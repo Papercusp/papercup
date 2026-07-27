@@ -24,6 +24,7 @@ import {
   type EscalationResolvedEvent,
 } from '@papercusp/coordination/core';
 import type { Sql, TransactionSql } from 'postgres';
+import { EVIDENCE_FIELD, type EvidenceStamp } from './relay-provenance';
 import { coordLog, coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import type { AgentIdentity } from './identity';
 import { FLAGS } from '@papercusp/flags';
@@ -123,7 +124,15 @@ function withRepeatMetadata(
 
 function buildOpenEscalationRecord(
   identity: AgentIdentity,
-  input: OpenEscalationInput & { meta?: EscalationMeta; harness_slug?: string },
+  input: OpenEscalationInput & {
+    meta?: EscalationMeta;
+    harness_slug?: string;
+    /** P-010: the evidence band grounding this escalation. Adapter-level, exactly
+     *  like `meta`/`harness_slug` — the generic coordination lib stays untouched.
+     *  DESCRIPTIVE only (D-015): it changes how much weight a reader gives the
+     *  escalation, never what the runtime executes. */
+    evidence?: EvidenceStamp;
+  },
   dedup: EscalationDedupIdentity,
   nowIso: string,
 ): EscalationRecord {
@@ -148,6 +157,11 @@ function buildOpenEscalationRecord(
   if (input.options !== undefined) env.options = input.options;
   if (input.harness_slug !== undefined) env.harness_slug = input.harness_slug;
   if (input.meta) Object.assign(env, input.meta);
+  // P-010: stamp the evidence band so the renderer can show `⊢ <band>
+  // (confidence: <derived>)`. Set LAST-but-one deliberately: `meta` is a
+  // caller-supplied extras bag, and the band must not be silently overwritable
+  // by a key collision in it.
+  if (input.evidence) env[EVIDENCE_FIELD] = input.evidence;
   return env;
 }
 
@@ -202,7 +216,15 @@ async function insertEscalationEventWithSql(
 
 async function openEscalationWithPgDedupLock(
   identity: AgentIdentity,
-  input: OpenEscalationInput & { meta?: EscalationMeta; harness_slug?: string },
+  input: OpenEscalationInput & {
+    meta?: EscalationMeta;
+    harness_slug?: string;
+    /** P-010: the evidence band grounding this escalation. Adapter-level, exactly
+     *  like `meta`/`harness_slug` — the generic coordination lib stays untouched.
+     *  DESCRIPTIVE only (D-015): it changes how much weight a reader gives the
+     *  escalation, never what the runtime executes. */
+    evidence?: EvidenceStamp;
+  },
   dedup: EscalationDedupIdentity,
   nowIso: string,
 ): Promise<EscalationRecord | null> {
@@ -276,7 +298,15 @@ export async function openEscalation(
   // ONLY for a concrete harness (never the operator/SU '*' wildcard), so an
   // operator-scope escalation correctly stays workspace-local. Distinct from
   // `meta.harnessSlug` (camelCase, body-only — the human-inbox chat-scoping key).
-  input: OpenEscalationInput & { meta?: EscalationMeta; harness_slug?: string },
+  input: OpenEscalationInput & {
+    meta?: EscalationMeta;
+    harness_slug?: string;
+    /** P-010: the evidence band grounding this escalation. Adapter-level, exactly
+     *  like `meta`/`harness_slug` — the generic coordination lib stays untouched.
+     *  DESCRIPTIVE only (D-015): it changes how much weight a reader gives the
+     *  escalation, never what the runtime executes. */
+    evidence?: EvidenceStamp;
+  },
 ): Promise<EscalationRecord> {
   const nowIso = new Date().toISOString();
   const dedup = escalationDedupIdentity(input);

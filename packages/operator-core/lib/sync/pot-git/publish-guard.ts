@@ -37,11 +37,39 @@ export const DEFAULT_MAX_PUBLISH_BLOB_BYTES = 100 * 1024 * 1024;
 export const DEFAULT_MAX_PUBLISH_TOTAL_BYTES = 500 * 1024 * 1024;
 /** Default cap on NEW object count a single publish may introduce (flood control). */
 export const DEFAULT_MAX_PUBLISH_NEW_OBJECTS = 50_000;
+/**
+ * WI-6254: PEAK-MEMORY budget for the G-10 secrets scan — how many bytes of
+ * blob content may be resident at once.
+ *
+ * This is a different KIND of limit from the caps above, which is why it is a
+ * separate knob rather than a reuse of `maxTotalNewBytes`. Those are VOLUME
+ * gates: policy about how much a publish may introduce, and by design
+ * `volumeGates: 'warn'` turns them off (see `volumeGates`). This one is a
+ * RESOURCE bound on how the guard does its own work, so it must hold in BOTH
+ * modes and can never be waived.
+ *
+ * Before this existed the scan materialised every text blob in the range into
+ * one array simultaneously, so in 'warn' mode — exactly what the ref-announce
+ * second-line guard passes — nothing bounded it at all. A range judged against
+ * a wrong baseline (WI-6251: 7057 commits) drove the sidecar 2.35GB -> 3.67GB
+ * into a FATAL heap OOM, crash frame `Builtins_StringSlowFlatten`. An OOM
+ * inside a fail-CLOSED guard is a fail-OPEN in effect: the process dies, DBOS
+ * restarts the fire at the same step, and git-sync wedges forever instead of
+ * the guard returning a refusal.
+ *
+ * Note the ENFORCE path was never a real memory bound either — 500MB of UTF-8
+ * becomes up to ~1GB of UTF-16 JS string, plus the scanner's working set.
+ */
+export const DEFAULT_PUBLISH_SCAN_CHUNK_BYTES = 32 * 1024 * 1024;
 
 export interface PublishGuardCaps {
   maxBlobBytes?: number;
   maxTotalNewBytes?: number;
   maxNewObjects?: number;
+  /** Peak bytes of blob content resident during the secrets scan
+   *  ({@link DEFAULT_PUBLISH_SCAN_CHUNK_BYTES}). Bounds memory, never
+   *  coverage: every text blob is still scanned, just not all at once. */
+  scanChunkBytes?: number;
 }
 
 export interface PublishGuardInput {
@@ -124,6 +152,111 @@ function runGitStdin(args: string[], cwd: string, stdin: string): Promise<{ code
   });
 }
 
+/** As {@link runGitStdin} but collecting stdout as BYTES. `cat-file --batch`
+ *  interleaves headers with raw object content on one stream, so decoding it
+ *  as a string would corrupt binary blobs and desynchronise the parser from
+ *  the byte-exact sizes git reports. */
+function runGitStdinBuffer(
+  args: string[],
+  cwd: string,
+  stdin: string,
+): Promise<{ code: number; stdout: Buffer; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
+    const chunks: Buffer[] = [];
+    let stderr = '';
+    child.stdout.on('data', (d: Buffer) => chunks.push(d));
+    child.stderr.on('data', (d) => (stderr += String(d)));
+    child.on('error', (e) => resolve({ code: -1, stdout: Buffer.concat(chunks), stderr: stderr + String(e) }));
+    child.on('close', (code) => resolve({ code: code ?? -1, stdout: Buffer.concat(chunks), stderr }));
+    child.stdin.write(stdin);
+    child.stdin.end();
+  });
+}
+
+/** A new blob in the judged range, with the size `--batch-check` already told
+ *  us — which is what lets the scan be partitioned without a second stat pass. */
+interface BlobEntry {
+  oid: string;
+  path: string;
+  bytes: number;
+}
+
+/**
+ * Partition blobs into groups whose total size stays within `chunkBytes`.
+ *
+ * A blob larger than the budget forms its own group rather than being dropped:
+ * coverage is never traded for the bound. That is safe because `blob-over-cap`
+ * is a HARD gate — enforced above in both volume modes — so a single blob is
+ * already bounded by `maxBlobBytes`.
+ */
+export function partitionBlobsForScan(blobs: readonly BlobEntry[], chunkBytes: number): BlobEntry[][] {
+  const budget = Math.max(1, chunkBytes);
+  const groups: BlobEntry[][] = [];
+  let current: BlobEntry[] = [];
+  let currentBytes = 0;
+  for (const b of blobs) {
+    const size = Number.isFinite(b.bytes) && b.bytes > 0 ? b.bytes : 0;
+    if (current.length > 0 && currentBytes + size > budget) {
+      groups.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(b);
+    currentBytes += size;
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+/**
+ * Read one partition's blobs with a SINGLE `git cat-file --batch`, returning
+ * the decodable TEXT ones. Binary blobs are skipped (the size caps already own
+ * that class), matching the previous per-blob behaviour.
+ *
+ * `--batch` frames each object as `<oid> SP <type> SP <size> LF <contents> LF`,
+ * or `<oid> SP missing LF` for one git cannot read. We parse against the
+ * declared size rather than scanning for delimiters, so content containing
+ * newlines (i.e. every source file) cannot desynchronise the stream.
+ */
+async function readTextBlobs(
+  group: readonly BlobEntry[],
+  repoPath: string,
+): Promise<{ files: { path: string; content: string }[]; error: string | null }> {
+  const pathByOid = new Map(group.map((b) => [b.oid, b.path] as const));
+  const out = await runGitStdinBuffer(
+    ['cat-file', '--batch', '--buffer'],
+    repoPath,
+    group.map((b) => b.oid).join('\n') + '\n',
+  );
+  // Fail-CLOSED: an unreadable batch means part of the range went unjudged.
+  // (A single `missing` object inside an otherwise good batch is tolerated
+  // below, exactly as the old loop tolerated a per-blob `cat-file` failure.)
+  if (out.code !== 0) return { files: [], error: `cat-file --batch failed: ${out.stderr.trim()}` };
+
+  const files: { path: string; content: string }[] = [];
+  const buf = out.stdout;
+  let pos = 0;
+  while (pos < buf.length) {
+    const nl = buf.indexOf(0x0a, pos);
+    if (nl === -1) break;
+    const header = buf.toString('utf8', pos, nl);
+    pos = nl + 1;
+    const [oid, type, sizeS] = header.trim().split(/\s+/);
+    if (!oid || !type || type === 'missing') continue;
+    const size = Number(sizeS ?? 0);
+    if (!Number.isFinite(size) || size < 0) break; // unparseable frame — stop rather than misread
+    const end = Math.min(pos + size, buf.length);
+    const content = buf.subarray(pos, end);
+    pos = end + 1; // skip the LF git appends after contents
+    const p = pathByOid.get(oid) ?? '';
+    if (!p) continue;
+    if (content.includes(0)) continue; // binary
+    files.push({ path: p, content: content.toString('utf8') });
+  }
+  return { files, error: null };
+}
+
 /**
  * Judge the (fromOid, toOid] range about to be exposed under a device's own
  * namespace ref. Pure decision — the caller (P-202's publish driver) decides
@@ -136,6 +269,7 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
     maxBlobBytes: input.caps?.maxBlobBytes ?? DEFAULT_MAX_PUBLISH_BLOB_BYTES,
     maxTotalNewBytes: input.caps?.maxTotalNewBytes ?? DEFAULT_MAX_PUBLISH_TOTAL_BYTES,
     maxNewObjects: input.caps?.maxNewObjects ?? DEFAULT_MAX_PUBLISH_NEW_OBJECTS,
+    scanChunkBytes: input.caps?.scanChunkBytes ?? DEFAULT_PUBLISH_SCAN_CHUNK_BYTES,
   };
   const res: PublishGuardResult = {
     ok: false,
@@ -191,16 +325,17 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
     );
     if (batch.code !== 0) return refuse('error', `cat-file --batch-check failed: ${batch.stderr.trim()}`);
     const pathByOid = new Map(entries.map((e) => [e.oid, e.path] as const));
-    const blobOids: string[] = [];
+    const blobs: BlobEntry[] = [];
     for (const line of batch.stdout.split('\n')) {
       const [oid, type, sizeS] = line.trim().split(/\s+/);
       if (!oid || !type) continue;
       const bytes = Number(sizeS ?? 0);
       res.newTotalBytes += Number.isFinite(bytes) ? bytes : 0;
       if (type === 'blob') {
-        blobOids.push(oid);
+        const path = pathByOid.get(oid) ?? '';
+        blobs.push({ oid, path, bytes: Number.isFinite(bytes) ? bytes : 0 });
         if (bytes > caps.maxBlobBytes) {
-          res.oversizeBlobs.push({ oid, path: pathByOid.get(oid) ?? '', bytes });
+          res.oversizeBlobs.push({ oid, path, bytes });
         }
       }
     }
@@ -223,18 +358,29 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
       }
     }
 
-    // 3. G-10 secrets scan over new TEXT blobs (capped read, binary skipped —
-    //    the size caps above already own that class).
-    const files: { path: string; content: string }[] = [];
-    for (const oid of blobOids) {
-      const p = pathByOid.get(oid) ?? '';
-      if (!p) continue;
-      const show = await runGit(['cat-file', 'blob', oid], input.repoPath);
-      if (show.code !== 0) continue; // unreadable blob — size caps already judged it
-      if (show.stdout.includes('\0')) continue; // binary
-      files.push({ path: p, content: show.stdout });
+    // 3. G-10 secrets scan over new TEXT blobs, read in BOUNDED chunks
+    //    (WI-6254). Peak resident content is `scanChunkBytes`, not the whole
+    //    range, and the read is one `cat-file --batch` per chunk rather than
+    //    one `cat-file` process per blob. Coverage is unchanged: every text
+    //    blob is still scanned, and `scanForSecrets` is a pure per-file
+    //    map-concat, so scanning in ordered chunks yields exactly the findings
+    //    (and the order) a single whole-range call would. Binary is skipped —
+    //    the size caps above already own that class.
+    const scanChunks = partitionBlobsForScan(
+      blobs.filter((b) => b.path),
+      caps.scanChunkBytes,
+    );
+    const findings: SecretFinding[] = [];
+    for (const group of scanChunks) {
+      const { files, error } = await readTextBlobs(group, input.repoPath);
+      // Fail-CLOSED, per this module's stated posture: a batch we could not
+      // read means part of the range went unjudged. (The old per-blob loop
+      // swallowed such a failure and carried on — a small fail-open hole;
+      // an individual `missing` object is still tolerated, inside readTextBlobs.)
+      if (error) return refuse('error', error);
+      findings.push(...scanForSecrets(files));
     }
-    res.secretFindings = scanForSecrets(files);
+    res.secretFindings = findings;
     if (res.secretFindings.length > 0 && input.workspaceId) {
       // WI-5591: consult the runtime, no-restart exemption list before
       // finalizing a 'secrets' refusal — a false positive on an already

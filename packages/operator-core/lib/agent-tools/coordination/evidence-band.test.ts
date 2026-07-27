@@ -222,47 +222,51 @@ describe('P-010 × D-015 — the band is DESCRIPTIVE, never transition authority
     );
   });
 
+  // NB: renderInjection's line 0 is the `[coord+N]` header — assert against the
+  // WHOLE output, and always pin a positive marker alongside any not.toContain,
+  // so a mis-indexed read can never masquerade as a pass.
+  const render = (entry: Record<string, unknown>) =>
+    renderInjection([entry as unknown as Parameters<typeof renderInjection>[0][number]]);
+
   it('renders on the actual injection line — the band is WIRED, not just a library', () => {
-    const [line] = renderInjection([
-      {
-        kind: 'escalation',
-        from: 'su-peer',
-        to: ['su-me'],
-        summary: 'the deploy looks wedged',
-        [EVIDENCE_FIELD]: { band: 'tool-output', ref: 'systemctl rc=3' },
-      } as unknown as Parameters<typeof renderInjection>[0][number],
-    ]).split('\n');
-    expect(line).toContain('the deploy looks wedged');
-    expect(line).toContain('⊢ tool-output systemctl rc=3 (confidence: high)');
+    const out = render({
+      kind: 'escalation',
+      from: 'su-peer',
+      to: ['su-me'],
+      summary: 'the deploy looks wedged',
+      [EVIDENCE_FIELD]: { band: 'tool-output', ref: 'systemctl rc=3' },
+    });
+    expect(out).toContain('the deploy looks wedged');
+    expect(out).toContain('⊢ tool-output systemctl rc=3 (confidence: high)');
   });
 
   it('a smuggled confidence number is flagged on the rendered line', () => {
-    const [line] = renderInjection([
-      {
-        kind: 'escalation',
-        from: 'su-peer',
-        to: ['su-me'],
-        summary: 'I am 99% sure',
-        confidence: 0.99,
-        [EVIDENCE_FIELD]: { band: 'inferred' },
-      } as unknown as Parameters<typeof renderInjection>[0][number],
-    ]).split('\n');
-    expect(line).toContain('DISCARDED');
+    const out = render({
+      kind: 'escalation',
+      from: 'su-peer',
+      to: ['su-me'],
+      summary: 'I am 99% sure',
+      confidence: 0.99,
+      [EVIDENCE_FIELD]: { band: 'inferred' },
+    });
+    expect(out).toContain('DISCARDED');
     // …and the DERIVED confidence still governs: `inferred` is low, not 0.99.
-    expect(line).toContain('(confidence: low)');
+    expect(out).toContain('(confidence: low)');
+    expect(out).not.toContain('0.99');
   });
 
   it('does NOT flag an unrelated envelope that merely carries a numeric field', () => {
-    const [line] = renderInjection([
-      {
-        kind: 'message',
-        from: 'system-watchdog',
-        to: ['su-me'],
-        summary: 'routine stats',
-        probability: 0.4,
-      } as unknown as Parameters<typeof renderInjection>[0][number],
-    ]).split('\n');
-    expect(line).not.toContain('DISCARDED');
+    const out = render({
+      kind: 'message',
+      from: 'system-watchdog',
+      to: ['su-me'],
+      summary: 'routine stats',
+      probability: 0.4,
+    });
+    // Positive marker first: proves the line really rendered, so the negative
+    // assertion below is meaningful rather than vacuous.
+    expect(out).toContain('routine stats');
+    expect(out).not.toContain('DISCARDED');
   });
 
   it('the band cannot be widened into the executable vocabulary by accident', () => {

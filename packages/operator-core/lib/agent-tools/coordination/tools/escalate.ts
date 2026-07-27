@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { openEscalation } from '../escalations';
+import { EVIDENCE_BANDS } from '../relay-provenance';
 import { COORD_ROLES } from '../roles';
 import { softText, clampText, LIMITS } from '../../limits';
 
@@ -76,6 +77,16 @@ export default defineTool({
       .array(z.object({ id: z.string().min(1), label: z.string().min(1) }))
       .optional()
       .describe('Optional named choices the human can pick from. Omit for free-form.'),
+    evidence: z
+      .object({
+        band: z.enum(EVIDENCE_BANDS),
+        reportedBy: z.string().min(1).optional(),
+        ref: z.string().min(1).max(200).optional(),
+      })
+      .optional()
+      .describe(
+        'How this escalation is GROUNDED: observed (you saw it) | tool-output (a tool result backs it; pass `ref`) | reported-by (a peer told you; `reportedBy` REQUIRED) | inferred (reasoned, not witnessed) | assumed (working assumption). Confidence is DERIVED from the band and rendered for the reader — never pass a number, it is discarded and flagged.',
+      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -104,6 +115,13 @@ export default defineTool({
       body: args.body,
       plan_slug: args.plan_slug,
       options: args.options,
+      // P-010: a `reported-by` band with no attribution is rejected at READ time
+      // (an unattributed relay is the provenance collapse the band exists to
+      // stop), so drop it here rather than persist a stamp that will never read
+      // back. DESCRIPTIVE only (D-015) — it never affects what the runtime does.
+      ...(args.evidence && (args.evidence.band !== 'reported-by' || args.evidence.reportedBy)
+        ? { evidence: args.evidence }
+        : {}),
       // harnessSlug (a concrete harness, never '*') does double duty: meta.harnessSlug
       // scopes the human-inbox chat (existing), and harness_slug FEDERATES the record
       // so a peer-machine harness-scoped escalation reaches the hub where the human's

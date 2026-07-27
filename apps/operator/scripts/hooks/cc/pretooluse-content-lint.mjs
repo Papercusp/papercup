@@ -15,21 +15,38 @@
 //   position (a HARD tsc/esbuild parse failure) only AFTER commit — feedback the author sees
 //   ~10-50 min later, buried in coord.
 //
-// RULE 2 — named owner-provenance tags (EI-18670296139788697), any text file
-//   `[owner:<name> …]` and `OWNER MANDATE (<Name>, <date>): "…"` in shipped source leak a real
-//   person into the release bundle. The three identity lints run as a green-checkpoint leg, so
-//   a one-line tag REDS THE GATE and freezes `main` for everyone: 4h10m with 41 commits
-//   buffered on 2026-07-26, from 20 findings across 10 files, every one authored that same day.
-//   EI-18147177863084708 already moved those lints from release-CUT time to checkpoint time for
-//   exactly this reason; this is the next hop — the author's own turn, seconds after they type
-//   it, when the fix is one word.
+// RULE 2 — the IDENTITY-LEAK FAMILY, all three classes (EI-18670296139788697,
+//   EI-18759401203875869), any text file. Each class has a green-checkpoint lint leg, so ONE
+//   line of any of them REDS THE GATE and freezes `main` for everyone:
+//     class 1  `[owner:<name> …]` / `OWNER MANDATE (<Name>, …)`  → lint:no-owner-name-tags
+//     class 2  a hardcoded `/home/<user>/…` path                 → lint:no-box-identity
+//     class 3  this box's bare git name/email, hostname, account → lint:no-identity-literals
 //
-//   The matcher is IMPORTED from the repo's scripts/lib/identity-leak-patterns.mjs — the same
-//   module scripts/check-no-owner-name-tags.mjs uses — resolved by walking up from the edited
+//   Class 1 alone cost 4h10m with 41 commits buffered on 2026-07-26 (20 findings, 10 files, all
+//   authored that day), which is why it got edit-time coverage first. Classes 2 and 3 stayed
+//   gate-only — and then cost FIVE consecutive red gates and 60 stranded commits on 2026-07-27
+//   over a single `/home/<user>/CLAUDE.md` written into one documentation file, with every one of
+//   40,469 tests passing. The cheapest possible detector (a string match) was reachable only from
+//   the most expensive and most shared mechanism in the repo, ~20 minutes later, for the whole
+//   fleet. All three classes now run HERE, in the author's own turn, while the fix is one word.
+//
+//   WHY NOT IN `npm run test:affected` INSTEAD (the obvious-looking alternative — do not "fix"
+//   this by moving it there): those lints scan a FILE SET, and on this shared tree no file set
+//   available to a local runner is the caller's own work. affected-tests.mjs derives its changed
+//   set from `git diff origin/main...HEAD` plus every uncommitted edit in the tree, so with `main`
+//   behind it is the whole fleet's recent work — agent B's routine check would red on a leak agent
+//   A committed hours ago. Un-actionable, mis-attributed, and it teaches agents to distrust the one
+//   check they actually run. This hook has no such problem: it lints the CONTENT BEING WRITTEN, so
+//   it is author-scoped by construction. (`lint:tsc --mine` hits the same wall and documents it.)
+//
+//   The matchers are IMPORTED from the repo's scripts/lib/identity-leak-patterns.mjs — the same
+//   module all three check-no-*.mjs gate lints use — resolved by walking up from the edited
 //   file. That indirection is deliberate: this hook runs from an INSTALLED copy in
 //   ~/.papercusp/hooks/cc/, so an inlined copy of the patterns would drift from the gate and
 //   the advisory would start green-lighting what the gate later rejects. Importing from the
-//   tree being edited makes divergence impossible.
+//   tree being edited makes divergence impossible. Every matcher is called behind a
+//   `typeof === 'function'` probe so an older installed hook against a newer tree — or this hook
+//   against a checkout predating a class — stays silent instead of throwing.
 //
 // CONTRACT (advisory — NEVER blocks, FAIL-OPEN)
 //   - On a hit: prints additionalContext (model-facing) + exit 0 (the edit PROCEEDS).
