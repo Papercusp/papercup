@@ -16,6 +16,7 @@
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { gitSidecarEnabled, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry } from './harness-registry';
 import { resolveHiveReleaseEnv } from './harness/routines/hive-release-env';
@@ -122,21 +123,44 @@ export interface GitPipelineHiveRow {
   bridge: GitPipelineBridgeState | null;
 }
 
-/** `git -C root rev-list --count <from>..<to>` — best-effort, null on any error/missing branch. */
-function revListCount(root: string, from: string, to: string): Promise<number | null> {
+/** `git -C root rev-list --count <from>..<to>` via a LOCAL fork — best-effort, null on any error. */
+function revListCountLocal(root: string, args: string[]): Promise<number | null> {
   return new Promise((resolve) => {
-    if (!root || !existsSync(root)) return resolve(null);
-    execFile(
-      'git',
-      ['-C', root, 'rev-list', '--count', `${from}..${to}`],
-      { timeout: 5_000 },
-      (err, stdout) => {
-        if (err) return resolve(null);
-        const n = Number.parseInt(stdout.trim(), 10);
-        resolve(Number.isFinite(n) ? n : null);
-      },
-    );
+    execFile('git', args, { timeout: 5_000, cwd: root }, (err, stdout) => {
+      if (err) return resolve(null);
+      const n = Number.parseInt(stdout.trim(), 10);
+      resolve(Number.isFinite(n) ? n : null);
+    });
   });
+}
+
+/**
+ * `git -C root rev-list --count <from>..<to>` — best-effort, null on any
+ * error/missing branch.
+ *
+ * Routes through the SPAWNER SIDECAR when enabled, falling back to a local fork
+ * on any sidecar problem. `fork()` copies the caller's page tables, so spawning
+ * from the ~4 GB bg-host cost ~165 ms of BLOCKED EVENT LOOP per call for a
+ * command git finishes in ~4 ms (EI-18808838427010743, ~40 ms/GB measured).
+ * This runs per hive row inside the pipeline snapshot, and a CPU profile of the
+ * live bg-host attributed 0.62% of the whole main thread to it — the largest
+ * remaining git spawner after dev-deploy-state.ts.
+ */
+async function revListCount(root: string, from: string, to: string): Promise<number | null> {
+  if (!root || !existsSync(root)) return null;
+  const args = ['-C', root, 'rev-list', '--count', `${from}..${to}`];
+  if (gitSidecarEnabled('PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR')) {
+    try {
+      const r = await runGitViaSpawnerSidecar(args, root, 5_000, process.env);
+      if (r.code !== 0) return null;
+      const n = Number.parseInt(r.stdout.trim(), 10);
+      return Number.isFinite(n) ? n : null;
+    } catch {
+      // Sidecar unreachable — fall through to the local fork. Best-effort
+      // helper: it already swallows every error into `null`, so no warn here.
+    }
+  }
+  return revListCountLocal(root, args);
 }
 
 function gateStatusOf(gate: GitPipelineSnapshot['gate']): HiveGateStatus {

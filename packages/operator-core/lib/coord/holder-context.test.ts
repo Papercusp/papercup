@@ -504,8 +504,14 @@ const READS_CLAIM_INTENT = (code: string): boolean =>
  * select only `owner`/`item_id` — they never read the intent at all.
  */
 const CLAIM_INTENT_ALLOWLIST: Record<string, string> = {
-  'packages/operator-core/lib/agent-tools/coordination/holder-context-sources.ts':
-    'P-026 goal source — the one reader-relative route, projected via declaredGoalOf',
+  // P-016 MOVED THIS READ. `holder-context-sources.ts` used to hold the SELECT and
+  // now delegates to the goal resolver, so the producer's one reader is this file.
+  // It still satisfies the rule the allowlist enforces: `fetchHolderGoalRecord`
+  // routes the raw intent through `declaredGoalOf` — and does so against the PLAN
+  // ITEM id, which is the only id the auto-convert detection is meaningful for
+  // once the goal ref itself may be a work-item.
+  'packages/operator-core/lib/agent-tools/coordination/agent-goal-sources.ts':
+    'P-016 goal source — the one route, projected via declaredGoalOf against the plan-item id',
   'packages/operator-core/lib/plan-items/claims.ts':
     'the claim STORE: returns the raw ClaimDbRow. Goal RENDERING happens downstream ' +
     'in claim-holder.ts (reader-independent) / holder-context.ts (reader-relative), ' +
@@ -519,7 +525,7 @@ describe('LEG B — the goal producer has one reader', () => {
     expect(
       found,
       'the producer scan found nothing at all — it is not scanning the tree, so its GREEN is meaningless',
-    ).toContain('packages/operator-core/lib/agent-tools/coordination/holder-context-sources.ts');
+    ).toContain('packages/operator-core/lib/agent-tools/coordination/agent-goal-sources.ts');
 
     const offenders = found.filter((f) => !(f in CLAIM_INTENT_ALLOWLIST));
     expect(

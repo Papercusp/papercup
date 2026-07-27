@@ -45,8 +45,8 @@ import type {
   HolderGoalRecord,
 } from '../../coord/holder-context';
 import type { CellReader } from '../../cell-registry';
-import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import { foldFacts } from '../../agent-facts/store';
+import { fetchHolderGoalRecord } from './agent-goal-sources';
 
 /**
  * Ceiling on owner-scoped facts read for ONE holder. Far above the measured live
@@ -57,38 +57,25 @@ import { foldFacts } from '../../agent-facts/store';
 export const HOLDER_ASSUMPTION_FOLD_LIMIT = 50;
 
 /**
- * The holder's current goal: their most-recently-active LIVE plan-item claim.
+ * The holder's current goal — now P-016's FULL auto-derivation, not the
+ * plan-item claim alone.
  *
- * MOST-RECENTLY-ACTIVE, not first or newest-acquired: an agent may hold several
- * items, and the one it last touched is the one it is actually on — which is the
- * question a blocked reader is asking. Deterministic tie-break on `item_id` so
- * two readers derive the same goal.
+ * ⚠ THIS USED TO BE A PLAN-ITEM-ONLY READ, AND THAT WAS A MEASURED BLIND SPOT.
+ * A live plan-item claim is one of four legs, and it is the leg with zero
+ * standalone traffic: on 2026-07-27, **0 of 19 holders held a plan-item claim
+ * without also holding a work-item**, so this function returned `null` for 15 of
+ * 19 holders who demonstrably had a goal — a blocked reader was told "no goal
+ * declared" about an agent actively holding a work-item.
  *
- * ⚠ LIVE CLAIMS ONLY (`expires_ts > now()`). An expired claim's intent is a
- * historical record, and rendering it would be the very "stale value reads as
- * current" defect rule (e) exists to prevent — one layer below `stale`.
+ * It now delegates to {@link fetchHolderGoalRecord}, which applies the
+ * precedence (override > work-item > plan-item > fleet mission), the
+ * `coord_links` corroboration tiebreak, and the same live-claim and
+ * prose-safety rules. This is the swap the module header of
+ * `coord/holder-context.ts` anticipated — behind the SAME seam, with NO consumer
+ * change.
  */
 export async function fetchHolderGoal(holderOwnerId: string): Promise<HolderGoalRecord | null> {
-  const owner = holderOwnerId.trim();
-  if (!owner || !coordHasPgFastPath()) return null;
-
-  try {
-    const sql = coordSql();
-    const rows = await sql<{ item_id: string; intent: string | null; acquired_ts: string }[]>`
-      SELECT item_id, intent, acquired_ts::text AS acquired_ts
-        FROM harness_shared.plan_item_claims
-       WHERE workspace_id = ${coordWorkspaceId()}
-         AND owner = ${owner}
-         AND expires_ts > now()
-       ORDER BY last_activity_ts DESC, item_id ASC
-       LIMIT 1`;
-    const r = rows[0];
-    if (!r?.item_id) return null;
-    return { itemId: r.item_id, intent: r.intent, acquiredTs: r.acquired_ts };
-  } catch {
-    // Rule (f): a dead store costs this ONE field, never the read it decorates.
-    return null;
-  }
+  return fetchHolderGoalRecord(holderOwnerId);
 }
 
 /**

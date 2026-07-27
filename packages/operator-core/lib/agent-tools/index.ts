@@ -588,6 +588,7 @@ import './coordination/tools/presence';
 // fleet:assignments, coord:glance, etc. — replaces "which of 5 tools do I call".
 import './coordination/tools/roster';
 import './coordination/tools/declare-intent';
+import './coordination/tools/goal';
 // Per-agent wake mode + staged-wake review — the pause/edit gate's control surface
 // (hive-agent-tabs-psu-tui-2026-06-09 P-008/P-009 / D-005). The stage-vs-fire
 // behavior is in wakeRecipients (P-007, gated on POT_AGENT_TABS); these expose it.

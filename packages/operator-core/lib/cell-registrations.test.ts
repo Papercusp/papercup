@@ -6,6 +6,7 @@ import {
   GATE_CANDIDATE_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
+  AGENT_GOAL_CELL,
   BUILTIN_CELLS,
   registerBuiltinCells,
 } from './cell-registrations';
@@ -90,10 +91,12 @@ describe('P-007: the four verdict cells', () => {
     expect(validateCellSpec(spec)).toEqual([]);
   });
 
-  it('registers all five built-ins, and does so idempotently', () => {
+  it('registers every built-in, and does so idempotently', () => {
     registerBuiltinCells();
     expect(() => registerBuiltinCells()).not.toThrow();
     expect(listCellsUnchecked().map((c) => c.cell)).toEqual([
+      // P-016. The first cell here that is about an AGENT rather than the tree.
+      'agent.goal',
       'deploy.3070.sha',
       'gate.greenCheckpoint.candidate',
       'gate.greenCheckpoint.verdict',
@@ -103,15 +106,31 @@ describe('P-007: the four verdict cells', () => {
   });
 
   /**
-   * #D-065 IS THE ASSERTION. Four cells naming one resolver is axis 5 satisfied (many
+   * #D-065 IS THE ASSERTION. Five cells naming one resolver is axis 5 satisfied (many
    * lenses over one derivation), and the thing that would break it is someone "fixing"
    * a cell by pointing it at a second resolver — or at a hand-rolled re-derivation of
    * the same values, which is the failure axis 5 exists to prevent.
+   *
+   * ⚠ SCOPED TO THE PIPELINE FAMILY, not to BUILTIN_CELLS. P-016's `agent.goal`
+   * legitimately has its OWN resolver — it derives a different thing from
+   * different tables. Asserting "the registry has exactly one resolver" would
+   * therefore be asserting that no second SUBJECT may ever be registered, which is
+   * not what D-065 said and would block the registry from growing at all. The
+   * invariant that matters is that the pipeline cells do not sprout a second
+   * derivation among THEMSELVES.
    */
-  it('all five are lenses over the ONE gitPipelinePosition resolver', () => {
-    const resolvers = new Set(BUILTIN_CELLS.map((c) => c.resolver));
+  it('the pipeline family are all lenses over the ONE gitPipelinePosition resolver', () => {
+    const family = [GIT_PIPELINE_POSITION_CELL, ...NEW_CELLS];
+    const resolvers = new Set(family.map((c) => c.resolver));
     expect(resolvers.size).toBe(1);
     expect([...resolvers][0]).toContain('gitPipelinePosition()');
+  });
+
+  /** Every registered cell still names exactly one resolver of its own — the
+   *  per-cell half of axis 5, which the family assertion above no longer covers. */
+  it('no two cells share a cell id, and every cell names a resolver', () => {
+    expect(new Set(BUILTIN_CELLS.map((c) => c.cell)).size).toBe(BUILTIN_CELLS.length);
+    for (const c of BUILTIN_CELLS) expect(c.resolver.trim()).not.toBe('');
   });
 
   /**
@@ -185,5 +204,89 @@ describe('P-007: the four verdict cells', () => {
     expect(spec.provenance.liveExercised).toBe(true);
     expect(spec.provenance.evidence).toContain('dev:pipeline_position');
     expect(spec.provenance.evidence).toMatch(/2026-07-27/);
+  });
+});
+
+/**
+ * P-016 — the agent goal cell.
+ *
+ * The assertions worth making here are the ones that would go red if someone
+ * "simplified" the cell back to the plan item's literal wording. The precedence
+ * sentence is under-determined on the live fleet, and the falsifier is what
+ * carries that finding to the next author.
+ */
+describe('P-016: agent.goal registers under the D-038 contract', () => {
+  beforeEach(() => __resetCellRegistryForTests());
+
+  it('validates with zero rejections', () => {
+    expect(validateCellSpec(AGENT_GOAL_CELL)).toEqual([]);
+  });
+
+  it('registers and is retrievable by any reader — a blocked peer is the point', () => {
+    registerBuiltinCells();
+    expect(getCell('agent.goal', { ownerId: 'su-anyone' })?.resolver).toContain('resolveOwnerGoal()');
+  });
+
+  /**
+   * Axis 3. The whole cell is "about WHICH agent", so a global or ambient
+   * declaration would be a category error — and `cell-read.ts` names this cell as
+   * the motivating example for the `subject` parameter.
+   */
+  it('is parameter-relative on ownerId, not global', () => {
+    expect(AGENT_GOAL_CELL.callerRelativity).toEqual({ kind: 'parameter', param: 'ownerId' });
+  });
+
+  /**
+   * Axis 1. The falsifier must be the LINK GRAPH, not staleness: staleness is
+   * already carried by HolderContext rule (e), so reusing it would add
+   * interpretation with no new information — which is what axis 1 rejects.
+   */
+  it('falsifies via the coord_links edge, and cites the measurement that earned it', () => {
+    expect(AGENT_GOAL_CELL.falsifier.measurement).toContain('coord_links');
+    expect(AGENT_GOAL_CELL.falsifier.measurement).not.toMatch(/stale/i);
+    // The count is the load-bearing part: it is why precedence alone is not enough.
+    expect(AGENT_GOAL_CELL.falsifier.kills).toContain('3 of 19');
+  });
+
+  /** Axis 2. A held-nothing agent has no goal, and the competing claims must be
+   *  hoisted to the RESULT so a caller who skips `agreement` still cannot miss them. */
+  it('is nullable and hoists the competing claims', () => {
+    expect(AGENT_GOAL_CELL.nullable).toBe(true);
+    expect(AGENT_GOAL_CELL.unknownHoist).toBe('goal.competing');
+  });
+
+  /**
+   * P-019. Narrowing this cell would make it useless for the thing D-051 built it
+   * for — a BLOCKED PEER reading the holder's goal — while promising a secrecy
+   * the claim surfaces do not actually provide.
+   */
+  it('is workspace-visible and hive-local', () => {
+    expect(AGENT_GOAL_CELL.visibility).toEqual({ kind: 'workspace' });
+    expect(AGENT_GOAL_CELL.federation).toEqual({ kind: 'local' });
+  });
+
+  /**
+   * A registered cell with no dispatchable poll tool is unreadable forever —
+   * `readCell` would return insufficient-data — which is the "surface #29"
+   * failure D-010's adoption gate exists to prevent.
+   */
+  it('names a poll resolver so the cell is actually readable', () => {
+    expect(AGENT_GOAL_CELL.changeSignal).toEqual({
+      kind: 'poll',
+      tool: 'coord:goal',
+      path: 'goal.ref',
+    });
+  });
+
+  /** Axis 6 absent: the four SOURCES are a precedence, not a sequence. Declaring
+   *  them as stages would invite reading `fleet-mission` as "further along". */
+  it('declares no stage order', () => {
+    expect(AGENT_GOAL_CELL.ordered).toBeUndefined();
+  });
+
+  it('is in BUILTIN_CELLS and does not collide with an existing resolver', () => {
+    expect(BUILTIN_CELLS).toContain(AGENT_GOAL_CELL);
+    registerBuiltinCells();
+    expect(() => registerBuiltinCells()).not.toThrow();
   });
 });

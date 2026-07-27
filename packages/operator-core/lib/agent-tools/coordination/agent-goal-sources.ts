@@ -1,0 +1,295 @@
+/**
+ * agent-goal-sources.ts — the PRODUCTION reads behind P-016's goal cell
+ * (plan `unified-agent-state-plane-2026-07-27`).
+ *
+ * Sibling of `holder-context-sources.ts` and built to the same split: the
+ * derivation is PURE (`lib/agent-goal-ref.ts` — no PG, no clock, exhaustively
+ * unit-tested), and this file is the only part that touches a store. That is what
+ * makes P-026 rule (f)'s totality structural rather than a promise.
+ *
+ * ⚠ THIS REPLACES A SINGLE-LEG DERIVATION, IT DOES NOT RUN BESIDE ONE.
+ * `fetchHolderGoal` previously answered "the holder's goal" from the plan-item
+ * claim ALONE. That is one of P-016's four legs, and it is the leg measured to
+ * have ZERO standalone live traffic (0 of 19 holders hold a plan-item claim
+ * without also holding a work-item, 2026-07-27) — so on today's fleet it returned
+ * null for 15 of 19 holders who demonstrably HAD a goal. It now delegates here.
+ * One derivation, many lenses (D-038 axis 5).
+ *
+ * ⚠⚠ THE OVERRIDE RIDES A RESERVED KEY, NOT `agent_facts.kind` — AND THAT IS THE
+ * SIBLING'S MEASURED WARNING APPLIED, NOT A SHORTCUT. D-011 requires an explicit
+ * author-override path; P-030 forbids minting a third place a goal is written. So
+ * the override lives on the declaration substrate P-008 already made
+ * append-versioned. The obvious spelling is `kind = 'goal'`, and it is wrong TWICE
+ * over:
+ *   · `agent_facts.kind`'s CHECK admits only `conclusion | assumption |
+ *     convention` — there is no `'goal'`, so the row could never be written;
+ *   · `kind` is populated on **13 of 2,076 rows** (holder-context-sources.ts,
+ *     measured), so a `kind` filter derives essentially nothing even where it is
+ *     legal.
+ * Facts are therefore identified BY KEY here, exactly as the assumptions leg does.
+ * `key` is the populated, load-bearing field; `kind` is not.
+ */
+import type { Sql } from 'postgres';
+import {
+  resolveAgentGoal,
+  type GoalCandidates,
+  type GoalLink,
+  type HeldFleet,
+  type HeldPlanItem,
+  type HeldWorkItem,
+  type ResolvedGoal,
+} from '../../agent-goal-ref';
+import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
+import { foldFacts } from '../../agent-facts/store';
+import { declaredGoalOf } from '../../plan-items/claim-holder';
+import type { HolderGoalRecord } from '../../coord/holder-context';
+
+/**
+ * The reserved `agent_facts` key an agent authors to override its derived goal.
+ *
+ * ⚠ ONE CONSTANT, so the reader here and any future writer can never drift — the
+ * same discipline `autoConvertClaimIntent` uses for the string it detects. An
+ * override is authored ONLY when true purpose differs from the claimed lane,
+ * "which is precisely the high-signal case" (D-011).
+ */
+export const GOAL_OVERRIDE_FACT_KEY = 'goal.override';
+
+/** Work-item states that must NOT produce a goal: an agent still named on a
+ *  finished row is not working toward it. */
+const TERMINAL_WORK_ITEM_STATES = ['done', 'cancelled', 'closed'];
+
+/**
+ * Ceiling on rows per leg. A BOUND, not a filter — the resolver must SEE the
+ * competing claims in order to disclose them (`ResolvedGoal.competing`), so
+ * trimming to one would reintroduce the silent-discard defect. The measured live
+ * maximum is 2 work-items per holder, so this is far above the real population
+ * while still stopping a pathological holder from turning a hot-path enrichment
+ * into an unbounded read.
+ */
+export const GOAL_LEG_CAP = 20;
+
+/**
+ * Gather every leg for one owner.
+ *
+ * FAIL-SOFT PER LEG: a dead source contributes nothing while the others still
+ * land, so a broken links table costs corroboration rather than the whole goal.
+ */
+export async function readGoalCandidates(ownerId: string): Promise<GoalCandidates> {
+  return (await readGoalLegs(ownerId)).candidates;
+}
+
+/** Internal: the candidates PLUS the claim prose, gathered in one pass so
+ *  {@link fetchHolderGoalRecord} needs no second round-trip. */
+async function readGoalLegs(
+  ownerId: string,
+): Promise<{ candidates: GoalCandidates; planItems: readonly HeldPlanItemRow[] }> {
+  const owner = (ownerId ?? '').trim();
+  if (!owner || !coordHasPgFastPath()) return { candidates: {}, planItems: [] };
+  const sql = coordSql();
+  const ws = coordWorkspaceId();
+
+  const settle = async <T>(f: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await f();
+    } catch {
+      return fallback;
+    }
+  };
+
+  const [workItems, planItems, fleet, override] = await Promise.all([
+    settle(() => readHeldWorkItems(sql, ws, owner), [] as HeldWorkItem[]),
+    settle(() => readHeldPlanItems(sql, ws, owner), [] as HeldPlanItemRow[]),
+    settle(() => readFleetMission(sql, ws, owner), null as HeldFleet | null),
+    settle(() => readGoalOverride(owner), null as GoalCandidates['override']),
+  ]);
+
+  return {
+    candidates: {
+      override,
+      workItems,
+      planItems,
+      fleet,
+      links: await settle(
+        () => readImplementsLinks(sql, ws, workItems, planItems),
+        [] as GoalLink[],
+      ),
+    },
+    planItems,
+  };
+}
+
+async function readHeldWorkItems(sql: Sql, ws: string, owner: string): Promise<HeldWorkItem[]> {
+  const rows = await sql<{ id: string; taken_at: string | null }[]>`
+    SELECT feature_id AS id, taken_at::text AS taken_at
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${ws}
+       AND taken_by = ${owner}
+       AND status <> ALL(${TERMINAL_WORK_ITEM_STATES})
+     ORDER BY taken_at DESC NULLS LAST
+     LIMIT ${GOAL_LEG_CAP}`;
+  return rows.filter((r) => r.id).map((r) => ({ id: r.id, takenAt: r.taken_at }));
+}
+
+/**
+ * ⚠ LIVE CLAIMS ONLY (`expires_ts > now()`), for the reason `fetchHolderGoal`
+ * already states: an expired claim's goal is a historical record, and rendering
+ * it is the "stale value reads as current" defect one layer below `stale`.
+ */
+async function readHeldPlanItems(sql: Sql, ws: string, owner: string): Promise<HeldPlanItemRow[]> {
+  const rows = await sql<
+    { plan_slug: string; item_id: string; acquired_ts: string | null; intent: string | null }[]
+  >`
+    SELECT plan_slug, item_id, acquired_ts::text AS acquired_ts, intent
+      FROM harness_shared.plan_item_claims
+     WHERE workspace_id = ${ws}
+       AND owner = ${owner}
+       AND expires_ts > now()
+     ORDER BY last_activity_ts DESC NULLS LAST, item_id ASC
+     LIMIT ${GOAL_LEG_CAP}`;
+  return rows
+    .filter((r) => r.plan_slug && r.item_id)
+    .map((r) => ({
+      planSlug: r.plan_slug,
+      itemId: r.item_id,
+      acquiredTs: r.acquired_ts,
+      intent: r.intent,
+    }));
+}
+
+/**
+ * A held plan-item claim PLUS its raw `intent`.
+ *
+ * ⚠ `intent` is carried HERE and not on {@link HeldPlanItem}, deliberately. The
+ * pure resolver derives a REF and must stay free of prose — a goal ref and a goal
+ * TEXT are different data with different lifetimes (D-011's table). This row type
+ * exists only so {@link fetchHolderGoalRecord} can recover the prose without a
+ * second query.
+ */
+interface HeldPlanItemRow extends HeldPlanItem {
+  intent: string | null;
+}
+
+/**
+ * Current fleet membership. `fleet_membership_events` is APPEND-ONLY, so
+ * membership is the newest event — and a `leave` means the agent has NO mission,
+ * not that its last fleet still counts.
+ */
+async function readFleetMission(sql: Sql, ws: string, owner: string): Promise<HeldFleet | null> {
+  const rows = await sql<{ fleet_slug: string; event: string; at: string | null }[]>`
+    SELECT fleet_slug, event, at::text AS at
+      FROM harness_shared.fleet_membership_events
+     WHERE workspace_id = ${ws}
+       AND owner_id = ${owner}
+     ORDER BY at DESC, id DESC
+     LIMIT 1`;
+  const r = rows[0];
+  if (!r?.fleet_slug || r.event === 'leave') return null;
+  return { slug: r.fleet_slug, joinedAt: r.at };
+}
+
+/**
+ * The author override — the newest live owner-scoped fact under the reserved key.
+ *
+ * Read through `foldFacts` rather than raw SQL so it inherits the audited
+ * append-version semantics for free: `superseded_at IS NULL` (P-008 (a) — a fold
+ * that saw the superseded tail would serve the correction and the corrected value
+ * as peers), plus retraction and expiry.
+ */
+async function readGoalOverride(owner: string): Promise<GoalCandidates['override']> {
+  const facts = await foldFacts([{ scope: 'owner', scopeRef: owner }], {
+    limitPerSelector: 1,
+    keyPrefix: GOAL_OVERRIDE_FACT_KEY,
+    audiences: 'all',
+  });
+  const f = facts.find((x) => x.key === GOAL_OVERRIDE_FACT_KEY);
+  if (!f?.body?.trim()) return null;
+  return { ref: f.body.trim(), declaredAt: f.updated_at ?? null };
+}
+
+/**
+ * The corroboration edges — `coord_links` rows proving a held work-item
+ * IMPLEMENTS a plan item.
+ *
+ * ⚠ SKIPPED WHEN ITS ANSWER CANNOT CHANGE THE RESULT. With no held work-item, or
+ * no plan-item claim to corroborate AGAINST, there is no ambiguity for an edge to
+ * resolve — and this decorates a hot path, so the query does not run.
+ */
+async function readImplementsLinks(
+  sql: Sql,
+  ws: string,
+  workItems: readonly HeldWorkItem[],
+  planItems: readonly HeldPlanItem[],
+): Promise<GoalLink[]> {
+  const ids = workItems.map((w) => w.id).filter(Boolean);
+  if (ids.length === 0 || planItems.length === 0) return [];
+  const rows = await sql<{ src_ref: string; dst_ref: string }[]>`
+    SELECT src_ref, dst_ref
+      FROM harness_shared.coord_links
+     WHERE workspace_id = ${ws}
+       AND dst_kind = 'plan_item'
+       AND rel = 'implements'
+       AND src_ref = ANY(${ids})`;
+  return rows
+    .filter((r) => r.src_ref && r.dst_ref)
+    .map((r) => ({ workItemId: r.src_ref, planItemRef: r.dst_ref }));
+}
+
+/**
+ * THE CELL'S RESOLVER — one owner's current goal, derived now.
+ *
+ * TOTAL: never throws. `null` is an HONEST "this agent holds nothing", which
+ * consumers render as absent — never as a fabricated goal, and (D-056)
+ * deliberately the same answer a reader gets for a holder whose goal it may not
+ * read, so a refusal cannot be used as a probe oracle.
+ */
+export async function resolveOwnerGoal(ownerId: string): Promise<ResolvedGoal | null> {
+  try {
+    return resolveAgentGoal((await readGoalLegs(ownerId)).candidates);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * P-026's `HolderContextSources.holderGoal`, now backed by all four legs.
+ *
+ * ⚠ THE PROSE GOAL IS RECOVERED CAREFULLY, AND THE CARE IS NOT OPTIONAL.
+ * `HolderContext.goalText` comes from `plan_item_claims.intent`, and
+ * `declaredGoalOf` protects it by detecting the auto-convert MECHANISM string —
+ * a string that embeds the PLAN ITEM id. Once `itemId` becomes a resolved ref
+ * (often a work-item, e.g. `WI-6407`), running that detection against the ref
+ * would compare the intent to a mechanism string for the WRONG id, it would never
+ * match, and the mechanism string would sail through rendered as the holder's
+ * goal — the exact thing `declaredGoalOf` exists to refuse.
+ *
+ * So the detection runs HERE, against the plan-item id where it is meaningful,
+ * and only a genuine goal is passed up. The pure projection then sees clean prose
+ * or null, and its own second `declaredGoalOf` call is a no-op rather than a
+ * mis-comparison. One rule, applied where it can be applied correctly.
+ *
+ * The prose is claimed ONLY when the resolved goal actually IS that plan-item
+ * claim — either directly, or via the `implements` edge that proves they are one
+ * goal. A work-item goal that merely coexists with an unrelated claim gets no
+ * prose, because that claim describes different work.
+ */
+export async function fetchHolderGoalRecord(ownerId: string): Promise<HolderGoalRecord | null> {
+  try {
+    const { candidates, planItems } = await readGoalLegs(ownerId);
+    const goal = resolveAgentGoal(candidates);
+    if (!goal) return null;
+
+    const planRef = goal.source === 'plan-item' ? goal.ref : goal.corroboratedBy;
+    const claim = planRef
+      ? planItems.find((p) => `${p.planSlug}#${p.itemId}` === planRef)
+      : undefined;
+
+    return {
+      itemId: goal.ref,
+      intent: claim ? declaredGoalOf(claim.intent, claim.itemId).goalText : null,
+      acquiredTs: goal.declaredAt,
+    };
+  } catch {
+    // P-026 rule (f): a dead store costs this ONE field, never the read it decorates.
+    return null;
+  }
+}

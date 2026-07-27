@@ -29,6 +29,20 @@ vi.mock('./log', async (orig) => {
   return { ...actual, coordWorkspaceId: () => 'default', coordScopeWorkspace: () => 'default' };
 });
 
+// liveFleetMemberIds projects the presence rows onto the authoritative psu-HOST
+// liveness read (`livePsuFleetMemberIds` → `findLiveHost`, WI-1764 #4 / P-006): a
+// fleet member is only a deliverable audience if a live pty-host for that ownerId
+// exists ON THIS MACHINE. Our seeded owners ('alice', 'bob', …) are fixtures with no
+// such host, so the unmocked resolver correctly returns [] and every assertion here
+// fails — the test predates that tightening, not the other way round. Report the
+// seeded owners as hosted so this file keeps testing what it is actually about (the
+// heartbeat gate + the mute/digest override), and leave the host-liveness rule itself
+// to the tests that own it.
+vi.mock('../../events/await/psu-pty-discovery', async (orig) => {
+  const actual = await orig<typeof import('../../events/await/psu-pty-discovery')>();
+  return { ...actual, findLiveHost: (ownerId: string) => ({ ownerId }) };
+});
+
 const { hostAudienceResolvers } = await import('./audience-host');
 const { setFleetDelivery, getFleetDeliveryOverrides } = await import('./fleet-delivery');
 

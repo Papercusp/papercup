@@ -430,6 +430,106 @@ export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
     '{ verdictProvenance: { mainFastForwarded, lastGreenSha, lastGreenAgeMs, deployedBehindGreenPin, deployOrigin }, verdictUnknown[] }',
 };
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * P-016 — THE AGENT GOAL CELL
+ *
+ * The first cell on this registry that is about an AGENT rather than about the
+ * tree, and the substrate D-051 and P-030 both wait on: "anything that can read a
+ * cell can read a holder's goal", so eight holder-bearing surfaces each add a
+ * LENS instead of each re-deriving a goal from their own columns.
+ *
+ * ⚠ IT IS THE CURRENT-STATE SURFACE, AND ITS SIBLING IS NOT. D-051 draws the line
+ * this cell sits on: the DECLARATION (this) answers "what is this agent doing
+ * right now" and belongs to presence/holder surfaces; the P-009 tool-call STAMP
+ * answers "what was true when this call was made" and belongs to postmortems.
+ * Deriving current state from the newest row of a historical log is a
+ * re-derivation and a lossy one — it goes stale between calls and is silent for
+ * an agent that has declared but not yet acted. Nothing here reads the stamp.
+ * ══════════════════════════════════════════════════════════════════════════════ */
+export const AGENT_GOAL_CELL: CellSpec = {
+  cell: 'agent.goal',
+  owner: 'unified-agent-state-plane-2026-07-27',
+  headline: 'goal.ref',
+
+  /**
+   * Axis 1. NOT staleness — `HolderContext` rule (e) already carries that, and
+   * reusing it here would add interpretation without new information.
+   *
+   * The independent measurement is the `coord_links` LINK GRAPH, which shares no
+   * input with either claim row, and it kills a false reading the precedence rule
+   * cannot see on its own: measured 2026-07-27, **3 of 19 holders hold TWO
+   * work-items at once**, so "the one ref returned is what this agent is doing"
+   * is a coin flip exactly when it matters. `agreement` says whether the legs
+   * corroborate, diverge, or stand alone.
+   */
+  falsifier: {
+    field: 'goal.agreement',
+    measurement:
+      "the coord_links `implements` edge joining a held work-item to a separately-claimed plan item — a link-graph read sharing no input with work_items.taken_by or plan_item_claims",
+    kills:
+      '"the single ref returned IS this agent\'s goal", when the agent holds several claims naming different work and precedence picked one arbitrarily. Measured: 3 of 19 holders hold two work-items; the edge is what says which one serves the claimed lane.',
+  },
+
+  /**
+   * Axis 2. TRUE — an agent holding nothing has no goal, and that is an honest
+   * unknown rather than an empty string. `competing` is the hoist: a caller who
+   * never inspects `agreement` still cannot miss that other claims exist, because
+   * they are enumerated at the result level (D-039).
+   */
+  nullable: true,
+  unknownHoist: 'goal.competing',
+
+  /** Axis 3. Relative to WHICH AGENT you are asking about — the cell cell-read.ts
+   *  names as the motivating example for the `subject` parameter. */
+  callerRelativity: { kind: 'parameter', param: 'ownerId' },
+
+  /**
+   * Axis 4. Live-exercised against the real fleet BEFORE the resolver was
+   * written, which is what produced the corroboration rule: the item's literal
+   * "claimed work-item > plan item" precedence was measured to be
+   * under-determined, and the edge is what resolves it.
+   */
+  provenance: {
+    obtainedBy:
+      'work_items.taken_by + plan_item_claims (live claims) + fleet_membership_events + an agent_facts override key, joined by coord_links `implements` edges',
+    liveExercised: true,
+    evidence:
+      'Measured live 2026-07-27 across the whole fleet: 19 holders of a work-item, 4 also holding a plan-item claim, 0 holding a plan-item claim alone, 3 holding two work-items; the corroborating edges WI-6407→unified-agent-state-plane-2026-07-27#P-016 and WI-6390→learning-tab-surface-public-release-2026-07-27#P-007 were both confirmed present with their holders claiming exactly those plan items.',
+  },
+
+  /** Axis 5. ONE resolver. Every holder surface (P-025, P-030, the lock-block
+   *  message) PROJECTS it through `getCell(cell, reader)` and never re-derives. */
+  resolver: 'resolveOwnerGoal() @ packages/operator-core/lib/agent-tools/coordination/agent-goal-sources.ts',
+
+  /**
+   * P-019 (a). WORKSPACE-visible, and that is a decision rather than a default.
+   * A narrower audience would make the cell useless for the thing it exists to
+   * do — D-051's whole point is that a BLOCKED PEER reads the holder's goal to
+   * decide whether to wait — and it would be a false promise of secrecy anyway:
+   * `claim-holder.ts` records that a claim's goal is already disclosed
+   * unconditionally to anyone who collides with it. The audience boundary here is
+   * the claim read itself.
+   *
+   * P-019 (b). `local`: owner ids, `WI-` refs and plan slugs do not resolve in a
+   * foreign hive, so the value would not merely be uninteresting there — it would
+   * be actively misread as a statement about their own agents.
+   */
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+
+  changeSignal: { kind: 'poll', tool: 'coord:goal', path: 'goal.ref' },
+
+  shape:
+    '{ ownerId, goal: { ref, source, declaredAt, corroboratedBy, competing[], agreement } | null }',
+
+  /**
+   * Axis 6 is deliberately ABSENT. A goal has no stage order — the four SOURCES
+   * are a precedence, not a sequence, and declaring them as stages would invite a
+   * reader to treat `fleet-mission` as "further along" than `work-item`. Absence
+   * means "this cell has no opinion", which is the honest answer.
+   */
+};
+
 /** Every built-in cell, in registration order. */
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
@@ -437,6 +537,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GATE_CANDIDATE_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
+  AGENT_GOAL_CELL,
 ];
 
 /** Register every built-in cell. Idempotent — safe to call from more than one entry

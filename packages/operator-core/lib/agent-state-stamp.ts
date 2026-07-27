@@ -45,7 +45,17 @@
  * columns it feeds — that is re-derivation from the wrong datum. Live readers
  * project P-016's goal cell. This exists to answer "what was true when this call
  * was made", which only a per-call stamp can answer.
+ *
+ * ⚠ ONE REF VOCABULARY, SHARED WITH THE CELL. `goalRef` is guarded by P-016's
+ * `asGoalRef`, the same rule the `agent.goal` cell applies, so the stamp can
+ * never hold a ref shape a live reader would reject. Without that the two could
+ * disagree about what a usable goal ref even IS — and the stamped one is the copy
+ * nobody re-checks, so it is the one that would rot unnoticed. This is a shared
+ * RULE, not a shared source: the stamp records a claim as it happens, while the
+ * cell resolves precedence across every leg at read time.
  */
+
+import { asGoalRef } from './agent-goal-ref';
 
 /** The three declaration pointers stamped onto one tool call. */
 export interface AgentStateStamp {
@@ -132,8 +142,7 @@ export function noteAssumptionAsserted(ownerId: string, factVersionId: number | 
  * this is an explicit clear rather than a leave-untouched.
  */
 export function noteGoalClaimed(ownerId: string, goalRef: string | null): void {
-  const trimmed = typeof goalRef === 'string' ? goalRef.trim() : null;
-  upsert(ownerId, { goalRef: trimmed && trimmed.length > 0 ? trimmed : null });
+  upsert(ownerId, { goalRef: asGoalRef(goalRef) });
 }
 
 /**

@@ -1,0 +1,77 @@
+/**
+ * `coord:goal` — what an agent is currently working toward, as a REF
+ * (unified-agent-state-plane-2026-07-27, P-016).
+ *
+ * THE `agent.goal` CELL'S RESOLVER LENS. It exists because a registered cell that
+ * nothing can dispatch is not readable at all: `readCell` needs a read-only poll
+ * tool to invoke, and a cell registered without one would return
+ * `insufficient-data` forever — a registry entry nobody can use, which is the
+ * "surface #29" failure D-010's adoption gate exists to prevent.
+ *
+ * ⚠ NOT A SECOND DERIVATION. This holds no logic: it calls `resolveOwnerGoal`,
+ * the same function the cell names as its resolver and the same one P-026's
+ * `HolderContext` seam calls. Agents should normally read
+ * `state:read { cell:'agent.goal', as:'<ownerId>' }` rather than this tool
+ * directly — that path applies the cell's audience check first. This is the door
+ * that read goes through.
+ *
+ * ⚠ IT ANSWERS "RIGHT NOW", NOT "WHAT WAS TRUE THEN" (D-051). For the historical
+ * question — what goal was a PAST tool call made under — read the P-009 stamp via
+ * `sessions:timeline`. Taking the newest row of that log as current state is a
+ * re-derivation from the wrong datum: it goes stale between calls and is silent
+ * for an agent that has declared but not yet acted.
+ */
+
+import { z } from 'zod';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { resolveAgentIdentity } from '../identity';
+import { resolveOwnerGoal } from '../agent-goal-sources';
+
+export default defineTool({
+  name: 'coord:goal',
+  description:
+    "An agent's CURRENT goal as a resolvable ref (a work-item, a plan item, or a fleet mission) — auto-derived from what they hold, never prose they typed. Omit `ownerId` for your own. Returns { goal: null } when they hold nothing; `goal.agreement` says whether the underlying claims corroborate ('corroborated'), stand alone ('sole'), or disagree ('divergent'), and `goal.competing` lists every other ref they hold. Answers what they are doing NOW — for what a past tool call was made under, read the stamp via sessions:timeline.",
+  guidance: {
+    when: "Before you wait on, interrupt, or duplicate a peer — read what they are actually working toward. Also when a claim, lock or release is blocked on someone: their goal ref tells you whether to wait or go elsewhere, and you can query the ref itself to see if it is still open.",
+    notWhen:
+      "The historical goal behind a past tool call — that is the P-009 stamp via sessions:timeline, not this. A holder's goal on a surface that already names them (a lock block, a claim refusal) — those already carry it. Prose about what someone is doing — this returns refs.",
+    chaining:
+      "coord:goal { ownerId } → work_items:get / plans:get-item on `goal.ref` to see whether the goal is still open → decide to wait or proceed. `goal.agreement:'divergent'` → read `goal.competing`: they hold more than one thing and the ref alone does not tell you which.",
+  },
+  // @cell-lens agent.goal
+  capability: 'coord:read',
+  requirePrincipal: false,
+  agentRoles: [...SU_ROLES],
+  args: z.object({
+    ownerId: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('The agent to ask about. Omit for your own goal.'),
+  }),
+  async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
+    const ownerId = (args.ownerId ?? '').trim() || identity.ownerId;
+    const goal = await resolveOwnerGoal(ownerId);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            ownerId,
+            goal,
+            // A null goal is an HONEST unknown and must not read as a failure:
+            // the agent genuinely holds nothing. Saying so in prose keeps a
+            // human-facing surface from rendering a bare `null`, while `goal`
+            // stays branchable because prose cannot be branched on.
+            summary: goal
+              ? `${ownerId} → ${goal.ref} (${goal.source}, ${goal.agreement})`
+              : `${ownerId} holds no work-item, plan-item claim or fleet mission, so there is no goal to report. That is an honest "nothing declared", not a failed read.`,
+          }),
+        },
+      ],
+    };
+  },
+});
