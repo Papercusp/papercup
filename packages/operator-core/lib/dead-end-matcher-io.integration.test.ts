@@ -46,7 +46,14 @@ let db: FreshPgDb;
 
 async function seedCursor(sessionId: string, ownerId: string | null, note = NOTE) {
   const cursor = buildCursor([note], { sessionId });
-  await upsertSessionCursor({ sessionId, ownerId, harnessSlug: null, turnTs: null, cursor });
+  await upsertSessionCursor({
+    workspaceId: 'default',
+    sessionId,
+    ownerId,
+    harnessSlug: null,
+    turnTs: null,
+    cursor,
+  });
 }
 
 /** Seed a dead-end fact the way facts:assert { slot:'dead-end' } stores one: an

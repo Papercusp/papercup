@@ -33,6 +33,7 @@ const {
   rowToCursor,
 } = await import('./session-cursor-store');
 const { buildAndPersistCursor } = await import('./session-cursor-io');
+const { recordTurnJournal } = await import('./turn-journal-store');
 const { buildCursor } = await import('./lexical-cursor');
 
 let rootSql: postgres.Sql;
@@ -113,10 +114,87 @@ beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.session_turn_journal`;
 });
 
+/** A deliberately NON-'default' workspace: every write below must land here, so
+ *  a regression to the old omit-the-column form (which silently fell back to the
+ *  DDL `DEFAULT 'default'`) fails loudly instead of passing unnoticed. */
+const TEST_WS = 'ws-cursor-test';
+
+describe('workspace scoping (data-scoping-audit-2026-06-22 D-005 / P-007)', () => {
+  it('writes the CALLER-SUPPLIED workspace, not the DDL default', async () => {
+    const cursor = buildCursor(['scoping check WI-684'], { sessionId: 'ws1' });
+    await upsertSessionCursor({
+      workspaceId: TEST_WS,
+      sessionId: 'ws1',
+      ownerId: 'su-1',
+      harnessSlug: 'papercusp',
+      turnTs: null,
+      cursor,
+    });
+
+    const row = (await rootSql<{ workspace_id: string }[]>`
+      SELECT workspace_id FROM harness_shared.session_cursor WHERE session_id = 'ws1'`)[0]!;
+    // The whole point of P-007 mechanism A: this used to be 'default' for EVERY
+    // row because the INSERT omitted the column entirely.
+    expect(row.workspace_id).toBe(TEST_WS);
+    expect(row.workspace_id).not.toBe('default');
+  });
+
+  it('recordTurnJournal writes the CALLER-SUPPLIED workspace too (the sibling omitting writer)', async () => {
+    // The journal is the other half of P-007 mechanism A, and the worse one: all
+    // 10,361 live session_turn_journal rows are 'default' because this INSERT
+    // omitted the column. Covered here because both writers share this file's
+    // PG fixture (turn-journal.test.ts is the pure-core, no-PG suite).
+    await recordTurnJournal({
+      workspaceId: TEST_WS,
+      ownerId: 'su-1',
+      agent: 'claude',
+      sourceKind: 'claude',
+      sessionId: 'wsj1',
+      turnTs: new Date('2026-07-14T10:00:00Z'),
+      note: 'scoping check WI-684',
+      source: 'agent',
+      flagged: false,
+      tripwire: null,
+      harnessSlug: 'papercusp',
+    });
+
+    const row = (await rootSql<{ workspace_id: string }[]>`
+      SELECT workspace_id FROM harness_shared.session_turn_journal WHERE session_id = 'wsj1'`)[0]!;
+    expect(row.workspace_id).toBe(TEST_WS);
+    expect(row.workspace_id).not.toBe('default');
+  });
+
+  it('re-scopes an existing session row on upsert (ON CONFLICT updates workspace_id)', async () => {
+    const mk = (n: string) => buildCursor([`note ${n} WI-684`], { sessionId: 'ws2' });
+    await upsertSessionCursor({
+      workspaceId: 'default',
+      sessionId: 'ws2',
+      ownerId: 'su-1',
+      harnessSlug: 'papercusp',
+      turnTs: null,
+      cursor: mk('a'),
+    });
+    await upsertSessionCursor({
+      workspaceId: TEST_WS,
+      sessionId: 'ws2',
+      ownerId: 'su-1',
+      harnessSlug: 'papercusp',
+      turnTs: null,
+      cursor: mk('b'),
+    });
+
+    const row = (await rootSql<{ workspace_id: string }[]>`
+      SELECT workspace_id FROM harness_shared.session_cursor WHERE session_id = 'ws2'`)[0]!;
+    // Self-healing: a row written before the fix does not stay stranded in
+    // 'default' once the session writes again with a resolved workspace.
+    expect(row.workspace_id).toBe(TEST_WS);
+  });
+});
+
 describe('upsertSessionCursor (PG)', () => {
   it('stores terms as a queryable jsonb ARRAY (::text::jsonb), not a double-encoded string scalar', async () => {
     const cursor = buildCursor(['landed WI-4790 advisory-lock fix; compaction now settles cleanly'], { sessionId: 's1' });
-    await upsertSessionCursor({ sessionId: 's1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: '2026-07-14T10:00:00Z', cursor });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'s1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: '2026-07-14T10:00:00Z', cursor });
 
     const row = (await rootSql<{ typ: string; first_term: string; term_count: number; note_count: number }[]>`
       SELECT jsonb_typeof(terms) AS typ,
@@ -131,7 +209,7 @@ describe('upsertSessionCursor (PG)', () => {
 
   it('rowToCursor rehydrates the full LexicalCursor (weightByTerm / classByTerm) from the stored row', async () => {
     const original = buildCursor(['debugging psu-launcher.mjs restart loop under compaction — WI-4790'], { sessionId: 's1' });
-    await upsertSessionCursor({ sessionId: 's1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: original });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'s1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: original });
 
     const row = await getSessionCursorRow('s1');
     expect(row).not.toBeNull();
@@ -146,8 +224,8 @@ describe('upsertSessionCursor (PG)', () => {
   });
 
   it('upserts on session_id — a later turn REPLACES the cursor (one current cursor per session)', async () => {
-    await upsertSessionCursor({ sessionId: 's1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['first note about WI-1111'], { sessionId: 's1' }) });
-    await upsertSessionCursor({ sessionId: 's1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['later note about WI-2222'], { sessionId: 's1' }) });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'s1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['first note about WI-1111'], { sessionId: 's1' }) });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'s1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['later note about WI-2222'], { sessionId: 's1' }) });
 
     const count = (await rootSql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.session_cursor`)[0]!.n;
     expect(count).toBe(1); // replaced, not appended
@@ -160,9 +238,9 @@ describe('upsertSessionCursor (PG)', () => {
 describe('recentSessionCursors (PG)', () => {
   it('filters by owner / exclude-session / freshness and orders freshest-first', async () => {
     const mk = (sid: string, owner: string) => buildCursor([`note for ${sid} about WI-4790`], { sessionId: sid });
-    await upsertSessionCursor({ sessionId: 'a', ownerId: 'su-A', harnessSlug: 'papercusp', turnTs: null, cursor: mk('a', 'su-A') });
-    await upsertSessionCursor({ sessionId: 'b', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: mk('b', 'su-B') });
-    await upsertSessionCursor({ sessionId: 'c', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: mk('c', 'su-B') });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'a', ownerId: 'su-A', harnessSlug: 'papercusp', turnTs: null, cursor: mk('a', 'su-A') });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'b', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: mk('b', 'su-B') });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'c', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: mk('c', 'su-B') });
     // Force a deterministic freshness order: a oldest, then b, then c newest.
     await rootSql`UPDATE harness_shared.session_cursor SET updated_at = '2026-07-14T09:00:00Z' WHERE session_id='a'`;
     await rootSql`UPDATE harness_shared.session_cursor SET updated_at = '2026-07-14T10:00:00Z' WHERE session_id='b'`;
@@ -183,9 +261,9 @@ describe('recentSessionCursors (PG)', () => {
 
   it('cursorsByOwner returns the FRESHEST cursor per owner (the P-002 presence-overlay read)', async () => {
     // su-B has two sessions; the fresher one must win. su-A has one; su-Z none.
-    await upsertSessionCursor({ sessionId: 'b1', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['older su-B note WI-1'], { sessionId: 'b1' }) });
-    await upsertSessionCursor({ sessionId: 'b2', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['newer su-B note WI-2'], { sessionId: 'b2' }) });
-    await upsertSessionCursor({ sessionId: 'a1', ownerId: 'su-A', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['su-A note WI-3'], { sessionId: 'a1' }) });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'b1', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['older su-B note WI-1'], { sessionId: 'b1' }) });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'b2', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['newer su-B note WI-2'], { sessionId: 'b2' }) });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'a1', ownerId: 'su-A', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['su-A note WI-3'], { sessionId: 'a1' }) });
     await rootSql`UPDATE harness_shared.session_cursor SET updated_at = '2026-07-14T09:00:00Z' WHERE session_id='b1'`;
     await rootSql`UPDATE harness_shared.session_cursor SET updated_at = '2026-07-14T11:00:00Z' WHERE session_id='b2'`;
 
@@ -198,8 +276,8 @@ describe('recentSessionCursors (PG)', () => {
   });
 
   it('pruneSessionCursors drops stale rows and reports the count', async () => {
-    await upsertSessionCursor({ sessionId: 'old', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['stale WI-1'], { sessionId: 'old' }) });
-    await upsertSessionCursor({ sessionId: 'new', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['fresh WI-2'], { sessionId: 'new' }) });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'old', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['stale WI-1'], { sessionId: 'old' }) });
+    await upsertSessionCursor({ workspaceId: TEST_WS, sessionId:'new', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['fresh WI-2'], { sessionId: 'new' }) });
     await rootSql`UPDATE harness_shared.session_cursor SET updated_at = '2026-07-01T00:00:00Z' WHERE session_id='old'`;
 
     const removed = await pruneSessionCursors('2026-07-10T00:00:00Z');
@@ -217,7 +295,7 @@ describe('buildAndPersistCursor — the end-to-end P-001 wiring', () => {
     await seedJournal({ sessionId: 'sX', note: 'earlier work on the cursor pipeline and hysteresis', ownerId: 'su-9', createdAt: '2026-07-14T11:00:00Z' });
     await seedJournal({ sessionId: 'sX', note: 'mechanical fallback mentioning EI-8888 nobody authored', source: 'mechanical', flagged: true, ownerId: 'su-9', createdAt: '2026-07-14T11:30:00Z' });
 
-    const res = await buildAndPersistCursor({ sessionId: 'sX', ownerId: 'su-9', harnessSlug: 'papercusp', turnTs: '2026-07-14T12:00:00Z' });
+    const res = await buildAndPersistCursor({ workspaceId: TEST_WS, sessionId: 'sX', ownerId: 'su-9', harnessSlug: 'papercusp', turnTs: '2026-07-14T12:00:00Z' });
     expect(res.persisted).toBe(true);
     expect(res.noteCount).toBe(2); // both agent notes, the mechanical/flagged one dropped
 

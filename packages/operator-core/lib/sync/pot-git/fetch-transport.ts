@@ -134,6 +134,10 @@ export function serveUploadPack(
     allowOutsideRoot?: boolean;
     /** REQUIRED for any repo in the scopes/ family (§5.3 roster serve gate). */
     scopeServeGrant?: ScopeRepoServeGrant;
+    /** EI-18802033487678337: abort this serve (SIGKILL the child) on demand —
+     *  used by `serve-wiring` to stand down a serve that a newer request for
+     *  the same repo on the same channel has superseded. */
+    signal?: AbortSignal;
     /**
      * EI-18776567787336109 (secondary defect): called ONCE, synchronously, the
      * moment this serve is KNOWN to have failed and — critically — BEFORE the
@@ -231,8 +235,52 @@ export function serveUploadPack(
       // treating it as idle is what killed every large cold join.
       armIdle();
     });
+    /**
+     * EI-18802033487678337 — THE ORPHANED-SERVE ROOT CAUSE.
+     *
+     * Before this, nothing killed `upload-pack` when the REQUESTER went away.
+     * `duplex.on('error')` was a bare crash-guard, and a destroyed duplex is
+     * exactly what a channel close produces (`serve-wiring.failAllSessions`
+     * destroys every in-flight session; pot-git channels churn 23-36x/min). So
+     * the child kept running with nowhere to send bytes — and, worse, its own
+     * `child.stdout`/`child.stderr` output kept calling `armIdle()`, so the
+     * IDLE ceiling could never fire either. The serve then ran to the ABSOLUTE
+     * ceiling: 30 MINUTES of `pack-objects` on a multi-GB repo, per orphan.
+     *
+     * Live on the tower 2026-07-27: 3+ concurrent `pack-objects` on the same
+     * 4.1G repo (1.0-1.7GB RSS and 40-126% CPU EACH), spawned ~15s apart, with
+     * serves logging 120-566s wall time against a requester whose own ceiling
+     * is 120s. Every one of those serves was already unreachable when it
+     * started burning the box. This is a self-amplifying loop: the orphans slow
+     * the next real serve past the requester's ceiling, which abandons it,
+     * which creates another orphan.
+     *
+     * A duplex that is closed or errored can never deliver a pack, so there is
+     * nothing to preserve by continuing — kill immediately and report, exactly
+     * as a ceiling would. Idempotent via `settled`/`failureReported`; the
+     * normal completion path has already settled by the time `duplex.end()`
+     * asynchronously emits its own 'close'.
+     */
+    const abandon = (why: string): void => {
+      if (settled) return;
+      killChild(why);
+    };
     // Never let a stream error crash the host (peer resets, EPIPE mid-pack).
-    duplex.on('error', () => {});
+    duplex.on('error', () => abandon('abandoned: requester duplex errored'));
+    duplex.on('close', () => abandon('abandoned: requester duplex closed'));
+    // WI-6373/EI-18802033487678337: the serving side may also be told to stand
+    // down by its caller (a newer request for the same repo on the same channel
+    // supersedes this one — see serve-wiring.resolveServeAdmission).
+    if (opts.signal) {
+      const sig = opts.signal;
+      if (sig.aborted) {
+        abandon(`aborted: ${String(sig.reason ?? 'cancelled')}`);
+      } else {
+        sig.addEventListener('abort', () => abandon(`aborted: ${String(sig.reason ?? 'cancelled')}`), {
+          once: true,
+        });
+      }
+    }
     child.stdin.on('error', () => {});
     child.stdout.on('error', () => {});
     // Safe to attach 'data' alongside the pipes below: `.pipe()` already puts

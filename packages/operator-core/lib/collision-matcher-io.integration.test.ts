@@ -37,7 +37,14 @@ const NOTE = 'converging on WI-9999 in lexical-cursor.ts collision hysteresis';
 
 async function seedCursor(sessionId: string, ownerId: string | null, note = NOTE) {
   const cursor = buildCursor([note], { sessionId });
-  await upsertSessionCursor({ sessionId, ownerId, harnessSlug: null, turnTs: null, cursor });
+  await upsertSessionCursor({
+    workspaceId: 'default',
+    sessionId,
+    ownerId,
+    harnessSlug: null,
+    turnTs: null,
+    cursor,
+  });
 }
 
 beforeAll(async () => {

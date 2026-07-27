@@ -63,7 +63,14 @@ const FAST: AdjacencyParams = {
 
 async function seedCursor(sessionId: string, ownerId: string, note: string) {
   const cursor = buildCursor([note], { sessionId });
-  await upsertSessionCursor({ sessionId, ownerId, harnessSlug: null, turnTs: null, cursor });
+  await upsertSessionCursor({
+    workspaceId: 'default',
+    sessionId,
+    ownerId,
+    harnessSlug: null,
+    turnTs: null,
+    cursor,
+  });
 }
 
 /** One combined turn-end tick: the collision tick computes the snapshot ONCE,

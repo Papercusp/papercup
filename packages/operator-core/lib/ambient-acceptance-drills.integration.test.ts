@@ -69,6 +69,7 @@ async function agentTurn(sessionId: string, ownerId: string, note: string) {
   turnSeq += 1;
   const turnTs = new Date(Date.UTC(2026, 6, 15, 0, 0, turnSeq));
   await recordTurnJournal({
+    workspaceId: 'default',
     ownerId,
     agent: 'claude',
     sourceKind: 'claude',
@@ -81,6 +82,7 @@ async function agentTurn(sessionId: string, ownerId: string, note: string) {
     harnessSlug: 'papercusp',
   });
   const built = await buildAndPersistCursor({
+    workspaceId: 'default',
     sessionId,
     ownerId,
     harnessSlug: 'papercusp',

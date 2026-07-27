@@ -49,7 +49,14 @@ const TOPIC = 'debugging psu-launcher.mjs restart loop — WI-4790 advisory lock
 
 async function seedCursor(sessionId: string, ownerId: string, note = TOPIC) {
   const cursor = buildCursor([note], { sessionId });
-  await upsertSessionCursor({ sessionId, ownerId, harnessSlug: 'papercusp', turnTs: null, cursor });
+  await upsertSessionCursor({
+    workspaceId: 'default',
+    sessionId,
+    ownerId,
+    harnessSlug: 'papercusp',
+    turnTs: null,
+    cursor,
+  });
 }
 
 /** Seed the peer's full live presence: cursor + live claim + checkpoint +
@@ -66,6 +73,7 @@ async function seedPeerPresence() {
     'reproduced the psu-launcher.mjs restart loop; WI-4790 advisory lock leak isolated',
   );
   await recordTurnJournal({
+    workspaceId: 'default',
     ownerId: PEER_OWNER,
     agent: 'claude',
     sourceKind: 'claude',

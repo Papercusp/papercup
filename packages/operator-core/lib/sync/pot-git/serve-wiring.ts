@@ -813,6 +813,117 @@ function formatRefusalTarget(
   return tail;
 }
 
+// ─── EI-18802033487678337: bounded per-repo serve concurrency ───────────
+//
+// `serveUploadPack` now stands down the moment its requester's duplex dies
+// (fetch-transport.ts), which removes the ORPHAN source. This is the second
+// half: a bound on how much concurrent work ONE repo can be made to do, so no
+// client — buggy, old-build, or hostile — can pile `pack-objects` processes
+// onto a multi-GB repo faster than they retire. Each such process cost
+// 1.0-1.7GB RSS and 40-126% CPU on the live tower; three of them was enough to
+// push every serve past the requester's 120s ceiling, which made the requester
+// re-dial, which made it worse.
+
+/** A serve this process is running right now, and the lever to stand it down. */
+export interface InFlightServe {
+  /** Identity of the requesting channel — one per (muxer, topic), i.e. per
+   *  peer connection per pot. Compared by reference. */
+  readonly channel: object;
+  /** Resolved on-disk repo path — the contended resource, and therefore the
+   *  cap's key. Two wire repoKeys that resolve to one path share the bound. */
+  readonly repoPath: string;
+  readonly repoKey: string;
+  readonly sessionId: number;
+  readonly startedAt: number;
+}
+
+export interface ServeAdmission {
+  readonly admit: boolean;
+  /** Set iff `admit` is false — the wire reason to refuse with. */
+  readonly refuseReason?: string;
+  /** In-flight serves this request SUPERSEDES; abort them whether or not this
+   *  one is admitted (they are abandoned either way). */
+  readonly supersede: readonly InFlightServe[];
+}
+
+/** Default concurrent serves allowed per repo path, across all peers. Two, not
+ *  one: a second genuine peer should not be refused just because a first is
+ *  mid-fetch, and the supersede rule below already means a single peer can
+ *  never hold more than one slot. Three-plus concurrent `pack-objects` on a
+ *  multi-GB repo is the regime that was observed to self-amplify. */
+export const DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO = 2;
+
+/**
+ * Decide whether to admit an inbound serve — the whole concurrency rule, as a
+ * pure function so it is directly assertable (the surrounding path needs a live
+ * Protomux, a spawned `upload-pack`, and a real repo on disk).
+ *
+ * TWO rules, in order:
+ *
+ *  1. SUPERSEDE. A new request for repo R on channel C means every in-flight
+ *     serve of R on C is abandoned. This is sound, not a heuristic: a pot-git
+ *     requester drives at most one fetch of a given repo per channel at a time
+ *     (the shallow-deepen ladder's rungs are strictly sequential — see
+ *     fetch-transport's ladder), so a second live request for the same repo on
+ *     the same channel PROVES the first will never be read again. Superseding
+ *     is what converts "the peer gave up 3 minutes ago" from something we can
+ *     only learn by timing out into something we learn immediately.
+ *
+ *  2. CAP. After discounting the superseded, if `cap` serves of this repo path
+ *     are still in flight, refuse `busy` — FAST. A fast refusal is strictly
+ *     better for the requester than admission into a contended queue: it fails
+ *     in milliseconds and retries on its next tick, instead of burning its full
+ *     120s ceiling waiting on a serve that contention has already doomed.
+ *
+ * The cap is deliberately keyed on `repoPath` alone (not per-peer): the
+ * contended resource is the repo's object store and this box's CPU/RAM, and
+ * they do not care which peer asked.
+ */
+export function resolveServeAdmission(args: {
+  repoPath: string;
+  channel: object;
+  /** Every serve in flight in this process, including ones for other repos. */
+  inFlight: readonly InFlightServe[];
+  cap?: number;
+}): ServeAdmission {
+  const cap = args.cap ?? DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO;
+  const sameRepo = args.inFlight.filter((s) => s.repoPath === args.repoPath);
+  const supersede = sameRepo.filter((s) => s.channel === args.channel);
+  const remaining = sameRepo.length - supersede.length;
+  if (remaining >= cap) {
+    return { admit: false, refuseReason: 'busy', supersede };
+  }
+  return { admit: true, supersede };
+}
+
+/** Live serves, process-wide. A `Set` (not a per-channel map) because the cap
+ *  it answers is process-wide: the repo's object store is shared by every
+ *  connection. Entries are removed in `handleReq`'s `finally`, so an entry
+ *  outliving its serve would require the serve promise never settling — which
+ *  the transport's ceilings make impossible. */
+const inFlightServes = new Set<InFlightServe>();
+/** Abort levers for the entries above, keyed by entry identity. */
+const serveAborters = new WeakMap<InFlightServe, AbortController>();
+
+/** Stand down an in-flight serve. Best-effort by construction: the entry may
+ *  have retired between the admission decision and this call. */
+function standDownServe(entry: InFlightServe, why: string): void {
+  const controller = serveAborters.get(entry);
+  if (!controller || controller.signal.aborted) return;
+  try {
+    controller.abort(why);
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Test seam: the live in-flight count for a repo path (0 when idle). */
+export function inFlightServeCountForTest(repoPath: string): number {
+  let n = 0;
+  for (const s of inFlightServes) if (s.repoPath === repoPath) n += 1;
+  return n;
+}
+
 function handleReq(state: ChannelState, v: ReqFrame): void {
   const startedAt = Date.now();
   const refuse = (reason: string): void => {
@@ -940,6 +1051,27 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     // matches the fail-fast contract every other refusal reason already gets.
     if (!(await pathExists(join(repoPath, 'HEAD')))) {
       return refuse('no-such-repo');
+    }
+    // EI-18802033487678337: bound concurrent work on this repo BEFORE spawning
+    // anything. Ordered after the existence/authz gates deliberately — a
+    // request that would be refused anyway must not consume a slot, and must
+    // not be told `busy` when the real answer is `no-such-repo`.
+    const admission = resolveServeAdmission({
+      repoPath,
+      channel: state,
+      inFlight: [...inFlightServes],
+    });
+    for (const superseded of admission.supersede) {
+      potGitLog(
+        'warn',
+        `[pot-git] serve SUPERSEDED repo=${superseded.repoKey} peer=${peerTag(state)}` +
+          ` id=${superseded.sessionId} after ${Date.now() - superseded.startedAt}ms` +
+          ` (same channel re-requested the same repo as id=${v.id}; the earlier fetch is abandoned)`,
+      );
+      standDownServe(superseded, `superseded by a newer request (id=${v.id}) for the same repo`);
+    }
+    if (!admission.admit) {
+      return refuse(admission.refuseReason ?? 'busy');
     }
     const duplex = new FrameDuplex(
       (chunk) => state.messages?.dataToClient.send({ id: v.id, chunk }),
