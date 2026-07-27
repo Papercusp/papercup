@@ -16,7 +16,7 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const conflictJudgeAvailable = vi.fn<[], boolean>();
+const conflictJudgeAvailable = vi.fn<() => boolean>();
 const warnKnowledgePackJudgeUnavailableOnce = vi.fn();
 const createAnthropicJudge = vi.fn(() => async () => ({ conflicts: [] as never[] }));
 

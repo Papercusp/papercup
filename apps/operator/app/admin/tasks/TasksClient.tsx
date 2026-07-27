@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactElement } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 
 /**
@@ -121,7 +121,7 @@ const mono: CSSProperties = { fontFamily: 'var(--font-mono, ui-monospace, monosp
 const cell: CSSProperties = { padding: '6px 10px', borderBottom: '1px solid var(--border, #2a2a2a)', ...mono };
 const head: CSSProperties = { ...cell, fontWeight: 600, position: 'sticky', top: 0, background: 'var(--bg, #111)' };
 
-export default function TasksClient(): JSX.Element {
+export default function TasksClient(): ReactElement {
   const [stateFilter, setStateFilter] = useQueryState('state', parseAsString);
   const [classFilter, setClassFilter] = useQueryState('class', parseAsString);
   const [includeEnded, setIncludeEnded] = useQueryState('ended', parseAsBoolean.withDefault(false));

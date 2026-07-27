@@ -851,3 +851,138 @@ describe('worktree clean step removes gitignored debris (WI-5366)', () => {
     expect(script).toMatch(/git\s+-C\s+"\$RELEASE_ROOT"\s+clean\s+-fdqx\s+-e\s+node_modules/);
   });
 });
+
+/**
+ * EI-18749180047527506: `extract_submodule_source()` — the submodule SOURCE
+ * extraction step (`git archive` at the pinned sha, local objects) must not
+ * trust a zero exit from `tar -x` as proof the extraction is COMPLETE. A
+ * truncated/interrupted archive stream can exit 0 having written fewer files
+ * than its own manifest promised, silently leaving a submodule tree partial —
+ * indistinguishable, downstream, from a genuine content regression (the
+ * >150-file scan-sanity floor in prompt-blueprint-verb-catalog.test.ts, which
+ * scans this exact submodule tree and reds the WHOLE fleet's green pin on a
+ * false alarm). These pin the completeness check: a full extraction is
+ * trusted as-is; a partial one is detected and repaired via the existing
+ * full-tree rsync fallback (already used for an outright `tar -x` failure).
+ */
+describe('extract_submodule_source (EI-18749180047527506) — submodule archive completeness', () => {
+  let work: string;
+  let integrationRoot: string;
+  let releaseRoot: string;
+  let sha: string;
+
+  /** A tiny real git repo at `<integrationRoot>/libs/sub` with two committed files —
+   *  stands in for a submodule's LOCAL object store (git archive reads it directly,
+   *  never the network — the whole reason this extraction strategy exists). */
+  function makeSubmoduleSource(): void {
+    const subDir = join(integrationRoot, 'libs', 'sub');
+    mkdirSync(subDir, { recursive: true });
+    const git = (...args: string[]) => {
+      const r = spawnSync('git', ['-C', subDir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+        encoding: 'utf8',
+      });
+      if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+      return r.stdout.trim();
+    };
+    git('init', '-q');
+    writeFileSync(join(subDir, 'a.txt'), 'a');
+    writeFileSync(join(subDir, 'b.txt'), 'b');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'c1');
+    sha = git('rev-parse', 'HEAD');
+  }
+
+  /** Runs the real `extract_submodule_source()` (sed-extracted from the shipped
+   *  script) for `libs/sub` at the fixture's pinned sha. `extraPath` prepends a
+   *  fake `tar` stub onto PATH for the truncation-simulation tests. */
+  function runExtract(extraPath?: string): { status: number | null; stdout: string; stderr: string } {
+    const wrapper = [
+      'set -uo pipefail',
+      'log() { echo "[log] $*"; }',
+      'source <(sed -n "/^extract_submodule_source()/,/^}/p" "$SETUP_SCRIPT")',
+      'extract_submodule_source "libs/sub" "$SHA"',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        PATH: extraPath ? `${extraPath}:${process.env.PATH ?? '/usr/bin:/bin'}` : process.env.PATH,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        INTEGRATION_ROOT: integrationRoot,
+        RELEASE_ROOT: releaseRoot,
+        SHA: sha,
+      },
+      encoding: 'utf8',
+    });
+    return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  }
+
+  beforeEach(() => {
+    work = realpathSync(mkdtempSync(join(tmpdir(), 'extract-submodule-')));
+    integrationRoot = join(work, 'int');
+    releaseRoot = join(work, 'rel');
+    mkdirSync(integrationRoot, { recursive: true });
+    mkdirSync(releaseRoot, { recursive: true });
+    makeSubmoduleSource();
+  });
+
+  afterEach(() => {
+    rmSync(work, { recursive: true, force: true });
+  });
+
+  it('a complete extraction lands every file and does NOT fall back to rsync', () => {
+    const r = runExtract();
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain('WARN');
+    expect(readdirSync(join(releaseRoot, 'libs', 'sub')).sort()).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('a re-run wipes stale content first (rm -rf before extraction, not an accumulating merge)', () => {
+    mkdirSync(join(releaseRoot, 'libs', 'sub'), { recursive: true });
+    writeFileSync(join(releaseRoot, 'libs', 'sub', 'stale-from-a-prior-pin.txt'), 'stale');
+    runExtract();
+    expect(existsSync(join(releaseRoot, 'libs', 'sub', 'stale-from-a-prior-pin.txt'))).toBe(false);
+  });
+
+  it('a PARTIAL extraction (tar -x exits 0 but drops a file) is detected and repaired via the rsync fallback', () => {
+    // A fake `tar` that extracts only ONE of the two archived files on `-x` (an
+    // interrupted/truncated stream that still exits 0) but is a transparent
+    // passthrough for every other invocation (notably `-tf`, which must report
+    // the TRUE manifest for the completeness check to have something to compare against).
+    const fakeBinDir = join(work, 'fake-bin');
+    mkdirSync(fakeBinDir, { recursive: true });
+    const realTar = spawnSync('bash', ['-c', 'command -v tar']).stdout.toString().trim();
+    const stub = [
+      '#!/usr/bin/env bash',
+      `real_tar=${JSON.stringify(realTar)}`,
+      'if [[ "$*" == *"-x"* ]]; then',
+      '  args=("$@"); outdir=""; tarfile=""',
+      '  for i in "${!args[@]}"; do',
+      '    [[ "${args[$i]}" == "-C" ]] && outdir="${args[$((i+1))]}"',
+      '    [[ "${args[$i]}" == "-f" ]] && tarfile="${args[$((i+1))]}"',
+      '  done',
+      '  mkdir -p "$outdir"',
+      '  "$real_tar" -x -C "$outdir" -f "$tarfile" a.txt', // drop b.txt on purpose
+      '  exit 0',
+      'fi',
+      'exec "$real_tar" "$@"',
+    ].join('\n');
+    writeFileSync(join(fakeBinDir, 'tar'), stub, { mode: 0o755 });
+
+    const r = runExtract(fakeBinDir);
+    expect(r.status).toBe(0); // the function self-heals — never fails the caller
+    expect(r.stdout).toContain('WARN');
+    expect(r.stdout).toMatch(/landed only 1\/2 file\(s\)/);
+    expect(r.stdout).toContain("rsync'ing integration HEAD");
+    // The rsync fallback recovered the FULL content despite the truncated tar.
+    expect(readdirSync(join(releaseRoot, 'libs', 'sub')).sort()).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('an outright `git archive` failure (bad sha) falls back to rsync exactly as before (pre-existing path, unchanged)', () => {
+    sha = '0'.repeat(40); // a well-formed but nonexistent sha
+    const r = runExtract();
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('WARN');
+    expect(r.stdout).toContain("rsync'ing integration HEAD");
+    expect(readdirSync(join(releaseRoot, 'libs', 'sub')).sort()).toEqual(['a.txt', 'b.txt']);
+  });
+});

@@ -51,12 +51,11 @@ function callAsRole(asRole: string) {
 }
 
 interface ListResult {
-  content: Array<{ text: string }>;
+  data: { tools: Array<{ name: string; allowed: boolean; reason: string | null }> };
 }
 
 function rows(result: unknown): Array<{ name: string; allowed: boolean; reason: string | null }> {
-  const parsed = JSON.parse((result as ListResult).content[0].text);
-  return parsed.tools ?? parsed;
+  return (result as ListResult).data.tools;
 }
 
 beforeEach(() => {

@@ -1,3 +1,4 @@
+import type { ReactElement } from 'react';
 import TasksClient from '@/app/admin/tasks/TasksClient';
 
 /**
@@ -16,7 +17,7 @@ import TasksClient from '@/app/admin/tasks/TasksClient';
  * and, with `live=1`, that walks the cgroup tree. Mounting it on an inactive tab
  * would run a kernel scan every 5 seconds for a pane nobody is looking at.
  */
-export default function TasksTab({ active }: { active: boolean }): JSX.Element | null {
+export default function TasksTab({ active }: { active: boolean }): ReactElement | null {
   if (!active) return null;
   return <TasksClient />;
 }

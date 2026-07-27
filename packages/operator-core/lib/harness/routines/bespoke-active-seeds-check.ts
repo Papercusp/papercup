@@ -25,10 +25,13 @@
  * checker exists to close. A script seeded INACTIVE-by-default (human-gated bring-up)
  * does NOT belong here; only entries whose own doc-comment already promises ACTIVE.
  *
- * Usage:
+ * This file is the PURE core (importable by a unit test with a fake `sql`, no real PG,
+ * no side effect on import — mirrors seed-hive-release-routines.ts/.test.ts). The
+ * runnable CLI is the sibling `check-bespoke-active-seeds.ts`:
+ *
  *   tsx packages/operator-core/lib/harness/routines/check-bespoke-active-seeds.ts
  *
- * Exit codes:
+ * Exit codes (of the CLI):
  *   0 — every registered routine has an ACTIVE row for the operator-home harness
  *   1 — at least one is missing or inactive (prints the exact `tsx …` command to fix it)
  *
@@ -36,7 +39,6 @@
  * deploy state, which a fresh CI database never has.
  */
 import type { Sql } from 'postgres';
-import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
@@ -89,41 +91,8 @@ export async function checkBespokeActiveSeeds(opts: {
   return { missing, inactive, ok: missing.length === 0 && inactive.length === 0 };
 }
 
-async function main(): Promise<void> {
-  const slug = operatorHomeHarnessSlug();
-  const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
-  const result = await checkBespokeActiveSeeds({ sql: sql as unknown as never, installSlug: slug, workspaceId: ws });
-
-  if (result.ok) {
-    console.log(
-      `[check-bespoke-active-seeds] ok — all ${BESPOKE_ACTIVE_SEEDS.length} always-on bespoke ` +
-        `routines have an ACTIVE row for "${slug}" (ws=${ws}).`,
-    );
-    await sql.end({ timeout: 5 });
-    return;
-  }
-
-  for (const entry of result.missing) {
-    console.error(
-      `[check-bespoke-active-seeds] MISSING: no "${entry.name}" row for "${slug}" — never seeded. Fix: ` +
-        `tsx packages/operator-core/lib/harness/routines/${entry.seedScript}`,
-    );
-  }
-  for (const entry of result.inactive) {
-    console.error(
-      `[check-bespoke-active-seeds] INACTIVE: "${entry.name}" row for "${slug}" is seeded but active=false — ` +
-        `its own header commits to ACTIVE by default. Fix: ` +
-        `tsx packages/operator-core/lib/harness/routines/${entry.seedScript}`,
-    );
-  }
-  await sql.end({ timeout: 5 });
-  process.exitCode = 1;
-}
-
-if (require.main === module || process.argv[1]?.includes('check-bespoke-active-seeds')) {
-  main().catch((e) => {
-    console.error('[check-bespoke-active-seeds] FAILED:', e instanceof Error ? e.message : e);
-    process.exitCode = 2;
-  });
+/** Convenience for the CLI wrapper — resolves the operator-home scope the same way
+ *  every `seed-*-routine.ts` in this directory does. */
+export function operatorHomeScope(): { installSlug: string; workspaceId: string } {
+  return { installSlug: operatorHomeHarnessSlug(), workspaceId: activeWorkspaceId() };
 }
