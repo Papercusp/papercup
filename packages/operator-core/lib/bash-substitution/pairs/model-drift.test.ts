@@ -60,6 +60,8 @@ import devPgQuery from '../../agent-tools/dev/pg_query';
 import capabilityRead, { DEFAULT_LIMIT } from '../../agent-tools/capability/read';
 import capabilityGit, { REFUSED_SUBCOMMANDS } from '../../agent-tools/capability/git';
 import testingRun from '../../agent-tools/testing/run';
+import logsRead from '../../agent-tools/logs/read';
+import { JOURNAL_LEVELS, JOURNAL_SCOPES } from '../../journal-read';
 import { assertSingleReadStatement } from '../../pg-read-query';
 
 // The models under audit.
@@ -74,6 +76,13 @@ import {
   TESTING_RUN_MAX_FILES,
   TESTING_RUN_MAX_PATTERN,
 } from './tests';
+import {
+  unitJournalRead,
+  LOGS_READ_MAX_GREP,
+  LOGS_READ_MAX_LIMIT,
+  LOGS_READ_MAX_UNITS,
+  LOGS_READ_MAX_WINDOW,
+} from './logs';
 
 // The shared D-016 assertions. Extracted so the service family's guard
 // (service-model-drift.test.ts, dev:listening_ports) asserts through the SAME
@@ -424,5 +433,84 @@ describe('tests.ts model tracks the real testing:run (D-015)', () => {
     for (const derived of ['affected', 'changed', 'since', 'diff', 'base']) {
       expect(argKeys(testingRun), `testing:run gained a '${derived}' arg — re-audit tests.affected`).not.toContain(derived);
     }
+  });
+});
+
+// ── logs:read ↔ pairs/logs.ts ───────────────────────────────────────────────
+
+/** Parse an args payload through `logs:read`'s REAL zod schema. */
+function logsAccepts(args: Record<string, unknown>): boolean {
+  return (logsRead as unknown as { args: { safeParse: (a: unknown) => { success: boolean } } })
+    .args.safeParse(args).success;
+}
+
+describe('logs.ts model tracks the real logs:read (D-015)', () => {
+  it('LOGS_READ_MAX_UNITS is the real `unit` array bound', () => {
+    const units = (n: number) => Array.from({ length: n }, (_, i) => `u${i}.service`);
+    expect(logsAccepts({ unit: units(LOGS_READ_MAX_UNITS) })).toBe(true);
+    expect(
+      logsAccepts({ unit: units(LOGS_READ_MAX_UNITS + 1) }),
+      `pairs/logs.ts refuses a command naming more than ${LOGS_READ_MAX_UNITS} units on the strength of this bound. ` +
+        'The tool now accepts more, so the model UNDER-claims.',
+    ).toBe(false);
+    // A single string is the dominant shape; the union must keep accepting it.
+    expect(logsAccepts({ unit: 'papercup-bg-host' })).toBe(true);
+  });
+
+  it('LOGS_READ_MAX_LIMIT / MAX_GREP / MAX_WINDOW are the real bounds', () => {
+    expect(logsAccepts({ unit: 'a', limit: LOGS_READ_MAX_LIMIT })).toBe(true);
+    expect(logsAccepts({ unit: 'a', limit: LOGS_READ_MAX_LIMIT + 1 })).toBe(false);
+    expect(logsAccepts({ unit: 'a', grep: 'x'.repeat(LOGS_READ_MAX_GREP) })).toBe(true);
+    expect(logsAccepts({ unit: 'a', grep: 'x'.repeat(LOGS_READ_MAX_GREP + 1) })).toBe(false);
+    expect(logsAccepts({ unit: 'a', since: 'x'.repeat(LOGS_READ_MAX_WINDOW) })).toBe(true);
+    expect(logsAccepts({ unit: 'a', since: 'x'.repeat(LOGS_READ_MAX_WINDOW + 1) })).toBe(false);
+  });
+
+  it("every level name cover() accepts is one the tool's enum accepts", () => {
+    for (const level of JOURNAL_LEVELS) {
+      expect(logsAccepts({ unit: 'a', level }), `cover() maps \`-p ${level}\` straight through`).toBe(true);
+    }
+    // The refusal of a NUMERIC/ranged priority (`-p 0..3`) rests on this.
+    expect(logsAccepts({ unit: 'a', level: '3' })).toBe(false);
+    expect(logsAccepts({ unit: 'a', level: '0..3' })).toBe(false);
+  });
+
+  it('scope is three-valued — collapsing it back to a boolean silently re-routes system reads', () => {
+    for (const scope of JOURNAL_SCOPES) expect(logsAccepts({ unit: 'a', scope })).toBe(true);
+    expect(
+      logsAccepts({ unit: 'a', scope: true }),
+      'logs:read took a boolean scope again. 18 corpus reads pass NEITHER --user nor --system and every one ' +
+        'targets a system unit, so a two-valued scope expresses them as a read of a journal that cannot hold the answer.',
+    ).toBe(false);
+  });
+
+  it('logs:read still takes NO follow/stream argument — the pattern excludes `-f` on that basis', () => {
+    expectArgSurface(
+      logsRead,
+      'logs:read',
+      ['unit', 'identifier', 'since', 'until', 'grep', 'level', 'limit', 'scope'],
+      'pairs/logs.ts excludes `-f`/`--follow`, boot/cursor selection and field projection BY PATTERN, on the ' +
+        'basis that the tool has no argument for them. A new arg may mean the pattern is now wrongly narrow.',
+    );
+    for (const streaming of ['follow', 'stream', 'tail', 'watch']) {
+      expect(argKeys(logsRead), `logs:read gained a '${streaming}' arg — re-audit the -f exclusion`).not.toContain(streaming);
+    }
+  });
+
+  it('cover() emits expressions built only from real logs:read args', () => {
+    expectExpressionUsesRealArgs(
+      unitJournalRead,
+      `journalctl --user -u papercup-bg-host.service --since '-30 min' --grep 'oom' --no-pager 2>/dev/null`,
+      logsRead,
+      ['unit', 'since', 'grep'],
+    );
+  });
+
+  it('the advisory still promises exactly what the tool does', () => {
+    // The push-down IS the substitution's value; an advisory that stops saying so
+    // is advertising a tool that merely runs the same command for you.
+    expect(unitJournalRead.advisoryText).toContain('--grep');
+    expect(unitJournalRead.routing.use).toContain('grep');
+    expect(unitJournalRead.expectedVerdict).toBe('equivalent');
   });
 });

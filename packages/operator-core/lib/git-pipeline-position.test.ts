@@ -1,4 +1,21 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+/**
+ * P-003: `gitPipelinePosition`'s serving probe really shells out to
+ * systemctl+ps by default (D-001 — a null-by-default dep would be shipping the
+ * feature dark). That makes every call site in this file machine-dependent:
+ * un-mocked, these unit tests read THIS box's live papercup-dev-api uptime and
+ * would answer differently on CI, or on a host where the unit does not exist.
+ * Pin it to a deterministic process: started 60s ago, which every fixture below
+ * treats as "after the code landed" unless it deliberately says otherwise.
+ */
+vi.mock('./agent-tools/dev/systemd-service-probe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./agent-tools/dev/systemd-service-probe')>();
+  return {
+    ...actual,
+    probeServiceStart: async () => ({ ok: true, mainPid: 4242, secondsSinceStart: 60, activeState: 'active' }),
+  };
+});
 import {
   gitPipelinePosition,
   summarizePosition,
@@ -103,7 +120,15 @@ function fakeGit(opts: {
 }
 
 const deploy = (over: Partial<DevDeployState> = {}): DevDeployState =>
-  ({ integrationRoot: '/repo', deployed: { sha: 'deployedsha0' } as DevDeployState['deployed'], ...over } as DevDeployState);
+  ({
+    integrationRoot: '/repo',
+    deployed: { sha: 'deployedsha0' } as DevDeployState['deployed'],
+    // P-003: the deploy landed an hour ago, while the mocked serving process
+    // started 60s ago — so the default fixture is a process that HAS loaded the
+    // deployed code. A case that wants the stale reading overrides this.
+    deployedAtMs: Date.now() - 60 * 60_000,
+    ...over,
+  } as DevDeployState);
 
 /** Default snapshot-level deploy state (distinct from the `deploy()` fixture above,
  *  which is the `loadDeploy` dep — this is `GitPipelineSnapshot.deploy`, the source
@@ -147,7 +172,13 @@ describe('gitPipelinePosition (P-002)', () => {
     );
     expect(res.positions).toEqual({ committedLocal: true, onStaging: true, inMain: true, deployed: true });
     expect(res.submodule).toBeNull();
-    expect(res.summary).toContain('(live)');
+    // P-003 changed this deliberately: the summary no longer prints a bare
+    // "(live)" off `positions.deployed`, because that git fact cannot establish
+    // that the serving PROCESS has loaded the code. It may claim live only with
+    // the process evidence attached — which this fixture supplies (deploy 1h ago,
+    // serving process started 60s ago).
+    expect(res.summary).toContain('live — the serving process started after this code landed');
+    expect(res.serving.startedSinceCodeChange).toBe(true);
   });
 
   // EI-18694888339365359: the local origin/staging remote-tracking ref lagged

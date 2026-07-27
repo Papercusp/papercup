@@ -629,24 +629,32 @@ export function evaluateServing(args: {
           : 'No systemd unit is known for this host.',
     };
   }
-  if (base.startedAtMs === null) {
+  // Number.isFinite, not `=== null`: these two timestamps come from a subprocess
+  // parse and from free-form deploy state respectively, so `undefined` and `NaN`
+  // are both reachable — and BOTH slip past a null check. An arithmetic comparison
+  // against one then yields `false` (reading as the confident "it is stale!") and a
+  // `NaN` minute count in the message. A diagnostic surface must degrade to an
+  // honest UNKNOWN, never to a confident wrong verdict rendered with "NaNm".
+  const startedAtMs = Number.isFinite(base.startedAtMs as number) ? (base.startedAtMs as number) : null;
+  const codeMs = Number.isFinite(codeAsOfMs as number) ? (codeAsOfMs as number) : null;
+  if (startedAtMs === null) {
     return {
       ...base,
       unknownReason: `Could not read ${unit}'s start time (not running, no systemd, or a non-Linux host) — serving state is UNKNOWN, which is not the same as "live".`,
     };
   }
-  if (codeAsOfMs === null) {
+  if (codeMs === null) {
     return {
       ...base,
-      unknownReason: `Read ${unit} (pid ${base.pid}) but not when its code last changed, so the two cannot be compared.`,
+      unknownReason: `Read ${unit} (pid ${base.pid}) but not when its code last changed, so the two cannot be compared — serving state is UNKNOWN, not "live".`,
     };
   }
 
-  const startedSinceCodeChange = base.startedAtMs > codeAsOfMs;
+  const startedSinceCodeChange = startedAtMs > codeMs;
   return {
     ...base,
     startedSinceCodeChange,
-    behindMin: startedSinceCodeChange ? null : Math.max(1, Math.round((codeAsOfMs - base.startedAtMs) / 60_000)),
+    behindMin: startedSinceCodeChange ? null : Math.max(1, Math.round((codeMs - startedAtMs) / 60_000)),
   };
 }
 
@@ -1190,7 +1198,7 @@ export async function gitPipelinePosition(
   let codeAsOfSource: 'deploy' | 'file-mtime' | null = null;
   if (runtime && servingUnit) {
     if (runtime.releasePipelineApplies) {
-      codeAsOfMs = deploy.deployedAtMs;
+      codeAsOfMs = deploy.deployedAtMs ?? null;
       codeAsOfSource = 'deploy';
     } else if (inp.path) {
       codeAsOfMs = await (deps.fileMtimeMs ?? realFileMtimeMs)(path.join(root, inp.path.replace(/^\.?\//, '')));
