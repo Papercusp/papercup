@@ -175,6 +175,65 @@ LOG="$WORK/tauri.log"
 
 log() { printf '\n[verify-tauri-headless] %s\n' "$*" >&2; }
 
+# EI-18738872670541790: find a live process (by pgrep pattern) whose OWN
+# /proc/<pid>/environ carries an EXACT `DISPLAY=<want>` — the same env-matching
+# technique this script already uses to disambiguate BRIDGE_PID/SIDECAR_PID
+# (below), generalized to a single-purpose helper for the stale-display reaper.
+# Prints the first matching pid (there should be at most one live owner per
+# display) and returns 1 when none is found. Never fatal — a /proc race (a pid
+# exiting mid-scan) is just skipped.
+find_pid_by_display_env() {
+  local pattern="$1" want_display="$2" p env_p
+  for p in $(pgrep -f "$pattern" 2>/dev/null); do
+    env_p="$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)" || continue
+    if grep -qxF "DISPLAY=$want_display" <<<"$env_p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# True (0) when a live papercusp-desktop app or bin/hono-host.ts sidecar is
+# ACTUALLY attached to display number "$1" right now — i.e. genuinely in use.
+# Deliberately does NOT count openbox: openbox is started unconditionally the
+# instant Xvfb comes up (line ~330 below), before the app boots, so a display
+# whose app crashed/never-booted but whose openbox+Xvfb are still alive would
+# otherwise read as "owned" forever — exactly the leak this exists to catch.
+display_has_owning_app() {
+  local want=":$1"
+  find_pid_by_display_env "debug/papercusp-desktop" "$want" >/dev/null 2>&1 && return 0
+  find_pid_by_display_env "bin/hono-host.ts" "$want" >/dev/null 2>&1 && return 0
+  return 1
+}
+
+# Reclaims display "$1" ONLY when BOTH hold: (a) a live Xvfb genuinely owns it
+# (a stale leftover SOCKET with no live Xvfb is the pre-existing, already-safe
+# "just skip past it" case below — nothing to reap there) and (b) it has no
+# owning app (display_has_owning_app) AND its Xvfb has been up longer than
+# $STALE_DISPLAY_MAX_AGE. This is a SHARED box — a wrong kill destroys a peer's
+# in-flight work — so both signals must agree before anything is touched; a
+# young display with no app yet (an app still mid-boot) fails the age gate and
+# is correctly left alone. Kills by EXACT pid discovered via DISPLAY-matching
+# (never a broad pattern-kill) and cleans the socket so the picker can reuse
+# the number immediately. Best-effort: any failure just leaves the picker
+# skipping past the display exactly as it always did.
+reap_stale_display_if_abandoned() {
+  local n="$1" xvfb_pid ob_pid age
+  xvfb_pid="$(pgrep -f "Xvfb :$n " 2>/dev/null | head -1)"
+  [ -n "$xvfb_pid" ] || return 1
+  display_has_owning_app "$n" && return 1
+  age="$(ps -o etimes= -p "$xvfb_pid" 2>/dev/null | tr -d '[:space:]')"
+  case "$age" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$age" -ge "$STALE_DISPLAY_MAX_AGE" ] || return 1
+  log "reclaiming abandoned display :$n — Xvfb pid=$xvfb_pid up ${age}s with no owning app (EI-18738872670541790)"
+  ob_pid="$(find_pid_by_display_env openbox ":$n" 2>/dev/null || true)"
+  [ -n "$ob_pid" ] && kill -9 "$ob_pid" 2>/dev/null
+  kill -9 "$xvfb_pid" 2>/dev/null
+  rm -f "/tmp/.X11-unix/X$n" 2>/dev/null
+  return 0
+}
+
 # ── pick a free display + port pair (never the owner's real :0/:1 seat) ─────
 # A display counts as "taken" if EITHER a live X server answers there OR a
 # unix-socket file for it still exists under /tmp/.X11-unix — the latter case
@@ -184,10 +243,20 @@ log() { printf '\n[verify-tauri-headless] %s\n' "$*" >&2; }
 # sockets") when this picker hands out that number. Checking the socket file
 # too makes the picker skip past the stale entry instead of colliding with it
 # — no attempt to clean up someone else's leaked socket, just don't reuse it.
+#
+# EI-18738872670541790: a LIVE-but-abandoned Xvfb (the owning run died without
+# reaching its teardown trap, or a --boot-only caller never ran the printed
+# stop script) is a DIFFERENT case from the stale-socket one above — the
+# server never dies, so it was never reclaimed, permanently narrowing this
+# picker's pool. reap_stale_display_if_abandoned attempts to reclaim it
+# (conservatively — see its own comment); on success we stop skipping and use
+# this display number, instead of walking past it forever.
+STALE_DISPLAY_MAX_AGE="${VERIFY_TAURI_STALE_DISPLAY_MAX_AGE_SEC:-3600}"
 DISPLAY_NUM="${VERIFY_TAURI_DISPLAY_NUM:-}"
 if [ -z "$DISPLAY_NUM" ]; then
   DISPLAY_NUM=90
   while DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || [ -S "/tmp/.X11-unix/X$DISPLAY_NUM" ]; do
+    reap_stale_display_if_abandoned "$DISPLAY_NUM" && break
     DISPLAY_NUM=$((DISPLAY_NUM + 1))
   done
 fi
@@ -281,8 +350,18 @@ write_stop_script() {
 # that drain), so a next run reusing this display can't collide with a straggler.
 [ -n "$TAURI_PID" ] && { kill -TERM -- -$TAURI_PID 2>/dev/null; sleep 1; kill -9 -- -$TAURI_PID 2>/dev/null; }
 [ -n "$OPENBOX_PID" ] && kill -9 $OPENBOX_PID 2>/dev/null
-[ -n "$XVFB_PID" ] && kill -9 $XVFB_PID 2>/dev/null
+# EI-18816386093046558: SIGKILL gives Xvfb no chance to unlink /tmp/.X11-unix/X<N>,
+# so EVERY run leaked its own socket (97 had accumulated, the oldest from 07-13).
+# That leak is not cosmetic: the picker above treats a leaked socket as "display
+# taken" (WI-2115, correctly) and walks past it, and PORT_BASE is DERIVED from the
+# display number — so each leak permanently pushed the port range upward. It had
+# reached :173 -> base 34530, and surviving X450 sockets show a past walk to :450
+# -> 37300, well inside other services' ports. SIGTERM first so Xvfb unlinks after
+# itself; SIGKILL only as the fallback; then remove OUR OWN socket unconditionally
+# (we started this server, so this file is unambiguously ours to clean up).
+[ -n "$XVFB_PID" ] && { kill -TERM $XVFB_PID 2>/dev/null; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 $XVFB_PID 2>/dev/null || break; sleep 0.2; done; kill -9 $XVFB_PID 2>/dev/null; }
 pkill -9 -f "Xvfb :$DISPLAY_NUM " 2>/dev/null
+rm -f "/tmp/.X11-unix/X$DISPLAY_NUM" 2>/dev/null
 # EI-10387: stop our throwaway isolated-DB postgres (if VERIFY_TAURI_ISOLATED_DB
 # booted one) — SIGTERM lets it shut the postmaster down cleanly before we reap.
 [ -n "$ISOLATED_PG_PID" ] && { kill -TERM "$ISOLATED_PG_PID" 2>/dev/null; sleep 1; kill -9 "$ISOLATED_PG_PID" 2>/dev/null; }

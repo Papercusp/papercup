@@ -1,0 +1,416 @@
+/**
+ * task-manager/store — durable CRUD over `harness_shared.task_ledger`
+ * (task-manager-no-escape-2026-07-27, P-003).
+ *
+ * The write ORDER is the load-bearing part, not the SQL. `registerTask` inserts a
+ * `pending` row BEFORE the fork, and `markSpawned` fills in the kernel identity
+ * after it. That ordering is what makes a crash between the two visible: the row
+ * exists, says `pending`, and the reconciler strands it once it ages out. The
+ * opposite order (spawn, then record) loses the process entirely if the operator
+ * dies in the window — which is exactly the failure the in-memory registry has
+ * today, at a much larger scale (EI-8855 wipes ALL of them on any restart).
+ *
+ * Every mutation takes an optional injected `Sql` so the integration test can run
+ * the real statements against a throwaway database, matching agent-facts/store.ts.
+ */
+
+import { getOrgPg } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
+import { activeWorkspaceId } from '../workspace-registry';
+import {
+  TASK_STATES,
+  isTerminalState,
+  newTaskId,
+  scopeUnitForTask,
+  type TaskMetrics,
+  type TaskRow,
+  type TaskSpec,
+  type TaskState,
+} from './types';
+
+function sqlOf(inject?: Sql): Sql {
+  return inject ?? getOrgPg().sql;
+}
+
+function assertState(state: TaskState): void {
+  if (!TASK_STATES.includes(state)) {
+    throw new Error(`task-manager: unknown state ${JSON.stringify(state)}`);
+  }
+}
+
+/** Postgres row -> TaskRow. Kept explicit (not a spread-rename) so a column added
+ *  to the table without a mapping here fails review rather than silently vanishing. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toRow(r: any): TaskRow {
+  const iso = (v: unknown): string | null =>
+    v == null ? null : v instanceof Date ? v.toISOString() : String(v);
+  const num = (v: unknown): number | null => (v == null ? null : Number(v));
+  return {
+    taskId: r.task_id,
+    workspaceId: r.workspace_id,
+    harnessSlug: r.harness_slug ?? null,
+    parentTaskId: r.parent_task_id ?? null,
+    rootTaskId: r.root_task_id,
+    class: r.class,
+    title: r.title,
+    argv: Array.isArray(r.argv) ? r.argv : JSON.parse(r.argv ?? '[]'),
+    cwd: r.cwd ?? null,
+    launchedBy: r.launched_by,
+    workItemId: r.work_item_id ?? null,
+    planSlug: r.plan_slug ?? null,
+    fleetSlug: r.fleet_slug ?? null,
+    sessionId: r.session_id ?? null,
+    scopeUnit: r.scope_unit ?? null,
+    cgroupPath: r.cgroup_path ?? null,
+    pid: num(r.pid),
+    processIdentity: r.process_identity ?? null,
+    confined: Boolean(r.confined),
+    memoryMaxBytes: num(r.memory_max_bytes),
+    cpuWeight: num(r.cpu_weight),
+    tasksMax: num(r.tasks_max),
+    deadlineAt: iso(r.deadline_at),
+    state: r.state,
+    exitCode: num(r.exit_code),
+    exitReason: r.exit_reason ?? null,
+    startedAt: iso(r.started_at) ?? new Date(0).toISOString(),
+    endedAt: iso(r.ended_at),
+    lastSeenAt: iso(r.last_seen_at) ?? new Date(0).toISOString(),
+    lastMemoryBytes: num(r.last_memory_bytes),
+    peakMemoryBytes: num(r.peak_memory_bytes),
+    cpuUsec: num(r.cpu_usec),
+    pidsCurrent: num(r.pids_current),
+    logPath: r.log_path ?? null,
+    detail: typeof r.detail === 'object' && r.detail ? r.detail : {},
+  };
+}
+
+export interface RegisterTaskOptions {
+  workspaceId?: string;
+  /** Pre-mint the id (the chokepoint needs it to build the scope name before the
+   *  row exists). Must satisfy `isValidTaskId`. */
+  taskId?: string;
+  /** Reserve the scope unit at register time so the UNIQUE index catches a
+   *  double-launch before the fork rather than after. */
+  reserveScope?: boolean;
+}
+
+/**
+ * Insert the `pending` row. Returns the full row — callers need `taskId` to build
+ * the scope name and to correlate the child's exit.
+ */
+export async function registerTask(
+  spec: TaskSpec,
+  opts: RegisterTaskOptions = {},
+  inject?: Sql,
+): Promise<TaskRow> {
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const taskId = opts.taskId ?? newTaskId();
+  const rootTaskId = spec.parentTaskId ? await resolveRoot(spec.parentTaskId, taskId, sql) : taskId;
+  const scopeUnit = opts.reserveScope ? scopeUnitForTask(taskId) : null;
+  const deadlineAt =
+    spec.runtimeMaxSec && spec.runtimeMaxSec > 0
+      ? new Date(Date.now() + spec.runtimeMaxSec * 1000).toISOString()
+      : null;
+
+  const rows = await sql`
+    INSERT INTO harness_shared.task_ledger (
+      task_id, workspace_id, harness_slug, parent_task_id, root_task_id,
+      class, title, argv, cwd,
+      launched_by, work_item_id, plan_slug, fleet_slug, session_id,
+      scope_unit, memory_max_bytes, cpu_weight, tasks_max, deadline_at,
+      state, log_path, detail
+    ) VALUES (
+      ${taskId}, ${ws}, ${spec.harnessSlug ?? null}, ${spec.parentTaskId ?? null}, ${rootTaskId},
+      ${spec.class}, ${spec.title}, ${JSON.stringify(spec.argv ?? [])}::jsonb, ${spec.cwd ?? null},
+      ${spec.launchedBy}, ${spec.workItemId ?? null}, ${spec.planSlug ?? null},
+      ${spec.fleetSlug ?? null}, ${spec.sessionId ?? null},
+      ${scopeUnit}, ${spec.memoryMaxBytes ?? null}, ${spec.cpuWeight ?? null},
+      ${spec.tasksMax ?? null}, ${deadlineAt},
+      'pending', ${spec.logPath ?? null}, ${JSON.stringify(spec.detail ?? {})}::jsonb
+    )
+    RETURNING *
+  `;
+  return toRow(rows[0]);
+}
+
+/** Walk to the tree root. Bounded so a corrupted parent cycle cannot hang a spawn. */
+async function resolveRoot(parentTaskId: string, fallback: string, sql: Sql): Promise<string> {
+  const rows = await sql`
+    SELECT root_task_id FROM harness_shared.task_ledger WHERE task_id = ${parentTaskId} LIMIT 1
+  `;
+  return rows[0]?.root_task_id ?? fallback;
+}
+
+export interface SpawnedFacts {
+  pid?: number | null;
+  processIdentity?: string | null;
+  scopeUnit?: string | null;
+  cgroupPath?: string | null;
+  confined?: boolean;
+}
+
+/** Fill in the kernel identity once the child exists and flip `pending` -> `running`. */
+export async function markSpawned(taskId: string, facts: SpawnedFacts, inject?: Sql): Promise<void> {
+  const sql = sqlOf(inject);
+  await sql`
+    UPDATE harness_shared.task_ledger
+       SET pid = ${facts.pid ?? null},
+           process_identity = ${facts.processIdentity ?? null},
+           scope_unit = COALESCE(${facts.scopeUnit ?? null}, scope_unit),
+           cgroup_path = COALESCE(${facts.cgroupPath ?? null}, cgroup_path),
+           confined = ${facts.confined ?? false},
+           state = 'running',
+           last_seen_at = now(),
+           updated_at = now()
+     WHERE task_id = ${taskId}
+       AND state = 'pending'
+  `;
+}
+
+export interface CloseTaskInput {
+  state: Extract<TaskState, 'exited' | 'killed' | 'timed_out' | 'stranded'>;
+  exitCode?: number | null;
+  exitReason?: string | null;
+}
+
+/**
+ * Terminal close. Idempotent by construction — the WHERE excludes rows that
+ * already ended, so a race between the child's `exit` event and the reconciler's
+ * strand verdict resolves to whichever landed first instead of overwriting a real
+ * exit code with a guess.
+ */
+export async function closeTask(taskId: string, input: CloseTaskInput, inject?: Sql): Promise<boolean> {
+  assertState(input.state);
+  if (!isTerminalState(input.state)) throw new Error(`task-manager: ${input.state} is not terminal`);
+  const sql = sqlOf(inject);
+  const rows = await sql`
+    UPDATE harness_shared.task_ledger
+       SET state = ${input.state},
+           exit_code = ${input.exitCode ?? null},
+           exit_reason = ${input.exitReason ?? null},
+           ended_at = now(),
+           last_seen_at = now(),
+           updated_at = now()
+     WHERE task_id = ${taskId}
+       AND ended_at IS NULL
+    RETURNING task_id
+  `;
+  return rows.length > 0;
+}
+
+/** Bulk liveness + metrics refresh, one statement for the whole scan. */
+export async function touchAlive(
+  updates: readonly {
+    taskId: string;
+    pid?: number | null;
+    processIdentity?: string | null;
+    metrics?: TaskMetrics;
+  }[],
+  inject?: Sql,
+): Promise<number> {
+  if (updates.length === 0) return 0;
+  const sql = sqlOf(inject);
+  const payload = updates.map((u) => ({
+    task_id: u.taskId,
+    pid: u.pid ?? null,
+    process_identity: u.processIdentity ?? null,
+    last_memory_bytes: u.metrics?.lastMemoryBytes ?? null,
+    cpu_usec: u.metrics?.cpuUsec ?? null,
+    pids_current: u.metrics?.pidsCurrent ?? null,
+  }));
+  const rows = await sql`
+    UPDATE harness_shared.task_ledger t
+       SET last_seen_at = now(),
+           updated_at = now(),
+           pid = COALESCE(u.pid, t.pid),
+           process_identity = COALESCE(u.process_identity, t.process_identity),
+           last_memory_bytes = COALESCE(u.last_memory_bytes, t.last_memory_bytes),
+           -- peak is a high-water mark: it must never fall when a sample dips.
+           peak_memory_bytes = GREATEST(
+             COALESCE(t.peak_memory_bytes, 0), COALESCE(u.last_memory_bytes, 0)
+           ),
+           cpu_usec = COALESCE(u.cpu_usec, t.cpu_usec),
+           pids_current = COALESCE(u.pids_current, t.pids_current)
+      FROM (
+        SELECT (x->>'task_id')::text AS task_id,
+               (x->>'pid')::int AS pid,
+               (x->>'process_identity')::text AS process_identity,
+               (x->>'last_memory_bytes')::bigint AS last_memory_bytes,
+               (x->>'cpu_usec')::bigint AS cpu_usec,
+               (x->>'pids_current')::int AS pids_current
+          FROM jsonb_array_elements(${JSON.stringify(payload)}::jsonb) AS x
+      ) u
+     WHERE t.task_id = u.task_id
+       AND t.ended_at IS NULL
+    RETURNING t.task_id
+  `;
+  return rows.length;
+}
+
+/** Close a batch of rows the reconciler judged absent. */
+export async function markStranded(
+  verdicts: readonly { taskId: string; reason: string }[],
+  inject?: Sql,
+): Promise<number> {
+  let n = 0;
+  for (const v of verdicts) {
+    if (await closeTask(v.taskId, { state: 'stranded', exitReason: v.reason }, inject)) n++;
+  }
+  return n;
+}
+
+export interface ListTasksFilter {
+  workspaceId?: string;
+  states?: readonly TaskState[];
+  classes?: readonly string[];
+  launchedBy?: string;
+  workItemId?: string;
+  rootTaskId?: string;
+  /** Include rows that ended before now — off by default, so the common read is
+   *  "what is running" and history is opt-in. */
+  includeEnded?: boolean;
+  limit?: number;
+}
+
+export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Promise<TaskRow[]> {
+  const sql = sqlOf(inject);
+  const ws = filter.workspaceId ?? activeWorkspaceId();
+  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 2000);
+  const rows = await sql`
+    SELECT * FROM harness_shared.task_ledger
+     WHERE workspace_id = ${ws}
+       ${filter.includeEnded ? sql`` : sql`AND ended_at IS NULL`}
+       ${filter.states?.length ? sql`AND state = ANY(${sql.array(filter.states as string[])})` : sql``}
+       ${filter.classes?.length ? sql`AND class = ANY(${sql.array(filter.classes as string[])})` : sql``}
+       ${filter.launchedBy ? sql`AND launched_by = ${filter.launchedBy}` : sql``}
+       ${filter.workItemId ? sql`AND work_item_id = ${filter.workItemId}` : sql``}
+       ${filter.rootTaskId ? sql`AND root_task_id = ${filter.rootTaskId}` : sql``}
+     ORDER BY started_at DESC
+     LIMIT ${limit}
+  `;
+  return rows.map(toRow);
+}
+
+/** Every row in a state that asserts a live OS process — the reconciler's input. */
+export async function listLiveTasks(workspaceId?: string, inject?: Sql): Promise<TaskRow[]> {
+  return listTasks({ workspaceId, states: ['pending', 'running'], limit: 2000 }, inject);
+}
+
+export async function getTask(taskId: string, inject?: Sql): Promise<TaskRow | null> {
+  const sql = sqlOf(inject);
+  const rows = await sql`SELECT * FROM harness_shared.task_ledger WHERE task_id = ${taskId} LIMIT 1`;
+  return rows[0] ? toRow(rows[0]) : null;
+}
+
+/** The whole tree a task belongs to — what "kill this and everything it started"
+ *  and the pane's tree view both read. */
+export async function getSubtree(rootTaskId: string, inject?: Sql): Promise<TaskRow[]> {
+  const sql = sqlOf(inject);
+  const rows = await sql`
+    SELECT * FROM harness_shared.task_ledger
+     WHERE root_task_id = ${rootTaskId}
+     ORDER BY started_at ASC
+  `;
+  return rows.map(toRow);
+}
+
+/**
+ * Persist an unaccounted residue group so a bypass accrues HISTORY ("this has been
+ * here for three hours") instead of being re-reported as news every 30s.
+ *
+ * The id is derived from the cgroup path when the group has no scope of ours, so
+ * repeated sightings upsert onto one row. When the group DOES sit in a `pc-` scope,
+ * the scope's own task id is used: that case means a scope outlived the row that
+ * described it, and re-using the id keeps the history attached to the real task
+ * rather than forking a phantom one.
+ */
+export async function upsertUnaccounted(
+  groups: readonly { taskId: string; cgroupPath: string; scopeUnit: string | null; pids: number[]; sampleCmdline: string }[],
+  opts: { workspaceId?: string } = {},
+  inject?: Sql,
+): Promise<string[]> {
+  if (groups.length === 0) return [];
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const seen: string[] = [];
+  for (const g of groups) {
+    await sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, cgroup_path, pid, confined, state, detail
+      ) VALUES (
+        ${g.taskId}, ${ws}, ${g.taskId}, 'other',
+        ${g.sampleCmdline.slice(0, 200) || '(unknown)'},
+        '[]'::jsonb, 'unknown', ${g.cgroupPath}, ${g.pids[0] ?? null}, false, 'unaccounted',
+        ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::jsonb
+      )
+      ON CONFLICT (task_id) DO UPDATE
+        SET last_seen_at = now(),
+            updated_at = now(),
+            state = CASE WHEN harness_shared.task_ledger.ended_at IS NULL
+                         THEN 'unaccounted' ELSE harness_shared.task_ledger.state END,
+            detail = ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::jsonb
+    `;
+    seen.push(g.taskId);
+  }
+  return seen;
+}
+
+/** Close previously-persisted residue rows that are no longer present. */
+export async function clearVanishedUnaccounted(
+  stillPresent: readonly string[],
+  opts: { workspaceId?: string } = {},
+  inject?: Sql,
+): Promise<number> {
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const keep = stillPresent.length ? (stillPresent as string[]) : [' none'];
+  const rows = await sql`
+    UPDATE harness_shared.task_ledger
+       SET state = 'stranded',
+           exit_reason = 'unaccounted residue no longer present',
+           ended_at = now(),
+           updated_at = now()
+     WHERE workspace_id = ${ws}
+       AND state = 'unaccounted'
+       AND ended_at IS NULL
+       AND task_id <> ALL(${sql.array(keep)})
+    RETURNING task_id
+  `;
+  return rows.length;
+}
+
+/**
+ * Retention. Terminal rows are the "what ran overnight and what did it cost"
+ * record, so they are kept for a while — but not forever, and never at the cost of
+ * the hot live-read index.
+ */
+export async function gcTerminalTasks(
+  olderThanHours = 168,
+  opts: { workspaceId?: string } = {},
+  inject?: Sql,
+): Promise<number> {
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const rows = await sql`
+    DELETE FROM harness_shared.task_ledger
+     WHERE workspace_id = ${ws}
+       AND ended_at IS NOT NULL
+       AND ended_at < now() - make_interval(hours => ${olderThanHours}::int)
+    RETURNING task_id
+  `;
+  return rows.length;
+}
+
+/** Stable id for a residue group with no scope of ours. `[0-9a-z]` by construction. */
+export function residueTaskId(cgroupPath: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < cgroupPath.length; i++) {
+    const c = cgroupPath.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 + c, 0x85ebca6b) >>> 0;
+  }
+  return `u${h1.toString(36)}${h2.toString(36)}`.slice(0, 24);
+}

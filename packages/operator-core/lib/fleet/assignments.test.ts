@@ -311,15 +311,28 @@ describe('summarizeOrphan — WI-5975', () => {
     expect(coldLive.action).toBe('ask');
   });
 
-  it.each<[Exclude<SessionState, 'live'>]>([
-    ['parked'],
-    ['draining'],
-    ['suspect'],
-    ['ended'],
-    ['recorded'],
-  ])('sessionState %s is not live ⇒ orphan/reclaim', (sessionState) => {
-    expect(summarizeOrphan(heldByLive, { sessionState }).verdict).toBe('orphan');
-  });
+  // EI-18738329288671636: `orphan`/`reclaim` requires the oracle to say the
+  // holder is CONFIRMED GONE — the oracle's OWN docstrings (presence-wakeability.ts)
+  // say `ended`/`suspect`/`draining` are the dead states and `parked`/`recorded`
+  // are alive (just not the running-right-now `live`). Live-verified: a `parked`
+  // holder with `holder_present:true` and a fresh heartbeat was reported
+  // `orphan`/`reclaim` before this fix — this is the regression canary for that.
+  it.each<[Exclude<SessionState, 'live'>]>([['draining'], ['suspect'], ['ended']])(
+    'sessionState %s is CONFIRMED gone ⇒ orphan/reclaim',
+    (sessionState) => {
+      expect(summarizeOrphan(heldByLive, { sessionState }).verdict).toBe('orphan');
+    },
+  );
+
+  it.each<[Exclude<SessionState, 'live'>]>([['parked'], ['recorded']])(
+    'sessionState %s is documented ALIVE (just not running-right-now) ⇒ held-by-live-agent, never orphan',
+    (sessionState) => {
+      const s = summarizeOrphan(heldByLive, { sessionState });
+      expect(s.verdict).toBe('held-by-live-agent');
+      expect(s.action).toBe('ask');
+      expect(isReclaimCandidate(s)).toBe(false);
+    },
+  );
 
   it('falls back to the row heartbeat when no oracle verdict is available', () => {
     // Degrade to the OLD behaviour rather than manufacture a confident verdict
@@ -377,12 +390,18 @@ describe('summarizeOrphan — WI-5975', () => {
       expect(isReclaimCandidate(s)).toBe(false);
     });
 
+    // EI-18738329288671636: these four exercise the isRecentlyActive WINDOW logic
+    // layered under the sessionState fallback — they need a sessionState the
+    // oracle documents as CONFIRMED gone (`draining`), not `parked` (documented
+    // alive, and now correctly NEVER orphan regardless of tool-call recency —
+    // see the dedicated `sessionState %s is documented ALIVE` cases above).
+
     it('a genuinely wedged holder still crosses the window into reclaim', () => {
       // The inverse, so the window is actually exercised rather than the guard
       // degenerating into "never reclaim anything".
       const s = summarizeOrphan(
         heldByLive,
-        { sessionState: 'parked', lastToolCallAt: agoMs(6 * 60 * 60_000) },
+        { sessionState: 'draining', lastToolCallAt: agoMs(6 * 60 * 60_000) },
         NOW,
       );
       expect(s.verdict).toBe('orphan');
@@ -393,12 +412,12 @@ describe('summarizeOrphan — WI-5975', () => {
     it('brackets the window boundary', () => {
       const inside = summarizeOrphan(
         heldByLive,
-        { sessionState: 'parked', lastToolCallAt: agoMs(ACTIVE_TOOL_CALL_WINDOW_MS - 1_000) },
+        { sessionState: 'draining', lastToolCallAt: agoMs(ACTIVE_TOOL_CALL_WINDOW_MS - 1_000) },
         NOW,
       );
       const outside = summarizeOrphan(
         heldByLive,
-        { sessionState: 'parked', lastToolCallAt: agoMs(ACTIVE_TOOL_CALL_WINDOW_MS + 1_000) },
+        { sessionState: 'draining', lastToolCallAt: agoMs(ACTIVE_TOOL_CALL_WINDOW_MS + 1_000) },
         NOW,
       );
       expect(isReclaimCandidate(inside)).toBe(false);
@@ -409,7 +428,7 @@ describe('summarizeOrphan — WI-5975', () => {
       // Absence must not read as liveness — the same failure mode as the null
       // progress signal above.
       for (const lastToolCallAt of [null, undefined, 'not-a-date']) {
-        const s = summarizeOrphan(heldByLive, { sessionState: 'parked', lastToolCallAt }, NOW);
+        const s = summarizeOrphan(heldByLive, { sessionState: 'draining', lastToolCallAt }, NOW);
         expect(s.verdict).toBe('orphan');
       }
     });
@@ -417,10 +436,20 @@ describe('summarizeOrphan — WI-5975', () => {
     it('does not let a far-future timestamp manufacture liveness', () => {
       const s = summarizeOrphan(
         heldByLive,
-        { sessionState: 'parked', lastToolCallAt: agoMs(-24 * 60 * 60_000) },
+        { sessionState: 'draining', lastToolCallAt: agoMs(-24 * 60 * 60_000) },
         NOW,
       );
       expect(s.verdict).toBe('orphan');
+    });
+
+    it('a PARKED holder is never orphan even far outside the tool-call window — parked is documented alive, not a wedged-holder proxy', () => {
+      const s = summarizeOrphan(
+        heldByLive,
+        { sessionState: 'parked', lastToolCallAt: agoMs(6 * 60 * 60_000) },
+        NOW,
+      );
+      expect(s.verdict).toBe('held-by-live-agent');
+      expect(isReclaimCandidate(s)).toBe(false);
     });
   });
 

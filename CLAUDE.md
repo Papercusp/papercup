@@ -300,9 +300,15 @@ file after you, it flips false and stays false: the tip is always newer than the
 candidate. Following the re-fire lever it used to emit can therefore never succeed — it just
 restarts a ~55min suite clock. This cost ~2h of the 2026-07-27 fleet-wide `facts:assert`
 outage (EI-18797292094433710): two wakes re-fired the gate while *every* candidate already
-carried the fix. **Ask the real question yourself** — `git merge-base --is-ancestor <the
-commit carrying your change> <candidate>` (exit 0 ⇒ the candidate carries you, and its
-verdict IS about your code), or `git show <candidate>:<path> | grep -c '<your marker>'`.
+carried the fix. **Settle it in the tool, not by hand: re-call with
+`dev:pipeline_position { path, marker: '<a distinctive literal string from YOUR change>' }`.**
+The marker verdict is definitive both ways — it reports the occurrence count in the judged
+commit, suppresses the false "does not contain" alarm when your change IS there, and still
+warns loudly when it genuinely is not. Supply a real fragment of your own edit (a new
+function name, an added error message, an id); a blank/whitespace marker is refused rather
+than matched against every line of indentation. Why a marker rather than the commit: **git-sync
+commits the whole shared tree under one identity**, so no commit is identifiably "yours" and
+`--is-ancestor` has nothing sound to test — which is why this could not simply be inferred.
 `uncommitted` / `absent` are the honest misses where the tool's exoneration does hold. And
 when a run is in flight, trust its own log line (`checkpointing candidate <sha>` in
 `/tmp/papercup-green-checkpoint-manual-*.log`) over `judgingSha`, which can lag it.

@@ -74,6 +74,9 @@ function expectGitDeny(out: { stdout: string; status: number | null }) {
 }
 
 const AGENT = { PAPERCUSP_AGENT_SESSION: '1' };
+// A fleet-member session that never got PAPERCUSP_AGENT_SESSION (EI-7872-class
+// gap) but does carry the fleet slug the server stamps independently.
+const FLEET = { PAPERCUSP_FLEET_SLUG: 'nonp2p-bug-drain-0727' };
 // A deterministic stand-in for the canonical shared staging tree. The hook
 // resolves the canonical tree from PAPERCUSP_CANONICAL_TREE (or ~/papercupai-
 // workspace/papercusp); we pin it via env + pass an explicit payload `cwd` so
@@ -136,6 +139,40 @@ describe('native-scheduler lockout (agent sessions)', () => {
 
   it('ignores non-shell tools even in agent sessions', () => {
     expectAllow(runGate({ tool_name: 'Edit', tool_input: { file_path: '/x' } }, AGENT));
+  });
+});
+
+// ── EI-18815668439722436 / WI-6147: PAPERCUSP_FLEET_SLUG backstop ──────────
+// This guard used to gate ONLY on PAPERCUSP_AGENT_SESSION, with no backstop —
+// unlike the sibling shared-tree git guard (EI-7872), which fires on cwd even
+// without the marker. A cwd-based backstop doesn't fit here (crontab/at/batch/
+// systemd-run aren't tied to a working directory), so the backstop instead is
+// PAPERCUSP_FLEET_SLUG — stamped server-side into a fleet member's env
+// independent of whatever client-side path sets (or fails to set) the marker.
+describe('native-scheduler lockout: fleet-slug backstop (EI-18815668439722436)', () => {
+  it.each([
+    ['crontab', 'crontab -e'],
+    ['systemd-run timer', 'systemd-run --on-calendar=daily echo hi'],
+    ['at', 'echo done | at midnight'],
+    ['batch', 'batch < jobs.txt'],
+  ])('fires WITHOUT the agent marker when PAPERCUSP_FLEET_SLUG is set: %s', (_label, command) => {
+    expectDeny(runGate(bashCmd(command), FLEET));
+  });
+
+  it('still honors the agent marker even with no fleet slug (unchanged behavior)', () => {
+    expectDeny(runGate(bashCmd('crontab -e'), AGENT));
+  });
+
+  it('fires when BOTH signals are present (no double-deny weirdness)', () => {
+    expectDeny(runGate(bashCmd('crontab -e'), { ...AGENT, ...FLEET }));
+  });
+
+  it("never fires with NEITHER signal — the owner's crontab is still their business", () => {
+    expectAllow(runGate(bashCmd('crontab -e')));
+  });
+
+  it('an empty PAPERCUSP_FLEET_SLUG does not count as set (defensive)', () => {
+    expectAllow(runGate(bashCmd('crontab -e'), { PAPERCUSP_FLEET_SLUG: '' }));
   });
 });
 

@@ -37,3 +37,66 @@ export function buildIsolatedScopeArgv(base: string[], memoryMaxG: number): stri
     ...base,
   ];
 }
+
+/**
+ * The NAMED variant (task-manager-no-escape-2026-07-27, P-005).
+ *
+ * Same mechanism as {@link buildIsolatedScopeArgv} — a transient `--scope`, so the
+ * payload stays our child with stdio piped — but with the two additions the task
+ * manager is built on:
+ *
+ *   `--unit=<name>`   the scope carries the LEDGER KEY in its own name, which is
+ *                     what turns reconciliation into a string join instead of a
+ *                     cmdline heuristic, and what makes a subtree kill addressable
+ *                     (`systemctl --user kill <unit>`) without ever touching a pid.
+ *   `--slice=<name>`  everything we launch lands under one root slice, so the
+ *                     scanner can enumerate ALL descendants — including grandchildren
+ *                     that double-forked and reparented — by walking one cgroup tree.
+ *
+ * Budgets are per-scope systemd properties rather than anything we police: a
+ * `RuntimeMaxSec` deadline is enforced by systemd even if the operator dies, which
+ * a timer of ours could never promise.
+ */
+export interface TaskScopeProperties {
+  unit: string;
+  slice: string;
+  memoryMaxBytes?: number | null;
+  cpuWeight?: number | null;
+  tasksMax?: number | null;
+  runtimeMaxSec?: number | null;
+  /** Extra `--property=K=V` pairs; escape hatch for a one-off, kept last. */
+  extraProperties?: readonly string[];
+}
+
+export function buildTaskScopeArgv(base: string[], props: TaskScopeProperties): string[] {
+  const argv = [
+    'systemd-run',
+    '--user',
+    '--scope',
+    '--quiet',
+    // --collect: a failed transient unit is garbage-collected instead of lingering
+    // in `systemctl --user list-units` as a permanent phantom the scanner would
+    // then have to special-case.
+    '--collect',
+    `--unit=${props.unit}`,
+    `--slice=${props.slice}`,
+  ];
+  if (props.memoryMaxBytes && props.memoryMaxBytes > 0) {
+    argv.push(`--property=MemoryMax=${Math.floor(props.memoryMaxBytes)}`);
+    // Swap-thrash IS the event-loop freeze (50-cgroup-memory.conf) — a task allowed
+    // to swap does not fail fast, it wedges the whole box while appearing alive.
+    argv.push('--property=MemorySwapMax=0');
+  }
+  if (props.cpuWeight && props.cpuWeight > 0) {
+    argv.push(`--property=CPUWeight=${Math.floor(props.cpuWeight)}`);
+  }
+  if (props.tasksMax && props.tasksMax > 0) {
+    argv.push(`--property=TasksMax=${Math.floor(props.tasksMax)}`);
+  }
+  if (props.runtimeMaxSec && props.runtimeMaxSec > 0) {
+    argv.push(`--property=RuntimeMaxSec=${Math.floor(props.runtimeMaxSec)}`);
+  }
+  for (const p of props.extraProperties ?? []) argv.push(`--property=${p}`);
+  argv.push(...base);
+  return argv;
+}
