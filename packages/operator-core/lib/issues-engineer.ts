@@ -830,10 +830,10 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
            : sql`TRUE`
        }
        -- P-013: the completion-authority read half (see ListIssuesFilter.completionAuthority).
-       -- Scoped to TERMINAL rows for the same reason `audit` is: a non-terminal row has no
-       -- close to judge, so an open row must never answer an 'unjudged' query — otherwise
-       -- the whole open backlog (authority NULL by construction) floods the result and the
-       -- filter reads as catastrophic under-evidencing instead of measuring closes.
+       -- Scoped to TERMINAL rows for the same reason the audit filter is: a non-terminal row
+       -- has no close to judge, so an open row must never answer an 'unjudged' query —
+       -- otherwise the whole open backlog (authority NULL by construction) floods the result
+       -- and the filter reads as catastrophic under-evidencing instead of measuring closes.
        AND ${
          filter.completionAuthority
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`

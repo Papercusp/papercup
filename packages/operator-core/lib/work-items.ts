@@ -693,9 +693,9 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
              : sql`TRUE`
          }
          -- P-013: see ListWorkItemsFilter.completionAuthority. Terminal-scoped for the same
-         -- reason `audit` is — an OPEN row has no close to judge and carries authority NULL
-         -- by construction, so letting it answer 'unjudged' would return the entire open
-         -- backlog and read as mass under-evidencing rather than a measurement of closes.
+         -- reason the audit filter is — an OPEN row has no close to judge and carries
+         -- authority NULL by construction, so letting it answer 'unjudged' would return the
+         -- whole open backlog and read as mass under-evidencing, not a measure of closes.
          AND ${
            filter.completionAuthority
              ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
@@ -781,7 +781,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
                )`
              : sql`TRUE`
          }
-         -- P-013: `audit` and `completionAuthority` are terminal-row DIAGNOSTIC filters, and
+         -- P-013: the audit and completionAuthority filters are terminal-row DIAGNOSTICS, and
          -- this COUNT applied NEITHER — the same count-vs-list parity bug WI-5512 fixed for
          -- admissibleOnly, still live for the audit branch (pre-existing) and about to be
          -- live for completionAuthority. Unfixed, a caller filtering to a handful of flagged

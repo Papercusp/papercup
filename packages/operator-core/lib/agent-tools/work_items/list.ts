@@ -12,7 +12,8 @@ import {
   type WorkItemKind,
 } from "../../work-items";
 import { boundRowField } from "../_bound-output";
-import { COMPLETION_AUDITS } from "../../completion-audit";
+import { COMPLETION_AUDITS, type CompletionAuthorityFilter } from "../../completion-audit";
+import { WORK_ITEM_COMPLETION_AUTHORITIES } from "../../work-item-completion-authority";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 
 /**
@@ -64,6 +65,13 @@ const WORK_ITEM_ROW = z.object({
    *  addedTests), if the completion supplied any. P-004 makes this REQUIRED for a close
    *  to reach `committed`; a close without it lands `authority:'proposed'` instead. */
   terminalCompletionEvidence: z.record(z.string(), z.unknown()).nullable().optional(),
+  /** P-004's judgement about this row's completion evidence ('committed' | 'proposed' |
+   *  'validated' | 'pending_human' | 'invalid'), or null when the close was never judged
+   *  — only `work_items:complete` stamps it, so a bare state-write close reads null
+   *  regardless of how well evidenced it was. Declared here so the `completionAuthority`
+   *  FILTER's own value is visible on the rows it returns (the schema strips undeclared
+   *  keys, so an omitted field would silently blank a column the caller just filtered on). */
+  completionAuthority: z.string().nullable().optional(),
 });
 
 // EI-1597: bound each list row's summary so a large backlog can't overflow the agent
@@ -228,6 +236,12 @@ export default defineTool({
       .describe(
         "Completion-integrity diagnostics over TERMINAL rows. NOTE (P-006): the old 'no-evidence' bareness sweep is GONE — evidence is now required at WRITE time, so a close without it lands `authority:'proposed'` (out of burn-down, still owned by its closer) rather than needing a later audit. Every bucket below fires on rows that PASS that gate. 'no-completion-record' = no completionRef AND no authority: a legacy/pre-gate close — mostly the benign, EXPECTED system skipCompletionGate flips (watchdog/hygiene/orphan/bee-exit/revert). 'no-completion-record-suspicious' = the ACTIONABLE subset: same shape but NOT credited to one of those recognized system identities — structurally impossible for a gated caller, so a hit means an undiscovered write path slipped past the gate; investigate directly. 'geometry-unverified' = touches a layout-bearing file (*.css/*.tsx/*.jsx) with verifiedHow 'unit' or absent — structure-passing, pixel-failing risk. 'intermittent-underevidenced' = titled intermittent/flaky/racy, carries evidence, but only a streak of consecutive passes — no failure rate, root cause, or deterministic repro, which cannot falsify 'we sampled the passing branch N times'. 'reconciler-sourced' = closed by the plan-item reconciler, which MIRRORS a linked plan item's status and is by construction never independently verified — a mis-flipped plan item silently marks a live defect fixed. Newest-first. Composes with `state`.",
       ),
+    completionAuthority: z
+      .enum([...WORK_ITEM_COMPLETION_AUTHORITIES, 'unjudged'] as [string, ...string[]])
+      .optional()
+      .describe(
+        "Filter TERMINAL rows by the completion-authority judgement the P-004 gate stamped: 'committed' (evidence sufficient — verifiedHow PLUS testsRun/testResult), 'proposed' (closed but under-evidenced: recorded, out of burn-down, still owned by its closer), 'validated'/'pending_human'/'invalid', or 'unjudged' for a close carrying NO judgement. This is how you LIST under-evidenced closes — the read D-012 left open when P-006/D-003 deleted the 'no-evidence' audit bucket. ⚠ 'unjudged' measures the INSTRUMENT, not the agents: only work_items:complete stamps an authority, so a close made via the bare state-write path lands NULL however well evidenced it was (that path records its evidence in terminalCompletionRef instead, and complete's structured evidence lands in payload._completionEvidence — three places, so no single field is a complete evidence test). Measured 2026-07-27: 38.2% of that day's agent closes were gate-judged vs 0.1% the day before, so an 'unjudged' hit means \"never judged\", NOT \"unevidenced\". Non-terminal rows never match. Composes with `state` and `audit`.",
+      ),
     includeObservations: z
       .boolean()
       .optional()
@@ -283,6 +297,7 @@ export default defineTool({
           includeChildren: args.includeChildren === true,
           admissibleOnly: args.admissibleOnly === true,
           audit: args.audit ?? null,
+          completionAuthority: args.completionAuthority ?? null,
           includeObservations: args.includeObservations === true,
           limit: args.limit ?? null,
         },
@@ -304,6 +319,7 @@ export default defineTool({
           includeChildren: args.includeChildren,
           admissibleOnly: args.admissibleOnly,
           audit: args.audit,
+          completionAuthority: args.completionAuthority as CompletionAuthorityFilter | undefined,
           includeObservations: args.includeObservations,
           limit: args.limit,
         });

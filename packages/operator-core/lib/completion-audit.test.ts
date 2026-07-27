@@ -371,3 +371,66 @@ describe('hasIntermittentFailureRateEvidence (EI-18716652701919665)', () => {
     expect(hasIntermittentFailureRateEvidence('')).toBe(false);
   });
 });
+
+/**
+ * P-013 — the completion-AUTHORITY filter: the read half D-012 left open.
+ *
+ * P-006/D-003 deleted the 'no-evidence' bareness audit because P-004 made evidence a
+ * WRITE-time requirement — but that also removed the only way to LIST under-evidenced
+ * closes after the fact. The judgement is a column now, so the replacement is a filter
+ * over it. These tests pin the SQL fragment (no live Postgres needed), because the
+ * regression that matters is the same one EI-10867 caught for the audit: a predicate
+ * silently keying on the wrong field, which reads as "everything is fine".
+ */
+describe('completionAuthorityPredicateSql (P-013)', () => {
+  it("'unjudged' tests the authority column for NULL — not for a literal string", () => {
+    const f = frag(completionAuthorityPredicateSql(recordingSql(), 'unjudged'));
+    expect(f.text).toContain('authority IS NULL');
+    // The bug this forbids: binding 'unjudged' as a value, so the predicate becomes
+    // `authority = 'unjudged'` and matches NOTHING — an empty result that reads as
+    // "no unjudged closes exist" when in fact 61.8% of them are unjudged.
+    expect(f.params).not.toContain('unjudged');
+  });
+
+  it('a real judgement binds as a PARAMETER, never interpolated into the SQL text', () => {
+    const f = frag(completionAuthorityPredicateSql(recordingSql(), 'proposed'));
+    expect(f.params).toContain('proposed');
+    expect(f.text).not.toContain("'proposed'");
+    expect(f.text).toContain('authority =');
+  });
+
+  it('every stampable authority value is expressible as a filter', () => {
+    for (const a of WORK_ITEM_COMPLETION_AUTHORITIES) {
+      const f = frag(completionAuthorityPredicateSql(recordingSql(), a));
+      expect(f.params).toContain(a);
+    }
+  });
+
+  it('the aliased form matches its unaliased twin (mirrors the audit predicate contract)', () => {
+    for (const v of ['unjudged', 'committed'] as const) {
+      const plain = frag(completionAuthorityPredicateSql(recordingSql(), v));
+      const aliased = frag(completionAuthorityPredicateSql(recordingSql(), v, 'ei'));
+      expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
+    }
+  });
+
+  it("qualifies the column with the alias when one is given (topic-joined branches select from a join)", () => {
+    const f = frag(completionAuthorityPredicateSql(recordingSql(), 'unjudged', 'ei'));
+    expect(f.text).toContain('ei.authority IS NULL');
+  });
+
+  /**
+   * 'unjudged' must never be readable as "unevidenced". Only work_items:complete stamps
+   * an authority, so a close made through the bare state-write path lands NULL however
+   * well evidenced it was — its evidence goes to terminal_completion_ref, and complete's
+   * structured evidence goes to payload._completionEvidence. Three different places, so
+   * this predicate deliberately tests exactly ONE of them and no caller may read it as a
+   * total evidence verdict. Pinned so a later "helpful" widening has to argue with a test.
+   */
+  it('is a judgement test ONLY — it never inspects the two evidence stores', () => {
+    const f = frag(completionAuthorityPredicateSql(recordingSql(), 'unjudged'));
+    expect(f.text).not.toContain('terminal_completion_ref');
+    expect(f.text).not.toContain(TERMINAL_COMPLETION_EVIDENCE_KEY);
+    expect(f.params).not.toContain(TERMINAL_COMPLETION_EVIDENCE_KEY);
+  });
+});
