@@ -19,6 +19,7 @@ import {
   sectionsToText,
   ENVELOPE_ONLY_FIELDS,
   renderAuthoredFieldsSuffix,
+  projectAuthoredFields,
 } from './message-fields';
 
 describe('renderAuthoredFieldsSuffix — making the fields visible', () => {
@@ -256,5 +257,108 @@ describe('stampMessageFields', () => {
     });
     expect(stamp.why?.goalRef).toBe('unified-agent-state-plane-2026-07-27#P-032');
     expect(stamp.blocking).toBe(false);
+  });
+});
+
+/**
+ * P-033 (e) — the READER projection. `coord:read`, `coord:thread` and the pui pane
+ * all showed only the FLATTENED body string, so a field nobody could see could not
+ * be judged by its VALUES — the only check D-070 leaves standing.
+ */
+describe('projectAuthoredFields — making the fields readable', () => {
+  /** The exact shape the send path writes onto the envelope. */
+  function stamped(input: Parameters<typeof stampMessageFields>[0], rest: Record<string, unknown> = {}) {
+    return { ...stampMessageFields(input), ...rest };
+  }
+
+  it('returns undefined for a plain message — an ordinary send grows no new block', () => {
+    expect(projectAuthoredFields(undefined)).toBeUndefined();
+    expect(projectAuthoredFields({})).toBeUndefined();
+    expect(projectAuthoredFields(stamped({ body: 'just text' }))).toBeUndefined();
+  });
+
+  it('is total on junk — a malformed envelope never throws at a reader', () => {
+    expect(projectAuthoredFields(null)).toBeUndefined();
+    expect(projectAuthoredFields('nonsense')).toBeUndefined();
+    expect(projectAuthoredFields(42)).toBeUndefined();
+    expect(projectAuthoredFields({ sections: 'not-an-array' })).toBeUndefined();
+  });
+
+  it('surfaces the four SECTION fields per section (D-064)', () => {
+    const out = projectAuthoredFields(
+      stamped({
+        body: [
+          {
+            text: 'a',
+            premises: ['WI-1#completion'],
+            forYouBecause: { relation: 'owns', ref: 'P-033' },
+            youMayNotKnow: [{ ref: 'D-072', provenance: 'plan-decision' }],
+            couldNotDetermine: [{ what: 'whether the deploy landed' }],
+          },
+          { text: 'b' },
+        ],
+      }),
+    );
+    expect(out?.sections).toHaveLength(2);
+    expect(out?.sections?.[0]?.forYouBecause?.relation).toBe('owns');
+    expect(out?.sections?.[0]?.youMayNotKnow).toHaveLength(1);
+    expect(out?.sections?.[0]?.couldNotDetermine?.[0]?.what).toBe('whether the deploy landed');
+    // The second section authored nothing — it keeps its text and gains no fields.
+    expect(out?.sections?.[1]).toEqual({ text: 'b' });
+  });
+
+  it('hands the reader premises ALREADY CLASSIFIED, so nobody re-derives D-026', () => {
+    const out = projectAuthoredFields(
+      stamped({ body: [{ text: 'a', premises: ['/internal/docs/x', 'msg:abc'] }] }),
+    );
+    expect(out?.sections?.[0]?.premises?.map((p) => p.invalidatable)).toEqual([false, true]);
+    expect(out?.sections?.[0]?.premises?.[0]?.ref).toBe('/internal/docs/x');
+  });
+
+  it('classifies on the fly for a message stamped before premisesClassified existed', () => {
+    // Back-compat: sections present, classification absent. D-026 forbids dropping a
+    // citation for being unrecognised, so it must still come back classified.
+    const out = projectAuthoredFields({ sections: [{ text: 'a', premises: ['msg:abc'] }] });
+    expect(out?.sections?.[0]?.premises).toEqual([
+      { ref: 'msg:abc', kind: 'peer-message', invalidatable: true },
+    ]);
+  });
+
+  it('surfaces the ENVELOPE fields once, never per section (D-064’s load-bearing half)', () => {
+    const out = projectAuthoredFields(
+      stamped(
+        { body: [{ text: 'a', premises: ['WI-1#x'] }], why: { goalRef: 'plan#P-033' }, blocking: true },
+        { expects: 'action' },
+      ),
+    );
+    expect(out?.expects).toBe('action');
+    expect(out?.blocking).toBe(true);
+    expect(out?.why?.goalRef).toBe('plan#P-033');
+    for (const section of out?.sections ?? []) {
+      for (const field of ENVELOPE_ONLY_FIELDS) {
+        expect(section).not.toHaveProperty(field);
+      }
+    }
+  });
+
+  it('marks DERIVED values so adoption measurement can exclude them (D-072)', () => {
+    const out = projectAuthoredFields(
+      stamped({ body: [{ text: 'a', premises: ['WI-1#x'] }] }, {
+        expects: 'none',
+        fieldProvenance: { expects: 'owner-gui-derived' },
+      }),
+    );
+    // The VALUE is still shown — a reader needs it — but it is flagged as not authored.
+    expect(out?.expects).toBe('none');
+    expect(out?.derivedFields).toContain('expects');
+  });
+
+  it('a fully-derived message is still distinguishable from an authored one', () => {
+    const authoredMsg = projectAuthoredFields(stamped({ body: 'x' }, { expects: 'action' }));
+    const derivedMsg = projectAuthoredFields(
+      stamped({ body: 'x' }, { expects: 'action', fieldProvenance: { expects: 'machine-derived' } }),
+    );
+    expect(authoredMsg?.derivedFields).toBeUndefined();
+    expect(derivedMsg?.derivedFields).toEqual(['expects']);
   });
 });

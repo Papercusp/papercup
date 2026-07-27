@@ -130,6 +130,33 @@ export interface AgentChatDetail extends AgentChatRow {
  * already builds client-side; the resolver does it server-side so a 300px rail
  * never has to load the firehose to find the conversations in it.
  */
+/**
+ * The authored message fields (unified-agent-state-plane-2026-07-27 P-032/P-033),
+ * projected SERVER-SIDE by `projectAuthoredFields` — never unpacked from a raw
+ * envelope here. D-064's split is mirrored in the shape: envelope fields once,
+ * section fields per section.
+ */
+export interface AuthoredMessageFields {
+  /** ENVELOPE — one per message. */
+  expects?: string;
+  blocking?: boolean;
+  why?: { goalRef: string; note?: string };
+  evidence?: { cell: string; version?: string; readAt?: string }[];
+  /** PER-SECTION — authored, and genuinely varying between the parts of one message. */
+  sections?: {
+    text: string;
+    /** Already classified server-side (D-026): the KIND decides staleness, and an
+     *  unrecognised ref degrades to `opaque` rather than being dropped. */
+    premises?: { ref: string; kind: string; invalidatable: boolean }[];
+    forYouBecause?: { relation: string; ref?: string; note?: string };
+    youMayNotKnow?: { ref: string; provenance?: string }[];
+    couldNotDetermine?: { what: string; note?: string }[];
+  }[];
+  /** D-072 — fields DERIVED (owner-GUI default / machine stamp) rather than authored.
+   *  Shown as such so a reader never mistakes a default for the sender's intent. */
+  derivedFields?: string[];
+}
+
 export interface AgentMessageRow {
   msg_id: string;
   kind: string;

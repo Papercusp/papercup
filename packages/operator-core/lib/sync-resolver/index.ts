@@ -49,6 +49,7 @@ import { createResolver, type QueryRegistry } from '@papercusp/sync/server';
 // Flat-row sync reads carry page metadata (e.g. the true total) on row[0]._meta;
 // attachListMeta is the one place that convention lives. See ./list-meta.
 import { attachListMeta } from './list-meta';
+import { projectAuthoredFields } from '../agent-tools/coordination/message-fields';
 
 // CLAMP, don't REJECT (clamp-not-reject, plan coordination-unification-data-sync-hardening
 // P-001 / D-002): a client-sent pagination `limit` must never make the resolver throw on
@@ -149,6 +150,8 @@ interface CoordEnvelopeBody {
   plan_slug?: unknown;
   lifecycle?: unknown;
   audience?: unknown;
+  /** Kind-specific extras — carries the authored message fields (P-033). */
+  extra?: unknown;
 }
 
 const asStr = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
@@ -164,6 +167,12 @@ const asStrArray = (v: unknown): string[] =>
 function toAgentMessageRow(row: Record<string, unknown>): Record<string, unknown> {
   const body = (row.body ?? {}) as CoordEnvelopeBody;
   const to = asStrArray(body.to);
+  // P-033 (e): this projection is a WHITELIST, so the authored message fields — which
+  // ride the envelope's `extra` — were dropped before the pui pane ever saw them.
+  // `body` here is the FLATTENED string, so the pane could not have re-derived them
+  // either. Projected server-side (never raw `extra`) for the reason stated above: a
+  // client that unpacks the envelope itself is a second place D-064's split can drift.
+  const authored = projectAuthoredFields(body.extra);
   return {
     msg_id: row.msg_id as string,
     kind: asStr(body.kind) ?? '',
@@ -171,6 +180,7 @@ function toAgentMessageRow(row: Record<string, unknown>): Record<string, unknown
     to,
     summary: asStr(body.summary),
     body: asStr(body.body),
+    ...(authored ? { authored } : {}),
     harness_slug: (row.harness_slug as string | null) ?? null,
     plan_slug: asStr(body.plan_slug),
     lifecycle: asStr(body.lifecycle),

@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readThread } from '../messages';
+import { projectAuthoredFields } from '../message-fields';
 import { COORD_ROLES } from '../roles';
 
 export default defineTool({
@@ -24,6 +25,14 @@ export default defineTool({
   }),
   async handler(args) {
     const entries = await readThread(args.root_msg_id);
-    return { data: { root: args.root_msg_id, entries } };
+    // P-033 (e): same reason as coord:read — the authored structure rides `extra`
+    // and the rendered `body` is a flattened projection of it. A thread is where a
+    // disagreement gets re-read, so it is the surface where "what did the sender say
+    // this rested on" matters most. Attached per entry; absent when nothing authored.
+    const withAuthored = entries.map((entry) => {
+      const authored = projectAuthoredFields((entry as { extra?: unknown }).extra);
+      return authored ? { ...entry, authored } : entry;
+    });
+    return { data: { root: args.root_msg_id, entries: withAuthored } };
   },
 });

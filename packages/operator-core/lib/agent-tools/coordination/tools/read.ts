@@ -27,6 +27,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMessageById } from '../messages';
+import { projectAuthoredFields } from '../message-fields';
 import { COORD_ROLES } from '../roles';
 
 export default defineTool({
@@ -45,11 +46,23 @@ export default defineTool({
   }),
   async handler(args) {
     const message = await getMessageById(args.msg_id);
+    // P-033 (e): the authored fields ride `extra` (sections / premisesClassified /
+    // why / blocking / fieldProvenance) and the `body` a reader sees is a FLATTENED
+    // projection of them — so on this surface, whose whole job is "show me this
+    // message in full", the structure the sender authored was invisible. Surface it
+    // as `authored`; absent entirely for a message that carries nothing.
+    const authored = message ? projectAuthoredFields((message as { extra?: unknown }).extra) : undefined;
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, found: message !== null, msg_id: args.msg_id, message }),
+          text: JSON.stringify({
+            ok: true,
+            found: message !== null,
+            msg_id: args.msg_id,
+            message,
+            ...(authored ? { authored } : {}),
+          }),
         },
       ],
     };

@@ -1561,35 +1561,37 @@ function ImprovementsView({
           else is one click away, and the way OUT is stated rather than left
           for the reader to wonder about. */}
       <div className="pc-learning__idea-filters" aria-label="Where these came from">
-        <button
-          type="button"
-          aria-pressed={scope === "loop"}
-          title="Only what the learning loop produced: ideas, and the work items they became."
-          onClick={() => void setScope("loop")}
-        >
-          <Radar size={11} aria-hidden />
-          From the loop{" "}
-          {digest && scope === "loop" ? <strong>{digest.total}</strong> : null}
-        </button>
-        {sources.map((s) => (
+        <Tooltip label="Only what the learning loop produced: ideas, and the work items they became.">
           <button
-            key={s}
             type="button"
-            aria-pressed={src === s}
-            title={`Filed by ${s}`}
-            onClick={() => void setSrc(src === s ? null : s)}
+            aria-pressed={scope === "loop"}
+            onClick={() => void setScope("loop")}
           >
-            {s}
+            <Radar size={11} aria-hidden />
+            From the loop{" "}
+            {digest && scope === "loop" ? <strong>{digest.total}</strong> : null}
           </button>
+        </Tooltip>
+        {sources.map((s) => (
+          <Tooltip key={s} label={`Filed by ${s}`}>
+            <button
+              type="button"
+              aria-pressed={src === s}
+              onClick={() => void setSrc(src === s ? null : s)}
+            >
+              {s}
+            </button>
+          </Tooltip>
         ))}
-        <button
-          type="button"
-          aria-pressed={scope === "all"}
-          title="Every capture in this workspace, including work that never came from the loop — the same population the Work tab lists."
-          onClick={() => void setScope("all")}
-        >
-          Every capture
-        </button>
+        <Tooltip label="Every capture in this workspace, including work that never came from the loop — the same population the Work tab lists.">
+          <button
+            type="button"
+            aria-pressed={scope === "all"}
+            onClick={() => void setScope("all")}
+          >
+            Every capture
+          </button>
+        </Tooltip>
         {scope === "loop" ? (
           <span
             className="pc-learning__matchcount"
@@ -5672,7 +5674,7 @@ export function LearningStyles() {
          with the chip's own text, never the sole carrier of the state.
          (--auto/--human were removed with the approval chip they styled.) */
       .pc-learning__chip--stage-not-ready { color: #94a3b8; border-color: rgba(148, 163, 184, 0.45); }
-      .pc-learning__chip--stage-approved { color: #7dd3fc; border-color: rgba(125, 211, 252, 0.5); }
+      .pc-learning__chip--stage-approved { color: var(--accent, #7dd3fc); border-color: var(--accent, rgba(125, 211, 252, 0.5)); }
       .pc-learning__chip--stage-in-flight { color: #fcd34d; border-color: rgba(252, 211, 77, 0.5); }
       .pc-learning__chip--stage-shipped { color: #86efac; border-color: rgba(134, 239, 172, 0.5); }
       .pc-learning__chip--stage-dropped { color: #94a3b8; border-color: rgba(148, 163, 184, 0.35); text-decoration: line-through; }

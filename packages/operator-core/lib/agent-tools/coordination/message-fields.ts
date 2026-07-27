@@ -441,6 +441,102 @@ export function renderAuthoredFieldsSuffix(env: Record<string, unknown>): string
   return parts.length ? ` ⟨${parts.join(' · ')}⟩` : '';
 }
 
+/**
+ * One section as a READER sees it: the authored fields, plus the premises already
+ * classified (D-026) so no reader re-derives the staleness rule.
+ */
+export interface ProjectedSection {
+  text: string;
+  premises?: ClassifiedPremise[];
+  forYouBecause?: ForYouBecause;
+  youMayNotKnow?: YouMayNotKnowEntry[];
+  couldNotDetermine?: CouldNotDetermineEntry[];
+}
+
+/**
+ * What a reader surface shows for the authored message fields. Mirrors D-064's
+ * split exactly — envelope fields once, section fields per section — so the shape
+ * itself teaches the rule rather than leaving it to prose.
+ */
+export interface AuthoredFieldsProjection {
+  /** ENVELOPE (one per message). */
+  expects?: string;
+  blocking?: boolean;
+  why?: MessageWhy;
+  evidence?: EvidenceEntry[];
+  /** PER-SECTION (authored, genuinely varying between the parts of one message). */
+  sections?: ProjectedSection[];
+  /**
+   * D-072: the fields whose values were DERIVED (owner-GUI defaults, machine
+   * stamps) rather than authored by the sender. Carried explicitly because a
+   * reader — and any adoption measurement — must be able to EXCLUDE them; an
+   * unstamped default silently inflates exactly the numbers this plan is judged
+   * on, which is the P-029 failure mechanised.
+   */
+  derivedFields?: string[];
+}
+
+/**
+ * Project the authored fields off a stored envelope's `extra` into the shape above.
+ *
+ * WHY A SHARED HELPER: `coord:read`, `coord:thread` and the pui pane each returned
+ * the flattened `body` string (or, for the pane, a hard field WHITELIST that dropped
+ * `extra` entirely), so the structure a sender authored was invisible at every
+ * surface that exists to inspect a message. Three hand-rolled unpackings of
+ * `extra.sections` + `extra.premisesClassified` would be three chances to drift from
+ * D-064's split — the near-synonym failure D-041 renamed to fix, multiplied by the
+ * number of readers.
+ *
+ * Returns `undefined` when the message carries nothing authored, so a plain-string
+ * message renders exactly as it does today.
+ */
+export function projectAuthoredFields(extra: unknown): AuthoredFieldsProjection | undefined {
+  if (!extra || typeof extra !== 'object') return undefined;
+  const e = extra as Record<string, unknown>;
+
+  const rawSections = Array.isArray(e.sections) ? (e.sections as MessageSection[]) : undefined;
+  // Aligned BY INDEX with `sections` (that is how the send path stamps it).
+  const classified = Array.isArray(e.premisesClassified)
+    ? (e.premisesClassified as ClassifiedPremise[][])
+    : undefined;
+
+  const out: AuthoredFieldsProjection = {};
+
+  if (typeof e.expects === 'string') out.expects = e.expects;
+  if (typeof e.blocking === 'boolean') out.blocking = e.blocking;
+  if (e.why && typeof e.why === 'object') out.why = e.why as MessageWhy;
+  if (Array.isArray(e.evidence) && e.evidence.length) out.evidence = e.evidence as EvidenceEntry[];
+
+  if (rawSections?.length) {
+    const projected = rawSections.map((s, i): ProjectedSection => {
+      const section: ProjectedSection = { text: s.text };
+      // Prefer the send-time classification; fall back to classifying here so a
+      // message stamped before `premisesClassified` existed still reads correctly
+      // (D-026: a citation is never dropped for being unrecognised).
+      const premises = classified?.[i] ?? (s.premises ?? []).map(classifyPremiseRef);
+      if (premises.length) section.premises = premises;
+      if (s.forYouBecause) section.forYouBecause = s.forYouBecause;
+      if (s.youMayNotKnow?.length) section.youMayNotKnow = s.youMayNotKnow;
+      if (s.couldNotDetermine?.length) section.couldNotDetermine = s.couldNotDetermine;
+      return section;
+    });
+    // Only surface sections that carry something beyond their text — an n=1
+    // plain-string send must not grow a section block it never authored.
+    if (projected.some((s) => s.premises || s.forYouBecause || s.youMayNotKnow || s.couldNotDetermine)
+      || projected.length > 1) {
+      out.sections = projected;
+    }
+  }
+
+  const provenance = e.fieldProvenance;
+  if (provenance && typeof provenance === 'object') {
+    const derived = Object.keys(provenance as Record<string, unknown>);
+    if (derived.length) out.derivedFields = derived;
+  }
+
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Everything the send path stamps onto the envelope for these fields. */
 export interface StampedMessageFields {
   sections?: MessageSection[];
