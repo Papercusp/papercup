@@ -262,3 +262,150 @@ describe('pretooluse-content-lint hook — edit-time identity advisory', () => {
     expect(status).toBe(0);
   });
 });
+
+describe('class 2 — hardcoded home paths (detector shared with check-no-box-identity.mjs)', () => {
+  it('catches the slash form and the slash-munged form', async () => {
+    const { findBoxIdentityPaths } = await loadDetector();
+    const slash = findBoxIdentityPaths(`const p = '${HOME}/${USER_SEG}/CLAUDE.md';`);
+    expect(slash.map((h) => h.user)).toEqual([USER_SEG]);
+    const munged = findBoxIdentityPaths(`let dir = "${MUNGED}-${USER_SEG}-papercusp";`);
+    expect(munged.map((h) => h.user)).toEqual([USER_SEG]);
+  });
+
+  // A false positive here would nag on every edit until agents ignored the advisory, so the
+  // negatives matter as much as the positives.
+  it.each([
+    ['a CI / shared-install account', `${HOME}/runner/x`],
+    ['a file that merely lives in /home', `${HOME}/instructions.txt`],
+    ['a 1-2 char stand-in that names nobody', `${HOME}/ab/x`],
+    ['a placeholder ending a sentence', `see ${HOME}/jdoe.`],
+    ['ordinary kebab-case prose', 'className="some-home-page-header"'],
+  ])('does NOT flag %s', async (_label, line) => {
+    const { findBoxIdentityPaths } = await loadDetector();
+    expect(findBoxIdentityPaths(line)).toEqual([]);
+  });
+});
+
+describe('class 3 — bare box-identity literals (detector shared with check-no-identity-literals.mjs)', () => {
+  /** SYNTHETIC literals — see the header: a fixture cannot spell this box's real identity. */
+  const SYNTH: [string, string][] = [
+    ['build-git-email', 'quil@example.test'],
+    ['build-git-name', 'Quil'],
+  ];
+  const SHORT: [string, string][] = [['build-git-name', 'Quil']];
+
+  it('catches a high-entropy literal anywhere in the line', async () => {
+    const { findIdentityLiterals } = await loadDetector();
+    const hits = findIdentityLiterals('// ping quil@example.test about the build box', SYNTH);
+    expect(hits.map((h) => h.key)).toEqual(['build-git-email']);
+  });
+
+  // needs_word_boundary(), ported from the release audit: a short literal matched loosely
+  // drowns in false positives (a file extension, a longer proper noun, vendored lexicons).
+  it('matches a SHORT literal only as a whole word, and case-sensitively', async () => {
+    const { findIdentityLiterals } = await loadDetector();
+    expect(findIdentityLiterals('a note from Quil here', SHORT).map((h) => h.key)).toEqual([
+      'build-git-name',
+    ]);
+    expect(findIdentityLiterals('a note from Quillon here', SHORT)).toEqual([]);
+    expect(findIdentityLiterals('a note from quil here', SHORT)).toEqual([]);
+  });
+
+  // is_vendor(): a bare short name is not vendor's fault to carry, but a high-entropy literal
+  // there DOES mean our own build baked it in.
+  it('scopes low-entropy literals out of vendored code but keeps hunting high-entropy ones', async () => {
+    const { findIdentityLiterals } = await loadDetector();
+    expect(findIdentityLiterals('Quil', SHORT, { vendor: true })).toEqual([]);
+    expect(
+      findIdentityLiterals('quil@example.test', SYNTH, { vendor: true }).map((h) => h.key),
+    ).toEqual(['build-git-email']);
+  });
+
+  it('is a no-op when no identity resolves (the documented bare / CI-box behaviour)', async () => {
+    const { findIdentityLiterals } = await loadDetector();
+    expect(findIdentityLiterals('anything at all', [])).toEqual([]);
+  });
+
+  // This class hunts BARE literals with no structural anchor, so it deliberately polices a wider
+  // path set than its siblings: a scratch artifact that RECORDS a past leak as data is not a leak.
+  it('polices a WIDER path set than classes 1-2', async () => {
+    const { isSkippedPath, isSkippedPathForIdentityLiterals } = await loadDetector();
+    expect(isSkippedPathForIdentityLiterals('scratchpad/lexicon-audit-dump.md')).toBe(true);
+    expect(isSkippedPath('scratchpad/lexicon-audit-dump.md')).toBe(false);
+    expect(isSkippedPathForIdentityLiterals(SRC)).toBe(false);
+  });
+});
+
+/**
+ * EI-18759401203875869 — THE RECURRENCE GUARD.
+ *
+ * The bug: all three identity lints were reachable ONLY from the green-checkpoint gate
+ * (green-checkpoint.ts) and CI (.github/workflows/test.yml). A one-word doc edit therefore red-ed
+ * the whole fleet's gate ~20 minutes later with zero local feedback — five consecutive reds and 60
+ * stranded commits, with 40,469 tests passing. `green-checkpoint-real-deps.test.ts` already asserts
+ * the GATE end of the wiring; this suite asserts the EDIT-TIME end, which is what was missing.
+ *
+ * Add a fourth identity lint to the gate and this suite fails until it also has a hook probe.
+ */
+describe('every gate identity class has EDIT-TIME coverage (EI-18759401203875869)', () => {
+  const FAMILY: Record<string, { script: string }> = {
+    'lint:no-owner-name-tags': { script: 'scripts/check-no-owner-name-tags.mjs' },
+    'lint:no-box-identity': { script: 'scripts/check-no-box-identity.mjs' },
+    'lint:no-identity-literals': { script: 'scripts/check-no-identity-literals.mjs' },
+  };
+
+  it('this suite covers exactly the family the gate enforces — no class left gate-only', () => {
+    expect(gateIdentityLints().sort()).toEqual(Object.keys(FAMILY).sort());
+  });
+
+  // The property that stops the advisory from green-lighting what the gate rejects. Re-inline a
+  // matcher into any gate script and this fails.
+  it('each gate lint IMPORTS the shared detector instead of carrying its own copy', () => {
+    for (const { script } of Object.values(FAMILY)) {
+      const src = readFileSync(join(REPO_ROOT, script), 'utf8');
+      expect(src, script).toMatch(/from '\.\/lib\/identity-leak-patterns\.mjs'/);
+    }
+  });
+
+  it('lint:no-box-identity class — warns at edit time on a hardcoded home path', async () => {
+    const { text, status } = await runHook({
+      file_path: repoFile(SRC),
+      new_string: `const p = '${HOME}/${USER_SEG}/CLAUDE.md';`,
+    });
+    expect(text).toContain('identity-leak');
+    expect(text).toContain(USER_SEG);
+    expect(status).toBe(0); // advisory, never a block
+  });
+
+  // Reads the literal from the environment and never writes it down — see the header. Skips on a
+  // bare / CI box where nothing resolves, mirroring the gate lint's own documented no-op.
+  it.skipIf(BOX_GIT_NAME === '')(
+    'lint:no-identity-literals class — warns at edit time on a real box-identity literal',
+    async () => {
+      const { text, status } = await runHook({
+        file_path: repoFile(SRC),
+        new_string: `// debug note left by ${BOX_GIT_NAME} while chasing the transport bug`,
+      });
+      expect(text).toContain('identity-leak');
+      expect(text).toContain('build-git-name');
+      expect(status).toBe(0);
+    },
+  );
+
+  it('reports EVERY class present in one edit, not just the first', async () => {
+    const { text } = await runHook({
+      file_path: repoFile(SRC),
+      new_string: `// [owner:${NAME} 2026-07-25] see '${HOME}/${USER_SEG}/CLAUDE.md'`,
+    });
+    expect(text).toContain('named owner-provenance tag');
+    expect(text).toContain('hardcoded home path');
+  });
+
+  it('stays silent on a carry surface for the NEW classes too', async () => {
+    const { text } = await runHook(
+      { file_path: repoFile('docs/plans/some-plan.md'), content: `path: ${HOME}/${USER_SEG}/x` },
+      'Write',
+    );
+    expect(text).toBe('');
+  });
+});

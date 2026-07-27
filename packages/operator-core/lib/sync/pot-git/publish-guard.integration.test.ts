@@ -11,7 +11,12 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ensurePotGitRepo } from './storage';
-import { checkPublishGuard, describePublishRefusal, resolveIncrementalPublishSha } from './publish-guard';
+import {
+  checkPublishGuard,
+  describePublishRefusal,
+  partitionBlobsForScan,
+  resolveIncrementalPublishSha,
+} from './publish-guard';
 
 let commitCounter = 0;
 
@@ -323,6 +328,125 @@ describe('pot-git publish-guard (real bare repo)', () => {
       const stillRefused = await checkPublishGuard({ repoPath: repo, fromOid: base, toOid: leaky, volumeGates: 'warn' });
       expect(stillRefused.ok).toBe(false);
       expect(stillRefused.refusalCode).toBe('secrets');
+    });
+  });
+
+  // WI-6254: the G-10 scan reads blobs in BOUNDED chunks, so peak resident
+  // content is `scanChunkBytes` rather than the whole range. Previously every
+  // text blob was materialised at once and the only things bounding that were
+  // the VOLUME caps — which `volumeGates:'warn'` (exactly what the ref-announce
+  // second-line guard passes) switches off. A range judged against a wrong
+  // baseline (WI-6251: 7057 commits) then drove the sidecar 2.35GB -> 3.67GB
+  // into a FATAL heap OOM, crash frame `Builtins_StringSlowFlatten`, instead of
+  // returning a refusal — an OOM inside a fail-CLOSED guard is a fail-OPEN in
+  // effect, because DBOS just restarts the fire at the same step forever.
+  //
+  // The bound is only safe if it never costs COVERAGE, which is what these pin.
+  describe('bounded-memory secrets scan (WI-6254)', () => {
+    it('partitions by byte budget, preserves order, and never drops an over-budget blob', () => {
+      const b = (oid: string, bytes: number) => ({ oid, path: `${oid}.ts`, bytes });
+
+      expect(partitionBlobsForScan([b('a', 40), b('b', 40), b('c', 40)], 100).map((g) => g.map((x) => x.oid))).toEqual([
+        ['a', 'b'],
+        ['c'],
+      ]);
+
+      // A blob larger than the whole budget forms its OWN group rather than
+      // being skipped — coverage is never traded for the bound. (Its size is
+      // separately bounded by the HARD, non-waivable blob-over-cap gate.)
+      const withFat = partitionBlobsForScan([b('a', 10), b('fat', 5_000), b('z', 10)], 100);
+      expect(withFat.map((g) => g.map((x) => x.oid))).toEqual([['a'], ['fat'], ['z']]);
+
+      // Every blob survives partitioning, in input order — the property the
+      // coverage tests below depend on.
+      const many = Array.from({ length: 50 }, (_, i) => b(`o${i}`, 30));
+      const groups = partitionBlobsForScan(many, 100);
+      expect(groups.flat().map((x) => x.oid)).toEqual(many.map((x) => x.oid));
+      // ...and every multi-blob group respects the budget.
+      for (const g of groups) {
+        if (g.length > 1) expect(g.reduce((n, x) => n + x.bytes, 0)).toBeLessThanOrEqual(100);
+      }
+
+      expect(partitionBlobsForScan([], 100)).toEqual([]);
+    });
+
+    it('yields identical findings with a 1-byte budget as with an unbounded one', async () => {
+      const base = await commit(repo, { 'chunk-base.txt': 'base' });
+      const fakeKey = ['AKIA', 'CHUNKCHUNKCHUNKZ'].join('');
+      const files: Record<string, string> = {};
+      for (let i = 0; i < 12; i++) files[`src/chunk-${i}.ts`] = `export const v${i} = ${i};\n`.repeat(20);
+      files['deep/buried.env'] = `AWS_ACCESS_KEY_ID=${fakeKey}\n`;
+      const tip = await commit(repo, files, base);
+
+      // scanChunkBytes:1 forces one blob per chunk — the maximum-fragmentation
+      // case. It must agree exactly with a single whole-range read.
+      const tiny = await checkPublishGuard({ repoPath: repo, fromOid: base, toOid: tip, caps: { scanChunkBytes: 1 } });
+      const huge = await checkPublishGuard({
+        repoPath: repo,
+        fromOid: base,
+        toOid: tip,
+        caps: { scanChunkBytes: 64 * 1024 * 1024 },
+      });
+
+      const fingerprint = (r: typeof tiny) => r.secretFindings.map((f) => `${f.path}:${f.line}:${f.rule}`);
+      expect(tiny.refusalCode).toBe('secrets');
+      expect(fingerprint(tiny)).toEqual(fingerprint(huge));
+      expect(fingerprint(tiny)).toContain('deep/buried.env:1:aws-access-key-id');
+    });
+
+    it('parses the batch stream byte-exactly: multi-line and BINARY blobs never desync the frame parser', async () => {
+      const base = await commit(repo, { 'bin-base.txt': 'base' });
+      const fakeKey = ['AKIA', 'BINARYBINARYBINZ'].join('');
+      const tip = await commit(
+        repo,
+        {
+          // Content full of LFs: a naive delimiter scan would lose frame sync
+          // here and misattribute every object after it.
+          'src/multiline.ts': 'const line = 1;\n'.repeat(500),
+          // Content with NUL bytes: must be SKIPPED as binary, and the frame
+          // AFTER it must still be read at the correct byte offset.
+          'assets/blob.bin': 'PK  binary payload '.repeat(50),
+          'later/leak.env': `AWS_ACCESS_KEY_ID=${fakeKey}\n`,
+        },
+        base,
+      );
+
+      const res = await checkPublishGuard({
+        repoPath: repo,
+        fromOid: base,
+        toOid: tip,
+        caps: { scanChunkBytes: 1024 },
+      });
+
+      // Found at its TRUE path and line ⇒ the parser stayed in sync across both
+      // the newline-dense blob and the NUL-carrying one.
+      expect(res.refusalCode).toBe('secrets');
+      expect(res.secretFindings.some((f) => f.path === 'later/leak.env' && f.line === 1)).toBe(true);
+      expect(res.secretFindings.some((f) => f.path === 'assets/blob.bin')).toBe(false);
+    });
+
+    it('applies the memory bound in BOTH volume modes — it is a resource bound, not a waivable volume gate', async () => {
+      const base = await commit(repo, { 'warn-base.txt': 'base' });
+      const fakeKey = ['AKIA', 'WARNBOUNDWARNBOZ'].join('');
+      const files: Record<string, string> = { 'w/leak.env': `AWS_ACCESS_KEY_ID=${fakeKey}\n` };
+      for (let i = 0; i < 8; i++) files[`w/f${i}.ts`] = `export const w${i} = ${i};\n`.repeat(30);
+      const tip = await commit(repo, files, base);
+
+      // 'warn' switches the VOLUME caps off. It must NOT switch the scan bound
+      // off, and the scan must still reach every blob — this is the exact
+      // configuration the ref-announce second-line guard runs in, i.e. the one
+      // that OOMed the rig.
+      const res = await checkPublishGuard({
+        repoPath: repo,
+        fromOid: base,
+        toOid: tip,
+        caps: { scanChunkBytes: 1, maxTotalNewBytes: 1, maxNewObjects: 1 },
+        volumeGates: 'warn',
+      });
+
+      expect(res.volumeWarnings).toContain('total-over-cap');
+      expect(res.refusalCode).toBe('secrets');
+      expect(res.secretFindings.some((f) => f.path === 'w/leak.env')).toBe(true);
     });
   });
 });
