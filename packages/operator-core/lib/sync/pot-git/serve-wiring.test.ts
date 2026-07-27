@@ -29,7 +29,12 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
   loadHarnessRegistry: loadRegistryMock,
 }));
 
-import { _testing } from './serve-wiring';
+import {
+  _testing,
+  resolveServeAdmission,
+  DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO,
+  type InFlightServe,
+} from './serve-wiring';
 
 const { SESSION_LEAK_WARN_AT, noteSessionHighWater, newChannelState, formatRefusalTarget } = _testing;
 
@@ -313,5 +318,122 @@ describe('EI-18802104888674071: serve reachability across a shared peer connecti
     // No socket ⇒ resolvePeerDevicePubkey has nothing to authenticate against.
     // Adopting the config anyway would serve an unauthenticated peer.
     expect(resolveServeRegistration(undefined, cfgA, undefined)).toBeNull();
+  });
+});
+
+// ─── EI-18802033487678337: bounded per-repo serve concurrency ───────────
+//
+// WHY A PURE UNIT: the rule this guards is a LIVE-TOPOLOGY property (how many
+// `pack-objects` processes one repo can be made to run at once), and the
+// surrounding path needs a Protomux, a real bare repo, and a spawned
+// upload-pack. The decision itself is pure, so it is asserted here where every
+// input is exact — the same split that made `resolveServeRegistration`
+// testable.
+//
+// WHAT THIS IS PROTECTING (live tower, 2026-07-27): 3+ concurrent
+// `git pack-objects` on one 4.1G repo, 1.0-1.7GB RSS and 40-126% CPU each,
+// spawned ~15s apart, with serves logging 120-566s against a requester whose
+// ceiling is 120s. Contention pushed every serve past that ceiling, the
+// requester re-dialled, and each re-dial added another process — a loop that
+// amplifies rather than settles.
+describe('resolveServeAdmission (EI-18802033487678337)', () => {
+  const REPO = '/pot-git/papercusp/papercusp.git';
+  const OTHER = '/pot-git/papercusp/other.git';
+  const chanA = { c: 'A' };
+  const chanB = { c: 'B' };
+  const chanC = { c: 'C' };
+  const serve = (channel: object, repoPath: string, sessionId: number): InFlightServe => ({
+    channel,
+    repoPath,
+    repoKey: 'papercusp',
+    sessionId,
+    startedAt: 0,
+  });
+
+  it('admits freely when the repo is idle', () => {
+    const got = resolveServeAdmission({ repoPath: REPO, channel: chanA, inFlight: [] });
+    expect(got.admit).toBe(true);
+    expect(got.supersede).toEqual([]);
+  });
+
+  // Rule 1 — the orphan reaper. A requester drives at most one fetch of a given
+  // repo per channel at a time (the deepen ladder's rungs are strictly
+  // sequential), so a SECOND live request for the same repo on the same channel
+  // proves the first will never be read again.
+  it('SUPERSEDES an in-flight serve of the same repo on the same channel', () => {
+    const stale = serve(chanA, REPO, 1);
+    const got = resolveServeAdmission({ repoPath: REPO, channel: chanA, inFlight: [stale] });
+    expect(got.admit).toBe(true);
+    expect(got.supersede).toEqual([stale]);
+  });
+
+  // The boundary that keeps rule 1 from being a cross-peer kill: a DIFFERENT
+  // channel is a different peer connection, whose fetch is live and must not be
+  // torn down by someone else's request.
+  it("never supersedes another CHANNEL's serve of the same repo", () => {
+    const other = serve(chanB, REPO, 1);
+    const got = resolveServeAdmission({ repoPath: REPO, channel: chanA, inFlight: [other] });
+    expect(got.admit).toBe(true);
+    expect(got.supersede).toEqual([]);
+  });
+
+  // ...and the same-channel rule is scoped to the same REPO: a peer fetching
+  // two different repos concurrently is legitimate.
+  it("never supersedes the same channel's serve of a DIFFERENT repo", () => {
+    const other = serve(chanA, OTHER, 1);
+    const got = resolveServeAdmission({ repoPath: REPO, channel: chanA, inFlight: [other] });
+    expect(got.admit).toBe(true);
+    expect(got.supersede).toEqual([]);
+  });
+
+  // Rule 2 — the cap. It bounds cost when the peers are genuinely distinct (so
+  // rule 1 can never fire), the regime a supersede rule alone cannot reach.
+  it('REFUSES busy at the cap across distinct channels', () => {
+    const got = resolveServeAdmission({
+      repoPath: REPO,
+      channel: chanC,
+      inFlight: [serve(chanA, REPO, 1), serve(chanB, REPO, 1)],
+      cap: 2,
+    });
+    expect(got.admit).toBe(false);
+    expect(got.refuseReason).toBe('busy');
+  });
+
+  // The cap DISCOUNTS what this same request supersedes — otherwise a single
+  // re-dialling peer would refuse itself busy forever off its own abandoned
+  // serves, which is the original bug wearing the fix's clothes.
+  it('does not count a serve it is superseding against the cap', () => {
+    const mine = serve(chanA, REPO, 1);
+    const got = resolveServeAdmission({
+      repoPath: REPO,
+      channel: chanA,
+      inFlight: [mine, serve(chanB, REPO, 1)],
+      cap: 2,
+    });
+    expect(got.admit).toBe(true);
+    expect(got.supersede).toEqual([mine]);
+  });
+
+  // The cap is keyed on the repo PATH, because the contended resource is that
+  // repo's object store and this box's CPU/RAM — an unrelated repo's serves
+  // must not consume it.
+  it('scopes the cap to the repo path, not the process', () => {
+    const got = resolveServeAdmission({
+      repoPath: REPO,
+      channel: chanC,
+      inFlight: [serve(chanA, OTHER, 1), serve(chanB, OTHER, 1)],
+      cap: 2,
+    });
+    expect(got.admit).toBe(true);
+  });
+
+  it('defaults the cap to DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO', () => {
+    const inFlight = Array.from({ length: DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO }, (_, i) =>
+      serve({ c: i }, REPO, 1),
+    );
+    expect(resolveServeAdmission({ repoPath: REPO, channel: chanC, inFlight }).admit).toBe(false);
+    expect(
+      resolveServeAdmission({ repoPath: REPO, channel: chanC, inFlight: inFlight.slice(1) }).admit,
+    ).toBe(true);
   });
 });

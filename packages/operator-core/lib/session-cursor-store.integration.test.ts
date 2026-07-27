@@ -314,7 +314,7 @@ describe('buildAndPersistCursor — the end-to-end P-001 wiring', () => {
 
   it('persists nothing when the session has no echo-guard-eligible notes', async () => {
     await seedJournal({ sessionId: 'empty', note: 'only a mechanical note', source: 'mechanical', flagged: true, createdAt: '2026-07-14T12:00:00Z' });
-    const res = await buildAndPersistCursor({ sessionId: 'empty', ownerId: 'su-9', harnessSlug: 'papercusp', turnTs: null });
+    const res = await buildAndPersistCursor({ workspaceId: TEST_WS, sessionId: 'empty', ownerId: 'su-9', harnessSlug: 'papercusp', turnTs: null });
     expect(res.persisted).toBe(false);
     expect(res.cursor).toBeNull();
     expect(await getSessionCursorRow('empty')).toBeNull();

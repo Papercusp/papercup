@@ -1086,10 +1086,21 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     );
     state.serverSessions.set(v.id, duplex);
     noteSessionHighWater(state);
+    const entry: InFlightServe = {
+      channel: state,
+      repoPath,
+      repoKey: v.repoKey,
+      sessionId: v.id,
+      startedAt,
+    };
+    const aborter = new AbortController();
+    serveAborters.set(entry, aborter);
+    inFlightServes.add(entry);
     try {
       const res = await serveUploadPack(repoPath, duplex, {
         timeoutMs: cfg.timeoutMs,
         scopeServeGrant,
+        signal: aborter.signal,
         // EI-18776567787336109 (secondary defect): put the REASON on the wire.
         // This fires before the duplex ends, which is the only window in which
         // it can land — the requester deletes its session on the end frame, so
@@ -1114,6 +1125,8 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       if (res.code === 0) potGitLog('info', `[pot-git] serve OK ${detail}`);
       else potGitLog('warn', `[pot-git] serve FAILED ${detail} stderr=${res.stderr.trim().slice(0, 300)}`);
     } finally {
+      inFlightServes.delete(entry);
+      serveAborters.delete(entry);
       state.serverSessions.delete(v.id);
     }
   })().catch((e) => {

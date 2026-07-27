@@ -342,3 +342,107 @@ describe('stale shallow.lock sweep — liveness beats age', () => {
     expect(isFetchInFlight(repo)).toBe(false);
   });
 });
+
+/**
+ * EI-18802033487678337 — a serve whose REQUESTER IS GONE must die NOW.
+ *
+ * THE BUG (live tower, 2026-07-27): nothing killed `upload-pack` when the
+ * requester went away. `duplex.on('error')` was a bare crash-guard, and a
+ * destroyed duplex is exactly what a channel close produces
+ * (`serve-wiring.failAllSessions` destroys every in-flight session; pot-git
+ * channels churn 23-36x/min). The child kept running with nowhere to send
+ * bytes — and its own stdout/stderr kept rearming the IDLE ceiling, so that
+ * safety net could never fire either. Each orphan therefore ran to the
+ * ABSOLUTE ceiling: 30 MINUTES of `pack-objects` on a multi-GB repo.
+ *
+ * Measured consequence: 3+ concurrent `pack-objects` on one 4.1G repo at
+ * 1.0-1.7GB RSS and 40-126% CPU each, serves logging 120-566s against a
+ * requester whose own ceiling is 120s. Self-amplifying — the orphans slowed the
+ * next real serve past that ceiling, which abandoned it, which orphaned another.
+ *
+ * The ceilings below are set far ABOVE vitest's per-test timeout on purpose: if
+ * the abandon path regresses, no ceiling can rescue these tests and they fail
+ * by timing out rather than passing slowly.
+ */
+describe('serveUploadPack — abandoned requester (EI-18802033487678337)', () => {
+  it('kills upload-pack the moment the requester duplex is DESTROYED', async () => {
+    const repo = repoWithCommit();
+    const duplex = peerDuplex();
+    const startedAt = Date.now();
+    const p = serveUploadPack(repo, duplex, {
+      timeoutMs: 300_000,
+      maxMs: 600_000,
+      allowOutsideRoot: true,
+    });
+    // Block upload-pack on an incomplete pkt-line read so it stays alive and
+    // silent — the exact state an orphan sits in.
+    duplex.push(PKT_HEADER);
+    await new Promise((r) => setTimeout(r, 150));
+    duplex.destroy(new Error('pot-git: serve channel closed'));
+
+    const res = await p;
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
+    expect(res.timedOut).toBe(true);
+    expect(res.stderr).toContain('abandoned');
+  });
+
+  /** The same stand-down, driven by the caller — `serve-wiring` aborts a serve
+   *  a newer request for the same repo on the same channel has superseded. */
+  it('kills upload-pack when the caller ABORTS the serve', async () => {
+    const repo = repoWithCommit();
+    const duplex = peerDuplex();
+    const aborter = new AbortController();
+    const startedAt = Date.now();
+    const p = serveUploadPack(repo, duplex, {
+      timeoutMs: 300_000,
+      maxMs: 600_000,
+      allowOutsideRoot: true,
+      signal: aborter.signal,
+    });
+    duplex.push(PKT_HEADER);
+    await new Promise((r) => setTimeout(r, 150));
+    aborter.abort('superseded by a newer request for the same repo');
+
+    const res = await p;
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
+    expect(res.timedOut).toBe(true);
+    expect(res.stderr).toContain('superseded');
+  });
+
+  /** An already-aborted signal must not be ignored — otherwise a serve raced
+   *  past its own stand-down and ran unkillable to the absolute ceiling. */
+  it('honours a signal that was ALREADY aborted before the serve started', async () => {
+    const repo = repoWithCommit();
+    const duplex = peerDuplex();
+    const res = await serveUploadPack(repo, duplex, {
+      timeoutMs: 300_000,
+      maxMs: 600_000,
+      allowOutsideRoot: true,
+      signal: AbortSignal.abort('stale'),
+    });
+    expect(res.timedOut).toBe(true);
+  });
+
+  /**
+   * THE NON-REGRESSION HALF, and the reason the `settled` guard exists: a clean
+   * serve ends its own duplex, which asynchronously emits 'close'. If that
+   * 'close' were treated as an abandonment, EVERY successful serve would report
+   * itself failed — a fix that turns a resource bug into a correctness bug.
+   */
+  it('does NOT report a cleanly-completed serve as abandoned', async () => {
+    const repo = repoWithCommit();
+    const duplex = peerDuplex();
+    const p = serveUploadPack(repo, duplex, {
+      timeoutMs: 300_000,
+      maxMs: 600_000,
+      allowOutsideRoot: true,
+    });
+    // A v2 flush ends the session: upload-pack advertises, sees the flush, and
+    // exits 0 of its own accord — no ceiling, no destroy.
+    duplex.push('0000');
+    const res = await p;
+    expect(res.code).toBe(0);
+    expect(res.timedOut).toBe(false);
+    expect(res.stderr).not.toContain('abandoned');
+  });
+});

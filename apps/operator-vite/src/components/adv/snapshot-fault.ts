@@ -49,9 +49,21 @@ export interface SnapshotFault {
  * `label` names the surface ("EKG", "Throughput") and is used to build a
  * message that reads correctly in both cases.
  */
+/**
+ * `snap` is deliberately `unknown` rather than `SnapshotProvenance`.
+ *
+ * Every provenance field is optional, which makes `SnapshotProvenance` a WEAK
+ * type: TypeScript then rejects any concrete snapshot that happens to share no
+ * properties with it (TS2559 — "has no properties in common"), which is every
+ * caller here, since `EkgSnapshot` / `MttshVitals` / `FrontierSnapshot` declare
+ * only their own payload fields. Widening to `unknown` and narrowing inside is
+ * also the truthful signature: this value came off the wire, so the client
+ * cannot assume its shape — the same defensive posture the panels already take
+ * with `Array.isArray(snap?.shifts)`.
+ */
 export function snapshotFault(
   syncError: unknown,
-  snap: SnapshotProvenance | null | undefined,
+  snap: unknown,
   label: string,
 ): SnapshotFault {
   if (syncError) {
@@ -64,18 +76,19 @@ export function snapshotFault(
     // substrate, so it is safe — and necessary — to show.
     return { failed: true, source: "transport", message: `${label} unavailable` };
   }
-  if (snap?.unavailable) {
+  const prov = (snap ?? null) as SnapshotProvenance | null;
+  if (prov?.unavailable) {
     // Pre-migration is a DIFFERENT fact from a read failure, and saying so is
     // the difference between "your install isn't finished" and "something is
     // wrong". Both beat "nothing has happened yet", which was the old render.
     const lead =
-      snap.unavailableKind === "pre-migration"
+      prov.unavailableKind === "pre-migration"
         ? `${label} not available yet — this install hasn't created its storage`
         : `${label} unavailable`;
     return {
       failed: true,
       source: "data",
-      message: snap.unavailableReason ? `${lead} (${snap.unavailableReason})` : lead,
+      message: prov.unavailableReason ? `${lead} (${prov.unavailableReason})` : lead,
     };
   }
   return { failed: false, source: null, message: null };
