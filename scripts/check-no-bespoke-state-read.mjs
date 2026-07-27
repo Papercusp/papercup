@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * check-cell-adoption.mjs — the ADOPTION GATE for the agent state plane.
+ * check-no-bespoke-state-read.mjs — the ADOPTION GATE for the agent state plane.
  * Plan `unified-agent-state-plane-2026-07-27` (P-005), enforcing D-010.
  *
  * ──────────────────────────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@
  * runs on committed code, so the window closes on its own — but it does mean a
  * local green is not proof, and CI's verdict is the one that counts.
  *
- *   node scripts/check-cell-adoption.mjs
+ *   node scripts/check-no-bespoke-state-read.mjs
  */
 import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -362,7 +362,7 @@ function main() {
   const { offenders, exemptions, lenses, stale, redundant, scanned } = findOffenders();
 
   if (offenders.length > 0) {
-    console.error('✗ cell-adoption gate (unified-agent-state-plane-2026-07-27 P-005 / D-010):\n');
+    console.error('✗ no-bespoke-state-read gate (unified-agent-state-plane-2026-07-27 P-005 / D-010):\n');
     for (const o of offenders) {
       console.error(`    ${o.name}  [${o.rule}]`);
       console.error(`      ${o.file}`);
@@ -382,7 +382,7 @@ function main() {
   }
 
   if (baselineExpired()) {
-    console.error('✗ cell-adoption gate: the BASELINE grandfather period has EXPIRED.');
+    console.error('✗ no-bespoke-state-read gate: the BASELINE grandfather period has EXPIRED.');
     console.error(`    ${BASELINE.size} tool(s) are still grandfathered past BASELINE_REVIEW_BY=${BASELINE_REVIEW_BY}.`);
     console.error('\n  Shrink-only was the promise; this is the date it comes due. Retire them onto');
     console.error('  cells (P-020, unified-agent-state-plane-2026-07-27) and delete their entries.');

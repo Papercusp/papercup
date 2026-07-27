@@ -50,12 +50,19 @@ const realGit: GitRunner = async (repo, args) => {
 };
 
 /** Is `sha` an ancestor-or-equal of `ref` (i.e. does ref's history contain it)? */
-async function refContains(git: GitRunner, repo: string, ref: string, sha: string): Promise<boolean> {
+async function refContains(git: GitRunner, repo: string, ref: string, sha: string): Promise<boolean | null> {
   // `${ref}..${sha}` = commits reachable from sha but NOT from ref. Zero of them
   // means ref's history already contains sha (sha is an ancestor-or-equal of ref).
   // rev-list prints a count on success, so this works through the plain GitRunner —
   // unlike `merge-base --is-ancestor`, whose 0/1 exit a stdout-only runner swallows.
   const contained = await git(repo, ['rev-list', '--count', `${ref}..${sha}`]);
+  // D-038 axis 2 — NEVER derive a verdict from an absence. GitRunner returns null
+  // on ANY failure, and the old `return contained === '0'` turned that into
+  // `false`: byte-IDENTICAL to the honest "this ref genuinely does not contain the
+  // commit". So a failed git read reported "your change has not reached this
+  // stage", and an agent waits for a stage it already passed. Exactly the
+  // `systemctl is-active` phantom-unit shape, in the pipeline's headline leg.
+  if (contained === null) return null;
   return contained === '0';
 }
 
@@ -401,6 +408,18 @@ export interface PipelinePosition {
     inMain: boolean;
     deployed: boolean;
   };
+  /**
+   * D-038 axis 2 + D-039's HOIST: the `positions.*` legs whose git read FAILED, so
+   * their boolean is `false` by DEGRADATION rather than by measurement. Empty means
+   * every leg was genuinely measured.
+   *
+   * WHY THIS IS RESULT-LEVEL AND NOT A PER-LEG FLAG: a qualifier a caller can skip
+   * past is how the defect survives contact with a hurried consumer, which is why
+   * systemd hoists `unitsUnknown[]` and `dev:listening_ports` hoists `ownerHidden`.
+   * A non-empty array here means at least one `false` above is NOT evidence the
+   * stage was not reached — do not report "not yet, wait" on it.
+   */
+  positionsUnknown: string[];
   deployedSha: string | null;
   gate: {
     stalled: boolean;
@@ -1696,13 +1715,26 @@ export async function gitPipelinePosition(
     inMain: false,
     deployed: false,
   };
+  // D-039 HOIST. The booleans above stay booleans so every existing consumer is
+  // unchanged, but a leg whose git read FAILED must not be indistinguishable from
+  // one that honestly read `false`. Naming the leg here is the result-level
+  // qualifier a caller who never inspects each position still cannot miss —
+  // modelled directly on `unitsUnknown[]` and `ownerHidden`.
+  const positionsUnknown: string[] = [];
+  const readLeg = (name: string, v: boolean | null): boolean => {
+    if (v === null) {
+      positionsUnknown.push(name);
+      return false; // degraded, and SAID so — not a measurement
+    }
+    return v;
+  };
   if (targetSha) {
-    positions.committedLocal = await refContains(git, gitDir, 'HEAD', targetSha);
+    positions.committedLocal = readLeg('committedLocal', await refContains(git, gitDir, 'HEAD', targetSha));
     if (submodule) {
       // Submodules track their own default branch; "pushed" == on origin/HEAD.
-      positions.onStaging = await refContains(git, gitDir, 'origin/HEAD', targetSha);
+      positions.onStaging = readLeg('onStaging', await refContains(git, gitDir, 'origin/HEAD', targetSha));
     } else {
-      positions.onStaging = await refContains(git, root, 'origin/staging', targetSha);
+      positions.onStaging = readLeg('onStaging', await refContains(git, root, 'origin/staging', targetSha));
       // EI-18694888339365359: the local ref said "not present" — before believing
       // that (and letting a caller block/park on it), check the actual remote tip
       // via ls-remote (no fetch, no local mutation). If the target IS the current
@@ -1711,14 +1743,23 @@ export async function gitPipelinePosition(
       // that already fired.
       if (!positions.onStaging && (await isExactRemoteTip(git, root, 'refs/heads/staging', targetSha))) {
         positions.onStaging = true;
+        // ls-remote is a DIRECT measurement of the remote tip, so it supersedes an
+        // unreadable local ref — the leg is answered, not degraded, and must drop
+        // out of the hoist or it would report a resolved leg as unknown.
+        const staleIdx = positionsUnknown.indexOf('onStaging');
+        if (staleIdx >= 0) positionsUnknown.splice(staleIdx, 1);
         notes.push(
           'The local origin/staging ref was stale (git-sync had not yet fetched this push); ' +
             'confirmed via `git ls-remote` (no local mutation) that the target commit IS the ' +
             'current remote tip, so onStaging was corrected to true.',
         );
       }
-      positions.inMain = await refContains(git, root, 'origin/main', targetSha);
-      positions.deployed = deployedSha ? await refContains(git, root, deployedSha, targetSha) : false;
+      positions.inMain = readLeg('inMain', await refContains(git, root, 'origin/main', targetSha));
+      // No deployedSha is NOT an unreadable leg — there is simply nothing deployed
+      // to compare against, which is a genuine `false`, not a degraded one.
+      positions.deployed = deployedSha
+        ? readLeg('deployed', await refContains(git, root, deployedSha, targetSha))
+        : false;
     }
   }
 
@@ -1743,7 +1784,12 @@ export async function gitPipelinePosition(
       // Is the deployed sha an ancestor-or-equal of the green pin (safe lag), or does
       // it carry commits the green pin doesn't (force-deployed past the gate)?
       const deployedIsAncestorOfReady = await refContains(git, root, ready.sha, deployedSha);
-      deployOrigin = deployedIsAncestorOfReady ? 'stale-behind-gate' : 'ahead-of-gate';
+      // Same axis-2 rule as the position legs: a FAILED read must not collapse into
+      // a confident 'ahead-of-gate'. Leave the origin unstated rather than asserting
+      // the opposite of what could not be measured.
+      if (deployedIsAncestorOfReady !== null) {
+        deployOrigin = deployedIsAncestorOfReady ? 'stale-behind-gate' : 'ahead-of-gate';
+      }
     }
   }
   const verdictProvenance: PipelinePosition['verdictProvenance'] = {
@@ -1858,6 +1904,7 @@ export async function gitPipelinePosition(
     targetSubject,
     dirtyUncommitted,
     positions,
+    positionsUnknown,
     verdictProvenance,
     deployedSha,
     gate,

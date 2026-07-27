@@ -22,7 +22,8 @@
  * The failure mode this exists to prevent is specific and has a measured base rate:
  * `predicate_watches` is shipped, correct in principle, and has NEVER been adopted
  * (0 rows, all tenants, 2026-07-27). D-010 therefore makes the adoption gate a
- * PRECONDITION of this registry shipping, not a follow-up — see check-cell-adoption.
+ * PRECONDITION of this registry shipping, not a follow-up — see
+ * `scripts/check-no-bespoke-state-read.mjs` (`npm run lint:no-bespoke-state-read`).
  * A registry nobody registers into is surface #29 and strictly worse than today.
  *
  * ⚠ The validator below is deliberately domain-free (it knows about falsifiers and

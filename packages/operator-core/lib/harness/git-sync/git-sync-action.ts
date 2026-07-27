@@ -66,6 +66,7 @@ import {
   ensurePotGitRepo,
   hiveGitRepoPath,
   listNamespaces,
+  pathExists,
   sweepStalePackTmpFiles,
 } from '../../sync/pot-git/storage';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
@@ -1301,7 +1302,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
 /** The P-008 bridge leg of one bridged-hive git-sync tick. Best-effort: never
  *  throws (the code plane must keep syncing even when GitHub is unreachable);
  *  outcome + the `last_admitted` watermark persist on the routine metadata. */
-async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<void> {
+export async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
     try {
@@ -1341,11 +1342,31 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
     const wbSha = rows[0]?.wb_sha ?? null;
     if (wbSha) {
       const bareRepoPath = hiveGitRepoPath(potHomeSlug, repoKey);
-      const existing = await defaultRunGit(['rev-parse', '--verify', '--quiet', BRIDGE_CANONICAL_REF], bareRepoPath);
-      if (existing.code !== 0) {
-        const pinned = await defaultRunGit(['update-ref', BRIDGE_CANONICAL_REF, wbSha], bareRepoPath);
-        if (pinned.code !== 0) {
-          console.warn(`[git-sync] ${slug}: bare canonical catch-up pin failed: ${pinned.stderr.trim()}`);
+      // WI-6282: a COLD device has no store yet — `hiveGitRepoPath` only COMPUTES
+      // a path (it never creates, unlike `ensurePotGitRepo`), and this leg runs
+      // BEFORE the bootstrap leg that does. Spawning git with a nonexistent cwd
+      // makes Node report ENOENT ON THE BINARY, so the warning below used to read
+      // "spawn git ENOENT" — i.e. "git is not installed", which sends whoever is
+      // debugging a failed join looking for the wrong thing entirely.
+      // LIVE-REPRODUCED on the P-302 rig 2026-07-27: exactly once, on the first
+      // tick after the store was deliberately removed, never on a warm tick.
+      // SKIP rather than create: the pin is meaningless on a store with no
+      // objects (update-ref refuses a sha whose object is missing), and store
+      // lifecycle belongs to the bootstrap leg, not here. This makes the failure
+      // impossible instead of merely handled — the next tick, post-bootstrap,
+      // finds a real store and pins normally.
+      if (await pathExists(join(bareRepoPath, 'HEAD'))) {
+        const existing = await defaultRunGit(['rev-parse', '--verify', '--quiet', BRIDGE_CANONICAL_REF], bareRepoPath);
+        if (existing.code !== 0) {
+          const pinned = await defaultRunGit(['update-ref', BRIDGE_CANONICAL_REF, wbSha], bareRepoPath);
+          if (pinned.code !== 0) {
+            // Name the PATH: `pinned.stderr` alone produced a message with no
+            // path in it, which is why the original report could not tell a
+            // missing cwd from a missing binary.
+            console.warn(
+              `[git-sync] ${slug}: bare canonical catch-up pin failed for ${bareRepoPath}: ${pinned.stderr.trim()}`,
+            );
+          }
         }
       }
     }

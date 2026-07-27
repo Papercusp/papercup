@@ -109,6 +109,33 @@ export interface ProgramSuccessInputs {
    * `ticks` stays unbounded by time exactly as before WI-5451.
    */
   cadenceByCodeHash?: { ticks: readonly ScoutTickRecord[]; codeHash: string | null };
+  /**
+   * GYM TASK CORPUS counts for the harness whose gym feeds this program
+   * (plan gym-real-fitness-signal-2026-07-27, P-011).
+   *
+   * WHY THIS BAR EXISTS AT ALL — the failure it closes is not a bug, it is a
+   * BLIND SPOT in this very report. Every other criterion here measures MECHANISM
+   * integrity: cycle error rate, ledger reconciliation, lens diversity, grading-loop
+   * closure. All of them can be, and were, perfectly green for six consecutive
+   * scorecards while the gym's fitness function was three hardcoded toy tasks against
+   * a generated 4-line stub (`export function handle(req){ return { status: 404 }; }`,
+   * sole gate `node --check`). A release gate that cannot fail when the benchmark is
+   * fake is not measuring learning; it is laundering it. So this bar asks the one
+   * question none of the others could: IS THE THING WE OPTIMIZE AGAINST REAL?
+   *
+   * OPTIONAL by construction — an absent value rates `unknown`, never `pass`. Made
+   * optional deliberately rather than required: a required field would go stale in
+   * every existing fixture and, worse, tempt a fixture author to fill it with a
+   * convenient 'real'. Absence must be visibly unproven, not silently fine.
+   */
+  gymCorpus?: {
+    /** Tasks whose corpus is 'real' (derived from genuinely shipped work). */
+    realCount: number;
+    /** Tasks whose corpus is 'synthetic' (a generated stub substrate). */
+    syntheticCount: number;
+    /** The harness these counts were read for, for the observed-line provenance. */
+    harnessSlug?: string;
+  };
 }
 
 export type SuccessStatus = 'pass' | 'fail' | 'unknown';

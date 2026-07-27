@@ -1,8 +1,8 @@
 /**
- * cell-adoption-guard.test.ts — the cell-adoption CI gate's detection predicate
- * (unified-agent-state-plane-2026-07-27, P-005 / D-010).
+ * no-bespoke-state-read-guard.test.ts — the adoption gate's detection predicate
+ * (unified-agent-state-plane-2026-07-27, P-005 / D-010; named by D-016's tier table).
  *
- * The guard (`scripts/check-cell-adoption.mjs`) runs green on the clean tree, which
+ * The guard (`scripts/check-no-bespoke-state-read.mjs`) runs green on the clean tree, which
  * only proves the no-false-positive direction. What D-010 actually asks for is the
  * OTHER direction — that a NEW bespoke state-read tool FAILS the build — and that
  * direction is invisible to a green run by construction: on a clean tree there is,
@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
-import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired } from '../../../scripts/check-cell-adoption.mjs';
+import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired } from '../../../scripts/check-no-bespoke-state-read.mjs';
 
 /** Build the text of a defineTool literal, optionally carrying a marker. */
 const toolSrc = (name: string, opts: { capability?: string; marker?: string } = {}) => `
@@ -29,7 +29,7 @@ export default defineTool({
 });
 `;
 
-describe('cell-adoption guard: the state-read signature', () => {
+describe('no-bespoke-state-read guard:the state-read signature', () => {
   it('FLAGS a new state-read tool as a candidate', () => {
     expect(isStateReadCandidate({ name: 'dev:reaper_status', capability: 'intel:read' })).toBe(true);
     expect(isStateReadCandidate({ name: 'fleet:health', capability: 'coord:read' })).toBe(true);
@@ -90,7 +90,7 @@ describe('cell-adoption guard: the state-read signature', () => {
   });
 });
 
-describe('cell-adoption guard: the verdict', () => {
+describe('no-bespoke-state-read guard:the verdict', () => {
   const undeclared = { name: 'dev:reaper_status', capability: 'intel:read', lens: null, exemption: null };
 
   it('REFUSES an undeclared new state-read tool — the gating property', () => {
@@ -125,7 +125,7 @@ describe('cell-adoption guard: the verdict', () => {
   });
 });
 
-describe('cell-adoption guard: parsing', () => {
+describe('no-bespoke-state-read guard:parsing', () => {
   it('extracts name + capability from single AND double quoted literals', () => {
     // dev:service_health uses double quotes; a single-quote-only parser misses it.
     const rows = parseToolDefs(`defineTool({ name: "dev:service_health", capability: "intel:read" });`);
@@ -166,7 +166,7 @@ describe('cell-adoption guard: parsing', () => {
   });
 });
 
-describe('cell-adoption guard: the shrink-only baseline', () => {
+describe('no-bespoke-state-read guard:the shrink-only baseline', () => {
   it('grandfathers an EXISTING tool but never a new one', () => {
     expect(BASELINE.has('dev:service_health')).toBe(true);
     expect(BASELINE.has('coord:presence')).toBe(true);
