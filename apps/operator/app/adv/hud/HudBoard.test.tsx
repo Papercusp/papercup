@@ -485,6 +485,12 @@ describe('HudBoard', () => {
  * assertion is what stops a third misread.
  */
 describe('header layout (owner asks 2026-07-27)', () => {
+  // The plan filter only renders when the board HAS plans (board.plans.length > 0).
+  const withPlans = () => [
+    entry({ ownerId: 'su-1111', currentPlanSlug: 'alpha-plan' }),
+    entry({ ownerId: 'su-2222', currentPlanSlug: 'beta-plan' }),
+  ];
+
   it('puts the launcher on its OWN row, AFTER the tab strip — not inside it', () => {
     const { container } = renderBoard([entry()]);
     const tabs = container.querySelector('.hud__tabs');
@@ -507,7 +513,7 @@ describe('header layout (owner asks 2026-07-27)', () => {
   });
 
   it('orders the plan filter FIRST in the filter row, ahead of the all-agents toggle', () => {
-    const { container } = renderBoard(planned());
+    const { container } = renderBoard(withPlans());
     const planFilter = container.querySelector('.hud__planfilter');
     const toggle = screen.getByRole('button', { name: /su sessions|all agents/ });
     expect(planFilter, 'the plan filter must render on the sessions tab').toBeTruthy();
@@ -518,7 +524,7 @@ describe('header layout (owner asks 2026-07-27)', () => {
   it('no longer right-aligns the plan filter behind a flex spacer', () => {
     // The spacer existed only to push the filter to the far right; leaving it in
     // would re-open the gap the owner asked to close.
-    const { container } = renderBoard(planned());
+    const { container } = renderBoard(withPlans());
     expect(container.querySelector('.hud__top .hud__spacer')).toBeNull();
   });
 });
