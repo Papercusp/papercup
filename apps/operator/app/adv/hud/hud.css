@@ -226,29 +226,35 @@
 .hud__header-action {
   display: flex;
   align-items: center;
-  margin-right: 10px;
-  padding-right: 12px;
-  padding-bottom: 8px;
-  border-right: 1px solid var(--border);
 }
 
-/* WI-6300 (owner ask 2026-07-27): "move these things to the row below it —
-   Model for new session / Effort level for new session / + New session".
-   So the launcher is a COLUMN: the plan picker on the first line, the
-   model/effort/launch group on its own line beneath it. align-items:flex-start
-   (not stretch) keeps both lines flush-LEFT and lets each size to its content,
-   which is what makes the second row read as "the leftmost things" on its line
-   rather than a stretched bar. */
-.pc-new-session-launcher {
+/* Owner ask 2026-07-27: the launch cluster gets a row of its OWN, directly below
+   the tab strip. It is a separate row rather than a second line inside
+   .hud__tabs because that strip runs padding-bottom:0 + align-items:flex-end +
+   a bottom border so the selected tab can bridge it (.hud__tab--on) — a second
+   line inside would land under that border and break the bridge.
+
+   Matches .hud__tabs' horizontal padding so the plan picker lines up with the
+   tabs above it, and carries the strip's own bottom border so the header still
+   reads as one block of chrome above the board. */
+.hud__launchrow {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+  flex: none;
 }
 
-/* The second line. Stays a horizontal group; wraps within itself on a narrow
-   rail instead of forcing the whole launcher wider. */
-.pc-new-session-launcher__row2 {
+/* Owner ask 2026-07-27 (restated after two misreads): plan + model + effort +
+   "+ New session" all sit together on ONE line, and that line is .hud__launchrow
+   — the row BELOW the tab strip. An earlier pass made this a COLUMN, splitting
+   the plan picker off onto its own line; that answered "the row below" about the
+   wrong row. A single wrapping row: on a narrow rail the controls wrap among
+   themselves rather than forcing the strip wider. */
+.pc-new-session-launcher {
   display: flex;
   flex-direction: row;
   align-items: center;

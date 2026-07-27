@@ -313,20 +313,16 @@ export default function HudBoard({
         {/* The launcher stays OUTSIDE the tab bodies: launching a session is
             not a thing you do to the sessions board, it is a thing you do from
             the HUD, and hiding it behind a tab would make it unreachable from
-            the two tabs most likely to make you want it.
+            the two tabs most likely to make you want it. It has moved through
+            this strip over several owner asks — far right behind a spacer, then
+            after the tabs, then ahead of them — and now sits on its OWN row
+            just below (see .hud__launchrow, rendered after this strip).
 
-            LEFTMOST in the strip (owner ask 2026-07-26, refined): it first sat
-            behind a `.hud__spacer` (flex:1) that pushed it to the far right —
-            a screen-width from the tabs it belongs to — then directly after the
-            tabs, and now ahead of them.
-
-            It is also a SIBLING of the tablist rather than a child of it: a
-            `role="tablist"` must contain only tabs, and parking a launch button
-            (three comboboxes and a submit) inside one misreports the strip to a
-            screen reader as a four-tab axis. The tablist role now sits on the
-            inner wrapper that holds exactly the tabs. */}
-        {headerAction ? <span className="hud__header-action">{headerAction}</span> : null}
-
+            It is also kept OUT of the `role="tablist"` element: that role must
+            contain only tabs, and parking a launch button (three comboboxes and
+            a submit) inside one misreports the strip to a screen reader as a
+            four-tab axis. The tablist role sits on the inner wrapper holding
+            exactly the tabs. */}
         <div className="hud__tablist" role="tablist" aria-label="HUD board">
           {HUD_TABS.map((id) => (
             <button
@@ -343,6 +339,20 @@ export default function HudBoard({
         </div>
       </div>
 
+      {/* Owner ask 2026-07-27 (asked several times, and my two previous passes
+          misread it): "move the select plan / model / effort / new session
+          buttons to the row below". I had twice rearranged the controls WITHIN
+          the launcher while it stayed on the tab strip's row — but the row being
+          referred to is the TAB STRIP's. So the launcher now owns a row of its
+          own, directly BELOW the tabs, with all four controls on that one line.
+
+          It is a sibling of .hud__tabs rather than a child because .hud__tabs
+          has padding-bottom:0 + align-items:flex-end + a bottom border so the
+          selected tab can BRIDGE that border (.hud__tab--on). Nesting a second
+          line inside it would put the launcher underneath that border and break
+          the bridge; a separate row keeps the tab chrome intact. */}
+      {headerAction ? <div className="hud__launchrow">{headerAction}</div> : null}
+
       {!onSessions ? (
         entityView ?? null
       ) : (
@@ -354,6 +364,36 @@ export default function HudBoard({
             one, and leaving it here would have made it vanish on the Plans and
             Work items tabs. The ordering the owner asked for is preserved: the
             launcher still leads, the counts still follow. */}
+        {/* Owner ask 2026-07-27: "move the plan filter as the first filter
+            before all agents". It previously sat at the END of this row, past a
+            flex:1 .hud__spacer that right-aligned it — so on a wide board it was
+            a screen-width away from the other filters it belongs with. It now
+            LEADS the row, ahead of the su-only/all-agents toggle.
+
+            Keeping it in .hud__top (not down in .hud__fleets) still matters for
+            the original reason: .hud__fleets is nowrap + overflow-x:auto, so a
+            picker appended there is reachable only by scrolling past every fleet
+            chip (verified live 2026-07-26 — with 14 fleets it was entirely off
+            screen). .hud__top wraps, so this stays visible at any width.
+
+            `align="end"` is dropped with the right-alignment that motivated it:
+            a leading control should open flush with its own left edge. */}
+        {board.plans.length > 0 ? (
+          <span className="hud__planfilter">
+            <Combobox
+              ariaLabel="Filter by plan"
+              triggerClassName="hud__planfilter-box"
+              testId="hud-plan-filter"
+              value={planValue}
+              emptyValue={ALL_PLANS}
+              placeholder="All plans"
+              emptyLabel="No plan matches"
+              options={planOptions}
+              onChange={(v) => onSelectPlan(v === NO_PLAN_TOKEN ? null : v)}
+            />
+          </span>
+        ) : null}
+
         <Tooltip
           label={
             suOnly
@@ -395,9 +435,9 @@ export default function HudBoard({
 
         {/* Searches every session's FULL TRANSCRIPT, not the card text — the
             roster carries only metadata, so "which session was I debugging the
-            gym gate in" is unanswerable from the board itself. Placed beside the
-            plan filter (not in .hud__fleets) for the nowrap/overflow reason
-            documented on the plan filter below. */}
+            gym gate in" is unanswerable from the board itself. In this row (not
+            .hud__fleets) for the same nowrap/overflow reason documented on the
+            plan filter, which now leads the row. */}
         {onSessionQuery ? (
           <input
             type="search"
@@ -410,32 +450,6 @@ export default function HudBoard({
           />
         ) : null}
 
-        <span className="hud__spacer" />
-
-        {/* The plan filter lives in THIS row, not down among the fleet chips,
-            because of how the two rows behave when space runs out: .hud__fleets
-            is `nowrap` + `overflow-x: auto` (deliberately — see its comment),
-            so anything appended after the chips is reachable only by scrolling
-            the strip past every one of them. Verified live 2026-07-26 in the
-            narrow HUD rail: with 14 fleets the picker was completely off
-            screen. .hud__top wraps instead, so here it right-aligns on a wide
-            board and drops onto its own line in the rail — visible either way. */}
-        {board.plans.length > 0 ? (
-          <span className="hud__planfilter">
-            <Combobox
-              ariaLabel="Filter by plan"
-              triggerClassName="hud__planfilter-box"
-              testId="hud-plan-filter"
-              value={planValue}
-              emptyValue={ALL_PLANS}
-              placeholder="All plans"
-              emptyLabel="No plan matches"
-              options={planOptions}
-              onChange={(v) => onSelectPlan(v === NO_PLAN_TOKEN ? null : v)}
-              align="end"
-            />
-          </span>
-        ) : null}
       </div>
 
       {board.fleets.length > 0 ? (

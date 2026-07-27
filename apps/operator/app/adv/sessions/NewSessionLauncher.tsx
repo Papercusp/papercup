@@ -326,13 +326,13 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         emptyLabel="No plans match"
         options={planOptions}
       />
-      {/* WI-6300 (owner ask 2026-07-27): "move these things to the row below it
-          — Model for new session / Effort level for new session / + New session".
-          The plan picker stays on the top line; these three drop to their own
-          line beneath it, flush-left. Grouping them in a real element (rather
-          than a flex line-break hack) keeps them one focus/tab group and lets the
-          row keep its own alignment when the strip wraps. */}
-      <div className="pc-new-session-launcher__row2">
+      {/* Owner ask 2026-07-27 (restated): all four controls — plan, model,
+          effort, + New session — belong together on ONE row, and that row is the
+          one BELOW the HUD tab strip (see .hud__launchrow in hud.css). An
+          earlier pass split them across two lines INSIDE the launcher, which was
+          a misreading of "the row below": the row in question was the tab
+          strip's, not the plan picker's. Flattened back to a single line. */}
+      <>
         <Combobox
           triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--model"
           value={model || MODEL_SELECT_DEFAULT}
@@ -362,7 +362,7 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         >
           {launching ? 'Launching…' : '+ New session'}
         </Button>
-      </div>
+      </>
     </div>
   );
 }
