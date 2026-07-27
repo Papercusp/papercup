@@ -571,11 +571,12 @@ test('EI-18791793869559327 — poolExhausted takes precedence over degraded (usa
 test('EI-18791793869559327 — degraded suppressed during the fresh-gateway restart grace', () => {
   const hr = {
     reachable: true,
-    utilization: 0.1,
-    paused: false,
+    utilization: 1,
+    paused: true,
+    rejected: true,
     queueDepth: 0,
     processUptimeMs: 4_000, // within the 30s restart grace
-    priorityTiers: { healthyAccounts: 2, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 0, queued: 0 }] },
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 0, tiers: [{ tier: 3, cap: 16, inFlight: 0, queued: 0 }] },
   };
   const r = buildCapacityReport(hr, {
     clampArmed: true,

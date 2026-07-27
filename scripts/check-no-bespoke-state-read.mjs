@@ -148,7 +148,7 @@ export const STATE_NOUNS = [
   // `facts:list`, `pot:get`, `dev:pg_active_queries` — none of these contain any noun
   // in this list either). The evidence-based real fix (select on measured call
   // volume from `tool_invocations` rather than on the name) is filed as a follow-up:
-  // WI-6479's sibling — see the bug for the analysis.
+  // WI-6487.
   'assignments',
   'roster',
   'walls',

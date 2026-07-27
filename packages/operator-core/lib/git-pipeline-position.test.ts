@@ -27,6 +27,8 @@ import {
   evaluateSweepExposure,
   parsePorcelainPaths,
   deriveBlocker,
+  mainBufferIsStale,
+  MAIN_BUFFER_STALL_MS,
   type GitRunner,
   type PipelinePosition,
   type ChangeInCandidate,

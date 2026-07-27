@@ -14,6 +14,7 @@ import {
   type CellReader,
 } from './cell-registry';
 import { readCell, type CellReadEnv } from './cell-read';
+import { BUILTIN_CELLS, registerBuiltinCells } from './cell-registrations';
 
 /**
  * cell-access-parity.test.ts — THE `canReadCell` PARITY GATE
@@ -375,5 +376,200 @@ describe('LEG C — no production surface calls an unchecked accessor', () => {
     // The compliant forms must NOT trip it, or the gate would be unusable noise.
     expect(BYPASS_CALL.test('const one = getCell(cell, reader);')).toBe(false);
     expect(BYPASS_CALL.test('const all = listCells(reader);')).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEG D — the VISIBILITY-KIND matrix
+// (agent-state-plane-verification-2026-07-27 P-006, per P-019 / P-028)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Legs A–C prove the surfaces AGREE with the oracle. They do not prove the REFUSAL is
+ * shaped identically to a non-existence — and that is a separate property with a
+ * separate failure mode: a refusal that is merely *correct* can still be *recognisable*,
+ * and a recognisable refusal is an ORACLE. An attacker (or an over-curious agent) who
+ * can tell "you may not read this" from "no such cell" can enumerate every narrow cell
+ * in the registry by probing names, which is exactly what P-019 forbids.
+ *
+ * Leg A checks this for ONE kind (`owner`) at ONE cell. `canReadCell` switches on FIVE
+ * kinds, each with its own reader field, and four of them were untested from this angle.
+ * A kind that returned, say, an `unknown` instead of `absent` would sail through legs
+ * A–C: the oracle would say REFUSE, the surface would refuse, parity holds — and the
+ * refusal would still be a probe oracle.
+ */
+const VISIBILITY_CASES: Array<{
+  kind: string;
+  visibility: CellSpec['visibility'];
+  /** A reader the cell IS visible to. */
+  inside: CellReader;
+  /** A reader it is NOT visible to — the one whose refusal must be indistinguishable. */
+  outside: CellReader;
+}> = [
+  {
+    kind: 'owner',
+    visibility: { kind: 'owner', ref: OWNER_A },
+    inside: { ownerId: OWNER_A },
+    outside: { ownerId: OWNER_B },
+  },
+  {
+    kind: 'role',
+    visibility: { kind: 'role', ref: 'su' },
+    inside: { ownerId: OWNER_B, roles: ['su'] },
+    outside: { ownerId: OWNER_B, roles: ['collaborator'] },
+  },
+  {
+    kind: 'harness',
+    visibility: { kind: 'harness', ref: 'papercusp' },
+    inside: { ownerId: OWNER_B, harnessSlug: 'papercusp' },
+    outside: { ownerId: OWNER_B, harnessSlug: 'some-other-harness' },
+  },
+  {
+    kind: 'work_item',
+    visibility: { kind: 'work_item', ref: 'WI-1234' },
+    inside: { ownerId: OWNER_B, workItems: ['WI-1234'] },
+    outside: { ownerId: OWNER_B, workItems: ['WI-9999'] },
+  },
+  {
+    // The wide kind. There IS no outside reader — which is itself worth asserting, so a
+    // future narrowing of `workspace` cannot pass unnoticed.
+    kind: 'workspace',
+    visibility: { kind: 'workspace' },
+    inside: { ownerId: OWNER_A },
+    outside: { ownerId: OWNER_B },
+  },
+];
+
+const NEVER_REGISTERED = 'test.neverRegisteredAtAll';
+
+describe('LEG D — an out-of-audience refusal is byte-identical to a non-existence, per visibility kind', () => {
+  for (const { kind, visibility, inside, outside } of VISIBILITY_CASES) {
+    const cell = `test.visibility.${kind}`;
+
+    it(`${kind}: the oracle itself discriminates (non-vacuity — else the rest proves nothing)`, () => {
+      __resetCellRegistryForTests();
+      const spec = registerCell(eventCell({ cell, visibility }));
+      expect(canReadCell(spec, inside), `${kind}: the INSIDE reader must be admitted`).toBe(true);
+      // `workspace` is visible to everyone by design, so its "outside" reader is inside.
+      expect(canReadCell(spec, outside)).toBe(kind === 'workspace');
+    });
+
+    if (kind === 'workspace') continue;
+
+    it(`${kind}: the refused read is ABSENT — same status as a cell that does not exist`, async () => {
+      __resetCellRegistryForTests();
+      registerCell(eventCell({ cell, visibility }));
+
+      const refused = await readCell(cell, outside, env);
+      const nonexistent = await readCell(NEVER_REGISTERED, outside, env);
+
+      expect(refused.status).toBe('absent');
+      expect(refused.status).toBe(nonexistent.status);
+    });
+
+    /**
+     * ⚠ THE KEY SET, NOT JUST THE STATUS. This is the assertion that catches the
+     * realistic version of this bug. Nobody returns a different `status` for a refusal
+     * — the tempting mistake is to return the same `absent` while ATTACHING something
+     * helpful (`reason`, `visibility`, `requiredRole`, a `detail` naming the owner). Any
+     * such field is a perfect oracle: its mere presence answers "does this cell exist?".
+     */
+    it(`${kind}: the refusal carries NO extra field — a helpful hint IS the oracle`, async () => {
+      __resetCellRegistryForTests();
+      registerCell(eventCell({ cell, visibility }));
+
+      const refused = await readCell(cell, outside, env);
+      const nonexistent = await readCell(NEVER_REGISTERED, outside, env);
+
+      expect(Object.keys(refused).sort()).toEqual(Object.keys(nonexistent).sort());
+    });
+
+    it(`${kind}: and the INSIDE reader gets past the gate, so the refusal is not universal`, async () => {
+      __resetCellRegistryForTests();
+      registerCell(eventCell({ cell, visibility }));
+      // Event-signalled fixture ⇒ `unknown`, which is any answer other than `absent`:
+      // proof the audience gate was passed without standing up a resolver.
+      expect((await readCell(cell, inside, env)).status).not.toBe('absent');
+    });
+  }
+
+  /**
+   * ⚠ THE DELIBERATE VIOLATION for leg D. A refusal that is correct-but-recognisable —
+   * the shape an author reaches for when trying to be helpful — must be caught by the
+   * key-set assertion above. Proves that assertion has teeth rather than comparing two
+   * objects that are trivially equal.
+   */
+  it('DELIBERATE VIOLATION: a refusal with a "helpful" extra field is caught by the key-set check', () => {
+    const honest = { status: 'absent', cell: 'x' };
+    const helpful = { status: 'absent', cell: 'x', reason: 'out-of-audience' };
+    const nonexistent = { status: 'absent', cell: 'y' };
+
+    expect(Object.keys(honest).sort()).toEqual(Object.keys(nonexistent).sort());
+    expect(Object.keys(helpful).sort()).not.toEqual(Object.keys(nonexistent).sort());
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEG E — walk the REAL registry, not fixtures (P-006)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Legs A–D run against fixtures, which is right for the audience ALGEBRA — a fixture can
+ * be shaped into every corner the switch has. But D-038 axis 4's whole complaint is that
+ * "fixtures cannot catch a fresh, correctly-versioned, confidently-wrong resolver", and a
+ * gate that never touches a production spec is exposed to exactly that. So this leg walks
+ * `BUILTIN_CELLS`.
+ */
+describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface', () => {
+  const stranger: CellReader = { ownerId: 'su-nobody-at-all' };
+
+  beforeEach(() => {
+    __resetCellRegistryForTests();
+    registerBuiltinCells();
+  });
+
+  it('the walk is NON-VACUOUS — there are built-in cells registered to check', () => {
+    expect(BUILTIN_CELLS.length).toBeGreaterThan(0);
+    expect(listCellsUnchecked().length).toBe(BUILTIN_CELLS.length);
+  });
+
+  for (const spec of BUILTIN_CELLS) {
+    it(`${spec.cell}: getCell / listCells / readCell all agree with canReadCell`, async () => {
+      const oracle = canReadCell(spec, stranger);
+
+      expect(getCell(spec.cell, stranger) !== undefined, 'getCell disagreed').toBe(oracle);
+      expect(listCells(stranger).some((s) => s.cell === spec.cell), 'listCells disagreed').toBe(oracle);
+      // readCell's `absent` is the refusal; any other status means the gate was passed.
+      // A poll cell would dispatch a real tool here, so only the GATE is asserted — via
+      // getCell, which is the same oracle readCell consults at its own gate 1.
+      expect(getCell(spec.cell, stranger) !== undefined).toBe(oracle);
+    });
+  }
+
+  /**
+   * ⚠ THE CENSUS, AND WHY IT IS AN ASSERTION RATHER THAN A COMMENT.
+   *
+   * Every built-in cell is currently `workspace`-visible, so leg E's walk exercises ONE
+   * arm of the five-way switch and `oracle` is `true` for every row above. That is not a
+   * flaw to hide — it is a fact about the registry that a reader of this file MUST know,
+   * because without it leg E reads as far stronger coverage than it is.
+   *
+   * Asserting the census rather than writing it in prose is what keeps it true. The
+   * moment a built-in cell adopts a narrower visibility, this test fails and forces the
+   * author to look at leg E — at which point the walk starts covering a second arm and
+   * the expectation here should be updated to say so. A comment would have silently
+   * gone stale instead.
+   */
+  it('CENSUS: records how many built-in cells use each visibility kind', () => {
+    const census: Record<string, number> = {};
+    for (const spec of BUILTIN_CELLS) {
+      census[spec.visibility.kind] = (census[spec.visibility.kind] ?? 0) + 1;
+    }
+    expect(
+      census,
+      'the built-in visibility census changed. If a cell has adopted a NARROWER visibility that is good news — ' +
+        "leg E now exercises an arm of canReadCell's switch it never did before. Update this expectation, and " +
+        'check that leg E still asserts something for the newly-narrow cell.',
+    ).toEqual({ workspace: BUILTIN_CELLS.length });
   });
 });

@@ -14,6 +14,7 @@
  *   npx vitest run --config vitest.integration.config.ts lib/pg-read-query.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { pgReadQuery, explainReadQuery, PgReadQueryError, describeRelation, listRelations } from './pg-read-query';
 
