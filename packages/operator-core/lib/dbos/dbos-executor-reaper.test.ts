@@ -258,6 +258,49 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  describe('EI-18752434722211671 — processStartedAtMs: a local-executor routineFire orphaned by a restart is reaped immediately, not after 185m', () => {
+    it('reaps a no-output PENDING routineFire tagged executor_id=local when its created_at predates this process start, well inside the normal 185m window', async () => {
+      const { sql, calls } = fakeSql((text) => {
+        if (text.includes('SELECT executor_id')) return []; // the stable-id dead-executor path never sees it (see EI-18752434722211671)
+        if (text.includes('SELECT workflow_uuid')) {
+          return [{ workflow_uuid: 'sched-.routineFire-restart-orphan', requeue_routine_id: 'rt_papercusp_git_sync' }];
+        }
+        if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 1 };
+        if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 0 };
+        if (text.includes('UPDATE harness_shared.routines')) return { count: 1 };
+        throw new Error(`unexpected query: ${text}`);
+      });
+
+      // Default 185m no-output window would NOT reap this on its own — proves the
+      // fast-reap here is genuinely coming from processStartedAtMs, not the window.
+      const processStartedAtMs = Date.now() - 60_000; // this process booted 1 minute ago
+      const res = await reapDeadExecutorWorkflows(sql, undefined, undefined, undefined, undefined, processStartedAtMs);
+
+      expect(res.cancelled).toBe(1);
+      expect(res.staleWorkflowIds).toEqual(['sched-.routineFire-restart-orphan']);
+      expect(res.requeuedRoutineIds).toEqual(['rt_papercusp_git_sync']);
+      const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
+      expect(staleSelect.text).toContain("executor_id = 'local'");
+      expect(staleSelect.values).toContain(true); // the hasProcessStartedAtMs gate param
+      expect(staleSelect.values).toContain(processStartedAtMs);
+    });
+
+    it('does NOT widen reaping when processStartedAtMs is omitted (default behavior byte-for-byte unaffected)', async () => {
+      const { sql, calls } = fakeSql((text) => {
+        if (text.includes('SELECT executor_id')) return [];
+        if (text.includes('SELECT workflow_uuid')) return []; // a fresh no-output fire, well inside every window, is left alone
+        throw new Error(`unexpected query: ${text}`);
+      });
+
+      const res = await reapDeadExecutorWorkflows(sql);
+
+      expect(res).toEqual({ cancelled: 0, queuePurged: 0, requeuedRoutineIds: [], deadExecutorIds: [], staleWorkflowIds: [] });
+      const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
+      expect(staleSelect.text).toContain("executor_id = 'local'"); // the clause is present…
+      expect(staleSelect.values).toContain(false); // …but gated off (hasProcessStartedAtMs=false)
+    });
+  });
 });
 
 describe('startExecutorReaper — the registered tick must genuinely AWAIT the reap (EI-3673)', () => {
@@ -331,6 +374,42 @@ describe('startExecutorReaper — the registered tick must genuinely AWAIT the r
 
     expect(capturedTick).not.toBeNull();
     await expect(capturedTick!()).resolves.toBeUndefined();
+  });
+
+  it('EI-18752434722211671: derives processStartedAtMs from process.uptime() by default and threads it into the reap query', async () => {
+    const before = Date.now() - process.uptime() * 1000;
+    const { sql, calls } = fakeSql((text) => {
+      if (text.includes('SELECT executor_id')) return [];
+      if (text.includes('SELECT workflow_uuid')) return [];
+      return { count: 0 };
+    });
+
+    startExecutorReaper(sql);
+    await new Promise((r) => setTimeout(r, 0));
+    const after = Date.now() - process.uptime() * 1000;
+
+    const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
+    expect(staleSelect.values).toContain(true); // hasProcessStartedAtMs — always derived, never omitted
+    const numericValues = staleSelect.values.filter((v): v is number => typeof v === 'number');
+    // the derived process-start estimate must land in the [before, after] bracket
+    // taken around the startExecutorReaper() call — proves it used process.uptime(),
+    // not some other fixed/omitted value.
+    expect(numericValues.some((v) => v >= before - 5 && v <= after + 5)).toBe(true);
+  });
+
+  it('EI-18752434722211671: an explicit opts.processStartedAtMs overrides the derived default', async () => {
+    const explicit = 1_700_000_000_000;
+    const { sql, calls } = fakeSql((text) => {
+      if (text.includes('SELECT executor_id')) return [];
+      if (text.includes('SELECT workflow_uuid')) return [];
+      return { count: 0 };
+    });
+
+    startExecutorReaper(sql, { processStartedAtMs: explicit });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
+    expect(staleSelect.values).toContain(explicit);
   });
 });
 
