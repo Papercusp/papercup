@@ -138,35 +138,117 @@ async function loadIdentityDetector(filePath) {
   return null;
 }
 
+/**
+ * The shared consequence paragraph. Every class has the same one, and stating it is most of the
+ * advisory's value: an author who knows a one-word edit freezes `main` fixes it in that turn.
+ */
+const GATE_CONSEQUENCE =
+  'This is SHIPPED SOURCE. Left in, it reds the green-checkpoint identity-lint leg the tick it ' +
+  'lands and FREEZES `main` for the whole fleet until someone hunts it down — the 2026-07-26 ' +
+  'instance cost 4h10m and 41 buffered commits, and the 2026-07-27 one cost five consecutive red ' +
+  'gates and 60 stranded commits over a single hardcoded home path in a doc. Fix it now, while it ' +
+  'is one word.';
+
+/**
+ * Render the offending TEXT, never a line number: for an Edit we only see the incoming fragment,
+ * so any line number computed here would be wrong relative to the real file.
+ */
+function renderHits(leaks, label) {
+  const shown = leaks.slice(0, 4).map((f) => `    ${label(f)}  in: ${f.text}`).join('\n');
+  return leaks.length > 4 ? `${shown}\n    … and ${leaks.length - 4} more` : shown;
+}
+
+/**
+ * Run every identity-leak class the resolved detector module offers against this edit's content.
+ * Each class is independently guarded and independently fail-open, so a module that predates a
+ * class — or one whose matcher throws — silently contributes nothing rather than suppressing the
+ * others. Returns the joined advisory text, or null when everything is clean.
+ */
 async function checkIdentityLeaks(filePath, content) {
   const detector = await loadIdentityDetector(filePath);
   if (!detector) return null;
   const { mod, repoRoot } = detector;
-  if (typeof mod.findOwnerNameLeaks !== 'function') return null;
 
   // Skip the same paths the gate skips: on a CARRY surface (work items, plans, .papercusp/)
   // the named form is CORRECT, and nagging there teaches agents to ignore this advisory.
   const rel = path.relative(repoRoot, path.resolve(filePath)).split(path.sep).join('/');
-  if (typeof mod.isSkippedPath === 'function' && mod.isSkippedPath(rel)) return null;
+  const skipped = typeof mod.isSkippedPath === 'function' ? mod.isSkippedPath(rel) : false;
+  const where = `this edit to ${path.basename(filePath)} (tracked as ${rel})`;
+  const notes = [];
 
-  const leaks = mod.findOwnerNameLeaks(content);
-  if (!leaks.length) return null;
+  // CLASS 1 — named owner-provenance tags.
+  try {
+    if (!skipped && typeof mod.findOwnerNameLeaks === 'function') {
+      const leaks = mod.findOwnerNameLeaks(content);
+      if (leaks.length) {
+        const label = typeof mod.renderLeak === 'function' ? mod.renderLeak : (f) => `(${f.name})`;
+        const fix = typeof mod.FIX_HINT === 'string' ? mod.FIX_HINT : 'Strip the name; keep the date.';
+        notes.push(
+          `⚠️ identity-leak (EI-18670296139788697): ${leaks.length} named owner-provenance tag(s) in ` +
+            `${where}.\n${renderHits(leaks, label)}\n\n${GATE_CONSEQUENCE}\n\n${fix}\n` +
+            `(Advisory — the edit proceeds.)`,
+        );
+      }
+    }
+  } catch {
+    /* fail-open per class */
+  }
 
-  // Report the offending TEXT, not a line number: for an Edit we only see the incoming
-  // fragment, so any line number we computed would be wrong relative to the real file.
-  const render = typeof mod.renderLeak === 'function' ? mod.renderLeak : (f) => `(${f.name})`;
-  const shown = leaks.slice(0, 4).map((f) => `    ${render(f)}  in: ${f.text}`).join('\n');
-  const more = leaks.length > 4 ? `\n    … and ${leaks.length - 4} more` : '';
-  const fix = typeof mod.FIX_HINT === 'string' ? mod.FIX_HINT : 'Strip the name; keep the date.';
+  // CLASS 2 — hardcoded home paths. Machine-agnostic: a path shape, not a value.
+  try {
+    if (!skipped && typeof mod.findBoxIdentityPaths === 'function') {
+      const leaks = mod.findBoxIdentityPaths(content);
+      if (leaks.length) {
+        const fix =
+          typeof mod.BOX_IDENTITY_FIX_HINT === 'string'
+            ? mod.BOX_IDENTITY_FIX_HINT
+            : 'Derive the path (os.homedir() / "$HOME" / %h) instead of hardcoding it.';
+        notes.push(
+          `⚠️ identity-leak (EI-18759401203875869): ${leaks.length} hardcoded home path(s) in ` +
+            `${where}.\n${renderHits(leaks, (f) => `(user "${f.user}")`)}\n\n` +
+            `A hardcoded home path is ALSO simply wrong on every machine but this one, so this is ` +
+            `not only a privacy rail. ${GATE_CONSEQUENCE}\n\n${fix}\n(Advisory — the edit proceeds.)`,
+        );
+      }
+    }
+  } catch {
+    /* fail-open per class */
+  }
 
-  return (
-    `⚠️ identity-leak (EI-18670296139788697): ${leaks.length} named owner-provenance tag(s) in ` +
-    `this edit to ${path.basename(filePath)} (tracked as ${rel}).\n${shown}${more}\n\n` +
-    `This is SHIPPED SOURCE. Left in, it reds the green-checkpoint's lint:identity-leak leg the ` +
-    `tick it lands and FREEZES \`main\` for the whole fleet until someone hunts it down — the ` +
-    `2026-07-26 instance cost 4h10m and 41 buffered commits. Fix it now, while it is one word.\n\n` +
-    `${fix}\n(Advisory — the edit proceeds.)`
-  );
+  // CLASS 3 — this box's bare identity literals (git name/email, hostname, OS account). Unlike
+  // class 2 this must resolve what "this box" IS at run time, exactly as the release audit does —
+  // two `git config --get` calls, which is noise next to this hook's own process spawn. It has its
+  // OWN skip predicate (a wider path set than its siblings), so it is computed separately.
+  try {
+    const skippedForLiterals =
+      typeof mod.isSkippedPathForIdentityLiterals === 'function'
+        ? mod.isSkippedPathForIdentityLiterals(rel)
+        : skipped;
+    if (
+      !skippedForLiterals &&
+      typeof mod.findIdentityLiterals === 'function' &&
+      typeof mod.resolveIdentityLiterals === 'function'
+    ) {
+      const entries = Object.entries(mod.resolveIdentityLiterals());
+      const vendor = typeof mod.isVendorPath === 'function' ? mod.isVendorPath(rel) : false;
+      const leaks = mod.findIdentityLiterals(content, entries, { vendor });
+      if (leaks.length) {
+        const fix =
+          typeof mod.IDENTITY_LITERAL_FIX_HINT === 'string'
+            ? mod.IDENTITY_LITERAL_FIX_HINT
+            : 'Remove the literal — never add an exception to make the build pass.';
+        notes.push(
+          `⚠️ identity-leak (EI-18759401203875869): ${leaks.length} bare build-box identity ` +
+            `literal(s) in ${where}.\n${renderHits(leaks, (f) => `[${f.key}]`)}\n\n` +
+            `${GATE_CONSEQUENCE}\n\n${fix}\n(Advisory — the edit proceeds.)`,
+        );
+      }
+    }
+  } catch {
+    /* fail-open per class */
+  }
+
+  return notes.length ? notes.join('\n\n') : null;
 }
 
 // Ported from packages/operator-core/lib/content-lint/smart-quotes.ts (kept in sync in spirit):
