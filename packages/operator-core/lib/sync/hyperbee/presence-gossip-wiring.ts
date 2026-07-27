@@ -201,6 +201,8 @@ export interface PresenceGossipWiringDeps {
   getSwarm: () => Promise<import('./swarm').HyperswarmLike>;
   /** PG client for the apply bindings (default: getOrgPg().sql at call time). */
   sql?: import('postgres').Sql;
+  /** Inbound-admission signal sink (EI-18769392276881557; tests swap the log seams). */
+  admissionReporter?: AdmissionReporter;
 }
 let deps: PresenceGossipWiringDeps = {
   listHiveMembers,
@@ -234,6 +236,13 @@ async function admittedDeviceMap(
     }
   }
   binding.members = { at: now, admitted };
+  // EI-18769392276881557: an EMPTY set here means this node can admit NO peer on
+  // this topic — a misconfiguration of this node, not the gate defending itself.
+  // Reported on every membership REFRESH (not per frame), so the throttle above
+  // is about repeated refreshes, not beat volume.
+  if (admitted.size === 0 && topicHex) {
+    reporter?.noteEmptyMembership(topicHex, binding.workspaceId, binding.potHomeSlug);
+  }
   return admitted;
 }
 
@@ -243,6 +252,7 @@ async function ensureState(): Promise<WiringState> {
   creating = (async () => {
     const swarm = await deps.getSwarm();
     const bindings = new Map<string, TopicBinding>();
+    const admissionReporter = deps.admissionReporter ?? createAdmissionReporter({ now: Date.now });
     const gossip = createPresenceGossip({
       swarm,
       // Riding already-joined substrate topics: the substrate's own discovery
@@ -250,9 +260,21 @@ async function ensureState(): Promise<WiringState> {
       refreshMs: 0,
       resolveMemberIdentity: async (devicePubkey, topicHex) => {
         const binding = bindings.get(topicHex);
-        if (!binding) return null; // unregistered topic → fail closed
-        const admitted = await admittedDeviceMap(binding);
-        return admitted.get(devicePubkey) ?? null; // non-member ⇒ null ⇒ dropped
+        if (!binding) {
+          admissionReporter.noteUnregisteredTopic(topicHex); // unregistered topic → fail closed
+          return null;
+        }
+        const admitted = await admittedDeviceMap(binding, topicHex, admissionReporter);
+        const githubUserId = admitted.get(devicePubkey) ?? null; // non-member ⇒ null ⇒ dropped
+        // EI-18769392276881557: both edges are logged (rate-limited) — a silent
+        // drop here is indistinguishable from "no peer is sending", which is
+        // exactly how WI-559 hid for weeks.
+        if (githubUserId === null) {
+          admissionReporter.noteRejected(topicHex, devicePubkey, admitted.size);
+        } else {
+          admissionReporter.noteAdmitted(topicHex);
+        }
+        return githubUserId;
       },
       applyPut: async (row, frameTs, topicHex) => {
         const binding = bindings.get(topicHex);
