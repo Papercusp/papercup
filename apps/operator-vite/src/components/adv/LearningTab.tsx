@@ -3269,7 +3269,7 @@ function ApiaryView({
               <LearningVisualEmpty
                 icon={Gauge}
                 title="No benchmark runs"
-                body={`This view compares each ${t("pot", { lower: true })} against the same benchmark set, so regressions show up as a score drop. Runs appear here once a benchmark has been run.`}
+                body="This view compares runs against the same benchmark set, so a regression shows up as a score drop. Runs appear here once a benchmark has been run."
               />
       ) : (
         <>

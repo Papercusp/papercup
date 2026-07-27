@@ -102,13 +102,25 @@ beforeAll(async () => {
     CREATE OR REPLACE FUNCTION harness_shared.capture_substrate_outbox() RETURNS trigger
     LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
   `);
+  // Same treatment for the federation stamp: 693 attaches
+  // stamp_local_federated_write_trg to agent_facts, so the function must exist.
+  // Its real definition (214) ALSO attaches triggers to a table list this
+  // fixture has no tables for (harness_plans, ...), so replaying 214 wholesale
+  // fails — stub it, as above. These legs assert on fact CONTENT, not fed_ts.
+  await db.sql.unsafe(`
+    CREATE OR REPLACE FUNCTION harness_shared.stamp_local_federated_write() RETURNS trigger
+    LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+  `);
   for (const m of [
     '609-session-cursor.sql',
     '444-agent-facts.sql',
     '455-agent-facts-shareable.sql',
     '461-agent-facts-federation.sql',
     '462-agent-facts-fed-key.sql',
+    '505-agent-facts-surrogate-pk-replica-identity.sql',
     '574-agent-facts-audience-provenance.sql',
+    '664-widen-fact-body-cap.sql',
+    '671-add-agent-facts-confidence.sql',
     // assertFact reads/writes superseded_at + supersedes_id (689), the
     // depends-on/kind/claim columns (690) and the federation stamp regime
     // (693). Omitting them here fails with a bare `column "superseded_at" does
@@ -116,6 +128,7 @@ beforeAll(async () => {
     // stale" — keep this list in step with what agent-facts/store.ts queries.
     '689-agent-facts-append-versioning.sql',
     '690-agent-facts-depends-on-kind-claim.sql',
+    '692-agent-facts-convention-enforcement.sql',
     '693-agent-facts-federation-stamp-regime.sql',
     '610-push-delivery.sql',
   ]) {

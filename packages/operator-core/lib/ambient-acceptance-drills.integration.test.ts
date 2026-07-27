@@ -146,6 +146,13 @@ beforeAll(async () => {
     CREATE OR REPLACE FUNCTION harness_shared.capture_substrate_outbox() RETURNS trigger
     LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
   `);
+  // Likewise for the federation stamp 693 attaches to agent_facts. Its real
+  // definition (214) also attaches triggers to tables this fixture lacks
+  // (harness_plans, ...), so replaying 214 wholesale fails — stub it.
+  await db.sql.unsafe(`
+    CREATE OR REPLACE FUNCTION harness_shared.stamp_local_federated_write() RETURNS trigger
+    LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+  `);
   for (const m of [
     '605-session-turn-journal.sql',
     '609-session-cursor.sql',
@@ -155,7 +162,17 @@ beforeAll(async () => {
     '455-agent-facts-shareable.sql',
     '461-agent-facts-federation.sql',
     '462-agent-facts-fed-key.sql',
+    '505-agent-facts-surrogate-pk-replica-identity.sql',
     '574-agent-facts-audience-provenance.sql',
+    '664-widen-fact-body-cap.sql',
+    '671-add-agent-facts-confidence.sql',
+    // Same stale-migration-list trap as dead-end-matcher-io: assertFact needs
+    // superseded_at (689), the depends-on/kind/claim columns (690) and the
+    // federation stamp regime (693).
+    '689-agent-facts-append-versioning.sql',
+    '690-agent-facts-depends-on-kind-claim.sql',
+    '692-agent-facts-convention-enforcement.sql',
+    '693-agent-facts-federation-stamp-regime.sql',
   ]) {
     await applyMigrationForTest(db.sql, join(SQL_DIR, m));
   }

@@ -71,23 +71,22 @@ const EMPTY_STAMP: AgentStateStamp = Object.freeze({
  */
 const MAX_OWNERS = 512;
 
-interface Entry extends AgentStateStamp {
-  /** Monotonic touch counter, for the LRU-ish eviction below. */
-  seq: number;
-}
-
-const stamps = new Map<string, Entry>();
-let touchSeq = 0;
+/**
+ * Values are the EXACT `AgentStateStamp` handed to readers — no internal
+ * bookkeeping field rides along. Recency is carried by the Map's own insertion
+ * order (every write below deletes and re-inserts), so no touch counter is
+ * needed; adding one would only leak into the public read.
+ */
+const stamps = new Map<string, AgentStateStamp>();
 
 function upsert(ownerId: string, patch: Partial<AgentStateStamp>): void {
   if (!ownerId) return;
   const prev = stamps.get(ownerId);
-  const next: Entry = {
+  const next: AgentStateStamp = {
     intentEventId: prev?.intentEventId ?? null,
     assumptionSetId: prev?.assumptionSetId ?? null,
     goalRef: prev?.goalRef ?? null,
     ...patch,
-    seq: ++touchSeq,
   };
   // Re-insert so Map iteration order tracks recency for the eviction below.
   stamps.delete(ownerId);
@@ -149,7 +148,6 @@ export function readAgentStateStamp(ownerId: string | null | undefined): AgentSt
 /** Test seam — the module holds process-global state. */
 export function resetAgentStateStamps(): void {
   stamps.clear();
-  touchSeq = 0;
 }
 
 /** Test/diagnostic seam: how many owners are currently held. */
