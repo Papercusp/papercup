@@ -1252,8 +1252,10 @@ describe('fleet scope assignment admission (P-016)', () => {
     });
 
     it('notifyFleetScopeRefusal returns the liveRouteTarget verdict AND reflects it in the leader message body', async () => {
+      // Only the refused member itself (the excluded owner) is present in the fleet —
+      // the exact repro shape (fleet was themself plus one idle member).
       admissionMocks.listFleetAssignments.mockResolvedValue([
-        { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-member', fleetSlug: 'p2p-release-verify', present: true, alive: true },
+        { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-member', fleetSlug: 'p2p-release-verify', holderPresent: true, holderAlive: true },
       ]);
       const result = await notifyFleetScopeRefusal(
         { ownerId: 'su-member' } as never,

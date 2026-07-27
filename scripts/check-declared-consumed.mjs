@@ -282,6 +282,26 @@ export function interfaceRanges(src) {
 
 const inRanges = (line, ranges) => ranges.some((r) => line >= r.start && line <= r.end);
 
+/**
+ * Normalise one file ONCE for every target.
+ *
+ * Not merely an optimisation: stripping and brace-scanning per (file × target)
+ * is what made the first version of this sweep exceed two minutes on this tree.
+ * Interface ranges are derived from the STRING-BLANKED text on purpose — a brace
+ * inside a string literal (`'{ positions, stages[] }'` appears verbatim in
+ * `cell-registrations.ts`) would otherwise desynchronise the depth count and
+ * silently move every subsequent range.
+ */
+export function prepareSource(source) {
+  const stripped = stripComments(source);
+  const blanked = blankQuotedStrings(stripped);
+  const lineStarts = [0];
+  for (let i = 0; i < stripped.length; i++) if (stripped[i] === '\n') lineStarts.push(i + 1);
+  return { stripped, blanked, ranges: interfaceRanges(blanked), lineStarts };
+}
+
+const prep = (s) => (typeof s === 'string' ? prepareSource(s) : s);
+
 // ── CLASSIFIERS ─────────────────────────────────────────────────────────────
 
 /**
@@ -296,8 +316,7 @@ const inRanges = (line, ranges) => ranges.some((r) => line >= r.start && line <=
  *   · `const { … name … } =`                                               → read
  */
 export function classifyTsField(source, name) {
-  const src = blankQuotedStrings(stripComments(source));
-  const ranges = interfaceRanges(src);
+  const { blanked: src, ranges } = prep(source);
   const lines = src.split('\n');
   const declarations = [];
   const writes = [];
@@ -338,20 +357,41 @@ const SQL_CLAUSE_RE = /\b(insert\s+into|do\s+update\s+set|set|select|where|and|o
  * again, in its SQL costume.
  */
 export function classifySqlColumn(source, column) {
-  const src = stripComments(source);
-  const ranges = interfaceRanges(src);
+  const prepared = prep(source);
+  const src = prepared.stripped;
   const writes = [];
   const reads = [];
 
+  // Find the occurrences FIRST: the clause scan below is the expensive part, and
+  // most files in a monorepo mention neither.
+  const occ = new RegExp(`\\b${column}\\b`, 'g');
+  const hits = [];
+  for (let m; (m = occ.exec(src)); ) hits.push(m.index);
+  if (hits.length === 0) return { writes, reads };
+
+  const ranges = interfaceRanges(src);
   const clauses = [];
   SQL_CLAUSE_RE.lastIndex = 0;
   for (let m; (m = SQL_CLAUSE_RE.exec(src)); ) {
     clauses.push({ index: m.index, kw: m[1].toLowerCase().replace(/\s+/g, ' ') });
   }
 
-  const lineOf = (idx) => src.slice(0, idx).split('\n').length;
-  const occ = new RegExp(`\\b${column}\\b`, 'g');
-  for (let m; (m = occ.exec(src)); ) {
+  // Line starts, computed once: slicing the prefix per occurrence is quadratic
+  // and on this tree that alone took the sweep past two minutes.
+  const lineStarts = [0];
+  for (let i = 0; i < src.length; i++) if (src[i] === '\n') lineStarts.push(i + 1);
+  const lineOf = (idx) => {
+    let lo = 0;
+    let hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid] <= idx) lo = mid; else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+
+  for (const index of hits) {
+    const m = { index };
     const ln = lineOf(m.index);
     if (inRanges(ln, ranges)) continue;
     let lo = 0;
@@ -434,21 +474,37 @@ async function main() {
   }
 
   const rows = [];
+  const fieldAcc = new Map(DECLARED_FIELDS.map((t) => [t.id, { declarations: [], writes: [], reads: [] }]));
+  const columnAcc = new Map(DECLARED_COLUMNS.map((t) => [t.id, { writes: [], reads: [] }]));
 
-  for (const target of DECLARED_FIELDS) {
-    const acc = { declarations: [], writes: [], reads: [] };
-    for (const f of files) {
-      let src;
-      try { src = readFileSync(f.abs, 'utf8'); } catch { continue; }
+  // ONE pass over the tree: each file is read once and offered to every target.
+  for (const f of files) {
+    let src;
+    try { src = readFileSync(f.abs, 'utf8'); } catch { continue; }
+
+    for (const target of DECLARED_FIELDS) {
       if (!src.includes(target.name)) continue;
+      const acc = fieldAcc.get(target.id);
       const c = classifyTsField(src, target.name);
-      // Vacuous pass (3): the declaring module never counts as its own consumer.
-      const isDeclaring = f.rel === target.declaredIn;
       for (const ln of c.declarations) acc.declarations.push(`${f.rel}:${ln}`);
-      if (isDeclaring) continue;
+      // Vacuous pass (3): the declaring module never counts as its own consumer.
+      if (f.rel === target.declaredIn) continue;
       for (const ln of c.writes) acc.writes.push(`${f.rel}:${ln}`);
       for (const ln of c.reads) acc.reads.push(`${f.rel}:${ln}`);
     }
+
+    for (const target of DECLARED_COLUMNS) {
+      // Scope: only a file that names the TABLE can be touching its columns.
+      if (!src.includes(target.table) || !src.includes(target.name)) continue;
+      const acc = columnAcc.get(target.id);
+      const c = classifySqlColumn(src, target.name);
+      for (const ln of c.writes) acc.writes.push(`${f.rel}:${ln}`);
+      for (const ln of c.reads) acc.reads.push(`${f.rel}:${ln}`);
+    }
+  }
+
+  for (const target of DECLARED_FIELDS) {
+    const acc = fieldAcc.get(target.id);
     rows.push({
       ...target,
       kind: 'field',
@@ -458,16 +514,7 @@ async function main() {
   }
 
   for (const target of DECLARED_COLUMNS) {
-    const acc = { writes: [], reads: [] };
-    for (const f of files) {
-      let src;
-      try { src = readFileSync(f.abs, 'utf8'); } catch { continue; }
-      // Scope: only a file that names the TABLE can be touching its columns.
-      if (!src.includes(target.table) || !src.includes(target.name)) continue;
-      const c = classifySqlColumn(src, target.name);
-      for (const ln of c.writes) acc.writes.push(`${f.rel}:${ln}`);
-      for (const ln of c.reads) acc.reads.push(`${f.rel}:${ln}`);
-    }
+    const acc = columnAcc.get(target.id);
     // A column's DECLARATION is its migration — the static analogue of `no-data`.
     let declared = 0;
     try {

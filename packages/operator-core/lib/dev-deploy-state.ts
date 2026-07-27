@@ -361,15 +361,24 @@ async function computeDevDeployState(): Promise<DevDeployState> {
 
   // cfg.integrationBranch === 'staging' (the churning firehose); cfg.releaseRef === 'main'
   // (the green pin). The bindings are named for what they HOLD — see the naming note above.
-  const [stagingHead, greenPin, deployed] = await Promise.all([
+  const [stagingHeadR, greenPinR, deployedR] = await Promise.all([
     commitRef(cfg.integrationRoot, cfg.integrationBranch),
     commitRef(cfg.integrationRoot, cfg.releaseRef),
     commitRef(cfg.releaseRoot, 'HEAD'),
   ]);
+  // Every downstream reader keeps the plain `CommitRef | null` shape it always
+  // had — only `errors[]` (below) additionally consumes the `unknown` reason.
+  const stagingHead = stagingHeadR.ref;
+  const greenPin = greenPinR.ref;
+  const deployed = deployedR.ref;
 
-  if (!stagingHead) errors.push('could not resolve ' + cfg.integrationBranch + ' in ' + cfg.integrationRoot);
-  if (!greenPin) errors.push('ref ' + cfg.releaseRef + ' not found in ' + cfg.integrationRoot);
-  if (!deployed) errors.push('could not resolve HEAD of release checkout ' + cfg.releaseRoot);
+  // EI-18788901632987174: report WHY, not just THAT — `unknown` distinguishes
+  // "this ref does not exist" (final) from "the git call itself failed"
+  // (retry-or-escalate); formatCellUnknown falls back to generic code prose
+  // if a call site ever constructs one with no detail.
+  if (stagingHeadR.unknown) errors.push(formatCellUnknown(stagingHeadR.unknown));
+  if (greenPinR.unknown) errors.push(formatCellUnknown(greenPinR.unknown));
+  if (deployedR.unknown) errors.push(formatCellUnknown(deployedR.unknown));
 
   // All counts are measured in the integration tree (it has every object — the
   // release worktree shares its object store). deployed must be reachable there.
