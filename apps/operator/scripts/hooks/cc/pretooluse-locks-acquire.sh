@@ -468,6 +468,53 @@ def _norm_origin(url):
     return (m.group(1) + '/' + m.group(2)).lower() if m else u.lower()
 
 
+def _origin_is_local_path_into_canonical(url, repo_root, canonical_tree,
+                                        canon_origin_norm):
+    """True when `url` is a LOCAL FILESYSTEM origin that points AT the canonical
+    project — the same-project checkout `_norm_origin` structurally cannot see.
+
+    EI-18826235967595309. WI-5031's independence test compares NORMALIZED REMOTE
+    URLS, which quietly assumes every checkout of the canonical project was cloned
+    from the same forge URL. A tree cloned from a SIBLING PATH
+    (`git clone ../papercup runner`) records origin=/abs/path; that normalizes to
+    the path itself and so never equals the canonical tree's
+    `github.com/papercusp/papercup`. `_origins_differ` therefore computed True and
+    the guard ALLOWED edits inside a full checkout of the canonical project, which
+    is precisely the stranding hazard it exists to refuse.
+
+    Verified live when this was written: `papercup-improvement-runner` is exactly
+    this shape — origin `<ws>/papercup`, itself a symlink to `<ws>/papercusp` — and
+    it was holding 22 uncommitted files that git-sync will never commit.
+
+    Resolves ONE hop, deliberately: the path itself (a clone of the canonical
+    tree), and a clone-of-a-clone whose own origin is the canonical forge URL.
+    Anything unresolvable returns False, which keeps this strictly ADDITIVE — it
+    can only catch checkouts the URL comparison already missed, and can never
+    newly refuse an independent sibling."""
+    if not url:
+        return False
+    try:
+        p = url.strip()
+        if p.startswith('file://'):
+            p = p[len('file://'):]
+        elif re.match(r'^(?:git@|ssh://|https?://|git://)', p):
+            return False  # a genuine remote URL — _norm_origin already decided it
+        if not os.path.isabs(p):
+            # git records `clone ../sibling` verbatim; resolve it against the
+            # cloned repo, which is the base git itself uses.
+            p = os.path.join(repo_root, p)
+        real = os.path.realpath(p)
+        if os.path.basename(real) == '.git':
+            real = os.path.dirname(real)
+        if real == canonical_tree:
+            return True
+        nested = _norm_origin(_repo_origin_url(real))
+        return (nested is not None and canon_origin_norm is not None
+                and nested == canon_origin_norm)
+    except Exception:
+        return False
+
+
 # Scope enforcement to the papercup workspace. Its worktrees (papercup,
 # papercup-<topic>, …) are direct children of WORKSPACE_ROOT. We compute
 # lock keys as paths RELATIVE TO each worktree root, so the same logical
@@ -605,7 +652,8 @@ for p in raw_paths:
             # sibling's origin remote matches the canonical tree's, or when
             # either origin is unreadable (conservative: an unprovable
             # sibling keeps the old refusal).
-            _sib_origin = _norm_origin(_repo_origin_url(root))
+            _sib_origin_raw = _repo_origin_url(root)
+            _sib_origin = _norm_origin(_sib_origin_raw)
             _canon_origin = _norm_origin(_repo_origin_url(_canonical_tree))
             # Independent by EITHER proof:
             #  (a) both origins readable and DIFFERENT (WI-5031's original test), or
@@ -613,9 +661,19 @@ for p in raw_paths:
             #      cannot be a stray checkout of the canonical project
             #      (EI-18825797177551487; see _repo_has_zero_remotes).
             # Unproven in both directions still denies — the conservative default.
+            #
+            # (a) carries one blind spot: "different URL" is not "different
+            # project" when the URL is a LOCAL PATH pointing back at the canonical
+            # tree (EI-18826235967595309 — see
+            # _origin_is_local_path_into_canonical). Such a sibling is a
+            # same-project checkout wearing an unrecognizable origin, so it must
+            # not earn independence from the mere string difference.
             _origins_differ = (_sib_origin is not None
                                and _canon_origin is not None
-                               and _sib_origin != _canon_origin)
+                               and _sib_origin != _canon_origin
+                               and not _origin_is_local_path_into_canonical(
+                                   _sib_origin_raw, root, _canonical_tree,
+                                   _canon_origin))
             if not (_origins_differ or _repo_has_zero_remotes(root) is True):
                 deny(
                     f"worktree guard: refused — you are editing in '{root}', which "

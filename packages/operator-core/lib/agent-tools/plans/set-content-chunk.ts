@@ -56,6 +56,12 @@ const argsSchema = z.object({
     .describe(
       'Commit rejects a body under 20% of the live plan as a probable mass deletion (`suspicious_shrink`) unless this is true. Provide on begin or commit; commit prefers the explicit value. On a suspicious_shrink rejection the draft is KEPT — re-commit with allowShrink: true if the shrink is intentional.',
     ),
+  allowStatusRegression: z
+    .boolean()
+    .optional()
+    .describe(
+      'A commit with no expectedHash that would move an item BACKWARD off a terminal (done/dropped) status is rejected as `item_status_regression` (almost always a stale-read clobber of someone else\'s completed work) unless this is true. Provide on begin or commit; commit prefers the explicit value. On rejection the draft is KEPT — re-commit with allowStatusRegression: true if the regression is intentional, or start over from a fresh plans:get.',
+    ),
 });
 
 type ChunkOp = z.infer<typeof argsSchema>['op'];
@@ -67,6 +73,7 @@ interface DraftMeta {
   expectedHash?: string;
   rationale?: string;
   allowShrink?: boolean;
+  allowStatusRegression?: boolean;
   createdAt: string;
   updatedAt: string;
   bytes: number;
@@ -75,7 +82,7 @@ interface DraftMeta {
 
 type ChunkValue =
   | { ok: true; op: ChunkOp; slug: string; draftId: string; bytes: number; chunks: number; contentHash?: string; warning?: string; filePath?: string; revision?: { seq: number } | null }
-  | { ok: false; code: 'missing_draft_id' | 'missing_chunk' | 'draft_not_found' | 'draft_mismatch' | 'not_found' | 'stale' | 'suspicious_shrink' | 'would_orphan_frontmatter' | 'lint_failed'; slug: string; draftId?: string; currentHash?: string; reason?: 'bytes' | 'structure'; currentLength?: number; proposedLength?: number; priorItems?: number; priorDecisions?: number; droppedItems?: number; droppedDecisions?: number; errors?: unknown[] };
+  | { ok: false; code: 'missing_draft_id' | 'missing_chunk' | 'draft_not_found' | 'draft_mismatch' | 'not_found' | 'stale' | 'suspicious_shrink' | 'would_orphan_frontmatter' | 'lint_failed' | 'item_status_regression'; slug: string; draftId?: string; currentHash?: string; reason?: 'bytes' | 'structure'; currentLength?: number; proposedLength?: number; priorItems?: number; priorDecisions?: number; droppedItems?: number; droppedDecisions?: number; errors?: unknown[]; regressions?: { id: string; from: string; to: string }[] };
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -182,6 +189,7 @@ async function createDraft(args: z.infer<typeof argsSchema>, harnessSlug: string
     ...(args.expectedHash ? { expectedHash: args.expectedHash } : {}),
     ...(args.rationale ? { rationale: args.rationale } : {}),
     ...(args.allowShrink !== undefined ? { allowShrink: args.allowShrink } : {}),
+    ...(args.allowStatusRegression !== undefined ? { allowStatusRegression: args.allowStatusRegression } : {}),
     createdAt: nowISO(),
     updatedAt: nowISO(),
     bytes: Buffer.byteLength(content, 'utf8'),
@@ -251,6 +259,9 @@ function domainFailurePayload(v: SetContentValue, slug: string, draftId: string)
           }
         : {}),
     };
+  }
+  if (v.code === 'item_status_regression') {
+    return { ok: false, code: 'item_status_regression', slug, draftId, regressions: v.regressions };
   }
   return { ok: false, code: v.code, slug, draftId };
 }
@@ -347,6 +358,8 @@ export default defineTool({
       (current) =>
         evaluateSetContent(current, draft.content, args.slug, args.expectedHash ?? draft.meta.expectedHash, {
           allowShrink: args.allowShrink ?? draft.meta.allowShrink,
+          wholeDocumentRewrite: true,
+          allowStatusRegression: args.allowStatusRegression ?? draft.meta.allowStatusRegression,
         }),
     );
 

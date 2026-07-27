@@ -176,6 +176,12 @@ export interface EngineerIssue {
   featureOrder: number | null;
   createdAt: string;
   updatedAt: string;
+  /** EI-18820653360383242 — when this item entered its CURRENT terminal state, maintained
+   *  by the base-table trigger (migration 698), never by a caller. `null` on a terminal row
+   *  means "closed, time unknown": the pre-698 legacy shape, which is most historical rows.
+   *  Read it INSTEAD of updatedAt for anything time-of-close — updatedAt moves on any write
+   *  and a single bulk write makes it report thousands of ancient rows as just-closed. */
+  closedAt: string | null;
 }
 
 export interface EngineerIssueDetail extends EngineerIssue {
@@ -348,6 +354,8 @@ interface IssueRowDb {
   feature_order: number | null;
   created_at: unknown;
   updated_at: unknown;
+  /** EI-18820653360383242 — bigint epoch-ms on the base table (migration 698). */
+  closed_ts: unknown;
 }
 // EI-18691099450966094: delegates to the shared pg-timestamp helper — a raw
 // Postgres-text timestamptz (e.g. "2026-07-26 03:34:43.647148-04") must be
@@ -389,6 +397,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     featureOrder: r.feature_order,
     createdAt: tsIso(r.created_at),
     updatedAt: tsIso(r.updated_at),
+    closedAt: tsIsoOrNull(r.closed_ts),
   };
 }
 
@@ -397,7 +406,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
 export const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
   assigned_by, assigned_at, last_progress_at, payload, found_during, linked_feature_id, created_by,
   origin, signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
-  terminal_completion_ref, authority, feature_order, created_at, updated_at`;
+  terminal_completion_ref, authority, feature_order, created_at, updated_at, closed_ts`;
 
 /**
  * EI-10489: ISSUE_COLS (the runtime SELECT allowlist above) and IssueRowDb (its TS shape)
@@ -421,7 +430,7 @@ export const ISSUE_ROW_DB_KEYS = [
   'assigned_by', 'assigned_at', 'last_progress_at', 'payload', 'origin', 'found_during',
   'linked_feature_id', 'created_by', 'signal_origin', 'assignee_rank', 'rank_writer',
   'rank_updated_at', 'terminal_owner', 'terminal_completion_ref', 'authority', 'feature_order',
-  'created_at', 'updated_at',
+  'created_at', 'updated_at', 'closed_ts',
 ] as const;
 type IssueRowDbKeysUnion = (typeof ISSUE_ROW_DB_KEYS)[number];
 type MissingFromTuple = Exclude<keyof IssueRowDb, IssueRowDbKeysUnion>;

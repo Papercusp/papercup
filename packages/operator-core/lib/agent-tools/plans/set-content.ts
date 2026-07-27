@@ -554,6 +554,14 @@ export default defineTool({
           payload.hint =
             'The proposed body is under 20% of the live plan — looks like a mass deletion. If intentional, retry with allowShrink: true.';
         }
+      } else if (v.code === 'item_status_regression') {
+        payload.regressions = v.regressions;
+        payload.hint =
+          `This write (no expectedVersion/expectedHash supplied) would move ${v.regressions.length} item(s) ` +
+          `backward off a terminal status (${v.regressions.map((r) => `${r.id}: ${r.from}→${r.to}`).join(', ')}) — ` +
+          `almost always a stale read clobbering someone else's completed work. Re-fetch via plans:get and carry its ` +
+          `version/contentHash, or use plans:set-status for a real single-item flip. If the regression is genuinely ` +
+          `intentional, retry with allowStatusRegression: true.`;
       }
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
