@@ -65,6 +65,12 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('SUBJECT for a caller-relative cell (see state:read `as`). Not an identity override — your audience is always what is checked.'),
+    of: z
+      .enum(['value', 'material'])
+      .optional()
+      .describe(
+        'WHICH of the cell\'s paths your condition is about. "value" (DEFAULT) = the headline value. "material" = the cell\'s declared MATERIALITY path, so a high-churn cell wakes you only on a change that matters (P-021). Refused when the cell declares no materiality — you are told the cell has none rather than silently watching the churny path.',
+      ),
     once: z.boolean().optional().describe('true (DEFAULT) = fire once then clear. false = standing; re-fires on each false→true cross.'),
     interval_sec: z.number().int().min(15).max(3600).optional().describe('Poll cadence (default 60).'),
     note: z.string().max(2000).optional().describe('Why you are watching — echoed into the wake turn.'),
@@ -139,6 +145,44 @@ export default defineTool({
     }
     const resolverArgs = rel.kind === 'parameter' ? { [rel.param]: args.as as string } : {};
 
+    /**
+     * P-021 — WHICH path the predicate watches.
+     *
+     * ⚠ A DECLARED MATERIALITY IS NEVER APPLIED SILENTLY, and that restraint is
+     * the whole design of this knob. The caller's `on: {op, value}` is written
+     * against a value they have in mind; quietly re-pointing it at a coarser
+     * sibling path would not narrow their condition, it would evaluate it against
+     * a DIFFERENT DOMAIN. Concretely: `on:{op:'ne', value:'4c871fdc'}` — the
+     * natural "wake me when the candidate moves" — silently redirected onto a
+     * BOOLEAN containment path is `ne` against a sha it can never equal, i.e. a
+     * predicate that is true on the first poll. The agent would be woken
+     * instantly and told it was a material change. A wake is an interrupt (D-044)
+     * and a spurious one is a false all-clear that resumes an agent on a
+     * condition never established — exactly what `comparePredicate`'s absent-
+     * evidence rule already refuses to do one layer down.
+     *
+     * So materiality is OPT-IN per subscription, and asking for it on a cell that
+     * declares none is an ERROR rather than a silent fallback to the churny path.
+     */
+    const wantsMaterial = args.of === 'material';
+    if (wantsMaterial && !spec.materiality) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              cell: args.cell,
+              error: `cell "${args.cell}" declares no materiality path, so there is no coarser answer to watch. Either its every change is material (the registry's default), or it should declare one. Re-subscribe without \`of\` to watch "${spec.changeSignal.path}" — and expect a wake on every change to it.`,
+              watchedPath: spec.changeSignal.path,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+    const watchedPath = wantsMaterial ? (spec.materiality as { path: string }).path : spec.changeSignal.path;
+
     // DELEGATE. The cell contributes exactly the triple it already declares; every
     // other knob is watch:create's, unchanged. Parsing through watch:create's own
     // schema (rather than hand-building its args) means a change to that schema
@@ -148,11 +192,13 @@ export default defineTool({
       wake: true,
       once: args.once ?? true,
       interval_sec: args.interval_sec,
-      note: args.note ?? `cell ${args.cell} ${args.on.op}${args.on.value === undefined ? '' : ` ${JSON.stringify(args.on.value)}`}`,
+      note:
+        args.note ??
+        `cell ${args.cell}${wantsMaterial ? ' (material)' : ''} ${args.on.op}${args.on.value === undefined ? '' : ` ${JSON.stringify(args.on.value)}`}`,
       predicate: {
         tool: spec.changeSignal.tool,
         args: resolverArgs,
-        path: spec.changeSignal.path,
+        path: watchedPath,
         op: args.on.op,
         ...(args.on.value === undefined ? {} : { value: args.on.value }),
       },

@@ -198,6 +198,14 @@ export interface CurrentCellObservation {
   observed?: string;
   /** Set instead of `digest` when the cell yields no value now. */
   unknown?: string;
+  /** P-021 — digest of the cell's declared MATERIAL answer, read from the same
+   *  dispatch as `digest`. Absent when the cell declares no materiality (or its
+   *  declared path did not resolve), which forces the loud reading. */
+  materialDigest?: string;
+  /** Bounded rendering of that material answer, for the reader. */
+  material?: string;
+  /** The path it was read from. */
+  materialPath?: string;
 }
 
 export type FactWithDependencyStaleness = AgentFact & { depsStale?: FactDependencyStaleness };
@@ -219,6 +227,7 @@ export function evaluateDependencyStaleness(
   if (deps.length === 0) return null;
   const verdicts: FactDependencyVerdict[] = [];
   const changed: string[] = [];
+  const immaterial: string[] = [];
   const undeterminable: string[] = [];
 
   for (const dep of deps) {
@@ -258,8 +267,50 @@ export function evaluateDependencyStaleness(
       undeterminable.push(dep.cell);
       continue;
     }
+    // P-021 — THE MATERIALITY GATE, and note the ORDER: the material answer is
+    // compared FIRST, before the raw digest, and a material change is reported
+    // `changed` even when the raw value sat still.
+    //
+    // That ordering is not tidiness. The two paths are SIBLINGS in one result,
+    // not a value and a summary of it, so they can move independently. Gating
+    // materiality behind "did the raw value change?" would mean a cell whose
+    // headline is static while its material answer flips — `judgingSha` unchanged
+    // because the same candidate is being re-judged, `judgingContainsPath`
+    // flipping because YOUR file moved — reports `fresh`. That is a false
+    // all-clear on precisely the change the reader cares most about, produced by
+    // the mechanism meant to protect them. So materiality can only ever SUPPRESS
+    // a raw change, never MASK a material one.
+    const materiallyComparable = dep.materialDigest !== undefined && now.materialDigest !== undefined;
+    if (materiallyComparable && now.materialDigest !== dep.materialDigest) {
+      verdicts.push({
+        ...base,
+        status: 'changed',
+        ...(now.observed ? { now: now.observed } : {}),
+        ...(now.material ? { material: now.material } : {}),
+        ...(now.materialPath ? { materialPath: now.materialPath } : {}),
+      });
+      changed.push(dep.cell);
+      continue;
+    }
     if (now.digest === dep.digest) {
       verdicts.push({ ...base, status: 'fresh', ...(now.observed ? { now: now.observed } : {}) });
+      continue;
+    }
+    // The raw value moved. If the cell declared a material answer and that answer
+    // held, this is a version bump — carried, but not raised.
+    if (materiallyComparable) {
+      // `was`/`now` are DROPPED here: the intermediate raw values are exactly
+      // what the item says the reader should stop receiving. Destructured out
+      // rather than set to `undefined`, so the key is genuinely absent from the
+      // object and not merely absent after a JSON round-trip.
+      const { was: _rawBefore, ...baseWithoutRaw } = base;
+      verdicts.push({
+        ...baseWithoutRaw,
+        status: 'immaterial',
+        ...(now.material ? { material: now.material } : {}),
+        ...(now.materialPath ? { materialPath: now.materialPath } : {}),
+      });
+      immaterial.push(dep.cell);
       continue;
     }
     verdicts.push({
@@ -272,7 +323,14 @@ export function evaluateDependencyStaleness(
 
   const status: FactDependencyStaleness['status'] =
     changed.length > 0 ? 'stale' : undeterminable.length > 0 ? 'undeterminable' : 'fresh';
-  return { status, changed, undeterminable, deps: verdicts, note: renderNote(status, verdicts, changed, undeterminable) };
+  return {
+    status,
+    changed,
+    immaterial,
+    undeterminable,
+    deps: verdicts,
+    note: renderNote(status, verdicts, changed, immaterial, undeterminable),
+  };
 }
 
 /** The loud line. Names the cell, what it was, and what it is now — the whole
@@ -281,9 +339,26 @@ function renderNote(
   status: FactDependencyStaleness['status'],
   verdicts: readonly FactDependencyVerdict[],
   changed: readonly string[],
+  immaterial: readonly string[],
   undeterminable: readonly string[],
 ): string {
   if (status === 'fresh') {
+    // P-021 — a fold that said "still reads as it did" over a cell that HAS
+    // moved would be false, and falsely reassuring. So the immaterial case gets
+    // its own line: short, because being short is the deliverable, but explicit
+    // about what was suppressed and against which declared answer, because a
+    // suppression a reader cannot audit is a blind spot rather than a threshold.
+    if (immaterial.length > 0) {
+      const detail = verdicts
+        .filter((v) => v.status === 'immaterial')
+        .map((v) => `${v.cell} (${v.materialPath ?? 'material'}=${v.material ?? '?'})`)
+        .join('; ');
+      const rest = verdicts.filter((v) => v.status === 'fresh').length;
+      return (
+        `✓ MATERIALLY UNCHANGED — ${detail} moved, but the declared material answer did not, so the intermediate ` +
+        `values are not reproduced here${rest > 0 ? ` (${rest} other dependency${rest === 1 ? '' : 'ies'} unchanged)` : ''}.`
+      );
+    }
     return `✓ every declared dependency (${verdicts.map((v) => v.cell).join(', ')}) still reads as it did when this fact was filed.`;
   }
   if (status === 'undeterminable') {
@@ -343,7 +418,20 @@ export async function captureFactDependencies(
       ...(subject ? { subject } : {}),
       observedAt,
       ...(obs.digest
-        ? { digest: obs.digest, ...(obs.observed ? { observed: obs.observed } : {}) }
+        ? {
+            digest: obs.digest,
+            ...(obs.observed ? { observed: obs.observed } : {}),
+            // P-021 — the material ANCHOR. Without one stored at assert time
+            // there is nothing to compare a later material answer against, so
+            // the re-read correctly degrades to the loud reading.
+            ...(obs.materialDigest
+              ? {
+                  materialDigest: obs.materialDigest,
+                  ...(obs.material ? { material: obs.material } : {}),
+                  ...(obs.materialPath ? { materialPath: obs.materialPath } : {}),
+                }
+              : {}),
+          }
         : { unknown: (obs.unknown ?? 'resolver-failed') as FactDependency['unknown'] }),
     });
   }
@@ -426,7 +514,20 @@ async function observeCell(
 ): Promise<CurrentCellObservation> {
   const read = await readCell(cell, reader, env, subject);
   if (read.status === 'value') {
-    return { digest: digestCellValue(read.value), observed: renderObservedValue(read.value) };
+    return {
+      digest: digestCellValue(read.value),
+      observed: renderObservedValue(read.value),
+      // P-021 — same dispatch, no extra resolver call. Absent unless the spec
+      // declares materiality AND that path resolved, which is what makes an
+      // unanchored comparison fall back to the loud reading.
+      ...(read.material
+        ? {
+            materialDigest: digestCellValue(read.material.value),
+            material: renderObservedValue(read.material.value),
+            materialPath: read.material.path,
+          }
+        : {}),
+    };
   }
   if (read.status === 'unknown') return { unknown: read.unknown.code };
   return { unknown: 'absent' };

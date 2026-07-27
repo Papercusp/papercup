@@ -197,7 +197,7 @@ su-18f2f, everything else → `p2p-public-release-remaining-lanes-2026-07-16`):
   re-attempt + epoch-gate defer semantics re-verified at HEAD
   (`outbox-drain-stall.test.ts` 14/14 + drain family 29/29).
 - **WI-3646 (hive_slug federation regression) — FIXED + live-rig verified 2026-07-09/10.**
-  `hive:create` from an existing harness never wrote `hive_slug` onto the
+  `pot:create` (then named `hive:create`) from an existing harness never wrote `hive_slug` onto the
   owner's source-harness registry row, so `potHomeSlugForHarness` /
   `resolveHiveSwarmBinding` returned null and the harness never swarm-bound —
   silent zero federation of the owner's own content. Root cause was three

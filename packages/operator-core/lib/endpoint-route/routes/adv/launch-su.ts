@@ -12,6 +12,7 @@
  * Linux-only server-side spawn, mirroring console-launch.ts. Same-origin
  * (the /adv UI is served by the operator) — no CORS preamble needed.
  */
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -151,7 +152,24 @@ const launchSu = defineTool({
 
     // All tokens are fixed flags or validated values; shellEscape is the real
     // guard (the validators above reject shell metacharacters anyway).
-    const psuArgs = [psuRef, '--no-picker', `--agent=${agent}`];
+    // WI-6363 (owner ask 2026-07-27: "when you click +new session the gui chat
+    // with them should show up"). PRE-PIN the coord owner id here and hand it to
+    // psu, so the CALLER knows the session's real identity at launch time.
+    //
+    // Why this is the only workable handle: the chat is keyed by coord owner id,
+    // and until now this route could not tell the client one. The terminal path
+    // below records NO adv_sessions row at all (psu self-registers asynchronously
+    // once it boots, see the comment on the spawn result), so there was no
+    // advSessionId to return either — the client got `{status:'ok', pid}` and had
+    // nothing to open a chat with. `psu --owner-id=` exists for exactly this
+    // "state a spawner keys pre-spawn" case (WI-5002/EI-13277): bootstrap-su
+    // validates the id and binds the session to it instead of minting its own.
+    //
+    // Deliberately built BEFORE the defer_spawn branch so BOTH paths carry it —
+    // the deferred path records these args as `launch_argv`, so the pui-run
+    // session binds to the same pre-pinned owner when it eventually starts.
+    const ownerId = `su-${randomUUID()}`;
+    const psuArgs = [psuRef, '--no-picker', `--agent=${agent}`, `--owner-id=${ownerId}`];
     if (harness) psuArgs.push(`--harness=${harness}`);
     psuArgs.push(plan ? `--plan=${plan}` : '--no-plan');
     if (model) psuArgs.push(`--model=${model}`);
@@ -191,7 +209,7 @@ const launchSu = defineTool({
       // explicitly. Best-effort: the row is already committed, so a notify
       // hiccup must not fail the launch (the safety-net still backs it up).
       void notifySyncInvalidate('roster').catch(() => {});
-      return json({ status: 'ok', deferred: true, advSessionId, agent, harnessSlug: harness, planSlug: plan });
+      return json({ status: 'ok', deferred: true, advSessionId, ownerId, agent, harnessSlug: harness, planSlug: plan });
     }
 
     const oneliner = `exec ${psuArgs.map(shellEscape).join(' ')}`;
@@ -214,6 +232,10 @@ const launchSu = defineTool({
     return json({
       status: 'ok',
       agent,
+      // WI-6363: the pre-pinned coord owner id this session will register as.
+      // The caller opens its chat with this — it is stable from launch onward,
+      // unlike the adv_sessions row, which does not exist yet on this path.
+      ownerId,
       harnessSlug: harness,
       planSlug: plan,
       terminal: spawned.terminal,

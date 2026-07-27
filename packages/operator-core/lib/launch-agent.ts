@@ -44,6 +44,16 @@ export interface LaunchAgentResult {
   /** The recorded adv_sessions row id when `deferSpawn` was set (else absent). */
   advSessionId?: number;
   /**
+   * WI-6363: the coord owner id launch-su PRE-PINNED for this session (`psu
+   * --owner-id=`), present on BOTH the terminal and deferred paths.
+   *
+   * This — not `advSessionId` — is the handle a caller opens the session's chat
+   * with. On the terminal path no adv_sessions row exists at launch (psu records
+   * one asynchronously once it boots), so `advSessionId` is absent there; the
+   * pre-pinned owner id is stable from launch onward.
+   */
+  ownerId?: string;
+  /**
    * EI-18696184925888288: set when launch-su reported `ok` but the spawned
    * terminal process exited almost immediately — a likely silent launch
    * failure (no window ever opened) that a flat success would hide.
@@ -91,7 +101,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
         body,
       });
       const data = (await r.json().catch(() => null)) as
-        | { status?: string; code?: string; error?: string; advSessionId?: number; warning?: string }
+        | { status?: string; code?: string; error?: string; advSessionId?: number; ownerId?: string; warning?: string }
         | null;
       if (!data) { lastError = `launch-su HTTP ${r.status} (no body)`; continue; }
       if (data.code === 'psu_not_installed') {
@@ -103,7 +113,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
         };
       }
       if (r.ok && data.status === 'ok') {
-        return { ok: true, advSessionId: data.advSessionId, warning: data.warning };
+        return { ok: true, advSessionId: data.advSessionId, ownerId: data.ownerId, warning: data.warning };
       }
       lastError = data.error ?? `launch-su HTTP ${r.status}`;
     } catch (e: unknown) {

@@ -395,7 +395,7 @@ probe. SSH host-forward ports default to `2225` (a) / `2226` (b) — override wi
 
 ## 8. Operator workspace-scoped HOME silently breaks BOTH the superuser token AND gh-auth (D-007)
 
-A peer can look healthy (API up, boots, serves requests) while `hive:membership_decide` fails
+A peer can look healthy (API up, boots, serves requests) while `pot:membership_decide` fails
 `no_owner_identity` and `fed.sh <vm> mcp`/`api` fail `superuser_invalid_bearer` — **without
 any VM reset or gh-auth wipe (§6) having happened.** Root cause, isolated live on fed-a
 (2026-06-25, plan `shared-hive-public-release-2026-06-22` D-007): the VM's operator process
@@ -408,7 +408,7 @@ was launched with a **workspace-scoped `HOME`**
    `api`/`mcp` verbs SSH in and read `~/.papercusp/superuser-token`, which expands against the
    **SSH login shell's** `HOME` (`/home/tester`). When the two differ, the script reads the
    wrong file (or nothing) and the token never matches.
-2. **`hive:membership_decide` → `no_owner_identity`** — `resolveLocalGithubIdentity` shells
+2. **`pot:membership_decide` → `no_owner_identity`** — `resolveLocalGithubIdentity` shells
    `gh auth token`, which reads `$HOME/.config/gh/hosts.yml` under the **operator's** `HOME`.
    `gh auth login` run from an interactive SSH session authenticates the **login shell's**
    `HOME` (`/home/tester/.config/gh`) — a different, workspace-UNSCOPED path — so the

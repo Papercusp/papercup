@@ -273,6 +273,47 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
   visibility: { kind: 'workspace' },
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'changeInCandidate.judgingSha' },
+
+  /**
+   * P-021 — THE MATERIALITY THRESHOLD, and this cell is why the field exists.
+   *
+   * `judgingSha` follows the gate's in-flight candidate, which is drawn from the
+   * staging tip: MEASURED at 335 commits in 24h on this fleet (`git rev-list
+   * --count --since=24h staging`, 2026-07-27). A fact resting on this cell
+   * therefore re-renders a stale-verdict paragraph into the orient fold dozens of
+   * times a day — for every agent the fold reaches.
+   *
+   * But re-read what the cell is FOR, three doc-blocks up: "WHICH commit the gate
+   * is judging… a red about a candidate that does not contain your change reads
+   * as *your fix did not work* instead of *your fix was not present*". The
+   * question is not which sha. It is WHETHER THE GATE IS JUDGING YOUR CHANGE —
+   * and that is `judgingContainsPath`, which moves only when YOUR file lands, not
+   * when the other 334 commits do.
+   *
+   * So this is the item's rule exactly: push what changed the SENDER'S OWN MODEL.
+   * The candidate advancing A→B with your change in both is news about someone
+   * else's work; the flip to a candidate that does NOT contain your path is news
+   * about yours.
+   *
+   * ⚠ NOT declared on the other four cells, and that restraint is the point. The
+   * P-020 verdict rule applies to its own author: add a knob where churn is REAL
+   * and MEASURED, never everywhere it would fit. `deploy.3070.sha` moves 13×/24h
+   * (release reflog, same date) and every move is genuinely material — a new
+   * deployed sha IS the news. `positions.deployed` and `mainFastForwarded` are
+   * booleans, where a change already IS a verdict flip. And
+   * `gate.greenCheckpoint.verdict` genuinely wants one — `consecutiveReds` 1→2 is
+   * a bump, 0→1 is a flip — but its resolver exposes no coarse verdict field to
+   * name, and computing `reds >= 1` HERE would be the registry re-deriving a
+   * verdict, which axis 5 forbids. Per this file's own twice-stated precedent the
+   * fix there belongs in the RESOLVER, not the declaration; until it exposes one,
+   * that cell correctly stays un-gated rather than gaining a threshold DSL.
+   */
+  materiality: {
+    path: 'changeInCandidate.judgingContainsPath',
+    why:
+      'judgingSha follows the staging tip — measured 335 commits/24h (git rev-list --since=24h staging, 2026-07-27) — but the question this cell exists to answer is "is the gate judging MY change", which is judgingContainsPath and moves only when the subject path itself lands. Suppressing a candidate step A→B that contains the path in both cases withholds news about OTHER agents\' commits; a containment flip is still reported loudly.',
+  },
+
   shape:
     '{ changeInCandidate: { judgingSha, judgingContainsPath, nextCandidateSha, nextContainsPath, missingReason, detail }, verdictUnknown[] }',
 };
