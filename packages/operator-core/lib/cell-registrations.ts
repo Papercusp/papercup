@@ -475,7 +475,7 @@ export const AGENT_GOAL_CELL: CellSpec = {
      * `coord:goal` hoists it (goal.ts). Re-nesting this reintroduces the bug
      * silently, because every fixture with a goal in it still passes.
      */
-    field: 'goal.agreement',
+    field: 'goalAgreement',
     measurement:
       "the coord_links `implements` edge joining a held work-item to a separately-claimed plan item — a link-graph read sharing no input with work_items.taken_by or plan_item_claims",
     kills:

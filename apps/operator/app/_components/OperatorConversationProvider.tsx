@@ -623,6 +623,35 @@ export type GenerationFn = (
  * a future Voice path can plug in a different GenerationFn that drains
  * the realtime-session's turn output the same way.
  */
+/**
+ * Project the UI's rich `ChatMessage` onto the converse tool's WIRE shape.
+ *
+ * WI-6502 — owner-reported: chat died with a wall of `messages.N: Unrecognized
+ * keys: "id", "seq", "report"`, one line per message, ~200 lines of it.
+ *
+ * `ChatMessage` is a RENDERING model and has grown presentation/persistence
+ * fields over time — `id` (optimistic-write dedup), `seq` (operator_turns.seq
+ * for chat:ask_choice), `report` (the curator status card), `tools`, `agent`,
+ * `declined`. The converse tool's `messages` arg accepts exactly `{ role,
+ * content }` and is STRICT (`additionalProperties:false`, the deliberate
+ * EI-10883 contract: an undeclared arg is rejected rather than silently
+ * ignored). Every field added to the render model was therefore a live grenade
+ * for the chat wire, and nothing connected the two — the provider passed
+ * `req.messages` through verbatim.
+ *
+ * The strictness is right and is NOT what to loosen: the whole point of
+ * EI-10883 is that a tool quietly ignoring an arg is indistinguishable from
+ * honouring it. The missing piece was this projection. Keep it EXPLICIT
+ * (name each wire field) rather than deleting known-bad keys — a destructuring
+ * omit would re-break the moment someone adds field number seven, which is
+ * exactly how this got here.
+ */
+export function toConverseWireMessages(
+  messages: readonly ChatMessage[],
+): { role: ChatMessage["role"]; content: string }[] {
+  return messages.map((m) => ({ role: m.role, content: m.content ?? "" }));
+}
+
 const defaultGenerationFn: GenerationFn = async (req) => {
   // Lazy import — avoids dragging the sessionStorage path into SSR.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -633,7 +662,8 @@ const defaultGenerationFn: GenerationFn = async (req) => {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      messages: req.messages,
+      // WI-6502: project onto the wire shape — never ship the render model.
+      messages: toConverseWireMessages(req.messages),
       trigger: req.trigger,
       mayAskActive: req.mayAskActive,
       modality: req.modality,

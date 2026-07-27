@@ -216,7 +216,14 @@ describe('P-011: every registered cell declares paths its resolver ACTUALLY prod
     // gap, which is what makes the falsifier actionable rather than merely contradictory.
     expect(pathExists(naiveReading, 'serving.behindMin').value).toBeGreaterThan(0);
 
-    for (const spec of PIPELINE_CELLS.filter((c) => c.falsifier.field === 'serving.startedSinceCodeChange')) {
+    // ⚠ A filter that matches NOTHING makes the loop below vacuous and this test green
+    // for the wrong reason — the exact defect P-009 found in all four of this plane's
+    // scanning guards (every one mutation-tested its predicate and none asserted the
+    // SIZE of its corpus). Caught here by mutation-testing this very file: renaming the
+    // falsifier path emptied the filter and the loop still "passed".
+    const sharing = PIPELINE_CELLS.filter((c) => c.falsifier.field === 'serving.startedSinceCodeChange');
+    expect(sharing.length, 'no cell falsifies via serving.startedSinceCodeChange — this assertion checked nothing').toBeGreaterThanOrEqual(2);
+    for (const spec of sharing) {
       expect(spec.falsifier.kills.toLowerCase()).toContain('deployed');
     }
   }, 30_000);
