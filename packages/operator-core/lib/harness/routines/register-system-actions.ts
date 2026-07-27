@@ -406,3 +406,13 @@ import './autoloop-release-readiness-action';
 // previously-missing scheduled counterpart of the on-demand gates:canary-check tool.
 // Seeded INACTIVE (seed-gate-canary-sweep-routine.ts --harness=<slug> --active to arm).
 import '../../gates/gate-canary-sweep-action';
+// WI-6454: `system:gitnexus-reindex` — the refresh owner for the gitnexus code graph
+// that `gitnexus.context`/`gitnexus.query` answer from. The graph was built by hand once
+// and nothing re-indexed it, so it decayed from the minute it was written — the sole
+// condition pinning the `code-search.definition-lookup` substitution pair at `observe`.
+// `analyze` is a FULL re-index (234s even against a fresh index), so the hourly (:35)
+// fire is only a cheap CHECK: registry + git + loadavg decide, and the expensive spawn
+// happens only when the graph is genuinely behind and the box is not oversubscribed.
+// Seeded ACTIVE (seed-gitnexus-reindex-routine.ts --inactive to seed off) — it writes
+// only the gitignored .gitnexus/ index and self-gates to the operator-home installSlug.
+import './gitnexus-reindex-action';

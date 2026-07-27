@@ -333,6 +333,12 @@ export function buildBurnDownResult(
     dropped: 0,
     deltaSince: opts.since ?? null,
     delta: 0,
+    /** EI-18820653360383242 — terminal rows with NO close stamp (closed before
+     *  migration 698). They CANNOT be placed in time, so they are excluded from
+     *  `delta` rather than guessed at from updatedAt. Reported so a reader can
+     *  tell "nothing closed in this window" apart from "this window predates the
+     *  close stamp"; a nonzero value here means `delta` is a floor, not a total. */
+    deltaClosedUndated: 0,
     authority: { counted: 0, committed: 0, validated: 0, proposed: 0, pendingHuman: 0, invalid: 0, legacy: 0 },
   };
   const inFlight: BurnDownRow[] = [];
@@ -344,6 +350,7 @@ export function buildBurnDownResult(
   // prefix of listWorkItems's own ordering.
   const closedRows: BurnDownDeltaRow[] = [];
   const openedRows: BurnDownDeltaRow[] = [];
+  let deltaClosedUndated = 0;
 
   for (const item of items) {
     const row = toRow(item, item.assignee ? liveOwners.has(item.assignee) : undefined);
@@ -365,9 +372,26 @@ export function buildBurnDownResult(
       if (auth === null) terminal.authority.legacy += 1;
       else if (auth === 'pending_human') terminal.authority.pendingHuman += 1;
       else terminal.authority[auth] += 1;
-      if (hasSince && Date.parse(item.updatedAt) > sinceMs) {
+      // EI-18820653360383242: `closedAt`, NOT `updatedAt`. updatedAt moves on ANY
+      // write, so a single bulk write reports every row it touched as just-closed:
+      // this exact line once returned 3,833 items "closed in one hour", all with
+      // terminal_owner NULL — the signature of a fleet-scale mass unattributed
+      // close — when it was a backfill touching rows closed weeks earlier (oldest
+      // 2026-06-04). A real mass-close and that artefact are INDISTINGUISHABLE from
+      // updatedAt, which is why this must read the dedicated close stamp.
+      //
+      // A NULL closedAt is deliberately EXCLUDED rather than falling back to
+      // updatedAt: null means "closed before migration 698, time unknown", and
+      // coalescing it would silently reintroduce the same phantom. The cost is
+      // that historical windows under-report until pre-698 rows age out, which is
+      // the honest direction to be wrong in — and `deltaClosedUndated` below makes
+      // that omission visible instead of leaving it to be discovered.
+      const closedAtMs = item.closedAt ? Date.parse(item.closedAt) : NaN;
+      if (hasSince && Number.isFinite(closedAtMs) && closedAtMs > sinceMs) {
         terminal.delta += 1;
-        closedRows.push({ id: item.id, kind: item.kind, title: item.title, state, harness: item.harness, ts: item.updatedAt });
+        closedRows.push({ id: item.id, kind: item.kind, title: item.title, state, harness: item.harness, ts: item.closedAt! });
+      } else if (hasSince && !item.closedAt) {
+        deltaClosedUndated += 1;
       }
       continue;
     }
@@ -426,6 +450,8 @@ export function buildBurnDownResult(
     const sorted = [...rows].sort(sortNewestFirst);
     return { rows: sorted.slice(0, DELTA_ROW_CAP), total: sorted.length, truncated: sorted.length > DELTA_ROW_CAP };
   };
+
+  terminal.deltaClosedUndated = deltaClosedUndated;
 
   return {
     ok: true,

@@ -470,6 +470,94 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     }
   });
 
+  it('EI-18826235967595309: a sibling cloned from the canonical tree by LOCAL PATH is refused, while a local-path clone of an UNRELATED repo stays allowed', async () => {
+    // The real hole behind that filing. WI-5031 proves independence by comparing
+    // normalized origin URLs, which assumes every checkout of the canonical
+    // project was cloned from the same forge URL. `git clone ../papercup runner`
+    // records origin=/abs/path — never equal to github.com/papercusp/papercup —
+    // so the sibling earned independence from a string difference and its edits
+    // were ALLOWED. git-sync commits only the canonical tree, so that work
+    // silently strands: exactly the data loss this guard exists to prevent.
+    //
+    // Found live as `papercup-improvement-runner` (origin `<ws>/papercup`, itself
+    // a symlink to `<ws>/papercusp`), a full checkout of the canonical project
+    // sharing its history and holding 22 uncommitted files.
+    //
+    // The second half is the load-bearing half: the fix must catch a local-path
+    // origin that points AT the canonical project WITHOUT re-refusing every
+    // local-path origin. Refusing those wholesale would re-break the independent
+    // siblings WI-5031 and EI-18825797177551487 were each written to un-break.
+    const gitBack = fs.readFileSync(join(repo, '.git'), 'utf8');
+    fs.rmSync(join(repo, '.git'));
+    try {
+      fs.mkdirSync(join(repo, '.git'));
+      fs.writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/staging\n');
+      fs.writeFileSync(
+        join(repo, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/Papercusp/papercup.git\n',
+      );
+      // The alias the live origin actually points through, so the fix is exercised
+      // against the indirection it has to survive rather than a direct path.
+      fs.symlinkSync('papercusp', join(ws, 'papercup'));
+
+      // (a) origin = a local path resolving to the canonical tree ⇒ REFUSED.
+      const runner = join(ws, 'papercup-improvement-runner');
+      fs.mkdirSync(join(runner, 'sub'), { recursive: true });
+      fs.mkdirSync(join(runner, '.git'));
+      fs.writeFileSync(join(runner, '.git', 'HEAD'), 'ref: refs/heads/master\n');
+      fs.writeFileSync(
+        join(runner, '.git', 'config'),
+        `[remote "origin"]\n\turl = ${join(ws, 'papercup')}\n`,
+      );
+      const denied = await run({
+        tool_name: 'Edit',
+        tool_input: { file_path: join(runner, 'sub/x.ts') },
+        tool_use_id: 'tu-local-path-origin',
+        session_id: 's',
+        cwd: runner,
+      });
+      expect(denied.status).toBe(0);
+      const deniedOut = JSON.parse(denied.stdout);
+      expect(deniedOut.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(deniedOut.hookSpecificOutput.permissionDecisionReason).toContain('worktree guard');
+      expect(fs.existsSync(join(cache, 'tu-local-path-origin.lock'))).toBe(false);
+
+      // (b) origin = a local path resolving to an UNRELATED repo ⇒ still ALLOWED.
+      const upstream = join(ws, 'some-vendor-upstream');
+      fs.mkdirSync(join(upstream, '.git'), { recursive: true });
+      fs.writeFileSync(join(upstream, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+      fs.writeFileSync(
+        join(upstream, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/someone/vendor-lib.git\n',
+      );
+      const fork = join(ws, 'vendor-lib-fork');
+      fs.mkdirSync(join(fork, 'sub'), { recursive: true });
+      fs.mkdirSync(join(fork, '.git'));
+      fs.writeFileSync(join(fork, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+      fs.writeFileSync(
+        join(fork, '.git', 'config'),
+        `[remote "origin"]\n\turl = ${upstream}\n`,
+      );
+      nextInner = { ok: true, lock_id: 'fork-lock' };
+      const allowed = await run({
+        tool_name: 'Edit',
+        tool_input: { file_path: join(fork, 'sub/x.ts') },
+        tool_use_id: 'tu-local-path-unrelated',
+        session_id: 's',
+        cwd: fork,
+      });
+      expect(allowed.status).toBe(0);
+      expect(allowed.stdout).toBe('');
+      expect(fs.readFileSync(join(cache, 'tu-local-path-unrelated.lock'), 'utf8')).toBe('fork-lock');
+    } finally {
+      fs.rmSync(join(repo, '.git'), { recursive: true, force: true });
+      fs.writeFileSync(join(repo, '.git'), gitBack);
+      for (const d of ['papercup', 'papercup-improvement-runner', 'some-vendor-upstream', 'vendor-lib-fork']) {
+        fs.rmSync(join(ws, d), { recursive: true, force: true });
+      }
+    }
+  });
+
   // ── EI-9478: transient workspace-contention must never be rendered as a foreign hold ──
   // The server's per-workspace advisory-lock wait can time out (commonly THIS
   // session's own parallel edits racing each other, or a starved PG pool). That

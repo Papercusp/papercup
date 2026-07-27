@@ -428,9 +428,9 @@ def _repo_has_zero_remotes(repo_root):
     it always carries an origin. A repo declaring zero remotes was never cloned
     from anything and therefore cannot be a stray checkout of the canonical
     tree, which is the only hazard this guard exists to prevent. Verified
-    against every sibling in this workspace when the fix was written: all six
-    same-project checkouts (papercup, papercup-checkpoint, papercup-release,
-    papercusp-checkpoint, papercusp-release, papercusp-staging) carry
+    against every sibling in this workspace when the fix was written: the
+    same-project checkouts (papercup-checkpoint, papercup-release,
+    papercusp-checkpoint, papercusp-staging) carry
     origin=.../papercup.git, while every remote-less sibling (hive-canary — a
     REGISTERED harness with its own `auto-commit hive-canary` git-sync lane —
     plus brood-box-alpha and the greenfield-* project trees) is a genuinely
@@ -438,7 +438,18 @@ def _repo_has_zero_remotes(repo_root):
     canary as unworkable, the same failure mode WI-5031 was written to fix.
 
     Deliberately distinguishes "read it, found none" from "could not read":
-    only the former proves independence. Unreadable still denies."""
+    only the former proves independence. Unreadable still denies.
+
+    ⚠ Do NOT read that sibling list as "every papercup* directory is a checkout
+    the origin test refuses". Two of them are SYMLINKS and reach neither this
+    function nor the origin comparison: `papercup` -> `papercusp` IS the canonical
+    tree (edits through it are correctly ALLOWED — realpath normalizes them), and
+    `papercusp-release` -> `papercup-release`. The rest are LINKED WORKTREES,
+    refused earlier by the commondir branch. An earlier revision of this list
+    named `papercup` among the refused checkouts, which reads as a guard hole the
+    moment you observe an edit there succeed — it cost a bogus major-severity bug
+    filing (EI-18826235967595309). Enumerate the shapes before believing any
+    summary of them, this one included."""
     try:
         cfg = _repo_git_config_path(repo_root)
         if cfg is None:

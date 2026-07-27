@@ -107,6 +107,21 @@ export default defineTool({
   },
   capability: 'operator:write',
   requirePrincipal: false,
+  // EI-18761103623054929: the default dispatch-stack tool timeout is 60s (dispatch-stack.ts:
+  // `exec.timeoutSec = exec.tool.timeoutSec ?? 60`) — too short for THIS tool specifically.
+  // `trigger`/`force` synchronously await fireGitSyncNow (see the EI-18733783500981433 comment
+  // below) before launching, and that fire-and-refresh is NOT bounded by "tens of seconds" under
+  // real load: measured live 2026-07-26 21:56-21:58 EDT (coming off 5 consecutive gate reds with
+  // 60 commits stranded, i.e. git-sync itself had a large backlog to work through), 4 of 5
+  // consecutive `trigger` calls took 83s / 96s / 177s / 61s — all past the 60s default, each
+  // surfacing as a spurious `timeout` (or, on a direct MCP call, a raw transport
+  // "write CONNECTION_CLOSED") even though the underlying deploy launch itself succeeded. Raising
+  // the budget (same fix shape as dev:restart's own slow drain-then-restart, `timeoutSec:
+  // MAX_DRAIN_SEC + 30`) lets the legitimately-slow-but-real operation finish inside its own
+  // timeout instead of being cut off by an unrelated, too-short default. 300s comfortably covers
+  // every measured duration above with margin; this is a rare, human/agent-initiated expedite
+  // lever, never a hot loop, so a generous ceiling costs nothing.
+  timeoutSec: 300,
   // EI-18733783500981433: `trigger`/`force` await fireGitSyncNow + readDeployStatus (git-sync
   // fire-and-refresh can itself take tens of seconds) before launching the detached deploy, and
   // never read ctx.tx (only ctx.role / ctx.principal-derived identity). Without this, the host's

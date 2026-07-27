@@ -85,7 +85,7 @@ import {
   type WorkItemCompletionAuthority,
 } from './work-item-completion-authority';
 import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
-import { pgTimestampToIso } from './pg-timestamp';
+import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
 export type {
@@ -269,6 +269,12 @@ export interface WorkItem {
   completionAuthority: WorkItemCompletionAuthority | null;
   createdAt: string;
   updatedAt: string;
+  /** EI-18820653360383242 — when this item entered its CURRENT terminal state, maintained
+   *  by the base-table trigger (migration 698), never by a caller. `null` on a terminal row
+   *  means "closed, time unknown": the pre-698 legacy shape, which is most historical rows.
+   *  Read it INSTEAD of updatedAt for anything time-of-close — updatedAt moves on any write
+   *  and a single bulk write makes it report thousands of ancient rows as just-closed. */
+  closedAt: string | null;
 }
 
 /** The propose/dispose author of a work-item's rank (local-hive D-008).
@@ -320,6 +326,10 @@ function nowIso(): string {
 // re-emitted as an explicit UTC "...Z" string rather than passed through
 // as an ambiguous local-offset string.
 const tsIso = pgTimestampToIso;
+/** Nullable sibling — closed_ts is legitimately NULL on a pre-698 terminal row
+ *  ("closed, time unknown"), and that must survive as null rather than becoming
+ *  an empty string that a consumer would read as a real value. */
+const tsIsoOrNull = pgTimestampToIsoOrNull;
 
 function extractTerminalCompletionEvidence(payload: unknown): CompletionVerificationEvidence | null {
   let obj = payload;
@@ -408,6 +418,7 @@ export function issueToWorkItem(i: EngineerIssue): WorkItem {
     verifiedAuthorGithubUserId: null, // local-origin ⇒ never verified-stamped (P-008)
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
+    closedAt: i.closedAt,
   };
 }
 
@@ -440,6 +451,8 @@ export interface FeatureRowDb {
   terminal_completion_ref: string | null;
   /** P-004 — the completion-authority column (D-009: bare `authority` in the DB). */
   authority: string | null;
+  /** EI-18820653360383242 — bigint epoch-ms on the base table (migration 698). */
+  closed_ts: unknown;
 }
 export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
   const externalBlockers = readExternalBlockers(r.payload);
@@ -483,6 +496,7 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     completionAuthority: isWorkItemCompletionAuthority(r.authority) ? r.authority : null,
     createdAt: tsIso(r.created_ts),
     updatedAt: tsIso(r.updated_ts),
+    closedAt: tsIsoOrNull(r.closed_ts),
   };
 }
 
@@ -498,7 +512,7 @@ export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary
   taken_at, last_progress_at,
   parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
   origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref,
-  authority`;
+  authority, closed_ts`;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {

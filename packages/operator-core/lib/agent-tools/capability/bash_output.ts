@@ -11,6 +11,9 @@ import { statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getJob, readJobOutput, scratchDir } from './bash-jobs';
+import { getTaskByBashJobId } from '../../task-manager/store';
+import { isTerminalState, type TaskRow } from '../../task-manager/types';
+import { readProcessIdentity } from '../../process-identity';
 
 /** Tail this many bytes of a stranded job's log when the in-memory registry
  *  missed but the file survived on disk (EI-8855). */
@@ -75,6 +78,63 @@ export function diagnoseStrandedCause(opts: {
   const processUptimeMs = opts.processUptimeMs ?? process.uptime() * 1000;
   const processStartedAtMs = now - processUptimeMs;
   return processStartedAtMs > opts.jobBirthtimeMs ? 'stranded_by_operator_restart' : 'job_process_gone';
+}
+
+/**
+ * EI-18759519171684432: `diagnoseStrandedCause` above only rules out ONE cause (a
+ * whole-operator restart) — it was never sound evidence that the job's OWN process
+ * actually died, yet the handler asserted exactly that ("CONFIRMED NOT the cause …
+ * the job's OWN process died independently") with no process check at all. Live
+ * repro: a `test:affected` run was still executing (confirmed via `ps`, log file
+ * still growing) while this verdict told the caller to re-run it — doubling the
+ * load on an already-loaded box.
+ *
+ * The durable task-manager ledger (task-manager-no-escape-2026-07-27) is the fix:
+ * `startBackground` stamps every job's ledger row with `detail.bashJobId` and its
+ * spawned `pid` + `processIdentity` (a boot-id+start-ticks pair immune to PID
+ * reuse — D-011), and that row survives exactly the failure that wipes the
+ * in-memory JOBS map (an operator restart, or eviction under load). So instead of
+ * inferring liveness from operator uptime, RE-PROBE the recorded pid's identity now
+ * and compare: if it still matches, the process is CONFIRMED alive regardless of
+ * what happened to the in-memory tracking. If the ledger itself already recorded a
+ * terminal exit, that is stronger evidence than any heuristic. Only when neither
+ * signal is available do we fall back to the uptime heuristic (below).
+ */
+export type LedgerLivenessVerdict =
+  | { kind: 'confirmed_alive'; pid: number; scopeUnit: string | null; taskId: string }
+  | { kind: 'confirmed_dead'; state: string; exitCode: number | null; exitReason: string | null }
+  | { kind: 'no_ledger_row' }
+  | { kind: 'ledger_inconclusive' };
+
+export function diagnoseFromLedger(
+  row: TaskRow | null,
+  probeIdentity: (pid: number) => string | null = readProcessIdentity,
+): LedgerLivenessVerdict {
+  if (!row) return { kind: 'no_ledger_row' };
+  if (isTerminalState(row.state)) {
+    return {
+      kind: 'confirmed_dead',
+      state: row.state,
+      exitCode: row.exitCode ?? null,
+      exitReason: row.exitReason ?? null,
+    };
+  }
+  // pending/running/unaccounted/foreign: the ledger THINKS a process is alive.
+  // Re-probe the recorded pid's identity — a bare pid re-check would be fooled by
+  // PID reuse (happens ~daily on this box under fleet load); comparing the full
+  // identity string is not.
+  if (row.pid && row.processIdentity) {
+    const nowIdentity = probeIdentity(row.pid);
+    if (nowIdentity && nowIdentity === row.processIdentity) {
+      return { kind: 'confirmed_alive', pid: row.pid, scopeUnit: row.scopeUnit ?? null, taskId: row.taskId };
+    }
+  }
+  // The kernel disagrees with the ledger's non-terminal state (or we lack enough
+  // to re-probe), but we never OBSERVED an exit — asserting death here would be the
+  // exact overclaim this fix exists to remove. Let the reconciler (which runs
+  // regardless) settle this row to `stranded` in its own time; report honestly that
+  // this read could not confirm either way.
+  return { kind: 'ledger_inconclusive' };
 }
 
 /** Max length of an agent-supplied `filter` regex (ReDoS surface bound). */
@@ -149,16 +209,87 @@ export default defineTool({
     if (!job) {
       const stranded = strandedJobLookup(args.bash_id, ctx.stateDir);
       if (stranded) {
+        // EI-18759519171684432: before asserting anything about the JOB's real OS
+        // liveness, consult the durable task-manager ledger — it survives exactly
+        // the failure (in-memory JOBS map entry gone) that got us into this branch,
+        // and can CONFIRM liveness via a pid+processIdentity re-probe (immune to PID
+        // reuse) instead of guessing from operator uptime alone.
+        const ledgerRow = await getTaskByBashJobId(args.bash_id).catch(() => null);
+        const ledgerVerdict = diagnoseFromLedger(ledgerRow);
+
+        if (ledgerVerdict.kind === 'confirmed_alive') {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  reason: 'tracking_lost_process_alive',
+                  advice:
+                    `This job's in-memory tracking is gone, but its real OS process (pid ${ledgerVerdict.pid}` +
+                    `${ledgerVerdict.scopeUnit ? `, systemd scope ${ledgerVerdict.scopeUnit}` : ''}) is CONFIRMED ` +
+                    'STILL RUNNING — verified just now via a process-identity re-probe against the durable task ' +
+                    'ledger (immune to PID reuse), not a guess. Do NOT re-run capability:bash — that would start a ' +
+                    'SECOND concurrent job and double the load. Keep polling capability:bash_output (the log tail ' +
+                    'below will keep growing as it runs), or read log_path directly. To stop it, use processes:kill ' +
+                    'with the taskId/scopeUnit below — never a bare kill.',
+                  pid: ledgerVerdict.pid,
+                  scope_unit: ledgerVerdict.scopeUnit,
+                  task_id: ledgerVerdict.taskId,
+                  log_path: stranded.logPath,
+                  total_bytes_written: stranded.sizeBytes,
+                  output_tail: stranded.tail,
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (ledgerVerdict.kind === 'confirmed_dead') {
+          const exitDetail =
+            (ledgerVerdict.exitCode !== null ? ` exit code ${ledgerVerdict.exitCode}` : '') +
+            (ledgerVerdict.exitReason ? `: ${ledgerVerdict.exitReason}` : '');
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  reason: 'job_process_gone',
+                  advice:
+                    "This job's in-memory tracking is gone, and the durable task ledger CONFIRMS it actually ended " +
+                    `(state=${ledgerVerdict.state}${exitDetail}) — not a guess. Re-run capability:bash if you still ` +
+                    'need the result; check output_tail below for how far it got.',
+                  log_path: stranded.logPath,
+                  total_bytes_written: stranded.sizeBytes,
+                  output_tail: stranded.tail,
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+
         // EI-18666279107998059: EI-16635 stopped ASSERTING the restart cause as fact
         // but still couldn't tell the two causes apart, so every stranded job read
         // "here are two possible causes, go check yourself" even when this very
         // process's own uptime already proves which one it was (see
-        // diagnoseStrandedCause). Do that check now and report the CONFIRMED cause.
+        // diagnoseStrandedCause). Do that check now — but this is a FALLBACK, only
+        // reached when the ledger (above) had no row or could not confirm either
+        // way, so word the verdict as the best available inference, not a fact
+        // about the JOB's liveness (that overclaim is EI-18759519171684432 itself —
+        // a whole-operator restart being ruled out never proved this job's own
+        // process was gone).
         const cause = diagnoseStrandedCause({ jobBirthtimeMs: stranded.birthtimeMs });
+        const ledgerCaveat =
+          ledgerVerdict.kind === 'no_ledger_row'
+            ? ' (no task-ledger record was found for this job to confirm further)'
+            : ' (the task ledger still shows it non-terminal but could not confirm liveness — the process may have exited without the ledger observing it yet)';
         const advice =
           cause === 'stranded_by_operator_restart'
             ? 'This job STARTED (its log file exists on disk) but its in-memory tracking is gone, and this operator process\'s own uptime is SHORTER than the job\'s age — CONFIRMED: the operator process that ran it restarted or was killed mid-job. A routine, common event on a shared dev box: any agent restarting :3070/:3170 kills every OTHER agent\'s in-flight background jobs too (repo-conventions § two-port model). It is NOT a wrong bash_id and not a bug in your command. Re-run capability:bash if you still need the result; check output_tail below for how far it got before dying.'
-            : 'This job STARTED (its log file exists on disk) but its in-memory tracking is gone, and this operator process has been running continuously since BEFORE the job started (its uptime exceeds the job\'s age) — so an operator restart is IMPOSSIBLE and CONFIRMED NOT the cause. The job\'s OWN process died independently (e.g. an OS-sandbox lifetime constraint — EI-16635). It is NOT a wrong bash_id and not necessarily a bug in your command. Re-run capability:bash if you still need the result; check output_tail below for how far it got before dying.';
+            : `This job STARTED (its log file exists on disk) but its in-memory tracking is gone, and this operator process has been running continuously since BEFORE the job started — so a WHOLE-OPERATOR restart is ruled out${ledgerCaveat}. That does NOT confirm the job's own process died: before re-running, check yourself (e.g. \`ps\` for your command) — re-running while the original may still be alive doubles the load. If you can confirm it is really gone, re-run capability:bash; check output_tail below for how far it got.`;
         return {
           content: [
             {
