@@ -211,7 +211,7 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
   });
 
   /**
-   * WI-6249 — the tick must derive its genesis baseline PER REF and IN THIS
+   * WI-6251 — the tick must derive its genesis baseline PER REF and IN THIS
    * STORE, not accept one worktree-derived sha for every ref of the namespace.
    *
    * THE RIG SHAPE: our namespace carries a `refs/heads/staging` MIRRORED from a
@@ -225,7 +225,7 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
    * ever dropped — the coverage gap a mutation test found: every other test here
    * passes with the wiring reverted, because they only cover the helper.
    */
-  describe('genesis baseline is per-ref, in this store (WI-6249)', () => {
+  describe('genesis baseline is per-ref, in this store (WI-6251)', () => {
     const OVERSIZE_CAPS = { maxBlobBytes: 64 };
     const devUs = mkDevice();
     const devPeer = mkDevice();

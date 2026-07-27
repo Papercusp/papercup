@@ -40,7 +40,7 @@
  * widens from one hard-coded ref name to the tightest already-exposed frontier
  * over ALL remote-tracking refs.
  *
- * ── WI-6249: the SAME disease one hop over (live-caught on the rig, 2026-07-27)
+ * ── WI-6251: the SAME disease one hop over (live-caught on the rig, 2026-07-27)
  *
  * `deriveGenesisBaselineSha` answers for ONE branch in the WORKTREE. ref-announce's
  * publish tick judges EVERY ref under this device's namespace in the BARE pot-git
