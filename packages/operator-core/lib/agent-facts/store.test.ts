@@ -196,6 +196,9 @@ describe('renderFactsFold', () => {
     kind: null,
     dependsOn: [],
     claim: null,
+    // P-018, migration 692 — same reason: spelled out so the fixture mirrors a
+    // real persisted row rather than relying on a default.
+    enforcement: null,
     sourceRef: 'WI-1574',
     audienceScope: null,
     sourceProvenance: null,

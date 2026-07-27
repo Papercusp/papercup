@@ -49,6 +49,21 @@ Object.defineProperty(window, "localStorage", {
   configurable: true,
 });
 
+// P-005: grading in the merged Improve view renders through a Radix Popover,
+// which measures its trigger via @radix-ui/react-use-size — that requires
+// ResizeObserver, and jsdom ships none. Without this the grade panel THROWS on
+// mount ("ReferenceError: ResizeObserver is not defined") instead of rendering,
+// which is what kept the grading contracts (7-11) un-re-established after the
+// P-003 merge retired the old inline-radio card. A no-op is correct here: these
+// tests assert DOM and behaviour, never layout, so there is nothing to measure.
+if (!("ResizeObserver" in globalThis)) {
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
 const nuqsState: Record<string, unknown> = {
   lview: "improvements",
   lane: "all",
@@ -1466,25 +1481,202 @@ describe("LearningTab — Benchmark view", () => {
 //   5. a trace's routed chip deep-linking a plan to Create → Plans
 //   6. the rail filter's aria-pressed round-trip
 
-// RETIRED with the Ideas view (P-003) — grading contracts P-005 must
-// re-establish against the merged view. These are the ones that matter most:
-// grading is the ONLY row control the owner kept, so it is the one behaviour
-// the merge must not have quietly broken.
+// P-005 RE-ESTABLISHED (contracts 7-11). These were pinned against the retired
+// `ScoutView`; the COMPONENT went away in the P-003 merge but the BEHAVIOUR did
+// not, so each is re-asserted below against the merged Improve list.
 //
-//   7. a grade POSTs {ideaId, grade, feedback?} to
-//      /api/agent-tools/scout/grade-idea and invalidates the scout read
-//   8. the optimistic grade ROLLS BACK and surfaces the error on a failed write
-//   9. ?grade=<ideaId> opens the grade panel, save is gated on a star, and
-//      grade + note submit together
-//  10. attribution ("★4 · brain") renders on already-graded rows, with the
-//      regrade affordance still live
-//  11. lens weights render as shares sorted descending, and are absent when the
-//      snapshot carries no weights
+// Why these five got done first: grading is the ONLY row control the owner kept
+// (2026-07-27 ruling — in a full-auto loop the human teaches the generator, it
+// does not approve the work), so it is the one behaviour the merge must not have
+// quietly broken. Every approval affordance around it was deliberately deleted
+// in P-004; if grading had broken too, the row would have no human control at all.
 //
-// NOTE for P-005: the merged row grades through a Popover + GradePanel, NOT the
-// card's inline star radios — the card-stack browser went away with the merge,
-// so assertions keyed on `.pc-learning__stargrade` need retargeting rather than
-// copying.
+// RETARGETED, not copied: the merged row grades through a Popover + GradePanel,
+// so these key on `.pc-learning__notebtn` / `.pc-learning__gradechip` — the
+// retired card's inline `.pc-learning__stargrade` radios no longer exist.
+describe("LearningTab — grading, the only row control the merge kept (P-005: contracts 7-11)", () => {
+  // Both fixtures come from scoutSnapshot.recent and are routed to NON-`wi:`
+  // refs, so they survive the merge as standalone idea rows in the Improve list:
+  //   idea-1 — ungraded            (rail plan)
+  //   idea-2 — graded ★4 by "Queen" (rail gym)
+  const GRADE_URL = "/api/agent-tools/scout/grade-idea";
+
+  const stubFetch = (impl: { ok: boolean; status?: number; body?: unknown }) => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: impl.ok,
+      status: impl.status ?? (impl.ok ? 200 : 500),
+      json: async () => impl.body ?? { ok: true, applied: true },
+    } as unknown as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("7. POSTs {ideaId, grade, feedback?} to the grade-idea tool, then invalidates the scout read", async () => {
+    const fetchMock = stubFetch({ ok: true });
+    const invalidate = vi.fn();
+    scoutResult = { ...scoutResult, invalidate };
+
+    nuqsState.grade = "idea-1";
+    render(<LearningTab />);
+
+    fireEvent.click(screen.getByLabelText("Grade 5 of 5"));
+    fireEvent.change(screen.getByLabelText("Grading note"), {
+      target: { value: "  sharp reframing  " },
+    });
+    fireEvent.click(screen.getByText("save grade"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(GRADE_URL);
+    expect(init.method).toBe("POST");
+    // The note is trimmed, and `feedback` is omitted entirely when blank —
+    // the server distinguishes "no note" from "empty note".
+    expect(JSON.parse(String(init.body))).toEqual({
+      ideaId: "idea-1",
+      grade: 5,
+      feedback: "sharp reframing",
+    });
+    // Invalidating is what makes the optimistic value converge on the truth;
+    // without it the row keeps showing a grade the server may have rejected.
+    await waitFor(() => expect(invalidate).toHaveBeenCalled());
+  });
+
+  it("7b. omits `feedback` entirely when the note is left blank", async () => {
+    const fetchMock = stubFetch({ ok: true });
+    nuqsState.grade = "idea-1";
+    render(<LearningTab />);
+
+    fireEvent.click(screen.getByLabelText("Grade 2 of 5"));
+    fireEvent.click(screen.getByText("save grade"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ ideaId: "idea-1", grade: 2 });
+  });
+
+  it("8. rolls the optimistic grade BACK and surfaces the error when the write fails", async () => {
+    stubFetch({ ok: false, status: 500 });
+    nuqsState.grade = "idea-1";
+    render(<LearningTab />);
+
+    fireEvent.click(screen.getByLabelText("Grade 3 of 5"));
+    fireEvent.click(screen.getByText("save grade"));
+
+    // The failure is SURFACED, not swallowed — a silently-dropped grade would
+    // read to the owner as a grade that stuck.
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Grade failed");
+    expect(alert.textContent).toContain("HTTP 500");
+
+    // ROLLED BACK: idea-1 must not have kept the optimistic ★3 — its control
+    // still offers to grade rather than to review an existing grade.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Grade this idea")).toBeTruthy(),
+    );
+  });
+
+  it("8b. rolls back when the tool answers applied:false, even though HTTP succeeded", async () => {
+    // A 200 carrying applied:false is the nastier case: the transport is fine,
+    // so only the payload says the grade did not land.
+    stubFetch({ ok: true, body: { ok: true, applied: false, reason: "idea is gone" } });
+    nuqsState.grade = "idea-1";
+    render(<LearningTab />);
+
+    fireEvent.click(screen.getByLabelText("Grade 4 of 5"));
+    fireEvent.click(screen.getByText("save grade"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("idea is gone");
+  });
+
+  it("9. ?grade=<ideaId> opens the panel, and saving is gated on picking a star", () => {
+    nuqsState.grade = "idea-1";
+    render(<LearningTab />);
+
+    // Opened by URL state alone (so `ui:dispatch` can drive it, per the nuqs rule).
+    expect(screen.getByLabelText("Grade this idea 1 to 5")).toBeTruthy();
+
+    // GATED: with no star picked there is no note field and no save button —
+    // a grade is required, a note is optional, and the UI enforces that order.
+    expect(screen.queryByLabelText("Grading note")).toBeNull();
+    expect(screen.queryByText("save grade")).toBeNull();
+    expect(
+      screen.getByText(/Pick a grade — 5 counts as a win for this lens/),
+    ).toBeTruthy();
+
+    // Picking a star opens both, and the hint switches to that grade's meaning.
+    fireEvent.click(screen.getByLabelText("Grade 4 of 5"));
+    expect(screen.getByLabelText("Grading note")).toBeTruthy();
+    expect(screen.getByText("save grade")).toBeTruthy();
+  });
+
+  it("9b. does NOT open a grade panel when ?grade names no row", () => {
+    nuqsState.grade = "idea-does-not-exist";
+    render(<LearningTab />);
+    expect(screen.queryByLabelText("Grade this idea 1 to 5")).toBeNull();
+  });
+
+  it("10. renders attribution on an already-graded row, with the regrade affordance still live", () => {
+    render(<LearningTab />);
+
+    // idea-2 was graded ★4 by the Queen; `graderLabel` maps "Queen" to the
+    // brain word (the lexicon is mocked identity, so it renders as "brain").
+    const chip = document.querySelector(".pc-learning__gradechip");
+    expect(chip?.textContent?.replace(/\s+/g, " ")).toContain("★4 · brain");
+    // The grader's note rides on the chip title rather than taking row space.
+    expect(chip?.getAttribute("title")).toContain("Sharp framing — ship it");
+
+    // REGRADE STAYS OPEN: an auto-grade is a suggestion, not a lock — the
+    // owner's grade is sovereign (D-004), so the control must still be there.
+    expect(screen.getByLabelText("Review idea grade")).toBeTruthy();
+    // ...and the ungraded row still invites a first grade.
+    expect(screen.getByLabelText("Grade this idea")).toBeTruthy();
+  });
+
+  it("11. renders lens weights as shares, sorted descending", () => {
+    scoutResult = {
+      ...scoutResult,
+      data: [
+        {
+          ...scoutSnapshot,
+          // Deliberately unsorted and not summing to 100 — the component must
+          // normalise to shares AND order them, rather than trusting the server.
+          lensWeights: { reframing: 1, analogical: 3, "first-principles": 4 },
+        },
+      ],
+    };
+    render(<LearningTab />);
+
+    const strip = screen.getByLabelText("Lens sampling weights");
+    const shares = Array.from(
+      strip.querySelectorAll(".pc-learning__lens"),
+    ).map((el) => el.getAttribute("title") ?? "");
+
+    // 4/8, 3/8, 1/8 → 50%, 38%, 13%, descending.
+    expect(shares[0]).toContain("first-principles: 50%");
+    expect(shares[1]).toContain("analogical: 38%");
+    expect(shares[2]).toContain("reframing: 13%");
+  });
+
+  it("11b. omits the lens-weight strip entirely when the snapshot carries none", () => {
+    // Absent, not a zeroed strip — an empty chart would imply the ideator has
+    // learned that every lens is worthless, which is a different claim.
+    for (const weights of [undefined, null, {}, { reframing: 0 }]) {
+      cleanup();
+      scoutResult = {
+        ...scoutResult,
+        data: [{ ...scoutSnapshot, lensWeights: weights }],
+      };
+      render(<LearningTab />);
+      expect(screen.queryByLabelText("Lens sampling weights")).toBeNull();
+      expect(screen.queryByText("Lens weights")).toBeNull();
+    }
+  });
+});
 
 describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-042's per-tab picker)", () => {
   const badge = () => document.querySelector(".pc-learning__hivepick");

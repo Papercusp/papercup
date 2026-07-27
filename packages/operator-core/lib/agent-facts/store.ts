@@ -989,6 +989,11 @@ export interface FactSelector {
  *                     the conservative default: a reader whose audience context
  *                     is unknown never receives an audience-scoped fact;
  *   • ['fleet:x']   → unrestricted facts + facts scoped to a listed audience;
+ * P-018: this read now also selects `id`, so a folded fact can render the exact
+ * VERSIONED citation ref ({@link factCitationRef}). A convention cited without
+ * its version cannot be checked for staleness precisely, which is most of the
+ * point of citing it.
+ *
  *   • 'all'         → NO audience filter — the explicit-read escape hatch
  *                     (facts:list): an audience-scoped fact must stay listable
  *                     or it becomes unmanageable (you can't retract what you
