@@ -56,8 +56,9 @@ const BASELINE: ReadonlySet<string> = new Set([
   'apps/operator/app/admin/dbos/DbosClient.tsx :: /api/admin/dbos/status',
   'apps/operator/app/admin/schedules/SchedulesClient.tsx :: /api/admin/schedules/inventory',
   'apps/operator/app/admin/plans/plans-api.ts :: /api/admin/inbox/triage',
-  'apps/operator/app/admin/plans/plans-api.ts :: /api/admin/coordination/:param/:param',
-  'apps/operator/app/_components/chat/SessionChatModal.tsx :: /api/admin/coordination/sessions/list',
+  // The two /api/admin/coordination entries were removed 2026-07-27 (WI-6500): the
+  // shrink-only check flagged them stale because WI-6486 had already widened that
+  // proxy to VTL for the HUD conversation pane. Fixing the route fixed its callers.
 
   // ── The whole admin TESTING pane. /api/admin/testing/memory/health measured 403. ──
   'apps/operator/app/admin/testing/_components/DesktopPerfTrendPanel.tsx :: /api/admin/testing/desktop-perf-trend',

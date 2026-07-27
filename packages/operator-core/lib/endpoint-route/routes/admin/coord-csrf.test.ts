@@ -13,10 +13,12 @@ import { describe, expect, it } from 'vitest';
 import coordRoutes from './coord';
 import inboxReplyRoutes from './coord-inbox-reply';
 import coordinationRoutes from './coordination';
+import plansRoutes from './plans';
 
 const coordWrite = coordRoutes[0];
 const inboxReply = inboxReplyRoutes[0];
 const coordination = coordinationRoutes[0];
+const plansWrite = plansRoutes[1];
 
 function post(path: string, origin: string | null, body: unknown) {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -105,5 +107,40 @@ describe('coordination proxy — CSRF backstop (WI-6486)', () => {
       params: { group: 'sessions', verb: 'list' },
     } as never)) as Response;
     expect(res.status).not.toBe(404);
+  });
+});
+
+/**
+ * WI-6500 — POST /admin/plans/:verb joined the VTL set because the left sidebar's
+ * plan load 403'd on the cookie-less desktop webview (owner-reported: "plans:get →
+ * 403: trust unverified-loopback not in allowlist").
+ *
+ * The read half is what the owner hit, but widening the tier necessarily widened the
+ * WRITE route too — and plans writes are not cosmetic (set-status, add-item, edit,
+ * promote). So the CSRF guard is the only thing left standing between a foreign page
+ * and a plan mutation. These pin it.
+ */
+describe('plans admin write route — CSRF backstop (WI-6500)', () => {
+  it('refuses a cross-origin browser POST', async () => {
+    const req = post('/admin/plans/set-status', 'https://evil.example', { slug: 'x', status: 'shipped' });
+    const res = (await plansWrite.handler(req as never, { params: { verb: 'set-status' } } as never)) as Response;
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'cross_origin_blocked' });
+  });
+
+  it('refuses BEFORE dispatching the verb — an unknown verb still 403s, not 404s', async () => {
+    // Proves ordering: the guard runs ahead of verb resolution, so no write path is
+    // reachable cross-origin even for a verb that would otherwise short-circuit.
+    const req = post('/admin/plans/nope', 'https://evil.example', {});
+    const res = (await plansWrite.handler(req as never, { params: { verb: 'nope' } } as never)) as Response;
+    expect(res.status).toBe(403);
+  });
+
+  it('lets desktop-webview origins and no-Origin native fetches through', async () => {
+    for (const origin of ['http://127.0.0.1:3055', 'tauri://tauri.localhost', null]) {
+      const req = post('/admin/plans/nope', origin, {});
+      const res = (await plansWrite.handler(req as never, { params: { verb: 'nope' } } as never)) as Response;
+      expect(res.status, `plans origin=${origin}`).toBe(404);
+    }
   });
 });
