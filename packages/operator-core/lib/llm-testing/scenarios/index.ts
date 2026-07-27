@@ -146,6 +146,15 @@ import { SU_S29_GRADE_LOW_WAKES_ORIGINATOR } from './su/S29-grade-low-wakes-orig
 // SU-S30: unconditional-bug-filing-prompt-hardening-2026-07-11 — a suspected bug (INCLUDING a
 // false-alarm / self-recovered / "transient" signal) is FILED unconditionally, not a judgment call.
 import { SU_S30_BUG_FILING_UNCONDITIONAL } from './su/S30-bug-filing-unconditional';
+// SU-S31a/b/c: agent-protocol-authority-semantics-2026-07-26 P-011 — the information-asymmetry
+// experiment. THREE matched arms over one identical task, differing only in how a peer's handoff
+// conveys the same three facts: (a) control, status-quo Did/Left/Next; (b) prose-equal, same facts
+// unstructured; (c) the labeled knownToMe / couldNotDetermine field. b-vs-c isolates the FIELD's
+// structure (information held constant) — a two-arm a-vs-c test would only show that telling a
+// successor more helps. Design + pre-registered decision rule: ./su/_S31-asymmetry-world.ts.
+import { SU_S31A_ASYMMETRY_CONTROL } from './su/S31a-asymmetry-control';
+import { SU_S31B_ASYMMETRY_PROSE } from './su/S31b-asymmetry-prose';
+import { SU_S31C_ASYMMETRY_FIELD } from './su/S31c-asymmetry-field';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Mug grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './mug/Q01-grade-routed-on-triage';
@@ -294,6 +303,9 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S29_GRADE_LOW_WAKES_ORIGINATOR,
   // unconditional bug-filing hardening (unconditional-bug-filing-prompt-hardening-2026-07-11)
   SU_S30_BUG_FILING_UNCONDITIONAL,
+  SU_S31A_ASYMMETRY_CONTROL,
+  SU_S31B_ASYMMETRY_PROSE,
+  SU_S31C_ASYMMETRY_FIELD,
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,

@@ -84,8 +84,84 @@ describe('release:checkpoint-run', () => {
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({}, MAKE_CTX())) as never);
     expect(b.ok).toBe(true);
-    expect(String(b.note)).toMatch(/EXCLUDED 1 commit/i);
+    // EI-18759622667757826: still warns, but as a PREDICTION — the assertion used to demand the
+    // settled-fact wording ("EXCLUDED 1 commit"), which is the defect, not the contract.
+    expect(String(b.note)).toMatch(/predicted exclusion: 1 commit/i);
     expect(String(b.note)).toContain('my just-landed fix');
+  });
+
+  // EI-18759622667757826: `excludedCommits` is resolved ~1-2s BEFORE the detached run re-resolves
+  // its own candidate, and the quiet cut is a pure age test — so a commit seconds short of the
+  // window ages in and IS judged. Reported as flat fact, that reading told the filer an expensive
+  // healthy run was worthless, and the only lever that looks like a fix is killing it. The reply
+  // must lead with the aging number and name waiting as the correct move.
+  it('EI-18759622667757826: an exclusion about to age in is reported as a probably-pessimistic PREDICTION, not as fact', async () => {
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual.log',
+      willJudge: {
+        candidate: 'aaaaaaa',
+        tip: 'fffffff',
+        quietCutApplied: true,
+        quietCutSec: 240,
+        excludedCommits: ['fffffff my just-landed fix'],
+        excludedPaths: ['packages/operator-core/lib/x.ts'],
+        excludedEligibility: [{ sha: 'fffffff', subject: 'my just-landed fix', eligibleInSec: 2 }],
+        soonestEligibleInSec: 2,
+      },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const note = String(parse((await tool.handler({}, MAKE_CTX())) as never).note);
+
+    expect(note).toMatch(/prediction only/i);
+    expect(note).toMatch(/pessimistic/i);
+    // The load-bearing correction: it says the run will very likely judge it after all.
+    expect(note).toMatch(/very likely judge them after all/i);
+    // …and never leaves "kill the run" as the reader's inference.
+    expect(note).toMatch(/do not kill the run/i);
+    expect(note).toMatch(/checkpoint:await/);
+    // The old settled-fact grammar must not come back: it asserted an unmade decision.
+    expect(note).not.toMatch(/they get the NEXT run/i);
+  });
+
+  it('EI-18759622667757826: an exclusion far from eligibility still reads as a prediction and never recommends killing', async () => {
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual.log',
+      willJudge: {
+        candidate: 'aaaaaaa',
+        tip: 'fffffff',
+        quietCutApplied: true,
+        quietCutSec: 240,
+        excludedCommits: ['fffffff someone elses commit'],
+        excludedPaths: ['apps/operator/x.ts'],
+        excludedEligibility: [{ sha: 'fffffff', subject: 'someone elses commit', eligibleInSec: 180 }],
+        soonestEligibleInSec: 180,
+      },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const note = String(parse((await tool.handler({}, MAKE_CTX())) as never).note);
+
+    expect(note).toMatch(/predicted exclusion/i);
+    expect(note).toMatch(/~180s/);
+    expect(note).toMatch(/killing a live run is never the recovery/i);
+    expect(note).not.toMatch(/prediction only/i);
   });
 
   it('WI-5124: no exclusion warning in `note` when the quiet-cut judged the tip directly', async () => {
@@ -525,7 +601,10 @@ describe('release:checkpoint-run', () => {
     // The generic exclusion notice is kept but DOWNGRADED — it is provably not about the
     // caller's files, so it must not read as a warning that shadows the positive answer.
     expect(String(b.note)).toMatch(/none of the files you named/);
-    expect(String(b.note)).not.toMatch(/⚠ quiet-cut EXCLUDED/);
+    // EI-18759622667757826: assert it carries NO warning marker at all. The old assertion
+    // pinned one literal string ("⚠ quiet-cut EXCLUDED") that no longer exists, so it had
+    // silently degraded into a test that could never fail.
+    expect(String(b.note)).not.toMatch(/⚠/);
   });
 
   it('answers containment on the already_running path too — that verdict is the one landing', async () => {

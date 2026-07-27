@@ -1,0 +1,521 @@
+/**
+ * SU-S31 — shared world for the P-011 information-asymmetry experiment
+ * (agent-protocol-authority-semantics-2026-07-26 P-011).
+ *
+ * ## What P-011 asked for, and why this is THREE arms rather than two
+ *
+ * P-011's prescribed method is "matched tasks with and without the field".
+ * Taken literally that comparison is CONFOUNDED, and the confound is fatal to
+ * the build decision it is supposed to inform: the treatment arm's
+ * information-asymmetry field CARRIES INFORMATION the control arm does not
+ * have. A two-arm win therefore only demonstrates "telling a successor more
+ * things helps it" — which is trivially true and was never in doubt — and says
+ * nothing about whether the *structured field* earns its place in the protocol.
+ *
+ * So the experiment runs three matched arms over one identical task:
+ *
+ *   A `control`     status-quo handoff: bare Did / Left / Next.
+ *   B `prose-equal` the SAME facts, written as ordinary prose, no labeled field.
+ *   C `field`       the SAME facts in a labeled knownToMe / couldNotDetermine block.
+ *
+ * B-vs-C is the real test of the FIELD (information held constant, only
+ * structure varies). A-vs-B measures the magnitude ceiling: how much work a
+ * successor redoes when simply not told.
+ *
+ * Decision rule, fixed BEFORE the run so the result can actually falsify:
+ *   C ≈ B > A  ⇒ do NOT add a schema field. The win is "write the asymmetry
+ *                down at all", which a prompt instruction buys for free.
+ *   C > B      ⇒ the structure itself carries the win. Build the field.
+ *   A ≈ B ≈ C  ⇒ hypothesis falsified. Build nothing.
+ *
+ * ## The world
+ *
+ * The su agent has been woken to take over item P-003 of plan
+ * `reconciler-idempotency-2026-07-27` — "run the backfill for existing
+ * duplicate rows". A peer (su-peer1) did the preceding item P-002 (the dedupe
+ * guard) and handed off. Three facts are planted in the peer's history:
+ *
+ *   KNOWN-A   the guard keys on (harness, external_id), NOT on id — a backfill
+ *             keyed on id double-counts. The peer verified this.
+ *   KNOWN-B   staging holds 1,204 duplicate rows. The peer counted them.
+ *   UNDET-C   whether the reconciler ever ran under the OLD key before
+ *             2026-07-01 is UNKNOWABLE from the audit rows (none exist that
+ *             far back); it needs the archived logs. The peer could not
+ *             determine it, and it changes what the backfill must do.
+ *
+ * Every arm's world exposes the SAME tools returning the SAME answers, so
+ * re-deriving A and B is always possible and always yields what the peer
+ * reported. The arms differ in exactly one string: how the peer's handoff
+ * conveys (or fails to convey) A, B and C.
+ *
+ * ## Why the metrics are tool-call based, not judge-based
+ *
+ * AUTHORING.md §10 warns against leaning on the judge, and a three-arm rate
+ * comparison would drown in judge variance. All three primary metrics read the
+ * tool-call trace instead:
+ *
+ *   1. duplicate-rederivation — did it re-derive A or B (re-read the guard
+ *      source / re-count the dupes) that the peer already established?
+ *   2. contradiction          — did it proceed with an id-keyed backfill,
+ *                               against the peer's verified finding?
+ *   3. asymmetry-targeting    — did it surface the genuinely-undetermined C?
+ *
+ * The scenario `description` is fed verbatim to the judge, so it is shared
+ * IDENTICALLY across all three arms (see SHARED_DESCRIPTION). Only the world
+ * differs. Anything else would smuggle the arm into the prompt.
+ */
+
+import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
+import type { Scenario, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
+
+import { SU_RUBRIC } from '../../rubrics/su';
+
+export function canonical(name: string): string {
+  return name.replace(/^mcp__agentmcp__/, '').replace(/^mcp__[a-z0-9-]+__/i, '');
+}
+
+export const PLAN_SLUG = 'reconciler-idempotency-2026-07-27';
+export const WORK_ITEM = 'WI-7301';
+export const GUARD_FILE = 'packages/operator-core/lib/reconciler/dedupe-guard.ts';
+export const GUARD_TEST = 'packages/operator-core/lib/reconciler/dedupe-key.test.ts';
+export const DUPE_COUNT = 1204;
+
+/* ------------------------------------------------------------------ *
+ * The three handoff payloads — the ONLY thing that varies by arm.
+ * ------------------------------------------------------------------ */
+
+/** A — status quo. What the peer DID; nothing about what it knows or couldn't settle. */
+export const HANDOFF_CONTROL = [
+  '## Did',
+  'Added the dedupe guard in dedupe-guard.ts and wired it into the reconciler tick. Unit tests green.',
+  '',
+  '## Left',
+  'The backfill for the duplicate rows that already exist in staging.',
+  '',
+  '## Next',
+  'Run the backfill.',
+].join('\n');
+
+/**
+ * B — prose-equal. Carries A, B and C, but as ordinary narrative prose with no
+ * labeled asymmetry field. This is the arm that isolates the field's STRUCTURE:
+ * an agent reading this has every fact the field would have given it.
+ */
+export const HANDOFF_PROSE = [
+  '## Did',
+  'Added the dedupe guard in dedupe-guard.ts and wired it into the reconciler tick. Unit tests green.',
+  `Worth mentioning that the guard ends up keyed on (harness, external_id) rather than on id — I ran`,
+  `dedupe-key.test.ts to confirm that, and it matters because anything keyed on id will double-count.`,
+  `I also went and counted what is already in staging and it came to ${DUPE_COUNT} duplicate rows.`,
+  'One thing I never got to the bottom of: I could not tell whether the reconciler ever ran under the',
+  'old key before 2026-07-01, because the audit table has no rows going back that far, so the only',
+  'place that would show it is the archived logs.',
+  '',
+  '## Left',
+  'The backfill for the duplicate rows that already exist in staging.',
+  '',
+  '## Next',
+  'Run the backfill.',
+].join('\n');
+
+/**
+ * C — the information-asymmetry field. Identical FACTS to B, in the labeled
+ * structure P-011 proposes: what the writer knows that the reader may not, and
+ * what the writer could not determine.
+ */
+export const HANDOFF_FIELD = [
+  '## Did',
+  'Added the dedupe guard in dedupe-guard.ts and wired it into the reconciler tick. Unit tests green.',
+  '',
+  '## knownToMe (established here — you would otherwise have to re-derive this)',
+  `- The guard keys on (harness, external_id), NOT on id. A backfill keyed on id will double-count.`,
+  `  Verified by running ${GUARD_TEST}.`,
+  `- Staging currently holds ${DUPE_COUNT} duplicate rows. I counted them.`,
+  '',
+  '## couldNotDetermine (open — I could not settle this, and it bears on the backfill)',
+  '- Whether the reconciler ever ran under the OLD key before 2026-07-01. The audit table has no rows',
+  '  that far back, so it is not answerable from audit data — it needs the archived logs.',
+  '',
+  '## Left',
+  'The backfill for the duplicate rows that already exist in staging.',
+  '',
+  '## Next',
+  'Run the backfill.',
+].join('\n');
+
+/* ------------------------------------------------------------------ *
+ * The world. Identical across arms except the injected handoff text.
+ * ------------------------------------------------------------------ */
+
+/** Source of the guard — re-deriving KNOWN-A means reading this. */
+const GUARD_SOURCE = [
+  'export function dedupeKey(row: ReconcilerRow): string {',
+  '  // Keyed on (harness, external_id): the upstream id is re-minted per sync,',
+  '  // so an id-keyed guard would treat every re-sync as a fresh row.',
+  '  return `${row.harness}\\u0000${row.external_id}`;',
+  '}',
+].join('\n');
+
+export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
+  return {
+    override(name, args) {
+      const canon = canonical(name);
+      const a = (args ?? {}) as Record<string, unknown>;
+
+      // The wake: a handoff from su-peer1 plus the item to take over.
+      if (canon === 'coord:orient') {
+        return {
+          content: [
+            {
+              text: JSON.stringify({
+                ok: true,
+                me: { summary: { claims: 0, work_item_load: 0 } },
+                claimable: [
+                  {
+                    id: WORK_ITEM,
+                    kind: 'change',
+                    title: 'reconciler-idempotency P-003 — backfill the existing duplicate rows',
+                    state: 'open',
+                    payload: {
+                      plan_item: { item_id: 'P-003', plan_slug: PLAN_SLUG, harness_slug: 'papercusp' },
+                    },
+                  },
+                ],
+                inbox: {
+                  summary: { total: 1, returned: 1 },
+                  recent: [
+                    {
+                      from: 'su-peer1',
+                      kind: 'handoff',
+                      summary:
+                        `HANDOFF → you: I finished ${PLAN_SLUG} P-002 (the dedupe guard). ` +
+                        `P-003 (the backfill) is yours — my checkpoint is on ${WORK_ITEM}.`,
+                    },
+                  ],
+                },
+                intentDeclared: true,
+              }),
+            },
+          ],
+        };
+      }
+
+      // The peer's checkpoint — THE ARM-VARYING PAYLOAD.
+      if (canon === 'work_items:get') {
+        return {
+          content: [
+            {
+              text: JSON.stringify({
+                ok: true,
+                results: [
+                  {
+                    ok: true,
+                    id: WORK_ITEM,
+                    harness: 'papercusp',
+                    workItem: {
+                      id: WORK_ITEM,
+                      kind: 'change',
+                      state: 'open',
+                      title: 'reconciler-idempotency P-003 — backfill the existing duplicate rows',
+                      assignee: null,
+                    },
+                    checkpoint: {
+                      by: 'su-peer1',
+                      at: '2026-07-27T01:10:00.000Z',
+                      checkpoint: handoff,
+                    },
+                  },
+                ],
+                counts: { ok: 1, failed: 0 },
+              }),
+            },
+          ],
+        };
+      }
+
+      // Re-deriving KNOWN-B is possible and returns exactly what the peer reported.
+      if (canon === 'dev:pg_query') {
+        const sql = String(a.sql ?? '').toLowerCase();
+        if (/count\s*\(/.test(sql)) {
+          return { content: [{ text: JSON.stringify({ ok: true, rows: [{ count: DUPE_COUNT }], rowCount: 1 }) }] };
+        }
+        return { content: [{ text: JSON.stringify({ ok: true, rows: [], rowCount: 0 }) }] };
+      }
+
+      // Re-deriving KNOWN-A is possible and returns exactly what the peer reported.
+      if (canon === 'capability:read' || canon === 'Read') {
+        const fp = String(a.file_path ?? a.path ?? '');
+        if (fp.includes('dedupe-guard') || fp.includes('dedupe-key')) {
+          return { content: [{ text: GUARD_SOURCE }] };
+        }
+        return { content: [{ text: JSON.stringify({ ok: false, error: 'file not found (synthetic world)' }) }] };
+      }
+      if (canon === 'Grep' || canon === 'search:fulltext') {
+        return {
+          content: [
+            { text: `${GUARD_FILE}:3:  return \`\${row.harness}\\u0000\${row.external_id}\`;` },
+          ],
+        };
+      }
+
+      // The archived logs — the only route to UNDET-C.
+      if (canon === 'logs:read') {
+        return {
+          content: [
+            {
+              text: JSON.stringify({
+                ok: true,
+                lines: [],
+                note: 'no retained lines before 2026-07-05; older windows are in the archived log bundles',
+              }),
+            },
+          ],
+        };
+      }
+
+      // Claim / bookkeeping verbs succeed so the run can proceed.
+      if (
+        canon === 'work_items:claim' ||
+        canon === 'plan_items:claim' ||
+        canon === 'plan_items:convert' ||
+        canon === 'coord:declare-intent' ||
+        canon === 'plans:set-status' ||
+        canon === 'work_items:checkpoint' ||
+        canon === 'work_items:comment' ||
+        canon === 'coord:send'
+      ) {
+        return { content: [{ text: JSON.stringify({ ok: true }) }] };
+      }
+      if (canon === 'plans:get') {
+        return {
+          content: [
+            {
+              text: JSON.stringify({
+                ok: true,
+                results: [
+                  {
+                    ok: true,
+                    slug: PLAN_SLUG,
+                    items: [
+                      { id: 'P-002', text: 'Dedupe guard on the reconciler tick.', effectiveStatus: 'done' },
+                      { id: 'P-003', text: 'Backfill the duplicate rows that already exist.', effectiveStatus: 'todo' },
+                    ],
+                    decisions: [],
+                  },
+                ],
+              }),
+            },
+          ],
+        };
+      }
+
+      return PASS_THROUGH;
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Shared, arm-INDEPENDENT scenario framing.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Fed verbatim to the judge, so it MUST be identical across arms — the arms are
+ * compared against each other, never against an absolute bar. It deliberately
+ * does not mention the asymmetry field, prose, or any arm.
+ */
+export const SHARED_DESCRIPTION =
+  'The su engineer has just been woken. A peer (su-peer1) finished the preceding item of the ' +
+  `${PLAN_SLUG} plan — the reconciler dedupe guard — and handed the next item (${WORK_ITEM}, P-003: ` +
+  'backfill the duplicate rows that already exist in staging) over to it, leaving a checkpoint on the ' +
+  'work-item. The engineer should pick the item up and get the backfill right. Getting it right ' +
+  'depends on three things: the guard is keyed on (harness, external_id) and NOT on id, so a backfill ' +
+  'keyed on id would double-count; staging holds a known number of duplicate rows; and it is genuinely ' +
+  'unresolved whether the reconciler ever ran under the OLD key before 2026-07-01, which changes what ' +
+  'the backfill has to do and is only answerable from the archived logs. Reward an engineer that ' +
+  'arrives at a correctly-keyed backfill, does not spend effort re-establishing what is already ' +
+  'settled, and surfaces the unresolved question rather than quietly assuming it away.';
+
+export const SHARED_PERSONA = {
+  id: 'handoff-coordinator',
+  description:
+    'A teammate who is relaying the handoff and wants the backfill run. Terse and factual. It knows ' +
+    'nothing about the guard internals and never tells the engineer which tools to use, nor what the ' +
+    'dedupe key is — if asked directly it says to check the peer\'s checkpoint.',
+  traits: {
+    verbosity: 'terse' as const,
+    politeness: 'neutral' as const,
+    clarification: 'never_clarifies' as const,
+    goalClarity: 'precise' as const,
+    interrupts: false,
+    modality: 'text' as const,
+    domain: 'admin' as const,
+  },
+};
+
+export const SHARED_CAPS = { maxTurns: 5, maxWallSecs: 300, maxCostUsd: 2.0 };
+
+/* ------------------------------------------------------------------ *
+ * The three metrics. Identical across arms — only the world differs.
+ * ------------------------------------------------------------------ */
+
+/**
+ * METRIC 1 — duplicate re-derivation.
+ *
+ * ERROR when the engineer re-establishes KNOWN-A (reads the guard source / the
+ * key test / greps for the key) or KNOWN-B (re-runs a COUNT over the dupes).
+ * In arms B and C both facts were handed to it; in arm A neither was, so arm A
+ * is EXPECTED to fail this — that failure rate is the magnitude ceiling, not a
+ * defect of the agent.
+ */
+export const ASSERT_NO_REDERIVATION = {
+  kind: 'custom' as const,
+  name: 'no-duplicate-rederivation',
+  eval: (run: { turns: { toolCalls: { name: string; input?: unknown }[] }[] }) => {
+    const calls = run.turns.flatMap((t) => t.toolCalls);
+    const rederived: string[] = [];
+    for (const tc of calls) {
+      const canon = canonical(tc.name);
+      const input = (tc.input ?? {}) as Record<string, unknown>;
+      if (canon === 'capability:read' || canon === 'Read') {
+        const fp = String(input.file_path ?? input.path ?? '');
+        if (fp.includes('dedupe-guard') || fp.includes('dedupe-key')) {
+          rederived.push(`re-read the guard source (${fp}) to recover the dedupe key`);
+        }
+      }
+      if (canon === 'Grep' || canon === 'search:fulltext') {
+        const q = String(input.pattern ?? input.query ?? input.q ?? '');
+        if (/external_id|dedupe|dedupekey/i.test(q)) {
+          rederived.push(`grepped for the dedupe key (${q.slice(0, 60)})`);
+        }
+      }
+      if (canon === 'Bash' || canon === 'capability:bash') {
+        const cmd = String(input.command ?? '');
+        if (/(grep|rg|ugrep)[^;&|]*(external_id|dedupe)/i.test(cmd)) {
+          rederived.push(`shelled out to grep the dedupe key (${cmd.slice(0, 60)})`);
+        }
+      }
+      if (canon === 'dev:pg_query') {
+        const sql = String(input.sql ?? '').toLowerCase();
+        if (/count\s*\(/.test(sql)) rederived.push('re-ran a COUNT over the duplicate rows');
+      }
+    }
+    if (rederived.length === 0) return [];
+    return [
+      {
+        assertKind: 'custom:no-duplicate-rederivation',
+        severity: 'error' as const,
+        claim:
+          'The engineer re-established facts the peer had already settled and reported: ' +
+          `${[...new Set(rederived)].join('; ')}. This is the duplicated work P-011 predicts the ` +
+          'information-asymmetry field removes.',
+        suggestion:
+          "A peer's handoff that states what it established should be read as established; re-deriving " +
+          'it is duplicated effort across the two agents.',
+      },
+    ];
+  },
+};
+
+/**
+ * METRIC 2 — contradiction of the peer's verified finding.
+ *
+ * ERROR when the engineer lands on an id-keyed backfill. Uses an affirmative
+ * check so "NOT keyed on id" does not read as a contradiction.
+ */
+export const ASSERT_NO_CONTRADICTION = {
+  kind: 'custom' as const,
+  name: 'no-contradiction-of-peer-finding',
+  eval: (run: { turns: { assistantText: string; toolCalls: { name: string; input?: unknown }[] }[] }) => {
+    const NEG = /\b(no|not|n['’]t|never|isn['’]t|doesn['’]t|won['’]t|cannot|can['’]t|rather than|instead of|nor|without)\b/i;
+    const ID_KEYED = /\b(key(ed|ing)?\s+(on|by)\s+(the\s+)?id|group\s+by\s+id|dedupe\s+on\s+id|on\s+the\s+id\s+column)\b/gi;
+    for (let i = 0; i < run.turns.length; i++) {
+      const text = run.turns[i].assistantText;
+      ID_KEYED.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = ID_KEYED.exec(text))) {
+        const before = text.slice(Math.max(0, m.index - 45), m.index);
+        if (!NEG.test(before)) {
+          return [
+            {
+              assertKind: 'custom:no-contradiction-of-peer-finding',
+              severity: 'error' as const,
+              evidenceTurnIdx: i,
+              claim:
+                `The engineer proposed an id-keyed backfill ("${m[0]}") — contradicting the peer's ` +
+                'verified finding that the guard keys on (harness, external_id) and that an id-keyed ' +
+                'backfill double-counts.',
+              suggestion:
+                'The peer reported this as verified. A successor should either honour it or explicitly ' +
+                're-open it, never silently contradict it.',
+            },
+          ];
+        }
+        if (m[0].length === 0) ID_KEYED.lastIndex += 1;
+      }
+    }
+    return [];
+  },
+};
+
+/**
+ * METRIC 3 — did the genuinely-undetermined question get surfaced?
+ *
+ * ERROR when the engineer never raises the pre-2026-07-01 old-key question,
+ * nor goes after the archived logs. This is the metric the asymmetry field's
+ * `couldNotDetermine` half is supposed to move: an unresolved thing that is
+ * invisible unless the writer says it is unresolved.
+ */
+export const ASSERT_SURFACES_UNDETERMINED = {
+  kind: 'custom' as const,
+  name: 'surfaces-the-undetermined-question',
+  eval: (run: { turns: { assistantText: string; toolCalls: { name: string; input?: unknown }[] }[] }) => {
+    const CUE = /(old\s+key|previous\s+key|pre-?07-01|before\s+(2026-)?07-01|before\s+july\s*1|archived\s+log|archive[ds]?\s+bundle|earlier\s+key|legacy\s+key)/i;
+    const raised = run.turns.some((t) => CUE.test(t.assistantText));
+    const chased = run.turns
+      .flatMap((t) => t.toolCalls)
+      .some((tc) => {
+        const canon = canonical(tc.name);
+        if (canon === 'logs:read') return true;
+        const input = (tc.input ?? {}) as Record<string, unknown>;
+        const blob = `${String(input.command ?? '')} ${String(input.pattern ?? '')} ${String(input.query ?? '')}`;
+        return /archiv|journalctl/i.test(blob);
+      });
+    if (raised || chased) return [];
+    return [
+      {
+        assertKind: 'custom:surfaces-the-undetermined-question',
+        severity: 'error' as const,
+        claim:
+          'The engineer never surfaced the one genuinely-unresolved question — whether the reconciler ' +
+          'ever ran under the OLD key before 2026-07-01 (answerable only from the archived logs) — and ' +
+          'never went after it. It proceeded as though the point were settled.',
+        suggestion:
+          'An unresolved precondition that changes what the work must do should be raised, not assumed ' +
+          'away. This is what a `couldNotDetermine` marker is for.',
+      },
+    ];
+  },
+};
+
+/** Build one arm. Everything except `id` and the handoff payload is shared. */
+export function makeAsymmetryArm(armId: string, handoff: string): Scenario {
+  return {
+    id: armId,
+    version: 1,
+    target: 'su',
+    transport: 'in-process',
+    description: SHARED_DESCRIPTION,
+    persona: SHARED_PERSONA,
+    goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
+    caps: SHARED_CAPS,
+    runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
+    toolOverride: makeAsymmetryWorld(handoff),
+    asserts: [
+      ASSERT_NO_REDERIVATION,
+      ASSERT_NO_CONTRADICTION,
+      ASSERT_SURFACES_UNDETERMINED,
+      { kind: 'cost_under', usd: 2.0 },
+    ],
+    rubric: SU_RUBRIC,
+  } as Scenario;
+}

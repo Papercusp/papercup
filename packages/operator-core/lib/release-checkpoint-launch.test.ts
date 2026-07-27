@@ -27,6 +27,7 @@ import {
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
   CHECKPOINT_MAX_RUNTIME_SEC,
+  CANDIDATE_RERESOLVE_WINDOW_SEC,
   REPLACE_STALE_MIN_AGE_SEC,
   classifyReplaceRequest,
   checkpointCandidateContainment,
@@ -557,7 +558,8 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
       if (j.includes('show -s --format=%ct')) return { status: 0, stdout: String(nowSec - 30), stderr: '' }; // 30s old — well inside the default 240s quiet window
       if (j.includes('rev-list -1 --before=')) return { status: 0, stdout: agedCandidate, stderr: '' };
       if (j.includes('rev-parse --verify ready')) return { status: 1, stdout: '', stderr: '' }; // no ready ref → skip the ancestor guard
-      if (j.includes('log --oneline --no-decorate')) return { status: 0, stdout: `${freshTip.slice(0, 7)} my just-landed fix\n`, stderr: '' };
+      if (j.includes('log --no-decorate --format='))
+        return { status: 0, stdout: `${freshTip.slice(0, 7)}\x1f${nowSec - 30}\x1fmy just-landed fix\n`, stderr: '' };
       return { status: 1, stdout: '', stderr: '' };
     });
 
@@ -572,6 +574,72 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
       quietCutApplied: true,
       excludedCommits: [`${freshTip.slice(0, 7)} my just-landed fix`],
     });
+  });
+
+  // EI-18759622667757826: the exclusion is a pure AGE test, so a commit that is merely SECONDS
+  // short of the quiet window ages into eligibility before the detached run re-resolves its own
+  // candidate ~1-2s later — and is judged after all. Reporting that commit as flatly "excluded"
+  // told the filer its in-flight run was worthless; the run went green and shipped. The launch
+  // reply must therefore carry HOW CLOSE each exclusion is, not just that it exists.
+  it('EI-18759622667757826: reports per-commit eligibleInSec so a seconds-short exclusion is visibly about to flip', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const freshTip = 'f'.repeat(40);
+    const agedCandidate = 'a'.repeat(40);
+    const nowSec = Math.floor(Date.now() / 1000);
+    // The real incident's numbers: the fix was 238s old against the default 240s quiet window.
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl') return { status: 0, stdout: 'ActiveState=inactive', stderr: '' };
+      const j = args.join(' ');
+      if (j.includes('rev-parse HEAD')) return { status: 0, stdout: freshTip, stderr: '' };
+      if (j.includes('show -s --format=%ct')) return { status: 0, stdout: String(nowSec - 238), stderr: '' };
+      if (j.includes('rev-list -1 --before=')) return { status: 0, stdout: agedCandidate, stderr: '' };
+      if (j.includes('rev-parse --verify ready')) return { status: 1, stdout: '', stderr: '' };
+      if (j.includes('log --no-decorate --format='))
+        return {
+          status: 0,
+          // 238s old (2s short) and 200s old (40s short) — one flips, one does not.
+          stdout: `1111111\x1f${nowSec - 238}\x1fthe fix I just landed\n2222222\x1f${nowSec - 200}\x1fsomeone else's commit\n`,
+          stderr: '',
+        };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+
+    const p = launchDetachedCheckpoint({ root: '/tree' }, spawnFn, execFn, () => null);
+    child.emit('close', 0);
+    const r = await p;
+
+    expect(r.launched).toBe(true);
+    const eligibility = r.willJudge?.excludedEligibility ?? [];
+    expect(eligibility).toHaveLength(2);
+    // 240 - 238 = 2s away: inside the re-resolution window, so this run very likely DOES judge it.
+    expect(eligibility[0]).toMatchObject({ sha: '1111111', subject: 'the fix I just landed' });
+    expect(eligibility[0]!.eligibleInSec).toBeLessThanOrEqual(CANDIDATE_RERESOLVE_WINDOW_SEC);
+    // 240 - 200 = 40s away: genuinely outside this run.
+    expect(eligibility[1]!.eligibleInSec).toBeGreaterThan(CANDIDATE_RERESOLVE_WINDOW_SEC);
+    expect(r.willJudge?.soonestEligibleInSec).toBe(eligibility[0]!.eligibleInSec);
+    // The subject survives the field split even though it contains an apostrophe/spaces.
+    expect(r.willJudge?.excludedCommits).toContain("2222222 someone else's commit");
+  });
+
+  it('EI-18759622667757826: soonestEligibleInSec is null when the quiet-cut excluded nothing', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const tip = 'c'.repeat(40);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl') return { status: 0, stdout: 'ActiveState=inactive', stderr: '' };
+      const j = args.join(' ');
+      if (j.includes('rev-parse HEAD')) return { status: 0, stdout: tip, stderr: '' };
+      if (j.includes('show -s --format=%ct')) return { status: 0, stdout: String(nowSec - 9999), stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+
+    const p = launchDetachedCheckpoint({ root: '/tree' }, spawnFn, execFn, () => null);
+    child.emit('close', 0);
+    const r = await p;
+
+    expect(r.willJudge).toMatchObject({ excludedEligibility: [], soonestEligibleInSec: null });
   });
 
   it('WI-5124: willJudge.quietCutApplied is false and excludedCommits is empty when the tip is old enough to judge directly', async () => {

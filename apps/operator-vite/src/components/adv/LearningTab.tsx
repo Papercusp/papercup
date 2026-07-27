@@ -5333,7 +5333,7 @@ export function LearningStyles() {
          slide UNDER it rather than through it. */
       .pc-learning__sectionhead--stickyruns {
         position: sticky; top: 0; z-index: 3;
-        background: var(--bg-0, #070d15); padding: 4px 0 5px;
+        background: var(--bg, #07101d); padding: 4px 0 5px;
         box-shadow: 0 6px 10px -8px rgba(0,0,0,0.85);
       }
       .pc-learning__runsrecency {

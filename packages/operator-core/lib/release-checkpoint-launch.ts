@@ -114,13 +114,24 @@ export interface LaunchCheckpointResult {
   /** EI-9672: set when `replaceStale:true` found the active run CONFIRMED stale and stopped
    *  it before this launch — the detail of what was stopped, for the caller's audit trail. */
   replacedStale?: ActiveCheckpointCheck;
-  /** WI-5124: which commit this launch will ACTUALLY judge, computed the same way the run
+  /** WI-5124: which commit this launch is PREDICTED to judge, computed the same way the run
    *  itself resolves it (quiet-cut applied) — set on every launch attempt (successful or
    *  refused), so a caller who just committed a fix and re-fires can see, from the REPLY
-   *  alone, whether their fix is IN or EXCLUDED from this run. Absent only if the git reads
-   *  themselves failed (current_head null). */
+   *  alone, whether their fix is likely IN or OUT of this run. Absent only if the git reads
+   *  themselves failed (current_head null).
+   *
+   *  EI-18759622667757826 — THIS IS A PREDICTION, NEVER SETTLED FACT, and its most likely
+   *  error is the DANGEROUS direction. The quiet cut is purely an AGE test (`rev-list
+   *  --before=@(now - quietCutSec)`) and the detached run re-resolves its OWN candidate ~1-2s
+   *  after launch — so a commit excluded here merely for being seconds too young AGES INTO
+   *  eligibility inside that gap and is judged after all. That is not an exotic race: it is
+   *  the expected outcome for the "I just fixed the reds, re-judge" caller this field exists
+   *  for, whose fix is by construction seconds old. Reported pessimistically it tells a caller
+   *  its expensive in-flight run is worthless, and the cheapest-looking recovery is to KILL the
+   *  run — which is how a healthy run nearly died on 2026-07-27. `excludedEligibility` below
+   *  quantifies the gap per commit so no caller has to guess. */
   willJudge?: {
-    /** The commit that will be judged (post quiet-cut). */
+    /** The commit predicted to be judged (post quiet-cut). */
     candidate: string | null;
     /** The true tip of the integration branch BEFORE any quiet-cut step-back. */
     tip: string | null;
@@ -140,6 +151,16 @@ export interface LaunchCheckpointResult {
      *  "if your fix is among them" the EI-18752644493166307 filer had to resolve by hand).
      *  Answering in path-space is what makes the warning actionable. */
     excludedPaths: string[];
+    /** EI-18759622667757826: per excluded commit, how many seconds until it AGES INTO quiet-cut
+     *  eligibility (0 = already eligible; it is excluded only because the candidate was resolved
+     *  a moment ago). Anything at or below CANDIDATE_RERESOLVE_WINDOW_SEC will very likely be
+     *  judged by THIS run despite appearing in `excludedCommits` — this is the field that turns
+     *  "your fix may not be in this run" from an unfalsifiable hedge into a number the caller
+     *  can act on. */
+    excludedEligibility: { sha: string; subject: string; eligibleInSec: number }[];
+    /** The smallest `eligibleInSec` across `excludedEligibility` (null when nothing is excluded)
+     *  — the single number that says how much to trust the exclusion prediction. */
+    soonestEligibleInSec: number | null;
   };
 }
 
@@ -253,14 +274,46 @@ function shaMatches(a: string | null | undefined, b: string | null | undefined):
   return a.startsWith(b) || b.startsWith(a);
 }
 
-/** WI-5124: one-line `sha subject` entries for commits strictly newer than `from` up to (and
- *  including) `to` — the sync/execFn counterpart of git-ops.ts's async `commitsBetween`, for
- *  reporting `willJudge.excludedCommits` on a launch. `from === to` (nothing excluded) short-
- *  circuits without a git call. */
-function commitsBetweenSync(root: string, from: string, to: string, execFn: ExecSyncLike): string[] {
+/** EI-18759622667757826: the launch→re-resolution gap. `launchDetachedCheckpoint` resolves the
+ *  predicted candidate immediately before spawning; the detached run then resolves its OWN
+ *  candidate ~1-2s later. An excluded commit that ages into eligibility within this window is
+ *  therefore judged after all, and any warning that says otherwise is actively misleading. Set
+ *  generously (spawn + node startup under load) — the cost of over-inclusion is a hedged
+ *  sentence, the cost of under-inclusion is a caller killing a healthy run. */
+export const CANDIDATE_RERESOLVE_WINDOW_SEC = 10;
+
+/** WI-5124 / EI-18759622667757826: commits strictly newer than `from` up to (and including)
+ *  `to` — the sync/execFn counterpart of git-ops.ts's async `commitsBetween`, for reporting
+ *  `willJudge`. Returns the one-line `sha subject` entry AND the commit's own age against the
+ *  quiet window, because the exclusion is a pure age test and "how close is it?" is the whole
+ *  question a caller needs answered. `from === to` (nothing excluded) short-circuits without a
+ *  git call. */
+function excludedCommitsSync(
+  root: string,
+  from: string,
+  to: string,
+  quietSec: number | null,
+  execFn: ExecSyncLike,
+): { line: string; sha: string; subject: string; eligibleInSec: number }[] {
   if (from === to) return [];
-  const out = gitOutput(root, ['log', '--oneline', '--no-decorate', `${from}..${to}`], execFn);
-  return out ? out.split('\n').filter(Boolean) : [];
+  // %x1f (unit separator) — a subject may contain anything, including the spaces that make
+  // --oneline unparseable back into fields.
+  const out = gitOutput(root, ['log', '--no-decorate', '--format=%h%x1f%ct%x1f%s', `${from}..${to}`], execFn);
+  if (!out) return [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  return out
+    .split('\n')
+    .filter(Boolean)
+    .map((raw) => {
+      const [sha = '', ctRaw = '', ...rest] = raw.split('\x1f');
+      const subject = rest.join('\x1f');
+      const ct = Number(ctRaw);
+      // Eligible once its age reaches the quiet window: at ct + quietSec. Unknown/disabled
+      // quiet window ⇒ 0 (nothing is being held back by age).
+      const eligibleInSec =
+        quietSec && Number.isFinite(ct) ? Math.max(0, ct + quietSec - nowSec) : 0;
+      return { line: `${sha} ${subject}`.trim(), sha, subject, eligibleInSec };
+    });
 }
 
 /** P-004: the FILES the `(from, to]` window touches — `commitsBetweenSync` in path-space. */
@@ -990,24 +1043,28 @@ export function launchDetachedCheckpoint(
   // the LaunchCheckpointResult.willJudge doc for the benign launch-time-vs-run-time race this
   // does not (and cannot) close.
   const current = currentCheckpointCandidate(root, execFn);
+  const tipSha = current.current_head;
+  const candidateSha = current.current_candidate;
+  const quietCutApplied = Boolean(tipSha && candidateSha && tipSha !== candidateSha);
+  const excluded =
+    quietCutApplied && candidateSha && tipSha
+      ? excludedCommitsSync(root, candidateSha, tipSha, current.quiet_cut_sec, execFn)
+      : [];
   const willJudge: LaunchCheckpointResult['willJudge'] = {
-    candidate: current.current_candidate,
-    tip: current.current_head,
-    quietCutApplied: Boolean(
-      current.current_head && current.current_candidate && current.current_head !== current.current_candidate,
-    ),
+    candidate: candidateSha,
+    tip: tipSha,
+    quietCutApplied,
     quietCutSec: current.quiet_cut_sec,
-    excludedCommits:
-      current.current_head && current.current_candidate && current.current_head !== current.current_candidate
-        ? commitsBetweenSync(root, current.current_candidate, current.current_head, execFn)
-        : [],
+    excludedCommits: excluded.map((e) => e.line),
     // P-004: same window, expressed in the space the caller can actually check. Sync
     // (`git diff --name-only`) so it stays inside the single-tick constraint this
     // function's spawn path depends on.
     excludedPaths:
-      current.current_head && current.current_candidate && current.current_head !== current.current_candidate
-        ? pathsBetweenSync(root, current.current_candidate, current.current_head, execFn)
-        : [],
+      quietCutApplied && candidateSha && tipSha ? pathsBetweenSync(root, candidateSha, tipSha, execFn) : [],
+    // EI-18759622667757826: how close each exclusion is to aging in — the difference between
+    // a prediction a caller can act on and one that talks it into killing a healthy run.
+    excludedEligibility: excluded.map(({ sha, subject, eligibleInSec }) => ({ sha, subject, eligibleInSec })),
+    soonestEligibleInSec: excluded.length ? Math.min(...excluded.map((e) => e.eligibleInSec)) : null,
   };
 
   return new Promise<LaunchCheckpointResult>((resolve) => {

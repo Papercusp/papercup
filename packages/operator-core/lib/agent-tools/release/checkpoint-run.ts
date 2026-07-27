@@ -26,6 +26,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import {
+  CANDIDATE_RERESOLVE_WINDOW_SEC,
   checkpointCandidateContainment,
   classifyReplaceRequest,
   launchDetachedCheckpoint,
@@ -190,6 +191,14 @@ export default defineTool({
 
     const excluded = result.willJudge?.excludedCommits ?? [];
     const excludedPaths = result.willJudge?.excludedPaths ?? [];
+    // EI-18759622667757826: the exclusion is a pure AGE test and the detached run re-resolves
+    // its candidate ~1-2s from now, so an excluded commit that is seconds short of the quiet
+    // window will be judged after all. Split them out: the two cases need opposite advice, and
+    // conflating them is what let a caller read "excluded" as "this run is worthless".
+    const agingIn = (result.willJudge?.excludedEligibility ?? []).filter(
+      (e) => e.eligibleInSec <= CANDIDATE_RERESOLVE_WINDOW_SEC,
+    );
+    const soonestSec = result.willJudge?.soonestEligibleInSec ?? null;
 
     // COMPOSED, not either/or. The containment verdict is the SPECIFIC answer and the
     // exclusion notice is the GENERIC one, so containment leads — but the generic notice
@@ -207,15 +216,28 @@ export default defineTool({
     // The old text ended at "if your fix is among them" and listed SHAS — the one space the
     // reader has no information about. Answer in PATH space, which a caller can match
     // against its own edits at a glance.
+    const touchedPart = excludedPaths.length
+      ? `Those commits touch: ${excludedPaths.slice(0, 8).join(', ')}${excludedPaths.length > 8 ? ` (+${excludedPaths.length - 8} more)` : ''}.`
+      : `Excluded: ${excluded.slice(0, 5).join(' | ')}${excluded.length > 5 ? ' | …' : ''}`;
+
+    // EI-18759622667757826: this sentence used to be written in the grammar of settled fact
+    // ("quiet-cut EXCLUDED N commits … they get the NEXT run", "THIS run judges the older
+    // version") about a decision the run had not made yet. It is a PREDICTION taken ~1-2s
+    // before the detached run re-resolves its own candidate, and because the quiet cut is a
+    // pure age test, its most likely error is the pessimistic one — telling a caller its
+    // expensive in-flight run cannot see the fix, when the fix ages in and is judged after
+    // all. A caller who believes that reaches for the only lever that looks like it helps:
+    // killing the run. On 2026-07-27 the filer came within one call of doing exactly that to
+    // the run that then went green and shipped. So: never assert the exclusion as fact, lead
+    // with the aging number when it is about to flip, and never leave "kill it" as the
+    // reader's inference — name waiting as the correct move.
     const excludedPart = !excluded.length
       ? ''
       : declaredAllIn
-        ? ` (${excluded.length} newer commit(s) were excluded from this run, touching ${excludedPaths.slice(0, 4).join(', ') || 'other files'} — none of the files you named, which were checked.)`
-        : ` ⚠ quiet-cut EXCLUDED ${excluded.length} commit(s) newer than the judged candidate (they get the NEXT run). ${
-            excludedPaths.length
-              ? `Those commits touch: ${excludedPaths.slice(0, 8).join(', ')}${excludedPaths.length > 8 ? ` (+${excludedPaths.length - 8} more)` : ''} — if you edited any of them, THIS run judges the older version, and a red from it is not evidence your change failed.`
-              : `Excluded: ${excluded.slice(0, 5).join(' | ')}${excluded.length > 5 ? ' | …' : ''}`
-          }`;
+        ? ` (${excluded.length} newer commit(s) are predicted to fall outside this run, touching ${excludedPaths.slice(0, 4).join(', ') || 'other files'} — none of the files you named, which were checked.)`
+        : agingIn.length
+          ? ` ⚠ PREDICTION ONLY — and this one is probably PESSIMISTIC: ${agingIn.length} of ${excluded.length} commit(s) newer than the predicted candidate age into quiet-cut eligibility within ${CANDIDATE_RERESOLVE_WINDOW_SEC}s (soonest ~${soonestSec ?? 0}s), and this run re-resolves its OWN candidate ~1-2s after launch — so it will very likely judge them after all. ${touchedPart} Do NOT treat this as a verdict on your change and do NOT kill the run over it: wait for the real verdict (checkpoint:await), then release:trace to see what it actually judged.`
+          : ` ⚠ PREDICTED exclusion: ${excluded.length} commit(s) newer than the predicted candidate are expected to fall outside this run${soonestSec == null ? '' : ` (soonest ages into eligibility in ~${soonestSec}s, past the ~1-2s re-resolution window)`}, so they would get the NEXT run. ${touchedPart} If you edited any of them, this run most likely judges the older version and a red from it is not evidence your change failed. The run re-resolves its candidate at start, so confirm with release:trace rather than assuming — and wait for the verdict either way; killing a live run is never the recovery.`;
     const excludedWarning = `${containmentPart}${excludedPart}`;
     return {
       content: [

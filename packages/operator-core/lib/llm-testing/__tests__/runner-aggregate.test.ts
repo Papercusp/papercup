@@ -115,6 +115,11 @@ describe('scenario registry', () => {
       'su-S28-ideate-pass-closes-loop',
       'su-S29-grade-low-wakes-originator',
       'su-S30-bug-filing-unconditional',
+      // information-asymmetry experiment (agent-protocol-authority-semantics-2026-07-26 P-011):
+      // three matched arms, identical task + description, differing only in the peer handoff.
+      'su-S31a-asymmetry-control',
+      'su-S31b-asymmetry-prose',
+      'su-S31c-asymmetry-field',
       // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
       'queen-Q01-grade-routed-on-triage',
       'queen-Q02-owner-grade-sovereign-no-retry',
