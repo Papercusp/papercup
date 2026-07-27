@@ -309,6 +309,78 @@ export interface HandleRefAnnouncementOpts {
   runGit?: RunGit;
 }
 
+/** Ceiling applied to the `openStream` seam when the caller passes no
+ *  `timeoutMs`. Matches `fetchOverDuplex`'s own default posture: generous
+ *  enough that a healthy-but-slow dial is never cut off, finite enough that a
+ *  wedged one cannot pin the tick. */
+const DEFAULT_STREAM_OPEN_TIMEOUT_MS = 30_000;
+
+/**
+ * EI-18752434722211671 — call the caller-supplied `openStream` seam under a
+ * CEILING, resolving null if it never produces a duplex in time.
+ *
+ * `opts.timeoutMs` used to bound only `fetchPeerNamespace`; the
+ * `await opts.openStream()` immediately before it was UNBOUNDED. `openStream`
+ * is arbitrary caller code that dials a live peer — on the P-302 rig its
+ * implementation reached a protomux channel that neither opened nor closed, so
+ * this await never settled, the receive tick never returned, and (because the
+ * tick runs as a DBOS step) the git-sync routine's dedup pin was never
+ * released, rejecting every subsequent enqueue on that device for hours.
+ *
+ * The root cause was fixed in `serve-wiring.ts` (`waitOpened` is now bounded),
+ * but this seam is the injection point for ANY openStream implementation —
+ * including ones that do their own I/O before dialing (git-sync-action's reads
+ * `resolveHiveGitTopicHex` from Postgres first). Bounding it here makes the
+ * receive path structurally incapable of hanging, whatever a caller supplies,
+ * which is what stops this CLASS of wedge from returning.
+ *
+ * A late duplex is DESTROYED rather than leaked — if the seam resolves after we
+ * gave up, that duplex owns a live channel session nobody will ever read.
+ */
+async function openStreamWithinCeiling(
+  openStream: () => Promise<Duplex> | Duplex,
+  timeoutMs: number | undefined,
+): Promise<Duplex | null> {
+  const ms = timeoutMs ?? DEFAULT_STREAM_OPEN_TIMEOUT_MS;
+  let timedOut = false;
+  const pending = (async () => openStream())();
+  const winner = await new Promise<Duplex | null>((resolve) => {
+    const timer = setTimeout(() => {
+      timedOut = true;
+      resolve(null);
+    }, ms);
+    timer.unref?.();
+    void pending.then(
+      (d) => {
+        clearTimeout(timer);
+        resolve(d);
+      },
+      () => {
+        // A THROWN openStream is a failed dial, not a hang — resolve null and
+        // let the caller report `fetch-failed` (the tick's own catch would also
+        // handle it, but reporting here keeps one result per announcement).
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+  if (timedOut) {
+    void pending.then(
+      (late) => {
+        try {
+          late.destroy();
+        } catch {
+          /* best-effort */
+        }
+      },
+      () => {
+        /* already failed — nothing to clean up */
+      },
+    );
+  }
+  return winner;
+}
+
 /**
  * Full receiver pipeline for one inbound announcement against the local mirror
  * `repoPath`: pure acceptance (watermark read from the mirror), sigrefs-oid
@@ -348,7 +420,16 @@ export async function handleRefAnnouncement(
     return { action: 'noop', budgetState: acceptance.budgetState };
   }
 
-  const duplex = await opts.openStream();
+  const duplex = await openStreamWithinCeiling(opts.openStream, opts.timeoutMs);
+  if (!duplex) {
+    return {
+      action: 'fetch-failed',
+      stderr:
+        `openStream did not resolve within ${opts.timeoutMs ?? DEFAULT_STREAM_OPEN_TIMEOUT_MS}ms ` +
+        `(no duplex was ever produced — see EI-18752434722211671)`,
+      budgetState: acceptance.budgetState,
+    };
+  }
   const res = await fetchPeerNamespace(repoPath, duplex, device, { timeoutMs: opts.timeoutMs });
   if (res.code !== 0) {
     return { action: 'fetch-failed', stderr: res.stderr, budgetState: acceptance.budgetState };

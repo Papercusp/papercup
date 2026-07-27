@@ -418,6 +418,25 @@ function waitOpened(state: ChannelState, timeoutMs: number): Promise<boolean> {
   });
 }
 
+/**
+ * The fail-soft return of `openHiveGitFetchDuplex`: an already-destroyed
+ * duplex carrying `reason`. Callers check `.destroyed` (and `fetchOverDuplex`
+ * fast-paths it into a `fetch-failed` result) — they never attach an 'error'
+ * listener, so the destroy-time error is swallowed here. Without that no-op
+ * listener a `.destroy(err)` schedules an UNHANDLED 'error' emission on the
+ * next tick, which is an uncaught exception on the host (the same footgun
+ * peer-dial-registry.ts's `openHiveGitDuplexToDevice` fixed).
+ */
+function failSoftDuplex(reason: string): Duplex {
+  const d = new FrameDuplex(
+    () => {},
+    () => {},
+  );
+  d.on('error', () => {});
+  d.destroy(new Error(reason));
+  return d;
+}
+
 /** A dropped/closed connection fails every in-flight session loudly (destroy,
  *  never a silent hang) — `fetchOverDuplex`/`serveUploadPack` both treat a
  *  destroyed duplex as a failed (nonzero) result, never a thrown exception. */
