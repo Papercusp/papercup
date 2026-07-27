@@ -56,7 +56,7 @@ import { ROUTING_GATE_INTENTS } from '../../routing-gate-hints';
  * Non-terminal only, and deliberately so. Creating an item straight into a terminal
  * state would walk right past the completion-integrity gate (setWorkItemState /
  * setIssueState demand an owner + a completionRef for any terminal transition, and
- * `audit:'no-evidence'` reads the evidence that gate collects) — i.e. it would be a
+ * P-004 stamps the `authority` judgement from the evidence that gate collects) — i.e. it would be a
  * one-call way to manufacture a "done" item with no evidence, the exact laundering
  * EI-10867 exists to stop. If it is genuinely already finished, create it and then
  * work_items:complete it, so the evidence is recorded.

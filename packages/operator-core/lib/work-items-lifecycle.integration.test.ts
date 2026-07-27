@@ -527,7 +527,7 @@ describe('EI-15461 — a feature passing auto-resolves its promoted source issue
     // manually-pre-stringified value cast directly to `::jsonb` gets DOUBLE-encoded
     // (ends up a jsonb *scalar string* instead of an object, silently breaking
     // `metadata ->> 'key'` reads). Same workaround already used in
-    // work-items-audit-no-evidence.integration.test.ts.
+    // work-items-audit-reconciler-sourced.integration.test.ts.
     await db.sql`
       INSERT INTO harness_shared.harness_features_consolidated
         (harness_slug, feature_id, title, status, item_kind, metadata, workspace_id, created_ts, updated_ts)

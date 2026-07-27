@@ -666,9 +666,9 @@ export interface ListIssuesFilter {
    * fleet-leader-frictions P-005 (the issue-family leg of listWorkItems' audit).
    * EI-10867: the predicate now lives in ONE place ({@link auditPredicateSql}) that
    * both families import, so the audit and the write path cannot key on different
-   * fields again — 'no-evidence' means "no structured verification evidence", NOT
-   * "no completion ref" (a column the completion gate forces to be non-null, which is
-   * why the old audit could never fire). Composes with an explicit `state`.
+   * fields again. P-006/D-003 deleted the 'no-evidence' bareness bucket (evidence is
+   * now required at write time — see {@link CompletionAudit} for what survived and
+   * why). Composes with an explicit `state`.
    */
   audit?: CompletionAudit;
   /**

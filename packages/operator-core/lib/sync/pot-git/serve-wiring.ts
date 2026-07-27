@@ -331,8 +331,91 @@ function markOpened(state: ChannelState): void {
   for (const w of waiters) w();
 }
 
-function waitOpened(state: ChannelState): Promise<void> {
-  return state.opened ? Promise.resolve() : new Promise((resolve) => state.openedWaiters.push(resolve));
+/**
+ * EI-18752434722211671 — the ceiling on OPENING a pot-git serve channel.
+ *
+ * Opening a channel on an ALREADY-CONNECTED socket is a single protomux
+ * control-frame round trip (milliseconds); the noise `opened` handshake on a
+ * fresh connection is the slower of the two and still sub-second on a healthy
+ * link. 15s is therefore ~1000x headroom, deliberately matched to the
+ * ref-announce leg's own fetch ceiling so a dead peer costs one ceiling, not
+ * two stacked ones.
+ */
+export const POT_GIT_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
+
+/**
+ * Resolve true when `p` settles (either way) within `ms`, false on the ceiling.
+ * Never rejects — a rejection IS a settle, and every caller here treats "did it
+ * finish in time" as the only question. Unref'd so a pending ceiling can never
+ * hold the process open.
+ */
+function settledWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (v: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(v);
+    };
+    timer = setTimeout(() => done(false), ms);
+    timer.unref?.();
+    void Promise.resolve(p).then(
+      () => done(true),
+      () => done(true),
+    );
+  });
+}
+
+/**
+ * Wait for the channel to open — BOUNDED. Resolves true when it opened, false
+ * when `timeoutMs` elapsed first.
+ *
+ * EI-18752434722211671 (root cause of a device-wide git-sync wedge): this used
+ * to be an UNBOUNDED `new Promise(resolve => state.openedWaiters.push(resolve))`
+ * — it settled ONLY via `markOpened` (channel opened) or `ensureChannel`'s
+ * onclose waiter-flush (channel closed). A channel that does NEITHER — opened
+ * but never accepted by a peer that is wired yet wedged, a muxer torn down
+ * without that channel's onclose firing — left this await pending FOREVER.
+ * `resolveMuxStream`'s own comment above already named the symptom ("our own
+ * `onopen` never fires and `waitOpened` hangs forever"), but only ONE cause of
+ * it (the pair() open race) was ever fixed; the await itself stayed unbounded,
+ * so every other cause still hung.
+ *
+ * That hang is NOT survivable by the callers' own timeouts: `fetchOverDuplex`'s
+ * ceiling covers the FETCH, and this runs strictly BEFORE it — the duplex does
+ * not exist yet. Live-observed 2026-07-26 on the P-302 rig: a git-sync fire
+ * checkpointed 8 steps, entered `git-sync:ref-announce`, and never recorded a
+ * 9th. DBOS faithfully re-claimed the workflow 3 times and each recovery
+ * re-entered the same hang, so the routine's dedup pin was never released and
+ * EVERY subsequent git-sync enqueue on that device was rejected for hours.
+ * Durable infrastructure makes an unbounded await MORE persistent, not less.
+ *
+ * A timed-out waiter REMOVES itself from `openedWaiters` — otherwise a channel
+ * that never opens accumulates one dead waiter per tick, forever.
+ */
+function waitOpened(state: ChannelState, timeoutMs: number): Promise<boolean> {
+  if (state.opened) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waiter = (): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(true);
+    };
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const i = state.openedWaiters.indexOf(waiter);
+      if (i >= 0) state.openedWaiters.splice(i, 1);
+      resolve(false);
+    }, timeoutMs);
+    timer.unref?.();
+    state.openedWaiters.push(waiter);
+  });
 }
 
 /** A dropped/closed connection fails every in-flight session loudly (destroy,
@@ -727,35 +810,36 @@ export async function openHiveGitFetchDuplex(
   socket: unknown,
   topic: Buffer,
   req: { repoKey: string; peerGithubUserId?: number },
+  opts: { openTimeoutMs?: number } = {},
 ): Promise<Duplex> {
+  const openTimeoutMs = opts.openTimeoutMs ?? POT_GIT_CHANNEL_OPEN_TIMEOUT_MS;
   const { mux, opened } = resolveMuxStream(socket, topic);
-  if (opened && typeof opened.then === 'function') await opened.catch(() => {});
+  // EI-18752434722211671: BOTH of this function's awaits are now bounded. Each
+  // ran strictly BEFORE any duplex existed, so neither was covered by
+  // `fetchOverDuplex`'s fetch ceiling — an unbounded await here hung the whole
+  // calling leg (and, under DBOS, the whole routine's dedup pin) forever.
+  if (opened && typeof opened.then === 'function') {
+    if (!(await settledWithin(opened, openTimeoutMs))) {
+      return failSoftDuplex(`pot-git: connection handshake did not complete within ${openTimeoutMs}ms — will retry`);
+    }
+  }
   const state = ensureChannel(mux, topic);
   if (!state.channel || !state.messages) {
-    const d = new FrameDuplex(
-      () => {},
-      () => {},
-    );
-    // Fail-soft: callers check `.destroyed`, they never attach 'error' — an
-    // unswallowed destroy(err) becomes an uncaught exception on next tick
-    // (same footgun peer-dial-registry.ts's openHiveGitDuplexToDevice fixed).
-    d.on('error', () => {});
-    d.destroy(new Error('pot-git: could not open the serve channel'));
-    return d;
+    return failSoftDuplex('pot-git: could not open the serve channel');
   }
-  await waitOpened(state);
+  if (!(await waitOpened(state, openTimeoutMs))) {
+    // The channel neither opened NOR closed within the ceiling — the peer is
+    // reachable enough to hold the channel but never accepted it. Fail soft so
+    // the leg reports `fetch-failed` and re-dials next tick, exactly as it does
+    // for every other transport failure.
+    return failSoftDuplex(`pot-git: serve channel did not open within ${openTimeoutMs}ms (peer wedged — will retry)`);
+  }
   if (!state.opened) {
     // The channel closed WITHOUT ever opening (remote side not wired yet —
     // protomux rejected our open; WI-3496 drill boot-order race). The onclose
     // handler evicted it, so the NEXT attempt re-creates a live channel; this
     // attempt fails soft instead of hanging to the caller's outer timeout.
-    const d = new FrameDuplex(
-      () => {},
-      () => {},
-    );
-    d.on('error', () => {});
-    d.destroy(new Error('pot-git: serve channel closed before opening (peer not wired yet — will retry)'));
-    return d;
+    return failSoftDuplex('pot-git: serve channel closed before opening (peer not wired yet — will retry)');
   }
   const messages = state.messages;
   const id = state.nextClientId++;

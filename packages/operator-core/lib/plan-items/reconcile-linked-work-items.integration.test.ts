@@ -251,7 +251,7 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
 
   // EI-18677799334390930: when the triggering plans:set-status call resolved an
   // attributable actor, the reconciler's completionRef names them — so a leader
-  // reading a `no-evidence`-flagged reconcile close can route a correction to the
+  // reading a `reconciler-sourced`-flagged reconcile close can route a correction to the
   // real actor instead of broadcasting "who flipped this plan item?" to the fleet.
   it('stamps the triggering actor onto the completionRef when available (EI-18677799334390930)', async () => {
     stub({ id: 'WI-attributed', state: 'open', lastProgressAt: null });
