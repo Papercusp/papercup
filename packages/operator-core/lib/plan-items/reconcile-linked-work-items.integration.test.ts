@@ -30,6 +30,10 @@ interface StubWorkItem {
   state: string;
   family: 'issue' | 'feature';
   lastProgressAt: string | null;
+  /** WI-6303: the in-flight guards now require a LIVE assignee alongside
+   *  lastProgressAt (a stale timestamp with no current holder is reclaimed
+   *  residue, not real in-flight work). Defaults to null (unclaimed). */
+  assignee?: string | null;
   payload?: Record<string, unknown> | null;
 }
 
@@ -167,6 +171,7 @@ function stub(over: Partial<StubWorkItem> & { id: string }): StubWorkItem {
     state: 'open',
     family: 'issue',
     lastProgressAt: null,
+    assignee: null,
     ...over,
   };
   h2.items.set(wi.id, wi);
@@ -218,7 +223,7 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
   });
 
   it('never clobbers a linked item carrying independent in-flight progress', async () => {
-    stub({ id: 'WI-active', state: 'open', lastProgressAt: '2026-07-02T00:00:00Z' });
+    stub({ id: 'WI-active', state: 'open', lastProgressAt: '2026-07-02T00:00:00Z', assignee: 'su-live-holder' });
     await edge({ plan: 'p1', item: 'P-002', srcRef: 'WI-active' });
 
     const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-002' });
@@ -226,6 +231,27 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
     expect(result.reconciled).toEqual([]);
     expect(result.skippedInFlight).toEqual(['WI-active']);
     expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+
+  it('WI-6303: a STALE lastProgressAt with NO current assignee is reconciled, not skipped as in-flight', async () => {
+    // Root cause: work-items-stale-claims.ts's dead/stalled-holder reaper,
+    // fleet-monitors.ts's sweepOrphanedTakenBy, and pg-stores.ts's fleet:cancel
+    // claim release all clear taken_by/taken_at on reclaim but historically left
+    // last_progress_at stamped from the dead holder — live-verified on
+    // WI-5130/WI-5136/WI-5137, unclaimed for 10+ days yet still reading as
+    // "in-flight" against their already-`done` plan items P-104/P-301/P-402.
+    stub({ id: 'WI-stale', state: 'open', lastProgressAt: '2026-07-17T00:00:00Z', assignee: null });
+    await edge({ plan: 'p1', item: 'P-006', srcRef: 'WI-stale' });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-006' });
+
+    expect(result.reconciled).toEqual(['WI-stale']);
+    expect(result.skippedInFlight).toEqual([]);
+    expect(setWorkItemState).toHaveBeenCalledWith(
+      'WI-stale',
+      'resolved',
+      expect.objectContaining({ by: 'system:plan-item-reconcile' }),
+    );
   });
 
   it('skips an already-terminal linked item as a no-op', async () => {
@@ -589,7 +615,14 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
   it('skips a candidate carrying independent in-flight progress (lastProgressAt)', async () => {
     await insertWorkItemRow({ id: 'F-active', kind: 'feature', status: 'wip', planSlug: 'pact', itemId: 'P-1' });
     await edge({ plan: 'pact', item: 'P-1', srcRef: 'sheets#F-active', srcKind: 'feature' });
-    stub({ id: 'F-active', harness: 'sheets', state: 'wip', family: 'feature', lastProgressAt: '2026-07-10T00:00:00Z' });
+    stub({
+      id: 'F-active',
+      harness: 'sheets',
+      state: 'wip',
+      family: 'feature',
+      lastProgressAt: '2026-07-10T00:00:00Z',
+      assignee: 'su-live-holder',
+    });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'done' }] });
 
     const result = await reconcileOrphanedPlanItemWorkItems();
@@ -674,6 +707,7 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       state: 'wip',
       family: 'feature',
       lastProgressAt: '2026-07-20T00:00:00Z',
+      assignee: 'su-live-holder',
     });
     h3.getPlanRow.mockResolvedValue({
       items: [
