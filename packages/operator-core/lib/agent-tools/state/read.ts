@@ -92,7 +92,12 @@ export default defineTool({
       {
         workspaceId: identity.workspaceId ?? ctx.workspaceId ?? 'default',
         harnessSlug: ctx.harnessSlug ?? null,
-        role: ctx.role,
+        // FAIL CLOSED on an absent role. `''` matches no tool's role allowlist, so the
+        // dispatch is refused with `role_not_allowed` and renders as a `not-measured`
+        // unknown — honest and safe. Substituting a real role here (a 'su' default,
+        // say) would WIDEN the second gate for a caller who never presented one, which
+        // is the same failure D-042 names: an access default that fails OPEN.
+        role: ctx.role ?? '',
       },
       args.as,
     );

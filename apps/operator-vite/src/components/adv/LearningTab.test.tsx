@@ -552,7 +552,7 @@ vi.mock("@papercusp/sync", () => ({
 vi.mock("@/lib/useLexicon", () => ({ useLexicon: () => (k: string) => k }));
 
 import { setFlagPayload } from "@papercusp/flags/client";
-import { FLAGS } from "@papercusp/flags";
+import { FLAGS, FLAG_DEFAULTS } from "@papercusp/flags";
 import LearningTab, {
   ARMING_AGENTS_LANE,
   ARMING_SIDEBAR_TAB,
@@ -563,7 +563,7 @@ beforeEach(() => {
   // Flags are a MODULE-level store, so an armed flag would leak into every later
   // test in the file. Reset to defaults first (outer beforeEach runs before the
   // nested ones), letting a suite that needs FLAGS.TESTING arm it explicitly.
-  setFlagPayload({ flags: {}, evaluatedAt: new Date().toISOString() });
+  setFlagPayload({ flags: { ...FLAG_DEFAULTS }, evaluatedAt: Date.now() });
   nuqsState.lview = "improvements";
   nuqsState.lane = "all";
   nuqsState.tab = null;
@@ -714,13 +714,13 @@ describe("LearningTab — Improvements view (default)", () => {
    *  somewhere real rather than render a pane the tab no longer offers. */
   describe("Gym view gating (FLAGS.TESTING)", () => {
     afterEach(() => {
-      setFlagPayload({ flags: {}, evaluatedAt: new Date().toISOString() });
+      setFlagPayload({ flags: { ...FLAG_DEFAULTS }, evaluatedAt: Date.now() });
     });
 
     it("shows the Gym view when FLAGS.TESTING is on", () => {
       setFlagPayload({
-        flags: { [FLAGS.TESTING]: true },
-        evaluatedAt: new Date().toISOString(),
+        flags: { ...FLAG_DEFAULTS, [FLAGS.TESTING]: true },
+        evaluatedAt: Date.now(),
       });
       render(<LearningTab />);
       expect(screen.getByRole("tab", { name: "Gym" })).toBeTruthy();
@@ -881,12 +881,12 @@ describe("LearningTab — Gym view", () => {
   beforeEach(() => {
     nuqsState.lview = "gym";
     setFlagPayload({
-      flags: { [FLAGS.TESTING]: true },
-      evaluatedAt: new Date().toISOString(),
+      flags: { ...FLAG_DEFAULTS, [FLAGS.TESTING]: true },
+      evaluatedAt: Date.now(),
     });
   });
   afterEach(() => {
-    setFlagPayload({ flags: {}, evaluatedAt: new Date().toISOString() });
+    setFlagPayload({ flags: { ...FLAG_DEFAULTS }, evaluatedAt: Date.now() });
   });
 
   it("leads directly with sparse gym challengers", () => {
@@ -1650,8 +1650,8 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
     // The Gym rides FLAGS.TESTING (WI-6315) — without it the view never mounts,
     // so it would never issue the query whose args this asserts on.
     setFlagPayload({
-      flags: { [FLAGS.TESTING]: true },
-      evaluatedAt: new Date().toISOString(),
+      flags: { ...FLAG_DEFAULTS, [FLAGS.TESTING]: true },
+      evaluatedAt: Date.now(),
     });
     advScopeState.slug = "beta-hive";
     advScopeState.hive = "beta-hive";
@@ -1844,12 +1844,12 @@ describe("GymView — recent-challengers header carries recency", () => {
   // As above: the Gym rides FLAGS.TESTING (WI-6315).
   beforeEach(() => {
     setFlagPayload({
-      flags: { [FLAGS.TESTING]: true },
-      evaluatedAt: new Date().toISOString(),
+      flags: { ...FLAG_DEFAULTS, [FLAGS.TESTING]: true },
+      evaluatedAt: Date.now(),
     });
   });
   afterEach(() => {
-    setFlagPayload({ flags: {}, evaluatedAt: new Date().toISOString() });
+    setFlagPayload({ flags: { ...FLAG_DEFAULTS }, evaluatedAt: Date.now() });
   });
 
   it("stamps the newest run age + count into a sticky header", () => {
