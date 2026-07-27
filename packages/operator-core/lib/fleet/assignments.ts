@@ -820,13 +820,44 @@ export interface OrphanedClaimSummary {
 }
 
 /**
+ * sessionState values the oracle itself documents as CONFIRMED-gone
+ * (presence-wakeability.ts's own docblock: `ended`/`suspect` = the process is
+ * gone; `draining` = "may be winding down and must not count as a healthy
+ * member"). `live`/`parked`/`recorded` are ALL documented as alive — `parked`
+ * explicitly "wakeable but idle... the ideal dispatch target", `recorded`
+ * explicitly "it is alive, just not coord-wakeable". This is the SAME
+ * dead-set already used for member-liveness in this codebase (see
+ * agent-tools/fleet/assignments.ts's `a.alive = false` / `return 'dead'`
+ * checks) — {@link summarizeOrphan} below now reuses it instead of its own
+ * narrower (and wrong) `=== 'live'` test.
+ */
+const ORACLE_CONFIRMED_GONE = new Set<HolderActivity['sessionState']>([
+  'ended',
+  'suspect',
+  'draining',
+]);
+
+/**
  * Summarize one reclaim-candidate claim for a leader surface.
  *
- * WI-5975: `holder` carries the authoritative liveness. When it says the holder
- * is `live`, the row is reported as `held-by-live-agent`/`ask` — NEVER as an
- * orphan — however old the progress signal is. Liveness outranks progress
- * recency: a claim not checkpointing is a reason to ASK the holder, and only a
- * holder the oracle says is GONE is a reason to reclaim.
+ * WI-5975: `holder` carries the authoritative liveness. Unless the oracle
+ * affirmatively says the holder is GONE ({@link ORACLE_CONFIRMED_GONE}), the
+ * row is reported as `held-by-live-agent`/`ask` — NEVER as an orphan —
+ * however old the progress signal is. Liveness outranks progress recency: a
+ * claim not checkpointing is a reason to ASK the holder, and only a holder
+ * the oracle says is GONE is a reason to reclaim.
+ *
+ * EI-18738329288671636: this used to require `sessionState === 'live'`
+ * exactly, so a `parked` holder — the oracle's own "wakeable but idle, ideal
+ * dispatch target" state, i.e. demonstrably NOT gone — fell through to
+ * `orphan`/`reclaim` the moment its last tool call aged past the 10-minute
+ * `isRecentlyActive` window below. Live-verified: `holder_present:true`,
+ * a heartbeat seconds old, a session merely parked between turns — reported
+ * `orphan`/`reclaim` anyway, which would have discarded a completed verdict
+ * and an in-flight artifact if acted on. Checking against the documented
+ * dead-set (rather than requiring the narrower alive-set membership `live`)
+ * fixes this for every non-`live` alive state (`parked`, `recorded`), not
+ * just the one this repro happened to hit.
  *
  * Falls back to the row's heartbeat-derived `holderAlive` only when no oracle
  * verdict is available, so an un-decorated caller degrades to the old behaviour
@@ -843,7 +874,9 @@ export function summarizeOrphan(
   // reported orphan/reclaim. Fuse it: no tool-call signal ⇒ unchanged prior behaviour.
   const liveHolder =
     isRecentlyActive(holder, nowMs) ||
-    (holder?.sessionState != null ? holder.sessionState === 'live' : r.holderAlive === true);
+    (holder?.sessionState != null
+      ? !ORACLE_CONFIRMED_GONE.has(holder.sessionState)
+      : r.holderAlive === true);
   return {
     source: r.source,
     agent: r.agentId,

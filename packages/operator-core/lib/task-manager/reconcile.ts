@@ -1,0 +1,297 @@
+/**
+ * task-manager/reconcile — the PURE diff between what the kernel is running and
+ * what the ledger believes (task-manager-no-escape-2026-07-27, P-004).
+ *
+ * This is the leg that makes the design inescapable. The chokepoint (P-007) only
+ * covers spawns that go through it; a lint guard only covers source we control.
+ * Neither can see a process someone started another way. What CAN see it is the
+ * kernel — so instead of trying to make every call site honest, we continuously
+ * ask the kernel what exists, join it against the ledger, and treat the residue
+ * as an ALARM rather than an invisible. "No escape" is that residue being
+ * reported, not every spawn being intercepted.
+ *
+ * Pure by construction — the caller supplies both sides and the clock. All the
+ * hard cases (PID recycling, a row too young to judge, a scope that outlived its
+ * row) are decided here, in a function that a unit test can drive exhaustively,
+ * rather than inside a routine that only reproduces on a live box at 3am.
+ */
+
+import {
+  isLiveOwnedState,
+  taskIdFromScopeUnit,
+  type TaskRow,
+  type TaskState,
+} from './types';
+
+/** One process as the scanner observed it. */
+export interface ScannedProcess {
+  pid: number;
+  /** Full unified-hierarchy path, e.g.
+   *  `/user.slice/user-1000.slice/user@1000.service/papercusp.slice/papercusp-bash.slice/pc-abc123.scope` */
+  cgroupPath: string;
+  /** `linux:<bootId>:<startTicks>`, or null when /proc could not be read. */
+  processIdentity: string | null;
+  cmdline: string;
+  /** true when this process lives inside our root slice. */
+  owned: boolean;
+}
+
+export interface AliveVerdict {
+  taskId: string;
+  /** The lowest pid seen in the scope — the best "leader" guess for display. */
+  pid: number | null;
+  processIdentity: string | null;
+  /** How many processes the task's cgroup currently holds. 1 for a simple job,
+   *  dozens for an agent session that has forked a test suite. */
+  pidsSeen: number;
+  /** How we matched. `scope` is the trustworthy one; the others are fallbacks for
+   *  unconfined rows and are reported so the pane can show confidence honestly. */
+  matchedBy: 'scope' | 'identity' | 'pid';
+}
+
+export interface StrandedVerdict {
+  taskId: string;
+  reason: string;
+}
+
+export interface ResidueGroup {
+  cgroupPath: string;
+  scopeUnit: string | null;
+  pids: number[];
+  sampleCmdline: string;
+}
+
+export interface OverdueVerdict {
+  taskId: string;
+  deadlineAt: string;
+  overdueMs: number;
+}
+
+export interface ReconcileResult {
+  alive: AliveVerdict[];
+  stranded: StrandedVerdict[];
+  /** Inside our slice, no live ledger row. Someone bypassed the chokepoint, or a
+   *  scope outlived the row that described it. REPORT-ONLY in v1 (D-010). */
+  unaccounted: ResidueGroup[];
+  /** A papercusp-tree process outside our slice — the owner's own terminal, a
+   *  peer's session. Visible, never controlled: visibility != control. */
+  foreign: ResidueGroup[];
+  overdue: OverdueVerdict[];
+  /** Rows skipped as too young to judge — surfaced so a stuck `pending` backlog
+   *  is visible rather than silently excluded every tick. */
+  tooYoung: string[];
+}
+
+export interface ReconcileOptions {
+  /** ms since the row was last credibly seen before absence counts as stranded.
+   *  Covers the register→fork→cgroup-visible window, plus one scan interval of
+   *  slack. Too low strands healthy tasks; too high leaves dead rows "running". */
+  graceMs?: number;
+  now?: number;
+}
+
+const DEFAULT_GRACE_MS = 60_000;
+
+function lastSegment(cgroupPath: string): string {
+  const parts = cgroupPath.split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? '';
+}
+
+/** The scope unit a scanned process sits in, if it is one of ours. */
+export function scopeUnitOf(proc: ScannedProcess): string | null {
+  const seg = lastSegment(proc.cgroupPath);
+  return taskIdFromScopeUnit(seg) ? seg : null;
+}
+
+function groupResidue(procs: ScannedProcess[]): ResidueGroup[] {
+  const byPath = new Map<string, ScannedProcess[]>();
+  for (const p of procs) {
+    const list = byPath.get(p.cgroupPath);
+    if (list) list.push(p);
+    else byPath.set(p.cgroupPath, [p]);
+  }
+  return [...byPath.entries()]
+    .map(([cgroupPath, list]) => ({
+      cgroupPath,
+      scopeUnit: scopeUnitOf(list[0]!),
+      pids: list.map((p) => p.pid).sort((a, b) => a - b),
+      sampleCmdline: list[0]!.cmdline,
+    }))
+    .sort((a, b) => a.cgroupPath.localeCompare(b.cgroupPath));
+}
+
+function ageMs(row: TaskRow, now: number): number {
+  const seen = Date.parse(row.lastSeenAt || row.startedAt);
+  const started = Date.parse(row.startedAt);
+  const newest = Math.max(Number.isFinite(seen) ? seen : 0, Number.isFinite(started) ? started : 0);
+  return newest > 0 ? now - newest : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Diff kernel reality against the ledger.
+ *
+ * `ledger` should carry every row in a live-owned state (`pending` | `running`);
+ * terminal rows are ignored if passed, so a caller may hand over a wider slice
+ * without pre-filtering.
+ */
+export function reconcile(
+  ledger: readonly TaskRow[],
+  kernel: readonly ScannedProcess[],
+  opts: ReconcileOptions = {},
+): ReconcileResult {
+  const now = opts.now ?? Date.now();
+  const graceMs = opts.graceMs ?? DEFAULT_GRACE_MS;
+
+  // ── index the kernel side ────────────────────────────────────────────────
+  const byScope = new Map<string, ScannedProcess[]>();
+  const byIdentity = new Map<string, ScannedProcess>();
+  const byPid = new Map<number, ScannedProcess>();
+  for (const p of kernel) {
+    const scope = scopeUnitOf(p);
+    if (scope) {
+      const list = byScope.get(scope);
+      if (list) list.push(p);
+      else byScope.set(scope, [p]);
+    }
+    if (p.processIdentity && !byIdentity.has(p.processIdentity)) byIdentity.set(p.processIdentity, p);
+    if (!byPid.has(p.pid)) byPid.set(p.pid, p);
+  }
+
+  const alive: AliveVerdict[] = [];
+  const stranded: StrandedVerdict[] = [];
+  const overdue: OverdueVerdict[] = [];
+  const tooYoung: string[] = [];
+  /** Scopes and pids claimed by a live ledger row — everything left over is residue. */
+  const claimedScopes = new Set<string>();
+  const claimedPids = new Set<number>();
+
+  for (const row of ledger) {
+    if (!isLiveOwnedState(row.state as TaskState)) continue;
+
+    // 1. the trustworthy match: our scope unit is present in the kernel.
+    const scopeProcs = row.scopeUnit ? byScope.get(row.scopeUnit) : undefined;
+    if (scopeProcs && scopeProcs.length > 0) {
+      claimedScopes.add(row.scopeUnit!);
+      for (const p of scopeProcs) claimedPids.add(p.pid);
+      const leader = scopeProcs.reduce((a, b) => (a.pid <= b.pid ? a : b));
+      alive.push({
+        taskId: row.taskId,
+        pid: leader.pid,
+        processIdentity: leader.processIdentity,
+        pidsSeen: scopeProcs.length,
+        matchedBy: 'scope',
+      });
+      pushOverdue(row, now, overdue);
+      continue;
+    }
+
+    // 2. unconfined fallback: the kernel-backed identity is still present.
+    //    Safe across PID wrap by construction — the identity embeds start time.
+    if (row.processIdentity) {
+      const hit = byIdentity.get(row.processIdentity);
+      if (hit) {
+        claimedPids.add(hit.pid);
+        alive.push({
+          taskId: row.taskId,
+          pid: hit.pid,
+          processIdentity: hit.processIdentity,
+          pidsSeen: 1,
+          matchedBy: 'identity',
+        });
+        pushOverdue(row, now, overdue);
+        continue;
+      }
+      // The row HAS an identity and the kernel does not have it. A pid match now
+      // would be a recycled pid belonging to something else — refuse it outright
+      // rather than "helpfully" keeping the row alive against a stranger.
+      if (ageMs(row, now) < graceMs) {
+        tooYoung.push(row.taskId);
+      } else {
+        stranded.push({
+          taskId: row.taskId,
+          reason: `process identity ${row.processIdentity} is gone from the kernel`,
+        });
+      }
+      continue;
+    }
+
+    // 3. last resort: a bare pid, only trusted while the row has no identity at
+    //    all (i.e. we never managed to read one). Still the weakest evidence we
+    //    accept, and it is reported as such.
+    if (row.pid) {
+      const hit = byPid.get(row.pid);
+      if (hit) {
+        claimedPids.add(hit.pid);
+        alive.push({
+          taskId: row.taskId,
+          pid: hit.pid,
+          processIdentity: hit.processIdentity,
+          pidsSeen: 1,
+          matchedBy: 'pid',
+        });
+        pushOverdue(row, now, overdue);
+        continue;
+      }
+    }
+
+    if (ageMs(row, now) < graceMs) {
+      tooYoung.push(row.taskId);
+    } else {
+      stranded.push({
+        taskId: row.taskId,
+        reason: row.scopeUnit
+          ? `scope ${row.scopeUnit} holds no processes`
+          : 'no scope, identity or pid match in the kernel scan',
+      });
+    }
+  }
+
+  // ── residue ──────────────────────────────────────────────────────────────
+  const unaccountedProcs: ScannedProcess[] = [];
+  const foreignProcs: ScannedProcess[] = [];
+  for (const p of kernel) {
+    if (claimedPids.has(p.pid)) continue;
+    const scope = scopeUnitOf(p);
+    if (scope && claimedScopes.has(scope)) continue;
+    if (p.owned || scope) unaccountedProcs.push(p);
+    else foreignProcs.push(p);
+  }
+
+  return {
+    alive,
+    stranded,
+    unaccounted: groupResidue(unaccountedProcs),
+    foreign: groupResidue(foreignProcs),
+    overdue,
+    tooYoung,
+  };
+}
+
+function pushOverdue(row: TaskRow, now: number, out: OverdueVerdict[]): void {
+  if (!row.deadlineAt) return;
+  const deadline = Date.parse(row.deadlineAt);
+  if (Number.isFinite(deadline) && deadline < now) {
+    out.push({ taskId: row.taskId, deadlineAt: row.deadlineAt, overdueMs: now - deadline });
+  }
+}
+
+/** Convenience for the routine's summary line + the pane's header. */
+export function summarizeReconcile(r: ReconcileResult): {
+  alive: number;
+  stranded: number;
+  unaccounted: number;
+  unaccountedPids: number;
+  foreign: number;
+  overdue: number;
+  tooYoung: number;
+} {
+  return {
+    alive: r.alive.length,
+    stranded: r.stranded.length,
+    unaccounted: r.unaccounted.length,
+    unaccountedPids: r.unaccounted.reduce((n, g) => n + g.pids.length, 0),
+    foreign: r.foreign.length,
+    overdue: r.overdue.length,
+    tooYoung: r.tooYoung.length,
+  };
+}

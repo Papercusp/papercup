@@ -67,6 +67,7 @@ import {
   type SeatSlot,
 } from '../fleet/seat-accounting';
 import { setLocalOfferDispositionForOffer } from './offer-store';
+import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import {
   parseWorkOfferRecordJson,
   type SpawnRequestPayload,
@@ -464,10 +465,9 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
     launchContextPath = undefined;
   }
 
-  const fromEnv = process.env.PAPERCUSP_OPERATOR_URL?.trim();
-  const operatorBaseUrl = fromEnv
-    ? fromEnv.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '')
-    : `http://localhost:${process.env.PAPERCUSP_HONO_PORT?.trim() || '3070'}`;
+  // WI-6154: this-host identity (PAPERCUSP_HONO_PORT) must win over an inherited
+  // PAPERCUSP_OPERATOR_URL — see resolveSpawnHostOperatorBaseUrl's doc for why.
+  const operatorBaseUrl = resolveSpawnHostOperatorBaseUrl();
   const base = await buildConsoleEnvelope({
     workspaceId: req.workspaceId,
     slug: req.potHomeSlug,

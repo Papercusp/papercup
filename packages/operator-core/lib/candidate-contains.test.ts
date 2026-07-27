@@ -6,6 +6,7 @@ import {
   classifyPathsAgainstCandidate,
   excludedCommitsTouchingPath,
   gitReadFromExecSync,
+  markerAtCommit,
   uncommittedPaths,
   type GitRead,
 } from './candidate-contains';
@@ -33,6 +34,14 @@ function fakeGit(opts: {
   log?: string;
   diff?: string;
   lsFiles?: string;
+  /**
+   * `${sha}:${path}` → the file's CONTENT at that commit (what `git show` prints).
+   * Absent key ⇒ `ls-tree` reports the path is not in that tree (''), the clean-miss
+   * signal — NOT a failure. `showFails` models the anomalous case separately.
+   */
+  contents?: Record<string, string>;
+  /** `${sha}:${path}` keys whose `ls-tree` says present but whose `git show` FAILS. */
+  showFails?: string[];
   /** Simulate a total git failure (bad repo, missing binary). */
   allFail?: boolean;
   /** Does `<sha>^{commit}` resolve? Default true — a bogus candidate sets it false. */
@@ -51,6 +60,20 @@ function fakeGit(opts: {
     if (args[0] === 'ls-files') return opts.lsFiles ?? '';
     if (args[0] === 'log') return opts.log ?? '';
     if (args[0] === 'diff') return opts.diff ?? '';
+    // `git ls-tree <sha> -- <path>`: an entry line when present, EXIT 0 WITH NO OUTPUT
+    // when the tree simply has no such path. That '' is the clean-miss signal
+    // markerAtCommit relies on to call a definitive absence without risking a
+    // failure-reads-as-absence error, so the fake must reproduce it exactly.
+    if (args[0] === 'ls-tree') {
+      const key = `${args[1]}:${args[3]}`;
+      const present = opts.contents?.[key] !== undefined || opts.showFails?.includes(key);
+      return present ? `100644 blob ${'e'.repeat(40)}\t${args[3]}` : '';
+    }
+    if (args[0] === 'show') {
+      const key = args[1];
+      if (opts.showFails?.includes(key)) return null;
+      return opts.contents?.[key] ?? null;
+    }
     return null;
   };
 }
@@ -71,6 +94,75 @@ describe('blob reads distinguish "absent" from "unreadable"', () => {
   it('blobInWorkingTree reads an UNTRACKED file — the case `git diff <commit>` cannot see', async () => {
     const git = fakeGit({ tree: { 'brand-new.test.ts': 'c'.repeat(40) } });
     expect(await blobInWorkingTree(git, 'brand-new.test.ts')).toBe('c'.repeat(40));
+  });
+});
+
+/**
+ * EI-18797292094433710. The incident these encode: a candidate DID carry the caller's
+ * fix, but a peer had appended an unrelated block to the same file, so blob identity
+ * said "does not contain" and the tool advised a re-fire — twice, each restarting a
+ * ~55min clock during a 3h+ fleet-wide outage. Blob identity answers "is the file
+ * identical"; the caller is asking "is MY change in there". These are the cases where
+ * those two answers come apart.
+ */
+describe('markerAtCommit — "is MY change in the judged commit", not "is the file identical"', () => {
+  const FIX = "superseded_at IS NULL";
+
+  it('finds the caller change in a candidate a PEER has since edited — the incident itself', async () => {
+    // The candidate carries the fix 7×; the working tree now has 8 because a peer added
+    // an unrelated occurrence. Blob identity calls this "missing"; the marker does not.
+    const git = fakeGit({ contents: { 'cand:store.ts': `x ${FIX} y ${FIX} z` } });
+    const r = await markerAtCommit(git, 'cand', 'store.ts', FIX);
+    expect(r.present).toBe(true);
+    expect(r.count).toBe(2);
+  });
+
+  it('a genuine miss is a DEFINITIVE false, so a real re-fire is still advised', async () => {
+    const git = fakeGit({ contents: { 'cand:store.ts': 'nothing relevant here' } });
+    const r = await markerAtCommit(git, 'cand', 'store.ts', FIX);
+    expect(r.present).toBe(false);
+    expect(r.count).toBe(0);
+    expect(r.unknownReason).toBeNull();
+  });
+
+  it('a path ABSENT from that commit is a definitive miss, distinguished by pathPresent', async () => {
+    const git = fakeGit({ contents: { 'cand:other.ts': FIX } });
+    const r = await markerAtCommit(git, 'cand', 'store.ts', FIX);
+    expect(r.present).toBe(false);
+    expect(r.pathPresent).toBe(false);
+    expect(r.unknownReason).toBeNull();
+  });
+
+  /**
+   * The load-bearing case. Every other verdict here is only trustworthy because a broken
+   * read cannot reach `present:false` — a false negative would send an agent to re-fire a
+   * gate that already carries its change, which is the exact behaviour being fixed.
+   */
+  it('a FAILED read is null, never a confident absence', async () => {
+    expect((await markerAtCommit(fakeGit({ allFail: true }), 'cand', 'store.ts', FIX)).present).toBeNull();
+
+    const bogus = fakeGit({ resolvesCommit: false, contents: { 'cand:store.ts': FIX } });
+    const r = await markerAtCommit(bogus, 'cand', 'store.ts', FIX);
+    expect(r.present).toBeNull();
+    expect(r.unknownReason?.code).toBe('resolver-failed');
+
+    // ls-tree says the path IS there but the read fails: an anomaly, not an absence.
+    const anomalous = fakeGit({ showFails: ['cand:store.ts'] });
+    expect((await markerAtCommit(anomalous, 'cand', 'store.ts', FIX)).present).toBeNull();
+  });
+
+  it('treats the marker as a LITERAL, so regex metacharacters in real code cannot misfire', async () => {
+    const git = fakeGit({ contents: { 'cand:a.ts': 'if (x?.y) return [1];' } });
+    expect((await markerAtCommit(git, 'cand', 'a.ts', 'x?.y')).present).toBe(true);
+    // As a regex `.` would match any char and this would wrongly hit.
+    expect((await markerAtCommit(git, 'cand', 'a.ts', 'x?Zy')).present).toBe(false);
+  });
+
+  it('an empty marker is "not measured" rather than a match against everything', async () => {
+    const git = fakeGit({ contents: { 'cand:a.ts': 'anything' } });
+    const r = await markerAtCommit(git, 'cand', 'a.ts', '');
+    expect(r.present).toBeNull();
+    expect(r.unknownReason?.code).toBe('not-applicable');
   });
 });
 

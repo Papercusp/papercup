@@ -75,6 +75,7 @@ import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { loadOrGenerateDeviceKeypair } from '../../identity/attest';
 import type { ColorScheme } from '../../console-color-schemes';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
+import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsSync } from '../../inference-gateway/local-model-ids-cache';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
@@ -100,12 +101,9 @@ const MAX_MEMBERS = 12;
 
 /** The operator's own base URL for the spawned terminal's API-callback env. Mirrors
  *  capability:terminal's resolver (strip a trailing /api/mcp back to the origin). */
-function resolveOperatorBaseUrl(): string {
-  const fromEnv = process.env.PAPERCUSP_OPERATOR_URL?.trim();
-  if (fromEnv) return fromEnv.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
-  const port = process.env.PAPERCUSP_HONO_PORT?.trim() || '3070';
-  return `http://localhost:${port}`;
-}
+// WI-6154: this-host identity (PAPERCUSP_HONO_PORT) must win over an inherited
+// PAPERCUSP_OPERATOR_URL — see resolveSpawnHostOperatorBaseUrl's doc for why.
+const resolveOperatorBaseUrl = resolveSpawnHostOperatorBaseUrl;
 
 /** Optional psu launch flags threaded onto EVERY member's `psu` invocation (EI-5765 /
  *  owner request). Each maps to the matching `psu --flag=value`; `brain` is the boolean

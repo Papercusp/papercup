@@ -57,6 +57,12 @@ export default defineTool({
       .string()
       .min(3)
       .max(200)
+      // Refused rather than silently ignored: a caller that named a marker is asking for
+      // a DEFINITIVE verdict, so quietly handing back the ambiguous one is the worse
+      // failure. (min(3) alone admits "   ", which would match indentation everywhere.)
+      .refine((s) => s.trim().length >= 3, {
+        message: 'marker must contain at least 3 non-whitespace characters — a blank marker matches everywhere.',
+      })
       .optional()
       .describe(
         'A distinctive LITERAL string from YOUR change (a new function name, an added error message, an id). ' +

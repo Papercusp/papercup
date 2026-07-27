@@ -231,7 +231,17 @@ export default defineConfig({
     cssMinify: 'esbuild',
   },
   server: {
-    port: 3055,
+    // EI-18739245749680446: apps/operator/playwright.config.ts reads OPERATOR_E2E_PORT
+    // to build its baseURL/webServer.url for an isolated e2e run (default 3055, same as
+    // here), and spreads process.env into the spawned webServer's env — but this file
+    // used to hardcode 3055 unconditionally, so the spawned vite NEVER honored a
+    // non-default OPERATOR_E2E_PORT: Playwright polled the port IT built while vite kept
+    // binding 3055, and on this box 3055 is permanently held by the standing
+    // papercup-vite.service, so an isolated run either collided or timed out waiting on
+    // a port nothing bound. PORT is also honored as the more generic fallback (both
+    // unset ⇒ unchanged default 3055 for every existing caller — Tauri desktop, the
+    // standing systemd service, bin/dev).
+    port: Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055,
     host: process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1',
     // CORS policy for /api belongs to the Hono host (:3070) — its middleware
     // allows `last-event-id` etc. and echoes the origin. Vite's own default

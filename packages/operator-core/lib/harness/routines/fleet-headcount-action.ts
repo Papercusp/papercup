@@ -14,6 +14,7 @@ import { spawnHeadless } from '../../console-spawn';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { memberLaunchCommand } from '../../agent-launch-core';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
+import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 export const FLEET_HEADCOUNT_FLAG = FLAGS.FLEET_HEADCOUNT_GOVERNOR;
@@ -27,11 +28,9 @@ export function nextHeadcountBackoff(currentMs: number): number {
   return Math.min(15 * 60_000, Math.max(60_000, Math.max(0, currentMs) * 2));
 }
 
-function operatorBaseUrl(): string {
-  const fromEnv = process.env.PAPERCUSP_OPERATOR_URL?.trim();
-  if (fromEnv) return fromEnv.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
-  return `http://localhost:${process.env.PAPERCUSP_HONO_PORT?.trim() || '3070'}`;
-}
+// WI-6154: this-host identity (PAPERCUSP_HONO_PORT) must win over an inherited
+// PAPERCUSP_OPERATOR_URL — see resolveSpawnHostOperatorBaseUrl's doc for why.
+const operatorBaseUrl = resolveSpawnHostOperatorBaseUrl;
 
 async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<void> {
   const attempt = await claimFleetHeadcountAttempt({ workspaceId, fleetSlug });

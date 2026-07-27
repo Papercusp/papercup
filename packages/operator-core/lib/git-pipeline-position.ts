@@ -2157,10 +2157,15 @@ export async function gitPipelinePosition(
     const bySha = new Map(byShaEntries);
     // EI-18797292094433710: only paid for when the caller actually named a marker —
     // this is the hot path CLAUDE.md points agents at for "is my edit live".
-    // Bound to a local const rather than read as `inp.marker` at each use: a truthiness
-    // narrowing on a mutable property access does NOT survive into the async closure
-    // below, so `markerAtCommit`'s `string` parameter would see `string | undefined`.
-    const marker = inp.marker;
+    // The binding this uses is the GUARDED one at the top of the function, deliberately:
+    // it is already a local `const` (so the truthiness narrowing does survive into the
+    // async closure below — that concern is real for `inp.marker`, but not for a const),
+    // and it is the only binding that screens an all-whitespace marker. Re-reading
+    // `inp.marker` here instead would type-check identically while silently restoring the
+    // hazard: zod's min(3) admits "   ", which `split` then matches against every run of
+    // indentation in the file — a large count, `present: true`, and a CONFIDENT WRONG
+    // "the candidate carries your change", which is the one failure this module exists to
+    // make impossible.
     const markerBySha = new Map<string, MarkerContainment>();
     if (marker) {
       const markerEntries = await Promise.all(

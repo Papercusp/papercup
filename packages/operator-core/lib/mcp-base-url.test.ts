@@ -4,7 +4,11 @@
  * (so a no-proxy env can never break). Run: npx vitest run mcp-base-url
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { resolveAgentMcpBaseUrl, resolveInheritedOperatorBaseUrl } from './mcp-base-url';
+import {
+  resolveAgentMcpBaseUrl,
+  resolveInheritedOperatorBaseUrl,
+  resolveSpawnHostOperatorBaseUrl,
+} from './mcp-base-url';
 
 const KEY = 'PAPERCUSP_MCP_PROXY_BASE';
 afterEach(() => {
@@ -55,5 +59,43 @@ describe('resolveInheritedOperatorBaseUrl', () => {
   it('suffixed origin + proxy configured → stripped AND routed through the proxy', () => {
     process.env[KEY] = 'http://127.0.0.1:9071';
     expect(resolveInheritedOperatorBaseUrl('http://localhost:3070/api/mcp')).toBe('http://127.0.0.1:9071');
+  });
+});
+
+describe('resolveSpawnHostOperatorBaseUrl (WI-6154)', () => {
+  it('HONO_PORT set (this process IS an operator host) → own identity wins, even with a stale inherited OPERATOR_URL', () => {
+    // Reproduces the staging-host leak: .env.local sets PAPERCUSP_OPERATOR_URL to
+    // the LIVE :3070 operator, and the staging service ADDITIONALLY exports its
+    // own PAPERCUSP_HONO_PORT=3170 on top — a spawn from staging must pin :3170.
+    expect(
+      resolveSpawnHostOperatorBaseUrl({
+        PAPERCUSP_HONO_PORT: '3170',
+        PAPERCUSP_OPERATOR_URL: 'http://localhost:3070/api/mcp',
+      }),
+    ).toBe('http://localhost:3170');
+  });
+
+  it('HONO_PORT unset (a plain client/agent session, not itself an operator host) → falls back to the inherited OPERATOR_URL', () => {
+    expect(
+      resolveSpawnHostOperatorBaseUrl({
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      }),
+    ).toBe('http://127.0.0.1:9071');
+  });
+
+  it('inherited OPERATOR_URL /api/mcp suffix is stripped back to the bare origin', () => {
+    expect(
+      resolveSpawnHostOperatorBaseUrl({
+        PAPERCUSP_OPERATOR_URL: 'http://localhost:3070/api/mcp',
+      }),
+    ).toBe('http://localhost:3070');
+  });
+
+  it('neither var set → defaults to the live operator origin', () => {
+    expect(resolveSpawnHostOperatorBaseUrl({})).toBe('http://localhost:3070');
+  });
+
+  it('HONO_PORT set, no inherited OPERATOR_URL at all → still pins to own identity', () => {
+    expect(resolveSpawnHostOperatorBaseUrl({ PAPERCUSP_HONO_PORT: '4100' })).toBe('http://localhost:4100');
   });
 });

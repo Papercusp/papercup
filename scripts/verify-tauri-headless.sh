@@ -137,6 +137,16 @@
 #                                non-positive value falls back to the role default);
 #                                to disable the watchdog outright, export
 #                                PAPERCUSP_MEMORY_WATCHDOG=0 in the ambient env.
+#   VERIFY_TAURI_STALE_DISPLAY_MAX_AGE_SEC
+#                               (EI-18738872670541790) seconds an auto-picked
+#                                candidate display's Xvfb may run with NO owning
+#                                papercusp-desktop/hono-host process before the
+#                                picker reclaims it instead of just skipping past
+#                                it forever (default 3600 — comfortably longer than
+#                                any single run; a --boot-only session already
+#                                promises not to sit unattended past that). Set to
+#                                a huge value to disable reclaiming and only skip,
+#                                as before.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
