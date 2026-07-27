@@ -244,7 +244,7 @@ describe('deriveCoordState', () => {
       msg({ msg_id: 'm-3', from: 'su-1', to: ['su-2'] }), // self-sent → not unread
       msg({ msg_id: 'm-4', from: 'su-2', to: ['su-1'] }), // acked below
     ];
-    const out = deriveCoordState(messages, new Set(['m-4']), [], [], 'su-1');
+    const out = deriveCoordState(messages, new Set(['m-4']), [], [], 'su-1', null);
     expect(out.unreadCount).toBe(2);
   });
 
@@ -273,7 +273,7 @@ describe('deriveCoordState', () => {
         },
       },
     ];
-    const out = deriveCoordState([], new Set(), handoffs, [], 'su-1');
+    const out = deriveCoordState([], new Set(), handoffs, [], 'su-1', null);
     expect(out.openHandoffs).toHaveLength(1);
     expect(out.openHandoffs[0]).toMatchObject({
       msgId: 'h-1',
@@ -289,7 +289,7 @@ describe('deriveCoordState', () => {
       { ts: isoMs(NOW), msg_id: 'e-1', from: 'su-1', to: ['human'], kind: 'escalation', severity: 'blocker', summary: 'stuck', resolved: null },
       { ts: isoMs(NOW), msg_id: 'e-2', from: 'su-2', to: ['human'], kind: 'escalation', severity: 'question', summary: 'other', resolved: null },
     ] as unknown as EscalationRecord[];
-    const out = deriveCoordState([], new Set(), [], escalations, 'su-1');
+    const out = deriveCoordState([], new Set(), [], escalations, 'su-1', null);
     expect(out.openEscalations).toHaveLength(1);
     expect(out.openEscalations[0]).toMatchObject({ msgId: 'e-1', severity: 'blocker' });
   });

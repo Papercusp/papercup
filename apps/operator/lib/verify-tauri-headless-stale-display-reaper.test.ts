@@ -57,11 +57,13 @@ describe('EI-18738872670541790 — verify-tauri-headless reclaims an abandoned (
     expect(loop).toMatch(/\|\|\s*\[\s*-S\s*"\/tmp\/\.X11-unix\/X\$DISPLAY_NUM"\s*\]/);
   });
 
-  it('a display with no live Xvfb is never touched (only "just skip past it" applies, as before)', () => {
+  it('a display with no live Xvfb defers to the orphaned-socket reclaimer, never the Xvfb-kill path', () => {
     const fn = src.match(/reap_stale_display_if_abandoned\(\)\s*\{[\s\S]*?\n\}/)?.[0];
     expect(fn).toBeTruthy();
     expect(fn).toMatch(/xvfb_pid="\$\(pgrep -f "Xvfb :\$n " 2>\/dev\/null \| head -1\)"/);
-    expect(fn).toMatch(/\[ -n "\$xvfb_pid" \] \|\| return 1/);
+    // No Xvfb process ⇒ delegate to the (separately guarded) orphaned-socket path
+    // rather than falling through to the age/owning-app/kill logic below.
+    expect(fn).toContain('[ -n "$xvfb_pid" ] || { reap_orphaned_x_socket "$n"; return $?; }');
   });
 
   it('reclaiming requires BOTH no owning app AND an age past the configurable threshold', () => {

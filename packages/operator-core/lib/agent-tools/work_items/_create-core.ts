@@ -113,6 +113,36 @@ export type CreateOneWorkItemResult =
     };
 
 /**
+ * EI-18816637571744179: does this create DECLARE a relationship to the item its
+ * title names?
+ *
+ * The EI-316 guard below keys on "the title names an open work-item id", which
+ * is a genuine accidental-mirror signal — but it is equally the signature of a
+ * FOLLOW-UP naming its parent for lineage, which is the opposite thing. A mirror
+ * duplicates a parent's scope; a follow-up records the scope the parent
+ * deliberately excluded, and is typically filed exactly when the parent is being
+ * CLOSED, so the guard's "work that item directly" advice is then not merely
+ * unhelpful but impossible.
+ *
+ * An explicit typed link to that same id is the discriminator, and it was
+ * already on the call: writing one is a deliberate act that demonstrates the
+ * author knows the item exists, which is precisely what an ACCIDENTAL mirror
+ * does not.
+ *
+ * `duplicates` is excluded on purpose — "this duplicates WI-9" is the very
+ * condition the guard names, so it must not be the thing that switches it off.
+ */
+function hasDeclaredLineageTo(
+  links: CreateOneWorkItemArgs['links'],
+  id: string,
+): boolean {
+  const target = id.trim().toLowerCase();
+  return (links ?? []).some(
+    (l) => l.rel !== 'duplicates' && (l.target_id ?? '').trim().toLowerCase() === target,
+  );
+}
+
+/**
  * Create ONE work-item, applying the mirror-guard + workspace resolution + hive-scope
  * gate, then the createWorkItem call (incl. the atomic create+claim). Never throws.
  */
@@ -129,14 +159,20 @@ export async function createOneWorkItem(
         const wi = await getWorkItem(id, args.harness);
         return wi ? { id: wi.id, state: wi.state } : null;
       });
-      if (mirror) {
+      // EI-18816637571744179: an explicit typed link to the named item declares
+      // lineage (a follow-up), which is the opposite of the accidental mirror
+      // this guard catches — so consult it before refusing.
+      if (mirror && !hasDeclaredLineageTo(args.links, mirror.id)) {
         return {
           ok: false,
           error: 'duplicate_mirror',
           message:
             `title references existing OPEN work-item ${mirror.id} (state: ${mirror.state}) — ` +
-            `work that item directly (work_items:claim ${mirror.id} / work_items:set_state), do NOT create a mirror. ` +
-            `Pass force:true only if this reference is deliberate.`,
+            `if this is the SAME work, work that item directly (work_items:claim ${mirror.id} / ` +
+            `work_items:set_state) rather than mirroring it. ` +
+            `If it is a FOLLOW-UP (different scope — e.g. what ${mirror.id} deliberately left undone), ` +
+            `declare that by passing links:[{ rel:'relates', target_id:'${mirror.id}' }] and it will be ` +
+            `created; force:true also overrides.`,
           existing: mirror,
         };
       }

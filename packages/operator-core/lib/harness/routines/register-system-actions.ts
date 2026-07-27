@@ -370,6 +370,13 @@ import './hive-git-gc-action';
 // entry when FLAGS.SUPERVISOR_AUTO_RESTART (default ON) && entry.autoRestart, with uniform
 // flap-damping; report-only otherwise. Seeded ACTIVE by seed-supervision-reconcile-routine.ts.
 import './supervision-reconcile-action';
+// task-manager-no-escape-2026-07-27 P-011: `system:task-reconcile` — the task
+// manager's kernel-vs-ledger reconcile + metrics sample, a bespoke ephemeral
+// (tier:'ephemeral', 30s) operator-HOME cadence (same deviation reasoning as
+// supervision-reconcile-action). Walks our cgroup slice, refreshes live rows,
+// closes strands, and FLAGS unaccounted processes — REPORT-ONLY, no kill and no
+// freeze path exists (plan D-010). Seeded ACTIVE by seed-task-reconcile-routine.ts.
+import './task-reconcile-action';
 // EI-14693: `system:plan-item-orphan-reconcile` — the periodic data-heal for the
 // transition-gap in the plan-item → work-item reconciler. The reaction rule
 // (plan-items/reconcile-rule.ts) only fires on a plan item's done TRANSITION, so a

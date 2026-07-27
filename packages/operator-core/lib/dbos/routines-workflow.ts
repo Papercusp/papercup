@@ -790,7 +790,12 @@ async function routinesTickImpl(): Promise<void> {
   // never a tool: D-046 refuses another pull read over `tool_invocations`
   // (three exist, all three dead). Notifies the agent ITSELF first and the
   // leader only on a repeat; debounced per (owner, tool) inside the sweep.
-  await DBOS.runStep(
+  // The report is RETURNED (not just logged) so P-015's measurement step below can
+  // consume the coverage this sweep already computed. Recomputing it there would
+  // be a second read of `tool_invocations` in one tick AND a second derivation of
+  // a quantity that already has one — the axis-5 violation (D-038) this plan has
+  // ruled against repeatedly.
+  const divergenceReport = await DBOS.runStep(
     async () => {
       try {
         const { divergenceSweep } = await import('../agent-state-divergence-sweep');
@@ -809,11 +814,41 @@ async function routinesTickImpl(): Promise<void> {
               `thrashRuns=${report.coverage.thrashRuns}/${report.coverage.failuresSeen} failures`,
           );
         }
+        return report;
       } catch (e) {
         console.warn(`[intent-action-divergence] sweep failed: ${e instanceof Error ? e.message : e}`);
+        return null;
       }
     },
     { name: 'intent-action-divergence-sweep' },
+  );
+
+  // unified-agent-state-plane-2026-07-27 P-015: the plane's baseline + standing
+  // measurement. A sweep for the same reason P-010 is one (D-046 refuses another
+  // pull read over `tool_invocations`; D-091 §1 records the verdict as computed
+  // and DELIVERED, with no browse surface).
+  //
+  // It records at most ONE reading per window — D-030 §3 requires at least two
+  // batches before any trend is reported, because within-arm variance there
+  // equalled between-arm variance, so a series of overlapping windows would be a
+  // trend line made of duplicates.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { planeMeasurementSweep, formatMeasurementLog } = await import(
+          '../agent-plane-measurement-sweep'
+        );
+        const out = await planeMeasurementSweep({ divergence: divergenceReport ?? null });
+        if (out.outcome === 'error') console.warn(`[plane-measurement] ${out.reason}`);
+        // Logged in full: the line leads with how much is MEASURABLE and names the
+        // missing producer behind each structural zero, because "0 divergences, 0
+        // conflicts" is the exact misread D-087/D-089 were written to prevent.
+        else if (out.outcome === 'recorded') console.info(formatMeasurementLog(out.measurement));
+      } catch (e) {
+        console.warn(`[plane-measurement] sweep failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'agent-plane-measurement-sweep' },
   );
 
   // GYM-2 (gym-unwedge-scout-novelty-2026-07-02, generalized across roles by WI-4632):

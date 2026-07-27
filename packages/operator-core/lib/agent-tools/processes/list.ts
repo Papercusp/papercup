@@ -1,0 +1,143 @@
+/**
+ * processes:list — the PROVENANCE inventory of running tasks
+ * (task-manager-no-escape-2026-07-27, P-013).
+ *
+ * Deliberately not a `ps` replacement, and deliberately not a widening of
+ * `dev:processes` (which stays frozen at its six agent kinds — plan D-002 explains
+ * why that decision is untouched). `ps` and `dev:processes` both answer a
+ * KERNEL-shaped question: what processes exist. This answers the one neither can —
+ * who launched it, for which work-item and plan, under what budget and deadline,
+ * where its log is, and what it is costing right now. That is a join over
+ * `harness_shared.task_ledger`, not a process-table read.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { listTasks } from '../../task-manager/store';
+import { reconcileTick } from '../../task-manager/reconcile-tick';
+import { defaultForeignSignature } from '../../task-manager/scan';
+import { REPO_ROOT } from '../docs/_repo-paths';
+import { TASK_STATES } from '../../task-manager/types';
+
+function mb(bytes: number | null | undefined): number | null {
+  return bytes == null ? null : Math.round(bytes / 1048576);
+}
+
+function ageSec(startedAt: string): number {
+  const t = Date.parse(startedAt);
+  return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 1000)) : 0;
+}
+
+export default defineTool({
+  name: 'processes:list',
+  profile: 'engineer',
+  description:
+    'Ledger-backed inventory of tasks this operator launched, with PROVENANCE `ps` cannot give: who launched each one, its work-item/plan, budget + deadline, log path, live RSS/CPU/pid-count, and whether it is cgroup-confined. Also surfaces `unaccounted` rows — processes inside our slice that no chokepoint registered. Pass `live:true` to reconcile against the kernel first (slower, authoritative).',
+  capability: 'intel:read',
+  guidance: {
+    when: 'You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is eating memory, or whether anything bypassed the spawn chokepoint. Also the honest answer to "is my background job still alive" for anything started through managedSpawn.',
+    notWhen:
+      'NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job\'s OUTPUT use `capability:bash_output`.',
+    chaining:
+      'Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree), `processes:freeze` (pause without losing work), or `processes:limit` (retune the budget live).',
+    returns:
+      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, pids, confined, scopeUnit, deadlineAt, logPath }], live? } — `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
+  },
+  requirePrincipal: false,
+  agentRoles: ['operator', 'architect', 'debugger', 'cup'],
+  args: z.object({
+    states: z.array(z.enum(TASK_STATES)).optional().describe('filter by lifecycle state'),
+    classes: z.array(z.string().min(1)).max(20).optional().describe('filter by task class'),
+    launchedBy: z.string().max(120).optional().describe('only tasks this agent id launched'),
+    workItemId: z.string().max(120).optional().describe('only tasks attributed to this work-item'),
+    rootTaskId: z.string().max(64).optional().describe('one task tree'),
+    includeEnded: z.boolean().optional().describe('include finished tasks (the "what ran overnight" read)'),
+    live: z
+      .boolean()
+      .optional()
+      .describe('reconcile against the kernel before answering — authoritative, ~100ms slower, writes nothing'),
+    limit: z.number().int().positive().max(2000).optional(),
+  }),
+  async handler(args) {
+    let live: unknown;
+    if (args.live) {
+      const tick = await reconcileTick({
+        dryRun: true,
+        scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
+      });
+      live = {
+        ...tick.summary,
+        degraded: tick.degraded,
+        degradedReason: tick.degradedReason,
+        scannedProcesses: tick.scan.processes,
+        unaccountedGroups: tick.result.unaccounted.map((g) => ({
+          cgroupPath: g.cgroupPath,
+          pids: g.pids,
+          sample: g.sampleCmdline.slice(0, 160),
+        })),
+        foreignGroups: tick.result.foreign.map((g) => ({
+          cgroupPath: g.cgroupPath,
+          pids: g.pids,
+          sample: g.sampleCmdline.slice(0, 160),
+        })),
+      };
+    }
+
+    const rows = await listTasks({
+      states: args.states,
+      classes: args.classes,
+      launchedBy: args.launchedBy,
+      workItemId: args.workItemId,
+      rootTaskId: args.rootTaskId,
+      includeEnded: args.includeEnded,
+      limit: args.limit,
+    });
+
+    const byState: Record<string, number> = {};
+    const byClass: Record<string, number> = {};
+    for (const r of rows) {
+      byState[r.state] = (byState[r.state] ?? 0) + 1;
+      byClass[r.class] = (byClass[r.class] ?? 0) + 1;
+    }
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify(
+            {
+              ok: true,
+              counts: { total: rows.length, byState, byClass },
+              ...(live ? { live } : {}),
+              tasks: rows.map((r) => ({
+                taskId: r.taskId,
+                class: r.class,
+                title: r.title,
+                state: r.state,
+                launchedBy: r.launchedBy,
+                workItemId: r.workItemId,
+                planSlug: r.planSlug,
+                parentTaskId: r.parentTaskId,
+                rootTaskId: r.rootTaskId,
+                ageSec: ageSec(r.startedAt),
+                rssMb: mb(r.lastMemoryBytes),
+                peakRssMb: mb(r.peakMemoryBytes),
+                cpuSec: r.cpuUsec == null ? null : Math.round(r.cpuUsec / 1_000_000),
+                pids: r.pidsCurrent,
+                confined: r.confined,
+                scopeUnit: r.scopeUnit,
+                memoryMaxMb: mb(r.memoryMaxBytes),
+                deadlineAt: r.deadlineAt,
+                exitCode: r.exitCode,
+                exitReason: r.exitReason,
+                logPath: r.logPath,
+              })),
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+});

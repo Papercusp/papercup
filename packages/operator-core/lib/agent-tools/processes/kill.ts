@@ -22,18 +22,22 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { killProcess } from '../../process-kill';
+import { killTask } from '../../task-manager/control';
 import { toList, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 
 export default defineTool({
   name: 'processes:kill',
   profile: 'engineer',
   description:
-    'Send SIGTERM (or SIGKILL) to one OR many tracked OS pids in ONE call — pass `pid` for one or `pids` for several. Returns { ok, results:[{ ok, pid, kind, signal | error }], counts } — correlate each result by its pid, not by position; a protected/absent pid fails only itself.',
+    'Send SIGTERM (or SIGKILL) in ONE call, addressed two ways. PREFER `taskId`/`taskIds` (from `processes:list`): kills the whole cgroup SUBTREE, leaves no orphaned grandchildren, and cannot hit a recycled pid. `pid`/`pids` is the legacy path for the six tracked agent kinds and re-verifies kernel identity before signalling. Results are keyed by taskId/pid; one failure never fails the rest.',
   guidance: {
-    when: 'Kill an AGENT process you already have a pid for — only kinds `run.sh | omp | claude` are killable. Killing several at once? Pass them all via `pids`.',
-    notWhen: 'NOT for a runaway BUILD/TEST job (vitest, tsc, gate, deploy, container): those are not a tracked kind, so they come back `unsupported_kind` — signal them with plain `kill(1)`, or start them via `capability:bash { run_in_background: true }` so you hold a real job handle instead. For SPAWNED agents use `orchestrator.cancel`; for DELEGATES, the delegate-cancel endpoint. `paperclip | pty | next` are visible but deliberately protected (`protected_kind`).',
+    when: 'End a task you can name. `taskId` is the right handle for anything this operator launched through the task manager — it takes the whole subtree. `pid` remains for an AGENT process (`run.sh | omp | claude`) you only have a pid for.',
+    notWhen:
+      'NEVER pattern-match a name to build a kill list (`pkill -f <binary>` has twice killed the owner\'s live desktop window and peers\' test instances — both addressing modes here exist to make that impossible). For a runaway BUILD/TEST job started outside the chokepoint, `pid` returns `unsupported_kind` — start such jobs via `capability:bash { run_in_background: true }` so you hold a real handle. To PAUSE rather than end, use `processes:freeze`.',
+    chaining:
+      '`processes:list` -> `taskId` -> here. Add `includeSubtree:true` to also signal logically-nested tasks that got their own scopes (an agent and everything it spawned).',
     returns:
-      '{ ok, results:[{ ok, pid, kind, signal | error, detail? }], counts } — keyed by pid, not position. The three failure modes mean DIFFERENT things: `pid_not_found` = the pid genuinely does not exist on the host; `unsupported_kind` = it IS alive but outside the six tracked kinds (do not read this as "gone" — EI-18698120633403217 was exactly that false claim); `protected_kind` = tracked but off-limits.',
+      '{ ok, results:[...], counts } — keyed, not positional. taskId failures: `identity_mismatch` = the pid now belongs to something else, so we REFUSED (not a bug — the rail working); `not_live` = already ended or a residue row; `unsupported`/`command_failed`. pid failures: `pid_not_found` = genuinely absent; `unsupported_kind` = ALIVE but outside the six tracked kinds (never read this as "gone" — EI-18698120633403217 was exactly that false claim); `protected_kind` = tracked but off-limits.',
   },
   capability: 'processes:kill',
   args: z
