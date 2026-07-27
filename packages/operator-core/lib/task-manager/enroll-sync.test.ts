@@ -26,9 +26,9 @@ const { taskManagerEnabledSync, scopeSupportKnown, registerTask, markSpawned, cl
 vi.mock('./enabled', () => ({ taskManagerEnabledSync: () => m.taskManagerEnabledSync() }));
 vi.mock('./managed-spawn', () => ({ scopeSupportKnown: () => m.scopeSupportKnown() }));
 vi.mock('./store', () => ({
-  registerTask: (...a: unknown[]) => m.registerTask(...(a as [])),
-  markSpawned: (...a: unknown[]) => m.markSpawned(...(a as [])),
-  closeTask: (...a: unknown[]) => m.closeTask(...(a as [])),
+  registerTask: (...a: unknown[]) => m.registerTask(...a),
+  markSpawned: (...a: unknown[]) => m.markSpawned(...a),
+  closeTask: (...a: unknown[]) => m.closeTask(...a),
 }));
 vi.mock('../process-identity', () => ({ readProcessIdentity: () => 'linux:boot:1' }));
 vi.mock('./cgroup-read', () => ({

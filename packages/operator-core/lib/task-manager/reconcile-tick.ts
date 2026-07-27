@@ -20,8 +20,8 @@
  */
 
 import { absCgroupDir, nodeCgroupFs, sampleCgroup, type CgroupFs } from './cgroup-read';
-import { reconcile, summarizeReconcile, scopeUnitOf, type ReconcileResult } from './reconcile';
-import { scanProcesses, type ScanOptions, type ScanResult, type ScannedProcess } from './scan';
+import { reconcile, summarizeReconcile, scopeUnitOf, type ReconcileResult, type ScannedProcess } from './reconcile';
+import { scanProcesses, type ScanOptions, type ScanResult } from './scan';
 import {
   clearVanishedUnaccounted,
   listLiveTasks,

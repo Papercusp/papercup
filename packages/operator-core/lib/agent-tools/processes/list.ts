@@ -74,11 +74,23 @@ export default defineTool({
     // that exited long ago. Say the subsystem is off instead.
     if (!(await isTaskManagerEnabled('processes:list'))) {
       return {
-        ok: true,
-        enabled: false,
-        reason: 'The task manager is disabled (papercusp-task-manager is off), so no spawns are being ledgered. Use `ps`/`pgrep` for a raw process list, or `dev:processes` for the tracked agent kinds.',
-        counts: { byState: {}, byClass: {} },
-        tasks: [],
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              {
+                ok: true,
+                enabled: false,
+                reason:
+                  'The task manager is disabled (papercusp-task-manager is off), so no spawns are being ledgered and the reconciler is not running. Use `ps`/`pgrep` for a raw host process list, or `dev:processes` for the tracked agent kinds.',
+                counts: { total: 0, byState: {}, byClass: {} },
+                tasks: [],
+              },
+              null,
+              2,
+            ),
+          },
+        ],
       };
     }
 

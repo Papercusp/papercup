@@ -26,6 +26,12 @@ function coverage(over: Partial<DivergenceCoverage> = {}): DivergenceCoverage {
     unsettledRuns: 0,
     stampedLegRan: false,
     samplingLegRan: false,
+    // P-010's terminal-goal filter. `terminalFilterApplied: false` is the correct
+    // default for a bare fixture: it means "no filter ran", which is what a
+    // constructed coverage object with no goal state actually represents.
+    terminalFilterApplied: false,
+    terminalGoalCallsExcluded: 0,
+    bucketsCollapsedByTerminal: 0,
     ...over,
   };
 }
