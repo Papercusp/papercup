@@ -72,6 +72,18 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       restartLever: null,
       unknownReason: 'fixture: no serving probe (lineage-only test)',
     },
+    // P-004 made `changeInCandidate` REQUIRED. All-null is the correct value here for the
+    // same reason `serving` is: these fixtures assert release-trace's own LINEAGE logic and
+    // never resolve a gate candidate. Nulls mean "not measured" — the three-valued verdict
+    // exists precisely so an unmeasured containment can never be read as a confirmed one.
+    changeInCandidate: {
+      judgingSha: null,
+      judgingContainsPath: null,
+      nextCandidateSha: null,
+      nextContainsPath: null,
+      missingReason: null,
+      detail: null,
+    },
     summary: 'ok',
     notes: [],
     ...over,

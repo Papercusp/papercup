@@ -1885,6 +1885,14 @@ export async function runGreenCheckpoint(
   }
 
   deps.log(`checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? 'none'})`);
+  // EI-18757156963245979: (re)enter the SUITE phase. This must be written at the top of EVERY
+  // invocation, not just the first, because a stale-red auto-refire RE-ENTERS this function
+  // recursively in the SAME process — without this reset the marker would still read
+  // 'delivering' from the previous iteration and the run would be permanently unreplaceable,
+  // including when it genuinely wedges mid-suite. Age cannot substitute here: `elapsed_sec`
+  // comes from the systemd unit's start and therefore keeps climbing across refires, so a
+  // legitimately-refiring run looks progressively MORE "wedged" the harder it is working.
+  writeCheckpointRunPhase(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot), 'suite');
   await deps.setupTree(candidate);
   // EI-13992: preflight — apply any pending migrations to the live dev PG BEFORE
   // judging, so a run of this gate can never red-pin itself on schema drift caused

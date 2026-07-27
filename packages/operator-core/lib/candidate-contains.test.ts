@@ -138,6 +138,34 @@ describe('classifyPathsAgainstCandidate', () => {
     expect(r.inCandidate).toBeNull();
     expect(r.unknownReason).toMatch(/No candidate commit/);
   });
+
+  /**
+   * Caught by a LIVE run against the real repo, not by a fixture. A sha that does not
+   * resolve makes every `<sha>:<path>` read fail — and on the candidate side a failed read
+   * looks exactly like "this commit genuinely lacks the path". So every file came back
+   * `absent`: a DEFINITIVE miss, hard-warning the caller that none of its work is in the
+   * run. `judgingSha` is parsed from a log line / a foreign checkout's HEAD, so a stale or
+   * bogus value is a real input — and this false alarm fires on EVERY path at once, which
+   * is exactly how a detector teaches people to ignore it.
+   */
+  it('a candidate sha that does not RESOLVE is UNKNOWN — never a blanket "absent"', async () => {
+    const git = fakeGit({ tree: { 'a.ts': SAME } }); // no blobs ⇒ rev-parse fails for everything
+    const rs = await classifyPathsAgainstCandidate(git, 'deadbeefdeadbeef', ['a.ts', 'b.ts']);
+    expect(rs.map((r) => r.inCandidate)).toEqual([null, null]);
+    expect(rs[0].reason).toBeNull();
+    expect(rs[0].unknownReason).toMatch(/does not resolve in this repo/);
+  });
+
+  it('…but a RESOLVING candidate that truly lacks the path still reports absent', async () => {
+    // The guard above must not swallow the genuine new-file case it sits in front of.
+    const git = fakeGit({
+      blobs: { 'deadbeefdeadbeef^{commit}': 'a'.repeat(40) },
+      tree: { 'new.ts': OTHER },
+    });
+    const [r] = await classifyPathsAgainstCandidate(git, 'deadbeefdeadbeef', ['new.ts']);
+    expect(r.inCandidate).toBe(false);
+    expect(r.reason).toBe('absent');
+  });
 });
 
 describe('callerEditsInCandidate', () => {

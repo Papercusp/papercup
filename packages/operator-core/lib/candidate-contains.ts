@@ -104,6 +104,24 @@ export async function classifyPathsAgainstCandidate(
       unknownReason: 'No candidate commit could be resolved, so there is nothing to compare against.',
     }));
   }
+  // The candidate COMMIT must resolve before any per-path verdict is meaningful. Without
+  // this, an unresolvable sha makes every `<sha>:<path>` read fail, and a failed read on
+  // the candidate side is indistinguishable from "the commit genuinely lacks this path" —
+  // so every file comes back `absent`, a DEFINITIVE miss, and the caller is hard-warned
+  // that none of its work is in the run. Caught live: a garbage sha reported
+  // `inCandidate: false, reason: 'absent'` for a file that was plainly committed.
+  // `judgingSha` is parsed from a log line / a foreign checkout's HEAD, so a stale or
+  // bogus value is a real input, not a hypothetical — and a detector that cries wolf is
+  // one agents learn to ignore.
+  const resolved = await git(['rev-parse', '--verify', `${candidateSha}^{commit}`]);
+  if (!resolved || !SHA_RE.test(resolved)) {
+    return paths.map((path) => ({
+      path,
+      inCandidate: null,
+      reason: null,
+      unknownReason: `Candidate commit '${candidateSha.slice(0, 12)}' does not resolve in this repo — containment is UNKNOWN, not missing.`,
+    }));
+  }
   return Promise.all(
     paths.map(async (path): Promise<PathContainment> => {
       const [candidateBlob, treeBlob] = await Promise.all([
