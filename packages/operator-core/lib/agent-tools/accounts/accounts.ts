@@ -153,10 +153,14 @@ export const accountsRemoveTool = defineTool({
 export const accountsStatusTool = defineTool({
   name: 'accounts:status',
   description:
-    "Per-account rate-limit status: availability (not currently paused), the sustained-limit flag (the scale-out trigger), the rate projection, and any LIVE local governor buckets keyed to the account. Returns {ok, accounts}.",
+    "Per-account rate-limit PROJECTION: `available` (⚠ ONLY \"not inside a local pause window right now\" — seconds-scale, NOT a routability or authentication verdict), the sustained-limit flag (the scale-out trigger), the rate projection, and any LIVE local governor buckets. ⚠ These flags PERSIST when a refresh probe fails, so `available:false` may mean UNKNOWN, not measured-unavailable — cross-check `accounts:probe-capacity` (verdict `no-reading` ⇒ the reading is blind). NEVER conclude \"the pool is exhausted / a fleet cannot launch\" from this tool. Returns {ok, accounts}.",
   guidance: {
-    when: 'Checking which accounts have headroom before a deploy, or why an account auto-scaled out.',
+    when: 'Inspecting one account’s rate-limit penalty/pause projection, or why an account auto-scaled out.',
+    notWhen:
+      'Deciding whether a FLEET CAN LAUNCH, whether accounts can AUTHENTICATE, or how many members to open — this tool cannot answer any of those and reads misleadingly on all three. Use the gateway’s routability verdict instead: fleet:capacity, gateway:status, or the `capacityClamp` block fleet:launch-on-plan returns (reachable / healthyAccounts / clamped). EI-18809949582687481: four accounts reading `available:false` here (their refresh probes all returning `fetch failed`/`no-reading`, one with a pausedUntil already 12s EXPIRED) sat alongside a gateway reporting reachable:true, healthyAccounts:2, clamped:false — a 10-member fleet then launched and booted clean with zero 401/403/429. An agent aborted an owner-directed launch on this field. Also note `healthyAccounts` is NOT a per-member cap: one account paces many concurrent sessions through the gateway.',
     seeAlso: [
+      'fleet:capacity (the ROUTABILITY verdict — ask this before a launch, not accounts:status)',
+      'accounts:probe-capacity (refresh the projection; `no-reading` ⇒ these flags are stale/blind)',
       'accounts:set-session-override (route the fleet around a limited account)',
       'accounts:reset-rate (clear a stale rate-limit penalty)',
       'accounts:scale_policy (tune when to scale out under sustained limiting)',

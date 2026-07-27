@@ -140,12 +140,18 @@ export function auditMigrationList(
   const tables = new Set<string>();
   for (const file of declared) for (const t of byFile.get(file) ?? []) tables.add(t);
 
-  // Only look PAST the newest declared migration: an older file the fixture
-  // deliberately omits is a choice, not rot.
-  const highestDeclared = Math.max(
-    0,
-    ...declared.map((f) => migrationNumber(f) ?? 0),
-  );
+  // The watermark is PER TABLE, not global. A global "newest declared" hides a
+  // real gap behind an unrelated table: a list carrying 693 (agent_facts) and
+  // 609 (session_cursor) would silently skip a 650 that alters session_cursor,
+  // because 650 < 693. Per table, 650 > 609 and is correctly flagged.
+  // Below a table's own watermark, an omission is a deliberate choice, not rot.
+  const watermark = new Map<string, number>();
+  for (const file of declared) {
+    const n = migrationNumber(file) ?? 0;
+    for (const t of byFile.get(file) ?? []) {
+      watermark.set(t, Math.max(watermark.get(t) ?? 0, n));
+    }
+  }
 
   const missing: { file: string; tables: string[] }[] = [];
   const wider: { file: string; tables: string[] }[] = [];
@@ -154,8 +160,9 @@ export function auditMigrationList(
   )) {
     if (declaredSet.has(file)) continue;
     const n = migrationNumber(file);
-    if (n === null || n <= highestDeclared) continue;
-    const overlap = [...touched].filter((t) => tables.has(t));
+    if (n === null) continue;
+    // Relevant for any of OUR tables that this file post-dates.
+    const overlap = [...touched].filter((t) => tables.has(t) && n > (watermark.get(t) ?? 0));
     if (!overlap.length) continue;
     // Every table it touches is one we already build ⇒ we can actually apply it.
     if (touched.size === overlap.length) missing.push({ file, tables: overlap.sort() });

@@ -130,13 +130,13 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    "Merged activity timeline for ONE agent: transcript turns + tool calls + coord messages, newest-first. owner:'self' = the caller. Audit filters can select kind/tool/status, hide automatic hook traffic (default), group repeats, continue with nextCursor, and report automatic-versus-agent tool-call counts.",
+    "Merged activity timeline for ONE agent: transcript turns + tool calls + coord messages, newest-first. owner:'self' = the caller. Audit filters can select kind/tool/status/goalRef, hide automatic hook traffic (default), group repeats, continue with nextCursor, and report automatic-versus-agent tool-call counts. Tool rows carry the goal and assumptions that were live when each call was made.",
   guidance: {
     when:
-      '"What did agent X actually do yesterday" — a postmortem / handoff-archaeology read joining speech + tool calls + coord traffic by owner and time.',
+      '"What did agent X actually do yesterday" — a postmortem / handoff-archaeology read joining speech + tool calls + coord traffic by owner and time. Also "what did they do while holding goal X, and under which assumptions": pass goalRef.',
     notWhen:
-      'Searching for specific content — sessions:search. Live state — coord:presence / fleet:assignments (this is HISTORY).',
-    chaining: 'Filter failures with kinds:["tool"], status:"invalid-input" (or another exact status); turn refs carry session id + turn idx → sessions:read.',
+      'Searching for specific content — sessions:search. Live state — coord:presence / fleet:assignments (this is HISTORY). In particular do NOT read goal_ref/assumption_set_id to learn what an agent is assuming NOW — that is a per-call retrospective stamp; live state is the goal cell.',
+    chaining: 'Filter failures with kinds:["tool"], status:"invalid-input" (or another exact status); turn refs carry session id + turn idx → sessions:read. goalRef:"WI-6393" scopes to one goal and resolves each row\'s assumption_count; stamp_coverage says whether anything was actually resolved, so an empty result names its own cause.',
     seeAlso: ['sessions:search', 'dev:session_detail (one spawn drilldown)'],
   },
   requirePrincipal: false,
@@ -188,7 +188,8 @@ export default defineTool({
         SELECT 'turn' AS kind, COALESCE(ts, ingested_at)::text AS ts,
                source_kind || ':' || session_id || ':' || turn_idx AS ref,
                '[' || speaker || '] ' || left(text, 300) AS text,
-               NULL::text AS tool_name, NULL::text AS status, false AS auto
+               NULL::text AS tool_name, NULL::text AS status, false AS auto,
+               NULL::text AS goal_ref, NULL::bigint AS assumption_set_id
           FROM harness_shared.session_turns
          WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
            AND owner = ${owner}
@@ -197,6 +198,7 @@ export default defineTool({
            AND (${kinds}::text[] IS NULL OR 'turn' = ANY(${kinds}::text[]))
            AND ${args.tool ?? null}::text IS NULL
            AND ${args.status ?? null}::text IS NULL
+           AND ${args.goalRef ?? null}::text IS NULL
          ORDER BY COALESCE(ts, ingested_at) DESC LIMIT ${fetchLimit}
       )
       UNION ALL
@@ -204,13 +206,18 @@ export default defineTool({
         SELECT 'tool' AS kind, invoked_at::text AS ts, id::text AS ref,
                tool_name || ' (' || COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status, '?') || COALESCE(', ' || duration_ms || 'ms', '') || ')' AS text,
                tool_name, COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) AS status,
-               tool_name = ANY(${[...AUTOMATIC_TOOL_NAMES]}::text[]) AS auto
+               tool_name = ANY(${[...AUTOMATIC_TOOL_NAMES]}::text[]) AS auto,
+               -- P-024 / D-046: two columns in an existing SELECT. goal_ref is
+               -- already a RESOLVED ref (P-009 typed it text for exactly this),
+               -- so there is no join and nothing to hydrate.
+               goal_ref, assumption_set_id
           FROM harness_shared.tool_invocations
          WHERE coord_owner_id = ${owner}
            AND invoked_at >= ${since}::timestamptz AND invoked_at < ${until}::timestamptz
            AND (${kinds}::text[] IS NULL OR 'tool' = ANY(${kinds}::text[]))
            AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
            AND (${args.status ?? null}::text IS NULL OR COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) = ${args.status ?? null})
+           AND (${args.goalRef ?? null}::text IS NULL OR goal_ref = ${args.goalRef ?? null})
            AND (${includeAuto} OR tool_name <> ALL(${[...AUTOMATIC_TOOL_NAMES]}::text[]))
          ORDER BY invoked_at DESC LIMIT ${fetchLimit}
       )
@@ -219,13 +226,15 @@ export default defineTool({
         SELECT 'coord' AS kind, ts::text AS ts, msg_id AS ref,
                left(COALESCE(body->>'summary', body->>'body', ''), 300) AS text,
                NULL::text AS tool_name, NULL::text AS status,
-               COALESCE(body->>'auto', 'false') = 'true' AS auto
+               COALESCE(body->>'auto', 'false') = 'true' AS auto,
+               NULL::text AS goal_ref, NULL::bigint AS assumption_set_id
           FROM harness_shared.coord_event_log
          WHERE surface = 'messages' AND body->>'from' = ${owner}
            AND ts >= ${since}::timestamptz AND ts < ${until}::timestamptz
            AND (${kinds}::text[] IS NULL OR 'coord' = ANY(${kinds}::text[]))
            AND ${args.tool ?? null}::text IS NULL
            AND ${args.status ?? null}::text IS NULL
+           AND ${args.goalRef ?? null}::text IS NULL
            AND (${includeAuto} OR COALESCE(body->>'auto', 'false') <> 'true')
          ORDER BY ts DESC LIMIT ${fetchLimit}
       )
@@ -234,7 +243,44 @@ export default defineTool({
     `;
 
     const hasMore = rows.length > offset + limit;
-    const pageRows = rows.slice(offset, offset + limit);
+    let pageRows = rows.slice(offset, offset + limit);
+
+    // P-024 (c): resolve the assumption SET only on a goal-scoped read, and only
+    // for the DISTINCT watermarks this page actually carries — ONE query, never
+    // one per row. An unfiltered postmortem page skips this entirely, which is
+    // the whole point: eager resolution would turn the ordinary "what did agent
+    // X do yesterday" read into an N+1 over agent_facts.
+    //
+    // The watermark→set expansion mirrors isAssumptionFact (D-087 R2): `kind`
+    // when declared WINS, else the pre-migration-690 legacy form
+    // confidence='suspected'. A kind-only count here would silently read 0 for
+    // every legacy assumption while passing every fixture that sets the new field
+    // — the exact defect the facts:assert guard caught one item ago.
+    let assumptionSetsResolved = 0;
+    if (args.goalRef) {
+      const wanted = assumptionSetIdsToResolve(pageRows);
+      if (wanted.length > 0) {
+        const countRows = await ctx.tx<{ watermark: string | number; n: number }[]>`
+          SELECT w.watermark::bigint AS watermark,
+                 count(f.id)::int AS n
+            FROM unnest(${wanted}::bigint[]) AS w(watermark)
+            LEFT JOIN harness_shared.agent_facts f
+              ON f.created_by = ${owner}
+             AND f.id <= w.watermark
+             AND f.retracted_at IS NULL
+             AND f.superseded_at IS NULL
+             AND (CASE WHEN f.kind IS NOT NULL THEN f.kind = 'assumption'
+                       ELSE f.confidence = 'suspected' END)
+           GROUP BY w.watermark
+        `;
+        const counts = new Map<number, number>(
+          countRows.map((r) => [Number(r.watermark), Number(r.n)]),
+        );
+        pageRows = attachAssumptionCounts(pageRows, counts);
+        assumptionSetsResolved = counts.size;
+      }
+    }
+
     const entries = args.group_repeated ? groupRepeatedTimelineEntries(pageRows) : pageRows;
     const nextCursor = hasMore
       ? encodeSessionCursor('sessions:timeline', offset + pageRows.length, fingerprint, { since, until })
@@ -261,8 +307,27 @@ export default defineTool({
             ...(kinds ? { kinds } : {}),
             ...(args.tool ? { tool: args.tool } : {}),
             ...(args.status ? { status: args.status } : {}),
+            ...(args.goalRef ? { goalRef: args.goalRef } : {}),
             include_auto: includeAuto,
             group_repeated: args.group_repeated ?? false,
+          },
+          // P-024 ACCEPTANCE / D-046 FLOOR: adoption of this read is measured on
+          // the goalRef filter, and if it is never passed it is P-009's STAMP
+          // that gets cut, not this projection. Reporting the resolution here
+          // makes an empty goal-scoped read self-describing: goal_scoped tells
+          // you the filter ran, assumption_sets_resolved tells you whether any
+          // watermark was actually expanded — so `count: 0` can never be read as
+          // "this agent did nothing under that goal" when it really means "no
+          // call ever carried that goal_ref".
+          stamp_coverage: {
+            goal_scoped: Boolean(args.goalRef),
+            assumption_sets_resolved: assumptionSetsResolved,
+            ...(args.goalRef && pageRows.length === 0
+              ? {
+                  zero_reason:
+                    'no tool call in this window carried that goal_ref — either the agent never held it, or the calls predate the P-009 stamp',
+                }
+              : {}),
           },
           raw_count: pageRows.length,
           count: entries.length,
