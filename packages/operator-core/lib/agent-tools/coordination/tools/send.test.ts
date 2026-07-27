@@ -800,6 +800,70 @@ describe('coord:send — fleet-scoped broadcast default (queen-fleet-authority-b
     expect(b.results[0].message).toMatch(/fleet-members\(ops\)/);
     expect(b.results[0].message).toMatch(/@fleet:ops/);
     expect(sendM).not.toHaveBeenCalled();
+    // EI-18791996856052350: the remedy it names must be EXECUTABLE. The old text
+    // said "send it from a non-fleet-authority context", which is unreachable —
+    // fleet leadership is a property of the sender's identity, not of the call.
+    expect(b.results[0].message).toMatch(/asAuthority:'none'/);
+  });
+
+  it("EI-18791996856052350: a fleet leader CAN send a hive-wide NOTICE with asAuthority:'none' — delivered UNSTAMPED, so it informs the hive without commanding it", async () => {
+    // The refusal above is right that a fleet-scoped CUE must not blast '*'. But it
+    // left a leader unable to send any hive-wide notice at all: the leader holding a
+    // fleet-wide outage item (facts:assert down for every agent) could not warn the
+    // hive, because its identity always stamps fleet-members(<slug>). Renouncing the
+    // authority for ONE message resolves the contradiction at its real source — the
+    // STAMP, not the audience.
+    fetchPresenceFleetM.mockResolvedValue(fleetOf('ops') as never);
+    const b = await body({
+      to: ['*'],
+      summary: 'HIVE-WIDE: facts:assert is failing on :3070 — re-assert after the heal',
+      allHive: true,
+      asAuthority: 'none',
+    });
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+    expect(b.results[0].to).toEqual(['*']);
+    expect(sendM.mock.calls[0][1].to).toEqual(['*']);
+    // UNSTAMPED: an explicit null (not undefined) so the H5a seam does not re-resolve
+    // the sender's fleet authority and refuse the very send this exit exists to allow.
+    expect(sendM.mock.calls[0][1].cueAuthorityResolved).toBeNull();
+    // the downgrade is REPORTED — a leader must never silently believe its cue
+    // carried fleet-control weight hive-wide.
+    expect(b.results[0].sentWithoutFleetAuthority).toBe(true);
+    // and the P-010/H5b durable trace still lands, so the allhive sweep still sees it
+    expect(b.results[0].allHiveBroadcast).toBe(true);
+    expect(sendM.mock.calls[0][1].extra?.allHiveBroadcast).toBe(true);
+  });
+
+  it("asAuthority:'none' does NOT widen the audience on its own — without allHive a fleeted sender's ['*'] is still down-scoped", async () => {
+    // The two knobs stay orthogonal: allHive decides the AUDIENCE, asAuthority decides
+    // the STAMP. Renouncing authority must never become an accidental hive-wide blast.
+    fetchPresenceFleetM.mockResolvedValue(fleetOf('ops') as never);
+    const b = await body({ to: ['*'], summary: 'status', asAuthority: 'none' });
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+    expect(b.results[0].to).toEqual(['@fleet:ops']);
+    expect(sendM.mock.calls[0][1].to).not.toContain('*');
+    expect(b.results[0].allHiveBroadcast).toBeUndefined();
+    // the renunciation itself DOES still apply (it is a property of the message, not
+    // of the audience) and is reported — the stamp is dropped, the audience is not
+    // widened. That separation is the whole point: renouncing authority must never
+    // become an accidental hive-wide blast.
+    expect(sendM.mock.calls[0][1].cueAuthorityResolved).toBeNull();
+    expect(b.results[0].sentWithoutFleetAuthority).toBe(true);
+  });
+
+  it("asAuthority:'none' is inert for a sender holding no fleet-leader authority", async () => {
+    // An ordinary member never carries a fleet-members stamp, so there is nothing to
+    // renounce — the flag must not invent a downgrade report or change delivery.
+    fetchPresenceFleetM.mockResolvedValue(fleetOf('ops', 'member') as never);
+    const b = await body({
+      to: ['*'],
+      summary: 'HIVE-WIDE: PG lock stampede',
+      allHive: true,
+      asAuthority: 'none',
+    });
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+    expect(b.results[0].to).toEqual(['*']);
+    expect(b.results[0].sentWithoutFleetAuthority).toBeUndefined();
   });
 
   it('EI-9501 guard does not fire without allHive — the ordinary fleet-scoped rewrite still applies', async () => {
