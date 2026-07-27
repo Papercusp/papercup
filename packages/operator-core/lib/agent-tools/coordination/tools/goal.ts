@@ -81,6 +81,24 @@ export default defineTool({
              * distinction for the reader-independent projection.
              */
             goalUnknown: goal ? null : 'nothing-held',
+            /**
+             * ⚠ HOISTED FOR THE SAME REASON `goalRef` IS, and it was missed the
+             * first time (P-011, agent-state-plane-verification-2026-07-27). This
+             * is the `agent.goal` cell's declared FALSIFIER path, and nesting it
+             * reproduced verbatim the bug the comment above describes: against a
+             * goal-less agent (`goal: null`), `goal.agreement` does not exist, so
+             * the falsifier is unreadable in the single most ordinary case there
+             * is — the one the cell most needs it to explain.
+             *
+             * The headline was hoisted flat precisely to avoid that, and the
+             * falsifier simply did not get the same treatment. Nothing caught it
+             * because every existing assertion compared the declaration to another
+             * declaration rather than to a payload.
+             *
+             * Purely additive: `goal.agreement` stays where the description and
+             * `summary` already point.
+             */
+            goalAgreement: goal?.agreement ?? null,
             goal,
             // Prose for a human-facing surface. `goal`/`goalRef` stay branchable
             // because prose cannot be branched on.

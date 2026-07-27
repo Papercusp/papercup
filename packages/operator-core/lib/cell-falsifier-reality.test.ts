@@ -154,17 +154,26 @@ describe('P-011: every registered cell declares paths its resolver ACTUALLY prod
    */
   it('serving.startedSinceCodeChange moves with the PROCESS probe while the git headline stays put', async () => {
     const base = { path: 'packages/operator-core/lib/cell-registrations.ts' };
-    const codeAsOfMs = Date.UTC(2026, 6, 27, 12, 0, 0);
+
+    /**
+     * ⚠ The pivot is READ FROM THE LIVE RUN, not chosen. `codeAsOfMs` comes from the
+     * DEPLOY state here (`codeAsOfSource: 'deploy'`), so injecting `fileMtimeMs` does
+     * not move it and a hardcoded constant silently compares against the wrong instant
+     * — which is how the first draft of this test failed. Anchoring to the resolver's
+     * own reported value keeps the experiment valid whatever the box's deploy age.
+     */
+    const observed = await gitPipelinePosition(base);
+    const codeAsOfMs = pathExists(observed, 'serving.codeAsOfMs').value;
+    expect(typeof codeAsOfMs, 'the serving leg reported no codeAsOfMs — nothing to pivot on').toBe('number');
+    const pivot = codeAsOfMs as number;
 
     // A process that started AFTER the code landed → the falsifier agrees with "deployed".
     const fresh = await gitPipelinePosition(base, {
-      probeUnitStart: async () => ({ pid: 4242, startedAtMs: codeAsOfMs + 60 * 60_000 }),
-      fileMtimeMs: async () => codeAsOfMs,
+      probeUnitStart: async () => ({ pid: 4242, startedAtMs: pivot + 60 * 60_000 }),
     });
     // The SAME git inputs, only the process probe moved → the falsifier must flip.
     const stale = await gitPipelinePosition(base, {
-      probeUnitStart: async () => ({ pid: 4242, startedAtMs: codeAsOfMs - 60 * 60_000 }),
-      fileMtimeMs: async () => codeAsOfMs,
+      probeUnitStart: async () => ({ pid: 4242, startedAtMs: pivot - 60 * 60_000 }),
     });
 
     expect(pathExists(fresh, 'serving.startedSinceCodeChange').value).toBe(true);
@@ -186,16 +195,16 @@ describe('P-011: every registered cell declares paths its resolver ACTUALLY prod
    * because bg-host runs tsx from the staging tree and was never restarted.
    */
   it('kills "deployed ✓ means the running process has my code" — the misread filed 4× and re-hit by P-010', async () => {
-    const codeAsOfMs = Date.UTC(2026, 6, 27, 12, 0, 0);
-    const naiveReading = await gitPipelinePosition(
-      { path: 'packages/operator-core/lib/cell-registrations.ts' },
-      {
-        // The false reading, constructed: the code IS deployed, and a reader who stops
-        // at the headline concludes the serving process is executing it.
-        probeUnitStart: async () => ({ pid: 4242, startedAtMs: codeAsOfMs - 3 * 60 * 60_000 }),
-        fileMtimeMs: async () => codeAsOfMs,
-      },
-    );
+    const base = { path: 'packages/operator-core/lib/cell-registrations.ts' };
+    const pivot = pathExists(await gitPipelinePosition(base), 'serving.codeAsOfMs').value as number;
+    expect(typeof pivot).toBe('number');
+
+    const naiveReading = await gitPipelinePosition(base, {
+      // The false reading, constructed: the code IS deployed, and a reader who stops
+      // at the headline concludes the serving process is executing it. The process in
+      // fact started three hours BEFORE that code existed — P-010's bg-host exactly.
+      probeUnitStart: async () => ({ pid: 4242, startedAtMs: pivot - 3 * 60 * 60_000 }),
+    });
 
     const falsifier = pathExists(naiveReading, 'serving.startedSinceCodeChange');
     expect(falsifier.exists).toBe(true);

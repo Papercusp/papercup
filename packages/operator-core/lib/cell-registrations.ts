@@ -468,6 +468,13 @@ export const AGENT_GOAL_CELL: CellSpec = {
    * corroborate, diverge, or stand alone.
    */
   falsifier: {
+    /**
+     * ⚠ FLAT, for the reason the headline is flat — P-011 found this declared as
+     * `goal.agreement`, which does not exist against a goal-less agent (`goal:
+     * null`), making the falsifier unreadable in the most ordinary case there is.
+     * `coord:goal` hoists it (goal.ts). Re-nesting this reintroduces the bug
+     * silently, because every fixture with a goal in it still passes.
+     */
     field: 'goal.agreement',
     measurement:
       "the coord_links `implements` edge joining a held work-item to a separately-claimed plan item — a link-graph read sharing no input with work_items.taken_by or plan_item_claims",
