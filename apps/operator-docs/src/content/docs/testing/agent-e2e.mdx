@@ -1942,6 +1942,44 @@ loadavg 9.5–48.6):
   `user_message | quiet_wait_resume | open_canvas | user_says_ready |
   user_welcomed | continue` — anything else streams a single
   `event: error` frame (`invalid_args`) and closes.
+- **A relaunched Tauri shell does NOT prove your server-side edit is live —
+  its sidecar can be days old, and the env switcher's chrome can lie about
+  which one you're hitting.** (EI-18796530017868774, 2026-07-27; cost a full
+  verify cycle.) Two compounding traps:
+  1. **The sidecar isn't per-shell and isn't refreshed by a shell relaunch.**
+     `tsx bin/hono-host.ts` sidecars sit under a bash supervisor
+     (`while :; do eval "$1"; done`) that outlives the shell that spawned
+     them — this box routinely has 30+ of these processes, some **8+ days
+     old**. `tsx` loads modules once at process start, so an old sidecar
+     serves old resolver code forever; killing and relaunching your Tauri
+     shell just re-attaches to the same stale process. Relaunching is the
+     obvious move and it does not help.
+  2. **The env switcher (Ctrl+Alt+1–4) changes the page origin, not where
+     `/api` actually goes.** The desktop webview proxies `/api/*` over Tauri
+     IPC to the shell's OWN spawned sidecar regardless of which origin the
+     chrome shows — switching to "staging :3170" makes the URL bar say
+     127.0.0.1:3170 while `fetch('/api/...')` from that page still answers
+     from the shell's local (possibly stale) sidecar. Verifiable: compare
+     the shell's in-page fetch result against a terminal `curl` to the same
+     URL at the same moment — a genuinely fresh sidecar matches; a stale one
+     silently diverges. (Related, same underlying proxy-not-origin behavior:
+     `ipc-monitor` above, and the frozen-SPA-snapshot trap in §15.4's
+     verify-tauri-headless notes.)
+
+  **The failure is silent and reads exactly like "my fix doesn't work"** — the
+  natural next move is to go re-edit already-correct code. The inverse is
+  worse: a stale sidecar that happens to still exhibit the OLD-but-passing
+  behavior reports a real regression as green.
+
+  **To verify a SERVER-SIDE change (a resolver, an API route, anything not
+  purely rendering), don't trust the shell — curl `:3170` directly** after
+  `dev:restart { target: 'staging', confirm: true }` (see the two-port model
+  in `/internal/docs/system/repo-conventions`). Use the Tauri shell only for
+  what it actually proves: rendering and interaction. If you must confirm
+  which code a given shell's sidecar is running, fetch the same query from
+  inside the page and diff it against a curl to `:3170` — a match means that
+  shell's sidecar is current; a mismatch means it predates your edit and no
+  amount of UI-level retrying will pick up the fix.
 - **Teardown hygiene: `pkill -f <pattern>` self-matches your own shell,
   and over-kills a shared WM.** `pkill -f "openbox"` / `pgrep -f 'Xvfb
   :96'` match against `/proc/<pid>/cmdline` for EVERY process — including

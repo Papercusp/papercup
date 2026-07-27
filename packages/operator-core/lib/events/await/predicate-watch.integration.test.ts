@@ -9,7 +9,7 @@
  * once-await consumption and the GC coupling stay honest. Follows the
  * org-fixture mock pattern (test/_org-test-db.ts).
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import type { PredicateOp } from './predicate-watch';
 import type { CellSpec } from '../../cell-registry';
@@ -347,14 +347,18 @@ describe('predicate watches (real PG)', () => {
     /** Re-read the row and evaluate it — the poller's per-tick unit. */
     const step = async (id: string) => pw.evalPredicateWatch((await pw.getPredicateWatch(id))!);
 
-    beforeAll(() => {
-      pw.configurePredicateDispatch(async () => STORE);
-    });
-
-    afterEach(() => {
-      // The outer afterEach clears the dispatch seam; restore ours for the next case.
-      pw.configurePredicateDispatch(async () => STORE);
+    /**
+     * ⚠ `beforeEach`, NOT `beforeAll` — the enclosing describe's `afterEach` nulls the
+     * dispatch seam after EVERY test, so a once-only arm leaves every case after the
+     * first polling a dispatch that is not there. That failure is silent in the worst
+     * way: the eval simply never matches, so an assertion of the form "it did not wake"
+     * PASSES. This suite caught it only because the material case proves the watch can
+     * fire BEFORE asserting any silence — which is precisely the vacuous pass P-005
+     * names, reproduced here for real.
+     */
+    beforeEach(() => {
       STORE = {};
+      pw.configurePredicateDispatch(async () => STORE);
     });
 
     it('TRIPLE PROVENANCE: the watch polls the tool + path the CELL declares, not a copy', async () => {
@@ -472,6 +476,9 @@ describe('predicate watches (real PG)', () => {
 
       // ONE mutation: the candidate sha moves. Nothing material changed.
       STORE = { changeInCandidate: { judgingSha: 'ccccccc', judgingContainsPath: false } };
+      const hRow = (await pw.getPredicateWatch(headline.row.id))!;
+      // eslint-disable-next-line no-console
+      console.log('DEBUG headline row', JSON.stringify({ id: hRow.id, tool: hRow.tool, path: hRow.path, op: hRow.op, value: hRow.value, lastEval: hRow.lastEval, active: hRow.active, args: hRow.args }));
       const headlineOut = await step(headline.row.id);
       const materialOut = await step(material.row.id);
 
