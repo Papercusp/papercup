@@ -84,7 +84,15 @@ const row = (ownerId: string) => ({
   intentStale: false,
   lastActiveSecAgo: 5,
 });
-const ROWS = [row(SELF), row(PEER), row(OTHER)];
+/**
+ * ⚠ A FRESH ARRAY PER CALL, DELIBERATELY. A shared module-level fixture makes
+ * the no-mutation assertions below VACUOUS: the first test to run would absorb
+ * any rewrite, so every later "before" snapshot already contains the damage and
+ * compares equal to itself. Caught by mutation-testing this very file — with a
+ * shared fixture, a projection that rewrote `intent` on the rows it reads left
+ * all 11 tests green.
+ */
+const freshRows = () => [row(SELF), row(PEER), row(OTHER)];
 
 /** Held work-items and their topic tags — the feed's real join, as data. */
 const HELD: Record<string, readonly string[]> = { [PEER]: ['WI-1'], [OTHER]: ['WI-2'] };
@@ -98,8 +106,11 @@ const SOURCES: CoupledTopicSources = {
 };
 
 /** SURFACE 1 — `tools/presence.ts`'s chain: edges → union → expanded[]. */
-const presenceExpanded = (derived: DerivedCoupling[], edges: CouplingEdge[]) =>
-  buildCoupledExpansion(resolveCoupledPeers(SELF, derived, edges), ROWS);
+const presenceExpanded = (
+  derived: DerivedCoupling[],
+  edges: CouplingEdge[],
+  rows: ReturnType<typeof freshRows> = freshRows(),
+) => buildCoupledExpansion(resolveCoupledPeers(SELF, derived, edges), rows);
 
 /** SURFACE 2 — `coupled-topics-read.ts`'s chain: edges → THE SAME union → feed. */
 const coupledFeed = async (derived: DerivedCoupling[], edges: CouplingEdge[]) =>
@@ -195,20 +206,25 @@ describe('P-013 lifecycle — a coupling reaches BOTH surfaces, and a decouple r
 });
 
 describe('P-013 byte-identity — expansion APPENDS a block and rewrites nothing (D-053)', () => {
-  const basePayload = () => ({
-    summary: { active: ROWS.length },
-    active: ROWS,
+  const META = {
+    summary: { active: 3 },
     etag: '5a96f1b69293aa34',
     as_of: '2026-07-27T23:26:52.359Z',
     scope: 'workspace',
-  });
+  };
 
   it('the base payload is identical with and without expansion, differing ONLY by the appended keys', () => {
-    const base = basePayload() as Record<string, unknown>;
-    const expansion = presenceExpanded([], [declaredEdge(PEER, 'coupled')]);
+    // The two payloads are built over INDEPENDENT row arrays: the no-expansion
+    // one is never handed to the projection, so if expansion rewrote anything
+    // in the rows it read, `active` diverges here instead of both sides moving
+    // together.
+    const base = { ...META, active: freshRows() } as Record<string, unknown>;
+    const rows = freshRows();
+    const expansion = presenceExpanded([], [declaredEdge(PEER, 'coupled')], rows);
     // Assembled exactly as tools/presence.ts assembles it: `{ ...snapshot, active, ...coupling }`.
     const withExpansion: Record<string, unknown> = {
-      ...basePayload(),
+      ...META,
+      active: rows,
       expanded: expansion.expanded,
       expandedTotal: expansion.total,
     };
@@ -227,10 +243,11 @@ describe('P-013 byte-identity — expansion APPENDS a block and rewrites nothing
   });
 
   it('does not mutate the roster rows it projects from', () => {
-    const before = JSON.stringify(ROWS);
-    const expansion = presenceExpanded([derivedEdge(OTHER)], [declaredEdge(PEER, 'coupled')]);
+    const rows = freshRows();
+    const before = JSON.stringify(freshRows());
+    const expansion = presenceExpanded([derivedEdge(OTHER)], [declaredEdge(PEER, 'coupled')], rows);
     expect(expansion.expanded).toHaveLength(2);
-    expect(JSON.stringify(ROWS)).toBe(before);
+    expect(JSON.stringify(rows), 'the projection rewrote the rows it only reads').toBe(before);
   });
 
   it('describes the same peer identically in expanded[] and in active[] — one payload must not contradict itself', () => {
@@ -240,7 +257,10 @@ describe('P-013 byte-identity — expansion APPENDS a block and rewrites nothing
     // two agree. One that REWROTE a projected field — an idle-prefixing intent
     // overlay is the obvious future candidate — would make a single payload
     // describe the same peer two different ways, and reds here.
-    const overlaid = ROWS.map((r) => ({ ...r, modes: ['auto'], parkedOn: ['coord:inbox-wake'] }));
+    // `overlaid` is built from an INDEPENDENT pristine array — it stands in for
+    // the post-overlay `active[]`, and must not be able to inherit a rewrite the
+    // projection made to the rows it was given.
+    const overlaid = freshRows().map((r) => ({ ...r, modes: ['auto'], parkedOn: ['coord:inbox-wake'] }));
     const expansion = presenceExpanded([], [declaredEdge(PEER, 'coupled')]);
 
     expect(expansion.expanded).toHaveLength(1);

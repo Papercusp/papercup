@@ -355,7 +355,7 @@ export function OperatorChat({
             </div>
           ) : undefined,
         }}
-        labelForRole={() => ''}
+        labelForRole={NO_ROLE_LABEL}
         inputPlaceholder={passive ? `Type to wake ${agentName}…` : `Reply to ${agentName}…`}
         inputValue={input}
         onInputChange={setInput}
@@ -432,6 +432,14 @@ export function OperatorChat({
 // + the (forthcoming) OperatorConversation provider don't need to
 // reach across the chat/ folder. Re-export, not redeclare.
 export type { ChatMessage as OperatorChatMessage } from './chat/ChatConversation';
+
+/**
+ * This pane draws its own role label into the avatar column, so ChatConversation
+ * must not draw one. Module-level (not an inline `() => ''`) because it is a prop
+ * of every transcript row: a fresh arrow each render re-renders every row on every
+ * keystroke, which is half of WI-6502's typing lag. See the <ChatMessageRow> memo.
+ */
+const NO_ROLE_LABEL = () => '';
 
 /**
  * Compact chip for an MCP/tool call the operator made during the preceding

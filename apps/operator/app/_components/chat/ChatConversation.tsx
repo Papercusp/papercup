@@ -339,6 +339,138 @@ export interface ChatConversationProps {
   loadingEarlier?: boolean;
 }
 
+type ChatMessageRowProps = {
+  message: ChatMessage;
+  index: number;
+  start: number;
+  measureElement: (node: HTMLElement | null) => void;
+  /** Already resolved out of `emptyState` by the parent so the row never takes
+   *  that inline object literal as a prop (it is rebuilt on every parent render). */
+  fallbackIcon: ChatIconComponent;
+  fallbackLabel: string;
+  iconForRole?: ChatConversationProps['iconForRole'];
+  labelForRole?: ChatConversationProps['labelForRole'];
+  renderAvatar?: ChatConversationProps['renderAvatar'];
+  renderToolChip?: ChatConversationProps['renderToolChip'];
+  renderToolCard?: ChatConversationProps['renderToolCard'];
+  renderReport?: ChatConversationProps['renderReport'];
+  harnessSlug?: ChatConversationProps['harnessSlug'];
+  onWorkRefActivate?: ChatConversationProps['onWorkRefActivate'];
+};
+
+/**
+ * One transcript row — memoized. THE typing-lag boundary.
+ *
+ * WI-6502 [owner 2026-07-27, verbatim] "typing into the chat boxes is very
+ * laggy." The composer's draft lives in OperatorChat's `input` state and arrives
+ * in ChatConversation as `inputValue`, so every keystroke re-renders it. Before
+ * this, that re-rendered the whole row body for every message on screen: avatar,
+ * role label, tool cards, and one `renderToolChip` per tool — each of which
+ * eagerly `JSON.stringify`s its full payload for a tooltip only visible on hover.
+ * `ChatMessageContent` alone was memoized (the earlier markdown pass), which is
+ * exactly why that guard kept passing while typing stayed slow.
+ *
+ * Measured in a driven Tauri webview against :3270, on the owner's own surface:
+ * ~70ms of main-thread block per keystroke against a 32ms idle two-frame floor,
+ * with 28 chip tooltips rebuilt per keystroke and ZERO network requests and ZERO
+ * forced reflows — i.e. pure re-render cost. Key auto-repeat is ~33ms, so any
+ * per-keystroke cost above that queues without bound, which is why the owner saw
+ * "half a second for each next character" while HOLDING a key rather than a
+ * uniform slowness.
+ *
+ * A memo is only as good as its props' identity, so every callback here must be
+ * stable at its source (see OperatorChat's module-level `labelForRole`). They are
+ * kept as REAL memo deps rather than latest-ref shims: a latest-ref would freeze
+ * the row against a genuine change, e.g. a new `rosterEntry` behind
+ * `renderAvatar`. `ChatConversation.memo.test.tsx` guards both directions.
+ */
+const ChatMessageRow = memo(function ChatMessageRow({
+  message: m,
+  index,
+  start,
+  measureElement,
+  fallbackIcon,
+  fallbackLabel,
+  iconForRole,
+  labelForRole,
+  renderAvatar,
+  renderToolChip,
+  renderToolCard,
+  renderReport,
+  harnessSlug,
+  onWorkRefActivate,
+}: ChatMessageRowProps) {
+  // WI-4731: a message stamped with the speaking agent gets that
+  // agent's canonical mark (the LeftSidebar tab iconography:
+  // mug → Coffee, kettle → Thermometer, papercup → CupSoda) so a
+  // Mug/Kettle message never wears the Papercup logo. Unstamped
+  // messages keep the pane's own icon (iconForRole / empty-state).
+  const AgentIcon = m.agent ? AGENT_MARKS[m.agent] : undefined;
+  const Icon = AgentIcon ?? (iconForRole ? iconForRole(m.role) : fallbackIcon);
+  const label = labelForRole?.(m.role) ?? (m.role === 'user' ? 'You' : fallbackLabel);
+  const showRoleLabel = label.trim().length > 0;
+  const avatarOverride = renderAvatar?.(m);
+
+  // Each tool is offered to renderToolCard FIRST (below content).
+  // If it returns a card, we DON'T also render the same tool as
+  // a chip above — cards subsume chip representation. Otherwise
+  // we fall through to renderToolChip (above content).
+  const cardSlots: Array<{ index: number; node: ReactNode }> = [];
+  const chipTools: Array<{ tool: ChatToolCall; index: number }> = [];
+  m.tools?.forEach((t, ti) => {
+    const card = renderToolCard?.(t, m, ti);
+    if (card) cardSlots.push({ index: ti, node: card });
+    else if (renderToolChip) chipTools.push({ tool: t, index: ti });
+  });
+  // deterministic-status-cards P-003: a status CARD (curator's
+  // report) renders IN PLACE OF the plain-text content — the card
+  // is the structured form of the same lines. Null ⇒ text as normal.
+  const reportCard = renderReport?.(m);
+
+  return (
+    <div
+      data-index={index}
+      data-message-index={index}
+      ref={measureElement}
+      className={`oracle-msg oracle-msg-${m.role}`}
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        width: '100%',
+        transform: `translateY(${start}px)`,
+      }}
+    >
+      {avatarOverride ? (
+        avatarOverride
+      ) : (
+        <span className="oracle-msg-avatar" aria-hidden="true">
+          <Icon className="oracle-msg-icon" />
+        </span>
+      )}
+      <div className="oracle-msg-stack">
+        {showRoleLabel && <div className="oracle-msg-role">{label}</div>}
+        {chipTools.map(({ tool, index: ti }) => (renderToolChip ? renderToolChip(tool, ti) : null))}
+        {reportCard
+          ? <div className="oracle-msg-report">{reportCard}</div>
+          : m.content && (
+            <div className="oracle-msg-content">
+              <ChatMessageContent
+                content={m.content}
+                harnessSlug={harnessSlug}
+                planSlug={m.planSlug}
+                onWorkRefActivate={onWorkRefActivate}
+              />
+            </div>
+          )}
+        {cardSlots.map(({ index: ci, node }) => (
+          <div key={`tool-card-${ci}`}>{node}</div>
+        ))}
+      </div>
+    </div>
+  );
+});
+
 export function ChatConversation(props: ChatConversationProps) {
   const {
     messages,
@@ -460,21 +592,35 @@ export function ChatConversation(props: ChatConversationProps) {
   // the viewport. Bounded DOM cost regardless of how deep the scrollback
   // grows. Variable-height messages are measured via the IntersectionObserver-
   // backed `measureElement` so estimates self-correct on first paint.
-  const virtualizer = useVirtualizer({
-    count: messages.length,
-    getScrollElement: () => scrollerRef.current,
-    estimateSize: () => 64, // typical bubble height; corrected by measureElement
-    overscan: 8,
-    // Key by stable message identity when possible. Today ChatMessage is
-    // {role, content, tools?} with no id; fall back to (role|content-prefix|index)
-    // — index alone breaks cache on prepend (every item shifts), but combining
-    // it with role + a content prefix keeps the cache hot for items the
-    // user is actually looking at across a prepend.
-    getItemKey: (i) => {
+  // WI-6502: these two MUST keep a stable identity across renders. virtual-core
+  // memoizes `getMeasurementOptions` on `getItemKey` by IDENTITY; a fresh arrow
+  // each render resets `pendingMeasuredCacheIndexes`, which drops `min` to 0 and
+  // re-walks the measurement loop over ALL `count` items — and makes
+  // `getVirtualItems()` return a NEW array every render, which would defeat the
+  // <ChatMessageRow> memo below no matter how stable its own props were. Cheap
+  // today (the session popup pages 10 turns) and O(n) per keystroke the moment
+  // that page size grows.
+  const estimateSize = useCallback(() => 64, []); // typical bubble height; corrected by measureElement
+  // Key by stable message identity when possible. Today ChatMessage is
+  // {role, content, tools?} with no id; fall back to (role|content-prefix|index)
+  // — index alone breaks cache on prepend (every item shifts), but combining
+  // it with role + a content prefix keeps the cache hot for items the
+  // user is actually looking at across a prepend.
+  const getItemKey = useCallback(
+    (i: number) => {
       const m = messages[i];
       if (!m) return i;
       return `${m.role}::${m.content.slice(0, 40)}::${i}`;
     },
+    [messages],
+  );
+  const getScrollElement = useCallback(() => scrollerRef.current, []);
+  const virtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement,
+    estimateSize,
+    overscan: 8,
+    getItemKey,
   });
 
   const virtualItems = virtualizer.getVirtualItems();
@@ -624,84 +770,24 @@ export function ChatConversation(props: ChatConversationProps) {
             {virtualItems.map((vi) => {
               const m = messages[vi.index];
               if (!m) return null;
-              // WI-4731: a message stamped with the speaking agent gets that
-              // agent's canonical mark (the LeftSidebar tab iconography:
-              // mug → Coffee, kettle → Thermometer, papercup → CupSoda) so a
-              // Mug/Kettle message never wears the Papercup logo. Unstamped
-              // messages keep the pane's own icon (iconForRole / empty-state).
-              const AgentIcon = m.agent ? AGENT_MARKS[m.agent] : undefined;
-              const Icon = AgentIcon ?? (iconForRole ? iconForRole(m.role) : emptyState.icon);
-              const label =
-                labelForRole?.(m.role) ?? (m.role === 'user' ? 'You' : emptyState.title);
-              const showRoleLabel = label.trim().length > 0;
-              const avatarOverride = renderAvatar?.(m);
               return (
-                <div
+                <ChatMessageRow
                   key={vi.key}
-                  data-index={vi.index}
-                  data-message-index={vi.index}
-                  ref={virtualizer.measureElement}
-                  className={`oracle-msg oracle-msg-${m.role}`}
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    transform: `translateY(${vi.start}px)`,
-                  }}
-                >
-                  {avatarOverride ? (
-                    avatarOverride
-                  ) : (
-                    <span className="oracle-msg-avatar" aria-hidden="true">
-                      <Icon className="oracle-msg-icon" />
-                    </span>
-                  )}
-                  <div className="oracle-msg-stack">
-                    {showRoleLabel && <div className="oracle-msg-role">{label}</div>}
-                    {/*
-                      Each tool is offered to renderToolCard FIRST (below content).
-                      If it returns a card, we DON'T also render the same tool as
-                      a chip above — cards subsume chip representation. Otherwise
-                      we fall through to renderToolChip (above content).
-                    */}
-                    {(() => {
-                      const cardSlots: Array<{ index: number; node: ReactNode }> = [];
-                      const chipTools: Array<{ tool: ChatToolCall; index: number }> = [];
-                      m.tools?.forEach((t, ti) => {
-                        const card = renderToolCard?.(t, m, ti);
-                        if (card) cardSlots.push({ index: ti, node: card });
-                        else if (renderToolChip) chipTools.push({ tool: t, index: ti });
-                      });
-                      // deterministic-status-cards P-003: a status CARD (curator's
-                      // report) renders IN PLACE OF the plain-text content — the card
-                      // is the structured form of the same lines. Null ⇒ text as normal.
-                      const reportCard = renderReport?.(m);
-                      return (
-                        <>
-                          {chipTools.map(({ tool, index }) =>
-                            renderToolChip ? renderToolChip(tool, index) : null,
-                          )}
-                          {reportCard
-                            ? <div className="oracle-msg-report">{reportCard}</div>
-                            : m.content && (
-                              <div className="oracle-msg-content">
-                                <ChatMessageContent
-                                  content={m.content}
-                                  harnessSlug={harnessSlug}
-                                  planSlug={m.planSlug}
-                                  onWorkRefActivate={onWorkRefActivate}
-                                />
-                              </div>
-                            )}
-                          {cardSlots.map(({ index, node }) => (
-                            <div key={`tool-card-${index}`}>{node}</div>
-                          ))}
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
+                  message={m}
+                  index={vi.index}
+                  start={vi.start}
+                  measureElement={virtualizer.measureElement}
+                  fallbackIcon={emptyState.icon}
+                  fallbackLabel={emptyState.title}
+                  iconForRole={iconForRole}
+                  labelForRole={labelForRole}
+                  renderAvatar={renderAvatar}
+                  renderToolChip={renderToolChip}
+                  renderToolCard={renderToolCard}
+                  renderReport={renderReport}
+                  harnessSlug={harnessSlug}
+                  onWorkRefActivate={onWorkRefActivate}
+                />
               );
             })}
           </div>
