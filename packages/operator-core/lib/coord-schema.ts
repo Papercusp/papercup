@@ -26,6 +26,7 @@
 
 import type { CoordKind } from '@papercusp/coordination/core';
 import { LIFECYCLE_CATEGORIES, type LifecycleCategory } from './coord-lifecycle/records';
+import { renderAuthoredFieldsSuffix } from './agent-tools/coordination/message-fields';
 import {
   isCueInScopeFor,
   readCueAuthority,
@@ -438,9 +439,16 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     const bandSurface = evidence !== null || e.kind === 'escalation' || rec.category === 'finding';
     const selfReportedFlag =
       bandSurface && hasSelfReportedConfidence(rec) ? `${SELF_REPORTED_CONFIDENCE_TAG} ` : '';
+    // P-032: the AUTHORED message fields (premises / forYouBecause /
+    // youMayNotKnow / couldNotDetermine, plus the envelope's `blocking`) render
+    // as a compact `⟨…⟩` block. Without this they are stamped on the envelope
+    // and seen by nobody — and D-070 leaves judging them by their VALUES as the
+    // only check on the message layer. Pure read; '' when the sender authored
+    // none, so an ordinary message is unchanged.
+    const authoredSuffix = renderAuthoredFieldsSuffix(e as unknown as Record<string, unknown>);
     const text = tag ? `[${tag}] ${body}` : body;
     lines.push(
-      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}`,
+      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${authoredSuffix}`,
     );
   }
   return lines.join('\n');

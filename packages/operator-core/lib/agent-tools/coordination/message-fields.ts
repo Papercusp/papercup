@@ -388,6 +388,59 @@ export function assertEnvelopeSectionSplit(sections: unknown[]): void {
   });
 }
 
+/**
+ * Render the AUTHORED fields as a compact injection suffix — the half that makes
+ * them real. A field stamped on an envelope that no receiver ever sees cannot be
+ * judged by its VALUES, and D-070 leaves that judgement as the only check on
+ * this layer.
+ *
+ * ⚠ D-072: a field marked in `fieldProvenance` was DERIVED by a non-agent
+ * sender's wrapper, not authored. It is deliberately NOT rendered here —
+ * presenting a GUI-derived default as the sender's model of you would be
+ * precisely the false signal the provenance stamp exists to prevent.
+ *
+ * Terse by construction: injection lines share a ~200-char cap with the message
+ * itself, so this reports COUNTS for the list-valued fields and spells out only
+ * `couldNotDetermine`, which is the one that changes what the receiver does
+ * (it marks a question OPEN rather than answered).
+ */
+export function renderAuthoredFieldsSuffix(env: Record<string, unknown>): string {
+  const raw = env.sections;
+  if (!Array.isArray(raw) || raw.length === 0) return '';
+  const derived = (env.fieldProvenance ?? {}) as Record<string, unknown>;
+  const sections = raw as MessageSection[];
+
+  const parts: string[] = [];
+
+  if (env.blocking === true && !derived.blocking) parts.push('BLOCKING');
+
+  // `⊨`, NOT `⊢`: the injection line already uses `⊢` for the P-010 evidence
+  // BAND, and these are different claims — premises are what the sender asserted
+  // this rests on, the band is how well-evidenced the line is. One glyph for both
+  // would recreate exactly the near-synonym confusion D-041 renamed to fix.
+  const premises = sections.flatMap((s) => s.premises ?? []);
+  if (premises.length && !derived.premises) {
+    parts.push(`⊨ ${premises.length === 1 ? premises[0] : `${premises.length} premises`}`);
+  }
+
+  if (!derived.forYouBecause) {
+    const fyb = sections.map((s) => s.forYouBecause).find(Boolean);
+    if (fyb) parts.push(`∵ ${fyb.relation}${fyb.ref ? ` ${fyb.ref}` : ''}`);
+  }
+
+  const ymnk = sections.flatMap((s) => s.youMayNotKnow ?? []);
+  if (ymnk.length && !derived.youMayNotKnow) parts.push(`⚠ ${ymnk.length} you-may-not-know`);
+
+  // Spelled out, not counted: this is the one that tells the receiver a question
+  // is OPEN rather than answered, which is a different action.
+  const cnd = sections.flatMap((s) => s.couldNotDetermine ?? []);
+  if (cnd.length && !derived.couldNotDetermine) {
+    parts.push(`? undetermined: ${cnd.map((c) => c.what).join('; ').slice(0, 120)}`);
+  }
+
+  return parts.length ? ` ⟨${parts.join(' · ')}⟩` : '';
+}
+
 /** Everything the send path stamps onto the envelope for these fields. */
 export interface StampedMessageFields {
   sections?: MessageSection[];
