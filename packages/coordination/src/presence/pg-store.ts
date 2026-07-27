@@ -369,7 +369,7 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
     CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
       owner_id          text        NOT NULL PRIMARY KEY,
       owner_label       text        NOT NULL DEFAULT '',
-      workspace_id      text        NOT NULL DEFAULT 'default',
+      workspace_id      text        NOT NULL,
       source            text        NOT NULL DEFAULT '',
       intent            text        NOT NULL DEFAULT '',
       current_plan_slug text,

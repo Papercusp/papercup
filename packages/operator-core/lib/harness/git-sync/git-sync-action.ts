@@ -763,6 +763,8 @@ async function recordOutcome(
   outcome: GitSyncOutcome,
   consecutiveErrorTicks: number,
   consecutiveContentErrorTicks: number,
+  /** EI-18812945811758018: 'push' | 'commit-only:<reason>' — see effectivePushMode. */
+  pushMode: string,
 ): Promise<void> {
   const pushed = 'pushed' in outcome ? outcome.pushed : [];
   const merged = 'merged' in outcome ? outcome.merged : [];
@@ -775,6 +777,9 @@ async function recordOutcome(
     last_status: outcome.status,
     last_synced_at: Date.now(),
     last_pushed: pushed,
+    // EI-18812945811758018: rides the SAME single write, so `last_pushed` is never
+    // readable without the mode that says what an empty one MEANS for this member.
+    push_mode: pushMode,
     last_merged: merged,
     last_conflicts: outcome.status === 'conflict' ? outcome.conflicts.map((c) => c.scope) : [],
     last_errors: errors.map((e) => `${e.scope}: ${e.message}`),
@@ -1261,6 +1266,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
       cfgBranch: cfg.branch,
       prevHeadSha,
       attributionOn,
+      pushMode: effectivePushMode,
     }));
 
   // event-await-… P-102: git-sync:committed[:<sha>] — wake anyone awaiting "is my
@@ -2938,9 +2944,11 @@ async function recordAndEscalateTick(a: {
   cfgBranch: string | undefined;
   prevHeadSha: string | null;
   attributionOn: boolean;
+  /** EI-18812945811758018: 'push' | 'commit-only:<reason>' for THIS tick. */
+  pushMode: string;
 }): Promise<void> {
   const { slug, workspaceId, outcome, errTicks, contentTicks } = a;
-  await recordOutcome(slug, workspaceId, outcome, errTicks, contentTicks);
+  await recordOutcome(slug, workspaceId, outcome, errTicks, contentTicks, a.pushMode);
 
   // Pipeline history (mig 177): log every tick so the /admin Git tab can show
   // sync/conflict/error rates over time (routines.metadata only keeps the LAST).

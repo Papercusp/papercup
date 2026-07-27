@@ -72,6 +72,7 @@
 import type { CellReader } from '../cell-registry';
 import { computeIntentStale, INTENT_STALE_SEC } from '../agent-tools/coordination/presence-tier1';
 import { declaredGoalOf } from '../plan-items/claim-holder';
+import { asGoalRef } from '../agent-goal-ref';
 
 /**
  * How many assumption KEYS are named before the projection relies on `count`
@@ -134,21 +135,17 @@ export interface HolderContextSources {
   holderAssumptionKeys?: (holderOwnerId: string, reader: CellReader) => Promise<readonly string[]>;
 }
 
-/** A bigint id masquerading as a ref. Rejected by rule (c) / D-046: a bigint is
- *  not a read surface — a reader handed `184073` can do nothing with it, whereas
- *  `WI-6389` / `P-026` resolve. */
-const BARE_BIGINT = /^\d+$/;
-
 /**
- * Guard {@link HolderContext.goalRef}. Returns null for a blank or bigint-shaped
- * id rather than passing it through: the ref is the field a reader is meant to
- * ACT on, so an unusable one must read as absent, not as present-and-broken.
+ * Guard {@link HolderContext.goalRef} — rule (c) / D-046: a bigint is not a read
+ * surface, so an unusable id must read as ABSENT rather than present-and-broken.
+ *
+ * ⚠ RE-EXPORTED, NOT REDEFINED. P-016 made `agent-goal-ref.ts` the canonical home
+ * of the ref rule, because that is the module which MINTS refs. Keeping a second
+ * copy here would be exactly the second derivation D-038 axis 5 forbids — and the
+ * two could then disagree about what counts as a usable goal ref, which is the
+ * one thing every consumer of this projection relies on.
  */
-export function asGoalRef(itemId: string | null | undefined): string | null {
-  const s = (itemId ?? '').trim();
-  if (!s || BARE_BIGINT.test(s)) return null;
-  return s;
-}
+export { asGoalRef };
 
 function cleanKey(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';

@@ -37,10 +37,10 @@ export default defineTool({
   name: 'work_items:tag',
   profile: 'engineer',
   description:
-    'Tag one OR many work-items with a topic (or untag with remove:true) — routes the item to that topic\'s subscribers, AND mirrors the topic into the claim-spec-visible `tags` field (a `scheduler:set_claim_spec` view.filter on `tags` reads exactly what this call writes). Single: { id, topic }. Many same topic: { ids:[…], topic }. Many heterogeneous: items:[{ id, topic, harness?, remove? }]. Returns { ok, results:[{ ok, id, topic? | error }], counts } — correlate by id; a not-found item never fails the rest.',
+    'Tag one OR many work-items with a topic (or untag with remove:true) — routes the item to that topic\'s subscribers, AND mirrors the topic into the claim-spec-visible `tags` field (a `scheduler:set_claim_spec` view.filter on `tags` reads exactly what this call writes). Single: { id, topic }. Many same topic: { ids:[…], topic }. Many heterogeneous: items:[{ id, topic, harness?, remove? }]. Returns { ok, results:[{ ok, id, topic, mirrored, mirrorOutcome, warning? | error }], counts } — correlate by id; a not-found item never fails the rest. ⚠ Read `mirrored`, not just `ok`: `mirrored:false` (e.g. mirrorOutcome "remote-origin") means the topic landed but the claim-spec `tags` field was NOT written, so a `tags` filter will not match that item.',
   guidance: {
     when: 'You want a work-item visible to agents following an area (topics:list to see topics), OR you want it to match a claim-spec filter on `tags` (this is the only writer for that field — work_items:update deliberately rejects a `tags` key). Tag several at once via ids:[…]+topic or items:[…].',
-    chaining: 'topics:list → work_items:tag { topic } (or { ids, topic }). For claim-spec lane-scoping: work_items:tag { id, topic:"<lane-tag>" } then scheduler:set_claim_spec { …filter: { field:"tags", op:"contains", value:"<lane-tag>" } }.',
+    chaining: 'topics:list → work_items:tag { topic } (or { ids, topic }). For claim-spec lane-scoping: work_items:tag { id, topic:"<lane-tag>" } → CHECK each result\'s `mirrored` → scheduler:set_claim_spec { …filter: { field:"tags", op:"contains", value:"<lane-tag>" } }. Any row that came back mirrored:false is NOT covered by that leg — scope it by id.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -71,9 +71,26 @@ export default defineTool({
         const res = it.remove
           ? await untagWorkItem(it.id, it.topic, opts)
           : await tagWorkItem(it.id, it.topic, { ...opts, by: ident.ownerId });
-        return 'error' in res
-          ? { ok: false as const, id: it.id, error: res.error }
-          : { ok: true as const, id: it.id, topic: it.topic };
+        if ('error' in res) return { ok: false as const, id: it.id, error: res.error };
+        // EI-18810823481386446: the topic landed, but on a federated row the
+        // claim-visible mirror is refused — say so IN THE ROW. A bare ok:true here
+        // is what let an agent build a claim-spec `tags` leg on a tag that never
+        // persisted and read the resulting mis-serve as "the spec isn't evaluated".
+        return {
+          ok: true as const,
+          id: it.id,
+          topic: it.topic,
+          mirrored: res.mirrored,
+          mirrorOutcome: res.mirrorOutcome,
+          ...(res.mirrored
+            ? {}
+            : {
+                warning:
+                  res.mirrorOutcome === 'remote-origin'
+                    ? `topic recorded, but '${it.id}' is remote-authored (origin=remote) so the claim-spec-visible \`tags\` field was NOT written — its authoring peer owns the row. A claim-spec filter on \`tags\` will NOT match this item; scope it by id instead.`
+                    : `topic recorded, but the claim-spec-visible \`tags\` field was NOT written (${res.mirrorOutcome}) — a claim-spec filter on \`tags\` will NOT match this item.`,
+              }),
+        };
       },
       { keyOf: (it) => ({ id: it.id }) },
     );

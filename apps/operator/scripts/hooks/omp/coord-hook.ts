@@ -1467,6 +1467,32 @@ export async function checkCommandVerdict(command: string): Promise<CheckCommand
   return res && typeof res === 'object' ? (res as CheckCommandVerdict) : null;
 }
 
+/**
+ * How to call a named tool that is not in the caller's loaded tool set
+ * (EI-18810711449496523).
+ *
+ * Both messages below name a tool, and on a trimmed launch that tool usually
+ * is not directly callable: measured on a live su session, 8 of the 10 tools
+ * the registry names were absent from the session's surface entirely — not
+ * loaded and not deferred, so a `ToolSearch select:` for them returns nothing.
+ * The agent's next move is a wasted round-trip and a fall back to bash, after
+ * which the same row fires again on the next command.
+ *
+ * Neither hook can fix that by suppression: a PreToolUse payload carries the
+ * command and the session's identity, never its tool surface. So the messages
+ * carry the calling convention that works unconditionally — `tools:invoke`
+ * dispatches any catalog tool server-side under the same gating as a direct
+ * call, and ships in every trimmed seed alongside `tools:find`.
+ *
+ * One constant feeds both messages deliberately. The advisory and the refusal
+ * already state the same routing twice, and the pair has drifted before; a
+ * remedy that appeared in one and not the other would leave the `deny` path —
+ * the one that actually blocks the command — as the dead end.
+ */
+export const TOOLS_INVOKE_FALLBACK_HINT =
+  'Not in your loaded tool set? `tools:invoke { name, args }` dispatches any ' +
+  'catalog tool server-side — a ToolSearch miss is not a dead end.';
+
 /** `  • \`<atom>\` → <tool>` + the row's authored advisory, one block per match. */
 export function formatSubstitutionLines(subs: SubstitutionWire[]): string {
   return subs
@@ -1486,7 +1512,8 @@ export function substitutionDenyReason(subs: SubstitutionWire[]): string {
     `${formatSubstitutionLines(subs)}\n\n` +
     'Re-run using the tool above. (This rule reached `deny` only by proving ' +
     'equivalence against real sampled commands, or because the prohibition ' +
-    'already existed independently.)'
+    'already existed independently.)\n\n' +
+    TOOLS_INVOKE_FALLBACK_HINT
   );
 }
 
@@ -1496,7 +1523,8 @@ export function substitutionAdvisoryText(subs: SubstitutionWire[]): string {
     'bash→tool advisory: a tool already answers this question directly.\n\n' +
     `${formatSubstitutionLines(subs)}\n\n` +
     'The tool call is cheaper (no shell round-trip, structured result) and is ' +
-    'what the routing table points at. Advisory only; this command proceeded as issued.'
+    'what the routing table points at. Advisory only; this command proceeded as issued.\n' +
+    TOOLS_INVOKE_FALLBACK_HINT
   );
 }
 

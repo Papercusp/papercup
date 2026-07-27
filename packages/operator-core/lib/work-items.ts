@@ -76,6 +76,7 @@ import {
   terminalPayloadMergeJson,
 } from './coord-lifecycle/records';
 import type { StoredAssumptionDeclaration } from './coord-lifecycle/records';
+import type { TopicTagMirrorOutcome, TopicTagMirrorResult } from './work-item-topic-tags';
 import { auditPredicateSql, completionAuthorityPredicateSql, type CompletionAudit } from './completion-audit';
 import type { CompletionAttestation, CompletionVerificationEvidence } from './coord-lifecycle/records';
 import {
@@ -5087,11 +5088,11 @@ async function mirrorTopicTagToClaimTags(
   wi: WorkItem,
   topic: string,
   opts: { remove?: boolean } = {},
-): Promise<void> {
+): Promise<TopicTagMirrorResult> {
   const { syncTopicTagToClaimTags } = await import('./work-item-topic-tags');
   const workspaceId =
     wi.family === 'issue' ? await resolveIssueWorkspace(wi.id, activeWorkspaceId()) : activeWorkspaceId();
-  await syncTopicTagToClaimTags({
+  return await syncTopicTagToClaimTags({
     id: wi.id,
     family: wi.family,
     workspaceId,
@@ -5101,30 +5102,50 @@ async function mirrorTopicTagToClaimTags(
   });
 }
 
+/**
+ * EI-18810823481386446: the topic-store write and the claim-tag mirror can now
+ * DISAGREE, so the result says so. On a federated (origin='remote') row the topic
+ * tag lands — that store is not origin-gated and routing a federated item to a
+ * topic's subscribers is legitimate — while the claim-visible mirror is refused,
+ * because the authoring peer owns that row. That is why this is `ok:true` +
+ * `mirrored:false` rather than the flat refusal `work_items:update` gives: the call
+ * DID do something, just not the thing a claim-spec reads. Callers steering
+ * admission must branch on `mirrored`, never on `ok`.
+ *
+ * The origin guard itself lives in syncTopicTagToClaimTags' statement (not here),
+ * so it holds for every caller of that module rather than only this path.
+ */
+export interface TagWorkItemResult {
+  ok: true;
+  /** true ⇒ the claim-spec-visible `tags` field now reflects this call. */
+  mirrored: boolean;
+  mirrorOutcome: TopicTagMirrorOutcome;
+}
+
 /** Taggable.addTag / removeTag (topic tags via coord_links rel='tagged'). */
 export async function tagWorkItem(
   id: string,
   topic: string,
   opts: { harness?: string; by?: string } = {},
-): Promise<{ ok: true } | { error: string }> {
+): Promise<TagWorkItemResult | { error: string }> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') await tagIssue(id, topic, opts.by);
   else await tags.addTag(workItemObjectRef(wi), topic, { created_by: opts.by, created_ts: nowIso() });
-  await mirrorTopicTagToClaimTags(wi, topic);
-  return { ok: true };
+  const mirror = await mirrorTopicTagToClaimTags(wi, topic);
+  return { ok: true, mirrored: mirror.mirrored, mirrorOutcome: mirror.outcome };
 }
 export async function untagWorkItem(
   id: string,
   topic: string,
   opts: { harness?: string } = {},
-): Promise<{ ok: true } | { error: string }> {
+): Promise<TagWorkItemResult | { error: string }> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') await untagIssue(id, topic);
   else await tags.removeTag(workItemObjectRef(wi), topic);
-  await mirrorTopicTagToClaimTags(wi, topic, { remove: true });
-  return { ok: true };
+  const mirror = await mirrorTopicTagToClaimTags(wi, topic, { remove: true });
+  return { ok: true, mirrored: mirror.mirrored, mirrorOutcome: mirror.outcome };
 }
 
 /** Subscribable.subscribe. */

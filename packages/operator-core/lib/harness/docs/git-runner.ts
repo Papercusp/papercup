@@ -1,13 +1,54 @@
 /**
- * git-runner — the shared spawn-based GitRunner + thin helpers for the harness-docs
+ * git-runner — the shared GitRunner + thin helpers for the harness-docs
  * subsystem (drift checks, the freshness sweep, provenance capture, the endpoints).
  * Same shape as run-git-sync's RunGit (never throws; captures code/stdout/stderr).
+ *
+ * ## Why this routes through the spawner sidecar (EI-18808838427010743)
+ *
+ * `fork()` copies the calling process's page tables, so the parent-side cost of
+ * `child_process.spawn` scales with the PARENT's RSS — charged as SYNCHRONOUS
+ * system time on the main thread, i.e. it blocks the event loop. Measured on
+ * this box: ~40 ms of blocked loop per GB of parent RSS. The bg-host runs at
+ * ~4 GB, so every `git` call forked from it cost ~165 ms of dead loop, for
+ * plumbing git itself finishes in ~4 ms (~97% pure overhead imposed by the
+ * caller's own footprint).
+ *
+ * This subsystem is the single most frequent git caller in the bg-host: the
+ * drift checker runs `git log <range> --name-only` per (baseline, submodule)
+ * group per doc, and /proc sampling of bg-host's children confirmed
+ * `harness/docs/drift.ts` as the dominant `git` parent even AFTER the pot-git
+ * seam was rerouted. So the same fix applies here, from the same shared helper
+ * (repo convention: reuse-first — one implementation, not a third copy).
+ *
+ * The sidecar is small, so ITS fork is cheap (~3 ms); this process pays only a
+ * Unix-socket round-trip. Any sidecar problem falls back to {@link runGitLocal},
+ * so a sidecar fault degrades performance, never correctness. Set
+ * `PAPERCUSP_HARNESS_DOCS_SPAWN_SIDECAR=0` to force the local path for this
+ * subsystem alone.
  */
 
 import { spawn } from 'node:child_process';
 import type { GitRunner } from './subject-ref';
+import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 
-export const runGit: GitRunner = (args, cwd) =>
+/**
+ * Kill-timeout for the sidecar-routed run.
+ *
+ * The local path is deliberately unbounded (it always has been), but the
+ * sidecar path needs SOME bound so a wedged child cannot pin a sidecar slot
+ * forever. Generous enough that a legitimate `git log` over a large range
+ * finishes well inside it.
+ */
+const SIDECAR_GIT_TIMEOUT_MS = 120_000;
+
+/**
+ * Local (in-process) GitRunner — never throws, captures code/stdout/stderr.
+ *
+ * ⚠ Forking from THIS process is expensive in proportion to its own RSS (see
+ * the module header). Prefer {@link runGit}. Exported so the fallback path
+ * stays directly testable.
+ */
+export const runGitLocal: GitRunner = (args, cwd) =>
   new Promise((resolve) => {
     const child = spawn('git', args, { cwd });
     let stdout = '';
@@ -17,6 +58,34 @@ export const runGit: GitRunner = (args, cwd) =>
     child.on('error', (e) => resolve({ code: -1, stdout, stderr: stderr + String(e) }));
     child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
   });
+
+/** Distinct sidecar-fallback reasons already logged (see {@link runGit}). */
+const loggedSidecarFallbacks = new Set<string>();
+
+function warnSidecarFallbackOnce(e: unknown): void {
+  const reason = e instanceof Error ? e.message : String(e);
+  if (loggedSidecarFallbacks.has(reason)) return;
+  // Bound the set — a pathological source of unique messages must not leak.
+  if (loggedSidecarFallbacks.size > 32) loggedSidecarFallbacks.clear();
+  loggedSidecarFallbacks.add(reason);
+  console.warn(`[harness-docs] spawner-sidecar git unavailable, using local spawn: ${reason}`);
+}
+
+export const runGit: GitRunner = async (args, cwd) => {
+  if (gitSidecarEnabled('PAPERCUSP_HARNESS_DOCS_SPAWN_SIDECAR')) {
+    try {
+      // Pass THIS process's env explicitly: the sidecar merges over its OWN
+      // process.env, so omitting it would silently run git under the sidecar's
+      // environment rather than the caller's.
+      return await runGitViaSpawnerSidecar(args, cwd, SIDECAR_GIT_TIMEOUT_MS, process.env);
+    } catch (e) {
+      // Warn once per distinct reason rather than per call: this is the hottest
+      // git path in the host, and a log line per call would itself be a cost.
+      warnSidecarFallbackOnce(e);
+    }
+  }
+  return runGitLocal(args, cwd);
+};
 
 /** Current HEAD sha of a repo, or null if it can't be read. */
 export async function repoHeadSha(repoRoot: string): Promise<string | null> {

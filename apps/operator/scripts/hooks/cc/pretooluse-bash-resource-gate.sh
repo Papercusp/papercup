@@ -1629,6 +1629,21 @@ if inner.get('decision') == 'block':
         f"Use the blessed wrapper (dev:restart / db:migrate) instead of a raw command."
     )
 
+# How to call a tool that is not in the caller's loaded set (EI-18810711449496523).
+# On a trimmed launch most advised tools are absent from the session surface
+# entirely — 8 of the 10 the registry names, measured live — so an agent reads
+# the row, spends a ToolSearch discovering the dead end, and falls back to bash.
+# A PreToolUse payload never carries the tool surface, so this cannot be fixed by
+# suppressing the row; it is fixed by naming the convention that always works.
+#
+# Kept BYTE-IDENTICAL to TOOLS_INVOKE_FALLBACK_HINT in the OMP hook
+# (scripts/hooks/omp/coord-hook.ts) — the two hooks are asserted to teach the
+# same thing, and coord-hook.test.ts pins this exact wording.
+_INVOKE_HINT = (
+    'Not in your loaded tool set? `tools:invoke { name, args }` dispatches any '
+    'catalog tool server-side — a ToolSearch miss is not a dead end.'
+)
+
 try:
     if _stier in ('advise', 'deny') and _subs:
         # One line per claimed intent: the advisory_text is authored per row and
@@ -1651,7 +1666,8 @@ try:
                 'substitution-gate: this command has a tool form that must be used '
                 'instead.\n\n%s\n\nRe-run using the tool above. (This rule reached '
                 '`deny` only by proving equivalence against real sampled commands, '
-                'or because the prohibition already existed independently.)' % _body
+                'or because the prohibition already existed independently.)\n\n%s'
+                % (_body, _INVOKE_HINT)
             )
         elif not ADVISORY:
             # SOFT: rides out as additionalContext on an explicit allow. The
@@ -1660,7 +1676,8 @@ try:
                 'bash→tool advisory: a tool already answers this question '
                 'directly.\n\n%s\n\nThe tool call is cheaper (no shell round-trip, '
                 'structured result) and is what the routing table points at. '
-                'Advisory only; this command is proceeding as issued.' % _body
+                'Advisory only; this command is proceeding as issued.\n%s'
+                % (_body, _INVOKE_HINT)
             )
 except Exception:
     pass  # advisory must never wedge a command

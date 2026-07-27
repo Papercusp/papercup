@@ -23,14 +23,70 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import { gitSidecarEnabled, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
 
 const pexec = promisify(execFile);
 
+/**
+ * Run git for the snapshot, THROWING on failure (every caller wraps this in
+ * try/catch → null, so the throw is the contract).
+ *
+ * Routes through the SPAWNER SIDECAR when one is enabled, falling back to a
+ * local fork on any sidecar problem — so a sidecar fault degrades performance,
+ * never correctness.
+ *
+ * ## Why (EI-18808838427010743 — measured on the live bg-host)
+ *
+ * `fork()` copies the calling process's page tables, so the parent-side cost of
+ * spawning ANY child scales with the PARENT's RSS, charged as synchronous
+ * system time on the main thread. Measured here: ~40 ms of blocked event loop
+ * per GB of parent RSS. The bg-host runs at ~4 GB, so each git call forked from
+ * it cost ~165 ms of dead loop — for commands git finishes in ~4 ms. This
+ * snapshot sits behind a UI-POLLED sync query and fans out to ~6 git execs
+ * (`commitRef` ×N + 3× `aheadCount`), so it was a top application-attributable
+ * event-loop cost; /proc sampling still caught it forking from bg-host after
+ * the pot-git seam was rerouted.
+ *
+ * argv is kept EXACTLY as it was (`-C <repo>` doing the repo selection, cwd
+ * left at the process cwd) so the sidecar path cannot change how a missing or
+ * repo-less path reports.
+ */
+/** A REAL non-zero git exit (not a sidecar fault) — must not trigger a local retry. */
+class GitExitError extends Error {}
+
 async function git(repo: string, args: string[]): Promise<string> {
-  const { stdout } = await pexec('git', ['-C', repo, ...args], {
+  const argv = ['-C', repo, ...args];
+  if (gitSidecarEnabled('PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR')) {
+    try {
+      const r = await runGitViaSpawnerSidecar(argv, process.cwd(), 60_000, process.env);
+      // Preserve the throwing contract: pexec rejects on a non-zero exit.
+      if (r.code !== 0) {
+        throw new GitExitError(`git ${argv.join(' ')} exited ${r.code}: ${r.stderr.trim()}`);
+      }
+      return r.stdout.trim();
+    } catch (e) {
+      // A non-zero git exit is a REAL result, not a sidecar fault — rethrow it
+      // rather than re-running the same failing command locally. Sniffing the
+      // message would be fragile; the sentinel type cannot collide.
+      if (e instanceof GitExitError) throw e;
+      warnDeploySidecarFallbackOnce(e);
+    }
+  }
+  const { stdout } = await pexec('git', argv, {
     maxBuffer: 32 * 1024 * 1024,
   });
   return stdout.trim();
+}
+
+/** Distinct sidecar-fallback reasons already logged (see {@link git}). */
+const loggedDeploySidecarFallbacks = new Set<string>();
+
+function warnDeploySidecarFallbackOnce(e: unknown): void {
+  const reason = e instanceof Error ? e.message : String(e);
+  if (loggedDeploySidecarFallbacks.has(reason)) return;
+  if (loggedDeploySidecarFallbacks.size > 32) loggedDeploySidecarFallbacks.clear();
+  loggedDeploySidecarFallbacks.add(reason);
+  console.warn(`[dev-deploy-state] spawner-sidecar git unavailable, using local spawn: ${reason}`);
 }
 
 /** A commit identity: sha + commit epoch-ms + subject line. */

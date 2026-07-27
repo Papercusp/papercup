@@ -105,12 +105,41 @@ try {
       'packages/',
       'apps/',
       'libs/',
+      // SOURCE only. Without these exclusions the scan pulls in the GENERATED docs
+      // mirror under apps/operator/public/internal/docs (one .html per insight, plus
+      // llms-small.txt), whose pages quote this very rule — 173MB of match output
+      // against a 64MB maxBuffer, so execFileSync threw ENOBUFS and this guard was
+      // DEAD, not clean. It reported nothing at all while the plan's `## Now` still
+      // recorded it as "active (6 sites)". A detector that dies must not look quiet:
+      // keep this list ahead of the docs build, and see the ENOBUFS re-raise below.
+      ':(exclude)*/public/*',
+      ':(exclude)*/dist/*',
+      ':(exclude)*/.next/*',
+      ':(exclude)*/node_modules/*',
+      ':(exclude)*.html',
+      ':(exclude)*.txt',
+      ':(exclude)*.md',
+      ':(exclude)*.mdx',
+      ':(exclude)*.json',
+      ':(exclude)*.map',
+      ':(exclude)*.snap',
     ],
     { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   );
 } catch (e) {
   if (e.status === 1) raw = ''; // git grep exits 1 on no matches
-  else throw e;
+  else if (e.code === 'ENOBUFS') {
+    // Never let this degrade into a silent/ambiguous pass: say plainly that the scan
+    // did not run and what to do, rather than emitting a bare spawnSync stack that
+    // reads like an infra hiccup. (The pathspec exclusions above are the fix; if a
+    // new generated tree lands under packages/apps/libs, add it there.)
+    console.error(
+      'check-scope-defaults: SCAN DID NOT RUN — git grep output exceeded maxBuffer (ENOBUFS).\n' +
+        'This is NOT a clean result. Something generated (a built docs mirror, a dist/ tree)\n' +
+        'is being scanned; add it to the ":(exclude)…" pathspecs in this script.',
+    );
+    process.exit(2);
+  } else throw e;
 }
 
 const lines = raw.split('\n');

@@ -1834,6 +1834,49 @@ describe('substitution verdict handling', () => {
     expect(hook.permissionDecisionReason).toContain('capability:read');
   });
 
+  /**
+   * EI-18810711449496523 — the advised tool is usually NOT in the caller's
+   * loaded tool surface, and the hook cannot know that.
+   *
+   * Measured on a live trimmed su session: of the 10 tools the registry names,
+   * only `coord:orient` and `dev:pg_query` were reachable. `capability:read`,
+   * `testing:run`, `logs:read`, `build:typecheck`, `capability:git`,
+   * `dev:service_health`, `dev:listening_ports` and `dev:processes` all missed
+   * — a `ToolSearch select:` for each returned nothing (verified against a
+   * positive control in the same call, so the miss is per-name, not a broken
+   * query). The agent then spends a round-trip discovering the dead end and
+   * falls back to bash, and is advised again on the next call.
+   *
+   * PreToolUse carries `tool_name` / `tool_input` / `transcript_path` and no
+   * tool surface, so the hook cannot suppress the row conditionally. What it
+   * CAN do is name the calling convention that always works: `tools:invoke`
+   * dispatches any catalog tool server-side and is in every trimmed seed
+   * (proven live for both `capability:read` and `testing:run`). That keeps the
+   * teaching signal and removes the dead end for every row, present and future
+   * — a per-row fix would reopen the moment a pair names a new tool.
+   *
+   * Asserted on BOTH tiers because `deny` is the worse failure: it blocks the
+   * command outright and says "re-run using the tool above", which strands an
+   * agent that cannot call that tool.
+   */
+  it('the advisory names the tools:invoke fallback, because the advised tool is often not loadable', () => {
+    setReply({ decision: 'allow', matched: [], substitutions: [SUB], substitutionTier: 'advise' });
+    const ctx = JSON.parse(run().stdout).hookSpecificOutput.additionalContext;
+    expect(ctx).toContain('tools:invoke');
+  });
+
+  it('the deny refusal names the tools:invoke fallback too (a block with no path out is worse)', () => {
+    setReply({
+      decision: 'allow',
+      matched: [],
+      substitutions: [{ ...SUB, tier: 'deny' }],
+      substitutionTier: 'deny',
+    });
+    const hook = JSON.parse(run().stdout).hookSpecificOutput;
+    expect(hook.permissionDecision).toBe('deny');
+    expect(hook.permissionDecisionReason).toContain('tools:invoke');
+  });
+
   it('an in-flight RESOURCE hold outranks a substitution advisory', () => {
     // A lock collision is happening right now; tool-choice guidance is not.
     // Burying the urgent message under the educational one is the failure.

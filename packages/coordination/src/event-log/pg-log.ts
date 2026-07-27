@@ -128,7 +128,7 @@ export async function ensureCoordEventLogTable(sql: Sql): Promise<void> {
   await sql`
     CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (
       id           bigserial   PRIMARY KEY,
-      workspace_id text        NOT NULL DEFAULT 'default',
+      workspace_id text        NOT NULL,
       surface      text        NOT NULL,
       writer_key   text,
       msg_id       text        NOT NULL,
@@ -147,9 +147,20 @@ export async function ensureCoordEventLogTable(sql: Sql): Promise<void> {
   // table (same steady-state-skip posture as the index `indexNeedsRebuild` guards
   // below).
   if (!(await columnExists(sql, 'coord_event_log', 'workspace_id'))) {
+    // The DEFAULT is REQUIRED here and is not the same thing as a standing column
+    // default: adding a NOT NULL column to a table that already has rows needs a
+    // fill value or the ALTER fails. So fill with it, then drop it immediately —
+    // legacy rows land on 'default' (unchanged behaviour) while the column is left
+    // with no standing default, per data-scoping-audit-2026-06-22 P-007 / D-005.
     await sql`
       ALTER TABLE harness_shared.coord_event_log
+        -- a one-shot FILL value for the legacy rows, NOT a standing column default:
+        -- allow-workspace-default — the very next statement drops it.
         ADD COLUMN IF NOT EXISTS workspace_id text NOT NULL DEFAULT 'default'
+    `;
+    await sql`
+      ALTER TABLE harness_shared.coord_event_log
+        ALTER COLUMN workspace_id DROP DEFAULT
     `;
   }
   // harness_slug: the harness scope projected from CoordEnvelope.harness_slug.

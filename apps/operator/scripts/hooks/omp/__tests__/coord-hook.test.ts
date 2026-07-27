@@ -152,6 +152,7 @@ import {
   formatSubstitutionLines,
   substitutionDenyReason,
   substitutionAdvisoryText,
+  TOOLS_INVOKE_FALLBACK_HINT,
   resourceBlockReason,
   stageSubstitutionAdvisory,
   drainSubstitutionAdvisory,
@@ -5387,6 +5388,26 @@ describe('cross-path parity with the shell hook (D-005 — the duplicated pre-fi
     expect(SUBSTITUTION_PHRASE_RE.source).toBe(pyRaw('_SUBSTITUTION_PHRASE_RE'));
   });
 
+  /**
+   * The `tools:invoke` remedy is the third thing genuinely duplicated across
+   * the two hooks (EI-18810711449496523), and it carries the same drift tax as
+   * the pre-filter above: it cannot be imported into a Python heredoc, so the
+   * wording exists twice. Drift here is quieter than a pattern drift — both
+   * paths still fire, one just keeps handing agents the dead end the fix
+   * removed — which is precisely why it needs the mechanical assertion rather
+   * than the comment that currently says "mirrors the shell hook".
+   */
+  it('the tools:invoke fallback hint matches the shell hook byte-for-byte', () => {
+    const m = /_INVOKE_HINT = \(([\s\S]*?)\n\)/.exec(shellHook);
+    expect(m, 'could not find _INVOKE_HINT in the shell hook').not.toBeNull();
+    // Join the implicitly-concatenated Python string literals the same way the
+    // interpreter does. Asserted non-empty first: a regex that matched but
+    // captured nothing would make this guard vacuously green.
+    const shellHint = [...m![1].matchAll(/'([^']*)'/g)].map((x) => x[1]).join('');
+    expect(shellHint.length).toBeGreaterThan(0);
+    expect(shellHint).toBe(TOOLS_INVOKE_FALLBACK_HINT);
+  });
+
   it('the three atomizer regexes match the shell hook byte-for-byte', () => {
     expect(SUBST_SPLIT_RE.source).toBe(pyRaw('_SUBST_SPLIT_RE'));
     expect(SUBST_RUNNER_RE.source).toBe(pyRaw('_SUBST_RUNNER_RE'));
@@ -5482,6 +5503,20 @@ describe('substitution message formatting', () => {
     expect(out).toContain('bash→tool advisory');
     expect(out).toContain('Advisory only');
     expect(out).toContain('proceeded as issued');
+  });
+
+  /**
+   * EI-18810711449496523 — see the cc gate's mirror of this guard for the
+   * measurement. Short version: the advised tool is usually NOT in the
+   * caller's loaded tool surface (8 of the 10 named tools missed on a live
+   * trimmed session), and neither hook can know that at decision time. Both
+   * messages therefore have to name `tools:invoke`, which reaches any catalog
+   * tool server-side, or the advice dead-ends and trains agents to read these
+   * rows as noise.
+   */
+  it('both messages name the tools:invoke fallback for a tool the caller cannot load', () => {
+    expect(substitutionAdvisoryText([sub()])).toContain('tools:invoke');
+    expect(substitutionDenyReason([sub({ tier: 'deny' })])).toContain('tools:invoke');
   });
 
   it('the resource refusal names the held resources', () => {

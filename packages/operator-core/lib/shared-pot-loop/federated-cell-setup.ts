@@ -41,6 +41,11 @@ export async function coordCellSetup(sql: postgres.Sql): Promise<void> {
   await sql.unsafe(`
     CREATE TABLE harness_shared.coord_event_log (
       id           bigserial   PRIMARY KEY,
+      -- A test-rig reproduction of the HISTORICAL pre-147 coord_event_log, whose whole
+      -- purpose is to replay the real federation migration on top of the shape that
+      -- existed before it. Fidelity to that PAST schema is the point, so it must not
+      -- track P-007's forward drop-default change (data-scoping-audit-2026-06-22 D-005).
+      -- allow-workspace-default: historical replay fixture; nothing production writes here.
       workspace_id text        NOT NULL DEFAULT 'default',
       surface      text        NOT NULL,
       writer_key   text,

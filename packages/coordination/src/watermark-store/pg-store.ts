@@ -60,7 +60,7 @@ export async function ensureCoordWatermarksTable(sql: Sql): Promise<void> {
   await sql`CREATE SCHEMA IF NOT EXISTS harness_shared`;
   await sql`
     CREATE TABLE IF NOT EXISTS harness_shared.coord_watermarks (
-      workspace_id text        NOT NULL DEFAULT 'default',
+      workspace_id text        NOT NULL,
       owner_id     text        NOT NULL,
       surfaces     jsonb       NOT NULL DEFAULT '{}'::jsonb,
       updated_at   timestamptz NOT NULL DEFAULT now(),

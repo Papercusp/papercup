@@ -320,7 +320,7 @@ export async function ensureConversationsTable(sql: Sql): Promise<void> {
   await sql`CREATE SCHEMA IF NOT EXISTS harness_shared`;
   await sql`
     CREATE TABLE IF NOT EXISTS harness_shared.coord_conversations (
-      workspace_id     text NOT NULL DEFAULT 'default',
+      workspace_id     text NOT NULL,
       id               text NOT NULL,
       kind             text NOT NULL,
       scope            text NOT NULL DEFAULT 'operator',
