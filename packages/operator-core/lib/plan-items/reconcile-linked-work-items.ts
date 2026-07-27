@@ -389,13 +389,17 @@ export type LaneGateOp =
  * effect below so the invariant is unit-testable without the lock/PG path
  * (mirrors set-status.ts's releaseTerminalGrips / releaseTodoClaim shape):
  *  - a settled work-item is never touched (its work is done/abandoned);
- *  - GATE never clobbers genuinely-active work (`lastProgressAt` set) and is
- *    idempotent (a re-gate of an already lane-parked item is a no-op);
+ *  - GATE never clobbers genuinely-active work (`lastProgressAt` set AND a
+ *    live `assignee` — WI-6303: a bare `lastProgressAt` can be a stale stamp
+ *    left behind by a dead/orphaned-claim reclaim path that never cleared it,
+ *    not real in-flight work; see reconcileLinkedWorkItemsForPlanItem's
+ *    identical guard for the full root-cause writeup) and is idempotent (a
+ *    re-gate of an already lane-parked item is a no-op);
  *  - UN-GATE only lifts a park THIS sync created (the `plan-lane:` blocker is
  *    present), so an item blocked for any other reason is left alone.
  */
 export function decideLaneGate(
-  wi: Pick<WorkItem, 'state' | 'lastProgressAt' | 'payload'>,
+  wi: Pick<WorkItem, 'state' | 'lastProgressAt' | 'payload' | 'assignee'>,
   laneStatus: PlanLaneSyncStatus,
   laneRef: string,
 ): LaneGateOp {
@@ -407,7 +411,7 @@ export function decideLaneGate(
     return hasLaneBlocker ? { op: 'ungate' } : { op: 'noop', reason: 'no-lane-blocker' };
   }
   // Gate intent (blocked / needs-human).
-  if (wi.lastProgressAt) return { op: 'noop', reason: 'in-flight' };
+  if (wi.lastProgressAt && wi.assignee) return { op: 'noop', reason: 'in-flight' };
   if (hasLaneBlocker) return { op: 'noop', reason: 'already-gated' };
   return {
     op: 'gate',
