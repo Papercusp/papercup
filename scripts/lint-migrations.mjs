@@ -347,6 +347,14 @@ function bareName(ident) {
  * through. A guard whose whole purpose is to be mechanical rather than a review
  * note must not have a spelling-shaped hole in it.
  *
+ * A DROP CONSTRAINT is counted whatever the constraint's TYPE, so dropping a mere
+ * CHECK constraint in the same migration that creates a unique index on that table
+ * does flag. That is deliberate and consistent with how the INDEX side already
+ * behaves: `DROP CONSTRAINT` names only the constraint, never its definition, so
+ * whether it was the UNIQUE one backing somebody's `ON CONFLICT` is not knowable
+ * from this file. Since two-phase is always available, the conservative reading is
+ * the safe one — and the pragma is there for the author who knows better.
+ *
  * A constraint action names its table in the `ALTER TABLE`, so for those drops the
  * table is matched EXACTLY and the `<table>_` name heuristic is skipped — that
  * heuristic exists only because a bare `DROP INDEX` does not say which table it

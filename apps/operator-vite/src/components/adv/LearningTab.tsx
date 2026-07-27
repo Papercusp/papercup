@@ -4399,140 +4399,156 @@ function CadenceCard({
 }
 
 // The ideation surface is mounted directly inside Improve → Ideas.
-export function ScoutView({
-  hive = "",
-  hiveReady = true,
-  onStatus,
+/**
+ * The cycle engine's instruments, lifted out of the retired Ideas view.
+ *
+ * Everything here answers "is the machine that MAKES ideas working" — the
+ * idea→work funnel, the drift markers, what will fire the next cycle, and the
+ * per-tick economics. It lives behind the Improve view's one labelled
+ * disclosure: the gauges are on demand, the plain summary is always up top.
+ */
+function LoopEngineInstruments({
+  snap,
+  scoutWord,
 }: {
-  /** Pot lens (pot-scope-all-learnings P-005): the routed-ideas legs scope by
-   *  the pot's member harnesses, the tick leg by pot_slug; empty = no lens. */
-  hive?: string;
-  /** WI-5412 gate: don't fetch until the tab's hive lens is resolved. */
-  hiveReady?: boolean;
-  onStatus?: (status: LearningViewStatus) => void;
-} = {}) {
-  const t = useLexicon();
-  const RAIL_META = railMeta(t);
-  const openArming = useOpenArming();
-  const sync = useSyncQuery<ScoutSnapshot>({
-    queryName: "learning.scout",
-    args: hive ? { hive } : {},
-    staleTime: 30_000,
-    enabled: hiveReady,
-  });
-  const snap = sync.data?.[0];
-  const rails = snap?.railCounts ?? [];
-  const recent = snap?.recent ?? [];
+  snap: ScoutSnapshot | undefined;
+  scoutWord: string;
+}) {
   const tick = snap?.lastTick ?? null;
   const tickMs = tick?.at ? Date.parse(tick.at) : NaN;
-  // P-002: tick-economics rows (newest first). Older server snapshots (pre-P-002
-  // deploy) lack the field — degrade to the empty strip, never a crash.
+  // Older server snapshots lack these fields — degrade to an empty strip or a
+  // neutral verdict, never a crash.
   const econTicks = snap?.ticks ?? [];
-  // P-003: the server-evaluated drift markers (the blender-release-readiness
-  // rubric's driftMarkers ARE the health spec — evaluated in
-  // learning-scout-read.ts, never re-derived here). Pre-P-003 snapshots lack
-  // the field — degrade to neutral.
   const health = snap?.health ?? { status: "neutral" as const, markers: [] };
-  // learning-tab-visibility P-001: the live cadence/firing state. Pre-deploy
-  // snapshots lack the field — the card simply doesn't render.
   const cadence = snap?.cadence ?? null;
-  // (Drafts-in-iteration moved to the Improvements view — owner ask 2026-07-19;
-  // it reads the thin learning.scoutDrafts resolver there, not this snapshot.)
+  return (
+    <>
+      {/* The idea→work funnel LEADS (owner ask 2026-07-19e): the outcome story
+          first, the machinery below it. */}
+      {snap?.improveFunnel ? (
+        <div className="pc-learning__funnel" aria-label="Idea-to-work funnel">
+          <span title="Every idea a cycle routed onto a rail (work item, gym seed, plan, benchmark).">
+            <strong>{snap.improveFunnel.routed}</strong>
+            <small>ideas routed</small>
+          </span>
+          <i aria-hidden>→</i>
+          <span title="Routed onto the improvement rail — filed as a work item.">
+            <strong>{snap.improveFunnel.filed}</strong>
+            <small>filed as work</small>
+          </span>
+          <i aria-hidden>→</i>
+          <span title="Filed items currently claimed by an agent (open + assigned).">
+            <strong>{snap.improveFunnel.claimed}</strong>
+            <small>claimed</small>
+          </span>
+          <i aria-hidden>→</i>
+          <span
+            className={snap.improveFunnel.done > 0 ? "is-good" : undefined}
+            title="Filed items resolved or closed."
+          >
+            <strong>{snap.improveFunnel.done}</strong>
+            <small>done</small>
+          </span>
+        </div>
+      ) : null}
+      {health.markers.length > 0 ? (
+        <ul className="pc-learning__warnlist" aria-label="Loop health warnings">
+          {health.markers.map((m) => (
+            <li
+              key={m.key}
+              className={m.severity === "bad" ? "is-bad" : "is-warn"}
+              title={`Instruments the '${m.rubricCriterion}' criterion of the blender-release-readiness rubric.`}
+            >
+              <AlertTriangle size={12} aria-hidden />
+              {m.summary}
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
-  // Grading (P-006): the note popover's open-state is URL state (`?grade=<ideaId>`)
-  // so agents can drive it; in-flight optimistic grades + errors are transient
-  // lifecycle → useState. A grade from this surface is an OWNER grade (the
-  // server derives gradedBy from the caller — C-3); owner regrade is always
-  // allowed, so the stars stay interactive on graded rows.
-  const [gradeOpen, setGradeOpen] = useQueryState("grade", parseAsString);
-  const [railFilter, setRailFilter] = useQueryState("irail", parseAsString);
-  // P-004: the pipeline-trace expansion is URL state (`?itrace=<ideaId>`) so
-  // agents can drive it — clicking an idea shows its whole loop (grounding →
-  // lens → route → grade → outcome), not four silos.
-  const [traceOpen, setTraceOpen] = useQueryState("itrace", parseAsString);
-  // Titles for the opaque wi: grounding refs (server-resolved, P-004);
-  // pre-deploy snapshots lack the field — fall back to the raw ref.
-  const groundingTitles = snap?.groundingTitles ?? {};
-  const [optimistic, setOptimistic] = useState<Record<string, EffectiveGrade>>(
-    {},
+      {/* The LIVE firing state — per-lane pending signal and the weighted score
+          against the volume gate's threshold, from the same reader + score
+          function the gate consumes. Answers "why isn't it firing / what will
+          make it fire" without a PG query. */}
+      {cadence ? <CadenceCard cadence={cadence} scoutWord={scoutWord} /> : null}
+
+      {/* Tick economics: each recent tick's stop reason, spend, generated→routed
+          funnel and lens mix — the columns where the 17-day WI-4482 lens
+          collapse and the budget-exhausted starvation lived, invisibly. */}
+      <div
+        className="pc-learning__tickstrip pc-learning__tickstrip--rows"
+        role="list"
+        aria-label={`${scoutWord} tick economics, newest first`}
+      >
+        {econTicks.length === 0 ? (
+          <span
+            className="pc-learning__flowchip"
+            title={`${scoutWord} records a row per tick (stop reason, spend, ideas generated/routed) — no ticks recorded yet.`}
+          >
+            <Radar size={11} aria-hidden />
+            last tick{" "}
+            <strong>
+              {tick && !Number.isNaN(tickMs) ? whenLabel(tickMs) : "none yet"}
+            </strong>
+          </span>
+        ) : (
+          econTicks.map((tk, i) => {
+            const ms = tk.at ? Date.parse(tk.at) : NaN;
+            const tone = tickTone(tk);
+            const lensPairs = Object.entries(tk.lenses).sort(
+              (a, b) => b[1] - a[1],
+            );
+            const spend =
+              tk.spendUsd != null ? `$${tk.spendUsd.toFixed(2)}` : null;
+            const tip =
+              tk.status === "ran"
+                ? `${!Number.isNaN(ms) ? whenLabel(ms) : ""} · ${tk.stop ?? "ran"} — generated ${tk.generated}, pruned ${tk.deduped}, routed ${tk.routed}${spend ? `, spend ${spend}` : ""}${lensPairs.length > 0 ? ` · lenses: ${lensPairs.map(([l, n]) => `${l}×${n}`).join(" ")}` : tk.routed === 0 ? " · nothing routed" : ""}`
+                : tk.status === "gated"
+                  ? `${!Number.isNaN(ms) ? whenLabel(ms) : ""} · self-gated (${tk.stop ?? "gate"}) — no cycle ran, no spend`
+                  : `${!Number.isNaN(ms) ? whenLabel(ms) : ""} · tick errored${tk.stop ? `: ${tk.stop}` : ""}`;
+            return (
+              <span
+                key={tk.cycleId ?? tk.at ?? i}
+                role="listitem"
+                className={`pc-learning__tickrow pc-learning__tickrow--${tone}`}
+                title={tip}
+              >
+                <em>{!Number.isNaN(ms) ? whenLabel(ms) : "—"}</em>
+                <strong>
+                  {tk.status === "ran"
+                    ? `${tk.generated}→${tk.routed}`
+                    : (tk.status ?? "?")}
+                </strong>
+                <span className="pc-learning__tickwhat">
+                  {tk.status === "ran"
+                    ? `generated ${tk.generated}, routed ${tk.routed} · ${tk.stop ?? "ran"}`
+                    : tk.status === "gated"
+                      ? `skipped — ${tk.stop ?? "gate"}`
+                      : `error — ${tk.stop ?? "unknown"}`}
+                </span>
+                {spend ? (
+                  <span className="pc-learning__tickspend">{spend}</span>
+                ) : null}
+              </span>
+            );
+          })
+        )}
+      </div>
+    </>
   );
-  const [savingId, setSavingId] = useState("");
-  const [gradeError, setGradeError] = useState("");
-  const filteredRecent = useMemo(
-    () =>
-      railFilter ? recent.filter((item) => item.rail === railFilter) : recent,
-    [railFilter, recent],
-  );
-  // P-003: the view badge evaluates the rubric's drift markers (server-derived
-  // health), NOT data-presence — "there are rows" is not "the loop is healthy".
-  useEffect(() => {
-    onStatus?.(sync.error ? "bad" : health.status);
-  }, [health.status, onStatus, sync.error]);
+}
 
-  const effectiveGrade = (item: ScoutRoutedItem): EffectiveGrade | null => {
-    const opt = optimistic[item.ideaId];
-    if (opt) return opt;
-    if (item.humanGrade == null) return null;
-    return {
-      grade: item.humanGrade,
-      feedback: item.humanFeedback ?? null,
-      gradedBy: item.gradedBy ?? "owner",
-    };
-  };
-  const reviewItems = filteredRecent.filter((item) => !effectiveGrade(item));
-  const reviewedItems = filteredRecent.filter((item) => effectiveGrade(item));
-  // Two DISTINCT ungraded sections (owner ask 2026-07-19): the decision queue
-  // (the 8 highest-priority to grade now) and everything older behind its own
-  // disclosure — no longer one truncated list toggled in place.
-  const DECISION_QUEUE_SIZE = 8;
-  const decisionQueue = reviewItems.slice(0, DECISION_QUEUE_SIZE);
-  const earlierUngraded = reviewItems.slice(DECISION_QUEUE_SIZE);
-
-  const submitGrade = async (
-    item: ScoutRoutedItem,
-    grade: number,
-    feedback: string | null,
-  ) => {
-    setGradeError("");
-    setSavingId(item.ideaId);
-    const prevEntry = optimistic[item.ideaId] ?? null;
-    // Optimistic: show the new grade immediately; the refetched snapshot
-    // confirms it (or the catch below rolls it back).
-    setOptimistic((m) => ({
-      ...m,
-      [item.ideaId]: { grade, feedback, gradedBy: "owner" },
-    }));
-    try {
-      const res = await fetch("/api/agent-tools/scout/grade-idea", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ideaId: item.ideaId,
-          grade,
-          ...(feedback ? { feedback } : {}),
-        }),
-      });
-      const raw: unknown = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const result = unwrapToolResult(raw);
-      if (result.applied === false)
-        throw new Error(String(result.reason ?? "grade not applied"));
-      sync.invalidate();
-    } catch (e) {
-      setOptimistic((m) => {
-        const next = { ...m };
-        if (prevEntry) next[item.ideaId] = prevEntry;
-        else delete next[item.ideaId];
-        return next;
-      });
-      setGradeError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSavingId("");
-    }
-  };
-
-  // Steering visibility (P-007): the persisted per-lens sampling weights,
-  // shown as shares of the total so they read as "how Scout will lean".
+/** The ideator's learned creative-lens steering — always visible under a
+ *  standard header (owner ask 2026-07-19: "should always be visible, it never
+ *  takes up much space"). Shown as shares of the total so they read as "how the
+ *  generator will lean" rather than as raw weights. */
+function LensWeights({
+  snap,
+  scoutWord,
+}: {
+  snap: ScoutSnapshot | undefined;
+  scoutWord: string;
+}) {
   const lensEntries = useMemo<Array<[string, number]>>(() => {
     const w = snap?.lensWeights;
     if (!w) return [];
@@ -4545,485 +4561,41 @@ export function ScoutView({
       .map(([k, v]) => [k, Math.round((v / sum) * 100)] as [string, number])
       .sort((a, b) => b[1] - a[1]);
   }, [snap]);
-
-  // Deep-links: a routed idea opens its artifact's home surface (all nuqs, so
-  // agents can drive the same navigation via ui:dispatch).
-  const [, setTab] = useQueryState("tab", parseAsString);
-  const [, setCreateView] = useQueryState("view", parseAsString);
-  const [, setPlanSel] = useQueryState("plan", parseAsString);
-  const [, setLviewRaw] = useQueryState("lview", parseAsString);
-  // `?lhive=` is retired (pot inherited from the top-bar selector, owner
-  // directive 2026-07-26) — carrying an idea's pot now sets the GLOBAL
-  // selection, and every tab follows.
-  const [, setTopBarSlug] = useQueryState("slug", parseAsString);
-  const [, setLane] = useQueryState("lane", parseAsString);
-  const [, setSrcSel] = useQueryState("lsrc", parseAsString);
-  const [, setLsel] = useQueryState("lsel", parseAsString);
-  // The improvements backlog, selecting THAT row (?lsel) and resetting the
-  // lane/source filters so the target is guaranteed visible (a sticky
-  // lane=auto would hide a human-tier item and the click would look like a
-  // no-op). Shared by openRouted and the trace's wi: grounding chips (P-004).
-  const openImprovement = (id: string) => {
-    void setLsel(id);
-    void setLane(null);
-    void setSrcSel(null);
-    void setLviewRaw("improvements");
-  };
-  // Deep-link a plan slug into Create → Plans — shared by the routed-artifact
-  // chip AND the plan: grounding chips (owner ask 2026-07-19: a plan in
-  // "grounded in" must be clickable and land on the plan in the Create tab).
-  const openPlan = (slug: string) => {
-    void setPlanSel(slug);
-    void setCreateView("plans");
-    void setTab("plans");
-  };
-  const openRouted = (item: ScoutRoutedItem) => {
-    if (item.rail === "plan" && item.routedRef.startsWith("plan:")) {
-      openPlan(item.routedRef.slice("plan:".length));
-    } else if (item.rail === "gym") {
-      // WI-5412 item 4: carry the idea's hive so the Gym view opens on the
-      // seed's data, not another pot's (empty) challengers. The ledger
-      // doesn't stamp harness_slug consistently (EI-10520) — when absent,
-      // navigate without touching the selection.
-      if (item.harnessSlug) void setTopBarSlug(item.harnessSlug);
-      void setLviewRaw("gym");
-    } else if (item.rail === "instance") {
-      void setLviewRaw("benchmark");
-    } else {
-      // improvement (wi:EI-…) and anything unknown → the improvements backlog.
-      openImprovement(
-        item.routedRef.startsWith("wi:")
-          ? item.routedRef.slice("wi:".length)
-          : item.routedRef,
-      );
-    }
-  };
-  // P-004: one grounding-evidence chip. wi: refs get their resolved title and
-  // deep-link to the improvements backlog; the other typed refs
-  // (fact:/rubric:/watchdog:/plan:/…) are already readable slugs.
-  const renderGroundingChip = (ref: string) => {
-    const sep = ref.indexOf(":");
-    const kind = sep > 0 ? ref.slice(0, sep) : "ref";
-    const rest = sep > 0 ? ref.slice(sep + 1) : ref;
-    if (kind === "wi") {
-      const title = groundingTitles[ref];
-      return (
-        <Tooltip
-          key={ref}
-          label={
-            title
-              ? `${rest} — ${title} (open in Improvements)`
-              : `${rest} — open in Improvements`
-          }
+  if (lensEntries.length === 0) return null;
+  return (
+    <>
+      <div className="pc-learning__sectionhead pc-learning__sectionhead--desc">
+        <h2>Lens weights</h2>
+        <span
+          className="pc-learning__sectionsub"
+          title={`${scoutWord} picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades (a ★5 counts as a win, a ★1 as a loss; a grade beats the system's own outcome guess).`}
         >
-          <button
-            type="button"
-            className="pc-learning__tracechip pc-learning__tracechip--link"
-            onClick={() => openImprovement(rest)}
-          >
-            <i>{kind}</i>
-            <span className="pc-learning__tracechip-text">
-              {title ?? rest}
-            </span>
-          </button>
-        </Tooltip>
-      );
-    }
-    if (kind === "plan") {
-      return (
-        <Tooltip key={ref} label={`${rest} — open the plan in Create → Plans`}>
-          <button
-            type="button"
-            className="pc-learning__tracechip pc-learning__tracechip--link"
-            onClick={() => openPlan(rest)}
-          >
-            <i>{kind}</i>
-            <span className="pc-learning__tracechip-text">{rest}</span>
-          </button>
-        </Tooltip>
-      );
-    }
-    return (
-      <span key={ref} className="pc-learning__tracechip" title={ref}>
-        <i>{kind}</i>
-        <span className="pc-learning__tracechip-text">{rest}</span>
-      </span>
-    );
-  };
-
-  // P-004: the pipeline trace — the idea's whole loop as ONE row of stages:
-  // grounding evidence → lens → routed artifact → grade → outcome. Every field
-  // comes from the same ledger read the list renders (D-001); a missing stage
-  // renders dimmed (the gap IS the signal — e.g. "ungraded" on a starving
-  // grading loop).
-  const renderTrace = (item: ScoutRoutedItem) => {
-    const meta = RAIL_META[item.rail] ?? {
-      label: item.rail,
-      desc: "Routed idea",
-      color: "#94a3b8",
-    };
-    // Pre-P-004 server snapshots lack the field — degrade to "none recorded".
-    const refs = item.addressesPatternRefs ?? [];
-    const eff = effectiveGrade(item);
-    const outcome = item.outcome ?? "pending";
-    const outcomeTone =
-      outcome === "won" ? "good" : outcome === "lost" ? "bad" : "missing";
-    // Display the ref WITHOUT its rail prefix — the rail chip already names
-    // the destination (owner ask 2026-07-19: the gym/plan link boxes were
-    // unreadable "gym gym:SP-004" doubles).
-    const shortRef = item.routedRef.replace(/^[a-z]+:/i, "");
-    return (
-      <div
-        className="pc-learning__trace"
-        aria-label={`Pipeline trace for ${item.title ?? item.routedRef}`}
-      >
-        <div
-          className={`pc-learning__tracerow${refs.length === 0 ? " is-missing" : ""}`}
-        >
-          <em>grounded in</em>
-          <span className="pc-learning__tracechips">
-            {refs.length > 0 ? (
-              refs.map(renderGroundingChip)
-            ) : (
-              <strong title="No grounding evidence was recorded for this idea (su-ideate filings often ground informally).">
-                none recorded
-              </strong>
-            )}
-          </span>
-        </div>
-        <div className="pc-learning__tracerow">
-          <em>lens</em>
-          <strong
-            title={
-              item.cycleId
-                ? `Produced by the '${item.lens}' lens in cycle ${item.cycleId}`
-                : `Produced by the '${item.lens}' lens`
-            }
-          >
-            {item.lens}
-            {item.origin ? <i> · {item.origin}</i> : null}
-          </strong>
-        </div>
-        <div className="pc-learning__tracerow">
-          <em>routed to</em>
-          <span className="pc-learning__tracechips">
-            <Tooltip label={`${meta.desc} — open ${item.routedRef}`}>
-              <button
-                type="button"
-                className="pc-learning__tracechip pc-learning__tracechip--link"
-                onClick={() => openRouted(item)}
-              >
-                <i
-                  className="pc-learning__tracedot"
-                  style={{ background: meta.color }}
-                  aria-hidden
-                />
-                <span>{meta.label}</span>
-                <b className="pc-learning__tracechip-text">{shortRef}</b>
-              </button>
-            </Tooltip>
-          </span>
-        </div>
-        <div className={`pc-learning__tracerow${eff ? "" : " is-missing"}`}>
-          <em>grade</em>
-          <strong
-            title={
-              eff
-                ? (eff.feedback ??
-                  `Graded by ${graderLabel(eff.gradedBy, t("brain"))}`)
-                : "Ungraded — the grade→learn half of the loop has not seen this idea."
-            }
-          >
-            {eff
-              ? `★${eff.grade} · ${graderLabel(eff.gradedBy, t("brain"))}`
-              : "ungraded"}
-          </strong>
-        </div>
-        <div
-          className={`pc-learning__tracerow${outcomeTone === "missing" ? " is-missing" : ` is-${outcomeTone}`}`}
-        >
-          <em>outcome</em>
-          <strong title="Outcome derived from the change feed (won / lost / pending) — did the routed artifact pan out?">
-            {outcome}
-          </strong>
-        </div>
-      </div>
-    );
-  };
-
-  const renderIdeaRow = (item: ScoutRoutedItem) => {
-    const meta = RAIL_META[item.rail] ?? {
-      label: item.rail,
-      desc: "Routed idea",
-      color: "#94a3b8",
-    };
-    const when = item.routedAt ? Date.parse(item.routedAt) : NaN;
-    const eff = effectiveGrade(item);
-    const isOpen = gradeOpen === item.ideaId;
-    const isTraceOpen = traceOpen === item.ideaId;
-    const saving = savingId === item.ideaId;
-    return (
-      <li
-        key={item.ideaId}
-        className="pc-learning__row pc-learning__row--scout"
-      >
-        <Tooltip
-          label={
-            isTraceOpen
-              ? "Hide this idea's pipeline trace"
-              : "Show this idea's pipeline trace — grounding, lens, route, grade, outcome"
-          }
-        >
-          <button
-            type="button"
-            className="pc-learning__rowmain"
-            aria-expanded={isTraceOpen}
-            onClick={() => void setTraceOpen(isTraceOpen ? null : item.ideaId)}
-          >
-            <span
-              className="pc-learning__sev"
-              style={{ background: meta.color }}
-              aria-hidden
-            />
-            <span className="pc-learning__id" style={{ color: meta.color }}>
-              {meta.label}
-            </span>
-            <span className="pc-learning__title">
-              {item.title ?? item.routedRef}
-            </span>
-          </button>
-        </Tooltip>
-        <span className="pc-learning__meta">
-          <span
-            className="pc-learning__chip pc-learning__chip--idea"
-            title="Creative lens that produced this idea"
-          >
-            {item.lens}
-          </span>
-          {item.outcome && item.outcome !== "pending" ? (
-            <span
-              className="pc-learning__score"
-              title="Outcome from the change feed"
-            >
-              {item.outcome}
-            </span>
-          ) : null}
-          <span className="pc-learning__age">
-            {!Number.isNaN(when) ? whenLabel(when) : ""}
-          </span>
-          <span
-            className="pc-learning__grade"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => event.stopPropagation()}
-          >
-            {eff ? (
-              <span
-                className="pc-learning__gradechip"
-                title={
-                  eff.feedback
-                    ? `Graded by ${graderLabel(eff.gradedBy, t("brain"))}: “${eff.feedback}”`
-                    : `Graded by ${graderLabel(eff.gradedBy, t("brain"))}`
-                }
-              >
-                ★{eff.grade} · {graderLabel(eff.gradedBy, t("brain"))}
-              </span>
-            ) : null}
-            <Popover
-              open={isOpen}
-              onOpenChange={(open) =>
-                void setGradeOpen(open ? item.ideaId : null)
-              }
-              trigger={
-                <button
-                  type="button"
-                  className="pc-learning__notebtn"
-                  aria-label={eff ? "Review idea grade" : "Grade this idea"}
-                  aria-expanded={isOpen}
-                >
-                  {eff ? (
-                    <Star size={12} fill="currentColor" aria-hidden />
-                  ) : (
-                    <MessageSquarePlus size={12} aria-hidden />
-                  )}
-                </button>
-              }
-              tooltipLabel={eff ? "Review this grade" : "Grade this idea"}
-              ariaLabel={`Grade ${item.title ?? item.routedRef}`}
-              contentClassName="pc-learning__gradepopover"
-            >
-              <GradePanel
-                current={eff}
-                busy={saving}
-                onSave={(grade, feedback) => {
-                  void submitGrade(item, grade, feedback).then(
-                    () => void setGradeOpen(null),
-                  );
-                }}
-                onClose={() => void setGradeOpen(null)}
-              />
-            </Popover>
-          </span>
+          the ideator's learned creative-lens steering — raised by wins and good
+          grades
         </span>
-        {isTraceOpen ? renderTrace(item) : null}
-      </li>
-    );
-  };
-
-  // Card variant of an idea for the overlapping-stack browser (owner ask
-  // 2026-07-19). The lens rides the GROUP header (renderLensStacks), so the
-  // card omits the lens chip — the whole stack is one lens. Same interactive
-  // grade + trace affordances as the row.
-  const renderIdeaCard = (item: ScoutRoutedItem) => {
-    const meta = RAIL_META[item.rail] ?? {
-      label: item.rail,
-      desc: "Routed idea",
-      color: "#94a3b8",
-    };
-    const when = item.routedAt ? Date.parse(item.routedAt) : NaN;
-    const eff = effectiveGrade(item);
-    const isOpen = gradeOpen === item.ideaId;
-    const saving = savingId === item.ideaId;
-    return (
-      <div className={`pc-learning__ideacard${eff ? " is-graded" : ""}`}>
-        <div className="pc-learning__ideacard-head">
-          <span
-            className="pc-learning__id"
-            style={{ color: meta.color }}
-            title={meta.desc}
-          >
-            <span
-              className="pc-learning__sev"
-              style={{ background: meta.color }}
-              aria-hidden
-            />
-            {meta.label}
-          </span>
-          {item.outcome && item.outcome !== "pending" ? (
-            <span
-              className={`pc-learning__score pc-learning__score--${item.outcome}`}
-              title="Outcome from the change feed"
-            >
-              {item.outcome}
-            </span>
-          ) : null}
-          <span className="pc-learning__age">
-            {!Number.isNaN(when) ? whenLabel(when) : ""}
-          </span>
-        </div>
-        <Tooltip label={`Open the routed artifact — ${item.routedRef}`}>
-          <button
-            type="button"
-            className="pc-learning__ideacard-title"
-            onClick={() => openRouted(item)}
-          >
-            {item.title ?? item.routedRef}
-          </button>
-        </Tooltip>
-        {/* Inline star grader ON the card (owner ask 2026-07-19d) — the same
-            grade+note the popup carried, always visible, no popup. */}
-        <CardGradeStars
-          current={eff}
-          busy={saving}
-          attribution={
-            eff ? `★${eff.grade} · ${graderLabel(eff.gradedBy, t("brain"))}` : null
-          }
-          feedback={eff?.feedback ?? null}
-          noteOpenInit={isOpen}
-          onGrade={(grade, feedback) => {
-            void submitGrade(item, grade, feedback ?? null).then(
-              () => void setGradeOpen(null),
-            );
-          }}
-        />
-        {/* The FULL story rides the card (owner ask 2026-07-19): the pipeline
-            trace is always visible — never behind a click-to-reveal. */}
-        {renderTrace(item)}
       </div>
-    );
-  };
-
-  // Group ungraded ideas by their producing lens ("first-principles reframing",
-  // …) and render each lens as its own overlapping card stack (owner ask
-  // 2026-07-19). Biggest stacks first so the dominant lenses lead.
-  const renderLensStacks = (items: ScoutRoutedItem[], keyPrefix: string) => {
-    const groups = new Map<string, ScoutRoutedItem[]>();
-    for (const it of items) {
-      const lens = it.lens || "unknown";
-      const bucket = groups.get(lens);
-      if (bucket) bucket.push(it);
-      else groups.set(lens, [it]);
-    }
-    const ordered = [...groups.entries()].sort(
-      (a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]),
-    );
-    return (
-      <div className="pc-learning__lensstacks">
-        {ordered.map(([lens, group]) => (
-          <section
-            key={`${keyPrefix}-${lens}`}
-            className="pc-learning__lensgroup"
-            aria-label={`${lens} ideas`}
+      <div className="pc-learning__flow" aria-label="Lens sampling weights">
+        {lensEntries.map(([lens, share]) => (
+          <span
+            key={lens}
+            className="pc-learning__lens"
+            title={`${lens}: ${share}% of next cycle's lens sampling — raised by wins and good grades, lowered by losses and poor grades.`}
           >
-            <CardStack
-              items={group}
-              getKey={(it) => it.ideaId}
-              ariaLabel={`${lens} ungraded ideas`}
-              accent={lensColor(lens)}
-              // The lens badge rides ON the active card's top edge (CardStack
-              // renders it overlapping), so the association is unmistakable.
-              header={
-                <>
-                  <span
-                    className="pc-cardstack__header-label"
-                    title="Creative lens"
-                  >
-                    {lens}
-                  </span>
-                  <span className="pc-cardstack__header-count">
-                    {group.length}
-                  </span>
-                </>
-              }
-              renderCard={(it) => renderIdeaCard(it)}
-            />
-          </section>
+            <em>{lens}</em>
+            <span className="pc-learning__lensbar" aria-hidden>
+              <span style={{ width: `${share}%` }} />
+            </span>
+            <strong>{share}%</strong>
+          </span>
         ))}
       </div>
-    );
-  };
+    </>
+  );
+}
 
+function RETIRED_ScoutView_TAIL() {
   return (
     <section className="pc-learning__section">
-      <LearningPageHeader
-        icon={Lightbulb}
-        title="Ideas"
-        question="The generator's ledger: idea → artifact trace + grading — routed rows are links into the real backlog, not a second one."
-        signal={snap ? `${snap.totalRouted} routed` : undefined}
-        tone={health.status}
-        action={
-          <button
-            type="button"
-            className="pc-learning__refresh"
-            aria-label={`Reload the ${t("scout", { lower: true })} feed`}
-            disabled={sync.fetching}
-            onClick={() => sync.invalidate()}
-          >
-            <RefreshCw size={13} aria-hidden />
-          </button>
-        }
-      />
-      {/* ONE plain-language glance line (owner ask 2026-07-19: the stacked
-          instrument clusters were unreadable). Every gauge behind ONE labelled
-          disclosure below. */}
-      <p className="pc-learning__glance" aria-label="Ideas at a glance">
-        <span title="Every idea a cycle turned into an artifact (work item, gym seed, plan, benchmark).">
-          <strong>{snap?.totalRouted ?? 0}</strong> ideas routed
-        </span>
-        {snap?.improveFunnel ? (
-          <span title="Ideas filed onto the improvement rail that are now resolved or closed.">
-            <strong>{snap.improveFunnel.done}</strong> done
-          </span>
-        ) : null}
         {cadence ? (
           <span
             title={`A weighted score over pending signal (new observations, captures, reverts, completions…) fires the next idea cycle at ≥${cadence.threshold}. Details in "How the cycle engine is doing".`}

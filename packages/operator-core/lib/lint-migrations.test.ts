@@ -329,6 +329,93 @@ DROP INDEX IF EXISTS harness_shared.agent_facts_identity;`;
       ),
     ).toEqual([]);
   });
+
+  /**
+   * A UNIQUE *constraint* is implemented BY a unique index and is inferable by
+   * `ON CONFLICT` identically, so the constraint spelling of either side is the
+   * same hazard. Matching only the INDEX spelling left a bypass reachable by an
+   * idiom this repo already uses 14 times — the 689 outage re-authored as
+   * `DROP CONSTRAINT` + `CREATE UNIQUE INDEX … WHERE` went through clean.
+   */
+  describe('constraint-backed spellings of the same swap', () => {
+    it('flags DROP CONSTRAINT + CREATE UNIQUE INDEX (the 689 outage, re-spelled)', () => {
+      const hits = findUniqueIndexShapeSwap(
+        `ALTER TABLE harness_shared.agent_facts DROP CONSTRAINT agent_facts_identity_key;
+         CREATE UNIQUE INDEX agent_facts_identity_current
+           ON harness_shared.agent_facts (workspace_id, key) WHERE superseded_at IS NULL;`,
+      );
+      expect(hits).toHaveLength(1);
+      expect(hits[0]).toMatchObject({
+        index: 'agent_facts_identity_current',
+        table: 'agent_facts',
+        partial: true,
+        dropped: ['agent_facts_identity_key'],
+      });
+    });
+
+    it('flags DROP INDEX + ADD CONSTRAINT … UNIQUE (replacement created as a constraint)', () => {
+      const hits = findUniqueIndexShapeSwap(
+        `DROP INDEX IF EXISTS harness_shared.agent_facts_identity;
+         ALTER TABLE harness_shared.agent_facts
+           ADD CONSTRAINT agent_facts_identity_key UNIQUE (workspace_id, key);`,
+      );
+      expect(hits).toHaveLength(1);
+      // A UNIQUE constraint cannot carry a predicate, so it is never partial.
+      expect(hits[0]).toMatchObject({ table: 'agent_facts', partial: false });
+    });
+
+    it('flags both actions carried by ONE comma-separated ALTER TABLE', () => {
+      expect(
+        findUniqueIndexShapeSwap(
+          `ALTER TABLE harness_shared.agent_facts
+             ADD CONSTRAINT agent_facts_ident2 UNIQUE (workspace_id, key),
+             DROP CONSTRAINT agent_facts_identity_key;`,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('matches the constraint drop on its STATED table, not the name prefix', () => {
+      // `uniq_facts_ident` does not begin with `agent_facts_`, so the name
+      // heuristic a bare DROP INDEX needs would miss this one entirely.
+      expect(
+        findUniqueIndexShapeSwap(
+          `ALTER TABLE harness_shared.agent_facts DROP CONSTRAINT uniq_facts_ident;
+           CREATE UNIQUE INDEX agent_facts_identity_current
+             ON harness_shared.agent_facts (workspace_id, key);`,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('does NOT flag a constraint dropped from a DIFFERENT table', () => {
+      expect(
+        findUniqueIndexShapeSwap(
+          `ALTER TABLE harness_shared.spawned_agents DROP CONSTRAINT spawned_agents_lease_key;
+           CREATE UNIQUE INDEX cross_hive_asks_correlation_uniq
+             ON harness_shared.cross_hive_asks (workspace_id, correlation_id);`,
+        ),
+      ).toEqual([]);
+    });
+
+    it('does NOT mistake a column-level ADD COLUMN … UNIQUE for a table-level swap', () => {
+      expect(
+        findUniqueIndexShapeSwap(
+          `ALTER TABLE harness_shared.agent_facts DROP CONSTRAINT agent_facts_identity_key;
+           ALTER TABLE harness_shared.agent_facts ADD COLUMN nickname text UNIQUE;`,
+        ),
+      ).toEqual([]);
+    });
+
+    it('honours the allow-index-swap pragma for the constraint spelling too', () => {
+      expect(
+        findUniqueIndexShapeSwap(
+          `-- lint-migrations: allow-index-swap brand-new table, no deployed readers
+           ALTER TABLE harness_shared.agent_facts DROP CONSTRAINT agent_facts_identity_key;
+           CREATE UNIQUE INDEX agent_facts_identity_current
+             ON harness_shared.agent_facts (workspace_id, key);`,
+        ),
+      ).toEqual([]);
+    });
+  });
 });
 
 /**
