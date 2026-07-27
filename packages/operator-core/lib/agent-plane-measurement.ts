@@ -75,9 +75,38 @@ export const PLANE_METRIC_IDS = [
 export type PlaneMetricId = (typeof PLANE_METRIC_IDS)[number];
 
 /**
- * Why a metric reported nothing. Only `'clean'` is an informative zero — the
- * others all mean "nothing was measured", which is the misread this whole module
- * exists to prevent. Same shape and same rule as the sibling detectors'
+ * What the `observed` count MEANS — and therefore what a zero means.
+ *
+ * ⚠⚠ FOUND BY RUNNING THIS MODULE OVER THE LIVE CORPUS, NOT BY A FIXTURE.
+ * Without this field every metric was implicitly a DEFECT counter, so the zero
+ * ladder ended at `'clean'` — "the only zero that is good news". The live window
+ * then produced **0 clarifications across 4,142 calls** and the module rendered
+ * it as a clean pass. But zero clarifications is not good news: it is equally
+ * consistent with agents having enough context and with agents guessing instead
+ * of asking, which is *exactly what that metric's own `vacuousPassWhen` says*.
+ * The prose was right and the structure contradicted it — P-015's own thesis
+ * ("a rule carried by prose rather than structure") turned on itself.
+ *
+ * A fixture could not catch it because a fixture author picks the numbers, and
+ * every fixture here was written around divergence-shaped metrics where 0 IS the
+ * good case. Only a real corpus offers a desirable behaviour that nobody
+ * performed.
+ */
+export const METRIC_POLARITIES = [
+  /** `observed` counts something BAD. Zero over a real denominator is good news. */
+  'defect',
+  /** `observed` counts something GOOD. Zero over a real denominator is a WARNING. */
+  'desirable',
+  /** `observed` is a MAGNITUDE (bytes), not a count of events. Never a "finding". */
+  'gauge',
+] as const;
+export type MetricPolarity = (typeof METRIC_POLARITIES)[number];
+
+/**
+ * Why a metric reported nothing. Only `'clean'` is an informative good-news zero
+ * — the others mean either "nothing was measured" (the D-089 misread this module
+ * exists to prevent) or, for a desirable behaviour, "it was measured and it did
+ * not happen". Same shape and rule as the sibling detectors'
  * `DIVERGENCE_ZERO_REASONS` / `CONFLICT_ZERO_REASONS`.
  */
 export const PLANE_ZERO_REASONS = [
@@ -93,13 +122,30 @@ export const PLANE_ZERO_REASONS = [
    * no bucket holds two comparable calls). A partial answer wearing a zero.
    */
   'nothing-comparable',
-  /** `comparable > 0` and `observed === 0`. The ONLY zero that is good news. */
+  /**
+   * A `desirable` metric measured over a real denominator that observed NOTHING.
+   * The instrument worked, so this is not a structural zero — it is a finding of
+   * ABSENCE, and it must never render as `'clean'`.
+   */
+  'none-observed',
+  /** `comparable > 0`, `observed === 0`, and the count was of a DEFECT. Good news. */
   'clean',
 ] as const;
 export type PlaneZeroReason = (typeof PLANE_ZERO_REASONS)[number];
 
-/** True when the zero means "nothing was measured", not "nothing was wrong". */
+/**
+ * True when the zero means "nothing was measured".
+ *
+ * `'none-observed'` is deliberately NOT structural: the instrument ran and
+ * returned an answer. It is simply not a good answer, which is a different thing
+ * and is why it needs its own reason rather than being folded into either side.
+ */
 export function isStructuralZero(reason: PlaneZeroReason | null): boolean {
+  return reason !== null && reason !== 'clean' && reason !== 'none-observed';
+}
+
+/** True when a zero must not be shown to a reader as a pass. */
+export function isConcerningZero(reason: PlaneZeroReason | null): boolean {
   return reason !== null && reason !== 'clean';
 }
 
@@ -126,6 +172,12 @@ export interface MetricSpec {
   unit: string;
   /** Unit of `comparable` / `observed` — often, but not always, the same as `unit`. */
   verdictUnit: string;
+  /**
+   * What `observed` counts, and therefore what a zero means. Required: without it
+   * every metric silently defaults to "defect", and a desirable behaviour nobody
+   * performed reports as a clean pass — see {@link METRIC_POLARITIES}.
+   */
+  polarity: MetricPolarity;
   /**
    * ⚠ D-030 §3, REQUIRED OF EVERY METRIC BEFORE IT SHIPS A NUMBER: *"what state of
    * the world makes this pass for the WRONG reason?"*
@@ -173,6 +225,12 @@ export interface PlaneMeasurement {
   interpretableCount: number;
   /** Metrics whose input producer has never written — the headline, not a footnote. */
   awaitingProducer: PlaneMetricId[];
+  /**
+   * DESIRABLE behaviours that were measured over a real denominator and did not
+   * happen at all. Separate from {@link awaitingProducer} because the instrument
+   * worked here — this is a finding, not a gap in the instrument.
+   */
+  noneObserved: PlaneMetricId[];
   /** One line stating how much of the plane is actually measurable right now. */
   summary: string;
 }
@@ -194,6 +252,7 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
     inputProducer: 'P-009’s stamp writer → tool_invocations.intent_event_id + goal_ref',
     unit: 'tool call',
     verdictUnit: 'intent bucket',
+    polarity: 'defect',
     vacuousPassWhen:
       'The P-009 stamp writer is not deployed, so fillRate is 0, no bucket holds two comparable calls, and the leg reports nothing for the same reason a perfectly-disciplined fleet would. Read `fillRate`, never `rate`, until the stamp is live.',
   },
@@ -204,6 +263,7 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
     inputProducer: 'tool_invocations failure rows — needs no stamp, so this leg is live today',
     unit: 'tool call',
     verdictUnit: 'observed failure',
+    polarity: 'defect',
     vacuousPassWhen:
       'A window in which the fleet was IDLE produces the same clean zero as a window in which every agent converged. `population` separates them; `rate` alone does not. A fleet that has learned to retry more SLOWLY also improves this number without converging any better.',
   },
@@ -213,6 +273,11 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
     inputProducer: 'coord:ask · coord:ask-owner · conversations:post · conversations:answer',
     unit: 'attributed tool call',
     verdictUnit: 'clarification-shaped call',
+    // ⚠ DESIRABLE, not defect: asking is the behaviour we WANT, so `observed: 0`
+    // is a finding of ABSENCE, never a pass. Measured live 2026-07-27: 0 across
+    // 4,142 calls in one 30-minute window — which the defect-shaped ladder was
+    // rendering as "✓ clean" until this field existed.
+    polarity: 'desirable',
     vacuousPassWhen:
       'A LOW rate is ambiguous BY CONSTRUCTION — equally consistent with agents having enough context (the win) and with agents guessing instead of asking (the loss). It is only interpretable read ALONGSIDE `acted-on-stale-or-wrong-value`, never on its own. D-030 §4 adds the opposite hazard: clarification-seeking measurably WIDENS prompt-injection exposure, so a rising rate is not automatically good either.',
   },
@@ -222,6 +287,7 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
     inputProducer: 'facts:assert { kind:"assumption", claim, dependsOn } → harness_shared.agent_facts',
     unit: 'agent_facts row',
     verdictUnit: 'compared pair',
+    polarity: 'defect',
     vacuousPassWhen:
       'ZERO assumptions have ever been filed (0 of 2,148 rows, measured 2026-07-27 and unchanged since D-087 measured 0 of 2,088), so `comparedPairs` is 0 and the detector reports no conflict for precisely the same reason it would in a perfectly-aligned fleet. This is D-087’s "read with no producer" — the metric is unbuilt, not clean.',
   },
@@ -233,6 +299,7 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
       'facts:assert { dependsOn } → dependency-staleness capture (captureFactDependencies), re-digested by markStaleDependencyFacts',
     unit: 'agent_facts row',
     verdictUnit: 'fact carrying a dependency observation',
+    polarity: 'defect',
     vacuousPassWhen:
       'No fact has ever declared `dependsOn` (0 of 2,148), so there is nothing to re-digest. Worse in the non-empty case: an `undeterminable` verdict — the declared cell no longer resolves — is EXCLUDED from `comparable` rather than counted fresh, because counting a broken resolver as fresh converts an instrument failure into a clean bill of health, which is this metric’s own failure mode.',
   },
@@ -242,6 +309,10 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
     inputProducer: 'tool_invocations.output_size on the enriched surfaces',
     unit: 'tool call on an enriched surface',
     verdictUnit: 'output byte',
+    // ⚠ GAUGE: `observed` is BYTES — a magnitude, not a count of events. It is
+    // never a "finding" however large it grows, and a reader who sees it listed
+    // beside real defect counts will mis-rank the whole row.
+    polarity: 'gauge',
     vacuousPassWhen:
       'NONE of the plane’s enrichments are deployed yet, so this window is the PRE-enrichment baseline. Reading a low number as "the plane is cheap" is exactly backwards — the cost is the DELTA against this row once the enrichments are live, and there is no delta to read until then.',
   },
@@ -253,12 +324,21 @@ function ratio(numerator: number, denominator: number): number | null {
   return Math.round((numerator / denominator) * 10_000) / 10_000;
 }
 
-function zeroReasonFor(c: MetricCounts): PlaneZeroReason | null {
+/**
+ * The zero ladder — coarsest cause first, so a reader is told the OUTERMOST
+ * reason nothing was found rather than an inner one that is merely a consequence.
+ *
+ * The final rung is polarity-dependent, and that is the whole point: `'clean'` is
+ * reserved for a DEFECT count that came back empty over a real denominator. A
+ * desirable behaviour that nobody performed lands on `'none-observed'` instead —
+ * measured, answered, and not a pass.
+ */
+function zeroReasonFor(c: MetricCounts, polarity: MetricPolarity): PlaneZeroReason | null {
   if (c.observed > 0) return null;
   if (c.population <= 0) return 'population-empty';
   if (c.eligible <= 0) return 'nothing-eligible';
   if (c.comparable <= 0) return 'nothing-comparable';
-  return 'clean';
+  return polarity === 'desirable' ? 'none-observed' : 'clean';
 }
 
 /** Guard against a negative or non-finite count silently poisoning a rate. */
@@ -280,7 +360,7 @@ export function buildMetric(id: PlaneMetricId, raw: MetricCounts): PlaneMetric {
     comparable: clamp(raw.comparable),
     observed: clamp(raw.observed),
   };
-  const zeroReason = zeroReasonFor(counts);
+  const zeroReason = zeroReasonFor(counts, spec.polarity);
   return {
     ...spec,
     ...counts,
@@ -317,7 +397,14 @@ export function composePlaneMeasurement(args: {
     .filter((m) => m.zeroReason === 'nothing-eligible' || m.zeroReason === 'population-empty')
     .map((m) => m.id);
 
-  const findings = metrics.filter((m) => m.observed > 0);
+  // ⚠ ONLY a DEFECT count is a "finding". A gauge's magnitude (bytes) listed
+  // beside real defect counts makes the whole line unrankable, and a desirable
+  // behaviour's count is the opposite of a finding when it is high.
+  const findings = metrics.filter((m) => m.polarity === 'defect' && m.observed > 0);
+  // Measured, answered, and NOT a pass — the case the live corpus surfaced.
+  const noneObserved = metrics.filter((m) => m.zeroReason === 'none-observed').map((m) => m.id);
+  const gauges = metrics.filter((m) => m.polarity === 'gauge' && m.rate != null);
+
   const summary =
     `${interpretableCount}/${PLANE_METRIC_IDS.length} plane metrics are measurable in this window` +
     (awaitingProducer.length
@@ -325,7 +412,11 @@ export function composePlaneMeasurement(args: {
       : '') +
     (findings.length
       ? `; findings: ${findings.map((m) => `${m.id}=${m.observed}/${m.comparable}`).join(', ')}`
-      : '; no findings in the measurable metrics');
+      : '; no defect findings in the measurable metrics') +
+    (noneObserved.length
+      ? `; ⚠ never observed: ${noneObserved.join(', ')} (measured, and it did not happen — not a pass)`
+      : '') +
+    (gauges.length ? `; gauges: ${gauges.map((m) => `${m.id}=${m.rate}/${m.verdictUnit}`).join(', ')}` : '');
 
   return {
     measuredAt: args.measuredAt ?? new Date(args.windowEndMs).toISOString(),
@@ -334,6 +425,7 @@ export function composePlaneMeasurement(args: {
     metrics,
     interpretableCount,
     awaitingProducer,
+    noneObserved,
     summary,
   };
 }
@@ -404,7 +496,9 @@ export function explainZero(reason: PlaneZeroReason): string {
       return 'units were examined but none carried this metric’s input — the producer has not written, so the metric is unbuilt rather than clean';
     case 'nothing-comparable':
       return 'the input was present but no unit admitted a verdict — a partial answer wearing a zero';
+    case 'none-observed':
+      return 'measured over a real denominator, and the desirable behaviour did not happen ONCE — the instrument worked, so this is a finding of absence and NOT a pass';
     case 'clean':
-      return 'a verdict was possible and nothing was found — the only zero that is good news';
+      return 'a defect count was possible and nothing was found — the only zero that is good news';
   }
 }

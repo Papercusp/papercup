@@ -48,6 +48,7 @@ import { detectAssumptionConflicts } from './agent-facts/conflicts';
 import {
   composePlaneMeasurement,
   isStructuralZero,
+  isConcerningZero,
   explainZero,
   type MetricCounts,
   type PlaneCounts,
@@ -406,9 +407,14 @@ export function formatMeasurementLog(m: PlaneMeasurement): string {
     if (metric.zeroReason && isStructuralZero(metric.zeroReason)) {
       return `${metric.id}=UNMEASURED(${metric.zeroReason}; fill=${metric.fillRate ?? 'n/a'}; awaiting ${metric.inputProducer})`;
     }
+    // Measured, and the desirable behaviour did not occur. It must not print like
+    // a defect count of 0, which is what "0/4142 (0)" reads as at a glance.
+    if (metric.zeroReason === 'none-observed') {
+      return `${metric.id}=NEVER-OBSERVED(0 of ${metric.comparable} ${metric.unit}s — measured, not a pass)`;
+    }
     return `${metric.id}=${metric.observed}/${metric.comparable}${metric.rate == null ? '' : ` (${metric.rate})`}`;
   });
   return `[plane-measurement] ${m.summary} | ${parts.join(' · ')}`;
 }
 
-export { isStructuralZero, explainZero };
+export { isStructuralZero, isConcerningZero, explainZero };

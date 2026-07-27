@@ -117,6 +117,15 @@ const EXACT: Record<string, CapabilityTier> = {
   // operator's superuser-token. Defense-in-depth: handler enforces a
   // kind allowlist + writes audit_log on every call.
   'processes:kill': 'high',
+  // task-manager-no-escape-2026-07-27 P-014: the NON-destructive task-manager
+  // verbs (processes:freeze / processes:limit). High-tier like its kill sibling
+  // because pausing or capping a peer's in-flight work is disruptive — but a
+  // DISTINCT capability, deliberately kept OUT of PROTECTED_CAPABILITY_GLOBS:
+  // both are reversible, and protecting them would block exactly the
+  // memory-pressure relief they exist for (freeze the fattest runs instead of
+  // killing them). Splitting reversible control from irreversible kill is the
+  // whole point of not reusing 'processes:kill' here.
+  'processes:control': 'high',
   // Fleet capability surface (agent-capability-confinement-2026-06-13, B-05):
   // the gated defineTool re-exposure of native capabilities. High for anything
   // that executes code, mutates the tree, or reaches the network; low for the

@@ -44,28 +44,81 @@ export default defineTool({
     .object({
       pid: z.number().int().positive().optional().describe('a single host pid (n=1 shorthand for pids:[pid])'),
       pids: z.array(z.number().int().positive()).min(1).max(100).optional().describe('host pids to signal (1–100)'),
+      taskId: z.string().max(64).optional().describe('a single task-ledger id (n=1 shorthand for taskIds)'),
+      taskIds: z
+        .array(z.string().max(64))
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('task-ledger ids from processes:list — kills each whole cgroup subtree'),
+      includeSubtree: z
+        .boolean()
+        .optional()
+        .describe('also signal logically-nested tasks that got their own scopes (taskId mode only)'),
+      escalateAfterMs: z
+        .number()
+        .int()
+        .min(0)
+        .max(120_000)
+        .optional()
+        .describe('SIGTERM, then SIGKILL after this long IF the scope still holds processes (taskId mode only)'),
       signal: z.enum(['SIGTERM', 'SIGKILL']).optional().describe('the signal to send (batch-level; default SIGTERM)'),
     })
-    .refine((a) => Boolean(a.pid) || (a.pids?.length ?? 0) > 0, {
-      message: 'pass `pid` (one) or `pids` (many)',
-    }),
+    .refine(
+      (a) =>
+        Boolean(a.pid) ||
+        (a.pids?.length ?? 0) > 0 ||
+        Boolean(a.taskId) ||
+        (a.taskIds?.length ?? 0) > 0,
+      { message: 'pass `taskId`/`taskIds` (preferred) or `pid`/`pids`' },
+    ),
   async handler(args, ctx) {
+    // Task-addressed kills go through the cgroup: whole subtree, no recycled-pid
+    // hazard. Pid-addressed kills keep the legacy tracked-kind path.
+    const taskIds = [...new Set([...toList<string>(args.taskId), ...toList<string>(args.taskIds)])];
+    const taskEnv = taskIds.length
+      ? await runBulk(
+          taskIds,
+          async (taskId) =>
+            killTask(taskId, {
+              signal: args.signal,
+              includeSubtree: args.includeSubtree,
+              escalateAfterMs: args.escalateAfterMs,
+            }),
+          { keyOf: (taskId) => ({ taskId }) },
+        )
+      : null;
+
     const pids = [...new Set([...toList<number>(args.pid), ...toList<number>(args.pids)])];
-    const env = await runBulk(
-      pids,
-      async (pid) => {
-        const result = await killProcess({
-          pid,
-          signal: args.signal,
-          actorSlug: ctx.principal.slug,
-          workspaceId: ctx.principal.workspaceId,
-        });
-        // killProcess returns { ok, pid, kind, signal | error, detail? } — already
-        // self-keyed by pid; surface it verbatim so a per-item failure rides through.
-        return { ...result, ok: result.ok, pid: result.pid ?? pid };
+    const pidEnv = pids.length
+      ? await runBulk(
+          pids,
+          async (pid) => {
+            const result = await killProcess({
+              pid,
+              signal: args.signal,
+              actorSlug: ctx.principal.slug,
+              workspaceId: ctx.principal.workspaceId,
+            });
+            // killProcess returns { ok, pid, kind, signal | error, detail? } — already
+            // self-keyed by pid; surface it verbatim so a per-item failure rides through.
+            return { ...result, ok: result.ok, pid: result.pid ?? pid };
+          },
+          { keyOf: (pid) => ({ pid }) },
+        )
+      : null;
+
+    if (taskEnv && !pidEnv) return bulkContent(taskEnv);
+    if (pidEnv && !taskEnv) return bulkContent(pidEnv);
+    // Both modes in one call: merge the keyed result lists rather than picking one,
+    // so a mixed batch reports every item instead of silently dropping half.
+    return bulkContent({
+      ...taskEnv!,
+      results: [...(taskEnv!.results ?? []), ...(pidEnv!.results ?? [])],
+      counts: {
+        ok: (taskEnv!.counts?.ok ?? 0) + (pidEnv!.counts?.ok ?? 0),
+        failed: (taskEnv!.counts?.failed ?? 0) + (pidEnv!.counts?.failed ?? 0),
       },
-      { keyOf: (pid) => ({ pid }) },
-    );
-    return bulkContent(env);
+    } as typeof taskEnv);
   },
 });

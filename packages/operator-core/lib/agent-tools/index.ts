@@ -414,6 +414,13 @@ import './dev/resolve_owner';
 // (the deterministic wrapper-candidate / code-recipes-promotion signal).
 import './dev/tool_cooccurrence';
 import './processes/kill';
+// task-manager-no-escape-2026-07-27 P-013/P-014: the ledger-backed task-manager
+// control plane. `list` is the provenance inventory (who launched it, for which
+// work-item, what it costs) that no process table can answer; `freeze`/`limit` are
+// the cgroup verbs — pause without losing work, retune a budget without a restart.
+import './processes/list';
+import './processes/freeze';
+import './processes/limit';
 import './turn/interrupt';
 import './dev/omp_session';
 // EI-4911 — the Claude-Code analogue of dev:omp_session: find/search/read local Claude transcripts.

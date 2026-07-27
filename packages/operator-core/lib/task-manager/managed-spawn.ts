@@ -119,6 +119,39 @@ export function probeScopeSupport(spawnFn: typeof spawn = spawn): Promise<{ ok: 
 /** Test seam — forget the cached probe. */
 export function resetScopeProbe(): void {
   scopeProbe = null;
+  scopeProbeResult = null;
+}
+
+let scopeProbeResult: { ok: boolean; reason?: string } | null = null;
+
+/**
+ * Kick the probe off without waiting for it, and remember the answer for
+ * SYNCHRONOUS callers.
+ *
+ * Some spawn seams cannot become async without changing a signature every caller
+ * and test depends on (`capability:bash`'s `startBackground` is the case that
+ * forced this). Those seams need the confinement decision at call time, with no
+ * await available. So: warm the probe at module load, answer synchronously
+ * afterwards, and have the first job before it resolves run UNCONFINED but still
+ * ledgered.
+ *
+ * That is the correct bias. Confinement is an observability and safety
+ * enhancement; the job itself is the user's actual work. A task manager that is
+ * still warming up must never be the reason a command does not run.
+ */
+export function warmScopeProbe(spawnFn: typeof spawn = spawn): void {
+  void probeScopeSupport(spawnFn)
+    .then((r) => {
+      scopeProbeResult = r;
+    })
+    .catch(() => {
+      scopeProbeResult = { ok: false, reason: 'probe threw' };
+    });
+}
+
+/** The probe's answer if it has landed, else null ("not known yet — do not confine"). */
+export function scopeSupportKnown(): { ok: boolean; reason?: string } | null {
+  return scopeProbeResult;
 }
 
 // ── the chokepoint ──────────────────────────────────────────────────────────

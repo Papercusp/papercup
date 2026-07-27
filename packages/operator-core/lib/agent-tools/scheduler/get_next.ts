@@ -113,6 +113,51 @@ export function specNamedIds(spec: unknown): string[] {
   return [];
 }
 
+/** The kinds whose claim path runs through the ISSUE-family diagnostic
+ *  (diagnoseClaimNextMiss / explainIssueClaimFloors / aggregateIssueClaimExclusions,
+ *  all imported below) — mirrors buildFleetKindClaimSpec's ISSUE_FAMILY_CLAIM_KINDS
+ *  in fleet_registry/launch-on-plan.ts (not re-exported from there to avoid a
+ *  fleet_registry → agent-tools/scheduler import edge for one literal set). */
+const ISSUE_FAMILY_KINDS = new Set(['bug', 'change', 'task']);
+
+/**
+ * EI-18741395910746959: pull the `kind in [...]` leaf's value out of a claim spec's
+ * view filter (top-level or nested one level inside an `all`) — the sibling of
+ * specNamedIds, used to tell whether THIS diagnosis (which is issue-family-only,
+ * see the doc comment below) is even on-topic for the caller's spec.
+ */
+export function specKindFilterValues(spec: unknown): string[] | undefined {
+  const view = (spec as { view?: { filter?: unknown } } | undefined)?.view;
+  const filter = view?.filter as { field?: string; op?: string; value?: unknown; all?: unknown[] } | undefined;
+  if (!filter) return undefined;
+  const candidates = Array.isArray(filter.all) ? filter.all : [filter];
+  for (const c of candidates) {
+    const cl = c as { field?: string; op?: string; value?: unknown };
+    if (cl?.field === 'kind' && cl?.op === 'in' && Array.isArray(cl.value)) {
+      return cl.value.filter((v): v is string => typeof v === 'string');
+    }
+  }
+  return undefined;
+}
+
+/**
+ * True when the spec's OWN kind filter (if any) restricts EXCLUSIVELY to issue-family
+ * kinds (bug/change/task) — i.e. the issue-family-only diagnostic below is the WHOLE
+ * story for this caller. False when the filter has no kind restriction at all (both
+ * families are structurally reachable) or explicitly includes a non-issue kind
+ * (feature/chunk/research-task/…) — in either case a "0 issue-family rows" diagnosis
+ * is not the whole picture and the caller needs to be told so explicitly (the exact
+ * confusion reported in EI-18741395910746959: a feature-only plan's claim spec has no
+ * kind leaf at all, so its miss diagnosis silently talked ONLY about the issue-family
+ * side, which the plan's items never touch, and never mentioned the feature-family
+ * claim path at all).
+ */
+export function specIsIssueFamilyOnly(spec: unknown): boolean {
+  const kinds = specKindFilterValues(spec);
+  if (!kinds || kinds.length === 0) return false;
+  return kinds.every((k) => ISSUE_FAMILY_KINDS.has(k));
+}
+
 /**
  * WI-4413: build the self-explaining miss. Two layers:
  *  1. AGGREGATE — the POOL/READY split from diagnoseClaimNextMiss (already the source of truth
@@ -274,12 +319,29 @@ async function buildMissDiagnosis(args: {
       }
     }
 
+    // EI-18741395910746959: everything above (diag.pendingUnclaimed/readyUnclaimed,
+    // explainIssueClaimFloors, aggregateIssueClaimExclusions) is computed EXCLUSIVELY over
+    // the issue-family (bug/change/task) claim path — it structurally cannot see a
+    // feature-family miss. When the caller's OWN spec does not restrict to issue-family
+    // kinds only (no kind filter at all, or one that includes feature/chunk/research-task/…),
+    // this whole diagnosis may be silently irrelevant to why THEIR claim actually missed. Say
+    // so plainly instead of letting "matches 0 issue-family row(s)" read as the whole picture.
+    const issueFamilyOnly = specIsIssueFamilyOnly(rec?.spec);
+    const familyScopeNote = issueFamilyOnly
+      ? ''
+      : ' NOTE: this diagnosis (pendingUnclaimed/readyUnclaimed/floors/excludedBreakdown above) covers ONLY the ' +
+        "issue-family (bug/change/task) claim path — your spec's filter does not restrict to issue-family kinds " +
+        'only, so if the item(s) you expected to claim are feature-family (kind:"feature"), this diagnosis says ' +
+        'nothing about why THAT claim missed; check the plan/feature directly (plans:items / work_items:get) ' +
+        'rather than trusting an issue-family-only 0 here.';
+
     return {
-      error: `${STATIC}. Diagnosis: ${aggregate}.${namedSummary}${breakdownSummary}${flagReadErrorNote}`,
+      error: `${STATIC}. Diagnosis: ${aggregate}.${namedSummary}${breakdownSummary}${flagReadErrorNote}${familyScopeNote}`,
       diagnosis: {
         drained: diag.drained,
         pendingUnclaimed: diag.pendingUnclaimed,
         readyUnclaimed: diag.readyUnclaimed,
+        issueFamilyOnlyDiagnosis: issueFamilyOnly,
         ...(diag.flagReadError ? { flagReadError: diag.flagReadError } : {}),
       },
       floors,
