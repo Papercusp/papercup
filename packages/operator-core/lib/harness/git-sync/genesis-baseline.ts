@@ -39,7 +39,30 @@
  * path on this machine. That is what is required now, and the baseline search
  * widens from one hard-coded ref name to the tightest already-exposed frontier
  * over ALL remote-tracking refs.
+ *
+ * ── WI-6249: the SAME disease one hop over (live-caught on the rig, 2026-07-27)
+ *
+ * `deriveGenesisBaselineSha` answers for ONE branch in the WORKTREE. ref-announce's
+ * publish tick judges EVERY ref under this device's namespace in the BARE pot-git
+ * store — a different repo AND a different question — yet it was fed that same
+ * single worktree-derived sha. Two ways that is wrong, and the rig hit both:
+ *
+ *   1. WRONG REPO. The sha is resolved against the worktree clone; the guard runs
+ *      in the bare store. They agree only by luck.
+ *   2. WRONG REF. A mainline baseline says nothing about a namespace ref on a
+ *      DIFFERENT line of history. The rig's own namespace carries a `refs/heads/
+ *      staging` mirrored from a peer at a sha its `main` baseline cannot reach, so
+ *      `(mainBaseline, staging]` spanned 7057 commits — the entire divergent
+ *      history — and the guard cat-file'd every blob in it into a JS string. That
+ *      is the 4GB heap OOM (EI-18759477854494594), every ~20-40 min, forever:
+ *      DBOS faithfully restarts the fire at the same step after each crash.
+ *
+ * The fix lives one layer down, in `pot-git/namespace-genesis-baseline.ts`
+ * (`deriveNamespaceGenesisBaseline`) — it reads the bare store, so it belongs in
+ * the store's own layer, and this module now shares its `frontierBaseline` walk
+ * rather than carrying a second copy that could drift.
  */
+import { frontierBaseline } from '../../sync/pot-git/namespace-genesis-baseline';
 import { type RunGit, defaultRunGit } from '../../sync/pot-git/storage';
 
 /** The subset of a registry ProjectEntry this needs — kept structural so the
@@ -57,16 +80,6 @@ export interface GenesisBaselineRepo {
  *  path (`/srv/mirror.git`, `../other`, `file://…`) deliberately does NOT count
  *  as exposure off this box. */
 const EXTERNAL_REMOTE_URL_RE = /^(?:https?:\/\/|ssh:\/\/|git:\/\/|[^\s/@]+@[^\s:/]+:)/;
-
-/** Cost bound on the frontier walk. A branch with more unexposed commits than
- *  this still yields a SAFE (merely less tight) baseline: a truncated walk can
- *  only surface FEWER boundary commits, never a non-remote-reachable one. */
-const MAX_FRONTIER_WALK_COMMITS = 50_000;
-
-/** How many boundary commits to price before choosing. A merge can produce
- *  several and any ONE of them is safe (see deriveRemoteFrontierBaseline), so
- *  this only bounds how hard we try for the tightest. */
-const MAX_FRONTIER_CANDIDATES = 16;
 
 /**
  * Resolve the genesis-publish baseline for `branch` in `repo`, or null to fall
@@ -141,9 +154,65 @@ async function deriveRemoteFrontierBaseline(
 ): Promise<string | null> {
   const anyRemoteRef = await runGit(['for-each-ref', '--count=1', '--format=%(objectname)', 'refs/remotes/'], repoPath);
   if (anyRemoteRef.code !== 0 || !anyRemoteRef.stdout.trim()) return null;
+  return await frontierBaseline(repoPath, branchRef, ['--not', '--remotes'], runGit);
+}
 
+/**
+ * WI-6249: the genesis baseline for ONE ref under this device's own namespace,
+ * resolved in the BARE pot-git store the publish guard actually reads.
+ *
+ * "Already exposed" here is every ref in this store EXCEPT our own namespace:
+ * another device's namespace ref is content that device published to the hive,
+ * a remote-tracking ref is content fetched off-box, and a quarantined ref is
+ * content a peer served us. All of it demonstrably left some machine already,
+ * so none of it is NEW exposure this device is responsible for judging. Only
+ * our own namespace is held out — that is exactly the content in question.
+ *
+ * Same single-boundary safety argument as `deriveRemoteFrontierBaseline`: the
+ * judged range is always a SUPERSET of the genuinely-unexposed set, so this can
+ * over-guard but never under-guard.
+ *
+ * Returns the ref's OWN sha when nothing under it is unexposed — the caller's
+ * `fromOid === sha` check then skips the ref outright (an empty range), which is
+ * strictly better than handing the guard a walk that finds nothing.
+ */
+export async function deriveNamespaceGenesisBaseline(
+  repoPath: string,
+  namespaceRefFullName: string,
+  selfNamespaceHex: string,
+  runGit: RunGit = defaultRunGit,
+): Promise<string | null> {
+  try {
+    // A namespace ref need not be a commit (e.g. `refs/rad/handoff` is a blob).
+    // `rev-list --objects <blob>` already judges such a ref correctly as the one
+    // object it is, so leave it to the caller's fallback rather than walking it.
+    const type = await runGit(['cat-file', '-t', namespaceRefFullName], repoPath);
+    if (type.code !== 0 || type.stdout.trim() !== 'commit') return null;
+
+    return await frontierBaseline(
+      repoPath,
+      namespaceRefFullName,
+      ['--not', `--exclude=refs/namespaces/${selfNamespaceHex}/*`, '--all'],
+      runGit,
+    );
+  } catch {
+    return null; // strict fallback
+  }
+}
+
+/**
+ * Shared frontier walk: `rev-list --boundary <target> <negatives…>` and pick the
+ * tightest boundary commit it stopped at. `negatives` names the already-exposed
+ * set (`--not --remotes`, `--not --exclude=… --all`, …).
+ */
+async function frontierBaseline(
+  repoPath: string,
+  targetRev: string,
+  negatives: readonly string[],
+  runGit: RunGit,
+): Promise<string | null> {
   const walk = await runGit(
-    ['rev-list', '--boundary', `--max-count=${MAX_FRONTIER_WALK_COMMITS}`, branchRef, '--not', '--remotes'],
+    ['rev-list', '--boundary', `--max-count=${MAX_FRONTIER_WALK_COMMITS}`, targetRev, ...negatives],
     repoPath,
   );
   if (walk.code !== 0) return null;
@@ -153,9 +222,9 @@ async function deriveRemoteFrontierBaseline(
     .filter(Boolean);
 
   if (lines.length === 0) {
-    // Nothing on this branch is unexposed — a remote already serves the whole
-    // branch. The head itself is the baseline: an empty range to judge.
-    const head = await runGit(['rev-parse', '--verify', '-q', `${branchRef}^{commit}`], repoPath);
+    // Nothing under this ref is unexposed — the already-exposed set covers it
+    // whole. The tip itself is the baseline: an empty range to judge.
+    const head = await runGit(['rev-parse', '--verify', '-q', `${targetRev}^{commit}`], repoPath);
     return head.code === 0 ? head.stdout.trim() || null : null;
   }
 
@@ -171,10 +240,10 @@ async function deriveRemoteFrontierBaseline(
   let bestDistance = Number.POSITIVE_INFINITY;
   for (const candidate of boundary.slice(0, MAX_FRONTIER_CANDIDATES)) {
     // Belt-and-braces, mirroring the fast path: never accept a non-ancestor.
-    const anc = await runGit(['merge-base', '--is-ancestor', candidate, branchRef], repoPath);
+    const anc = await runGit(['merge-base', '--is-ancestor', candidate, targetRev], repoPath);
     if (anc.code !== 0) continue;
     if (boundary.length === 1) return candidate;
-    const count = await runGit(['rev-list', '--count', `${candidate}..${branchRef}`], repoPath);
+    const count = await runGit(['rev-list', '--count', `${candidate}..${targetRev}`], repoPath);
     const distance = count.code === 0 ? Number.parseInt(count.stdout.trim(), 10) : Number.NaN;
     if (!Number.isFinite(distance)) continue;
     if (distance < bestDistance) {
