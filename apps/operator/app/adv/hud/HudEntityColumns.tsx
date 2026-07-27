@@ -13,12 +13,19 @@
  * would be a promise to keep them looking identical forever, by hand. The only
  * new CSS this tab needs is the tab strip itself and the search box.
  *
- * Cards are `<div>`s, not `<button>`s. A session card opens that session's live
- * transcript; a plan or work-item card has no equivalent destination wired yet,
- * and a button that looks activatable but does nothing is worse than a card
- * that never claimed to be. The destination is a deliberate future seam (the
- * card model already carries `id`/`ref`), the same separation
- * `UnattributedAskCard` documents in HudBoard.tsx.
+ * Cards were `<div>`s, not `<button>`s, because a plan or work-item card had no
+ * destination wired yet and "a button that looks activatable but does nothing is
+ * worse than a card that never claimed to be". That was always a deliberate
+ * future seam (the card model already carries `id`/`ref`) — and the owner asked
+ * for it on 2026-07-27, expecting the left sidebar's behaviour: clicking a row
+ * opens it in a POPUP.
+ *
+ * hud-open-destinations-and-true-counts-2026-07-27 P-002 closes the seam. A card
+ * is a `<button>` exactly when `onOpenCard` is supplied, and stays an inert
+ * `<div>` otherwise — so the reasoning above still holds for any board that has
+ * no destination. The popups themselves are `PlanPopupModal` /
+ * `WorkItemPopupModal`, mounted by HudView: the SAME components PlansPane (left
+ * sidebar) and OperatorChat already open, never a second renderer.
  */
 
 import { memo } from 'react';
@@ -44,13 +51,26 @@ const CHIP_TONE_CLASS: Record<HudBadge['tone'], string> = {
  *  less than one with four, and the model already orders them by value. */
 const MAX_CHIPS = 4;
 
-function EntityCard({ card }: { card: HudEntityCard }) {
+function EntityCard({
+  card,
+  onOpen,
+}: {
+  card: HudEntityCard;
+  onOpen?: (card: HudEntityCard) => void;
+}) {
   const chips = card.badges.slice(0, MAX_CHIPS);
   const overflow = card.badges.length - chips.length;
+  // A button ONLY when there is somewhere to go (see the file docblock). The
+  // session card's `type="button"` + className shape is mirrored exactly so the
+  // two boards keep looking identical without a parallel style set.
+  const Tag = onOpen ? 'button' : 'div';
   return (
-    <div
+    <Tag
       className={`hud__card hud__card--${card.column} hud__card--entity`}
       aria-label={`${card.ref} — ${card.title}`}
+      {...(onOpen
+        ? { type: 'button' as const, onClick: () => onOpen(card) }
+        : {})}
     >
       {/* Flex row on the inner span, never the outer element — see the
           WebKitGTK note on .hud__card in hud.css. */}
@@ -91,7 +111,7 @@ function EntityCard({ card }: { card: HudEntityCard }) {
           ) : null}
         </span>
       </span>
-    </div>
+    </Tag>
   );
 }
 
@@ -126,6 +146,14 @@ export interface HudEntityColumnsProps {
    * everything has to SAY so, or every count on it becomes untrustworthy.
    */
   notice?: string | null;
+  /**
+   * Open a card (P-002). Supplied ⇒ cards render as real buttons; omitted ⇒
+   * they stay inert `<div>`s, so a board with no destination never grows a
+   * control that does nothing. The whole card is passed (not just `id`) because
+   * the popups are harness/slug-scoped and the caller decides which popup a
+   * given board's cards belong to.
+   */
+  onOpenCard?: (card: HudEntityCard) => void;
 }
 
 export default function HudEntityColumns({
@@ -139,6 +167,7 @@ export default function HudEntityColumns({
   emptyLabel,
   noun,
   notice = null,
+  onOpenCard,
 }: HudEntityColumnsProps) {
   const visibleColumns = focusColumn
     ? board.columns.filter((c) => c.id === focusColumn)
@@ -212,7 +241,7 @@ export default function HudEntityColumns({
                 ) : (
                   <>
                     {c.cards.map((card) => (
-                      <MemoEntityCard key={card.id} card={card} />
+                      <MemoEntityCard key={card.id} card={card} onOpen={onOpenCard} />
                     ))}
                     {/* A truncated column says so. The cap is a render bound;
                         pretending the column holds 60 items when it holds 400

@@ -29,12 +29,15 @@ import { useSyncQuery } from '@papercusp/sync';
 import { useDebouncedValue } from '@/app/harness/picker-kit';
 import { parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringLiteral, useQueryState } from 'nuqs';
 import SessionChatModal from '@/app/_components/chat/SessionChatModal';
+import PlanPopupModal from '@/app/_components/plans/PlanPopupModal';
+import WorkItemPopupModal from '@/app/_components/work-items/WorkItemPopupModal';
 import { scopeInboxItems, useInboxAttention } from '@/app/_components/inbox/use-inbox-pending';
 import NewSessionLauncher from '@/app/adv/sessions/NewSessionLauncher';
 import { usePlanList } from '@/app/admin/plans/plans-api';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import HudBoard from './HudBoard';
 import HudEntityColumns from './HudEntityColumns';
+import type { HudEntityCard } from './hud-entity-board';
 import {
   ALL_FLEETS,
   ALL_PLANS,
@@ -78,6 +81,22 @@ const CLOCK_TICK_MS = 15_000;
  *  size. Matches the work-items panel's own page size rather than inventing a
  *  second number. */
 const WORK_ITEM_FETCH_LIMIT = 500;
+
+/** A work-item id (WI-/EI-/F-), anchored. The Work items board also carries
+ *  UNATTRIBUTED ASK cards folded into needs-you (`askToCard` ids them `ask:<id>`
+ *  and puts the work-item ref, when there is one, on `ref`) — so "which id does
+ *  this card open" is not simply `card.id`, and an ask with no work item behind
+ *  it opens nothing rather than pointing the popup at a ref that is really a
+ *  kind label. */
+const WORK_ITEM_ID = /^(WI|EI|F)-\d+$/i;
+
+function workItemIdForCard(card: HudEntityCard): string | null {
+  if (WORK_ITEM_ID.test(card.id)) return card.id.toUpperCase();
+  if (card.id.startsWith('ask:') && card.ref && WORK_ITEM_ID.test(card.ref)) {
+    return card.ref.toUpperCase();
+  }
+  return null;
+}
 
 /* The "all fleets" sentinel is imported from hud-board-model, not re-declared:
    HudBoard raises it and this file compares against it, and while each spelled
@@ -393,6 +412,41 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     [workItems.data, board.unattributed, nowMs, entityQuery],
   );
 
+  /* ── Card → popup (P-002) ───────────────────────────────────────────────
+     Owner ask 2026-07-27: clicking a Plans/Work-items row should open it in a
+     popup, "like it works in the plans tab in the left hand side bar". So this
+     opens the SAME two components that sidebar (PlansPane) and the chat's ref
+     pills already open — PlanPopupModal / WorkItemPopupModal — rather than a
+     third detail renderer.
+
+     Own nuqs keys (`hudplan`/`hudwi`), deliberately distinct from PlansPane's
+     `pplan` and OperatorChat's `wpop`/`wppop`: the same convention those two
+     already follow, so a popup opened from the HUD and one opened from the
+     sidebar can coexist instead of fighting over one URL key. */
+  const [openPlanSlug, setOpenPlanSlug] = useQueryState('hudplan', parseAsString);
+  const [openItemId, setOpenItemId] = useQueryState('hudwi', parseAsString);
+
+  /* PlanDetail is harness-scoped — scoping plans:get to the wrong harness is
+     the "Server: not_found" trap PlanPopupModal's own docblock names. The plan
+     row already carries its harness, so read it from the loaded list rather
+     than assuming the board's active harness. */
+  const openPlanRow = useMemo(
+    () => (planList.data?.plans ?? []).find((p) => p.slug === openPlanSlug) ?? null,
+    [planList.data, openPlanSlug],
+  );
+
+  const onOpenPlanCard = useCallback(
+    (card: HudEntityCard) => void setOpenPlanSlug(card.id),
+    [setOpenPlanSlug],
+  );
+  const onOpenItemCard = useCallback(
+    (card: HudEntityCard) => {
+      const id = workItemIdForCard(card);
+      if (id) void setOpenItemId(id);
+    },
+    [setOpenItemId],
+  );
+
   const entityView =
     tab === 'plans' ? (
       <HudEntityColumns
@@ -405,6 +459,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         error={planList.error ? String(planList.error) : null}
         emptyLabel="No plans in this workspace yet."
         noun="plans"
+        onOpenCard={onOpenPlanCard}
       />
     ) : tab === 'items' ? (
       <HudEntityColumns
@@ -432,6 +487,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
             : 'No harness is selected, so no work items could be loaded — these are asks that belong to no single harness. Pick a harness to see its work items.'
         }
         noun="work items"
+        onOpenCard={onOpenItemCard}
       />
     ) : null;
 
@@ -489,6 +545,21 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
           setPendingLaunch(null);
           void setOpenOwner(null);
         }}
+      />
+      {/* P-002: the Plans / Work items tabs' destination. Mounted here (not in
+          HudEntityColumns) for the same reason PlansPane mounts its own — the
+          popup is a pure function of props, the CALLER owns the open-id param. */}
+      <PlanPopupModal
+        planSlug={openPlanSlug}
+        harnessSlug={openPlanRow?.harnessSlug ?? harnessSlug}
+        planTitle={openPlanRow?.title ?? null}
+        onClose={() => void setOpenPlanSlug(null)}
+      />
+      <WorkItemPopupModal
+        id={openItemId}
+        harnessSlug={harnessSlug}
+        onSelect={(id) => void setOpenItemId(id)}
+        onClose={() => void setOpenItemId(null)}
       />
     </>
   );

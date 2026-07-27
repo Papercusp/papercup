@@ -164,4 +164,25 @@ describe('HudEntityColumns rendering', () => {
     );
     expect(screen.getByText(/\+3 more/)).toBeTruthy();
   });
+
+  /* hud-open-destinations-and-true-counts-2026-07-27 P-002 — the owner asked
+     for the left sidebar's behaviour: clicking a row opens it in a popup. The
+     seam was deliberately left unwired when these tabs shipped, so this is the
+     first time these cards are activatable at all. */
+  describe('card activation (P-002)', () => {
+    it('renders cards as inert divs when no destination is supplied', () => {
+      renderCols({}, { items: [item({ id: 'WI-1', state: 'open' })], asks: [] });
+      // The card label is `${ref} — ${title}`; no button should carry it.
+      expect(screen.queryByRole('button', { name: /^WI-1 — / })).toBeNull();
+    });
+
+    it('renders cards as real buttons and fires onOpenCard with the card', () => {
+      const onOpenCard = vi.fn();
+      renderCols({ onOpenCard }, { items: [item({ id: 'WI-1', state: 'open' })], asks: [] });
+      const card = screen.getByRole('button', { name: /^WI-1 — / });
+      fireEvent.click(card);
+      expect(onOpenCard).toHaveBeenCalledTimes(1);
+      expect(onOpenCard.mock.calls[0][0]).toMatchObject({ id: 'WI-1', ref: 'WI-1' });
+    });
+  });
 });
