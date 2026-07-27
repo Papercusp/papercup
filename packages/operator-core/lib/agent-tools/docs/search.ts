@@ -224,6 +224,17 @@ export default defineTool({
       finalHits = response.hits.slice(0, limit);
     }
 
+    // EI-18804433041289369: `surface` alone is easy to skim past — a caller who names their OWN
+    // harness (the natural, seemingly-correct thing to pass) gets a scoped project-docs/harness-docs
+    // corpus that does NOT include agent-insights/ or the framework reference, and a plausible-looking
+    // ranked result (even a NON-empty one — the reported incident had 37 hits, just from the wrong
+    // corpus) reads as "no such page exists" rather than "wrong corpus". Say so explicitly on every
+    // non-engineering-surface response, so a weak/absent-feeling result is legible as SCOPE, not absence.
+    const scopeNote =
+      resolved.surface === 'engineering'
+        ? undefined
+        : `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference — those live on the separate 'engineering' surface. A weak or zero-looking result here does not mean no such page exists; retry with harness:'all' before concluding that.`;
+
     const payload: Record<string, unknown> = {
       ...response,
       hits: finalHits,
@@ -231,6 +242,7 @@ export default defineTool({
       surface: resolved.surface,
       ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}),
       ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
+      ...(scopeNote ? { scopeNote } : {}),
     };
     ctxAny.metadata?.({
       ...innerMeta,

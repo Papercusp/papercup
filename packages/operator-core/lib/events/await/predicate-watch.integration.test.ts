@@ -476,9 +476,6 @@ describe('predicate watches (real PG)', () => {
 
       // ONE mutation: the candidate sha moves. Nothing material changed.
       STORE = { changeInCandidate: { judgingSha: 'ccccccc', judgingContainsPath: false } };
-      const hRow = (await pw.getPredicateWatch(headline.row.id))!;
-      // eslint-disable-next-line no-console
-      console.log('DEBUG headline row', JSON.stringify({ id: hRow.id, tool: hRow.tool, path: hRow.path, op: hRow.op, value: hRow.value, lastEval: hRow.lastEval, active: hRow.active, args: hRow.args }));
       const headlineOut = await step(headline.row.id);
       const materialOut = await step(material.row.id);
 
@@ -489,6 +486,69 @@ describe('predicate watches (real PG)', () => {
         fired: false,
       });
       expect(h.emits.map((e) => e.key)).toEqual([headline.eventKey]);
+    });
+
+    /**
+     * ⚠ REGRESSION — the STRING-OPERAND round-trip (found by this suite, fixed in
+     * `parseJsonb`).
+     *
+     * A jsonb operand is decoded by the driver before it reaches us, and re-parsing it
+     * nulled every operand that was not itself valid JSON — i.e. every sha, ref, path
+     * and id anyone would actually subscribe on. Every pre-existing test used a number
+     * or a boolean operand, which took the branch that was always correct, so the whole
+     * suite stayed green over a feature that could not fire.
+     *
+     * These cases exist because the FIX is invisible to a test that only checks firing:
+     * the operand has to be read back and compared to what was stored.
+     */
+    it('⚠ a STRING operand survives the jsonb round-trip — it must not come back null', async () => {
+      const sha = '42123c7841cd4a2ad86e5efb2beda80ca6117488';
+      const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { of: 'value', op: 'eq', value: sha });
+      expect(row.value, 'the operand was lost on write').toBe(sha);
+      expect((await pw.getPredicateWatch(row.id))!.value, 'the operand was lost on read').toBe(sha);
+    });
+
+    it('⚠ a JSON-LOOKING string operand is not silently RETYPED', async () => {
+      // "123" must stay the STRING "123" — a `eq` against a numeric sha prefix or a
+      // stringly-typed id must not start comparing as a number.
+      for (const literal of ['123', 'true', 'null', '{}']) {
+        const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { of: 'value', op: 'eq', value: literal });
+        expect(typeof (await pw.getPredicateWatch(row.id))!.value, `"${literal}" changed type`).toBe('string');
+        expect((await pw.getPredicateWatch(row.id))!.value).toBe(literal);
+      }
+    });
+
+    it('⚠ and a string operand actually FIRES — the null operand could never match', async () => {
+      const sha = 'deadbeefcafe';
+      const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { of: 'value', op: 'eq', value: sha });
+
+      STORE = { changeInCandidate: { judgingSha: 'something-else' } };
+      expect(await step(row.id)).toMatchObject({ matched: false, fired: false });
+
+      STORE = { changeInCandidate: { judgingSha: sha } };
+      expect(await step(row.id)).toMatchObject({ matched: true, fired: true });
+    });
+
+    /**
+     * ⚠ THE DANGEROUS HALF. With the operand nulled, `ne` became
+     * `!absent && !deepEq(observed, null)` — TRUE on the first poll that observed
+     * anything at all. "Wake me when the deployed sha CHANGES" fired immediately and
+     * reported a deploy that had not happened: a false ALL-CLEAR, which is worse than a
+     * missed wake because the agent proceeds on a condition never established.
+     */
+    it('⚠ `ne` against a string operand does NOT fire while the value still equals it', async () => {
+      const sha = 'deadbeefcafe';
+      const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { of: 'value', op: 'ne', value: sha });
+
+      STORE = { changeInCandidate: { judgingSha: sha } };
+      expect(
+        await step(row.id),
+        'a `ne` watch fired while the observed value still EQUALS its operand — the operand was lost',
+      ).toMatchObject({ matched: false, fired: false });
+      expect(h.emits).toHaveLength(0);
+
+      STORE = { changeInCandidate: { judgingSha: 'a-different-sha' } };
+      expect(await step(row.id)).toMatchObject({ matched: true, fired: true });
     });
 
     it('a cell whose declared path is ABSENT from the store does not fire — and does not error out', async () => {

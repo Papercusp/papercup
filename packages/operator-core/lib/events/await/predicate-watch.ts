@@ -79,6 +79,35 @@ function log(msg: string): void {
 
 /** jsonb arrives parsed OR as text depending on the postgres-js client config
  *  (the repo's known sql.json quirk) — tolerate both. */
+/**
+ * Read a `jsonb` column back into a JS value.
+ *
+ * ⚠ THE DRIVER HAS ALREADY PARSED IT — RE-PARSING IS THE BUG THIS COMMENT EXISTS TO
+ * PREVENT A RETURN OF (found by P-005's end-to-end,
+ * agent-state-plane-verification-2026-07-27).
+ *
+ * `postgres` decodes `jsonb` for us: an object arrives as an object, a number as a
+ * number, and A JSON STRING ARRIVES AS A BARE JS STRING. The previous implementation
+ * saw `typeof v === 'string'` and ran `JSON.parse` on it a second time, which is wrong
+ * in two different directions and silent in both:
+ *
+ *   • a string that is NOT valid JSON — every sha, path, ref, owner id and cell name
+ *     we actually store — threw and was swallowed into `null`;
+ *   • a string that IS valid JSON was silently RETYPED: `"123"` came back as the
+ *     number 123, `"true"` as a boolean, `"null"` as null.
+ *
+ * The operand round-trip is what made it dangerous rather than merely lossy. With
+ * `value` nulled, `comparePredicate(observed, 'eq', null)` can never match — so
+ * `state:subscribe { on:{ op:'eq', value:'<sha>' } }` never fires, forever, silently.
+ * And `'ne'` inverts it into the worse failure: `!absent && !deepEq(observed, null)` is
+ * TRUE on the very first poll that observes anything, so "wake me when the deployed sha
+ * CHANGES" fired IMMEDIATELY and told the agent a deploy had landed that had not. That
+ * is precisely the false all-clear `comparePredicate`'s own absent-evidence rule was
+ * written to refuse — reached through the OPERAND instead of through the path.
+ *
+ * It survived because every pre-existing test used a NUMBER or a BOOLEAN operand, and
+ * those take the `return v as T` branch that was always correct.
+ */
 function parseJsonb<T>(v: unknown): T | null {
   if (v == null) return null;
   if (typeof v === 'string') {

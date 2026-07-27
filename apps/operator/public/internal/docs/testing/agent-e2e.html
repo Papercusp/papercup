@@ -3211,45 +3211,66 @@ regression.</li>
 </ol>
 <div class="sl-heading-wrapper level-h2"><h2 id="15-common-gotchas">15. Common gotchas</h2><a class="sl-anchor-link" href="#15-common-gotchas"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “15. Common gotchas”</span></a></div>
 <ul>
-<li><strong>Verdict shares chromium with the human user.</strong> Long
+<li>
+<p><strong>Verdict shares chromium with the human user.</strong> Long
 click-and-wait sequences fail when the user is browsing. Run
-<code dir="auto">verdict status</code> first.</li>
-<li><strong>Sonner Toasts are lazy.</strong> <code dir="auto">[data-sonner-toaster]</code> only mounts
+<code dir="auto">verdict status</code> first.</p>
+</li>
+<li>
+<p><strong>Sonner Toasts are lazy.</strong> <code dir="auto">[data-sonner-toaster]</code> only mounts
 when at least one toast is active. The empty
 <code dir="auto">&#x3C;section aria-label="Notifications alt+T"></code> is just the
 accessibility announcer. To assert a toast appeared, query
 <code dir="auto">[data-sonner-toaster] li</code> <em>during</em> the action, not after the
-toast has timed out.</li>
-<li><strong>Add-plugin enable is slow (3–9s).</strong> No spinner. Wait for
+toast has timed out.</p>
+</li>
+<li>
+<p><strong>Add-plugin enable is slow (3–9s).</strong> No spinner. Wait for
 <code dir="auto">curl /api/plugins/enabled</code> to reflect the change; don’t time out
-early.</li>
-<li><strong><code dir="auto">/marketplace</code> URL behavior changed.</strong> It now renders the
+early.</p>
+</li>
+<li>
+<p><strong><code dir="auto">/marketplace</code> URL behavior changed.</strong> It now renders the
 Overview tab directly (4 tabs total: Overview, Templates,
-Plugins, Snapshots) — not a redirect to <code dir="auto">/templates</code>.</li>
-<li><strong>Stream parser unwrap.</strong> Oracle stream events arrive as
+Plugins, Snapshots) — not a redirect to <code dir="auto">/templates</code>.</p>
+</li>
+<li>
+<p><strong>Stream parser unwrap.</strong> Oracle stream events arrive as
 <code dir="auto">{type:"stream_event", event:{type:"content_block_delta", delta:{...}}}</code> — parsing top-level <code dir="auto">content_block_delta</code> silently
 drops every text token. (Already handled server-side; relevant
-if you’re writing a new SSE consumer.)</li>
-<li><strong>Stale Vite parse cache.</strong> If a JSX parse error references a
+if you’re writing a new SSE consumer.)</p>
+</li>
+<li>
+<p><strong>Stale Vite parse cache.</strong> If a JSX parse error references a
 line that doesn’t match the on-disk file, the cache is stale.
 <code dir="auto">rm -rf apps/operator-vite/node_modules/.vite</code> and restart. (Next.js
-is retired — there is no <code dir="auto">.next</code> cache anymore.)</li>
-<li><strong>Harness tab nav uses <code dir="auto">?panel=</code>.</strong> <code dir="auto">panel=plugin:&#x3C;id></code> selects a
-plugin-contributed tab. Test these the same way as built-in tabs.</li>
-<li><strong><code dir="auto">tauri-agent-tools screenshot --selector</code> is flaky on tiny
+is retired — there is no <code dir="auto">.next</code> cache anymore.)</p>
+</li>
+<li>
+<p><strong>Harness tab nav uses <code dir="auto">?panel=</code>.</strong> <code dir="auto">panel=plugin:&#x3C;id></code> selects a
+plugin-contributed tab. Test these the same way as built-in tabs.</p>
+</li>
+<li>
+<p><strong><code dir="auto">tauri-agent-tools screenshot --selector</code> is flaky on tiny
 elements.</strong> A short input (e.g. the operator composer at ~187×42
 px) sometimes returns a 1×1 PNG. Workaround: <code dir="auto">screenshot --title Papercusp -o full.png</code> then crop in ImageMagick using the
-rect from <code dir="auto">eval "JSON.stringify($('input').getBoundingClientRect())"</code>.</li>
-<li><strong><code dir="auto">ipc-monitor</code> is silent for the operator chat.</strong> The composer
+rect from <code dir="auto">eval "JSON.stringify($('input').getBoundingClientRect())"</code>.</p>
+</li>
+<li>
+<p><strong><code dir="auto">ipc-monitor</code> is silent for the operator chat.</strong> The composer
 sends via HTTP/SSE to <code dir="auto">/api/agent-mcp/operator-converse</code>, not via
 Tauri IPC. Use <code dir="auto">console-monitor</code>, <code dir="auto">rust-logs</code>, or
 <code dir="auto">curl /api/operator/conversations/&#x3C;id></code> to corroborate.
 <code dir="auto">ipc-monitor</code> <em>is</em> the right tool for plugin/host wiring,
-workspace switching, and shell-sidecar calls.</li>
-<li><strong>Bridge port is per-process.</strong> <code dir="auto">tauri-agent-tools probe</code> reports
+workspace switching, and shell-sidecar calls.</p>
+</li>
+<li>
+<p><strong>Bridge port is per-process.</strong> <code dir="auto">tauri-agent-tools probe</code> reports
 the live port (e.g. <code dir="auto">34875</code>); restart the dev shell and the port
-changes. Always <code dir="auto">probe</code> before scripting a sequence.</li>
-<li><strong>Radix tabs (and other pointerdown-activated Radix widgets) ignore
+changes. Always <code dir="auto">probe</code> before scripting a sequence.</p>
+</li>
+<li>
+<p><strong>Radix tabs (and other pointerdown-activated Radix widgets) ignore
 plain <code dir="auto">click</code>.</strong> A programmatic <code dir="auto">el.click()</code> (or the bridge <code dir="auto">click</code>
 verb) dispatches only a <code dir="auto">click</code> event; Radix <code dir="auto">Tabs</code> activate on
 <em>pointerdown</em>, so the tab looks clicked but selection and the nuqs
@@ -3257,8 +3278,10 @@ verb) dispatches only a <code dir="auto">click</code> event; Radix <code dir="au
 Dispatch the full sequence:
 <code dir="auto">for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window}))</code>.
 Plain anchors are fine with <code dir="auto">click</code>. (Found 2026-06-10; cost a full
-battery round of invalid tab numbers.)</li>
-<li><strong>Harness-panel tabs need a WARM single-pot context — and the PRs panel
+battery round of invalid tab numbers.)</p>
+</li>
+<li>
+<p><strong>Harness-panel tabs need a WARM single-pot context — and the PRs panel
 is NOT a standalone tab.</strong> The per-pot tabs (<code dir="auto">git</code>/<code dir="auto">insights</code>/<code dir="auto">docs</code>/
 <code dir="auto">testing</code>/<code dir="auto">brainstorm</code>/<code dir="auto">settings</code>, and the strip-hidden <code dir="auto">prs</code>) render
 <code dir="auto">AdvHarnessPanelPage</code> keyed on <code dir="auto">?slug=&#x3C;pot></code> + <code dir="auto">?scope=expanded</code> (NOT
@@ -3272,36 +3295,88 @@ panel, owner-gated auto-toggle) is auto-opened as a dock panel INSIDE the
 <strong>Git tab</strong> (<code dir="auto">AdvGitDock</code> seeds git-graph + <code dir="auto">adv:prs</code>). So to e2e the PR
 GUI, navigate to <code dir="auto">tab=git</code> (a real strip tab), not <code dir="auto">tab=prs</code>. (Found
 2026-06-20 verifying PR-3; cost ~an hour targeting the vestigial <code dir="auto">?tab=prs</code>
-route that the router never honors.)</li>
-<li><strong>Close the Web Inspector before ANY memory or perf measurement.</strong>
+route that the router never honors.)</p>
+</li>
+<li>
+<p><strong>Close the Web Inspector before ANY memory or perf measurement.</strong>
 All Tauri instances share one webview profile
 (<code dir="auto">~/.local/share/com.papercusp.desktop</code>), and it restores the
 inspector OPEN from the last session. The inspector’s record buffers
 (its Network tab logs every SSE/API frame) grew ~1.9 GB across two
 nav batteries on 2026-06-10 and looked exactly like an app leak —
 closing it dropped RSS from 2.7 GB to 819 MB instantly. Latency
-numbers were unaffected; memory numbers with it open are garbage.</li>
-<li><strong>Don’t measure under <code dir="auto">tauri dev</code> on the shared dev box — launch the
+numbers were unaffected; memory numbers with it open are garbage.</p>
+</li>
+<li>
+<p><strong>Don’t measure under <code dir="auto">tauri dev</code> on the shared dev box — launch the
 bare debug binary.</strong> <code dir="auto">tauri dev</code> watches <code dir="auto">src-tauri/**</code>, and the
 fleet edits that tree continuously: a peer’s mid-flight Rust edit
 kills and rebuilds your app mid-test (and a peer’s compile error
 leaves you appless). Launch
 <code dir="auto">./src-tauri/target/debug/papercusp-desktop</code> directly (the dev
 wrapper + bridge are compiled in) and pick the target via the
-build-switcher rail or a devUrl-restored URL.</li>
-<li><strong>Wayland trap: a bare <code dir="auto">DISPLAY=:9X</code> launch can land on the owner’s
+build-switcher rail or a devUrl-restored URL.</p>
+</li>
+<li>
+<p><strong>Wayland trap: a bare <code dir="auto">DISPLAY=:9X</code> launch can land on the owner’s
 desktop.</strong> GTK prefers Wayland when <code dir="auto">WAYLAND_DISPLAY</code> is set, so the
 isolated-Xvfb recipe silently opens the window on the live seat
 (focus-steal). Always launch with
-<code dir="auto">env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=:9X …</code>.</li>
-<li><strong><code dir="auto">screenshot</code> verb may demand sway/grim</strong> (it probes the host
+<code dir="auto">env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=:9X …</code>.</p>
+</li>
+<li>
+<p><strong><code dir="auto">screenshot</code> verb may demand sway/grim</strong> (it probes the host
 platform, not your X11 instance). Fallback that always works on an
-Xvfb display: <code dir="auto">WID=$(DISPLAY=:9X xdotool search --name Papercusp | tail -1); DISPLAY=:9X import -window $WID shot.png</code>.</li>
-<li><strong><code dir="auto">operator-converse</code> trigger enum.</strong> When poking
+Xvfb display: <code dir="auto">WID=$(DISPLAY=:9X xdotool search --name Papercusp | tail -1); DISPLAY=:9X import -window $WID shot.png</code>.</p>
+</li>
+<li>
+<p><strong><code dir="auto">operator-converse</code> trigger enum.</strong> When poking
 <code dir="auto">/api/agent-mcp/operator-converse</code> directly, <code dir="auto">trigger</code> must be one of
 <code dir="auto">user_message | quiet_wait_resume | open_canvas | user_says_ready | user_welcomed | continue</code> — anything else streams a single
-<code dir="auto">event: error</code> frame (<code dir="auto">invalid_args</code>) and closes.</li>
-<li><strong>Teardown hygiene: <code dir="auto">pkill -f &#x3C;pattern></code> self-matches your own shell,
+<code dir="auto">event: error</code> frame (<code dir="auto">invalid_args</code>) and closes.</p>
+</li>
+<li>
+<p><strong>A relaunched Tauri shell does NOT prove your server-side edit is live —
+its sidecar can be days old, and the env switcher’s chrome can lie about
+which one you’re hitting.</strong> (EI-18796530017868774, 2026-07-27; cost a full
+verify cycle.) Two compounding traps:</p>
+<ol>
+<li><strong>The sidecar isn’t per-shell and isn’t refreshed by a shell relaunch.</strong>
+<code dir="auto">tsx bin/hono-host.ts</code> sidecars sit under a bash supervisor
+(<code dir="auto">while :; do eval "$1"; done</code>) that outlives the shell that spawned
+them — this box routinely has 30+ of these processes, some <strong>8+ days
+old</strong>. <code dir="auto">tsx</code> loads modules once at process start, so an old sidecar
+serves old resolver code forever; killing and relaunching your Tauri
+shell just re-attaches to the same stale process. Relaunching is the
+obvious move and it does not help.</li>
+<li><strong>The env switcher (Ctrl+Alt+1–4) changes the page origin, not where
+<code dir="auto">/api</code> actually goes.</strong> The desktop webview proxies <code dir="auto">/api/*</code> over Tauri
+IPC to the shell’s OWN spawned sidecar regardless of which origin the
+chrome shows — switching to “staging :3170” makes the URL bar say
+127.0.0.1:3170 while <code dir="auto">fetch('/api/...')</code> from that page still answers
+from the shell’s local (possibly stale) sidecar. Verifiable: compare
+the shell’s in-page fetch result against a terminal <code dir="auto">curl</code> to the same
+URL at the same moment — a genuinely fresh sidecar matches; a stale one
+silently diverges. (Related, same underlying proxy-not-origin behavior:
+<code dir="auto">ipc-monitor</code> above, and the frozen-SPA-snapshot trap in §15.4’s
+verify-tauri-headless notes.)</li>
+</ol>
+<p><strong>The failure is silent and reads exactly like “my fix doesn’t work”</strong> — the
+natural next move is to go re-edit already-correct code. The inverse is
+worse: a stale sidecar that happens to still exhibit the OLD-but-passing
+behavior reports a real regression as green.</p>
+<p><strong>To verify a SERVER-SIDE change (a resolver, an API route, anything not
+purely rendering), don’t trust the shell — curl <code dir="auto">:3170</code> directly</strong> after
+<code dir="auto">dev:restart { target: 'staging', confirm: true }</code> (see the two-port model
+in <code dir="auto">/internal/docs/system/repo-conventions</code>). Use the Tauri shell only for
+what it actually proves: rendering and interaction. If you must confirm
+which code a given shell’s sidecar is running, fetch the same query from
+inside the page and diff it against a curl to <code dir="auto">:3170</code> — a match means that
+shell’s sidecar is current; a mismatch means it predates your edit and no
+amount of UI-level retrying will pick up the fix.</p>
+</li>
+<li>
+<p><strong>Teardown hygiene: <code dir="auto">pkill -f &#x3C;pattern></code> self-matches your own shell,
 and over-kills a shared WM.</strong> <code dir="auto">pkill -f "openbox"</code> / <code dir="auto">pgrep -f 'Xvfb :96'</code> match against <code dir="auto">/proc/&#x3C;pid>/cmdline</code> for EVERY process — including
 the very shell invoking the command, if that command’s own text
 contains the pattern (it will; you just typed it). SIGTERM’ing your own
@@ -3314,7 +3389,8 @@ openbox WM on the box, including a peer e2e agent’s. Kill by the
 a substring:
 <code dir="auto">for p in $(pgrep -x Xvfb); do tr '\0' ' ' &#x3C;/proc/$p/cmdline | grep -q ' :96 ' &#x26;&#x26; kill -TERM $p; done</code>. Never <code dir="auto">pkill -f &#x3C;pattern></code> from a
 command whose own text contains <code dir="auto">&#x3C;pattern></code>; never broad-match a
-shared WM/binary by bare name. (EI-606, 2026-06-14.)</li>
+shared WM/binary by bare name. (EI-606, 2026-06-14.)</p>
+</li>
 </ul>
 <div class="sl-heading-wrapper level-h3"><h3 id="154-xvfb--xdotool--ocr-fallback-cookbook">15.4 Xvfb / xdotool / OCR fallback cookbook</h3><a class="sl-anchor-link" href="#154-xvfb--xdotool--ocr-fallback-cookbook"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “15.4 Xvfb / xdotool / OCR fallback cookbook”</span></a></div>
 <p>The bridge covers 99% of cases. Reach for this stack only when:</p>

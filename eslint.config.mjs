@@ -133,4 +133,33 @@ export default [
       'papercusp/no-parse-boundary-falsy-default': 'warn',
     },
   },
+  {
+    // EI-18817814737628830: a same-named inner `const`/`let` re-declaration silently
+    // SHADOWS an outer validated binding — tsc passes (shadowing is legal TS), tests pass
+    // (nothing exercised the case the outer binding guarded against), and `git blame` is
+    // useless on this tree (git-sync squashes the fleet under one identity), so nothing
+    // catches it. Confirmed live: a peer's inner `const marker = inp.marker` shadowed the
+    // guarded outer `const marker = inp.marker?.trim() ? inp.marker : null` in
+    // git-pipeline-position.ts, silently disabling the whitespace-marker screen in the
+    // module whose one design constraint is "an ABSENCE must never read as a POSITIVE" —
+    // a caller-supplied all-whitespace marker would have substring-matched every line of
+    // indentation and returned a confident WRONG "your change is present" verdict.
+    // `@typescript-eslint/no-shadow` (not the base `no-shadow` — it understands TS-only
+    // declarations like enums/overloads and doesn't false-positive on them) is the
+    // reuse-first catch for this class. `warn`, not `error`, for this first landing —
+    // same conservative rollout as `no-parse-boundary-falsy-default` above: 133 existing
+    // warnings across 70/4147 files in packages/operator-core/lib on the real tree
+    // (measured 2026-07-27), not yet worth reddening the shared lint gate over. Scoped to
+    // operator-core/lib (where the instance was found) rather than repo-wide, to keep the
+    // first rollout's blast radius small; widen once the false-positive rate is confirmed
+    // low. See `tools/eslint-rules/README.md` if one is added for the rationale link.
+    files: ['packages/operator-core/lib/**/*.ts'],
+    plugins: {
+      '@typescript-eslint': tseslint.plugin,
+    },
+    rules: {
+      'no-shadow': 'off', // superseded by the TS-aware version below
+      '@typescript-eslint/no-shadow': 'warn',
+    },
+  },
 ];
