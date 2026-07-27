@@ -216,7 +216,7 @@ PAINT_ATTEMPTS="${VERIFY_LEARNING_PAINT_ATTEMPTS:-2}"
     echo "for attempt in \$(seq 1 $PAINT_ATTEMPTS); do"
     echo "  tauri-agent-tools eval --pid \"\$P\" \"location.href='$URL'; 'go'\" >/dev/null 2>&1"
     echo "  if tauri-agent-tools wait --pid \"\$P\" --eval \"$SETTLED\" --timeout $PAINT_TIMEOUT_MS >/dev/null 2>&1; then V_TIMEDOUT=false; else V_TIMEDOUT=true; fi"
-    echo "  V_RESULT=\"\$(tauri-agent-tools eval --pid \"\$P\" \"$PROBE\" 2>&1 | tr -d ' \\n\\\"')\""
+    echo "  V_RESULT=\"\$(tauri-agent-tools eval --pid \"\$P\" \"$PROBE\" 2>&1 | tr -d ' \\n\"')\""
     # A boundary trip is DEFINITIVE — retrying a crash just burns the budget.
     echo "  case \"\$V_RESULT\" in *'boundary=1'*) V_SETTLED=1 ;; esac"
     echo "  [ \"\$V_TIMEDOUT\" = false ] && V_SETTLED=1"
@@ -239,12 +239,14 @@ fi
 RAW="$(mktemp -t learning-views-raw.XXXXXX)"
 "$HARNESS" -- bash "$DRIVE" 2>&1 | tee "$RAW"
 
-# Flattened purely so a token that got wrapped by the bridge is still matchable;
-# the verdict tokens are space-free by construction, so this is belt-and-braces
-# rather than the load-bearing step it used to be.
-FLAT="$(mktemp -t learning-views-flat.XXXXXX)"
-tr -d ' \n' < "$RAW" > "$FLAT"
-
+# The verdicts are read from the RAW log, NOT from a de-newlined copy of it.
+# The previous version flattened the whole transcript because the bridge
+# pretty-prints JSON across lines — but flattening also welds each view's token
+# onto the NEXT view's markers, and a `grep -o key=[^~]* | tail -1` over that
+# soup can silently answer with a different view's field. The drive already
+# strips whitespace from the result before echoing it, so every verdict is one
+# space-free line and needs no flattening at all: matching `[^ ]*` on the raw
+# line is both simpler and cannot cross a view boundary.
 field() { # field <token-line> <key>  → the value, or empty
   printf '%s' "$1" | grep -o "$2=[^~]*" | tail -1 | sed "s/^$2=//"
 }
@@ -254,7 +256,7 @@ echo "── Learning tab: per-view render verdict ─────────�
 echo "   pot=$POT scope=$POT_SCOPE workspace=$WORKSPACE"
 FAILED=0
 for V in "${VIEWS[@]}"; do
-  LINE="$(grep -o "VERDICT~$V~[^\"]*" "$FLAT" | tail -1)"
+  LINE="$(grep -o "VERDICT~$V~[^ ]*" "$RAW" | tail -1)"
   if [ -z "$LINE" ]; then
     printf '  %-16s INCONCLUSIVE — no verdict captured\n' "$V"
     FAILED=1
@@ -264,7 +266,7 @@ for V in "${VIEWS[@]}"; do
   # the same words as one that concluded negatively (the mirror of the
   # a-check-that-never-ran-must-not-read-as-passed insight). The drive emits its
   # own timeout marker because the verdict token cannot carry it.
-  ATTEMPTS="$(grep -o "ATTEMPTS:$V:[0-9]*" "$FLAT" | tail -1 | sed "s/.*://")"
+  ATTEMPTS="$(grep -o "ATTEMPTS:$V:[0-9]*" "$RAW" | tail -1 | sed "s/.*://")"
   RETRIED=""
   [ -n "$ATTEMPTS" ] && [ "$ATTEMPTS" -gt 1 ] 2>/dev/null && RETRIED=" (recovered on attempt $ATTEMPTS)"
 
@@ -280,7 +282,7 @@ for V in "${VIEWS[@]}"; do
     printf '  %-16s CRASHED — the tab error boundary tripped\n' "$V"; FAILED=1; continue
   fi
   if [ "$PANE" != "1" ]; then
-    if grep -q "TIMEDOUT:$V:true" "$FLAT"; then
+    if grep -q "TIMEDOUT:$V:true" "$RAW"; then
       printf '  %-16s TIMED OUT after %ss x%s — never painted, never errored. NOT proof of a defect: re-drive this one view before believing it (fact: learning-view-sweep-single-view-flake).\n' \
         "$V" "$((PAINT_TIMEOUT_MS / 1000))" "${ATTEMPTS:-?}"
     else
@@ -312,12 +314,11 @@ for V in "${VIEWS[@]}"; do
 done
 echo "──────────────────────────────────────────────────────────────────────"
 if [ "$FAILED" -eq 0 ]; then
-  rm -f "$RAW" "$FLAT"
+  rm -f "$RAW"
   echo "ALL PROBED VIEWS PAINTED"
 else
   # A gate that fails and then deletes its own evidence makes the next agent
   # re-run a 2min boot to see what it already had.
-  rm -f "$FLAT"
   echo "AT LEAST ONE VIEW IS BROKEN — see above (raw drive log kept at $RAW)"
 fi
 exit "$FAILED"

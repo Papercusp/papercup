@@ -4,14 +4,25 @@
  * composition, and the recorded session shape. Filesystem writes go to a
  * throwaway launch-context dir.
  */
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
 const LC_DIR = mkdtempSync(join(tmpdir(), 'bootstrap-role-lc-'));
 process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR = LC_DIR;
+
+// WI-6154: this mkdtemp dir was never cleaned up, so every run of this suite
+// (local or CI, on this shared box) left a `bootstrap-role-lc-*` directory
+// behind forever — 1600+ accumulated in /tmp over ~6 days. Worse than the disk
+// leak: those leftover `.mcp.json` fixtures (written with this file's mocked
+// `sig=x` placeholder, never a real HMAC signature) were mistaken for evidence
+// of a LIVE gym-worker misconfiguration in WI-6154's original report. Clean up
+// so the artifacts stop accumulating and stop looking like production data.
+afterAll(() => {
+  rmSync(LC_DIR, { recursive: true, force: true });
+});
 
 const recordAdvSessionMock = vi.fn(async (_o: unknown) => 7 as number | null);
 const buildRoleLaunchSpecMock = vi.fn();

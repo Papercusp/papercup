@@ -365,7 +365,7 @@ export async function clearVanishedUnaccounted(
 ): Promise<number> {
   const sql = sqlOf(inject);
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const keep = stillPresent.length ? (stillPresent as string[]) : [' none'];
+  const keep = stillPresent.length ? (stillPresent as string[]) : ['\x00none'];
   const rows = await sql`
     UPDATE harness_shared.task_ledger
        SET state = 'stranded',

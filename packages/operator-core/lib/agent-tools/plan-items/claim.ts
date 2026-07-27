@@ -28,6 +28,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { holderContextReader, resolveHolderAdvisory } from '../coordination/holder-advisory';
+import { planItemRef } from '../../agent-goal-ref';
 import type { CellReader } from '../../cell-registry';
 import type { LivenessMode } from '../../plan-items/claims';
 
@@ -52,6 +53,7 @@ import type { LivenessMode } from '../../plan-items/claims';
  */
 async function planItemConflictAdvisory(
   result: unknown,
+  planSlug: string,
   itemId: string,
   reader: CellReader | null,
 ): Promise<{ holderContext?: unknown }> {
@@ -62,7 +64,13 @@ async function planItemConflictAdvisory(
     reader,
     // D-094: the plan item IS the subject, so the holder must never be reported
     // as also competing on the very item whose refusal is being explained.
-    subjectRef: itemId,
+    //
+    // ⚠ THE QUALIFIED REF VIA THE CANONICAL MINTER, NOT THE BARE `itemId` — the
+    // LIVE exercise caught the bare form here, where the comparison silently never
+    // matched ('P-006' vs 'some-plan-2026-07-27#P-006') and the subtraction was a
+    // no-op on every real row. `planItemRef` is the SAME function that builds the
+    // refs going INTO `competing`, so the two sides cannot drift apart.
+    subjectRef: planItemRef(planSlug, itemId),
   });
   return holderContext ? { holderContext } : {};
 }
@@ -213,7 +221,7 @@ export default defineTool({
             plan: it.plan,
             item: it.item,
             result: conv,
-            ...(await planItemConflictAdvisory(conv, it.item, reader)),
+            ...(await planItemConflictAdvisory(conv, it.plan, it.item, reader)),
           };
         }
 
@@ -235,7 +243,7 @@ export default defineTool({
           plan: it.plan,
           item: it.item,
           result,
-          ...(await planItemConflictAdvisory(result, it.item, reader)),
+          ...(await planItemConflictAdvisory(result, it.plan, it.item, reader)),
         };
       },
       { keyOf: (it) => ({ plan: it.plan, item: it.item }) },

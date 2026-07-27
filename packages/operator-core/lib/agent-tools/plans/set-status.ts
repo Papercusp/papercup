@@ -49,6 +49,10 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { holderContextReader, resolveHolderAdvisory } from '../coordination/holder-advisory';
+// ⚠ THE CANONICAL MINTER, not a `${slug}#${item}` literal. `competing` is built by
+// THIS function (agent-goal-ref.ts), so using it here is what makes the two sides
+// of D-094's subtraction structurally unable to disagree — see the call sites below.
+import { planItemRef } from '../../agent-goal-ref';
 import { softText } from '../limits';
 
 // Most-permissive (owner directive 2026-06-25): open to every role; the capability envelope is the
@@ -504,7 +508,15 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       const holderContext = await resolveHolderAdvisory({
         holder: outcome.holder?.owner,
         reader: holderContextReader(ctx as Parameters<typeof holderContextReader>[0]),
-        subjectRef: it.itemId,
+        // ⚠ THE QUALIFIED REF, NOT THE BARE ITEM ID — found by the LIVE exercise,
+        // invisible to every fixture. `competing` holds plan-item refs in
+        // `<planSlug>#<itemId>` form, so passing `it.itemId` ('P-006') compared a
+        // bare id against a qualified ref, the subtraction never fired, and the
+        // holder was reported as competing on the very item being refused: D-094's
+        // exact defect, surviving at this surface because the SUBJECT was in a
+        // different notation than the REF. A fixture cannot catch it — the author
+        // picks both sides of the comparison.
+        subjectRef: planItemRef(it.slug, it.itemId),
       });
       return {
         ok: false,
@@ -573,7 +585,8 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       const holderContext = await resolveHolderAdvisory({
         holder: conflict.owner,
         reader: holderContextReader(ctx as Parameters<typeof holderContextReader>[0]),
-        subjectRef: it.itemId,
+        // The qualified ref — same reason as the wip-claim path above.
+        subjectRef: planItemRef(it.slug, it.itemId),
       });
       return {
         ok: false,

@@ -114,6 +114,47 @@ describe('resolveHolderAdvisory', () => {
     expect(ctx?.competing).not.toContain('WI-500');
   });
 
+  /**
+   * ⚠⚠ THE DEFECT THE LIVE EXERCISE FOUND, AND THE FIFTH OF ITS KIND ON THIS PLAN.
+   *
+   * The plan-item call sites passed the BARE item id (`P-006`) while `competing`
+   * holds QUALIFIED refs (`some-plan-2026-07-27#P-006`). The comparison never
+   * matched, the subtraction was a silent no-op on every real row, and D-094's
+   * defect survived intact at that surface — a holder reported as competing on the
+   * very item whose refusal was being explained. Measured on 2 of 4 live plan-item
+   * claims: every one with a rival.
+   *
+   * ⚠ NO FIXTURE CAN CATCH THIS, which is why the assertion is written from the
+   * failure rather than the fix: a test author picks BOTH sides of the comparison
+   * and naturally makes them agree. Only real refs, minted by the real producer,
+   * disagree. The fix is to mint the subject with `planItemRef` — the SAME function
+   * that builds `competing` — so the two can never drift.
+   */
+  it('a BARE item id does not match a qualified plan-item ref (the live defect)', async () => {
+    const qualified = 'some-plan-2026-07-27#P-006';
+    const sources = sourcesFor({ 'su-holder': { itemId: 'WI-1', competing: [qualified] } });
+
+    // The BUG: a bare id subtracts nothing.
+    const bare = await resolveHolderAdvisory({
+      holder: 'su-holder',
+      reader,
+      subjectRef: 'P-006',
+      nowMs: NOW,
+      sources,
+    });
+    expect(bare?.competing).toEqual([qualified]);
+
+    // The FIX: the qualified ref subtracts, so the refusal never names itself.
+    const fixed = await resolveHolderAdvisory({
+      holder: 'su-holder',
+      reader,
+      subjectRef: qualified,
+      nowMs: NOW,
+      sources,
+    });
+    expect(fixed?.competing).toEqual([]);
+  });
+
   it('leaves competing intact when no subject is given (a lock path is not an item ref)', async () => {
     const ctx = await resolveHolderAdvisory({
       holder: 'su-holder',
