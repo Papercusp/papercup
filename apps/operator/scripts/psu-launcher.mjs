@@ -1766,6 +1766,13 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // fleet route, so every trimmed client needs the verb that executes it. This used to
   // be an OMP-only exception; that stranded Codex/Claude behind the same required gate.
   'fleet:launch-on-plan',
+  // search:fulltext joins the canonical CORE (EI-18745029375690371, 2026-07-27): it was
+  // seeded asymmetrically vs docs:search (docs:search in the spine, fulltext not) despite
+  // root CLAUDE.md recommending both for prose recall — 22 tools:invoke fallback
+  // reaches/11 distinct callers in 14d vs docs:search's 9. Mirror the canonical CORE order
+  // (right before the discovery pair). search:semantic stays OUT here too — lower
+  // demand-evidence (7 reaches/7 callers/14d), reachable via tools:find/invoke.
+  'search:fulltext',
   'tools:find', 'tools:invoke',
 ];
 
