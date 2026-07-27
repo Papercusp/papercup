@@ -87,6 +87,11 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       nextCandidateSha: null,
       nextContainsPath: null,
       missingReason: null,
+      // EI-18797292094433710 added marker containment on the same three-valued
+      // principle as the fields above: no marker was supplied by these fixtures,
+      // so null is "not measured" rather than a measured absence.
+      markerJudging: null,
+      markerNext: null,
       detail: null,
     },
     // P-006 made `sweepExposure` REQUIRED. `dirtyUncommitted` is false in this fixture, so

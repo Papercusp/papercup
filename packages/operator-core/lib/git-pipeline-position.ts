@@ -2086,6 +2086,10 @@ export async function gitPipelinePosition(
     const bySha = new Map(byShaEntries);
     // EI-18797292094433710: only paid for when the caller actually named a marker —
     // this is the hot path CLAUDE.md points agents at for "is my edit live".
+    // Bound to a local const rather than read as `inp.marker` at each use: a truthiness
+    // narrowing on a mutable property access does NOT survive into the async closure
+    // below, so `markerAtCommit`'s `string` parameter would see `string | undefined`.
+    const marker = inp.marker;
     const markerBySha = new Map<string, MarkerContainment>();
     if (marker) {
       const markerEntries = await Promise.all(

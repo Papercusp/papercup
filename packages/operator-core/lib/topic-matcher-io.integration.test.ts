@@ -97,6 +97,15 @@ beforeAll(async () => {
     DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
     DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
   `);
+  // Stub the capture fn BEFORE 149 creates its triggers on it (the real body drags
+  // the whole outbox chain in; irrelevant here). Safe as a no-op returning NULL
+  // because every trigger 149 attaches is AFTER — an AFTER trigger's return value
+  // is ignored, so this cannot swallow a row. Same precedent as
+  // dead-end-matcher-io.integration.test.ts.
+  await db.sql.unsafe(`
+    CREATE OR REPLACE FUNCTION harness_shared.capture_substrate_outbox() RETURNS trigger
+    LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
+  `);
   // EI-18808675015292160: applyMigrationsForTest AUDITS this list before applying
   // it, so a migration landing on one of these tables without being listed fails
   // naming the FILE, not a bare `column "..." does not exist`.

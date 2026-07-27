@@ -16,8 +16,8 @@ import {
   isStructuralZero,
   toolNamespace,
   DIVERGENCE_LIMIT,
-  SAMPLING_LOOKAHEAD_CALLS,
-  SAMPLING_WINDOW_MS,
+  RETRY_THRASH_THRESHOLD,
+  THRASH_WINDOW_MS,
   type DivergenceCall,
 } from './agent-state-divergence';
 

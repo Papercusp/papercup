@@ -75,6 +75,10 @@ const NO_CANDIDATE: ChangeInCandidate = {
   nextCandidateSha: null,
   nextContainsPath: null,
   missingReason: null,
+  // EI-18797292094433710: no caller-supplied marker, so there is nothing to be
+  // contained — null is "not measured", distinct from a measured absence.
+  markerJudging: null,
+  markerNext: null,
   detail: null,
 };
 

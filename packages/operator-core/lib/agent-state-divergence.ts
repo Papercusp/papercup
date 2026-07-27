@@ -61,8 +61,17 @@
  * stamp at all: they are computed from `tool_name`, `status` and the args that
  * every one of those 170,682 rows already carries. That is what keeps this
  * detector genuinely live rather than dark while the stamp is undeployed — the
- * stamped legs light up on their own the moment the deploy lands, with no code
+ * stamped leg lights up on its own the moment the deploy lands, with no code
  * change here.
+ *
+ * ⚠ But those two triggers are EVIDENCE, not findings. Taken literally — fire
+ * whenever a retry changed its args — they produce ~532 findings/day across 23
+ * agents, because retrying with CORRECTED arguments is what a healthy agent does
+ * after `invalid-input`. Requiring the run not to converge
+ * ({@link RETRY_THRASH_THRESHOLD}) cuts that to ~39/day across 11 agents while
+ * keeping every genuine flail. The numbers behind both figures are on that
+ * constant. This is the one place the item's literal wording had to yield to its
+ * stated purpose (MAST FM-2.6), and it yielded on measurement, not taste.
  */
 
 /** How an agent's actions diverged from its declaration. */
@@ -70,12 +79,15 @@ export const DIVERGENCE_KINDS = [
   /** STAMPED: one intent bucket, ≥2 distinct goal refs — declared once, worked
    *  several goals without re-declaring. */
   'goal-drift-within-intent',
-  /** UNSTAMPED SAMPLING: a call failed, then the SAME tool ran again with
-   *  different args — the action changed while the declaration did not. */
-  'retry-with-changed-args',
-  /** UNSTAMPED SAMPLING: a call failed, then a DIFFERENT verb in the SAME tool
-   *  namespace ran — a fallback within the family. */
-  'tool-fallback-after-failure',
+  /**
+   * UNSTAMPED SAMPLING: the same tool failed ≥{@link RETRY_THRASH_THRESHOLD}
+   * times for one owner inside {@link THRASH_WINDOW_MS} — the agent is not
+   * converging. P-010's named triggers (a retry with changed args, a tool/verb
+   * fallback after failure) are the TRANSITIONS inside such a run and are
+   * reported on the finding; see {@link RetryLoopEvidence} for why neither is a
+   * finding on its own.
+   */
+  'unconverged-retry-loop',
 ] as const;
 export type DivergenceKind = (typeof DIVERGENCE_KINDS)[number];
 
@@ -108,17 +120,47 @@ export function isStructuralZero(reason: DivergenceZeroReason | null): boolean {
 export const DIVERGENCE_LIMIT = 50;
 
 /**
- * How far ahead of a failure the sampling legs look for a retry/fallback, in
- * calls by the SAME owner. Small on purpose: a retry is adjacent to its failure,
- * and a wide lookahead turns "the agent moved on" into a false positive.
+ * Failures of ONE tool by ONE owner inside {@link THRASH_WINDOW_MS} before the
+ * run counts as unconverged.
+ *
+ * ⚠ THIS THRESHOLD IS MEASURED, NOT CHOSEN. Against 24h of live
+ * `tool_invocations` (2026-07-27, workspace `papercusp-workspace`):
+ *
+ *   | same owner+tool failures in a 10-min window | groups | agents |
+ *   |---|---|---|
+ *   | exactly 1 (self-corrected)                  |    456 |      — |
+ *   | exactly 2                                   |    106 |      — |
+ *   | **≥3 (this threshold)**                     | **39** | **11** |
+ *
+ * Dropping to ≥1 — i.e. firing on every retry-with-changed-args, which is how
+ * P-010's trigger reads at face value — yields ~532 findings/day across 23
+ * agents (~23 per agent per day). That is not a detector, it is a mute button:
+ * an agent that retries a call with CORRECTED arguments after `invalid-input`
+ * is self-correcting, which is the behaviour we want, not a reasoning-action
+ * mismatch. At ≥3 the rate is ~39/day across 11 agents (~3.5 per agent per
+ * day) and every group is an agent genuinely failing to converge. Worst
+ * observed run: 7.
  */
-export const SAMPLING_LOOKAHEAD_CALLS = 5;
+export const RETRY_THRASH_THRESHOLD = 3;
 
-/** And a wall-clock bound, so a lookahead cannot span a wake boundary. */
-export const SAMPLING_WINDOW_MS = 5 * 60_000;
+/** The window a thrash run must fit inside. */
+export const THRASH_WINDOW_MS = 10 * 60_000;
 
-/** Statuses that count as a failed call for the sampling legs. */
-const FAILURE_STATUSES = new Set(['error', 'invalid-input', 'timeout', 'refused', 'denied']);
+/**
+ * Statuses that count as a failed call.
+ *
+ * `role-not-allowed` is here because the live data has it (4 in 24h) and it is a
+ * genuine refusal; it was missing from the first cut of this set, which is the
+ * kind of gap only real rows expose.
+ */
+const FAILURE_STATUSES = new Set([
+  'error',
+  'invalid-input',
+  'timeout',
+  'refused',
+  'denied',
+  'role-not-allowed',
+]);
 
 export function isFailureStatus(status: string | null | undefined): boolean {
   if (!status) return false;
@@ -179,6 +221,29 @@ export interface DivergenceSide {
   goalRef: string | null;
 }
 
+/**
+ * What P-010's two named triggers actually looked like inside an unconverged
+ * run. Reported rather than each being its own finding, because measurement
+ * showed a LONE occurrence of either is healthy: 456 of 601 failure groups in
+ * 24h were a single failure the agent then fixed. The triggers say what KIND of
+ * flailing this was; the run length is what says it is flailing at all.
+ */
+export interface RetryLoopEvidence {
+  /** Failures in the run. */
+  attempts: number;
+  /** Consecutive attempts whose args differed — P-010's "retry with changed
+   *  args". High relative to `attempts` means the agent is varying inputs. */
+  argsChangedTransitions: number;
+  /** Attempts whose args were byte-identical to the previous one — retrying an
+   *  unchanged call, which cannot succeed for a deterministic refusal. */
+  identicalRetries: number;
+  /** A different verb in the same namespace ran between attempts — P-010's
+   *  "tool/verb fallback after failure". */
+  fallbackObserved: boolean;
+  /** Distinct failure statuses seen across the run. */
+  statuses: string[];
+}
+
 export interface Divergence {
   kind: DivergenceKind;
   ownerId: string;
@@ -188,6 +253,8 @@ export interface Divergence {
   detail: string;
   a: DivergenceSide;
   b: DivergenceSide;
+  /** Present only on `unconverged-retry-loop`. */
+  retryLoop?: RetryLoopEvidence;
 }
 
 export interface DivergenceCoverage {
@@ -210,13 +277,13 @@ export interface DivergenceCoverage {
    * false-positive-rate denominator, the analog of P-011's `comparedPairs`.
    */
   comparableBuckets: number;
-  /** Failed calls — the denominator for both sampling legs. */
+  /** Failed calls — the false-positive denominator for the sampling leg. */
   failuresSeen: number;
-  /** Failures whose lookahead window actually held a later call to compare. */
-  failuresSampled: number;
-  /** Did the stamped legs have anything at all to compare? */
+  /** Runs that reached {@link RETRY_THRASH_THRESHOLD} — the numerator. */
+  thrashRuns: number;
+  /** Did the stamped leg have anything at all to compare? */
   stampedLegRan: boolean;
-  /** Did the sampling legs have anything at all to compare? */
+  /** Did the sampling leg have anything at all to examine? */
   samplingLegRan: boolean;
 }
 
@@ -278,12 +345,18 @@ function ordered(calls: readonly DivergenceCall[]): DivergenceCall[] {
  * • **A goal ref going null.** `noteGoalClaimed(owner, null)` on release is a
  *   deliberate clear, so calls after a release legitimately carry no goal. Only
  *   two DISTINCT NON-NULL goals in one bucket are evidence of anything.
- * • **A failure followed by an unrelated tool.** The fallback leg requires the
- *   same NAMESPACE; without that, every failure followed by any next call is a
- *   "fallback" and the signal is noise.
- * • **A retry with IDENTICAL args.** That is a plain retry — the declaration and
- *   the action still agree. Only a CHANGED argument set is a mismatch between
- *   what was declared and what was done.
+ * • **A ONE-OFF failure the agent then fixed.** Measured: 456 of 601 same-owner
+ *   same-tool failure groups in 24h were a SINGLE failure. An agent that reads
+ *   `invalid-input` and retries with corrected arguments is self-correcting —
+ *   the behaviour we want. Firing there would produce ~23 notifications per
+ *   agent per day and the detector would simply be muted, which is exactly how
+ *   the pull reads over this table died (D-046).
+ * • **A failure followed by an unrelated tool.** The fallback evidence requires
+ *   the same NAMESPACE; without that, every failure followed by any next call
+ *   is a "fallback" and the signal is noise.
+ * • **Two failures.** Still inside normal correction (106 groups in 24h).
+ *   {@link RETRY_THRASH_THRESHOLD} is where the population stops looking like
+ *   self-correction and starts looking like flailing.
  */
 export function detectIntentActionDivergence(calls: readonly DivergenceCall[]): DivergenceReport {
   const rows = ordered(calls);
@@ -358,55 +431,87 @@ export function detectIntentActionDivergence(calls: readonly DivergenceCall[]): 
   }
 
   let failuresSeen = 0;
-  let failuresSampled = 0;
+  let thrashRuns = 0;
   for (const owned of byOwner.values()) {
-    for (let i = 0; i < owned.length; i += 1) {
-      const fail = owned[i];
-      if (!isFailureStatus(fail.status)) continue;
+    // Failures of ONE tool, in time order. Grouping by tool BEFORE running the
+    // window is what makes "the same call keeps failing" distinguishable from
+    // "this agent had a bad minute across five different tools" — only the
+    // former is a convergence failure.
+    const failuresByTool = new Map<string, DivergenceCall[]>();
+    for (const c of owned) {
+      if (!isFailureStatus(c.status)) continue;
       failuresSeen += 1;
-      const failAt = timeOf(fail);
-      const failDigest = digestArgs(fail.args);
-      const ns = toolNamespace(fail.toolName);
-      let sampled = false;
+      const b = failuresByTool.get(c.toolName);
+      if (b) b.push(c);
+      else failuresByTool.set(c.toolName, [c]);
+    }
 
-      const end = Math.min(owned.length, i + 1 + SAMPLING_LOOKAHEAD_CALLS);
-      for (let j = i + 1; j < end; j += 1) {
-        const next = owned[j];
-        if (timeOf(next) - failAt > SAMPLING_WINDOW_MS) break;
-        sampled = true;
-
-        if (next.toolName === fail.toolName) {
-          const nextDigest = digestArgs(next.args);
-          // Both digests must EXIST. A null means "args were not supplied to the
-          // detector", and calling that a change would invent signal from a gap
-          // in the input — the failure mode this whole module is guarding.
-          if (failDigest != null && nextDigest != null && failDigest !== nextDigest) {
-            push({
-              kind: 'retry-with-changed-args',
-              ownerId: fail.ownerId,
-              intentEventId: fail.intentEventId ?? null,
-              detail: `${fail.toolName} failed (${fail.status}) and was retried with DIFFERENT arguments — the action changed while the declaration did not`,
-              a: sideOf(fail),
-              b: sideOf(next),
-            });
+    for (const [toolName, failures] of failuresByTool) {
+      const ns = toolNamespace(toolName);
+      let start = 0;
+      while (start < failures.length) {
+        // Extend the run while each further failure stays inside the window
+        // measured from the run's FIRST attempt.
+        const runStartAt = timeOf(failures[start]);
+        let end = start + 1;
+        while (end < failures.length && timeOf(failures[end]) - runStartAt <= THRASH_WINDOW_MS) {
+          end += 1;
+        }
+        const run = failures.slice(start, end);
+        if (run.length >= RETRY_THRASH_THRESHOLD) {
+          thrashRuns += 1;
+          let argsChangedTransitions = 0;
+          let identicalRetries = 0;
+          for (let k = 1; k < run.length; k += 1) {
+            const prevDigest = digestArgs(run[k - 1].args);
+            const curDigest = digestArgs(run[k].args);
+            // Both digests must EXIST. A null means "args were not supplied to
+            // the detector", and calling that a change would invent signal from
+            // a gap in the input — the failure mode this module is guarding.
+            if (prevDigest == null || curDigest == null) continue;
+            if (prevDigest === curDigest) identicalRetries += 1;
+            else argsChangedTransitions += 1;
           }
-          // Either way the retry answers this failure; stop scanning it.
-          break;
-        }
 
-        if (ns !== '' && toolNamespace(next.toolName) === ns) {
+          // A same-namespace fallback anywhere between the run's first and last
+          // attempt — P-010's second named trigger.
+          const lastAt = timeOf(run[run.length - 1]);
+          const fallbackObserved =
+            ns !== '' &&
+            owned.some(
+              (c) =>
+                c.toolName !== toolName &&
+                toolNamespace(c.toolName) === ns &&
+                timeOf(c) >= runStartAt &&
+                timeOf(c) <= lastAt,
+            );
+
+          const statuses = [
+            ...new Set(run.map((c) => (c.status ?? '').trim().toLowerCase()).filter((s) => s !== '')),
+          ].sort();
+
           push({
-            kind: 'tool-fallback-after-failure',
-            ownerId: fail.ownerId,
-            intentEventId: fail.intentEventId ?? null,
-            detail: `${fail.toolName} failed (${fail.status}) and was followed by ${next.toolName} in the same '${ns}' namespace — a verb fallback`,
-            a: sideOf(fail),
-            b: sideOf(next),
+            kind: 'unconverged-retry-loop',
+            ownerId: run[0].ownerId,
+            intentEventId: run[0].intentEventId ?? null,
+            detail:
+              `${toolName} failed ${run.length}× within ` +
+              `${Math.round(THRASH_WINDOW_MS / 60_000)}min (${statuses.join(', ')}) without converging` +
+              (fallbackObserved ? `, with a fallback to another '${ns}' verb in between` : '') +
+              (identicalRetries > 0 ? `; ${identicalRetries} retr${identicalRetries === 1 ? 'y' : 'ies'} re-sent IDENTICAL args` : ''),
+            a: sideOf(run[0]),
+            b: sideOf(run[run.length - 1]),
+            retryLoop: {
+              attempts: run.length,
+              argsChangedTransitions,
+              identicalRetries,
+              fallbackObserved,
+              statuses,
+            },
           });
-          break;
         }
+        start = end;
       }
-      if (sampled) failuresSampled += 1;
     }
   }
 
@@ -419,9 +524,12 @@ export function detectIntentActionDivergence(calls: readonly DivergenceCall[]): 
     intentBuckets: buckets.size,
     comparableBuckets,
     failuresSeen,
-    failuresSampled,
+    thrashRuns,
     stampedLegRan: comparableBuckets > 0,
-    samplingLegRan: failuresSampled > 0,
+    // The leg RAN if it had failures to examine — not if it found something.
+    // Same distinction as `comparableBuckets`: an agent whose every failure
+    // self-corrected was genuinely examined and genuinely came back clean.
+    samplingLegRan: failuresSeen > 0,
   };
 
   return {
@@ -471,8 +579,6 @@ export function explainZero(reason: DivergenceZeroReason): string {
 export function deliverableKinds(coverage: DivergenceCoverage): DivergenceKind[] {
   const out: DivergenceKind[] = [];
   if (coverage.stampedLegRan) out.push('goal-drift-within-intent');
-  if (coverage.samplingLegRan) {
-    out.push('retry-with-changed-args', 'tool-fallback-after-failure');
-  }
+  if (coverage.samplingLegRan) out.push('unconverged-retry-loop');
   return out;
 }
