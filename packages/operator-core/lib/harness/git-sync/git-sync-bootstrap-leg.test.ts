@@ -365,6 +365,54 @@ describe('runBootstrapLeg', () => {
     expect((opts as Record<string, unknown>).selfDevicePubkey).toBe('c2VsZi1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISEhISE=');
   });
 
+  /* WI-6284 recurrence guards. The bootstrap leg logged every FAILURE and every
+   * PARTIAL, and said nothing at all on success — so the single event this whole
+   * feature exists to produce was its only silent outcome. Live cost, 2026-07-27:
+   * a deliberate cold-join drill on the P-302 rig succeeded (2 namespaces in 2
+   * rungs, history complete) and emitted no line, so the drill was checkpointed
+   * as "may never have run" and the verdict had to be re-derived from routine
+   * metadata a wake later. These two tests assert the CLASS: every terminal
+   * outcome of this leg both logs and stamps which path produced it. */
+  it('WI-6284: a SUCCESSFUL dialed cold join LOGS the completion (success was the only silent outcome)', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+      openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false));
+      bootstrapFromPeerMock.mockImplementation(bootstrapOutcome({
+        ok: true,
+        namespaces: ['ns-a', 'ns-b'],
+        skippedExisting: [],
+        skippedSelf: null,
+        stderr: '',
+        steps: 2,
+        shallow: false,
+      } as BootstrapOutcome));
+      await runBootstrapLeg(SLUG, WS);
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('COLD JOIN COMPLETE'));
+      // The counts must be IN the line — a bare "it worked" would not have
+      // settled the rig question either.
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('seeded 2 namespace(s) in 2 rung(s)'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('history complete'));
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('WI-6284: the bootstrap metadata record NAMES the path that produced it (dialed vs no-topic stub)', async () => {
+    // Dialed: a real peer duplex.
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false));
+    await runBootstrapLeg(SLUG, WS);
+    expect(JSON.parse((unsafeMock.mock.calls[0][1] as unknown[])[1] as string).bootstrap).toMatchObject({ path:'dialed' });
+
+    // No live swarm topic: the destroyed-stub no-op. Previously indistinguishable
+    // from the above except by which optional keys happened to be present.
+    unsafeMock.mockClear();
+    getBootedHarnessMock.mockReturnValue(null);
+    await runBootstrapLeg(SLUG, WS);
+    expect(JSON.parse((unsafeMock.mock.calls[0][1] as unknown[])[1] as string).bootstrap).toMatchObject({ path:'no-topic-stub' });
+  });
+
   it('patches routine metadata under the bootstrap key with the outcome summary', async () => {
     await runBootstrapLeg(SLUG, WS);
     expect(unsafeMock).toHaveBeenCalledTimes(1);

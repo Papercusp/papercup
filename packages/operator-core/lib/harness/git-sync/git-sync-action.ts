@@ -1736,6 +1736,13 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       await patchRoutineMetadata(slug, {
         bootstrap: {
           at: Date.now(),
+          // WI-6284: say WHICH path produced this record. Until this existed, the
+          // only way to tell a real dial from this destroyed-stub no-op was to
+          // notice that the dial writer below emits `phase`/`rungs`/`shallow` and
+          // this one does not — an accidental discriminator that one added key
+          // here would have silently erased, on the exact record a release
+          // reviewer uses to decide whether the live cold join ever ran.
+          path: 'no-topic-stub',
           ok: outcome.ok,
           namespaceCount: outcome.namespaces.length,
           skippedExisting: outcome.skippedExisting.length,
@@ -1831,6 +1838,9 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     await patchRoutineMetadata(slug, {
       bootstrap: {
         at: Date.now(),
+        // WI-6284: see the stub writer above — this record must SAY it came from
+        // a real dial rather than leaving a reader to infer it from key presence.
+        path: 'dialed',
         ok: outcome?.ok ?? false,
         namespaceCount: outcome?.namespaces.length ?? 0,
         skippedExisting: outcome?.skippedExisting.length ?? 0,
@@ -1865,6 +1875,23 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     } else if (!outcome.ok) {
       console.warn(
         `[git-sync] ${slug}: bootstrap-tick reported errors (dialed: ${dialLog.join(', ')}): ${outcome.stderr.trim().slice(0, 500)}`,
+      );
+    } else {
+      // WI-6284: the COMPLETED cold join — the one event this whole feature
+      // exists to produce, and until now the ONLY outcome of this leg with no
+      // log branch at all (every failure and every partial had one). That
+      // asymmetry is not cosmetic: on 2026-07-27 a deliberate cold-join drill on
+      // the P-302 rig SUCCEEDED here — 2 namespaces seeded in 2 rungs, history
+      // complete — and emitted nothing, so the drill was checkpointed as
+      // "may never have run" and the answer had to be re-derived from
+      // `harness_shared.routines.metadata->'bootstrap'` on a later wake. A
+      // release whose open question is "does the live cold join work" cannot
+      // have success be the silent case.
+      console.log(
+        `[git-sync] ${slug}: bootstrap-tick COLD JOIN COMPLETE (dialed: ${dialLog.join(', ')}): ` +
+          `seeded ${outcome.namespaces.length} namespace(s) in ${outcome.steps ?? 0} rung(s)` +
+          `${outcome.skippedExisting.length > 0 ? `, ${outcome.skippedExisting.length} already present` : ''}` +
+          `${outcome.shallow ? ' — still shallow' : ' — history complete'}`,
       );
     }
   } catch (e) {

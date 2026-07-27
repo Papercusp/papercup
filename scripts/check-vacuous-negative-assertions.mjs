@@ -66,6 +66,20 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const TEST_RE = /\.(test|spec)\.[cm]?[jt]sx?$/;
+
+/**
+ * PROSE IS NOT AN EMITTER, so it is not corpus. A doc or a prompt that *describes* a
+ * banner cannot produce it, and counting it as evidence is exactly what hid the
+ * motivating instance: `⚠ quiet-cut EXCLUDED` survives today ONLY in
+ * `blueprints/base/prompts/release-fixer.md`, which still tells release-fixer agents to
+ * look for a warning `checkpoint-run.ts` stopped emitting. Judging against prose scored
+ * that string "still exists" and the dead assertion passed the lint too — while the
+ * stale prompt (a second, live defect) stayed invisible.
+ *
+ * This is cheap: measured over the whole repo, dropping prose from the corpus changes
+ * exactly ONE assertion's verdict.
+ */
+const PROSE_RE = /\.(md|mdx|txt|rst|adoc)$/i;
 const BINARY_RE =
   /\.(png|jpe?g|gif|ico|svgz|webp|avif|woff2?|ttf|otf|eot|pdf|zip|gz|tgz|bz2|xz|7z|bin|wasm|so|dylib|dll|node|exe|mp[34]|mov|webm|wav|ogg|class|jar|pyc|db|sqlite|snap|lock)$/i;
 
@@ -75,7 +89,15 @@ const BINARY_RE =
  * so leaving it in would make almost any prose literal "present" and silently gut this
  * lint — the couldn't-measure-reads-as-a-pass failure, aimed at itself.
  */
+const SELF = 'scripts/check-vacuous-negative-assertions.mjs';
+
 const isExcluded = (p) =>
+  // THIS FILE quotes the banner from the motivating instance verbatim, and it is a .mjs,
+  // so leaving it in the corpus makes that string "exist in the source" and renders the
+  // one assertion this lint was written to catch undetectable. A checker that cites its
+  // own example poisons its own evidence — caught only by replaying the real pre-fix
+  // commit through the judge and getting zero findings.
+  p === SELF ||
   /(^|\/)(node_modules|dist|dist-host|build|_retired|sidecar|env-sidecars|coverage|\.next|target)\//.test(p) ||
   /\.materialized\//.test(p) ||
   /(^|\/)(package-lock\.json|Cargo\.lock)$/.test(p) ||
@@ -315,7 +337,9 @@ const MIN_EXPECTED_TESTS = 500;
 function main(argv) {
   const report = argv.includes('--report');
   const list = trackedFiles();
-  const corpusFiles = list.filter((p) => !TEST_RE.test(p) && !BINARY_RE.test(p) && !isExcluded(p));
+  const corpusFiles = list.filter(
+    (p) => !TEST_RE.test(p) && !BINARY_RE.test(p) && !PROSE_RE.test(p) && !isExcluded(p),
+  );
   const testFiles = list.filter((p) => TEST_RE.test(p) && !isExcluded(p) && !ALLOW.has(p));
 
   if (corpusFiles.length < MIN_EXPECTED_CORPUS || testFiles.length < MIN_EXPECTED_TESTS) {
