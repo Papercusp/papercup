@@ -299,12 +299,30 @@ function startRequestServers(): void {
   // for the retry wrapper.
   const server: ReturnType<typeof createAdaptorServer> = createAdaptorServer({ fetch: handler });
   const httpServer = server as unknown as import('node:http').Server;
+  // onFatal reproduces the pre-existing behavior exactly: the process-level
+  // `uncaughtException` handler above used to be what logged-and-exited on an
+  // unrecoverable listen() error (Node re-raising an unhandled 'error' event as
+  // an uncaught exception). Retries are exhausted (or the error isn't
+  // EADDRINUSE) by the time this fires, so the same message + exit code apply.
+  const onListenFatal = (err: NodeJS.ErrnoException): void => {
+    console.error('[hono-host] fatal uncaughtException — exiting:', err);
+    process.exit(1);
+  };
+  const listenOpts = {
+    port,
+    host: hostname,
+    maxAttempts: LISTEN_RETRY_MAX_ATTEMPTS,
+    retryDelayMs: LISTEN_RETRY_DELAY_MS,
+    onFatal: onListenFatal,
+  };
   if (cluster.isWorker) {
-    listenWithEaddrinuseRetry(httpServer, { port, host: hostname, reusePort: true }, () =>
-      onListening(port),
-    );
+    listenWithEaddrinuseRetry(httpServer, {
+      ...listenOpts,
+      reusePort: true,
+      onListening: () => onListening(port),
+    });
   } else {
-    listenWithEaddrinuseRetry(httpServer, { port, host: hostname }, () => onListening(port));
+    listenWithEaddrinuseRetry(httpServer, { ...listenOpts, onListening: () => onListening(port) });
   }
 
   // B2 (infra-fail-fast-build-integrity P-006) — the "safe half": explicit inbound

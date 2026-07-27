@@ -159,10 +159,35 @@ export async function resolveDeclaredAssumptions(args: {
   const resolvedAt = new Date().toISOString();
   if (args.declared === NO_ASSUMPTIONS) return { declared: NO_ASSUMPTIONS, resolvedAt };
 
+  // EI-18806393166489384: derive the harness scope from the work-item when the
+  // caller did not name it, so a fact asserted at `scope:'harness'` for THIS
+  // item's own harness resolves without the caller having to repeat the harness
+  // it is already closing an item in.
+  //
+  // Why here and not at the call sites: `assumptionSelectorsFor`'s `push` helper
+  // silently no-ops on an empty ref, so an undefined harness does not fail — the
+  // selector VANISHES, and the refusal then truthfully lists the scopes it
+  // searched with harness simply absent. That reads as a missing feature rather
+  // than a dropped argument, which is why this was filed three times and
+  // mis-diagnosed as "the resolver doesn't search harness scope" each time.
+  // `complete.ts` happens to have the row in hand already, but `set_state.ts`
+  // does not, and a fourth caller would have to remember — fixing only the known
+  // call sites leaves the trap armed.
+  let harnessSlug = args.harnessSlug ?? null;
+  if (!harnessSlug) {
+    // Fail OPEN, per this file's standing discipline: the derive is a
+    // convenience, so a ledger/PG blip must never become the reason a close is
+    // refused. Falling back to "no harness selector" is exactly the old
+    // behaviour, so the worst case here is what callers already had.
+    harnessSlug = await getWorkItem(args.workItemId)
+      .then((wi) => wi?.harness ?? null)
+      .catch(() => null);
+  }
+
   const selectors = assumptionSelectorsFor({
     workItemId: args.workItemId,
     ownerId: args.ownerId,
-    harnessSlug: args.harnessSlug,
+    harnessSlug,
   });
   // Only a GENUINE absence refuses. `resolveAssumptions` fails open to
   // `unresolved` when the ledger could not be read, so a PG blip never turns into

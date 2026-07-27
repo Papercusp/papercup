@@ -41,6 +41,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { fleetSlugFromName, getFleetScheme } from '../../agent-fleets-store';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import type { ColorScheme } from '../../console-color-schemes';
 
 /** Opening more than this many desktop windows in one call is almost certainly a
@@ -53,12 +54,9 @@ const MAX_TERMINALS = 12;
  * API-callback env. `PAPERCUSP_OPERATOR_URL` is commonly set to the full
  * `…/api/mcp` endpoint, so strip that suffix back to the bare origin.
  */
-function resolveOperatorBaseUrl(): string {
-  const fromEnv = process.env.PAPERCUSP_OPERATOR_URL?.trim();
-  if (fromEnv) return fromEnv.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
-  const port = process.env.PAPERCUSP_HONO_PORT?.trim() || '3070';
-  return `http://localhost:${port}`;
-}
+// WI-6154: this-host identity (PAPERCUSP_HONO_PORT) must win over an inherited
+// PAPERCUSP_OPERATOR_URL — see resolveSpawnHostOperatorBaseUrl's doc for why.
+const resolveOperatorBaseUrl = resolveSpawnHostOperatorBaseUrl;
 
 const terminalSpec = z.object({
   command: z

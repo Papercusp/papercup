@@ -267,7 +267,7 @@ export async function attachHolderContext<T extends HolderLensRow>(
     const ctx = byOwner.get(owner);
     // Null ⇒ nothing disclosable to THIS reader: no goal, or a goal they may not
     // read. The field is simply absent, identically in both cases.
-    if (ctx) row.holder = ctx;
+    if (ctx) row.holder = forRow(ctx, row.id);
   }
   return out;
 }

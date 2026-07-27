@@ -41,6 +41,7 @@ import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { fleetSlugFromName, getFleetScheme } from '../../agent-fleets-store';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import {
   buildAgentLaunchCommand,
   claimAgentLaunch,
@@ -70,12 +71,9 @@ function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
 }
 
-function resolveOperatorBaseUrl(): string {
-  const fromEnv = process.env.PAPERCUSP_OPERATOR_URL?.trim();
-  if (fromEnv) return fromEnv.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
-  const port = process.env.PAPERCUSP_HONO_PORT?.trim() || '3070';
-  return `http://localhost:${port}`;
-}
+// WI-6154: this-host identity (PAPERCUSP_HONO_PORT) must win over an inherited
+// PAPERCUSP_OPERATOR_URL — see resolveSpawnHostOperatorBaseUrl's doc for why.
+const resolveOperatorBaseUrl = resolveSpawnHostOperatorBaseUrl;
 
 export default defineTool({
   name: 'capability:launch-agent',

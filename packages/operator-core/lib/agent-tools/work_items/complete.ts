@@ -500,7 +500,11 @@ async function completeOne(
       declared: it.assumptions,
       workItemId: it.id,
       ownerId: ident.ownerId,
-      harnessSlug: it.harness,
+      // EI-18806393166489384: `it.harness` is the caller's OPTIONAL arg, so a
+      // close that did not redundantly name the harness resolved no harness
+      // scope at all. The resolver now derives it when absent, but pass the row
+      // we already fetched above so the common path costs no extra read.
+      harnessSlug: it.harness ?? existing.harness,
     });
   } catch (e) {
     assumptionsError = e instanceof Error ? e.message : String(e);

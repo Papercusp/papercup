@@ -284,7 +284,39 @@ def _os_scheduler_deny_reason(cmd):
     )
 
 
-if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' and re.search(
+# EI-18815668439722436 / WI-6147: this guard used to gate ONLY on
+# PAPERCUSP_AGENT_SESSION=='1', with no backstop — unlike the two sibling
+# guards in this same file (the destructive shared-tree git guard + the heavy-
+# command admission control), which were hardened after EI-7872 established
+# that the marker is silently ABSENT in some fleet-launched sessions (e.g. a
+# `fleet:launch-on-plan` member whose spawn path never set it), leaving the
+# ENTIRE guard inert — fail-OPEN — for exactly the sessions it must protect.
+#
+# The sibling guards' backstop (`_cmd_in_canonical_tree()`) does NOT fit here:
+# it is cwd-scoped, but crontab/at/batch/systemd-run are not tied to a working
+# directory at all — an agent session can run `crontab -e` from anywhere, so a
+# cwd-keyed backstop would still miss it. This guard needs its own
+# correctly-scoped secondary signal instead.
+#
+# PAPERCUSP_FLEET_SLUG is that signal: it is stamped into a fleet member's
+# process env SERVER-SIDE (bootstrap-su.ts / operator-spawn.ts), independent
+# of whichever client-side code path is responsible for (and can fail to set)
+# PAPERCUSP_AGENT_SESSION — so a session that ends up fleet-slugged but
+# marker-less is still caught. It never fires for the owner's own plain
+# interactive terminal (D-003): that session is never launched with
+# `--fleet=<slug>` and so never carries a fleet slug at all. (An owner who
+# DOES deliberately launch into an existing fleet with `--fleet=<slug>`
+# already inherits AUTO mode by default at launch — the platform already
+# treats a fleet-slugged session as an automated/coordinated context, not a
+# raw personal terminal, so gating on it here is consistent, not a new
+# category of over-block.)
+def _is_agent_or_fleet_session():
+    if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1':
+        return True
+    return bool((os.environ.get('PAPERCUSP_FLEET_SLUG') or '').strip())
+
+
+if _is_agent_or_fleet_session() and re.search(
         r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|batch|systemd-run)\b'
         r'|(?:^|[;&|\n]\s*|\bsudo\s+)at\s+(?:now|midnight|noon|teatime|\+?\d)',
         _strip_shell_quotes(command)):

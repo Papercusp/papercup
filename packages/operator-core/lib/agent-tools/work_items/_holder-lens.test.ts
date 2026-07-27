@@ -174,6 +174,50 @@ describe('D-056 — visibility never leaks through the shape of the list', () =>
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('D-093 — a divergent holder is disclosed on the row', () => {
+  /**
+   * ⚠ THE DEFECT THE LIVE EXERCISE FOUND, AND NO FIXTURE WOULD HAVE.
+   *
+   * `competing` is a HOLDER-level fact. Projected onto a row it becomes a
+   * ROW-level claim, and for a multi-item holder the raw list names the very row
+   * the reader is looking at as a rival to itself: on `WI-6410`, with the goal
+   * resolved to `EI-1881…`, it read "…and they are also competing on WI-6410".
+   * Measured live 2026-07-27: 3 of 18 decorated rows — every multi-item holder,
+   * i.e. exactly the population the field exists to serve.
+   */
+  it('never names the row itself among its own competing claims', async () => {
+    const rows = await attachHolderContext(
+      [row('WI-6410', 'su-a', 'open'), row('EI-1881', 'su-a', 'open')],
+      reader,
+      {
+        sources: sourcesFor({
+          'su-a': {
+            itemId: 'EI-1881',
+            agreement: 'divergent',
+            competing: ['WI-6410', 'some-plan#P-007'],
+          },
+        }),
+        nowMs: NOW,
+      },
+    );
+    // On WI-6410 the row's own ref is dropped; the genuine rival survives.
+    expect(rows[0].holder?.competing).toEqual(['some-plan#P-007']);
+    // …and the real signal is intact: the goal is NOT this row.
+    expect(rows[0].holder?.goalRef).toBe('EI-1881');
+
+    // On the goal's OWN row, WI-6410 is a genuine competing claim and stays.
+    expect(rows[1].holder?.competing).toEqual(['WI-6410', 'some-plan#P-007']);
+  });
+
+  it('leaves competing untouched when the row is not among them', async () => {
+    const rows = await attachHolderContext([row('WI-1', 'su-a', 'open')], reader, {
+      sources: sourcesFor({
+        'su-a': { itemId: 'WI-1', agreement: 'divergent', competing: ['some-plan#P-402'] },
+      }),
+      nowMs: NOW,
+    });
+    expect(rows[0].holder?.competing).toEqual(['some-plan#P-402']);
+  });
+
   it('renders agreement and competing, not just goalRef', async () => {
     const rows = await attachHolderContext([row('WI-1', 'su-a', 'open')], reader, {
       sources: sourcesFor({
