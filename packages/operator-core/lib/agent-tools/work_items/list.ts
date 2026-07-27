@@ -18,7 +18,8 @@ import {
   type CompletionAuthorityFilter,
 } from "../../completion-audit";
 import { cachedRead, type CachedReadCtx } from "../../cache";
-import { attachHolderContext, holderLensReader, HOLDER_CONTEXT_SCHEMA } from "./_holder-lens";
+import { attachHolderContext } from "./_holder-lens";
+import { holderContextReader, HOLDER_CONTEXT_SCHEMA } from "../coordination/holder-advisory";
 
 /**
  * SWR backstop for work_items:list (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -377,10 +378,10 @@ export default defineTool({
     // context inside the factory would store one reader's answer and serve it to
     // every other reader. Total + fail-soft: on any failure the rows are returned
     // exactly as the cache produced them.
-    // `holderLensReader` returns null rather than throwing for a caller this tool
+    // `holderContextReader` returns null rather than throwing for a caller this tool
     // cannot attribute (`requirePrincipal: false` makes such a caller legitimate),
     // so the enrichment can never fail the read it decorates.
-    const reader = holderLensReader(ctx as Parameters<typeof holderLensReader>[0]);
+    const reader = holderContextReader(ctx as Parameters<typeof holderContextReader>[0]);
     const withHolders = await attachHolderContext(items, reader).catch(() => items);
     return { data: withHolders };
   },

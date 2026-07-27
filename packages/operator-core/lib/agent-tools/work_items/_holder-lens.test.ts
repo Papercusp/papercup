@@ -1,16 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  attachHolderContext,
-  rowHasLiveHolder,
-  holderLensReader,
-  HOLDER_CONTEXT_SCHEMA,
-  HOLDER_LENS_DISTINCT_CAP,
-} from './_holder-lens';
-import {
-  projectHolderContext,
-  type HolderContextSources,
-  type HolderGoalRecord,
-} from '../../coord/holder-context';
+import { attachHolderContext, rowHasLiveHolder } from './_holder-lens';
+import { holderContextReader, HOLDER_ADVISORY_DISTINCT_CAP } from '../coordination/holder-advisory';
+import { type HolderContextSources, type HolderGoalRecord } from '../../coord/holder-context';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from '../../cell-registry';
 import { AGENT_GOAL_CELL } from '../../cell-registrations';
 
@@ -231,35 +222,12 @@ describe('D-093 — a divergent holder is disclosed on the row', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// The wire schema cannot drift behind the projection
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe('HOLDER_CONTEXT_SCHEMA tracks the projection', () => {
-  /**
-   * ⚠ THE FAILURE THIS PREVENTS IS SILENT. A tool's zod `result` STRIPS undeclared
-   * keys, so a schema lagging the projection does not error — it deletes the new
-   * field from every response. D-093 adding two fields is exactly such a moment,
-   * and without this the amendment could have shipped invisible on
-   * `work_items:list` while every other test stayed green.
-   */
-  it('declares exactly the projection\'s key set', () => {
-    const ctx = projectHolderContext({ itemId: 'WI-1', acquiredTs: null }, ['k'], NOW);
-    expect(ctx).not.toBeNull();
-    expect(Object.keys(HOLDER_CONTEXT_SCHEMA.shape).sort()).toEqual(
-      Object.keys(ctx as object).sort(),
-    );
-  });
-
-  it('accepts a real projection unchanged', () => {
-    const ctx = projectHolderContext(
-      { itemId: 'WI-1', intent: 'do the thing', acquiredTs: null, agreement: 'sole', competing: [] },
-      ['k'],
-      NOW,
-    );
-    expect(HOLDER_CONTEXT_SCHEMA.parse(ctx)).toEqual(ctx);
-  });
-});
+// ⚠ `HOLDER_CONTEXT_SCHEMA tracks the projection` MOVED to
+// `../coordination/holder-advisory.test.ts` (P-027), following the schema itself
+// out of this work-item-private module. It is the load-bearing guard on the wire
+// shape — a zod `result` strips undeclared keys, so a schema lagging the
+// projection deletes fields from every response silently — and it belongs beside
+// the declaration it guards, not beside one of the six tools that import it.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bounds + totality
@@ -298,7 +266,7 @@ describe('the fan-out is bounded and the read cannot fail', () => {
   it('the default cap is above the measured live holder population', () => {
     // Measured 2026-07-27: 17 distinct holders across the WHOLE work_items table.
     // The cap exists for a fleet an order of magnitude larger, not for today's.
-    expect(HOLDER_LENS_DISTINCT_CAP).toBeGreaterThan(17);
+    expect(HOLDER_ADVISORY_DISTINCT_CAP).toBeGreaterThan(17);
   });
 
   /**
@@ -356,11 +324,11 @@ describe('the fan-out is bounded and the read cannot fail', () => {
    * `work_items:get` suite, which is why the guarded seam is a named export
    * instead of two inline calls.
    */
-  it('holderLensReader returns null for an unattributable ctx instead of throwing', () => {
-    expect(() => holderLensReader({} as never)).not.toThrow();
-    expect(holderLensReader({} as never)).toBeNull();
+  it('holderContextReader returns null for an unattributable ctx instead of throwing', () => {
+    expect(() => holderContextReader({} as never)).not.toThrow();
+    expect(holderContextReader({} as never)).toBeNull();
     // …and a null reader is simply a no-op for the read, never a failure.
-    expect(holderLensReader({ role: 'su' } as never)).toBeNull();
+    expect(holderContextReader({ role: 'su' } as never)).toBeNull();
   });
 
   it('a null reader leaves every row intact', async () => {

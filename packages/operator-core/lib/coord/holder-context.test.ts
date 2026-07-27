@@ -584,13 +584,17 @@ const CONSTRUCTS_SHAPE = (raw: string): boolean => {
 const SHAPE_ALLOWLIST: Record<string, string> = {
   'packages/operator-core/lib/coord/holder-context.ts':
     'defines the projection — the one derivation every consumer reads',
-  'packages/operator-core/lib/agent-tools/work_items/_holder-lens.ts':
-    'P-030: declares the ONE wire schema (HOLDER_CONTEXT_SCHEMA) every holder-bearing tool ' +
+  'packages/operator-core/lib/agent-tools/coordination/holder-advisory.ts':
+    'P-027: declares the ONE wire schema (HOLDER_CONTEXT_SCHEMA) every holder-bearing tool ' +
     'imports, and constructs no context — it calls resolveHolderContext. The schema is a ' +
-    'genuine second statement of the shape, so _holder-lens.test.ts asserts its key set ' +
+    'genuine second statement of the shape, so holder-advisory.test.ts asserts its key set ' +
     'EQUALS the projection\'s: drift deletes fields from the wire silently (zod strips ' +
     'undeclared keys), and that assertion is the reason one schema module beats a literal ' +
-    'inlined at each tool',
+    'inlined at each tool. ⚠ THE ENTRY MOVED HERE FROM work_items/_holder-lens.ts — P-030 ' +
+    'declared the schema inside a private WORK-ITEM module, and P-027 renders the same ' +
+    'projection at four more surfaces (locks:queue, plan_items:claim, …) which cannot import ' +
+    'a work_items-private file to describe their own results. The allowlist follows the ' +
+    'schema; it does not grant a directory standing permission to restate the shape',
 };
 
 describe('LEG A — only the resolver constructs a HolderContext', () => {

@@ -320,23 +320,32 @@ PORT_SLOT=$(( (DISPLAY_NUM - 90) % 60 ))
 PORT_BASE=$(( 33700 + PORT_SLOT * 10 ))
 [ "$PORT_BASE" -ge 33700 ] || PORT_BASE=33700   # a caller-forced low DISPLAY_NUM must not underflow into real ports
 PORT_LOCK_DIR="${VERIFY_TAURI_PORT_LOCK_DIR:-${TMPDIR:-/tmp}/papercusp-tauri-port-locks}"
-PORT_LOCK_ATTEMPTS=0
-while :; do
-  DEV_PORT="$(fed_pick_free_port "$PORT_BASE")"
-  PTY_PORT="$(fed_pick_free_port $((DEV_PORT + 4)))"
-  if [ "$DEV_PORT" != "$PTY_PORT" ] \
-    && fed_acquire_port_lock "$DEV_PORT" "$PORT_LOCK_DIR" \
-    && fed_acquire_port_lock "$PTY_PORT" "$PORT_LOCK_DIR"; then
-    break
-  fi
-  fed_release_port_locks
-  PORT_BASE=$((DEV_PORT + 1))
-  PORT_LOCK_ATTEMPTS=$((PORT_LOCK_ATTEMPTS + 1))
-  [ "$PORT_LOCK_ATTEMPTS" -lt 100 ] || {
-    echo "FATAL: could not reserve a verifier port pair after $PORT_LOCK_ATTEMPTS attempts" >&2
-    exit 1
-  }
-done
+
+# pick_and_lock_ports — sets DEV_PORT/PTY_PORT to a fresh, advisory-locked pair,
+# walking PORT_BASE forward past anything already free-but-claimed. Factored out
+# of the initial pick (below) so EI-18734124566158657's bind-time retry (further
+# down, after the sidecar actually attempts to bind) can call the SAME walk-
+# forward+lock logic instead of re-deriving it — one procedure, two call sites.
+pick_and_lock_ports() {
+  local attempts=0
+  while :; do
+    DEV_PORT="$(fed_pick_free_port "$PORT_BASE")"
+    PTY_PORT="$(fed_pick_free_port $((DEV_PORT + 4)))"
+    if [ "$DEV_PORT" != "$PTY_PORT" ] \
+      && fed_acquire_port_lock "$DEV_PORT" "$PORT_LOCK_DIR" \
+      && fed_acquire_port_lock "$PTY_PORT" "$PORT_LOCK_DIR"; then
+      return 0
+    fi
+    fed_release_port_locks
+    PORT_BASE=$((DEV_PORT + 1))
+    attempts=$((attempts + 1))
+    [ "$attempts" -lt 100 ] || {
+      echo "FATAL: could not reserve a verifier port pair after $attempts attempts" >&2
+      exit 1
+    }
+  done
+}
+pick_and_lock_ports
 
 log "display=:$DISPLAY_NUM devPort=$DEV_PORT ptyPort=$PTY_PORT work=$WORK"
 

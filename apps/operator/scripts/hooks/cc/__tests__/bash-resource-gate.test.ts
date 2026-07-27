@@ -1172,6 +1172,28 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
   });
 
+  /**
+   * EI-18741479132591597 — filed repro claimed the guard mis-attributed a
+   * quoted-variable redirect target to the leading wrapper word (`setsid`)
+   * for a detached-launch idiom (`setsid nohup ... > "$LOG" 2>&1 < /dev/null &`),
+   * denying a legitimate write to an explicit /tmp path. Could not reproduce
+   * against the current guard — `_resolve_write_target`'s literal-only check
+   * (any `$`/backtick/`~`/glob in the raw target bails, per the existing
+   * "shell expansion is left alone" case above) already fails this open
+   * regardless of the leading wrapper words, and cwd never enters into it
+   * since resolution never happens for an expansion-bearing target. Locking
+   * in the EXACT filed shape (multiple leading wrappers + a `cd`/assignment
+   * preamble + backgrounding) as its own regression rather than relying on
+   * the simpler existing case to imply it.
+   */
+  it('allows the setsid/nohup detached-launch repro with a quoted $VAR redirect target (EI-18741479132591597)', () => {
+    const command =
+      'cd papercusp-desktop\n' +
+      'LOG=/tmp/wi760-fedproof4.log\n' +
+      'setsid nohup bin/vm-federation.sh --vms=2 --dht=testnet --net=bridge > "$LOG" 2>&1 < /dev/null &';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
   it('does not fire when the resolved target is OUTSIDE the canonical tree even with a relative path', () => {
     expectAllow(runGate(bashCmd('cat >> notes.txt <<EOF\nhi\nEOF', { cwd: '/tmp/outside-canonical' }), CANON_ENV));
   });

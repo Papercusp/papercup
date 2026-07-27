@@ -19,7 +19,24 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // @ts-expect-error vitest-summary.mjs is a standalone Node script without declarations.
-import { parseSummaryFailedCounts } from '../../../../scripts/lib/vitest-summary.mjs';
+import { parseSummaryFailedCounts, parseFailedTestFiles } from '../../../../scripts/lib/vitest-summary.mjs';
+
+/**
+ * EI-18819483316574031 — VERBATIM bytes from the gate run that advanced the green pin
+ * over a real, deterministic failure (candidate e1e2dfdbbcda, 2026-07-27T17:17Z,
+ * ~/.papercusp/checkpoint-logs/2026-07-27T17-17-31-003Z-...-cand-e1e2dfdbbcda.log
+ * lines 273/274 and the operator-vite rollup row).
+ *
+ * These are NOT hand-written approximations of "what vitest probably prints" — that is
+ * precisely the mistake that let this bug live: every pre-existing case above uses clean,
+ * uncoloured text, so the parser looked correct while being blind on real gate output.
+ */
+const REAL_ANSI_SUMMARY =
+  '[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m161 passed[39m[22m[90m (162)[39m\n' +
+  '[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m1598 passed[39m[22m[90m (1599)[39m\n';
+
+const REAL_ANSI_ROLLUP =
+  ' [31m❯[39m src/components/adv/learning-empty-state-copy.guard.test.ts [2m([22m[2m5 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 15[2mms[22m[39m\n';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
@@ -58,13 +75,60 @@ describe('parseSummaryFailedCounts (EI-18653696921091778)', () => {
     expect(parseSummaryFailedCounts('   Test Files    1 failed\n')).toEqual({ testFiles: 1, tests: 0 });
     expect(parseSummaryFailedCounts('Tests  7 failed | 10 passed\n')).toEqual({ testFiles: 0, tests: 7 });
   });
+
+  // ── EI-18819483316574031: the ANSI blindness that disabled this guard in production ──
+  it('parses a COLOURISED summary — the real gate output shape', () => {
+    expect(parseSummaryFailedCounts(REAL_ANSI_SUMMARY)).toEqual({ testFiles: 1, tests: 1 });
+  });
+
+  it('still returns null for a colourised ALL-GREEN summary (no false positives)', () => {
+    const green =
+      '[2m Test Files [22m [1m[32m162 passed[39m[22m[90m (162)[39m\n' +
+      '[2m      Tests [22m [1m[32m1599 passed[39m[22m[90m (1599)[39m\n';
+    expect(parseSummaryFailedCounts(green)).toBeNull();
+  });
+});
+
+describe('parseFailedTestFiles (EI-18819483316574031)', () => {
+  it('extracts the failing file from a COLOURISED rollup row', () => {
+    expect(parseFailedTestFiles(REAL_ANSI_ROLLUP)).toEqual([
+      'src/components/adv/learning-empty-state-copy.guard.test.ts',
+    ]);
+  });
+
+  it('extracts the failing file from a COLOURISED bare FAIL row', () => {
+    const failRow = ' [41m[1m FAIL [22m[49m [36msrc/components/adv/x.test.ts[39m\n';
+    expect(parseFailedTestFiles(failRow)).toEqual(['src/components/adv/x.test.ts']);
+  });
+
+  it('still parses uncoloured output, and ignores passing rollups', () => {
+    const out = [
+      ' ❯ lib/foo.test.ts (3 tests | 1 failed) 12ms',
+      ' ✓ lib/bar.test.ts (7 tests) 9ms',
+      'FAIL  lib/baz.test.ts',
+      '',
+    ].join('\n');
+    expect(parseFailedTestFiles(out).sort()).toEqual(['lib/baz.test.ts', 'lib/foo.test.ts']);
+  });
+
+  it('returns [] on empty/nullish input', () => {
+    expect(parseFailedTestFiles('')).toEqual([]);
+    expect(parseFailedTestFiles(null as unknown as string)).toEqual([]);
+  });
 });
 
 describe('affected-tests.mjs cross-checks the summary against the exit code (EI-18653696921091778)', () => {
   const source = readFileSync(AFFECTED_TESTS, 'utf8');
 
-  it('imports parseSummaryFailedCounts', () => {
-    expect(source).toMatch(/import \{ parseSummaryFailedCounts \} from '\.\/lib\/vitest-summary\.mjs'/);
+  it('imports parseSummaryFailedCounts from the shared parser module', () => {
+    expect(source).toMatch(/import \{[^}]*\bparseSummaryFailedCounts\b[^}]*\} from '\.\/lib\/vitest-summary\.mjs'/);
+  });
+
+  // EI-18819483316574031: the failed-file parser must be the SHARED one, not a local
+  // re-implementation — a second copy is what drifted out of ANSI-sync last time.
+  it('uses the shared parseFailedTestFiles rather than a local regex copy', () => {
+    expect(source).toMatch(/import \{[^}]*\bparseFailedTestFiles\b[^}]*\} from '\.\/lib\/vitest-summary\.mjs'/);
+    expect(source).not.toMatch(/function parseFailedFiles\s*\(/);
   });
 
   it('forces a failure when a captured run exits 0 but the summary reports failures', () => {

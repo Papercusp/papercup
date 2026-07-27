@@ -31,11 +31,27 @@ export interface InsightEntry {
   tags: string[];
 }
 
+/** Strip one layer of matching surrounding quotes from a scalar. */
+function unquote(s: string): string {
+  return (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+    ? s.slice(1, -1)
+    : s;
+}
+
 /**
  * Minimal YAML frontmatter parser — handles the shapes the
- * agent-insights files actually use: top-level string scalars + an
- * inline array of tags. Not a general YAML parser; explicitly
+ * agent-insights files actually use: top-level string scalars, an
+ * INLINE array (`tags: [a, b]`), and a BLOCK list (`documents:` followed
+ * by `  - item` lines). Not a general YAML parser; explicitly
  * single-purpose so this module has zero deps.
+ *
+ * Block-list support matters because it is the corpus's DOMINANT list
+ * style — a 2026-07-27 sweep found 572/625 docs writing `documents:` and
+ * 248 writing `plans:` that way (vs `tags:`, which is always inline). A
+ * key parsed without it yields `''`, i.e. silently "absent", which would
+ * make any lint keyed on a list field (see content-lint/insight-normative.ts)
+ * false-positive on the majority authoring style.
  */
 export function parseFrontmatter(
   raw: string,
@@ -47,37 +63,41 @@ export function parseFrontmatter(
   const block = raw.slice(4, end);
 
   const out: Record<string, string | string[]> = {};
-  for (const line of block.split('\n')) {
+  const lines = block.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (!line.trim() || line.trim().startsWith('#')) continue;
-    if (line.startsWith('  ')) continue; // skip nested
+    if (/^\s/.test(line)) continue; // nested / list item — consumed by its owning key below
     const colon = line.indexOf(':');
     if (colon < 0) continue;
     const key = line.slice(0, colon).trim();
-    let value = line.slice(colon + 1).trim();
+    const value = unquote(line.slice(colon + 1).trim());
     if (!key) continue;
 
-    // Strip optional surrounding quotes
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
+    if (value === '') {
+      // Block list: collect the following `- item` lines (indented or not).
+      const items: string[] = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        const item = /^\s*-\s+(.*)$/.exec(lines[j]);
+        if (item) {
+          items.push(unquote(item[1].trim()));
+          continue;
+        }
+        if (!lines[j].trim()) continue; // blank line inside the list
+        break; // next top-level key ends the list
+      }
+      out[key] = items.length ? items : value;
+      continue;
     }
 
     // Inline array: [a, b, c]
     if (value.startsWith('[') && value.endsWith(']')) {
-      const items = value
+      out[key] = value
         .slice(1, -1)
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean)
-        .map((s) =>
-          (s.startsWith('"') && s.endsWith('"')) ||
-          (s.startsWith("'") && s.endsWith("'"))
-            ? s.slice(1, -1)
-            : s,
-        );
-      out[key] = items;
+        .map(unquote);
     } else {
       out[key] = value;
     }

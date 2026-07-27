@@ -43,99 +43,30 @@
  * "this is what they are doing about this item". Same rule the goal resolver
  * applies to its own work-item leg, applied to the display side.
  */
-import { z } from 'zod';
+import type { HolderContext, HolderContextSources } from '../../coord/holder-context';
 import {
-  resolveHolderContext,
-  forSubject,
-  type HolderContext,
-  type HolderContextSources,
-} from '../../coord/holder-context';
-import { holderContextSources } from '../coordination/holder-context-sources';
+  resolveHolderAdvisoryMap,
+  HOLDER_ADVISORY_DISTINCT_CAP,
+} from '../coordination/holder-advisory';
 import { isTerminalStateInput } from '../../work-item-dispatch-states';
-import { resolveAgentIdentity } from '../coordination/identity';
-import { cellReaderFromCtx, type CellReaderCtxLike } from '../cell-reader-ctx';
 import type { CellReader } from '../../cell-registry';
 
 /**
- * The WIRE schema for the shared projection — declared ONCE, here, and imported
- * by every tool that returns a holder.
+ * ⚠ THREE THINGS THAT USED TO LIVE HERE NOW LIVE IN
+ * `../coordination/holder-advisory.ts` (P-027): `HOLDER_CONTEXT_SCHEMA` (the
+ * wire shape), the guarded reader resolver (renamed `holderContextReader` — it
+ * was never lens-specific), and the distinct-holder cap.
  *
- * ⚠ IT IS A SECOND PLACE THE SHAPE IS WRITTEN DOWN, AND THAT IS EXACTLY THE RISK.
- * A tool's zod `result` STRIPS undeclared keys (`work_items:list` already carries
- * a comment about a field silently blanked that way), so a schema that drifts
- * behind `HolderContext` does not fail — it quietly deletes the new field from
- * every response. D-093 adding `agreement`/`competing` is precisely such a
- * moment. `_holder-lens.test.ts` therefore asserts this key set EQUALS the
- * projection's, so the two cannot diverge; that assertion is what makes one
- * schema module safer than a literal inlined at each tool.
+ * They moved because P-027 renders this same projection at four MORE subjects —
+ * a claim refusal, a release request, a lock-queue entry, a plan-item conflict —
+ * and leaving them here would have forced `locks:queue` and `plan_items:claim`
+ * to import a private, underscore-prefixed WORK-ITEM module to describe their
+ * own results. Same reasoning that moved `forSubject` into `coord/holder-context.ts`
+ * under D-094: state the rule once, beside the shape it constrains.
+ *
+ * What remains here is the genuinely work-item-specific part: which ROWS have a
+ * live holder worth decorating, and the row-shaped fields that get attached.
  */
-export const HOLDER_CONTEXT_SCHEMA = z.object({
-  goalRef: z.string().nullable(),
-  goalText: z.string().nullable(),
-  assumptions: z.object({ count: z.number(), keys: z.array(z.string()) }),
-  declaredAt: z.string().nullable(),
-  stale: z.boolean().nullable(),
-  agreement: z.string().nullable(),
-  competing: z.array(z.string()),
-});
-
-/**
- * Ceiling on DISTINCT holders resolved for one read.
- *
- * Measured live 2026-07-27 (P-030 requires re-measurement before shipping, and
- * this is it): across the WHOLE `work_items` table, **18 rows carry a holder and
- * they belong to 17 distinct holders** — against 18,562 non-terminal rows. So a
- * 500-row list read fans out to ~17 resolutions at the very most, and this cap
- * cannot bite on today's fleet. It exists so a fleet an order of magnitude
- * larger degrades by DISCLOSING less rather than by turning a list read into an
- * unbounded per-holder fan-out.
- *
- * D-060's cost objection re-checked: the claimed population went 4 → 18 rows
- * (4.5×) since the item was written, which is NOT the order of magnitude the
- * item names as the trigger to re-litigate the reversal.
- */
-export const HOLDER_LENS_DISTINCT_CAP = 40;
-
-/**
- * Resolve the {@link CellReader} for a holder-lens call, or `null`.
- *
- * ⚠⚠ IT MUST NEVER THROW, AND THE FIRST VERSION OF THIS DID — caught by the
- * existing `work_items:get` suite, which is the only reason it is a helper.
- * `resolveAgentIdentity` THROWS for a caller it cannot attribute, and BOTH tools
- * that use this lens declare `requirePrincipal: false` — i.e. an unattributed
- * caller is explicitly legitimate for them. Calling it unguarded turns "we cannot
- * name you, so you get no reader-relative state" (correct, and a no-op for the
- * read) into "your work-item read fails" — an enrichment failing the operation it
- * decorates, which is the ONE thing P-026 rule (f) forbids.
- *
- * A null reader FAILS CLOSED downstream: `resolveHolderContext` refuses an
- * unidentified reader, so an unattributable caller simply sees no `holder`.
- */
-export function holderLensReader(ctx: CellReaderCtxLike): CellReader | null {
-  try {
-    return cellReaderFromCtx(
-      resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]),
-      ctx,
-    ).reader;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Re-project one holder's context ONTO ONE ROW — a row IS a subject, so this is
- * {@link forSubject} under the name this lens's call sites read by.
- *
- * ⚠ THE RULE MOVED, THE BEHAVIOUR DID NOT (D-094). P-030 found the defect here —
- * a holder-level `competing` list naming the very row it was rendered on — and
- * fixed it here. P-027 then renders the SAME projection against four more
- * subjects (a claim refusal, a release request, a lock-queue entry, a plan-item
- * conflict), so the rule now lives once in `coord/holder-context.ts` beside the
- * shape it constrains. Keeping a private copy here would be the second
- * derivation D-038 axis 5 forbids: two filters that agree today and drift later,
- * each looking correct in isolation.
- */
-const forRow = forSubject;
 
 /** The row fields this lens needs. Structural, so it never drags a work-item row
  *  type (or its schema) into the shared projection. */
@@ -218,43 +149,37 @@ export async function attachHolderContext<T extends HolderLensRow>(
   // here just avoids the fan-out.
   if (!reader?.ownerId?.trim() || out.length === 0) return out;
 
-  const cap = opts.distinctCap ?? HOLDER_LENS_DISTINCT_CAP;
-  // First-seen order, so which holders survive the cap is deterministic for a
-  // given row order rather than dependent on Map/Set iteration incidentals.
-  const wanted: string[] = [];
-  for (const row of out) {
-    if (!rowHasLiveHolder(row)) continue;
-    const owner = row.assignee!.trim();
-    if (!wanted.includes(owner)) wanted.push(owner);
-  }
+  // ONLY rows with a live holder contribute to the fan-out — a terminal row's
+  // holder is never resolved, so it can neither be decorated nor consume cap
+  // budget that a live row needs. First-seen order, so which holders survive the
+  // cap is deterministic for a given row order rather than dependent on Map/Set
+  // iteration incidentals (`resolveHolderAdvisoryMap` dedupes order-preservingly).
+  const wanted = out.filter((r) => rowHasLiveHolder(r)).map((r) => r.assignee!.trim());
   if (wanted.length === 0) return out;
 
-  const resolved = wanted.slice(0, cap);
-  const sources = opts.sources ?? holderContextSources();
-  const byOwner = new Map<string, HolderContext | null>();
-  await Promise.all(
-    resolved.map(async (owner) => {
-      byOwner.set(
-        owner,
-        // Total by contract; caught anyway, because "an enrichment must never be
-        // able to fail the operation it decorates" is the one rule here that a
-        // future source change could break from a distance.
-        await resolveHolderContext(owner, reader, sources, { nowMs: opts.nowMs }).catch(() => null),
-      );
-    }),
-  );
+  // The SHARED fan-out (P-027) — one resolution per distinct holder, capped,
+  // total. This lens deliberately owns no second copy of it: the four friction
+  // points added by P-027 resolve holders exactly the same way, and two
+  // implementations of "resolve once, project per subject" is the drift D-038
+  // axis 5 forbids.
+  const advisory = await resolveHolderAdvisoryMap(wanted, reader, {
+    nowMs: opts.nowMs,
+    sources: opts.sources,
+    distinctCap: opts.distinctCap ?? HOLDER_ADVISORY_DISTINCT_CAP,
+  });
 
   for (const row of out) {
     if (!rowHasLiveHolder(row)) continue;
     const owner = row.assignee!.trim();
-    if (!byOwner.has(owner)) {
+    if (advisory.omitted.has(owner)) {
       row.holderOmitted = 'cap';
       continue;
     }
-    const ctx = byOwner.get(owner);
     // Null ⇒ nothing disclosable to THIS reader: no goal, or a goal they may not
-    // read. The field is simply absent, identically in both cases.
-    if (ctx) row.holder = forRow(ctx, row.id);
+    // read. The field is simply absent, identically in both cases (D-056).
+    // `forRow` applies D-094's subtraction against THIS row's own ref.
+    const ctx = advisory.forRow(owner, row.id);
+    if (ctx) row.holder = ctx;
   }
   return out;
 }

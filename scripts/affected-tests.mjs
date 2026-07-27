@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
-import { parseSummaryFailedCounts } from './lib/vitest-summary.mjs';
+import { parseSummaryFailedCounts, parseFailedTestFiles } from './lib/vitest-summary.mjs';
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
@@ -520,18 +520,12 @@ if (explicitRetryFailed == null && retryFailed) {
 //     suite), so the gate's wall-clock stays bounded under load.
 // Parse the vitest summary for failed files; when nothing parses (e.g. a
 // non-vitest failure mode) fall back to the original full-workspace retry.
-function parseFailedFiles(out) {
-  const files = new Set();
-  // ` ❯ lib/x/y.test.ts (22 tests | 1 failed) 85ms` — failed-file summary rows
-  for (const m of out.matchAll(/^\s*❯\s+(\S+\.(?:test|spec)\.[cm]?[jt]sx?)\s+\([^)]*\bfailed\b[^)]*\)/gm)) {
-    files.add(m[1]);
-  }
-  // `FAIL  lib/x/y.test.ts …` — failed-suite rows (transform/setup errors)
-  for (const m of out.matchAll(/^\s*FAIL\s+(\S+\.(?:test|spec)\.[cm]?[jt]sx?)\b/gm)) {
-    files.add(m[1]);
-  }
-  return [...files];
-}
+// EI-18819483316574031: this used to be a local copy of the rollup/FAIL regexes that
+// did NOT strip ANSI, so on real (colourised) gate output it returned [] — silently
+// downgrading the targeted fresh-process re-run of the actual failed files into a blunt
+// whole-workspace retry. Now delegated to the shared, ANSI-stripping, unit-tested parser
+// so it cannot drift from green-checkpoint.ts's copy again.
+const parseFailedFiles = parseFailedTestFiles;
 const FRESH_RETRY_MAX_FILES = 15; // a broader red is a real regression, not a flake
 
 // A PACKAGED install ships the whole suite (vitest, the test files, quarantine.txt,
