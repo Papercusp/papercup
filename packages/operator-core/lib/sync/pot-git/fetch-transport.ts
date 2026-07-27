@@ -35,7 +35,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Duplex } from 'node:stream';
-import { deviceNamespaceKey, potGitRoot } from './storage';
+import { deviceNamespaceKey, noteFetchInFlight, potGitRoot } from './storage';
 import { isScopeRepoFamilyPath } from './scope-repo';
 import { type ScopeRepoServeGrant, isIssuedScopeServeGrant } from './scope-serve-gate';
 
@@ -46,9 +46,40 @@ const EXT_BRIDGE_PATH = join(dirname(fileURLToPath(import.meta.url)), 'git-ext-b
  *  channel of this protocol per in-flight fetch, keyed by the hive topic). */
 export const POT_GIT_PROTOCOL = 'papercusp/pot-git';
 
-/** Default per-fetch wall-clock ceiling (ms) — a stuck upload-pack/fetch is
- *  killed so a hostile or wedged peer can't pin a stream open forever. */
+/**
+ * Default per-fetch IDLE ceiling (ms) — a fetch that moves NO bytes in either
+ * direction for this long is killed, so a hostile or wedged peer can't pin a
+ * stream open forever.
+ *
+ * ⚠ THIS IS AN IDLE TIMEOUT, NOT A WALL-CLOCK ONE (EI-18776567787336109). It
+ * used to be measured from spawn, which conflated two opposite conditions:
+ *
+ *   - a STALLED transfer (no bytes moving)        → must die fast
+ *   - a LARGE but healthy transfer (bytes flowing) → must NOT be killed
+ *
+ * A wall-clock ceiling makes a large pot structurally un-joinable: the tower's
+ * 6.3 GB papercusp store spends well over 120 s in upload-pack's counting/
+ * compressing phase alone, so EVERY cold-join fetch died at exactly 120 s while
+ * warm incremental fetches finished in 100-650 ms (live, 2026-07-27: 8/8 cold
+ * fetches timed out, 101/101 warm fetches succeeded). Worse, the ladder's
+ * last-resort `--unshallow` rung is unbounded in size BY DESIGN, so no rung
+ * size could ever have rescued it.
+ *
+ * Resetting the deadline on progress preserves the original anti-wedge
+ * guarantee EXACTLY — no progress for this long and the child is SIGKILLed —
+ * while letting a genuinely large transfer run to completion.
+ */
 export const DEFAULT_FETCH_TIMEOUT_MS = 120_000;
+
+/**
+ * Absolute per-fetch ceiling (ms), regardless of progress. The idle timeout
+ * above is the operative guard; this one exists so a hostile peer that
+ * slow-drips a byte every 119 s still cannot pin a stream open indefinitely.
+ * Generous on purpose — a multi-GB cold join over a p2p link legitimately takes
+ * many minutes, and killing one that is actively streaming is the exact bug
+ * this module just stopped having.
+ */
+export const DEFAULT_FETCH_MAX_MS = 30 * 60_000;
 
 export interface TransportResult {
   /** git process exit code (0 = success; -1 = spawn/timeout failure). */
@@ -95,7 +126,11 @@ export function serveUploadPack(
   repoPath: string,
   duplex: Duplex,
   opts: {
+    /** IDLE ceiling — reset on every byte of progress. See
+     *  {@link DEFAULT_FETCH_TIMEOUT_MS}. */
     timeoutMs?: number;
+    /** Absolute ceiling regardless of progress. See {@link DEFAULT_FETCH_MAX_MS}. */
+    maxMs?: number;
     allowOutsideRoot?: boolean;
     /** REQUIRED for any repo in the scopes/ family (§5.3 roster serve gate). */
     scopeServeGrant?: ScopeRepoServeGrant;
@@ -106,10 +141,15 @@ export function serveUploadPack(
     let settled = false;
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let hardTimer: ReturnType<typeof setTimeout> | undefined;
+    const idleMs = opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+    const maxMs = opts.maxMs ?? DEFAULT_FETCH_MAX_MS;
+    let bytesServed = 0;
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (hardTimer) clearTimeout(hardTimer);
       resolve({ code, stderr, timedOut });
     };
     try {
@@ -128,21 +168,49 @@ export function serveUploadPack(
     const child = spawn('git', ['upload-pack', '--strict', repoPath], {
       env: { ...process.env, GIT_PROTOCOL: 'version=2', LC_ALL: 'C', LANG: 'C' },
     });
-    timer = setTimeout(() => {
+    const killChild = (why: string): void => {
       timedOut = true;
-      stderr += `\nupload-pack timed out after ${opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS}ms`;
+      stderr += `\nupload-pack ${why} (served ${bytesServed}B)`;
       try {
         child.kill('SIGKILL');
       } catch {
         /* ignore */
       }
-    }, opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS);
-    timer.unref?.();
-    child.stderr.on('data', (d) => (stderr += String(d)));
+    };
+    // IDLE ceiling: armed now, rearmed on every byte of progress in EITHER
+    // direction. A transfer that is still streaming never trips it; one that
+    // has genuinely stalled dies exactly as fast as it used to.
+    const armIdle = (): void => {
+      if (settled) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => killChild(`idle for ${idleMs}ms`), idleMs);
+      timer.unref?.();
+    };
+    armIdle();
+    // ABSOLUTE ceiling: never rearmed, so a slow-drip peer still cannot pin the
+    // stream open forever.
+    hardTimer = setTimeout(() => killChild(`exceeded the ${maxMs}ms absolute ceiling`), maxMs);
+    hardTimer.unref?.();
+    child.stderr.on('data', (d) => {
+      stderr += String(d);
+      // upload-pack's counting/compressing phase on a multi-GB repo emits
+      // progress here while stdout is still silent — that IS liveness, and
+      // treating it as idle is what killed every large cold join.
+      armIdle();
+    });
     // Never let a stream error crash the host (peer resets, EPIPE mid-pack).
     duplex.on('error', () => {});
     child.stdin.on('error', () => {});
     child.stdout.on('error', () => {});
+    // Safe to attach 'data' alongside the pipes below: `.pipe()` already puts
+    // both in flowing mode and Node delivers each chunk to EVERY listener, so
+    // these counters never consume or steal bytes (same reasoning as the
+    // client half's byte counters).
+    duplex.on('data', armIdle);
+    child.stdout.on('data', (d: Buffer | string) => {
+      bytesServed += typeof d === 'string' ? Buffer.byteLength(d) : d.length;
+      armIdle();
+    });
     duplex.pipe(child.stdin);
     child.stdout.pipe(duplex);
     child.on('error', (e) => {
@@ -180,7 +248,11 @@ export function serveUploadPack(
  * + temp dir on completion.
  */
 export interface FetchOverDuplexOptions {
+  /** IDLE ceiling — rearmed on every byte of progress in either direction, and
+   *  on git's own progress output. See {@link DEFAULT_FETCH_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /** Absolute ceiling regardless of progress. See {@link DEFAULT_FETCH_MAX_MS}. */
+  maxMs?: number;
   /** WI-6189 resumable cold-join: `--depth=<n>` — request a SHALLOW fetch
    *  truncated to `n` commits per tip. The ladder's first rung: for the
    *  papercusp pot-home store this is a 78 MB transfer against 2.5 GB for the
@@ -236,6 +308,13 @@ export function fetchOverDuplex(
     let bytesFromPeer = 0;
     let bytesToPeer = 0;
     let bridgeConnected = false;
+    // Idle + absolute ceilings (EI-18776567787336109). `timer` is REARMED on
+    // every byte of progress, so a large-but-healthy fetch is never killed;
+    // `hardTimer` is never rearmed and bounds the whole fetch absolutely.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let hardTimer: ReturnType<typeof setTimeout> | undefined;
+    const idleMs = opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+    const maxMs = opts.maxMs ?? DEFAULT_FETCH_MAX_MS;
     // Never let a stream error crash the host — attached SYNCHRONOUSLY, before
     // any await, so an already-destroyed/decoy duplex (the documented
     // DIAL-REGISTRY GAP idiom several callers use — a pre-destroyed stub
@@ -326,7 +405,12 @@ export function fetchOverDuplex(
         /* ignore — releasing a duplex must never fail a settled fetch */
       }
     };
+    // Hold the in-flight mark for this repo until the fetch settles, so a
+    // concurrent tick's stale-lock sweep can never unlink the `shallow.lock`
+    // this fetch is actively holding (EI-18776567787336109).
+    const releaseInFlight = noteFetchInFlight(localRepoPath);
     const cleanup = async (): Promise<void> => {
+      releaseInFlight();
       releasePeerDuplex();
       try {
         server.close();
@@ -339,6 +423,7 @@ export function fetchOverDuplex(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(hardTimer);
       void cleanup();
       resolve({ code, stderr, timedOut });
     };
@@ -352,7 +437,7 @@ export function fetchOverDuplex(
     // global 90s test timeout is what surfaced this in serve-wiring's
     // integration tests, not a real fix). Now this outer timer is the actual
     // enforced ceiling: kill the child if one was spawned, and always finish.
-    const timer = setTimeout(() => {
+    const expire = (why: string): void => {
       timedOut = true;
       // WI-6184: name what we were WAITING ON, not just that we waited.
       //   peer→us 0 B  ⇒ the serving side never answered (its handleReq refused
@@ -363,7 +448,7 @@ export function fetchOverDuplex(
       //   bridge=no    ⇒ we never even got git's ext helper connected locally,
       //                  so the stall is LOCAL setup (mkdtemp/listen/spawn).
       stderr +=
-        `\nfetch timed out after ${opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS}ms` +
+        `\nfetch ${why}` +
         ` (peer→us ${bytesFromPeer}B, us→peer ${bytesToPeer}B,` +
         ` bridge=${bridgeConnected ? 'yes' : 'no'}, gitChild=${child ? 'spawned' : 'none'})`;
       try {
@@ -372,8 +457,19 @@ export function fetchOverDuplex(
         /* ignore */
       }
       finish(-1);
-    }, opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS);
-    timer.unref?.();
+    };
+    // IDLE ceiling — rearmed by `noteProgress()` on every byte in either
+    // direction, so only a genuinely STALLED fetch trips it.
+    const armIdle = (): void => {
+      if (settled) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => expire(`idle for ${idleMs}ms`), idleMs);
+      timer.unref?.();
+    };
+    armIdle();
+    // ABSOLUTE ceiling — never rearmed.
+    hardTimer = setTimeout(() => expire(`exceeded the ${maxMs}ms absolute ceiling`), maxMs);
+    hardTimer.unref?.();
 
     // FAIL FAST on an ALREADY-destroyed duplex (WI-3496 rig finding): the
     // 'error' listener above only covers a destroy that happens AFTER this
@@ -432,14 +528,19 @@ export function fetchOverDuplex(
       duplex.pipe(conn);
       // Case (a)/(b) above: the peer was already gone when git got here.
       if (peerHalfClosed || duplex.readableEnded || duplex.destroyed) propagateHalfClose();
-      // WI-6184: counters only — see the declarations above for why an extra
-      // 'data' listener on an already-piped stream is byte-safe.
+      // WI-6184: counters — see the declarations above for why an extra
+      // 'data' listener on an already-piped stream is byte-safe. These are also
+      // the IDLE-ceiling's progress signal (EI-18776567787336109): every byte in
+      // either direction rearms it, so a multi-GB transfer that is still moving
+      // is never killed for taking a long time.
       bridgeConnected = true;
       duplex.on('data', (c: Buffer | string) => {
         bytesFromPeer += typeof c === 'string' ? Buffer.byteLength(c) : c.length;
+        armIdle();
       });
       conn.on('data', (c: Buffer | string) => {
         bytesToPeer += typeof c === 'string' ? Buffer.byteLength(c) : c.length;
+        armIdle();
       });
     });
 
@@ -505,7 +606,15 @@ export function fetchOverDuplex(
           }
         }, opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS);
         killTimer.unref?.();
-        child.stderr.on('data', (d) => (stderr += String(d)));
+        child.stderr.on('data', (d) => {
+          stderr += String(d);
+          // git's own progress ("Receiving objects", "Resolving deltas") is
+          // liveness too: during index-pack the client burns minutes writing to
+          // disk with NO network bytes moving, which the byte counters above
+          // cannot see. Without this, a large cold join would idle out at the
+          // very last step (EI-18776567787336109).
+          armIdle();
+        });
         child.on('error', (e) => {
           clearTimeout(killTimer);
           stderr += String(e);

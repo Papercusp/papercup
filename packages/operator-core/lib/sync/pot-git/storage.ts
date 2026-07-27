@@ -260,6 +260,43 @@ export const STALE_SHALLOW_LOCK_MAX_AGE_MS =
   FETCH_CEILING_MS_MIRROR + STALE_SHALLOW_LOCK_MARGIN_MS;
 
 /**
+ * Repos with a fetch IN FLIGHT in this process (path → refcount).
+ *
+ * EI-18776567787336109 made this necessary. The age gate above rests on the
+ * argument "we SIGKILL any fetch at `timeoutMs`, so no live fetch can hold this
+ * lock longer than that" — which was true only while the ceiling was WALL-CLOCK.
+ * Now that it is an IDLE ceiling, a large-but-healthy fetch legitimately runs
+ * for many minutes, and since ticks fire every ~5-10 min the NEXT tick's sweep
+ * would happily unlink the `shallow.lock` of a fetch that is still streaming —
+ * corrupting the very cold join the idle ceiling was introduced to enable.
+ *
+ * So liveness is now tracked explicitly instead of inferred from a duration.
+ * The age gate stays tight (a stranded lock still clears in ~3 min, preserving
+ * the WI-6189 wedge-recovery this was tuned for); a lock belonging to a live
+ * fetch is simply never eligible, at any age.
+ */
+const fetchesInFlight = new Map<string, number>();
+
+/** Mark `repoPath` as having a fetch in flight; returns the release fn.
+ *  Refcounted, so concurrent legs on one repo can't release each other's mark. */
+export function noteFetchInFlight(repoPath: string): () => void {
+  fetchesInFlight.set(repoPath, (fetchesInFlight.get(repoPath) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const n = (fetchesInFlight.get(repoPath) ?? 1) - 1;
+    if (n <= 0) fetchesInFlight.delete(repoPath);
+    else fetchesInFlight.set(repoPath, n);
+  };
+}
+
+/** True while any fetch is in flight against `repoPath` in this process. */
+export function isFetchInFlight(repoPath: string): boolean {
+  return (fetchesInFlight.get(repoPath) ?? 0) > 0;
+}
+
+/**
  * EI-18745600910177355: reclaim orphaned `index-pack` temp files.
  *
  * `git index-pack` (inside `git fetch`) streams an incoming pack to
@@ -307,7 +344,10 @@ export async function sweepStalePackTmpFiles(
   // A stale lock is not merely wasted disk like a stale pack, it is total
   // stoppage, so the gate must be as tight as correctness allows: one fetch
   // ceiling plus a margin, past which no live fetch can still hold it.
-  for (const lock of ['shallow.lock']) {
+  // ⚠ Never sweep a lock belonging to a fetch that is still running here. With
+  // the idle ceiling (EI-18776567787336109) a healthy multi-GB rung outlives the
+  // age gate by design, so age ALONE no longer implies "stranded".
+  for (const lock of isFetchInFlight(repoPath) ? [] : ['shallow.lock']) {
     const p = join(repoPath, lock);
     try {
       const st = await stat(p);

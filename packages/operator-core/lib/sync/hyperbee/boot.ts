@@ -981,10 +981,38 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           (await joinerPotHomeSlug(opts.workspaceId, opts.harnessSlug, { fresh: true })) ?? undefined;
       }
       if (process.env.PAPERCUSP_A003_TRACE === '1') {
-         
+
         console.error(
           `[A-003] ${new Date().toISOString()} resolve ${opts.harnessSlug}: joinerPotHomeSlug=${resolved ?? '<null>'}`,
         );
+      }
+      // WI-559 / EI-18775450536624845 — the FK-parent reconcile, deliberately sited
+      // HERE. `resolved` is the FEDERATED scope the hive-home projections are about
+      // to persist under; the joiner's LOCAL handle is what its `pots` row is keyed
+      // by. When those two differ, `pot_members` has no FK parent under the
+      // federated scope, so every inbound roster op fails `pot_members_pot_fkey`,
+      // the merge pass aborts, and the WI-255 quarantine escalates it to permanent
+      // row loss. Stamping `canonical_pot_home_slug` (migration 686) gives those
+      // rows a parent WITHOUT renaming the local handle.
+      //
+      // This is the one point that runs on BOTH the cold boot AND the in-place
+      // rekey — the two moments the binding is established — so a first join and a
+      // restart are both covered, and it fires only when a rebind actually engaged.
+      // Fully best-effort: reconcile never throws, and its result is not consulted,
+      // because failing to IMPROVE the binding must never break a working Pot.
+      if (resolved) {
+        try {
+          const { potHomeSlugForHarness } = await import('../../hive-federation');
+          const localHome = await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug, {
+            fresh: true,
+          });
+          if (localHome && localHome !== resolved) {
+            const { reconcilePotCanonicalSlug } = await import('../../pot-canonical-slug-reconcile');
+            await reconcilePotCanonicalSlug(opts.workspaceId, localHome);
+          }
+        } catch {
+          /* best-effort: a working binding must never fail over the FK repair */
+        }
       }
       return resolved;
     } catch (e) {
