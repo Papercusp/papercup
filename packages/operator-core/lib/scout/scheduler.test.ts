@@ -10,8 +10,10 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   runScoutTick,
   buildScoutTickDeps,
+  persistRoutedRecordsIsolated,
   type ScoutTickDeps,
   type ScoutCycleLike,
+  type ScoutRoutedRecord,
   type QueenFeedbackItem,
 } from './scheduler';
 import type { ScoutTickRecord } from './tick-ledger';
@@ -917,5 +919,47 @@ describe('groundingLaneHistogram (blender-self-learning-2026-07-12 P-006)', () =
   it('empty provenance yields an empty histogram (detail key omitted upstream)', async () => {
     const { groundingLaneHistogram } = await import('./scheduler');
     expect(groundingLaneHistogram([])).toEqual({});
+  });
+});
+
+describe('persistRoutedRecordsIsolated — per-record error isolation (WI-6338)', () => {
+  const rec = (ideaId: string): ScoutRoutedRecord => ({
+    ideaId,
+    lens: 'first-principles',
+    rail: 'improvement',
+    routedRef: `wi:${ideaId}`,
+  });
+
+  it('a failing record does not abort the batch — every sibling still gets written', async () => {
+    const written: string[] = [];
+    const write = vi.fn(async (r: ScoutRoutedRecord) => {
+      if (r.ideaId === 'bad') throw new Error('insert failed');
+      written.push(r.ideaId);
+    });
+    const errors: Array<{ ideaId: string; message: string }> = [];
+    await persistRoutedRecordsIsolated([rec('a'), rec('bad'), rec('c')], write, (r, e) =>
+      errors.push({ ideaId: r.ideaId, message: e instanceof Error ? e.message : String(e) }),
+    );
+    // Pre-fix (a bare for-loop with no try/catch) this would have thrown out of
+    // the loop after 'bad', so 'c' would never be attempted — the exact WI-6338
+    // divergence mechanism (issue captured+tagged, but no scout_routed_ideas row).
+    expect(written).toEqual(['a', 'c']);
+    expect(write).toHaveBeenCalledTimes(3);
+    expect(errors).toEqual([{ ideaId: 'bad', message: 'insert failed' }]);
+  });
+
+  it('no failures ⇒ every record written, onError never called', async () => {
+    const write = vi.fn(async () => {});
+    const onError = vi.fn();
+    await persistRoutedRecordsIsolated([rec('a'), rec('b')], write, onError);
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('onError is optional — a failure is swallowed rather than thrown', async () => {
+    const write = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    await expect(persistRoutedRecordsIsolated([rec('a')], write)).resolves.toBeUndefined();
   });
 });

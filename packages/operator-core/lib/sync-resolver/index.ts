@@ -3406,6 +3406,45 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── taskManager.inventory — the Tasks pane's read model (WI-6475) ──
+  //
+  // Every task this operator launched, with the provenance a process table cannot
+  // give: who launched it, for which work-item, and what it is consuming. The
+  // `live` arm additionally walks the cgroup tree for the no-escape signal
+  // (processes inside our slice that no chokepoint registered).
+  //
+  // This exists as a SYNC query rather than the pane polling its admin route,
+  // because a bare `fetch` from the desktop webview does not ride the sys:http IPC
+  // bridge that injects the loopback-superuser bearer — it resolves
+  // `unverified-loopback`, and the VT-gated admin route 403-blanks the pane
+  // (EI-338; the mechanism is written up in endpoint-route/__tests__/
+  // auth-posture.test.ts). The sync transport is `auth:'loopback'`, so it is
+  // admitted on exactly the path every sibling rail tab already uses.
+  //
+  // Shares `getTaskInventory` with `/admin/tasks/inventory` so the HTTP surface and
+  // the pane can never drift. Callers pace themselves with `staleTime` — the `live`
+  // arm is a kernel scan and must not be run on a tab nobody is looking at.
+  'taskManager.inventory': {
+    resolve: async (args: unknown) => {
+      const a = (args ?? {}) as { state?: string; cls?: string; includeEnded?: boolean; live?: boolean };
+      const [{ getTaskInventory, disabledInventory }, { getFlag }, { FLAGS }] = await Promise.all([
+        import('../task-manager/inventory'),
+        import('@papercusp/flags/server'),
+        import('@papercusp/flags'),
+      ]);
+      const enabled = await getFlag(FLAGS.TASK_MANAGER, 'sync:taskManager.inventory').catch(() => true);
+      if (!enabled) return [disabledInventory()];
+      return [
+        await getTaskInventory({
+          state: a.state ?? null,
+          cls: a.cls ?? null,
+          includeEnded: a.includeEnded === true,
+          live: a.live === true,
+        }),
+      ];
+    },
+  },
+
   // ── mugBrief.floorView — the chat sidebar's pot-status panel (P-018) ──
   //
   // (operator-chat-sidebar-revival-2026-07-13 P-018, mockup variant A.) A compact

@@ -281,6 +281,64 @@ describe('readCell — path drift', () => {
       expect(r.unknown.detail).toContain('positions.deployed');
     }
   });
+
+  describe('EI-18790908999972569 / D-067 defect 2 — an ERROR payload must not be misdiagnosed as path drift', () => {
+    it('a `data.error` sentinel payload is quoted, not blamed on the declared path', async () => {
+      // The live shape: a `global`-relativity cell dispatches `{}`, and the tool
+      // opens with `if (!args.path && !args.sha) return { data: { error: … } }`.
+      // Every declared path was correct; the resolver never produced a result.
+      registerCell(spec());
+      dispatchReadOnlyTool.mockResolvedValue({ data: { error: 'Provide a path or a sha.' } });
+
+      const r = await readCell('test.cell', READER, ENV);
+      expect(r.status).toBe('unknown');
+      if (r.status === 'unknown') {
+        expect(r.unknown.code).toBe('insufficient-data');
+        expect(r.unknown.detail).toContain('Provide a path or a sha.');
+        expect(r.unknown.detail).toContain('not path drift');
+        // Must NOT emit the old drift wording — that is precisely the misdiagnosis.
+        expect(r.unknown.detail).not.toContain('drifted apart');
+      }
+    });
+
+    it('a top-level `error` sentinel payload is quoted too', async () => {
+      registerCell(spec());
+      dispatchReadOnlyTool.mockResolvedValue({ error: 'no such resource' });
+
+      const r = await readCell('test.cell', READER, ENV);
+      expect(r.status).toBe('unknown');
+      if (r.status === 'unknown') {
+        expect(r.unknown.code).toBe('insufficient-data');
+        expect(r.unknown.detail).toContain('no such resource');
+        expect(r.unknown.detail).not.toContain('drifted apart');
+      }
+    });
+
+    it('names the dispatched args in the error-shape detail — the `{}` for a global cell is the lead', async () => {
+      registerCell(spec({ callerRelativity: { kind: 'parameter', param: 'ownerId' } }));
+      dispatchReadOnlyTool.mockResolvedValue({ data: { error: 'missing ownerId' } });
+
+      const r = await readCell('test.cell', READER, ENV, 'su-peer');
+      expect(r.status).toBe('unknown');
+      if (r.status === 'unknown') {
+        expect(r.unknown.detail).toContain('su-peer');
+      }
+    });
+
+    it('a real result with a non-string `error`/`data.error` field falls back to the drift diagnosis', async () => {
+      // Guards against a false positive: a legitimate payload that happens to carry a
+      // truthy-but-non-string `error`-named field (e.g. an error COUNT) must not be
+      // mistaken for the sentinel shape.
+      registerCell(spec());
+      dispatchReadOnlyTool.mockResolvedValue({ error: 3, somethingElse: true });
+
+      const r = await readCell('test.cell', READER, ENV);
+      expect(r.status).toBe('unknown');
+      if (r.status === 'unknown') {
+        expect(r.unknown.detail).toContain('drifted apart');
+      }
+    });
+  });
 });
 
 describe('P-021 — the material lens rides the SAME dispatch', () => {

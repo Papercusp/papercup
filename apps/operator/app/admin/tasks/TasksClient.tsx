@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactElement } from 'react';
+import { useMemo, type CSSProperties, type ReactElement } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
+import { useSyncQuery } from '@papercusp/sync';
 
 // `@/app/...` (not a relative path): this component is rendered from BOTH trees —
 // apps/operator's own /admin/tasks page and operator-vite's route + left-rail tab —
@@ -16,10 +17,13 @@ import { Table, type TableColumn } from '@/app/harness/Table';
  *
  * Deliberately modelled on /admin/schedules, because they are the same idea one
  * axis apart: that page is the inventory of everything RECURRING, this is the
- * inventory of everything RUNNING. Same posture too — self-fetching client, nuqs-
- * backed filters so agents and deep links work, and READ-ONLY. The kill/freeze/
- * limit verbs are capability-gated MCP tools; a dashboard fetch must not be able to
- * end someone's work.
+ * inventory of everything RUNNING. Same posture too — nuqs-backed filters so agents
+ * and deep links work, and READ-ONLY. The kill/freeze/limit verbs are capability-
+ * gated MCP tools; a dashboard read must not be able to end someone's work.
+ *
+ * Data comes from the `taskManager.inventory` SYNC query, not a bare fetch — see the
+ * comment on the hook below (WI-6475). Rendered from BOTH trees: apps/operator's own
+ * /admin/tasks page and operator-vite's route + left-rail Tasks tab.
  *
  * What this shows that no process table can: WHO launched each task, for which
  * work-item, under what budget, and what it is costing right now. The `unaccounted`
@@ -175,33 +179,31 @@ export default function TasksClient(): ReactElement {
   const [includeEnded, setIncludeEnded] = useQueryState('ended', parseAsBoolean.withDefault(false));
   const [liveView, setLiveView] = useQueryState('live', parseAsBoolean.withDefault(true));
 
-  const [data, setData] = useState<Payload | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Reads through the sync layer, NOT a bare fetch (WI-6475). Two reasons, and the
+  // first is a hard bug rather than a style point: a native webview fetch does not
+  // ride the sys:http IPC bridge that injects the loopback-superuser bearer, so it
+  // resolves `unverified-loopback` and the VT-gated /api/admin/tasks/inventory route
+  // refuses it — the pane rendered "Load failed: HTTP 403" for the owner on every
+  // desktop shell (EI-338; see endpoint-route/__tests__/auth-posture.test.ts). The
+  // sync transport is `auth:'loopback'` and is admitted. Second, `fetch +
+  // setInterval` is the exact hand-rolled pattern the repo bans — @papercusp/sync is
+  // the one audited path, and it is what every sibling rail tab already uses.
+  //
+  // `staleTime` carries the old 5s poll cadence: fast enough to feel live, close
+  // enough to the reconciler's 30s tick, and it does NOT scan while unmounted.
+  const q = useSyncQuery<Payload>({
+    queryName: 'taskManager.inventory',
+    args: {
+      ...(stateFilter ? { state: stateFilter } : {}),
+      ...(classFilter ? { cls: classFilter } : {}),
+      ...(includeEnded ? { includeEnded: true } : {}),
+      ...(liveView ? { live: true } : {}),
+    },
+    staleTime: 5_000,
+  });
 
-  const load = useCallback(async () => {
-    const qs = new URLSearchParams();
-    if (stateFilter) qs.set('state', stateFilter);
-    if (classFilter) qs.set('class', classFilter);
-    if (includeEnded) qs.set('includeEnded', '1');
-    if (liveView) qs.set('live', '1');
-    try {
-      const res = await fetch(`/api/admin/tasks/inventory?${qs}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setData((await res.json()) as Payload);
-      setError(null);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, [stateFilter, classFilter, includeEnded, liveView]);
-
-  useEffect(() => {
-    void load();
-    // A pane whose whole purpose is "what is happening right now" has to refresh.
-    // 5s matches the reconciler's 30s cadence closely enough to feel live without
-    // hammering a scan on every tick.
-    const t = setInterval(() => void load(), 5000);
-    return () => clearInterval(t);
-  }, [load]);
+  const data = q.data?.[0] ?? null;
+  const error = q.error ? String((q.error as Error).message ?? q.error) : null;
 
   const live = data?.live ?? null;
   const unaccountedGroups = useMemo(() => {

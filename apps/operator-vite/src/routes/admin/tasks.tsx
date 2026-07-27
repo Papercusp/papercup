@@ -8,7 +8,7 @@ import TasksClient from '@/app/admin/tasks/TasksClient';
  *
  * Thin composition, exactly like /admin/schedules — which is its sibling by design:
  * that page inventories everything RECURRING, this one everything RUNNING. Reuses
- * the self-fetching `TasksClient` (it hits `/api/admin/tasks/inventory`) via the
+ * `TasksClient` (which reads the `taskManager.inventory` sync query) via the
  * `@/app` alias inside the operator-vite AdminShell the live Tauri shell renders.
  */
 export const Route = createFileRoute('/admin/tasks')({

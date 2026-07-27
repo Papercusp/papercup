@@ -202,6 +202,29 @@ export function unknownForDispatchError(err: ReadOnlyDispatchError): CellUnknown
   return cellUnknown('resolver-failed', err.message);
 }
 
+/**
+ * Detect whether a resolver payload looks like an ERROR/sentinel result rather than a
+ * real one — checks the conventional `error` and `data.error` string fields a
+ * read-only tool uses to report "I could not answer" without throwing (dispatch stays
+ * total; see `readCell`'s own no-throw contract). Not exhaustive — a resolver may
+ * error-shape differently — but these two cover the case that actually misdiagnosed
+ * (EI-18790908999972569 / D-067 defect 2): a `global`-relativity cell dispatches `{}`,
+ * and the tool opens with `if (!args.path && !args.sha) return { data: { error: … } }`.
+ * Returning the message (not just a boolean) lets the caller quote the resolver's own
+ * diagnosis instead of asserting a cause it never measured.
+ */
+function errorShapeMessage(payload: unknown): string | undefined {
+  if (payload === null || typeof payload !== 'object') return undefined;
+  const obj = payload as Record<string, unknown>;
+  if (typeof obj.error === 'string') return obj.error;
+  const data = obj.data;
+  if (data !== null && typeof data === 'object') {
+    const err = (data as Record<string, unknown>).error;
+    if (typeof err === 'string') return err;
+  }
+  return undefined;
+}
+
 /** The dispatch env a cell read runs under. Every field is already known at the call
  *  site (identity + request context), so resolving one costs no lookup. */
 export interface CellReadEnv {
@@ -290,10 +313,33 @@ export async function readCell(
   }
 
   const value = valueAtPath(payload, spec.changeSignal.path);
-  // The resolver answered but the declared path is not present. This is NOT
-  // `resolver-failed` (the resolver worked) and NOT a value (there is none) — the read
-  // partly succeeded and cannot support a verdict, which is `insufficient-data`.
+  // The resolver answered but the declared path is not present. `value === undefined`
+  // has (at least) two causes with DIFFERENT fixes, and conflating them misdiagnoses
+  // the common one: a resolver that never produced a result at all (it returned an
+  // error/sentinel payload, e.g. because a `global` cell dispatched `{}` and the tool
+  // requires an arg) looks byte-identical here to a genuinely stale declared path. The
+  // first is a resolver/args problem; the second is a cell-registration problem — and
+  // "the declared path has drifted" actively misdirects an author auditing the former
+  // (D-067 defect 2 / EI-18790908999972569: three correct paths were blamed for a
+  // one-line arg-wiring bug in the resolver's own error branch).
   if (value === undefined) {
+    const errorMessage = errorShapeMessage(payload);
+    if (errorMessage !== undefined) {
+      return {
+        status: 'unknown',
+        cell,
+        unknown: cellUnknown(
+          'insufficient-data',
+          `the resolver returned an error instead of a result: "${errorMessage}" — the declared path was not evaluated, ` +
+            `so this is not path drift; check the resolver or the args this cell's callerRelativity dispatches ` +
+            `(dispatched: ${JSON.stringify(args)}).`,
+        ),
+      };
+    }
+    // The resolver worked (no error shape) and the declared path is genuinely absent.
+    // This is NOT `resolver-failed` (the resolver worked) and NOT a value (there is
+    // none) — the read partly succeeded and cannot support a verdict, which is
+    // `insufficient-data`.
     return {
       status: 'unknown',
       cell,
