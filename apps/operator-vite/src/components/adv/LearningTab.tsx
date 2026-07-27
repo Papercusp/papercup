@@ -49,6 +49,7 @@ import {
   Rss,
   Microscope,
   Workflow,
+  Zap,
 } from "lucide-react";
 import type {
   ImprovementDigest,
@@ -107,6 +108,7 @@ import {
   LearningVisualError,
   LearningVisualStyles,
 } from "./LearningVisuals";
+import { snapshotFault } from "./snapshot-fault";
 
 const LVIEWS = [
   "signals",
@@ -186,7 +188,10 @@ function viewDescriptions(t: ReturnType<typeof useLexicon>): Record<LView, strin
       "Adversarial-pressure tracking — is quality keeping pace as the environment hardens?",
     experiments: "A/B experiments the loop has run, and how they came out.",
     frontier: "Mined improvement territory the loop has not explored yet.",
-    throughput: `Per-${pot} learning throughput — how much each ${pot} banks.`,
+    // WI-6383: the old line ("how much each pot banks") described Retain, not
+    // this view — nothing here counts what was banked. It renders the loop's
+    // operating yardstick, so the tooltip now names what is actually on screen.
+    throughput: `Whether each ${pot}'s loop is keeping up — placement rate, how busy its fleet is, and what is stuck.`,
     learnings: `The ${pot}'s shared memory — what it keeps and recalls while it works.`,
   };
 }
@@ -218,6 +223,21 @@ const VERIFY_VIEWS: ReadonlyArray<{ id: LView; label: string; icon: typeof Eye }
   { id: "red-queen", label: "Red Queen", icon: Radar },
   { id: "experiments", label: "Experiments", icon: Beaker },
   { id: "frontier", label: "Frontier", icon: Telescope },
+  // WI-6383: RESTORED. Throughput shipped as a real subtab (2026-06-13), was
+  // converted to a header "Loop health" utility icon (2026-07-11), and lost its
+  // only entry point when that whole utility row was deleted the next day. The
+  // view kept working the entire time — LVIEWS, the render dispatch and the
+  // resolver all survived — so for 15 days it was reachable ONLY by hand-typing
+  // `?lview=throughput`. It does not go back in the header: the header removal
+  // was deliberate and is still pinned ("keeps operational destinations out of
+  // the learning header"), so it returns as what it originally was, a subtab.
+  //
+  // WHY Verify. It is a whole-system operating measurement, not a per-idea one:
+  // placement rate, fleet saturation, stuck count, mean-time-to-complete. That
+  // is the same family as its neighbours Wake efficiency and EKG. It sits after
+  // Frontier because those two are the stage's HIVE-AWARE pair (P-005), so the
+  // pot lens applies to an adjacent run of tabs rather than a scattered one.
+  { id: "throughput", label: "Throughput", icon: Zap },
 ];
 
 const STAGES: ReadonlyArray<{
@@ -283,6 +303,40 @@ const STAGES: ReadonlyArray<{
     views: VERIFY_VIEWS,
   },
 ];
+
+// Exported READ-ONLY, under a qualified name, for the reachability guard —
+// which has to reconstruct the real pre-fix catalog to prove it reds on the
+// actual defect rather than on a synthetic stand-in (WI-6383).
+export { STAGES as LEARNING_STAGES };
+
+/**
+ * Every `?lview=` value that NO navigation can reach — the detector for the
+ * WI-6383 class.
+ *
+ * THE CLASS. `LVIEWS` (what `?lview=` accepts, what the render dispatch
+ * switches on) and {@link STAGES} (what the stage/subtab nav offers) are two
+ * parallel lists over the same population. Nothing made them agree, so a view
+ * could be deleted from the nav while staying fully alive everywhere else — no
+ * type error, no failing test, no dead code for `knip` to find. Throughput sat
+ * in exactly that state for 15 days: implemented, routed, resolver live,
+ * unreachable. Restoring the one tab does not stop the next one going the same
+ * way; this does.
+ *
+ * `catalog`/`views` are injectable ONLY so the guard test can prove the
+ * detector reds on the real pre-fix catalog rather than on a synthetic one —
+ * production callers pass nothing. Deliberately checks the UNFILTERED catalog:
+ * a flag-gated view (see {@link TESTING_ONLY_VIEWS}) is hidden on purpose and
+ * still reachable when its flag is on, which is not this defect.
+ */
+export function orphanedLearningViews(
+  catalog: typeof STAGES = STAGES,
+  views: readonly LView[] = LVIEWS,
+): LView[] {
+  const reachable = new Set<string>(
+    catalog.flatMap((stage) => stage.views.map((candidate) => candidate.id)),
+  );
+  return views.filter((view) => !reachable.has(view));
+}
 
 /** Views hidden from the Learning tab unless FLAGS.TESTING is on.
  *
@@ -4101,13 +4155,23 @@ function ThroughputView({
     staleTime: 60_000,
     enabled: hiveReady,
   });
-  const hives = sync.data?.[0]?.hives ?? [];
+  const snap = sync.data?.[0];
+  const hives = snap?.hives ?? [];
   const soakByHive = new Map(
     (soak.data?.[0]?.hives ?? []).map((report) => [report.potSlug, report]),
   );
+  // WI-6382/WI-6383: the resolver catches a read failure and returns a
+  // SUCCESSFUL empty snapshot (never a 500), so `sync.error` alone left this
+  // view's fault path unreachable — a broken or pre-migration install rendered
+  // as the calm "no throughput recorded yet" card below, which then instructed
+  // the reader to go start a pot and wait for data that could never arrive.
+  // The degraded snapshot now carries provenance; fold it into the SAME branch.
+  // Wiring it is part of restoring reachability, not scope creep: this view was
+  // skipped by WI-6382's panel sweep precisely BECAUSE no user could open it.
+  const fault = snapshotFault(sync.error ?? soak.error, snap, "Throughput");
   useEffect(() => {
     onStatus?.(
-      sync.error || soak.error
+      fault.failed
         ? "bad"
         : hives.some((hive) => !hive.operatingWell)
           ? "warn"
@@ -4115,11 +4179,19 @@ function ThroughputView({
             ? "good"
             : "neutral",
     );
-  }, [hives, onStatus, soak.error, sync.error]);
+  }, [fault.failed, hives, onStatus]);
 
   return (
     <section className="pc-learning__section">
-      {hives.length === 0 ? (
+      {fault.failed ? (
+        <LearningVisualError
+          title={fault.message ?? "Throughput unavailable"}
+          onRetry={() => {
+            sync.invalidate();
+            soak.invalidate();
+          }}
+        />
+      ) : hives.length === 0 ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <strong>No throughput recorded yet</strong>
           <span>

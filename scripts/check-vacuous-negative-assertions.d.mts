@@ -82,10 +82,11 @@ export function extractNegativeLiterals(text: string): NegativeAssertion[];
  *
  * @param {string} lit
  * @param {IncludesFn} includes
+ * @returns {{ fragment: string; residue: [string, string] } | null}
  */
 export function driftFragment(lit: string, includes: IncludesFn): {
     fragment: string;
-    residue: string[];
+    residue: [string, string];
 } | null;
 /**
  * Judge one test file's negative assertions. `includes` answers "does the non-test

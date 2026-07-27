@@ -19,7 +19,65 @@
 import { execSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 
-/** Parse tsc output into { file, code } entries (file null when unattributable). */
+/**
+ * One diagnostic parsed out of tsc's output.
+ *
+ * @typedef {object} TscErrorEntry
+ * @property {string | null} file - null when the diagnostic carries no file (unattributable).
+ * @property {string} code - The `TSnnnn` code.
+ */
+
+/**
+ * One file's standing against its baseline.
+ *
+ * @typedef {object} PerFileGateEntry
+ * @property {string} file
+ * @property {number} baseline
+ * @property {number} current
+ * @property {number} delta - `current - baseline`; positive is a regression.
+ */
+
+/**
+ * A baseline owned by ANOTHER package, whose recorded counts this gate inherits for
+ * files under `prefix` rather than assuming an implicit 0 (EI-18649014117371738).
+ *
+ * @typedef {object} ForeignBaselineSource
+ * @property {string} prefix - Repo-relative path prefix of the files the other package owns.
+ * @property {Record<string, number>} files - That package's own per-file baseline map.
+ * @property {string} [label]
+ */
+
+/**
+ * The verdict vocabulary. `fail-new-file` is split out of `peerDrift` so `--mine` can
+ * never greenwash a brand-new file: absence from the git-status changed set does not
+ * prove a new file isn't yours, because git-sync auto-commits this shared tree every few
+ * minutes (EI-18766822535373909).
+ *
+ * @typedef {'fail-syntax' | 'fail-regressed' | 'fail-attributed' | 'fail-new-file' | 'ok-peer-drift' | 'ok-ratchet' | 'ok-below' | 'ok'} PerFileGateVerdict
+ */
+
+/**
+ * The full decision for one run.
+ *
+ * @typedef {object} PerFileGateResult
+ * @property {PerFileGateVerdict} verdict
+ * @property {PerFileGateEntry[]} regressions
+ * @property {PerFileGateEntry[]} improvements
+ * @property {PerFileGateEntry[]} [attributed]
+ * @property {PerFileGateEntry[]} [peerDrift]
+ * @property {PerFileGateEntry[]} [newFiles] - Regressions in files ABSENT from the baseline.
+ * @property {number} total
+ * @property {number} baselineTotal
+ * @property {Record<string, number>} [newBaselineByFile]
+ * @property {string[]} [brokenFiles]
+ */
+
+/**
+ * Parse tsc output into { file, code } entries (file null when unattributable).
+ *
+ * @param {string} tscOutput
+ * @returns {TscErrorEntry[]}
+ */
 export function parseTscErrors(tscOutput) {
   const errors = [];
   for (const line of String(tscOutput).split('\n')) {
@@ -34,8 +92,14 @@ export function parseTscErrors(tscOutput) {
   return errors;
 }
 
-/** Files carrying parse-level (TS1xxx) errors — they fail to compile at all. */
+/**
+ * Files carrying parse-level (TS1xxx) errors — they fail to compile at all.
+ *
+ * @param {TscErrorEntry[]} errors
+ * @returns {string[]}
+ */
 export function syntaxBrokenFiles(errors) {
+  /** @type {Set<string>} */
   const files = new Set();
   for (const e of errors) {
     if (/^TS1\d{3}$/.test(e.code)) files.add(e.file ?? '(unattributed)');
@@ -43,8 +107,14 @@ export function syntaxBrokenFiles(errors) {
   return [...files].sort();
 }
 
-/** Aggregate parsed errors into a { file: count } map. Unattributable errors bucket under '(unattributed)'. */
+/**
+ * Aggregate parsed errors into a { file: count } map. Unattributable errors bucket under '(unattributed)'.
+ *
+ * @param {TscErrorEntry[]} errors
+ * @returns {Record<string, number>}
+ */
 export function countByFile(errors) {
+  /** @type {Record<string, number>} */
   const map = {};
   for (const e of errors) {
     const key = e.file ?? '(unattributed)';
@@ -53,6 +123,10 @@ export function countByFile(errors) {
   return map;
 }
 
+/**
+ * @param {Record<string, number>} map
+ * @returns {number}
+ */
 export function sumValues(map) {
   let total = 0;
   for (const v of Object.values(map)) total += v;
@@ -64,6 +138,9 @@ export function sumValues(map) {
  * `--mine` scoping. Fail-SOFT: a git failure (packaged install, detached state) returns an empty
  * set, which under `--mine` means "attribute nothing to me" — never a crash, never a false pass on
  * a real CI gate (CI runs bare, without `--mine`).
+ *
+ * @param {string} [root] - Repo root to run git in.
+ * @returns {Set<string>}
  */
 export function gitChangedFiles(root) {
   try {
@@ -109,6 +186,9 @@ export function gitChangedFiles(root) {
  * unchanged) — never an empty Set for "flag absent", so callers can tell "not scoped" apart from
  * "scoped to zero files" (a malformed `--files=` with no content, which is now the caller's own
  * bug to fix, not a silent no-op).
+ *
+ * @param {string[]} argv
+ * @returns {Set<string> | null} null when the flag is absent; an EMPTY set means "scoped to zero files".
  */
 export function parseExplicitFiles(argv) {
   const flag = argv.find((a) => a.startsWith('--files='));
