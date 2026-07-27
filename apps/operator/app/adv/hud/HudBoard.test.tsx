@@ -474,3 +474,51 @@ describe('HudBoard', () => {
     expect(screen.queryByRole('combobox', { name: 'Filter by plan' })).toBeNull();
   });
 });
+
+/**
+ * Header LAYOUT — the two owner asks of 2026-07-27, pinned as document ORDER.
+ *
+ * Both are position asks, and position is exactly what a screenshot cannot assert
+ * durably. The first ask had already been made "a few times": earlier passes kept
+ * rearranging controls INSIDE the launcher while it stayed on the tab strip's row,
+ * when the row being referred to was the TAB STRIP's. Encoding the reading as an
+ * assertion is what stops a third misread.
+ */
+describe('header layout (owner asks 2026-07-27)', () => {
+  it('puts the launcher on its OWN row, AFTER the tab strip — not inside it', () => {
+    const { container } = renderBoard([entry()]);
+    const tabs = container.querySelector('.hud__tabs');
+    const launchRow = container.querySelector('.hud__launchrow');
+    expect(tabs, '.hud__tabs must exist').toBeTruthy();
+    expect(launchRow, 'the launcher needs a row of its own below the tabs').toBeTruthy();
+
+    // Not nested inside the tab strip — that is the layout being corrected.
+    expect(tabs!.contains(launchRow!)).toBe(false);
+    // DOCUMENT_POSITION_FOLLOWING === the launcher row comes AFTER the tabs.
+    expect(tabs!.compareDocumentPosition(launchRow!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // …and it is the launcher that lives there.
+    expect(within(launchRow as HTMLElement).getByTestId('launcher')).toBeTruthy();
+  });
+
+  it('keeps the launch button out of the tablist (a11y: a tablist holds only tabs)', () => {
+    const { container } = renderBoard([entry()]);
+    const tablist = container.querySelector('[role="tablist"]')!;
+    expect(within(tablist as HTMLElement).queryByTestId('launcher')).toBeNull();
+  });
+
+  it('orders the plan filter FIRST in the filter row, ahead of the all-agents toggle', () => {
+    const { container } = renderBoard(planned());
+    const planFilter = container.querySelector('.hud__planfilter');
+    const toggle = screen.getByRole('button', { name: /su sessions|all agents/ });
+    expect(planFilter, 'the plan filter must render on the sessions tab').toBeTruthy();
+    // The ask: "move the plan filter as the first filter before all agents".
+    expect(planFilter!.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('no longer right-aligns the plan filter behind a flex spacer', () => {
+    // The spacer existed only to push the filter to the far right; leaving it in
+    // would re-open the gap the owner asked to close.
+    const { container } = renderBoard(planned());
+    expect(container.querySelector('.hud__top .hud__spacer')).toBeNull();
+  });
+});
