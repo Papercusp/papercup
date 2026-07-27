@@ -30,6 +30,7 @@ import {
   type FactDependency,
   type FactSourceProvenance,
 } from '../../agent-facts/store';
+import { assumptionDetectabilityWarning } from '../../agent-facts/conflicts';
 import { resolveScopeRefAlias } from './scope-ctx';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 
@@ -389,6 +390,12 @@ export default defineTool({
               'their callerRelativity.',
           }
         : null;
+    // P-011 / D-087 R5: same warn-only discipline, for the one thing that decides
+    // whether an assumption is DETECTABLE at all. D-019 blesses the degradation
+    // (a claimless assumption is valid, just uncomparable) — this makes it honest
+    // rather than silent. Never a field on the clean case, and never on a
+    // conclusion/convention.
+    const detectorVisibility = assumptionDetectabilityWarning(fact);
     return {
       content: [
         {
@@ -398,6 +405,7 @@ export default defineTool({
             fact,
             ...(truncation ? { truncated: truncation } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
+            ...(detectorVisibility ? { detectorVisibility } : {}),
             ...provenanceFields,
           }),
         },

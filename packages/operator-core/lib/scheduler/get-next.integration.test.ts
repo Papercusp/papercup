@@ -31,6 +31,7 @@ import {
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import type { ClaimSpec } from './claim-spec';
+import { OrgTxnTimeoutError } from '../pg-bounded-txn';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
@@ -140,6 +141,52 @@ beforeEach(async () => {
 // ────────────────────────────────────────────────────────────────────────────
 // 1. Filter + rank: claims the CORRECT item.
 // ────────────────────────────────────────────────────────────────────────────
+describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a drain (EI-18805386252364731)', () => {
+  // The regression this guards: the claim query runs on the `harness_admin` pool, which has NO
+  // statement_timeout (migrations share it), so an over-cost spec used to HANG until the MCP
+  // client gave up minutes later. A member reads a pull that never returned as "lane drained"
+  // and parks — while the lane is full. The bug is not the slowness; it is that exhaustion and
+  // emptiness were indistinguishable.
+  it('an exhausted budget raises a TYPED error, on an item it would otherwise have claimed', async () => {
+    await seedFeature('F-affordable', { createdTs: 100 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'budget-guard',
+      revision: 1,
+      view: { filter: { field: 'id', op: 'in', value: ['F-affordable'] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+
+    // Budget gone BEFORE the data is touched. The claim must not come back as `null` — that is
+    // the exact shape a genuine drain has, and the whole defect was that the two were the same.
+    await expect(getNextWorkItem(s, BEE, { harness: H, claimBudgetMs: 0 })).rejects.toBeInstanceOf(
+      OrgTxnTimeoutError,
+    );
+
+    // Teeth: the SAME spec, same rows, with a real budget DOES claim. So the rejection above was
+    // about the budget and not about there being nothing to find — without this second half the
+    // test would still pass if the filter simply matched no rows.
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-affordable');
+  });
+
+  // COVERAGE NOTE — why this second, source-level test exists.
+  //
+  // The behavioural test above only exercises the JS ladder-deadline branch. The OTHER half of
+  // the fix is that the claim statement itself runs under a DB-side `SET LOCAL statement_timeout`
+  // — and that half is what actually rescues a wedged query, because postgres-js does not cancel
+  // an in-flight query from JS. A revert that kept the deadline check but put the UPDATE back on
+  // the raw unbounded `harness_admin` pool would restore the original hang while the test above
+  // still passed: a guard can fail at the right times and still be scoped to the wrong
+  // population. There is no way to observe SET LOCAL from outside its own transaction, so the
+  // executed-SQL path is pinned at the source level instead.
+  it('the claim statement runs through boundedOrgTxn, never the raw unbounded admin pool', () => {
+    const src = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'get-next.ts'), 'utf8');
+    expect(src).toContain('boundedOrgTxn');
+    // The pre-fix form: the claim UPDATE issued directly on the pool handle.
+    expect(src).not.toMatch(/await sql<FeatureRowDb\[\]>`\s*\n?\s*UPDATE harness_shared\.harness_features_consolidated/);
+  });
+});
+
 describe('get_next — spec filter + rank selects the correct item', () => {
   it('a tags filter NARROWS to the matching item', async () => {
     await seedFeature('F-sync', { tags: ['sync'], createdTs: 100 });

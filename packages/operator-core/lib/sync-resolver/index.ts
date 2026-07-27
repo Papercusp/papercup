@@ -49,6 +49,10 @@ import { createResolver, type QueryRegistry } from '@papercusp/sync/server';
 // Flat-row sync reads carry page metadata (e.g. the true total) on row[0]._meta;
 // attachListMeta is the one place that convention lives. See ./list-meta.
 import { attachListMeta } from './list-meta';
+// WI-6382: degraded-snapshot provenance. A `learning.*` catch must never return
+// a bare empty — that made a broken substrate byte-identical to an idle healthy
+// one and left every panel's error branch unreachable for the data-layer class.
+import { degraded } from './degraded-snapshot';
 import { projectAuthoredFields } from '../agent-tools/coordination/message-fields';
 
 // CLAMP, don't REJECT (clamp-not-reject, plan coordination-unification-data-sync-hardening
@@ -3664,7 +3668,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         });
       } catch (err) {
         console.warn('[learning.apiary] benchmark read failed:', err instanceof Error ? err.message : err);
-        return [{ instances: [] }];
+        return [degraded({ instances: [] }, err)];
       }
     },
   },
@@ -3701,7 +3705,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         if (code !== '42P01' && !/does not exist/i.test(msg)) {
           console.warn('[learning.hiveEvalTrend] hive-eval trend read failed:', msg);
         }
-        return [{ instances: [] }];
+        return [degraded({ instances: [] }, err)];
       }
     },
   },
@@ -3733,7 +3737,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         if (code !== '42P01' && !/does not exist/i.test(msg)) {
           console.warn('[learning.bakeoff] bake-off trend read failed:', msg);
         }
-        return [{ rows: [] }];
+        return [degraded({ rows: [] }, err)];
       }
     },
   },
@@ -3931,7 +3935,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         sql = getOrgPg().sql;
       } catch (err) {
         console.warn('[learning.efficacy] no workspace/PG:', err instanceof Error ? err.message : err);
-        return [EMPTY_EFFICACY];
+        return [degraded(EMPTY_EFFICACY, err)];
       }
 
       const result = { ...EMPTY_EFFICACY, gen0Baseline: { ...GEN0_BASELINE } };
@@ -3998,7 +4002,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         if ((err as { code?: string }).code !== '42P01') {
           console.warn('[learning.demand] demand read failed:', err instanceof Error ? err.message : err);
         }
-        return [EMPTY_DEMAND_SNAPSHOT];
+        return [degraded(EMPTY_DEMAND_SNAPSHOT, err)];
       }
     },
   },
@@ -4026,7 +4030,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         if ((err as { code?: string }).code !== '42P01') {
           console.warn('[learning.ekg] ekg read failed:', err instanceof Error ? err.message : err);
         }
-        return [EMPTY_EKG_SNAPSHOT];
+        return [degraded(EMPTY_EKG_SNAPSHOT, err)];
       }
     },
   },
@@ -4054,7 +4058,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         if ((err as { code?: string }).code !== '42P01') {
           console.warn('[learning.redQueen] vitals read failed:', err instanceof Error ? err.message : err);
         }
-        return [EMPTY_MTTSH_VITALS];
+        return [degraded(EMPTY_MTTSH_VITALS, err)];
       }
     },
   },
@@ -4083,7 +4087,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         if (code !== '42P01' && code !== '42703' && !/does not exist/i.test(msg)) {
           console.warn('[learning.mugWakeEfficiency] read failed:', msg);
         }
-        return [EMPTY_MUG_WAKE_EFFICIENCY];
+        return [degraded(EMPTY_MUG_WAKE_EFFICIENCY, err)];
       }
     },
   },
@@ -4449,7 +4453,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         return await routeWithWorkspace(async (tx) => [await readAnalyzeSnapshot(tx, ws)]);
       } catch (err) {
         console.warn('[learning.analyze] analyze read failed:', err instanceof Error ? err.message : err);
-        return [{ cycles: [], generatedAt: new Date().toISOString() }];
+        return [degraded({ cycles: [], generatedAt: new Date().toISOString() }, err)];
       }
     },
   },
@@ -4500,7 +4504,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         ]);
       } catch (err) {
         console.warn('[learning.frontier] frontier read failed:', err instanceof Error ? err.message : err);
-        return [{ lanes: [], unmatchedGovernor: [], generatedAt: new Date().toISOString() }];
+        return [degraded({ lanes: [], unmatchedGovernor: [], generatedAt: new Date().toISOString() }, err)];
       }
     },
   },
@@ -4554,7 +4558,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         ]);
       } catch (err) {
         console.warn('[learning.hiveThroughput] read failed:', err instanceof Error ? err.message : err);
-        return [{ hives: [] }];
+        return [degraded({ hives: [] }, err)];
       }
     },
   },
@@ -4596,7 +4600,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           return [{ ...rows[0], hives: hive ? all.filter((r) => r?.potSlug === hive) : all }];
         } catch (err) {
           console.warn('[learning.soakReport] snapshot read failed:', err instanceof Error ? err.message : err);
-          return [{ hives: [] }];
+          return [degraded({ hives: [] }, err)];
         }
       }
       try {
@@ -4619,7 +4623,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         return [{ hives: reports }];
       } catch (err) {
         console.warn('[learning.soakReport] read failed:', err instanceof Error ? err.message : err);
-        return [{ hives: [] }];
+        return [degraded({ hives: [] }, err)];
       }
     },
   },

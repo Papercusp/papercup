@@ -12,6 +12,7 @@
  * "no throughput recorded yet", never a 500.
  */
 import type { Sql } from 'postgres';
+import { degraded, isUndefinedTable, type DegradedProvenance } from './degraded-snapshot';
 import {
   isOperatingWell,
   normalizeThroughputRow,
@@ -30,16 +31,21 @@ export interface PotThroughputView {
   operatingWell: boolean;
 }
 
-export interface HiveThroughputSnapshot {
+/**
+ * WI-6382: `Partial<DegradedProvenance>` so a degraded read is TYPED, not just
+ * conventionally tagged — a consumer that forgets `unavailable` exists is the
+ * failure mode this closes. A snapshot WITHOUT `unavailable` is a genuine,
+ * trustworthy empty; with it, the substrate could not be read.
+ */
+export interface HiveThroughputSnapshot extends Partial<DegradedProvenance> {
   hives: PotThroughputView[];
 }
 
-const UNDEFINED_TABLE = '42P01';
-
-/** True when a PG error means "the relation doesn't exist" (pre-migration). */
-export function isUndefinedTable(err: unknown): boolean {
-  return (err as { code?: string } | null)?.code === UNDEFINED_TABLE;
-}
+// `isUndefinedTable` lives in ./degraded-snapshot — it had drifted into two
+// byte-identical copies (here and learning-scout-read.ts). One rule, one
+// definition: a rule that exists twice is a rule that can come to disagree
+// with itself. Re-exported so existing importers keep their call site.
+export { isUndefinedTable };
 
 /** Group recent throughput ticks into per-hive views (newest-first per hive). */
 export async function readHiveThroughputSnapshot(
@@ -64,7 +70,12 @@ export async function readHiveThroughputSnapshot(
     if (!isUndefinedTable(err)) {
       console.warn('[learning.hiveThroughput] tick read failed:', err instanceof Error ? err.message : err);
     }
-    return { hives: [] };
+    // WI-6382: still never a 500 — but the degraded snapshot now SAYS it is
+    // degraded. Returning a bare `{ hives: [] }` made a broken/pre-migration
+    // substrate byte-identical to a healthy idle one, so the panel confidently
+    // told the user "No throughput recorded yet — start a pot and its metrics
+    // appear here": an instruction to wait for something that will never come.
+    return degraded({ hives: [] }, err);
   }
 
   // Group newest-first; the query is already DESC so insertion order is preserved.

@@ -37,21 +37,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
-// embedded-postgres-server is plain JS (no .d.ts) — type the one export we use,
-// mirroring db-boot-migrate.ts's ApplyPendingMigrations wrapper.
-// @ts-expect-error untyped JS package; signature pinned by ApplyPendingMigrations below.
-import { applyPendingMigrations as _applyPendingMigrations } from '@papercusp/embedded-postgres-server';
+// Types come from the package's generated `src/index.d.ts` (EI-18804531117413708).
+// This was a verbatim copy of db-boot-migrate.ts's `@ts-expect-error` +
+// hand-written `ApplyPendingMigrations` cast; both are gone now that the real
+// signature is generated from the source's JSDoc.
+import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { resolveSqlDir } from './migration-drift';
-
-type ApplyPendingMigrations = (args: {
-  client: unknown;
-  sqlDir: string;
-  log?: (s: string) => void;
-  skipFile?: (f: string) => boolean;
-  continueOnError?: boolean;
-}) => Promise<{ appliedCount: number; totalKnown: number; failed: Array<{ file: string; error: string }> }>;
-
-const applyPendingMigrations = _applyPendingMigrations as ApplyPendingMigrations;
 
 // The runner applies each file as a raw `BEGIN; <ddl>; COMMIT;` via .unsafe(),
 // which postgres-js rejects on a pooled (max>1) connection — so this MUST be

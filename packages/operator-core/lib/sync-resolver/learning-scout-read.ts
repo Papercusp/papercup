@@ -30,6 +30,7 @@
  */
 import { term } from '@papercusp/lexicon';
 import type { Sql } from 'postgres';
+import { isUndefinedTable } from './degraded-snapshot';
 import { PLATFORM_POT_SLUG } from '../pot-membership';
 import {
   ISSUE_ABANDONED_STATUSES,
@@ -344,12 +345,9 @@ export interface ScoutSnapshot {
   digestHistory: ScoutDigestHistoryEntry[];
 }
 
-const UNDEFINED_TABLE = '42P01';
-
-/** True when a PG error means "the relation doesn't exist" (pre-migration). */
-export function isUndefinedTable(err: unknown): boolean {
-  return (err as { code?: string } | null)?.code === UNDEFINED_TABLE;
-}
+// `isUndefinedTable` lives in ./degraded-snapshot — see the note in
+// learning-hive-throughput-read.ts. One rule, one definition.
+export { isUndefinedTable };
 
 function toIso(v: unknown): string | null {
   if (v instanceof Date) return v.toISOString();

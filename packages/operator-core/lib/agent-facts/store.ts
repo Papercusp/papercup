@@ -1206,6 +1206,47 @@ export async function listConventionFacts(
 }
 
 /**
+ * P-011: every live DECLARED ASSUMPTION in the workspace, across scopes — the
+ * input to `detectAssumptionConflicts` (see `conflicts.ts`).
+ *
+ * ⚠ DELIBERATELY NOT NARROWED TO THE CALLER'S OWN SCOPES, unlike
+ * {@link listConventionFacts}. A convention that names someone else's ref governs
+ * THEM, so narrowing there removes noise. Here the opposite holds: the assumption
+ * most worth knowing about is the one a PEER holds that contradicts yours, and a
+ * `scopeRefs` filter would hide exactly it. Conflict detection is a
+ * workspace-wide question or it is nothing.
+ *
+ * ⚠ AND NOT FILTERED BY `source_hive`. A foreign hive's copy of an identity
+ * cannot manufacture a conflict, because the detector never pairs two rows of the
+ * same `(scope, scopeRef, key)` (D-087 R3) — so including federated rows costs
+ * nothing and lets a genuine cross-hive disagreement surface.
+ *
+ * The predicate covers the LEGACY assumption form (D-087 R2): D-019 defined an
+ * assumption as `confidence:'suspected'` + `dependsOn` before its own DEFECT 1
+ * added `kind` (migration 690). The `kind='assumption'` leg uses the mig-690
+ * partial index; the legacy leg cannot (it is `kind IS NULL`) and falls to the
+ * live-rows fold index — acceptable because that population is closed and, as of
+ * 2026-07-27, empty.
+ */
+export async function listAssumptionFacts(
+  opts: { workspaceId?: string; limit?: number } = {},
+  inject?: Sql,
+): Promise<AgentFact[]> {
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<AgentFactRow[]>`
+    SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
+           confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text
+      FROM harness_shared.agent_facts
+     WHERE workspace_id = ${ws}
+       AND (kind = 'assumption' OR (kind IS NULL AND confidence = 'suspected'))
+       AND superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
+     ORDER BY updated_at DESC
+     LIMIT ${opts.limit ?? 200}`;
+  return rows.map(rowToFact);
+}
+
+/**
  * Every VERSION of one fact identity, newest first — the read that makes
  * append-versioning (P-008 a) worth having. The current version is the row with
  * `supersededAt === null`; walk `supersedesId` to follow the chain back.

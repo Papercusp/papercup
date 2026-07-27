@@ -118,6 +118,13 @@ export interface GetNextOpts {
   workspaceId?: string;
   /** THIS Swarm's id — when set, the affinity/redundancy FLOORS honor it (per-Hive lease). */
   swarmId?: string;
+  /**
+   * EI-18805386252364731: override the claim ladder's time budget in ms (default
+   * CLAIM_LADDER_BUDGET_MS, per-attempt capped at CLAIM_ATTEMPT_BUDGET_MS). Lets a caller with
+   * a tighter SLA than the transport bound the pull, and lets the recurrence guard assert that
+   * an exhausted budget raises a TYPED error instead of a drain-shaped miss.
+   */
+  claimBudgetMs?: number;
   /** Skip high-stakes (redundancy > 1) items (redundancy flag on). */
   excludeRedundant?: boolean;
   /**
@@ -1389,7 +1396,8 @@ export async function getNextWorkItem(
   // as a drain-shaped `null`. Bounding each attempt alone would not be enough — the ladder runs
   // this query up to three tiers plus a release-and-retry loop, so N individually-affordable
   // attempts can still sum past any caller's patience.
-  const ladderDeadline = Date.now() + CLAIM_LADDER_BUDGET_MS;
+  const ladderBudgetMs = opts.claimBudgetMs ?? CLAIM_LADDER_BUDGET_MS;
+  const ladderDeadline = Date.now() + ladderBudgetMs;
 
   /** One attempt at the compiled query under a given (possibly widened) filter node. */
   const attempt = async (filterNode: FilterNode | undefined): Promise<WorkItem | null> => {
@@ -1420,7 +1428,7 @@ export async function getNextWorkItem(
        )
       RETURNING ${tx.unsafe(FEATURE_COLS)}`;
       },
-      { client: sql, statementTimeoutMs: Math.min(remainingMs, CLAIM_ATTEMPT_BUDGET_MS) },
+      { client: sql, statementTimeoutMs: Math.min(remainingMs, ladderBudgetMs, CLAIM_ATTEMPT_BUDGET_MS) },
     );
     return rows[0] ? featureRowToWorkItem(rows[0]) : null;
   };
@@ -1519,6 +1527,14 @@ export async function getNextWorkItem(
     // family dry ⇒ fall through to an adjacent open issue" contract. Widening past exactly
     // that leaf is what tier 3 IS; every other narrowing (including an issue-kind lane
     // constraint) still compiles through.
+    // EI-18805386252364731: do not ENTER tier 3 with the ladder budget already spent — tiers 1/2
+    // may have consumed it. This bounds tier-3 ENTRY only: `claimNextIssueWorkItem` still runs
+    // its own queries on the raw unbounded `harness_admin` pool, so a stall INSIDE it is not yet
+    // rescued (JS cannot cancel an in-flight postgres-js query). Tracked separately — see the
+    // residual noted on this item; do not read this line as the issue-family path being bounded.
+    if (Date.now() >= ladderDeadline) {
+      throw new OrgTxnTimeoutError('57014', new Error('claim ladder budget exhausted before tier 3'));
+    }
     const specFilterSql = compileFilter(sql, stripFeatureOnlyKindLeaves(spec.view.filter));
     claimed = await claimNextIssueWorkItem(
       {

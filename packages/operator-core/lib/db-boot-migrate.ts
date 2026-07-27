@@ -15,20 +15,15 @@
  * only this shared-box boot opts into continueOnError.)
  */
 import postgres from 'postgres';
-// embedded-postgres-server is plain JS (no .d.ts) — type the one export we use.
-// @ts-expect-error untyped JS package; signature pinned by ApplyPendingMigrations below.
-import { applyPendingMigrations as _applyPendingMigrations } from '@papercusp/embedded-postgres-server';
+// Types come from the package's generated `src/index.d.ts` (EI-18804531117413708).
+// This import used to carry a `@ts-expect-error` plus a hand-written
+// `ApplyPendingMigrations` type it cast to — a local projection of a signature
+// in another package, kept in sync by nothing, and duplicated verbatim in
+// release-preflight-migration-boot-smoke.integration.test.ts. The suppression
+// also meant the cast was unchecked: it could have drifted from the real
+// function silently.
+import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
-
-type ApplyPendingMigrations = (args: {
-  client: unknown;
-  sqlDir: string;
-  log?: (s: string) => void;
-  skipFile?: (f: string) => boolean;
-  continueOnError?: boolean;
-}) => Promise<{ appliedCount: number; totalKnown: number; failed: Array<{ file: string; error: string }> }>;
-
-const applyPendingMigrations = _applyPendingMigrations as ApplyPendingMigrations;
 import { checkMigrationDrift, resolveSqlDir } from './migration-drift';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
