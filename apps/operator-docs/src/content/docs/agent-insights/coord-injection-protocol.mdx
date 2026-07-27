@@ -37,6 +37,27 @@ double-UUID, and the per-block header.
   `^` `=` `.` `~` `|`) — emoji (`▶ ↪ ⚠`) tokenize to 2–3 tokens, pure waste here.
   (`|` is `yield` — turn-lifecycle-control Phase 4/P-019: a peer asking you to
   wrap up at a safe checkpoint and end your turn, i.e. `turn:interrupt`.)
+
+  ⚠ **It is DERIVED, not hand-written — do not add a bare key to it.** Since
+  P-008/D-014 (`agent-protocol-authority-semantics-2026-07-26`) it is composed
+  from two *typed* maps: `LIFECYCLE_LEGEND` (`Record<LifecycleCategory, …>`) and
+  `KIND_LEGEND` (`Record<CoordKind, …>`, ordered executable-then-conversational).
+  So a new lifecycle category or `CoordKind` without a glyph is a **compile
+  error**, not a silent fallback. This is the fix for a real class of bug, not
+  ceremony: `handoff_expired` had been a `CoordKind` since F-FIX-037 with no
+  legend entry, so every expiry line rendered as `-` — indistinguishable from a
+  free-text note, in exactly the place a reader needs to see their handoff timed
+  out. Add the kind to the union and the compiler will tell you where to add its
+  glyph.
+
+  The same split gives the runtime one authority for *"may this line drive a
+  state transition?"* — **`isExecutableCoordKind()`** over the closed
+  `COORD_EXECUTABLE_KINDS` set (`@papercusp/coordination/core`). Narrow through
+  it; never re-list kinds at a call site, which is how the two taxonomies drifted
+  in the first place. Conversational kinds (`message`/`ack`/`escalation`/
+  `escalation_resolved`) are preserved verbatim for audit but carry **zero**
+  authority — a peer saying "this is done" in a body is a claim, never a
+  transition.
 - **`glyphFor(entry)`** — the glyph for one entry: its lifecycle category if it
   has one (keyed on the **`lifecycle`** envelope field that `coord:emit` stamps —
   NOT `category`, which is reserved for ambient tags), else its `kind`.

@@ -47,7 +47,8 @@
  * always still returns its partial results.
  */
 import type { Duplex } from 'node:stream';
-import { defaultRunGit, type RunGit, listNamespaceRefs, type NamespaceRef } from './storage';
+import { defaultRunGit, type RunGit, listNamespaceRefs, type NamespaceRef, deviceNamespaceKey } from './storage';
+import { deriveNamespaceGenesisBaseline } from './namespace-genesis-baseline';
 import { SIGREFS_REF, buildSigrefs, readSigrefs } from './sigrefs';
 import {
   buildRefAnnouncement,
@@ -80,14 +81,15 @@ export interface RefAnnouncePublishTickInput {
    *  blob-size posture). */
   publishGuardCaps?: PublishGuardCaps;
   /**
-   * Genesis baseline for FIRST-EVER sigrefs (same contract as
-   * OwnHeadPublishTickInput.genesisBaselineSha): a ref with no prior sigrefs
-   * entry is judged over `(baseline, sha]` instead of the ENTIRE history —
-   * without it a pre-existing GitHub-backed repo above the flood caps
-   * (papercusp: 200k+ objects vs 50k) can never publish sigrefs, so peers
-   * never fetch it. Caller must verify the baseline is already-exposed (the
-   * origin remote-tracking tip, ancestry-checked). Refs that already have a
-   * prior sigrefs sha keep the strict prior — this only affects genesis.
+   * LAST-RESORT genesis baseline for FIRST-EVER sigrefs, used only when the
+   * per-ref walk below cannot answer.
+   *
+   * ⚠ WI-6249: this is a WORKTREE-derived, SINGLE-BRANCH sha, and this tick
+   * judges EVERY ref of this device's namespace in the BARE store. It is the
+   * right answer for at most one of them. Relying on it as the primary was the
+   * 4GB-heap OOM on the rig — see namespace-genesis-baseline.ts. The tick now
+   * derives the baseline PER REF, in the bare store, and falls back to this
+   * only when that walk returns nothing.
    */
   genesisBaselineSha?: string | null;
   /** WI-5738: workspace whose runtime secrets-guard path exemptions apply (see
@@ -176,11 +178,24 @@ export async function runRefAnnouncePublishTick(
   // WHOLE publish this tick — namespace-wide, safe to retry: nothing was
   // exposed under the namespace ref, so a peer can't have fetched it either.
   const priorShaByRef = new Map((prior?.refs ?? []).map((r) => [r.ref, r.sha] as const));
+  const namespaceHex = deviceNamespaceKey(input.devicePubkeyBase64);
   for (const r of currentRefs) {
     // Genesis: no prior sigrefs entry for this ref → judge from the verified
     // already-exposed baseline instead of the whole history (see input doc).
-    const fromOid = priorShaByRef.get(r.ref) ?? input.genesisBaselineSha ?? null;
-    if (fromOid === r.sha) continue; // this ref didn't move
+    // WI-6249: derive that baseline PER REF and IN THIS STORE — a single
+    // worktree-derived sha is the right answer for at most one namespace ref,
+    // and is catastrophically wrong for one on a different line of history.
+    const fromOid =
+      priorShaByRef.get(r.ref) ??
+      (await deriveNamespaceGenesisBaseline(
+        input.repoPath,
+        `refs/namespaces/${namespaceHex}/${r.ref}`,
+        namespaceHex,
+        runGit,
+      )) ??
+      input.genesisBaselineSha ??
+      null;
+    if (fromOid === r.sha) continue; // this ref didn't move (or nothing under it is unexposed)
     let guard: PublishGuardResult;
     try {
       guard = await checkPublishGuard({

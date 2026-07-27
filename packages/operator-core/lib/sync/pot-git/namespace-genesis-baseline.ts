@@ -39,14 +39,30 @@ export const MAX_FRONTIER_WALK_COMMITS = 50_000;
 export const MAX_FRONTIER_CANDIDATES = 16;
 
 /**
+ * Ref classes that are PROOF content already left a machine. Deliberately a
+ * closed allow-list rather than "everything but mine" — see the function doc.
+ * Each entry is a bare prefix with no globbing character, which `--glob` turns
+ * into a `<prefix>/*` prefix match (no ambiguity about whether `*` crosses `/`).
+ * The FIRST entry must stay the namespaces prefix: the self-exclude is placed
+ * immediately before it, and `--exclude` binds only to the next glob.
+ */
+export const EXPOSED_REF_GLOBS = ['refs/namespaces', 'refs/bootstrap-quarantine', 'refs/remotes'] as const;
+
+/**
  * The genesis baseline for ONE ref under this device's own namespace.
  *
- * "Already exposed" here is every ref in this store EXCEPT our own namespace:
- * another device's namespace ref is content that device published to the hive, a
- * remote-tracking ref is content fetched off-box, and a quarantined ref is
- * content a peer served us. All of it demonstrably left some machine already, so
- * none of it is NEW exposure this device is responsible for judging. Only our
- * own namespace is held out — that is exactly the content in question.
+ * The already-exposed set is named EXPLICITLY (see EXPOSED_REF_GLOBS), not as
+ * "every ref except mine". That distinction is the whole safety margin: an
+ * exclude-everything-else formulation would count any stray local ref in the
+ * store as proof of exposure and judge NOTHING — an UNDER-guard, the one
+ * direction that actually leaks. Each glob below is a class of ref that
+ * provably left a machine:
+ *   • another device's namespace  — that device published it to the hive
+ *   • bootstrap-quarantine        — a peer served it to us
+ *   • remote-tracking             — we fetched it from a remote
+ * Our own namespace is held out of the first glob: it is exactly the content in
+ * question. Anything not on this list is treated as unexposed and therefore
+ * judged, which is the safe direction to be wrong in.
  *
  * Returns the ref's OWN tip when nothing under it is unexposed; the caller's
  * `fromOid === sha` check then skips the ref outright (an empty range), which is
@@ -66,12 +82,16 @@ export async function deriveNamespaceGenesisBaseline(
     const type = await runGit(['cat-file', '-t', namespaceRefFullName], repoPath);
     if (type.code !== 0 || type.stdout.trim() !== 'commit') return null;
 
-    // `--exclude=<glob>` filters the refs the FOLLOWING `--all` contributes, so
-    // this reads "everything in the store except my own namespace".
+    // `--exclude=<glob>` filters only the refs the NEXT ref-glob contributes,
+    // hence its placement immediately before the namespaces glob.
     return await frontierBaseline(
       repoPath,
       namespaceRefFullName,
-      ['--not', `--exclude=refs/namespaces/${selfNamespaceHex}/*`, '--all'],
+      [
+        '--not',
+        `--exclude=refs/namespaces/${selfNamespaceHex}`,
+        ...EXPOSED_REF_GLOBS.map((g) => `--glob=${g}`),
+      ],
       runGit,
     );
   } catch {

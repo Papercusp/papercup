@@ -1656,6 +1656,40 @@ describe('stage levers (P-005)', () => {
     expect(l).toMatch(/fix the reds/);
   });
 
+  /**
+   * Found by DOGFOODING this surface on a live stale red: the gate read 5 consecutive
+   * reds, but a run was already in flight judging a candidate that carried the fix, so
+   * a verdict clearing it was on its way.
+   *
+   * Telling the caller to fire release:checkpoint-run there is actively wrong: the gate
+   * is a singleton, so a second fire is REFUSED — and the natural escalation from a
+   * refusal is `replaceStale`, which is precisely the EI-11667 replace-storm that killed
+   * every verdict for 2h on 2026-07-13. When a verdict covering your change is already
+   * coming, waiting IS the lever.
+   */
+  it('an IN-FLIGHT run that carries the change ⇒ no lever, even with the gate red', () => {
+    const l = lever('gate', {
+      positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+      gate: { stalled: true, consecutiveReds: 5, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      changeInCandidate: { ...NO_CANDIDATE, judgingSha: 'inflight123456', judgingContainsPath: true },
+    });
+    expect(l).toBeNull();
+  });
+
+  it('…but an in-flight run that does NOT carry the change still routes to the containment lever', () => {
+    const l = lever('gate', {
+      positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+      gate: { stalled: true, consecutiveReds: 5, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      changeInCandidate: {
+        ...NO_CANDIDATE,
+        judgingSha: 'inflight123456',
+        judgingContainsPath: false,
+        missingReason: 'newer-commit',
+      },
+    });
+    expect(l).toMatch(/quiet-cut/);
+  });
+
   it('`main` never offers a lever — it advances only as a consequence of the gate', () => {
     expect(
       lever('main', {

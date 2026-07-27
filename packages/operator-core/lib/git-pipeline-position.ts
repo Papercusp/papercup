@@ -983,11 +983,20 @@ export function computeStages(
           ? cic.missingReason === 'uncommitted' || cic.missingReason === 'absent'
             ? 'git-sync:run (the judged candidate does not contain your change yet)'
             : 'wait out the quiet-cut window (~4 min), then release:checkpoint-run — the judged candidate predates your commit'
-          : g.fireStale
-            ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
-            : gateHealth === 'stalled'
-              ? 'fix the reds, then release:checkpoint-run — a red gate holds main for everyone and is yours to green, not a queue to wait in'
-              : null
+          : // A run is ALREADY IN FLIGHT judging a candidate that carries this change: a
+            // verdict covering it is coming, so waiting is the correct move and there is
+            // nothing to fire. Telling the caller to run release:checkpoint-run here is
+            // actively wrong — the gate is a singleton, so a second fire is REFUSED, and
+            // reaching for replaceStale to "unstick" it is the EI-11667 replace-storm that
+            // starved the gate of every verdict for 2h. Found by dogfooding this surface on
+            // a live stale red whose in-flight run already carried the fix.
+            cic.judgingSha && cic.judgingContainsPath === true
+            ? null
+            : g.fireStale
+              ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
+              : gateHealth === 'stalled'
+                ? 'fix the reds, then release:checkpoint-run — a red gate holds main for everyone and is yours to green, not a queue to wait in'
+                : null
         : null,
     });
 
