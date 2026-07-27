@@ -661,7 +661,13 @@ describe('runBootstrapLeg', () => {
     }
   });
 
-  it('warns "no live dial path" listing EVERY candidate when all are registry misses (dialLog signature)', async () => {
+  // Anchored on the stable `bootstrap-tick` token (what the runbook greps for) and
+  // on the dialLog entries — NOT on the prose. EI-18740968796318403 reworded this
+  // warning (the old "no live dial path" phrasing was actively misleading: it means
+  // a registry miss AT SAMPLE TIME, not an unreachable peer) and broke these two
+  // assertions, which is the "test quotes emitted wording, has no drift guard"
+  // failure mode. The dialLog signature below is the behaviour worth pinning.
+  it('warns listing EVERY candidate when all are registry misses (dialLog signature)', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
@@ -671,7 +677,7 @@ describe('runBootstrapLeg', () => {
       openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(true)); // all no-path
       await runBootstrapLeg(SLUG, WS);
       expect(bootstrapFromPeerMock).not.toHaveBeenCalled();
-      const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('no live dial path'));
+      const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'));
       expect(warnMsg).toBeTruthy();
       expect(warnMsg).toContain(`${PEER_DEVICE.slice(0, 8)}:no-path`);
       expect(warnMsg).toContain(`${PEER_DEVICE_2.slice(0, 8)}:no-path`);
@@ -744,7 +750,7 @@ describe('runBootstrapLeg', () => {
       await runBootstrapLeg(SLUG, WS);
       expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1); // unchanged — no new dial
       expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1); // unchanged
-      const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('no live dial path'));
+      const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'));
       expect(warnMsg).toContain(`${PEER_DEVICE.slice(0, 8)}:backoff(no-such-repo)`);
     } finally {
       warnSpy.mockRestore();
