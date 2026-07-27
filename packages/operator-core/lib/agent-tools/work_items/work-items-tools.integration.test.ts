@@ -324,6 +324,42 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect(none).toEqual([]);
   });
 
+  // EI-18821495781915490: the literal `'self'` means the CALLER — the same token
+  // work_items:claim, claim_next and create's `assign_to` all resolve (EI-9274).
+  // `list` alone passed it through verbatim, so the query asked for an ownerId of
+  // "self", matched nothing, and returned []. It failed in the SAFE-LOOKING
+  // direction: an agent auditing its own holdings before a compaction or handoff
+  // reads [] as "nothing to flush". Observed live — only the compaction tripwire
+  // caught the miss, which is the guard of last resort, not a detector.
+  it("assignee: 'self' resolves to the caller, like every sibling tool's self token", async () => {
+    const bug = await createOne({ kind: 'bug', title: 'self-token bug', harness: 'papercup' });
+    const bugId = (bug.workItem as Record<string, unknown>).id as string;
+    const other = await createOne({ kind: 'bug', title: 'peer-owned bug', harness: 'papercup' });
+    const otherId = (other.workItem as Record<string, unknown>).id as string;
+
+    await claimOne({ id: bugId, assignee: 'su-tester' }); // CTX resolves to ownerId 'su-tester'
+    await claimOne({ id: otherId, assignee: 'agent-other' });
+
+    const viaSelf = await listData({ harness: 'papercup', assignee: 'self' });
+    expect(viaSelf.map((w) => w.id)).toEqual([bugId]);
+
+    // `assignee: 'self'` and `mine: true` are the same request spelled two ways.
+    const viaMine = await listData({ harness: 'papercup', mine: true });
+    expect(viaSelf.map((w) => w.id)).toEqual(viaMine.map((w) => w.id));
+
+    // NEGATIVE CONTROL — the load-bearing assertion. The fix must resolve the ONE
+    // reserved token, not degrade `assignee` into "unmatched owner ⇒ show
+    // everything". A fix that simply dropped an unmatched filter would satisfy both
+    // assertions above while silently breaking every lookup of a PEER's work, and a
+    // fix that disabled the filter outright would look identical from here.
+    const unknown = await listData({ harness: 'papercup', assignee: 'nobody-home' });
+    expect(unknown).toEqual([]);
+
+    // ...and a peer lookup must still return exactly that peer's item.
+    const peer = await listData({ harness: 'papercup', assignee: 'agent-other' });
+    expect(peer.map((w) => w.id)).toEqual([otherId]);
+  });
+
   it('claim → set_state(close) → release walks the lifecycle envelopes (issue + feature)', async () => {
     const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const bugId = (bug.workItem as Record<string, unknown>).id as string;

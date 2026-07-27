@@ -36,10 +36,17 @@ function deps(over: Parameters<typeof divergenceSweep>[0] = {}) {
   return {
     loadRecentCalls: vi.fn(async () => flailCalls()),
     recentWatchdogFires: vi.fn(async () => 0),
-    recordFire: vi.fn(async () => undefined),
+    // Won the debounce slot. `claimWatchdogFire` replaced the old
+    // recentWatchdogFires-then-recordFire pair, which was both racy and — because
+    // the recorded reason never contained the scope key — a debounce that could
+    // never match (EI-18824142520274965).
+    claimWatchdogFire: vi.fn(async () => true),
     openEscalation: vi.fn(async () => undefined),
     sendMessage: vi.fn(async () => undefined),
-    now: T0 + 60_000,
+    // Comfortably past CONVERGENCE_SETTLE_MS from the flail's last failure, so
+    // these delivery-ordering tests exercise delivery rather than the settle
+    // rule (which has its own tests below).
+    now: T0 + 10 * 60_000,
     ...over,
   } as unknown as Parameters<typeof divergenceSweep>[0] & Record<string, ReturnType<typeof vi.fn>>;
 }
@@ -140,23 +147,46 @@ describe('divergenceSweep — the delivery orderings', () => {
     expect(esc.summary).toContain('REPEAT');
   });
 
-  it('debounces inside the debounce window — no message, no escalation', async () => {
-    const recentWatchdogFires = vi.fn(async (_ws, _slug, hours: number) =>
-      hours === DIVERGENCE_DEBOUNCE_HOURS ? 1 : 0,
-    );
-    const d = deps({ recentWatchdogFires } as never);
+  it('debounces when the fire slot is already claimed — no message, no escalation', async () => {
+    const d = deps({ claimWatchdogFire: vi.fn(async () => false) } as never);
     const out = await divergenceSweep(d);
     expect(d.sendMessage).not.toHaveBeenCalled();
     expect(d.openEscalation).not.toHaveBeenCalled();
     expect(out.outcomes[0].outcome).toBe('debounced');
   });
 
-  it('records the fire BEFORE notifying, so a crash cannot re-page forever', async () => {
+  it('claims the fire BEFORE notifying, so a crash cannot re-page forever', async () => {
     const d = deps();
     await divergenceSweep(d);
-    const fireOrder = (d.recordFire as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const fireOrder = (d.claimWatchdogFire as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
     const sendOrder = (d.sendMessage as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
     expect(fireOrder).toBeLessThan(sendOrder);
+  });
+
+  // ── EI-18824142520274965: the debounce that could never match ──────────────
+  //
+  // The regression that produced 113 fires across 2 conditions in 37 minutes.
+  // `claimWatchdogFire`/`recentWatchdogFires` resolve a `scopeKey` as
+  // `reason LIKE '%scopeKey%'`, so recording the bare summary — which never
+  // contains `<ownerId>:<toolName>` — left the debounce structurally unable to
+  // find its own prior fires. Asserting on the RECORDED REASON is what pins it:
+  // a test that only checked "was it called" passed throughout the outage.
+  it('records the fire under a reason CONTAINING the scope key, or the debounce cannot match', async () => {
+    const d = deps();
+    await divergenceSweep(d);
+    const [claim] = (d.claimWatchdogFire as ReturnType<typeof vi.fn>).mock.calls[0];
+    const key = `su-a:work_items:claim`;
+    expect(claim.scopeKey).toBe(key);
+    expect(claim.reason).toContain(key);
+    expect(claim.windowHours).toBe(DIVERGENCE_DEBOUNCE_HOURS);
+  });
+
+  it('reads isRepeat BEFORE claiming, so its own fire cannot pin it to true', async () => {
+    const d = deps();
+    await divergenceSweep(d);
+    const repeatRead = (d.recentWatchdogFires as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const claim = (d.claimWatchdogFire as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    expect(repeatRead).toBeLessThan(claim);
   });
 });
 

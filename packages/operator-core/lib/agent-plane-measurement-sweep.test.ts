@@ -20,6 +20,8 @@ function coverage(over: Partial<DivergenceCoverage> = {}): DivergenceCoverage {
     comparableBuckets: 0,
     failuresSeen: 0,
     thrashRuns: 0,
+    convergedRuns: 0,
+    unsettledRuns: 0,
     stampedLegRan: false,
     samplingLegRan: false,
     ...over,

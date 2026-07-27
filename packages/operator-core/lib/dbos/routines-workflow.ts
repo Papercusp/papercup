@@ -811,7 +811,13 @@ async function routinesTickImpl(): Promise<void> {
           console.info(
             `[intent-action-divergence] examined ${report.coverage.callsExamined} calls, ` +
               `stampFillRate=${report.coverage.stampFillRate}, ` +
-              `thrashRuns=${report.coverage.thrashRuns}/${report.coverage.failuresSeen} failures`,
+              `thrashRuns=${report.coverage.thrashRuns}/${report.coverage.failuresSeen} failures ` +
+              // The suppression breakdown, for the same reason the fill rate is
+              // here: `thrashRuns` alone cannot say whether a run was REPORTED.
+              // A converged/unsettled count climbing while notifications stay
+              // flat is the detector working, not the detector silent
+              // (EI-18824142520274965).
+              `(converged=${report.coverage.convergedRuns}, unsettled=${report.coverage.unsettledRuns})`,
           );
         }
         return report;

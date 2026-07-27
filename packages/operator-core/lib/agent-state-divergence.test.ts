@@ -17,6 +17,7 @@ import {
   toolNamespace,
   DIVERGENCE_LIMIT,
   RETRY_THRASH_THRESHOLD,
+  CONVERGENCE_SETTLE_MS,
   THRASH_WINDOW_MS,
   type DivergenceCall,
 } from './agent-state-divergence';
@@ -154,13 +155,119 @@ describe('the sampling leg — live without any stamp', () => {
     expect(out.divergences).toHaveLength(0);
   });
 
+  // ── EI-18824142520274965: "without converging" must be OBSERVABLE ──────────
+  //
+  // The detector used to filter to failures before grouping, which discarded the
+  // only rows that could ever disprove its own verdict — so it asserted a
+  // negative it structurally could not see, and paged agents whose very next
+  // call had succeeded. Live case: 3 rejections for an undocumented 5000-char
+  // limit (7884 → 5357 → 5098 chars — each attempt strictly closer), then
+  // success. That is textbook self-correction, reported as a flail.
+  describe('a run the agent RECOVERED from is not a flail', () => {
+    /** A success of the same tool, `afterMs` after T0. */
+    const ok = (id: number, afterMs: number): DivergenceCall =>
+      call({
+        id,
+        toolName: 'work_items:claim',
+        status: 'ok',
+        invokedAt: new Date(T0 + afterMs).toISOString(),
+        args: { a: id },
+      });
+
+    it('suppresses a threshold run that ends in a success on the same tool', () => {
+      const out = detectIntentActionDivergence([...flail(RETRY_THRASH_THRESHOLD), ok(99, 5_000)]);
+      expect(out.divergences).toHaveLength(0);
+      // Still COUNTED — the suppression is measurable, not invisible.
+      expect(out.coverage.thrashRuns).toBe(1);
+      expect(out.coverage.convergedRuns).toBe(1);
+    });
+
+    it('still flags a run with no success after it', () => {
+      const out = detectIntentActionDivergence(flail(RETRY_THRASH_THRESHOLD));
+      expect(out.divergences).toHaveLength(1);
+      expect(out.coverage.convergedRuns).toBe(0);
+    });
+
+    it('a success SPLITS the timeline instead of merging two episodes into one flail', () => {
+      // fail,fail,ok,fail,fail — converged twice, and neither half reaches the
+      // threshold. The old code merged all four failures into a single
+      // "4× without converging".
+      const out = detectIntentActionDivergence([
+        ...flail(2),
+        ok(50, 3_000),
+        call({
+          id: 60,
+          toolName: 'work_items:claim',
+          status: 'invalid-input',
+          invokedAt: new Date(T0 + 4_000).toISOString(),
+          args: { a: 6 },
+        }),
+        call({
+          id: 61,
+          toolName: 'work_items:claim',
+          status: 'invalid-input',
+          invokedAt: new Date(T0 + 5_000).toISOString(),
+          args: { a: 7 },
+        }),
+      ]);
+      expect(out.divergences).toHaveLength(0);
+    });
+
+    it("a success on a DIFFERENT tool does not excuse this tool's flail", () => {
+      const out = detectIntentActionDivergence([
+        ...flail(RETRY_THRASH_THRESHOLD),
+        call({ id: 98, toolName: 'plans:get', status: 'ok', invokedAt: new Date(T0 + 5_000).toISOString(), args: {} }),
+      ]);
+      expect(out.divergences).toHaveLength(1);
+    });
+
+    it('an UNKNOWN status neither converges a run nor breaks it — no signal from a gap', () => {
+      const out = detectIntentActionDivergence([
+        ...flail(RETRY_THRASH_THRESHOLD),
+        call({
+          id: 97,
+          toolName: 'work_items:claim',
+          status: null,
+          invokedAt: new Date(T0 + 5_000).toISOString(),
+          args: {},
+        }),
+      ]);
+      expect(out.divergences).toHaveLength(1);
+      expect(out.coverage.convergedRuns).toBe(0);
+    });
+  });
+
+  describe('the settle window — do not judge a run that may still be mid-correction', () => {
+    it('defers a run whose last failure is newer than CONVERGENCE_SETTLE_MS', () => {
+      const calls = flail(RETRY_THRASH_THRESHOLD);
+      const lastAt = Date.parse(calls[calls.length - 1].invokedAt);
+      const out = detectIntentActionDivergence(calls, { now: lastAt + CONVERGENCE_SETTLE_MS - 1 });
+      expect(out.divergences).toHaveLength(0);
+      expect(out.coverage.unsettledRuns).toBe(1);
+    });
+
+    it('reports it once the run has settled', () => {
+      const calls = flail(RETRY_THRASH_THRESHOLD);
+      const lastAt = Date.parse(calls[calls.length - 1].invokedAt);
+      const out = detectIntentActionDivergence(calls, { now: lastAt + CONVERGENCE_SETTLE_MS });
+      expect(out.divergences).toHaveLength(1);
+      expect(out.coverage.unsettledRuns).toBe(0);
+    });
+
+    it('without a clock the settle rule does not apply — the detector reads no hidden time', () => {
+      const out = detectIntentActionDivergence(flail(RETRY_THRASH_THRESHOLD));
+      expect(out.divergences).toHaveLength(1);
+      expect(out.coverage.unsettledRuns).toBe(0);
+    });
+  });
+
   it('fires with a ZERO stamp fill rate — the state of the fleet today', () => {
     const out = detectIntentActionDivergence(flail(3));
     expect(out.coverage.stampFillRate).toBe(0);
     expect(out.divergences).toHaveLength(1);
   });
 
-  it('counts changed-args transitions — P-010\'s first named trigger, as evidence', () => {
+  it("counts changed-args transitions — P-010's first named trigger, as evidence", () => {
     const out = detectIntentActionDivergence(flail(3));
     expect(out.divergences[0].retryLoop?.argsChangedTransitions).toBe(2);
     expect(out.divergences[0].retryLoop?.identicalRetries).toBe(0);
@@ -174,7 +281,11 @@ describe('the sampling leg — live without any stamp', () => {
 
   it('records a same-namespace fallback inside the run — the second named trigger', () => {
     const calls = flail(3);
-    calls.splice(1, 0, call({ id: 50, toolName: 'work_items:claim_next', invokedAt: new Date(T0 + 500).toISOString() }));
+    calls.splice(
+      1,
+      0,
+      call({ id: 50, toolName: 'work_items:claim_next', invokedAt: new Date(T0 + 500).toISOString() }),
+    );
     const out = detectIntentActionDivergence(calls);
     expect(out.divergences[0].retryLoop?.fallbackObserved).toBe(true);
     expect(out.divergences[0].detail).toContain('fallback');
@@ -190,8 +301,20 @@ describe('the sampling leg — live without any stamp', () => {
     // Two failures, a long gap, then two more: neither side reaches 3.
     const calls = [
       ...flail(2),
-      call({ id: 10, toolName: 'work_items:claim', status: 'invalid-input', invokedAt: new Date(T0 + THRASH_WINDOW_MS + 1).toISOString(), args: { a: 9 } }),
-      call({ id: 11, toolName: 'work_items:claim', status: 'invalid-input', invokedAt: new Date(T0 + THRASH_WINDOW_MS + 2000).toISOString(), args: { a: 10 } }),
+      call({
+        id: 10,
+        toolName: 'work_items:claim',
+        status: 'invalid-input',
+        invokedAt: new Date(T0 + THRASH_WINDOW_MS + 1).toISOString(),
+        args: { a: 9 },
+      }),
+      call({
+        id: 11,
+        toolName: 'work_items:claim',
+        status: 'invalid-input',
+        invokedAt: new Date(T0 + THRASH_WINDOW_MS + 2000).toISOString(),
+        args: { a: 10 },
+      }),
     ];
     expect(detectIntentActionDivergence(calls).divergences).toHaveLength(0);
   });
@@ -214,7 +337,12 @@ describe('the sampling leg — live without any stamp', () => {
 
   it('does not invent changed-args evidence when args were never supplied', () => {
     const calls = Array.from({ length: 3 }, (_, i) =>
-      call({ id: i + 1, toolName: 'work_items:claim', status: 'error', invokedAt: new Date(T0 + i * 1000).toISOString() }),
+      call({
+        id: i + 1,
+        toolName: 'work_items:claim',
+        status: 'error',
+        invokedAt: new Date(T0 + i * 1000).toISOString(),
+      }),
     );
     const out = detectIntentActionDivergence(calls);
     expect(out.divergences).toHaveLength(1);

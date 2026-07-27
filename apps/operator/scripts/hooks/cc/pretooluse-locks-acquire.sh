@@ -356,39 +356,49 @@ def find_repo_root(abs_path):
     return None
 
 
-def _repo_origin_url(repo_root):
-    """Best-effort `origin` fetch URL for ANY repo shape — ordinary clone
+def _repo_git_config_path(repo_root):
+    """Absolute path to a repo's `config` for ANY repo shape — ordinary clone
     (`.git` dir), linked worktree (`.git` file → gitdir → commondir), or
-    submodule (`.git` file → gitdir with its own config). None on ANY
+    submodule (`.git` file → gitdir with its own config). None when it cannot
+    be resolved. Split out of _repo_origin_url so the remote-less check below
+    reads the SAME config by the SAME rules — the two must never disagree
+    about which file they judged."""
+    git_entry = os.path.join(repo_root, '.git')
+    if os.path.isfile(git_entry):
+        with open(git_entry) as f:
+            m = re.match(r'gitdir:\s*(.+)$', f.read().strip())
+        if not m:
+            return None
+        gd = m.group(1).strip()
+        if not os.path.isabs(gd):
+            gd = os.path.join(repo_root, gd)
+        gd = os.path.realpath(gd)
+        cfg = os.path.join(gd, 'config')
+        if not os.path.exists(cfg):
+            # Linked worktree: config lives in the COMMON git dir.
+            cd_path = os.path.join(gd, 'commondir')
+            if not os.path.exists(cd_path):
+                return None
+            with open(cd_path) as f:
+                cd = f.read().strip()
+            if not os.path.isabs(cd):
+                cd = os.path.join(gd, cd)
+            cfg = os.path.join(os.path.realpath(cd), 'config')
+        return cfg
+    return os.path.join(git_entry, 'config')
+
+
+def _repo_origin_url(repo_root):
+    """Best-effort `origin` fetch URL for ANY repo shape. None on ANY
     failure (unreadable, no origin remote, broken gitdir). Used by the
     worktree guard (WI-5031) to tell a stray checkout of the CANONICAL
     project apart from an independent repo that merely lives in the
     workspace dir. Parses .git/config directly — no `git` subprocess on
     the per-edit hot path."""
     try:
-        git_entry = os.path.join(repo_root, '.git')
-        if os.path.isfile(git_entry):
-            with open(git_entry) as f:
-                m = re.match(r'gitdir:\s*(.+)$', f.read().strip())
-            if not m:
-                return None
-            gd = m.group(1).strip()
-            if not os.path.isabs(gd):
-                gd = os.path.join(repo_root, gd)
-            gd = os.path.realpath(gd)
-            cfg = os.path.join(gd, 'config')
-            if not os.path.exists(cfg):
-                # Linked worktree: config lives in the COMMON git dir.
-                cd_path = os.path.join(gd, 'commondir')
-                if not os.path.exists(cd_path):
-                    return None
-                with open(cd_path) as f:
-                    cd = f.read().strip()
-                if not os.path.isabs(cd):
-                    cd = os.path.join(gd, cd)
-                cfg = os.path.join(os.path.realpath(cd), 'config')
-        else:
-            cfg = os.path.join(git_entry, 'config')
+        cfg = _repo_git_config_path(repo_root)
+        if cfg is None:
+            return None
         url, in_origin = None, False
         with open(cfg) as f:
             for line in f:
@@ -399,6 +409,48 @@ def _repo_origin_url(repo_root):
                     url = s.split('=', 1)[1].strip() if '=' in s else None
                     break
         return url or None
+    except Exception:
+        return None
+
+
+def _repo_has_zero_remotes(repo_root):
+    """True when the repo's config was READ SUCCESSFULLY and declares NO
+    remotes at all; False when it declares at least one; None when the config
+    could not be read.
+
+    EI-18825797177551487 — why this exists, and why it is sound. WI-5031 made
+    an independent sibling exempt from the worktree guard, but used `origin` as
+    the independence proof and treated an UNREADABLE-or-ABSENT origin as
+    "not proven independent" (deny). That conflates two very different repos:
+    one we could not read, and one that provably has no remote at all.
+
+    A stray checkout of the canonical project is, by construction, a CLONE — so
+    it always carries an origin. A repo declaring zero remotes was never cloned
+    from anything and therefore cannot be a stray checkout of the canonical
+    tree, which is the only hazard this guard exists to prevent. Verified
+    against every sibling in this workspace when the fix was written: all six
+    same-project checkouts (papercup, papercup-checkpoint, papercup-release,
+    papercusp-checkpoint, papercusp-release, papercusp-staging) carry
+    origin=.../papercup.git, while every remote-less sibling (hive-canary — a
+    REGISTERED harness with its own `auto-commit hive-canary` git-sync lane —
+    plus brood-box-alpha and the greenfield-* project trees) is a genuinely
+    independent local project. Denying those parked the daily loop-health
+    canary as unworkable, the same failure mode WI-5031 was written to fix.
+
+    Deliberately distinguishes "read it, found none" from "could not read":
+    only the former proves independence. Unreadable still denies."""
+    try:
+        cfg = _repo_git_config_path(repo_root)
+        if cfg is None:
+            return None
+        saw_remote = False
+        with open(cfg) as f:
+            for line in f:
+                s = line.strip()
+                if s.startswith('[') and re.match(r'\[remote\s*"', re.sub(r'\s+', ' ', s)):
+                    saw_remote = True
+                    break
+        return not saw_remote
     except Exception:
         return None
 
@@ -555,17 +607,26 @@ for p in raw_paths:
             # sibling keeps the old refusal).
             _sib_origin = _norm_origin(_repo_origin_url(root))
             _canon_origin = _norm_origin(_repo_origin_url(_canonical_tree))
-            if (_sib_origin is None or _canon_origin is None
-                    or _sib_origin == _canon_origin):
+            # Independent by EITHER proof:
+            #  (a) both origins readable and DIFFERENT (WI-5031's original test), or
+            #  (b) the sibling provably declares NO remotes — never cloned, so it
+            #      cannot be a stray checkout of the canonical project
+            #      (EI-18825797177551487; see _repo_has_zero_remotes).
+            # Unproven in both directions still denies — the conservative default.
+            _origins_differ = (_sib_origin is not None
+                               and _canon_origin is not None
+                               and _sib_origin != _canon_origin)
+            if not (_origins_differ or _repo_has_zero_remotes(root) is True):
                 deny(
                     f"worktree guard: refused — you are editing in '{root}', which "
                     f"is not the canonical staging tree. Agents edit ONLY the shared "
                     f"staging tree ({_canonical_tree}); other worktrees are off-limits "
                     f"because work left in them never reaches the auto-committed tree. "
                     f"cd into the staging tree and make this edit there. (An "
-                    f"INDEPENDENT sibling repo — one whose `origin` remote provably "
-                    f"differs from the canonical tree's — is exempt; this tree's "
-                    f"origin matches the canonical project or could not be read.)"
+                    f"INDEPENDENT sibling repo is exempt — one whose `origin` remote "
+                    f"provably differs from the canonical tree's, OR which provably "
+                    f"declares no remotes at all. This tree's origin matches the "
+                    f"canonical project, or its git config could not be read.)"
                 )
     except Exception:
         pass  # The guard must never wedge an edit on its own error (fail-open).
