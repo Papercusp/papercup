@@ -144,6 +144,62 @@ describe('selectAbsentConditions (pure — EI-15182 guard #3, family-agnostic)',
     expect(selectAbsentConditions(states, now, 2 * 60 * 60_000)).toEqual([]);
   });
 
+  it('WI-6228: a ONE-SHOT condition is NEVER absent, however long its last_seen has been frozen', () => {
+    // The regression this guards. A one-shot emitter (`if (alerted) continue`)
+    // broadcasts once and stays deliberately silent while the condition remains
+    // continuously true, so `last_seen` freezing carries NO information about
+    // recovery. Resolving it by absence is a false green — and, unlike a
+    // coalescing race, it is GUARANTEED for any one-shot condition outlasting
+    // absenceMs. Without the one_shot check this returns the key and fails.
+    const now = Date.parse('2026-07-17T21:00:00.000Z');
+    const states = [
+      mkState({
+        condition_key: 'origin-freshness:papercusp',
+        last_seen: '2026-07-11T02:13:00.000Z', // ~6 days frozen
+        one_shot: true,
+      }),
+    ];
+    expect(selectAbsentConditions(states, now, 2 * 60 * 60_000)).toEqual([]);
+  });
+
+  it('WI-6228: replays the real incident — the single alarm is NOT auto-resolved at the 120m mark', () => {
+    // Measured timeline, 2026-07-26 fleet-wide git egress freeze:
+    //   21:13:41Z  the one and only origin-freshness:papercusp alarm
+    //   23:13:48Z  reconciler auto-resolved it (120m+7s later, to the second)
+    //   23:39:42Z  origin actually recovered — 26min AFTER the false green
+    // At the moment of the false green the outage was live and worsening.
+    const alarmedAt = '2026-07-26T21:13:41.000Z';
+    const falselyResolvedAt = Date.parse('2026-07-26T23:13:48.000Z');
+    const stillFrozen = mkState({
+      condition_key: 'origin-freshness:papercusp',
+      first_seen: alarmedAt,
+      open_since: alarmedAt,
+      last_seen: alarmedAt,
+      one_shot: true,
+    });
+    expect(falselyResolvedAt - Date.parse(alarmedAt)).toBeGreaterThan(2 * 60 * 60_000); // absence window HAD elapsed
+    expect(selectAbsentConditions([stillFrozen], falselyResolvedAt, 2 * 60 * 60_000)).toEqual([]);
+  });
+
+  it('WI-6228: a NON-one-shot condition is still resolved by absence (EI-15182 is preserved, not weakened)', () => {
+    // The dead/quiet-pot case guard #3 exists for must keep working: an emitter
+    // that re-alarms every sweep and has gone quiet really has stopped observing.
+    const now = Date.parse('2026-07-17T21:00:00.000Z');
+    const reAlarming = mkState({
+      condition_key: 'git-sync-stall:dummy-pot-0707',
+      last_seen: '2026-07-11T02:13:00.000Z',
+      one_shot: false,
+    });
+    const undeclared = mkState({
+      condition_key: 'single-primary:split-brain-primary',
+      last_seen: '2026-07-11T02:13:00.000Z',
+    }); // legacy emitter, never declared — unchanged behaviour
+    expect(selectAbsentConditions([reAlarming, undeclared], now, 2 * 60 * 60_000)).toEqual([
+      'git-sync-stall:dummy-pot-0707',
+      'single-primary:split-brain-primary',
+    ]);
+  });
+
   it('an already-RESOLVED condition is never flagged absent, even with an ancient last_seen', () => {
     const now = Date.parse('2026-07-17T21:00:00.000Z');
     const states = [

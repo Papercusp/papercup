@@ -444,6 +444,11 @@ export async function checkOriginFreshness(
             `lock-authority lease holder) is actually running.`,
           category: 'severe-event',
           conditionKey: `origin-freshness:${entry.slug}`,
+          // WI-6228: one-shot until recovery (`if (alerted) continue` above) — our
+          // silence is deliberate, never evidence origin caught up. This exact
+          // condition was falsely auto-resolved 120m after its single alarm on
+          // 2026-07-26 while the egress freeze was still live.
+          oneShot: true,
         });
 
         try {
@@ -529,6 +534,11 @@ export async function checkOriginFreshness(
               `and confirm the sweep's scope covers the latter.`,
             category: 'severe-event',
             conditionKey: WATCHDOG_BLIND_CONDITION_KEY,
+            // WI-6228: edge-triggered off `lastSweepWasBlind` — "a persistent
+            // blindness broadcasts once, not every 15 minutes". A blind watchdog
+            // that stays blind must NEVER be auto-resolved by its own silence:
+            // that would retire the one signal saying nothing is being monitored.
+            oneShot: true,
           });
         }
       }

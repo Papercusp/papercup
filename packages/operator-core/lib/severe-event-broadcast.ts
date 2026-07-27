@@ -63,6 +63,26 @@ export interface SevereEventBroadcast {
    * Omit for one-off events with no meaningful recovery.
    */
   conditionKey?: string;
+  /**
+   * WI-6228: this emitter alarms ONCE per episode and stays SILENT until recovery
+   * (the `if (alerted) continue; // one-shot until recovery` pattern shared by
+   * origin-freshness, green-stall, git-sync-stall, gate-canary and
+   * federation-join-stall). Declaring it stops the condition-staleness
+   * reconciler from reading that deliberate silence as "the signal cleared".
+   *
+   * Why the EMITTER must declare it: `last_seen` is derived purely from alarm
+   * broadcasts, so a one-shot condition's `last_seen` freezes at its first alarm
+   * even while the condition is continuously observed and worsening. The
+   * signal-absence guard (condition-staleness-alarm.ts guard #3) then resolves it
+   * after `absenceMs` — a FALSE GREEN that is *guaranteed*, not probabilistic, for
+   * any one-shot condition outlasting that window. Measured live 2026-07-26:
+   * `origin-freshness:papercusp` alarmed once at 21:13:41Z during a fleet-wide git
+   * egress freeze and was auto-resolved at 23:13:48Z — 120m+7s later, to the
+   * second — while the outage was still live; the genuine RECOVERED broadcast did
+   * not land until 23:39:42Z. Only the emitter knows whether it re-alarms; the
+   * guard cannot infer it from the envelope stream.
+   */
+  oneShot?: boolean;
   /** EI-10060: the resolved responsible party, if any. See {@link SevereEventRoute}. */
   route?: SevereEventRoute;
 }
@@ -104,7 +124,16 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
       summary: ev.summary,
       body: ev.body,
       category: ev.category ?? 'severe-event',
-      ...(ev.conditionKey ? { extra: { condition_key: ev.conditionKey } } : {}),
+      ...(ev.conditionKey
+        ? {
+            extra: {
+              condition_key: ev.conditionKey,
+              // WI-6228: carried on the envelope so the condition fold can mark the
+              // state one_shot without any per-family knowledge.
+              ...(ev.oneShot ? { one_shot: true } : {}),
+            },
+          }
+        : {}),
     });
     if (ev.route) await deliverRoute(ev.route, ev.summary, ev.body);
     return true;

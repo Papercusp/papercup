@@ -280,6 +280,9 @@ export async function checkGreenStall(
           // WI-1444 condition lifecycle: recovery below broadcasts the matching
           // resolution, so late inbox readers see this alarm annotated resolved.
           conditionKey: `green-stall:${row.install_slug}`,
+          // WI-6228: one-shot until recovery (see `watchdogAlerted` above) — our
+          // silence is deliberate, never evidence the gate recovered.
+          oneShot: true,
         });
         try {
           await sql`
@@ -570,6 +573,9 @@ export async function checkMainBehindStaging(
         body: verdict.reason ?? '',
         category: 'severe-event',
         conditionKey: `main-behind-staging:${harnessSlug}`,
+        // WI-6228: one-shot until recovery (`alreadyAlarmed` below) — our silence
+        // is deliberate, never evidence main caught up.
+        oneShot: true,
       });
       await sql`
         INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
@@ -781,6 +787,9 @@ export async function checkReleaseTriggerFreeze(
         body: reasonWithOwner,
         category: 'severe-event',
         conditionKey: `release-trigger-freeze:${installSlug}`,
+        // WI-6228: one-shot until recovery (`alreadyAlarmed` below) — our silence
+        // is deliberate, never evidence the deploy freeze lifted.
+        oneShot: true,
       });
       try {
         await sql`
@@ -955,6 +964,9 @@ export async function checkReleaseTriggerFireStale(
         body: verdict.reason ?? '',
         category: 'severe-event',
         conditionKey: `release-trigger-fire-stale:${installSlug}`,
+        // WI-6228: one-shot until recovery (`alreadyAlarmed` below) — our silence
+        // is deliberate, never evidence release-trigger started firing again.
+        oneShot: true,
       });
       try {
         await sql`

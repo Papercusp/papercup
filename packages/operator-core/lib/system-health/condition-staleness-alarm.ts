@@ -156,12 +156,34 @@ const INFRA_LIVENESS_PREFIX = 'infra-liveness:';
  * `absenceMs` — as of `now`. Unlike `selectReconcilableConditions` (guard #2,
  * infra-liveness-only, requires a live health re-check), this needs no
  * per-family knowledge: a source watchdog that is still actually observing a
- * problem re-alarms on every sweep (every source in this codebase sweeps well
- * under an hour), so a `last_seen` this stale means the watchdog stopped
- * emitting for this key altogether — dead/quiet pot, a one-shot event that
- * never got an explicit RECOVERED broadcast, or the process that used to hit
- * this code path simply stopped running. Applies to EVERY condition family
- * (git-sync-stall:*, single-primary:*, embed-exhaustion:*, infra-liveness:*, …).
+ * problem re-alarms on every sweep, so a `last_seen` this stale means the
+ * watchdog stopped emitting for this key altogether — dead/quiet pot, a one-shot
+ * event that never got an explicit RECOVERED broadcast, or the process that used
+ * to hit this code path simply stopped running.
+ *
+ * ⚠ WI-6228 — that premise holds ONLY for emitters that re-alarm. It was
+ * originally written as "every source in this codebase sweeps well under an
+ * hour", which conflated *sweeping* with *broadcasting*: the dominant convention
+ * in the release/infra watchdogs is `if (alerted) continue; // one-shot until
+ * recovery` (origin-freshness, green-stall ×4, git-sync-stall, gate-canary,
+ * federation-join-stall — gate-canary-sweep-action.ts even documents it as "like
+ * every sibling watchdog"). Such a watchdog sweeps every minute and stays
+ * deliberately SILENT while the condition is continuously true, so its
+ * `last_seen` freezes at the first alarm and this guard resolved it on a timer —
+ * a false green that was GUARANTEED, not probabilistic, for any one-shot
+ * condition outlasting `absenceMs`. Measured live 2026-07-26 during a fleet-wide
+ * git egress freeze: `origin-freshness:papercusp` alarmed once at 21:13:41Z and
+ * was auto-resolved at 23:13:48Z — 120m+7s later, to the second — while the
+ * outage was still live and worsening (the real RECOVERED broadcast landed only
+ * at 23:39:42Z, and ~19 commits were stranded meanwhile). A false green is worse
+ * than a missing alarm: it actively retires the one signal a responder would act
+ * on. So a state whose latest alarm declared `one_shot` is NEVER selected here —
+ * its silence carries no information. Such a condition still closes the honest
+ * ways: an explicit RECOVERED broadcast from its emitter, or guard #2's live
+ * health re-check.
+ *
+ * Applies to EVERY condition family (git-sync-stall:*, single-primary:*,
+ * embed-exhaustion:*, infra-liveness:*, …).
  */
 export function selectAbsentConditions(
   states: readonly ConditionState[],
@@ -171,6 +193,8 @@ export function selectAbsentConditions(
   const out: string[] = [];
   for (const s of states) {
     if (!s.open) continue;
+    // WI-6228: a one-shot emitter's silence is by design, not evidence of recovery.
+    if (s.one_shot === true) continue;
     const lastSeenMs = Date.parse(s.last_seen);
     if (!Number.isFinite(lastSeenMs)) continue;
     if (now - lastSeenMs > absenceMs) out.push(s.condition_key);

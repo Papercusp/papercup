@@ -431,6 +431,9 @@ export async function checkGitSyncStall(
           // WI-1444 condition lifecycle: recovery below broadcasts the matching
           // resolution, so late inbox readers see this alarm annotated resolved.
           conditionKey: `git-sync-stall:${row.install_slug}`,
+          // WI-6228: one-shot until recovery (`watchdogAlerted` above) — our
+          // silence is deliberate, never evidence git-sync started committing.
+          oneShot: true,
         });
         try {
           await sql`

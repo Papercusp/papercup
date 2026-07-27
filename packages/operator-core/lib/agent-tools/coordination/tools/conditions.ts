@@ -54,6 +54,13 @@ export interface ConditionState {
   alarm_count: number;
   /** the latest alarm's one-line summary. */
   latest_summary: string | null;
+  /**
+   * WI-6228: the latest alarm declared its emitter ONE-SHOT — it alarms once per
+   * episode and stays silent until recovery, so `last_seen` freezing is NOT
+   * evidence the signal cleared. Optional: an envelope from an emitter that never
+   * declared it is left `undefined`, preserving the pre-WI-6228 reading.
+   */
+  one_shot?: boolean;
   /** ts of the latest resolution, when one exists. */
   resolved_at: string | null;
   /** the latest resolution's one-line summary, when one exists. */
@@ -140,6 +147,7 @@ export function computeConditionStates(
         alarm_count: 1,
         latest_summary:
           typeof e["summary"] === "string" ? (e["summary"] as string) : null,
+        one_shot: e["one_shot"] === true,
         resolved_at: null,
         resolved_summary: null,
       });
@@ -153,6 +161,9 @@ export function computeConditionStates(
         prev.last_seen = ts;
         prev.latest_summary =
           typeof e["summary"] === "string" ? (e["summary"] as string) : null;
+        // WI-6228: the LATEST alarm decides — an emitter that switched to/from
+        // one-shot is described by what it most recently declared.
+        prev.one_shot = e["one_shot"] === true;
         prev.from = typeof e["from"] === "string" ? (e["from"] as string) : prev.from;
         prev.category =
           typeof e["category"] === "string" ? (e["category"] as string) : prev.category;

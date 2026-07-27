@@ -449,6 +449,37 @@ result, no subprocess, and no output to re-parse. When a row's caveat applies (a
 `tail -f` follow, a non-operator database, a `\du`), the bash form is the right
 answer — the gate will not fight you on those.
 
+## Long jobs: background them at the LAUNCH, don't poll for them afterwards
+
+**"Is my job done?" is 12% of every bash call on this box** — ~2,950 calls in 7
+days across 63 of 86 sessions: `ps`/`pgrep` (2,315), polling a task-output file
+with `cat`/`tail`/`wc -c` (1,120), and bare `sleep` (1,082, and what follows a
+sleep is overwhelmingly another poll). None of that is recoverable by swapping
+the poll command, because the fix is one step earlier:
+
+> For anything that runs longer than ~1–2 min, start it with
+> **`capability:bash { run_in_background: true }`** and read it with
+> **`capability:bash_output { bash_id, filter }`**. The `filter` regex means only
+> matching lines enter your context — no `2>&1 | tail -60`.
+
+**Why the tool and not native `run_in_background`:** not because the tool is
+crash-proof — it is not. Its in-memory job registry is wiped whenever *any* agent
+restarts the operator on this shared box (EI-8855). The difference is
+**recoverability**. `capability:bash` writes the job log to a deterministic
+`stateDir + bash_id` path, so a poll after that still returns the log tail plus a
+**confirmed** cause (`stranded_by_operator_restart` vs `job_process_gone`,
+decided by comparing operator uptime to the log's age — EI-18666279107998059). A
+native background id is bookkeeping inside the CLI child's own memory: after a
+compaction, carry-respawn, or cold-loop wake it is simply a dead reference with
+nothing to recover (EI-16611).
+
+So: **checkpoint the `bash_id`, never a native task id**, and never write "await
+background task `<id>`" as a successor's next action.
+
+Do not sit in a `sleep`/poll loop waiting on work you did not launch either —
+prefer the push path (`events:await`, a completion event) over polling; see the
+"never wait for a calm window" and force-the-deploy rules above.
+
 ## Feature flags + PostHog
 
 Single source of truth for keys/defaults: `libs/flags/src/types.ts`; flip flags

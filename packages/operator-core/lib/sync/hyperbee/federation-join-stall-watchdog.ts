@@ -150,6 +150,9 @@ export async function checkFederationJoinStall(
             `up the next successful join automatically, no operator restart needed.`,
           category: 'severe-event',
           conditionKey: `federation-join-stall:${key}`,
+          // WI-6228: one-shot until recovery (`wasAlerted` below) — our silence is
+          // deliberate, never evidence the join succeeded.
+          oneShot: true,
         });
         out.alarmed.push(key);
         console.warn(`[federation-join-stall-watchdog] ALARM ${key}: ${verdict.reason}`);

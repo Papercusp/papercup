@@ -36,11 +36,23 @@ import { TERMINAL_COMPLETION_EVIDENCE_KEY, type CompletionVerificationEvidence }
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
 /**
- * The completion-integrity audits. Two DISTINCT defects — keep both:
+ * The completion-integrity audits.
  *
- *  - `no-evidence` — terminal, but no structured verification evidence
- *    (`payload._completionEvidence` absent). The unit asserted done without ever
- *    stating HOW it was verified. This is the stale-done close, and the common case.
+ * ## `no-evidence` is GONE (P-006 / D-003 / D-012)
+ *
+ * The bareness audit — "terminal, but no structured verification evidence" — was
+ * DELETED, not extended. P-004 made evidence structurally required: an evidence-less
+ * close now lands `authority:'proposed'`, stays out of burn-down, stays owned by its
+ * closer, and `work_items:complete` WARNS the closer in the response to the very call
+ * that did it. There is no longer a wrong value to sweep for after the fact, which is
+ * the whole of D-003 [owner 2026-07-11: *"lets just make sure its right the first
+ * time so that it doesn't need to get 're-verified' to begin with"*]. Its EI-13424
+ * false-positive softener (`looksLikeCitedProseEvidence`) went with it — keeping an
+ * error-correction layer for a deleted predicate is the band-aid pattern inverted.
+ *
+ * D-012 is why the buckets BELOW survived that deletion: each fires on a row that
+ * PASSES P-004's gate, so D-003's "nothing left to re-verify" reasoning does not
+ * reach them. They are not a bareness audit wearing a different name.
  *
  *  - `no-completion-record` — terminal with `terminal_completion_ref IS NULL` AND
  *    `authority IS NULL`: a bare `set_state` close that bypassed the completion path
@@ -80,29 +92,43 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
  *    with `verifiedHow:'live-drove-ui'` citing only two vitest runs and no screenshot —
  *    structure-passing, pixel-failing. This bucket names that exact shape so a leader
  *    audit (`work_items:list { audit: 'geometry-unverified' }`) surfaces it going
- *    forward, the same way `no-evidence` surfaces a bare-assertion close today.
+ *    forward. P-004's gate does NOT close this: `verifiedHow:'unit'` plus
+ *    `testResult:'42/42'` satisfies it completely and is exactly this bucket.
  *
  *  - `intermittent-underevidenced` (EI-18716652701919665) — a terminal row whose title is
  *    classified intermittent/flaky/racy ({@link looksLikeIntermittentClassification}) AND
- *    carries STRUCTURED completion evidence (so `no-evidence` does NOT already catch it) AND
+ *    carries STRUCTURED completion evidence (so it passes P-004's gate outright) AND
  *    that evidence states neither a failure rate/root-cause nor cites a deterministic
  *    regression test ({@link hasIntermittentFailureRateEvidence}). This is an EVIDENCE-SHAPE
  *    defect, not a bareness one: WI-5673 (live-federation-gate content-matrix) closed with a
  *    fully structured, honest completion — `verifiedHow:'integration'`, testResult "2
- *    consecutive runs, 10/10 both times" — and passed the ordinary `no-evidence` bar cleanly.
+ *    consecutive runs, 10/10 both times" — and would pass P-004's evidence gate cleanly.
  *    It then reopened 5 days later, now failing 4/4 with a wider blast radius. For a bug whose
  *    own title says "intermittently", N consecutive passes is a SAMPLE that cannot falsify
  *    "we happened to sample the passing branch N times" unless a per-run failure rate (or an
  *    actual root cause + deterministic repro test) is stated. This bucket names that gap so a
  *    leader audit (`work_items:list { audit: 'intermittent-underevidenced' }`) surfaces it,
  *    the same way `geometry-unverified` surfaces an evidence-shape mismatch for layout bugs.
+ *
+ *  - `reconciler-sourced` (EI-18677799334390930) — a terminal row credited to
+ *    {@link RECONCILER_SYSTEM_ACTOR}. D-012 RESCUED this rule out of the deleted
+ *    `no-evidence` branch, where it had been riding as an unrelated second clause; it is a
+ *    RENAME, not a new audit. `plan-items/reconcile-linked-work-items.ts` terminal-closes a
+ *    work-item by MIRRORING its linked plan-item's status, calling `setWorkItemState` with a
+ *    SYNTHETIC completionRef and no `authority` stamp. So such a row is invisible to
+ *    `no-completion-record` (it HAS a ref) and untouched by P-004 (no authority), while being
+ *    by construction never independently verified — the failure mode is a mis-flipped plan
+ *    item silently marking a live defect "fixed". Flagged on the ACTOR, not on an evidence
+ *    key, so a future caller adding a well-meaning evidence stamp to that write path cannot
+ *    defeat it. The structural fix (have the reconciler stamp an authority, making this
+ *    bucket deletable for D-003's own reason) is filed, not built here.
  */
 export const COMPLETION_AUDITS = [
-  'no-evidence',
   'no-completion-record',
   'no-completion-record-suspicious',
   'geometry-unverified',
   'intermittent-underevidenced',
+  'reconciler-sourced',
 ] as const;
 export type CompletionAudit = (typeof COMPLETION_AUDITS)[number];
 
@@ -238,11 +264,6 @@ function intermittentUnderevidencedWhereSql(sql: OrgSql, titleExpr: unknown, tes
 /**
  * The audit's WHERE fragment. Callers AND it with their own terminal-state predicate
  * (the two families spell their state column differently — `status` vs `state`).
- *
- * `payload ? key` is the jsonb key-existence operator; both payload columns are jsonb
- * (verified against information_schema), and a NULL payload correctly fails the test,
- * so a row that never carried a payload reads as "no evidence" rather than dropping
- * out of the audit.
  */
 export function auditPredicateSql(sql: OrgSql, audit: CompletionAudit) {
   if (audit === 'no-completion-record') return sql`terminal_completion_ref IS NULL AND authority IS NULL`;
@@ -264,12 +285,11 @@ export function auditPredicateSql(sql: OrgSql, audit: CompletionAudit) {
       sql.unsafe(`payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'testsRun'`),
     );
   }
-  // EI-18677799334390930: a reconcile-sourced close (RECONCILER_SYSTEM_ACTOR) is ALWAYS
-  // flagged here, independent of the `_completionEvidence` key check — it never carries
-  // independent verification by construction (it only mirrors an adjacent plan item's
-  // status), so this can't be silently defeated by a future caller adding a well-meaning
-  // but misleading evidence stamp to that write path.
-  return sql`(NOT (COALESCE(payload, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY}) OR terminal_owner = ${RECONCILER_SYSTEM_ACTOR})`;
+  // 'reconciler-sourced' (EI-18677799334390930, rescued by D-012 from the deleted
+  // `no-evidence` branch). Keyed on the ACTOR alone — never on an evidence key — so a
+  // future caller adding a well-meaning but misleading evidence stamp to the reconcile
+  // write path cannot silently defeat it.
+  return sql`terminal_owner = ${RECONCILER_SYSTEM_ACTOR}`;
 }
 
 /** Same fragment, for a query that aliases the table (e.g. `ei.payload`). */
@@ -297,67 +317,8 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: CompletionAudit, alias:
       sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'testsRun'`),
     );
   }
-  // EI-18677799334390930: same always-flag rule as auditPredicateSql above.
-  return sql`(NOT (COALESCE(${col}, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY}) OR ${owner} = ${RECONCILER_SYSTEM_ACTOR})`;
-}
-
-/**
- * EI-13424 — `no-evidence`'s OWN false-positive rate.
- *
- * The predicate above is exact and cheap (it must stay that way — see the module
- * doc), but it answers a narrower question than its name implies: "does this row
- * carry the STRUCTURED `_completionEvidence` key", not "was this work actually
- * verified". `work_items:complete`'s free-text `completion.summary` is exactly where
- * an agent naturally writes real verification detail instead of the structured
- * fields — a cited commit sha, a specific file:line, an observed tool call + its
- * result, a measured test-count ratio, a drillId/session id. Three such completions
- * were nearly RE-OPENED by a DRAIN leader mechanically following the "re-open bare
- * assertions" mandate on every `no-evidence` hit, because the audit has no way to
- * tell "never said how" apart from "said how, in prose".
- *
- * This is a SEPARATE, best-effort SIGNAL — not a replacement for the SQL predicate,
- * and not itself proof of verification. A caller (the DRAIN leader's spot-audit, or
- * any consumer of `work_items:list { audit }`) checks it on each returned row BEFORE
- * acting: `looksLikeCitedProseEvidence(row.terminalCompletionRef)` true means the
- * ref itself cites something a fabricated one-line "done" would not contain, and the
- * row deserves a read before a reopen, not a mechanical one.
- *
- * Deliberately biased toward NOT flagging a ref as evidenced: the harm this exists to
- * prevent is over-detecting BARENESS on well-evidenced prose (the false positive that
- * burns fleet time re-doing verified work and erodes trust in the audit) — so both the
- * length floor and the citation-pattern requirement lean toward the direction that is
- * safe to get wrong here (an under-flagged genuinely-bare close stays correctly
- * flagged with no evidence signal; it is not silently waved through by this function —
- * it is still a `no-evidence` audit hit either way, just without the extra signal).
- */
-export const PROSE_EVIDENCE_MIN_LENGTH = 100;
-
-const PROSE_EVIDENCE_PATTERNS: readonly RegExp[] = [
-  // A file:line / file(line — a specific source location, e.g. "run.ts:204" or "foo.tsx(12,".
-  /[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|rs|go|sql|md|mdx|json|yml|yaml)[:(]\d+/i,
-  // A tool call, colon-form, e.g. "session:carry-drill(" or "events:status { event }".
-  /\b[a-z][a-z_]*(?::[a-z][a-z_-]*)+\s*[({]/i,
-  // A measured test-count ratio, e.g. "9/9 green" or "26/26 passed".
-  /\b\d{1,4}\s*\/\s*\d{1,4}\b/,
-  // A uuid / drillId.
-  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i,
-  // A commit sha (7+ hex chars) — long enough that a plain word collision is very rare.
-  /\b[0-9a-f]{7,40}\b/i,
-  // An ISO timestamp, e.g. "2026-07-17T03:2".
-  /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/,
-];
-
-/**
- * Does this completion ref look like it cites verifiable evidence, despite carrying
- * no structured `_completionEvidence`? Pure, synchronous, no I/O — see the doc above
- * for what this is (a caller-facing signal) and is NOT (proof, or a replacement for
- * the SQL predicate).
- */
-export function looksLikeCitedProseEvidence(ref: string | null | undefined): boolean {
-  if (!ref) return false;
-  const text = ref.trim();
-  if (text.length < PROSE_EVIDENCE_MIN_LENGTH) return false;
-  return PROSE_EVIDENCE_PATTERNS.some((re) => re.test(text));
+  // 'reconciler-sourced': same actor-keyed rule as auditPredicateSql above.
+  return sql`${owner} = ${RECONCILER_SYSTEM_ACTOR}`;
 }
 
 /**
