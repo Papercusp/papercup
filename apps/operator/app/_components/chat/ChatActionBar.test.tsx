@@ -3,7 +3,7 @@
  * ChatActionBar — verifies the registry-driven bar + the params/confirm/run
  * flow through askUserLocal, LocalCardHost-rendered.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { z } from 'zod';
 
@@ -14,6 +14,16 @@ import { _resetChatActionsForTests, registerChatAction } from '@/lib/chat-action
 import type { ChatActionContext } from '@/lib/chat-actions/types';
 
 const ctx: ChatActionContext = { sessionOwnerId: 'su-1', ownerLabel: 'su-1' };
+
+// Reset BEFORE each test too, not only after. ChatActionBar now imports the
+// chat-actions BARREL (WI-6450 — importing the registry directly is what left
+// the bar empty in the real app), so the concrete posture/grade/session actions
+// are registered as a side effect of importing the component under test. Every
+// case here builds its own registry from scratch, so the first test would
+// otherwise inherit those real actions and see a populated bar.
+beforeEach(() => {
+  _resetChatActionsForTests();
+});
 
 afterEach(() => {
   cleanup();

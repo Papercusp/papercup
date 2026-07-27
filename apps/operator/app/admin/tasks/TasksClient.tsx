@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactElement } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 
+import { Checkbox } from '../../harness/Checkbox';
+import { Select } from '../../harness/Select';
+import { Table, type TableColumn } from '../../harness/Table';
+
 /**
  * /admin/tasks — the Task Manager pane
  * (task-manager-no-escape-2026-07-27, P-018).
@@ -106,7 +110,7 @@ export const stateColor = (state: string): string => {
     case 'pending':
       return 'var(--warn)';
     case 'unaccounted':
-      return 'var(--danger, #e5484d)';
+      return 'var(--bad)';
     case 'stranded':
     case 'timed_out':
       return 'var(--warn)';
@@ -119,7 +123,48 @@ export const stateColor = (state: string): string => {
 
 const mono: CSSProperties = { fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 12 };
 const cell: CSSProperties = { padding: '6px 10px', borderBottom: '1px solid var(--border, #2a2a2a)', ...mono };
-const head: CSSProperties = { ...cell, fontWeight: 600, position: 'sticky', top: 0, background: 'var(--bg, #111)' };
+/** Header cells stay pinned while a long task list scrolls under them. */
+const head: CSSProperties = { textAlign: 'left', position: 'sticky', top: 0, background: 'var(--bg, #111)' };
+
+/** The task table's columns. Declared once at module scope (not rebuilt per render)
+ *  because every cell renderer here is a pure function of its row. */
+const TASK_COLUMNS: TableColumn<Row>[] = [
+  {
+    key: 'state',
+    header: 'state',
+    headerStyle: head,
+    // Colour is per-ROW (it encodes the state), so it lives in render, not cellStyle.
+    render: (r) => <span style={{ color: stateColor(r.state) }}>{r.state}</span>,
+    cellStyle: cell,
+    // The taskId + scope unit are what you need to act on a row via `processes:*`,
+    // so keep them reachable on hover rather than widening the table for them.
+    cellTitle: (r) => `${r.taskId}${r.scopeUnit ? ` · ${r.scopeUnit}` : ''}`,
+  },
+  { key: 'class', header: 'class', headerStyle: head, render: (r) => r.class, cellStyle: cell },
+  {
+    key: 'title',
+    header: 'title',
+    headerStyle: head,
+    render: (r) => r.title,
+    cellStyle: { ...cell, maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis' },
+    cellTitle: (r) => r.title,
+  },
+  { key: 'launchedBy', header: 'launched by', headerStyle: head, render: (r) => r.launchedBy, cellStyle: cell },
+  { key: 'workItem', header: 'work-item', headerStyle: head, render: (r) => r.workItemId ?? '—', cellStyle: cell },
+  { key: 'age', header: 'age', headerStyle: head, render: (r) => fmtAge(r.startedAt), cellStyle: cell },
+  { key: 'rss', header: 'rss', headerStyle: head, render: (r) => fmtBytes(r.rssBytes), cellStyle: cell },
+  { key: 'peak', header: 'peak', headerStyle: head, render: (r) => fmtBytes(r.peakRssBytes), cellStyle: cell },
+  { key: 'cpu', header: 'cpu', headerStyle: head, render: (r) => fmtCpu(r.cpuUsec), cellStyle: cell },
+  { key: 'pids', header: 'pids', headerStyle: head, render: (r) => r.pids ?? '—', cellStyle: cell },
+  {
+    key: 'conf',
+    header: 'conf',
+    headerStyle: head,
+    // Dimmed when unconfined: a pid-only row is tracked but NOT cgroup-bounded.
+    render: (r) => <span style={{ opacity: r.confined ? 1 : 0.5 }}>{r.confined ? 'cgroup' : 'pid'}</span>,
+    cellStyle: cell,
+  },
+];
 
 export default function TasksClient(): ReactElement {
   const [stateFilter, setStateFilter] = useQueryState('state', parseAsString);
@@ -179,7 +224,7 @@ export default function TasksClient(): ReactElement {
         <code>processes:*</code> tools.
       </p>
 
-      {error && <div style={{ color: 'var(--danger, #e5484d)', marginBottom: 12 }}>Load failed: {error}</div>}
+      {error && <div style={{ color: 'var(--bad)', marginBottom: 12 }}>Load failed: {error}</div>}
 
       {/* The no-escape signal, first, because it is the one thing here that means
           something is wrong rather than merely busy. */}
@@ -190,8 +235,8 @@ export default function TasksClient(): ReactElement {
         </div>
       )}
       {unaccountedGroups.length > 0 && (
-        <div style={{ marginBottom: 16, border: '1px solid var(--danger, #e5484d)', borderRadius: 4 }}>
-          <div style={{ ...cell, fontWeight: 600, color: 'var(--danger, #e5484d)', borderBottom: 'none' }}>
+        <div style={{ marginBottom: 16, border: '1px solid var(--bad)', borderRadius: 4 }}>
+          <div style={{ ...cell, fontWeight: 600, color: 'var(--bad)', borderBottom: 'none' }}>
             {unaccountedGroups.length} unaccounted cgroup(s) — running inside our slice with no ledger row
           </div>
           {unaccountedGroups.slice(0, 8).map((g) => (
@@ -206,35 +251,40 @@ export default function TasksClient(): ReactElement {
       )}
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-        <label>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           state{' '}
-          <select value={stateFilter ?? ''} onChange={(e) => void setStateFilter(e.target.value || null)}>
-            <option value="">all</option>
-            {['pending', 'running', 'exited', 'killed', 'timed_out', 'stranded', 'unaccounted'].map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+          <Select
+            ariaLabel="filter by task state"
+            value={stateFilter ?? ''}
+            onChange={(v) => void setStateFilter(v || null)}
+            options={[
+              { value: '', label: 'all' },
+              ...['pending', 'running', 'exited', 'killed', 'timed_out', 'stranded', 'unaccounted'].map((s) => ({
+                value: s,
+                label: s,
+              })),
+            ]}
+          />
         </label>
-        <label>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           class{' '}
-          <select value={classFilter ?? ''} onChange={(e) => void setClassFilter(e.target.value || null)}>
-            <option value="">all</option>
-            {Object.keys(data?.summary.byClass ?? {}).map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+          <Select
+            ariaLabel="filter by task class"
+            value={classFilter ?? ''}
+            onChange={(v) => void setClassFilter(v || null)}
+            options={[
+              { value: '', label: 'all' },
+              ...Object.keys(data?.summary.byClass ?? {}).map((c) => ({ value: c, label: c })),
+            ]}
+          />
         </label>
-        <label>
-          <input type="checkbox" checked={includeEnded} onChange={(e) => void setIncludeEnded(e.target.checked)} />{' '}
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <Checkbox ariaLabel="include finished tasks" checked={includeEnded} onChange={(v) => void setIncludeEnded(v)} />{' '}
           include finished
         </label>
-        <label>
-          <input type="checkbox" checked={liveView} onChange={(e) => void setLiveView(e.target.checked)} /> live
-          kernel scan
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <Checkbox ariaLabel="live kernel scan" checked={liveView} onChange={(v) => void setLiveView(v)} /> live kernel
+          scan
         </label>
         <span style={{ opacity: 0.6, marginLeft: 'auto' }}>
           {data?.summary.total ?? 0} row(s)
@@ -244,44 +294,18 @@ export default function TasksClient(): ReactElement {
       </div>
 
       <div style={{ overflowX: 'auto' }}>
-        <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1100 }}>
-          <thead>
-            <tr>
-              {['state', 'class', 'title', 'launched by', 'work-item', 'age', 'rss', 'peak', 'cpu', 'pids', 'conf'].map(
-                (h) => (
-                  <th key={h} style={{ ...head, textAlign: 'left' }}>
-                    {h}
-                  </th>
-                ),
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.rows ?? []).map((r) => (
-              <tr key={r.taskId} title={`${r.taskId}${r.scopeUnit ? ` · ${r.scopeUnit}` : ''}`}>
-                <td style={{ ...cell, color: stateColor(r.state) }}>{r.state}</td>
-                <td style={cell}>{r.class}</td>
-                <td style={{ ...cell, maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.title}</td>
-                <td style={cell}>{r.launchedBy}</td>
-                <td style={cell}>{r.workItemId ?? '—'}</td>
-                <td style={cell}>{fmtAge(r.startedAt)}</td>
-                <td style={cell}>{fmtBytes(r.rssBytes)}</td>
-                <td style={cell}>{fmtBytes(r.peakRssBytes)}</td>
-                <td style={cell}>{fmtCpu(r.cpuUsec)}</td>
-                <td style={cell}>{r.pids ?? '—'}</td>
-                <td style={{ ...cell, opacity: r.confined ? 1 : 0.5 }}>{r.confined ? 'cgroup' : 'pid'}</td>
-              </tr>
-            ))}
-            {(data?.rows ?? []).length === 0 && (
-              <tr>
-                <td style={{ ...cell, opacity: 0.6 }} colSpan={11}>
-                  No tasks. If that is surprising, check that the reconcile routine is armed
-                  (<a href="/admin/schedules">/admin/schedules</a> → <code>task-reconcile</code>).
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <Table
+          style={{ minWidth: 1100, ...mono }}
+          columns={TASK_COLUMNS}
+          rows={data?.rows ?? []}
+          getRowKey={(r) => r.taskId}
+          emptyLabel={
+            <>
+              No tasks. If that is surprising, check that the reconcile routine is armed (
+              <a href="/admin/schedules">/admin/schedules</a> → <code>task-reconcile</code>).
+            </>
+          }
+        />
       </div>
     </div>
   );

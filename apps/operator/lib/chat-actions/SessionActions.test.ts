@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getChatAction } from './registry';
-import type { CardOption, CardPresentation } from '@papercusp/agent-mcp';
 
 // Side-effect import — registers session-actions into the shared registry
 // once for this file (same pattern as PostureActions.test.ts).
@@ -13,14 +12,6 @@ import {
   resumableSessionId,
   type SessionActionCtx,
 } from './SessionActions';
-
-/** Narrow a CardPresentation to its radio/checkbox member and pull `options`. */
-function optionsOf(presentation: CardPresentation | undefined): CardOption[] {
-  if (!presentation || (presentation.kind !== 'radio' && presentation.kind !== 'checkbox')) {
-    throw new Error(`expected a radio/checkbox presentation, got ${presentation?.kind ?? 'undefined'}`);
-  }
-  return presentation.options;
-}
 
 const baseCtx: SessionActionCtx = { sessionOwnerId: 'su-abc123' };
 
@@ -67,50 +58,94 @@ describe('SessionActions — pure predicates', () => {
   });
 });
 
+// P-015: three INDEPENDENT one-click buttons mirroring AgentInspectorModal,
+// replacing P-006's single `session-actions` entry whose params opened a radio
+// card. The behaviour under test moved from "which options does the card
+// offer" to "which buttons are available" — same predicates, different shape.
+const IDS = ['session-resume', 'session-fork', 'session-focus'] as const;
+
 describe('SessionActions — registration', () => {
-  it('registers session-actions in the "session" group', () => {
-    const action = getChatAction('session-actions');
-    expect(action).toBeDefined();
-    expect(action?.group).toBe('session');
+  it('registers three separate actions, all in the "session" group', () => {
+    for (const id of IDS) {
+      const action = getChatAction(id);
+      expect(action, `${id} should be registered`).toBeDefined();
+      expect(action?.group).toBe('session');
+    }
   });
 
-  it('available requires sessionOwnerId AND (resumable OR focusable)', () => {
-    const action = getChatAction('session-actions')!;
-    expect(action.available({ ...baseCtx, agent: 'claude', sessionId: 's1' })).toBe(true);
-    expect(action.available({ ...baseCtx, windowId: 'w1' })).toBe(true);
-    // no owner id
-    expect(action.available({ sessionOwnerId: '', agent: 'claude', sessionId: 's1' })).toBe(false);
-    // owner id present but neither resumable nor focusable
-    expect(action.available({ ...baseCtx, agent: 'codex', sessionId: 's1' })).toBe(false);
-    expect(action.available({ ...baseCtx })).toBe(false);
+  it('the old collapsed single-entry action is gone', () => {
+    expect(getChatAction('session-actions')).toBeUndefined();
+  });
+
+  it('none of them declares params — a click runs the action directly', () => {
+    // This is what makes them ONE-CLICK, matching the dropdown. A params()
+    // here would silently reintroduce the card step P-015 exists to remove.
+    for (const id of IDS) {
+      expect(getChatAction(id)!.params, `${id} must not declare params`).toBeUndefined();
+    }
+  });
+
+  it('carries the dropdown\'s icons so the two surfaces read as the same control', () => {
+    expect(getChatAction('session-resume')!.icon).toBe('↻');
+    expect(getChatAction('session-fork')!.icon).toBe('⑂');
   });
 });
 
-describe('SessionActions — params (radio, options vary by ctx)', () => {
-  it('claude session with a window: offers resume, fork, and focus', async () => {
-    const action = getChatAction('session-actions')!;
-    const ctx: SessionActionCtx = { ...baseCtx, agent: 'claude', sessionId: 's1', windowId: 'w1' };
-    const spec = await action.params!(ctx);
-    expect(spec.presentation?.kind).toBe('radio');
-    expect(spec.allowDecline).toBe(true);
-    const ids = optionsOf(spec.presentation).map((o) => o.id);
-    expect(ids).toEqual(['resume', 'fork', 'focus']);
+describe('SessionActions — per-button availability', () => {
+  const availability = (ctx: SessionActionCtx): string[] =>
+    IDS.filter((id) => getChatAction(id)!.available(ctx));
+
+  it('claude session with a window: all three buttons', () => {
+    expect(availability({ ...baseCtx, agent: 'claude', sessionId: 's1', windowId: 'w1' })).toEqual([
+      'session-resume', 'session-fork', 'session-focus',
+    ]);
   });
 
-  it('omp session: resumable but not forkable (no fork option)', async () => {
-    const action = getChatAction('session-actions')!;
-    const ctx: SessionActionCtx = { ...baseCtx, agent: 'omp', ompThreadId: 't1' };
-    const spec = await action.params!(ctx);
-    const ids = optionsOf(spec.presentation).map((o) => o.id);
-    expect(ids).toEqual(['resume']);
+  it('omp session: resumable but NOT forkable (--fork-session is claude-only)', () => {
+    expect(availability({ ...baseCtx, agent: 'omp', ompThreadId: 't1' })).toEqual(['session-resume']);
   });
 
-  it('codex session with only a window: focus-only, no resume/fork', async () => {
-    const action = getChatAction('session-actions')!;
-    const ctx: SessionActionCtx = { ...baseCtx, agent: 'codex', sessionId: 's1', advSessionId: 7 };
-    const spec = await action.params!(ctx);
-    const ids = optionsOf(spec.presentation).map((o) => o.id);
-    expect(ids).toEqual(['focus']);
+  it('codex session with an advSessionId: focus only, never resume/fork', () => {
+    expect(availability({ ...baseCtx, agent: 'codex', sessionId: 's1', advSessionId: 7 })).toEqual([
+      'session-focus',
+    ]);
+  });
+
+  it('no sessionOwnerId: nothing is offered', () => {
+    expect(availability({ sessionOwnerId: '', agent: 'claude', sessionId: 's1', windowId: 'w1' })).toEqual([]);
+  });
+
+  it('claude session with no window: resume + fork, but no focus', () => {
+    expect(availability({ ...baseCtx, agent: 'claude', sessionId: 's1' })).toEqual([
+      'session-resume', 'session-fork',
+    ]);
+  });
+
+  it('pid alone does not make a window focusable', () => {
+    expect(availability({ ...baseCtx, pid: 1234 })).toEqual([]);
+  });
+});
+
+describe('SessionActions — run dispatches without a card', () => {
+  it('session-resume posts fork:false', async () => {
+    await getChatAction('session-resume')!.run(
+      { ...baseCtx, agent: 'claude', sessionId: 's1', ownerLabel: 'Ada' } as SessionActionCtx,
+      undefined,
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toMatchObject({ fork: false });
+  });
+
+  it('session-fork posts fork:true', async () => {
+    await getChatAction('session-fork')!.run(
+      { ...baseCtx, agent: 'claude', sessionId: 's1', ownerLabel: 'Ada' } as SessionActionCtx,
+      undefined,
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toMatchObject({ fork: true });
+  });
+
+  it('session-focus posts to the focus route', async () => {
+    await getChatAction('session-focus')!.run({ ...baseCtx, advSessionId: 7 } as SessionActionCtx, undefined);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/adv/sessions/focus');
   });
 });
 
@@ -183,28 +218,8 @@ describe('SessionActions — focusWindow', () => {
   });
 });
 
-describe('SessionActions — run()', () => {
-  it('picking "resume" calls launchInNewTerminal(ctx, false)', async () => {
-    const action = getChatAction('session-actions')!;
-    const ctx: SessionActionCtx = { ...baseCtx, agent: 'claude', sessionId: 's1' };
-    await action.run(ctx, { picks: ['resume'] });
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
-    expect(body.fork).toBe(false);
-  });
-
-  it('picking "fork" calls launchInNewTerminal(ctx, true)', async () => {
-    const action = getChatAction('session-actions')!;
-    const ctx: SessionActionCtx = { ...baseCtx, agent: 'claude', sessionId: 's1' };
-    await action.run(ctx, { picks: ['fork'] });
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
-    expect(body.fork).toBe(true);
-  });
-
-  it('picking "focus" calls focusWindow(ctx)', async () => {
-    const action = getChatAction('session-actions')!;
-    const ctx: SessionActionCtx = { ...baseCtx, windowId: 'w1' };
-    await action.run(ctx, { picks: ['focus'] });
-    const [url] = fetchMock.mock.calls[0];
-    expect(url).toBe('/api/adv/sessions/focus');
-  });
-});
+// NOTE: the former 'SessionActions — run()' block lived here. It drove the
+// single `session-actions` entry through a { picks: [...] } payload, which no
+// longer exists — P-015 replaced the radio card with three direct buttons.
+// Its coverage is preserved by 'SessionActions — run dispatches without a card'
+// above, which asserts the same three outcomes via `run(ctx, undefined)`.

@@ -52,6 +52,17 @@ export interface BridgeTickInput {
   upstreamWrite?: boolean | null;
   /** The last ADMITTED github-origin head (caller-persisted watermark). */
   lastAdmitted: string | null;
+  /**
+   * EI-18751829787526583: the last ACCEPTED worktree-bridge watermark
+   * (`worktree_bridge.stagingSha` — the local "branch tip" canonical is
+   * supposed to track). When set and the bare-store canonical ref (read
+   * fresh below) is a STRICT ANCESTOR of it — i.e. canonical exists but is
+   * behind — the tick surfaces `egress-canonical-stale` so a frozen-but-green
+   * bridge is detectable instead of silently reading `divergence: clear`.
+   * Omit when the caller has no watermark to compare against (staleness
+   * detection is then simply skipped, exactly like today).
+   */
+  expectedCanonicalSha?: string | null;
   deps?: {
     runGit?: RunGit;
     repoPath?: string;
@@ -95,6 +106,27 @@ async function readCanonicalSha(repoPath: string, runGit: RunGit): Promise<strin
   const r = await runGit(['rev-parse', '--verify', '--quiet', BRIDGE_CANONICAL_REF], repoPath);
   const sha = r.stdout.trim();
   return r.code === 0 && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+}
+
+/**
+ * EI-18751829787526583: is `ancestorSha` a STRICT ancestor of `descendantSha`
+ * (both objects already local — no fetch)? Returns the commit count strictly
+ * between them (0 when equal or not an ancestor — the caller only acts on a
+ * positive count). Never throws: a missing object / non-commit ref reads as
+ * "not an ancestor" rather than failing the whole tick.
+ */
+async function countStrictlyBehind(
+  repoPath: string,
+  ancestorSha: string,
+  descendantSha: string,
+  runGit: RunGit,
+): Promise<number> {
+  if (ancestorSha === descendantSha) return 0;
+  const isAncestor = await runGit(['merge-base', '--is-ancestor', ancestorSha, descendantSha], repoPath);
+  if (isAncestor.code !== 0) return 0; // diverged / not an ancestor / object missing — not our case
+  const count = await runGit(['rev-list', '--count', `${ancestorSha}..${descendantSha}`], repoPath);
+  const n = Number.parseInt(count.stdout.trim(), 10);
+  return count.code === 0 && Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 export async function runGithubBridgeTick(input: BridgeTickInput): Promise<BridgeTickOutcome> {
@@ -192,11 +224,25 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
   // origin freezes indefinitely (the hello-world-3-pot canary sat ~22h / 8
   // commits behind reading green). Surface it so divergence escalates.
   let canonicalMissing: { canonicalRef: string; watermarkSha: string | null } | null = null;
+  // EI-18751829787526583: canonical EXISTS but is a strict ancestor of the
+  // accepted worktree-bridge watermark — the sibling gap to canonicalMissing.
+  let canonicalStale: { canonicalSha: string; expectedSha: string; behindCount: number } | null = null;
   let canonicalShaForWatermark: string | null = null;
   if (target.target !== 'none') {
     const canonicalSha = await readCanonicalSha(repoPath, runGit);
     canonicalShaForWatermark = canonicalSha;
     if (canonicalSha) {
+      if (input.expectedCanonicalSha && input.expectedCanonicalSha !== canonicalSha) {
+        const behindCount = await countStrictlyBehind(repoPath, canonicalSha, input.expectedCanonicalSha, runGit);
+        if (behindCount > 0) {
+          canonicalStale = { canonicalSha, expectedSha: input.expectedCanonicalSha, behindCount };
+          errors.push(
+            `egress: canonical ref ${BRIDGE_CANONICAL_REF} is STALE in ${repoPath} — ${behindCount} commit(s) behind ` +
+              `the accepted watermark ${input.expectedCanonicalSha.slice(0, 12)} (publishing the stale content this tick; ` +
+              `the catch-up pin re-anchors canonical on the next git-sync tick)`,
+          );
+        }
+      }
       egress = await (input.deps?.egress ?? egressCanonicalRefs)({
         repoPath,
         remoteUrl: target.remote,
@@ -227,7 +273,7 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
 
   // 4. DIVERGENCE — fold residues, write/clear the escalation (best-effort).
   const verdict = classifyDivergence(
-    collectDivergenceSignals({ egress, ingress, admissions: admissionResults, canonicalMissing, remoteUnreachable }),
+    collectDivergenceSignals({ egress, ingress, admissions: admissionResults, canonicalMissing, canonicalStale, remoteUnreachable }),
   );
   await record(input.potHomeSlug, input.workspaceId, verdict);
 

@@ -37,6 +37,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../..');
@@ -154,5 +155,45 @@ describe('composition-rig schema drift — engineer_issues vs the read path (ISS
     }
 
     expect(missing).toEqual([]);
+  });
+});
+
+// EI-18752123064847436: every check above validates composition-rig.ts by
+// reading it as TEXT and regexing out column names — it never imports the
+// module, so a syntactically BROKEN composition-rig.ts (e.g. a stray backtick
+// inside a SQL comment prematurely terminating a TS template literal — the
+// exact hazard this fixture carries, and the one that bit _work-items-schema.ts
+// per the sibling report EI-18748484115079154) passes this guard with a green
+// checkmark while every OTHER test that imports the module fails elsewhere,
+// with no pointer back here. This block closes that detector gap CHEAPLY:
+// `ts.transpileModule` performs a real single-file PARSE (catches syntax
+// errors like an unterminated template literal) without importing the module
+// or its heavy transitive dependency graph (hyperswarm/hyperdht/testcontainers
+// PG helpers) — so, unlike an `await import()` of the real module, it stays a
+// fast, no-docker pure-unit check.
+describe('composition-rig.ts parses cleanly — the guard must not be blind to its own fixture breaking (EI-18752123064847436)', () => {
+  it('is syntactically valid TypeScript (a parse error here would otherwise pass every text-scanning check above)', () => {
+    const rigSrc = readFileSync(RIG_FILE, 'utf8');
+    const { diagnostics } = ts.transpileModule(rigSrc, {
+      fileName: RIG_FILE,
+      compilerOptions: { target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext },
+      reportDiagnostics: true,
+    });
+
+    if (diagnostics && diagnostics.length > 0) {
+      const messages = diagnostics.map((d) => {
+        const loc = d.file && d.start !== undefined ? d.file.getLineAndCharacterOfPosition(d.start) : undefined;
+        const where = loc ? `${loc.line + 1}:${loc.character + 1}` : '?';
+        return `  ${where}: ${ts.flattenDiagnosticMessageText(d.messageText, '\n')}`;
+      });
+      throw new Error(
+        `composition-rig.ts fails to PARSE as TypeScript (${diagnostics.length} syntax error(s)) — every ` +
+          `text-scanning check in this file operates on the file's TEXT and cannot detect this, so a broken ` +
+          `composition-rig.ts would pass them all while every rig test that imports the module fails elsewhere ` +
+          `with no pointer back here. Errors:\n${messages.join('\n')}`,
+      );
+    }
+
+    expect(diagnostics ?? []).toEqual([]);
   });
 });

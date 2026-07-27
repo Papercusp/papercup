@@ -1416,6 +1416,36 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
               `[git-sync] ${slug}: bare canonical catch-up pin failed for ${bareRepoPath}: ${pinned.stderr.trim()}`,
             );
           }
+        } else {
+          // EI-18751829787526583: the ref EXISTS but can still be STALE — the
+          // absent-only branch above never re-derives it. worktree-bridge's
+          // step-3.5 `update-ref` (worktree-bridge.ts) is best-effort and
+          // UNCHECKED, so it can fail without leaving canonical absent,
+          // pinning it at an old sha instead. Egress then publishes exactly
+          // that stale content and reports `upToDate`/`clear` — green — while
+          // origin freezes (the incident this fixes: 21 commits / ~3h). Only
+          // re-pin a STRICT ANCESTOR (never a diverged/ahead ref — that is a
+          // different problem, not this pin's to silently resolve), and CAS
+          // against what we just read so a genuinely concurrent legitimate
+          // advance loses cleanly instead of being clobbered.
+          const existingSha = existing.stdout.trim();
+          if (existingSha && existingSha !== wbSha) {
+            const isAncestor = await defaultRunGit(['merge-base', '--is-ancestor', existingSha, wbSha], bareRepoPath);
+            if (isAncestor.code === 0) {
+              const pinned = await defaultRunGit(['update-ref', BRIDGE_CANONICAL_REF, wbSha, existingSha], bareRepoPath);
+              if (pinned.code !== 0) {
+                console.warn(
+                  `[git-sync] ${slug}: bare canonical stale re-pin failed for ${bareRepoPath} ` +
+                    `(${existingSha.slice(0, 12)} → ${wbSha.slice(0, 12)}): ${pinned.stderr.trim()}`,
+                );
+              } else {
+                console.warn(
+                  `[git-sync] ${slug}: bare canonical ${BRIDGE_CANONICAL_REF} was STALE at ${existingSha.slice(0, 12)} ` +
+                    `(behind accepted watermark ${wbSha.slice(0, 12)}) — re-pinned`,
+                );
+              }
+            }
+          }
         }
       }
     }
@@ -1436,6 +1466,12 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
       branches: [entry.github_default_branch ?? 'main'],
       upstreamWrite,
       lastAdmitted,
+      // EI-18751829787526583: the same watermark the catch-up pin above just
+      // re-derived from — passed through as a BACKSTOP so a case the pin
+      // declined to touch (diverged rather than a strict ancestor) or a
+      // re-pin that itself failed still surfaces as `egress-canonical-stale`
+      // instead of silently reading `divergence: clear`.
+      expectedCanonicalSha: wbSha,
     });
 
     await patchRoutineMetadata(slug, workspaceId, {

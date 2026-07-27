@@ -31,6 +31,22 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: (...a: unknown[]) => spawnMock(...a),
 }));
 
+// The scope wrapper is no longer built inline here — it moved behind the task
+// manager's enrolment seam (task-manager-no-escape-2026-07-27 P-009), which confines
+// only when a CACHED systemd-scope support probe has landed and said yes. Production
+// warms that probe at module load (orchestrator-runner.ts); a test process cannot
+// rely on it, for two independent reasons: the probe resolves asynchronously (so it
+// races the assertions), and its own probe spawn goes through the SAME mocked
+// `spawn`, which would shift every `spawnMock.mock.calls[N]` index this file reads.
+// So pin the answer and neuter the warm-up. The subject of this file is the argv that
+// reaches spawn() on a host that CAN make scopes — not the probe's own plumbing,
+// which managed-spawn's tests own.
+vi.mock('../task-manager/managed-spawn', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../task-manager/managed-spawn')>()),
+  warmScopeProbe: () => {},
+  scopeSupportKnown: () => ({ ok: true }),
+}));
+
 const H = vi.hoisted(() => ({
   cmd: null as null | { command: string; args: string[]; env: NodeJS.ProcessEnv },
 }));

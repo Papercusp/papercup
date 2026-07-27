@@ -47,6 +47,14 @@ describe('launchAgent', () => {
       kickoff: { kind: 'new-plan' },
       defer_spawn: false,
       context_size: null,
+      // The launch body always carries the fleet/account keys, explicitly null when
+      // the caller passes none — a GUI launch must never omit `account` (psu with no
+      // --account opens an interactive picker that hangs the spawn). Pinned here so
+      // dropping one from the wire body is a failure, not a silent behaviour change.
+      fleet: null,
+      fleet_name: null,
+      fleet_scheme: null,
+      account: null,
     });
   });
 

@@ -58,8 +58,11 @@ describe('stateColor', () => {
   it('makes `unaccounted` the loudest state', () => {
     // It is the one state on this pane that means something is WRONG rather than
     // merely busy — a process inside our slice that no chokepoint registered.
-    expect(stateColor('unaccounted')).toContain('danger');
-    expect(stateColor('running')).not.toContain('danger');
+    // `--bad` is the operator's defined alarm token; the pane originally reached for
+    // an undefined `--danger`, which the css-tokens lint (rightly) rejects — every
+    // colour here must be a real, themeable token, not a fallback hex.
+    expect(stateColor('unaccounted')).toBe('var(--bad)');
+    expect(stateColor('running')).not.toBe(stateColor('unaccounted'));
   });
 
   it('distinguishes foreign (not ours) from running (ours)', () => {

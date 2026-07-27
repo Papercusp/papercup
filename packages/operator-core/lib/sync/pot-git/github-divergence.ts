@@ -86,7 +86,21 @@ export type DivergenceSignal =
    * green). Not an owner lever: the integrator's next publish — or the
    * catch-up pin — establishes it.
    */
-  | { kind: 'egress-canonical-missing'; canonicalRef: string; watermarkSha: string | null };
+  | { kind: 'egress-canonical-missing'; canonicalRef: string; watermarkSha: string | null }
+  /**
+   * The egress target is live and the canonical ref EXISTS, but it is a
+   * strict ancestor of the last ACCEPTED worktree-bridge watermark — i.e. it
+   * exists but is STALE. This is the sibling gap to `egress-canonical-missing`
+   * (EI-18751829787526583): the ref that reports `egress: { upToDate: 1 }` +
+   * `divergence: clear` for hours while origin sat 21 commits behind, because
+   * worktree-bridge's step-3.5 `update-ref` (best-effort, unchecked) can fail
+   * WITHOUT leaving the ref absent — leaving it pinned at an old sha instead —
+   * and the absent-only catch-up pin never re-derives a ref that already
+   * exists. Not an owner lever: same self-heal path as canonicalMissing (the
+   * catch-up pin re-pins on the next tick; the integrator's next publish also
+   * clears it).
+   */
+  | { kind: 'egress-canonical-stale'; canonicalSha: string; expectedSha: string; behindCount: number };
 
 export interface DivergenceVerdict {
   /** No signals → clear (a clean pass clears the escalation, git-sync idiom). */
@@ -110,6 +124,9 @@ export function collectDivergenceSignals(results: {
   admissions?: Array<{ head: string; result: Pick<AdmissionResult, 'admit' | 'basis' | 'blockedAuthors' | 'errors'> }>;
   /** Set by the tick when a live egress target found no canonical ref to push. */
   canonicalMissing?: { canonicalRef: string; watermarkSha: string | null } | null;
+  /** Set by the tick when the canonical ref exists but is a strict ancestor of
+   *  the accepted worktree-bridge watermark (behind, not diverged). */
+  canonicalStale?: { canonicalSha: string; expectedSha: string; behindCount: number } | null;
   /** Set by the tick when ingress failed for EVERY requested branch (remote unreachable). */
   remoteUnreachable?: { remoteUrl: string | null; branches: string[]; errors: string[]; transient?: boolean } | null;
 }): DivergenceSignal[] {
@@ -128,6 +145,14 @@ export function collectDivergenceSignals(results: {
       kind: 'egress-canonical-missing',
       canonicalRef: results.canonicalMissing.canonicalRef,
       watermarkSha: results.canonicalMissing.watermarkSha,
+    });
+  }
+  if (results.canonicalStale) {
+    signals.push({
+      kind: 'egress-canonical-stale',
+      canonicalSha: results.canonicalStale.canonicalSha,
+      expectedSha: results.canonicalStale.expectedSha,
+      behindCount: results.canonicalStale.behindCount,
     });
   }
   for (const r of results.egress?.rejectedNonFF ?? []) {
@@ -199,6 +224,13 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
   if (c('egress-canonical-missing') > 0)
     parts.push(
       `canonical ref absent in the bare store — NOTHING is being egressed and origin is frozen (the integrator has not published it, and the catch-up pin could not: its watermark sha's object is missing). Re-establish canonical, then egress fast-forwards`,
+    );
+  const stale = signals.find(
+    (s): s is Extract<DivergenceSignal, { kind: 'egress-canonical-stale' }> => s.kind === 'egress-canonical-stale',
+  );
+  if (stale)
+    parts.push(
+      `canonical ref exists but is STALE — ${stale.behindCount} commit(s) behind the accepted watermark (${stale.canonicalSha.slice(0, 12)} vs ${stale.expectedSha.slice(0, 12)}); egress is publishing the stale content and origin is frozen at it until the catch-up pin re-anchors canonical`,
     );
   return {
     action: 'escalate',

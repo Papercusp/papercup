@@ -102,8 +102,21 @@ export interface CanaryCandidate {
 
 /**
  * Sample stable live memories: active, non-entity, long enough, old enough.
- * `ORDER BY md5(id)` = deterministic spread, so consecutive reseeds pick a
- * similar population and baselines stay comparable. Read-only.
+ * `ORDER BY md5(id::text)` = deterministic spread, so consecutive reseeds pick
+ * a similar population and baselines stay comparable. Read-only.
+ *
+ * The `::text` cast is load-bearing, not decorative: `memory_canonical.id` is
+ * `uuid`, and `md5()` has no `uuid` overload — the un-cast form threw
+ * `function md5(uuid) does not exist` (PG 42883) on EVERY call. Because this
+ * runs inside `runRecallCanary`'s outer try/catch (never-throw contract for
+ * the scheduled step), the failure was swallowed to a console log nobody
+ * reads and surfaced nowhere durable: the routine fired daily from
+ * 2026-07-14 onward with zero rows ever written to
+ * harness_shared.memory_live_recall_canary_run — the live memory-recall
+ * degradation alert this canary exists to provide was never actually armed —
+ * a "registered + wired + flag-ON but silently never executes" sibling of the
+ * bash-substitution seeder class (EI-18749575523514756), found by that bug's
+ * sibling sweep. Fixed 2026-07-27.
  */
 export async function sampleCanaryCandidates(
   sql: Sql,
@@ -117,7 +130,7 @@ export async function sampleCanaryCandidates(
        AND payload->>'user_id' IS NOT NULL
        AND length(coalesce(payload->>'data', '')) >= ${MIN_BODY_CHARS}
        AND created_at < now() - make_interval(days => ${MIN_AGE_DAYS})
-     ORDER BY md5(id)
+     ORDER BY md5(id::text)
      LIMIT ${poolSize}
   `) as Array<{ id: string; scope: string; text: string }>;
   return rows.map((r) => ({ id: String(r.id), scope: String(r.scope), text: String(r.text) }));
