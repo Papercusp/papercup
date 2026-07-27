@@ -57,9 +57,16 @@ export interface TimelineEntry {
   /**
    * P-024: the assumption WATERMARK live at call time — every non-retracted,
    * non-superseded assumption of this owner with `agent_facts.id <= this`.
-   * Resolving it to a COUNT is deliberately on-demand (see resolveAssumptionCounts).
+   * Resolving it to a COUNT is deliberately on-demand (see below).
+   *
+   * ⚠ `number | string` because postgres-js hands BIGINT back as a STRING (the
+   * same reason the sibling `ref` column is written `id::text`). Typing this as
+   * `number` alone would compile, pass every hand-built fixture, and then match
+   * nothing at runtime — the resolver would silently resolve zero watermarks
+   * with no error anywhere. Normalize through {@link toWatermark}, never with a
+   * bare `typeof x === 'number'`.
    */
-  assumption_set_id?: number | null;
+  assumption_set_id?: number | string | null;
   /**
    * P-024 (c): how many assumptions that watermark covers. Present ONLY on a
    * `goalRef`/`assumptionSetId`-filtered read — never eagerly per row, because
@@ -78,12 +85,18 @@ export interface TimelineEntry {
  * never one query per row. An agent's watermark only moves when it asserts an
  * assumption (~0–3 per task), so in practice a long page collapses to 1–2 ids.
  */
+export function toWatermark(v: number | string | null | undefined): number | null {
+  if (v == null) return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function assumptionSetIdsToResolve(rows: TimelineEntry[]): number[] {
   const ids = new Set<number>();
   for (const r of rows) {
     if (r.kind !== 'tool') continue;
-    const id = r.assumption_set_id;
-    if (typeof id === 'number' && Number.isFinite(id)) ids.add(id);
+    const id = toWatermark(r.assumption_set_id);
+    if (id !== null) ids.add(id);
   }
   return [...ids].sort((a, b) => a - b);
 }
@@ -103,8 +116,8 @@ export function attachAssumptionCounts(
 ): TimelineEntry[] {
   return rows.map((r) => {
     if (r.kind !== 'tool') return r;
-    const id = r.assumption_set_id;
-    if (typeof id !== 'number' || !counts.has(id)) return r;
+    const id = toWatermark(r.assumption_set_id);
+    if (id === null || !counts.has(id)) return r;
     return { ...r, assumption_count: counts.get(id) };
   });
 }

@@ -57,6 +57,43 @@ import { readFileSync, writeFileSync } from 'node:fs';
  */
 
 /**
+ * A cross-package baseline named by PATH, for `runTscBaselineGate`'s options. Distinct
+ * from `ForeignBaselineSource`, which carries the already-LOADED `files` map — this is
+ * what a CLI passes in before the gate reads it off disk.
+ *
+ * @typedef {object} ForeignBaselineRef
+ * @property {string} prefix - Repo-relative path prefix the owning package covers.
+ * @property {string} baselineFile - Absolute path to that package's `.tsc-baseline.json`.
+ * @property {string} [label]
+ */
+
+/**
+ * Options for the shared CLI entry point.
+ *
+ * ⚠ Written as a `@typedef` with `@property` tags, NOT as an inline `@param {{ … }}`
+ * object type. TypeScript's JSDoc TYPE parser does not accept `//` comments inside a type
+ * expression: this options bag was previously documented inline with a `//` gloss per
+ * field, and everything from the first comment-only continuation line onward — including
+ * `foreignBaselines` — was silently dropped from the emitted type while still reading as
+ * fully documented. `@property` descriptions are prose by design, so the annotation and
+ * the explanation can coexist without one eating the other.
+ *
+ * @typedef {object} RunTscBaselineGateOptions
+ * @property {string} root - cwd the tscCommand runs from (repo root).
+ * @property {string} tscCommand - e.g. 'npx tsc -p apps/foo/tsconfig.json --noEmit --incremental false'.
+ * @property {string} baselineFile - Absolute path to this project's `.tsc-baseline.json`.
+ * @property {string} label - Human label for console output, e.g. 'operator-core'.
+ * @property {string[]} argv - `process.argv.slice(2)`.
+ * @property {string} [countField] - Baseline JSON field the derived total is written to on
+ *   `--update` (default 'errorCount'; operator-core keeps its legacy 'operatorCoreErrorCount'
+ *   name for back-compat with existing tooling).
+ * @property {ForeignBaselineRef[]} [foreignBaselines] - Cross-package files this gate
+ *   MEASURES but does not OWN: a file under `prefix` that is absent from this gate's
+ *   baseline inherits the owning package's recorded count instead of an implicit 0. See
+ *   `effectiveBaselineByFile` (EI-18649014117371738).
+ */
+
+/**
  * The full decision for one run.
  *
  * @typedef {object} PerFileGateResult
@@ -419,21 +456,7 @@ export function formatNewFileGuidance({ explicit }) {
  * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
  * `main()` every per-project CLI (lint-tsc.mjs, lint-tsc-operator-vite.mjs, …) delegates to.
  *
- * @param {{
- *   root: string,           // cwd the tscCommand runs from (repo root)
- *   tscCommand: string,     // e.g. 'npx tsc -p apps/foo/tsconfig.json --noEmit --incremental false'
- *   baselineFile: string,   // absolute path to this project's .tsc-baseline.json
- *   label: string,          // human label for console output, e.g. 'operator-core'
- *   argv: string[],         // process.argv.slice(2)
- *   countField?: string,    // baseline JSON field the derived total is written to on --update
- *                           // (default 'errorCount'; operator-core keeps its legacy
- *                           // 'operatorCoreErrorCount' name for back-compat with existing tooling).
- *   foreignBaselines?: {prefix: string, baselineFile: string, label?: string}[],
- *                           // Cross-package files this gate MEASURES but does not OWN: a file under
- *                           // `prefix` that is absent from this gate's baseline inherits the owning
- *                           // package's recorded count instead of an implicit 0. See
- *                           // effectiveBaselineByFile (EI-18649014117371738).
- * }}
+ * @param {RunTscBaselineGateOptions} options
  */
 export function runTscBaselineGate({
   root,

@@ -52,6 +52,32 @@ describe('assumptionSetIdsToResolve — the N+1 guard', () => {
     expect(assumptionSetIdsToResolve(rows)).toEqual([3368]);
   });
 
+  it('accepts the STRING form postgres-js actually returns for a bigint', () => {
+    // The production wire format, not a hypothetical: postgres-js hands BIGINT
+    // back as a string (which is why the sibling `ref` column is written
+    // `id::text`). A `typeof id === 'number'` check compiles, passes every
+    // hand-built numeric fixture, and then matches NOTHING at runtime — the
+    // feature would resolve zero watermarks forever with no error to notice.
+    const rows = [
+      toolRow({ ref: '1', assumption_set_id: '3368' }),
+      toolRow({ ref: '2', assumption_set_id: 3368 }),
+      toolRow({ ref: '3', assumption_set_id: '3400' }),
+    ];
+    // The string and number forms of the same id must collapse to ONE entry.
+    expect(assumptionSetIdsToResolve(rows)).toEqual([3368, 3400]);
+  });
+
+  it('attaches counts to rows whose watermark arrived as a string', () => {
+    const rows = [toolRow({ assumption_set_id: '3368' })];
+    const out = attachAssumptionCounts(rows, new Map([[3368, 2]]));
+    expect(out[0]!.assumption_count).toBe(2);
+  });
+
+  it('drops a non-numeric watermark rather than emitting NaN', () => {
+    const rows = [toolRow({ assumption_set_id: 'not-a-number' })];
+    expect(assumptionSetIdsToResolve(rows)).toEqual([]);
+  });
+
   it('returns nothing for a page that carries no stamps at all', () => {
     // The live case today: assumption_set_id's producer is measured EMPTY, so
     // every row is null and the resolver must issue ZERO queries.
