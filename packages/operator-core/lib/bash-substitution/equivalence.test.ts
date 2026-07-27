@@ -231,6 +231,94 @@ describe('file-read pattern boundaries', () => {
     expect(result.expression).toContain('offset: 110');
     expect(result.expression).toContain('limit: 91');
   });
+
+  /**
+   * EI-18799531134810488. `head`/`tail` used to require a SLASH in the operand,
+   * so a bare filename in the cwd was silently unclaimed while the sibling
+   * `sed`/`cat` rows claimed the same file — measured live as the single miss in
+   * a 17-case probe battery against the registry.
+   */
+  it('claims a bare filename, not only a path-qualified one', () => {
+    expect(claims(headFileRead, 'head -n 20 foo.ts')).toBe(true);
+    expect(claims(tailFileRead, 'tail -n 50 build.log')).toBe(true);
+    expect(claims(headFileRead, 'head -40 README.md 2>/dev/null')).toBe(true);
+    expect(claims(tailFileRead, 'tail -100 local-matrix.out 2>&1')).toBe(true);
+    // …and still claims the path-qualified form it always did.
+    expect(claims(tailFileRead, 'tail -n 40 /tmp/run.log')).toBe(true);
+  });
+
+  /**
+   * The slash had been MASKING these: a real path almost always contains one, a
+   * fragment almost never does. Dropping it without replacing the operand shape
+   * would have re-admitted all three classes as live advisories.
+   */
+  it('excludes globs, which have no literal path to hand the tool', () => {
+    expect(claims(headFileRead, 'head -1 serve-a-*.log')).toBe(false);
+    expect(claims(tailFileRead, 'tail -20 ~/.papercusp/logs/operator*.log 2>/dev/null')).toBe(false);
+    expect(claims(catFileRead, 'cat /tmp/live-fed-gate/last-* 2>/dev/null')).toBe(false);
+    expect(claims(sedRangeRead, "sed -n '1,80p' libs/db/sql/630-*.sql 2>/dev/null")).toBe(false);
+  });
+
+  it('excludes process substitution, which is a stream and not a path', () => {
+    expect(claims(headFileRead, 'head -n 5 <(cat a.ts)')).toBe(false);
+    expect(claims(tailFileRead, 'tail -n 5 <(cat a.ts)')).toBe(false);
+  });
+
+  /**
+   * `atomize` is not a shell parser (by design), so an inlined script payload
+   * splits into pseudo-atoms headed by a real verb — the EI-18733363666718163
+   * class that already bit the `ps` pair. Each of these is a real corpus atom.
+   */
+  it('excludes atomize fragments of inlined script payloads', () => {
+    expect(claims(headFileRead, 'head ==="')).toBe(false);
+    expect(claims(headFileRead, "head -5 a.ts'],")).toBe(false);
+    expect(claims(tailFileRead, 'tail -150 &')).toBe(false);
+    expect(claims(tailFileRead, 'tail = data[idx+len(needle):idx+len(needle)+120]')).toBe(false);
+    // An unbalanced trailing quote is a fragment, not a path — `cover()` would
+    // otherwise hand the tool `~/mac-flip-e2e.log'` and it would not resolve.
+    expect(claims(tailFileRead, "tail -30 ~/mac-flip-e2e.log' 2>/dev/null")).toBe(false);
+  });
+
+  /**
+   * A multi-file read has no `capability:read` expression (one `file_path` per
+   * call), so per D-008 it belongs outside the pattern rather than being claimed
+   * and then failed by the envelope. It WAS being claimed, on all four rows —
+   * the frozen 24-atom samples just happened to miss it.
+   */
+  it('excludes multi-file reads, which take one file_path per call', () => {
+    expect(claims(headFileRead, 'head -20 a.ts b.ts')).toBe(false);
+    expect(claims(catFileRead, 'cat a.ts b.ts')).toBe(false);
+    expect(claims(tailFileRead, 'tail -5 pkg/a/boot.ts pkg/b/boot.ts 2>/dev/null')).toBe(false);
+  });
+
+  it('claims quoted paths and paths carrying a colon, which are real here', () => {
+    // Scratch dirs on this box are named after tool verbs (`…/coord:inbox/…`).
+    expect(claims(tailFileRead, 'tail -60 /home/dev/.papercusp/scratch/ws/coord:inbox/abc.md')).toBe(true);
+    expect(claims(tailFileRead, 'tail -30 "/tmp/claude-1000/-home-dev-papercusp/f261/tasks/b9j.output"')).toBe(true);
+  });
+
+  /**
+   * `capability:read` returns the file WITH line numbers, so `cat -n` is a
+   * faithful substitution. `cat -A`/`-v` render non-printing characters — a
+   * different intent with no tool form, and 32 real atoms wide.
+   */
+  it('claims cat -n but not the non-printing-character flags', () => {
+    expect(claims(catFileRead, 'cat -n packages/operator-core/lib/x.ts')).toBe(true);
+    expect(claims(catFileRead, 'cat -A /tmp/su-repro/nc-fetch.raw 2>/dev/null')).toBe(false);
+    expect(claims(catFileRead, 'cat -v /tmp/x.bin')).toBe(false);
+  });
+
+  /**
+   * The tripwire for the assertion above, mirroring the `ps` pair's. The `-A`
+   * exclusion must live in the PATTERN — but the ENVELOPE has to reject it too,
+   * or a pattern regression would leak a `-A` atom that still scores COVERED,
+   * leaving the verdict green while a wrong advisory ships.
+   */
+  it('scores cat -A as unexpressible, so a broken pattern exclusion is loud', () => {
+    const result = catFileRead.cover('cat -A /tmp/x.raw');
+    expect(result.covered).toBe(false);
+    expect(result.reason).toContain('non-printing');
+  });
 });
 
 describe('postgres pattern boundaries', () => {

@@ -87,6 +87,7 @@ const BORROWABLE = [
   // path (repo-relative)                  category                fallback description (only if package.json lacks one)
   ['libs/generic/rrf',                        'Pure utilities & infra'],
   ['libs/generic/rules',                      'Pure utilities & infra'],
+  ['libs/generic/image-blankness',            'Pure utilities & infra'],
   ['libs/generic/step-program',               'Pure utilities & infra'],
   ['libs/generic/event-reaction',             'Pure utilities & infra'],
   ['libs/generic/structured-concurrency',     'Pure utilities & infra'],

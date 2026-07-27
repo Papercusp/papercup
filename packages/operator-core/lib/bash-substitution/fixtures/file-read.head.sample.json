@@ -1,8 +1,8 @@
 {
-  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 P-005 / pair file-read.head",
-  "extractedAt": "2026-07-26T01:23:00Z",
-  "totalAtoms": 173,
-  "totalSessions": 49,
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 P-005 / pair file-read.head (re-drawn for EI-18799531134810488: single-file-operand pattern)",
+  "extractedAt": "2026-07-26T13:34:00Z",
+  "totalAtoms": 213,
+  "totalSessions": 53,
   "sample": [
     {
       "sid": "su-a28a5f3c-4f45-465e-af05-e1e6e05668a9",
@@ -10,119 +10,119 @@
       "atom": "head -1 /home/dev/.papercusp/live-fed-gate/triage/serve-b-220159.log"
     },
     {
-      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
-      "ts": "2026-07-21T08:31:36.607Z",
-      "atom": "head -100 /tmp/live-fed-gate-20260721-034225/local-matrix.out"
-    },
-    {
-      "sid": "su-a8ea9aff-9469-4a8f-90bf-f09c6a383ca3",
-      "ts": "2026-07-25T21:33:13.324Z",
-      "atom": "head -12 packages/operator-core/lib/harness/git-sync/oversized-blob-boundary.test.ts"
-    },
-    {
-      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
-      "ts": "2026-07-25T22:18:31.670Z",
-      "atom": "head -2 ~/.papercusp-lane-a-fed/inst-b.log 2>/dev/null"
-    },
-    {
-      "sid": "su-9d23464a-a46e-4be8-80d1-50be8f4d0dc4",
-      "ts": "2026-07-19T15:50:26.320Z",
-      "atom": "head -20 /tmp/linux-cut-0.0.12.log"
-    },
-    {
       "sid": "su-48ed7aaf-a682-4059-b032-42e9488f6620",
       "ts": "2026-07-26T04:35:37.654Z",
-      "atom": "head -20 /tmp/wi5863-cand7-run.log"
+      "atom": "head -10 /tmp/wi5863-cand7-run2.log"
     },
     {
-      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
-      "ts": "2026-07-26T03:23:11.782Z",
-      "atom": "head -20 packages/operator-core/lib/check-assert-integrity.test.ts"
-    },
-    {
-      "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
-      "ts": "2026-07-26T00:13:44.589Z",
-      "atom": "head -25 apps/operator-vite/src/routes/adv/insights.tsx"
-    },
-    {
-      "sid": "su-a8ea9aff-9469-4a8f-90bf-f09c6a383ca3",
-      "ts": "2026-07-26T02:02:06.680Z",
-      "atom": "head -3 /tmp/gate-final.log 2>/dev/null"
-    },
-    {
-      "sid": "su-3dfbc0fd-e642-46b0-b81e-abed2ae62eea",
-      "ts": "2026-07-19T13:48:48.196Z",
-      "atom": "head -3 /tmp/wmctrl-block.ts"
-    },
-    {
-      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
-      "ts": "2026-07-21T00:07:27.787Z",
-      "atom": "head -30 /tmp/live-fed-gate-20260720-194254/content-matrix.out"
-    },
-    {
-      "sid": "su-29a4071e-0980-4838-89c4-e1793c366a6b",
-      "ts": "2026-07-26T02:07:17.550Z",
-      "atom": "head -30 apps/operator/lib/verify-tauri-headless-boot-only.test.ts"
-    },
-    {
-      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
-      "ts": "2026-07-19T03:24:44.137Z",
-      "atom": "head -30 papercusp-desktop/bin/live-federation-gate.sh"
-    },
-    {
-      "sid": "su-5d27fac9-98b3-4012-8537-18b12cdf114d",
-      "ts": "2026-07-25T23:55:01.492Z",
-      "atom": "head -40 /home/dev/papercupai-workspace/papercusp/.claude/skills/verdict/SKILL.md 2>/dev/null"
+      "sid": "su-698e64fa-028b-4adc-b792-c4fb8fadc201",
+      "ts": "2026-07-26T04:59:01.935Z",
+      "atom": "head -12 apps/operator-docs/src/content/docs/agent-insights/adding-a-sync-query.mdx"
     },
     {
       "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
-      "ts": "2026-07-25T22:09:55.189Z",
-      "atom": "head -40 /tmp/live-fed-gate-forced-2207.log"
+      "ts": "2026-07-25T22:23:07.523Z",
+      "atom": "head -2 serve-b-182058.log"
     },
     {
-      "sid": "su-143b12bd-edcc-4af5-b983-3ec8f258b992",
-      "ts": "2026-07-19T20:29:29.741Z",
-      "atom": "head -40 packages/operator-core/lib/endpoint-route/routes/zero-harness/rest-query.ts"
-    },
-    {
-      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
-      "ts": "2026-07-19T15:57:00.891Z",
-      "atom": "head -40 ~/mac-verify-build-waiter.sh 2>/dev/null"
-    },
-    {
-      "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
-      "ts": "2026-07-20T02:55:38.190Z",
-      "atom": "head -5 /tmp/papercusp-winleg-desktop-v0.0.11-alpha.log"
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T02:33:06.992Z",
+      "atom": "head -20 /tmp/live-fed-gate-20260720-220200/build.log"
     },
     {
       "sid": "su-92bacd98-b714-4f44-a4fc-08e73ea7ca39",
-      "ts": "2026-07-25T23:18:59.246Z",
-      "atom": "head -50 packages/operator-core/lib/hive-git-drill-migration-freshness-guard.test.ts 2>/dev/null"
+      "ts": "2026-07-26T01:14:24.005Z",
+      "atom": "head -20 apps/operator-docs/src/content/docs/reference/agent-insights-index.md"
     },
     {
-      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
-      "ts": "2026-07-21T10:12:53.489Z",
-      "atom": "head -60 /home/dev/.papercusp/scratch/wi5672-routine-capture.sh"
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T12:10:47.183Z",
+      "atom": "head -20 scn.content_bidir-042035.log"
     },
     {
-      "sid": "su-1204f89e-6d36-44ed-9b18-54ff8ac9530d",
-      "ts": "2026-07-19T13:56:54.714Z",
-      "atom": "head -60 bin/build-windows-on-vm.sh"
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T15:59:38.888Z",
+      "atom": "head -25 packages/operator-core/lib/agent-tools/dev/service_health.test.ts"
+    },
+    {
+      "sid": "su-9d23464a-a46e-4be8-80d1-50be8f4d0dc4",
+      "ts": "2026-07-19T19:14:35.086Z",
+      "atom": "head -3 /tmp/gen-latest-0.0.12.py"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-25T20:29:20.004Z",
+      "atom": "head -3 packages/integration/src/llm-analyst-responses.test.ts"
     },
     {
       "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
-      "ts": "2026-07-19T06:32:11.044Z",
-      "atom": "head -60 papercusp-desktop/bin/two-instance-hive-from-repo-smoke.sh"
+      "ts": "2026-07-20T18:46:59.110Z",
+      "atom": "head -30 /tmp/live-fed-gate-20260720-143812/build.log 2>/dev/null"
+    },
+    {
+      "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
+      "ts": "2026-07-26T00:13:34.170Z",
+      "atom": "head -30 apps/operator-vite/src/routes/adv/docs.tsx"
+    },
+    {
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T01:38:23.755Z",
+      "atom": "head -30 papercusp-desktop/bin/lib/federation-asserts.sh"
     },
     {
       "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
-      "ts": "2026-07-19T18:48:42.166Z",
-      "atom": "head -8 ~/mac-flip-e2e.log 2>/dev/null"
+      "ts": "2026-07-19T18:55:54.283Z",
+      "atom": "head -4 ~/mac-flip-e2e.log 2>/dev/null"
     },
     {
-      "sid": "su-a6b56a61-d6cb-4d10-bd17-3f25292bf01e",
-      "ts": "2026-07-17T04:28:39.234Z",
-      "atom": "head -80 papercusp-desktop/bin/live-federation-gate.sh"
+      "sid": "su-a7d08fd3-ba65-45d3-a07f-a335b9004454",
+      "ts": "2026-07-21T00:17:46.198Z",
+      "atom": "head -40 README.md 2>/dev/null"
+    },
+    {
+      "sid": "su-73565638-a17a-4be4-adfd-86a6750ac1c1",
+      "ts": "2026-07-26T02:31:52.061Z",
+      "atom": "head -40 packages/operator-core/lib/release/gate-verdict-target.test.ts"
+    },
+    {
+      "sid": "su-e15fb42f-6686-41e7-8368-37f5ec26ef3c",
+      "ts": "2026-07-26T06:52:24.063Z",
+      "atom": "head -45 scripts/check-generic-first.mjs"
+    },
+    {
+      "sid": "su-48ed7aaf-a682-4059-b032-42e9488f6620",
+      "ts": "2026-07-26T17:23:13.470Z",
+      "atom": "head -5 /tmp/wi6061-deb-build.log 2>&1"
+    },
+    {
+      "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
+      "ts": "2026-07-25T23:54:20.391Z",
+      "atom": "head -50 libs/papercusp/plugins/design-phase/tokens.cjs 2>/dev/null"
+    },
+    {
+      "sid": "su-e044d888-c238-4311-8eb0-aef7896b3e92",
+      "ts": "2026-07-20T08:58:56.430Z",
+      "atom": "head -6 replication-liveness-connected-never-replicated-harness-hell.md"
+    },
+    {
+      "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
+      "ts": "2026-07-25T23:42:07.404Z",
+      "atom": "head -60 apps/operator/app/harness/PiPanel.tsx"
+    },
+    {
+      "sid": "su-48ed7aaf-a682-4059-b032-42e9488f6620",
+      "ts": "2026-07-26T02:11:36.543Z",
+      "atom": "head -60 papercusp-desktop/bin/live-federation-gate.sh 2>/dev/null"
+    },
+    {
+      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
+      "ts": "2026-07-25T23:45:31.861Z",
+      "atom": "head -8 release-local.sh"
+    },
+    {
+      "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
+      "ts": "2026-07-25T23:41:47.621Z",
+      "atom": "head -80 apps/operator/scripts/psu-pty-host.mjs"
     }
   ]
 }

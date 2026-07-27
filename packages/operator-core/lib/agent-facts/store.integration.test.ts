@@ -34,6 +34,7 @@ import {
 } from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
 import { factsCellDelta } from './cells';
+import { assumptionSelectorsFor, resolveAssumptions } from './assumptions';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-facts-int';
@@ -787,5 +788,132 @@ describe('P-018 conventions — enforcement round-trip + cross-scope discovery',
     const out = await listConventionFacts({ workspaceId: WS }, db.sql);
     expect(out.map((f) => f.key)).toEqual(['revised']);
     expect(out[0].body).toBe('v2');
+  });
+});
+
+/**
+ * P-008 (d) / D-050 / D-079 — assumption key RESOLUTION.
+ *
+ * These run against real PG because the whole question is what the LEDGER says,
+ * and the distinction the gate turns on (lapsed vs never-existed) is invisible to
+ * `foldFacts`, which filters expired/retracted/superseded rows out entirely. A
+ * mocked read could not tell the two apart, which is the bug being prevented.
+ */
+describe('P-008 (d) assumption resolution (D-079)', () => {
+  const base = {
+    scope: 'owner' as const,
+    scopeRef: 'su-me',
+    body: 'the gate red is a flake',
+    createdBy: 'su-int',
+    workspaceId: WS,
+  };
+  const selectors = assumptionSelectorsFor({ workItemId: 'WI-1', ownerId: 'su-me', harnessSlug: 'papercusp' });
+  const resolve = (declared: string[]) => resolveAssumptions(declared, selectors, { workspaceId: WS }, db.sql);
+
+  it('resolves a live bare key and STAMPS the absolute versioned ref', async () => {
+    const f = await assertFact({ ...base, key: 'gate-flake' }, db.sql);
+    const [r] = await resolve(['gate-flake']);
+    expect(r.condition).toBe('live');
+    expect(r.ref).toBe(`fact:owner:su-me:gate-flake@v${f.id}`);
+    expect(r.versionId).toBe(f.id);
+    // The excerpt is what makes the record survive the 30d expiry sweep.
+    expect(r.excerpt).toBe('the gate red is a flake');
+  });
+
+  it('an EXPIRED key resolves as lapsed — NOT dangling (the D-050 question)', async () => {
+    await assertFact({ ...base, key: 'stale-hunch' }, db.sql);
+    await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 hour'
+                  WHERE workspace_id = ${WS} AND key = 'stale-hunch'`;
+    const [r] = await resolve(['stale-hunch']);
+    expect(r.condition).toBe('lapsed');
+    expect(r.ref).toContain('stale-hunch');
+    expect(r.excerpt).toBeTruthy();
+  });
+
+  it('a RETRACTED key resolves as retracted, not dangling', async () => {
+    await assertFact({ ...base, key: 'withdrawn' }, db.sql);
+    await retractFact({ scope: 'owner', scopeRef: 'su-me', key: 'withdrawn', workspaceId: WS }, db.sql);
+    const [r] = await resolve(['withdrawn']);
+    expect(r.condition).toBe('retracted');
+  });
+
+  it('a key that NEVER existed is the one thing that dangles', async () => {
+    const [r] = await resolve(['never-asserted-anywhere']);
+    expect(r.condition).toBe('dangling');
+    expect(r.ref).toBeNull();
+  });
+
+  it('a bare key resolves to the CURRENT version after a correction', async () => {
+    await assertFact({ ...base, key: 'revised', body: 'v1' }, db.sql);
+    const v2 = await assertFact({ ...base, key: 'revised', body: 'v2' }, db.sql);
+    const [r] = await resolve(['revised']);
+    expect(r.condition).toBe('live');
+    expect(r.versionId).toBe(v2.id);
+    expect(r.excerpt).toBe('v2');
+  });
+
+  it('a version-pinned ref whose version was superseded reports superseded, pointing at the current one', async () => {
+    const v1 = await assertFact({ ...base, key: 'pinned', body: 'first' }, db.sql);
+    const v2 = await assertFact({ ...base, key: 'pinned', body: 'second' }, db.sql);
+    const [r] = await resolve([`fact:owner:su-me:pinned@v${v1.id}`]);
+    expect(r.condition).toBe('superseded');
+    expect(r.versionId).toBe(v2.id);
+    expect(r.excerpt).toBe('second');
+  });
+
+  it('most-specific scope wins, and the multi-scope hit is flagged ambiguous', async () => {
+    await assertFact(
+      { scope: 'workspace', key: 'shared-slug', body: 'workspace-wide', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    await assertFact({ ...base, key: 'shared-slug', body: 'mine' }, db.sql);
+    const [r] = await resolve(['shared-slug']);
+    expect(r.scope).toBe('owner');
+    expect(r.excerpt).toBe('mine');
+    expect(r.ambiguous).toBe(true);
+  });
+
+  it('a single-scope hit is NOT flagged ambiguous', async () => {
+    await assertFact({ ...base, key: 'only-mine' }, db.sql);
+    const [r] = await resolve(['only-mine']);
+    expect(r.ambiguous).toBeUndefined();
+  });
+
+  /**
+   * The reason absolute refs exist: a role-scoped fact cannot be reached by a
+   * bare key (AgentIdentity carries no role), so it must stay citable explicitly.
+   */
+  it('an absolute ref resolves a scope OUTSIDE the caller selector set', async () => {
+    await assertFact(
+      {
+        scope: 'role',
+        scopeRef: 'engineer',
+        key: 'role-rule',
+        body: 'engineers do X',
+        createdBy: 'su-int',
+        workspaceId: WS,
+      },
+      db.sql,
+    );
+    expect((await resolve(['role-rule']))[0].condition).toBe('dangling');
+    const [r] = await resolve(['fact:role:engineer:role-rule']);
+    expect(r.condition).toBe('live');
+    expect(r.scope).toBe('role');
+    expect(r.excerpt).toBe('engineers do X');
+  });
+
+  it('a foreign hive partition is not the fact you asserted', async () => {
+    await assertFact({ ...base, key: 'local-only' }, db.sql);
+    await db.sql`UPDATE harness_shared.agent_facts SET source_hive = 'other-hive'
+                  WHERE workspace_id = ${WS} AND key = 'local-only'`;
+    expect((await resolve(['local-only']))[0].condition).toBe('dangling');
+  });
+
+  it('resolves a whole batch in ONE read, preserving caller order', async () => {
+    await assertFact({ ...base, key: 'k-a' }, db.sql);
+    await assertFact({ ...base, key: 'k-b' }, db.sql);
+    const out = await resolve(['k-b', 'ghost', 'k-a']);
+    expect(out.map((r) => r.key)).toEqual(['k-b', 'ghost', 'k-a']);
+    expect(out.map((r) => r.condition)).toEqual(['live', 'dangling', 'live']);
   });
 });

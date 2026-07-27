@@ -362,6 +362,89 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
     expect(issuePayload.evidence).toEqual(evidence);
   });
 
+  /**
+   * P-008 (d) / D-050 / D-079 R1 — the assumption declaration actually LANDS.
+   *
+   * ⚠ This test is the point of the whole item. `assumptions` was required on
+   * every terminal close, format-checked by two zod refines, and then referenced
+   * ZERO times downstream — collected and dropped on the floor. Nothing failed,
+   * because nothing asserted that it arrived. Both families are checked in ONE
+   * test for the same reason the evidence test above does: a persistence path
+   * that works for features and silently drops for issues is the failure mode.
+   */
+  it('P-008 (d): a resolved assumption declaration is PERSISTED under payload._assumptions for BOTH families', async () => {
+    const declaration = {
+      declared: [
+        {
+          declared: 'gate-red-is-flake',
+          ref: 'fact:owner:agA:gate-red-is-flake@v42',
+          key: 'gate-red-is-flake',
+          scope: 'owner' as const,
+          scopeRef: 'agA',
+          versionId: 42,
+          condition: 'live' as const,
+          excerpt: 'the gate red is a flake, not a regression',
+        },
+      ],
+      resolvedAt: '2026-07-27T12:00:00.000Z',
+    };
+
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(feat.id, 'passed', {
+      harness: 'papercup',
+      by: 'agA',
+      completionRef: 'closed on a declared assumption',
+      assumptions: declaration,
+    });
+
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'closed', {
+      by: 'agA',
+      completionRef: 'closed on a declared assumption',
+      assumptions: declaration,
+    });
+
+    const [featurePayload] = await db.sql<{ a: unknown }[]>`
+      SELECT payload->'_assumptions' AS a
+        FROM harness_shared.harness_features_consolidated
+       WHERE feature_id = ${feat.id}`;
+    const [issuePayload] = await db.sql<{ a: unknown }[]>`
+      SELECT payload->'_assumptions' AS a
+        FROM harness_shared.engineer_issues
+       WHERE issue_id = ${bug.id}`;
+    expect(featurePayload.a).toEqual(declaration);
+    expect(issuePayload.a).toEqual(declaration);
+  });
+
+  it('P-008 (d): an explicit "none" is stored VERBATIM, not flattened to an empty array', async () => {
+    // D-016's argument for the literal is that "this rests on nothing recorded" is
+    // a real answer; flattening it to [] would make it indistinguishable from a
+    // close that predates the field.
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'closed', {
+      by: 'agA',
+      completionRef: 'rests on nothing recorded',
+      assumptions: { declared: 'none', resolvedAt: '2026-07-27T12:00:00.000Z' },
+    });
+    const [row] = await db.sql<{ a: { declared: unknown } }[]>`
+      SELECT payload->'_assumptions' AS a
+        FROM harness_shared.engineer_issues
+       WHERE issue_id = ${bug.id}`;
+    expect(row.a.declared).toBe('none');
+  });
+
+  it('P-008 (d): a close carrying NO declaration leaves payload._assumptions absent, not null', async () => {
+    // The system write paths (watchdog auto-close, restore, reconcile) pass no
+    // declaration; they must not manufacture an empty assumption record.
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'closed', { by: 'agA', completionRef: 'no declaration' });
+    const [row] = await db.sql<{ has: boolean }[]>`
+      SELECT (payload ? '_assumptions') AS has
+        FROM harness_shared.engineer_issues
+       WHERE issue_id = ${bug.id}`;
+    expect(row.has).toBe(false);
+  });
+
   it('a non-terminal transition is UNAFFECTED by the gate — no owner/completionRef required', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     const after = await wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup' });

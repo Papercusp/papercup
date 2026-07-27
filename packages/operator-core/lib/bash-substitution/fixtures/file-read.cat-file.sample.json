@@ -1,8 +1,8 @@
 {
-  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 P-005 / pair file-read.cat-file",
-  "extractedAt": "2026-07-26T01:23:00Z",
-  "totalAtoms": 1589,
-  "totalSessions": 73,
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 P-005 / pair file-read.cat-file (re-drawn for EI-18799531134810488: single-file-operand pattern)",
+  "extractedAt": "2026-07-26T13:34:00Z",
+  "totalAtoms": 2084,
+  "totalSessions": 72,
   "sample": [
     {
       "sid": "su-9d23464a-a46e-4be8-80d1-50be8f4d0dc4",
@@ -10,119 +10,119 @@
       "atom": "cat \"/home/dev/.cargo-target/release/bundle/build-provenance.json\""
     },
     {
-      "sid": "su-1204f89e-6d36-44ed-9b18-54ff8ac9530d",
-      "ts": "2026-07-19T18:11:26.734Z",
-      "atom": "cat \"Papercusp GUI_0.0.12_x64-setup.exe.sig\" 2>/dev/null"
-    },
-    {
-      "sid": "su-cd450e2a-a441-442a-afe6-f112522cbde8",
-      "ts": "2026-07-20T08:27:58.776Z",
-      "atom": "cat /home/dev/.config/systemd/user/papercup-staging-api.service.d/40-pgbouncer.conf 2>&1"
-    },
-    {
-      "sid": "su-21cd5f76-1476-4ee0-b596-30bc43b98bc9",
-      "ts": "2026-07-21T01:14:22.057Z",
-      "atom": "cat /home/dev/.papercusp/live-fed-gate/triage/scn.replication_soak-192224.log"
-    },
-    {
-      "sid": "su-772cf615-c6a4-488e-8491-b553ced6b4ac",
-      "ts": "2026-07-20T18:20:38.404Z",
-      "atom": "cat /home/dev/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/653-fed-key-generated-col-stamp-mask.sql"
-    },
-    {
-      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
-      "ts": "2026-07-25T23:04:22.343Z",
-      "atom": "cat /proc/884780/cgroup 2>/dev/null"
-    },
-    {
-      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
-      "ts": "2026-07-17T17:50:21.788Z",
-      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/0725437e-bf4c-473c-91f9-628579e9fe7f/tasks/bli2gad9p.output 2>&1"
-    },
-    {
-      "sid": "su-fd41c149-504a-4421-9b10-3f9a6d94faa2",
-      "ts": "2026-07-20T06:27:44.964Z",
-      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/529a0fae-a03d-477a-ba0c-db92bbb99efa/tasks/b49vpe8x2.output"
-    },
-    {
-      "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
-      "ts": "2026-07-26T01:46:32.613Z",
-      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/929e59e5-abb8-4e42-b66d-9e56b9a530d0/tasks/bp21z5fw7.output"
-    },
-    {
-      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
-      "ts": "2026-07-21T06:18:18.413Z",
-      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/c58fa2f2-2b22-4050-9ba0-164ca5fd4cae/tasks/btpym9rqz.output"
+      "sid": "su-39274e17-029f-409c-b058-970c9cc5bfdc",
+      "ts": "2026-07-26T07:33:16.879Z",
+      "atom": "cat \"/tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/3cd6c45b-2ffe-49b0-80e9-4404f12459e9/tasks/bfkwmp4iv.output\""
     },
     {
       "sid": "su-29a4071e-0980-4838-89c4-e1793c366a6b",
-      "ts": "2026-07-26T02:56:05.968Z",
-      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/fd86ac5d-d0f2-46e2-a689-507e4555f524/tasks/b05puxdv5.output'"
+      "ts": "2026-07-26T00:50:02.910Z",
+      "atom": "cat /home/dev/.papercusp-lane-a-fed/dht.log"
     },
     {
-      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
-      "ts": "2026-07-19T04:44:33.184Z",
-      "atom": "cat /tmp/live-fed-gate-20260719-000425/content-matrix.out 2>/dev/null"
+      "sid": "su-cfeca4f2-6e46-41d3-89f3-ae8916b0cc95",
+      "ts": "2026-07-26T01:10:19.787Z",
+      "atom": "cat /home/dev/.papercusp/scratch/papercusp-workspace/coord:inbox/ed8f876e-6285-4344-8eff-af342120565f/result-door-1785028201826.md 2>&1"
     },
     {
-      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
-      "ts": "2026-07-20T23:55:24.396Z",
-      "atom": "cat /tmp/live-fed-gate-20260720-194254/local-matrix.out"
+      "sid": "su-1204f89e-6d36-44ed-9b18-54ff8ac9530d",
+      "ts": "2026-07-19T18:46:13.614Z",
+      "atom": "cat /home/dev/.papercusp/operator.json 2>/dev/null"
     },
     {
-      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
-      "ts": "2026-07-21T10:08:52.334Z",
-      "atom": "cat /tmp/live-fed-gate-20260721-054531/provenance"
-    },
-    {
-      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
-      "ts": "2026-07-25T23:12:06.282Z",
-      "atom": "cat /tmp/live-fed-gate-20260725-183831/provenance 2>/dev/null"
-    },
-    {
-      "sid": "su-00cb5bbb-979b-4d78-81d8-a1debf876551",
-      "ts": "2026-07-25T22:05:43.441Z",
-      "atom": "cat /tmp/pcusp-local-rig.lock.holder 2>/dev/null"
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T17:11:41.803Z",
+      "atom": "cat /proc/self/cgroup"
     },
     {
       "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
-      "ts": "2026-07-20T09:36:37.022Z",
-      "atom": "cat /tmp/tsc-gym-check.log 2>/dev/null"
+      "ts": "2026-07-21T01:48:34.461Z",
+      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/00fe3716-a0c0-4ac0-acac-0a4e918a0675/tasks/brfsoncja.output 2>/dev/null"
     },
     {
-      "sid": "su-48ed7aaf-a682-4059-b032-42e9488f6620",
-      "ts": "2026-07-26T02:08:43.638Z",
-      "atom": "cat /tmp/wi5837-repro.cjs"
+      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
+      "ts": "2026-07-25T23:24:30.264Z",
+      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/3818212f-35c0-49c5-a375-af41e9b631f9/tasks/btcc5j3ch.output 2>/dev/null"
     },
     {
-      "sid": "su-a7d08fd3-ba65-45d3-a07f-a335b9004454",
-      "ts": "2026-07-20T20:46:15.923Z",
-      "atom": "cat apps/operator/app/_components/SetupWizard/useWizardStatuses.ts"
-    },
-    {
-      "sid": "su-6f5ca4fb-38ab-468f-8d82-247940a52119",
-      "ts": "2026-07-25T23:43:18.848Z",
-      "atom": "cat libs/papercusp-shared/package.json 2>&1"
-    },
-    {
-      "sid": "su-38101f27-bf18-4044-9ca1-bd66bcf0b411",
-      "ts": "2026-07-26T00:59:15.724Z",
-      "atom": "cat node_modules/mem0ai/package.json 2>/dev/null"
+      "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
+      "ts": "2026-07-26T14:24:15.134Z",
+      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/7cbfd3ae-a9e9-4858-b2ed-3d355778644b/tasks/b010hwxxb.output 2>/dev/null"
     },
     {
       "sid": "su-7845f434-583f-4801-86ba-d06f350d1071",
-      "ts": "2026-07-26T04:17:11.801Z",
-      "atom": "cat packages/operator-core/lib/modes/registry.ts 2>/dev/null"
+      "ts": "2026-07-26T04:05:00.391Z",
+      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/b593ea46-30a7-4459-a427-e2c59716f22a/tasks/b2k67ai4e.output 2>/dev/null"
     },
     {
-      "sid": "su-6bf2ddf4-01af-4873-a116-9ddcb2a0a779",
-      "ts": "2026-07-25T21:05:45.592Z",
-      "atom": "cat src-tauri/tauri.conf.json 2>/dev/null"
+      "sid": "su-21cd5f76-1476-4ee0-b596-30bc43b98bc9",
+      "ts": "2026-07-20T02:51:22.999Z",
+      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/e01d8ad4-3c0e-47b5-bf79-cfd2d08d2727/tasks/b0pga6rx9.output 2>/dev/null"
+    },
+    {
+      "sid": "su-a8ea9aff-9469-4a8f-90bf-f09c6a383ca3",
+      "ts": "2026-07-26T01:59:15.028Z",
+      "atom": "cat /tmp/gate-chain.log"
     },
     {
       "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
-      "ts": "2026-07-20T12:50:53.096Z",
-      "atom": "cat ~/.papercusp/live-fed-gate/last-downgrade 2>&1"
+      "ts": "2026-07-20T22:05:23.070Z",
+      "atom": "cat /tmp/live-fed-gate-20260720-174633/local-matrix.out"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T13:18:18.739Z",
+      "atom": "cat /tmp/live-fed-gate-20260721-073904/provenance"
+    },
+    {
+      "sid": "su-38101f27-bf18-4044-9ca1-bd66bcf0b411",
+      "ts": "2026-07-26T00:56:50.452Z",
+      "atom": "cat /tmp/mac-vm-build.lock 2>&1"
+    },
+    {
+      "sid": "su-39274e17-029f-409c-b058-970c9cc5bfdc",
+      "ts": "2026-07-26T07:28:43.919Z",
+      "atom": "cat /tmp/reply-deadline-test2.log 2>/dev/null"
+    },
+    {
+      "sid": "su-a7d08fd3-ba65-45d3-a07f-a335b9004454",
+      "ts": "2026-07-20T21:25:51.086Z",
+      "atom": "cat /tmp/tsc-full-out.txt 2>/dev/null"
+    },
+    {
+      "sid": "su-7a80832c-ade5-4ed2-9a08-43f72fbbdae4",
+      "ts": "2026-07-26T08:02:56.183Z",
+      "atom": "cat /tmp/wi5863-rig-rebuild/local-matrix-v3-iter5.log"
+    },
+    {
+      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
+      "ts": "2026-07-25T21:45:27.483Z",
+      "atom": "cat apps/operator-docs/src/content/docs/agent-insights/absorbing-state-guards-and-self-report-detectors.mdx 2>/dev/null"
+    },
+    {
+      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
+      "ts": "2026-07-26T15:19:51.537Z",
+      "atom": "cat driver.log"
+    },
+    {
+      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
+      "ts": "2026-07-26T06:21:46.908Z",
+      "atom": "cat n-loop.log"
+    },
+    {
+      "sid": "su-6eab8a26-2a45-4253-a708-671fd3182607",
+      "ts": "2026-07-26T08:46:06.601Z",
+      "atom": "cat packages/operator-core/lib/bash-substitution/pairs/postgres.ts"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T12:10:47.183Z",
+      "atom": "cat scn.planpart_bidir-012321.log"
+    },
+    {
+      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
+      "ts": "2026-07-19T18:58:07.249Z",
+      "atom": "cat ~/.papercusp-workspaces/.shared/embedded-pg-data/postmaster.pid 2>/dev/null"
     }
   ]
 }

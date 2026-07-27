@@ -147,6 +147,59 @@ function readPattern(body: string): RegExp {
 }
 
 /**
+ * Characters a literal path operand is made of. `:` is included because this
+ * box's scratch dirs are named after tool verbs (`…/scratch/ws/coord:inbox/…`).
+ * `-` is appended LAST at every use site so it can never open a character range.
+ */
+const PATH_CHARS = String.raw`A-Za-z0-9_.~@/:+`;
+
+/**
+ * EXACTLY ONE literal path — bare, or wholly quoted (a quoted path may contain
+ * spaces). An unbalanced quote is deliberately NOT accepted: `atomize` is not a
+ * shell parser, so an inlined script payload leaves fragments like
+ * `~/mac-flip-e2e.log'` that look like paths and are not.
+ */
+const ONE_PATH = String.raw`(?:"[${PATH_CHARS} -]+"|'[${PATH_CHARS} -]+'|(?!-)[${PATH_CHARS}-]+)`;
+
+/**
+ * Only stderr plumbing may trail the operand. `2>/dev/null` and `2>&1` ride on a
+ * large share of real reads and change nothing about them; anything ELSE after
+ * the path is a second operand, which `capability:read` cannot express.
+ */
+const TRAILING_STDERR = String.raw`(?:\s+2>[^\s]+|\s+2>&\d)*\s*$`;
+
+/**
+ * The shared operand tail for the whole family: one literal path, then the end
+ * of the atom. Matching is per-ATOM (see `match.ts`), so anchoring at `$` asks
+ * "is this whole command a single-file read?" — which is exactly the question.
+ *
+ * ── Why this replaced a trailing `\/` (EI-18799531134810488) ─────────────────
+ * `head`/`tail` used to require a SLASH in the operand. The stated intent was
+ * only "has a file operand" — the dominant `… | head -20` pipe filter has no
+ * operand at all and was already excluded — so the slash was an accident that
+ * silently dropped every bare filename: `head -n 20 foo.ts` was unclaimed while
+ * the sibling `sed`/`cat` rows claimed the same file. Measured live against the
+ * registry, that was the one miss in a 17-case probe battery.
+ *
+ * Dropping the slash naively re-admits three junk classes the slash had been
+ * masking (a real path almost always contains one; a fragment almost never
+ * does), all found by re-running the harness over the RAW corpus rather than the
+ * frozen sample:
+ *   • globs              `head -1 serve-a-*.log`      — no literal path to pass
+ *   • atomize fragments  `head ===`, `tail -150 &`, `head -5 a.ts'],`
+ *   • inlined script     `tail = data[idx+len(needle):…]`  (EI-18733363666718163)
+ * Per D-008 each is excluded by the PATTERN, not apologised for in `cover()`.
+ *
+ * The same shape then fixed a hole the slash had been hiding in ALL FOUR rows:
+ * multi-file reads and globs were being claimed and then failed by the envelope.
+ * That never showed up in the recorded verdicts because the frozen 24-atom
+ * samples happened to miss them — the population told a different story (head
+ * 4/191, tail 11/1879, cat 43/1505, sed 3/3730 claimed-but-unexpressible). All
+ * four are now 0.
+ */
+const SINGLE_FILE_OPERAND = `${ONE_PATH}${TRAILING_STDERR}`;
+
+/**
  * Coverage checks shared by every member of the family: exactly one operand,
  * and that operand a literal path `capability:read` can be handed as-is.
  */
@@ -189,7 +242,7 @@ function checkByteWindow(parsed: ParsedAtom): CoverageResult | null {
 export const sedRangeRead: SubstitutionPair = {
   id: 'file-read.sed-range',
   intentLabel: 'file-range-read',
-  bashPattern: readPattern(String.raw`sed\s+-n\s+['"]?\s*\d+\s*,\s*\d+\s*p['"]?\s+\S`),
+  bashPattern: readPattern(String.raw`sed\s+-n\s+['"]?\s*\d+\s*,\s*\d+\s*p['"]?\s+${SINGLE_FILE_OPERAND}`),
   toolName: 'capability:read',
   advisoryText:
     "capability:read { file_path, offset, limit } reads a line range directly — `sed -n 'N,Mp' FILE` is offset=N, limit=M-N+1.",
@@ -223,11 +276,17 @@ export const sedRangeRead: SubstitutionPair = {
 /**
  * P-005b — `cat FILE`: whole-file read of one literal path. The pattern
  * excludes heredocs and redirects (writes), and `cat -` (stdin).
+ *
+ * `-n`/`--number` is the one flag admitted: `capability:read` returns the file
+ * WITH line numbers, so `cat -n FILE` is a faithful substitution. `cat -A`/`-v`
+ * are not — showing non-printing characters is a different intent with no tool
+ * form, so per D-008 they fall outside the pattern rather than being claimed and
+ * then quietly mis-expressed (they were, on 32 real atoms).
  */
 export const catFileRead: SubstitutionPair = {
   id: 'file-read.cat-file',
   intentLabel: 'file-whole-read',
-  bashPattern: readPattern(String.raw`cat\s+(?!<)(?!-\s)[^<>|]*\S`),
+  bashPattern: readPattern(String.raw`cat\s+(?:(?:-n|--number)\s+)?${SINGLE_FILE_OPERAND}`),
   toolName: 'capability:read',
   advisoryText:
     'capability:read { file_path } returns the file with line numbers, paged at 2000 lines — no shell round-trip.',
@@ -239,7 +298,18 @@ export const catFileRead: SubstitutionPair = {
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
-    if (/<<|<</.test(atom)) return { covered: false, reason: 'heredoc — this is a write, not a read' };
+    if (/<</.test(atom)) return { covered: false, reason: 'heredoc — this is a write, not a read' };
+    // Mirrors the pattern's exclusion, and deliberately so: `tail -f` sets the
+    // convention that an excluded intent is ALSO unexpressible here. If the
+    // pattern's exclusion ever regresses, such an atom reaches this envelope,
+    // scores NOT covered, and flips the recorded verdict — loudly. Scoring it
+    // covered instead would let a wrong advisory ship in silence.
+    if (parsed.flags.some((f) => /^-[Avet]+$|^--(show-|binary)/.test(f))) {
+      return {
+        covered: false,
+        reason: 'renders non-printing characters (-A/-v/-e/-t); capability:read returns text only',
+      };
+    }
     const shared = checkSingleLiteralFile(parsed);
     if (shared) return shared;
     return {
@@ -258,7 +328,7 @@ export const catFileRead: SubstitutionPair = {
 export const headFileRead: SubstitutionPair = {
   id: 'file-read.head',
   intentLabel: 'file-head-read',
-  bashPattern: readPattern(String.raw`head\s+(?:-n\s*\d+\s+|-\d+\s+)?[^\s-][^\s]*\/`),
+  bashPattern: readPattern(String.raw`head\s+(?:-n\s*\d+\s+|-\d+\s+)?${SINGLE_FILE_OPERAND}`),
   toolName: 'capability:read',
   advisoryText: 'capability:read { file_path, limit: N } returns the first N lines — the `head -n N FILE` equivalent.',
   routing: {
@@ -302,7 +372,9 @@ export const tailFileRead: SubstitutionPair = {
   // `-f`/`--follow` and `-c` are excluded by the pattern: a stream follow and a
   // byte window are different intents, so per D-008 they fall outside rather
   // than dragging the verdict down.
-  bashPattern: readPattern(String.raw`tail\s+(?!-f\b)(?!--follow\b)(?!-c\b)(?:-n\s*\d+\s+|-\d+\s+)?[^\s-][^\s]*\/`),
+  bashPattern: readPattern(
+    String.raw`tail\s+(?!-f\b)(?!--follow\b)(?!-c\b)(?:-n\s*\d+\s+|-\d+\s+)?${SINGLE_FILE_OPERAND}`,
+  ),
   toolName: 'capability:read',
   advisoryText: 'capability:read { file_path, tail: N } returns the last N lines — the `tail -n N FILE` equivalent.',
   routing: {
