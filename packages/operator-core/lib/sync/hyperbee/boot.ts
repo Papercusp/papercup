@@ -2977,7 +2977,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // in-memory only (byte-identical to today). Best-effort: persistCursor's
         // throw is swallowed inside the merge so a failed save can't abort a pass.
         onCursorAdvance: pgMergeCursorStore
-          ? (positions: ReadonlyMap<string, number>) => persistCursor(positions, pgMergeCursorStore)
+          ? (positions: ReadonlyMap<string, number>) =>
+              persistCursor(positions, pgMergeCursorStore, currentApplyBinding())
           : undefined,
       };
       // WI-2105 REV acceleration (17c98): fold the log with the SMALLEST remaining

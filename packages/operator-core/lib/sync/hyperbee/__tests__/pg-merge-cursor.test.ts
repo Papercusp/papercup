@@ -52,20 +52,47 @@ function put(table: string, hbKey: string, ts: number): PeerLogOp {
 }
 
 /** An in-memory MergeCursorStore (== the PG store's contract), so the seam is
- *  exercised without a live PG. Records every save for assertions. */
-function fakeStore(initial?: Map<string, number>): MergeCursorStore & { saves: Array<Map<string, number>>; data: Map<string, number> } {
+ *  exercised without a live PG. Records every save for assertions.
+ *
+ *  EI-18773697830188393: mirrors the PG store's SCOPE STAMP — each row carries the
+ *  `apply_binding` it was folded under, `load(binding)` returns only rows matching it
+ *  (NULL-safe, like the real `IS NOT DISTINCT FROM`), and a save RE-STAMPS the row.
+ *  `initialBinding` is the stamp pre-seeded rows carry (default null == a pre-migration
+ *  row / a fold under no pot-home scope). */
+function fakeStore(
+  initial?: Map<string, number>,
+  initialBinding: string | null = null,
+): MergeCursorStore & {
+  saves: Array<Map<string, number>>;
+  saveBindings: Array<string | null>;
+  data: Map<string, number>;
+  bindings: Map<string, string | null>;
+} {
   const data = new Map<string, number>(initial ?? []);
+  const bindings = new Map<string, string | null>();
+  for (const k of data.keys()) bindings.set(k, initialBinding);
   const saves: Array<Map<string, number>> = [];
+  const saveBindings: Array<string | null> = [];
   return {
     data,
+    bindings,
     saves,
-    async load() {
-      return new Map(data);
+    saveBindings,
+    async load(applyBinding: string | null) {
+      const out = new Map<string, number>();
+      for (const [k, v] of data) {
+        if ((bindings.get(k) ?? null) === (applyBinding ?? null)) out.set(k, v);
+      }
+      return out;
     },
-    async save(positions) {
+    async save(positions, applyBinding: string | null) {
       // Snapshot the map at save time (the live cursor map mutates after).
       saves.push(new Map(positions));
-      for (const [k, v] of positions) data.set(k, v);
+      saveBindings.push(applyBinding ?? null);
+      for (const [k, v] of positions) {
+        data.set(k, v);
+        bindings.set(k, applyBinding ?? null);
+      }
     },
   };
 }
@@ -82,7 +109,7 @@ describe('seedCursorFromPg (WI-2105)', () => {
   it('seeds each log at its persisted position (fresh cursor)', async () => {
     const store = fakeStore(new Map([['logA', 40], ['logB', 12]]));
     const cursor = createMergeCursor();
-    await seedCursorFromPg(cursor, store);
+    await seedCursorFromPg(cursor, store, null);
     expect(cursor.positions.get('logA')).toBe(40);
     expect(cursor.positions.get('logB')).toBe(12);
   });
@@ -91,14 +118,14 @@ describe('seedCursorFromPg (WI-2105)', () => {
     const store = fakeStore(new Map([['logA', 40]]));
     const cursor = createMergeCursor();
     cursor.positions.set('logA', 55); // a live fold already ahead of PG
-    await seedCursorFromPg(cursor, store);
+    await seedCursorFromPg(cursor, store, null);
     expect(cursor.positions.get('logA')).toBe(55); // NOT rewound to 40
   });
 
   it('ignores a persisted position of 0 (fold-from-0, nothing to skip)', async () => {
     const store = fakeStore(new Map([['logA', 0]]));
     const cursor = createMergeCursor();
-    await seedCursorFromPg(cursor, store);
+    await seedCursorFromPg(cursor, store, null);
     expect(cursor.positions.has('logA')).toBe(false);
   });
 });
@@ -106,7 +133,7 @@ describe('seedCursorFromPg (WI-2105)', () => {
 describe('persistCursor (WI-2105)', () => {
   it('writes the positions through to the injected store', async () => {
     const store = fakeStore();
-    await persistCursor(new Map([['logA', 7]]), store);
+    await persistCursor(new Map([['logA', 7]]), store, null);
     expect(store.data.get('logA')).toBe(7);
   });
 });
@@ -117,6 +144,9 @@ async function foldWithPersist(
   log: AdmittedLog,
   cursor: MergeCursor,
   store: MergeCursorStore,
+  /** EI-18773697830188393: the apply binding (pot-home projection scope) this fold runs
+   *  under — stamped onto every persisted position. Default null == no pot-home scope. */
+  applyBinding: string | null = null,
 ): Promise<{ decoded: number; applied: number; persistVsApplied: Array<{ persisted: number; applied: number }> }> {
   let appliedCount = 0;
   const persistVsApplied: Array<{ persisted: number; applied: number }> = [];
@@ -129,7 +159,7 @@ async function foldWithPersist(
     },
     onCursorAdvance: async (positions) => {
       persistVsApplied.push({ persisted: positions.get(log.keyHex) ?? 0, applied: appliedCount });
-      await store.save(positions);
+      await store.save(positions, applyBinding);
     },
   });
   return { decoded: result.decoded, applied: result.applied, persistVsApplied };
@@ -216,5 +246,146 @@ describe('restart-resume via PG-cursor (WI-2105 — the REV-leg fix)', () => {
     // already committed pre-crash, so re-folding them would be redundant, not wrong.
     expect(result.decoded).toBe(40);
     expect(applied).toEqual(Array.from({ length: 40 }, (_, i) => `K${60 + i}`));
+  });
+});
+
+/**
+ * EI-18773697830188393 — a joiner whose hive-home binding is CORRECTED must re-apply the
+ * rows it dropped while mis-bound.
+ *
+ * The trap WI-2105 left behind: a persisted position claims "every op below this index
+ * was APPLIED", but whether an op applies is decided by the pot-home projection scope it
+ * was folded through (the federation demux key). Fold under the WRONG scope and the op is
+ * DROPPED while the cursor advances past it anyway — so the position is a lie the moment
+ * the scope changes. Live (WI-559): fed-b bound the shared hive to its local slug and
+ * discarded ~49,762 inbound rows this way; fixing the binding was not enough, because the
+ * next COLD boot seeded from that stale progress and resumed past the very owner
+ * `hive_members` rows it had dropped, so `pot_members` never repopulated. `forceReFold`
+ * (boot.ts, the rekey rebind) covers only the mid-session path, never a cold boot.
+ *
+ * The fix makes the cursor's validity INTRINSIC to the scope it was computed under: each
+ * persisted row is stamped with its apply binding and only same-stamp progress is
+ * resumable.
+ */
+describe('scope-stamped cursor — cold-boot self-heal after a binding change (EI-18773697830188393)', () => {
+  const OWNER_HOME = 'spoon-knife-pot'; // the owner-authored hive-home (correct)
+  const LOCAL_SLUG = 'octocat-spoon-knife'; // the joiner's local slug (the WI-559 mis-binding)
+
+  it('does NOT resume progress recorded under a DIFFERENT binding (re-folds from 0)', async () => {
+    // Progress was folded under the joiner's WRONG local-slug binding.
+    const store = fakeStore(new Map([['logOwner', 49762]]), LOCAL_SLUG);
+    const cursor = createMergeCursor();
+    // A later boot resolves the CORRECT hive-home → that progress is not resumable.
+    await seedCursorFromPg(cursor, store, OWNER_HOME);
+    expect(cursor.positions.has('logOwner')).toBe(false);
+  });
+
+  it('DOES resume progress recorded under the SAME binding (no re-fold storm)', async () => {
+    const store = fakeStore(new Map([['logOwner', 49762]]), OWNER_HOME);
+    const cursor = createMergeCursor();
+    await seedCursorFromPg(cursor, store, OWNER_HOME);
+    expect(cursor.positions.get('logOwner')).toBe(49762);
+  });
+
+  it('a NULL binding matches the NULL stamp — non-hive harnesses + hive OWNERS resume unchanged', async () => {
+    // The blast-radius guarantee: pre-migration rows carry NULL, and a harness with no
+    // pot-home scope folds with NULL, so the overwhelming majority of boots are
+    // byte-identical to pre-fix behaviour. (A `=` comparison would three-valued-miss
+    // here and silently re-fold every such harness on EVERY boot.)
+    const store = fakeStore(new Map([['logA', 40]]), null);
+    const cursor = createMergeCursor();
+    await seedCursorFromPg(cursor, store, null);
+    expect(cursor.positions.get('logA')).toBe(40);
+  });
+
+  it('heals EXACTLY ONCE: the re-fold re-stamps, so the NEXT boot resumes normally', async () => {
+    // Boot 1 (post-migration, pre-existing rows carry NULL) — a hive joiner now folds
+    // under its hive-home, so the stale NULL-stamped progress must be discarded...
+    const ops: PeerLogOp[] = [];
+    for (let i = 0; i < 100; i++) ops.push(put('features_consolidated', `K${i}`, 1000 + i));
+    const store = fakeStore(new Map([['logOwner', 100]]), null);
+
+    const cursor1 = createMergeCursor();
+    await seedCursorFromPg(cursor1, store, OWNER_HOME);
+    expect(cursor1.positions.has('logOwner')).toBe(false); // discarded → full re-fold
+    const boot1 = await foldWithPersist(fakeLog('logOwner', [...ops]), cursor1, store, OWNER_HOME);
+    expect(boot1.decoded).toBe(100); // every dropped op re-folded through the right scope
+    expect(store.bindings.get('logOwner')).toBe(OWNER_HOME); // re-stamped by the fold
+
+    // ...but boot 2 under the SAME binding must NOT re-fold again (a re-fold on every
+    // boot would re-introduce the WI-2105 REV starvation loop this table exists to stop).
+    const cursor2 = createMergeCursor();
+    await seedCursorFromPg(cursor2, store, OWNER_HOME);
+    expect(cursor2.positions.get('logOwner')).toBe(100);
+    const boot2 = await foldWithPersist(fakeLog('logOwner', [...ops]), cursor2, store, OWNER_HOME);
+    expect(boot2.decoded).toBe(0);
+  });
+
+  it('heals PER LOG: a log already re-stamped resumes while a still-stale log re-folds', async () => {
+    // A crash mid-heal leaves the set mixed. Per-row stamps mean each log is judged on
+    // its own progress — no all-or-nothing reset, no stale log silently resumed.
+    const store = fakeStore(new Map([['logDone', 100]]), OWNER_HOME);
+    store.data.set('logStale', 5000);
+    store.bindings.set('logStale', LOCAL_SLUG);
+
+    const cursor = createMergeCursor();
+    await seedCursorFromPg(cursor, store, OWNER_HOME);
+    expect(cursor.positions.get('logDone')).toBe(100);
+    expect(cursor.positions.has('logStale')).toBe(false);
+  });
+
+  it('END-TO-END: ops DROPPED by a wrong scope (cursor advanced past them) re-apply after the binding is corrected', async () => {
+    // The live failure, reproduced: a demux that drops every op whose row-scope !== the
+    // bound scope, while the cursor advances regardless.
+    const ops: PeerLogOp[] = [];
+    for (let i = 0; i < 30; i++) ops.push(put('hive_members', `M${i}`, 1000 + i));
+    const store = fakeStore();
+
+    const foldUnder = async (binding: string, cursor: MergeCursor) => {
+      const applied: string[] = [];
+      await mergeAdmittedLogsIncremental([fakeLog('logOwner', ops)], cursor, {
+        getTimeoutMs: 0,
+        // The demux: the owner authored these rows under OWNER_HOME, so a joiner bound to
+        // its LOCAL slug drops every one of them — yet still reports the fold as done.
+        applyImpl: async (op: OpEnvelope) => {
+          if (binding !== OWNER_HOME) return false; // dropped (hive_home_slug mismatch)
+          applied.push(op.hbKey ?? '');
+          return true;
+        },
+        onCursorAdvance: async (positions) => store.save(positions, binding),
+      });
+      return applied;
+    };
+
+    // Boot 1 — mis-bound: nothing applies, but the cursor is persisted as complete.
+    const misApplied = await foldUnder(LOCAL_SLUG, createMergeCursor());
+    expect(misApplied).toEqual([]); // the whole-hive blackout
+    expect(store.data.get('logOwner')).toBe(30); // ...recorded as fully folded
+
+    // Boot 2 — binding corrected. WITHOUT the stamp this seeds at 30 and applies NOTHING
+    // (the bug: pot_members stays empty forever). WITH it, the stale progress is
+    // discarded and every dropped row re-applies.
+    const cursor2 = createMergeCursor();
+    await seedCursorFromPg(cursor2, store, OWNER_HOME);
+    const healed = await foldUnder(OWNER_HOME, cursor2);
+    expect(healed).toEqual(Array.from({ length: 30 }, (_, i) => `M${i}`));
+  });
+
+  it('fails SAFE: an unresolvable binding costs a redundant re-fold, never a skipped op', async () => {
+    // `resolveHiveHomeProjectionSlug` fails OPEN (returns undefined) on a transient
+    // resolve error, so a boot can legitimately fold under a null scope. The stamp is
+    // DESCRIPTIVE — it records the scope progress was actually computed under — so every
+    // mismatch resolves toward re-folding (idempotent LWW), never toward resuming across
+    // a scope it was not folded under. Redundant work is the only failure mode.
+    const store = fakeStore(new Map([['logOwner', 100]]), OWNER_HOME);
+    const degraded = createMergeCursor();
+    await seedCursorFromPg(degraded, store, null); // resolve failed → fail-open null
+    expect(degraded.positions.has('logOwner')).toBe(false); // re-fold, not a silent skip
+
+    // And once the resolve recovers, the null-stamped progress is likewise not trusted.
+    await store.save(new Map([['logOwner', 100]]), null);
+    const recovered = createMergeCursor();
+    await seedCursorFromPg(recovered, store, OWNER_HOME);
+    expect(recovered.positions.has('logOwner')).toBe(false);
   });
 });

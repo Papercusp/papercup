@@ -330,35 +330,35 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
           than a flex line-break hack) keeps them one focus/tab group and lets the
           row keep its own alignment when the strip wraps. */}
       <div className="pc-new-session-launcher__row2">
-      <Combobox
-        triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--model"
-        value={model || MODEL_SELECT_DEFAULT}
-        emptyValue={MODEL_SELECT_DEFAULT}
-        onChange={(value) => setModel(value === MODEL_SELECT_DEFAULT ? '' : value)}
-        ariaLabel="Model for new session"
-        placeholder="Default"
-        emptyLabel="No models match"
-        options={OMP_MODEL_OPTIONS}
-      />
-      <Combobox
-        triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--effort"
-        value={effort || EFFORT_SELECT_DEFAULT}
-        emptyValue={EFFORT_SELECT_DEFAULT}
-        onChange={(value) => setEffort(value === EFFORT_SELECT_DEFAULT ? '' : value)}
-        ariaLabel="Effort level for new session"
-        placeholder="Default effort"
-        emptyLabel="No effort levels match"
-        options={EFFORT_OPTIONS}
-      />
-      <Button
-        variant="primary"
-        size="sm"
-        className="pc-new-session-launcher__btn"
-        onClick={() => void launch()}
-        disabled={launching}
-      >
-        {launching ? 'Launching…' : '+ New session'}
-      </Button>
+        <Combobox
+          triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--model"
+          value={model || MODEL_SELECT_DEFAULT}
+          emptyValue={MODEL_SELECT_DEFAULT}
+          onChange={(value) => setModel(value === MODEL_SELECT_DEFAULT ? '' : value)}
+          ariaLabel="Model for new session"
+          placeholder="Default"
+          emptyLabel="No models match"
+          options={OMP_MODEL_OPTIONS}
+        />
+        <Combobox
+          triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--effort"
+          value={effort || EFFORT_SELECT_DEFAULT}
+          emptyValue={EFFORT_SELECT_DEFAULT}
+          onChange={(value) => setEffort(value === EFFORT_SELECT_DEFAULT ? '' : value)}
+          ariaLabel="Effort level for new session"
+          placeholder="Default effort"
+          emptyLabel="No effort levels match"
+          options={EFFORT_OPTIONS}
+        />
+        <Button
+          variant="primary"
+          size="sm"
+          className="pc-new-session-launcher__btn"
+          onClick={() => void launch()}
+          disabled={launching}
+        >
+          {launching ? 'Launching…' : '+ New session'}
+        </Button>
       </div>
     </div>
   );

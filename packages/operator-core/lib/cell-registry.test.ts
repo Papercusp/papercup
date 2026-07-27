@@ -4,6 +4,8 @@ import {
   registerCell,
   getCell,
   listCells,
+  listCellsUnchecked,
+  canReadCell,
   CellRegistrationError,
   __resetCellRegistryForTests,
   type CellSpec,
@@ -113,6 +115,82 @@ describe('the three independent cells the contract was derived from all register
     const reader = { ownerId: 'su-anyone', harnessSlug: 'papercusp' };
     expect(listCells(reader).map((c) => c.cell)).toEqual(['port.listener', 'session.state']);
     expect(getCell('port.listener', reader)?.owner).toBe('papercusp');
+  });
+});
+
+describe('P-019 — visibility and federation are declared at registration', () => {
+  const anyone = { ownerId: 'su-stranger' };
+
+  it('REFUSES a cell that declares no visibility', () => {
+    const spec = { ...sessionCell(), visibility: undefined as unknown as CellSpec['visibility'] };
+    expect(validateCellSpec(spec).map((r) => r.rule)).toContain('visibility-undeclared');
+  });
+
+  it('REFUSES a cell that declares no federation', () => {
+    const spec = { ...sessionCell(), federation: undefined as unknown as CellSpec['federation'] };
+    expect(validateCellSpec(spec).map((r) => r.rule)).toContain('federation-undeclared');
+  });
+
+  it('REFUSES a narrow visibility with no ref', () => {
+    expect(
+      validateCellSpec({ ...sessionCell(), visibility: { kind: 'owner', ref: '  ' } }).map((r) => r.rule),
+    ).toContain('visibility-ref-missing');
+  });
+
+  it('REFUSES a shareable cell whose visibility is narrower than the workspace', () => {
+    // A ref like an owner id or work-item does not resolve in a foreign hive, so the
+    // receiver can neither evaluate nor honour the audience: it fails open (leak) or
+    // closed (silently invisible). Refused rather than guessed.
+    const spec: CellSpec = {
+      ...portCell(),
+      visibility: { kind: 'owner', ref: 'su-8d9a6' },
+      federation: { kind: 'shareable' },
+    };
+    expect(validateCellSpec(spec).map((r) => r.rule)).toContain('shareable-narrow-visibility');
+  });
+
+  it('ACCEPTS workspace-visible + shareable, and any visibility + local', () => {
+    expect(validateCellSpec(sessionCell())).toEqual([]); // workspace + shareable
+    expect(validateCellSpec(portCell())).toEqual([]); // harness-narrow + local
+  });
+
+  it('an OUT-OF-AUDIENCE caller cannot read the cell — P-019 acceptance criterion', () => {
+    registerCell(portCell()); // visibility: { kind: 'harness', ref: 'papercusp' }
+    const inAudience = { ownerId: 'su-a', harnessSlug: 'papercusp' };
+    const outOfAudience = { ownerId: 'su-b', harnessSlug: 'some-other-harness' };
+
+    expect(getCell('port.listener', inAudience)?.cell).toBe('port.listener');
+    expect(getCell('port.listener', outOfAudience)).toBeUndefined();
+    expect(canReadCell(portCell(), outOfAudience)).toBe(false);
+  });
+
+  it('hides EXISTENCE, not just the value — a refusal must not be a probe oracle', () => {
+    registerCell(portCell());
+    const outOfAudience = { ownerId: 'su-b', harnessSlug: 'other' };
+    // Indistinguishable from a cell that was never registered at all.
+    expect(getCell('port.listener', outOfAudience)).toBe(getCell('cell.doesNotExist', outOfAudience));
+    expect(listCells(outOfAudience)).toEqual([]);
+  });
+
+  it('each visibility kind admits exactly its own audience', () => {
+    expect(canReadCell({ ...portCell(), visibility: { kind: 'workspace' } }, anyone)).toBe(true);
+    expect(canReadCell({ ...portCell(), visibility: { kind: 'owner', ref: 'su-x' } }, { ownerId: 'su-x' })).toBe(true);
+    expect(canReadCell({ ...portCell(), visibility: { kind: 'owner', ref: 'su-x' } }, { ownerId: 'su-y' })).toBe(false);
+    expect(canReadCell({ ...portCell(), visibility: { kind: 'role', ref: 'admin' } }, { ownerId: 'su-x', roles: ['admin'] })).toBe(true);
+    expect(canReadCell({ ...portCell(), visibility: { kind: 'role', ref: 'admin' } }, { ownerId: 'su-x', roles: ['dev'] })).toBe(false);
+    expect(canReadCell({ ...portCell(), visibility: { kind: 'work_item', ref: 'WI-1' } }, { ownerId: 'su-x', workItems: ['WI-1'] })).toBe(true);
+    expect(canReadCell({ ...portCell(), visibility: { kind: 'work_item', ref: 'WI-1' } }, { ownerId: 'su-x' })).toBe(false);
+  });
+
+  it('fails CLOSED on an unregistrable visibility rather than defaulting open', () => {
+    const bogus = { ...portCell(), visibility: { kind: 'nonsense' } as unknown as CellSpec['visibility'] };
+    expect(canReadCell(bogus, { ownerId: 'su-x', harnessSlug: 'papercusp' })).toBe(false);
+  });
+
+  it('listCellsUnchecked bypasses the audience — the loud name is the point', () => {
+    registerCell(portCell());
+    expect(listCellsUnchecked().map((c) => c.cell)).toEqual(['port.listener']);
+    expect(listCells({ ownerId: 'su-b', harnessSlug: 'other' })).toEqual([]);
   });
 });
 
@@ -236,7 +314,10 @@ describe('axis 6 — ordered is optional and its ABSENCE is not "clear"', () => 
 
   it('absence is representable as absence — never as an empty verdict', () => {
     registerCell({ ...portCell(), ordered: undefined });
-    expect(getCell('port.listener')).toHaveProperty('ordered', undefined);
+    expect(getCell('port.listener', { ownerId: 'su-a', harnessSlug: 'papercusp' })).toHaveProperty(
+      'ordered',
+      undefined,
+    );
   });
 });
 

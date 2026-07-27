@@ -285,6 +285,10 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
  * so a stranger cannot enumerate narrow cells or infer one from a refusal.
  */
 export function canReadCell(spec: CellSpec, reader: CellReader): boolean {
+  // Fail CLOSED on a missing spec/reader rather than throwing. A throwing access
+  // check is one `catch` away from being read as "allow", and the callers here are
+  // exactly the kind of surface that wraps reads in a try/catch.
+  if (!spec || !reader) return false;
   const v = spec.visibility;
   switch (v?.kind) {
     case 'workspace':

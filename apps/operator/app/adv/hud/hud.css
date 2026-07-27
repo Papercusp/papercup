@@ -232,9 +232,27 @@
   border-right: 1px solid var(--border);
 }
 
+/* WI-6300 (owner ask 2026-07-27): "move these things to the row below it —
+   Model for new session / Effort level for new session / + New session".
+   So the launcher is a COLUMN: the plan picker on the first line, the
+   model/effort/launch group on its own line beneath it. align-items:flex-start
+   (not stretch) keeps both lines flush-LEFT and lets each size to its content,
+   which is what makes the second row read as "the leftmost things" on its line
+   rather than a stretched bar. */
 .pc-new-session-launcher {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+/* The second line. Stays a horizontal group; wraps within itself on a narrow
+   rail instead of forcing the whole launcher wider. */
+.pc-new-session-launcher__row2 {
+  display: flex;
+  flex-direction: row;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
