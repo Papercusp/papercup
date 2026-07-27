@@ -18,12 +18,9 @@
  *     (prepareAmbientPushBlock) out to the receiver. P-006 → P-003 wired evidence.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../test/_pg-helpers';
+import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../test/_pg-helpers';
 
-const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-deadend-int';
 
 // A shared note ⇒ the cursor and the dead-end fact overlap strongly (cosine ~1,
@@ -111,29 +108,29 @@ beforeAll(async () => {
     CREATE OR REPLACE FUNCTION harness_shared.stamp_local_federated_write() RETURNS trigger
     LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
   `);
-  for (const m of [
-    '609-session-cursor.sql',
-    '444-agent-facts.sql',
-    '455-agent-facts-shareable.sql',
-    '461-agent-facts-federation.sql',
-    '462-agent-facts-fed-key.sql',
-    '505-agent-facts-surrogate-pk-replica-identity.sql',
-    '574-agent-facts-audience-provenance.sql',
-    '664-widen-fact-body-cap.sql',
-    '671-add-agent-facts-confidence.sql',
-    // assertFact reads/writes superseded_at + supersedes_id (689), the
-    // depends-on/kind/claim columns (690) and the federation stamp regime
-    // (693). Omitting them here fails with a bare `column "superseded_at" does
-    // not exist` that looks nothing like "this fixture's migration list is
-    // stale" — keep this list in step with what agent-facts/store.ts queries.
-    '689-agent-facts-append-versioning.sql',
-    '690-agent-facts-depends-on-kind-claim.sql',
-    '692-agent-facts-convention-enforcement.sql',
-    '693-agent-facts-federation-stamp-regime.sql',
-    '610-push-delivery.sql',
-  ]) {
-    await applyMigrationForTest(db.sql, join(SQL_DIR, m));
-  }
+  // EI-18808675015292160: applyMigrationsForTest AUDITS this list before applying
+  // it — if a migration lands on one of these tables and is not listed here, the
+  // failure names the missing FILE, not a bare `column "..." does not exist`.
+  await applyMigrationsForTest(
+    db.sql,
+    [
+      '609-session-cursor.sql',
+      '444-agent-facts.sql',
+      '455-agent-facts-shareable.sql',
+      '461-agent-facts-federation.sql',
+      '462-agent-facts-fed-key.sql',
+      '505-agent-facts-surrogate-pk-replica-identity.sql',
+      '574-agent-facts-audience-provenance.sql',
+      '664-widen-fact-body-cap.sql',
+      '671-add-agent-facts-confidence.sql',
+      '689-agent-facts-append-versioning.sql',
+      '690-agent-facts-depends-on-kind-claim.sql',
+      '692-agent-facts-convention-enforcement.sql',
+      '693-agent-facts-federation-stamp-regime.sql',
+      '610-push-delivery.sql',
+    ],
+    { label: 'dead-end-matcher-io.integration.test.ts' },
+  );
   h.sql = db.sql;
 }, 90_000);
 

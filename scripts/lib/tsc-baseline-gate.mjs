@@ -274,17 +274,6 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
  *   updateFlag?: boolean,
  *   changedFiles?: Set<string> | null,
  * }} args
- * @returns {{
- *   verdict: 'fail-syntax'|'fail-regressed'|'fail-attributed'|'ok-peer-drift'|'ok-ratchet'|'ok-below'|'ok',
- *   regressions: {file:string,baseline:number,current:number,delta:number}[],
- *   improvements: {file:string,baseline:number,current:number,delta:number}[],
- *   attributed?: {file:string,baseline:number,current:number,delta:number}[],
- *   peerDrift?: {file:string,baseline:number,current:number,delta:number}[],
- *   total: number,
- *   baselineTotal: number,
- *   newBaselineByFile?: Record<string, number>,
- *   brokenFiles?: string[],
- * }}
  * @returns {PerFileGateResult}
  */
 export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag = false, changedFiles = null }) {

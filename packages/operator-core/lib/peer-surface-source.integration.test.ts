@@ -17,12 +17,8 @@
  *     attribution tie-in, owner+handle_ref correlated.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../test/_pg-helpers';
-
-const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
+import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../test/_pg-helpers';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -109,19 +105,22 @@ beforeAll(async () => {
       updated_at   bigint
     );
   `);
-  for (const m of [
-    '143-agent-activity.sql',
-    '188-work-item-claims.sql',
-    '472-carry-notes.sql',
-    // carry-note.ts selects `deps` (680). Same stale-list trap as the
-    // agent-facts migrations in dead-end-matcher-io.
-    '680-carry-note-declared-deps.sql',
-    '605-session-turn-journal.sql',
-    '609-session-cursor.sql',
-    '610-push-delivery.sql',
-  ]) {
-    await applyMigrationForTest(db.sql, join(SQL_DIR, m));
-  }
+  // EI-18808675015292160: applyMigrationsForTest AUDITS this list before applying
+  // it — a migration landing on one of these tables without being listed here now
+  // fails naming the missing FILE, not a bare `column "deps" does not exist`.
+  await applyMigrationsForTest(
+    db.sql,
+    [
+      '143-agent-activity.sql',
+      '188-work-item-claims.sql',
+      '472-carry-notes.sql',
+      '680-carry-note-declared-deps.sql',
+      '605-session-turn-journal.sql',
+      '609-session-cursor.sql',
+      '610-push-delivery.sql',
+    ],
+    { label: 'peer-surface-source.integration.test.ts' },
+  );
   // 506 (pot-rename slice 2) added pot_slug to work_item_claims inside a
   // cross-cutting multi-table migration; replay just the claims ALTER.
   await db.sql.unsafe(
