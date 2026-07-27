@@ -91,11 +91,9 @@ describe('remoteLiveHeadroom — the derating model', () => {
 
   it('scales linearly with the binding window', () => {
     expect(remoteLiveHeadroom(healthy({ utilization: 0.25 }), CAP).headroom).toBe(750_000);
-    // 99_999, not 100_000: `1 - 0.9` is 0.09999999999999998 in binary floating point and the
-    // result is FLOORED. Pinned deliberately rather than smoothed away — the residue is one
-    // micro-dollar and it always lands on the conservative side of the gate, which is the only
-    // direction that is safe here.
-    expect(remoteLiveHeadroom(healthy({ utilization: 0.9 }), CAP).headroom).toBe(99_999);
+    // Exactly 100_000, NOT 99_999: `1 - 0.9` carries binary-float residue, which the model rounds
+    // away rather than leaking into a usd-micros figure a human will later read on a receipt.
+    expect(remoteLiveHeadroom(healthy({ utilization: 0.9 }), CAP).headroom).toBe(100_000);
   });
 
   it('is 0 at (and beyond) the cap — a >1.0 utilization clamps, never goes negative', () => {

@@ -873,6 +873,42 @@ def _strip_redirect_tokens(toks):
     return out
 
 
+# EI-18809538554039853: short flags BUNDLE, so the in-place flag is frequently not
+# the first character of its token — `perl -0pi -e ...` is `-0` `-p` `-i`, and is the
+# idiomatic slurp-mode in-place rewrite, i.e. exactly the multi-line edit reached for
+# INSTEAD of Edit. The earlier `(?:^|\s)-i\S*` test required the token to BEGIN with
+# `-i` and so missed every bundled spelling, silently letting those writes past the
+# file-lock hook on a tree the whole fleet shares.
+#
+# Scanning for a bare `i` anywhere in the token is NOT correct either: it would deny
+# `-Mstrict`, `-Ilib/inc`, `-Fpattern` — common, and none of them in-place. Short
+# flags that take a VALUE consume the remainder of their token, so the scan stops at
+# the first of those; anything after it is a value, not a flag.
+_VALUE_CONSUMING_FLAGS = {
+    'perl': set('eEMmIFxCD'),
+    'ruby': set('eEIrKCFSx'),
+    'sed': set('efl'),
+}
+
+
+def _has_inplace_flag(seg, kind):
+    """True when any token in `seg` carries an in-place flag, bundled or not."""
+    _consuming = _VALUE_CONSUMING_FLAGS.get(kind, set())
+    for _tok in seg.split():
+        # Long form (`sed --in-place`, `--in-place=.bak`).
+        if _tok == '--in-place' or _tok.startswith('--in-place='):
+            return True
+        # Only short-flag clusters bundle; `--foo` and a bare `-` never do.
+        if _tok.startswith('--') or not _tok.startswith('-') or _tok == '-':
+            continue
+        for _ch in _tok[1:]:
+            if _ch == 'i':
+                return True
+            if _ch in _consuming:
+                break  # the rest of this token is that flag's value, not more flags
+    return False
+
+
 def _shell_write_guard():
     _canon = _canonical_tree_root()
     if not _canon:
@@ -905,7 +941,7 @@ def _shell_write_guard():
     # unquoted script text: a real target among them still triggers the deny).
     for _m in re.finditer(r'\bsed\b([^;&|\n]*)', _clean):
         _seg = _m.group(1)
-        if not re.search(r'(?:^|\s)-i\S*|--in-place\b', _seg):
+        if not _has_inplace_flag(_seg, 'sed'):
             continue
         if _segment_has_unsplittable_expansion(_seg):
             continue
@@ -920,9 +956,9 @@ def _shell_write_guard():
     # half, an interpreter's OWN open()/writeFileSync() call inside inline
     # code, is a different shape and handled by _interpreter_write_guard
     # below since there is no shell-level flag to key on there).
-    for _m in re.finditer(r'\b(?:perl|ruby)\b([^;&|\n]*)', _clean):
-        _seg = _m.group(1)
-        if not re.search(r'(?:^|\s)-i\S*\b', _seg):
+    for _m in re.finditer(r'\b(perl|ruby)\b([^;&|\n]*)', _clean):
+        _seg = _m.group(2)
+        if not _has_inplace_flag(_seg, _m.group(1)):
             continue
         if _segment_has_unsplittable_expansion(_seg):
             continue

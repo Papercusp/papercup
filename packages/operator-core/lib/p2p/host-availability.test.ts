@@ -6,7 +6,7 @@
  * SQL-free).
  */
 import { describe, expect, it } from 'vitest';
-import { hostAvailability } from './host-availability';
+import { hostAvailability, type HostAvailabilityReaders } from './host-availability';
 import type { OrgSql } from '../work-items';
 
 /** A sql stub that FAILS the test if any query executes. */
@@ -76,7 +76,7 @@ describe('hostAvailability (WI-1937 D-007 snapshot builder)', () => {
       { match: 'p2p_metering_contribution', rows: [] },
     ]);
     const r = await hostAvailability({ workspaceId: 'ws-1', hostRef: 'host-1' }, 'fleet-a', sql);
-    expect(r.remote).toEqual({ allotmentRemaining: 2_500_000, liveHeadroom: 0 });
+    expect(r.remote).toMatchObject({ allotmentRemaining: 2_500_000, liveHeadroom: 0 });
     expect(r.local).toBeNull();
   });
 
@@ -87,7 +87,7 @@ describe('hostAvailability (WI-1937 D-007 snapshot builder)', () => {
       { match: 'p2p_metering_contribution', rows: [] },
     ]);
     const r = await hostAvailability({ workspaceId: 'ws-1', hostRef: 'host-1' }, 'fleet-a', sql);
-    expect(r.local).toEqual({ allotmentRemaining: 4, liveHeadroom: 0 });
+    expect(r.local).toMatchObject({ allotmentRemaining: 4, liveHeadroom: 0 });
     expect(r.remote).toBeNull();
   });
 
@@ -99,7 +99,7 @@ describe('hostAvailability (WI-1937 D-007 snapshot builder)', () => {
     ]);
     const r = await hostAvailability({ workspaceId: 'ws-1', hostRef: 'host-1' }, 'fleet-a', sql);
     // Still "served" (a row exists) so not null, but the cap resolves to 0.
-    expect(r.remote).toEqual({ allotmentRemaining: 0, liveHeadroom: 0 });
+    expect(r.remote).toMatchObject({ allotmentRemaining: 0, liveHeadroom: 0 });
   });
 
   it('P-205 metering spend for THIS hostRef/fleet/axis is subtracted from the cap, floored at 0', async () => {
@@ -116,7 +116,7 @@ describe('hostAvailability (WI-1937 D-007 snapshot builder)', () => {
       { match: 'p2p_metering_contribution', rows: [] },
     ]);
     const r = await hostAvailability({ workspaceId: 'ws-1', hostRef: 'host-1' }, 'fleet-a', sql);
-    expect(r.remote).toEqual({ allotmentRemaining: 600_000, liveHeadroom: 0 });
+    expect(r.remote).toMatchObject({ allotmentRemaining: 600_000, liveHeadroom: 0 });
 
     // Overspend (beyond the cap) floors at 0, never negative.
     const sqlOver = routedSql([
@@ -128,7 +128,7 @@ describe('hostAvailability (WI-1937 D-007 snapshot builder)', () => {
       { match: 'p2p_metering_contribution', rows: [] },
     ]);
     const rOver = await hostAvailability({ workspaceId: 'ws-1', hostRef: 'host-1' }, 'fleet-a', sqlOver);
-    expect(rOver.remote).toEqual({ allotmentRemaining: 0, liveHeadroom: 0 });
+    expect(rOver.remote).toMatchObject({ allotmentRemaining: 0, liveHeadroom: 0 });
   });
 
   it('an agent_slot allotment row never contributes to remote/local budget math (D-002 exclusion)', async () => {
@@ -149,5 +149,107 @@ describe('hostAvailability (WI-1937 D-007 snapshot builder)', () => {
     ]);
     const r = await hostAvailability({ workspaceId: 'ws-1', hostRef: 'host-1' }, 'fleet-a', sql);
     expect(r).toEqual({ remote: null, local: null });
+  });
+});
+
+/**
+ * WI-3590: the PHYSICS layer is now a live read. These drive it through INJECTED readers — the
+ * production defaults deliberately short-circuit to "unreachable" under VITEST so the tests above
+ * (which inject nothing) keep asserting the fail-closed v1 behaviour deterministically instead of
+ * reading whatever real :8788 gateway happens to be running on the box.
+ */
+describe('hostAvailability PHYSICS layer (WI-3590)', () => {
+  const readers = (over: Partial<HostAvailabilityReaders> = {}): HostAvailabilityReaders => ({
+    gatewayHeadroom: async () => ({ reachable: true, window: '5h', utilization: 0, healthyAccounts: 2, paused: false, rejected: false }),
+    localBackends: async () => ({
+      reachable: true,
+      configured: true,
+      candidates: [
+        { backend: { id: 'a', kind: 'llama-server', baseUrl: 'http://127.0.0.1:9001', models: ['m'], maxConcurrent: 4, enabled: true }, inFlight: 1, healthy: true },
+      ],
+    }),
+    ...over,
+  });
+
+  const accountSql = (dollarCapUsd: number) =>
+    routedSql([
+      { match: 'resource_allotments', rows: [allotmentRow({ axis: { dollarCapUsd } })] },
+      { match: 'p2p_metering_spend', rows: [] },
+      { match: 'p2p_metering_contribution', rows: [] },
+    ]);
+
+  it('a healthy idle gateway leaves the remote POLICY cap unbound (physics does not bind at 0% utilization)', async () => {
+    const r = await hostAvailability({ workspaceId: 'ws-1', hostRef: 'host-1' }, 'fleet-a', accountSql(1), readers());
+    expect(r.remote?.allotmentRemaining).toBe(1_000_000);
+    expect(r.remote?.liveHeadroom).toBe(1_000_000);
+  });
+
+  it('a busy gateway DERATES the remote cap by live utilization', async () => {
+    const r = await hostAvailability(
+      { workspaceId: 'ws-1', hostRef: 'host-1' },
+      'fleet-a',
+      accountSql(1),
+      readers({ gatewayHeadroom: async () => ({ reachable: true, window: '5h', utilization: 0.8, healthyAccounts: 2 }) }),
+    );
+    expect(r.remote?.liveHeadroom).toBe(200_000);
+  });
+
+  it('a down gateway fails the remote axis CLOSED and says why (the detail reaches the refusal line)', async () => {
+    const r = await hostAvailability(
+      { workspaceId: 'ws-1', hostRef: 'host-1' },
+      'fleet-a',
+      accountSql(1),
+      readers({ gatewayHeadroom: async () => ({ reachable: false, error: 'ECONNREFUSED' }) }),
+    );
+    expect(r.remote?.allotmentRemaining).toBe(1_000_000); // POLICY still says yes …
+    expect(r.remote?.liveHeadroom).toBe(0); // … PHYSICS overrides it to no
+    expect(r.remote?.liveHeadroomDetail).toContain('unreachable');
+  });
+
+  it('the local axis reads real free slots from the pool', async () => {
+    const sql = routedSql([
+      { match: 'resource_allotments', rows: [allotmentRow({ resource_kind: 'gpu', resource_ref: 'gpu-1', axis: { slots: 8 } })] },
+      { match: 'p2p_metering_spend', rows: [] },
+      { match: 'p2p_metering_contribution', rows: [] },
+    ]);
+    const r = await hostAvailability({ workspaceId: 'ws-1', hostRef: 'host-1' }, 'fleet-a', sql, readers());
+    expect(r.local?.allotmentRemaining).toBe(8); // POLICY allows 8 …
+    expect(r.local?.liveHeadroom).toBe(3); // … but only 3 slots (4 − 1 in flight) exist right now
+  });
+
+  it('does NOT probe the gateway for an axis this host does not serve (no wasted hot-path round-trip)', async () => {
+    let remoteProbes = 0;
+    let localProbes = 0;
+    await hostAvailability({ workspaceId: 'ws-1', hostRef: 'host-1' }, 'fleet-a', accountSql(1), {
+      gatewayHeadroom: async () => {
+        remoteProbes += 1;
+        return { reachable: true, utilization: 0, healthyAccounts: 1 };
+      },
+      localBackends: async () => {
+        localProbes += 1;
+        return { reachable: true, configured: true, candidates: [] };
+      },
+    });
+    expect(remoteProbes).toBe(1); // an account row IS served
+    expect(localProbes).toBe(0); // no gpu row ⇒ local axis is null ⇒ never probed
+  });
+
+  it('one dead reader cannot deny the OTHER axis (independent fail-closed)', async () => {
+    const sql = routedSql([
+      {
+        match: 'resource_allotments',
+        rows: [
+          allotmentRow({ axis: { dollarCapUsd: 1 } }),
+          allotmentRow({ resource_kind: 'gpu', resource_ref: 'gpu-1', axis: { slots: 8 } }),
+        ],
+      },
+      { match: 'p2p_metering_spend', rows: [] },
+      { match: 'p2p_metering_contribution', rows: [] },
+    ]);
+    const r = await hostAvailability({ workspaceId: 'ws-1', hostRef: 'host-1' }, 'fleet-a', sql, readers({
+      gatewayHeadroom: async () => ({ reachable: false, error: 'gateway down' }),
+    }));
+    expect(r.remote?.liveHeadroom).toBe(0); // remote is dead …
+    expect(r.local?.liveHeadroom).toBe(3); // … local is unaffected
   });
 });

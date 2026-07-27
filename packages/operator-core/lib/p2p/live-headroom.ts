@@ -114,8 +114,12 @@ export function remoteLiveHeadroom(h: GatewayHeadroom, allotmentRemaining: numbe
   }
   const spendableFraction = Math.max(0, Math.min(1, 1 - u));
   const cap = Math.max(0, allotmentRemaining);
+  // ROUND, not floor: `1 - 0.8` is 0.19999999999999996 in binary floating point, so flooring
+  // leaks the residue into the result (199_999 instead of 200_000) — noise that looks like a bug
+  // to every later reader. Rounding is still bounded by the cap (the fraction is clamped to
+  // [0,1]), so the "PHYSICS can only lower POLICY" invariant is untouched.
   return {
-    headroom: Math.floor(cap * spendableFraction),
+    headroom: Math.round(cap * spendableFraction),
     reason: 'derated_by_utilization',
     detail: `remote window '${h.window ?? 'unified'}' at ${h.utilizationPct ?? Math.round(u * 100)}% — ${Math.round(spendableFraction * 100)}% of the ${cap} usd-micros cap is spendable now`,
   };
