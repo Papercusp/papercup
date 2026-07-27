@@ -929,12 +929,42 @@ const ORACLE_CONFIRMED_GONE = new Set<HolderActivity['sessionState']>([
  * Falls back to the row's heartbeat-derived `holderAlive` only when no oracle
  * verdict is available, so an un-decorated caller degrades to the old behaviour
  * rather than manufacturing a confident verdict from missing input.
+ *
+ * `residue` (EI-18763117665515043), when passed, OUTRANKS the liveness
+ * derivation entirely — see {@link resolveTerminalPlanItemResidue}. Whether the
+ * holder is alive or gone says nothing about whether ALREADY-FINISHED work
+ * should be reclaimed or asked-about; it should be closed, full stop.
  */
 export function summarizeOrphan(
   r: FleetAssignmentRow,
   holder?: HolderActivity | null,
   nowMs: number = Date.now(),
+  residue?: PlanItemLaneBlock | null,
 ): OrphanedClaimSummary {
+  const base = {
+    source: r.source,
+    agent: r.agentId,
+    harness: r.harnessSlug,
+    plan: r.planSlug,
+    id: r.itemId ?? r.workItemId,
+    detail: r.detail,
+    expires: r.claimExpiresTs,
+    holder_present: r.holderPresent,
+    holder_heartbeat_at: r.holderHeartbeatAt,
+    progress: (r.lastProgressAt ? 'stale-since' : 'never-checkpointed') as ClaimProgressSignal,
+    last_progress_at: r.lastProgressAt,
+    ...(holder?.lastToolCallAt !== undefined
+      ? { holder_last_tool_call_at: holder.lastToolCallAt }
+      : {}),
+  };
+  if (residue) {
+    return {
+      ...base,
+      verdict: 'residue',
+      action: 'close',
+      residue: { planSlug: residue.planSlug, itemId: residue.itemId, effectiveStatus: residue.effectiveStatus },
+    };
+  }
   // EI-18716042694888410: recent REAL work outranks session posture. `lastToolCallAt`
   // was already fetched and documented as the working-vs-wedged discriminator, but the
   // verdict consulted only `sessionState`, so an actively-invoking `parked` holder was
@@ -945,26 +975,19 @@ export function summarizeOrphan(
       ? !ORACLE_CONFIRMED_GONE.has(holder.sessionState)
       : r.holderAlive === true);
   return {
-    source: r.source,
-    agent: r.agentId,
-    harness: r.harnessSlug,
-    plan: r.planSlug,
-    id: r.itemId ?? r.workItemId,
-    detail: r.detail,
-    expires: r.claimExpiresTs,
-    holder_present: r.holderPresent,
-    holder_heartbeat_at: r.holderHeartbeatAt,
-    progress: r.lastProgressAt ? 'stale-since' : 'never-checkpointed',
-    last_progress_at: r.lastProgressAt,
+    ...base,
     verdict: liveHolder ? 'held-by-live-agent' : 'orphan',
     action: liveHolder ? 'ask' : 'reclaim',
-    ...(holder?.lastToolCallAt !== undefined
-      ? { holder_last_tool_call_at: holder.lastToolCallAt }
-      : {}),
   };
 }
 
 /** WI-5975: a row a leader may actually reclaim — the holder is gone, not merely quiet. */
 export function isReclaimCandidate(s: OrphanedClaimSummary): boolean {
   return s.verdict === 'orphan';
+}
+
+/** EI-18763117665515043: a row that is stale residue of already-finished work —
+ *  close it (with evidence), never `work_items:release` it. */
+export function isResidueCandidate(s: OrphanedClaimSummary): boolean {
+  return s.verdict === 'residue';
 }

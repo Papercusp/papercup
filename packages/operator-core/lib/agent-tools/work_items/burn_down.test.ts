@@ -78,8 +78,9 @@ describe('work_items:burn_down', () => {
   it('classifies terminal, in-flight, parked, and unclaimed rows', () => {
     const result = buildBurnDownResult(
       [
-        item({ id: 'WI-done', state: 'done', updatedAt: '2026-07-05T20:10:00.000Z' }),
-        item({ id: 'EI-resolved', state: 'resolved', updatedAt: '2026-07-05T20:20:00.000Z' }),
+        // EI-18820653360383242: the delta is driven by closedAt, NOT updatedAt.
+        item({ id: 'WI-done', state: 'done', updatedAt: '2026-07-05T20:10:00.000Z', closedAt: '2026-07-05T20:10:00.000Z' }),
+        item({ id: 'EI-resolved', state: 'resolved', updatedAt: '2026-07-05T20:20:00.000Z', closedAt: '2026-07-05T20:20:00.000Z' }),
         item({ id: 'WI-live', assignee: 'su-live', takenAt: '2026-07-05T20:01:00.000Z' }),
         item({ id: 'WI-dead', assignee: 'su-dead' }),
         item({ id: 'WI-blocked', state: 'blocked' }),
@@ -194,26 +195,29 @@ describe('work_items:burn_down', () => {
     expect(result.openedSince).toBeUndefined();
   });
 
-  it('itemizes closedSince (terminal, updatedAt>since) and openedSince (createdAt>since), newest first', () => {
+  it('itemizes closedSince (terminal, closedAt>since) and openedSince (createdAt>since), newest first', () => {
     const result = buildBurnDownResult(
       [
         item({
           id: 'WI-closed-old',
           state: 'done',
           createdAt: '2026-07-01T00:00:00.000Z',
-          updatedAt: '2026-07-05T20:05:00.000Z', // before since — not in closedSince
+          updatedAt: '2026-07-05T20:05:00.000Z',
+          closedAt: '2026-07-05T20:05:00.000Z', // before since — not in closedSince
         }),
         item({
           id: 'WI-closed-new',
           state: 'resolved',
           createdAt: '2026-07-01T00:00:00.000Z',
           updatedAt: '2026-07-05T20:20:00.000Z',
+          closedAt: '2026-07-05T20:20:00.000Z',
         }),
         item({
           id: 'WI-closed-newer',
           state: 'dropped',
           createdAt: '2026-07-01T00:00:00.000Z',
           updatedAt: '2026-07-05T20:25:00.000Z',
+          closedAt: '2026-07-05T20:25:00.000Z',
         }),
         item({
           id: 'WI-opened-new',
@@ -245,6 +249,7 @@ describe('work_items:burn_down', () => {
         state: 'done',
         createdAt: '2026-07-01T00:00:00.000Z',
         updatedAt: new Date(Date.parse('2026-07-05T20:15:01.000Z') + i * 1000).toISOString(),
+        closedAt: new Date(Date.parse('2026-07-05T20:15:01.000Z') + i * 1000).toISOString(),
       }),
     );
     const result = buildBurnDownResult(items, new Set(), {
@@ -256,6 +261,46 @@ describe('work_items:burn_down', () => {
     expect(result.closedSince?.truncated).toBe(true);
     // newest first: the last-created row (i=34) should be first.
     expect(result.closedSince?.rows[0]?.id).toBe('WI-closed-34');
+  });
+
+  // ---------------------------------------------------------------------------
+  // EI-18820653360383242 — the regression guard for the defect this column exists
+  // to end. A bulk write (a retag, a payload backfill, a sweep) moves updatedAt on
+  // rows that closed weeks ago. Read that way, burn-down once reported 3,833 items
+  // "closed in one hour" with terminal_owner NULL — indistinguishable from a real
+  // fleet-scale mass unattributed close, and it cost two investigation cycles.
+  //
+  // A recent updatedAt must therefore NOT put a row in closedSince. And a row whose
+  // close time is genuinely unknown (closed before migration 698) must be COUNTED
+  // as undated rather than guessed at, so a reader can tell "nothing closed in this
+  // window" apart from "this window predates the close stamp".
+  // ---------------------------------------------------------------------------
+  it('excludes a bulk-touched row with a recent updatedAt but no closedAt, and reports it as undated', () => {
+    const result = buildBurnDownResult(
+      [
+        item({
+          id: 'WI-bulk-touched',
+          state: 'done',
+          createdAt: '2026-06-04T00:00:00.000Z',
+          updatedAt: '2026-07-05T20:29:00.000Z', // a sweep touched it just now
+          closedAt: null, //                        but it actually closed long ago, time unknown
+        }),
+        item({
+          id: 'WI-really-closed',
+          state: 'done',
+          createdAt: '2026-07-01T00:00:00.000Z',
+          updatedAt: '2026-07-05T20:20:00.000Z',
+          closedAt: '2026-07-05T20:20:00.000Z',
+        }),
+      ],
+      new Set(),
+      { harness: 'papercusp', since: '2026-07-05T20:15:00.000Z' },
+    );
+
+    expect(result.closedSince?.rows.map((r) => r.id)).toEqual(['WI-really-closed']);
+    expect(result.terminal.delta).toBe(1);
+    // The undated row is neither counted nor silently dropped.
+    expect(result.terminal.deltaClosedUndated).toBe(1);
   });
 
   it('derives live owners from non-stale fresh presence rows', () => {

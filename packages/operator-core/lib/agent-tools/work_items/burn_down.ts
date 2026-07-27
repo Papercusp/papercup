@@ -79,6 +79,13 @@ export interface BurnDownResult {
     dropped: number;
     deltaSince: string | null;
     delta: number;
+    /** EI-18820653360383242 — terminal rows carrying NO close stamp (closed before
+     *  migration 698), excluded from `delta` because they cannot be placed in time.
+     *  Nonzero means `delta` is a FLOOR, not a total: the window may also contain
+     *  closes whose time is unknown. Reported so "nothing closed" and "this window
+     *  predates the close stamp" are distinguishable — reading updatedAt instead is
+     *  what once reported 3,833 ancient rows as closed within one hour. */
+    deltaClosedUndated: number;
     /**
      * agent-protocol-authority-semantics-2026-07-26 P-004 — the terminal rows split by
      * COMPLETION AUTHORITY, which is the axis that answers "how much of this actually
@@ -548,6 +555,7 @@ export default defineTool({
       dropped: z.number(),
       deltaSince: z.string().nullable(),
       delta: z.number(),
+      deltaClosedUndated: z.number(),
     }),
     inFlight: z.array(rowSchema),
     parked: z.array(rowSchema.extend({

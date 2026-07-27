@@ -1665,6 +1665,98 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
 });
 
 /**
+ * EI-18828567391761902 — a PROSE WORD carrying a period was resolved as a path.
+ *
+ * Fifth in the not-a-path-resolved-as-one family. The predecessor
+ * (EI-18800669297694465) narrowed candidates from whole literals to whitespace
+ * TOKENS, which left the per-token test as a bare `[./]` — so any prose word
+ * ending in a period still qualified. `sibling."""` contains a `.`, does not
+ * start with `/`, and was therefore joined onto an in-tree cwd as
+ * `<canon>/sibling."""`.
+ *
+ * What makes this one worth pinning rather than just fixing: the offending
+ * command's ONLY write sink was `open('/tmp/...','w')`, so the write-indicator
+ * test (the previous two rounds' fix) was satisfied LEGITIMATELY and could not
+ * help. The entire error was in path detection, which is why the narrowing has
+ * to land there.
+ *
+ * The cost was not merely a refusal. The blocked command was building an
+ * out-of-tree MUTANT copy to verify a guard fix — the technique this repo's own
+ * guidance prescribes for testing a guard without touching shared source. The
+ * fallback (`sed`) silently produced a no-op mutant, and a working fix was
+ * nearly reported as inert. A false positive here degrades verification itself.
+ */
+describe('interpreter literal scan — prose periods are not extensions (EI-18828567391761902)', () => {
+  it('allows the exact repro: a heredoc searching for a docstring sentence while writing only to /tmp', () => {
+    const command =
+      "python3 - <<'PY'\n" +
+      `anchor = 'newly refuse an independent sibling."""'\n` +
+      "open('/tmp/mutant.sh','w').write('x')\n" +
+      'PY';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows prose whose words merely END in a period (`sibling.`, `e.g.`, `etc.`)', () => {
+    const command =
+      "python3 - <<'PY'\n" +
+      "open('/tmp/o.txt','w').write('x')\n" +
+      "print('refused an independent sibling. see the docstring, e.g. the list, etc.')\n" +
+      'PY';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  /**
+   * The `/` branch needed the same protection: tokenizing prose can hand back a
+   * token that is quote-wrapped rather than path-shaped. No tracked path in this
+   * repo contains a quote character (`git ls-files | grep -c '["'\'']'` → 0), so
+   * excluding quoted tokens cannot lose a real in-tree target.
+   */
+  it('allows prose that QUOTES a relative tree path inside the sentence', () => {
+    const command =
+      "python3 - <<'PY'\n" +
+      "open('/tmp/o.txt','w').write('x')\n" +
+      'print(\'see "apps/operator" for details\')\n' +
+      'PY';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  /**
+   * THE LOAD-BEARING CONTROL for how the extension rule is spelled.
+   *
+   * An alnum-only extension (`\.[A-Za-z0-9]+$`) would have excluded prose just
+   * as well, but it would ALSO have stopped matching 5 real tracked paths whose
+   * extensions carry `_` or `-` and which have no `/` to fall back on:
+   * .bash_profile, .gitnexusignore, .mcp.json.su-parked, and two dated
+   * .mcp.json backups. Measured, not assumed: of the 3615 tracked paths whose
+   * final segment is not an alnum extension, exactly those 5 lack a slash.
+   * Hence `[A-Za-z0-9_-]`. This test fails if anyone tightens it to alnum.
+   */
+  it('still denies a write to a root dotfile whose extension contains _ or - (why filename-safe, not alnum)', () => {
+    for (const target of ['.bash_profile', '.gitnexusignore', '.mcp.json.su-parked']) {
+      const command = `python3 -c "open('${target}','w').write('x')"`;
+      const reason = expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+      expect(reason).toContain(target);
+    }
+  });
+
+  /**
+   * Masking control. If the narrowing had been implemented as "skip any literal
+   * containing prose", a real in-tree write sitting beside a prose sentence
+   * would sail through — the exact hole this guard exists to close.
+   */
+  it('still denies a real in-tree write in a script that ALSO holds a period-bearing prose literal', () => {
+    const command =
+      "python3 - <<'PY'\n" +
+      `anchor = 'newly refuse an independent sibling."""'\n` +
+      "open('apps/operator/generated.ts','w').write('x')\n" +
+      'PY';
+    const reason = expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('apps/operator/generated.ts');
+    expect(reason).not.toContain('sibling');
+  });
+});
+
+/**
  * EI-18692070370140239 — the write-INDICATOR's own false positives.
  *
  * The describe above records how the guard, on its first pass, denied a

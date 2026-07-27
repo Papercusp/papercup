@@ -27,8 +27,10 @@ import {
   lastToolCallAtByOwner,
   listFleetAssignments,
   isReclaimCandidate,
+  isResidueCandidate,
   orphanedClaims,
   reconcileOrphanedWithVerdicts,
+  resolveTerminalPlanItemResidue,
   stalledClaims,
   summarizeOrphan,
   type AgentAssignment,
@@ -720,8 +722,22 @@ export default defineTool({
         { sessionState: a.sessionState ?? null, lastToolCallAt: a.lastToolCallAt ?? null },
       ]),
     );
+    // EI-18763117665515043: a claim's liveness verdict is meaningless when the
+    // claim's OWN linked plan item is already terminal (done/dropped) — the claim
+    // is stale residue of finished work, not abandoned or quiet-but-live work.
+    // Resolved over the reclaim-candidate set only (orphaned + stalled), the same
+    // rows summarizeFor renders — never the whole fleet. Best-effort: a lookup
+    // outage just leaves every row on the liveness-only verdict (today's behaviour).
+    const residueMap = await resolveTerminalPlanItemResidue([...orphans, ...stalled]).catch(
+      () => new Map<string, { planSlug: string; itemId: string; effectiveStatus: string }>(),
+    );
     const summarizeFor = (row: FleetAssignmentRow) =>
-      summarizeOrphan(row, row.agentId ? (holderActivity.get(row.agentId) ?? null) : null);
+      summarizeOrphan(
+        row,
+        row.agentId ? (holderActivity.get(row.agentId) ?? null) : null,
+        undefined,
+        row.workItemId ? (residueMap.get(row.workItemId) ?? null) : null,
+      );
     const orphanRows = orphans.map(summarizeFor);
     const stalledRows = stalled.map(summarizeFor);
     // WI-5975: only rows whose holder the oracle says is GONE are reclaimable.
@@ -729,8 +745,14 @@ export default defineTool({
     // "not visibly advancing" signal) but counted separately, so neither the
     // summary nor the work_items:release nudge below can advise reclaiming work
     // out from under an agent that is alive and mid-task.
+    // EI-18763117665515043: residue rows (linked plan item already terminal) are
+    // excluded from BOTH buckets — they are neither safely reclaimable-by-release
+    // (that just re-places already-done work) nor a "live holder, go ask" case.
+    const residueRows = [...orphanRows, ...stalledRows].filter(isResidueCandidate);
     const reclaimableRows = [...orphanRows, ...stalledRows].filter(isReclaimCandidate);
-    const liveHeldRows = [...orphanRows, ...stalledRows].filter((s) => !isReclaimCandidate(s));
+    const liveHeldRows = [...orphanRows, ...stalledRows].filter(
+      (s) => !isReclaimCandidate(s) && !isResidueCandidate(s),
+    );
     // Plan-item COVERAGE rollup: which plan items are being worked via a LINKED
     // work-item (or a direct claim) even when no plan-item lease names them — the
     // blind spot that makes plans:items show an actively-worked item as unworked.
@@ -858,6 +880,10 @@ export default defineTool({
       // aimed at an agent that was working.
       reclaimable_claims: reclaimableRows.length,
       held_by_live_agent: liveHeldRows.length,
+      // EI-18763117665515043: claims whose LINKED plan item is already terminal —
+      // stale residue, not abandoned/quiet-but-live work. Close these (evidence
+      // citing the plan item), never `work_items:release` them.
+      residue_claims: residueRows.length,
       // EI-6074: distinct plan-item deliverables held by >1 principal via the
       // work-item↔plan-item coverage edge — the silent cross-table duplicate.
       coverage_collisions: collisions.length,

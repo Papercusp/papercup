@@ -959,6 +959,51 @@ def _has_inplace_flag(seg, kind):
     return False
 
 
+# EI-18763270524857214: a `cd <dir>` earlier in the SAME compound command
+# changes the cwd every later relative target actually resolves against — the
+# guard was resolving every target against the session's STARTING cwd
+# regardless, so `cd /tmp/probe && ... > relative.md` (the sanctioned
+# out-of-tree scratch-work idiom) got told its target "resolves INSIDE the
+# shared staging tree" as flat fact, when it plainly did not: the preceding
+# `cd` moved cwd out of the tree first. Filed by an agent doing the CAREFUL
+# thing (building a probe in /tmp specifically to avoid dirtying the tree) —
+# a false reading stated as established fact sends the reader hunting a
+# cwd-drift bug that never happened.
+#
+# Best-effort replay, not a real shell: walk every `cd <target>` occurring
+# BEFORE a given position and fold it into a running cwd, same literal-path
+# safety net as `_resolve_write_target` (an unresolvable target — expansion,
+# unreadable — makes everything from there on UNKNOWN, at which point this
+# bails to the ORIGINAL session cwd rather than guess, so it can only ever
+# make the guard MORE accurate, never quietly disable it).
+#
+# Deliberately inert whenever the command contains ANY paren: a `cd` inside a
+# `(subshell)` does not leak its cwd change past the closing `)`, and this
+# replay has no paren-depth tracking to know that — folding a subshell-scoped
+# `cd` into the outer cwd could turn a genuine in-tree write into a false
+# ALLOW, which is a strictly worse failure than the stale-cwd false DENY this
+# is fixing. `$(...)` command substitution shares the same `(`/`)` characters,
+# so this also — harmlessly — sits out whenever one of those appears anywhere
+# in the command; the guard just falls back to its original (correct, if
+# occasionally over-cautious) behavior in that case.
+_CD_RE = re.compile(r'\bcd\s+(\S+)')
+
+
+def _effective_cwd_before(pos, base_cwd, clean, has_paren):
+    if has_paren:
+        return base_cwd
+    _cwd = base_cwd
+    for _m in _CD_RE.finditer(clean[:pos]):
+        _target = _m.group(1)
+        if not _target or any(ch in _target for ch in ('$', '`', '~', '*', '?', '[')):
+            return base_cwd  # can't tell where cwd ended up — don't guess
+        try:
+            _cwd = _target if os.path.isabs(_target) else os.path.realpath(os.path.join(_cwd, _target))
+        except Exception:
+            return base_cwd
+    return _cwd
+
+
 def _shell_write_guard():
     _canon = _canonical_tree_root()
     if not _canon:
@@ -968,14 +1013,15 @@ def _shell_write_guard():
     except Exception:
         return
     _clean = _strip_shell_quotes(_strip_heredoc_bodies(command))
-    _targets = []  # (raw_target, human-readable construct name)
+    _has_paren = '(' in _clean or ')' in _clean
+    _targets = []  # (raw_target, human-readable construct name, position in _clean)
 
     # `>`/`>>` redirects. The lookahead excludes fd-duplication/comparison
     # forms (`2>&1`, `>=`, `2>&2`) so those never get misread as file targets.
     for _m in re.finditer(r'\d*(>{1,2})(?![&=])\s*([^\s;&|()<>]+)', _clean):
         if not _looks_like_redirect_path(_m.group(2)):
             continue
-        _targets.append((_m.group(2), 'shell redirect (`%s`)' % _m.group(1)))
+        _targets.append((_m.group(2), 'shell redirect (`%s`)' % _m.group(1), _m.start(2)))
 
     # `tee [-a] FILE...`
     for _m in re.finditer(r'\btee\b([^;&|\n]*)', _clean):
@@ -983,7 +1029,7 @@ def _shell_write_guard():
             continue
         for _tok in _strip_redirect_tokens(_m.group(1).split()):
             if not _tok.startswith('-'):
-                _targets.append((_tok, '`tee`'))
+                _targets.append((_tok, '`tee`', _m.start()))
 
     # `sed -i[.bak] ... FILE...` / `sed --in-place ... FILE...` — quote-
     # stripping already erased a quoted script, so treat every remaining
@@ -997,7 +1043,7 @@ def _shell_write_guard():
             continue
         for _tok in _strip_redirect_tokens(_seg.split()):
             if not _tok.startswith('-'):
-                _targets.append((_tok, '`sed -i`'))
+                _targets.append((_tok, '`sed -i`', _m.start()))
 
     # `perl -i[.bak] FILE...` / `ruby -i[.bak] FILE...` — the same in-place
     # side door as `sed -i` above, just a different interpreter
@@ -1021,7 +1067,7 @@ def _shell_write_guard():
         for _tok in _strip_redirect_tokens(_seg.split()):
             # `inplace` is the library operand, not a target.
             if not _tok.startswith('-') and _tok != 'inplace':
-                _targets.append((_tok, '`awk -i inplace`'))
+                _targets.append((_tok, '`awk -i inplace`', _m.start()))
 
     for _m in re.finditer(r'\b(perl|ruby)\b([^;&|\n]*)', _clean):
         _seg = _m.group(2)
@@ -1031,7 +1077,7 @@ def _shell_write_guard():
             continue
         for _tok in _strip_redirect_tokens(_seg.split()):
             if not _tok.startswith('-'):
-                _targets.append((_tok, '`perl -i`/`ruby -i`'))
+                _targets.append((_tok, '`perl -i`/`ruby -i`', _m.start()))
 
     # `cp SRC... DEST` — the last positional (non-flag) token is the
     # destination. Skipped for a recursive/archive copy (`-r`/`-R`/`-a`/
@@ -1046,10 +1092,11 @@ def _shell_write_guard():
             continue
         _pos = [t for t in _strip_redirect_tokens(_toks) if not t.startswith('-')]
         if len(_pos) >= 2:
-            _targets.append((_pos[-1], '`cp`'))
+            _targets.append((_pos[-1], '`cp`', _m.start()))
 
-    for _raw, _construct in _targets:
-        _resolved = _resolve_write_target(_raw, _cwd)
+    for _raw, _construct, _at in _targets:
+        _effective_cwd = _effective_cwd_before(_at, _cwd, _clean, _has_paren)
+        _resolved = _resolve_write_target(_raw, _effective_cwd)
         if _resolved and (_resolved == _canon or _resolved.startswith(_canon + os.sep)):
             deny(
                 'shell-write guard (EI-18664655909328670): this %s targets `%s`, which '
@@ -1216,6 +1263,50 @@ def _extract_heredoc_bodies(cmd):
 # closed by an unrelated `"`.
 _QUOTED_LITERAL_RE = re.compile(r'"([^"\n]*)"|\'([^\'\n]*)\'')
 
+# EI-18828567391761902 — FIFTH in the not-a-path-resolved-as-one family, and
+# the narrowing the family's own through-line calls for: "every widening of
+# what counts as a 'path' must be paid for by a matching narrowing of what
+# counts as a candidate." The predecessor narrowed candidates to whitespace-
+# separated TOKENS, which left the token test itself as bare `[./]` — so any
+# prose word carrying a period still qualified.
+#
+# It did. A mutation-control script searching for a docstring sentence held the
+# literal 'newly refuse an independent sibling."""'; the token `sibling."""`
+# contains a `.`, does not start with `/`, and so was joined onto an in-tree cwd
+# as `<canon>/sibling."""` — "inside the tree". The command's only write sink was
+# `open(dst,'w')` with dst=/tmp/..., so the write-indicator test was satisfied
+# LEGITIMATELY and could not save it: the whole error was in path detection.
+# The cost is not just the refusal. It blocks the out-of-tree mutation-testing
+# workflow this repo's guidance prescribes for exactly this kind of guard, and
+# the fallback (a `sed` one-liner) silently produced a NO-OP mutant, so a fix
+# was nearly reported as inert. A false positive here degrades verification.
+#
+# Two token narrowings, each verified against the only tree this gates:
+#  (a) NO QUOTE CHARACTER. `git ls-files | grep -c '["'\'']'` -> 0. This also
+#      covers the `/` branch, where prose can otherwise smuggle a hit: the
+#      literal 'see "apps/operator" for details' yields the token
+#      `"apps/operator"`, which contains a `/` and resolves in-tree.
+#  (b) PATH SHAPE: contains `/`, OR its FINAL `.` is followed by a non-empty run
+#      of filename-safe characters and nothing else. `sibling."""` fails (`"""`),
+#      as do `sibling.`, `e.g.`, `etc.` — a trailing/prose period is not an
+#      extension. Filename-safe is deliberately `[A-Za-z0-9_-]` rather than
+#      alnum: an alnum-only rule would have dropped 5 real tracked paths
+#      (.bash_profile, .gitnexusignore, .mcp.json.su-parked, and two dated
+#      .mcp.json backups) — the only tracked dotted paths with no `/` to fall
+#      back on. Measured, not assumed: of 3615 tracked paths whose final segment
+#      is not an alnum extension, exactly those 5 lack a slash.
+#
+# RESIDUAL, accepted: a missing space after a period (`sentence.The`) and a
+# quoted decimal ('1.5') are still path-shaped by this test. Both are rarer than
+# what (b) removes, and the guard is coarse by design — see its honest-limit note.
+_PATH_CANDIDATE_RE = re.compile(r'/|\.[A-Za-z0-9_-]+$')
+
+
+def _looks_like_path_candidate(cand):
+    if '"' in cand or "'" in cand:
+        return False
+    return bool(_PATH_CANDIDATE_RE.search(cand))
+
 
 def _payload_literal_tree_path(body, canon, cwd):
     # Every quoted token inside `body` that looks path-like (contains `/` or
@@ -1253,7 +1344,7 @@ def _payload_literal_tree_path(body, canon, cwd):
         # coarse, so every widening of what counts as a "path" must be paid
         # for by a matching narrowing of what counts as a candidate.
         for cand in raw.split():
-            if not re.search(r'[./]', cand):
+            if not _looks_like_path_candidate(cand):
                 continue
             resolved = _resolve_write_target(cand, cwd)
             if resolved and (resolved == canon or resolved.startswith(canon + os.sep)):
