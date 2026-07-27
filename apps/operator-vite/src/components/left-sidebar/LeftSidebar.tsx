@@ -154,7 +154,11 @@ const TABS = [
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
-const TAB_IDS = TABS.map((t) => t.id) as unknown as TabId[];
+/** Exported so DEEP-LINKERS can be checked against the real tab set: `lst` is
+ *  parsed with parseAsStringLiteral(TAB_IDS), so a link writing an id that is not
+ *  here is silently rejected and lands on the default tab (see
+ *  LearningTab's ARMING_SIDEBAR_TAB — that is how "Open Arming" became a no-op). */
+export const TAB_IDS = TABS.map((t) => t.id) as unknown as TabId[];
 
 // Width model — mirrors DevAdminRail's.
 const COLLAPSED_WIDTH = 48;

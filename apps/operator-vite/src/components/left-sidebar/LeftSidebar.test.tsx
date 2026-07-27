@@ -325,4 +325,28 @@ describe('<LeftSidebar> shell', () => {
     expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).not.toBe('blender');
   });
 
+  /**
+   * The other half of the deep-link contract (owner report 2026-07-27: "what does
+   * the Open Arming button do, it doesnt seem to do anything").
+   *
+   * `lst` is parseAsStringLiteral(TAB_IDS), so a link writing a NON-member id is
+   * silently rejected and the rail falls back to its default tab. The Learning
+   * tab's Open Arming button used to write the retired `blender` id: the test
+   * above asserted blender does not resolve, and a LearningTab test asserted the
+   * button writes blender — both passed, and between them they encoded a dead
+   * button as intended behaviour. This test pins the LIVE target so a future tab
+   * rename breaks here instead of silently neutering the button again. Keep it in
+   * sync with LearningTab's ARMING_SIDEBAR_TAB.
+   */
+  it("resolves the tab Learning's Open Arming deep-links to (ARMING_SIDEBAR_TAB = 'agents')", () => {
+    renderRail('?lst=agents');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('agents');
+  });
+
+  it('exports TAB_IDS containing that target, so deep-linkers can be validated', async () => {
+    const { TAB_IDS } = await import('./LeftSidebar');
+    expect(TAB_IDS).toContain('agents');
+    expect(TAB_IDS).not.toContain('blender');
+  });
+
 });
