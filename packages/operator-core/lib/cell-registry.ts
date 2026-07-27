@@ -94,6 +94,52 @@ export interface CellProvenance {
   evidence: string;
 }
 
+/**
+ * P-019 (a) — WHO may read this cell. REQUIRED at registration; there is no default.
+ *
+ * ⚠ THE DISTINCTION THAT MOTIVATES A SEPARATE CONCEPT. `agent_facts.audience_scope`
+ * already exists and looks like the obvious thing to reuse — but it is DELIVERY
+ * RELEVANCE, NOT SECRECY. Its own tool text says so: an audience-scoped fact folds
+ * only into that fleet's orients, yet `facts:list` still shows it to everyone.
+ * Reusing those semantics for cells would be a leak BY CONSTRUCTION, which is
+ * exactly the hazard P-019 (c) names for P-013's presence expansion: an
+ * out-of-audience caller would simply read the value through a different lens.
+ *
+ * So visibility is enforced on the READ path (see `canReadCell`), and it gates
+ * EXISTENCE as well as value — a cell a reader may not see reads as absent rather
+ * than as forbidden, so the narrow cells cannot be enumerated by a stranger.
+ *
+ * The vocabulary is REUSED, not invented: it mirrors `agent_facts.scope`'s CHECK
+ * constraint (workspace | role | owner | harness | work_item) and its companion
+ * rule that everything except `workspace` requires a ref.
+ */
+export type CellVisibility =
+  /** Every agent in the workspace. A stated decision, not an absent field. */
+  | { kind: 'workspace' }
+  | { kind: 'harness'; ref: string }
+  | { kind: 'role'; ref: string }
+  | { kind: 'owner'; ref: string }
+  | { kind: 'work_item'; ref: string };
+
+/**
+ * P-019 (b) — may this cell cross hives? REQUIRED; no default.
+ * Mirrors `agent_facts.shareable` (+ `source_hive` / `fed_ts` for the transport).
+ */
+export type CellFederation =
+  /** Never leaves this hive. */
+  | { kind: 'local' }
+  /** May federate. Only legal for workspace-visible cells — see the rule below. */
+  | { kind: 'shareable' };
+
+/** A caller, for the audience check. Deliberately small: everything here is
+ *  already known at dispatch, so the check costs no lookup. */
+export interface CellReader {
+  ownerId: string;
+  roles?: string[];
+  harnessSlug?: string;
+  workItems?: string[];
+}
+
 export interface CellSpec {
   /** Dotted id, e.g. `git.pipelinePosition`. Unique across the registry. */
   cell: string;

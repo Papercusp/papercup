@@ -27,6 +27,7 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
     targetSubject: 'test',
     dirtyUncommitted: false,
     positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+    positionsUnknown: [],
     deployedSha: deployed,
     gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
     verdictProvenance: {

@@ -58,10 +58,27 @@ const idea = (over: Partial<RoutedIdeaProvenance> = {}): RoutedIdeaProvenance =>
  * the per-cycle reconcile join has rows) and the union — which is what production does for
  * a scout-origin idea.
  */
-const inputs = (ticks: ScoutTickRecord[], routedIdeas: RoutedIdeaProvenance[]): ProgramSuccessInputs => ({
+const inputs = (
+  ticks: ScoutTickRecord[],
+  routedIdeas: RoutedIdeaProvenance[],
+  gymCorpus?: ProgramSuccessInputs['gymCorpus'],
+): ProgramSuccessInputs => ({
   cadence: { ticks, routedIdeas, lensOutcomes: emptyOutcomes() } as unknown as ScoutQualityInputs<CreativeLens>,
   ideas: routedIdeas,
+  ...(gymCorpus ? { gymCorpus } : {}),
 });
+
+/**
+ * The all-real corpus a FULLY-GREEN gate now requires (P-011). Most fixtures omit it
+ * on purpose: `fitness-signal-is-real` then rates `unknown`, which is the honest
+ * reading of a fixture that never stated its benchmark's provenance — and is why the
+ * verdict roll-up tests below assert 'incomplete' rather than 'pass'.
+ */
+const REAL_CORPUS: ProgramSuccessInputs['gymCorpus'] = {
+  realCount: 3,
+  syntheticCount: 0,
+  harnessSlug: 'papercusp',
+};
 
 const bar = (r: ProgramSuccessReport, key: string) => r.criteria.find((c) => c.key === key)!;
 
@@ -584,11 +601,89 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
             ],
           }),
         ],
+        // P-011: a fully-green gate must ALSO prove the fitness signal is real.
+        // Before this bar, this fixture reached 'pass' with a synthetic benchmark —
+        // exactly how six live scorecards certified a toy corpus. A green program
+        // verdict is now unreachable without a real corpus.
+        REAL_CORPUS,
       ),
     );
     expect(r.verdict).toBe('pass');
-    expect(r.passed).toBe(6);
+    expect(r.passed).toBe(7);
     expect(r.failed + r.unknown).toBe(0);
+    expect(bar(r, 'fitness-signal-is-real').status).toBe('pass');
+  });
+
+  it('CANNOT close the program on a synthetic corpus, however green everything else is', () => {
+    // The same otherwise-perfect fixture as above, with the one difference that the gym
+    // is optimizing against generated stubs. This is the exact state the stack was in
+    // for six consecutive green scorecards.
+    const green = () =>
+      inputs(
+        [
+          ranTick({ ideasRouted: 2, detail: { cycleId: 'c1', signalScore: 30 } }),
+          ...[...Array(MIN_ERROR_RATE_DENOMINATOR - 1)].map((_, i) =>
+            ranTick({ detail: { cycleId: `c-denominator-${i}`, signalScore: 30 } }),
+          ),
+        ],
+        [
+          idea({
+            ideaId: 'i-analogical',
+            lens: 'analogical' as unknown as RoutedIdeaProvenance['lens'],
+            addressesPatternRefs: ['rubric:su-agent-behavior/tool-discipline'],
+            humanGrade: 5,
+            humanFeedback: 'ship it',
+            gradedBy: 'owner',
+            gradedAt: '2026-07-13T12:00:00.000Z',
+            createdBy: 'su-green',
+            feedbackRevisions: [
+              { revisionRef: 'EI-green-2', createdBy: 'su-green', revisedAt: '2026-07-13T12:01:00.000Z' },
+            ],
+          }),
+          idea({
+            ideaId: 'i-reframing',
+            lens: 'reframing' as unknown as RoutedIdeaProvenance['lens'],
+            addressesPatternRefs: ['rubric:su-agent-behavior/tool-discipline'],
+            humanGrade: 4,
+            humanFeedback: 'also good',
+            gradedBy: 'owner',
+            gradedAt: '2026-07-13T12:00:00.000Z',
+            createdBy: 'su-green-2',
+            feedbackRevisions: [
+              { revisionRef: 'EI-green-3', createdBy: 'su-green-2', revisedAt: '2026-07-13T12:01:00.000Z' },
+            ],
+          }),
+        ],
+      );
+
+    // All three toy tasks → hard FAIL, and the whole program verdict follows.
+    const synthetic = evaluateProgramSuccess({
+      ...green(),
+      gymCorpus: { realCount: 0, syntheticCount: 3, harnessSlug: 'papercusp' },
+    });
+    expect(bar(synthetic, 'fitness-signal-is-real').status).toBe('fail');
+    expect(bar(synthetic, 'fitness-signal-is-real').observed).toContain('SYNTHETIC FITNESS SIGNAL');
+    expect(synthetic.verdict).toBe('fail');
+
+    // Even ONE stub among real tasks fails — a partly-toy corpus cannot be laundered.
+    const mixed = evaluateProgramSuccess({
+      ...green(),
+      gymCorpus: { realCount: 5, syntheticCount: 1, harnessSlug: 'papercusp' },
+    });
+    expect(bar(mixed, 'fitness-signal-is-real').status).toBe('fail');
+    expect(mixed.verdict).toBe('fail');
+
+    // An UNREAD corpus is unknown, never a silent pass.
+    const unread = evaluateProgramSuccess(green());
+    expect(bar(unread, 'fitness-signal-is-real').status).toBe('unknown');
+    expect(unread.verdict).toBe('incomplete');
+
+    // An EMPTY corpus is reported, not graded — nothing is being optimized.
+    const empty = evaluateProgramSuccess({
+      ...green(),
+      gymCorpus: { realCount: 0, syntheticCount: 0, harnessSlug: 'papercusp' },
+    });
+    expect(bar(empty, 'fitness-signal-is-real').status).toBe('unknown');
   });
 
   it('a single FAIL dominates any number of passes', () => {

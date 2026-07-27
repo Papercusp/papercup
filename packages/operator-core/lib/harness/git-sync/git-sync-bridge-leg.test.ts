@@ -25,8 +25,16 @@ const defaultRunGitMock = vi.hoisted(() => vi.fn());
  *  reason and the test would pass vacuously. */
 const sqlMock = vi.hoisted(() => vi.fn());
 
-vi.mock('../../harness-registry', () => ({ loadHarnessRegistry: loadHarnessRegistryMock }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock, unsafe: vi.fn() }) }));
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadHarnessRegistry: loadHarnessRegistryMock,
+}));
+// Partial: unrelated modules pulled in transitively (locks/configure.ts) call other
+// db-org exports at import time, and vitest throws on ANY access to a missing mock key.
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOrgPg: () => ({ sql: sqlMock, unsafe: vi.fn() }),
+}));
 vi.mock('../../sync/pot-git/storage', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   hiveGitRepoPath: hiveGitRepoPathMock,

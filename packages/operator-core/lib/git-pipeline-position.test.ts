@@ -103,6 +103,13 @@ function fakeGit(opts: {
    *  not-present) disagreeing with the true remote tip. */
   remoteStagingTip?: string;
   /**
+   * D-038 axis 2: refs whose `rev-list --count` FAILS (GitRunner yields null).
+   * Deliberately distinct from `contains` merely omitting the ref — that is an
+   * honest "not contained", this is "could not measure". Conflating the two is
+   * exactly the defect `positionsUnknown` exists to surface.
+   */
+  failRefs?: string[];
+  /**
    * EI-18715870370005934: models the SUBMODULE BOUNDARY faithfully — the
    * superproject stores a gitlink (mode 160000), never submodule file content.
    * So inside the submodule repo a superproject sha does NOT resolve (rev-parse
@@ -147,6 +154,7 @@ function fakeGit(opts: {
     if (args[0] === 'log' && args.includes('--pretty=%s')) return opts.subject ?? 'subj';
     if (args[0] === 'rev-list' && args[1] === '--count') {
       const [ref, sha] = args[2].split('..');
+      if (opts.failRefs?.includes(ref)) return null; // the READ failed — not "not contained"
       const set = new Set(opts.contains?.[ref] ?? []);
       return set.has(sha) ? '0' : '3';
     }
@@ -217,6 +225,38 @@ describe('gitPipelinePosition (P-002)', () => {
     // serving process started 60s ago).
     expect(res.summary).toContain('live — the serving process started after this code landed');
     expect(res.serving.startedSinceCodeChange).toBe(true);
+  });
+
+  /**
+   * D-038 axis 2 + D-039's hoist — and the defect P-006 found in THIS cell while
+   * trying to register it as the contract's exemplar.
+   *
+   * `refContains` returned `contained === '0'` over a GitRunner that yields `null`
+   * on any failure, so `null === '0'` made a FAILED read indistinguishable from an
+   * honest "this ref does not contain the commit". An agent reads `inMain: false`
+   * and waits for a stage it may already have passed — a verdict manufactured from
+   * an absence, in the pipeline's headline leg.
+   */
+  it('a FAILED ref read is hoisted as unknown, never reported as a confident "not reached"', async () => {
+    const git = fakeGit({
+      pathCommit: 'abc1234567',
+      contains: { HEAD: ['abc1234567'], 'origin/staging': ['abc1234567'], deployedsha0: [] },
+      failRefs: ['origin/main'], // could not measure — NOT "honestly not contained"
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+    // The boolean still degrades to false, so every existing consumer is unchanged…
+    expect(res.positions.inMain).toBe(false);
+    // …but it is now SAYABLE that this particular false was not a measurement.
+    expect(res.positionsUnknown).toContain('inMain');
+    // And a leg that genuinely read "not contained" must NOT be swept in with it.
+    // A hoist that cries wolf is one agents learn to ignore, which would leave us
+    // worse off than the bare boolean it replaced.
+    expect(res.positionsUnknown).not.toContain('deployed');
+    expect(res.positions.deployed).toBe(false);
+    expect(res.positions.onStaging).toBe(true);
   });
 
   // EI-18694888339365359: the local origin/staging remote-tracking ref lagged
@@ -571,6 +611,7 @@ describe('gitPipelinePosition (P-002)', () => {
       targetSubject: 'subj',
       dirtyUncommitted: false,
       positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
+      positionsUnknown: [],
       deployedSha: 'deployedsha0',
       gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
       verdictProvenance: {
@@ -1194,6 +1235,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       targetSubject: 'subj',
       dirtyUncommitted: false,
       positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+      positionsUnknown: [],
       deployedSha: 'deployedsha0',
       gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
       verdictProvenance: {
@@ -1408,6 +1450,7 @@ describe('changeInCandidate (P-004)', () => {
       targetSubject: 'subj',
       dirtyUncommitted: false,
       positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+      positionsUnknown: [],
       deployedSha: 'deployedsha0',
       gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
       verdictProvenance: {

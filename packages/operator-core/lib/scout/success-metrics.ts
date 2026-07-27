@@ -572,6 +572,44 @@ export function evaluateProgramSuccess(
         }),
   });
 
+  // ── 7. fitness-signal-is-real (P-011) ───────────────────────────────────────
+  // The bar that makes a green gate over a stub benchmark IMPOSSIBLE. See
+  // ProgramSuccessInputs.gymCorpus for why every other criterion could pass while
+  // this one was missing. Ordering of the branches is the whole safety property:
+  // absent ⇒ unknown, empty ⇒ unknown, ANY synthetic ⇒ fail, all real ⇒ pass.
+  const corpus = inputs.gymCorpus;
+  criteria.push({
+    key: 'fitness-signal-is-real',
+    bar: 'the gym optimizes against a REAL task corpus (no synthetic-stub tasks in the active set)',
+    ...(corpus == null
+      ? {
+          status: 'unknown' as const,
+          observed: 'gym task corpus not read for this report — provenance unproven',
+          unknownReason:
+            'without the corpus counts this bar cannot distinguish a real benchmark from a generated stub, and MUST NOT default to pass (that default is exactly how six scorecards certified a toy benchmark)',
+        }
+      : corpus.realCount + corpus.syntheticCount === 0
+        ? {
+            status: 'unknown' as const,
+            observed: `no gym tasks recorded for ${corpus.harnessSlug ?? 'this harness'} — nothing is being optimized`,
+            unknownReason:
+              'an empty corpus is neither a real signal nor a fake one; it means the gym has no benchmark at all, which this bar reports rather than grades',
+          }
+        : corpus.syntheticCount > 0
+          ? {
+              status: 'fail' as const,
+              observed:
+                `SYNTHETIC FITNESS SIGNAL — ${corpus.syntheticCount} of ${corpus.realCount + corpus.syntheticCount} active gym task(s) for ` +
+                `${corpus.harnessSlug ?? 'this harness'} are generated stubs (corpus='synthetic'), ${corpus.realCount} are real. ` +
+                'A champion crowned on this corpus has proven only that it can edit a toy file, so promotions from it are not evidence of learning. ' +
+                'Populate a real task corpus (plan gym-real-fitness-signal-2026-07-27 P-001) — this bar stays RED until every active task is real.',
+            }
+          : {
+              status: 'pass' as const,
+              observed: `all ${corpus.realCount} active gym task(s) for ${corpus.harnessSlug ?? 'this harness'} are drawn from a REAL corpus (corpus='real')`,
+            }),
+  });
+
   const passed = criteria.filter((c) => c.status === 'pass').length;
   const failed = criteria.filter((c) => c.status === 'fail').length;
   const unknown = criteria.filter((c) => c.status === 'unknown').length;
@@ -715,8 +753,40 @@ export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions
     })(),
   ]);
   const ideas = [...cadence.routedIdeas, ...suIdeate.routedIdeas];
+  // P-011: read the gym's task-corpus split so `fitness-signal-is-real` can fail on a
+  // synthetic benchmark. Best-effort and lazily imported, like the code-hash read
+  // above — but note the asymmetry: a FAILED read yields `undefined`, which rates the
+  // bar `unknown`, never `pass`. A gate that greened because its own probe errored
+  // would reproduce the exact blindness this bar exists to end.
+  const gymCorpus = await (async () => {
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { sql } = getOrgPg();
+      const harnessSlug = opts.harnessSlug;
+      const rows = (await (harnessSlug
+        ? sql`SELECT corpus, count(*)::int AS n
+                FROM harness_gym_durable.gym_tasks
+               WHERE harness_slug = ${harnessSlug}
+                 ${opts.workspaceId ? sql`AND workspace_id = ${opts.workspaceId}` : sql``}
+               GROUP BY corpus`
+        : sql`SELECT corpus, count(*)::int AS n
+                FROM harness_gym_durable.gym_tasks
+               ${opts.workspaceId ? sql`WHERE workspace_id = ${opts.workspaceId}` : sql``}
+               GROUP BY corpus`)) as Array<{ corpus: string; n: number }>;
+      if (rows.length === 0) return undefined;
+      let realCount = 0;
+      let syntheticCount = 0;
+      for (const r of rows) {
+        if (r.corpus === 'real') realCount += Number(r.n);
+        else syntheticCount += Number(r.n); // unknown labels count as synthetic
+      }
+      return { realCount, syntheticCount, ...(harnessSlug ? { harnessSlug } : {}) };
+    } catch {
+      return undefined;
+    }
+  })();
   const report = evaluateProgramSuccess(
-    { cadence, ideas, ...(cadenceByCodeHash ? { cadenceByCodeHash } : {}) },
+    { cadence, ideas, ...(cadenceByCodeHash ? { cadenceByCodeHash } : {}), ...(gymCorpus ? { gymCorpus } : {}) },
     {
       ...(opts.maxErrorRate != null ? { maxErrorRate: opts.maxErrorRate } : {}),
       // A full page back on EITHER partition means the read almost certainly hit the cap and
