@@ -845,7 +845,19 @@ export function evaluateChangeInCandidate(args: {
       case 'absent':
         return 'That file does not exist at all in the judged commit (it is new). Commit it first: git-sync:run.';
       case 'newer-commit':
-        return 'It IS committed, but in a commit newer than the candidate (the quiet-cut steps the candidate back ~4 min). Re-fire once the commit ages past the quiet window, or let the next run pick it up.';
+        // EI-18797292094433710: this branch used to read "re-fire once the commit ages
+        // past the quiet window". That is the one lever that must NOT be offered here.
+        // `inCandidate` compares the path's CURRENT content, so a PEER's later commit to
+        // the same file produces this exact reading even when the candidate already
+        // carries YOUR change — and on a hot shared file it never clears, because the
+        // tip is always newer than the quiet-cut candidate. Following the old advice
+        // restarts a ~55min suite clock for nothing; it did so twice during a 3h+
+        // fleet-wide outage whose fix was sitting in every candidate the whole time.
+        return (
+          'It IS committed, but the file has been committed AGAIN since the candidate was cut (the quiet-cut steps the candidate back ~4 min). ' +
+          'This does NOT by itself mean YOUR change is missing — a peer commit to the same file reads identically. ' +
+          'Settle it before firing anything: `git merge-base --is-ancestor <the commit carrying your change> <candidate>` (exit 0 ⇒ the candidate carries you and its verdict IS about your change).'
+        );
       default:
         return '';
     }
@@ -854,6 +866,22 @@ export function evaluateChangeInCandidate(args: {
   // The in-flight run's verdict is the one about to land, so it outranks the
   // hypothetical next candidate whenever both are known.
   if (base.judgingContainsPath === false) {
+    // EI-18797292094433710: 'newer-commit' is NOT the same claim as the other two.
+    // uncommitted/absent mean the candidate provably cannot see your work, so "a RED
+    // is not evidence your change failed" is true. newer-commit only means the file
+    // MOVED since the cut — which a peer's edit causes just as readily as your own —
+    // so asserting the same exoneration there tells the caller to disregard a verdict
+    // that may be a real verdict on their code, and to re-fire for one they already
+    // have. State the ambiguity instead of resolving it in the wrong direction.
+    if (base.missingReason === 'newer-commit') {
+      return {
+        ...base,
+        detail:
+          `The gate run IN FLIGHT is judging ${base.judgingSha?.slice(0, 12)}, which carries an EARLIER version of this file. ` +
+          `Whether YOUR change is in it is UNRESOLVED from the path alone. ${lever(base.missingReason)} ` +
+          `A verdict is already coming from this run — do not re-fire on the strength of this line alone.`,
+      };
+    }
     return {
       ...base,
       detail:
@@ -1176,7 +1204,13 @@ export function computeStages(
       detail: notInCandidate
         ? `${cic.detail}${
             gateHealth === 'stalled'
-              ? ` (The gate is also RED — ${g.consecutiveReds} consecutive — but do NOT read that red as your change failing until a run that CONTAINS it completes.)`
+              ? cic.missingReason === 'newer-commit'
+                ? // EI-18797292094433710: do NOT hand out the exoneration here. The file
+                  // only moved since the cut, so the red may be a REAL red on this
+                  // change; telling the caller to disregard it is how a genuine
+                  // regression gets waved through as "stale candidate".
+                  ` (The gate is also RED — ${g.consecutiveReds} consecutive. Resolve the ancestor check above BEFORE deciding whether that red is yours — it may well be.)`
+                : ` (The gate is also RED — ${g.consecutiveReds} consecutive — but do NOT read that red as your change failing until a run that CONTAINS it completes.)`
               : ''
           }`
         : g.fireStale
@@ -1190,7 +1224,16 @@ export function computeStages(
         ? notInCandidate
           ? cic.missingReason === 'uncommitted' || cic.missingReason === 'absent'
             ? 'git-sync:run (the judged candidate does not contain your change yet)'
-            : 'wait out the quiet-cut window (~4 min), then release:checkpoint-run — the judged candidate predates your commit'
+            : // EI-18797292094433710: 'newer-commit' with a run ALREADY IN FLIGHT must
+              // not route to a re-fire. The file merely moved since the cut — a peer's
+              // edit does that too — so the in-flight candidate may already carry the
+              // change, and a re-fire would throw away a verdict that is minutes from
+              // landing to start a fresh ~55min clock (done twice during a 3h+ outage
+              // whose fix was in every candidate). Same reasoning as the
+              // judgingContainsPath===true arm below: a verdict is coming, so wait.
+              cic.judgingSha
+              ? null
+              : 'wait out the quiet-cut window (~4 min), then release:checkpoint-run — the judged candidate predates your commit'
           : // A run is ALREADY IN FLIGHT judging a candidate that carries this change: a
             // verdict covering it is coming, so waiting is the correct move and there is
             // nothing to fire. Telling the caller to run release:checkpoint-run here is

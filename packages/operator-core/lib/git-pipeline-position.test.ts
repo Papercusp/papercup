@@ -1516,6 +1516,39 @@ describe('changeInCandidate (P-004)', () => {
       expect(r.detail).toMatch(/inflight1234/);
     });
 
+    it('EI-18797292094433710: a newer-commit miss states the AMBIGUITY and the ancestor probe — it never exonerates the red', () => {
+      // `inCandidate` compares the path's CURRENT content, so a peer's later commit to
+      // the same file is indistinguishable from your own change having missed the cut.
+      // Claiming "a RED from that run is NOT evidence your change failed" there is a
+      // false exoneration — it invites waving a genuine regression through as a stale
+      // candidate, and (with the old lever) re-firing for a verdict already in flight.
+      const r = evaluateChangeInCandidate({
+        relPath: 'a.ts',
+        candidates: { judgingSha: 'inflight123456', nextCandidateSha: null },
+        judging: { path: 'a.ts', inCandidate: false, reason: 'newer-commit', unknownReason: null },
+        next: null,
+      });
+      expect(r.judgingContainsPath).toBe(false);
+      expect(r.detail).toMatch(/UNRESOLVED/);
+      expect(r.detail).toMatch(/merge-base --is-ancestor/);
+      expect(r.detail).toMatch(/do not re-fire/i);
+      // the false exoneration must be gone
+      expect(r.detail).not.toMatch(/NOT evidence your change failed/);
+      // and it must not prescribe the re-fire that cost the outage two suite cycles
+      expect(r.detail).not.toMatch(/Re-fire once the commit ages/);
+    });
+
+    it('an UNCOMMITTED miss keeps the exoneration — there the candidate provably cannot see the work', () => {
+      const r = evaluateChangeInCandidate({
+        relPath: 'a.ts',
+        candidates: { judgingSha: 'inflight123456', nextCandidateSha: null },
+        judging: { path: 'a.ts', inCandidate: false, reason: 'uncommitted', unknownReason: null },
+        next: null,
+      });
+      expect(r.detail).toMatch(/NOT evidence your change failed/);
+      expect(r.detail).toMatch(/git-sync:run/);
+    });
+
     it('a confirmed-contained candidate says the verdict IS about your change', () => {
       const r = evaluateChangeInCandidate({
         relPath: 'a.ts',
@@ -1955,7 +1988,15 @@ describe('stage levers (P-005)', () => {
     expect(l).toBeNull();
   });
 
-  it('…but an in-flight run that does NOT carry the change still routes to the containment lever', () => {
+  it('EI-18797292094433710: an in-flight run whose candidate merely PREDATES the newest edit offers NO lever — never a re-fire', () => {
+    // The old behaviour routed this to "wait out the quiet-cut window, then
+    // release:checkpoint-run". That is the single most expensive wrong lever this
+    // surface can emit: `newer-commit` only means the file was committed again since
+    // the cut, which a PEER's edit to the same file causes just as readily as your
+    // own — so the in-flight candidate may already carry your change, and re-firing
+    // discards a verdict minutes from landing to start a fresh ~55min clock. It did
+    // exactly that twice during a 3h+ fleet-wide outage whose fix was in every
+    // candidate the whole time. A run is in flight ⇒ a verdict is coming ⇒ wait.
     const l = lever('gate', {
       positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
       gate: { stalled: true, consecutiveReds: 5, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
@@ -1966,7 +2007,40 @@ describe('stage levers (P-005)', () => {
         missingReason: 'newer-commit',
       },
     });
+    expect(l).toBeNull();
+  });
+
+  it('…but with NO run in flight, a next-candidate that predates the commit still routes to the quiet-cut lever', () => {
+    // Nothing is coming on its own here, so firing IS the move — the guard above is
+    // specifically about not throwing away an in-flight verdict.
+    const l = lever('gate', {
+      positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+      gate: { stalled: true, consecutiveReds: 5, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      changeInCandidate: {
+        ...NO_CANDIDATE,
+        judgingSha: null,
+        nextCandidateSha: 'nextcand123456',
+        nextContainsPath: false,
+        missingReason: 'newer-commit',
+      },
+    });
     expect(l).toMatch(/quiet-cut/);
+  });
+
+  it('EI-18797292094433710: an UNCOMMITTED/ABSENT miss still routes to git-sync:run even with a run in flight', () => {
+    // The narrowing above must not weaken the genuine misses: when the candidate
+    // provably cannot see the work, waiting for the in-flight verdict is useless.
+    const l = lever('gate', {
+      positions: { committedLocal: false, onStaging: false, inMain: false, deployed: false },
+      gate: { stalled: true, consecutiveReds: 5, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      changeInCandidate: {
+        ...NO_CANDIDATE,
+        judgingSha: 'inflight123456',
+        judgingContainsPath: false,
+        missingReason: 'uncommitted',
+      },
+    });
+    expect(l).toMatch(/git-sync:run/);
   });
 
   it('`main` never offers a lever — it advances only as a consequence of the gate', () => {

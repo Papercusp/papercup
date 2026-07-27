@@ -1469,24 +1469,12 @@ describe("LearningTab — Benchmark view", () => {
 // (rendered as <LearningTab /> at ?lview=improvements, with BOTH
 // learning.improvements and learning.scout mocked).
 //
-// STATUS (P-005): contracts 7-11 are DONE — see the grading describe-block
-// below, which also carries the ResizeObserver note that unblocked them.
-// 1-6 below are STILL OUTSTANDING. They are display/navigation contracts, so
-// nothing about them is hard now that the Popover renders in jsdom; they were
-// simply ranked behind grading, which is the only row control the owner kept
-// and therefore the only one whose loss would be silent.
-//
-//   1. routed ideas appear as rows carrying rail label, lens, and outcome
-//      (pending suppressed on the chip, shown in the trace)
-//   2. tick-economics strip contents behind the loop disclosure, and its
-//      "none yet" degradation on a legacy payload with no ticks
-//   3. teaching empty state + the "Open Arming" action landing on lst=agents
-//      (ARMING_SIDEBAR_TAB — 'blender' was retired and silently no-op'd it)
-//   4. the pipeline trace: resolved wi: titles without the raw id, readable
-//      typed refs, prefix-stripped routed ref (never "plan: plan:…"), the
-//      "ungraded"/"none recorded" GAPS rendering rather than vanishing
-//   5. a trace's routed chip deep-linking a plan to Create → Plans
-//   6. the rail filter's aria-pressed round-trip
+// STATUS (P-005): ALL ELEVEN are re-established. 7-11 (grading) are in the
+// describe-block immediately below, which also carries the ResizeObserver note
+// that unblocked them; 1-6 (display + navigation) are in the block after it.
+// Nothing is left as prose here — a contract described in a comment is not a
+// contract, and the six sat un-re-established for exactly as long as they were
+// only written down.
 
 // P-005 RE-ESTABLISHED (contracts 7-11). These were pinned against the retired
 // `ScoutView`; the COMPONENT went away in the P-003 merge but the BEHAVIOUR did
