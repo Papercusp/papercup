@@ -274,7 +274,60 @@ export function fetchOverDuplex(
     // premature destroy truncates it ("bad pack header"). Default end:true pipes
     // then propagate each half-close cleanly.
     const server = createServer({ allowHalfOpen: true });
+    /**
+     * EI-18765930091826096: THIS FETCH OWNS THE DUPLEX'S LIFETIME — release it
+     * when the fetch settles, on EVERY path (success, refusal, ceiling).
+     *
+     * Nothing here used to end or destroy the caller's duplex at all: `finish`
+     * closed our LOCAL unix bridge and removed the tmpdir, and the peer-facing
+     * duplex was simply dropped on the floor still open. For a pot-git
+     * `FrameDuplex` that is a two-sided leak, and it is the mechanism behind a
+     * peer channel that degrades until it can serve nothing:
+     *
+     *   - the PEER is never told we left. `FrameDuplex._final` (which sends the
+     *     `end` frame) only runs on a graceful `.end()`, so an abandoned rung
+     *     left the serving side's `git upload-pack` running against an open
+     *     stdin until ITS own ceiling — one zombie upload-pack per failed rung,
+     *     still generating and pushing pack bytes at us.
+     *   - OUR side kept absorbing those bytes. The session stayed registered in
+     *     `clientSessions`, so every inbound data frame was buffered into a
+     *     duplex whose only reader (git) had already been SIGKILLed.
+     *
+     * A cold-join ladder fails rungs BY DESIGN, so this accumulated per tick and
+     * was freed only by the connection dying — i.e. only by a process restart,
+     * exactly the observed signature.
+     *
+     * Ordering matters: `end()` first so `_final` fires and the end frame
+     * actually reaches the peer, and only THEN destroy (which would abort a
+     * pending `_final` and swallow the frame). The unref'd fallback timer covers
+     * a writable side that can never finish because the transport is already
+     * gone — without it, a dead-transport abandon would leak the very session
+     * this is here to release.
+     */
+    const releasePeerDuplex = (): void => {
+      try {
+        if (duplex.destroyed) return;
+        const hardRelease = (): void => {
+          try {
+            if (!duplex.destroyed) duplex.destroy();
+          } catch {
+            /* ignore */
+          }
+        };
+        if (duplex.writableEnded) {
+          hardRelease();
+          return;
+        }
+        duplex.once('finish', hardRelease);
+        const fallback = setTimeout(hardRelease, 1_000);
+        fallback.unref?.();
+        duplex.end();
+      } catch {
+        /* ignore — releasing a duplex must never fail a settled fetch */
+      }
+    };
     const cleanup = async (): Promise<void> => {
+      releasePeerDuplex();
       try {
         server.close();
       } catch {

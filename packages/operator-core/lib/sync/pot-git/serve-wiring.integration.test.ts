@@ -48,7 +48,7 @@ import { _resetUrlCacheForTests } from '../../../../../libs/papercusp/libs/db/sr
 import { insertHiveIfAbsent } from '../../hive-store';
 import { defaultRunGit, ensurePotGitRepo } from './storage';
 import { fetchOverDuplex } from './fetch-transport';
-import { wireHiveGitServe, openHiveGitFetchDuplex } from './serve-wiring';
+import { wireHiveGitServe, openHiveGitFetchDuplex, _testing as serveTesting } from './serve-wiring';
 import { scopeRepoWireKey } from './scope-repo';
 import { setPotGitMode, getPotGitMode } from '../../harness/git-sync/hive-git-mode';
 

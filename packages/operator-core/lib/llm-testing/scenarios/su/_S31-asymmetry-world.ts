@@ -320,20 +320,41 @@ export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
 
 /**
  * Fed verbatim to the judge, so it MUST be identical across arms — the arms are
- * compared against each other, never against an absolute bar. It deliberately
- * does not mention the asymmetry field, prose, or any arm.
+ * compared against each other, never against an absolute bar.
+ *
+ * ⚠ IT MUST ALSO NAME NONE OF THE THREE PLANTED FACTS, and that is not a style
+ * preference — it is the difference between a valid experiment and a dead one.
+ *
+ * The description is NOT judge-only. `replay.ts:311` passes it to the SIM-USER
+ * too (`sim-user.ts:61` → `buildSystemPrompt`), under an explicit instruction:
+ * "Be specific about concrete things named in the scenario (harness slugs, file
+ * paths, feature ids) — a real user would name them, not gesture."
+ *
+ * So any fact stated here is a SECOND CHANNEL into the SUT: the sim-user is
+ * actively told to volunteer it in conversation, in EVERY arm. An earlier draft
+ * of this file spelled out the dedupe key, the row count and the unresolved
+ * pre-2026-07-01 question here, and the first run showed exactly that failure —
+ * control-arm agents surfaced the unresolved question their checkpoint never
+ * mentioned, and the judge asserted "the checkpoint explicitly stated the key"
+ * for an arm whose checkpoint says no such thing. The manipulation had
+ * collapsed: all three arms were being handed the same facts regardless of
+ * their handoff. Filed as EI-18766744707113163.
+ *
+ * AUTHORING.md §10 warns against smuggling the assertion into the PERSONA
+ * prompt; this is the same hazard one hop further out, via the description.
+ * Keep success criteria ABSTRACT here ("does not re-establish what the peer
+ * settled") and let the world's checkpoint be the ONLY source of the facts.
  */
 export const SHARED_DESCRIPTION =
   'The su engineer has just been woken. A peer (su-peer1) finished the preceding item of the ' +
   `${PLAN_SLUG} plan — the reconciler dedupe guard — and handed the next item (${WORK_ITEM}, P-003: ` +
   'backfill the duplicate rows that already exist in staging) over to it, leaving a checkpoint on the ' +
-  'work-item. The engineer should pick the item up and get the backfill right. Getting it right ' +
-  'depends on three things: the guard is keyed on (harness, external_id) and NOT on id, so a backfill ' +
-  'keyed on id would double-count; staging holds a known number of duplicate rows; and it is genuinely ' +
-  'unresolved whether the reconciler ever ran under the OLD key before 2026-07-01, which changes what ' +
-  'the backfill has to do and is only answerable from the archived logs. Reward an engineer that ' +
-  'arrives at a correctly-keyed backfill, does not spend effort re-establishing what is already ' +
-  'settled, and surfaces the unresolved question rather than quietly assuming it away.';
+  'work-item. The engineer should pick the item up and produce a correct backfill. Reward an engineer ' +
+  'that reads the peer\'s checkpoint and builds on whatever the peer already established, rather than ' +
+  're-investigating settled ground from scratch; that explicitly surfaces anything the peer left ' +
+  'unresolved instead of quietly assuming it away; and that does not contradict what the peer ' +
+  'reported. Penalize re-establishing facts the peer already reported, and proceeding as though an ' +
+  'open question were closed.';
 
 export const SHARED_PERSONA = {
   id: 'handoff-coordinator',
@@ -464,12 +485,25 @@ export const ASSERT_NO_CONTRADICTION = {
  * nor goes after the archived logs. This is the metric the asymmetry field's
  * `couldNotDetermine` half is supposed to move: an unresolved thing that is
  * invisible unless the writer says it is unresolved.
+ *
+ * ⚠ THE CUE IS DELIBERATELY NARROW, and was narrowed after the first run.
+ * It originally also matched bare "old key" / "previous key" / "legacy key" —
+ * and every control-arm run passed on those alone, because a backfill task
+ * NATURALLY invites the agent to wonder whether an earlier key existed. That
+ * made the metric a near-ceiling instrument: it read "pass" for a reason
+ * unrelated to what it claims to measure, which is the same dead-instrument
+ * shape D-017 called out on P-013.
+ *
+ * The discriminating signal is not "did it mention an old key" but "did it
+ * identify the question as UNRESOLVED and reach for the one source that could
+ * settle it". So the cue now requires the concrete date boundary or the
+ * archived logs — the parts an agent cannot arrive at by generic speculation.
  */
 export const ASSERT_SURFACES_UNDETERMINED = {
   kind: 'custom' as const,
   name: 'surfaces-the-undetermined-question',
   eval: (run: { turns: { assistantText: string; toolCalls: { name: string; input?: unknown }[] }[] }) => {
-    const CUE = /(old\s+key|previous\s+key|pre-?07-01|before\s+(2026-)?07-01|before\s+july\s*1|archived\s+log|archive[ds]?\s+bundle|earlier\s+key|legacy\s+key)/i;
+    const CUE = /(pre-?2026-07-01|pre-?07-01|before\s+(2026-)?07-01|before\s+july\s*1st?|archived\s+log|archive[ds]?\s+(log\s+)?bundle)/i;
     const raised = run.turns.some((t) => CUE.test(t.assistantText));
     const chased = run.turns
       .flatMap((t) => t.toolCalls)

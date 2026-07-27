@@ -237,8 +237,19 @@ class FrameDuplex extends Duplex {
   override _destroy(err: Error | null, cb: (e?: Error | null) => void): void {
     cb(err);
   }
-  /** Deliver an inbound DATA frame's bytes to the readable side. */
+  /** Deliver an inbound DATA frame's bytes to the readable side.
+   *
+   *  FAIL-CLOSED on a dead session (EI-18765930091826096): never buffer into a
+   *  duplex nobody will ever read again. `push()` on a stream with no reader
+   *  returns false — backpressure this class cannot honour, because the bytes
+   *  arrive as protomux frames on a channel SHARED with every other session and
+   *  there is nowhere to put them back. An abandoned session (its fetch gave up
+   *  and walked away) therefore used to absorb the REST OF THE PEER'S PACK into
+   *  an undrained readable buffer, held alive by `clientSessions`, freed only by
+   *  a connection teardown — i.e. only by a process restart. Dropping is correct
+   *  and lossless here: the reader is gone, so there is no one to lose bytes. */
   pushChunk(chunk: Buffer): void {
+    if (this.destroyed || this.readableEnded) return;
     this.push(chunk);
   }
   /** Deliver an inbound END frame — EOF on the readable side (half-open: the
@@ -873,6 +884,18 @@ export async function openHiveGitFetchDuplex(
     },
   );
   state.clientSessions.set(id, duplex);
+  // EI-18765930091826096: release the session on ANY termination, not only the
+  // three REMOTE-driven ones (`handleRefuse`, `handleEndToClient`, channel
+  // close). A fetch that gives up LOCALLY — `fetchOverDuplex` hitting its
+  // ceiling and SIGKILLing git, a caller destroying the duplex — left its entry
+  // in `clientSessions` forever, so every later `dataToClient` frame for that id
+  // still resolved to the abandoned duplex and was buffered into it. Since the
+  // map is a strong ref on a per-connection object, nothing short of the
+  // connection dying ever collected it: the exact reason a degraded peer channel
+  // was only ever cleared by a process restart.
+  duplex.once('close', () => {
+    if (state.clientSessions.get(id) === duplex) state.clientSessions.delete(id);
+  });
   try {
     messages.req.send({ id, repoKey: req.repoKey, peerGithubUserId: req.peerGithubUserId ?? 0 });
   } catch (e) {
@@ -881,3 +904,26 @@ export async function openHiveGitFetchDuplex(
   }
   return duplex;
 }
+
+/**
+ * Test seam for EI-18765930091826096's session-lifecycle guards. Sessions are
+ * per-(muxer, topic) private state with no observable surface, so WITHOUT this
+ * the leak fixes above are undefendable: a regression that re-strands abandoned
+ * sessions keeps every existing test green — they all assert on the fetch's
+ * RESULT, which a leak does not change — and resurfaces only as a peer channel
+ * that mysteriously stops serving, hours later, on a real 2-machine rig.
+ */
+export const _testing = {
+  /** Live session counts for the (socket, topic) channel — the leak probe.
+   *  `null` when no channel state exists (never dialed, or evicted on close). */
+  sessionCounts(socket: unknown, topic: Buffer): { client: number; server: number } | null {
+    const muxStream = ((socket as { noiseStream?: unknown } | null)?.noiseStream ?? socket) as object;
+    const mux = Protomux.from(muxStream as never);
+    const state = statesFor(mux as unknown as object).get(topic.toString('hex'));
+    if (!state) return null;
+    return { client: state.clientSessions.size, server: state.serverSessions.size };
+  },
+  /** The framed per-fetch duplex, so `pushChunk`'s fail-closed drop is directly
+   *  assertable rather than only reachable through a live two-peer fetch. */
+  FrameDuplex,
+};
