@@ -6,7 +6,10 @@ describe('fmtBytes', () => {
     expect(fmtBytes(512)).toBe('512 B');
     expect(fmtBytes(2048)).toBe('2.0 KB');
     expect(fmtBytes(5 * 1024 * 1024)).toBe('5.0 MB');
-    expect(fmtBytes(7_247_708_160)).toBe('6.8 GB');
+    // A real reading sampled off this box's operator scope — 7247708160 is just
+    // under 6.75 GiB, so it rounds DOWN. Kept as a live-derived value rather than a
+    // tidy power of two precisely because that is the arithmetic that bites.
+    expect(fmtBytes(7_247_708_160)).toBe('6.7 GB');
   });
 
   it('drops the decimal once the number is big enough not to need it', () => {

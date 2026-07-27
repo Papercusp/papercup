@@ -21,9 +21,8 @@ import {
   renderPresenceRebootstrapBlock,
   consumePresenceRebootstrap,
 } from "../presence-snapshot";
-// These three are USED below but were never imported — 5 x TS2304 that red the
-// per-file tsc gate for the whole fleet. All three are exported from
-// inbox-visibility.ts; this restores the missing import only.
+// The default-visibility predicates, relocated out of this defineTool module so
+// the unread counter can share them (P-005 / D-006 — see the re-export below).
 import {
   isAmbientBroadcast,
   excludeIntentDeclares,
@@ -106,13 +105,9 @@ const COORD_KINDS = [
 // repeated-broadcast coalescing) were RELOCATED to `../inbox-visibility` so the
 // owner-visible unread counter can apply the SAME rules without importing this
 // defineTool module (unread-count-truthfulness-2026-07-27 P-005 / D-006).
-// Re-exported here so this module's public surface is unchanged.
-import {
-  excludeIntentDeclares,
-  isAmbientBroadcast,
-  coalesceRepeatedBroadcasts,
-} from "../inbox-visibility";
-
+// Imported at the top of this file; re-exported here so this module's public
+// surface — and every existing importer, including the two pure test files —
+// is unchanged.
 export { excludeIntentDeclares, isAmbientBroadcast, coalesceRepeatedBroadcasts };
 
 const DEFAULT_INBOX_LIMIT = 50;

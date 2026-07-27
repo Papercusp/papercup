@@ -728,6 +728,9 @@ export default defineTool({
               harness: args.harness,
               states: args.states,
               rigAvailable: args.rigAvailable,
+              // P-027: guarded — an unattributable caller gets no advisory rather
+              // than a failed miss-diagnosis.
+              reader: holderContextReader(ctx as Parameters<typeof holderContextReader>[0]),
             }),
             {
               fallback: {

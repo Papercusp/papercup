@@ -125,6 +125,14 @@
 #                                so a display-reusing next run can't collide with a
 #                                straggler (default 30; EI-11559). The wait exits
 #                                early the instant the port is free.
+#   VERIFY_TAURI_MAX_BOOT_ATTEMPTS
+#                               how many times to (re-)pick a port pair and boot
+#                                the sidecar before surfacing a bind-time EADDRINUSE
+#                                as fatal (default 2 — one fresh-port retry). The
+#                                advisory port lock above only protects against a
+#                                CONCURRENT verifier launch; a squatter that never
+#                                took the lock (a leaked prior sidecar, an unrelated
+#                                process) still needs this retry (EI-18734124566158657).
 #   VERIFY_TAURI_MEMORY_LIMIT_MB
 #                               RSS high-water mark (MiB) the isolated verify
 #                                sidecar's memory-watchdog recycles at (default
