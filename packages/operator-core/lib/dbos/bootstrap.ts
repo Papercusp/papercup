@@ -431,6 +431,15 @@ export async function startDbos(): Promise<void> {
       '../system-health/carry-drill-drop-watchdog'
     );
     startCarryDrillDropWatchdog();
+    // EI-18741922664751805: alarm on the RATE at which the long-lived operator
+    // units restart. :3170 ran ~10 restarts/hour through 2026-07-26 with nothing
+    // watching, and a restart storm on papercup-dev-api is worse still — the
+    // headless fleet children live in THAT unit's cgroup. Runtime gate:
+    // FLAGS.SERVICE_RESTART_RATE_WATCHDOG (default ON), checked per tick.
+    const { startServiceRestartRateWatchdog } = await import(
+      '../system-health/service-restart-rate-watchdog'
+    );
+    startServiceRestartRateWatchdog();
     // cold-with-carry-activation-2026-07-20 (A2): the BOOTSTRAP for P-021 cold-by-default.
     // Grades prior respawned drills + starts ONE cold-boot drill per pass on an eligible
     // HEADLESS host until 'claude-headless' is drill-proven, so classDefaultColdForWake

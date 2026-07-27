@@ -1398,6 +1398,19 @@ export const FLAGS = {
   // sat unnoticed ~40min). DEFAULT ON. OFF = the kill-switch: the timer still
   // ticks but every sweep no-ops before reading the ledger.
   CARRY_DRILL_DROP_WATCHER: "papercusp-carry-drill-drop-watcher",
+  // EI-18741922664751805: gates the service restart-rate watchdog — a
+  // system-health sweep that counts systemd "Started" events for the long-lived
+  // operator units (papercup-dev-api, papercup-staging-api) over a trailing hour
+  // and opens ONE deduped escalation per unit above 8/hour. Restart RATE was
+  // previously unmeasured: :3170 restarted ~10x/hour through 2026-07-26 with
+  // nothing alarming, and the condition was only found by a human running
+  // `journalctl | grep -c 'Started '` by hand ~4h in — by which point the
+  // driving defect had already been fixed, so the resulting issue also
+  // mis-attributed the cause off a measurement window that straddled the fix.
+  // Threshold is measured, not chosen: pre-fix hours ran 9-10, post-fix 1-6.
+  // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
+  // no-ops before reading the journal.
+  SERVICE_RESTART_RATE_WATCHDOG: "papercusp-service-restart-rate-watchdog",
   // deterministic-context-carry P-019 (D-010 live leg 2): gates the residual
   // carry SAMPLER — at each REAL compaction boundary the gateway's deterministic
   // maintenance-carry branch serves, fire-and-forget one reserved-lane residual

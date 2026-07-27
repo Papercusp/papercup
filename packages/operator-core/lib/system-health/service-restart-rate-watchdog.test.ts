@@ -1,0 +1,178 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  countStarts,
+  evaluateReading,
+  runRestartRateSweepOnce,
+  RESTART_RATE_THRESHOLD_PER_HOUR,
+  type RestartRateReading,
+} from './service-restart-rate-watchdog';
+import type { JournalReadResult } from '../journal-read';
+
+const UNIT = 'papercup-staging-api.service';
+
+/** A journal read result with the healthy defaults; override what a case is about. */
+function read(over: Partial<JournalReadResult> = {}): JournalReadResult {
+  return {
+    entries: [],
+    matched: 0,
+    collapsed: 0,
+    truncated: false,
+    window: { since: '-1h', until: null },
+    units: [UNIT],
+    journalAvailable: true,
+    journalError: null,
+    unitsUnknown: [],
+    command: 'journalctl ...',
+    ...over,
+  };
+}
+
+function reading(over: Partial<RestartRateReading> = {}): RestartRateReading {
+  return { unit: UNIT, starts: 0, atLeast: false, unreadable: null, ...over };
+}
+
+describe('countStarts (EI-18741922664751805)', () => {
+  it('counts pre-dedup lines, NOT collapsed entries — the trap that would report 1 for a 40x storm', () => {
+    // collapseConsecutive merges runs of identical (unit, message) lines, and
+    // successive "Started <unit>" messages ARE identical. A 40-restart storm
+    // therefore arrives as ONE entry with repeat:40.
+    const result = read({
+      matched: 40,
+      collapsed: 39,
+      entries: [
+        {
+          ts: '2026-07-26T16:00:00.000Z',
+          unit: UNIT,
+          level: 'info',
+          message: `Started ${UNIT} - Papercusp operator STAGING host (:3170)`,
+          repeat: 40,
+          lastTs: '2026-07-26T16:59:00.000Z',
+        },
+      ],
+    });
+    expect(result.entries).toHaveLength(1); // what a naive implementation would count
+    expect(countStarts(UNIT, result).starts).toBe(40);
+  });
+
+  it('reports an absent journal as unreadable, never as zero restarts', () => {
+    const r = countStarts(UNIT, read({ journalAvailable: false }));
+    expect(r.starts).toBeNull();
+    expect(r.unreadable).toMatch(/no systemd journal/i);
+  });
+
+  it('reports a failed read as unreadable, never as zero restarts', () => {
+    const r = countStarts(UNIT, read({ journalError: 'permission denied' }));
+    expect(r.starts).toBeNull();
+    expect(r.unreadable).toMatch(/permission denied/);
+  });
+
+  it('reports an unknown unit name as unreadable, never as a quiet healthy service', () => {
+    const r = countStarts(UNIT, read({ unitsUnknown: [UNIT] }));
+    expect(r.starts).toBeNull();
+    expect(r.unreadable).toMatch(/does not know this unit/i);
+  });
+
+  it('marks a row-capped read as a FLOOR rather than an exact total', () => {
+    const r = countStarts(UNIT, read({ matched: 201, truncated: true }));
+    expect(r).toMatchObject({ starts: 201, atLeast: true, unreadable: null });
+  });
+});
+
+describe('evaluateReading', () => {
+  it('does not alarm at or below the threshold', () => {
+    expect(evaluateReading(reading({ starts: RESTART_RATE_THRESHOLD_PER_HOUR }))).toBeNull();
+    expect(evaluateReading(reading({ starts: RESTART_RATE_THRESHOLD_PER_HOUR - 1 }))).toBeNull();
+  });
+
+  it('alarms above the threshold', () => {
+    const alert = evaluateReading(reading({ starts: RESTART_RATE_THRESHOLD_PER_HOUR + 1 }));
+    expect(alert).toMatchObject({ unit: UNIT, starts: RESTART_RATE_THRESHOLD_PER_HOUR + 1 });
+  });
+
+  it('never alarms on an unreadable journal, however alarming it would look as 0', () => {
+    expect(evaluateReading(reading({ starts: null, unreadable: 'no systemd' }))).toBeNull();
+  });
+
+  it('separates the measured pre-fix storm from the measured post-fix steady state', () => {
+    // The numbers this threshold was derived from — see the module header.
+    for (const preFix of [9, 10]) {
+      expect(evaluateReading(reading({ starts: preFix }))).not.toBeNull();
+    }
+    for (const postFix of [1, 2, 4, 6]) {
+      expect(evaluateReading(reading({ starts: postFix }))).toBeNull();
+    }
+  });
+});
+
+describe('runRestartRateSweepOnce', () => {
+  it('skips entirely (no journal read) when the flag is OFF', async () => {
+    const readStarts = vi.fn();
+    const result = await runRestartRateSweepOnce({ flagEnabled: async () => false, readStarts });
+    expect(result).toEqual({ alerts: [], unreadable: [], skipped: true });
+    expect(readStarts).not.toHaveBeenCalled();
+  });
+
+  it('escalates once per breaching unit and leaves healthy units alone', async () => {
+    const escalate = vi.fn(async () => {});
+    const result = await runRestartRateSweepOnce({
+      flagEnabled: async () => true,
+      units: ['a.service', 'b.service'],
+      threshold: 8,
+      readStarts: async (unit) =>
+        reading({ unit, starts: unit === 'a.service' ? 12 : 3 }),
+      escalate,
+    });
+    expect(escalate).toHaveBeenCalledTimes(1);
+    expect(escalate).toHaveBeenCalledWith(expect.objectContaining({ unit: 'a.service', starts: 12 }));
+    expect(result.alerts).toHaveLength(1);
+  });
+
+  it('keeps sweeping the remaining units when one unit is unreadable', async () => {
+    const escalate = vi.fn(async () => {});
+    const result = await runRestartRateSweepOnce({
+      flagEnabled: async () => true,
+      units: ['broken.service', 'b.service'],
+      threshold: 8,
+      readStarts: async (unit) =>
+        unit === 'broken.service'
+          ? reading({ unit, starts: null, unreadable: 'systemd does not know this unit' })
+          : reading({ unit, starts: 20 }),
+      escalate,
+    });
+    expect(result.unreadable).toHaveLength(1);
+    expect(escalate).toHaveBeenCalledWith(expect.objectContaining({ unit: 'b.service' }));
+  });
+
+  it('records a throwing journal read as unreadable instead of failing the sweep', async () => {
+    const escalate = vi.fn(async () => {});
+    const result = await runRestartRateSweepOnce({
+      flagEnabled: async () => true,
+      units: ['boom.service', 'b.service'],
+      threshold: 8,
+      readStarts: async (unit) => {
+        if (unit === 'boom.service') throw new Error('journalctl exploded');
+        return reading({ unit, starts: 20 });
+      },
+      escalate,
+    });
+    expect(result.unreadable[0]).toMatchObject({ unit: 'boom.service' });
+    expect(result.unreadable[0].unreadable).toMatch(/exploded/);
+    expect(escalate).toHaveBeenCalledWith(expect.objectContaining({ unit: 'b.service' }));
+  });
+
+  it('does not abort the sweep when escalating one unit fails', async () => {
+    const escalate = vi.fn(async (a: { unit: string }) => {
+      if (a.unit === 'a.service') throw new Error('escalation store down');
+    });
+    const result = await runRestartRateSweepOnce({
+      flagEnabled: async () => true,
+      units: ['a.service', 'b.service'],
+      threshold: 8,
+      readStarts: async (unit) => reading({ unit, starts: 20 }),
+      escalate,
+    });
+    expect(escalate).toHaveBeenCalledTimes(2);
+    // 'a' failed to escalate so it is not reported as alerted; 'b' still is.
+    expect(result.alerts).toEqual([expect.objectContaining({ unit: 'b.service' })]);
+  });
+});

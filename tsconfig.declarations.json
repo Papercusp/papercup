@@ -50,6 +50,7 @@
     "scripts/lib/sync-write.mjs",
     "scripts/proc-guard.mjs",
     "scripts/lib/tsc-baseline-gate.mjs",
+    "scripts/check-vacuous-negative-assertions.mjs",
     "scripts/lint-tsc-operator-vite.mjs",
     "scripts/check-transitive-boundary.mjs",
     "scripts/check-vite-externalized-warnings.mjs",

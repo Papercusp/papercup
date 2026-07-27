@@ -118,6 +118,44 @@ const FRAGMENT_SHARE = 0.7;
 const ALLOW = new Set([]);
 
 /**
+ * DRIFTED gates: a prose literal that exists nowhere emittable, while a long fragment of
+ * it IS in the source — the guard is pinned to that string's OLD wording.
+ * ORPHANED reports only: nothing resembling the literal survives, or the literal is not
+ * prose (a value pin, a shape guard, fixture-composed output).
+ *
+ * @typedef {'DRIFTED' | 'ORPHANED'} VacuousVerdict
+ */
+
+/**
+ * A negative assertion with a static literal argument, as extracted from a test file.
+ *
+ * @typedef {object} NegativeAssertion
+ * @property {number} line - 1-indexed line of the assertion in the test file.
+ * @property {string} kind - Rendered matcher form, e.g. `not.toMatch(/…/)`.
+ * @property {string} lit - The static string the assertion pins.
+ * @property {string} span - The matched assertion text, used to exclude self-references.
+ */
+
+/**
+ * One judged assertion that did not survive the gate.
+ *
+ * @typedef {object} VacuousFinding
+ * @property {string} file
+ * @property {number} line
+ * @property {string} kind
+ * @property {string} lit
+ * @property {VacuousVerdict} verdict
+ * @property {string | null} fragment - The reworded fragment the source still carries, or null when nothing is close.
+ */
+
+/**
+ * Answers "does the non-test corpus contain this string". Injected so the unit tests can
+ * drive a synthetic corpus.
+ *
+ * @typedef {(needle: string) => boolean} IncludesFn
+ */
+
+/**
  * The GATE is narrowed to PROSE — multi-word wording with no embedded values. That is
  * where this class actually bites (banners, prompt text, advice strings: copy that gets
  * reworded often, and carries negative guards precisely because a bad phrasing already
@@ -130,6 +168,9 @@ const ALLOW = new Set([]);
  * fixture-composed output (`(subpath "/p")`). Every one of those was a live finding on
  * the first sweep of this repo, and every one is a *good* assertion. They stay visible
  * under --report; they do not gate.
+ *
+ * @param {string} lit
+ * @returns {boolean}
  */
 export function proseShaped(lit) {
   if (lit.length < 15) return false;
@@ -148,6 +189,9 @@ const META = new Set(['.', '(', ')', '[', ']', '{', '}', '$', '^', '*', '+', '?'
  * The plain string a regex source encodes, or null when it uses real regex power
  * (`\d`, `\s`, a character class, alternation, a quantifier). Only a pattern that is
  * a plain literal can be judged by "does this string exist anywhere".
+ *
+ * @param {string} src - The regex source (no delimiters, no flags).
+ * @returns {string | null}
  */
 export function regexSourceToLiteral(src) {
   let out = '';
@@ -188,9 +232,16 @@ const RE_NEG_TEMPLATE = /\.not\.(toContain|toMatch)\(\s*`([^`$\n]*)`\s*\)/g;
 const RE_POS_STRING = /(?<!\.not)\.(toContain|toMatch|toBe|toEqual|toContainEqual)\(\s*(['"])((?:\\.|(?!\2)[^\n])*)\2\s*\)/g;
 const RE_POS_REGEX = /(?<!\.not)\.toMatch\(\s*\/((?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+)\/[gimsuvy]*\s*\)/g;
 
-/** Negative assertions with a static literal argument, in source order. */
+/**
+ * Negative assertions with a static literal argument, in source order.
+ *
+ * @param {string} text - Full source of one test file.
+ * @returns {NegativeAssertion[]}
+ */
 export function extractNegativeLiterals(text) {
+  /** @param {number} idx */
   const lineOf = (idx) => text.slice(0, idx).split('\n').length;
+  /** @type {NegativeAssertion[]} */
   const out = [];
   for (const m of text.matchAll(RE_NEG_REGEX)) {
     const lit = regexSourceToLiteral(m[1]);
@@ -236,6 +287,14 @@ function suppressed(lines, lineNo) {
  * outward. Growing matters: the residue (what the source does NOT have) is the whole
  * discriminator below, and an un-grown threshold-length window reports residue the
  * source actually contains.
+ *
+ * `residue` is a fixed PAIR — [before the fragment, after it]. The implementation builds
+ * it as an array literal, which infers as `string[]`; the tuple only survives because it
+ * is written here.
+ *
+ * @param {string} lit
+ * @param {IncludesFn} includes
+ * @returns {{ fragment: string; residue: [string, string] } | null}
  */
 export function driftFragment(lit, includes) {
   const need = Math.max(MIN_FRAGMENT, Math.ceil(lit.length * FRAGMENT_SHARE));
@@ -272,12 +331,16 @@ function residueIsComposed(residue, haystack) {
 /**
  * Judge one test file's negative assertions. `includes` answers "does the non-test
  * corpus contain this string" — injected so the unit tests can drive a synthetic corpus.
+ *
+ * @param {{ file: string; text: string; includes: IncludesFn }} args
+ * @returns {{ considered: number; findings: VacuousFinding[] }}
  */
 export function judgeFile({ file, text, includes }) {
   const lines = text.split('\n');
   const negatives = extractNegativeLiterals(text);
   if (negatives.length === 0) return { considered: 0, findings: [] };
   const positives = positiveLiterals(text);
+  /** @type {VacuousFinding[]} */
   const findings = [];
   let considered = 0;
 

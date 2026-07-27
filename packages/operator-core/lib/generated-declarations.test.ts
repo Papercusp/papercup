@@ -120,6 +120,25 @@ describe('generated .d.mts declarations', () => {
     expect(baselineGate, 'tsc-baseline-gate return types collapsed').toMatch(
       /parseTscErrors\([^)]*\):\s*\(\{/,
     );
+
+    const vacuous = readDeclaration('scripts/check-vacuous-negative-assertions.d.mts');
+    // The named types are what the importing test drives the judge with; losing any of
+    // them degrades that whole test file to `any` without failing anything.
+    expect(vacuous, 'VacuousVerdict stopped being a literal union').toMatch(
+      /VacuousVerdict\s*=\s*"DRIFTED"\s*\|\s*"ORPHANED"/,
+    );
+    expect(vacuous, 'VacuousFinding lost its verdict/fragment types').toMatch(
+      /verdict:\s*VacuousVerdict;[\s\S]*?fragment:\s*string\s*\|\s*null;/,
+    );
+    expect(vacuous, 'IncludesFn stopped being a function type').toMatch(
+      /IncludesFn\s*=\s*\(needle:\s*string\)\s*=>\s*boolean/,
+    );
+    // The most fragile type here: `residue` is built as an array literal, which infers as
+    // `string[]`. The fixed-pair tuple exists ONLY because driftFragment's `@returns`
+    // spells it out, so this is the first thing to disappear if that tag is touched.
+    expect(vacuous, 'driftFragment.residue decayed from a [string, string] tuple').toMatch(
+      /residue:\s*\[string,\s*string\];/,
+    );
   });
 
   it('exist for every module the config lists — a missing one silently reverts that importer to `any`', () => {
