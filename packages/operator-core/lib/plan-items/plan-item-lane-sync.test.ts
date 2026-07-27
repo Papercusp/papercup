@@ -22,8 +22,10 @@ import { decideLaneGate, planLaneBlockerRef, type PlanLaneSyncStatus } from './r
 const REF = planLaneBlockerRef('desktop-auto-update-operational-2026-07-09', 'P-007');
 
 /** A minimal work-item shape the pure decision reads. */
-function wi(over: Partial<{ state: string; lastProgressAt: string | null; payload: unknown }> = {}) {
-  return { state: 'todo', lastProgressAt: null, payload: {}, ...over };
+function wi(
+  over: Partial<{ state: string; lastProgressAt: string | null; payload: unknown; assignee: string | null }> = {},
+) {
+  return { state: 'todo', lastProgressAt: null, payload: {}, assignee: null, ...over };
 }
 
 /** A payload already carrying THIS sync's active `plan-lane:` blocker (i.e. WE parked it). */
@@ -57,9 +59,27 @@ describe('decideLaneGate — GATE (plan lane blocked/needs-human) [EI-14699]', (
     });
   });
 
-  it('NEVER clobbers genuinely-active work (lastProgressAt set)', () => {
-    const d = decideLaneGate(wi({ state: 'todo', lastProgressAt: '2026-07-18T00:00:00Z' }), 'blocked', REF);
+  it('NEVER clobbers genuinely-active work (lastProgressAt set AND a live assignee)', () => {
+    const d = decideLaneGate(
+      wi({ state: 'todo', lastProgressAt: '2026-07-18T00:00:00Z', assignee: 'su-abc123' }),
+      'blocked',
+      REF,
+    );
     expect(d).toEqual({ op: 'noop', reason: 'in-flight' });
+  });
+
+  it('WI-6303: a STALE lastProgressAt with NO current assignee is NOT in-flight — parks it', () => {
+    // Root cause: work-items-stale-claims.ts's dead/stalled-holder reaper, fleet-
+    // monitors.ts's sweepOrphanedTakenBy, and pg-stores.ts's fleet:cancel claim
+    // release all clear taken_by/taken_at on reclaim but historically left
+    // last_progress_at stamped from the dead holder — a bare lastProgressAt check
+    // then treated an unclaimed, abandoned item as "genuinely active" forever.
+    const d = decideLaneGate(
+      wi({ state: 'todo', lastProgressAt: '2026-07-17T00:00:00Z', assignee: null }),
+      'blocked',
+      REF,
+    );
+    expect(d).toEqual({ op: 'gate', capability: 'live-dependency' });
   });
 
   it('is IDEMPOTENT — a re-gate of an already lane-parked item is a no-op (no repeated writes)', () => {
