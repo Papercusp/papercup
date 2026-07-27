@@ -79,29 +79,62 @@ describe('readHiveThroughputSnapshot', () => {
     expect(snap.hives[0]?.operatingWell).toBe(false);
   });
 
-  it('empty when no ticks recorded', async () => {
+  // WI-6382: an OBSERVED empty carries no provenance — this is the one case
+  // where "nothing recorded yet" is the truth, and the panel's calm empty state
+  // is the correct render. It is the CONTRAST case for the two below.
+  it('empty when no ticks recorded — and NOT flagged unavailable', async () => {
     const snap = await readHiveThroughputSnapshot(fakeSql(async () => []), 'ws-1');
     expect(snap).toEqual({ hives: [] });
+    expect(snap.unavailable).toBeUndefined();
   });
 
-  it('degrades to the empty snapshot SILENTLY when the table does not exist yet (42P01)', async () => {
+  // These two used to assert `toEqual({ hives: [] })` — i.e. they asserted that
+  // a failed read is INDISTINGUISHABLE from an idle healthy one, and so actively
+  // enshrined WI-6382. Changing them is the fix, not a regression: the degraded
+  // snapshot must now say WHY, or the panel goes on telling the user "no
+  // throughput recorded yet — start a pot and its metrics appear here" while
+  // the substrate is missing or unreadable.
+  it('degrades with pre-migration provenance when the table does not exist yet (42P01)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sql = fakeSql(async () => {
       throw Object.assign(new Error('relation "harness_shared.pot_throughput_ticks" does not exist'), { code: '42P01' });
     });
     const snap = await readHiveThroughputSnapshot(sql, 'ws-1');
-    expect(snap).toEqual({ hives: [] });
+    expect(snap.hives).toEqual([]);
+    // Still not a 500, and still not noisy — pre-migration is expected.
     expect(warn).not.toHaveBeenCalled();
+    // But no longer a LIE: distinguishable from the observed-empty case above.
+    expect(snap.unavailable).toBe(true);
+    expect(snap.unavailableKind).toBe('pre-migration');
+    expect(snap.unavailableReason).toContain('does not exist');
   });
 
-  it('warns + empties on any other read error', async () => {
+  it('degrades with read-failed provenance (and warns) on any other read error', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sql = fakeSql(async () => {
       throw Object.assign(new Error('permission denied'), { code: '42501' });
     });
     const snap = await readHiveThroughputSnapshot(sql, 'ws-1');
-    expect(snap).toEqual({ hives: [] });
+    expect(snap.hives).toEqual([]);
     expect(warn).toHaveBeenCalled();
+    expect(snap.unavailable).toBe(true);
+    expect(snap.unavailableKind).toBe('read-failed');
+    // The CAUSE, verbatim — a bare "unavailable" is a dead end for the reader.
+    expect(snap.unavailableReason).toBe('permission denied');
+  });
+
+  // The property the whole WI reduces to, stated once as an executable claim.
+  it('an observed empty and a degraded empty are DIFFERENT VALUES', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const observed = await readHiveThroughputSnapshot(fakeSql(async () => []), 'ws-1');
+    const degradedSnap = await readHiveThroughputSnapshot(
+      fakeSql(async () => {
+        throw Object.assign(new Error('boom'), { code: '42501' });
+      }),
+      'ws-1',
+    );
+    expect(observed.hives).toEqual(degradedSnap.hives); // same DATA …
+    expect(observed).not.toEqual(degradedSnap); // … different FACT.
   });
 });
 

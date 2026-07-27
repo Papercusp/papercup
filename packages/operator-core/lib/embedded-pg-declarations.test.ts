@@ -28,7 +28,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -43,14 +43,19 @@ const DECLARATIONS = ['index.d.ts', 'migration-runner.d.ts'] as const;
 // not the one the repo pins, silently changing the emit).
 const TSC = join(REPO_ROOT, 'node_modules/.bin/tsc');
 
-/** Run tsc, surfacing its own output on failure — a bare "Command failed" hides
- *  the diagnostic that says what actually broke. */
-function runTsc(cwd: string): void {
+/** Run the package's declaration build, emitting to `outDir` instead of in place.
+ *  Surfaces tsc's own output on failure — a bare "Command failed" hides the
+ *  diagnostic that says what actually broke. */
+function runTsc(outDir: string): void {
   try {
-    execFileSync(TSC, ['-p', 'tsconfig.types.json'], { cwd, encoding: 'utf8', stdio: 'pipe' });
+    execFileSync(TSC, ['-p', 'tsconfig.types.json', '--outDir', outDir], {
+      cwd: PKG_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };
-    throw new Error(`tsc failed in ${cwd}:\n${e.stdout ?? ''}${e.stderr ?? ''}\n${e.message ?? ''}`);
+    throw new Error(`tsc failed:\n${e.stdout ?? ''}${e.stderr ?? ''}\n${e.message ?? ''}`);
   }
 }
 
@@ -58,32 +63,23 @@ const REGEN = 'npm run gen:types --prefix libs/papercusp/packages/embedded-postg
 
 describe('@papercusp/embedded-postgres-server generated declarations', () => {
   it(`regenerate identically from source — run \`${REGEN}\` if this fails`, () => {
-    // Generate from a HERMETIC COPY of the JS sources, never in place. Two
-    // reasons, both load-bearing:
+    // Emit to a temp directory, never in place: this repo has ONE working tree
+    // shared by the whole fleet, so a test must not write into the package a
+    // peer may be mid-edit in.
     //
-    //  - Correctness. With the committed `.d.ts` present, `index.js`'s
-    //    `export … from './migration-runner.js'` resolves to the DECLARATION
-    //    instead of the JS. The check would then be validating the committed
-    //    files partly against themselves, and tsc additionally refuses to emit
-    //    over its own resolved input (TS5055). Copying only `*.js` reproduces
-    //    the clean-slate state `gen:types` creates with its `rm`.
-    //  - Safety. This repo has ONE working tree shared by the whole fleet, so a
-    //    test must never write into the package directory; a peer could be
-    //    mid-edit in it.
+    // Note it runs with `cwd` = the real package, NOT a copy of it. A copy under
+    // /tmp has no `node_modules`, so imports of the package's own dependencies
+    // stop resolving and the emitted types silently degrade to `any` — the copy
+    // then differs from the committed file for a reason that has nothing to do
+    // with drift. Generating from the real directory keeps dependency
+    // resolution identical to what `gen:types` sees.
     const work = mkdtempSync(join(tmpdir(), 'epg-dts-drift-'));
     try {
-      mkdirSync(join(work, 'src'));
-      for (const name of ['index.js', 'migration-runner.js']) {
-        writeFileSync(join(work, 'src', name), readFileSync(join(PKG_DIR, 'src', name), 'utf8'));
-      }
-      // The real config — so the test and `gen:types` can never disagree about flags.
-      writeFileSync(join(work, 'tsconfig.types.json'), readFileSync(join(PKG_DIR, 'tsconfig.types.json'), 'utf8'));
-
       runTsc(work);
 
       for (const name of DECLARATIONS) {
         const committed = readFileSync(join(PKG_DIR, 'src', name), 'utf8');
-        const fresh = readFileSync(join(work, 'src', name), 'utf8');
+        const fresh = readFileSync(join(work, name), 'utf8');
         expect(
           fresh,
           `${name} is STALE: the committed declaration no longer matches what the source generates. Run \`${REGEN}\`.`,

@@ -241,7 +241,7 @@ export interface AssumptionConflictReport {
 }
 
 function identityOf(f: AgentFact): string {
-  return `${f.scope} ${(f.scopeRef ?? '').trim()} ${f.key}`;
+  return `${f.scope}\x00${(f.scopeRef ?? '').trim()}\x00${f.key}`;
 }
 
 function sideOf(f: AgentFact, assertion: string): ConflictSide {

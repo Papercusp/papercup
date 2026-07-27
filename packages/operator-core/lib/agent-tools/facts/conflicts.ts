@@ -20,7 +20,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { listAssumptionFacts } from '../../agent-facts/store';
+import { factCitationRef, listAssumptionFacts } from '../../agent-facts/store';
 import {
   detectAssumptionConflicts,
   explainZero,
@@ -39,9 +39,12 @@ export function projectConflict(c: AssumptionConflict, full: boolean): Record<st
     const body = s.body ?? '';
     const cut = !full && body.length > CONFLICT_BODY_EXCERPT_CHARS;
     return {
-      // The absolute citation grammar the rest of the fact layer already emits,
-      // so a pair can be quoted straight into `premises` / `restsOn` (D-023).
-      ref: `fact:${s.scope}:${s.scopeRef ?? ''}:${s.key}${s.id != null ? `@v${s.id}` : ''}`,
+      // THE shared citation grammar, never a second hand-rolled one: a
+      // workspace-scoped fact carries no ref segment, so `fact:workspace::key`
+      // (what an inlined template produces) does not parse and would degrade
+      // every such citation to `opaque` — the near-synonym failure D-041 exists
+      // to prevent. Quotable straight into `premises` / `restsOn` (D-023).
+      ref: factCitationRef(s),
       by: s.createdBy,
       updatedAt: s.updatedAt,
       assertion: s.assertion,
@@ -92,12 +95,23 @@ export default defineTool({
       .describe('Return COMPLETE bodies for both sides instead of excerpts. Default false.'),
   }),
   async handler(args) {
-    const facts = await listAssumptionFacts({ limit: args.limit ?? 200 });
+    const limit = args.limit ?? 200;
+    const facts = await listAssumptionFacts({ limit });
     const report = detectAssumptionConflicts(facts);
+    // A scan that hit its own cap has NOT searched the workspace, and a conflict
+    // between two rows it never loaded is a miss reported as a clean answer. Say
+    // so — the same reason every zero here names itself (D-087 R4).
+    const scanCapped = facts.length >= limit;
     return {
       data: {
         ok: true,
         count: report.conflicts.length,
+        ...(scanCapped
+          ? {
+              scanCapped: true,
+              scanNote: `Loaded the full ${limit}-row scan cap, so live assumptions BEYOND it were never compared — this answer is partial. Raise \`limit\` (max 500).`,
+            }
+          : {}),
         conflicts: report.conflicts.map((c) => projectConflict(c, args.full === true)),
         ...(report.truncated ? { truncated: true, pairsLimit: CONFLICT_PAIRS_LIMIT } : {}),
         // D-087 R4: the denominator ships with the verdict, always. `comparedPairs`
