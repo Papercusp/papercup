@@ -15,6 +15,14 @@ import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } fr
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 const AUTOMATIC_TOOL_NAMES = ['activity:report', 'coord:glance', 'coord:inbox'] as const;
 
+/** One resolved watermark → how many live assumptions it covers (P-024 (c)).
+ *  `watermark` is typed `string | number` because postgres-js returns BIGINT as
+ *  a string — the same reason {@link TimelineEntry.assumption_set_id} is. */
+interface AssumptionCountRow {
+  watermark: string | number;
+  n: number;
+}
+
 export interface AutomaticCallAuditRow {
   total_tool_calls: number;
   automatic_calls: number;
@@ -273,7 +281,7 @@ export default defineTool({
     if (args.goalRef) {
       const wanted = assumptionSetIdsToResolve(pageRows);
       if (wanted.length > 0) {
-        const countRows = await ctx.tx<{ watermark: string | number; n: number }[]>`
+        const countRows = await ctx.tx<AssumptionCountRow[]>`
           SELECT w.watermark::bigint AS watermark,
                  count(f.id)::int AS n
             FROM unnest(${wanted}::bigint[]) AS w(watermark)
@@ -287,7 +295,10 @@ export default defineTool({
            GROUP BY w.watermark
         `;
         const counts = new Map<number, number>(
-          countRows.map((r) => [Number(r.watermark), Number(r.n)]),
+          countRows.map((r: AssumptionCountRow): [number, number] => [
+            Number(r.watermark),
+            Number(r.n),
+          ]),
         );
         pageRows = attachAssumptionCounts(pageRows, counts);
         assumptionSetsResolved = counts.size;

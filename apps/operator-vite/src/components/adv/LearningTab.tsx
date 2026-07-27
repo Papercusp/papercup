@@ -4169,17 +4169,24 @@ function ThroughputView({
   // Wiring it is part of restoring reachability, not scope creep: this view was
   // skipped by WI-6382's panel sweep precisely BECAUSE no user could open it.
   const fault = snapshotFault(sync.error ?? soak.error, snap, "Throughput");
+  // The status is computed FIRST and the effect depends on the resulting STRING —
+  // never on `hives`. This is the shape every sibling panel uses (FrontierPanel,
+  // EkgPanel, …) and ThroughputView was the one that did not: it listed `hives` in
+  // the deps, and `hives` is `snap?.hives ?? []`, a fresh array identity on every
+  // render whenever the read has not landed. That re-fires the effect each render
+  // instead of when the status actually changes — the ingredient a render loop
+  // needs (WI-6383 found this view crashing the whole Learning tab live with React
+  // #185, "Maximum update depth exceeded", while 86 jsdom tests stayed green).
+  const status: LearningViewStatus = fault.failed
+    ? "bad"
+    : hives.some((hive) => !hive.operatingWell)
+      ? "warn"
+      : hives.length > 0
+        ? "good"
+        : "neutral";
   useEffect(() => {
-    onStatus?.(
-      fault.failed
-        ? "bad"
-        : hives.some((hive) => !hive.operatingWell)
-          ? "warn"
-          : hives.length > 0
-            ? "good"
-            : "neutral",
-    );
-  }, [fault.failed, hives, onStatus]);
+    onStatus?.(status);
+  }, [onStatus, status]);
 
   return (
     <section className="pc-learning__section">

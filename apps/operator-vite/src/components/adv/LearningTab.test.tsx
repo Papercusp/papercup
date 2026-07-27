@@ -1479,7 +1479,13 @@ describe("LearningTab — Benchmark view", () => {
     expect(screen.getByLabelText("alpha-hive throughput")).toBeTruthy();
     expect(screen.getByText("3/4")).toBeTruthy(); // cups busy / cap
     expect(screen.getByText("75%")).toBeTruthy(); // utilization
-    expect(screen.getByText("needs attention")).toBeTruthy(); // operatingWell:false
+    // Scoped to the pot's own health chip: "needs attention" is ALSO the stage/view
+    // status-description text, so an unscoped query matches three nodes.
+    expect(
+      within(screen.getByLabelText("alpha-hive throughput health")).getByText(
+        "needs attention",
+      ),
+    ).toBeTruthy(); // operatingWell:false
     expect(screen.getByLabelText("alpha-hive question rungs")).toBeTruthy();
   });
 
