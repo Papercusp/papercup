@@ -463,6 +463,27 @@ export interface PipelinePosition {
     deployOrigin: 'gate-green' | 'stale-behind-gate' | 'ahead-of-gate' | 'unknown';
   };
   /**
+   * unified-agent-state-plane-2026-07-27 P-007 — D-038 axis 2 + D-039's HOIST for the
+   * three VERDICT legs, the ones agents were demonstrably hand-copying:
+   * `gate.consecutiveReds`, `deployedSha`, `verdictProvenance.mainFastForwarded`.
+   *
+   * Empty means all three were genuinely measured. A non-empty entry means the leg it
+   * names is NOT evidence of anything — and each of the three degrades into a value
+   * that reads as GOOD NEWS, which is why they need hoisting rather than a comment:
+   *   · `gate.consecutiveReds` → `0`, which reads as "the gate is passing";
+   *   · `deployedSha` → `null`, which reads as "nothing is deployed";
+   *   · `verdictProvenance.mainFastForwarded` → `null`, which reads as "no opinion".
+   *
+   * WHY RESULT-LEVEL AND NOT A PER-FIELD QUALIFIER: identical reasoning to
+   * `positionsUnknown` above — a qualifier a caller can skip past is how the defect
+   * survives contact with a hurried consumer. This one differs from `positionsUnknown`
+   * in ONE way, deliberately: it carries the ENUMERATED `CellUnknown` rather than a
+   * bare leg name, because `not-applicable` (a final answer) and `resolver-failed`
+   * (retry-or-escalate) demand OPPOSITE caller behaviour and a name cannot express
+   * which one it was. See cell-contract.ts for why that enum exists at all.
+   */
+  verdictUnknown: Array<{ leg: string; unknown: CellUnknown }>;
+  /**
    * Kept for back-compat. PREFER `gitSync` — this single word cannot answer the
    * question callers actually have: `'synced'` is reachable with nothing pushed.
    */
@@ -1755,11 +1776,22 @@ export async function gitPipelinePosition(
         );
       }
       positions.inMain = readLeg('inMain', await refContains(git, root, 'origin/main', targetSha));
-      // No deployedSha is NOT an unreadable leg — there is simply nothing deployed
-      // to compare against, which is a genuine `false`, not a degraded one.
+      // P-007 CORRECTION. This previously read: "No deployedSha is NOT an unreadable leg
+      // — there is simply nothing deployed to compare against, which is a genuine
+      // `false`, not a degraded one." That premise does not survive checking the source.
+      // `deployedSha` comes from `devDeployState().deployed`, which is `commitRef(releaseRoot,
+      // 'HEAD')` — and dev-deploy-state.ts pushes 'could not resolve HEAD of release
+      // checkout …' onto `errors[]` whenever it comes back null. So a null deployedSha is a
+      // FAILED READ of the release checkout, not an empty one; there is no "nothing is
+      // deployed" state that reaches here without an error beside it.
+      //
+      // Which makes the `false` DEGRADED, and it was being asserted as a measurement
+      // thirty lines below the hoist built to prevent exactly that — the same axis-2
+      // defect P-006 fixed in `refContains`, surviving in the same function because a
+      // comment asserted the reading instead of checking it. Name the leg.
       positions.deployed = deployedSha
         ? readLeg('deployed', await refContains(git, root, deployedSha, targetSha))
-        : false;
+        : readLeg('deployed', null);
     }
   }
 
@@ -1800,6 +1832,71 @@ export async function gitPipelinePosition(
     deployedBehindGreenPin: snap.deploy?.deployedBehindGreenPin ?? null,
     deployOrigin,
   };
+
+  /**
+   * P-007 — the axis-2 hoist for the three verdict legs. Each degrades into a value
+   * that reads as good news, so each one that is NOT a measurement is named here.
+   */
+  const verdictUnknown: PipelinePosition['verdictUnknown'] = [];
+
+  // Leg 1 — the red streak. PROJECTED from the snapshot, never re-derived here: only
+  // git-pipeline-stats can see whether `gate_health` carried a counter, because it
+  // applies the `?? 0` that destroys the distinction (axis 5 — one derivation, many
+  // lenses). `undefined` is a pre-P-007 snapshot fixture, not a report of "measured";
+  // treat only an explicit CellUnknown as a claim.
+  if (snap.gate?.countersUnknown) {
+    verdictUnknown.push({ leg: 'gate.consecutiveReds', unknown: snap.gate.countersUnknown });
+  }
+
+  // Leg 2 — the deployed sha. See the positions.deployed correction above for why a
+  // null here is a failed read rather than an empty one. `deploy.errors` carries the
+  // reason text and was, until now, loaded and discarded by this resolver — the only
+  // place the WHY exists, so it goes in `detail` rather than being re-invented.
+  if (deployedSha === null) {
+    const why = deploy.errors?.length ? ` (${deploy.errors.join('; ')})` : '';
+    verdictUnknown.push({
+      leg: 'deployedSha',
+      unknown: cellUnknown(
+        'resolver-failed',
+        `the release checkout's HEAD did not resolve, so what :3070 is running is unknown${why}. This is a FAILED read of ${deploy.releaseRoot}, not evidence that nothing is deployed.`,
+      ),
+    });
+  }
+
+  // Leg 3 — main-vs-staging. `greenPinAtStagingHead` is null only when the green pin or
+  // the staging head failed to resolve, so ask those two operands DIRECTLY rather than
+  // sniffing the error strings for a match.
+  //
+  // The code is `resolver-failed` for every case, and that is a deliberate refusal to
+  // over-report: `commitRef` catches its git failure and returns null, so "this ref does
+  // not exist yet" and "the git call failed" arrive here as the SAME null. Splitting
+  // them into insufficient-data vs resolver-failed would be inventing a distinction the
+  // measurement cannot support — precisely what axis 2's enum exists to stop. Filed
+  // upstream instead; see cell-contract.ts on why a fabricated code is worse than a
+  // coarse one, since each code implies a different caller response.
+  if (verdictProvenance.mainFastForwarded === null) {
+    const missing: string[] = [];
+    if (!snap.deploy) missing.push('the deploy snapshot itself');
+    else {
+      if (!snap.deploy.greenPin) missing.push(`the green pin (${snap.deploy.releaseRef ?? 'main'})`);
+      if (!snap.deploy.stagingHead) missing.push(`the staging head (${snap.deploy.integrationBranch ?? 'staging'})`);
+    }
+    verdictUnknown.push({
+      leg: 'verdictProvenance.mainFastForwarded',
+      unknown: cellUnknown(
+        'resolver-failed',
+        missing.length
+          ? `${missing.join(' and ')} did not resolve, so whether main is fast-forwarded to the newest green pin could not be measured`
+          : 'both operands resolved but the commit-count between them did not, so whether main is fast-forwarded to the newest green pin could not be measured',
+      ),
+    });
+  }
+  if (verdictUnknown.length > 0) {
+    notes.push(
+      `${verdictUnknown.length} verdict leg(s) could NOT be measured and their reported values are defaults, not evidence: ` +
+        verdictUnknown.map((v) => `${v.leg} — ${formatCellUnknown(v.unknown)}`).join(' | '),
+    );
+  }
 
   // EI-10895: classify against the SUPERPROJECT-relative path (a submodule path is
   // resolved inside its own repo above, but the runtime map keys on the repo-relative

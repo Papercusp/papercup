@@ -19,6 +19,7 @@
  * (sub-reads that fail degrade to null/empty) so the panel always renders.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { cellUnknown, type CellUnknown } from './cell-contract';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import {
   summarizePipelineWindow,
@@ -86,6 +87,30 @@ export interface GitPipelineSnapshot {
    *  red streak / age crossed the alert threshold. */
   gate: {
     consecutiveReds: number;
+    /**
+     * unified-agent-state-plane-2026-07-27 P-007, D-038 axis 2 — is `consecutiveReds`
+     * above a MEASUREMENT, or the `?? 0` default standing in for one?
+     *
+     * `null` means measured. A `CellUnknown` means `gate_health.consecutiveReds` was
+     * ABSENT or unparseable, so the `0` above is a DEFAULT — byte-identical to a
+     * measured "no reds", and read by every consumer as "the gate is passing".
+     *
+     * ⚠ WHY THIS IS NOT ALREADY COVERED, because it looks like it should be. The gate
+     * has TWO rich staleness models and BOTH are structurally blind here:
+     *   · `fireStale` (WI-282) asks "is the routine FIRING?" — a wedged ticker. It does
+     *     not ask whether the counter it produced exists.
+     *   · `verdictStale` (WI-4489) asks "is the recorded verdict CURRENT?" — and
+     *     `evaluateGateVerdictFreshness` opens with `if (consecutiveReds <= 0) return
+     *     { stale: false }`, commented "Only a RED verdict can misdirect. A stale green
+     *     is inert." That premise is TRUE of a stale green and FALSE of an unmeasured
+     *     one: a green that was never measured is not inert, it is FABRICATED. The
+     *     short-circuit lands on exactly the case this field exists to name.
+     *
+     * So a caller must not read `consecutiveReds === 0` as "green" without checking
+     * this. The same value, hoisted to the result level where a hurried caller cannot
+     * skip it, is `PipelinePosition.verdictUnknown`.
+     */
+    countersUnknown: CellUnknown | null;
     lastGreenAtMs: number | null;
     firstRedAtMs: number | null;
     stalled: boolean;
@@ -411,7 +436,22 @@ export async function gitPipelineSnapshot(
   // EI-18669342433807110 — Rule 4: a stale-candidate auto-refire for the cached red running RIGHT
   // NOW, already freshness-checked (missing/malformed/abandoned ⇒ null).
   const inFlightRetriage = parseInFlightRetriage(gateHealth.inFlightRetriage);
-  const rawConsecutiveReds = num(gateHealth.consecutiveReds) ?? 0;
+  /**
+   * P-007 (D-038 axis 2). The `?? 0` below is load-bearing for every downstream
+   * consumer — they all expect a number — but the fallback DESTROYS the distinction
+   * between "the gate ran and recorded no reds" and "no counter was recorded at all",
+   * and those read identically as a passing gate. Capture which one it was BEFORE the
+   * default is applied; it is unrecoverable afterwards.
+   */
+  const measuredConsecutiveReds = num(gateHealth.consecutiveReds);
+  const countersUnknown: CellUnknown | null =
+    measuredConsecutiveReds == null
+      ? cellUnknown(
+          'resolver-failed',
+          'the green-checkpoint routine metadata (`gate_health.consecutiveReds`) carried no readable red-streak counter, so the reported 0 is a DEFAULT and not a measurement — do not read it as a passing gate',
+        )
+      : null;
+  const rawConsecutiveReds = measuredConsecutiveReds ?? 0;
   const {
     stale: gcVerdictStale,
     reason: gcVerdictStaleReason,
@@ -512,6 +552,7 @@ export async function gitPipelineSnapshot(
       // EI-13714: reset to 0 when a pin advance PROVES a green happened since this count was
       // recorded — never left as a stale, alarm-triggering streak (see `pinProvenGateCorrection`).
       consecutiveReds: effectiveGate.consecutiveReds,
+      countersUnknown,
       lastGreenAtMs: num(gateHealth.lastGreenAt),
       firstRedAtMs: effectiveGate.firstRedAtMs,
       // A stalled-streak alert can't survive proof the streak it was raised on has already ended.
