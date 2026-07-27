@@ -69,6 +69,9 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
       importance: item.importance ?? null,
       needsHuman: item.needsHuman === true,
       text: clip(item.text, c.text),
+      // Deliberately snake_case (not the file's usual camelCase): must literally match
+      // `<field>_truncated` for the result-door's detector regex to recognize it (see wasClipped doc).
+      text_truncated: wasClipped(item.text, c.text),
       phase: clip(item.phase, c.phase),
       /** Count of live blockers (unresolved P-refs + open issue-blocks). */
       blockers: unresolved + issueBlocks,

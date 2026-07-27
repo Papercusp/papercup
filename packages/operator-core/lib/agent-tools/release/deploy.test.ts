@@ -132,6 +132,17 @@ describe('release:deploy — skipWorkspaceTx (EI-18733783500981433)', () => {
   });
 });
 
+describe('release:deploy — timeoutSec (EI-18761103623054929)', () => {
+  it('raises the dispatch-stack timeout above the 60s default — trigger/force await ' +
+    'fireGitSyncNow, which is NOT bounded by "tens of seconds" under real load: measured live ' +
+    '2026-07-26 (60 commits stranded behind 5 consecutive gate reds), 4 of 5 consecutive ' +
+    'trigger calls took 83s/96s/177s/61s, each surfacing as a spurious timeout (or transport ' +
+    'CONNECTION_CLOSED) past the 60s default even though the deploy launch itself succeeded.', () => {
+    expect((tool as unknown as { timeoutSec?: number }).timeoutSec).toBe(300);
+    expect((tool as unknown as { timeoutSec?: number }).timeoutSec!).toBeGreaterThan(177);
+  });
+});
+
 describe('release:deploy — trigger', () => {
   it('refuses when the gate is red (no green pin to ship)', async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red', canTriggerGreen: false }));

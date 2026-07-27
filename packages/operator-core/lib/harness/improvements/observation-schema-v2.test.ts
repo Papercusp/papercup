@@ -39,6 +39,7 @@ function existing(p: Partial<EngineerIssue> & { id: string; title: string }): En
     terminalCompletionRef: null,
     createdAt: '2026-06-20T00:00:00Z',
     updatedAt: '2026-06-20T00:00:00Z',
+    closedAt: null,
     ...p,
   };
 }

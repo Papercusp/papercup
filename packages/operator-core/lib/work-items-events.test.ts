@@ -38,6 +38,7 @@ const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
   verifiedAuthorGithubUserId: null,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
+  closedAt: null,
   ...over,
 });
 

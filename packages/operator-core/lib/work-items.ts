@@ -1445,6 +1445,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     verifiedAuthorGithubUserId: null, // created here ⇒ local-authored, never verified-stamped (P-008)
     createdAt: tsIso(now),
     updatedAt: tsIso(now),
+    closedAt: null,
   };
   // Capabilities: tag topics + auto-subscribe the creator (the hfc CDC trigger handles
   // the change fan-out + federation, so no explicit deliver() here).

@@ -41,6 +41,7 @@ function wi(over: Partial<WorkItem> = {}): WorkItem {
     priority: null,
     createdAt: '2026-06-14',
     updatedAt: '2026-06-14',
+    closedAt: null,
     ...over,
   };
 }

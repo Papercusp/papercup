@@ -178,16 +178,25 @@ describe('applyResultDoor', () => {
       expect(spill).toContain('NOT recoverable from this file');
     });
 
-    it('a result WITHOUT the marker keeps the original truthful "FULL result" wording (no false positives)', () => {
-      const doored = applyResultDoor(
-        { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 3) }] },
-        { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
-      );
-      const pointer = (doored.content.at(-1) as { text: string }).text;
-      expect(pointer).toContain('The FULL result is at');
-      const spill = readSpill('ws-1', 'plans:get', RUN_ID);
-      expect(spill).toContain('# result-door spill — FULL tool result');
-    });
+    it(
+      'a result WITHOUT any marker gets the HONEST default wording — never an unconditional ' +
+        '"FULL result" claim (EI-18762253154342502: no marker firing proves nothing was cut ' +
+        "upstream, only that no known marker fired — a tool can silently truncate a field with " +
+        'a bare ellipsis and no `_truncated` flag, as plans:items did before its own fix)',
+      () => {
+        const doored = applyResultDoor(
+          { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 3) }] },
+          { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
+        );
+        const pointer = (doored.content.at(-1) as { text: string }).text;
+        expect(pointer).not.toContain('The FULL result is at');
+        expect(pointer).toContain('The result as it reached this door is at');
+        expect(pointer).toContain('No upstream truncation marker was detected');
+        const spill = readSpill('ws-1', 'plans:get', RUN_ID);
+        expect(spill).not.toContain('# result-door spill — FULL tool result');
+        expect(spill).toContain('# result-door spill — the text as it reached this door');
+      },
+    );
 
     it('a projected result that ALSO fits under the door budget is untouched (no false-positive spill)', () => {
       const result = { content: [{ type: 'text' as const, text: 'small already-projected result' }], _meta: { payloadProjection } };

@@ -29,6 +29,7 @@ function issue(p: Partial<EngineerIssue> & { id: string }): EngineerIssue {
     featureOrder: null,
     createdAt: '2026-06-04T00:00:00Z',
     updatedAt: '2026-06-04T00:00:00Z',
+    closedAt: null,
     ...p,
   };
 }

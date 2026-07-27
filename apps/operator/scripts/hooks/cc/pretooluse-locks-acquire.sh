@@ -695,7 +695,9 @@ for p in raw_paths:
                     f"INDEPENDENT sibling repo is exempt — one whose `origin` remote "
                     f"provably differs from the canonical tree's, OR which provably "
                     f"declares no remotes at all. This tree's origin matches the "
-                    f"canonical project, or its git config could not be read.)"
+                    f"canonical project, or is a LOCAL PATH that resolves to it "
+                    f"(a `git clone ../papercup` checkout — same project, different "
+                    f"origin spelling), or its git config could not be read.)"
                 )
     except Exception:
         pass  # The guard must never wedge an edit on its own error (fail-open).

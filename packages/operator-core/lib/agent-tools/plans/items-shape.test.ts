@@ -56,3 +56,34 @@ describe('shapePlansItems — coverageDivergence -> diverged', () => {
     expect(shapePlansItems(null, 'standard')).toBeNull();
   });
 });
+
+describe('shapePlansItems — text_truncated marker (EI-18762253154342502)', () => {
+  it('stamps text_truncated:true when the trimmed-tier cap actually clips item.text', () => {
+    const longText = 'x'.repeat(PLANS_ITEMS_TIER_CAPS.trimmed.text + 50);
+    const out = shapePlansItems(
+      { items: [row({ item: { id: 'P-009', text: longText } })] },
+      'trimmed',
+    ) as { items: Record<string, unknown>[] };
+    expect(out.items[0].text_truncated).toBe(true);
+    expect((out.items[0].text as string).endsWith('…')).toBe(true);
+    expect((out.items[0].text as string).length).toBe(PLANS_ITEMS_TIER_CAPS.trimmed.text);
+  });
+
+  it('stamps text_truncated:false when item.text fits under the cap untouched', () => {
+    const out = shapePlansItems(
+      { items: [row({ item: { id: 'P-009', text: 'short' } })] },
+      'trimmed',
+    ) as { items: Record<string, unknown>[] };
+    expect(out.items[0].text_truncated).toBe(false);
+    expect(out.items[0].text).toBe('short');
+  });
+
+  it('the standard tier also stamps the marker (higher cap, same contract)', () => {
+    const longText = 'y'.repeat(PLANS_ITEMS_TIER_CAPS.standard.text + 1);
+    const out = shapePlansItems(
+      { items: [row({ item: { id: 'P-009', text: longText } })] },
+      'standard',
+    ) as { items: Record<string, unknown>[] };
+    expect(out.items[0].text_truncated).toBe(true);
+  });
+});

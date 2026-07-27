@@ -37,6 +37,7 @@ const wi = (id: string, family: 'feature' | 'issue'): WorkItem => ({
   terminalCompletionEvidence: null,
   createdAt: '',
   updatedAt: '',
+  closedAt: null,
 });
 
 describe('mergeWorkItemDimensions (P-010 v2 — route-side plan-link + spine join)', () => {
