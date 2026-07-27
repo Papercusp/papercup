@@ -210,7 +210,15 @@ const HIVE_AWARE_VIEWS = [
  * along, in the very table the funnel bug was about).
  */
 const WORKSPACE_GLOBAL_READS: Record<string, string> = {
-  // (empty — every read in every hive-aware view is pot-scopeable today)
+  // Retain view. VERIFIED AGAINST THE SCHEMA, not against the code comment:
+  // `harness_shared.knowledge_pack_candidates` has no workspace_id, no
+  // harness_slug and no pot column of any kind, and is read through getOrgPg()
+  // — it is org-global by construction. A pack candidate is staged BECAUSE a
+  // lesson recurred across hives, so "this pot's cross-hive candidates" is not
+  // a meaningful set. Contrast WI-6385, where the pot column was present in the
+  // table all along and the leg simply never used it.
+  "knowledgePacks.candidates":
+    "cross-hive recurrence escalations — table has no pot column (org-global store)",
 };
 
 /**

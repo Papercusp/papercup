@@ -540,34 +540,83 @@ const DIGEST_HISTORY_LIMIT = 10;
  *  snapshots ships full entries for — omitted/not-found falls back to the
  *  newest. */
 /**
+ * THE pot-lens predicate for `harness_shared.scout_routed_ideas` — one rule, one
+ * definition, every leg.
+ *
+ * scout_routed_ideas has `harness_slug` but NO pot column: a row's pot is its
+ * harness's registry pot (the write-side resolveLearningPotSlug model, P-005).
+ * Rows with NULL harness_slug home to the PLATFORM pot, mirroring step 3 of that
+ * resolution; under any other pot lens they are excluded (D-002 — never misfile
+ * unattributable rows into a pot).
+ *
+ * ⚠ EVERY query over scout_routed_ideas must alias the table `sri` and take its
+ * predicate from HERE. The alias is not cosmetic — the fragment names a qualified
+ * column, so an un-aliased query cannot use it.
+ *
+ * This used to be a comment asking callers to reuse an inline fragment, and the
+ * comment did not work: it was violated twice. First by the improve funnel, which
+ * wrote the rule out a second time and scoped its FIRST stage and not its later
+ * ones, rendering a funnel that GREW under a pot lens (observed live: 156 ideas →
+ * 605 approved, EI-18799358267821549). Then by readScoutDraftIterations below,
+ * which aliased the same table `r` and so could not have reused the fragment even
+ * if its author had wanted to (WI-6385). Exported and parameterised so reuse is
+ * the path of least resistance rather than an instruction.
+ */
+export function routedIdeasPotFilter(
+  sql: Sql,
+  { hive, memberSlugs }: { hive: string | null; memberSlugs: string[] | null },
+) {
+  if (!memberSlugs?.length) return sql``;
+  return hive === PLATFORM_POT_SLUG
+    ? sql`AND (sri.harness_slug IN ${sql(memberSlugs)} OR sri.harness_slug IS NULL)`
+    : sql`AND sri.harness_slug IN ${sql(memberSlugs)}`;
+}
+
+/**
  * Drafts-in-iteration: rail='plan' routed-ledger rows joined to the draft
  * plans they became (version > 1 = the grade/feedback → typed-revision loop
  * has turned). Workspace-scoped join (harness_plans is multi-tenant — never a
  * bare-slug read); the newest plan row per slug wins. Best-effort: returns []
  * on error. Serves BOTH the full scout snapshot and the thin
  * `learning.scoutDrafts` resolver (the Improvements view's read).
+ *
+ * WI-6385: takes the pot lens like every other leg over this table. It previously
+ * aliased scout_routed_ideas `r` and passed no pot at all, so under a selected pot
+ * the Improvements view showed two scoped legs beside this workspace-wide one and
+ * nothing on screen said which was which.
  */
 export async function readScoutDraftIterations({
   workspaceId,
   sql,
+  hive = null,
+  hiveMemberSlugs = null,
 }: {
   workspaceId: string;
   sql: Sql;
+  /** Pot lens; null/'' ⇒ the workspace-wide rollup. */
+  hive?: string | null;
+  /** The pot's member harness slugs (resolved by the caller via the registry);
+   *  falls back to the pot home slug alone. */
+  hiveMemberSlugs?: string[] | null;
 }): Promise<ScoutDraftIteration[]> {
   try {
+    const lens = typeof hive === 'string' && hive.trim() ? hive.trim() : null;
+    const memberSlugs = lens ? (hiveMemberSlugs?.length ? hiveMemberSlugs : [lens]) : null;
+    const potFilter = routedIdeasPotFilter(sql, { hive: lens, memberSlugs });
     const draftRows = (await sql`
-      SELECT DISTINCT ON (r.idea_id)
-             r.idea_id, r.title, r.routed_at,
-             substring(r.routed_ref from 'plan:(.*)') AS plan_slug,
+      SELECT DISTINCT ON (sri.idea_id)
+             sri.idea_id, sri.title, sri.routed_at,
+             substring(sri.routed_ref from 'plan:(.*)') AS plan_slug,
              p.status AS plan_status, p.version AS plan_version, p.updated_at AS plan_updated_at
-        FROM harness_shared.scout_routed_ideas r
+        FROM harness_shared.scout_routed_ideas sri
         LEFT JOIN harness_shared.harness_plans p
-          ON p.workspace_id = r.workspace_id
-         AND p.plan_slug = substring(r.routed_ref from 'plan:(.*)')
-       WHERE r.workspace_id = ${workspaceId}
-         AND r.rail = 'plan'
-         AND r.routed_ref LIKE 'plan:%'
-       ORDER BY r.idea_id, p.updated_at DESC NULLS LAST
+          ON p.workspace_id = sri.workspace_id
+         AND p.plan_slug = substring(sri.routed_ref from 'plan:(.*)')
+       WHERE sri.workspace_id = ${workspaceId}
+         AND sri.rail = 'plan'
+         AND sri.routed_ref LIKE 'plan:%'
+         ${potFilter}
+       ORDER BY sri.idea_id, p.updated_at DESC NULLS LAST
     `) as Array<Record<string, unknown>>;
     return draftRows
       .map((r) => {
@@ -612,24 +661,7 @@ export async function readScoutSnapshot(
 ): Promise<ScoutSnapshot> {
   const hive = typeof opts.hive === 'string' && opts.hive.trim() ? opts.hive.trim() : null;
   const memberSlugs = hive ? (opts.hiveMemberSlugs?.length ? opts.hiveMemberSlugs : [hive]) : null;
-  // scout_routed_ideas has harness_slug but NO pot column — a row's pot is its
-  // harness's registry pot (the write-side resolveLearningPotSlug model, P-005).
-  // Rows with NULL harness_slug home to the PLATFORM pot, mirroring step 3 of
-  // that resolution; under any other pot lens they are excluded (D-002 — never
-  // misfile unattributable rows into a pot).
-  //
-  // ⚠ EVERY query over scout_routed_ideas must alias it `sri` and reuse THIS
-  // fragment. The alias is not cosmetic: the predicate names a qualified column,
-  // so an un-aliased query cannot take it, and the tempting workaround — writing
-  // the rule out a second time beside the aliased query — is exactly how the
-  // improve funnel below came to scope its FIRST stage and not its later ones,
-  // rendering an impossible funnel that GREW under a pot lens (observed live:
-  // 156 ideas → 605 approved). One rule, one definition, every leg.
-  const routedPotFilter = memberSlugs
-    ? hive === PLATFORM_POT_SLUG
-      ? sql`AND (sri.harness_slug IN ${sql(memberSlugs)} OR sri.harness_slug IS NULL)`
-      : sql`AND sri.harness_slug IN ${sql(memberSlugs)}`
-    : sql``;
+  const routedPotFilter = routedIdeasPotFilter(sql, { hive, memberSlugs });
   const rails = (await sql`
     SELECT rail, count(*)::int AS count
       FROM harness_shared.scout_routed_ideas sri
@@ -830,7 +862,14 @@ export async function readScoutSnapshot(
   // Queen↔Scout revision loop is watchable (version > 1 = revised). Shared
   // with the thin `learning.scoutDrafts` resolver (the Improvements view's
   // read — owner ask 2026-07-19 moved the Drafts-in-iteration section there).
-  const drafts = await readScoutDraftIterations({ workspaceId, sql });
+  // WI-6385: takes THIS snapshot's lens. It previously did not, so the drafts
+  // leg of a pot-scoped snapshot was workspace-wide beside its scoped siblings.
+  const drafts = await readScoutDraftIterations({
+    workspaceId,
+    sql,
+    hive,
+    hiveMemberSlugs: memberSlugs,
+  });
 
   // Digest leg (learning-tab-visibility P-008, browseable history WI-5417):
   // the newest DIGEST_HISTORY_LIMIT persisted per-cycle digests, each

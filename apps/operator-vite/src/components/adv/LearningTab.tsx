@@ -1136,10 +1136,14 @@ function ImprovementsView({
   // 2026-07-19): a draft plan awaiting revision is WORK IN PROGRESS, so it
   // belongs on the backlog surface. Thin dedicated read, never the heavy
   // learning.scout snapshot.
+  // WI-6385: same lens and same readiness gate as the two legs above. It
+  // previously had neither, so under a selected pot this list showed every
+  // pot's drafts beside two pot-scoped siblings.
   const draftsSync = useSyncQuery<ScoutDraftIteration>({
     queryName: "learning.scoutDrafts",
-    args: {},
+    args: hive ? { hive } : {},
     staleTime: 60_000,
+    enabled: hiveReady,
   });
   const drafts = draftsSync.data ?? [];
   const [lane, setLane] = useQueryState(
@@ -4648,10 +4652,15 @@ function LearningsView({
   const [, setTabNav] = useQueryState("tab", parseAsString);
   const [, setCreateViewNav] = useQueryState("view", parseAsString);
 
+  // WI-6384: gated on `hiveReady` ALONE, like every sibling read in this view.
+  // It used to also require `hive.length > 0`, so selecting All Pots — the
+  // BROADEST lens — disabled the main list while the extras strip beside it
+  // kept reporting workspace-wide counts. The resolver now serves '' as the
+  // workspace-wide rollup the tab's contract always promised.
   const sync = useSyncQuery<HiveLearningsSnapshot>({
     queryName: "learning.hive",
-    args: { hive },
-    enabled: hiveReady && hive.length > 0,
+    args: hive ? { hive } : {},
+    enabled: hiveReady,
     staleTime: 30_000,
   });
   // The rest of what the colony keeps (WI-5412, owner ask: lens weights,

@@ -66,6 +66,10 @@ vi.mock('../presence', () => ({ getPresence: vi.fn(async () => null) }));
 // getPresence().fleetSlug — a field production never returns — which is exactly
 // what hid the no-op bug this item fixes.)
 vi.mock('../presence-fleet', () => ({ fetchPresenceFleet: vi.fn(async () => new Map()) }));
+// P-008 last leg / D-084: `basedOn` is DERIVED off the invocation log at send
+// time. Mocked here so the WIRING is asserted without a PG round-trip — the
+// derivation itself is covered by based-on.test.ts + based-on.integration.test.ts.
+vi.mock('../based-on', () => ({ deriveBasedOn: vi.fn(async () => []) }));
 
 import { sendMessage, getMessageById } from '../messages';
 import { resolveRecipients, remoteSessionOwnerIds, remoteSessionsByOwnerId } from '../recipient-resolve';
@@ -75,6 +79,8 @@ import { resolveWorkspaceHiveScope } from '../federation-scope';
 import { getPresence } from '../presence';
 import { fetchPresenceFleet } from '../presence-fleet';
 import { getFlag } from '@papercusp/flags/server';
+import { deriveBasedOn } from '../based-on';
+const basedOnM = vi.mocked(deriveBasedOn);
 const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
 const resolveM = vi.mocked(resolveRecipients);
@@ -112,6 +118,8 @@ beforeEach(() => {
   remoteMapM.mockResolvedValue(new Map<string, number>() as never);
   // P-004: non-fleeted by default → a bare '*' stays a literal hive broadcast.
   fetchPresenceFleetM.mockResolvedValue(new Map() as never);
+  // D-084: nothing traceable read by default, so an ordinary send is unchanged.
+  basedOnM.mockResolvedValue([] as never);
 });
 
 describe('coord:send handler (bulk keyed-array)', () => {
@@ -1053,5 +1061,53 @@ describe('report card payload (agent-report-cards-2026-07-17 P-001)', () => {
     expect(
       tool.args.safeParse({ items: [{ to: ['human'], summary: 'hi', expects: 'none', report }] }).success,
     ).toBe(true);
+  });
+});
+
+/**
+ * P-008's last leg (D-084). The field this replaces was typed, threaded and
+ * rendered for weeks without a single write, so what is pinned here is the
+ * WIRING — that the derived value actually reaches the envelope the send seam
+ * persists, and that it is stamped as derived so no measurement can count it as
+ * sender intent.
+ */
+describe('basedOn — the sender’s read trace, derived (never authored)', () => {
+  const trace = [
+    { ref: 'work-item:WI-9001', via: 'work_items:get', readAt: '2026-07-27T12:00:00.000Z', versionAtSend: 'open@17' },
+  ];
+
+  it('derives it for the SENDER, and rides the envelope the send seam persists', async () => {
+    basedOnM.mockResolvedValue(trace as never);
+    await body({ to: ['bee-1'], summary: 'hi', expects: 'none' });
+
+    expect(basedOnM).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'me', workspaceId: 'ws1' }));
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.basedOn).toEqual(trace);
+  });
+
+  it('is stamped DERIVED, so adoption measurement can never count it as authored (D-072)', async () => {
+    basedOnM.mockResolvedValue(trace as never);
+    await body({ to: ['bee-1'], summary: 'hi', expects: 'none' });
+    const opts = sendM.mock.calls[0]![1] as { extra?: { fieldProvenance?: Record<string, string> } };
+    expect(opts.extra?.fieldProvenance?.basedOn).toBe('session-derived');
+  });
+
+  it('an empty trace leaves the envelope BYTE-IDENTICAL — no key, no provenance stamp', async () => {
+    await body({ to: ['bee-1'], summary: 'hi', expects: 'none' });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).not.toHaveProperty('basedOn');
+    expect(opts.extra).not.toHaveProperty('fieldProvenance');
+  });
+
+  it('is NOT a caller argument — an authored `basedOn` is refused by the schema (D-002)', () => {
+    expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'none', basedOn: trace }).success).toBe(
+      false,
+    );
+  });
+
+  it('never fails a send when the derivation itself blows up', async () => {
+    basedOnM.mockRejectedValue(new Error('pg is down') as never);
+    const b = await body({ to: ['bee-1'], summary: 'hi', expects: 'none' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
   });
 });

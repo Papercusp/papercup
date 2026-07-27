@@ -28,7 +28,8 @@ const packMeta = (itemId: string) => ({
 });
 
 const deps = (entries: Array<{ id: string; text: string; kind?: string; metadata?: Record<string, unknown> }>) => ({
-  listPool: async (scope: string) => entries.map((e) => ({ ...e, scope })),
+  listPool: async (scope: string | readonly string[]) =>
+    entries.map((e) => ({ ...e, scope: Array.isArray(scope) ? scope.join(",") : (scope as string) })),
   loadPack: async (id: string) => (id === 'papercusp-default' ? { pack } : null),
 });
 
@@ -71,6 +72,88 @@ describe('readHiveLearnings', () => {
       loadPack: async () => null,
     });
     expect(snap).toMatchObject({ hive: 'h', rows: [], packs: [], organicCount: 0, unavailable: true });
+  });
+
+  // ─── WI-6384: "All Pots" ('') is a LENS, not an absence of data ──────────────
+  //
+  // The resolver used to short-circuit '' to a hard-coded empty snapshot, so the
+  // BROADEST selection produced the EMPTIEST view — an empty list and
+  // organicCount 0 rendered beside a workspace-wide "banked this week" strip.
+  describe('the All Pots ("") lens', () => {
+    it('reads EVERY pot pool as one, not an empty snapshot', async () => {
+      const seen: Array<string | readonly string[]> = [];
+      const snap = await readHiveLearnings('', {
+        listPool: async (scope) => {
+          seen.push(scope);
+          return [
+            { id: 'm1', text: 'from alpha', kind: 'reference', metadata: { created_by: 'mug' } },
+            { id: 'm2', text: 'from beta', kind: 'reference', metadata: { created_by: 'mug' } },
+          ];
+        },
+        loadPack: async () => null,
+        listPotSlugs: async () => ['alpha', 'beta'],
+      });
+      // One batched read over both pools (ListOptions.scope takes an array).
+      expect(seen).toEqual([['hive:alpha', 'hive:beta']]);
+      expect(snap.rows).toHaveLength(2);
+      // The number the old behaviour rendered as a bare, wrong 0.
+      expect(snap.organicCount).toBe(2);
+      expect(snap.unavailable).toBeUndefined();
+    });
+
+    it('distinguishes "nothing retained" from "could not resolve the pots"', async () => {
+      // The whole point of the fix: an empty RESULT and an unreadable SOURCE are
+      // different facts. Returning [] for both is what made a broken read look
+      // like a calm, idle workspace.
+      const emptyPool = await readHiveLearnings('', {
+        listPool: async () => [],
+        loadPack: async () => null,
+        listPotSlugs: async () => ['alpha'],
+      });
+      expect(emptyPool.rows).toEqual([]);
+      expect(emptyPool.unavailable).toBeUndefined(); // genuinely empty
+
+      const noPots = await readHiveLearnings('', {
+        listPool: async () => [],
+        loadPack: async () => null,
+        listPotSlugs: async () => [],
+      });
+      expect(noPots.unavailable).toBe(true);
+      expect(noPots.unavailableReason).toMatch(/no pots/i);
+
+      const brokenRegistry = await readHiveLearnings('', {
+        listPool: async () => [],
+        loadPack: async () => null,
+        listPotSlugs: async () => {
+          throw new Error('registry unreadable');
+        },
+      });
+      expect(brokenRegistry.unavailable).toBe(true);
+      expect(brokenRegistry.unavailableReason).toMatch(/registry unreadable/);
+    });
+
+    it('a caller that cannot serve the rollup says so instead of returning empty', async () => {
+      const snap = await readHiveLearnings('', {
+        listPool: async () => [{ id: 'x', text: 'should not be read' }],
+        loadPack: async () => null,
+        // no listPotSlugs
+      });
+      expect(snap.unavailable).toBe(true);
+      expect(snap.rows).toEqual([]);
+    });
+
+    it('a named pot still reads exactly its own pool', async () => {
+      const seen: Array<string | readonly string[]> = [];
+      await readHiveLearnings('my-hive', {
+        listPool: async (scope) => {
+          seen.push(scope);
+          return [];
+        },
+        loadPack: async () => null,
+        listPotSlugs: async () => ['alpha', 'beta'],
+      });
+      expect(seen).toEqual(['hive:my-hive']);
+    });
   });
 
   it('LP-6: a mixed-version pool reports the FIRST-SEEN packVersion (order-dependent rollup)', async () => {

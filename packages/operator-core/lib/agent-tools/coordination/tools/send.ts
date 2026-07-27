@@ -610,15 +610,23 @@ async function sendOne(
   if (Array.isArray(msg.body)) assertEnvelopeSectionSplit(msg.body);
   const sections = toSections(msg.body);
   // P-008 last leg / D-084: `basedOn` — the sender's information provenance,
-  // DERIVED from what it actually read (the invocation log), never authored.
-  // Deliberately not a caller argument (D-002's never-author economics), and
-  // deliberately fail-soft: `deriveBasedOn` returns [] rather than throwing, so
-  // a message never fails to send because its provenance could not be derived.
+  // DERIVED from what it actually read (the invocation log), never authored
+  // (D-002's never-author economics; it is not a caller argument at all).
+  //
+  // ⚠ THE `.catch` IS LOAD-BEARING, not belt-and-braces. `deriveBasedOn` already
+  // swallows its own failures, so this only fires if the derivation throws in a
+  // way it did not anticipate — and the consequence of letting that propagate is
+  // that the MESSAGE IS NOT SENT. A decorative trace must never be able to fail
+  // the delivery it decorates: the availability coupling that turns one PG blip
+  // into fleet-wide silence is the same one D-079's `unresolved` condition exists
+  // to prevent on the completion gate. A send with no provenance is fine; a
+  // provenance failure that eats a message is not. (Caught live by the wiring
+  // test below, which the first cut of this failed.)
   const basedOn = await deriveBasedOn({
     ownerId: identity.ownerId,
     workspaceId: identity.workspaceId ?? '',
     harness: harnessSlug,
-  });
+  }).catch(() => []);
   const fieldStamp = stampMessageFields({
     body: msg.body,
     why: msg.why,

@@ -384,24 +384,31 @@ describe('EI-18799539619330782: git-sync routine-metadata access is tenant-scope
     'scopes EVERY routines read AND write to the ticking workspace on a %s tick — a peer tenant sharing the install_slug cannot be read or clobbered',
     async (_label, outcome) => {
       runGitSyncMock.mockResolvedValue(outcome);
+      // The conflict / content-error paths legitimately warn (resolver + fixer dispatch);
+      // this suite runs vitest-fail-on-console, so silence it. We assert on the SQL, not
+      // on the logging, which those paths' own dedicated tests already cover.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        // A DIFFERENT workspace than the suite default ('ws-42'), so a hardcoded or
+        // defaulted scope cannot pass this by coincidence.
+        await action({ ...ctx, workspaceId: 'ws-99' });
 
-      // A DIFFERENT workspace than the suite default ('ws-42'), so a hardcoded or
-      // defaulted scope cannot pass this by coincidence.
-      await action({ ...ctx, workspaceId: 'ws-99' });
+        // Guard the guard: if a refactor stops issuing routines statements entirely,
+        // the per-statement loops below would vacuously pass.
+        expect(routineReads().length).toBeGreaterThan(0);
+        expect(routineWrites().length).toBeGreaterThan(0);
 
-      // Guard the guard: if a refactor stops issuing routines statements entirely,
-      // the per-statement loops below would vacuously pass.
-      expect(routineReads().length).toBeGreaterThan(0);
-      expect(routineWrites().length).toBeGreaterThan(0);
-
-      for (const read of routineReads()) {
-        expect(read.text).toContain('workspace_id =');
-        expect(read.values).toContain('ws-99');
-      }
-      for (const write of routineWrites()) {
-        // params are [slug, workspaceId, patch] — the predicate binds $2.
-        expect(write.text).toContain('workspace_id = $2');
-        expect(write.params[1]).toBe('ws-99');
+        for (const read of routineReads()) {
+          expect(read.text).toContain('workspace_id =');
+          expect(read.values).toContain('ws-99');
+        }
+        for (const write of routineWrites()) {
+          // params are [slug, workspaceId, patch] — the predicate binds $2.
+          expect(write.text).toContain('workspace_id = $2');
+          expect(write.params[1]).toBe('ws-99');
+        }
+      } finally {
+        warn.mockRestore();
       }
     },
   );

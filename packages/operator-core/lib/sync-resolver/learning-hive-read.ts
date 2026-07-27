@@ -75,32 +75,72 @@ export interface HiveLearningsSnapshot {
 }
 
 export interface HiveLearningsDeps {
-  listPool: (scope: string) => Promise<MemoryEntry[]>;
+  /** One pool, or several read as one (the backend's ListOptions.scope already
+   *  accepts `string | readonly string[]`). */
+  listPool: (scope: string | readonly string[]) => Promise<MemoryEntry[]>;
   loadPack: (packId: string) => Promise<{ pack: KnowledgePack } | null>;
+  /**
+   * Every pot slug in the workspace — consulted ONLY for the "All Pots" ('')
+   * lens (WI-6384). Optional so existing single-pot callers are unaffected; a
+   * caller that omits it simply cannot serve the rollup, and says so honestly
+   * rather than returning a silent empty.
+   */
+  listPotSlugs?: () => Promise<string[]>;
 }
 
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
 }
 
+/**
+ * One pot's retained-learnings pool — or, when `potSlug` is '' (the "All Pots"
+ * lens), every pot's pools read as one.
+ *
+ * WI-6384: the '' case used to be refused by the caller with a hard-coded empty
+ * snapshot, so selecting the BROADEST lens produced the EMPTIEST view — an empty
+ * list and `organicCount: 0` rendered beside the workspace-wide "banked this
+ * week" strip, two numbers from different populations sitting side by side. The
+ * tab's own contract (LearningTab.tsx: "All Pots => '' => the workspace-wide
+ * rollup each hive-aware view already supports") always said this should work;
+ * every sibling hive-aware view already honoured it. Retain was the exception.
+ */
 export async function readHiveLearnings(
   potSlug: string,
   deps: HiveLearningsDeps,
 ): Promise<HiveLearningsSnapshot> {
+  const unavailable = (reason: string): HiveLearningsSnapshot => ({
+    hive: potSlug,
+    rows: [],
+    packs: [],
+    organicCount: 0,
+    unavailable: true,
+    unavailableReason: reason.slice(0, 300),
+  });
+
+  let scope: string | readonly string[];
+  if (potSlug) {
+    scope = `hive:${potSlug}`;
+  } else {
+    // All Pots. Resolve the pools to read; an empty/absent pot list is reported
+    // as unavailable rather than as "this workspace has retained nothing" —
+    // those are different facts, and conflating them is the bug being fixed.
+    if (!deps.listPotSlugs) return unavailable('workspace rollup unsupported by this caller');
+    let slugs: string[];
+    try {
+      slugs = await deps.listPotSlugs();
+    } catch (err) {
+      return unavailable(err instanceof Error ? err.message : String(err));
+    }
+    if (slugs.length === 0) return unavailable('no pots registered in this workspace');
+    scope = slugs.map((s) => `hive:${s}`);
+  }
+
   let entries: MemoryEntry[];
   try {
-    entries = await deps.listPool(`hive:${potSlug}`);
+    entries = await deps.listPool(scope);
   } catch (err) {
     // Carry the reason (see `unavailableReason`) — never swallow it.
-    const reason = err instanceof Error ? err.message : String(err);
-    return {
-      hive: potSlug,
-      rows: [],
-      packs: [],
-      organicCount: 0,
-      unavailable: true,
-      unavailableReason: reason.slice(0, 300),
-    };
+    return unavailable(err instanceof Error ? err.message : String(err));
   }
 
   // Resolve each referenced pack ONCE (batched — never per-row).

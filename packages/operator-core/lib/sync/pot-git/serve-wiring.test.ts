@@ -31,12 +31,14 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
 
 import { _testing } from './serve-wiring';
 
-const { SESSION_LEAK_WARN_AT, noteSessionHighWater, newChannelState } = _testing;
+const { SESSION_LEAK_WARN_AT, noteSessionHighWater, newChannelState, formatRefusalTarget } = _testing;
 
 /** The detector reads only `.size` off the two session maps, so a plain filler
  *  object per slot is sufficient and keeps these cases free of socket plumbing. */
 function withSessions(client: number, server: number): ReturnType<typeof newChannelState> {
-  const state = newChannelState();
+  // topic/mux are carried only so a refusal can name its own lookup key; the
+  // leak detector reads neither, so any placeholder keeps these cases honest.
+  const state = newChannelState('00'.repeat(32), null);
   for (let i = 0; i < client; i++) state.clientSessions.set(i, {} as never);
   for (let i = 0; i < server; i++) state.serverSessions.set(i, {} as never);
   return state;
@@ -229,5 +231,45 @@ describe('WI-6364: the serve path\'s superseded-store lookup', () => {
   it('FAILS OPEN: an unreadable registry never refuses — a diagnostic must not take the serve plane down', async () => {
     loadRegistryMock.mockRejectedValue(new Error('registry unreadable'));
     await expect(resolveSupersededRepoKey('papercusp', 'papercusp')).resolves.toBeNull();
+  });
+});
+
+describe('serve-refusal diagnosability (a refusal must name its own lookup key)', () => {
+  const REQUESTED = 'd85dc18c0bac0c9a'.repeat(4); // 64 hex
+  const OTHER = '0edc4b5f618f81b3'.repeat(4);
+
+  // The regression this guards is not a crash — it is a refusal that cannot be
+  // acted on. `not-serving` is decided by a (muxer, topic) lookup, so dropping
+  // the topic from the line makes the reason unfalsifiable from logs; that is
+  // what stalled the live rig<->tower papercusp diagnosis.
+  it('names the topic the refusal is about', () => {
+    expect(formatRefusalTarget('not-serving', REQUESTED, [])).toContain(`topic=${REQUESTED.slice(0, 16)}`);
+    // every reason carries the topic, not only not-serving
+    expect(formatRefusalTarget('no-such-repo', REQUESTED, [])).toContain(`topic=${REQUESTED.slice(0, 16)}`);
+  });
+
+  it('DISTINGUISHES the two shapes of not-serving: an unwired muxer vs a channel-id mismatch', () => {
+    // (1) nothing wired on this muxer at all
+    expect(formatRefusalTarget('not-serving', REQUESTED, [])).toContain('wiredTopics=<none>');
+    // (2) this muxer DOES serve — just not the requested topic. Distinct from
+    // (1), and the pair is what identifies a dialer/server channel-id mismatch.
+    const mismatch = formatRefusalTarget('not-serving', REQUESTED, [OTHER]);
+    expect(mismatch).toContain(`wiredTopics=${OTHER.slice(0, 16)}`);
+    expect(mismatch).not.toContain('<none>');
+  });
+
+  it('reports an unreadable registration set as distinct from an empty one', () => {
+    // Collapsing these would let a broken probe read as a confident "nothing
+    // is wired here" — the diagnosis and the fix differ.
+    expect(formatRefusalTarget('not-serving', REQUESTED, null)).toContain('wiredTopics=<unreadable>');
+  });
+
+  it('omits wiredTopics for reasons that do not depend on it', () => {
+    // no-such-repo already proves serve WAS registered, so the set is noise.
+    expect(formatRefusalTarget('no-such-repo', REQUESTED, [OTHER])).not.toContain('wiredTopics');
+  });
+
+  it('survives a state with no topic rather than printing a misleading empty key', () => {
+    expect(formatRefusalTarget('not-serving', '', [])).toContain('topic=<unknown>');
   });
 });

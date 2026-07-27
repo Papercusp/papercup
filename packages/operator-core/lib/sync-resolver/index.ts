@@ -4358,15 +4358,28 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // (owner ask 2026-07-19 moved the section out of Ideas): rail='plan' routed
   // ideas joined to their draft plans. A THIN dedicated read — never make the
   // Improvements view pay for the full learning.scout snapshot.
+  // WI-6385: pot-scoped like its sibling legs. This resolver used to take no
+  // args at all, so the Improvements view rendered two pot-scoped reads beside
+  // this workspace-wide one and nothing on screen distinguished them.
   'learning.scoutDrafts': {
-    resolve: async () => {
+    argsSchema: z.object({ hive: z.string().max(120).optional() }).optional(),
+    resolve: async (args) => {
+      const { hive } = (args ?? {}) as { hive?: string };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
       const { readScoutDraftIterations } = await import('./learning-scout-read');
       try {
         const ws = activeWorkspaceId();
+        // Same member-slug resolution as learning.scout — a pot's rows are its
+        // member harnesses' rows (P-005), not just the home slug's.
+        const memberSlugs = hive ? await resolveHiveMemberSlugs(hive, ws) : null;
         return await routeWithWorkspace(async (tx) =>
-          readScoutDraftIterations({ workspaceId: ws, sql: tx }),
+          readScoutDraftIterations({
+            workspaceId: ws,
+            sql: tx,
+            hive: hive ?? null,
+            hiveMemberSlugs: memberSlugs,
+          }),
         );
       } catch (err) {
         console.warn('[learning.scoutDrafts] read failed:', err instanceof Error ? err.message : err);
@@ -4623,7 +4636,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ hive: z.string().max(120).optional() }),
     resolve: async (args) => {
       const hive = typeof (args as { hive?: unknown })?.hive === 'string' ? (args as { hive: string }).hive : '';
-      if (!hive) return [{ hive: '', rows: [], packs: [], organicCount: 0 }];
+      // WI-6384: '' is the "All Pots" lens, NOT "no data". It used to return a
+      // hard-coded empty snapshot here, so the broadest selection rendered the
+      // emptiest view beside a workspace-wide count strip.
       const { readHiveLearnings } = await import('./learning-hive-read');
       const { getMemoryBackend } = await import('../memory/backend');
       const { loadKnowledgePack, listKnowledgePacks } = await import('../knowledge-packs/load-packs');
@@ -4635,6 +4650,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           return backend.list({ scope });
         },
         loadPack: (id) => loadKnowledgePack(id),
+        listPotSlugs: async () => {
+          const { listPots } = await import('../agent-tools/pot/_resolve');
+          const { activeWorkspaceId } = await import('../workspace-registry');
+          return (await listPots(activeWorkspaceId())).map((p) => p.slug);
+        },
       });
       // Decorate the rollups with enabled state (P-009) + adoptable-version
       // info (P-013) — best-effort; the bare snapshot still renders.
@@ -4645,9 +4665,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           import('../knowledge-packs/pack-format'),
           listKnowledgePacks(),
         ]);
-        const disabled = new Set(await disabledPacksFor(activeWorkspaceId(), hive));
+        // Pack enablement is a PER-POT setting, so it has no meaning under the
+        // All Pots rollup — leave `enabled` undefined there rather than assert a
+        // single pot's answer over every pot's rows (WI-6384). Version
+        // adoptability is pack-global and stays correct either way.
+        const disabled = hive
+          ? new Set(await disabledPacksFor(activeWorkspaceId(), hive))
+          : null;
         for (const p of snap.packs) {
-          p.enabled = !disabled.has(p.packId);
+          if (disabled) p.enabled = !disabled.has(p.packId);
           const avail = catalog.find((c) => c.id === p.packId);
           if (avail) {
             p.availableVersion = avail.version;

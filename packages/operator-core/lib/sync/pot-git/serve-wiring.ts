@@ -702,6 +702,50 @@ async function resolveSupersededRepoKey(
   }
 }
 
+/**
+ * The diagnostic tail of a `serve REFUSED` line: which (muxer, topic) the
+ * refusal is ABOUT.
+ *
+ * `not-serving` is emitted when `state.serverConfig` is null for THIS (muxer,
+ * topic) — so a refusal that does not name the topic omits the very lookup key
+ * its own reason depends on. Naming the topic alone still is not actionable;
+ * what decides the fix is whether the muxer serves OTHER topics:
+ *
+ *   - `wiredTopics=<none>`      the connection handler never wired serve on this
+ *                               muxer at all.
+ *   - `wiredTopics=a…,b…` but   a dialer/server channel-id MISMATCH: the dial
+ *     not the requested topic   path opens a pot-git channel on whatever live
+ *                               socket reaches the device, while serve is
+ *                               registered per (muxer, topic).
+ *
+ * Those two demand different fixes and were indistinguishable from the old log
+ * line, which is what made the live rig<->tower papercusp standoff
+ * undiagnosable from logs. Pure (no WeakMap reads, no I/O) so the content is
+ * directly assertable — `potGitLog` is a no-op under vitest, so a test cannot
+ * observe the emitted line itself.
+ *
+ * @param wiredTopicHexes the muxer's serve-registered topics, or `null` if they
+ *   could not be read — rendered distinctly from a readable-but-empty set.
+ */
+function formatRefusalTarget(
+  reason: string,
+  topicHex: string,
+  wiredTopicHexes: string[] | null,
+): string {
+  const short = (h: string): string => h.slice(0, 16);
+  let tail = ` topic=${topicHex ? short(topicHex) : '<unknown>'}`;
+  if (reason === 'not-serving') {
+    const wired =
+      wiredTopicHexes === null
+        ? '<unreadable>'
+        : wiredTopicHexes.length > 0
+          ? wiredTopicHexes.map(short).join(',')
+          : '<none>';
+    tail += ` wiredTopics=${wired}`;
+  }
+  return tail;
+}
+
 function handleReq(state: ChannelState, v: ReqFrame): void {
   const startedAt = Date.now();
   const refuse = (reason: string): void => {
@@ -714,36 +758,27 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     // that differ ONLY by the topic they arrived on are the single most
     // diagnostic pair this log can emit, so they must never collapse into one
     // another as "identical".
-    const topicTag = state.topicHex ? state.topicHex.slice(0, 16) : '<unknown>';
     const { log, suppressed } = shouldLogRefusal(
       `${reason}\x00${v.repoKey}\x00${peerTag(state)}\x00${state.topicHex}`,
       Date.now(),
     );
     if (log) {
-      // `not-serving` means `state.serverConfig` was null for THIS (muxer,
-      // topic). Naming the topic alone is not enough to act on: what decides
-      // the fix is whether this muxer serves OTHER topics. Non-empty but
-      // missing the requested topic => a dialer/server channel-id mismatch
-      // (the dial path opens a pot-git channel on whatever live socket reaches
-      // the device, while serve is registered per muxer+topic). Empty => the
-      // connection handler never wired serve on this muxer at all. Only
-      // computed for the reason that depends on it, and never throws.
-      let wiredTopics = '';
+      // Read the muxer's serve registrations only for the reason that depends
+      // on them. `null` => unreadable, which the formatter renders distinctly
+      // from "readable and empty" (a very different diagnosis).
+      let wiredTopicHexes: string[] | null = [];
       if (reason === 'not-serving') {
-        let wired: string;
         try {
           const m = state.mux ? serveConfigByMuxer.get(state.mux) : undefined;
-          const hexes = m ? [...m.keys()].map((h) => h.slice(0, 16)) : [];
-          wired = hexes.length > 0 ? hexes.join(',') : '<none>';
+          wiredTopicHexes = m ? [...m.keys()] : [];
         } catch {
-          wired = '<unreadable>';
+          wiredTopicHexes = null;
         }
-        wiredTopics = ` wiredTopics=${wired}`;
       }
       potGitLog(
         'warn',
-        `[pot-git] serve REFUSED reason=${reason} repo=${v.repoKey} peer=${peerTag(state)} ` +
-          `topic=${topicTag}${wiredTopics} id=${v.id}` +
+        `[pot-git] serve REFUSED reason=${reason} repo=${v.repoKey} peer=${peerTag(state)}` +
+          `${formatRefusalTarget(reason, state.topicHex, wiredTopicHexes)} id=${v.id}` +
           (suppressed > 0 ? ` (+${suppressed} identical suppressed in the last ${REFUSE_LOG_WINDOW_MS / 1000}s)` : ''),
       );
     }
@@ -1193,4 +1228,8 @@ export const _testing = {
   SESSION_LEAK_WARN_AT,
   noteSessionHighWater,
   newChannelState: newState,
+  /** The refusal line's (muxer, topic) tail. Exposed because `potGitLog` is a
+   *  no-op under vitest, so the emitted line is unobservable in a test — and
+   *  this tail is the whole diagnostic payload of a `not-serving` refusal. */
+  formatRefusalTarget,
 };
