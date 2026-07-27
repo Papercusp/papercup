@@ -48,6 +48,9 @@ import {
   isNothingToGate,
   realCheckpointDeps,
   pipelineName,
+  formatGateLineageLine,
+  computeGateLineage,
+  type GateLineage,
   type CheckpointDeps,
   type CheckpointExec,
   type FailingFile,
@@ -717,6 +720,84 @@ describe('runGreenCheckpoint', () => {
     const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
     expect(r.reason).toBe('not-green');
     expect(messages.some((m) => m.includes('already changed since candidate'))).toBe(false);
+  });
+
+  // EI-18685041726970077 — owner-flagged highest-leverage fix: every not-green verdict
+  // carries an inline one-line LINEAGE (candidate sha, commits behind tip, whether the
+  // failing files were touched in that range) so a stale-candidate red is distinguishable
+  // from a real break without manual git archaeology.
+  describe('EI-18685041726970077: gate verdict lineage', () => {
+    it('formatGateLineageLine: candidate IS the tip — nothing newer to blame', () => {
+      const lineage: GateLineage = { candidate: 'a'.repeat(40), tip: 'a'.repeat(40), commitsBehind: 0, failingFilesChangedInRange: [] };
+      const line = formatGateLineageLine(lineage);
+      expect(line).toContain('📍 lineage:');
+      expect(line).toContain('IS the current tip');
+      expect(line).toContain('real red');
+    });
+
+    it('formatGateLineageLine: commits behind, no failing files touched in range — presumptively real', () => {
+      const lineage: GateLineage = {
+        candidate: 'c'.repeat(40),
+        tip: 't'.repeat(40),
+        commitsBehind: 4,
+        failingFilesChangedInRange: [],
+      };
+      const line = formatGateLineageLine(lineage);
+      expect(line).toContain('4 commit(s) behind tip');
+      expect(line).toContain('none of the failing files were modified');
+      expect(line).toContain('presumptively a real red');
+    });
+
+    it('formatGateLineageLine: commits behind, failing files touched in range — presumptively stale', () => {
+      const lineage: GateLineage = {
+        candidate: 'c'.repeat(40),
+        tip: 't'.repeat(40),
+        commitsBehind: 7,
+        failingFilesChangedInRange: ['src/a.test.ts', 'src/b.test.ts'],
+      };
+      const line = formatGateLineageLine(lineage);
+      expect(line).toContain('7 commit(s) behind tip');
+      expect(line).toContain('2 of the failing file(s) were MODIFIED in that range');
+      expect(line).toContain('presumptively STALE');
+      expect(line).toContain('src/a.test.ts');
+      expect(line).toContain('src/b.test.ts');
+    });
+
+    it('computeGateLineage: counts commits behind tip and names failing files touched in range', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const candidate = await commit('a', '2', 'c2 — the candidate');
+      await commit('src/failing.test.ts', 'fixed', 'c3');
+      await commit('other.ts', 'x', 'c4');
+      const tip = await commit('other.ts', 'y', 'c5');
+      const lineage = await computeGateLineage(repo, 'main', candidate, ['src/failing.test.ts']);
+      expect(lineage).not.toBeNull();
+      expect(lineage!.tip).toBe(tip);
+      expect(lineage!.commitsBehind).toBe(3); // c3, c4, c5
+      expect(lineage!.failingFilesChangedInRange).toEqual(['src/failing.test.ts']);
+    });
+
+    it('computeGateLineage: candidate IS the tip', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const candidate = await commit('a', '2', 'c2');
+      const lineage = await computeGateLineage(repo, 'main', candidate, ['src/failing.test.ts']);
+      expect(lineage).toEqual({ candidate, tip: candidate, commitsBehind: 0, failingFilesChangedInRange: [] });
+    });
+
+    it('runGreenCheckpoint: not-green verdict carries the lineage line in the broadcast body + the structured result', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const candidate = await commit('a', '2', 'c2 — the (stale-by-verdict-time) candidate');
+      await commit('src/failing.test.ts', 'fixed', 'c3 — fixes it, landed after the candidate was cut');
+      const { deps } = stubDeps(false, ['src/failing.test.ts']);
+      const messages: string[] = [];
+      deps.broadcast = async (_s: string, body?: string) => { messages.push(body ?? ''); };
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+      expect(r.reason).toBe('not-green');
+      expect(r.lineage).toMatchObject({ candidate, commitsBehind: 1, failingFilesChangedInRange: ['src/failing.test.ts'] });
+      expect(messages.some((m) => m.includes('📍 lineage:') && m.includes('1 commit(s) behind tip') && m.includes('presumptively STALE'))).toBe(true);
+    });
   });
 
   // EI-10615 — the stale-red rescue must run BEFORE the partial-green prefix salvage.

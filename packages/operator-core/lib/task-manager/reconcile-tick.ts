@@ -21,7 +21,7 @@
 
 import { absCgroupDir, nodeCgroupFs, sampleCgroup, type CgroupFs } from './cgroup-read';
 import { reconcile, summarizeReconcile, scopeUnitOf, type ReconcileResult } from './reconcile';
-import { scanProcesses, type ScanOptions, type ScanResult } from './scan';
+import { scanProcesses, type ScanOptions, type ScanResult, type ScannedProcess } from './scan';
 import {
   clearVanishedUnaccounted,
   listLiveTasks,
@@ -56,6 +56,21 @@ export interface ReconcileTickResult {
     processes: number;
     userManagerRoot: string | null;
   };
+  /**
+   * The processes the scan actually SAW, passed through rather than reduced to a
+   * count (WI-6475, owner-reported: "the task manager shows no tasks, obviously we
+   * have running tasks").
+   *
+   * The scan already walks every pid under our slice AND every signature-matching
+   * process in the user manager, reading each one's cmdline — then the tick threw
+   * all of it away and kept `processes: <number>`. So the pane could report "400
+   * process(es) scanned · 111 foreign group(s)" while rendering an empty table,
+   * which reads as broken however accurate the count is.
+   *
+   * Cheap: this is a passthrough of an array the scan already built, not a second
+   * walk. Callers that only want the count keep reading `scan.processes`.
+   */
+  scannedProcesses: ScannedProcess[];
   /** True when the scan could not be trusted enough to close rows. */
   degraded: boolean;
   degradedReason?: string;
@@ -101,6 +116,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         processes: scan.processes.length,
         userManagerRoot: scan.userManagerRoot,
       },
+      scannedProcesses: scan.processes,
       degraded,
       degradedReason,
       touched: 0,
@@ -172,6 +188,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       processes: scan.processes.length,
       userManagerRoot: scan.userManagerRoot,
     },
+    scannedProcesses: scan.processes,
     degraded,
     degradedReason,
     touched,

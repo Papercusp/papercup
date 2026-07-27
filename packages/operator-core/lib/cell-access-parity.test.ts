@@ -46,8 +46,31 @@ import { BUILTIN_CELLS, registerBuiltinCells } from './cell-registrations';
  *   A. BEHAVIOURAL — a surface answers a reader differently from the oracle.
  *   B. ROOT        — someone adds a NEW reader-less accessor to the registry.
  *   C. CALL-SITE   — someone calls an EXISTING unchecked accessor from a new surface.
- * Legs B and C each carry a deliberate violation proving the detector actually fires,
- * which is P-028's stated acceptance criterion.
+ * ...since joined by D (the visibility-kind refusal matrix) and E (the walk over the
+ * REAL registry). Legs A–D EACH carry a deliberate violation proving the detector
+ * actually fires, which is P-028's stated acceptance criterion; leg E carries a
+ * non-vacuity check and a census instead, because it walks a corpus rather than
+ * applying a predicate.
+ *
+ * ⚠ WHAT CATCHES A FAULT IN THE ORACLE ITSELF — measured, not assumed (P-009).
+ *
+ * A parity gate compares every surface AGAINST `canReadCell`, so the obvious worry is
+ * that it cannot see a bug IN `canReadCell`: break the oracle and both sides of every
+ * comparison move together, agreement is preserved, and the gate stays green. That
+ * worry is HALF right, and the half that is wrong is the useful part.
+ *
+ * Mutating `canReadCell` to fail closed (`return false` for every spec) was run
+ * against this file on 2026-07-27: 14 tests RED. The parametrized parity cases in leg
+ * A behaved exactly as feared — oracle `false`, surfaces `false`, agreement intact,
+ * green. What caught it was leg D's NON-VACUITY leg, "the oracle itself discriminates
+ * … the INSIDE reader must be admitted": an assertion in the POSITIVE direction, on a
+ * hardcoded expectation rather than on the oracle's own output.
+ *
+ * So the property that makes this gate robust is not the parity comparison — it is
+ * that every leg proves the oracle can still say YES before asserting that it says NO.
+ * Delete the prove-capable-first legs as redundant and the whole file degrades into a
+ * tautology that a dead oracle satisfies perfectly. They are load-bearing; the
+ * agreement assertions are not, on their own.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────

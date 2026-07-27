@@ -71,12 +71,24 @@ type Live = {
   error?: string;
 };
 
+type LiveProcess = { pid: number; cmdline: string | null; cgroupPath: string; owned: boolean };
+
 type Payload = {
   enabled: boolean;
   summary: { total: number; byState: Record<string, number>; byClass: Record<string, number> };
   live: (Live & { unaccounted?: number | { cgroupPath: string; pids: number[]; sample: string }[] }) | null;
   rows: Row[];
+  liveProcesses?: LiveProcess[];
 };
+
+/** `node …/foo/bar.ts --flag` → `bar.ts` — the part a human scans for. Pure. */
+export function shortCmd(cmdline: string | null): string {
+  if (!cmdline) return '—';
+  const parts = cmdline.trim().split(/\s+/);
+  const meaningful = parts.find((p) => !/^(node|npx|npm|bash|sh|python3?|tsx)$/.test(p.replace(/.*\//, ''))) ?? parts[0];
+  const base = meaningful.replace(/.*\//, '');
+  return base.length > 0 ? base : cmdline.slice(0, 40);
+}
 
 // ── pure formatters (exported for tests) ────────────────────────────────────
 
@@ -334,6 +346,37 @@ export default function TasksClient(): ReactElement {
             rows={data?.rows ?? []}
             getRowKey={(r) => r.taskId}
           />
+        </div>
+      )}
+
+      {/* WHAT IS ACTUALLY RUNNING.
+          The ledger above answers "what did our enrolment seams record", and at any
+          instant that is nearly empty — the three enrolled seams are all short-lived,
+          so the pane showed 0 rows beside its own "400 process(es) scanned". Both
+          numbers were right and the pane still read as broken (owner-reported).
+          This section answers the question the tab actually promises. */}
+      {liveProcs.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ ...mono, fontSize: 13, marginBottom: 6 }}>
+            Running now · {liveProcs.length} process(es)
+            <span style={{ opacity: 0.65 }}>
+              {' '}
+              · {liveProcs.filter((p) => p.owned).length} enrolled · {liveProcs.filter((p) => !p.owned).length}{' '}
+              unenrolled
+            </span>
+          </div>
+          <p style={{ opacity: 0.65, fontSize: 12, maxWidth: 780, marginBottom: 8, lineHeight: 1.45 }}>
+            Enrolled processes carry provenance (they appear in the ledger above). Unenrolled ones are real and
+            running, but were started outside a chokepoint — so we can see them, not attribute them.
+          </p>
+          <div style={{ overflowX: 'auto' }}>
+            <Table
+              style={{ minWidth: 560, ...mono }}
+              columns={PROC_COLUMNS}
+              rows={liveProcs}
+              getRowKey={(p) => String(p.pid)}
+            />
+          </div>
         </div>
       )}
     </div>

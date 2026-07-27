@@ -46,11 +46,41 @@ export type TaskInventoryRow = {
   logPath: string | null;
 };
 
+/**
+ * A process the kernel scan SAW but the ledger does not own.
+ *
+ * Owner-reported (WI-6475): "the task manager is showing no tasks, obviously we have
+ * running tasks". Both facts were true at once, and that is the bug. Only three seams
+ * enrol (orchestrator agent turns, backgrounded bash jobs, headless fleet members),
+ * each of them SHORT-LIVED, so at any given instant almost nothing enrolled is
+ * mid-flight — while ~400 real processes run on the box. The pane rendered an empty
+ * table next to its own line reading "400 process(es) scanned", which is not a
+ * subtle failure: it reads as broken.
+ *
+ * The scan already collects pid + cmdline + cgroup for every one of these. Showing
+ * them costs nothing and makes the pane answer the question its own tooltip promises
+ * ("every process running right now") instead of "what our three seams enrolled in
+ * the last minute".
+ */
+export type LiveProcessRow = {
+  pid: number;
+  cmdline: string | null;
+  cgroupPath: string;
+  /** true = inside our slice (enrolled lineage); false = signature-matched, unenrolled. */
+  owned: boolean;
+};
+
 export type TaskInventory = {
   enabled: boolean;
   summary: { total: number; byState: Record<string, number>; byClass: Record<string, number> };
   live: unknown;
   rows: TaskInventoryRow[];
+  /**
+   * What is ACTUALLY running, independent of the ledger. Populated only when the
+   * caller asks for the live view (it comes from the same dry-run scan). Capped so a
+   * busy box cannot ship an unbounded payload to a sidebar pane.
+   */
+  liveProcesses: LiveProcessRow[];
 };
 
 export type TaskInventoryOptions = {
@@ -62,8 +92,11 @@ export type TaskInventoryOptions = {
 
 /** The disabled-flag payload. Shared so both callers render the same empty state. */
 export function disabledInventory(): TaskInventory {
-  return { enabled: false, summary: { total: 0, byState: {}, byClass: {} }, rows: [], live: null };
+  return { enabled: false, summary: { total: 0, byState: {}, byClass: {} }, rows: [], live: null, liveProcesses: [] };
 }
+
+/** Cap on live-process rows shipped to the pane. Well above the ~400 this box runs. */
+const MAX_LIVE_PROCESS_ROWS = 800;
 
 export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise<TaskInventory> {
   const { state, cls, includeEnded = false, live: wantLive = false } = opts;
@@ -83,6 +116,7 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
   }
 
   let live: unknown = null;
+  let liveProcesses: LiveProcessRow[] = [];
   if (wantLive) {
     // Never let a scan fault take the PANE down — a task manager that goes blank
     // exactly when the box is unhealthy is worse than one that renders the ledger
@@ -103,6 +137,19 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
           sample: g.sampleCmdline.slice(0, 200),
         })),
       };
+      // Owned first (enrolled lineage), then the signature-matched strangers; within
+      // each, by pid so the order is stable across the 5s refresh and rows do not
+      // jump under the reader's cursor.
+      liveProcesses = tick.scannedProcesses
+        .slice()
+        .sort((a, b) => Number(b.owned) - Number(a.owned) || a.pid - b.pid)
+        .slice(0, MAX_LIVE_PROCESS_ROWS)
+        .map((p) => ({
+          pid: p.pid,
+          cmdline: p.cmdline ? p.cmdline.slice(0, 300) : null,
+          cgroupPath: p.cgroupPath,
+          owned: p.owned,
+        }));
     } catch (e) {
       live = { error: (e as Error).message.slice(0, 300) };
     }
@@ -112,6 +159,7 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
     enabled: true,
     summary: { total: rows.length, byState, byClass },
     live,
+    liveProcesses,
     // `?? null` on every nullable field is load-bearing, not defensive noise: the
     // store types these as `T | null | undefined`, and `JSON.stringify` DROPS an
     // undefined-valued key entirely. Left alone, a task with no work-item would ship
