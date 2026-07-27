@@ -78,13 +78,16 @@ export interface HandoffWithAcceptance {
   repinged_by?: HandoffRecord;
 }
 
-/** True if an arbitrary envelope is a handoff, acceptance, expiry, or re-ping record. */
+/**
+ * True if an arbitrary envelope is a handoff, acceptance, expiry, or re-ping
+ * record. Decided by the DECLARED `kind` alone (P-009) — never by body/summary
+ * prose, so a `message` claiming "handoff accepted" is not one.
+ */
 export function isHandoffRecord(rec: CoordEnvelope): rec is HandoffRecord {
   return (
-    rec.kind === 'handoff' ||
-    rec.kind === 'handoff_accepted' ||
-    rec.kind === 'handoff_expired' ||
-    rec.kind === 'handoff_repinged'
+    typeof rec?.kind === 'string' &&
+    HANDOFF_KIND_SET.has(rec.kind) &&
+    isExecutableCoordKind(rec.kind)
   );
 }
 

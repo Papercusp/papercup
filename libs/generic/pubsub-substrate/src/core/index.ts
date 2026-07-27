@@ -16,6 +16,10 @@ export {
   COORD_EXECUTABLE_KINDS,
   COORD_CONVERSATIONAL_KINDS,
   isExecutableCoordKind,
+  // P-009: the single door from an envelope to a state transition. The intent is
+  // BODY-FREE by construction, so a transition path cannot read prose.
+  type CoordTransitionIntent,
+  readCoordTransitionIntent,
   type CoordEnvelope,
   newMsgId,
   compareByTsThenId,
@@ -32,7 +36,9 @@ export { type InboxOptions, filterInbox } from './inbox';
 export {
   type OpenHandoffInput,
   type HandoffRecord,
+  type HandoffKind,
   type HandoffWithAcceptance,
+  HANDOFF_KINDS,
   isHandoffRecord,
   foldHandoffs,
 } from './handoffs';

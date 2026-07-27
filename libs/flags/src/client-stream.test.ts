@@ -30,6 +30,10 @@ beforeEach(() => {
   vi.mocked(createResilientEventSource).mockReset();
   // reset the module store to all-defaults
   setFlagPayload({ flags: {} as FlagValues, evaluatedAt: 0, source: 'defaults' });
+  // The flag stream is now SHARED per endpoint (one socket for N callers), so the
+  // sharing map is module state that must be dropped between cases — otherwise a
+  // later test reuses the previous test's stream and never re-invokes the mock.
+  _resetFlagStreamSharing();
 });
 
 afterEach(() => {
@@ -113,7 +117,10 @@ describe('subscribeToFlagStream — wired transport', () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it('forwards optional onOpen/onStatusChange hooks straight through to the resilient source', () => {
+  // The stream is shared per endpoint, so the wrapper passes its own FAN-OUT
+  // callbacks (not the caller's function identity) — the contract is that
+  // invoking them reaches every live caller's hooks.
+  it('delivers onOpen/onStatusChange to the caller through the shared fan-out', () => {
     vi.stubGlobal('EventSource', class FakeEventSource {});
     const close = vi.fn();
     vi.mocked(createResilientEventSource).mockReturnValue({ close } as unknown as ReturnType<
@@ -123,14 +130,16 @@ describe('subscribeToFlagStream — wired transport', () => {
     const onStatusChange = vi.fn();
     subscribeToFlagStream('/api/flags/stream', { onOpen, onStatusChange });
     const call = vi.mocked(createResilientEventSource).mock.calls[0][0];
-    expect(call.onOpen).toBe(onOpen);
-    expect(call.onStatusChange).toBe(onStatusChange);
+    call.onOpen?.();
+    call.onStatusChange?.('failing');
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onStatusChange).toHaveBeenCalledWith('failing');
   });
 
-  it('passes onOpen/onStatusChange as undefined when no hooks are given (no crash)', () => {
+  it('is safe when no hooks are given (fan-out invoked with zero subscriber hooks)', () => {
     const { call } = arrange();
-    expect(call.onOpen).toBeUndefined();
-    expect(call.onStatusChange).toBeUndefined();
+    expect(() => call.onOpen?.()).not.toThrow();
+    expect(() => call.onStatusChange?.('open')).not.toThrow();
   });
 });
 

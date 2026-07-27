@@ -187,7 +187,12 @@ export async function runRefAnnouncePublishTick(
     // and is catastrophically wrong for one on a different line of history.
     const fromOid =
       priorShaByRef.get(r.ref) ??
-      (false as unknown as string | null) ?? // MUTATION-TEST: part A reverted
+      (await deriveNamespaceGenesisBaseline(
+        input.repoPath,
+        `refs/namespaces/${namespaceHex}/${r.ref}`,
+        namespaceHex,
+        runGit,
+      )) ??
       input.genesisBaselineSha ??
       null;
     if (fromOid === r.sha) continue; // this ref didn't move (or nothing under it is unexposed)
