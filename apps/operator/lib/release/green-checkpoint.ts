@@ -299,6 +299,11 @@ export interface CheckpointResult {
    *  durably recorded (release-actions.ts persists it via buildCheckpointDetail), not lost
    *  to a truncated console log. */
   isolationNote?: string;
+  /** EI-18685041726970077: on the not-green path, the lineage of the judged candidate
+   *  vs the integration branch's tip AT VERDICT TIME — commits behind + whether any
+   *  failing file was touched in that range. See {@link GateLineage}. Absent when the
+   *  lineage read itself failed (fail-soft — never blocks or alters the verdict). */
+  lineage?: GateLineage;
 }
 
 export interface CheckpointRunLock {
@@ -761,6 +766,92 @@ export function describeFailingCases(cases: string[] | undefined): string {
   const shown = cases.slice(0, ISOLATION_MAX_NAMED_CASES);
   const more = cases.length - shown.length;
   return ` — failed case(s): ${shown.map((c) => `"${c}"`).join(', ')}${more > 0 ? ` (+${more} more)` : ''}`;
+}
+
+/* ── gate verdict lineage (EI-18685041726970077) ──────────────────────────────
+ *
+ * Owner-flagged [owner 2026-07-26] as the single highest-leverage fix from the
+ * nine-detector audit: "put lineage in the gate verdict. One line — candidate is
+ * N commits behind tip; the failing files were modified in the tip range — would
+ * have collapsed tonight's multi-hour red-gate detour into thirty seconds."
+ *
+ * TODAY (before this): a red gate verdict states WHICH tests failed but not WHICH
+ * COMMIT it judged, so a red caused by a stale candidate (the run judged code that
+ * peers have since fixed) is indistinguishable from a real break without manual
+ * git archaeology. Every not-green verdict now carries this inline, as one line:
+ * the candidate sha, how many commits behind the current tip it is, and whether
+ * any of the failing files were touched in that range — the discriminator: if
+ * they were, the red is presumptively stale.
+ *
+ * Deliberately a SEPARATE, cheaper read from the `retriage` stale-candidate
+ * re-triage below: `retriage` re-RUNS the failing tests at tip (minutes, and only
+ * fires when a workspace/gate-id mapping exists) to make an auto-refire DECISION;
+ * this is a single `git rev-list`/`git diff` pair (milliseconds) that always runs
+ * and is purely DISPLAY — it never re-executes a test or alters the advance/hold
+ * decision. The two are complementary: this answers "should a human even suspect
+ * staleness" in the time it takes to read one line; `retriage` is the automated
+ * follow-through once that suspicion is warranted.
+ */
+
+export interface GateLineage {
+  /** The sha this run judged. */
+  candidate: string;
+  /** The integration branch's tip AT THE TIME the verdict was built — a
+   *  best-effort snapshot re-resolved right here, not the quiet-cut `tip` used
+   *  elsewhere in this file for the auto-refire decision (may have moved again by
+   *  the time a reader looks at this verdict). */
+  tip: string;
+  /** Commits between `candidate` (exclusive) and `tip` (inclusive). 0 when the
+   *  candidate IS the tip (nothing newer to blame). */
+  commitsBehind: number;
+  /** Of the failing test files, which ones were touched somewhere in
+   *  `candidate..tip` — the presumptive-stale discriminator. */
+  failingFilesChangedInRange: string[];
+}
+
+/** Pure formatter — the ONE line the verdict leads with. Kept separate from the
+ *  git reads so the exact wording is unit-testable without a repo. */
+export function formatGateLineageLine(lineage: GateLineage): string {
+  const { candidate, tip, commitsBehind, failingFilesChangedInRange: changed } = lineage;
+  if (commitsBehind === 0) {
+    return `📍 lineage: candidate ${candidate.slice(0, 8)} IS the current tip ${tip.slice(0, 8)} — nothing newer to blame, this is a real red`;
+  }
+  const discriminator =
+    changed.length > 0
+      ? `${changed.length} of the failing file(s) were MODIFIED in that range (presumptively STALE — re-verify at tip before re-diagnosing from scratch): ${changed.join(', ')}`
+      : `none of the failing files were modified in that range (presumptively a real red)`;
+  return `📍 lineage: candidate ${candidate.slice(0, 8)} is ${commitsBehind} commit(s) behind tip ${tip.slice(0, 8)} — ${discriminator}`;
+}
+
+/** Compute the lineage for a NOT-GREEN verdict. Fail-soft end to end (a lineage
+ *  read is diagnostic display only, and must never block or alter the red path) —
+ *  any git error resolves to `null`, and the caller treats that as "no lineage
+ *  note this run" rather than throwing. */
+export async function computeGateLineage(
+  repo: string,
+  branch: string,
+  candidate: string,
+  failingTests: string[],
+): Promise<GateLineage | null> {
+  try {
+    const tip = await revParse(repo, branch);
+    if (tip === candidate) {
+      return { candidate, tip, commitsBehind: 0, failingFilesChangedInRange: [] };
+    }
+    const [commits, changed] = await Promise.all([
+      commitsBetween(repo, candidate, tip),
+      failingTests.length > 0 ? changedFiles(repo, candidate, tip) : Promise.resolve<string[]>([]),
+    ]);
+    const changedSet = new Set(changed);
+    return {
+      candidate,
+      tip,
+      commitsBehind: commits.length,
+      failingFilesChangedInRange: failingTests.filter((f) => changedSet.has(f)),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /* ── stale-candidate re-triage ────────────────────────────────────────────────
@@ -2085,28 +2176,36 @@ export async function runGreenCheckpoint(
   }
   if (!green) {
     deps.log(`candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? 'unset'}`);
-    // EI-6542: surface "this exact failing test file already changed since the
-    // candidate" — the manual git-log check a triaging agent otherwise repeats by
-    // hand. Purely informational (never alters the advance/hold decision): a
-    // logically-atomic change split across git-sync ticks means the quiet-cut
-    // candidate can be stale by the time the ~40min suite finishes, and a newer
-    // commit may already have fixed the exact failing file(s). Best-effort — any
+    // EI-6542 / EI-18685041726970077: surface "this exact failing test file already
+    // changed since the candidate" AND the one-line LINEAGE the owner flagged as the
+    // single highest-leverage fix from the nine-detector audit — the manual git-log
+    // archaeology a triaging agent otherwise repeats by hand every time. A red gate
+    // verdict states WHICH tests failed but not WHICH COMMIT it judged, so a red
+    // caused by a stale candidate (peers already fixed it) is indistinguishable from a
+    // real break without this. Purely informational (never alters the advance/hold
+    // decision): a logically-atomic change split across git-sync ticks means the
+    // quiet-cut candidate can be stale by the time the ~40min suite finishes, and a
+    // newer commit may already have fixed the exact failing file(s). Best-effort — any
     // git error here just skips the note, never blocks the red path.
     let alreadyFixedNote = '';
-    if (failingTests?.length) {
-      try {
-        const freshTip = await revParse(cfg.integrationRoot, cfg.integrationBranch);
-        if (freshTip !== candidate) {
-          const changedSinceCandidate = new Set(await changedFiles(cfg.integrationRoot, candidate, freshTip));
-          const alreadyTouched = failingTests.filter((f) => changedSinceCandidate.has(f));
-          if (alreadyTouched.length) {
-            alreadyFixedNote =
-              `\n\n⚠ already changed since candidate ${candidate.slice(0, 8)} (may be fixed-since downstream — verify before re-diagnosing from scratch): ${alreadyTouched.join(', ')}`;
-            deps.log(`already-fixed-since: ${alreadyTouched.join(', ')} changed between ${candidate.slice(0, 8)} and ${freshTip.slice(0, 8)}`);
-          }
-        }
-      } catch (e) {
-        deps.log(`already-fixed-since check skipped (${e instanceof Error ? e.message : e})`);
+    let lineageNote = '';
+    const lineage = await computeGateLineage(cfg.integrationRoot, cfg.integrationBranch, candidate, failingTests ?? []).catch(
+      (e: unknown) => {
+        deps.log(`lineage check skipped (${e instanceof Error ? e.message : e})`);
+        return null;
+      },
+    );
+    if (lineage) {
+      lineageNote = `\n\n${formatGateLineageLine(lineage)}`;
+      deps.log(
+        `lineage: candidate ${lineage.candidate.slice(0, 8)} is ${lineage.commitsBehind} commit(s) behind tip ${lineage.tip.slice(0, 8)}` +
+          (lineage.failingFilesChangedInRange.length
+            ? `; changed-in-range: ${lineage.failingFilesChangedInRange.join(', ')}`
+            : ''),
+      );
+      if (lineage.failingFilesChangedInRange.length) {
+        alreadyFixedNote =
+          `\n\n⚠ already changed since candidate ${candidate.slice(0, 8)} (may be fixed-since downstream — verify before re-diagnosing from scratch): ${lineage.failingFilesChangedInRange.join(', ')}`;
       }
     }
     // WI-2997 (EI-7443 follow-up): best-effort 7d historical flake annotation for
@@ -2124,7 +2223,7 @@ export async function runGreenCheckpoint(
     await deps
       .broadcast(
         `🟥 green-checkpoint: ${candidate.slice(0, 8)} not green — \`${cfg.releaseRef}\` held at ${lastReady?.slice(0, 8) ?? 'unset'}`,
-        summary + alreadyFixedNote + historicalFlakeNote,
+        summary + lineageNote + alreadyFixedNote + historicalFlakeNote,
       )
       .catch(() => {});
     // release-pipeline-resilience-2026-06-09 P-005: emit a reaction event on the RED path,
@@ -2147,10 +2246,14 @@ export async function runGreenCheckpoint(
         sha: candidate,
         from: lastReady ?? null,
         pipeline,
-        summary: summary + alreadyFixedNote + historicalFlakeNote,
+        summary: summary + lineageNote + alreadyFixedNote + historicalFlakeNote,
         failingTests: failingTests ?? [],
         logPath: logPath ?? null,
         runId: deps.runId ?? null,
+        // EI-18685041726970077: the structured lineage, so a consumer (dev:why,
+        // coord:orient, a release-fixer) can read commitsBehind / changed-in-range
+        // as FIELDS instead of re-parsing the prose line above.
+        lineage: lineage ?? null,
       };
       // EI-12457: this candidate resolved red — a subscriber's still-pending green
       // await for this pipeline can now never legitimately fire.
@@ -2165,7 +2268,7 @@ export async function runGreenCheckpoint(
     // P-002: durable human-facing escalation (transition-only, cleared on green).
     await deps.escalate?.(
       `green-checkpoint held: ${candidate.slice(0, 8)} not green`,
-      `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? 'unset'}.\n\nFailing tail:\n${summary}${alreadyFixedNote}${historicalFlakeNote}`,
+      `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? 'unset'}.\n\nFailing tail:\n${summary}${lineageNote}${alreadyFixedNote}${historicalFlakeNote}`,
     ).catch(() => {});
     // docs-audit #2: a held gate must get LOUDER, not go silent. Past 2h/4h/8h
     // re-broadcast a rising-urgency alert (the gate blocks EVERY fleet deploy), so a
@@ -2365,6 +2468,7 @@ export async function runGreenCheckpoint(
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
       ...(isolationNote ? { isolationNote } : {}),
+      ...(lineage ? { lineage } : {}),
     };
   }
 

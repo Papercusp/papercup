@@ -42,7 +42,7 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    'Run a read-only SELECT / WITH…SELECT against the operator Postgres (canonical store behind plans, work-items, issues, tool_invocations, scorecards, recipes, …), or pass `describe` to inspect a relation\'s columns/indexes/constraints (psql `\\d` equivalent). Read-only enforced; 5s statement_timeout; rows capped.',
+    'Run a read-only SELECT / WITH…SELECT against the operator Postgres (canonical store behind plans, work-items, issues, tool_invocations, scorecards, recipes, …), or pass `describe` to inspect a relation\'s columns/indexes/constraints (psql `\\d` equivalent). Read-only enforced; 5s statement_timeout; rows capped. bigint/int8 columns (e.g. queryid) come back as exact-precision STRINGS, never a rounded number.',
   capability: 'intel:read',
   guidance: {
     when:

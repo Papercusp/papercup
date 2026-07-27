@@ -506,7 +506,7 @@ describe('docs:search handler', () => {
       mockRegistry([]);
       const tool = (await import('../search')).default;
       const res = await tool.handler(
-        { query: 'auth flow', limit: 8 } as never,
+        { query: 'auth flow', limit: 8, harness: 'all' } as never,
         { harnessSlug: '*', isSuperuser: true } as never,
       );
       const p = payloadOf(res);

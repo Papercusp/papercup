@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveRepoFile, readRepoFile } from '@papercusp/test-config';
@@ -472,6 +472,83 @@ function scanLib(matches: (code: string) => boolean): string[] {
   walk(LIB_DIR);
   return hits.sort();
 }
+
+/**
+ * ⚠ THE WALK IS TESTED FOR HAVING RUN, NOT FOR HAVING COVERED — and those are
+ * different properties (P-009).
+ *
+ * Legs A, B and C each open with a non-vacuity assertion, and each one checks that
+ * the scan found ONE named anchor file. That catches a walk that returned nothing.
+ * It cannot catch a walk that returned almost nothing — because every leg's anchor
+ * is the file the leg is ABOUT, which sits in the same directory the leg's own
+ * subject lives in, and is therefore the single file most likely to survive any
+ * collapse of the corpus. The three anchors have that property in COMMON, which is
+ * precisely what makes it the untested axis.
+ *
+ * Measured, 2026-07-27: the real corpus is 4,149 files over 127 top-level subdirs.
+ * If `walk` stopped descending, or SKIP grew, or a readdirSync threw and got
+ * swallowed, and the corpus collapsed to `coord/` alone, that is 4,149 -> 5 files
+ * (a 99.88% loss) and LEG A's non-vacuity assertion STILL PASSES: its anchor,
+ * `coord/holder-context.ts`, is one of the five. Collapsed to
+ * `agent-tools/coordination/` it is 4,149 -> 161 and LEG B's anchor likewise
+ * survives. Every leg would report GREEN over a corpus that had stopped containing
+ * the consumers the legs exist to police.
+ *
+ * So the corpus itself gets an assertion, once, here — floors plus DISTANT anchors
+ * deliberately chosen from subtrees no leg is about, so that surviving this check
+ * requires the walk to have actually traversed the tree rather than merely reached
+ * its own neighbourhood. Floors are generous (the tree grows); they are set to
+ * catch a collapse by an order of magnitude, not to pin a number.
+ */
+describe('the scan COVERS the tree, not merely reaches its own directory', () => {
+  // One walk, reused: the corpus is ~4,149 files, so re-walking per case would read
+  // ~25k files to answer six questions about a single traversal.
+  let corpus: string[];
+  beforeAll(() => {
+    corpus = scanLib(() => true);
+  });
+
+  it('walks the whole lib corpus, not just the legs own neighbourhoods', () => {
+    expect(
+      corpus.length,
+      `the walk visited ${corpus.length} files; the real corpus is ~4,149. A walk this ` +
+        `small has collapsed to a subtree, and EVERY leg's non-vacuity check still ` +
+        `passes because each leg's anchor lives in the subtree the leg is about.`,
+    ).toBeGreaterThan(2500);
+
+    const subdirs = new Set(
+      corpus
+        .map((f) => f.replace('packages/operator-core/lib/', '').split('/')[0])
+        .filter((d) => d.endsWith('.ts') === false),
+    );
+    expect(
+      subdirs.size,
+      `the walk reached ${subdirs.size} top-level subdirectories of lib/; the tree has ~127. ` +
+        `A walk that descends into only a handful is not scanning the tree.`,
+    ).toBeGreaterThan(80);
+  });
+
+  /**
+   * The anchors below are chosen for DISTANCE: none is in `coord/` or
+   * `agent-tools/coordination/`, so none of them can be found by a walk that only
+   * reached a leg's own neighbourhood. A leg's own anchor proves nothing here and
+   * is deliberately absent.
+   */
+  it.each([
+    'packages/operator-core/lib/cell-registry.ts',
+    'packages/operator-core/lib/sync-resolver/index.ts',
+    'packages/operator-core/lib/plan-items/claims.ts',
+    'packages/operator-core/lib/task-manager/managed-spawn.ts',
+    'packages/operator-core/lib/agent-tools/index.ts',
+  ])('reaches the distant file %s', (distant) => {
+    expect(
+      corpus,
+      `${distant} is not in the scanned corpus. It is far from every leg's anchor, so ` +
+        `its absence means the walk is not reaching the consumers the legs police — ` +
+        `while the legs themselves still report GREEN.`,
+    ).toContain(distant);
+  });
+});
 
 describe('the scan strips comments before matching', () => {
   /**
