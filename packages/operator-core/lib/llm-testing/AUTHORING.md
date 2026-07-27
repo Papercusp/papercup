@@ -5,9 +5,15 @@ A scenario is one declarative TypeScript file under
 imports it, drives a sim-user / SUT / judge loop, asserts, and persists.
 
 This guide is what you read **before** writing a new one. It assumes
-the framework's already running — see
-`apps/operator/docs/plans/llm-testing-phase1-status-2026-05-14.md` for
-where the pieces live.
+the framework's already running. For where the pieces live, read the
+tree itself — `packages/operator-core/lib/llm-testing/` holds
+`scenarios/`, `targets/`, `rubrics/`, `asserts/` and `variants/`, and
+each is small enough to skim.
+
+> The phase-1 status plan this section used to point at no longer
+> exists on disk (plans are Postgres-canonical; the `docs/plans/*.md`
+> files are projections). Resolve a plan by slug with `plans:get`
+> rather than by file path.
 
 ---
 
