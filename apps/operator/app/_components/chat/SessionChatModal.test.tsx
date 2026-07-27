@@ -994,4 +994,101 @@ describe('SessionChatModal', () => {
       expect(lastAgentDossierProps?.startingUp).toBe(false);
     });
   });
+
+  // WI-6440: the reload half of the same window. `pendingLaunch` is client-local
+  // and dies with the page, so a reload during boot dropped the modal back onto
+  // the gone-away copy while the BOARD, reading the durable `starting` tier, was
+  // concurrently calling the same session "Fresh session — launched, not started
+  // yet". Every case below passes NO pendingLaunch — that is the point.
+  describe('WI-6440 starting-up survives a reload (durable `starting` tier)', () => {
+    const GONE = 'No recent Claude session found for this agent.';
+    const STARTING = /Starting up — waiting for this session to come online/;
+    const FAILED = /This session hasn't come online/;
+
+    function seedTiers(tiers: {
+      active?: Array<Record<string, unknown>>;
+      starting?: Array<Record<string, unknown>>;
+    }) {
+      H.results['advRoster.list'] = {
+        data: [{ active: tiers.active ?? [], pending: [], starting: tiers.starting ?? [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    }
+
+    it('says "starting up" for a session the server still lists as starting, with no pendingLaunch', async () => {
+      seedTiers({ starting: [{ ownerId: 'su-new-1', startedAt: new Date().toISOString() }] });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-starting-up')).toBeTruthy());
+      expect(screen.getByText(STARTING)).toBeTruthy();
+      expect(screen.queryByText(GONE)).toBeNull();
+    });
+
+    // The literal reported symptom: the rail said "This agent is no longer in
+    // the live roster" about a session launched ~10s earlier.
+    it('passes startingUp:true to the dossier rail, so the rail does not call it gone', async () => {
+      seedTiers({ starting: [{ ownerId: 'su-new-1', startedAt: new Date().toISOString() }] });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+      expect(lastAgentDossierProps?.startingUp).toBe(true);
+    });
+
+    // Non-vacuity: the tier is matched by ownerId, not merely "is the tier
+    // non-empty". Without this a bug reading `starting.length > 0` would pass.
+    it('does not claim a DIFFERENT session is starting just because the tier is non-empty', async () => {
+      seedTiers({ starting: [{ ownerId: 'su-someone-else', startedAt: new Date().toISOString() }] });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText(GONE)).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-starting-up')).toBeNull();
+    });
+
+    // A registered session outranks a stale `starting` row (the tiers are
+    // deduped server-side; this pins the client's behaviour if that ever slips).
+    it('treats a session present in `active` as registered even if it also appears in `starting`', async () => {
+      seedTiers({
+        active: [{ ownerId: 'su-new-1' }],
+        starting: [{ ownerId: 'su-new-1', startedAt: new Date().toISOString() }],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText(GONE)).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-starting-up')).toBeNull();
+    });
+
+    // The did-not-come-online fallback has to work off the DURABLE timestamp
+    // too — otherwise a reload resets the 60s window and the modal promises
+    // forever that a dead launch is on its way.
+    it('admits the launch failed when the record\'s own startedAt is already past the grace window', async () => {
+      seedTiers({
+        starting: [
+          { ownerId: 'su-new-1', startedAt: new Date(Date.now() - 61_000).toISOString() },
+        ],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText(FAILED)).toBeTruthy());
+      expect(screen.queryByText(STARTING)).toBeNull();
+    });
+
+    // An undateable launch must not be reported as a FAILED one — the board
+    // makes the same call (ageSec(null) falls through rather than accusing).
+    it('stays on "starting up" when the record carries no usable startedAt', async () => {
+      seedTiers({ starting: [{ ownerId: 'su-new-1', startedAt: null }] });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText(STARTING)).toBeTruthy());
+      expect(screen.queryByText(FAILED)).toBeNull();
+    });
+  });
 });
