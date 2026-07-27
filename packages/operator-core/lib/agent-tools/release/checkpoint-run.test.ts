@@ -460,6 +460,10 @@ describe('release:checkpoint-run', () => {
     // A caller told "your file is in there" can trust a red as a real red — which is the
     // other half of the fix, and the half that stops a needless re-fire.
     expect(String(b.note)).toMatch(/real verdict on your change/);
+    // The generic exclusion notice is kept but DOWNGRADED — it is provably not about the
+    // caller's files, so it must not read as a warning that shadows the positive answer.
+    expect(String(b.note)).toMatch(/none of the files you named/);
+    expect(String(b.note)).not.toMatch(/⚠ quiet-cut EXCLUDED/);
   });
 
   it('answers containment on the already_running path too — that verdict is the one landing', async () => {
