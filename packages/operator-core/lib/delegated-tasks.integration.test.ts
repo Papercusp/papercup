@@ -222,7 +222,10 @@ describe('resume — findOpenDelegatedTask + resolveDelegatedTask', () => {
 
     await dt.resolveDelegatedTask(task.id, 'sr');
     expect(await dt.findOpenDelegatedTask('sr')).toBeNull();
-    expect((await wi.getWorkItem(task.id))?.state).toBe('resolved');
+    // Terminal-state UNIFICATION (work-items.ts): issue `resolved`→`done`, with the
+    // resolved-vs-closed nuance preserved in `terminal_reason`. The assertion here is
+    // "resolving SETTLES the work item", and `done` is that settled terminal.
+    expect((await wi.getWorkItem(task.id))?.state).toBe('done');
   });
 });
 

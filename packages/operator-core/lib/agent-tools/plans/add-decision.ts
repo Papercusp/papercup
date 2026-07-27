@@ -355,12 +355,17 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    // `itemRefs` is a declared alias of `refs` (EI-18735663944089262):
+    // plans:get echoes a decision's refs back under that exact name, so
+    // accept it here too instead of rejecting the read-shape field name.
+    // `refs` wins when both are given on the same object.
+    const batchRefs = args.refs ?? args.itemRefs;
     const list: NewDecision[] = args.items?.length
       ? args.items.map((it) => ({
           slug: it.slug,
           title: it.title,
           body: it.body,
-          refs: it.refs ?? args.refs,
+          refs: it.refs ?? it.itemRefs ?? batchRefs,
           affects: it.affects ?? args.affects,
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
@@ -370,7 +375,7 @@ export default defineTool({
             slug: args.slug as string,
             title: args.title as string,
             body: args.body as string,
-            refs: args.refs,
+            refs: batchRefs,
             affects: args.affects,
             harness: args.harness,
             rationale: args.rationale,

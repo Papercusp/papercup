@@ -345,7 +345,9 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     // WOULD BE the regression; asserting the unified terminal is the point.
     expect((closed.workItem as Record<string, unknown>).state).toBe('dropped');
     const progressed = await setStateOne({ id: featId, state: 'in_progress', harness: 'papercup' });
-    expect((progressed.workItem as Record<string, unknown>).state).toBe('in_progress');
+    // Same normalization map: `in_progress`→`wip` (work-items.ts). The input vocabulary
+    // is still accepted; only the STORED/returned state is unified.
+    expect((progressed.workItem as Record<string, unknown>).state).toBe('wip');
 
     const released = await releaseOne({ id: bugId });
     expect((released.workItem as Record<string, unknown>).assignee).toBeNull();
@@ -605,8 +607,9 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
 
     const res = await call(expandTool, { id: parentId, children: [{ title: 'late child' }] });
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/already settled \(state=passed\)/);
-    expect(res.settledState).toBe('passed');
+    // The guard reports the STORED state, which is now the unified terminal.
+    expect(res.error).toMatch(/already settled \(state=done\)/);
+    expect(res.settledState).toBe('done');
     const kids = await expandedChildrenOf(parentId);
     expect(kids).toHaveLength(0); // refused — no orphan children created
   });

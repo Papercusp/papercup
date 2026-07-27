@@ -2,6 +2,16 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+// WI-6410: the scanner moved to a shared module so the CLIENT half of this
+// guard can ask the same question ("which resolvers can report unavailable?")
+// with the same answer. Assertions below are unchanged.
+import {
+  collectCatchReturns,
+  isDegradedReturn,
+  isFlatArrayReturn,
+  isObjectSnapshotReturn,
+} from './learning-degraded-provenance.scan';
+
 /**
  * WI-6382 structural guard: no `learning.*` resolver may return a BARE empty
  * snapshot from a catch block.
@@ -33,80 +43,8 @@ import { describe, expect, it } from 'vitest';
 
 const INDEX = join(__dirname, 'index.ts');
 
-interface CatchReturn {
-  resolver: string;
-  line: number;
-  text: string;
-}
-
-/**
- * Walk index.ts, tracking the current `'learning.*'` resolver key and brace
- * depth, and collect every `return` statement that sits inside a `catch` block.
- */
-function collectCatchReturns(src: string): CatchReturn[] {
-  const lines = src.split('\n');
-  const out: CatchReturn[] = [];
-  let resolver: string | null = null;
-  let resolverDepth = -1;
-  let depth = 0;
-  // Depths at which a catch block opened (may nest).
-  const catchDepths: number[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const code = line.replace(/\/\/.*$/, '');
-
-    // A top-level resolver key: `  'learning.foo': {`
-    const key = /^\s{2}'(learning\.[A-Za-z.]+)':\s*\{/.exec(line);
-    if (key) {
-      resolver = key[1];
-      resolverDepth = depth;
-    }
-
-    const opensCatch = /\}\s*catch\s*\(/.test(code);
-
-    for (const ch of code) {
-      if (ch === '{') {
-        depth++;
-        if (opensCatch && catchDepths[catchDepths.length - 1] !== depth) {
-          catchDepths.push(depth);
-        }
-      } else if (ch === '}') {
-        if (catchDepths[catchDepths.length - 1] === depth) catchDepths.pop();
-        depth--;
-        if (resolver && depth <= resolverDepth) {
-          resolver = null;
-          resolverDepth = -1;
-        }
-      }
-    }
-
-    if (resolver && catchDepths.length > 0) {
-      const ret = /^\s*return\s+(.+)$/.exec(code);
-      if (ret) out.push({ resolver, line: i + 1, text: ret[1].trim() });
-    }
-  }
-  return out;
-}
-
 const SRC = readFileSync(INDEX, 'utf8');
 const CATCH_RETURNS = collectCatchReturns(SRC);
-
-/** A returned value that is a flat array literal — `[]`, or `[…]` of non-objects. */
-function isFlatArrayReturn(text: string): boolean {
-  return /^\[\s*\]\s*;?$/.test(text);
-}
-
-/** A returned value that is an object snapshot wrapped in the helper. */
-function isDegradedReturn(text: string): boolean {
-  return /^\[\s*degraded(Because)?\s*\(/.test(text);
-}
-
-/** A returned value that is an object snapshot — `[{ … }]` or `[SOME_EMPTY]`. */
-function isObjectSnapshotReturn(text: string): boolean {
-  if (isFlatArrayReturn(text) || isDegradedReturn(text)) return false;
-  return /^\[\s*\{/.test(text) || /^\[\s*[A-Z_][A-Z0-9_]*\s*\]/.test(text);
-}
 
 describe('WI-6382 guard — learning.* catches must not return a bare empty', () => {
   // ── NON-BLINDNESS ────────────────────────────────────────────────────────
