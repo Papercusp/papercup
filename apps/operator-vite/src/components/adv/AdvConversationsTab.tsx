@@ -1489,6 +1489,20 @@ function ThreadsView({
   const [topic, setTopic] = useQueryState('ctopic', parseAsString.withDefault(''));
   const [sel, setSel] = useQueryState('conversation', parseAsString);
   const [busy, setBusy] = useState(false);
+  // Refs in this view's callouts/prose open the thing they name (owner ask,
+  // 2026-07-27). A `conversation` ref is a sibling row of THIS view, so it
+  // re-targets the selection rather than stacking a modal on it.
+  const refPopup = useConversationRefPopup('cref', null);
+  const onOpenRef = useCallback(
+    (ref: ConversationRef) => {
+      if (ref.kind === 'conversation') {
+        void setSel(ref.ref);
+        return;
+      }
+      refPopup.open(ref);
+    },
+    [refPopup, setSel],
+  );
   const listQuery = useSyncQuery<ConvRow>({
     queryName: 'conversations.questionsList',
     args: { limit: COMMS_LIST_LIMIT },
@@ -1708,13 +1722,23 @@ function ThreadsView({
                 ))}
               </p>
             )}
-            {detail.body && <p className="pc-coord__body">{detail.body}</p>}
+            {detail.body && (
+              <p className="pc-coord__body">
+                <LinkifiedText text={detail.body} harnessSlug={detail.harness_slug} onOpen={onOpenRef} />
+              </p>
+            )}
             {detail.accepted_answer && (
               <div className="pc-advconv__callout pc-advconv__callout--accepted">
                 <CheckCircle2 size={15} aria-hidden />
                 <div>
                   <strong>Accepted answer</strong>
-                  <p>{detail.accepted_answer}</p>
+                  <p>
+                    <LinkifiedText
+                      text={detail.accepted_answer}
+                      harnessSlug={detail.harness_slug}
+                      onOpen={onOpenRef}
+                    />
+                  </p>
                 </div>
               </div>
             )}
@@ -1724,7 +1748,13 @@ function ThreadsView({
                 <div>
                   <strong>Linked work-item</strong>
                   <p>
-                    <span>{detail.promoted_issue_id}</span>
+                    {/* Opens the item instead of naming it (owner, 2026-07-27). */}
+                    <ConversationRefLink
+                      refValue={{ kind: 'issue', ref: detail.promoted_issue_id }}
+                      harnessSlug={detail.harness_slug}
+                      onOpen={onOpenRef}
+                      size="sm"
+                    />
                     <em>Promoted to an engineer issue; implementation discussion continues there.</em>
                   </p>
                 </div>
@@ -1751,11 +1781,14 @@ function ThreadsView({
                       <strong>{p.author_id ?? 'unknown'}</strong>
                       {p.created_ts && <span>{dateStamp(p.created_ts)}</span>}
                     </span>
-                    <p>{p.body}</p>
+                    <p>
+                      <LinkifiedText text={p.body} harnessSlug={detail.harness_slug} onOpen={onOpenRef} />
+                    </p>
                   </li>
                 ))}
               </ol>
             )}
+            {refPopup.element}
             {detail.state === 'open' && (
               <ReplyComposer
                 key={detail.id}
@@ -1783,6 +1816,7 @@ function DeliberationsView({
   loadingSummary?: UnifiedConversationRow;
 } = {}) {
   const [sel, setSel] = useQueryState('thread', parseAsString);
+  const [, setConvRoute] = useQueryStates(CONVERSATION_ROUTE_PARAMS);
   const listQuery = useSyncQuery<ThreadRow>({
     queryName: 'conversations.deliberationList',
     args: { limit: COMMS_LIST_LIMIT },
@@ -1806,6 +1840,26 @@ function DeliberationsView({
   const posts = detail?.posts ?? [];
   const loading = listQuery.loading;
   const error = listQuery.error ? errText(listQuery.error) : null;
+
+  // `parent_kind` is the store's OWN typed parent (issue · feature ·
+  // conversation), so the ref never has to be guessed from the string shape.
+  const attachedRef = useMemo<ConversationRef | null>(() => {
+    const kind = asConversationRefKind(head?.parent_kind);
+    return kind && head?.parent_ref ? { kind, ref: head.parent_ref } : null;
+  }, [head?.parent_kind, head?.parent_ref]);
+  const refPopup = useConversationRefPopup('cref', head?.harness_slug ?? null);
+  const onOpenRef = useCallback(
+    (ref: ConversationRef) => {
+      // A thread attached to a CONVERSATION opens that conversation's own view,
+      // not a work-item popup — the thing it names is a sibling surface.
+      if (ref.kind === 'conversation') {
+        void setConvRoute({ conv: 'threads', ...EMPTY_CONVERSATION_SELECTION, conversation: ref.ref });
+        return;
+      }
+      refPopup.open(ref);
+    },
+    [refPopup, setConvRoute],
+  );
 
   // U1 (operator-vite-ui-consolidation): the deliberations rail renders through
   // the shared, virtualized @papercusp/grid-core RichGrid (the agent-chats
@@ -1913,7 +1967,18 @@ function DeliberationsView({
               <div>
                 <p className="pc-advconv__detailkicker">
                   <span className="pc-coord__kind">{head.parent_kind ?? 'thread'}</span>
-                  {head.parent_ref ? <span className="pc-advconv__statepill">{head.parent_ref}</span> : null}
+                  {/* "Attached to" used to be dead text naming a work item you
+                      then had to go find by hand (owner ask, 2026-07-27). */}
+                  {attachedRef ? (
+                    <ConversationRefLink
+                      refValue={attachedRef}
+                      harnessSlug={head.harness_slug}
+                      onOpen={onOpenRef}
+                      size="sm"
+                    />
+                  ) : head.parent_ref ? (
+                    <span className="pc-advconv__statepill">{head.parent_ref}</span>
+                  ) : null}
                 </p>
                 <h2>{head.title ?? head.thread_id}</h2>
               </div>
@@ -1936,11 +2001,18 @@ function DeliberationsView({
                       <strong>{p.author_id ?? 'unknown'}</strong>
                       <span>{fmtTs(p.created_at)}</span>
                     </span>
-                    <p>{p.body ?? ''}</p>
+                    <p>
+                      <LinkifiedText
+                        text={p.body}
+                        harnessSlug={p.harness_slug ?? head.harness_slug}
+                        onOpen={onOpenRef}
+                      />
+                    </p>
                   </li>
                 ))}
               </ol>
             )}
+            {refPopup.element}
           </article>
         )}
         </section>

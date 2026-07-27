@@ -37,6 +37,17 @@ import { COORD_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
 import { runBulk, bulkContent, type BulkItemResult } from '../../_bulk';
 import { cellTranscriptionHint } from '../../../cell-transcription-detector';
+import {
+  messageBodyArg,
+  blockingArg,
+  whyArg,
+  assertEnvelopeSectionSplit,
+  stampMessageFields,
+  toSections,
+  sectionsToText,
+  type MessageSection,
+  type MessageWhy,
+} from '../message-fields';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
@@ -49,7 +60,14 @@ const ENDTURN_SETTLE_MS = Number(process.env.PAPERCUSP_ENDTURN_SETTLE_MS) || 150
 interface SendMsg {
   to: string[];
   summary: string;
-  body?: string;
+  /** P-032 / D-064: a plain string is the n=1 case; an array carries the four
+   *  AUTHORED per-section fields. Flattened to text for `env.body` (every
+   *  existing reader keeps working) with the STRUCTURE stamped alongside it. */
+  body?: string | MessageSection[];
+  /** ENVELOPE (D-064). Is the SENDER blocked until this is dealt with? */
+  blocking?: boolean;
+  /** ENVELOPE (D-011). A goal REF, never prose — the receiver queries its LIVE state. */
+  why?: MessageWhy;
   files?: string[];
   plan_slug?: string;
   related_msg_id?: string;
@@ -292,7 +310,14 @@ const reportArg = z
 const itemSpec = z.object({
   to: toArg,
   summary: summaryArg,
-  body: z.string().optional(),
+  body: messageBodyArg,
+  // P-032 / D-064, reopened by D-070: the ENVELOPE half of the split. These
+  // cannot vary per section — `blocking` because a scheduler acts on a message
+  // as a UNIT, `why` because one message serves one goal (D-011). The SECTION
+  // half (premises / forYouBecause / youMayNotKnow / couldNotDetermine) lives on
+  // `body[]`, and message-fields.ts REFUSES either half on the wrong side.
+  blocking: blockingArg,
+  why: whyArg,
   files: z.array(z.string()).optional(),
   plan_slug: z.string().optional(),
   related_msg_id: z
@@ -534,6 +559,19 @@ async function sendOne(
   //     never arrives is a different obligation from an unanswered 'answer').
   const expectsReply = msg.expects !== 'none';
   extra.expects = msg.expects;
+  // P-032 / D-064 (reopened by D-070). The envelope/section boundary is checked
+  // BEFORE anything is persisted: `.strict()` on the section schema already
+  // rejects unknown keys, but an ENVELOPE field on a section gets the typed
+  // refusal that teaches the split instead of a generic "unrecognized key".
+  if (Array.isArray(msg.body)) assertEnvelopeSectionSplit(msg.body);
+  const sections = toSections(msg.body);
+  const fieldStamp = stampMessageFields({ body: msg.body, why: msg.why, blocking: msg.blocking });
+  // Only the fields that CARRY something ride the envelope — a plain-string send
+  // stays byte-identical on the wire, so the n=1 case costs nothing.
+  if (fieldStamp.sections) extra.sections = fieldStamp.sections;
+  if (fieldStamp.premisesClassified) extra.premisesClassified = fieldStamp.premisesClassified;
+  if (fieldStamp.why) extra.why = fieldStamp.why;
+  if (fieldStamp.blocking !== undefined) extra.blocking = fieldStamp.blocking;
   // EI-8986: stamp an absolute deadline (epoch ms) so the reply-deadline-sweep
   // (dbos/periodic-workflows.ts) can select it with a simple `<= now` compare —
   // no need to re-derive "elapsed since send" from `ts` at sweep time. Positive
@@ -561,7 +599,10 @@ async function sendOne(
   const env = await sendMessage(identity, {
     to: toSend,
     summary: msg.summary,
-    body: msg.body,
+    // The TEXT projection of the sections. `env.body` stays a plain string so
+    // coord:inbox / coord:read / the [coord+N] injection / coord:thread / the
+    // pui pane are unchanged; the structure rides `extra.sections` beside it.
+    body: sections.length ? sectionsToText(sections) : undefined,
     files: msg.files,
     plan_slug: msg.plan_slug,
     related_msg_id: msg.related_msg_id,
@@ -1120,7 +1161,11 @@ export default defineTool({
     // 1 element(s)" zod default on these two required fields.
     to: toArg.optional(),
     summary: summaryArg.optional(),
-    body: z.string().optional(),
+    body: messageBodyArg,
+    // P-032 / D-064 envelope half — see itemSpec for why these two cannot be
+    // per-section.
+    blocking: blockingArg,
+    why: whyArg,
     files: z.array(z.string()).optional(),
     plan_slug: z.string().optional(),
     related_msg_id: z
@@ -1173,6 +1218,8 @@ export default defineTool({
             to: args.to as string[],
             summary: args.summary as string,
             body: args.body,
+            blocking: args.blocking,
+            why: args.why,
             files: args.files,
             plan_slug: args.plan_slug,
             related_msg_id: args.related_msg_id,

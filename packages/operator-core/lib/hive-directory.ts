@@ -91,6 +91,13 @@ export interface DiscoveredHive {
   /** Member upstream repos, encoded `<owner>/<repo>[#<id>]` (hive-announce.ts) —
    *  the repo→Hive binding signal a paste-a-URL lookup matches against (P-003). */
   memberRepos?: string[];
+  /**
+   * A3 (EI-18788176839043286): the pot-git repoKey the POT HOME's bare store is
+   * named on the OWNER's device. Unlike `memberRepos`, adopting this needs NO
+   * correlator — a device whose local pot home matches `potId` takes it directly,
+   * which is the only route open to a home entry that carries no upstream coords.
+   */
+  homeRepoKey?: string;
   visibility: HiveVisibility;
   /** Epoch-ms the hive was created (from the announce). */
   createdAt: number;
@@ -126,6 +133,10 @@ export interface LocalHiveDescriptor {
   /** Member upstream repos, encoded `<owner>/<repo>[#<id>]` — derived fresh at
    *  publish time (deriveHiveMemberRepoRefs), like hivePubkey. */
   memberRepos?: string[];
+  /** A3: this pot HOME's own pot-git repoKey, derived fresh at publish time
+   *  (`canonicalRepoKey` of the home entry) so peers adopt it instead of
+   *  deriving — see the field on {@link DiscoveredHive}. */
+  homeRepoKey?: string;
   visibility: HiveVisibility;
   createdAt: number;
   ownerGithubLogin: string;
@@ -391,6 +402,7 @@ export class HiveDirectory {
       memberTopics: [...frame.member_topics],
       ...(frame.member_links ? { memberLinks: [...frame.member_links] } : {}),
       ...(frame.member_repos ? { memberRepos: [...frame.member_repos] } : {}),
+      ...(frame.home_repo_key ? { homeRepoKey: frame.home_repo_key } : {}),
       visibility: frame.visibility,
       createdAt: frame.created_at,
       announcedTs: frame.ts,
@@ -549,6 +561,8 @@ export class HiveDirectory {
       member_topics: [...desc.memberTopics],
       ...(desc.memberLinks ? { member_links: [...desc.memberLinks] } : {}),
       ...(desc.memberRepos ? { member_repos: [...desc.memberRepos] } : {}),
+      // A3: the pot home's own repoKey — the correlator-free adoption signal.
+      ...(desc.homeRepoKey ? { home_repo_key: desc.homeRepoKey } : {}),
       visibility: desc.visibility,
       created_at: desc.createdAt,
       ts: this.nowMs(),

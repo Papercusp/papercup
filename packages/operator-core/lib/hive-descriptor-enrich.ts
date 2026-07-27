@@ -96,11 +96,29 @@ export async function enrichLocalHiveDescriptor(
       if (links.length) memberLinks = links;
     }
 
+    // A3 (EI-18788176839043286): announce the repoKey the POT HOME's own bare
+    // store is named here. The member links above can only be adopted by a peer
+    // that already shares the upstream coords they are keyed on — and the home
+    // entry is precisely the one that often has none (ensure-papercusp-hive
+    // mints it upstream-less), so without this it can correlate against nothing
+    // and derives its own key forever. Needs no correlator: a peer whose local
+    // pot home matches this announce's potId adopts it directly.
+    let homeRepoKey = desc.homeRepoKey;
+    try {
+      const { canonicalRepoKey } = await import('./sync/pot-git/repo-identity');
+      const reg = await loadRegistry(ws);
+      const home = reg.projects.find((p) => p.slug === desc.potId);
+      if (home) homeRepoKey = canonicalRepoKey(home);
+    } catch {
+      /* registry unreadable — announce as registered, never fail the build */
+    }
+
     return {
       ...desc,
       ...(pk ? { hivePubkey: pk } : {}),
       ...(memberRepos.length ? { memberRepos } : {}),
       ...(memberLinks?.length ? { memberLinks } : {}),
+      ...(homeRepoKey ? { homeRepoKey } : {}),
       ...(beacon ? { beacon } : {}),
     };
   } catch {

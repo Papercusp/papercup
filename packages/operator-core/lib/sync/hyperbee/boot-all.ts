@@ -48,6 +48,7 @@ import { wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
 import { mapWithConcurrency } from '../../gym/concurrency';
 import { pinRepoKeysForWorkspace } from '../pot-git/pin-repo-keys';
+import { adoptAnnouncedRepoKeysForWorkspace } from '../pot-git/adopt-announced-repo-keys';
 import type { BootedHarnessFacts } from './substrate-eviction-policy';
 // P-012 slice B — the swarm-presence keepalive that lets a federating harness be
 // left dark. This import is one-way: substrate-wake-wiring reaches BACK into
@@ -1165,6 +1166,14 @@ export async function bootAllHarnessesForActiveWorkspace(
     // impossible later. Must run ahead of the boots — git-sync and publish both
     // read the key. Idempotent and fail-soft: it never throws.
     await pinRepoKeysForWorkspace(wsId);
+    // A3: then CORRECT that guess against the pot owner. Pinning alone only makes
+    // a key stable, not shared — two devices still have to arrive at the same
+    // value, which for a pot home minted locally on both (ensure-papercusp-hive
+    // does exactly that on every install) happens only by luck. This adopts the
+    // owner's announced `homeRepoKey` over any key stamped 'local'. Order matters:
+    // the backfill above writes the guess down, this pass overrides it — which is
+    // the whole reason that stamp exists. Fail-soft; never throws.
+    await adoptAnnouncedRepoKeysForWorkspace(wsId);
     let slugs: string[];
     try {
       slugs = await discover(wsId);

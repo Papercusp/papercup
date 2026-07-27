@@ -84,6 +84,23 @@ export interface HiveAnnounceBody {
    * announce that omits it signs the exact bytes earlier versions did.
    */
   member_repos?: string[];
+  /**
+   * The pot-git repoKey the POT HOME's own bare store is named on the owner's
+   * device (A3, EI-18788176839043286).
+   *
+   * WHY THIS EXISTS SEPARATELY FROM `member_repos`/`member_links`. Those two
+   * identify a member repo by its UPSTREAM GitHub coords, so a peer can only
+   * adopt from them if it already holds the same coords. The pot HOME is exactly
+   * the entry that often does NOT: `ensure-papercusp-hive` mints it with no
+   * upstream at all, so it can correlate against nothing and is left deriving —
+   * and therefore diverging — forever. This field needs no correlator: a device
+   * whose local pot-home matches this announce's `hive_id` adopts it directly.
+   *
+   * OPTIONAL + additive; included in the canonical signing bytes only when
+   * present, so an announce that omits it signs the exact bytes earlier versions
+   * did.
+   */
+  home_repo_key?: string;
   /** Directory visibility — `public` announces to the global topic; `invite` to an
    *  invite-scoped topic only. (`private` never announces, so it never appears on
    *  the wire — included for completeness/round-trip.) */
@@ -187,6 +204,7 @@ export function hiveAnnounceSigningBytes(body: HiveAnnounceBody): Buffer {
   if (typeof body.nonce === 'string') ordered.nonce = body.nonce;
   if (typeof body.hive_pubkey === 'string') ordered.hive_pubkey = body.hive_pubkey;
   if (Array.isArray(body.member_repos)) ordered.member_repos = body.member_repos;
+  if (typeof body.home_repo_key === 'string') ordered.home_repo_key = body.home_repo_key;
   if (body.beacon && typeof body.beacon === 'object') {
     const canon = canonicalBeaconForSigning(body.beacon);
     if (canon) ordered.beacon = canon;
@@ -240,6 +258,7 @@ export function verifyHiveAnnounce(
         (!Array.isArray(frame.member_links) || frame.member_links.some((l) => typeof l !== 'string'))) ||
       (frame.member_repos !== undefined &&
         (!Array.isArray(frame.member_repos) || frame.member_repos.some((r) => typeof r !== 'string'))) ||
+      (frame.home_repo_key !== undefined && typeof frame.home_repo_key !== 'string') ||
       !isHiveVisibility(frame.visibility) ||
       typeof frame.created_at !== 'number' ||
       typeof frame.sig !== 'string'
