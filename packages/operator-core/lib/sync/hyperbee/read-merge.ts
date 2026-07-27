@@ -825,6 +825,35 @@ async function raceApplyTimeout<T>(groupKey: string, p: Promise<T>, timeoutMs: n
  * as a throw, so a persistently-hanging (poison) op converges to quarantine
  * exactly like a persistently-throwing one — see `MergeApplyTimeoutError`.
  */
+/**
+ * WI-559 / EI-18775450536624845 — is this a STRUCTURAL apply failure: one caused by
+ * a row the receiver does not have YET, which resolves itself the moment that row
+ * arrives or a repair lands?
+ *
+ * Today only `23503 foreign_key_violation`. The motivating incident: a joiner whose
+ * local Pot handle differed from the owner's announced slug had no FK parent for the
+ * federated `pot_members` scope, so EVERY inbound roster op raised 23503. Both of
+ * this function's non-existence consequences then fired at once —
+ *   1. the throw propagated and ABORTED the whole merge pass, every ~60s, so the log
+ *      never advanced (writer at 7944, merged to 0); and
+ *   2. after MAX_APPLY_THROWS the op was QUARANTINED — winner recorded, op dropped —
+ *      converting a self-healing structural mismatch into PERMANENT data loss
+ *      (~20 roster ops lost in 3 minutes on the live rig).
+ * The roster stayed empty and the joiner admitted nobody.
+ *
+ * A structural failure is the OPPOSITE of poison: poison is a value PG can NEVER
+ * store, whereas this op is perfectly storable and merely EARLY. Dropping it is the
+ * one thing that must not happen, because nothing re-reads it afterwards.
+ *
+ * Deliberately NARROW. Widening this predicate weakens the poison quarantine that
+ * stops a genuinely un-appliable op from wedging the merge loop forever — only add a
+ * code that is provably self-healing once the missing referent exists.
+ */
+function isStructuralApplyFailure(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === '23503';
+}
+
 async function applyRecordingWinner(
   cursor: MergeCursor,
   groupKey: string,
@@ -834,6 +863,15 @@ async function applyRecordingWinner(
   applyTimeoutMs: number = MERGE_APPLY_TIMEOUT_MS,
   maxWinnersEntries: number = DEFAULT_MAX_WINNERS_ENTRIES,
   onWinnersEvicted?: (evictedCount: number, size: number) => void,
+  /**
+   * WI-559: fired when this op is STRUCTURALLY DEFERRED. The caller MUST hold this
+   * log's cursor at the deferred position, because positions only ever move forward
+   * — advancing past a deferred op loses it just as permanently as quarantining it
+   * (not recording a winner is necessary but NOT sufficient; the op also has to be
+   * re-READ). Later ops in the pass still apply and record winners, so the re-read
+   * next pass is cheap: `beatsStored` dedupes every one of them.
+   */
+  onStructuralDeferral?: () => void,
 ): Promise<boolean> {
   let ok: boolean;
   try {
@@ -843,6 +881,34 @@ async function applyRecordingWinner(
       applyTimeoutMs,
     );
   } catch (err) {
+    // WI-559: a STRUCTURAL failure is neither transient nor poison, and the two
+    // existing branches both handle it WRONG — rethrowing aborts the pass (so no
+    // LATER op in it can land either), and quarantining drops the op forever.
+    // Correct handling is a third outcome: SKIP this op without recording a winner,
+    // and let the pass continue. The winner stays unrecorded, so `beatsStored` will
+    // re-select the op on a later pass and it lands by itself once the referent
+    // exists — no re-fold, no operator action.
+    if (isStructuralApplyFailure(err)) {
+      // Reuse the existing per-op streak counter purely to RATE-LIMIT the log — a
+      // whole-Pot structural mismatch defers every roster op on every pass, which
+      // would otherwise flood the journal (the live incident deferred ~20 ops in 3
+      // minutes, forever). The counter deliberately never reaches quarantine here;
+      // it self-clears on the success path once the referent lands.
+      const throws = (cursor.applyThrows ??= new Map());
+      const ident = opIdent(groupKey, env);
+      const n = (throws.get(ident) ?? 0) + 1;
+      throws.set(ident, n);
+      if (n === 1 || n % 100 === 0) {
+        console.warn(
+          `[read-merge] structural apply deferral (${n}×): op ${groupKey} (src=${(env.sourceLogKeyHex ?? '').slice(0, 12)}) ` +
+            `references a row this receiver does not have yet — SKIPPED (winner NOT recorded, cursor HELD), the pass ` +
+            `CONTINUES, and it re-applies automatically once the referent lands. Not quarantined, not lost: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      onStructuralDeferral?.();
+      return false;
+    }
     const isTimeout = err instanceof MergeApplyTimeoutError;
     const throws = (cursor.applyThrows ??= new Map());
     const ident = opIdent(groupKey, env);
@@ -1029,7 +1095,21 @@ export async function mergeAdmittedLogsIncremental(
       }
     }
 
+    // WI-559 — structural-deferral cursor hold. Cursor positions are MONOTONIC, so
+    // not recording a winner is necessary but NOT sufficient to make a deferred op
+    // re-appliable: it must also be re-READ, and it never will be if this pass
+    // advances past it. Track the FIRST deferred index and clamp every position
+    // write for this log to it. Later ops in the pass still apply and record
+    // winners, so re-reading them next pass is cheap — `beatsStored` dedupes each
+    // one — and the deferred op finally lands by itself once its referent arrives.
     let pos = from;
+    let firstDeferredPos = -1;
+    const holdCursorHere = (): void => {
+      if (firstDeferredPos < 0) firstDeferredPos = pos;
+    };
+    const effectivePos = (p: number): number =>
+      firstDeferredPos >= 0 ? Math.min(p, firstDeferredPos) : p;
+
     for (; pos < upper; pos++) {
       // EI-81: yield a macrotask every ~1k iterations — counted per pass
       // (the counter carries across logs) so N small logs can't dodge it.
@@ -1051,7 +1131,7 @@ export async function mergeAdmittedLogsIncremental(
       // the 240s bg-host watchdog and never return.
       if (onCursorAdvance && ++opsSincePersist >= MERGE_PERSIST_EVERY_OPS) {
         opsSincePersist = 0;
-        cursor.positions.set(log.keyHex, pos);
+        cursor.positions.set(log.keyHex, effectivePos(pos));
         try {
           await onCursorAdvance(cursor.positions);
         } catch {
@@ -1118,6 +1198,7 @@ export async function mergeAdmittedLogsIncremental(
               applyTimeoutMs,
               maxWinnersEntries,
               onWinnersEvicted,
+              holdCursorHere,
             )
           )
             applied++;
@@ -1138,11 +1219,14 @@ export async function mergeAdmittedLogsIncremental(
           applyTimeoutMs,
           maxWinnersEntries,
           onWinnersEvicted,
+          holdCursorHere,
         )
       )
         applied++;
     }
-    cursor.positions.set(log.keyHex, pos);
+    // WI-559: never advance PAST a structurally-deferred op — positions are
+    // monotonic, so doing so loses it exactly as permanently as quarantining it.
+    cursor.positions.set(log.keyHex, effectivePos(pos));
     // WI-2105 REV fix: persist this log's advanced cursor (persist-after-apply —
     // the pass's applies committed above). Guarded on `pos > from` so an
     // unchanged log doesn't churn PG each 1Hz tick.

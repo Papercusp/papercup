@@ -21,7 +21,7 @@ import { describe, expect, it, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, utimesSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PassThrough } from 'node:stream';
+import { Duplex } from 'node:stream';
 import { execFileSync } from 'node:child_process';
 import { serveUploadPack } from './fetch-transport';
 import {
@@ -55,14 +55,17 @@ function repoWithCommit(): string {
     GIT_COMMITTER_NAME: 't',
     GIT_COMMITTER_EMAIL: 't@t',
   };
-  execFileSync('git', ['init', '-q', d]);
-  writeFileSync(join(d, 'f'), 'x');
-  execFileSync('git', ['-C', d, 'add', 'f'], { env });
-  execFileSync('git', ['-C', d, 'commit', '-qm', 'c'], { env });
-  // upload-pack wants the GIT DIR, not the worktree root — handed the latter it
-  // exits in ~30ms with "does not appear to be a git repository" and every
-  // timing assertion below passes/fails for the wrong reason.
-  return join(d, '.git');
+  const work = join(d, 'work');
+  execFileSync('git', ['init', '-q', work]);
+  writeFileSync(join(work, 'f'), 'x');
+  execFileSync('git', ['-C', work, 'add', 'f'], { env });
+  execFileSync('git', ['-C', work, 'commit', '-qm', 'c'], { env });
+  // A BARE repo. Handed a worktree root upload-pack exits in ~30ms with
+  // "does not appear to be a git repository", which returns timedOut:false and
+  // makes every timing assertion below pass or fail for the wrong reason.
+  const bare = join(d, 'r.bare');
+  execFileSync('git', ['clone', '--bare', '-q', work, bare]);
+  return bare;
 }
 
 /**
@@ -77,6 +80,27 @@ function repoWithCommit(): string {
  */
 const PKT_HEADER = '0014';
 
+/**
+ * A peer duplex: `push()` sends bytes TO upload-pack's stdin, and whatever
+ * upload-pack writes back is swallowed.
+ *
+ * ⚠ A single `PassThrough` is NOT usable here and fails in a way that looks
+ * like an env bug: `serveUploadPack` does BOTH `duplex.pipe(child.stdin)` and
+ * `child.stdout.pipe(duplex)`, so one PassThrough loops the server's own v2
+ * advertisement straight back into its stdin. upload-pack then parses its own
+ * `000eversion 2` banner as a request and dies with
+ * `fatal: unknown capability 'version 2'` in ~20ms — timedOut:false, every
+ * assertion here meaningless.
+ */
+function peerDuplex(): Duplex {
+  return new Duplex({
+    read() {},
+    write(_chunk, _enc, cb) {
+      cb();
+    },
+  });
+}
+
 describe('serveUploadPack — idle ceiling', () => {
   /**
    * THE BUG. A peer that is actively sending bytes must not be killed merely
@@ -84,7 +108,7 @@ describe('serveUploadPack — idle ceiling', () => {
    */
   it('does NOT kill a serve that is still making progress, past several ceilings', async () => {
     const repo = repoWithCommit();
-    const duplex = new PassThrough();
+    const duplex = peerDuplex();
     const settled = { done: false, timedOut: false };
 
     const p = serveUploadPack(repo, duplex, {
@@ -96,11 +120,11 @@ describe('serveUploadPack — idle ceiling', () => {
       return r;
     });
 
-    duplex.write(PKT_HEADER);
+    duplex.push(PKT_HEADER);
     for (let i = 0; i < 14; i++) {
       await new Promise((r) => setTimeout(r, 60));
       if (settled.done) break;
-      duplex.write('x');
+      duplex.push('x');
     }
 
     // ~900ms elapsed against a 250ms ceiling. A wall-clock ceiling would have
@@ -119,7 +143,7 @@ describe('serveUploadPack — idle ceiling', () => {
    */
   it('still kills a serve that goes silent, at the idle ceiling', async () => {
     const repo = repoWithCommit();
-    const duplex = new PassThrough(); // live, but never written to
+    const duplex = peerDuplex(); // live, but never sends anything
     const res = await serveUploadPack(repo, duplex, {
       timeoutMs: 300,
       allowOutsideRoot: true,

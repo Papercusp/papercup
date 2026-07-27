@@ -275,6 +275,11 @@ export async function composeDispatch(
     ...(hydratedBody ? { body: hydratedBody } : {}),
     ...(args.planSlug ? { plan_slug: args.planSlug } : {}),
     wake: 'required',
+    // D-048: `expects` is required and never defaulted. Dispatch hands the target WORK
+    // and wakes it to start now, so the expectation is 'action' — not 'ack' (we are not
+    // asking it to confirm receipt; the wake result already reports pickup) and never
+    // 'none' (a dispatch nobody is obliged to act on is not a dispatch).
+    expects: 'action',
   })) as { results?: Array<Record<string, unknown>> } | undefined;
 
   const r0 = (sendEnv?.results?.[0] ?? {}) as {
