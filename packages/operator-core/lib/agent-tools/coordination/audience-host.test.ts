@@ -42,10 +42,6 @@ vi.mock('../locks/su-lock-store', async (importOriginal) => ({
   getTxPool: vi.fn(() => ({}) as never),
   readQueue: vi.fn(async () => ({ active_locks: [], waiting: [] })),
 }));
-vi.mock('../locks/coordination-domain', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../locks/coordination-domain')>()),
-  lockCoordinationDomain: vi.fn(() => '/realpath/of/this/checkout'),
-}));
 
 import {
   audienceMode,
@@ -283,10 +279,15 @@ describe('hostAudienceResolvers.listPathLockAgents — the LOCK half of @file: (
     expect(await hostAudienceResolvers.listPathLockAgents(PATH)).toEqual(['holder', 'queued']);
   });
 
-  it("reads THIS checkout's coordination domain with the CANONICALIZED path", async () => {
+  it('reads ACROSS coordination domains with the CANONICALIZED path', async () => {
     await hostAudienceResolvers.listPathLockAgents(`./${PATH}`);
     expect(mockReadQueue).toHaveBeenCalledWith(expect.anything(), {
-      coordinationDomain: '/realpath/of/this/checkout',
+      // Deliberately cross-domain (null), NOT pinned to this checkout: a
+      // domain-scoped read silently reports a genuinely-held lock as ABSENT, which
+      // is the exact defect this resolver exists to remove. Observed live
+      // 2026-07-27: an agent editing the staging tree had its lock recorded under
+      // the papercup-RELEASE domain, so a pinned read would have missed it.
+      coordinationDomain: null,
       paths: [PATH], // the leading './' canonicalized away — it is the same lock key
     });
   });

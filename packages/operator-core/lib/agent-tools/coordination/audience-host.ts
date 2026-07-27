@@ -16,7 +16,6 @@ import { coordWorkspaceId } from './log';
 // The locks shim (NOT `@papercusp/locks` directly) — it imports ./configure for its
 // side effect, so the package's host seam is wired before the first store call.
 import { ensureBootstrap, getTxPool, readQueue, normalizePaths } from '../locks/su-lock-store';
-import { lockCoordinationDomain } from '../locks/coordination-domain';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { getFleet, fleetSlugFromName } from '../../agent-fleets-store';
 import { getFleetDeliveryOverrides } from './fleet-delivery';
@@ -84,7 +83,7 @@ export const hostAudienceResolvers: AudienceResolvers = {
       if (!canonical) return [];
       await ensureBootstrap();
       const queue = await readQueue(getTxPool(), {
-        coordinationDomain: lockCoordinationDomain(),
+        coordinationDomain: null,
         paths: [canonical],
       });
       const ids = new Set<string>();
