@@ -3,8 +3,10 @@ import {
   drillInRefToInbox,
   resolveInboxDrillIn,
   resolvePlanItemDrillIn,
+  resolveRefDestination,
   type DrillInItem,
   type PlanItemDrillItem,
+  type RefDestinationItem,
 } from './curator-card-drill-in';
 
 describe('drillInRefToInbox (deterministic-status-cards P-003/D-004)', () => {
@@ -103,5 +105,81 @@ describe('resolvePlanItemDrillIn (chat-ref-pills-2026-07-26 P-006)', () => {
   it('an empty ref returns null sel even with plan context', () => {
     expect(resolvePlanItemDrillIn('', 'chat-ref-pills-2026-07-26', items)).toEqual({ sel: null });
     expect(resolvePlanItemDrillIn('   ', 'chat-ref-pills-2026-07-26', items)).toEqual({ sel: null });
+  });
+});
+
+describe('resolveRefDestination (hud-open-destinations-and-true-counts-2026-07-27 P-001)', () => {
+  // The regression this exists to prevent (owner report 2026-07-27): a report
+  // row naming a work item or a plan resolved to no ownerAgentId, so the chat
+  // drill-in pushed `/adv?tab=hud` with nothing selected — a visible no-op when
+  // fired from a sidebar already on /adv.
+  const destItems: RefDestinationItem[] = [
+    {
+      id: 'coord-escalation:msg-1',
+      itemRef: null,
+      planSlug: null,
+      ownerAgentId: 'su-abc12345',
+    },
+    {
+      id: 'decision:d-9',
+      itemRef: 'EI-18750935999066024',
+      planSlug: 'git-sync-2026-07-27',
+      ownerAgentId: 'su-def67890',
+    },
+    { id: 'ask-ownerless', itemRef: null, planSlug: 'lonely-plan-2026-07-01', ownerAgentId: null },
+    { id: 'ask-bare', itemRef: null, planSlug: null, ownerAgentId: null },
+  ];
+
+  it('an explicit wi: ref opens the work item, normalized to uppercase', () => {
+    expect(resolveRefDestination('wi:WI-6512', destItems)).toEqual({ kind: 'work-item', id: 'WI-6512' });
+    expect(resolveRefDestination('wi:ei-42', destItems)).toEqual({ kind: 'work-item', id: 'EI-42' });
+  });
+
+  it('an explicit plan: ref opens the plan', () => {
+    expect(resolveRefDestination('plan:my-plan-2026-07-17', destItems)).toEqual({
+      kind: 'plan',
+      slug: 'my-plan-2026-07-17',
+    });
+  });
+
+  it('a BARE work-item id opens the work item — the case that used to no-op', () => {
+    expect(resolveRefDestination('EI-18750935999066024', destItems)).toEqual({
+      kind: 'work-item',
+      id: 'EI-18750935999066024',
+    });
+    expect(resolveRefDestination('F-100', destItems)).toEqual({ kind: 'work-item', id: 'F-100' });
+  });
+
+  it('an escalation ref goes to the owning agent conversation — answering them IS the action', () => {
+    expect(resolveRefDestination('escalation:msg-1', destItems)).toEqual({
+      kind: 'session',
+      ownerAgentId: 'su-abc12345',
+    });
+  });
+
+  it('a matched item prefers its OWN work item over its owning agent (most specific wins)', () => {
+    expect(resolveRefDestination('decision:d-9', destItems)).toEqual({
+      kind: 'work-item',
+      id: 'EI-18750935999066024',
+    });
+  });
+
+  it('a matched ownerless ask falls back to its plan rather than resolving to nothing', () => {
+    expect(resolveRefDestination('ask-ownerless', destItems)).toEqual({
+      kind: 'plan',
+      slug: 'lonely-plan-2026-07-01',
+    });
+  });
+
+  it('a ref naming nothing openable returns none, so the caller can SAY so', () => {
+    expect(resolveRefDestination('health:some-panel', destItems)).toEqual({ kind: 'none' });
+    expect(resolveRefDestination('ask-bare', destItems)).toEqual({ kind: 'none' });
+    expect(resolveRefDestination('', destItems)).toEqual({ kind: 'none' });
+    expect(resolveRefDestination('   ', destItems)).toEqual({ kind: 'none' });
+  });
+
+  it('a ref shaped like a work item but glued into a larger token is NOT a work item', () => {
+    expect(resolveRefDestination('XWI-123', destItems)).toEqual({ kind: 'none' });
+    expect(resolveRefDestination('WI-123abc', destItems)).toEqual({ kind: 'none' });
   });
 });

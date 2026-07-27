@@ -104,6 +104,105 @@ export function resolveInboxDrillIn(
   return { selId: null, filter: null };
 }
 
+/* ── ref → destination (hud-open-destinations-and-true-counts-2026-07-27 P-001) ──
+ *
+ * `resolveInboxDrillIn` above answers "WHICH live attention item is this ref",
+ * which was sufficient while every drill-in had exactly one destination (the
+ * Inbox pane). That pane is retired, and its replacement (P-004: navigate to the
+ * HUD tab, selecting the matched item's owning agent) covers only ONE of the
+ * things a curator report row can name.
+ *
+ * The gap the owner hit (2026-07-27, "clicking open on one of the papercup
+ * reports is supposed to open something relevant but it isn't"): a row naming a
+ * WORK ITEM or a PLAN resolves to no `ownerAgentId`, so the handler pushed
+ * `/adv?tab=hud` with nothing selected — and fired from the chat sidebar, which
+ * is already on `/adv`, that is a visible no-op.
+ *
+ * The rule here is: OPEN THE MOST SPECIFIC THING THE REF NAMES.
+ *   1. a work item (explicit `wi:` prefix, a bare WI-/EI-/F- id, or the matched
+ *      item's own `itemRef`)  → the work item
+ *   2. a plan (`plan:<slug>`, or the matched item's `planSlug`) → the plan
+ *   3. otherwise, an ask from a live agent → that agent's conversation
+ *   4. nothing resolvable (e.g. `health:<panelId>`) → 'none', so the CALLER can
+ *      say so instead of navigating somewhere useless
+ *
+ * The one deliberate exception is `escalation:<msgId>`: an escalation names a
+ * MESSAGE, and the actionable target of a message is the agent that sent it —
+ * answering them IS the response. So an escalation with a resolvable owning
+ * agent goes to the conversation first, falling back to the chain above.
+ *
+ * Pure — `items` is passed in, same contract as the resolvers above.
+ */
+
+/** The live-item shape {@link resolveRefDestination} reads: what
+ *  {@link resolveInboxDrillIn} needs, plus the owning agent the HUD
+ *  conversation destination is keyed by. */
+export type RefDestinationItem = DrillInItem & { ownerAgentId?: string | null };
+
+export type RefDestination =
+  /** Open `id` in WorkItemPopupModal. */
+  | { kind: 'work-item'; id: string }
+  /** Open `slug` in PlanPopupModal. */
+  | { kind: 'plan'; slug: string }
+  /** Open this agent's conversation (the HUD `?hudsession=` destination). */
+  | { kind: 'session'; ownerAgentId: string }
+  /** Nothing this ref names can be opened — the caller must SAY so rather than
+   *  navigate somewhere that looks like a no-op. */
+  | { kind: 'none' };
+
+/** WI-/EI-/F- ids, anchored (a whole ref token, not a scan over prose — that is
+ *  `parseWorkRefs`'s job). Case-insensitive so a `wi:wi-42` ref still resolves;
+ *  the id is normalized to uppercase, matching `parseWorkRefs`. */
+const WORK_ITEM_ID = /^(WI|EI|F)-(\d+)$/i;
+
+function asWorkItemId(token: string): string | null {
+  const m = WORK_ITEM_ID.exec(token.trim());
+  return m ? `${m[1].toUpperCase()}-${m[2]}` : null;
+}
+
+export function resolveRefDestination(
+  ref: string,
+  items: readonly RefDestinationItem[],
+): RefDestination {
+  const r = ref.trim();
+  if (!r) return { kind: 'none' };
+
+  const colon = r.indexOf(':');
+  const prefix = colon >= 0 ? r.slice(0, colon) : '';
+  const bare = colon >= 0 ? r.slice(colon + 1) : r;
+
+  // 1. Explicit kind prefixes from the curator's own ref vocabulary
+  //    (fleet-signals.ts) — these are unambiguous, so they win outright.
+  if (prefix === 'wi' && bare) {
+    return { kind: 'work-item', id: asWorkItemId(bare) ?? bare };
+  }
+  if (prefix === 'plan' && bare) return { kind: 'plan', slug: bare };
+
+  // 2. A bare work-item id carrying no prefix at all.
+  const bareId = colon < 0 ? asWorkItemId(r) : null;
+  if (bareId) return { kind: 'work-item', id: bareId };
+
+  // 3. Resolve against the live items, reusing the SAME matcher the inbox
+  //    destination uses — so the two can never disagree about which item a ref
+  //    denotes, only about where to open it.
+  const { selId } = resolveInboxDrillIn(r, items);
+  const match = selId ? items.find((i) => i.id === selId) ?? null : null;
+
+  // The escalation exception: answering the agent IS the action.
+  if (prefix === 'escalation' && match?.ownerAgentId) {
+    return { kind: 'session', ownerAgentId: match.ownerAgentId };
+  }
+
+  if (match) {
+    const viaItemRef = match.itemRef ? asWorkItemId(match.itemRef) : null;
+    if (viaItemRef) return { kind: 'work-item', id: viaItemRef };
+    if (match.planSlug) return { kind: 'plan', slug: match.planSlug };
+    if (match.ownerAgentId) return { kind: 'session', ownerAgentId: match.ownerAgentId };
+  }
+
+  return { kind: 'none' };
+}
+
 /**
  * @deprecated Use {@link resolveInboxDrillIn}, which matches against the live
  * items. Retained as the escalation-only string translation for any caller
