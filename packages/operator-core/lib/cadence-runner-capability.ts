@@ -93,7 +93,7 @@ async function defaultHasActiveCadenceRoutine(
       AND active = true
       AND name = ANY(${[...CADENCE_RUNNER_ROUTINES]}::text[])
     LIMIT 1
-  `) as unknown[];
+  `) as unknown as { length: number };
   return rows.length > 0;
 }
 

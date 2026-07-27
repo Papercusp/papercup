@@ -6665,9 +6665,17 @@ Measured cut vs the legacy format: **−70%** (5-message block) to **−80%** (s
 `packages/operator-core/lib/coord-schema.ts` is the **single source**:
 
 * **`COORD_LEGEND`** — `lineType → { glyph, name }`, keyed by the lifecycle category (`intent`/`completion`/`claim`/`window`/`handoff`/`finding`) plus the base `CoordKind`s. Glyphs are **1-token ASCII** (`>` `*` `+` `#` `<` `!` `-` `^` `=` `.` `~` `|`) — emoji (`▶ ↪ ⚠`) tokenize to 2–3 tokens, pure waste here. (`|` is `yield` — turn-lifecycle-control Phase 4/P-019: a peer asking you to wrap up at a safe checkpoint and end your turn, i.e. `turn:interrupt`.)
+
+  ⚠ **It is DERIVED, not hand-written — do not add a bare key to it.** Since P-008/D-014 (`agent-protocol-authority-semantics-2026-07-26`) it is composed from two *typed* maps: `LIFECYCLE_LEGEND` (`Record<LifecycleCategory, …>`) and `KIND_LEGEND` (`Record<CoordKind, …>`, ordered executable-then-conversational). So a new lifecycle category or `CoordKind` without a glyph is a **compile error**, not a silent fallback. This is the fix for a real class of bug, not ceremony: `handoff_expired` had been a `CoordKind` since F-FIX-037 with no legend entry, so every expiry line rendered as `-` — indistinguishable from a free-text note, in exactly the place a reader needs to see their handoff timed out. Add the kind to the union and the compiler will tell you where to add its glyph.
+
+  The same split gives the runtime one authority for *“may this line drive a state transition?”* — **`isExecutableCoordKind()`** over the closed `COORD_EXECUTABLE_KINDS` set (`@papercusp/coordination/core`). Narrow through it; never re-list kinds at a call site, which is how the two taxonomies drifted in the first place. Conversational kinds (`message`/`ack`/`escalation`/ `escalation_resolved`) are preserved verbatim for audit but carry **zero** authority — a peer saying “this is done” in a body is a claim, never a transition.
+
 * **`glyphFor(entry)`** — the glyph for one entry: its lifecycle category if it has one (keyed on the **`lifecycle`** envelope field that `coord:emit` stamps — NOT `category`, which is reserved for ambient tags), else its `kind`.
+
 * **`shortHandle(from)`** — `su-ab53332d-…` → `ab533`; shown ONCE per line.
+
 * **`renderInjection(entries)`** (Projection 1, the wire) — the `[coord+N]` block: capping + overflow count, digest-notify coalescing, latest-per-peer intent collapse, no header, no footer.
+
 * **`renderCoordLegend()`** (Projection 2, the prompt) — the once-per-session legend (grammar + glyph key + the relocated footer), spliced into the psu playbook at `<!-- PAPERCUSP-SU:COORD-LEGEND -->` by `renderSuPlaybook`.
 
 Because the wire and the legend **both derive from `COORD_LEGEND`**, they cannot desync — the anti-desync test (`coord-schema.test.ts`) asserts every glyph `renderInjection` can emit is documented in the legend. A positional format can’t self-correct a schema mismatch (no inline header), so this is load-bearing.
@@ -31416,6 +31424,141 @@ This is the same defect as a claim-path that returns an empty result without nam
 * `↩` marks a **reply** (it carries `related_msg_id`): almost always an answer *arriving*, not an ask *waiting*. `•` marks a fresh message — those are the ones likely to need you.
 * **Both `coord:inbox` and `coord:orient` count as reading.** Orienting clears it.
 * Nothing in it needs you? Then nothing is required of you. Carry on.
+
+# Reading pipeline state — position vs health vs nextAction ("is my change live?")
+
+> dev:pipeline_position answers three different questions and they are routinely conflated. POSITION is where your change sits (a boolean per stage). HEALTH is whether that stage is MOVING — the dimension a boolean cannot express, and the one behind most filed pipeline confusion (a 2h52m push freeze read as 'not yet'; 'deployed ✓' read as 'live' while the process served older code, filed 4x independently). NEXTACTION is the single lever, and a NULL nextAction is a positive answer ('waiting is correct'), never a missing one. Also: changeInCandidate (is the judged commit even your code) and sweepExposure (what the next git-sync tick will commit out of your half-finished tree).
+
+## The one call
+
+[Section titled “The one call”](#the-one-call)
+
+```plaintext
+dev:pipeline_position { path: "packages/operator-core/lib/x.ts" }
+```
+
+Read `summary` first — it now LEADS with the answer, not with a row of ticks:
+
+```plaintext
+BLOCKED AT COMMITTED → git-sync:run (commit the working tree — the gate cannot see it)
+  — ⚠ this sweeps ALL 3 dirty paths in the tree, not just yours; only fire it once the
+  set is complete. packages/…/release-trace.test.ts @c3b961f32: committed ✓ · staging ✓
+  · main ✓ · deployed ✓ (live — the serving process started after this code landed)
+  ⚠ +uncommitted edits — SWEEP-EXPOSED: the next git-sync tick (~3 min) commits all 3
+  dirty paths as ONE auto-commit, and the gate can cut its candidate there and judge
+  that intermediate.
+```
+
+Everything after the lead clause is supporting evidence. If you only read one field, read `nextAction`.
+
+## The three dimensions, and why conflating them is the whole bug class
+
+[Section titled “The three dimensions, and why conflating them is the whole bug class”](#the-three-dimensions-and-why-conflating-them-is-the-whole-bug-class)
+
+### 1. POSITION — where the change SITS
+
+[Section titled “1. POSITION — where the change SITS”](#1-position--where-the-change-sits)
+
+`positions.{committedLocal,onStaging,inMain,deployed}`, and per-stage `stages[].position` (`past` | `pending` | `na`).
+
+A position is a boolean, and a boolean cannot distinguish **“not yet, wait”** from **“this leg is dead, waiting is futile.”** That single missing dimension is behind most filed pipeline confusion in this repo.
+
+\`na\` is not \`pending\`
+
+A path whose runtime does not go through the release pipeline (bg-host, gateway, embed-sidecar) is never carried by staging→main→:3070 **at all**. Its gate/main/deployed stages are `na`, not `pending` — reporting them as pending told an agent to wait for something that could never happen to its file (EI-11120 cost a real deploy-and-wait cycle to exactly that misreading).
+
+### 2. HEALTH — whether the stage is MOVING
+
+[Section titled “2. HEALTH — whether the stage is MOVING”](#2-health--whether-the-stage-is-moving)
+
+`stages[].health`: `advancing` | `stalled` | `disabled` | `broken` | `unknown`.
+
+This is the dimension positions cannot express, and reading position without it is how these got filed:
+
+| what the position said  | what health would have said                                     | what it cost                                       |
+| ----------------------- | --------------------------------------------------------------- | -------------------------------------------------- |
+| `staging ✗` — “not yet” | push leg **broken**: git-sync faulting, origin frozen           | 2h52m freeze, 19 stranded commits, read as latency |
+| `deployed ✓` — “live”   | serving **stalled**: the process started before the code landed | filed 4× independently as separate bugs            |
+| `main ✗`, gate 0 reds   | gate **wedged** — not firing at all                             | an invisible \~2h stall reading as fully healthy   |
+
+`gitSync` splits the two legs that `lastStatus` collapses: **`status: 'synced'` is reachable with nothing pushed.** Read `gitSync.pushedRepos` — empty with status `synced` is the trap.
+
+### 3. NEXTACTION — the single lever
+
+[Section titled “3. NEXTACTION — the single lever”](#3-nextaction--the-single-lever)
+
+`blockedOn: StageName | null` + `nextAction: string | null`, derived from the stage table by `deriveBlocker`. Three states that must never collapse into each other:
+
+| `blockedOn` | `nextAction` | meaning                                                                      |
+| ----------- | ------------ | ---------------------------------------------------------------------------- |
+| `null`      | `null`       | it is live — nothing pending                                                 |
+| set         | `null`       | blocked, and **waiting is genuinely correct** — this leg advances on its own |
+| set         | set          | do this one thing                                                            |
+
+A null nextAction is an ANSWER, not a gap
+
+`null` means “there is nothing to do but wait” — a positive verdict. It is deliberately distinct from a missing field, because the failure this surface exists to prevent is an agent inventing a lever (firing a run, escalating to `replaceStale`) when waiting was right. The gate is a singleton: a second fire is *refused*, and the natural escalation from a refusal is the replace-storm that starved the gate of every verdict for 2h (EI-11667).
+
+`blockedOn` says where the change **sits**; the action may belong to a LATER stage. When they differ the summary says both — *“AT PUSHED (advancing on its own) — but GATE IS BLOCKED → …”*. A self-advancing early leg must never mask an actionable stage behind it (that produced a false all-clear while a red gate held `main` for the whole fleet).
+
+## Two questions that come BEFORE “where is my change”
+
+[Section titled “Two questions that come BEFORE “where is my change””](#two-questions-that-come-before-where-is-my-change)
+
+### `changeInCandidate` — is the judged commit even your code?
+
+[Section titled “changeInCandidate — is the judged commit even your code?”](#changeincandidate--is-the-judged-commit-even-your-code)
+
+Before reading a gate verdict as a verdict *on your change*, check whether the commit being judged contains your file’s content:
+
+* `judgingSha` / `judgingContainsPath` — the run **in flight**, i.e. the verdict about to land.
+* `nextCandidateSha` / `nextContainsPath` — what a `release:checkpoint-run` fired **right now** would judge (post quiet-cut). Check this *before* firing.
+
+Every verdict is three-valued: an unresolvable read is `null` (unknown), never `false` and never a silent `true`. **A red from a run that does not carry your change is not evidence your change failed.**
+
+### `sweepExposure` — what the next tick will commit out of your tree
+
+[Section titled “sweepExposure — what the next tick will commit out of your tree”](#sweepexposure--what-the-next-tick-will-commit-out-of-your-tree)
+
+You do not commit here; git-sync does, on a fixed interval, sweeping whatever is on disk into one `chore(git-sync): auto-commit`. So a multi-file change has a window in which a partial, often non-compiling intermediate becomes a real commit — and the gate can cut its candidate inside it. That produced 29 failures against a 14:09 candidate for work whose dependent fix landed at 14:36; every one was already green at tip, and a peer spent a wake triaging code that was never broken (EI-18735166063643844).
+
+```jsonc
+"sweepExposure": {
+  "exposed": true,
+  "dirtyPathCount": 3,          // the BLAST RADIUS — git-sync commits the whole tree
+  "dirtyPathSample": ["…"],
+  "nextSweepInMs": 163095,      // when the commit actually happens
+  "detail": "⚠ SWEEP-EXPOSED: …"
+}
+```
+
+Note what it does **not** carry: a lever. Nothing you can call makes the commit atomic. Either finish the set before the tick, or read a red landing in that window against the candidate sha before believing it.
+
+\`git-sync:run\` is a TREE-WIDE sweep
+
+The `committed` stage’s lever is still `git-sync:run` — but it commits *every* dirty path in the tree, including other agents’ in-flight edits, not just yours. When the sweep would take more than your file the lever says so and tells you to fire it only once your set is complete. Firing it mid-refactor is committing the broken intermediate **on purpose**.
+
+## Practical routing
+
+[Section titled “Practical routing”](#practical-routing)
+
+| you want to know                                          | read                                                                     |
+| --------------------------------------------------------- | ------------------------------------------------------------------------ |
+| is my change live, and if not what is the ONE thing to do | `summary` lead clause, or `blockedOn` + `nextAction`                     |
+| is this leg stuck or just slow                            | `stages[].health` (never a position boolean alone)                       |
+| did my work actually reach origin                         | `gitSync.pushedRepos` (not `status`)                                     |
+| is the running process actually executing my code         | `serving.startedSinceCodeChange` (a git `deployed ✓` cannot answer this) |
+| is the gate judging my code                               | `changeInCandidate.judgingContainsPath`                                  |
+| will the next tick commit my half-finished refactor       | `sweepExposure`                                                          |
+
+## Anti-patterns
+
+[Section titled “Anti-patterns”](#anti-patterns)
+
+* **Do not** hand-diff shas, `merge-base`, and `git log` to answer “is my edit live” — that is the 11-tool-call path this surface replaced, and it went wrong twice on the day it was measured.
+* **Do not** read `deployed ✓` as “live”. It is a git fact stating a process conclusion.
+* **Do not** treat a `null` `nextAction` as “the tool didn’t know”.
+* **Do not** poll for git-sync to push. If your next step genuinely needs the code live on `:3070`, force the deploy (see the repo `CLAUDE.md` § commit discipline); otherwise keep working.
 
 # A readOnly corestore open is a point-in-time snapshot — refresh BEFORE you open
 
@@ -85937,6 +86080,14 @@ node node_modules/vitest/vitest.mjs run --config packages/operator-core/vitest.i
 # P-079 runbook — live bidirectional federation acceptance
 
 > **Webapp retired.** Every `localhost:3055`/`localhost:3070` URL here is only reachable while the **Tauri dev shell** is running (`cd papercusp-desktop && npm run dev`). Drive the operator through the Tauri shell, not a browser (see [Agent E2E playbook](/internal/docs/testing/agent-e2e)).
+
+Rig wedged, ports stale, or a VM needs restarting? Read the runbook FIRST (WI-753)
+
+Before you debug a federation failure as a *product* bug, check it isn’t the **rig**: stale operator/PG ports, a wedged smoke, leaked VMs, or a peer that is silently local-only after a reset (missing `gh` auth — WI-757) all present as “federation is broken.”
+
+* **Precondition check (one command, exit 0/1):** `papercusp-desktop/scripts/linux-test-vm/fed.sh <a|b> health` — verifies the three hops every driver call needs (ssh → operator preflight → PG accepting) and prints which one failed. The ports are **self-discovered** per call (WI-754), so it survives app/VM restarts with no edits; `fed.sh <a|b> rediscover` forces a fresh probe.
+* **⚠ There is no `fed.sh restart`, deliberately.** VM/app lifecycle goes through `vmctl status|verify|reset|down|up fed-<a|b>`, which auto-reaps the orphaned sidecar a naive relaunch would stack on top of. An operator restart also drops that peer’s `gh` auth and must be **coordinated** — never fire one at a peer another agent is investigating.
+* **Full recovery procedures:** [Federation rig — restart / recovery runbook](/internal/docs/agent-insights/federation-rig-restart-runbook) (never broad-`pkill`/broad-`rm` — EI-1739).
 
 This is the acceptance test for Phase-1b bidirectional federation: two **different** GitHub engineers join/share a harness and sync state **both ways** over the Model B Hyperswarm substrate. It is the gate that closes implementation **Open-Risk R-1** (see below) — the one thing that cannot be asserted offline.
 

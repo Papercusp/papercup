@@ -10,6 +10,26 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 > (`cd papercusp-desktop && npm run dev`). Drive the operator through the Tauri
 > shell, not a browser (see [Agent E2E playbook](/internal/docs/testing/agent-e2e)).
 
+Before you debug a federation failure as a *product* bug, check it isn't the
+**rig**: stale operator/PG ports, a wedged smoke, leaked VMs, or a peer that is
+silently local-only after a reset (missing `gh` auth — WI-757) all present as
+"federation is broken."
+
+* **Precondition check (one command, exit 0/1):**
+  `papercusp-desktop/scripts/linux-test-vm/fed.sh <a|b> health` — verifies the
+  three hops every driver call needs (ssh → operator preflight → PG accepting)
+  and prints which one failed. The ports are **self-discovered** per call
+  (WI-754), so it survives app/VM restarts with no edits; `fed.sh <a|b>
+  rediscover` forces a fresh probe.
+* **⚠ There is no `fed.sh restart`, deliberately.** VM/app lifecycle goes through
+  `vmctl status|verify|reset|down|up fed-<a|b>`, which auto-reaps the orphaned
+  sidecar a naive relaunch would stack on top of. An operator restart also drops
+  that peer's `gh` auth and must be **coordinated** — never fire one at a peer
+  another agent is investigating.
+* **Full recovery procedures:** [Federation rig — restart / recovery
+  runbook](/internal/docs/agent-insights/federation-rig-restart-runbook)
+  (never broad-`pkill`/broad-`rm` — EI-1739).
+
 This is the acceptance test for Phase-1b bidirectional federation: two
 **different** GitHub engineers join/share a harness and sync state **both ways**
 over the Model B Hyperswarm substrate. It is the gate that closes implementation

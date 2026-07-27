@@ -430,6 +430,39 @@ describe('bootstrap resumability (WI-6189: durable progress across channel death
     expect(await readNamespaceRef(joiner, devDeep, WORK_REF)).toBe(tipSha);
   });
 
+  it('a rung that LANDS disarms the flake counter, so a much later flake is judged as a FIRST one', async () => {
+    // The counter must be cleared by a LANDING rung, not just by a back-off.
+    // Miss that and it is sticky: an unrelated flake much later arrives already
+    // charged and halves on its FIRST failure — silently restoring the defect
+    // WI-6261 removed. This needs its own test because in the flake/flake/land
+    // sequence above the counter is ALREADY unset by the back-off, so an
+    // assertion there passes whether or not the landing rung clears anything.
+    // (A mutation run that deleted the reset survived that test and only this
+    // ordering — flake, LAND, flake — could tell the difference.)
+    const joiner = await freshJoiner();
+    const flakeKey = 'papercusp.bootstrapDeepenFlakes';
+
+    // 1. One transport death: the size is held and the counter is armed.
+    await bootstrapFromPeer(joiner, await dial(), { timeoutMs: 15_000, dial: dialDying });
+    const armed = await defaultRunGit(['config', '--get', flakeKey], joiner);
+    expect(Number(armed.stdout.trim())).toBe(1);
+
+    // 2. A healthy rung LANDS.
+    const landed = await bootstrapFromPeer(joiner, await dial(), { timeoutMs: 30_000, dial });
+    expect(landed.progressed).toBe(true);
+    const cleared = await defaultRunGit(['config', '--get', flakeKey], joiner);
+    expect(cleared.code, `counter still "${cleared.stdout.trim()}" after a landed rung`).not.toBe(0);
+
+    // 3. So the NEXT death is a first failure again — size held, counter re-armed
+    //    at 1 — rather than the second-strike back-off a sticky counter produces.
+    const held = landed.deepenNext;
+    const after = await bootstrapFromPeer(joiner, await dial(), { timeoutMs: 15_000, dial: dialDying });
+    expect(after.timedOut).toBe(false);
+    expect(after.deepenNext).toBe(held);
+    const rearmed = await defaultRunGit(['config', '--get', flakeKey], joiner);
+    expect(Number(rearmed.stdout.trim())).toBe(1);
+  });
+
   it('climbs the ladder rung by rung when the deepen size is small, never seeding a shallow history', async () => {
     const joiner = await freshJoiner();
     // Force the smallest rung so the 40-commit history needs several of them.
