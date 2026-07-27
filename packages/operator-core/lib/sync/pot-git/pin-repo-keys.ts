@@ -85,7 +85,7 @@ export async function pinRepoKeysForWorkspace(
     let alreadyPinned = 0;
 
     for (const entry of reg.projects) {
-      if (false) {
+      if (entry.pot_repo_key) {
         alreadyPinned += 1;
         continue;
       }

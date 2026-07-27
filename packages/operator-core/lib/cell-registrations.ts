@@ -215,7 +215,7 @@ export const GATE_VERDICT_CELL: CellSpec = {
       'the green-checkpoint routine metadata (`gate_health`) via gitPipelineSnapshot, corrected by pinProvenGateCorrection',
     liveExercised: true,
     evidence:
-      'dev:pipeline_position run against the live repo 2026-07-27T08:55Z returned gate.consecutiveReds=0 with fireStale=false — while verdictProvenance.mainFastForwarded=FALSE, deployedBehindGreenPin=19 and stages[main].health="stalled". THE FALSIFIER FIRED IN THE REAL SYSTEM: the headline read as a passing gate while an independent git-ancestry measurement showed main 19 commits behind the pin and not fast-forwarded. The tool\'s own summary said "gate reports 0 reds, but main has NOT fast-forwarded — do not read this as fully healthy".',
+      'dev:pipeline_position run against the live repo 2026-07-27T08:55Z returned gate.consecutiveReds=0 with fireStale=false — while verdictProvenance.mainFastForwarded=FALSE, deployedBehindGreenPin=19 and stages[main].health="stalled". THE FALSIFIER FIRED IN THE REAL SYSTEM: the headline read as a passing gate while an independent git-ancestry measurement showed main 19 commits behind the pin and not fast-forwarded. The tool\'s own summary said "gate reports 0 reds, but main has NOT fast-forwarded — do not read this as fully healthy". RE-EXERCISED 09:2xZ with the P-007 hoist in place, against the real gate_health blob: countersUnknown=null and verdictUnknown=[] — i.e. the live counter IS measured and the hoist correctly stays SILENT. That negative result is the one worth recording: a hoist that fired on the healthy path would be one agents learn to ignore.',
   },
 
   resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',

@@ -47,6 +47,7 @@ import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config
 import { wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
 import { mapWithConcurrency } from '../../gym/concurrency';
+import { pinRepoKeysForWorkspace } from '../pot-git/pin-repo-keys';
 import type { BootedHarnessFacts } from './substrate-eviction-policy';
 // P-012 slice B — the swarm-presence keepalive that lets a federating harness be
 // left dark. This import is one-way: substrate-wake-wiring reaches BACK into
@@ -1154,6 +1155,16 @@ export async function bootAllHarnessesForActiveWorkspace(
   // timed out ALL substrates (WI-779) — see `bootConcurrency`.
   const pairs: Array<{ wsId: string; slug: string }> = [];
   for (const wsId of workspaceIds) {
+    // EI-18788176839043286: freeze every entry's pot-git repoKey BEFORE anything
+    // boots. The key names both the bare store on disk and the repo on the wire,
+    // and it used to be re-derived from mutable registry coords on every call —
+    // so a pot created local-only silently re-keyed itself the moment it gained a
+    // GitHub binding, abandoning its store and orphaning every peer (the P-302
+    // rig sat disconnected for 7 days reporting ok:true). Pinning writes down the
+    // key already in use, so this changes no behaviour now and makes that drift
+    // impossible later. Must run ahead of the boots — git-sync and publish both
+    // read the key. Idempotent and fail-soft: it never throws.
+    await pinRepoKeysForWorkspace(wsId);
     let slugs: string[];
     try {
       slugs = await discover(wsId);
