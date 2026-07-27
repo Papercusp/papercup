@@ -126,7 +126,8 @@ describe('classifyPathsAgainstCandidate', () => {
     const git = fakeGit({ blobs: { 'cand:a.ts': SAME } });
     const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['a.ts']);
     expect(r.inCandidate).toBeNull();
-    expect(r.unknownReason).toMatch(/UNKNOWN, not confirmed/);
+    expect(r.unknownReason?.code).toBe('resolver-failed');
+    expect(r.unknownReason?.detail).toMatch(/UNKNOWN, not confirmed/);
   });
 
   it('a totally failed git yields UNKNOWN for every path', async () => {
@@ -139,7 +140,9 @@ describe('classifyPathsAgainstCandidate', () => {
     const git = fakeGit({ tree: { 'a.ts': SAME } });
     const [r] = await classifyPathsAgainstCandidate(git, null, ['a.ts']);
     expect(r.inCandidate).toBeNull();
-    expect(r.unknownReason).toMatch(/No candidate commit/);
+    // No candidate supplied ⇒ the question does not apply yet. FINAL, not a failure.
+    expect(r.unknownReason?.code).toBe('not-applicable');
+    expect(r.unknownReason?.detail).toMatch(/No candidate commit/);
   });
 
   /**
@@ -156,7 +159,10 @@ describe('classifyPathsAgainstCandidate', () => {
     const rs = await classifyPathsAgainstCandidate(git, 'deadbeefdeadbeef', ['a.ts', 'b.ts']);
     expect(rs.map((r) => r.inCandidate)).toEqual([null, null]);
     expect(rs[0].reason).toBeNull();
-    expect(rs[0].unknownReason).toMatch(/does not resolve in this repo/);
+    // A sha WAS given and did not resolve — fetching the right checkout may yet
+    // answer, so this must NOT read as `not-applicable`.
+    expect(rs[0].unknownReason?.code).toBe('resolver-failed');
+    expect(rs[0].unknownReason?.detail).toMatch(/does not resolve in this repo/);
   });
 
   it('…but a RESOLVING candidate that truly lacks the path still reports absent', async () => {

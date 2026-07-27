@@ -70,7 +70,7 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       startedSinceCodeChange: null,
       behindMin: null,
       restartLever: null,
-      unknownReason: 'fixture: no serving probe (lineage-only test)',
+      unknownReason: { code: 'not-measured', detail: 'fixture: no serving probe (lineage-only test)' },
     },
     // P-004 made `changeInCandidate` REQUIRED. All-null is the correct value here for the
     // same reason `serving` is: these fixtures assert release-trace's own LINEAGE logic and

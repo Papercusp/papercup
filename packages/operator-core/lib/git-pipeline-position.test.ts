@@ -1050,14 +1050,19 @@ describe('evaluateServing: process truth, never a git inference', () => {
       codeAsOfSource: 'deploy',
     });
     expect(sv.startedSinceCodeChange).toBeNull();
-    expect(sv.unknownReason).toMatch(/UNKNOWN, which is not the same as "live"/);
+    // The probe RAN and came back empty — retry-or-escalate, NOT a final answer.
+    expect(sv.unknownReason?.code).toBe('resolver-failed');
+    expect(sv.unknownReason?.detail).toMatch(/UNKNOWN, which is not the same as "live"/);
   });
 
   it('a sha-only probe (no path) cannot identify a serving process and says so', () => {
     const sv = evaluateServing({ runtime: null, process: null, codeAsOfMs: null, codeAsOfSource: null });
     expect(sv.startedSinceCodeChange).toBeNull();
     expect(sv.host).toBeNull();
-    expect(sv.unknownReason).toMatch(/sha-only probe/);
+    // Nothing failed here — there is no serving question to ask, so this is
+    // FINAL. A caller that retries a `not-applicable` is burning calls forever.
+    expect(sv.unknownReason?.code).toBe('not-applicable');
+    expect(sv.unknownReason?.detail).toMatch(/sha-only probe/);
   });
 
   it('a working-tree host compares against FILE MTIME, because it imports the tree — not the deploy', () => {
@@ -1145,7 +1150,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       startedAtMs: null,
       pid: null,
       startedSinceCodeChange: null,
-      unknownReason: 'could not read the unit',
+      unknownReason: { code: 'resolver-failed', detail: 'could not read the unit' },
     };
     const s = computeStages(base(unknown));
     expect(stage(s, 'serving').health).toBe('unknown');
@@ -1286,7 +1291,12 @@ describe('changeInCandidate (P-004)', () => {
       const r = evaluateChangeInCandidate({
         relPath: 'a.ts',
         candidates: { judgingSha: 'inflight123456', nextCandidateSha: null },
-        judging: { path: 'a.ts', inCandidate: null, reason: null, unknownReason: 'unreadable' },
+        judging: {
+          path: 'a.ts',
+          inCandidate: null,
+          reason: null,
+          unknownReason: { code: 'resolver-failed', detail: 'unreadable' },
+        },
         next: null,
       });
       expect(r.judgingContainsPath).toBeNull();
