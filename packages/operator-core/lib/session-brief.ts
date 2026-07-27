@@ -72,6 +72,11 @@ export async function writeSessionBrief(
   try {
     if (!identity?.ownerId) return;
     const sql = getOrgPg().sql;
+    // EI-18776963284535761: same omitted-means-untouched sentinel as coord_presence
+    // (see pg-store.write). The brief is what a SUCCESSOR reads after its predecessor
+    // dies, so a wipe here loses the declared lane at exactly the moment it matters
+    // most. Explicit [] still clears; NULL is the untouched sentinel (NOT NULL column).
+    const filesJson = input.currentFiles === undefined ? null : JSON.stringify(input.currentFiles);
     await sql`
       INSERT INTO harness_shared.session_briefs
         (owner_id, workspace_id, owner_label, source, intent,
@@ -84,7 +89,7 @@ export async function writeSessionBrief(
         ${identity.source ?? ''},
         ${input.intent ?? ''},
         ${input.currentPlanSlug ?? null},
-        ${JSON.stringify(input.currentFiles ?? [])}::text::jsonb,
+        COALESCE(${filesJson}::text::jsonb, '[]'::jsonb),
         ${input.harnessSlug ?? null},
         ${input.potSlug ?? null},
         ${input.nativeSessionId ?? null},
@@ -96,7 +101,9 @@ export async function writeSessionBrief(
         source            = EXCLUDED.source,
         intent            = EXCLUDED.intent,
         current_plan_slug = EXCLUDED.current_plan_slug,
-        current_files     = EXCLUDED.current_files,
+        -- omitted ⇒ untouched, explicit [] ⇒ clear (EI-18776963284535761); reads the
+        -- parameter directly, not EXCLUDED (the VALUES row COALESCEd it to '[]').
+        current_files     = COALESCE(${filesJson}::text::jsonb, harness_shared.session_briefs.current_files),
         -- populate-once-then-keep: a write that omits harness/hive/session never WIPES
         -- a previously-resolved value (mirrors coord_presence D-004).
         harness_slug      = COALESCE(EXCLUDED.harness_slug, harness_shared.session_briefs.harness_slug),

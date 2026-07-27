@@ -114,6 +114,18 @@ export class PgPresenceStore implements PresenceStore {
     // agent_role / pot_slug are populate-once-then-keep: COALESCE(EXCLUDED, existing)
     // so a write that omits them (passes null) never WIPES a previously-resolved
     // value (D-004).
+    //
+    // EI-18776963284535761: `currentFiles` is OMITTED-MEANS-UNTOUCHED, distinct from
+    // BOTH neighbours above — an explicit `[]` still CLEARS (matching declare-intent's
+    // `items` lane semantics, which document exactly this), while an omitted field
+    // preserves. The old `?? []` made omission a CLEAR, and since `coord:orient` — the
+    // mandated every-wake bootstrap — re-declares intent WITHOUT current_files, every
+    // wake silently wiped it: measured 113 live presence rows, 0 populated. Three
+    // collision-avoidance consumers (locks enrich-busy `holder_focused`, place_batch's
+    // touch-set exclusion, git-sync derived attribution) read that column, so all three
+    // were reading a permanently-dead signal. NULL is the "untouched" sentinel on the
+    // wire because the column is NOT NULL, so it can never be a legitimate value.
+    const filesJson = input.currentFiles === undefined ? null : JSON.stringify(input.currentFiles);
     await sql`
       INSERT INTO harness_shared.coord_presence
         (owner_id, owner_label, workspace_id, source, intent,
@@ -123,7 +135,7 @@ export class PgPresenceStore implements PresenceStore {
         ${identity.ownerId}, ${identity.ownerLabel},
         ${identity.workspaceId ?? 'default'}, ${identity.source},
         ${input.intent ?? ''}, ${input.currentPlanSlug ?? null},
-        ${JSON.stringify(input.currentFiles ?? [])}::text::jsonb,
+        COALESCE(${filesJson}::text::jsonb, '[]'::jsonb),
         ${input.host ?? ''}, ${input.pid ?? null},
         ${input.agentRole ?? null}, ${input.potSlug ?? null},
         ${JSON.stringify(input.capabilityTags ?? [])}::text::jsonb,
@@ -135,7 +147,10 @@ export class PgPresenceStore implements PresenceStore {
         source            = EXCLUDED.source,
         intent            = EXCLUDED.intent,
         current_plan_slug = EXCLUDED.current_plan_slug,
-        current_files     = EXCLUDED.current_files,
+        -- omitted ⇒ untouched, explicit [] ⇒ clear (EI-18776963284535761). Reads the
+        -- parameter directly rather than EXCLUDED, because the VALUES row already
+        -- COALESCEd the omitted case to '[]' to satisfy the NOT NULL column.
+        current_files     = COALESCE(${filesJson}::text::jsonb, harness_shared.coord_presence.current_files),
         host              = EXCLUDED.host,
         pid               = EXCLUDED.pid,
         agent_role        = COALESCE(EXCLUDED.agent_role, harness_shared.coord_presence.agent_role),

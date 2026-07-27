@@ -383,15 +383,37 @@ describe('routineControl — why a row has (or has not) a switch', () => {
     }
   });
 
-  it('covers every live no-control category in the real inventory', () => {
-    // The five categories actually observed in `schedule:inventory` on 2026-07-26
-    // (26 managed + 7 external-process + 17 in-process). If a new one appears this
-    // still passes via `unknown` — but the assertion documents that vague copy is
-    // a KNOWN fallback, not the intended state for these five.
-    const live = ['watchdog', 'cache', 'lifecycle', 'global-sweep', 'external-process'];
-    for (const category of live) {
-      const source = category === 'external-process' ? 'external-process' : 'managed';
-      expect(routineControl({ source, category }).reason, category).not.toBe('unknown');
+  it('classifies a DBOS scheduled workflow as declared-in-code', () => {
+    expect(routineControl({ source: 'dbos', category: 'dbos-scheduled' }).reason).toBe('durable-workflow');
+  });
+
+  it('classifies a sync-triggered sweep as event-driven, not a schedule', () => {
+    expect(routineControl({ source: 'in-process', category: 'sync-triggered' }).reason).toBe('event-triggered');
+  });
+
+  /**
+   * Pinned to the REAL inventory, not to what the mapping happens to handle: this
+   * is the full set of (source, category) pairs observed live in
+   * `schedule:inventory` on 2026-07-26 (421 rows). Writing the test from the
+   * mapping instead of from the data is what let `dbos` and `sync-triggered` fall
+   * through to vague copy in the first pass — an assertion over five categories
+   * passed while the live system had eight pairs.
+   */
+  it('gives a specific reason for EVERY source/category pair live in the inventory', () => {
+    const livePairs: Array<[string, string]> = [
+      ['in-process', 'global-sweep'], // 15 rows
+      ['managed', 'watchdog'], // 9
+      ['managed', 'cache'], // 7
+      ['external-process', 'external-process'], // 7
+      ['managed', 'lifecycle'], // 5
+      ['managed', 'global-sweep'], // 5
+      ['in-process', 'sync-triggered'], // 2
+      ['dbos', 'dbos-scheduled'], // 1
+    ];
+    for (const [source, category] of livePairs) {
+      const { reason, why } = routineControl({ source, category });
+      expect(reason, `${source}/${category}`).not.toBe('unknown');
+      expect(why.trim(), `${source}/${category}`).not.toBe('');
     }
   });
 });

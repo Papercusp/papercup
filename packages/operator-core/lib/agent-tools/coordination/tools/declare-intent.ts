@@ -6,9 +6,20 @@
  * OMP hook also writes presence automatically on session_start /
  * turn_start. agent-coordination-architecture-v2 §4.2 / §4.3.
  *
- * Semantics: this declares the caller's *whole* current work state —
- * omitted `current_plan_slug` / `current_files` reset to empty. Pass
- * them if they should persist.
+ * Semantics: this declares the caller's *whole* current work state — an
+ * omitted `current_plan_slug` resets to empty, so pass it if it should
+ * persist.
+ *
+ * `current_files` is the EXCEPTION, alongside `items` (EI-18776963284535761):
+ * omitting it leaves the declared file set UNTOUCHED; an explicit `[]` clears
+ * it. It used to reset like current_plan_slug, which made it permanently empty
+ * in practice — `coord:orient`, the mandated every-wake bootstrap, re-declares
+ * intent without the arg, so every agent wiped its own file set on every wake
+ * (measured: 113 live presence rows, 0 populated) and every downstream
+ * collision-avoidance consumer read a dead signal. `current_plan_slug` was
+ * deliberately NOT changed with it: it is genuinely populated (37/113 live rows
+ * at the time of the fix), and preserving it would strand a stale plan
+ * association on an agent that has moved off the plan.
  *
  * `items` (claim-discipline-enforcement-2026-06-10): the declared LANE.
  * When passed with `current_plan_slug`, each P-NNN is auto-claimed
@@ -97,7 +108,7 @@ function broadIntentHint(intent: string, hasStructuredItems: boolean): string | 
 export default defineTool({
   name: 'coord:declare-intent',
   description:
-    'Declare what you are working on right now — a one-line intent, optionally the plan slug, the plan items you are taking (auto-claimed as your lane), and the files in scope. Other agents see this via coord:presence / fleet:assignments. Declares your whole current state; omitted fields reset (except claims — omitted `items` leaves claims untouched). A broad "all remaining items" intent declared with no structured `items` gets an advisory `overCoverageHint` back (EI-5873) — a peer declaring the same broad scope has no structural signal to catch the overlap otherwise.',
+    'Declare what you are working on right now — a one-line intent, optionally the plan slug, the plan items you are taking (auto-claimed as your lane), and the files in scope. Other agents see this via coord:presence / fleet:assignments. Declares your whole current state; an omitted field resets it — EXCEPT `items` (claims) and `current_files`, where omitted leaves the existing value untouched and an explicit [] clears it. A broad "all remaining items" intent declared with no structured `items` gets an advisory `overCoverageHint` back (EI-5873) — a peer declaring the same broad scope has no structural signal to catch the overlap otherwise.',
   guidance: {
     when: 'Starting a distinct piece of work, so other agents see what you have taken on. When the work is plan items, pass them as `items` — that claims your lane structurally instead of describing it in prose. Especially for a broad "take everything remaining" directive: enumerate the items so a colliding peer sees a real conflict instead of two agents each independently claiming to own the whole set (EI-5873).',
     notWhen: 'Every turn — the OMP hook heartbeats automatically; call this when your intent changes.',
@@ -131,7 +142,9 @@ export default defineTool({
     current_files: z
       .array(z.string())
       .optional()
-      .describe('Repo-relative files currently in scope.'),
+      .describe(
+        'Repo-relative files currently in scope — read by lock-contention enrichment (is the holder still focused on this path?) and by fleet placement. Omit to leave your declared file set untouched; pass [] to clear it. Same omission semantics as `items`.',
+      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -163,7 +176,11 @@ export default defineTool({
       {
         intent: args.intent,
         currentPlanSlug: args.current_plan_slug ?? null,
-        currentFiles: args.current_files ?? [],
+        // EI-18776963284535761: pass THROUGH (no `?? []`). `undefined` is the store's
+        // "leave untouched" sentinel; `?? []` turned every omission into a CLEAR, and
+        // coord:orient re-declares intent WITHOUT this arg on every wake — so the
+        // column was empty for 113/113 live agents.
+        currentFiles: args.current_files,
       },
       // harness the work is in → resolves the agent's home hive_slug (D-004).
       args.harness ?? null,

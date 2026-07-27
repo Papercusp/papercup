@@ -111,6 +111,8 @@ export type NoControlReason =
   | 'per-connection'
   | 'other-process'
   | 'ephemeral-tier'
+  | 'durable-workflow'
+  | 'event-triggered'
   | 'unknown';
 
 export interface ControlEntry {
@@ -133,6 +135,10 @@ const NO_CONTROL_COPY: Record<NoControlReason, string> = {
     'Runs inside a separate process (not the operator), which the routine system cannot yet reach. Stop it by stopping that process.',
   'ephemeral-tier':
     'A central sweep on the in-process tier — declared in code rather than as a routine row, so it has no per-row switch yet.',
+  'durable-workflow':
+    'A DBOS scheduled workflow — its cadence is declared in code, so there is no row to toggle. Stopping it is a code change.',
+  'event-triggered':
+    'Fires on an event rather than a clock — there is no schedule to pause.',
   unknown: 'Not a routine row, so it has no switch in this pane.',
 };
 
@@ -157,18 +163,25 @@ export function routineControl(input: {
       reason: null,
     };
   }
+  // Source binds before category: a process boundary and a DBOS workflow are
+  // constraints no category can override. Category then discriminates the
+  // in-operator timers, which is where the five real populations live.
   const reason: NoControlReason =
     input.source === 'external-process'
       ? 'other-process'
-      : input.category === 'watchdog'
-        ? 'watchdog'
-        : input.category === 'cache'
-          ? 'per-process'
-          : input.category === 'lifecycle'
-            ? 'per-connection'
-            : input.category === 'global-sweep' || input.category === 'ephemeral-harness'
-              ? 'ephemeral-tier'
-              : 'unknown';
+      : input.source === 'dbos'
+        ? 'durable-workflow'
+        : input.category === 'sync-triggered'
+          ? 'event-triggered'
+          : input.category === 'watchdog'
+            ? 'watchdog'
+            : input.category === 'cache'
+              ? 'per-process'
+              : input.category === 'lifecycle'
+                ? 'per-connection'
+                : input.category === 'global-sweep' || input.category === 'ephemeral-harness'
+                  ? 'ephemeral-tier'
+                  : 'unknown';
   return { control: 'none', why: NO_CONTROL_COPY[reason], reason };
 }
 

@@ -83,6 +83,19 @@ describe('resolveFederatedPotScope — precedence and fail-open', () => {
     expect(getHiveBySlug).not.toHaveBeenCalled();
   });
 
+  it('SOURCE 1 answering `local` is AUTHORITATIVE — source 2 is not consulted at all', async () => {
+    // The owner path (and any non-remote pot): canonicalHiveHomeSlug returns the local slug
+    // because that IS where the writers wrote. Two properties are asserted at once —
+    // correctness (reader scope == writer scope) and cost (no second PG read on the hot
+    // git-sync path, which is also what keeps existing call-shape assertions valid).
+    const getHiveBySlug = vi.fn(async () => ({ canonicalHomeSlug: 'should-not-be-used' }));
+    const scope = await resolveFederatedPotScope(WS, LOCAL, {
+      seams: { canonicalHiveHomeSlug: async (_ws: string, slug: string) => slug, getHiveBySlug },
+    });
+    expect(scope).toBe(LOCAL);
+    expect(getHiveBySlug).not.toHaveBeenCalled();
+  });
+
   it('SOURCE 2 corroborates: the migration-686 column answers when the announce read cannot', async () => {
     const scope = await resolveFederatedPotScope(WS, LOCAL, {
       seams: {
