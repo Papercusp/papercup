@@ -42,6 +42,7 @@ describe('decision_ledger:summary tool', () => {
       terminalTotal: 9,
       genuineCompletions: 6,
       dedupOrUnverified: 3,
+      gateJudged: 2,
     });
   });
   afterEach(() => vi.useRealTimers());
@@ -72,6 +73,7 @@ describe('decision_ledger:summary tool', () => {
         terminalTotal: 9,
         genuineCompletions: 6,
         dedupOrUnverified: 3,
+        gateJudged: 2,
       },
     });
   });

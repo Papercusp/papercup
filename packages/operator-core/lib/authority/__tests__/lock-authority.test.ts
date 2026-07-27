@@ -151,8 +151,12 @@ describe('queryPresenceRows / queryPresenceRowsForHive — LOOSE last_seen_at pr
     // workspaceId value at all rather than a WI-6032-era duplicated null).
     expect(calls[0].values).toEqual(['h', 180]);
     expect(calls[0].text).not.toMatch(/workspace_id/);
-    // BIGINT→string columns are still coerced to numbers.
-    expect(out).toEqual([{ device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm1', last_seen_ms: 123 }]);
+    // BIGINT→string columns are still coerced to numbers. `runs_routines`
+    // (EI-18761517980514694, mig 682) is selected on the same read and normalised to
+    // null when the row predates the column — absent ⇒ not a runner candidate.
+    expect(out).toEqual([
+      { device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm1', last_seen_ms: 123, runs_routines: null },
+    ]);
   });
 
   it('WI-6032: harness query filters on workspace_id when passed', async () => {

@@ -82,6 +82,7 @@ beforeEach(() => {
     terminalTotal: 10,
     genuineCompletions: 7,
     dedupOrUnverified: 3,
+    gateJudged: 4,
   });
 });
 
@@ -144,6 +145,7 @@ describe('fleet:status', () => {
     expect(h.getCompletionIntegrityStats).toHaveBeenCalledWith('papercusp');
     expect(out.completionStats).toEqual({
       harness: 'papercusp',
+      gateJudged: 4,
       terminalTotal: 10,
       genuineCompletions: 7,
       dedupOrUnverified: 3,

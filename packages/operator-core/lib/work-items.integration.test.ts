@@ -935,6 +935,7 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
       terminalTotal: 0,
       genuineCompletions: 0,
       dedupOrUnverified: 0,
+      gateJudged: 0,
     });
   });
 
@@ -968,7 +969,36 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
       terminalTotal: 4,
       genuineCompletions: 2,
       dedupOrUnverified: 2,
+      // P-013: both genuine closes above came through the completionRef path, which stamps
+      // no authority — so the gate JUDGED none of them. This zero beside genuineCompletions:2
+      // is the whole point of the coverage metric: fully-evidenced work can still be entirely
+      // invisible to the judge.
+      gateJudged: 0,
     });
+  });
+
+  // P-013 — coverage is a DISTINCT axis from genuine-vs-dedup, so it needs its own case:
+  // a close carrying an authority judgement must increment gateJudged, and one carrying
+  // only a completionRef must not.
+  it('gateJudged counts ONLY closes the P-004 gate judged, not every genuine completion', async () => {
+    const harness = 'judged-harness';
+
+    const judged = await wi.createWorkItem({ kind: 'feature', title: 'judged feat', harness, createdBy: 'agA' });
+    await wi.setWorkItemState(judged.id, 'passed', {
+      harness,
+      by: 'agA',
+      completionAuthority: 'committed',
+      completionEvidence: { verifiedHow: 'unit', testsRun: 'vitest completion-audit', testResult: '49 passed' },
+    });
+
+    const refOnly = await wi.createWorkItem({ kind: 'feature', title: 'ref-only feat', harness, createdBy: 'agA' });
+    await wi.setWorkItemState(refOnly.id, 'passed', { harness, by: 'agA', completionRef: 'shipped in PR #9' });
+
+    const stats = await wi.getCompletionIntegrityStats(harness);
+    // Both are genuine completions; only one was judged.
+    expect(stats.terminalTotal).toBe(2);
+    expect(stats.genuineCompletions).toBe(2);
+    expect(stats.gateJudged).toBe(1);
   });
 
   it('is scoped to the one harness asked about — a genuine completion in a DIFFERENT harness never leaks in', async () => {
@@ -976,10 +1006,10 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
     await wi.setWorkItemState(other.id, 'passed', { harness: 'other-harness', by: 'agA', completionRef: 'shipped' });
 
     const stats = await wi.getCompletionIntegrityStats('papercup');
-    expect(stats).toEqual({ harness: 'papercup', terminalTotal: 0, genuineCompletions: 0, dedupOrUnverified: 0 });
+    expect(stats).toEqual({ harness: 'papercup', terminalTotal: 0, genuineCompletions: 0, dedupOrUnverified: 0, gateJudged: 0 });
 
     const otherStats = await wi.getCompletionIntegrityStats('other-harness');
-    expect(otherStats).toEqual({ harness: 'other-harness', terminalTotal: 1, genuineCompletions: 1, dedupOrUnverified: 0 });
+    expect(otherStats).toEqual({ harness: 'other-harness', terminalTotal: 1, genuineCompletions: 1, dedupOrUnverified: 0, gateJudged: 0 });
   });
 });
 

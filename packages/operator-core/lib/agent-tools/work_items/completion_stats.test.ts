@@ -16,8 +16,11 @@ const mockStats = vi.mocked(getCompletionIntegrityStats);
 const tool = (await import('./completion_stats')).default;
 
 function callTool(args: Record<string, unknown>) {
+  // The handler returns the { data } shape (tool-data-shape ratchet P-003), not { content }
+  // — the old annotation described a wire shape this tool never returns, so every `res.data`
+  // assertion below was a type error the suite carried silently.
   return (
-    tool as unknown as { handler: (a: unknown, c?: unknown) => Promise<{ content: Array<{ text: string }> }> }
+    tool as unknown as { handler: (a: unknown, c?: unknown) => Promise<{ data: Record<string, unknown> }> }
   ).handler(args, {});
 }
 
@@ -30,6 +33,7 @@ describe('work_items:completion_stats tool', () => {
       terminalTotal: 10,
       genuineCompletions: 6,
       dedupOrUnverified: 4,
+      gateJudged: 2,
     });
     const res = await callTool({ harness: 'papercusp' });
     expect(mockStats).toHaveBeenCalledWith('papercusp');
@@ -39,6 +43,25 @@ describe('work_items:completion_stats tool', () => {
       terminalTotal: 10,
       genuineCompletions: 6,
       dedupOrUnverified: 4,
+      gateJudged: 2,
     });
+  });
+
+  // P-013: gateJudged must reach the caller — it is the coverage half of the metric, and a
+  // tool that computed it but dropped it on the wire would report the same blind spot the
+  // metric exists to expose.
+  it('passes gateJudged through (the P-013 coverage half)', async () => {
+    mockStats.mockResolvedValue({
+      harness: 'papercusp',
+      terminalTotal: 100,
+      genuineCompletions: 100,
+      dedupOrUnverified: 0,
+      gateJudged: 38,
+    });
+    const res = await callTool({ harness: 'papercusp' });
+    // Fully-evidenced yet only 38% judged — the exact shape that makes coverage a DISTINCT
+    // signal from genuineCompletions rather than a restatement of it.
+    expect(res.data.genuineCompletions).toBe(100);
+    expect(res.data.gateJudged).toBe(38);
   });
 });

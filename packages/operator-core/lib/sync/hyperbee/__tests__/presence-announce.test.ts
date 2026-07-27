@@ -54,7 +54,21 @@ describe('buildPresenceAnnounceRow / Op', () => {
       // hive_slug defaults null (shared-hive-federation P-008/P-009 carry; the
       // publisher stamps a real Hive slug when wired).
       hive_slug: null,
+      // runs_routines defaults null = "not a runner candidate"
+      // (EI-18761517980514694); the publisher stamps TRUE only on a node that
+      // actually fires this pot's cadence loops.
+      runs_routines: null,
     });
+  });
+
+  it('stamps runs_routines ONLY when true — false collapses to null for wire compat', () => {
+    // A non-runner must produce a row byte-identical to the pre-mig-682 wire form,
+    // or its signed gossip frame stops verifying on peers that have not upgraded
+    // (presenceFrameSigningBytes includes the field only when present). `false` and
+    // "unknown" are the same verdict to every consumer, so they collapse to null.
+    expect(buildPresenceAnnounceRow(ID, STATE, NOW, null, true).runs_routines).toBe(true);
+    expect(buildPresenceAnnounceRow(ID, STATE, NOW, null, false).runs_routines).toBeNull();
+    expect(buildPresenceAnnounceRow(ID, STATE, NOW, null, null).runs_routines).toBeNull();
   });
   it('builds a put op keyed <github_user_id>/<machine> (mirrors the projection composeKey)', () => {
     const op = buildPresenceAnnounceOp(ID, STATE, NOW);

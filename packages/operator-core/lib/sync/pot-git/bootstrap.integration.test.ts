@@ -375,7 +375,7 @@ describe('bootstrap resumability (WI-6189: durable progress across channel death
     expect(Number(walked.stdout.trim())).toBe(HISTORY);
   });
 
-  it('a rung that DIES costs only that rung, and backs the next one off', async () => {
+  it('a rung that DIES costs only that rung; a transport death RETRIES the same size, a second one backs it off', async () => {
     const joiner = await freshJoiner();
     // Rung 1 lands (real dial), rung 2 dies (channel closed mid-fetch).
     const startedAt = Date.now();
