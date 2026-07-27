@@ -130,8 +130,9 @@ logs are from the green run `m1785117063`.
    already be stale.**
 2. **hive-git live legs (row 34).** Owned by `p2p-git-live-activation-2026-07-09`; do not
    duplicate its diagnosis.
-3. **Two skipped gate legs + the 3-frame scenario (§5).** Cheap to close now that the 2-frame gate
-   is genuinely green — D-007's own flip condition is met.
+3. **Gate coverage gaps (§5).** The two from-repo legs were **enabled in this same pass** (D-016)
+   — coverage lands on the next real gate window. `membership_churn` still needs `--frames=3`;
+   D-007's own flip condition is now met; the flip is tracked as **P-425**.
 4. **Code-signing certs (§4).** Owner-supplied input, arriving when it arrives.
 
 Rows 1–3 are agent work. Nothing on this list is waiting on a decision.
@@ -209,10 +210,16 @@ its three dark flags are all `owner-authority` kill-switches, which the watermar
    marker file is a claim, the journal line is the evidence.*
 2. **Work-item ledger diverges from plan-item ledger on four rows.** `P-301`→WI-5136 `todo`,
    `P-402`→WI-5137 `todo` and WI-5064 `open`, `P-104`→WI-5130 `blocked` — while all four plan
-   items read `done`. This is the feature-family repair class tracked as **WI-6218** (system
-   sweeps taking terminal credit). **Deliberately not mass-flipped here** — the authoritative
-   feature-side write surface has to be established first, or the repair repeats the very defect
-   it is fixing.
+   items read `done`. ⚠ **Do not attribute this to WI-6218** (skipCompletionGate stamping
+   `terminal_owner` over an existing completion): that item is closed, and the live measurement
+   it was asked for found **ZERO rows with the damage signature** across 30 days of
+   `engineer_issues` + `harness_features_consolidated`. This is a *different*, still-unexplained
+   plan-item↔work-item sync divergence. **Deliberately not mass-flipped here** — flipping four
+   states to match a hypothesis is exactly the stale-state-flip pattern this ledger has caught
+   three times (WI-1534, WI-971, WI-2009). Filed for root-cause as **WI-6303** instead
+   (`system:plan-item-lane-sync` is the visible writer). Note P-402 has **two** work-items
+   linked to it, and `source_plan_item_ids` is empty for every item on this plan — both worth
+   checking as part of the same root cause
 3. **Plan-item id ≠ work-item id.** P-405's work-item is **WI-5139**; `work_items:get P-405`
    returns not-found, and a checkpoint written against `P-405` goes nowhere. The linkage lives in
    `work_items.payload->'plan_item'`, not in `source_plan_item_ids` (which is empty for this
@@ -220,6 +227,15 @@ its three dark flags are all `owner-authority` kill-switches, which the watermar
 4. **A stale "must not self-ratify" note in the git lane** contradicted that lane's own D-001 and
    had been carried forward twice by agents reading `## Now` instead of `## Decisions` — corrected
    by that lane 2026-07-27. Same class as #1: prose drifting away from the structured record.
+5. **The `SKIP_FROMREPO` skip outlived BOTH of its own stated reasons, in writing, in two files.**
+   The systemd unit said *"expected-RED while WI-971 is open … flip to 0 when WI-971 lands"* —
+   WI-971 landed and was live-verified twice (WI-5775). The gate script said the leg's witness
+   sub-probe was failing for an unrelated reason, WI-5783 — which is closed. So both artifacts
+   carried their own satisfied flip condition and neither was flipped, because the script had
+   explicitly deferred the call to the p2p-release leader and nobody had made it. Made this pass
+   as **D-016**. The general shape is the same defect as #1 and #4: *a condition changed and the
+   artifact describing it did not.* When you write "flip this when X lands", something has to
+   watch X — a comment is not a watcher.
 
 ---
 
