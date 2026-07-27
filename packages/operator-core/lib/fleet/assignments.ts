@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { isActivelyWorked, isReclaimable, type ItemActivity } from '../item-activity';
 import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../adv-sessions';
+import type { PlanItemLaneBlock } from '../scheduler/plan-item-lane-guard';
 
 /** A presence row whose workspace is '*' belongs to every workspace's fleet. */
 const GLOBAL_WORKSPACE = '*';
@@ -710,6 +711,58 @@ export async function lastToolCallAtByOwner(coordOwnerIds: string[]): Promise<Ma
   }
 }
 
+/**
+ * EI-18763117665515043: does this work-item claim's LINKED plan item — resolved
+ * via the SAME two-mechanism stamp `planItemLaneBlockReason` already uses for the
+ * pre-claim self-select gate (payload.plan_item back-pointer, or the
+ * source_plan_slug/source_plan_item_ids DB columns) — already carry a TERMINAL
+ * (done/dropped) effectiveStatus?
+ *
+ * The bug this closes: the reclaim verdict (`summarizeOrphan`) was computed
+ * PURELY from claim/holder liveness, so a claim whose linked plan item is
+ * already `done` still resolved to `orphan`/`reclaim` (re-placing dead work) or
+ * `held-by-live-agent`/`ask` (telling a leader to interrupt a live holder over
+ * work that is already finished) — both wrong. `work_items:get`'s own
+ * `planItemBlocked` field already performs this exact check for the UNCLAIMED
+ * self-select path; this is its claimed-work counterpart for the reclaim path.
+ *
+ * Batched + deduped by work-item id (an agent can hold several claim rows across
+ * the orphan/stalled lists that name the same work-item). Best-effort per item —
+ * a lookup failure for one id just omits it from the map, leaving that row to
+ * fall through to the existing liveness-only verdict; it never breaks the batch.
+ */
+export async function resolveTerminalPlanItemResidue(
+  rows: readonly Pick<FleetAssignmentRow, 'source' | 'workItemId' | 'harnessSlug'>[],
+): Promise<Map<string, PlanItemLaneBlock>> {
+  const harnessById = new Map<string, string | undefined>();
+  for (const r of rows) {
+    if (r.source === 'work_item_claim' && r.workItemId && !harnessById.has(r.workItemId)) {
+      harnessById.set(r.workItemId, r.harnessSlug ?? undefined);
+    }
+  }
+  if (harnessById.size === 0) return new Map();
+  const [{ getWorkItem }, { planItemLaneBlockReason }] = await Promise.all([
+    import('../work-items'),
+    import('../scheduler/plan-item-lane-guard'),
+  ]);
+  const out = new Map<string, PlanItemLaneBlock>();
+  await Promise.all(
+    [...harnessById.entries()].map(async ([id, harness]) => {
+      try {
+        const wi = await getWorkItem(id, harness);
+        if (!wi) return;
+        const block = await planItemLaneBlockReason(wi);
+        if (block && (block.effectiveStatus === 'done' || block.effectiveStatus === 'dropped')) {
+          out.set(id, block);
+        }
+      } catch {
+        // Best-effort — one item's lookup failure never breaks the batch.
+      }
+    }),
+  );
+  return out;
+}
+
 /** Claims keyed by holder ownerId — the roster's per-agent enrichment. */
 export function claimsByAgent(rows: FleetAssignmentRow[]): Map<string, AgentClaim[]> {
   const map = new Map<string, AgentClaim[]>();
@@ -752,8 +805,16 @@ export type ClaimProgressSignal = 'never-checkpointed' | 'stale-since';
  *                        which is worth surfacing, but a live holder's work is
  *                        NOT abandoned and must never be reclaimed out from
  *                        under it on a progress-recency signal alone.
+ *   residue            → close. The claim's LINKED plan item is already
+ *                        terminal (done/dropped) — see
+ *                        {@link resolveTerminalPlanItemResidue}. Outranks the
+ *                        liveness verdict entirely: whether the holder is alive
+ *                        or gone is irrelevant when the work behind the claim is
+ *                        already finished. Never `work_items:release` this (that
+ *                        just re-places already-done work on the next self-select
+ *                        pass) — close it with evidence instead.
  */
-export type ClaimReclaimVerdict = 'orphan' | 'held-by-live-agent';
+export type ClaimReclaimVerdict = 'orphan' | 'held-by-live-agent' | 'residue';
 
 /**
  * The holder-liveness inputs {@link summarizeOrphan} needs to tell an abandoned
@@ -812,11 +873,17 @@ export interface OrphanedClaimSummary {
   last_progress_at: string | null;
   /** WI-5975: is this really abandoned, or just quiet? */
   verdict: ClaimReclaimVerdict;
-  /** WI-5975: the sanctioned next step for that verdict. */
-  action: 'reclaim' | 'ask';
+  /** WI-5975: the sanctioned next step for that verdict. EI-18763117665515043:
+   *  'close' for `verdict:'residue'` — never 'reclaim'/'release' a claim whose
+   *  linked plan item is already terminal; that just re-places finished work. */
+  action: 'reclaim' | 'ask' | 'close';
   /** The holder's last GENUINE work (tool invocation) — the signal that separates
    *  a working-but-not-checkpointing agent from a wedged one. */
   holder_last_tool_call_at?: string | null;
+  /** EI-18763117665515043: set only when verdict:'residue' — the linked plan
+   *  item + its terminal status, i.e. WHY this claim is stale residue rather
+   *  than abandoned/quiet-but-live work. */
+  residue?: { planSlug: string; itemId: string; effectiveStatus: string };
 }
 
 /**
