@@ -38,6 +38,7 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
 import { liveBlockedState, liveSettledProbe, liveAssigneeProbe } from '../../work-items-events';
+import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 import { resolvePlanScope } from '../plans/source';
