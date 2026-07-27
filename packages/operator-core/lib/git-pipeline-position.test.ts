@@ -573,6 +573,42 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.summary).not.toContain('WEDGED');
   });
 
+  it('WI-6357 / EI-18790908999972569: the SAME buffer, freshly green, does NOT cry wolf — this is the reported symptom', async () => {
+    // Ground truth from the live symptom: main == the green pin, gate reports 0 reds,
+    // and a staging buffer exists (the NORMAL steady state — staging outruns the
+    // ~hourly checkpoint). The old un-aged check fired on this near-universal
+    // combination; it must now stay silent because the last green verdict is recent.
+    const git = fakeGit({
+      pathCommit: 'fresh1234567',
+      contains: {
+        HEAD: ['fresh1234567'],
+        'origin/staging': ['fresh1234567'],
+        'origin/main': [], // not promoted — un-checkpointed buffer, but a NORMAL one
+        deployedsha0: [],
+      },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/w2.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () =>
+          snap(
+            { stalled: false, consecutiveReds: 0, fireStale: false, fireStaleReason: null, lastGreenAtMs: Date.now() - 5 * 60_000 },
+            'synced',
+            { greenPinAtStagingHead: false },
+          ),
+      },
+    );
+    expect(res.verdictProvenance.mainFastForwarded).toBe(false);
+    expect(res.gate.consecutiveReds).toBe(0);
+    // The false alarm must be GONE — this is exactly what taught readers to scroll
+    // past the wording, per the bug's own report.
+    expect(res.summary).not.toContain('NOT fast-forwarded');
+    expect(res.summary).not.toContain('STALLED');
+    expect(res.summary).not.toContain('WEDGED');
+  });
+
   it('a submodule path is detected, annotated, and resolved against the submodule (not staging)', async () => {
     const git = fakeGit({
       submodules: ['libs/papercusp'],
@@ -1259,6 +1295,114 @@ describe('computeStages: position x health', () => {
   it('is pure: no git calls, and stages are ordered source->live', () => {
     const names = computeStages(input()).map((s) => s.name);
     expect(names).toEqual(['committed', 'pushed', 'gate', 'main', 'deployed', 'serving']);
+  });
+
+  /**
+   * WI-6357 / EI-18790908999972569 — `mainFastForwarded === false` (a nonzero
+   * staging→main buffer) is the fleet's NORMAL steady state, not a stall. The old
+   * `'main'` stage read `stalled` on its mere existence, crying wolf on virtually
+   * every healthy call (EI-11012 reincarnated under a new field name) and burying
+   * the ONE real signal — the gate's own health, or a buffer whose age has
+   * genuinely outlived the pipeline's cadence.
+   */
+  describe('WI-6357: the `main` stage no longer conflates a NORMAL buffer with a stall', () => {
+    it('a nonzero buffer with a RECENT green verdict reads advancing, not stalled — the reported symptom', () => {
+      const s = computeStages(
+        input({
+          gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: Date.now() - 5 * 60_000, fireStale: false, fireStaleReason: null },
+          verdictProvenance: {
+            lastGreenSha: 'g',
+            lastGreenShortSha: 'g',
+            lastGreenAgeMs: 1,
+            mainFastForwarded: false,
+            deployedBehindGreenPin: 0,
+            deployOrigin: 'gate-green',
+          },
+        }),
+      );
+      expect(stage(s, 'main').health).toBe('advancing');
+      expect(stage(s, 'main').detail).toMatch(/normal, not a stall/);
+    });
+
+    it('a buffer whose last green verdict is OLDER than MAIN_BUFFER_STALL_MS reads stalled', () => {
+      const s = computeStages(
+        input({
+          gate: {
+            stalled: false,
+            consecutiveReds: 0,
+            lastGreenAtMs: Date.now() - (MAIN_BUFFER_STALL_MS + 60_000),
+            fireStale: false,
+            fireStaleReason: null,
+          },
+          verdictProvenance: {
+            lastGreenSha: 'g',
+            lastGreenShortSha: 'g',
+            lastGreenAgeMs: 1,
+            mainFastForwarded: false,
+            deployedBehindGreenPin: 0,
+            deployOrigin: 'gate-green',
+          },
+        }),
+      );
+      expect(stage(s, 'main').health).toBe('stalled');
+      expect(stage(s, 'main').detail).toMatch(/EI-18719549079738452/);
+    });
+
+    it('a RED or WEDGED gate still marks `main` stalled regardless of buffer age — the gate is what actually blocks it', () => {
+      const redGate = computeStages(
+        input({
+          gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: Date.now(), fireStale: false, fireStaleReason: null },
+          verdictProvenance: {
+            lastGreenSha: 'g',
+            lastGreenShortSha: 'g',
+            lastGreenAgeMs: 1,
+            mainFastForwarded: false,
+            deployedBehindGreenPin: 0,
+            deployOrigin: 'gate-green',
+          },
+        }),
+      );
+      expect(stage(redGate, 'main').health).toBe('stalled');
+      expect(stage(redGate, 'main').detail).toMatch(/see the gate stage above/);
+    });
+
+    it('no buffer at all (mainFastForwarded: true) is unconditionally advancing with no detail, however old lastGreenAtMs is', () => {
+      const s = computeStages(
+        input({
+          gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+          verdictProvenance: {
+            lastGreenSha: 'g',
+            lastGreenShortSha: 'g',
+            lastGreenAgeMs: 1,
+            mainFastForwarded: true,
+            deployedBehindGreenPin: 0,
+            deployOrigin: 'gate-green',
+          },
+        }),
+      );
+      expect(stage(s, 'main')).toMatchObject({ health: 'advancing', detail: null });
+    });
+  });
+});
+
+describe('mainBufferIsStale — pure helper (WI-6357 / EI-18790908999972569)', () => {
+  it('is false whenever there is no buffer (mainFastForwarded true or null), regardless of age', () => {
+    expect(mainBufferIsStale({ lastGreenAtMs: 1 }, true)).toBe(false);
+    expect(mainBufferIsStale({ lastGreenAtMs: 1 }, null)).toBe(false);
+  });
+
+  it('is false when the last green verdict has never been measured (axis 2: no confident negative from missing data)', () => {
+    expect(mainBufferIsStale({ lastGreenAtMs: null }, false)).toBe(false);
+  });
+
+  it('is false for a buffer younger than the threshold — the normal, expected lag', () => {
+    const now = 10_000_000;
+    expect(mainBufferIsStale({ lastGreenAtMs: now - (MAIN_BUFFER_STALL_MS - 1) }, false, now)).toBe(false);
+  });
+
+  it('is true once the last green verdict is older than the threshold', () => {
+    const now = 10_000_000;
+    expect(mainBufferIsStale({ lastGreenAtMs: now - (MAIN_BUFFER_STALL_MS + 1) }, false, now)).toBe(true);
   });
 });
 

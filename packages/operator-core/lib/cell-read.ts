@@ -54,10 +54,7 @@
  * into an if-chain.
  */
 
-import {
-  cellUnknown,
-  type CellUnknown,
-} from './cell-contract';
+import { cellUnknown, type CellUnknown } from './cell-contract';
 import { getCell, type CellReader, type CellSpec } from './cell-registry';
 import {
   dispatchReadOnlyTool,
@@ -312,62 +309,98 @@ export async function readCell(
     };
   }
 
-  const value = valueAtPath(payload, spec.changeSignal.path);
-  // The resolver answered but the declared path is not present. `value === undefined`
-  // has (at least) two causes with DIFFERENT fixes, and conflating them misdiagnoses
-  // the common one: a resolver that never produced a result at all (it returned an
-  // error/sentinel payload, e.g. because a `global` cell dispatched `{}` and the tool
-  // requires an arg) looks byte-identical here to a genuinely stale declared path. The
-  // first is a resolver/args problem; the second is a cell-registration problem — and
-  // "the declared path has drifted" actively misdirects an author auditing the former
-  // (D-067 defect 2 / EI-18790908999972569: three correct paths were blamed for a
-  // one-line arg-wiring bug in the resolver's own error branch).
-  if (value === undefined) {
-    const errorMessage = errorShapeMessage(payload);
-    if (errorMessage !== undefined) {
+  /**
+   * ⚠ THE PROJECTION IS INSIDE A GUARD, and the guard is not decorative — it closes a
+   * real hole in this module's own no-throw contract (found by P-007's totality fuzz,
+   * agent-state-plane-verification-2026-07-27).
+   *
+   * The `try` above wraps only the DISPATCH. Everything below it walks the resolver's
+   * PAYLOAD — `valueAtPath` for the headline, again for the material lens, and
+   * `hoistFrom` for the hoist — and a payload is not obliged to be walkable. A getter
+   * that throws, a Proxy whose trap rejects, a lazily-computed field that blows up on
+   * first access: each makes `valueAtPath` throw, and before this guard that throw
+   * escaped `readCell` entirely.
+   *
+   * Which is the exact failure P-026 rule (f) exists to forbid, in the module that
+   * documents it. The consumers named in this function's own header — a lock acquire, a
+   * claim, a presence read — would have taken the exception on a hot path, so the
+   * enrichment could fail the operation it decorates.
+   *
+   * `resolver-failed` is the right code by this module's own mapping table: the resolver
+   * ANSWERED but produced something unusable, and the lever is retry-or-escalate rather
+   * than "supply more input". The detail says it is a resolver defect rather than a
+   * transient, matching how `not_read_only` is already reported.
+   */
+  try {
+    const value = valueAtPath(payload, spec.changeSignal.path);
+    // The resolver answered but the declared path is not present. `value === undefined`
+    // has (at least) two causes with DIFFERENT fixes, and conflating them misdiagnoses
+    // the common one: a resolver that never produced a result at all (it returned an
+    // error/sentinel payload, e.g. because a `global` cell dispatched `{}` and the tool
+    // requires an arg) looks byte-identical here to a genuinely stale declared path. The
+    // first is a resolver/args problem; the second is a cell-registration problem — and
+    // "the declared path has drifted" actively misdirects an author auditing the former
+    // (D-067 defect 2 / EI-18790908999972569: three correct paths were blamed for a
+    // one-line arg-wiring bug in the resolver's own error branch).
+    if (value === undefined) {
+      const errorMessage = errorShapeMessage(payload);
+      if (errorMessage !== undefined) {
+        return {
+          status: 'unknown',
+          cell,
+          unknown: cellUnknown(
+            'insufficient-data',
+            `the resolver returned an error instead of a result: "${errorMessage}" — the declared path was not evaluated, ` +
+              `so this is not path drift; check the resolver or the args this cell's callerRelativity dispatches ` +
+              `(dispatched: ${JSON.stringify(args)}).`,
+          ),
+        };
+      }
+      // The resolver worked (no error shape) and the declared path is genuinely absent.
+      // This is NOT `resolver-failed` (the resolver worked) and NOT a value (there is
+      // none) — the read partly succeeded and cannot support a verdict, which is
+      // `insufficient-data`.
       return {
         status: 'unknown',
         cell,
         unknown: cellUnknown(
           'insufficient-data',
-          `the resolver returned an error instead of a result: "${errorMessage}" — the declared path was not evaluated, ` +
-            `so this is not path drift; check the resolver or the args this cell's callerRelativity dispatches ` +
-            `(dispatched: ${JSON.stringify(args)}).`,
+          `the resolver answered but "${spec.changeSignal.path}" was absent from its result — the cell's declared path and ` +
+            "its resolver's shape have drifted apart.",
         ),
       };
     }
-    // The resolver worked (no error shape) and the declared path is genuinely absent.
-    // This is NOT `resolver-failed` (the resolver worked) and NOT a value (there is
-    // none) — the read partly succeeded and cannot support a verdict, which is
-    // `insufficient-data`.
+
+    // P-021 — the material lens, off the SAME payload. `undefined` means the
+    // declared path is not in this result (registration drift): we omit `material`
+    // rather than reporting it as unchanged, so the caller falls back to LOUD.
+    const materialPath = spec.materiality?.path;
+    const materialValue = materialPath === undefined ? undefined : valueAtPath(payload, materialPath);
+
+    return {
+      status: 'value',
+      cell,
+      value,
+      headline: spec.headline,
+      resolver: spec.resolver,
+      ...(spec.unknownHoist === undefined ? {} : { unknownHoist: hoistFrom(payload, spec.unknownHoist) }),
+      ...(materialPath !== undefined && materialValue !== undefined
+        ? { material: { path: materialPath, value: materialValue } }
+        : {}),
+    };
+  } catch (err) {
     return {
       status: 'unknown',
       cell,
       unknown: cellUnknown(
-        'insufficient-data',
-        `the resolver answered but "${spec.changeSignal.path}" was absent from its result — the cell's declared path and ` +
-          "its resolver's shape have drifted apart.",
+        'resolver-failed',
+        `this cell's resolver answered, but its result could not be read: ${
+          err instanceof Error ? err.message : String(err)
+        }. Projecting the declared path threw, so the payload is not a plain result (a throwing getter, a Proxy ` +
+          "trap, a lazily-computed field). This is a defect in the resolver's RESULT, not a transient failure.",
       ),
     };
   }
-
-  // P-021 — the material lens, off the SAME payload. `undefined` means the
-  // declared path is not in this result (registration drift): we omit `material`
-  // rather than reporting it as unchanged, so the caller falls back to LOUD.
-  const materialPath = spec.materiality?.path;
-  const materialValue = materialPath === undefined ? undefined : valueAtPath(payload, materialPath);
-
-  return {
-    status: 'value',
-    cell,
-    value,
-    headline: spec.headline,
-    resolver: spec.resolver,
-    ...(spec.unknownHoist === undefined ? {} : { unknownHoist: hoistFrom(payload, spec.unknownHoist) }),
-    ...(materialPath !== undefined && materialValue !== undefined
-      ? { material: { path: materialPath, value: materialValue } }
-      : {}),
-  };
 }
 
 /**

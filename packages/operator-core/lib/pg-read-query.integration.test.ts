@@ -97,6 +97,54 @@ describe('pgReadQuery (real PG)', () => {
   });
 });
 
+/**
+ * EI-18789855771421275 recurrence guard: a bigint (int8) value beyond
+ * `Number.MAX_SAFE_INTEGER` must survive `pgReadQuery` at EXACT precision, not
+ * get silently rounded to the nearest representable double. `db.adminSql`
+ * (used everywhere above) mirrors the canonical `getOrgPg()` client shape —
+ * `types: PG_BIGINT_AS_NUMBER_TYPES` (EI-9265) — which is why the first test
+ * below documents the LOSSY behavior still correctly applies there (that
+ * override is intentional and stays for ordinary app code, per WI-3880). A
+ * client built with NO type override (postgres-js's own default for oid 20,
+ * mirroring what `getOrgPgLosslessBigint()` builds via `buildClient`'s
+ * `typesOverride: {}` param) must instead come back as an exact string.
+ */
+describe('pgReadQuery — bigint precision (EI-18789855771421275)', () => {
+  let db: OrgTestDb;
+  let losslessSql: postgres.Sql;
+  // 19-digit value from the reported incident — well past 2^53 (9007199254740991)
+  // in both directions, so it exercises the exact rounding this bug reported.
+  const BIG_NEGATIVE = '-259627072863669756';
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    losslessSql = postgres(db.adminDsn, { max: 1, onnotice: () => {}, prepare: false, types: {} });
+  }, 120_000);
+
+  afterAll(async () => {
+    await losslessSql?.end({ timeout: 1 }).catch(() => {});
+    await db?.cleanup();
+  });
+
+  it('documents the bug: the bigint-as-number client (db.adminSql, same shape as getOrgPg()) rounds a >2^53 bigint', async () => {
+    const r = await pgReadQuery(`SELECT ${BIG_NEGATIVE}::bigint AS big_id`, { client: db.adminSql });
+    expect(typeof r.rows[0]?.big_id).toBe('number');
+    // The rounded value is NOT the original — proving precision was actually lost,
+    // not just represented differently.
+    expect(String(r.rows[0]?.big_id)).not.toBe(BIG_NEGATIVE);
+  });
+
+  it('the fix: a lossless-bigint client (what getOrgPgLosslessBigint() builds) returns the EXACT value as a string', async () => {
+    const r = await pgReadQuery(`SELECT ${BIG_NEGATIVE}::bigint AS big_id`, { client: losslessSql });
+    expect(r.rows[0]?.big_id).toBe(BIG_NEGATIVE);
+  });
+
+  it('a safe-range bigint is unaffected (still an exact string, just one that happens to be small)', async () => {
+    const r = await pgReadQuery('SELECT 42::bigint AS big_id', { client: losslessSql });
+    expect(r.rows[0]?.big_id).toBe('42');
+  });
+});
+
 // EI-10514: EXPLAIN-only schema validation (parses/plans, never executes or writes) —
 // built for validateRubricReplicationSql to schema-check embedded rubric drill SQL.
 describe('explainReadQuery (real PG)', () => {

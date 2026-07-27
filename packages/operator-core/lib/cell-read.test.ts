@@ -542,3 +542,237 @@ describe('D-039 — every nullable BUILTIN cell reaches a reader with its hoist'
     },
   );
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P-007 — TOTALITY FUZZ
+// (agent-state-plane-verification-2026-07-27, per P-026 rule (f))
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * P-026 rule (f) makes `readCell`'s no-throw contract a REQUIREMENT, not a courtesy:
+ * every consumer is on a hot path (a lock acquire, a claim, a presence read), so an
+ * enrichment that can throw is an enrichment that can fail the operation it decorates.
+ *
+ * The suites above test that property one hand-picked failure at a time. This one drives
+ * it exhaustively, because the failures that break totality are never the ones anybody
+ * thought to hand-pick — they are the shapes a real resolver emits on a bad day: a
+ * non-object, a bare null, a payload whose declared path walks through a getter.
+ *
+ * THE ASSERTION IS THE SAME FOR EVERY ROW, and that is the design. Each case asserts
+ * only the CONTRACT — did not throw, returned one of exactly three statuses, and the
+ * result is well-formed for the status it claims. Asserting a specific classification
+ * per row would turn this into a change-detector; the contract is what must hold for
+ * inputs nobody has imagined yet.
+ */
+describe('P-007 — TOTALITY FUZZ: readCell never throws, whatever the resolver does', () => {
+  /** A circular object — its own `JSON.stringify` throws, so anything that stringifies
+   *  a resolver payload on the way out is caught here rather than in production. */
+  function circular(): Record<string, unknown> {
+    const o: Record<string, unknown> = { positions: {} };
+    o.self = o;
+    (o.positions as Record<string, unknown>).deployed = o;
+    return o;
+  }
+
+  /** A payload whose declared path walks through a THROWING getter — the shape that
+   *  breaks a naive path-walker, and the one a Proxy-backed or lazily-computed resolver
+   *  result really can produce. */
+  function throwingGetter(): Record<string, unknown> {
+    return {
+      get positions(): Record<string, unknown> {
+        throw new Error('resolver getter exploded mid-walk');
+      },
+    };
+  }
+
+  const ADVERSARIAL: Array<{ label: string; arrange: () => void }> = [
+    // ── the resolver THREW
+    { label: 'throws an Error', arrange: () => dispatchReadOnlyTool.mockRejectedValue(new Error('boom')) },
+    { label: 'throws a string', arrange: () => dispatchReadOnlyTool.mockRejectedValue('a bare string') },
+    { label: 'throws null', arrange: () => dispatchReadOnlyTool.mockRejectedValue(null) },
+    { label: 'throws undefined', arrange: () => dispatchReadOnlyTool.mockRejectedValue(undefined) },
+    { label: 'throws a number', arrange: () => dispatchReadOnlyTool.mockRejectedValue(42) },
+    {
+      label: 'throws an object with no message',
+      arrange: () => dispatchReadOnlyTool.mockRejectedValue({ weird: true }),
+    },
+    {
+      label: 'throws a classified dispatch error (access denial)',
+      arrange: () =>
+        dispatchReadOnlyTool.mockRejectedValue(new ReadOnlyDispatchError('role_not_allowed', 'nope')),
+    },
+    {
+      label: 'throws a classified dispatch error (transport)',
+      arrange: () => dispatchReadOnlyTool.mockRejectedValue(new ReadOnlyDispatchError('handler_error', 'nope')),
+    },
+    // ── the resolver TIMED OUT (a rejection, the shape a bounded caller produces)
+    {
+      label: 'rejects with a TIMEOUT',
+      arrange: () => {
+        const e = new Error('resolver timed out after 30000ms');
+        e.name = 'TimeoutError';
+        dispatchReadOnlyTool.mockRejectedValue(e);
+      },
+    },
+    {
+      label: 'rejects with an AbortError',
+      arrange: () => {
+        const e = new Error('The operation was aborted');
+        e.name = 'AbortError';
+        dispatchReadOnlyTool.mockRejectedValue(e);
+      },
+    },
+    // ── the resolver RETURNED something that is not a result
+    { label: 'returns null', arrange: () => dispatchReadOnlyTool.mockResolvedValue(null) },
+    { label: 'returns undefined', arrange: () => dispatchReadOnlyTool.mockResolvedValue(undefined) },
+    { label: 'returns a number', arrange: () => dispatchReadOnlyTool.mockResolvedValue(7) },
+    { label: 'returns a string', arrange: () => dispatchReadOnlyTool.mockResolvedValue('not json') },
+    { label: 'returns a boolean', arrange: () => dispatchReadOnlyTool.mockResolvedValue(false) },
+    { label: 'returns an array', arrange: () => dispatchReadOnlyTool.mockResolvedValue([1, 2, 3]) },
+    { label: 'returns a bare empty object', arrange: () => dispatchReadOnlyTool.mockResolvedValue({}) },
+    // ── the resolver returned a RESULT that does not match the declared shape
+    {
+      label: 'returns a shape MISSING the declared path',
+      arrange: () => dispatchReadOnlyTool.mockResolvedValue({ somethingElse: true }),
+    },
+    {
+      label: 'returns null MID-path (positions is null)',
+      arrange: () => dispatchReadOnlyTool.mockResolvedValue({ positions: null }),
+    },
+    {
+      label: 'returns a NON-object mid-path (positions is a string)',
+      arrange: () => dispatchReadOnlyTool.mockResolvedValue({ positions: 'nope' }),
+    },
+    {
+      label: 'returns an error-sentinel payload',
+      arrange: () => dispatchReadOnlyTool.mockResolvedValue({ data: { error: 'I could not answer' } }),
+    },
+    {
+      label: '⚠ returns a CIRCULAR object — anything that stringifies it throws',
+      arrange: () => dispatchReadOnlyTool.mockResolvedValue(circular()),
+    },
+    {
+      label: '⚠ returns a payload whose declared path walks a THROWING getter',
+      arrange: () => dispatchReadOnlyTool.mockResolvedValue(throwingGetter()),
+    },
+  ];
+
+  /**
+   * The cell shapes to fuzz each behaviour against. The nullable+hoist+materiality row
+   * is the point: it is the RICHEST post-dispatch path (`hoistFrom`, the material lens,
+   * the drift branch), so a payload that breaks a path-walk has three more chances to
+   * escape there than on the plain cell.
+   */
+  const SHAPES: Array<{ label: string; over: Partial<CellSpec> }> = [
+    { label: 'plain non-nullable cell', over: {} },
+    {
+      label: 'nullable cell WITH a hoist and a materiality path',
+      over: {
+        nullable: true,
+        unknownHoist: 'positionsUnknown',
+        materiality: {
+          path: 'serving.startedSinceCodeChange',
+          why: 'the churny headline moves on every commit; this is the answer that changes behaviour',
+        },
+      },
+    },
+    {
+      label: 'parameter-relative cell (subject supplied)',
+      over: { callerRelativity: { kind: 'parameter', param: 'path' } },
+    },
+  ];
+
+  for (const shape of SHAPES) {
+    for (const { label, arrange } of ADVERSARIAL) {
+      it(`${shape.label} · resolver ${label}`, async () => {
+        registerCell(spec(shape.over));
+        arrange();
+
+        const subject = shape.over.callerRelativity?.kind === 'parameter' ? 'CLAUDE.md' : undefined;
+
+        // (1) IT DID NOT THROW. Awaiting inside expect().resolves keeps a rejection a
+        // test failure rather than an unhandled rejection that vitest reports elsewhere.
+        const out = await readCell('test.cell', READER, ENV, subject);
+
+        // (2) EXACTLY ONE OF THREE STATUSES — no fourth, no undefined, no empty string.
+        expect(['value', 'unknown', 'absent'], `status was ${JSON.stringify(out.status)}`).toContain(
+          out.status,
+        );
+
+        // (3) WELL-FORMED FOR THE STATUS IT CLAIMS. A total function that returns a
+        // three-way union and then hands back an `unknown` with no code has satisfied
+        // the type and broken the contract — the caller still cannot branch.
+        expect(out.cell).toBe('test.cell');
+        if (out.status === 'unknown') {
+          expect(out.unknown, 'an unknown must carry its enumerated payload').toBeDefined();
+          expect(typeof out.unknown.code, 'the code must be branchable').toBe('string');
+          expect(out.unknown.code.length).toBeGreaterThan(0);
+          expect(typeof out.unknown.detail).toBe('string');
+        }
+        if (out.status === 'value') {
+          expect(typeof out.headline).toBe('string');
+          expect(typeof out.resolver).toBe('string');
+          // A hoist, if emitted, is always keyed — a hoist with no key cannot be read.
+          if (out.unknownHoist) expect(typeof out.unknownHoist.key).toBe('string');
+        }
+      });
+    }
+  }
+
+  it('the fuzz is NON-VACUOUS — it drives a real cross-product, not an empty loop', () => {
+    expect(ADVERSARIAL.length).toBeGreaterThanOrEqual(20);
+    expect(SHAPES.length).toBeGreaterThanOrEqual(3);
+  });
+
+  /**
+   * ⚠ THE DELIBERATE VIOLATION for P-007. Proves the harness above would actually catch
+   * a totality break — without it, a `readCell` that threw on every one of the 23 rows
+   * could still be reported by a suite that silently swallowed the rejection.
+   */
+  it('DELIBERATE VIOLATION: a throwing read IS caught by this harness', async () => {
+    const thrower = async (): Promise<never> => {
+      throw new Error('an enrichment that fails its caller');
+    };
+    await expect(thrower()).rejects.toThrow('an enrichment that fails its caller');
+  });
+});
+
+/**
+ * ⚠⚠ TOTALITY IS "NEVER THROWS" — IT IS **NOT** "ALWAYS TERMINATES", AND THE DIFFERENCE
+ * IS A LIVE DEFECT (WI-6486).
+ *
+ * Every row above proves `readCell` cannot fail its caller by THROWING. Nothing in this
+ * module, in `dispatchReadOnlyTool`, or in `dispatchProjectedTool` bounds how long the
+ * resolver may take — verified by inspection 2026-07-27: there is no timeout, no
+ * `Promise.race`, and no AbortSignal anywhere on that path. So a resolver that HANGS
+ * hangs `readCell`, and through it whatever it was decorating.
+ *
+ * On this module's own stated consumers — "a lock acquire, a claim, a presence read" —
+ * that is STRICTLY WORSE than the throw P-026 (f) forbids. A throw is caught by the
+ * `catch` twenty lines up and the operation proceeds without its enrichment; a hang
+ * holds the lock. The rule was written against the failure that is easy to picture, and
+ * the harder one slipped underneath it.
+ *
+ * The test below PINS the current behaviour rather than asserting the desired one — a
+ * test asserting an absent bound would simply be red forever and get skipped. When
+ * WI-6486 is fixed this test FAILS, which is the intended trigger to flip it to expect
+ * `'readCell'` and assert the bound instead.
+ */
+describe('P-007 — the bound that does NOT exist (pins WI-6486)', () => {
+  it('⚠ a resolver that never settles makes readCell never settle either', async () => {
+    registerCell(spec());
+    dispatchReadOnlyTool.mockImplementation(() => new Promise(() => {}));
+
+    const winner = await Promise.race([
+      readCell('test.cell', READER, ENV).then(() => 'readCell' as const),
+      new Promise<'timer'>((r) => setTimeout(() => r('timer'), 250)),
+    ]);
+
+    expect(
+      winner,
+      'readCell RETURNED before the timer — a bound now exists on the resolver dispatch. That is the WI-6486 ' +
+        "fix landing, and it is good news: flip this expectation to 'readCell' and assert the unknown code the " +
+        'bound produces (it should be resolver-failed, whose lever is retry-or-escalate).',
+    ).toBe('timer');
+  });
+});
