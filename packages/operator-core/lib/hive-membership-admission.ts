@@ -30,6 +30,7 @@ import {
   evaluateMembershipAdmission,
   type JoinerIdentity,
 } from './hive-membership-policy';
+import { resolveFederatedPotScope, type FederatedPotScope } from './federated-pot-scope';
 import {
   recordPendingJoin as realRecordPendingJoin,
   getPendingJoin as realGetPendingJoin,
@@ -178,7 +179,15 @@ export type DecidePendingResult =
  * Authority (claimed-owner) is the CALLER's responsibility.
  */
 export async function approvePendingJoin(
-  input: { workspaceId: string; potHomeSlug: string; githubUserId: number; decidedByGithubUserId: number },
+  // ⚠ SCOPE (WI-6312): the FEDERATED scope. Branded on the INPUT deliberately — this module
+  // has no local handle to resolve from, so the obligation belongs to the JOIN FLOW that
+  // already knows which of the two names it is holding.
+  input: {
+    workspaceId: string;
+    potHomeSlug: FederatedPotScope;
+    githubUserId: number;
+    decidedByGithubUserId: number;
+  },
   deps: MembershipAdmissionDeps = {},
 ): Promise<DecidePendingResult> {
   const getPending = deps.getPendingJoin ?? realGetPendingJoin;
@@ -277,7 +286,8 @@ export type OwnerAdmitOutcome =
   | { action: 'refuse'; reason: 'banned' | 'not_allowlisted' };
 
 export async function ownerAdmitOrPend(
-  input: { workspaceId: string; potHomeSlug: string; joiner: JoinerInfo },
+  // ⚠ SCOPE (WI-6312): FEDERATED, resolved by the caller — see approvePendingJoin above.
+  input: { workspaceId: string; potHomeSlug: FederatedPotScope; joiner: JoinerInfo },
   deps: MembershipAdmissionDeps = {},
 ): Promise<OwnerAdmitOutcome> {
   const { workspaceId, potHomeSlug, joiner } = input;
@@ -392,9 +402,16 @@ export async function admitAnnouncedPeerAsOwner(
     (async (ws: string, home: string) => (await import('./identity/hive-keypair')).loadHivePubkey(ws, home));
   const admit = deps.admit ?? ownerAdmitOrPend;
 
-  const potHomeSlug = await resolveHome(input.workspaceId, input.harnessSlug);
-  if (!potHomeSlug) return { action: 'skip', reason: 'no_hive_home' };
-  if (!(await loadPubkey(input.workspaceId, potHomeSlug))) return { action: 'skip', reason: 'not_owner' };
+  const localPotHomeSlug = await resolveHome(input.workspaceId, input.harnessSlug);
+  if (!localPotHomeSlug) return { action: 'skip', reason: 'no_hive_home' };
+  if (!(await loadPubkey(input.workspaceId, localPotHomeSlug))) return { action: 'skip', reason: 'not_owner' };
+
+  // ⚠ SCOPE (WI-6312): `potHomeSlugForHarness` is a fresh REGISTRY read, i.e. the LOCAL
+  // handle — which a joiner's `freeSlug` may have suffixed. This is THE resolution point
+  // for the whole owner-announce admit path: everything downstream is branded, so it can
+  // only be reached with the federated scope. Fails open to the local handle, leaving the
+  // owner path (where canonical == local) byte-identical.
+  const potHomeSlug = await resolveFederatedPotScope(input.workspaceId, localPotHomeSlug);
 
   const outcome = await admit(
     {

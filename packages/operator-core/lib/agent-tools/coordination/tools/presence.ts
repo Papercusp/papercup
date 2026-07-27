@@ -30,7 +30,8 @@ import { buildParkedOnMap } from '../../fleet/assignments';
 import { overlayPresenceCursors } from '../presence-cursor-overlay';
 import { listCouplingsFor, resolveCoupledPeers } from '../../../coord/couplings';
 import { buildCoupledExpansion } from '../../../coord/coupled-expansion';
-import { deriveCouplingsFromRoster } from '../../../coord/coupling-derivation';
+import { deriveCouplings } from '../../../coord/coupling-derivation';
+import { couplingSourcesFor } from '../coupling-sources';
 
 export default defineTool({
   name: 'coord:presence',
@@ -197,11 +198,35 @@ export default defineTool({
       try {
         const edges = await listCouplingsFor(self.ownerId, c.workspaceId ?? undefined);
         // P-013 (scoping ruling D-078): the derived half, plugged in exactly where
-        // this module always said it would go. It is computed from the SAME
-        // pre-overlay snapshot rows the block projects from, so it adds no query
-        // and — by construction, not by an access check — cannot surface a peer
-        // this caller could not already see (D-044 / D-078 (c)).
-        const derived = deriveCouplingsFromRoster(self.ownerId, snapshot.active);
+        // this module always said it would go. The roster signals (same fleet,
+        // shared awaited event) are computed from the SAME pre-overlay snapshot
+        // rows the block projects from and add no query at all.
+        //
+        // The QUERYING signals — overlapping lock holds, a plan `blocked-by` edge,
+        // a recent directed coord exchange — are injected as bounded, caller-scoped
+        // reads (coupling-sources.ts) and are fail-soft PER LEG, so a dead source
+        // costs that one signal rather than the whole block. Each reads only what
+        // this caller can already read, and `deriveCouplings` filters every derived
+        // edge back through the roster, so coupling still cannot surface a peer
+        // this caller could not otherwise see (D-044 / D-078 (c)).
+        //
+        // The lock-hold signal is what makes the file dimension real: `current_files`
+        // is a live roster field but is empty for essentially every agent (measured
+        // 2026-07-27 — 119 live rows, zero populated; EI-18772330418885814), so a
+        // live lock is the only AUTOMATIC "this agent is on this file" signal.
+        const derived = await deriveCouplings(
+          self.ownerId,
+          snapshot.active,
+          couplingSourcesFor({
+            selfOwnerId: self.ownerId,
+            rosterOwnerIds: snapshot.active
+              .map((r) => (r as { ownerId?: unknown }).ownerId)
+              .filter((v): v is string => typeof v === 'string' && v.length > 0),
+            ...(detail ? { coordinationDomain: detail.coordinationDomain } : {}),
+            ...(c.harnessSlug ? { harnessSlug: c.harnessSlug } : {}),
+            ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}),
+          }),
+        );
         const peers = resolveCoupledPeers(self.ownerId, derived, edges);
         const expansion = buildCoupledExpansion(peers, snapshot.active);
         coupling = {

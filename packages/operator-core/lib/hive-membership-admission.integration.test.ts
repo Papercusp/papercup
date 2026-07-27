@@ -53,10 +53,12 @@ import { hiveKeychainId } from './identity/hive-keypair';
 import type { DeviceAttestationEntry } from './harness/contributor-row-types';
 
 const WS = 'ws-admission';
-const HIVE = 'acme';
+// WI-6312: branded at the declaration — the fixture writes and reads one synthetic slug.
+const HIVE = unsafeFederatedPotScope('acme', 'integration fixture: one synthetic pot slug, written and read');
 // EI-18777176681958978: the readers take the FEDERATED pot scope; this fixture writes and
 // reads one synthetic slug, so local == federated by construction.
-const HIVE_SCOPE = unsafeFederatedPotScope(HIVE, 'integration fixture: one synthetic pot slug, written and read');
+/** @deprecated WI-6312: HIVE is itself branded now; kept as an alias for existing call sites. */
+const HIVE_SCOPE = HIVE;
 const OWNER_ID = 9;
 
 function dev(pubkey: string): DeviceAttestationEntry {

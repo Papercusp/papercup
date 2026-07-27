@@ -35,6 +35,7 @@ import { clearPotTimeWake } from '../../pot/wake';
 import { dropHarnessSchema } from '../../scaffold-harness-schema';
 import { removeHarnessFromWorkspace } from '../../harness-membership';
 import { removeAllHiveMembers } from '../../hive-membership-store';
+import { resolveFederatedPotScope } from '../../federated-pot-scope';
 import { requirePotTier } from '../../pot/member-tier-gate';
 import { teardownPotLearningLoop } from '../../pot/provision-learning-loop';
 import { releaseHiveDesktop } from '../computer/desktop-lease';
@@ -165,7 +166,13 @@ export default defineTool({
     // tombstone so peers' read-merge drops the departed members. Best-effort: a
     // failure WARNS but never fails the dissolve (same contract as 3.5/3.6).
     try {
-      steps.membershipRowsDropped = await removeAllHiveMembers(workspaceId, pot.slug, sql);
+      // ⚠ SCOPE (WI-6312): `pot.slug` is the LOCAL registry handle; pot_members rows are
+      // written under the FEDERATED scope. Passing the local handle on a divergent joiner
+      // deletes 0 rows and the members keep federating — i.e. silently reintroduces the
+      // exact G24 bug this call was added to fix, and the `try` below would report success.
+      // Fails open to the local handle, so the owner path is byte-identical.
+      const potScope = await resolveFederatedPotScope(workspaceId, pot.slug);
+      steps.membershipRowsDropped = await removeAllHiveMembers(workspaceId, potScope, sql);
     } catch (e) {
       steps.membershipRowsDropped = 0;
       steps.membershipError = (e instanceof Error ? e.message : String(e)).slice(0, 200);

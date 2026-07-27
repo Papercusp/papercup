@@ -131,6 +131,28 @@ export interface SubstitutionPair {
    * some human already wrote down somewhere else may.
    */
   policyTier?: SubstitutionTier;
+  /**
+   * OPT-OUT: this pair may NEVER be promoted past `observe`, whatever its
+   * verdict, until the stated condition is met. The value IS the reason, and it
+   * is required — a hold with no argument is indistinguishable from an oversight.
+   *
+   * The mirror of {@link SubstitutionPair.policyTier}: that field admits a row
+   * ABOVE the staging tier, this one pins a row TO it. Both exist for the same
+   * reason — `equivalent` records that a substitution is FAITHFUL, and that is
+   * simply a different claim from "the agent should be nudged to use it".
+   *
+   * Why it must live HERE and not in a plan decision (learned the hard way,
+   * D-011 / D-042): the git-read row carried exactly this hold, written down and
+   * reasoned through in a decision body — and was then swept into `advise`
+   * anyway by a promotion that selected on `equivalence_verdict` alone, because
+   * no code reads decision prose. That fired the registry's single largest
+   * advisory (~2,500 calls/week across 77 of 86 sessions) for a benefit D-011
+   * had already argued was near-zero for the superuser role. A constraint that
+   * only exists in prose is a constraint that will eventually be violated by
+   * someone acting in good faith on the data. So it is carried in the DATA,
+   * exactly as D-039 carries the opposite authorization.
+   */
+  holdAtObserve?: string;
   /** Model of what the tool can express. See the warning above. */
   cover(atom: string): CoverageResult;
 }
@@ -147,6 +169,12 @@ export const POLICY_INTENT_PREFIX = 'policy-violation:';
  */
 export function assertPolicyTier(pair: SubstitutionPair): SubstitutionTier {
   if (pair.policyTier === undefined) return 'observe';
+  if (pair.holdAtObserve !== undefined) {
+    throw new Error(
+      `pair ${pair.id} sets BOTH policyTier='${pair.policyTier}' and holdAtObserve — a row cannot be ` +
+        'both authorized above the staging tier and pinned to it. Drop one.',
+    );
+  }
   if (!pair.intentLabel.startsWith(POLICY_INTENT_PREFIX)) {
     throw new Error(
       `pair ${pair.id} sets policyTier='${pair.policyTier}' but its intentLabel ` +

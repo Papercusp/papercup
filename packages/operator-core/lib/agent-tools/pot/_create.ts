@@ -583,15 +583,23 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
         // attestation fields are create-time placeholders (the projection's LWW refines the row later
         // when a real federated self-row with an HLC arrives).
         try {
-          const [{ upsertHiveMember: upsertPotMember }, { resolveLocalGithubIdentity }] = await Promise.all([
-            import('../../hive-membership-store'),
-            import('../../identity/resolve-local-github-identity'),
-          ]);
+          const [{ upsertHiveMember: upsertPotMember }, { resolveLocalGithubIdentity }, { unsafeFederatedPotScope }] =
+            await Promise.all([
+              import('../../hive-membership-store'),
+              import('../../identity/resolve-local-github-identity'),
+              import('../../federated-pot-scope'),
+            ]);
           const gh = await resolveLocalGithubIdentity();
           if (gh.kind === 'ok') {
             await upsertPotMember({
               workspaceId: ws,
-              potHomeSlug: opts.slug,
+              // ⚠ SCOPE (WI-6312): certified, not resolved. This is pot CREATION — the creator
+              // IS the owner, so the federated scope is this slug BY CONSTRUCTION; there is no
+              // canonical slug to diverge from yet, and resolving would be a no-op read.
+              potHomeSlug: unsafeFederatedPotScope(
+                opts.slug,
+                'pot creation: the creator is the owner, so canonical == local by construction',
+              ),
               githubUserId: self.githubUserId,
               githubUsername: gh.githubLogin,
               deviceAttestations: [

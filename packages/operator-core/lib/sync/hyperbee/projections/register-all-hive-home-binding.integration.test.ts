@@ -35,11 +35,16 @@ import type { OpEnvelope } from '../op-envelope-types';
 import type { DeviceAttestationEntry } from '../../../harness/contributor-row-types';
 
 const WS = 'ws-a003';
-const HOME = 'hive-home'; // the Hive home slug — the op carries this
+// WI-6312: branded at the declaration — HOME is the owner-authored home slug the op carries.
+const HOME = unsafeFederatedPotScope(
+  'hive-home',
+  'A-003 fixture: HOME is the owner-authored home slug the op carries',
+); // the Hive home slug — the op carries this
 // EI-18777176681958978: HOME is the OWNER-authored home slug the op carries, i.e. exactly the
 // federated scope the readers require — this suite's whole subject is the write side binding
 // to it.
-const HOME_SCOPE = unsafeFederatedPotScope(HOME, 'A-003 fixture: HOME is the owner-authored home slug the op carries');
+/** @deprecated WI-6312: HOME is itself branded now; kept as an alias for existing call sites. */
+const HOME_SCOPE = HOME;
 const MEMBER = 'member-repo'; // the harness a joiner actually boots
 const OWN_LOG = 'own-log-hex';
 const REMOTE_LOG = 'remote-log-hex'; // != OWN_LOG → origin='remote' (a federated op)

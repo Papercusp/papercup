@@ -39,13 +39,44 @@ import {
   expectedRows,
   formatDrift,
 } from '../packages/operator-core/lib/bash-substitution/registry-drift';
-import { seedSubstitutionRegistry } from '../packages/operator-core/lib/bash-substitution/seed';
+import { promoteEarnedRows, seedSubstitutionRegistry } from '../packages/operator-core/lib/bash-substitution/seed';
 
 const WORKSPACE_ID = process.env.PAPERCUSP_WORKSPACE_ID ?? 'papercusp-workspace';
 const CHECK = process.argv.includes('--check');
+const PROMOTE = process.argv.includes('--promote');
+const APPLY = process.argv.includes('--apply');
 
 async function main(): Promise<void> {
   const fixtures = loadPairFixtures(ALL_PAIRS);
+
+  // `--promote` is P-020's staged promotion (observe → advise) as a repeatable
+  // command rather than a hand-written UPDATE. Dry-run unless --apply, and the
+  // eligibility rules (incl. "a filed false positive pauses promotion") live in
+  // promoteEarnedRows, not here — see its header.
+  if (PROMOTE) {
+    const outcomes = await promoteEarnedRows({ workspaceId: WORKSPACE_ID, apply: APPLY });
+    if (outcomes.length === 0) {
+      process.stdout.write('  no rows are eligible for promotion\n');
+      return;
+    }
+    for (const o of outcomes) {
+      process.stdout.write(`  ${o.from} → ${o.to}  ${o.intentLabel} → ${o.toolName}\n`);
+    }
+    // Promotions and hold-demotions are counted separately: reporting a demotion
+    // as "promoted N rows to advise" is precisely the kind of line that gets
+    // skimmed and believed.
+    const up = outcomes.filter((o) => o.to === 'advise').length;
+    const down = outcomes.length - up;
+    const parts = [up > 0 ? `promoted ${up} to advise` : '', down > 0 ? `demoted ${down} held row(s) to observe` : '']
+      .filter(Boolean)
+      .join(', ');
+    process.stdout.write(
+      APPLY
+        ? `✓ ${parts} in ${WORKSPACE_ID}\n  live PreToolUse gates refresh within ~30s (registry cache TTL)\n`
+        : `\n  DRY RUN — ${parts}; re-run with --apply to commit\n`,
+    );
+    return;
+  }
 
   if (CHECK) {
     const drifts = diffRegistry(expectedRows(fixtures), await fetchSubstitutionRows(WORKSPACE_ID));

@@ -15,15 +15,25 @@
  * keeps suppression winning: an agent that decoupled a peer stays decoupled even
  * though this derivation re-fires on every read (D-061 R4).
  *
- * ⚠ RE-RANKING ONLY, NEVER WIDENING (D-044, D-078 (c)). Every signal below is
- * computed from the roster rows the caller is ALREADY being sent. There is no
- * second query and no cell read, so this cannot surface a peer the caller could
- * not otherwise observe — the strongest available form of that guarantee, since
- * it holds by construction rather than by an access check that could be wrong.
- * A signal needing data OUTSIDE the caller's roster (a plan `blocked-by` edge, a
- * recent coord exchange) is deliberately NOT here: it needs a bounded query, and
- * that query must route through `getCell(cell, reader)` / `listCells(reader)`
- * rather than the `Unchecked` accessors, or leg C of the D-076 parity gate reds.
+ * ⚠ RE-RANKING ONLY, NEVER WIDENING (D-044, D-078 (c)). `deriveCouplingsFromRoster`
+ * is computed purely from roster rows the caller is ALREADY being sent, so it
+ * cannot surface a peer the caller could not otherwise observe — a guarantee that
+ * holds BY CONSTRUCTION rather than by an access check that could be wrong.
+ *
+ * The QUERYING signals below (lock holds, plan `blocked-by`, recent coord
+ * exchange) keep that property by a different route: each reads only things the
+ * caller can ALREADY read — locks in its own coordination domain, its OWN plan's
+ * item graph, its OWN messages — and each is keyed to a peer that must ALSO be
+ * in the caller's roster to be emitted. No signal can introduce an ownerId the
+ * roster did not already contain; see `deriveCouplings`.
+ *
+ * On D-078 (c) specifically: that ruling binds any CELL-backed input to
+ * `getCell(cell, reader)` / `listCells(reader)` rather than the `Unchecked`
+ * accessors. This derivation reads no cells at all — not a workaround but the
+ * strongest form of compliance, and stated explicitly so a reviewer does not
+ * read the absence of a `getCell` call as the ruling being ignored. Should a
+ * signal ever need registry data, it MUST take the checked reader path or leg C
+ * of the D-076 parity gate reds.
  *
  * ⚠ PURE AND TOTAL, like `resolveCoupledPeers` and `buildCoupledExpansion`
  * before it: rows come in as `unknown[]` and are read structurally, so it unit-
@@ -36,12 +46,32 @@ import type { DerivedCoupling } from './couplings';
 /** How many overlapping files to NAME before summarising the rest. */
 export const DERIVATION_FILES_NAMED = 2;
 
-/** The roster fields this derivation reads. Structural, so any roster row fits. */
+/** How many overlapping LOCK HOLDS to name before summarising the rest. */
+export const DERIVATION_LOCKS_NAMED = 2;
+
+/** The roster fields this derivation reads. Structural, so any roster row fits.
+ *
+ *  Every field here is a REAL emitted roster field — `PRESENCE_IDENTITY_FIELDS` /
+ *  `PRESENCE_STATE_FIELDS` in presence-payload.ts. That is asserted by a contract
+ *  test (coupling-derivation.test.ts) rather than left to review, because this
+ *  interface is structural: a typo or a renamed producer field would still
+ *  typecheck and every hand-built fixture would still pass. */
 export interface DerivationRow {
   ownerId?: string | null;
   fleetSlug?: string | null;
+  /** ⚠ EMPTY IN PRACTICE — see `deriveCouplingsFromRoster`'s note. Kept because it
+   *  is free and correct when populated; the LOCK-HOLD signal is the real one. */
   currentFiles?: readonly string[] | null;
   awaitingEventKey?: string | null;
+  currentPlanSlug?: string | null;
+  claimedItems?: readonly string[] | null;
+}
+
+/** One `blocked-by` edge within a single plan: `item` cannot start until each of
+ *  `blockedBy` is done. Mirrors `PlanItem.blockedBy` (libs/generic/plan-parser). */
+export interface PlanBlockingEdge {
+  item: string;
+  blockedBy: readonly string[];
 }
 
 function cleanId(v: unknown): string {
@@ -78,6 +108,21 @@ function sharedFilesPhrase(shared: readonly string[]): string {
  *
  * Signal order is fixed (fleet → files → awaited event) and rows are visited in
  * the order given, so two readers with the same roster derive the same string.
+ *
+ * ⚠ THE `currentFiles` SIGNAL IS ALL BUT DEAD IN PRACTICE — kept deliberately,
+ * not by oversight. `current_files` is a real emitted roster field, but it is
+ * populated ONLY by an explicit `coord:declare-intent { current_files }`, and
+ * every declare that OMITS the arg RESETS it to `[]`. Measured live 2026-07-27
+ * (EI-18772330418885814, recorded in audience.ts): 119 live presence rows, ZERO
+ * with a non-empty `current_files`. The `@file:` audience selector hit exactly
+ * this and drew the conclusion this module now follows — a live FILE LOCK is the
+ * strongest, and the only AUTOMATIC, "this agent is on this file" signal there
+ * is. So the working file signal is `deriveCouplingsFromHeldFiles`; this one is
+ * retained because it costs nothing and is correct on the rare row that has it.
+ *
+ * The general lesson, since it nearly shipped silently here: a green unit test
+ * over hand-built fixtures cannot distinguish "field is wrong" from "field is
+ * real but always empty" — both pass. Only a check against the PRODUCER can.
  */
 export function deriveCouplingsFromRoster(
   selfOwnerId: string,
@@ -133,4 +178,242 @@ export function deriveCouplingsFromRoster(
     }
   }
   return out;
+}
+
+/** Render the lock-overlap signal, naming a bounded number of paths. */
+function sharedLocksPhrase(shared: readonly string[]): string {
+  const named = shared.slice(0, DERIVATION_LOCKS_NAMED);
+  const rest = shared.length - named.length;
+  const list = named.join(', ');
+  return rest > 0
+    ? `you both hold locks in ${list} (+${rest} more shared ${rest === 1 ? 'path' : 'paths'})`
+    : `you both hold locks in ${list}`;
+}
+
+/**
+ * THE FILE SIGNAL THAT ACTUALLY FIRES: overlapping live LOCK HOLDS.
+ *
+ * D-078's item text names "overlapping/adjacent lock holds", and this is it —
+ * the automatic signal `current_files` was supposed to be but is not (see
+ * `deriveCouplingsFromRoster`'s note). Pure over an INJECTED map so it unit-tests
+ * without the lock DB; `fetchPresenceHeldFiles` supplies it in production.
+ *
+ * NEVER WIDENS: it emits only ownerIds already present in `held`, which the
+ * caller's own presence read produced, restricted to its own coordination domain.
+ */
+export function deriveCouplingsFromHeldFiles(
+  selfOwnerId: string,
+  held: ReadonlyMap<string, readonly string[]>,
+): DerivedCoupling[] {
+  const self = cleanId(selfOwnerId);
+  if (!self) return [];
+  const mine = fileSet(held.get(self) ?? []);
+  if (mine.size === 0) return [];
+
+  const out: DerivedCoupling[] = [];
+  for (const [rawId, paths] of held) {
+    const ownerId = cleanId(rawId);
+    if (!ownerId || ownerId === self) continue;
+    const shared: string[] = [];
+    for (const p of fileSet(paths)) if (mine.has(p)) shared.push(p);
+    if (shared.length === 0) continue;
+    shared.sort();
+    out.push({ ownerId, because: sharedLocksPhrase(shared) });
+  }
+  // Map iteration order is insertion order, which the caller controls; sort so the
+  // derived string is identical for two readers with the same holds (D-006).
+  out.sort((a, b) => a.ownerId.localeCompare(b.ownerId));
+  return out;
+}
+
+/**
+ * Plan `blocked-by` edges — the dependency signal, and the only one here that is
+ * DIRECTIONAL. Both directions are emitted because they mean opposite things to
+ * the reader: a peer holding what blocks you is who to CHASE; a peer blocked on
+ * what you hold is who is waiting on YOU. The second is the more actionable and
+ * the one an agent is least likely to discover on its own.
+ *
+ * Scoped to a single plan — `edges` are the caller's OWN plan's item graph, which
+ * the caller can already read, and a peer is considered only when the roster says
+ * it is working that same plan. Pure over injected edges, so no PG in tests.
+ */
+export function deriveCouplingsFromPlanBlocking(
+  selfOwnerId: string,
+  rows: readonly unknown[],
+  edges: readonly PlanBlockingEdge[],
+): DerivedCoupling[] {
+  const self = cleanId(selfOwnerId);
+  if (!self || edges.length === 0) return [];
+
+  let selfRow: DerivationRow | undefined;
+  const peers: DerivationRow[] = [];
+  for (const raw of rows) {
+    const row = (raw ?? {}) as DerivationRow;
+    const id = cleanId(row.ownerId);
+    if (!id) continue;
+    if (id === self) selfRow ??= row;
+    else peers.push(row);
+  }
+  if (!selfRow) return [];
+
+  const myPlan = cleanId(selfRow.currentPlanSlug);
+  if (!myPlan) return [];
+  const myItems = new Set(itemList(selfRow.claimedItems));
+  if (myItems.size === 0) return [];
+
+  /** item → the items it is blocked BY. */
+  const blockedBy = new Map<string, Set<string>>();
+  for (const e of edges) {
+    const item = cleanId(e.item);
+    if (!item) continue;
+    const deps = new Set(itemList(e.blockedBy));
+    if (deps.size > 0) blockedBy.set(item, deps);
+  }
+
+  const out: DerivedCoupling[] = [];
+  const seen = new Set<string>();
+  for (const row of peers) {
+    const ownerId = cleanId(row.ownerId);
+    if (seen.has(ownerId)) continue;
+    // Same plan only: a `blocked-by` id is plan-local, so comparing it against an
+    // item claimed on a DIFFERENT plan would couple two agents over a collision of
+    // identifiers ("P-003") that mean unrelated things.
+    if (cleanId(row.currentPlanSlug) !== myPlan) continue;
+    const theirItems = itemList(row.claimedItems);
+    if (theirItems.length === 0) continue;
+    seen.add(ownerId);
+
+    for (const mineItem of [...myItems].sort()) {
+      const deps = blockedBy.get(mineItem);
+      if (!deps) continue;
+      for (const t of theirItems) {
+        if (deps.has(t)) {
+          out.push({ ownerId, because: `your ${mineItem} is blocked by ${t}, which they hold` });
+        }
+      }
+    }
+    for (const t of [...theirItems].sort()) {
+      const deps = blockedBy.get(t);
+      if (!deps) continue;
+      for (const mineItem of myItems) {
+        if (deps.has(mineItem)) {
+          out.push({ ownerId, because: `their ${t} is blocked by ${mineItem}, which you hold` });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Recent DIRECTED coord exchange.
+ *
+ * ⚠ BROADCASTS ARE EXCLUDED AT THE SOURCE, and that exclusion is the whole design
+ * of this signal. A `to:['*']` message reaches the entire fleet, so counting it as
+ * an exchange would couple every agent to every other after a single broadcast —
+ * turning `expanded[]` from a relevance signal into a roster copy and making
+ * `expandedBecause` meaningless. Only a message naming a concrete counterpart
+ * says these two agents are actually working together.
+ *
+ * Pure over an injected partner list (already deduped + broadcast-filtered by the
+ * source), keyed to the roster by the caller in `deriveCouplings`.
+ */
+export function deriveCouplingsFromCoordExchange(
+  selfOwnerId: string,
+  partnerIds: readonly string[],
+): DerivedCoupling[] {
+  const self = cleanId(selfOwnerId);
+  if (!self) return [];
+  const out: DerivedCoupling[] = [];
+  const seen = new Set<string>();
+  for (const raw of partnerIds) {
+    const ownerId = cleanId(raw);
+    if (!ownerId || ownerId === self || seen.has(ownerId)) continue;
+    seen.add(ownerId);
+    out.push({ ownerId, because: 'recent coord exchange' });
+  }
+  out.sort((a, b) => a.ownerId.localeCompare(b.ownerId));
+  return out;
+}
+
+/** Normalize a claimed-items / blocked-by list to clean ids. */
+function itemList(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const x of v) {
+    const s = cleanId(x);
+    if (s) out.push(s);
+  }
+  return out;
+}
+
+/** The bounded, caller-scoped reads the querying signals need. Each is OPTIONAL:
+ *  an unavailable source degrades that one signal, never the whole derivation. */
+export interface CouplingDerivationSources {
+  /** ownerId → live lock paths, for the roster's own agents. */
+  heldFiles?: () => Promise<ReadonlyMap<string, readonly string[]>>;
+  /** The caller's OWN plan's `blocked-by` graph. */
+  planEdges?: (planSlug: string) => Promise<readonly PlanBlockingEdge[]>;
+  /** Concrete peers the caller exchanged DIRECTED messages with recently. */
+  recentPartners?: () => Promise<readonly string[]>;
+}
+
+/**
+ * THE ORCHESTRATOR: the pure roster derivation ∪ the querying signals.
+ *
+ * FAIL-SOFT PER LEG, deliberately: each source is awaited independently and a
+ * thrown/rejected one contributes nothing while the others still land. A single
+ * dead source must not cost the reader every OTHER signal — and none of them may
+ * cost it the roster, which is why `coord:presence` also wraps the whole call.
+ *
+ * ⚠ THE ROSTER IS THE ACCESS BOUNDARY. Every derived edge is filtered to ownerIds
+ * present in `rows` before it is returned. The querying sources are already
+ * caller-scoped, so this is belt-and-braces — but it is what makes "coupling may
+ * re-rank what a reader can already see and may never widen it" (D-044 / D-078
+ * (c)) true STRUCTURALLY for the querying half, exactly as purity makes it true
+ * for the roster half, instead of resting on each source staying well-behaved.
+ */
+export async function deriveCouplings(
+  selfOwnerId: string,
+  rows: readonly unknown[],
+  sources: CouplingDerivationSources = {},
+): Promise<DerivedCoupling[]> {
+  const self = cleanId(selfOwnerId);
+  if (!self) return [];
+
+  const inRoster = new Set<string>();
+  let selfRow: DerivationRow | undefined;
+  for (const raw of rows) {
+    const row = (raw ?? {}) as DerivationRow;
+    const id = cleanId(row.ownerId);
+    if (!id) continue;
+    inRoster.add(id);
+    if (id === self) selfRow ??= row;
+  }
+
+  const settle = async <T>(f: (() => Promise<T>) | undefined, fallback: T): Promise<T> => {
+    if (!f) return fallback;
+    try {
+      return await f();
+    } catch {
+      return fallback;
+    }
+  };
+
+  const myPlan = cleanId(selfRow?.currentPlanSlug);
+  const [held, partners, edges] = await Promise.all([
+    settle(sources.heldFiles, new Map<string, readonly string[]>() as ReadonlyMap<string, readonly string[]>),
+    settle(sources.recentPartners, [] as readonly string[]),
+    myPlan && sources.planEdges
+      ? settle(() => sources.planEdges!(myPlan), [] as readonly PlanBlockingEdge[])
+      : Promise.resolve([] as readonly PlanBlockingEdge[]),
+  ]);
+
+  const all = [
+    ...deriveCouplingsFromRoster(self, rows),
+    ...deriveCouplingsFromHeldFiles(self, held),
+    ...deriveCouplingsFromPlanBlocking(self, rows, edges),
+    ...deriveCouplingsFromCoordExchange(self, partners),
+  ];
+  return all.filter((d) => d.ownerId !== self && inRoster.has(d.ownerId));
 }

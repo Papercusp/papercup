@@ -37,12 +37,17 @@ import type { Sql } from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { leaveHive, type LeaveHiveDeps } from './leave-hive';
 import { upsertHiveMember, getHiveMember, removeAllHiveMembers } from '../hive-membership-store';
+import { unsafeFederatedPotScope } from '../federated-pot-scope';
 import type { HarnessRegistry } from '../harness-registry';
 import { applyPot557RenameAndFixups } from '../sync/hyperbee/__tests__/_hive-substrate-rig';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-lifecycle-gap';
-const HIVE = 'shop-hive'; // the remote_hive view slug == the Hive home slug
+// WI-6312: branded at the declaration — the fixture writes and reads this same synthetic slug.
+const HIVE = unsafeFederatedPotScope(
+  'shop-hive',
+  'integration fixture: writes and reads the same synthetic hive home slug',
+); // the remote_hive view slug == the Hive home slug
 const MEMBER_SLUG = 'shop'; // a joined member harness whose home is the hive view
 const LEAVER_UID = 42;
 

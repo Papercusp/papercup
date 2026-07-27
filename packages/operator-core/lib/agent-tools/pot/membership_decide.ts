@@ -19,6 +19,7 @@ import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { isCanonicalHiveOwner } from '../../hive-identity';
 import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
 import { approvePendingJoin, denyPendingJoin } from '../../hive-membership-admission';
+import { resolveFederatedPotScope } from '../../federated-pot-scope';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { softText, clampText, LIMITS } from '../limits';
 
@@ -81,6 +82,13 @@ export default defineTool({
       return text({ ok: false, code: 'no_owner_identity', detail: 'could not resolve the local GitHub identity' });
     }
 
+    // ⚠ SCOPE (WI-6312): `args.pot` is the LOCAL registry handle; pending-join and member
+    // rows are keyed by the FEDERATED scope. Resolved ONCE for the whole batch (like the
+    // owner gate above) rather than per decision. The owner gate means this path only runs
+    // where canonical == local, so this is a type-safety hardening rather than a behavior
+    // change — but it keeps approve/deny reading the same scope the admit path wrote under.
+    const potScope = await resolveFederatedPotScope(workspaceId, args.pot);
+
     const decisions = args.items?.length
       ? args.items
       : [{ githubUserId: args.githubUserId!, decision: args.decision!, reason: args.reason }];
@@ -89,8 +97,8 @@ export default defineTool({
       async ({ githubUserId, decision, reason }) => {
         const result =
           decision === 'approve'
-            ? await approvePendingJoin({ workspaceId, potHomeSlug: args.pot, githubUserId, decidedByGithubUserId: decidedBy })
-            : await denyPendingJoin({ workspaceId, potHomeSlug: args.pot, githubUserId, decidedByGithubUserId: decidedBy, reason: clampText(reason, LIMITS.ANNOTATION) ?? null });
+            ? await approvePendingJoin({ workspaceId, potHomeSlug: potScope, githubUserId, decidedByGithubUserId: decidedBy })
+            : await denyPendingJoin({ workspaceId, potHomeSlug: potScope, githubUserId, decidedByGithubUserId: decidedBy, reason: clampText(reason, LIMITS.ANNOTATION) ?? null });
         // approvePendingJoin/denyPendingJoin return their own { ok, … }; surface it
         // verbatim, keyed by githubUserId.
         return { ...result, ok: (result as { ok?: boolean }).ok !== false, githubUserId };

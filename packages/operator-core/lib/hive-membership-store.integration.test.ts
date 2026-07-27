@@ -31,12 +31,16 @@ import { applyPot557RenameAndFixups } from './sync/hyperbee/__tests__/_hive-subs
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-p006';
-const HIVE = 'alpha';
+// WI-6312: branded at the DECLARATION so every write/read site in this file certifies once,
+// rather than 31 call sites each restating it. The fixture writes and reads the same synthetic
+// slug, so local == federated by construction.
+const HIVE = unsafeFederatedPotScope('alpha', 'integration fixture: one synthetic pot slug, written and read');
 // EI-18777176681958978: the readers take the FEDERATED pot scope. This fixture writes and
 // reads the same synthetic slug (no joiner topology), so certifying it is correct here — the
 // joiner divergence itself is covered by federated-pot-scope.test.ts + the integration test
 // in federated-pot-scope.integration.test.ts.
-const HIVE_SCOPE = unsafeFederatedPotScope(HIVE, 'integration fixture: one synthetic pot slug, written and read');
+/** @deprecated WI-6312: HIVE is itself branded now; kept as an alias for existing call sites. */
+const HIVE_SCOPE = HIVE;
 
 function dev(pubkey: string): DeviceAttestationEntry {
   return { device_pubkey: pubkey, gist_id: 'g', gist_url: 'u', device_label: 'd', created_at: 1, signature_by_device: 's' };
@@ -76,7 +80,15 @@ async function seedHive(slug = HIVE, ws = WS): Promise<void> {
 describe('hive-membership-store (P-006 per-Hive admission)', () => {
   it('requires a parent Hive (FK) — a member with no hives row is rejected', async () => {
     await expect(
-      upsertHiveMember({ workspaceId: WS, potHomeSlug: 'ghost', githubUserId: 1, githubUsername: 'a' }, db.sql),
+      upsertHiveMember(
+        {
+          workspaceId: WS,
+          potHomeSlug: unsafeFederatedPotScope('ghost', 'negative fixture: deliberately-absent parent hive, asserts the FK rejects'),
+          githubUserId: 1,
+          githubUsername: 'a',
+        },
+        db.sql,
+      ),
     ).rejects.toThrow();
   });
 

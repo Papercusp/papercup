@@ -24,6 +24,7 @@
 
 import { loadHivePubkey } from './identity/hive-keypair';
 import { loadHiveMemberDevicePubkeys, addRevokedHivePubkeys } from './hive-membership-store';
+import { resolveFederatedPotScope, type FederatedPotScope } from './federated-pot-scope';
 import {
   advanceEpochOnHiveBoundary,
   isHiveRekeyEnabled,
@@ -70,12 +71,20 @@ export interface RevokeHiveContributorSeams {
   isOwningSwarm?: (workspaceId: string, potHomeSlug: string) => Promise<boolean>;
   /** The local owner's numeric GitHub id (whose row holds the revoked set). */
   resolveOwnerGithubUserId?: () => Promise<number | null>;
-  /** The target member's device pubkeys (the things to revoke). */
-  loadTargetPubkeys?: (workspaceId: string, potHomeSlug: string, githubUserId: number) => Promise<string[]>;
-  /** Add `pubkeys` to the owner's own row + (P-004) federate. Throws if the owner has no row. */
+  /** The target member's device pubkeys (the things to revoke).
+   *  ⚠ SCOPE (WI-6312): receives the FEDERATED scope, resolved once by the caller. */
+  loadTargetPubkeys?: (
+    workspaceId: string,
+    potHomeSlug: FederatedPotScope,
+    githubUserId: number,
+  ) => Promise<string[]>;
+  /** Add `pubkeys` to the owner's own row + (P-004) federate. Throws if the owner has no row.
+   *  ⚠ SCOPE (WI-6312): receives the FEDERATED scope — the SAME one loadTargetPubkeys got.
+   *  Attestations and revocations are columns of ONE row, so a mismatch between these two
+   *  is how a revoked device passes an admission check. */
   publishRevocation?: (
     workspaceId: string,
-    potHomeSlug: string,
+    potHomeSlug: FederatedPotScope,
     ownerGithubUserId: number,
     pubkeys: string[],
   ) => Promise<{
@@ -168,10 +177,17 @@ async function revokeHiveContributorInner(
   const ownerGithubUserId = await resolveOwnerGithubUserId();
   if (ownerGithubUserId == null) return { ok: false, code: 'no_owner_identity' };
 
+  // ⚠ SCOPE (WI-6312): resolved ONCE, here, and threaded to BOTH pot_members touches below.
+  // This is not a stylistic preference: attestations (step 3) and revocations (step 4) are
+  // columns of the SAME row, so reading one under the local handle and writing the other
+  // under the federated scope is precisely how a revoked device keeps passing admission.
+  // Resolving per-call would make that divergence expressible again.
+  const potScope = await resolveFederatedPotScope(input.workspaceId, input.potHomeSlug);
+
   // 3. Resolve the target's device pubkeys.
   let pubkeys: string[];
   try {
-    pubkeys = await loadTargetPubkeys(input.workspaceId, input.potHomeSlug, input.githubUserId);
+    pubkeys = await loadTargetPubkeys(input.workspaceId, potScope, input.githubUserId);
   } catch (err: unknown) {
     return { ok: false, code: 'revoke_failed', detail: err instanceof Error ? err.message : String(err) };
   }
@@ -181,7 +197,7 @@ async function revokeHiveContributorInner(
   try {
     const { live, newEpoch, distributed, skippedDevicePubkeys, reason } = await publishRevocation(
       input.workspaceId,
-      input.potHomeSlug,
+      potScope,
       ownerGithubUserId,
       pubkeys,
     );
@@ -211,7 +227,7 @@ async function realResolveOwnerGithubUserId(): Promise<number | null> {
 
 async function realPublishRevocation(
   workspaceId: string,
-  potHomeSlug: string,
+  potHomeSlug: FederatedPotScope,
   ownerGithubUserId: number,
   pubkeys: string[],
 ): Promise<{

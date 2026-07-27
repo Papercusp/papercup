@@ -24,6 +24,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getHiveMember } from '../hive-membership-store';
+import { resolveFederatedPotScope } from '../federated-pot-scope';
 import { getRepoPermission } from '../harness/binding-service';
 import type { GithubRepoPermission } from '../harness/binding-types';
 import {
@@ -97,8 +98,19 @@ export async function resolvePotMemberTier(opts: ResolveTierOpts): Promise<Resol
   const repo = await resolvePotRepo(workspaceId, potSlug);
   if (!repo) return { tier: 'owner', reason: 'solo-unbound' };
 
+  // ⚠ SCOPE (WI-6312): `potSlug` is the LOCAL registry handle — correct for
+  // `resolvePotRepo` above, WRONG for every `pot_members` access below, which the
+  // projections write under the FEDERATED scope. Resolved ONCE here and threaded,
+  // because this flow touches pot_members THREE times (the getHiveMember read plus
+  // the two raw-SQL permission-cache statements) and only the first is type-policed
+  // — resolving per-call would leave the untyped two silently on the local handle.
+  // On a divergent joiner the local handle made getHiveMember return null, and
+  // `!member` is indistinguishable from "not a member", so a REAL verified member
+  // was silently demoted to read-only.
+  const potScope = await resolveFederatedPotScope(workspaceId, potSlug);
+
   const { sql } = getOrgPg();
-  const member = await getHiveMember(workspaceId, potSlug, githubUserId);
+  const member = await getHiveMember(workspaceId, potScope, githubUserId);
   if (!member) return { tier: 'read-only', reason: 'not-a-member' };
   if (member.bindingStatus !== 'verified') return { tier: 'read-only', reason: 'unverified' };
 
@@ -107,7 +119,7 @@ export async function resolvePotMemberTier(opts: ResolveTierOpts): Promise<Resol
     const cached = await sql<{ repo_permission: string | null; permission_checked_at: string | null }[]>`
       SELECT repo_permission, permission_checked_at
         FROM harness_shared.pot_members
-       WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${potSlug} AND github_user_id = ${githubUserId}
+       WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${potScope} AND github_user_id = ${githubUserId}
        LIMIT 1`;
     const row = cached[0];
     const at = row?.permission_checked_at != null ? Number(row.permission_checked_at) : null;
@@ -128,7 +140,7 @@ export async function resolvePotMemberTier(opts: ResolveTierOpts): Promise<Resol
     await sql`
       UPDATE harness_shared.pot_members
          SET repo_permission = ${perm}, permission_checked_at = ${Date.now()}
-       WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${potSlug} AND github_user_id = ${githubUserId}`;
+       WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${potScope} AND github_user_id = ${githubUserId}`;
   } catch {
     /* cache is advisory */
   }

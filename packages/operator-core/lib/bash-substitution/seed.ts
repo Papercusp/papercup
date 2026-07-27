@@ -140,6 +140,115 @@ async function upsertPair(
  *   seeding a verdict nobody re-derived is precisely the drift D-002 exists to
  *   prevent. Fix the envelope or re-record the pair; never seed past it.
  */
+/** One row moved by {@link promoteEarnedRows}. */
+export interface PromotionOutcome {
+  intentLabel: string;
+  toolName: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * Promote earned rows `observe` → `advise` (P-020).
+ *
+ * ── WHY THIS IS A FUNCTION AND NOT A HAND-WRITTEN UPDATE ────────────────────
+ * D-002 says promotion is "a column update, so a bad rule is rolled back in
+ * seconds". True, and that flexibility is the point — but it left promotion
+ * with NO caller at all, exactly the hole this file's sibling CLI was written
+ * to close for seeding ("a seed script with no caller is not dormant, it is
+ * stale"). A promotion performed by whoever hand-writes an UPDATE that day is
+ * unauditable, forgets `promoted_at`, and — the real hazard — relies on the
+ * author remembering the eligibility rules. Encoding them here makes the rule
+ * the code rather than the discipline.
+ *
+ * ELIGIBILITY, all four required:
+ *  - `tier = 'observe'`      — never re-promote, never touch a policy `deny`.
+ *  - `equivalence_verdict = 'equivalent'` — D-001: never enforce a pattern whose
+ *    replacement is unproven. `maxTierFor()` agrees (`equivalent` → `advise` is
+ *    its ceiling), and the DB's `tier_requires_equivalence` CHECK refuses the
+ *    write independently, so this is the third of three guards, not the only one.
+ *  - `enabled = true`        — a disabled row is not enforcement state.
+ *  - `false_positive_count = 0` — P-020: "Any agent may file a false-positive
+ *    against a row and that pauses its promotion." That sentence is the whole
+ *    safety valve, and it is worth nothing if it lives only in prose; here a
+ *    filed false positive mechanically withholds the row.
+ *  - NOT held by `holdAtObserve` — a pair may pin itself to the staging tier
+ *    with a stated reason (D-011's role-dependent git-read row). See below.
+ *
+ * It also DEMOTES a held row that is sitting above `observe`, rather than merely
+ * declining to promote it. That is not tidiness: D-042 happened because a
+ * verdict-only promotion swept the held git-read row into `advise`, and nothing
+ * in the system would ever have pulled it back — the seeder deliberately never
+ * demotes (a re-seed must not undo an earned promotion), so without this the
+ * only repair path is a human noticing. A hold that self-heals is a hold; a hold
+ * that needs someone to notice is a comment.
+ *
+ * Dry-run by default: `apply` must be passed explicitly, so the eligible set can
+ * always be inspected before it is committed.
+ */
+export async function promoteEarnedRows(opts: {
+  workspaceId: string;
+  apply?: boolean;
+  client?: OrgSql;
+}): Promise<PromotionOutcome[]> {
+  const sql = opts.client ?? getOrgPg().sql;
+  const held = ALL_PAIRS.filter((p) => p.holdAtObserve !== undefined).map((p) => p.intentLabel);
+
+  const eligible = (await sql`
+    SELECT intent_label, tool_name, tier
+      FROM harness_shared.bash_tool_substitutions
+     WHERE workspace_id = ${opts.workspaceId}
+       AND tier = 'observe'
+       AND equivalence_verdict = 'equivalent'
+       AND enabled = true
+       AND false_positive_count = 0
+       AND NOT (intent_label = ANY(${held}))
+     ORDER BY intent_label
+  `) as unknown as Array<{ intent_label: string; tool_name: string; tier: string }>;
+
+  // A held row that has drifted above the staging tier — the D-042 regression.
+  const drifted = (await sql`
+    SELECT intent_label, tool_name, tier
+      FROM harness_shared.bash_tool_substitutions
+     WHERE workspace_id = ${opts.workspaceId}
+       AND intent_label = ANY(${held})
+       AND tier <> 'observe'
+     ORDER BY intent_label
+  `) as unknown as Array<{ intent_label: string; tool_name: string; tier: string }>;
+
+  const outcomes: PromotionOutcome[] = [
+    ...eligible.map((r) => ({ intentLabel: r.intent_label, toolName: r.tool_name, from: r.tier, to: 'advise' })),
+    ...drifted.map((r) => ({ intentLabel: r.intent_label, toolName: r.tool_name, from: r.tier, to: 'observe' })),
+  ];
+
+  if (!opts.apply || outcomes.length === 0) return outcomes;
+
+  if (eligible.length > 0) {
+    await sql`
+      UPDATE harness_shared.bash_tool_substitutions
+         SET tier = 'advise', promoted_at = now(), updated_at = now()
+       WHERE workspace_id = ${opts.workspaceId}
+         AND tier = 'observe'
+         AND equivalence_verdict = 'equivalent'
+         AND enabled = true
+         AND false_positive_count = 0
+         AND NOT (intent_label = ANY(${held}))
+    `;
+  }
+
+  if (drifted.length > 0) {
+    await sql`
+      UPDATE harness_shared.bash_tool_substitutions
+         SET tier = 'observe', promoted_at = NULL, updated_at = now()
+       WHERE workspace_id = ${opts.workspaceId}
+         AND intent_label = ANY(${held})
+         AND tier <> 'observe'
+    `;
+  }
+
+  return outcomes;
+}
+
 export async function seedSubstitutionRegistry(opts: {
   workspaceId: string;
   fixtures: PairWithFixture[];

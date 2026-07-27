@@ -14,11 +14,11 @@
  * Run: cd packages/operator-core && \
  *   npx vitest run --config vitest.integration.config.ts lib/bash-substitution/seed.integration.test.ts
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { loadPairFixtures } from './corpus';
 import { MIN_POPULATION_ATOMS, MIN_POPULATION_SESSIONS, MIN_SAMPLE_SIZE } from './equivalence';
-import { seedSubstitutionRegistry } from './seed';
+import { promoteEarnedRows, seedSubstitutionRegistry } from './seed';
 import { ALL_PAIRS } from './pairs';
 import { POLICY_INTENT_PREFIX } from './types';
 
@@ -198,6 +198,129 @@ describe('seedSubstitutionRegistry (real PG)', () => {
     // evidence that would argue against keeping it promoted.
     expect(row.tier).toBe('advise');
     expect(Number(row.false_positive_count)).toBe(3);
+  });
+
+  describe('promoteEarnedRows (P-020 staged promotion)', () => {
+    beforeEach(async () => {
+      // Clean baseline: every earned row back to `observe` with no
+      // false-positive evidence. A POLICY tier is deliberately left alone — it
+      // is declared by the pair, not earned from an observation window (D-039),
+      // so promotion must never be the thing that sets or clears it.
+      await db.adminSql`
+        UPDATE harness_shared.bash_tool_substitutions
+           SET tier = CASE WHEN tier = 'deny' THEN tier ELSE 'observe' END,
+               false_positive_count = 0,
+               promoted_at = NULL
+         WHERE workspace_id = ${WORKSPACE}
+      `;
+    });
+
+    it('promotes only rows whose replacement is PROVEN equivalent, and stamps promoted_at', async () => {
+      const outcomes = await promoteEarnedRows({ workspaceId: WORKSPACE, apply: true, client: db.adminSql });
+
+      expect(outcomes.length).toBeGreaterThan(0);
+      expect(outcomes.every((o) => o.from === 'observe' && o.to === 'advise')).toBe(true);
+
+      const rows = (await db.adminSql`
+        SELECT intent_label, tier, equivalence_verdict, promoted_at
+          FROM harness_shared.bash_tool_substitutions
+         WHERE workspace_id = ${WORKSPACE}
+      `) as unknown as Array<{
+        intent_label: string;
+        tier: string;
+        equivalence_verdict: string;
+        promoted_at: Date | null;
+      }>;
+
+      for (const r of rows) {
+        if (r.intent_label.startsWith(POLICY_INTENT_PREFIX)) {
+          // A declared policy row is not promotion's business in either direction.
+          expect(r.tier).toBe('deny');
+          continue;
+        }
+        if (r.equivalence_verdict === 'equivalent') {
+          expect(r.tier).toBe('advise');
+          expect(r.promoted_at).not.toBeNull();
+        } else {
+          // D-001: a pattern whose replacement is unproven may never be
+          // enforced, however long it has sat in the registry.
+          expect(r.tier).toBe('observe');
+          expect(r.promoted_at).toBeNull();
+        }
+      }
+    });
+
+    it('a filed false positive pauses that row’s promotion', async () => {
+      // P-020's safety valve: "Any agent may file a false-positive against a row
+      // and that pauses its promotion." Worth nothing if it lives only in prose.
+      const target = ALL_PAIRS.find((p) => p.expectedVerdict === 'equivalent')!.intentLabel;
+      await db.adminSql`
+        UPDATE harness_shared.bash_tool_substitutions
+           SET false_positive_count = 1
+         WHERE workspace_id = ${WORKSPACE} AND intent_label = ${target}
+      `;
+
+      const outcomes = await promoteEarnedRows({ workspaceId: WORKSPACE, apply: true, client: db.adminSql });
+      expect(outcomes.some((o) => o.intentLabel === target)).toBe(false);
+
+      const [row] = (await db.adminSql`
+        SELECT tier FROM harness_shared.bash_tool_substitutions
+         WHERE workspace_id = ${WORKSPACE} AND intent_label = ${target}
+      `) as unknown as Array<{ tier: string }>;
+      expect(row.tier).toBe('observe');
+    });
+
+    it('never promotes a pair that holds itself at observe, whatever its verdict', async () => {
+      const heldPairs = ALL_PAIRS.filter((p) => p.holdAtObserve !== undefined);
+      expect(heldPairs.length).toBeGreaterThan(0); // D-011's git-read row
+
+      const outcomes = await promoteEarnedRows({ workspaceId: WORKSPACE, apply: true, client: db.adminSql });
+
+      for (const p of heldPairs) {
+        expect(outcomes.some((o) => o.intentLabel === p.intentLabel && o.to === 'advise')).toBe(false);
+        const [row] = (await db.adminSql`
+          SELECT tier FROM harness_shared.bash_tool_substitutions
+           WHERE workspace_id = ${WORKSPACE} AND intent_label = ${p.intentLabel}
+        `) as unknown as Array<{ tier: string }>;
+        expect(row.tier).toBe('observe');
+      }
+    });
+
+    it('DEMOTES a held row that has drifted above observe (the D-042 regression)', async () => {
+      // The exact incident: a verdict-only promotion swept the held git-read row
+      // into `advise`. Declining to promote it next time is not enough — nothing
+      // else in the system ever demotes, so the drift would be permanent.
+      const held = ALL_PAIRS.find((p) => p.holdAtObserve !== undefined)!;
+      await db.adminSql`
+        UPDATE harness_shared.bash_tool_substitutions
+           SET tier = 'advise', promoted_at = now()
+         WHERE workspace_id = ${WORKSPACE} AND intent_label = ${held.intentLabel}
+      `;
+
+      const outcomes = await promoteEarnedRows({ workspaceId: WORKSPACE, apply: true, client: db.adminSql });
+      expect(outcomes).toContainEqual(
+        expect.objectContaining({ intentLabel: held.intentLabel, from: 'advise', to: 'observe' }),
+      );
+
+      const [row] = (await db.adminSql`
+        SELECT tier, promoted_at FROM harness_shared.bash_tool_substitutions
+         WHERE workspace_id = ${WORKSPACE} AND intent_label = ${held.intentLabel}
+      `) as unknown as Array<{ tier: string; promoted_at: Date | null }>;
+      expect(row.tier).toBe('observe');
+      expect(row.promoted_at).toBeNull();
+    });
+
+    it('is a DRY RUN unless apply is passed — reports the eligible set, changes nothing', async () => {
+      const outcomes = await promoteEarnedRows({ workspaceId: WORKSPACE, client: db.adminSql });
+      expect(outcomes.length).toBeGreaterThan(0);
+
+      const [{ promoted }] = (await db.adminSql`
+        SELECT count(*)::int AS promoted
+          FROM harness_shared.bash_tool_substitutions
+         WHERE workspace_id = ${WORKSPACE} AND tier = 'advise'
+      `) as unknown as Array<{ promoted: number }>;
+      expect(Number(promoted)).toBe(0);
+    });
   });
 
   it('refuses to seed a verdict the harness does not re-derive', async () => {

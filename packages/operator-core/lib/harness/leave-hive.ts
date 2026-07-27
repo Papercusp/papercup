@@ -48,6 +48,7 @@ import { closeBootedHarness, getBootedHarness } from '../sync/hyperbee/boot-all'
 import { publishPresenceTombstoneForHarness } from '../sync/hyperbee/wire-presence';
 import { removeGitSyncRoutine } from './git-sync/git-sync-routine';
 import { removeHiveMember } from '../hive-membership-store';
+import { resolveFederatedPotScope } from '../federated-pot-scope';
 import { resolveLocalGithubIdentity } from '../identity/resolve-local-github-identity';
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -190,7 +191,12 @@ export async function leaveHive(
     });
   const dropMembers =
     deps.dropMembers ??
-    ((s: Sql, ws: string, home: string, uid: number) => removeHiveMember(ws, home, uid, s));
+    // ⚠ SCOPE (WI-6312): `home` is derived from the LOCAL registry, but pot_members rows are
+    // written under the FEDERATED scope. Under the local handle this deletes 0 rows and
+    // returns 0 — which is indistinguishable from the idempotent "already gone", so a leave
+    // that never actually happened reads as a clean one. Fails open to `home` on the owner.
+    (async (s: Sql, ws: string, home: string, uid: number) =>
+      removeHiveMember(ws, await resolveFederatedPotScope(ws, home), uid, s));
 
   let reg: HarnessRegistry;
   try {

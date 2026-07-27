@@ -209,6 +209,17 @@ export const gitReadPassthrough: SubstitutionPair = {
       '`git log --oneline -5` — bash is not WRONG here; the gain is argv-safety and git-scoped gating. Shell-substituted argv (`git -C "$D" …`) has no tool form. For "is my edit live", prefer `dev:pipeline_position { path }`',
   },
   expectedVerdict: 'equivalent',
+  // D-011's tier caveat, now carried in the data instead of in the decision body
+  // alone — which is what let a verdict-only promotion sweep this row into
+  // `advise` by accident (D-042). `equivalent` records that the substitution is
+  // faithful; it does not argue that it is worth making.
+  holdAtObserve:
+    'D-011: capability:git is an argv PASS-THROUGH, so this row offers the SAME answer rather than a ' +
+    'better one — its benefits are argv-safety and being gated as `git` rather than as arbitrary shell. ' +
+    'That second benefit is ROLE-DEPENDENT: the entire point for a confined agent, near-zero for a ' +
+    'superuser already holding capability:bash. The registry has no role dimension, so promoting the ' +
+    'largest pair in it (~2,500 calls/week, 77 of 86 sessions) would buy the smallest per-call benefit. ' +
+    'Release when the registry gains a role dimension, or when someone makes the value argument explicitly.',
   cover(atom: string): CoverageResult {
     if (SHELL_SUBSTITUTION.test(atom)) {
       return {

@@ -47,6 +47,7 @@ export const DEFAULT_ABS_FLOOR: Record<MetricSummary['unit'], number> = {
   ms: 5,
   'ops/sec': 1,
   bytes: 32 * 1024 * 1024,
+  count: 1,
 };
 
 export interface CompareOpts {

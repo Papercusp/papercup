@@ -48,14 +48,32 @@ beforeAll(async () => {
     CREATE OR REPLACE FUNCTION harness_shared.capture_substrate_outbox() RETURNS trigger
     LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
   `);
+  // P-008 (c) / D-077: migration 693 attaches `stamp_local_federated_write` to
+  // agent_facts, so the function must EXIST before that CREATE TRIGGER runs.
+  // Stubbed rather than applying migration 314, which also attaches triggers to
+  // tables (harness_features_consolidated, …) this deliberately-minimal fixture
+  // does not have.
+  //
+  // ⚠ SCOPE OF THIS STUB — it mints a monotonically increasing, HLC-SHAPED token,
+  // which is exactly the property the delta cursor depends on (D-012: an HLC is a
+  // total order, so the cursor is one comparable string). It is NOT the real
+  // clock: node-id entropy, hlc_recv drift-clamping and the origin='remote'
+  // passthrough are 314/459/466/681's business, not this file's. Those are
+  // verified against the REAL trigger on the real schema — a local write is
+  // stamped, a remote op carrying its own fed_ts is left alone.
+  await db.sql.unsafe(`
+    CREATE SEQUENCE IF NOT EXISTS harness_shared.test_hlc_seq;
+    CREATE OR REPLACE FUNCTION harness_shared.stamp_local_federated_write() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      IF TG_OP = 'UPDATE' AND NEW.fed_ts IS DISTINCT FROM OLD.fed_ts THEN RETURN NEW; END IF;
+      IF COALESCE(NEW.origin, 'local') <> 'local' THEN RETURN NEW; END IF;
+      NEW.fed_ts  := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
+      NEW.fed_hlc := lpad(nextval('harness_shared.test_hlc_seq')::text, 15, '0') || ':00000:testnode';
+      RETURN NEW;
+    END $$;
+  `);
   for (const m of [
-    // P-008 (c) / D-077: the HLC stamp regime — `hlc_clock`, `hlc_now()` and
-    // `stamp_local_federated_write()`. Needed BEFORE 693 attaches that trigger to
-    // agent_facts, and applied for real (not stubbed) so the cell version this
-    // store now selects is minted by the SAME function that mints it in
-    // production. ⚠ 314 also (re)defines `capture_substrate_outbox` — the outbox
-    // chain stays out of scope, so the no-op stub is re-applied after this loop.
-    '314-d001-hlc-ordering-key.sql',
     '444-agent-facts.sql',
     '455-agent-facts-shareable.sql',
     '461-agent-facts-federation.sql',
@@ -95,14 +113,6 @@ beforeAll(async () => {
     // (lifted from this file's own former inline version).
     await applyMigrationForTest(db.sql, join(SQL_DIR, m));
   }
-  // Re-stub: migration 314 above replaced the no-op with the REAL capture
-  // function. The triggers already exist and resolve the body at call time, so
-  // replacing it here is enough to keep the outbox chain out of scope — while
-  // the HLC stamping 314 also brought stays genuine.
-  await db.sql.unsafe(`
-    CREATE OR REPLACE FUNCTION harness_shared.capture_substrate_outbox() RETURNS trigger
-    LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
-  `);
 });
 afterAll(async () => {
   await db?.cleanup();

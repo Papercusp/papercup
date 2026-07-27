@@ -301,7 +301,13 @@ async function defaultIsTrustedUser(workspaceId: string, githubUserId: number): 
 /** P-003 default audience check, 'whole-pot' case. */
 async function defaultIsPotMember(workspaceId: string, potSlug: string, githubUserId: number): Promise<boolean> {
   const { getHiveMember } = await import('../hive-membership-store');
-  const member = await getHiveMember(workspaceId, potSlug, githubUserId);
+  // ⚠ SCOPE (WI-6312): `potSlug` arrives as the LOCAL handle. pot_members is written under
+  // the FEDERATED scope, so the local handle returns null and this audience check answers
+  // "not a member" for a REAL member — denying a legitimate delegated spawn on a divergent
+  // joiner. Lazy-imported alongside the store to keep this file's projection import path thin.
+  const { resolveFederatedPotScope } = await import('../federated-pot-scope');
+  const potScope = await resolveFederatedPotScope(workspaceId, potSlug);
+  const member = await getHiveMember(workspaceId, potScope, githubUserId);
   return member != null;
 }
 

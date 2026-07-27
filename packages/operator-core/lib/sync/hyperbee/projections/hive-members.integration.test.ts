@@ -40,7 +40,8 @@ vi.mock('../hive-epoch-boundary-wiring', () => ({
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-proj';
-const HIVE = 'alpha';
+// WI-6312: branded at the declaration — the projection writes and reads this same slug.
+const HIVE = unsafeFederatedPotScope('alpha', 'projection fixture: the projection writes under this slug');
 
 function dev(pk: string): DeviceAttestationEntry {
   return { device_pubkey: pk, gist_id: 'g', gist_url: 'u', device_label: 'd', created_at: 1, signature_by_device: 's' };
