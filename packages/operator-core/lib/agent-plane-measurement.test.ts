@@ -2,12 +2,17 @@ import { describe, it, expect } from 'vitest';
 import {
   PLANE_METRIC_IDS,
   PLANE_ZERO_REASONS,
+  METRIC_POLARITIES,
+  METRIC_VERDICTS,
   METRIC_SPECS,
+  metricVerdict,
+  isPassVerdict,
   MIN_BATCHES_FOR_VARIANCE,
   buildMetric,
   composePlaneMeasurement,
   assessSeries,
   isStructuralZero,
+  isConcerningZero,
   explainZero,
   type MetricCounts,
   type PlaneCounts,
@@ -56,6 +61,124 @@ describe('the pre-registration is total and answers D-030 §3', () => {
     // The item's literal wording ("cells-read vs values-transcribed-into-prose")
     // was corrected by D-032 as measuring PRESENTATION; it must not reappear.
     expect(PLANE_METRIC_IDS.join(',')).not.toMatch(/transcri/i);
+  });
+});
+
+describe('polarity — a zero means different things for different metrics', () => {
+  // ⚠ REGRESSION TEST FOR A DEFECT THE LIVE CORPUS FOUND, NOT A FIXTURE.
+  // Before `polarity` existed every metric was implicitly a defect counter, so
+  // 0 clarifications across 4,142 real calls rendered as "✓ clean — the only
+  // zero that is good news".
+  it('a DESIRABLE behaviour nobody performed is NOT clean', () => {
+    const m = buildMetric('clarification-rate', {
+      population: 4142,
+      eligible: 4142,
+      comparable: 4142,
+      observed: 0,
+    });
+    expect(m.polarity).toBe('desirable');
+    expect(m.zeroReason).toBe('none-observed');
+    expect(m.zeroReason).not.toBe('clean');
+    // The instrument WORKED — so this is not a structural zero …
+    expect(isStructuralZero(m.zeroReason)).toBe(false);
+    // … but it must never be shown to a reader as a pass.
+    expect(isConcerningZero(m.zeroReason)).toBe(true);
+    expect(explainZero(m.zeroReason!)).toContain('NOT a pass');
+  });
+
+  it('a DEFECT count of zero over a real denominator IS clean', () => {
+    const m = buildMetric('intent-action-divergence-sampling', {
+      population: 4142,
+      eligible: 19,
+      comparable: 19,
+      observed: 0,
+    });
+    expect(m.polarity).toBe('defect');
+    expect(m.zeroReason).toBe('clean');
+    expect(isConcerningZero(m.zeroReason)).toBe(false);
+  });
+
+  it('every metric declares a polarity — none may default to defect', () => {
+    for (const id of PLANE_METRIC_IDS) {
+      expect(METRIC_POLARITIES as readonly string[]).toContain(METRIC_SPECS[id].polarity);
+    }
+    // The two non-defect metrics are the ones the live run mis-rendered.
+    expect(METRIC_SPECS['clarification-rate'].polarity).toBe('desirable');
+    expect(METRIC_SPECS['plane-token-cost'].polarity).toBe('gauge');
+  });
+
+  it('a GAUGE magnitude is never reported as a finding', () => {
+    const m = composePlaneMeasurement({
+      counts: countsWith({
+        'plane-token-cost': { population: 4142, eligible: 71, comparable: 64, observed: 596_234 },
+      }),
+      windowStartMs: 0,
+      windowEndMs: 1,
+    });
+    // 596,234 BYTES is not 596,234 defects — it must not be listed as a finding.
+    expect(m.summary).not.toContain('findings: plane-token-cost');
+    expect(m.summary).toContain('no defect findings');
+    expect(m.summary).toContain('gauges: plane-token-cost=');
+  });
+
+  it('surfaces never-observed desirable metrics in the measurement, not just per-metric', () => {
+    const m = composePlaneMeasurement({
+      counts: countsWith({
+        'clarification-rate': { population: 4142, eligible: 4142, comparable: 4142, observed: 0 },
+      }),
+      windowStartMs: 0,
+      windowEndMs: 1,
+    });
+    expect(m.noneObserved).toEqual(['clarification-rate']);
+    expect(m.summary).toContain('never observed');
+    expect(m.summary).toContain('not a pass');
+    // And it is NOT filed as an instrument gap — the instrument worked.
+    expect(m.awaitingProducer).not.toContain('clarification-rate');
+  });
+});
+
+describe('metricVerdict — the one place polarity and zeroReason combine', () => {
+  // It exists because the hand-rolled ternary is wrong, and reappeared in the
+  // first consumer written AFTER the polarity fix: `isStructuralZero(r) ? … : 'clean'`
+  // relabels a never-observed desirable behaviour as a pass.
+  const v = (id: PlaneMetricId, c: MetricCounts) => metricVerdict(buildMetric(id, c));
+
+  it('never labels a never-observed desirable metric as a pass', () => {
+    const verdict = v('clarification-rate', {
+      population: 4142,
+      eligible: 4142,
+      comparable: 4142,
+      observed: 0,
+    });
+    expect(verdict).toBe('never-observed');
+    expect(isPassVerdict(verdict)).toBe(false);
+  });
+
+  it('distinguishes all six verdicts', () => {
+    expect(v('intent-action-divergence-stamped', { population: 100, eligible: 0, comparable: 0, observed: 0 })).toBe('unmeasured');
+    expect(v('intent-action-divergence-sampling', { population: 100, eligible: 5, comparable: 5, observed: 0 })).toBe('clean');
+    expect(v('intent-action-divergence-sampling', { population: 100, eligible: 5, comparable: 5, observed: 2 })).toBe('finding');
+    expect(v('clarification-rate', { population: 100, eligible: 100, comparable: 100, observed: 7 })).toBe('present');
+    expect(v('plane-token-cost', { population: 100, eligible: 10, comparable: 10, observed: 5000 })).toBe('gauge');
+  });
+
+  it('a desirable behaviour that DID occur is a pass, not a finding', () => {
+    const verdict = v('clarification-rate', { population: 100, eligible: 100, comparable: 100, observed: 7 });
+    expect(verdict).toBe('present');
+    expect(isPassVerdict(verdict)).toBe(true);
+  });
+
+  it('every verdict it can return is a declared member', () => {
+    for (const id of PLANE_METRIC_IDS) {
+      for (const c of [
+        { population: 0, eligible: 0, comparable: 0, observed: 0 },
+        { population: 9, eligible: 0, comparable: 0, observed: 0 },
+        { population: 9, eligible: 9, comparable: 9, observed: 0 },
+        { population: 9, eligible: 9, comparable: 9, observed: 3 },
+      ]) {
+        expect(METRIC_VERDICTS as readonly string[]).toContain(v(id, c));
+      }
+    }
   });
 });
 

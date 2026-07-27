@@ -27,6 +27,17 @@ import { join } from 'node:path';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import { buildCapabilitySandboxCommand, scrubExecEnv } from './exec-sandbox';
 import { resolveAgentMcpBaseUrl } from '../../mcp-base-url';
+import {
+  beginSyncEnrolment,
+  completeSyncEnrolment,
+  finishSyncEnrolment,
+} from '../../task-manager/enroll-sync';
+import { warmScopeProbe } from '../../task-manager/managed-spawn';
+
+// Warm the systemd-scope probe at module load so the FIRST background job can
+// already be confined. Fire-and-forget by design: a job must never wait on, or be
+// refused by, the task manager's own readiness (task-manager P-008).
+warmScopeProbe();
 
 /** Inline output cap (chars). Output beyond this spills to the scratch log and
  *  the inline result carries head+tail + the log path. Mirrors the native
@@ -73,6 +84,16 @@ export interface BashJob {
   /** Index into `buffer` already returned by bash_output (incremental reads). */
   readCursor: number;
   logStream: WriteStream | null;
+  /**
+   * task-manager-no-escape-2026-07-27 P-008 — the DURABLE half of this job's
+   * identity. The Map above dies with the operator process (EI-8855: any agent
+   * restarting it wipes every handle, which is why an inherited "job COMPLETED"
+   * claim has to be re-verified against the OS). The ledger row does not, and the
+   * cgroup scope makes the job's whole subtree addressable without a pid.
+   * Undefined for foreground runs, which by construction cannot outlive the call.
+   */
+  taskId?: string;
+  scopeUnit?: string | null;
 }
 
 const JOBS = new Map<string, BashJob>();
@@ -114,6 +135,10 @@ function spawnShell(
   env: Record<string, string> | undefined,
   sandboxEnabled = false,
   background = false,
+  /** task-manager P-008: wrap the resolved argv into this job's cgroup scope.
+   *  Applied AFTER the sandbox decision so bwrap still wraps the payload and the
+   *  scope wraps bwrap — the confinement layers nest rather than compete. */
+  wrapScope?: (binary: string, argv: string[]) => { binary: string; argv: string[] },
 ): ChildProcess {
   const spawnPath = augmentedSpawnPath();
   // EI-1617: scrubExecEnv replaces the old stripHostX-only passthrough — an
@@ -136,7 +161,10 @@ function spawnShell(
       `[capability:bash] exec-sandbox enabled but ${decision.reason} — running unsandboxed in the operator process (cwd ${cwd})`,
     );
   }
-  const child = childSpawn(decision.binary, decision.argv, {
+  const launch = wrapScope
+    ? wrapScope(decision.binary, decision.argv)
+    : { binary: decision.binary, argv: decision.argv };
+  const child = childSpawn(launch.binary, launch.argv, {
     cwd,
     // ISOLATION (2026-06-19 keystroke-leak fix): strip the operator's host X session
     // (DISPLAY=:0 / gdm XAUTHORITY) so a bee shell can NEVER inherit the seat. A GUI
@@ -229,6 +257,12 @@ export interface RunOptions {
   /** Resolved papercusp-capability-exec-sandbox flag (P-022/D-008). When true the
    *  command runs inside a bwrap OS sandbox where bwrap works; fail-open otherwise. */
   sandboxEnabled?: boolean;
+  /** task-manager P-008 provenance — the agent id this job is FOR, and the
+   *  work-item it is attributable to. Optional because a caller that does not know
+   *  should say so (the row records `capability:bash`) rather than guess: a wrong
+   *  attribution in a ledger built for attribution is worse than an honest gap. */
+  launchedBy?: string;
+  workItemId?: string | null;
 }
 
 export interface ForegroundResult {
@@ -342,9 +376,15 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   pruneFinished();
   const id = cryptoRandomId();
   const logPath = join(scratchDir(opts.stateDir), `bash-${id}.log`);
+
+  // task-manager P-008: mint the task id + confinement decision BEFORE the fork so
+  // the scope name can go into the argv; the ledger WRITES happen afterwards,
+  // fire-and-forget, and can never block or fail this spawn (see enroll-sync.ts).
+  const enrolment = beginSyncEnrolment({ class: 'bash-job', runtimeMaxSec: Math.ceil(timeoutMs / 1000) });
+
   // EI-16635: background:true — this job is a run_in_background spawn, meant to
   // outlive this call, so the sandbox path (when enabled) must not die-with-parent.
-  const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled, true);
+  const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled, true, enrolment.wrap);
   const job: BashJob = {
     id,
     command: opts.command,
@@ -359,8 +399,29 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     logPath,
     readCursor: 0,
     logStream: safeWriteStream(logPath),
+    taskId: enrolment.taskId,
+    scopeUnit: enrolment.scopeUnit,
   };
   JOBS.set(id, job);
+
+  completeSyncEnrolment(
+    enrolment,
+    {
+      class: 'bash-job',
+      // The command is the only honest title here, and it is what a human scanning
+      // the pane will look for. Bounded so one pathological heredoc cannot bloat
+      // every read of the table.
+      title: opts.command.slice(0, 300),
+      argv: ['bash', '-o', 'pipefail', '-c', opts.command],
+      cwd: opts.cwd,
+      launchedBy: opts.launchedBy ?? 'capability:bash',
+      workItemId: opts.workItemId ?? null,
+      logPath,
+      runtimeMaxSec: Math.ceil(timeoutMs / 1000),
+      detail: { bashJobId: id, sandboxed: Boolean(opts.sandboxEnabled) },
+    },
+    child.pid ?? null,
+  );
 
   const onData = (b: Buffer): void => appendOutput(job, b.toString('utf8'));
   child.stdout?.on('data', onData);
@@ -380,6 +441,11 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     clearTimeout(timer);
     try { job.logStream?.end(); } catch { /* ignore */ }
     job.logStream = null;
+    finishSyncEnrolment(enrolment, {
+      state: 'exited',
+      exitCode: null,
+      exitReason: `spawn error: ${err instanceof Error ? err.message : String(err)}`,
+    });
   });
   child.on('close', (code) => {
     if (job.status === 'running') job.status = code === 0 ? 'completed' : 'failed';
@@ -388,6 +454,14 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     clearTimeout(timer);
     try { job.logStream?.end(); } catch { /* ignore */ }
     job.logStream = null;
+    // `timed_out` is preserved distinctly rather than collapsed into a kill: the
+    // ledger's job is to say WHY something ended, and "hit its own deadline" and
+    // "someone killed it" are different answers to that.
+    finishSyncEnrolment(enrolment, {
+      state: job.status === 'timed_out' ? 'timed_out' : job.status === 'killed' ? 'killed' : 'exited',
+      exitCode: code,
+      exitReason: job.status === 'timed_out' ? `exceeded ${timeoutMs}ms timeout` : null,
+    });
   });
 
   return job;

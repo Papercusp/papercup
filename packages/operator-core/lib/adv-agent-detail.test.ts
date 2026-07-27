@@ -49,6 +49,9 @@ vi.mock('./workspace-registry', async (importOriginal) => ({
 }));
 
 const { deriveAgentLocks, deriveCoordState, getAgentSignals } = await import('./adv-agent-detail');
+// The shared cursor rule, asserted alongside the counter it now feeds so the
+// two cannot drift (unread-count-truthfulness-2026-07-27 P-002/P-003).
+const { pickUnreadCursor } = await import('./agent-tools/coordination/watermarks');
 
 const NOW = 1_700_000_000_000;
 const isoMs = (ms: number): string => new Date(ms).toISOString();
@@ -246,6 +249,78 @@ describe('deriveCoordState', () => {
     ];
     const out = deriveCoordState(messages, new Set(['m-4']), [], [], 'su-1', null);
     expect(out.unreadCount).toBe(2);
+  });
+
+  // unread-count-truthfulness-2026-07-27 P-003.
+  //
+  // The bug these pin: this counter had NO read cursor at all, so it reported
+  // every message ever addressed-or-broadcast to an agent minus the handful it
+  // explicitly ACKed — and agents essentially never send an explicit ack. On a
+  // real agent that was 19,391 (19,390 of them broadcasts), which is the ~19k
+  // the owner reported. `readCursor` is resolved by readUnreadCursor() from the
+  // LATER of messages_since_ts / messages_shown_ts / the last recorded
+  // coord:inbox|orient call, so an empty (never-settled) since_ts no longer
+  // means "epoch".
+  describe('unread respects the read cursor', () => {
+    // The exact live shape: messages_since_ts is '' (detached session, the
+    // attached-only onTurnEnd never persisted it) but messages_shown_ts is
+    // recent — so the resolved cursor is the shown_ts, and only what landed
+    // after it counts.
+    it('reports a SMALL count for an empty since_ts with a recent shown_ts, not the whole log', () => {
+      const shownTs = isoMs(NOW - 60_000);
+      const messages: CoordEnvelope[] = [
+        // A long backlog the agent demonstrably HAS been shown.
+        ...Array.from({ length: 200 }, (_, i) =>
+          msg({ msg_id: `old-${i}`, ts: isoMs(NOW - 3_600_000 + i * 1_000), from: 'su-9', to: ['*'] }),
+        ),
+        // Two that arrived after the receipt — the honest unread.
+        msg({ msg_id: 'new-1', ts: isoMs(NOW - 30_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'new-2', ts: isoMs(NOW - 10_000), from: 'su-3', to: ['*'] }),
+      ];
+
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', shownTs).unreadCount).toBe(2);
+      // Same input with no cursor is the OLD behaviour — proving the cursor,
+      // not the fixture, is what shrinks the number.
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', null).unreadCount).toBe(202);
+    });
+
+    it('still reports a real number for an agent that is genuinely behind', () => {
+      const messages: CoordEnvelope[] = Array.from({ length: 40 }, (_, i) =>
+        msg({ msg_id: `m-${i}`, ts: isoMs(NOW - 40_000 + i * 1_000), from: 'su-2', to: ['su-1'] }),
+      );
+      // Read receipt predates all of it: the agent really has not read these.
+      const out = deriveCoordState(messages, new Set(), [], [], 'su-1', isoMs(NOW - 90_000));
+      expect(out.unreadCount).toBe(40);
+    });
+
+    it('is unchanged for an agent with both cursors set (cursor === the later one)', () => {
+      const sinceTs = isoMs(NOW - 90_000);
+      const shownTs = isoMs(NOW - 45_000);
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'before-both', ts: isoMs(NOW - 120_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'between', ts: isoMs(NOW - 60_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'after-both', ts: isoMs(NOW - 20_000), from: 'su-2', to: ['su-1'] }),
+      ];
+      // pickUnreadCursor takes the LATER of the two, so only 'after-both' counts.
+      expect(pickUnreadCursor(sinceTs, shownTs)).toBe(shownTs);
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', shownTs).unreadCount).toBe(1);
+    });
+
+    it('treats an empty-string cursor as "no receipt", never as an epoch comparison', () => {
+      const messages: CoordEnvelope[] = [msg({ msg_id: 'm-1', from: 'su-2', to: ['su-1'] })];
+      expect(pickUnreadCursor('', null)).toBeNull();
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', '').unreadCount).toBe(1);
+    });
+
+    it('still excludes explicitly-acked messages that arrived after the cursor', () => {
+      const cursor = isoMs(NOW - 60_000);
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'new-1', ts: isoMs(NOW - 30_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'new-2', ts: isoMs(NOW - 20_000), from: 'su-2', to: ['su-1'] }),
+      ];
+      const out = deriveCoordState(messages, new Set(['new-2']), [], [], 'su-1', cursor);
+      expect(out.unreadCount).toBe(1);
+    });
   });
 
   it('lists open handoffs in/out with direction + accepted flag', () => {

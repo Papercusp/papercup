@@ -487,6 +487,49 @@ export function assessSeries(values: readonly (number | null)[]): SeriesAssessme
   };
 }
 
+/** The five things a metric can be saying. */
+export const METRIC_VERDICTS = [
+  /** Nothing was measured — the instrument could not run. */
+  'unmeasured',
+  /** Measured, and a DESIRABLE behaviour did not occur at all. Not a pass. */
+  'never-observed',
+  /** A defect count came back empty over a real denominator. Good news. */
+  'clean',
+  /** A DEFECT was found. */
+  'finding',
+  /** A DESIRABLE behaviour did occur. */
+  'present',
+  /** A magnitude reading — never good or bad on its own. */
+  'gauge',
+] as const;
+export type MetricVerdict = (typeof METRIC_VERDICTS)[number];
+
+/**
+ * What this metric is SAYING, in one word — the single place the polarity and the
+ * zero reason are combined.
+ *
+ * ⚠ It exists because the obvious hand-rolled version is wrong, and was: a
+ * consumer naturally writes `isStructuralZero(r) ? 'UNMEASURED' : 'clean'`, which
+ * silently relabels `'none-observed'` as a pass. That is the very defect the live
+ * run exposed, and it reappeared IMMEDIATELY in the first consumer written after
+ * the fix. So the ternary is not left for callers to rebuild — this is the lazy
+ * path, per the same D-016/D-047 rule the rest of this plan follows.
+ */
+export function metricVerdict(
+  m: Pick<PlaneMetric, 'zeroReason' | 'polarity' | 'observed'>,
+): MetricVerdict {
+  if (m.zeroReason && isStructuralZero(m.zeroReason)) return 'unmeasured';
+  if (m.zeroReason === 'none-observed') return 'never-observed';
+  if (m.zeroReason === 'clean') return 'clean';
+  if (m.polarity === 'gauge') return 'gauge';
+  return m.polarity === 'desirable' ? 'present' : 'finding';
+}
+
+/** True when the verdict must NOT be rendered to a reader as a pass. */
+export function isPassVerdict(v: MetricVerdict): boolean {
+  return v === 'clean' || v === 'present';
+}
+
 /** Render a zero honestly, in one line, wherever a reader meets it. */
 export function explainZero(reason: PlaneZeroReason): string {
   switch (reason) {

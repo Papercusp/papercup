@@ -49,6 +49,7 @@ import {
   composePlaneMeasurement,
   isStructuralZero,
   isConcerningZero,
+  metricVerdict,
   explainZero,
   type MetricCounts,
   type PlaneCounts,
@@ -404,17 +405,21 @@ export async function planeMeasurementSweep(
  */
 export function formatMeasurementLog(m: PlaneMeasurement): string {
   const parts = m.metrics.map((metric) => {
-    if (metric.zeroReason && isStructuralZero(metric.zeroReason)) {
-      return `${metric.id}=UNMEASURED(${metric.zeroReason}; fill=${metric.fillRate ?? 'n/a'}; awaiting ${metric.inputProducer})`;
+    // ONE place decides what a metric is saying — never a hand-rolled ternary.
+    switch (metricVerdict(metric)) {
+      case 'unmeasured':
+        return `${metric.id}=UNMEASURED(${metric.zeroReason}; fill=${metric.fillRate ?? 'n/a'}; awaiting ${metric.inputProducer})`;
+      // Measured, and the desirable behaviour did not occur. It must not print
+      // like a defect count of 0, which is what "0/4142 (0)" reads as at a glance.
+      case 'never-observed':
+        return `${metric.id}=NEVER-OBSERVED(0 of ${metric.comparable} ${metric.unit}s — measured, not a pass)`;
+      case 'gauge':
+        return `${metric.id}=GAUGE(${metric.rate}/${metric.verdictUnit} over ${metric.comparable})`;
+      default:
+        return `${metric.id}=${metric.observed}/${metric.comparable}${metric.rate == null ? '' : ` (${metric.rate})`}`;
     }
-    // Measured, and the desirable behaviour did not occur. It must not print like
-    // a defect count of 0, which is what "0/4142 (0)" reads as at a glance.
-    if (metric.zeroReason === 'none-observed') {
-      return `${metric.id}=NEVER-OBSERVED(0 of ${metric.comparable} ${metric.unit}s — measured, not a pass)`;
-    }
-    return `${metric.id}=${metric.observed}/${metric.comparable}${metric.rate == null ? '' : ` (${metric.rate})`}`;
   });
   return `[plane-measurement] ${m.summary} | ${parts.join(' · ')}`;
 }
 
-export { isStructuralZero, isConcerningZero, explainZero };
+export { isStructuralZero, isConcerningZero, metricVerdict, explainZero };
