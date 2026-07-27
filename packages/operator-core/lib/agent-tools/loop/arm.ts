@@ -329,11 +329,34 @@ export default defineTool({
     // softText fields (P-002): never bounced on length — clamp to cap here.
     const goal = clampText(args.goal, 4000);
     const wakePrompt = clampText(args.wakePrompt, 4000);
-    // B (cold-with-carry-activation-2026-07-20): an unspecified carry now RESOLVES a
-    // default — 'cold' for an unattended headless session, 'warm' otherwise (see
-    // resolveDefaultCarry). An explicit args.carry always wins. `carry` from here on
-    // is the RESOLVED value, threaded into materializeLoop + the kickoff + response.
-    const carry = args.carry ?? (await resolveDefaultCarry(ownerId));
+
+    // EI-18792078711601844 — read the prior loop this arm is about to UPSERT over
+    // BEFORE computing carry, so a re-arm with `carry` omitted can PRESERVE it
+    // instead of silently recomputing a fresh default. loop:arm is an upsert keyed
+    // on (owner, name): the playbook's own prescribed remedy for a blocked loop —
+    // "re-loop:arm with a larger intervalSec" — passes only intervalSec, and before
+    // this fix that omission reset carry to whatever resolveDefaultCarry() computes
+    // NOW (which can legitimately differ from the loop's actual current carry, e.g.
+    // host-discovery flakiness, a flag flip mid-run), silently converting a bounded
+    // cold loop into an unbounded warm one. Reused below for the overwrite-note
+    // comparison too (was previously fetched twice). Best-effort: a read failure
+    // here must not fail the arm — falls back to the pre-fix default-resolution path.
+    let prior: PriorLoopFacts | null = null;
+    try {
+      prior = await readActiveLoopFacts(ownerId);
+    } catch (e) {
+      console.warn(`[loop:arm] prior-loop read failed (falling back to default carry resolution): ${e instanceof Error ? e.message : e}`);
+    }
+
+    // B (cold-with-carry-activation-2026-07-20): an unspecified carry on a FRESH arm
+    // (no active prior loop for this owner) RESOLVES a default — 'cold' for an
+    // unattended headless session, 'warm' otherwise (see resolveDefaultCarry). An
+    // unspecified carry on a RE-ARM of an already-ACTIVE loop instead PRESERVES that
+    // loop's current carry (EI-18792078711601844) — a re-arm's whole point is to
+    // retune ONE field (usually intervalSec), not to re-decide the lifecycle. An
+    // explicit args.carry always wins either way. `carry` from here on is the
+    // RESOLVED value, threaded into materializeLoop + the kickoff + response.
+    const carry = args.carry ?? (prior?.active ? prior.carry : await resolveDefaultCarry(ownerId));
     const resolvedMode = args.mode ?? 'work';
 
     // WI-5557 TIER 1 — an unattended warm-carry WORK loop with neither dead-man guard set
@@ -412,20 +435,19 @@ export default defineTool({
         workItem: claimedWorkItem,
       });
 
-    // EI-18221784742583615 — arm-time overwrite guard. Read the loop this upsert is about
-    // to REPLACE (before materializeLoop overwrites it) and, if the re-arm materially
-    // changes an ACTIVE loop's goal, surface the prior config for comparison so the arming
-    // agent sees what it is replacing instead of clobbering a specialized loop blind (the
-    // stale/replayed-kickoff scenario). Best-effort + purely advisory: the read/compute
-    // never fails the arm, and the loop is still (re-)armed regardless — "surface, don't
-    // silently overwrite" per the filed bug, not a hard refusal.
+    // EI-18221784742583615 — arm-time overwrite guard. Using `prior` (read above, before
+    // materializeLoop overwrites it) — if the re-arm materially changes an ACTIVE loop's
+    // goal, surface the prior config for comparison so the arming agent sees what it is
+    // replacing instead of clobbering a specialized loop blind (the stale/replayed-kickoff
+    // scenario). Best-effort + purely advisory: a compute failure never fails the arm, and
+    // the loop is still (re-)armed regardless — "surface, don't silently overwrite" per the
+    // filed bug, not a hard refusal.
     let overwriteNote: LoopOverwriteNote | null = null;
     try {
-      const prior = await readActiveLoopFacts(ownerId);
       overwriteNote = computeLoopOverwriteNote(prior, { goal, intervalSec: args.intervalSec, kickoff });
     } catch (e) {
       console.warn(
-        `[loop:arm] overwrite-guard read failed (loop still armed): ${e instanceof Error ? e.message : e}`,
+        `[loop:arm] overwrite-note compute failed (loop still armed): ${e instanceof Error ? e.message : e}`,
       );
     }
 

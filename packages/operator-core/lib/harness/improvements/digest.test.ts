@@ -6,6 +6,7 @@ import {
   signatureRecurrence,
   recallAlreadyDecided,
   titleSimilarity,
+  extractQuotedSignatures,
 } from './digest';
 import type { ImprovementCandidate } from './policy';
 
@@ -215,6 +216,69 @@ describe('findLikelyDuplicates', () => {
     expect(flat).toContain('exact2');
     expect(flat).not.toContain('near1'); // near-dup pass skipped above the cap (best-effort, D-001)
     expect(flat).not.toContain('near2');
+  });
+
+  // EI-18790490225750395 D3: three real items were filed against the IDENTICAL
+  // Postgres error string with three completely different, non-overlapping
+  // titles — invisible to every title-based pass above. A quoted error/exception
+  // signature is a far stronger identity signal for exactly this filing pattern.
+  describe('quoted-error-signature clustering (EI-18790490225750395 D3)', () => {
+    it('clusters candidates quoting an IDENTICAL error string even with disjoint titles', () => {
+      const clusters = findLikelyDuplicates([
+        cand({
+          id: 'q1',
+          title: 'LIVE OUTAGE: facts:assert fails ("no unique or exclusion constraint matching the ON CONFLICT specification")',
+        }),
+        cand({
+          id: 'q2',
+          title: 'facts:assert handler_error repro',
+          body: 'Repro: `no unique or exclusion constraint matching the ON CONFLICT specification`',
+        }),
+        cand({ id: 'q3', title: 'a totally unrelated item about something else entirely' }),
+      ]);
+      const quoteCluster = clusters.find((c) => c.signature.startsWith('quote:'));
+      expect(quoteCluster?.ids.sort()).toEqual(['q1', 'q2']);
+      expect(clusters.flatMap((c) => c.ids)).not.toContain('q3');
+    });
+
+    it('does not cluster on short/incidental quoted words (below the signature length floor)', () => {
+      const clusters = findLikelyDuplicates([
+        cand({ id: 's1', title: 'the button says "ok" apparently' }),
+        cand({ id: 's2', title: 'a dialog also says "ok" somewhere' }),
+      ]);
+      expect(clusters).toEqual([]); // titles are also token-dissimilar, so nothing else catches them either
+    });
+
+    it('takes priority over the weaker title-signature pass — an id is not double-clustered', () => {
+      const clusters = findLikelyDuplicates([
+        cand({ id: 't1', title: 'shared quoted text here', body: 'error: "a sufficiently long quoted error signature"' }),
+        cand({ id: 't2', title: 'shared quoted text here', body: 'error: "a sufficiently long quoted error signature"' }),
+      ]);
+      // Both the quote signature AND the title signature match for this pair —
+      // must land in exactly ONE cluster, not two.
+      expect(clusters).toHaveLength(1);
+      expect(clusters[0].ids.sort()).toEqual(['t1', 't2']);
+    });
+  });
+});
+
+describe('extractQuotedSignatures', () => {
+  it('extracts a double-quoted span at least 20 chars, normalized', () => {
+    expect(extractQuotedSignatures('boom: "Some Error   Text  That Is Long Enough"')).toEqual([
+      'some error text that is long enough',
+    ]);
+  });
+  it('extracts a backtick-quoted span too', () => {
+    expect(extractQuotedSignatures('see `a backtick quoted error of decent length`')).toEqual([
+      'a backtick quoted error of decent length',
+    ]);
+  });
+  it('ignores quoted spans shorter than the signature floor', () => {
+    expect(extractQuotedSignatures('the button says "ok"')).toEqual([]);
+  });
+  it('returns [] for undefined/empty text', () => {
+    expect(extractQuotedSignatures(undefined)).toEqual([]);
+    expect(extractQuotedSignatures('')).toEqual([]);
   });
 });
 

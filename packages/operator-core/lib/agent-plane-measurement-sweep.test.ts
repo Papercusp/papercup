@@ -416,7 +416,7 @@ describe('the commitment legs reach the composed metrics', () => {
   });
 
   it('gives the close-time leg a REAL denominator with an honest clean zero', () => {
-    const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1, measuredAtMs: 1 });
+    const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1 });
     const leg = m.metrics.find((x) => x.id === 'acted-on-stale-declared-basis');
     expect(leg?.comparable).toBe(30);
     expect(leg?.observed).toBe(0);
@@ -428,7 +428,7 @@ describe('the commitment legs reach the composed metrics', () => {
   });
 
   it('reports the movement leg as a rate, not a structural zero', () => {
-    const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1, measuredAtMs: 1 });
+    const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1 });
     const leg = m.metrics.find((x) => x.id === 'closed-work-basis-moved');
     expect(leg?.observed).toBe(5);
     expect(leg?.rate).toBeCloseTo(5 / 30, 4);
@@ -437,7 +437,7 @@ describe('the commitment legs reach the composed metrics', () => {
   });
 
   it('fillRate exposes that only ~10% of closes name a basis at all', () => {
-    const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1, measuredAtMs: 1 });
+    const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1 });
     const leg = m.metrics.find((x) => x.id === 'acted-on-stale-declared-basis');
     expect(leg?.fillRate).toBeCloseTo(29 / 284, 4);
   });
@@ -455,12 +455,7 @@ describe('the commitment legs reach the composed metrics', () => {
       staleness: null,
       commitmentBasis: null,
     });
-    const m = composePlaneMeasurement({
-      counts: nullCounts,
-      windowStartMs: 0,
-      windowEndMs: 1,
-      measuredAtMs: 1,
-    });
+    const m = composePlaneMeasurement({ counts: nullCounts, windowStartMs: 0, windowEndMs: 1 });
     for (const id of ['acted-on-stale-declared-basis', 'closed-work-basis-moved'] as const) {
       const leg = m.metrics.find((x) => x.id === id);
       expect(leg?.zeroReason).not.toBe('clean');
