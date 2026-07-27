@@ -100,6 +100,45 @@ const CURATED_COORD_ROOT_KINDS = [
   'contract',
 ] as const;
 
+/**
+ * Two machine-traffic exclusions that decide whether this pane is a
+ * conversation view or a telemetry firehose. Measured over the 51,462 curated
+ * roots on 2026-07-27: only 7,452 (14.5%) are messages an agent actually wrote
+ * to another agent. Both exclusions are applied together, opt out with
+ * `includeMachine`.
+ *
+ * 1. `auto:true` — 31,159 rows (60.5%). The authoritative machine-authored
+ *    stamp, the SAME one coord:inbox's default read filters on
+ *    (agent-tools/coordination/tools/inbox.ts). These are lifecycle
+ *    projections an agent's tooling emitted on its behalf — `now working on:`
+ *    intent declares (12,238), completion broadcasts (7,437), claim notices —
+ *    not prose anyone composed. They are also newest-biased (an intent fires on
+ *    every wake), so unfiltered they dominate the top of the pane.
+ *
+ * 2. Named machine actors — ~12,850 rows. `service-health`, `rate-governor`,
+ *    `green-checkpoint`, `git-sync-*`, `claim-discipline-watch`,
+ *    `compaction-watchdog`, `coord-probe-canary-*` and friends write plain
+ *    un-stamped messages, so exclusion (1) does not reach them.
+ *
+ * The (2) predicate is deliberately a MACHINE test rather than an agent
+ * whitelist, so it fails OPEN: an unrecognised sender stays VISIBLE. That
+ * direction is chosen on purpose — the bug this whole plan exists to fix was
+ * the owner UNDER-seeing their agents ("I only see 51 chat messages"), so a
+ * wrong guess must cost noise, never a hidden conversation.
+ *
+ * The structural rule: every agent session id carries a high-entropy hex run
+ * (`su-40f20db0-…`, the legacy `s-1784004323664-25c58084`, a bare UUID) while
+ * every service slug is words-joined-by-hyphens. So "contains 8+ consecutive
+ * hex chars" separates them without enumerating service names — which a
+ * blacklist would need, and would silently re-pollute the pane the next time
+ * someone adds a watchdog.
+ *
+ * NOT joined against `coord_presence`: that registry is TTL-reaped, so only
+ * 7.9% of genuine historical senders still have a row. Presence answers who is
+ * live NOW; only the append-only log answers who ever spoke.
+ */
+export const AGENT_SESSION_ID_HEX_RUN = '[0-9a-f]{8}';
+
 /** The subset of a coord envelope's jsonb body these resolvers read. */
 interface CoordEnvelopeBody {
   kind?: unknown;
@@ -5416,11 +5455,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       limit: clampedLimit(500, 100),
       harness: z.string().optional(),
       kinds: z.array(z.string()).optional(),
+      /** Include machine traffic — `auto:true` lifecycle projections AND named
+       *  service actors. Default false: the pane shows what agents wrote. */
+      includeMachine: z.boolean().optional(),
     }),
     resolve: async (args) => {
-      const { limit, harness, kinds } = args as { limit: number; harness?: string; kinds?: string[] };
+      const { limit, harness, kinds, includeMachine } = args as {
+        limit: number; harness?: string; kinds?: string[]; includeMachine?: boolean;
+      };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
       const kindFilter = kinds && kinds.length > 0 ? kinds : [...CURATED_COORD_ROOT_KINDS];
+      const machineOk = includeMachine === true;
       const [rows, totalRows] = await Promise.all([
         sql`
           SELECT c.msg_id,
@@ -5440,6 +5485,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
              AND c.body ->> 'kind' = ANY(${kindFilter}::text[])
              AND NOT (c.body ? 'related_msg_id')
              AND COALESCE(c.body ->> 'from', '') !~* '^system($|[-_:/.])'
+             AND (${machineOk}
+                  OR (COALESCE(c.body ->> 'auto', '') <> 'true'
+                      AND COALESCE(c.body ->> 'from', '') ~* ${AGENT_SESSION_ID_HEX_RUN}))
              AND (${harness ?? null}::text IS NULL OR c.harness_slug = ${harness ?? null})
            ORDER BY c.id DESC
            LIMIT ${limit}`,
@@ -5450,6 +5498,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
              AND c.body ->> 'kind' = ANY(${kindFilter}::text[])
              AND NOT (c.body ? 'related_msg_id')
              AND COALESCE(c.body ->> 'from', '') !~* '^system($|[-_:/.])'
+             AND (${machineOk}
+                  OR (COALESCE(c.body ->> 'auto', '') <> 'true'
+                      AND COALESCE(c.body ->> 'from', '') ~* ${AGENT_SESSION_ID_HEX_RUN}))
              AND (${harness ?? null}::text IS NULL OR c.harness_slug = ${harness ?? null})`,
       ]);
       return attachListMeta(rows.map(toAgentMessageRow), { total: totalRows[0]?.n ?? rows.length });

@@ -275,7 +275,20 @@ export async function sendMessage(
   // The value is DERIVED, so it is STAMPED as derived: adoption measurement must
   // not count a machine default as sender intent. An explicit caller value always
   // wins, so the coord:send tool (which sets `expects` itself) is untouched.
-  if (env.expects === undefined && isMachineAuthoredSender(identity.ownerId)) {
+  //
+  // ⚠ TWO SIGNALS, NOT ONE — `isMachineAuthoredSender` ALONE SILENTLY MISSES
+  // MOST EMITTERS. Its pattern is conservative on purpose (a false positive
+  // would silence the human `pc-admin-coord-ui`), so it matches `system-watchdog`
+  // and `system:operator-directive` but NOT `service-health`, `rate-governor`,
+  // `boot-migrate` or `hive-owner-key-health`. Keying only on it would look like
+  // a one-seam fix while covering a third of the traffic. `auto === true` is the
+  // other canonical machine marker (set explicitly by coord:emit's lifecycle
+  // sends and by the stamp directly above), so the two together cover the real
+  // population. Widening the shared MACHINE_SENDER_PATTERN itself is deliberately
+  // NOT done here: it is embedded verbatim in unanswered-directed's SQL, so
+  // changing it also changes which historical rows count as unanswered — a
+  // separate change with its own measurement, not a side effect of this one.
+  if (env.expects === undefined && (isMachineAuthoredSender(identity.ownerId) || env.auto === true)) {
     env.expects = 'none';
     const existing = (env.fieldProvenance ?? {}) as Record<string, unknown>;
     env.fieldProvenance = { ...existing, expects: 'system-emitter-derived' };

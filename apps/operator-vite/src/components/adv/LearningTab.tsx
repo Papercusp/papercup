@@ -1016,6 +1016,65 @@ function isSelectedRow(row: LoopRow, lsel: string | null): boolean {
   return lsel != null && row.item != null && row.item.id === lsel;
 }
 
+/**
+ * The public pipeline vocabulary (P-004, owner ruling 2026-07-27).
+ *
+ * ONE set of words for where a thing is in the loop, used by the row chip AND
+ * the funnel above the list so the summary and the rows cannot describe the
+ * same population differently.
+ *
+ * These deliberately are NOT the storage vocabulary. `open` / `assignee` /
+ * `resolved` describe the work-items table, not the question a reader is
+ * asking; and the chip this replaces ("review" vs "auto", "Waits for your
+ * review") described a HUMAN APPROVAL GATE that does not exist — in a full-auto
+ * loop the human teaches the generator by grading and never approves the work.
+ * Naming a gate that nobody operates invites someone to wait at it.
+ */
+type PipelineState = "not-ready" | "approved" | "in-flight" | "shipped" | "dropped";
+
+const PIPELINE_STATES: Record<PipelineState, { label: string; desc: string }> = {
+  "not-ready": {
+    label: "not ready yet",
+    desc: "The loop produced this idea but has not filed it as work yet.",
+  },
+  approved: {
+    label: "approved",
+    desc: "Filed as work. Waiting for an agent to pick it up.",
+  },
+  "in-flight": {
+    label: "in flight",
+    desc: "An agent is working on this right now.",
+  },
+  shipped: { label: "shipped", desc: "Landed." },
+  dropped: { label: "dropped", desc: "Abandoned — closed without shipping." },
+};
+
+/**
+ * Which pipeline state a merged row is in — exclusive by construction.
+ *
+ * ⚠ `ScoredItem.state` is the COLLAPSED three-value lifecycle
+ * (`open|resolved|closed`) that `toLifecycleState` maps the unified work-item
+ * enum onto — NOT the raw `done|dropped|wip|…` enum the server's SQL sees. The
+ * two vocabularies read alike and mean different things, which is precisely how
+ * EI-18792873324746237 put a permanent "0 shipped" on this tab. Do not copy a
+ * state list between this function and a query.
+ *
+ * In practice only the first three are reachable here: the digest admits
+ * ONLY open items into `autoEligible`/`humanQueue` ("Only OPEN items go into
+ * the actionable queues" — digest.ts), so a terminal row cannot appear in this
+ * list at all and `shipped` is a FUNNEL-only word today. The terminal branches
+ * are kept anyway: they are one line each, and the alternative — falling
+ * through to `approved` — would label a finished or abandoned item as waiting
+ * work if that ever changes.
+ */
+function pipelineState(row: LoopRow): PipelineState {
+  const item = row.item;
+  if (!item) return "not-ready";
+  if (item.state === "resolved") return "shipped";
+  if (item.state === "closed") return "dropped";
+  return item.assignee ? "in-flight" : "approved";
+}
+
 /** Recency for the merged sort, in days, from whichever half the row has.
  *  Work items carry `ageDays` from the digest; ideas carry a routing instant. */
 function rowAgeDays(row: LoopRow, nowMs: number): number {
@@ -1348,8 +1407,17 @@ function ImprovementsView({
       { key: "kind", header: "Kind", filter: { type: "enum", accessor: (r) => r.item?.kind ?? "—" } },
       { key: "severity", header: "Severity", filter: { type: "enum", accessor: (r) => r.item?.severity ?? "—" } },
       { key: "scope", header: "Scope", filter: { type: "enum", accessor: (r) => r.item?.scope ?? "—" } },
-      { key: "tier", header: "Tier", filter: { type: "enum", accessor: (r) => r.item?.tier ?? "—" } },
-      { key: "state", header: "State", filter: { type: "enum", accessor: (r) => r.item?.state ?? "—" } },
+      // ONE stage facet (P-004), over the same words the row chip shows.
+      // It replaces two facets that could not survive the vocabulary change:
+      // `tier` (auto/human) sliced by a human-approval gate that no longer
+      // exists and is no longer displayed anywhere — you cannot filter by an
+      // invisible property; `state` exposed the raw storage lifecycle, and
+      // since the digest admits only OPEN items it offered exactly one choice.
+      {
+        key: "stage",
+        header: "Stage",
+        filter: { type: "enum", accessor: (r) => PIPELINE_STATES[pipelineState(r)].label },
+      },
       { key: "ideaType", header: "Idea type", filter: { type: "enum", accessor: (r) => r.item?.ideaType ?? "—" } },
       { key: "lens", header: "Lens", filter: { type: "enum", accessor: (r) => r.idea?.lens ?? "—" } },
       { key: "score", header: "Score", filter: { type: "number", accessor: (r) => r.item?.score ?? 0 } },
@@ -1460,16 +1528,16 @@ function ImprovementsView({
           stays behind the labelled disclosure below. */}
       <p className="pc-learning__glance" aria-label="The loop at a glance">
         <span title="Every idea a cycle turned into an artifact (work item, plan, gym seed, benchmark).">
-          <strong>{snap?.totalRouted ?? 0}</strong> ideas routed
+          <strong>{snap?.totalRouted ?? 0}</strong> ideas
         </span>
         {digest ? (
-          <span title="Work items from the loop that are still open.">
-            <strong>{digest.open}</strong> still open
+          <span title={`${PIPELINE_STATES.approved.desc} Includes work already in flight.`}>
+            <strong>{digest.open}</strong> in the queue
           </span>
         ) : null}
         {snap?.improveFunnel ? (
-          <span title="Ideas filed onto the improvement rail that are now resolved or closed.">
-            <strong>{snap.improveFunnel.done}</strong> shipped
+          <span title={PIPELINE_STATES.shipped.desc}>
+            <strong>{snap.improveFunnel.done}</strong> {PIPELINE_STATES.shipped.label}
           </span>
         ) : null}
         {health.markers.length > 0 ? (
@@ -2029,7 +2097,7 @@ function LoopRowView({
       })
     : null;
   const sevColor = item ? SEVERITY[item.severity ?? "minor"].solid : null;
-  const human = item?.tier === "human";
+  const stage = pipelineState(row);
   const eff = idea ? ctx.effectiveGrade(idea) : null;
   const isTraceOpen = Boolean(idea) && ctx.traceOpen === idea?.ideaId;
   const isGradeOpen = Boolean(idea) && ctx.gradeOpen === idea?.ideaId;
@@ -2050,7 +2118,10 @@ function LoopRowView({
     <li
       ref={ref}
       className={`pc-learning__row${selected ? " pc-learning__row--selected" : ""}`}
-      title={item?.tierReason}
+      // No row-level `title`: it used to carry `tierReason` ("… → human
+      // review"), which now contradicts the stage chip's own tooltip. The chip
+      // explains where the row is; nothing else on the row should re-explain it
+      // in the retired approval vocabulary.
       onClick={selected ? ctx.onDismissSelect : undefined}
     >
       <span
@@ -2116,33 +2187,15 @@ function LoopRowView({
             {item.source}
           </span>
         ) : null}
-        {item ? (
-          <span
-            className={`pc-learning__chip pc-learning__chip--${human ? "human" : "auto"}`}
-            title={
-              human
-                ? "Waits for your review"
-                : "An agent may fix this on its own"
-            }
-          >
-            {human ? (
-              <UserRound size={10} aria-hidden />
-            ) : (
-              <ShieldCheck size={10} aria-hidden />
-            )}
-            {human ? "review" : "auto"}
-          </span>
-        ) : (
-          // No work item yet — the idea exists, the work does not. P-004 gives
-          // this the real pipeline word ("not ready yet"); today it states the
-          // fact plainly rather than leaving the row's status blank.
-          <span
-            className="pc-learning__chip"
-            title="This idea has not been filed as work yet."
-          >
-            not filed yet
-          </span>
-        )}
+        {/* Where this is in the loop (P-004). ONE chip, one vocabulary, on
+            every row — replacing the old review/auto pair, which announced a
+            human approval gate that does not exist. */}
+        <span
+          className={`pc-learning__chip pc-learning__chip--stage-${stage}`}
+          title={PIPELINE_STATES[stage].desc}
+        >
+          {PIPELINE_STATES[stage].label}
+        </span>
         <span className="pc-learning__age" title="How long ago this was filed">
           {item
             ? ageLabel(item.ageDays)
@@ -4350,29 +4403,42 @@ function LoopEngineInstruments({
     <>
       {/* The idea→work funnel LEADS (owner ask 2026-07-19e): the outcome story
           first, the machinery below it. */}
+      {/* The funnel speaks the SAME vocabulary as the row chips below it
+          (P-004) — a reader should not have to translate between the summary
+          and the list. Stage 1 is the mouth (every idea); the drop from it to
+          `approved` is the "not ready yet" population, so that word needs no
+          column of its own here. */}
       {snap?.improveFunnel ? (
         <div className="pc-learning__funnel" aria-label="Idea-to-work funnel">
           <span title="Every idea a cycle routed onto a rail (work item, gym seed, plan, benchmark).">
             <strong>{snap.improveFunnel.routed}</strong>
-            <small>ideas routed</small>
+            <small>ideas</small>
           </span>
           <i aria-hidden>→</i>
-          <span title="Routed onto the improvement rail — filed as a work item.">
+          <span title={`Filed as work on the improvement rail. ${PIPELINE_STATES.approved.desc}`}>
             <strong>{snap.improveFunnel.filed}</strong>
-            <small>filed as work</small>
+            <small>{PIPELINE_STATES.approved.label}</small>
           </span>
           <i aria-hidden>→</i>
-          <span title="Filed items currently claimed by an agent (open + assigned).">
+          <span title={PIPELINE_STATES["in-flight"].desc}>
             <strong>{snap.improveFunnel.claimed}</strong>
-            <small>claimed</small>
+            <small>{PIPELINE_STATES["in-flight"].label}</small>
           </span>
           <i aria-hidden>→</i>
           <span
             className={snap.improveFunnel.done > 0 ? "is-good" : undefined}
-            title="Filed items resolved or closed."
+            title={
+              // Name the abandoned population rather than hiding it: it is
+              // excluded from `shipped` by design (EI-18792873324746237), and
+              // an unexplained gap between stages invites the reader to assume
+              // the number is broken — which, until this fix, it was.
+              snap.improveFunnel.dropped > 0
+                ? `${PIPELINE_STATES.shipped.desc} ${snap.improveFunnel.dropped} more were dropped — abandoned, not shipped, and never counted here.`
+                : PIPELINE_STATES.shipped.desc
+            }
           >
             <strong>{snap.improveFunnel.done}</strong>
-            <small>done</small>
+            <small>{PIPELINE_STATES.shipped.label}</small>
           </span>
         </div>
       ) : null}
@@ -4972,7 +5038,11 @@ function LearningsView({
                 >
                   {extrasSnap.shippedFromIdeas.map((d) => {
                     const doneMs = d.completedAt ? Date.parse(d.completedAt) : NaN;
-                    const good = ["resolved", "closed", "active", "adopted", "shipped"].includes(d.outcome);
+                    // Server-stamped (RetainShippedIdea.shipped). This used to
+                    // be a hand-typed state list here, which drifted from the
+                    // unified enum and scored a `done` item as not-a-win while
+                    // scoring an abandoned one as a win (EI-18792873324746237).
+                    const good = d.shipped;
                     return (
                       <li key={d.ideaId} className="pc-learning__draftrow">
                         <CheckCircle2 size={11} aria-hidden />
@@ -5596,8 +5666,16 @@ export function LearningStyles() {
         border-radius: 999px; border: 1px solid currentColor; color: var(--fg-mute, #7f9bb4);
       }
       .pc-learning__chip--idea { color: #a78bfa; border-color: rgba(167, 139, 250, 0.5); }
-      .pc-learning__chip--auto { color: #86efac; border-color: rgba(134, 239, 172, 0.5); }
-      .pc-learning__chip--human { color: #fcd34d; border-color: rgba(252, 211, 77, 0.5); }
+      /* Pipeline stage (P-004). The ramp reads as progress — inert grey while
+         the loop has only had the idea, cool blue once it is queued work, warm
+         amber while an agent is on it, green when it lands. Colour is redundant
+         with the chip's own text, never the sole carrier of the state.
+         (--auto/--human were removed with the approval chip they styled.) */
+      .pc-learning__chip--stage-not-ready { color: #94a3b8; border-color: rgba(148, 163, 184, 0.45); }
+      .pc-learning__chip--stage-approved { color: #7dd3fc; border-color: rgba(125, 211, 252, 0.5); }
+      .pc-learning__chip--stage-in-flight { color: #fcd34d; border-color: rgba(252, 211, 77, 0.5); }
+      .pc-learning__chip--stage-shipped { color: #86efac; border-color: rgba(134, 239, 172, 0.5); }
+      .pc-learning__chip--stage-dropped { color: #94a3b8; border-color: rgba(148, 163, 184, 0.35); text-decoration: line-through; }
       .pc-learning__delta { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
       .pc-learning__delta--good { color: var(--good); }
       .pc-learning__delta--bad { color: var(--bad); }

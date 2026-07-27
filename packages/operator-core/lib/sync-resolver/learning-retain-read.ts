@@ -24,6 +24,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Sql } from 'postgres';
+import { ISSUE_SHIPPED_STATUSES } from '../work-item-blocking';
 
 export interface RetainBankedCounts {
   /** engineer_issues improvements filed in the trailing 7d (hive-scoped when scopes given). null = leg degraded. */
@@ -62,8 +63,23 @@ export interface RetainShippedIdea {
   title: string | null;
   rail: string;
   routedRef: string;
-  /** engineer_issues.state (resolved/closed) or the plan's lifecycle status. */
+  /** The raw end state: engineer_issues.state (the unified work-item enum) or
+   *  the routed plan's lifecycle status. Shown verbatim as the outcome chip. */
   outcome: string;
+  /**
+   * Did it LAND, as opposed to merely reaching an end state? Classified HERE,
+   * on the server, against the shared ISSUE_SHIPPED_STATUSES — deliberately not
+   * left to the client.
+   *
+   * The client cannot value-import the shared set (work-item-blocking pulls the
+   * pg layer, which must not enter the browser bundle), so it previously
+   * re-typed the member list by hand — and drifted: its list still named the
+   * pre-unify `resolved`/`closed`, so a `done` item rendered as NOT-good while
+   * an abandoned `closed`/`dropped` one rendered as a win. Stamping the verdict
+   * server-side removes the second copy rather than fixing it twice
+   * (EI-18792873324746237).
+   */
+  shipped: boolean;
   completedAt: string | null;
 }
 
@@ -208,20 +224,32 @@ export async function readRetainExtras(
          AND hp.plan_slug = substring(r.routed_ref from 6)
        WHERE r.workspace_id = ${workspaceId}
          AND (
-           ei.state IN ('resolved', 'closed')
+           -- EI-18792873324746237: this filtered the pre-unify spellings only,
+           -- so after the writer-flip NO work-item-routed idea could ever reach
+           -- this list — all 137 shipped ones were silently excluded and only
+           -- the plan-routed branch below produced rows. Bind the shared set.
+           ei.state = ANY(${[...ISSUE_SHIPPED_STATUSES]}::text[])
            OR (hp.status IS NOT NULL AND hp.status NOT IN ('draft', 'superseded'))
          )
        ORDER BY r.idea_id, COALESCE(ei.updated_at, hp.updated_at) DESC NULLS LAST
     `) as Array<Record<string, unknown>>;
     shippedFromIdeas = rows
-      .map((r) => ({
-        ideaId: String(r.idea_id ?? ''),
-        title: typeof r.title === 'string' && r.title ? r.title : null,
-        rail: String(r.rail ?? ''),
-        routedRef: String(r.routed_ref ?? ''),
-        outcome: String(r.outcome ?? ''),
-        completedAt: typeof r.completed_at === 'string' ? r.completed_at : null,
-      }))
+      .map((r) => {
+        const outcome = String(r.outcome ?? '');
+        return {
+          ideaId: String(r.idea_id ?? ''),
+          title: typeof r.title === 'string' && r.title ? r.title : null,
+          rail: String(r.rail ?? ''),
+          routedRef: String(r.routed_ref ?? ''),
+          outcome,
+          // The two rails end in DIFFERENT vocabularies, so classify per rail:
+          // a work item lands at done|resolved; a plan lands only at 'shipped'
+          // ('ready'/'active' also survive the WHERE clause above, but they are
+          // in-progress, not delivered, and must not read as wins).
+          shipped: ISSUE_SHIPPED_STATUSES.has(outcome) || outcome === 'shipped',
+          completedAt: typeof r.completed_at === 'string' ? r.completed_at : null,
+        };
+      })
       .filter((r) => r.ideaId)
       .sort((a, b) => (b.completedAt ?? '').localeCompare(a.completedAt ?? ''))
       .slice(0, SECTION_CAP);

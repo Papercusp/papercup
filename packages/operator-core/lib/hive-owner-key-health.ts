@@ -152,7 +152,10 @@ async function defaultEscalate(ref: OwnedHiveKeyMissingRef, summary: string): Pr
     to: ['*'],
     summary,
     category: 'hive-owner-health',
-    extra: { condition_key: dedupKey(ref.workspaceId, ref.potSlug) },
+    // P-033 (d): `hive-owner-key-health` does not match the conservative
+    // MACHINE_SENDER_PATTERN — mark it explicitly so the sendMessage seam
+    // stamps `expects:'none'` (D-072).
+    extra: { condition_key: dedupKey(ref.workspaceId, ref.potSlug), auto: true },
   }).catch(() => {});
   // Toast row — the notification panel / notifications:recent rail, AND the
   // persistent cross-restart dedup floor `defaultRecentlyAlerted` reads back.

@@ -123,10 +123,18 @@ export function renderObservedValue(value: unknown): string {
     : s;
 }
 
-/** Per-dependency verdict. Three-valued for the same reason every cell read is
- *  (D-038 axis 2): "I could not tell" is not "unchanged", and collapsing them
- *  would mean an unreadable cell silently certifies a fact as fresh. */
-export type FactDependencyStatus = 'fresh' | 'changed' | 'undeterminable';
+/**
+ * Per-dependency verdict. Three-valued for the same reason every cell read is
+ * (D-038 axis 2): "I could not tell" is not "unchanged", and collapsing them
+ * would mean an unreadable cell silently certifies a fact as fresh.
+ *
+ * P-021 adds a FOURTH, and it is deliberately not a fourth kind of "unknown":
+ * `immaterial` is a POSITIVE verdict. The raw value moved, the cell's declared
+ * material answer did not, and we know both. That is why it does not block a
+ * clean roll-up the way `undeterminable` does — we are not admitting ignorance,
+ * we are reporting that the news carried nothing.
+ */
+export type FactDependencyStatus = 'fresh' | 'changed' | 'immaterial' | 'undeterminable';
 
 export interface FactDependencyVerdict {
   cell: string;
@@ -139,17 +147,43 @@ export interface FactDependencyVerdict {
   was?: string;
   /** The rendering read just now, when there was one. */
   now?: string;
+  /**
+   * P-021 — the MATERIAL answer, on an `immaterial` verdict.
+   *
+   * ⚠ NOTE WHAT AN `immaterial` ENTRY DELIBERATELY OMITS: `was`/`now`, the raw
+   * before-and-after. That omission IS the deliverable — "agents learn of
+   * material changes WITHOUT RECEIVING EVERY INTERMEDIATE VERSION". The
+   * intermediate values are precisely the bytes the reader does not need, and
+   * carrying them would reproduce the cost this verdict exists to remove.
+   */
+  material?: string;
+  /** The declared path the material answer came from — named so a reader can
+   *  audit a suppression rather than take it on trust. */
+  materialPath?: string;
   /** Why a verdict is `undeterminable`. */
   detail?: string;
 }
 
-/** The fact-level roll-up. `stale` iff at least one dependency CHANGED —
- *  undeterminable dependencies alone never manufacture a `stale` verdict, but
- *  they do block a clean `fresh` one. */
+/**
+ * The fact-level roll-up. `stale` iff at least one dependency CHANGED —
+ * undeterminable dependencies alone never manufacture a `stale` verdict, but
+ * they do block a clean `fresh` one.
+ *
+ * ⚠ P-021 ADDS NO FOURTH ROLL-UP STATUS, ON PURPOSE. `cell-contract.ts` states
+ * the rule for its sibling enum: adding a code is a CONTRACT change, because
+ * every caller's branch set changes with it. A materially-unchanged fact is not
+ * stale, so it rolls up as `fresh` and the news travels in `immaterial[]` + the
+ * note. Consumers that only branch on `status` keep working unchanged; the ones
+ * that want the detail can read a field. That is the same shape as `changed[]`.
+ */
 export interface FactDependencyStaleness {
   status: 'fresh' | 'stale' | 'undeterminable';
   /** Cells whose value moved since the fact was filed. */
   changed: string[];
+  /** P-021 — cells whose RAW value moved while their declared material answer
+   *  did not. Not stale, and not silently dropped either: this is the channel
+   *  that keeps a suppression auditable. */
+  immaterial: string[];
   /** Cells that could not be compared, either then or now. */
   undeterminable: string[];
   deps: FactDependencyVerdict[];

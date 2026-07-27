@@ -1001,7 +1001,15 @@ export async function runServiceHealthTick(): Promise<{ checked: number; transit
       t.to === 'down'
         ? `⚠ service "${t.name}" is DOWN${downDetail}`
         : `✅ service "${t.name}" recovered`;
-    await sendMessage(HEALTH_IDENTITY, { to: ['*'], summary, category: 'service-health' }).catch(() => {});
+    // P-033 (d): `auto` marks it machine lifecycle chatter, which also carries
+    // the `expects:'none'` stamp at the sendMessage seam. Set explicitly because
+    // `service-health` does not match the conservative MACHINE_SENDER_PATTERN.
+    await sendMessage(HEALTH_IDENTITY, {
+      to: ['*'],
+      summary,
+      category: 'service-health',
+      extra: { auto: true },
+    }).catch(() => {});
     // P-104: also fire the awaitable key so "block until recovered" (events:await
     // service:up:<name>) replaces re-polling dev:service_health. Fire-and-forget;
     // transition-only by construction (diffHealth already returns only changes).

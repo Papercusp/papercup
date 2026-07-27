@@ -56,7 +56,15 @@ async function surfacePause(bucketKey: string, untilIso: string, source: string)
   const summary = `⏳ agent rate-limit — bucket "${bucketKey}" paused until ${untilIso} (${source})`;
   // Coord broadcast (transition only), mirroring the service-health monitor.
   // Ambient category → default-excluded from coord:inbox (opt-in to see it).
-  await sendMessage(GOVERNOR_IDENTITY, { to: ['*'], summary, category: 'agent-governor' }).catch(() => {});
+  // P-033 (d): see service-health — `rate-governor` does not match the
+  // conservative MACHINE_SENDER_PATTERN, so mark it machine chatter explicitly;
+  // the sendMessage seam then stamps `expects:'none'` (D-072).
+  await sendMessage(GOVERNOR_IDENTITY, {
+    to: ['*'],
+    summary,
+    category: 'agent-governor',
+    extra: { auto: true },
+  }).catch(() => {});
   // Toast stream (notifications:recent), mirroring writeVerifierWarningToast.
   try {
     const tl = generated.toastLogInHarnessShared;

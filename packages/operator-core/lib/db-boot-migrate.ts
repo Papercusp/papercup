@@ -122,6 +122,10 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
           .map((f) => `- ${f.file}: ${f.error}`)
           .join('\n')}`,
         category: 'service-health',
+        // P-033 (d): `boot-migrate` does not match the conservative
+        // MACHINE_SENDER_PATTERN — mark it machine chatter explicitly so the
+        // sendMessage seam stamps `expects:'none'` (D-072).
+        extra: { auto: true },
       }).catch(() => {});
     }
     // WI-5050 (WI-4070 class): detect the INVERSE drift — the shared DB was

@@ -212,6 +212,26 @@ export interface FactDependency {
    *  `digest` is set. `'absent'` is this layer's own code for "the cell does not
    *  exist for this reader" — a CellRead status, not a CellUnknownCode. */
   unknown?: CellUnknownCode | 'absent';
+  /**
+   * P-021 — digest of the cell's MATERIAL answer at assert time, for a cell that
+   * declares `materiality`. Set only alongside `digest`.
+   *
+   * ⚠ ITS ABSENCE IS LOAD-BEARING AND MUST STAY FAIL-LOUD. A dependency filed
+   * before this field existed (or against a cell that declares no materiality,
+   * or whose declared path did not resolve) has no material anchor — so a raw
+   * change CANNOT be shown to be immaterial and is reported CHANGED, exactly as
+   * it is today. Every unanchored case therefore degrades to the loud reading.
+   * The opposite default would let a schema gap silently certify a moved cell as
+   * "materially unchanged", which is the one failure this whole field must not
+   * be able to cause.
+   */
+  materialDigest?: string;
+  /** Bounded rendering of the material answer at assert time (never compared) —
+   *  it is what lets a reader CHECK a suppression instead of trusting it. */
+  material?: string;
+  /** The path the material answer was read from, echoed so the note can name it
+   *  without re-reading the spec (and so a later spec change is visible). */
+  materialPath?: string;
 }
 
 /** P-008 (b) — bound a fact's declared dependency set. A fact rests on a handful

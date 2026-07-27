@@ -78,7 +78,29 @@ import {
  *                 refusal cannot be used as a probe oracle to enumerate narrow cells.
  */
 export type CellRead =
-  | { status: 'value'; cell: string; value: unknown; headline: string; resolver: string }
+  | {
+      status: 'value';
+      cell: string;
+      value: unknown;
+      headline: string;
+      resolver: string;
+      /**
+       * P-021 — the MATERIAL answer, present only when the spec declares
+       * `materiality` AND that path resolved in this same result.
+       *
+       * ⚠ EXTRACTED FROM THE DISPATCH THAT ALREADY HAPPENED — never a second
+       * call. That is axis 5 applied to materiality: the material answer is a
+       * LENS on the one derivation, so declaring it costs no resolver work and
+       * cannot drift from the value it qualifies.
+       *
+       * ABSENT when the declared path is not in the result. That case is a
+       * registration drift, and callers must treat it as "cannot compare
+       * materially" and fall back to the LOUD reading — never as "nothing
+       * material changed", which is the silent-suppression failure the
+       * `materiality.why` rule exists to keep auditable.
+       */
+      material?: { path: string; value: unknown };
+    }
   | { status: 'unknown'; cell: string; unknown: CellUnknown }
   | { status: 'absent'; cell: string };
 
@@ -212,7 +234,22 @@ export async function readCell(
     };
   }
 
-  return { status: 'value', cell, value, headline: spec.headline, resolver: spec.resolver };
+  // P-021 — the material lens, off the SAME payload. `undefined` means the
+  // declared path is not in this result (registration drift): we omit `material`
+  // rather than reporting it as unchanged, so the caller falls back to LOUD.
+  const materialPath = spec.materiality?.path;
+  const materialValue = materialPath === undefined ? undefined : valueAtPath(payload, materialPath);
+
+  return {
+    status: 'value',
+    cell,
+    value,
+    headline: spec.headline,
+    resolver: spec.resolver,
+    ...(materialPath !== undefined && materialValue !== undefined
+      ? { material: { path: materialPath, value: materialValue } }
+      : {}),
+  };
 }
 
 /** Sentinel for "this cell needs a subject and none was given" — distinct from the

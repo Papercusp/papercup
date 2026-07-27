@@ -131,6 +131,65 @@ export type CellFederation =
   /** May federate. Only legal for workspace-visible cells — see the rule below. */
   | { kind: 'shareable' };
 
+/**
+ * P-021 — THE MATERIALITY THRESHOLD. Declared at REGISTRATION, and OPTIONAL:
+ * absence means "every change is material", which is today's behaviour and stays
+ * the default. You declare this only for a cell whose raw value churns faster
+ * than the question it answers.
+ *
+ * ── WHAT IT IS FOR (D-018 A.2, gated by D-044) ───────────────────────────────
+ *
+ * D-044 draws the line this field sits on: coupling decides RELEVANCE, surprisal
+ * decides WHETHER SOMETHING IS WORTH AN INTERRUPT. A pull surface needs no
+ * surprisal gate — the caller asked. What needs one is everything that arrives
+ * UNASKED: a wake, and the staleness verdict that rides along on every orient.
+ *
+ * The concrete case that motivated it, measured rather than imagined:
+ * `gate.greenCheckpoint.candidate` declares `changeInCandidate.judgingSha`, which
+ * follows the staging tip — 335 commits in 24h on this fleet. But the question
+ * the cell exists to answer is "is the gate judging MY change", and that answer
+ * (`judgingContainsPath`) moves only when YOUR file lands. So 335 daily version
+ * bumps carry ~2 bits of news for their subject, and every one of them re-renders
+ * a stale-verdict paragraph into every fold that carries a fact resting on it.
+ *
+ * That is the item's own rule — "push what changed the SENDER's own model;
+ * everything else stays pull" — expressed as a registration field.
+ *
+ * ── WHY A PATH AND NOT A THRESHOLD DSL ───────────────────────────────────────
+ *
+ * The obvious alternative is a reduction rule (`{ kind:'threshold', at: 1 }`, so
+ * `consecutiveReds` 0→1 is a flip and 1→2 is a bump). It is REFUSED, on this
+ * registry's own precedent: `cell-registrations.ts` records twice that when a
+ * declaration cannot state something honestly, the fix belongs in the RESOLVER,
+ * not the declaration. A registry computing `reds >= 1` would be the registry
+ * DERIVING a verdict — which is exactly what axis 5 forbids one level up. If the
+ * material question is "is the gate red", the resolver should answer it, and this
+ * field should then name that answer.
+ *
+ * So materiality is a LENS, not a computation: a second dot-path into the SAME
+ * resolver result, extracted from the SAME dispatch (see `readCell`). It adds no
+ * resolver call, no second derivation, and nothing this file has to interpret.
+ *
+ * ── ⚠ SUPPRESSION IS INVISIBLE BY CONSTRUCTION, SO IT CARRIES ITS REASON ─────
+ *
+ * Every other field here fails LOUDLY when it is wrong. This one fails SILENTLY
+ * and in the confident direction: a cell that names the wrong material path stops
+ * telling agents about real changes, and nothing surfaces to say so. `why` is
+ * therefore REQUIRED — a reader who is told "3 changes were not raised" must be
+ * able to check the claim that they did not matter. Suppression that cannot be
+ * audited is not a threshold, it is a blind spot.
+ */
+export interface CellMateriality {
+  /**
+   * Dot-path into the SAME resolver result whose change is the MATERIAL one.
+   * Must differ from `changeSignal.path` — naming the same path declares a no-op,
+   * which is the default and should be expressed by omitting the field.
+   */
+  path: string;
+  /** Why THIS is the material question, and what the raw path's churn is. */
+  why: string;
+}
+
 /** A caller, for the audience check. Deliberately small: everything here is
  *  already known at dispatch, so the check costs no lookup. */
 export interface CellReader {
@@ -177,6 +236,8 @@ export interface CellSpec {
   /** How a subscriber learns it changed. `poll` rides predicate_watches (P-004 is
    *  wiring, not a build); do NOT add a second subscription mechanism. */
   changeSignal: { kind: 'poll'; tool: string; path: string } | { kind: 'event'; key: string };
+  /** P-021 — OPTIONAL. Omitted ⇒ every change is material (today's behaviour). */
+  materiality?: CellMateriality;
   /** Human-readable result shape. */
   shape: string;
   /**
@@ -193,7 +254,7 @@ export interface CellRejection {
   /** A D-038 axis number, or a P-019 dimension. The two are labelled differently on
    *  purpose: `visibility`/`federation` are NOT contract axes, they are the access
    *  model P-019 added, and blurring them would misrepresent D-038 as having eight. */
-  axis: 1 | 2 | 3 | 4 | 5 | 'visibility' | 'federation';
+  axis: 1 | 2 | 3 | 4 | 5 | 'visibility' | 'federation' | 'materiality';
   rule: string;
   detail: string;
 }
@@ -273,6 +334,34 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
     reject('federation', 'federation-undeclared', 'federation is REQUIRED: `{ kind: "local" }` (never leaves this hive) or `{ kind: "shareable" }`.');
   } else if (fed.kind === 'shareable' && vis?.kind && vis.kind !== 'workspace') {
     reject('federation', 'shareable-narrow-visibility', `a \`shareable\` cell must be workspace-visible; this one is "${vis.kind}"-scoped. A ref like an owner id, role or work-item does NOT resolve in a foreign hive, so the receiving side can neither evaluate nor honour the audience — it either fails open (a leak) or fails closed (silently invisible). Both are wrong answers, so the combination is refused rather than guessed.`);
+  }
+
+  // ── P-021 — MATERIALITY. Optional, but a declared one must be able to do work.
+  const mat = spec.materiality;
+  if (mat !== undefined) {
+    if (!mat.path?.trim()) {
+      reject('materiality', 'materiality-path-missing', 'materiality must name a `path` — the field in the SAME resolver result whose change is the material one. Omit the whole field to mean "every change is material".');
+    }
+    if (!mat.why?.trim()) {
+      reject(
+        'materiality',
+        'materiality-unjustified',
+        'materiality must state `why`. Every other field here fails loudly when wrong; this one SUPPRESSES — it fails silently and in the confident direction, so a reader told "N changes were not raised" must be able to check the claim that they did not matter.',
+      );
+    }
+    if (spec.changeSignal?.kind !== 'poll') {
+      reject(
+        'materiality',
+        'materiality-on-event-cell',
+        'materiality names a path into a RESOLVER RESULT, and an event-signalled cell has no resolver to produce one. Gate the push at the emitter instead.',
+      );
+    } else if (mat.path?.trim() && norm(mat.path) === norm(spec.changeSignal.path)) {
+      reject(
+        'materiality',
+        'materiality-is-changesignal-path',
+        `materiality.path "${mat.path}" IS changeSignal.path — that declares "every change is material", which is already the default. Omit the field, or name the COARSER answer the cell actually exists to give.`,
+      );
+    }
   }
 
   return out;
