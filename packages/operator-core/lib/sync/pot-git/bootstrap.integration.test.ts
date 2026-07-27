@@ -393,13 +393,34 @@ describe('bootstrap resumability (WI-6189: durable progress across channel death
     expect(Date.now() - startedAt).toBeLessThan(10_000);
     expect(cut.progressed).toBe(true); // rung 1 still counted
     expect(cut.steps).toBe(1);
-    // Backed off: the retry asks for a bite the link might actually swallow.
-    expect(cut.deepenNext).toBe(INITIAL_DEEPEN_COMMITS / 2);
+    // WI-6261 — CHANGED BEHAVIOUR, deliberately. This test used to assert that
+    // this death HALVED the rung. But the death asserted just above is
+    // `timedOut: false` — a transport hang-up, not a bite that overran its
+    // window — and halving on that is the defect WI-6261 fixes: a flaky peer
+    // fails at ANY size, so backing off on it walks a working ladder down to
+    // MIN_DEEPEN_COMMITS while re-growth needs a rung that lands AND lands
+    // fast. (Observed live: 1024 failed, 512 LANDED +551 commits, 512 failed,
+    // 256 failed, 128 — one success in the whole descent.) So the size is now
+    // HELD and retried once; only repeated failure at a size is evidence about
+    // the size.
+    expect(cut.deepenNext).toBe(INITIAL_DEEPEN_COMMITS);
+    const flakes = await defaultRunGit(['config', '--get', 'papercusp.bootstrapDeepenFlakes'], joiner);
+    expect(Number(flakes.stdout.trim())).toBe(1);
     // And the durable checkpoint is INTACT — the dead rung took nothing with it.
     expect(cut.quarantineRefs).toBeGreaterThan(0);
     expect(await hasObject(joiner, tipSha)).toBe(true);
 
-    // The back-off is persisted on the repo, so it survives a process restart.
+    // A SECOND consecutive transport death at the SAME size (no landing rung in
+    // between — the initial duplex is dying too, so nothing resets the counter)
+    // IS evidence about size: now it backs off.
+    const again = await bootstrapFromPeer(joiner, await dialDying(), {
+      timeoutMs: 15_000,
+      dial: dialDying,
+    });
+    expect(again.deepenNext).toBe(INITIAL_DEEPEN_COMMITS / 2);
+    // The back-off is persisted on the repo, so it survives a process restart —
+    // as is the flake counter itself, which is why a fresh tick can tell a
+    // second failure from a first at all.
     const persisted = await defaultRunGit(['config', '--get', 'papercusp.bootstrapDeepen'], joiner);
     expect(Number(persisted.stdout.trim())).toBe(INITIAL_DEEPEN_COMMITS / 2);
 

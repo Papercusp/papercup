@@ -290,11 +290,33 @@ export function completionAuthorityPredicateSql(
   authority: CompletionAuthorityFilter,
   alias?: string,
 ) {
-  const col = alias ? sql.unsafe(`${alias}.authority`) : sql.unsafe('authority');
+  // `unknown` first, exactly as the sibling *WhereSql helpers above type their expression
+  // params: sql.unsafe() returns a PendingQuery, and the `as string` the tagged-template
+  // interpolation needs is not a legal direct conversion from it.
+  const col: unknown = alias ? sql.unsafe(`${alias}.authority`) : sql.unsafe('authority');
   return authority === 'unjudged'
     ? sql`${col as string} IS NULL`
     : sql`${col as string} = ${authority}`;
 }
+
+/**
+ * The `completionAuthority` filter's accepted values, as a literal tuple for `z.enum`.
+ *
+ * `satisfies` proves every entry is a legal {@link CompletionAuthorityFilter} at compile
+ * time while preserving the literal types z.enum needs. It cannot prove EXHAUSTIVENESS
+ * (a newly-added authority silently missing here would still compile), so
+ * completion-audit.test.ts asserts this list covers WORK_ITEM_COMPLETION_AUTHORITIES —
+ * a new authority that is not filterable fails there rather than becoming a value the
+ * store can hold but no reader can select.
+ */
+export const COMPLETION_AUTHORITY_FILTERS = [
+  'proposed',
+  'validated',
+  'committed',
+  'pending_human',
+  'invalid',
+  'unjudged',
+] as const satisfies readonly CompletionAuthorityFilter[];
 
 /**
  * The audit's WHERE fragment. Callers AND it with their own terminal-state predicate

@@ -299,8 +299,18 @@ async function buildGossipWriter(
       githubUserId: id.githubUserId,
       machineLabel,
       potSlug,
-      getOwnRow: async () =>
-        buildPresenceAnnounceRow(
+      getOwnRow: async () => {
+        // EI-18761517980514694: the GOSSIP plane is the live presence path since the
+        // 2026-07-17 PRESENCE_GOSSIP cutover, so the runner-capability bit must be
+        // stamped here too — a row published without it reads as "not a runner" to
+        // peers. Best-effort, exactly like the log path: never fail an announce.
+        let runsRoutines: boolean | null = null;
+        try {
+          runsRoutines = await resolveRunsRoutines();
+        } catch {
+          runsRoutines = null;
+        }
+        return buildPresenceAnnounceRow(
           {
             githubUserId: id.githubUserId,
             devicePubkey: id.devicePubkeyBase64,
@@ -309,7 +319,9 @@ async function buildGossipWriter(
           getState(),
           now(),
           potSlug,
-        ),
+          runsRoutines,
+        );
+      },
     };
   } catch {
     return undefined; // gh unauthed → no writer (no-op on either plane)

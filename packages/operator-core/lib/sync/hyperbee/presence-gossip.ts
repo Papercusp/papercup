@@ -134,7 +134,7 @@ export function presenceFrameSigningBytes(body: PresenceFrameBody): Buffer {
   };
   if (body.row) {
     const r = body.row;
-    ordered.row = {
+    const row: Record<string, unknown> = {
       harness_slug: r.harness_slug,
       github_user_id: r.github_user_id,
       machine_label: r.machine_label,
@@ -145,6 +145,15 @@ export function presenceFrameSigningBytes(body: PresenceFrameBody): Buffer {
       schema_version: r.schema_version,
       hive_slug: r.hive_slug ?? null,
     };
+    // EI-18761517980514694: the runner-capability bit rides the SIGNED bytes —
+    // the per-Hive runner election trusts it to decide candidacy, so leaving it
+    // unsigned would let a tamperer mark any peer a runner and starve the pot's
+    // cadence loop. Included ONLY when present, the same P-301 idiom the fleet
+    // labels below use: the publisher emits it solely when TRUE, so a node that
+    // is NOT a runner produces byte-identical frames to the pre-mig-682 wire form
+    // and verification stays stable across a mixed-version deploy window.
+    if (r.runs_routines != null) row.runs_routines = r.runs_routines;
+    ordered.row = row;
   }
   if (body.del) {
     ordered.del = {

@@ -94,10 +94,23 @@ export async function checkHiveSingleRunner(
   // (the caller's own `workspaceId` param), so it is a genuine, non-ambient
   // caller-known value, not a guess (see LockAuthorityDeps.workspaceId). An
   // explicit `authorityDeps.workspaceId` override (tests) still wins.
+  // EI-18761517980514694: elect only among nodes that actually RUN this pot's
+  // cadence loops (`shared_presence.runs_routines`). Without it the election is a
+  // bare argmin over the presence roster with no notion of capability, so a peer
+  // that never fires the loop won every tick and the pot went dark for hours —
+  // while this node, holding the enabled autoloop and the budget, stood down as
+  // `remote-runner` ~89% of the time. It cannot stall anything: eligibility
+  // constrains PEERS only and self is always a candidate, so worst case every peer
+  // is excluded and this node runs its own loop. An explicit
+  // `authorityDeps.routineHostsOnly` (tests) still wins.
   const authority =
     deps.hiveAuthority ??
     ((slug: string) =>
-      lockAuthorityForHive(slug, { ...deps.authorityDeps, workspaceId: deps.authorityDeps?.workspaceId ?? workspaceId }));
+      lockAuthorityForHive(slug, {
+        ...deps.authorityDeps,
+        workspaceId: deps.authorityDeps?.workspaceId ?? workspaceId,
+        routineHostsOnly: deps.authorityDeps?.routineHostsOnly ?? true,
+      }));
   try {
     const potSlug = await resolveHive(workspaceId, harnessSlug);
     if (!potSlug) return { run: true, reason: 'not-in-hive' };

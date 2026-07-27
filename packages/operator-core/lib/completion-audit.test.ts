@@ -21,6 +21,7 @@ import {
   citesScreenshotArtifact,
   completionAuthorityPredicateSql,
   COMPLETION_AUDITS,
+  COMPLETION_AUTHORITY_FILTERS,
   hasIntermittentFailureRateEvidence,
   isBackedLiveDroveUiClaim,
   KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES,
@@ -406,6 +407,20 @@ describe('completionAuthorityPredicateSql (P-013)', () => {
       const f = frag(completionAuthorityPredicateSql(recordingSql(), a));
       expect(f.params).toContain(a);
     }
+  });
+
+  /**
+   * The `satisfies` on COMPLETION_AUTHORITY_FILTERS proves each entry is LEGAL but cannot
+   * prove the list is COMPLETE — a newly-added authority omitted from it still compiles,
+   * and the failure mode is silent: the store can hold the value but no caller can select
+   * it. Asserted here instead.
+   */
+  it('the filter vocabulary covers every stampable authority, plus unjudged', () => {
+    for (const a of WORK_ITEM_COMPLETION_AUTHORITIES) {
+      expect(COMPLETION_AUTHORITY_FILTERS).toContain(a);
+    }
+    expect(COMPLETION_AUTHORITY_FILTERS).toContain('unjudged');
+    expect(COMPLETION_AUTHORITY_FILTERS).toHaveLength(WORK_ITEM_COMPLETION_AUTHORITIES.length + 1);
   });
 
   it('the aliased form matches its unaliased twin (mirrors the audit predicate contract)', () => {

@@ -122,6 +122,32 @@ const DEEPEN_CONFIG_KEY = 'papercusp.bootstrapDeepen';
  * can actually converge.
  */
 const UNSHALLOW_LATCH_CONFIG_KEY = 'papercusp.bootstrapForceUnshallow';
+/**
+ * Git-config key holding the consecutive NON-TIMEOUT failure count at the
+ * current rung size (WI-6261).
+ *
+ * The control law below backs the rung size off after a failed fetch, on the
+ * theory that the bite was too big. That theory is right for a fetch the
+ * TIMEOUT killed, and wrong for a transport that simply hung up: a flaky link
+ * fails at any size, so halving on it walks the ladder down toward
+ * {@link MIN_DEEPEN_COMMITS} while re-growth requires a rung that both lands
+ * AND lands fast. Observed live on the P-302 rig cold join: deepen 1024 failed,
+ * 512 LANDED (+551 commits), 512 then failed, 256 failed, 128 — one success in
+ * the whole descent, with `have` frozen. If 512 were above the link's capacity
+ * it could not have landed, so those were flakes, not a size ceiling. At the
+ * floor of 16 the remaining ~795 commits would need ~50 rungs at ~1 rung per
+ * ~10-min git-sync fire — roughly 8 hours for a join that should take minutes,
+ * on the exact path a brand-new peer takes on first contact.
+ *
+ * So a non-timeout failure now RETRIES the same size before it halves, and only
+ * a repeated failure at that size is taken as evidence the bite is too big.
+ * Persisted because each tick is a fresh process (see readDeepenFlakes).
+ */
+const DEEPEN_FLAKE_CONFIG_KEY = 'papercusp.bootstrapDeepenFlakes';
+/** Consecutive NON-TIMEOUT failures tolerated at one rung size before backing
+ *  off. 2 = retry once, then halve — enough to ride out an isolated flake
+ *  without stalling long on a size that is genuinely unreachable. */
+export const DEEPEN_FLAKE_TOLERANCE = 2;
 /** Rung-size bounds + starting point for the adaptive `--deepen` ladder. */
 export const MIN_DEEPEN_COMMITS = 16;
 export const INITIAL_DEEPEN_COMMITS = 64;
@@ -298,6 +324,29 @@ async function writeDeepenStep(repoPath: string, runGit: RunGit, n: number): Pro
   const clamped = Math.min(Math.max(n, MIN_DEEPEN_COMMITS), MAX_DEEPEN_COMMITS);
   await runGit(['config', DEEPEN_CONFIG_KEY, String(clamped)], repoPath);
   return clamped;
+}
+
+/** Consecutive NON-TIMEOUT rung failures at the CURRENT deepen size (WI-6261).
+ *  Persisted for the same reason the unshallow latch is: every tick is a fresh
+ *  process, so an in-memory counter resets to zero each time and the ladder can
+ *  never tell a second failure from a first. */
+async function readDeepenFlakes(repoPath: string, runGit: RunGit): Promise<number> {
+  const r = await runGit(['config', '--get', DEEPEN_FLAKE_CONFIG_KEY], repoPath);
+  const n = r.code === 0 ? Number.parseInt(r.stdout.trim(), 10) : Number.NaN;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Persist (or clear) the flake counter. Fail-soft like the latch: losing this
+ *  write only costs one extra retry-or-halve decision, never a landed rung. */
+async function writeDeepenFlakes(repoPath: string, runGit: RunGit, n: number): Promise<void> {
+  try {
+    await runGit(
+      n > 0 ? ['config', DEEPEN_FLAKE_CONFIG_KEY, String(n)] : ['config', '--unset', DEEPEN_FLAKE_CONFIG_KEY],
+      repoPath,
+    );
+  } catch {
+    /* fail-soft by contract — see readDeepenFlakes */
+  }
 }
 
 /** Read the persisted `--unshallow` escalation latch (WI-6241). Absent/unset ⇒
@@ -495,8 +544,31 @@ export async function bootstrapFromPeer(
     if (res.code !== 0) {
       // The rung died. Everything EARLIER rungs delivered stays on disk — that
       // is the whole point. Back the rung size off so the retry asks for a
-      // bite this link can actually swallow.
-      if (phase === 'deepen') deepenNext = await writeDeepenStep(localRepoPath, runGit, Math.floor(deepenNext / 2));
+      // bite this link can actually swallow — but only once we have evidence
+      // the BITE is what failed (WI-6261).
+      //
+      // `timedOut` is the discriminator: it means the fetch burned the whole
+      // window and was killed, i.e. too much to move in the time available —
+      // halve immediately, as before. A non-timeout death is the peer or the
+      // duplex hanging up ("fetch-pack: unexpected disconnect while reading
+      // sideband packet"), which happens at ANY size; halving on that walks a
+      // working ladder down to the floor. Retry the same size first, and treat
+      // only repeated failure there as evidence about size.
+      if (phase === 'deepen') {
+        if (res.timedOut) {
+          deepenNext = await writeDeepenStep(localRepoPath, runGit, Math.floor(deepenNext / 2));
+          await writeDeepenFlakes(localRepoPath, runGit, 0);
+        } else {
+          const flakes = (await readDeepenFlakes(localRepoPath, runGit)) + 1;
+          if (flakes >= DEEPEN_FLAKE_TOLERANCE) {
+            deepenNext = await writeDeepenStep(localRepoPath, runGit, Math.floor(deepenNext / 2));
+            await writeDeepenFlakes(localRepoPath, runGit, 0);
+          } else {
+            // Hold the size; the next tick re-attempts this same rung.
+            await writeDeepenFlakes(localRepoPath, runGit, flakes);
+          }
+        }
+      }
       return partial();
     }
     steps++;
@@ -515,6 +587,10 @@ export async function bootstrapFromPeer(
         // when it ran over, otherwise hold. A rung that lands but takes most
         // of the window is already at the link's limit — doubling it there is
         // how the ladder overshoots into a rung that can never complete.
+        // A rung LANDED at this size, so any earlier failures here were flakes,
+        // not evidence about size (WI-6261). Clear the counter or an unrelated
+        // failure much later would arrive pre-charged and halve prematurely.
+        await writeDeepenFlakes(localRepoPath, runGit, 0);
         const elapsed = Date.now() - rungStartedAt;
         const target = (opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS) * DEEPEN_TARGET_FRACTION;
         const scaled =

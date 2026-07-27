@@ -106,6 +106,11 @@ interface LivePeerRow {
   github_user_id: number;
   machine_label: string;
   last_seen_ms: number;
+  /** EI-18761517980514694 — `shared_presence.runs_routines` (mig 682): does this
+   *  node fire the pot's cadence loops? Only read when a caller opts into
+   *  {@link LockAuthorityDeps.routineHostsOnly}. Undefined/null = a pre-upgrade
+   *  peer, treated as NOT a runner candidate. */
+  runs_routines?: boolean | null;
 }
 
 /**
@@ -202,6 +207,34 @@ export interface LockAuthorityDeps {
    * caller until it opts in).
    */
   workspaceId?: string;
+  /**
+   * EI-18761517980514694: restrict candidacy to nodes that actually RUN the pot's
+   * cadence loops — peers whose presence row lacks `runs_routines = true` are
+   * excluded (folded through the same {@link LockAuthorityDeps.eligibleDevices}
+   * machinery, INTERSECTED with it when both are given).
+   *
+   * The bug it closes: the runner election is `argmin(device_pubkey)` over the live
+   * presence roster with NO notion of whether the winner can do the work. Measured
+   * on the papercusp pot, a peer that never fires `gym-cycle` won every single tick
+   * (lowest pubkey + a ~10s heartbeat), so the one node with the gym stack, an
+   * enabled autoloop and the budget stood down as `remote-runner` on ~89% of fires
+   * and the loop was dark for hours. Nothing errored — the election succeeded and
+   * elected a node that does not run the loop, which is why it never self-corrected.
+   *
+   * It CANNOT stall a loop: eligibility constrains PEERS only, and both selectors
+   * add SELF unconditionally, so the worst case is every peer excluded ⇒ self wins
+   * ⇒ this node runs its own loop (the pre-P-020 behaviour). During an upgrade
+   * window, before peers publish the bit, that can produce a duplicate cycle — which
+   * is exactly the trade D-004 already names ("a rare duplicate cycle is the
+   * tolerated price; a permanently-dark learning loop is not") — and it self-heals
+   * as peers publish. Duplicate prevention is fully intact between two nodes that
+   * BOTH publish the bit: they still arbitrate by argmin.
+   *
+   * OPT-IN. Omit → today's behavior; every existing caller (file locks, steering
+   * lease, work-item claims) is unchanged, and rightly so: those serialize state a
+   * non-runner node still contends for.
+   */
+  routineHostsOnly?: boolean;
 }
 
 /**
@@ -219,6 +252,31 @@ function withEligibility(
   const merged = new Set<string>(excluded ?? []);
   for (const r of rows) if (r.device_pubkey && !eligible.has(r.device_pubkey)) merged.add(r.device_pubkey);
   return merged;
+}
+
+/**
+ * EI-18761517980514694: resolve the effective eligible-device allowlist for a
+ * selection — the caller's explicit {@link LockAuthorityDeps.eligibleDevices},
+ * narrowed by {@link LockAuthorityDeps.routineHostsOnly} when set.
+ *
+ * The routine-host set is derived from the rows ALREADY fetched (`runs_routines`
+ * rides the same presence query), so this costs no extra round-trip. When both
+ * constraints are present the result is their INTERSECTION: each is a necessary
+ * condition, so a peer must satisfy both to stay a candidate.
+ */
+function effectiveEligibility(
+  rows: LivePeerRow[],
+  deps: LockAuthorityDeps,
+): ReadonlySet<string> | undefined {
+  if (!deps.routineHostsOnly) return deps.eligibleDevices;
+  const capable = new Set<string>();
+  for (const r of rows) {
+    if (r.device_pubkey && r.runs_routines === true) capable.add(r.device_pubkey);
+  }
+  if (!deps.eligibleDevices) return capable;
+  const both = new Set<string>();
+  for (const pk of capable) if (deps.eligibleDevices.has(pk)) both.add(pk);
+  return both;
 }
 
 /**
@@ -266,7 +324,8 @@ export async function queryPresenceRows(
     SELECT device_pubkey,
            github_user_id,
            machine_label,
-           (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
+           (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms,
+           runs_routines
     FROM harness_shared.shared_presence
     WHERE harness_slug = ${harnessSlug}
       ${workspaceFilter}
@@ -277,12 +336,14 @@ export async function queryPresenceRows(
     github_user_id: number;
     machine_label: string;
     last_seen_ms: string | number;
+    runs_routines: boolean | null;
   }>;
   return rows.map((r) => ({
     device_pubkey: r.device_pubkey,
     github_user_id: Number(r.github_user_id),
     machine_label: r.machine_label,
     last_seen_ms: Number(r.last_seen_ms),
+    runs_routines: r.runs_routines ?? null,
   }));
 }
 
@@ -319,7 +380,8 @@ export async function queryPresenceRowsForHive(
     SELECT device_pubkey,
            github_user_id,
            machine_label,
-           (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
+           (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms,
+           runs_routines
     FROM harness_shared.shared_presence
     WHERE pot_slug = ${potSlug}
       ${workspaceFilter}
@@ -330,12 +392,14 @@ export async function queryPresenceRowsForHive(
     github_user_id: number;
     machine_label: string;
     last_seen_ms: string | number;
+    runs_routines: boolean | null;
   }>;
   return rows.map((r) => ({
     device_pubkey: r.device_pubkey,
     github_user_id: Number(r.github_user_id),
     machine_label: r.machine_label,
     last_seen_ms: Number(r.last_seen_ms),
+    runs_routines: r.runs_routines ?? null,
   }));
 }
 
@@ -453,7 +517,11 @@ export async function lockAuthorityFor(
     resolveUseHrwRendezvous(deps),
   ]);
   const nowMs = now();
-  const excluded = withEligibility(rows, evictionExclusions(harnessSlug, rows, self, nowMs, deps), deps.eligibleDevices);
+  const excluded = withEligibility(
+    rows,
+    evictionExclusions(harnessSlug, rows, self, nowMs, deps),
+    effectiveEligibility(rows, deps),
+  );
   if (useHrw) {
     return selectAuthorityRendezvous(
       rows as RendezvousPeerRow[],
@@ -522,7 +590,11 @@ export async function lockAuthorityForHive(
     resolveUseHrwRendezvous(deps),
   ]);
   const nowMs = now();
-  const excluded = withEligibility(rows, evictionExclusions(potSlug, rows, self, nowMs, deps), deps.eligibleDevices);
+  const excluded = withEligibility(
+    rows,
+    evictionExclusions(potSlug, rows, self, nowMs, deps),
+    effectiveEligibility(rows, deps),
+  );
   if (useHrw) {
     return selectAuthorityRendezvous(
       rows as RendezvousPeerRow[],

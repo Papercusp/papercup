@@ -117,7 +117,12 @@ export function buildPresenceAnnounceRow(
     last_seen_at: nowMs,
     schema_version: PRESENCE_SCHEMA_VERSION,
     hive_slug: potSlug,
-    runs_routines: runsRoutines,
+    // Emitted only when TRUE — `false` and "unknown" are the same verdict to every
+    // consumer (not a runner candidate), so collapsing them to null keeps a
+    // non-runner's signed gossip frame byte-identical to the pre-mig-682 wire form
+    // (see presenceFrameSigningBytes) instead of breaking verification on peers
+    // that have not upgraded yet.
+    runs_routines: runsRoutines === true ? true : null,
   };
 }
 
