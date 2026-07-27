@@ -87,6 +87,28 @@ beforeAll(async () => {
     // .simple(): the migration is a multi-statement DDL batch — the simple query protocol runs
     // them as one batch (the extended protocol postgres-js defaults to allows only one).
     await mig.unsafe(readFileSync(MIGRATION_650, 'utf8')).simple();
+    // Migration 684 added harness_gym_durable.gym_tasks.corpus, which
+    // copyRunAnalyticsToDurable now writes unconditionally — but 684's OTHER
+    // statement (harness_shared.gym_proposals.task_corpus) targets a table this
+    // test's minimal dst schema never creates (only 650 is applied here, not the
+    // full migration chain). Apply just the gym_tasks half directly rather than
+    // replaying 684 verbatim, so this test's schema matches what store.ts writes
+    // without pulling in the unrelated harness_shared dependency.
+    await mig.unsafe(`
+      ALTER TABLE harness_gym_durable.gym_tasks
+        ADD COLUMN IF NOT EXISTS corpus text NOT NULL DEFAULT 'synthetic';
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+           WHERE conname = 'gym_tasks_corpus_check'
+             AND conrelid = 'harness_gym_durable.gym_tasks'::regclass
+        ) THEN
+          ALTER TABLE harness_gym_durable.gym_tasks
+            ADD CONSTRAINT gym_tasks_corpus_check CHECK (corpus IN ('synthetic', 'real'));
+        END IF;
+      END $$;
+    `);
   } finally { await mig.end({ timeout: 5 }); }
 });
 

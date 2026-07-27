@@ -203,7 +203,7 @@ async function readGoalOverride(owner: string): Promise<GoalCandidates['override
   });
   const f = facts.find((x) => x.key === GOAL_OVERRIDE_FACT_KEY);
   if (!f?.body?.trim()) return null;
-  return { ref: f.body.trim(), declaredAt: f.updated_at ?? null };
+  return { ref: f.body.trim(), declaredAt: f.updatedAt ?? null };
 }
 
 /**
