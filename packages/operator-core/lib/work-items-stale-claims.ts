@@ -551,9 +551,9 @@ export async function reclaimStaleWorkItemClaims(
            -- holder did NOT act, so attributing it to the holder erases the very signal
            -- an operator/detector needs. Stamping a reaper-prefixed, REASON-tagged marker
            -- here (never equal to any real ownerId) means (a) the release-cooldown floor
-           -- (scheduler/get-next.ts's `last_released_by <> candidate`) can never misfire
-           -- against it, and (b) any detector/audit can find every involuntary release
-           -- with `last_released_by LIKE 'reaper:%'` and read WHY off the suffix
+           -- (scheduler/get-next.ts's last_released_by <> candidate check) can never
+           -- misfire against it, and (b) any detector/audit can find every involuntary
+           -- release with last_released_by LIKE 'reaper:%' and read WHY off the suffix
            -- (dead / spawn-exit / stalled) without a join.
            last_released_by = 'reaper:' || d.reason,
            last_released_at = now(),

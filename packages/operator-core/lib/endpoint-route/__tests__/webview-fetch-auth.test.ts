@@ -117,20 +117,57 @@ function walk(dir: string, out: string[] = []): string[] {
  * that matches no route, so a real violation silently reads as "no route found" and
  * is skipped. Anything after a literal `?` is likewise query, not path.
  */
-function findFetchPaths(src: string): string[] {
-  const found: string[] = [];
-  const re = /fetch\(\s*[`'"](\/api\/[^`'"]*)[`'"]/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(src))) {
-    const path = m[1]
+function normalisePath(raw: string): string {
+  return (
+    raw
       // A trailing interpolation NOT preceded by `/` is a query-string suffix.
       .replace(/(?<!\/)\$\{[^}]*\}$/, '')
       .split('?')[0]
       // What remains is a genuine dynamic path segment.
       .replace(/\$\{[^}]*\}/g, ':param')
-      .replace(/\/$/, '');
-    found.push(path);
+      .replace(/\/$/, '')
+  );
+}
+
+/**
+ * Module-level `const NAME = '/api/...'` base constants, so a fetch built from one
+ * is still attributable to a route.
+ *
+ * WI-6500 — this is the hole the first cut of this guard left open, and it cost the
+ * owner a dead plans sidebar. `plans-api.ts` does NOT contain a literal
+ * `fetch('/api/admin/plans/...')`; it declares `const BASE = '/api/admin/plans'` and
+ * every one of its ~30 verbs goes through two helpers that fetch `${BASE}/${verb}`.
+ * The literal-only regex saw none of it, so the file's only flagged entries were the
+ * two unrelated literal fetches that happen to live in it — the guard reported on the
+ * file while missing its entire primary surface. A guard with a hole shaped like the
+ * most common way to write an API client is worse than none: the baseline LOOKED like
+ * a complete inventory of the 403 class.
+ */
+function findBaseConsts(src: string): Map<string, string> {
+  const bases = new Map<string, string>();
+  const re = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*[`'"](\/api\/[^`'"$]*)[`'"]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) bases.set(m[1], m[2].replace(/\/$/, ''));
+  return bases;
+}
+
+/** Literal `fetch('/api/...')` call sites, plus base-const-built ones. */
+function findFetchPaths(src: string): string[] {
+  const found: string[] = [];
+
+  const re = /fetch\(\s*[`'"](\/api\/[^`'"]*)[`'"]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) found.push(normalisePath(m[1]));
+
+  // `fetch(`${BASE}/${verb}`)` and the `new URL(`${BASE}/${verb}`, …)` +
+  // `fetch(url.toString())` shape — both resolve to `<base>/:param`.
+  const bases = findBaseConsts(src);
+  for (const [name, base] of bases) {
+    const built = new RegExp(String.raw`[\`'"]?\$\{${name}\}([^\`'"]*)`, 'g');
+    let b: RegExpExecArray | null;
+    while ((b = built.exec(src))) found.push(normalisePath(base + b[1]));
   }
+
   return found;
 }
 

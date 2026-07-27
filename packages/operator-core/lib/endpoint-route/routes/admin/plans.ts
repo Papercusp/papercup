@@ -31,6 +31,7 @@ import '../../../agent-tools/index';
 import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { bodyFromSearchParams } from './_plans-args';
+import { requireAllowedOriginOr403 } from '../../cors';
 // papercusp-dogfood-v5 P-021 (server-side half): fire SSE invalidations
 // on successful plan writes so any subscriber to `plans.*` queryNames
 // refetches. Pairs with the existing `notifySyncInvalidate` →
@@ -258,6 +259,13 @@ export async function dispatchRead(req: Request, ctx: RouteContext): Promise<Res
 }
 
 async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {
+  // WI-6500: this route admits `unverified-loopback` so the cookie-less desktop
+  // webview can reach it (see the route definition). That admission removes the
+  // trust tier as the cross-origin backstop, so the CSRF origin guard IS the
+  // backstop — mirrors coord/:verb and the coordination proxy. Must stay FIRST.
+  const csrf = requireAllowedOriginOr403(req);
+  if (csrf) return csrf;
+
   const verb = ctx.params.verb;
   if (!WRITE_VERBS.has(verb)) {
     return Response.json(
@@ -363,19 +371,37 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
   return unwrap(result);
 }
 
+// WI-6500 (owner-reported 2026-07-27: "plans:get → 403: trust unverified-loopback
+// not in allowlist" opening a plan from the left sidebar).
+//
+// Both routes admit `unverified-loopback` — the EI-338 class, same fix as the coord
+// / coordination / deploy-accounts families. A native fetch from the DESKTOP webview
+// (the only shipping target) does not ride the sys:http IPC bridge that injects the
+// loopback-superuser bearer, so every plans read resolved `unverified-loopback` and
+// this VT gate refused it. The plans rail is not an optional pane — it is the primary
+// navigation surface, so VT here meant the sidebar was dead in the shipping build.
+//
+// Why widen rather than move the UI to sync queries (the other sanctioned fix): the
+// plans client is ~30 verbs across reads AND mutations, and useSyncQuery is a read
+// transport — it has no mutation path, so that route would fix half the surface and
+// leave every write 403ing. Widening fixes both halves at the layer the bug is in.
+//
+// The trust tier is therefore no longer what stops a cross-origin browser POST.
+// `dispatchWrite` opens with requireAllowedOriginOr403 for exactly that reason —
+// if you remove one, remove the other, or this becomes a cross-origin write hole.
+const PLANS_TRUST = ['verified', 'trusted', 'unverified-loopback'] as const;
+
 const readRoute = defineTool({
   method: 'GET',
   path: '/admin/plans/:verb',
-  // Admin plans surface (verified admin/plans UI); gated per D3 (was 'public').
-  auth: { trust: ['verified', 'trusted'] },
+  auth: { trust: [...PLANS_TRUST] },
   handler: dispatchRead,
 });
 
 const writeRoute = defineTool({
   method: 'POST',
   path: '/admin/plans/:verb',
-  // Mutating admin plans ops (verified admin/plans UI); gated per D3 (was 'public').
-  auth: { trust: ['verified', 'trusted'] },
+  auth: { trust: [...PLANS_TRUST] },
   handler: dispatchWrite,
 });
 
