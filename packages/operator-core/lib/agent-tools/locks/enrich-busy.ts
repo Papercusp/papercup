@@ -10,6 +10,9 @@
 import { getPresence } from '../coordination/presence';
 import { PLACEHOLDER_INTENT } from '../coordination/presence-payload';
 import type { AcquireBusy } from './su-lock-store';
+import type { CellReader } from '../../cell-registry';
+import { resolveHolderContext, type HolderContext } from '../../coord/holder-context';
+import { holderContextSources } from '../coordination/holder-context-sources';
 
 export interface BusyJson {
   path: string;
@@ -32,6 +35,19 @@ export interface BusyJson {
    *  peer reads this as "likely orphaned, not actively contended" so it needn't
    *  cross-reference coord:presence by hand or wait out the full TTL. */
   holder_intent_diverged?: boolean;
+  /**
+   * P-026 / D-055 A1 — the holder's GOAL and ASSUMPTIONS, in the one shape every
+   * D-055 friction point renders (`coord/holder-context.ts`). Omitted entirely
+   * when there is nothing disclosable to THIS reader.
+   *
+   * ⚠ NOT A DUPLICATE OF `holder_intent`, and the two can legitimately differ.
+   * `holder_intent` is the holder's CURRENT declared coord presence intent —
+   * "what are they on right now", and the input to `holder_intent_diverged`.
+   * `holder_context.goalText` is the goal declared on the CLAIM they hold, with
+   * its ref, its age and its assumptions. A blocked peer reads the first to judge
+   * whether this lock is orphaned, and the second to judge whether to wait.
+   */
+  holder_context?: HolderContext;
 }
 
 export function busyToJson(b: AcquireBusy): BusyJson {
@@ -87,16 +103,32 @@ export function intentsDiverged(lockIntent: string, holderIntent: string): boole
 }
 
 /**
- * Enrich busy rows with the holder's declared coord intent (presence).
+ * Enrich busy rows with the holder's declared coord intent (presence) and, when
+ * the blocked caller is identified, their P-026 {@link HolderContext}.
+ *
  * Best-effort: a presence miss just leaves the row unenriched. One getPresence
- * per DISTINCT holder, and only on contention, so the cost is paid rarely.
+ * per DISTINCT holder, and only on contention, so the cost is paid rarely — the
+ * holder-context legs ride the same per-holder fan-out.
+ *
+ * ⚠ `reader` IS OPTIONAL BUT ITS ABSENCE FAILS CLOSED, never open. Holder context
+ * is reader-relative (a holder's assumptions are audience-scoped), so a caller
+ * that cannot identify its reader gets NO context rather than a default audience
+ * — `resolveHolderContext` enforces this, for the same reason `getCell` requires
+ * a reader: a defaulted audience is a defaulted access check.
  */
-export async function enrichBusy(rows: AcquireBusy[]): Promise<BusyJson[]> {
+export async function enrichBusy(rows: AcquireBusy[], reader?: CellReader): Promise<BusyJson[]> {
   const owners = [...new Set(rows.map((r) => r.owner))];
   const byOwner = new Map<string, Awaited<ReturnType<typeof getPresence>>>();
+  const ctxByOwner = new Map<string, HolderContext | null>();
+  const sources = reader ? holderContextSources() : null;
   await Promise.all(
     owners.map(async (o) => {
       byOwner.set(o, await getPresence(o).catch(() => null));
+      if (sources) {
+        // Total by contract, but caught anyway: this decorates a lock acquire,
+        // and an enrichment must never fail the operation it decorates.
+        ctxByOwner.set(o, await resolveHolderContext(o, reader, sources).catch(() => null));
+      }
     }),
   );
   return rows.map((b) => {
@@ -124,6 +156,8 @@ export async function enrichBusy(rows: AcquireBusy[]): Promise<BusyJson[]> {
     ) {
       json.holder_intent_diverged = true;
     }
+    const ctx = ctxByOwner.get(b.owner);
+    if (ctx) json.holder_context = ctx;
     return json;
   });
 }

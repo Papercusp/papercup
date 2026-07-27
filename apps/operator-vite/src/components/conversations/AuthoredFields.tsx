@@ -34,7 +34,7 @@ export function AuthoredFields({ authored }: { authored?: AuthoredMessageFields 
   const hasSectionFields = sections.some(
     (s) => s.premises?.length || s.forYouBecause || s.youMayNotKnow?.length || s.couldNotDetermine?.length,
   );
-  const hasEnvelope = authored.expects || authored.blocking || authored.why || authored.evidence?.length;
+  const hasEnvelope = authored.expects || authored.blocking || authored.why || authored.basedOn?.length;
   if (!hasEnvelope && !hasSectionFields) return null;
 
   return (
@@ -66,16 +66,18 @@ export function AuthoredFields({ authored }: { authored?: AuthoredMessageFields 
         </div>
       )}
 
-      {/* `evidence` is auto-derived from what the sender READ (D-002/D-011) — it is
-          never authored, so it is labelled as a trace rather than a claim. */}
-      {authored.evidence && authored.evidence.length > 0 && (
+      {/* `basedOn` is auto-derived from what the sender READ (D-002/D-011/D-084) —
+          never authored, so it is labelled as a trace rather than a claim. The
+          token is the ref's version AT SEND time, not at read time (D-084 R4);
+          it is shown suffixed so a reader can compare it against the ref now. */}
+      {authored.basedOn && authored.basedOn.length > 0 && (
         <div className="pc-authored__row">
           <span className="pc-authored__key">Read before sending</span>
           <span className="pc-authored__val">
-            {authored.evidence.map((e) => (
-              <span key={e.cell} className="pc-authored__ref">
-                {e.cell}
-                {e.version ? `@${e.version}` : ''}{' '}
+            {authored.basedOn.map((e) => (
+              <span key={e.ref} className="pc-authored__ref" title={`read via ${e.via} at ${e.readAt}`}>
+                {e.ref}
+                {e.versionAtSend ? `@${e.versionAtSend}` : ''}{' '}
               </span>
             ))}
           </span>

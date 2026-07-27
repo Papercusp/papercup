@@ -133,10 +133,10 @@ describe('upgrading GUI senders to the new body format', () => {
 });
 
 describe('what it deliberately does NOT invent', () => {
-  it('never fabricates why / premises / youMayNotKnow / couldNotDetermine / evidence', () => {
+  it('never fabricates why / premises / youMayNotKnow / couldNotDetermine / basedOn', () => {
     const out = applyOwnerMessageDefaults({ to: ['a'], summary: 's', body: 'b' });
     expect(out.why).toBeUndefined();
-    expect(out.evidence).toBeUndefined();
+    expect(out.basedOn).toBeUndefined();
     const section = (out.body as Array<Record<string, unknown>>)[0];
     // A GUI has no goal ref, no reasoning chain and no read-trace. Plausible
     // values here would be exactly the healthy-looking empty schema D-064 warns of.

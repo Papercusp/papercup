@@ -312,7 +312,7 @@ describe('runBootstrapLeg', () => {
     // ...and the convergence verdict was STILL computed and persisted.
     const convergencePatches = routinesPatchCallsWithKey('convergence');
     expect(convergencePatches).toHaveLength(1);
-    const patched = JSON.parse(String(convergencePatches[0]![1][1])).convergence as Record<string, unknown>;
+    const patched = routinePatchBody(convergencePatches[0]![1]).convergence as Record<string, unknown>;
     expect(patched).toMatchObject({ converged: true, judged: 0 });
   });
 
@@ -465,7 +465,7 @@ describe('runBootstrapLeg', () => {
         // means; a third leg-level patch can then be added without touching
         // any of these assertions.
         try {
-          return key in (JSON.parse(String((c[1] as unknown[])[1])) as Record<string, unknown>);
+          return key in routinePatchBody(c[1] as unknown[]);
         } catch {
           return false;
         }
@@ -481,19 +481,31 @@ describe('runBootstrapLeg', () => {
     return { text: call[0], params: call[1] };
   }
 
+  /**
+   * EI-18799539619330782: the JSONB patch body out of a `patchRoutineMetadata` call.
+   *
+   * Params are `[slug, workspaceId, patch]` — the patch is params[2]. It used to be
+   * params[1], and every reader here open-coded that index, so adding the tenant
+   * scope broke eight assertions at once. Read the body through this helper so the
+   * next param change is one edit, not eight.
+   */
+  function routinePatchBody(params: unknown[]): Record<string, unknown> {
+    return JSON.parse(String(params[2])) as Record<string, unknown>;
+  }
+
   it('WI-6284: the bootstrap metadata record NAMES the path that produced it (dialed vs no-topic stub)', async () => {
     // Dialed: a real peer duplex.
     getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
     openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false));
     await runBootstrapLeg(SLUG, WS);
-    expect(JSON.parse(routinesPatch().params[1] as string).bootstrap).toMatchObject({ path: 'dialed' });
+    expect(routinePatchBody(routinesPatch().params).bootstrap).toMatchObject({ path: 'dialed' });
 
     // No live swarm topic: the destroyed-stub no-op. Previously indistinguishable
     // from the above except by which optional keys happened to be present.
     unsafeMock.mockClear();
     getBootedHarnessMock.mockReturnValue(null);
     await runBootstrapLeg(SLUG, WS);
-    expect(JSON.parse(routinesPatch().params[1] as string).bootstrap).toMatchObject({
+    expect(routinePatchBody(routinesPatch().params).bootstrap).toMatchObject({
       path: 'no-topic-stub',
     });
   });
@@ -504,7 +516,7 @@ describe('runBootstrapLeg', () => {
     const { text, params } = routinesPatch();
     expect(text).toContain('harness_shared.routines');
     expect(params[0]).toBe(SLUG);
-    const patch = JSON.parse(params[1] as string);
+    const patch = routinePatchBody(params);
     expect(patch.bootstrap).toMatchObject({ ok: true, namespaceCount: 1, skippedExisting: 0 });
   });
 
@@ -676,7 +688,7 @@ describe('runBootstrapLeg', () => {
     expect(openHiveGitDuplexToDeviceMock.mock.calls[0][1]).toBe(PEER_DEVICE);
     expect(openHiveGitDuplexToDeviceMock.mock.calls[1][1]).toBe(PEER_DEVICE_2);
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
-    const patch = JSON.parse(routinesPatch().params[1] as string);
+    const patch = routinePatchBody(routinesPatch().params);
     expect(patch.bootstrap.ok).toBe(true);
   });
 
@@ -691,7 +703,7 @@ describe('runBootstrapLeg', () => {
       .mockImplementationOnce(bootstrapOutcome({ ok: true, namespaces: ['abcd1234'], skippedExisting: [], skippedSelf: null, stderr: '' }));
     await runBootstrapLeg(SLUG, WS);
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(2); // first failed → tried the second
-    const patch = JSON.parse(routinesPatch().params[1] as string);
+    const patch = routinePatchBody(routinesPatch().params);
     expect(patch.bootstrap.ok).toBe(true); // the final (successful) outcome wins
   });
 
@@ -766,7 +778,7 @@ describe('runBootstrapLeg', () => {
       expect(warnMsg).toBeTruthy();
       expect(warnMsg).toContain(`${PEER_DEVICE.slice(0, 8)}:no-path`);
       expect(warnMsg).toContain(`${PEER_DEVICE_2.slice(0, 8)}:no-path`);
-      const patch = JSON.parse(routinesPatch().params[1] as string);
+      const patch = routinePatchBody(routinesPatch().params);
       expect(patch.bootstrap.ok).toBe(false);
     } finally {
       warnSpy.mockRestore();

@@ -141,7 +141,9 @@ export interface AuthoredMessageFields {
   expects?: string;
   blocking?: boolean;
   why?: { goalRef: string; note?: string };
-  evidence?: { cell: string; version?: string; readAt?: string }[];
+  /** D-084: what the sender READ, auto-derived. `versionAtSend` is the ref's
+   *  version when the message was SENT — never when it was read. */
+  basedOn?: { ref: string; via: string; readAt: string; versionAtSend?: string }[];
   /** PER-SECTION — authored, and genuinely varying between the parts of one message. */
   sections?: {
     text: string;

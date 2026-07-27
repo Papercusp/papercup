@@ -48,6 +48,7 @@ import {
   type MessageSection,
   type MessageWhy,
 } from '../message-fields';
+import { deriveBasedOn } from '../based-on';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
@@ -608,19 +609,43 @@ async function sendOne(
   // refusal that teaches the split instead of a generic "unrecognized key".
   if (Array.isArray(msg.body)) assertEnvelopeSectionSplit(msg.body);
   const sections = toSections(msg.body);
-  const fieldStamp = stampMessageFields({ body: msg.body, why: msg.why, blocking: msg.blocking });
+  // P-008 last leg / D-084: `basedOn` — the sender's information provenance,
+  // DERIVED from what it actually read (the invocation log), never authored.
+  // Deliberately not a caller argument (D-002's never-author economics), and
+  // deliberately fail-soft: `deriveBasedOn` returns [] rather than throwing, so
+  // a message never fails to send because its provenance could not be derived.
+  const basedOn = await deriveBasedOn({
+    ownerId: identity.ownerId,
+    workspaceId: identity.workspaceId ?? '',
+    harness: harnessSlug,
+  });
+  const fieldStamp = stampMessageFields({
+    body: msg.body,
+    why: msg.why,
+    blocking: msg.blocking,
+    basedOn,
+  });
   // Only the fields that CARRY something ride the envelope — a plain-string send
   // stays byte-identical on the wire, so the n=1 case costs nothing.
   if (fieldStamp.sections) extra.sections = fieldStamp.sections;
   if (fieldStamp.premisesClassified) extra.premisesClassified = fieldStamp.premisesClassified;
   if (fieldStamp.why) extra.why = fieldStamp.why;
   if (fieldStamp.blocking !== undefined) extra.blocking = fieldStamp.blocking;
+  if (fieldStamp.basedOn) extra.basedOn = fieldStamp.basedOn;
   // P-033: ride the envelope so a reader (and the D-070 adoption measurement)
   // can tell an owner-GUI-derived value from an agent-authored one. Without
   // this stamp the derived defaults would silently inflate every adoption
   // number this plan is judged on — the P-029 failure, mechanised.
-  if (msg.fieldProvenance && Object.keys(msg.fieldProvenance).length) {
-    extra.fieldProvenance = msg.fieldProvenance;
+  // D-084 R5: `basedOn` is 100% DERIVED, so it is stamped as such for the same
+  // reason the GUI's defaults are — an adoption measurement that counted a
+  // machine-derived field as sender intent would inflate exactly the numbers
+  // this plan is judged on (the P-029 failure, mechanised).
+  const provenance: Record<string, string> = {
+    ...(msg.fieldProvenance ?? {}),
+    ...(fieldStamp.basedOn ? { basedOn: 'session-derived' } : {}),
+  };
+  if (Object.keys(provenance).length) {
+    extra.fieldProvenance = provenance;
   }
   // EI-8986: stamp an absolute deadline (epoch ms) so the reply-deadline-sweep
   // (dbos/periodic-workflows.ts) can select it with a simple `<= now` compare —

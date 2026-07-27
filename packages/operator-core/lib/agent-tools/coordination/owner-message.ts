@@ -39,7 +39,7 @@
  * string), and is the reason this file stamps rather than just fills.
  *
  * ⚠ POPULATE ONLY WHAT CAN BE POPULATED HONESTLY. `why` (a goal ref), `premises`,
- * `youMayNotKnow`, `couldNotDetermine` and `evidence` are NOT invented here.
+ * `youMayNotKnow`, `couldNotDetermine` and `basedOn` are NOT invented here.
  * A GUI has no goal ref, no reasoning chain, and no read-trace, and inventing
  * plausible values for them would produce exactly the healthy-looking, empty
  * schema D-064 warns about.

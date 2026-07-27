@@ -160,10 +160,14 @@ let contentFixerRows: Array<{ lr: { status?: string; at?: number; instance?: str
 let counterRows: Array<{ et: number; lo: string[] | null; ct?: number }> = [];
 /** Every `sql.unsafe(text, params)` write, in order. */
 const unsafeCalls: Array<{ text: string; params: unknown[] }> = [];
+/** EI-18799539619330782: every tagged-template READ, with its interpolated values —
+ *  needed to assert the reads are tenant-scoped, not just the writes. */
+const templateCalls: Array<{ text: string; values: unknown[] }> = [];
 
 const fakeSql = Object.assign(
-  (strings: TemplateStringsArray, ..._values: unknown[]): Promise<Row[]> => {
+  (strings: TemplateStringsArray, ...values: unknown[]): Promise<Row[]> => {
     const text = strings.join('?');
+    templateCalls.push({ text, values });
     if (text.includes("'last_content_fixer'")) return Promise.resolve(contentFixerRows as unknown as Row[]);
     if (text.includes("'last_resolver'")) return Promise.resolve(resolverRows as unknown as Row[]);
     if (text.includes('consecutive_error_ticks')) return Promise.resolve(counterRows as unknown as Row[]);
@@ -303,6 +307,7 @@ beforeEach(() => {
   contentFixerRows = [];
   counterRows = [];
   unsafeCalls.length = 0;
+  templateCalls.length = 0;
   txQueries.length = 0;
   registryProjects = [{ slug: 'papercup', path: repoDir }];
 });
@@ -339,6 +344,62 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     await action(ctx);
 
     expect(routinePatches()[0]).toMatchObject({ last_status: 'synced', reaped_count: 0 });
+  });
+});
+
+/**
+ * EI-18799539619330782 — routine-metadata access is TENANT-SCOPED.
+ *
+ * `harness_shared.routines` is keyed on (workspace_id, install_slug, target_role), and
+ * `install_slug` is NOT unique across workspaces. Every read/write here used to filter on
+ * `install_slug = $slug AND target_role = 'system:git-sync'` ALONE, which means:
+ *   - the two UPDATEs were UNBOUNDED — with N workspaces holding the same install slug, one
+ *     tick overwrote all N tenants' metadata with this tenant's state; and
+ *   - the reads used `LIMIT 1` with no ORDER BY, so WHICH tenant's row came back was arbitrary.
+ * That metadata is what `bootstrap.ok` / `bootstrap.converged` are read from, so the damage
+ * surfaces as a corrupted release trust-surface on exactly the federated multi-workspace
+ * install this ships to. This is the same failure shape already proven in WI-5125.
+ *
+ * These tests are the regression guard for the CLASS, not for one call site: they assert over
+ * EVERY routines statement a tick issues, so a newly-added unscoped read or write fails here
+ * rather than silently reintroducing cross-tenant access.
+ */
+describe('EI-18799539619330782: git-sync routine-metadata access is tenant-scoped', () => {
+  const routineReads = () => templateCalls.filter((c) => c.text.includes('harness_shared.routines'));
+  const routineWrites = () => unsafeCalls.filter((c) => c.text.includes('UPDATE harness_shared.routines'));
+
+  it('scopes EVERY routines read AND write to the ticking workspace — a peer tenant sharing the install_slug cannot be read or clobbered', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    // A DIFFERENT workspace than the suite default ('ws-42'), so a hardcoded or
+    // defaulted scope cannot pass this by coincidence.
+    await action({ ...ctx, workspaceId: 'ws-99' });
+
+    // Guard the guard: if a refactor stops issuing routines statements entirely,
+    // the per-statement loops below would vacuously pass.
+    expect(routineReads().length).toBeGreaterThan(0);
+    expect(routineWrites().length).toBeGreaterThan(0);
+
+    for (const read of routineReads()) {
+      expect(read.text).toContain('workspace_id =');
+      expect(read.values).toContain('ws-99');
+    }
+    for (const write of routineWrites()) {
+      // params are [slug, workspaceId, patch] — the predicate binds $2.
+      expect(write.text).toContain('workspace_id = $2');
+      expect(write.params[1]).toBe('ws-99');
+    }
+  });
+
+  it('binds the scope from the tick context, not a constant — a second tenant scopes to ITS own workspace', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action({ ...ctx, workspaceId: 'ws-tenant-b' });
+
+    expect(routineWrites().length).toBeGreaterThan(0);
+    expect(routineWrites().map((w) => w.params[1])).toEqual(routineWrites().map(() => 'ws-tenant-b'));
+    // and nothing leaked the other tenant's id into the scope position
+    expect(routineWrites().map((w) => w.params[1])).not.toContain('ws-42');
   });
 });
 

@@ -17,9 +17,11 @@
  *                                       a state anything can act on
  *   why                                 a goal REF (D-011), not prose — one
  *                                       message serves one goal
- *   evidence                            auto-derived trace of what the sender
- *                                       READ; a property of the SESSION, not of
- *                                       a paragraph (D-002/D-011)
+ *   basedOn (D-064's `evidence`,        auto-derived trace of what the sender
+ *   renamed by D-084 — the old name     READ; a property of the SESSION, not of
+ *   collides with P-010's live          a paragraph (D-002/D-011)
+ *   evidence BAND on the same
+ *   envelope key)
  *
  *   PER-SECTION — all four AUTHORED, and they genuinely vary between the parts
  *   of one message: premises, forYouBecause, youMayNotKnow, couldNotDetermine.
@@ -106,7 +108,7 @@ const premisesArg = z
       '`fact:owner:<id>:<key>@v<N>` · `<plan-slug>#D-NNN` · `WI-NNNN#completion` (the completion ' +
       'CLAIM, not the item) · `msg:<msg_id>` · `owner-turn:<ref>` · `/internal/docs/...`. Any ref ' +
       'may be cited; the ref KIND decides whether it can go stale (a doc is declarable, never ' +
-      'invalidatable). Distinct from `evidence`, which cites CELLS you READ and is auto-derived.',
+      'invalidatable). Distinct from `basedOn`, which is what you READ and is auto-derived.',
   );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -318,8 +320,9 @@ export interface MessageSection {
   couldNotDetermine?: CouldNotDetermineEntry[];
 }
 
-/** The four field names that may NEVER appear on a section (D-064's split). */
-export const ENVELOPE_ONLY_FIELDS = ['expects', 'blocking', 'why', 'evidence'] as const;
+/** The four field names that may NEVER appear on a section (D-064's split;
+ *  `evidence` renamed `basedOn` by D-084 — see {@link BasedOnEntry}). */
+export const ENVELOPE_ONLY_FIELDS = ['expects', 'blocking', 'why', 'basedOn'] as const;
 
 /** The four that may never appear on the envelope. */
 export const SECTION_ONLY_FIELDS = [
@@ -360,7 +363,7 @@ export const messageBodyArg = z
       'ARRAY of sections when the parts of your message have different dispositions — a concession, ' +
       'an experimental result, an explicitly-undetermined claim — each with its own `premises`, ' +
       '`forYouBecause`, `youMayNotKnow`, `couldNotDetermine`. The ENVELOPE fields (expects, ' +
-      'blocking, why, evidence) stay on the message and are refused on a section.',
+      'blocking, why, basedOn) stay on the message and are refused on a section.',
   );
 
 export { premisesArg, forYouBecauseArg, youMayNotKnowArg, couldNotDetermineArg, whyArg, blockingArg };
@@ -392,7 +395,7 @@ export class EnvelopeFieldOnSectionError extends Error {
       `body[${index}].${field} is an ENVELOPE field, not a section field (D-064). ` +
         `Move it to the top level of the message. \`expects\`/\`blocking\` cannot vary per section ` +
         `because a scheduler acts on a message as a UNIT; \`why\` is one goal ref per message; ` +
-        `\`evidence\` is auto-derived from the session, not authored per paragraph.`,
+        `\`basedOn\` is auto-derived from the session, not authored per paragraph.`,
     );
     this.name = 'EnvelopeFieldOnSectionError';
   }
@@ -490,7 +493,7 @@ export interface AuthoredFieldsProjection {
   expects?: string;
   blocking?: boolean;
   why?: MessageWhy;
-  evidence?: EvidenceEntry[];
+  basedOn?: BasedOnEntry[];
   /** PER-SECTION (authored, genuinely varying between the parts of one message). */
   sections?: ProjectedSection[];
   /**
@@ -532,7 +535,7 @@ export function projectAuthoredFields(extra: unknown): AuthoredFieldsProjection 
   if (typeof e.expects === 'string') out.expects = e.expects;
   if (typeof e.blocking === 'boolean') out.blocking = e.blocking;
   if (e.why && typeof e.why === 'object') out.why = e.why as MessageWhy;
-  if (Array.isArray(e.evidence) && e.evidence.length) out.evidence = e.evidence as EvidenceEntry[];
+  if (Array.isArray(e.basedOn) && e.basedOn.length) out.basedOn = e.basedOn as BasedOnEntry[];
 
   if (rawSections?.length) {
     const projected = rawSections.map((s, i): ProjectedSection => {
@@ -570,7 +573,7 @@ export interface StampedMessageFields {
   premisesClassified?: ClassifiedPremise[][];
   why?: MessageWhy;
   blocking?: boolean;
-  evidence?: EvidenceEntry[];
+  basedOn?: BasedOnEntry[];
 }
 
 /**
@@ -582,7 +585,7 @@ export function stampMessageFields(input: {
   body?: string | MessageSection[];
   why?: MessageWhy;
   blocking?: boolean;
-  evidence?: EvidenceEntry[];
+  basedOn?: BasedOnEntry[];
 }): StampedMessageFields {
   const sections = toSections(input.body);
   const authored = sections.some(
@@ -597,6 +600,9 @@ export function stampMessageFields(input: {
   }
   if (input.why) stamp.why = input.why;
   if (input.blocking !== undefined) stamp.blocking = input.blocking;
-  if (input.evidence?.length) stamp.evidence = input.evidence;
+  // Omitted when empty, never stamped as `[]`: "I read nothing traceable" and
+  // "the derivation found nothing" are indistinguishable to a reader, and only
+  // one of them would be true.
+  if (input.basedOn?.length) stamp.basedOn = input.basedOn;
   return stamp;
 }
