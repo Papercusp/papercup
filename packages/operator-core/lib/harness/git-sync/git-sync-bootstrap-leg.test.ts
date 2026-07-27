@@ -211,6 +211,7 @@ const dialDuplex = (destroyed: boolean) => ({ on: (_ev: string, _cb: () => void)
 
 beforeEach(() => {
   loadHarnessRegistryMock.mockClear();
+  saveHarnessRegistryMock.mockClear();
   listHiveMembersMock.mockClear();
   hiveGitRepoPathMock.mockClear();
   listNamespacesMock.mockClear();
