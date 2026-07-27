@@ -33,7 +33,11 @@
  * another precisely under that rule.
  */
 
+import { readFile, stat } from 'node:fs/promises';
+import { isAbsolute, resolve as resolvePath } from 'node:path';
+
 import { getOrgPg } from '@papercusp/db-org';
+import { analyzeImageBlankness } from '@papercusp/image-blankness';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY, type CompletionVerificationEvidence } from './coord-lifecycle/records';
 import type { WorkItemCompletionAuthority } from './work-item-completion-authority';
 

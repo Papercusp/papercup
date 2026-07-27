@@ -69,7 +69,13 @@ import {
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
 import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
-import { COMPLETION_ATTESTATIONS_KEY, TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
+import {
+  COMPLETION_ATTESTATIONS_KEY,
+  TERMINAL_COMPLETION_EVIDENCE_KEY,
+  readStoredAssumptions,
+  terminalPayloadMergeJson,
+} from './coord-lifecycle/records';
+import type { StoredAssumptionDeclaration } from './coord-lifecycle/records';
 import { auditPredicateSql, completionAuthorityPredicateSql, type CompletionAudit } from './completion-audit';
 import type { CompletionAttestation, CompletionVerificationEvidence } from './coord-lifecycle/records';
 import {
@@ -335,11 +341,7 @@ function extractTerminalCompletionEvidence(payload: unknown): CompletionVerifica
   return v as CompletionVerificationEvidence;
 }
 
-function completionEvidencePayloadJson(evidence: CompletionVerificationEvidence | undefined): string | null {
-  return evidence && Object.keys(evidence).length > 0
-    ? JSON.stringify({ [TERMINAL_COMPLETION_EVIDENCE_KEY]: evidence })
-    : null;
-}
+
 
 /** Allocate the next kind-independent WI-NNN id (D-008). */
 export async function nextWorkItemId(): Promise<string> {
@@ -1728,6 +1730,17 @@ export async function setWorkItemState(
     allowNonCanonical?: boolean;
     completionRef?: string;
     completionEvidence?: CompletionVerificationEvidence;
+    /**
+     * P-008 (d) / D-050 / D-079 — the RESOLVED assumption declaration this close
+     * rests on, stored under {@link TERMINAL_ASSUMPTIONS_KEY}.
+     *
+     * Optional HERE, required at the two agent-facing commitment tools, because
+     * this function is also the system write path (watchdog auto-close, restore,
+     * reconcile sweeps) and those are documented as "not completions at all" —
+     * forcing a declaration on them would manufacture assumption records for
+     * closes no agent made.
+     */
+    assumptions?: StoredAssumptionDeclaration;
     skipCompletionGate?: boolean;
     /**
      * agent-protocol-authority-semantics-2026-07-26 P-004 — the completion-authority
@@ -1886,6 +1899,13 @@ export async function setWorkItemState(
       completionRef: upgrade ? wi.terminalCompletionRef : (opts.completionRef ?? null),
       completionAuthority: upgrade ? wi.completionAuthority : (opts.completionAuthority ?? null),
       evidence: upgrade ? wi.terminalCompletionEvidence : (opts.completionEvidence ?? null),
+      // P-008 (d) / D-079 R4. On an UPGRADE the stored record is the one being
+      // archived, so the attestation carries what is already on the row; otherwise
+      // it carries THIS close's declaration, which is the one the `||` merge would
+      // otherwise drop on the floor.
+      assumptions: upgrade
+        ? readStoredAssumptions(wi.payload)
+        : (opts.assumptions ?? null),
       outcome: upgrade ? 'superseded' : 'attested',
     };
     // Best-effort, and deliberately so on the ATTESTED path: failing to file the second
@@ -2022,6 +2042,11 @@ export async function setWorkItemState(
     }
     const updated = await setIssueState(id, state as IssueState, opts.by, opts.completionRef, {
       completionEvidence: opts.completionEvidence,
+      // P-008 (d): forwarded, or the issue family would silently drop every
+      // assumption declaration while the feature family persisted it — a
+      // half-verification across FAMILIES, the same defect D-050 forbids across
+      // TOOLS.
+      assumptions: opts.assumptions,
       skipCompletionGate: opts.skipCompletionGate,
       completionAuthority: opts.completionAuthority,
     });
@@ -2051,7 +2076,7 @@ export async function setWorkItemState(
       }
     }
     const { sql } = getOrgPg();
-    const evidencePayloadJson = completionEvidencePayloadJson(opts.completionEvidence);
+    const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
     // D-007: a genuine terminal success/drop resets the stale-reclaim requeue
     // counter, so a later legitimate re-open starts fresh with the full cap.
     const resetRequeue = isTerminal;

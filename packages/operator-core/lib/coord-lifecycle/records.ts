@@ -18,6 +18,10 @@
  */
 
 import { z } from 'zod';
+// P-008 (d): type-only, so the payload contract and the resolver cannot disagree
+// about the stored shape without a compile error — and so no runtime import cycle
+// is created between this module and the facts substrate.
+import type { ResolvedAssumption } from '../agent-facts/assumptions';
 
 /** The lifecycle categories this layer renders (the D-003 automation table). */
 export const LIFECYCLE_CATEGORIES = [
@@ -101,6 +105,94 @@ export const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';
 export const COMPLETION_ATTESTATIONS_KEY = '_completionAttestations';
 
 /**
+ * P-008 (d) / D-050 / D-079 — the ONE key under which a terminal close's RESOLVED
+ * assumption declaration is stored, for both work-item families.
+ *
+ * Declared beside {@link TERMINAL_COMPLETION_EVIDENCE_KEY} and for the same reason
+ * that constant's header gives: two private, identical copies is precisely how a
+ * write path and its reader drift. P-011's conflicting-assumption detector reads
+ * this key; nothing may re-declare it locally.
+ *
+ * ⚠ Until P-008 (d) this key did not exist and `assumptions` was NOT PERSISTED AT
+ * ALL — required on every terminal close, format-checked by two zod refines, then
+ * referenced zero times downstream. D-050's claim that the gate enforced "an
+ * assumption was STATED... strictly more than the nothing that preceded it" was
+ * therefore false as built: a declaration that is validated and discarded is
+ * exactly nothing, plus a required field.
+ */
+export const TERMINAL_ASSUMPTIONS_KEY = '_assumptions';
+
+/**
+ * What lands under {@link TERMINAL_ASSUMPTIONS_KEY}.
+ *
+ * `'none'` is stored VERBATIM rather than as an empty array: D-016's whole
+ * argument for the literal is that an explicit "this rests on nothing recorded"
+ * is a real answer, and flattening it to `[]` would make it indistinguishable
+ * from a close that predates the field.
+ */
+export interface StoredAssumptionDeclaration {
+  /** The literal 'none', or the resolved entries (see `ResolvedAssumption`). */
+  declared: 'none' | ResolvedAssumption[];
+  /** When resolution ran — the ISO instant the conditions below were true. */
+  resolvedAt: string;
+}
+
+/**
+ * The jsonb a terminal write merges into `payload`: structured completion evidence
+ * plus the resolved assumption declaration.
+ *
+ * ⚠ SHARED BY BOTH FAMILIES ON PURPOSE. `completionEvidencePayloadJson` existed as
+ * two byte-identical private copies — one in work-items.ts, one in
+ * issues-engineer.ts — which is the *precise* duplication this module's
+ * {@link TERMINAL_COMPLETION_EVIDENCE_KEY} header describes as how a write path and
+ * its reader drift apart. Adding assumptions to both copies would have made it
+ * three. One builder, both families, no third copy.
+ *
+ * Returns null when there is nothing to merge, so the caller's `IS NULL` branch
+ * leaves `payload` untouched. PURE.
+ */
+export function terminalPayloadMergeJson(
+  evidence: CompletionVerificationEvidence | undefined,
+  assumptions?: StoredAssumptionDeclaration | undefined,
+): string | null {
+  const merge: Record<string, unknown> = {};
+  if (evidence && Object.keys(evidence).length > 0) merge[TERMINAL_COMPLETION_EVIDENCE_KEY] = evidence;
+  if (assumptions) merge[TERMINAL_ASSUMPTIONS_KEY] = assumptions;
+  return Object.keys(merge).length > 0 ? JSON.stringify(merge) : null;
+}
+
+/**
+ * Read a stored assumption declaration off a payload. Defensive double-parse: the
+ * column is jsonb but arrives as a string down some facade legs, and a nested JSON
+ * string has been observed in the wild for the evidence key. PURE.
+ */
+export function readStoredAssumptions(payload: unknown): StoredAssumptionDeclaration | null {
+  let obj = payload;
+  if (typeof obj === 'string') {
+    try {
+      obj = JSON.parse(obj) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return null;
+  let v = (obj as Record<string, unknown>)[TERMINAL_ASSUMPTIONS_KEY];
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  const d = (v as StoredAssumptionDeclaration).declared;
+  // 'none' or an array, nothing else — an out-of-band write must read as "no
+  // declaration", never as a shape P-011's detector would mis-consume.
+  if (d !== 'none' && !Array.isArray(d)) return null;
+  return v as StoredAssumptionDeclaration;
+}
+
+/**
  * One non-authoritative terminal close recorded under {@link COMPLETION_ATTESTATIONS_KEY}.
  *
  * `outcome` says which side of the conflict this row was:
@@ -117,6 +209,17 @@ export interface CompletionAttestation {
   completionRef: string | null;
   completionAuthority: string | null;
   evidence: CompletionVerificationEvidence | null;
+  /**
+   * P-008 (d) / D-079 R4: the assumptions THIS close declared.
+   *
+   * Carried here as well as under {@link TERMINAL_ASSUMPTIONS_KEY} because the
+   * terminal UPDATE merges payload with jsonb `||` — a TOP-LEVEL key merge — so a
+   * second closer REPLACES the stored object wholesale (EI-18736669939338784: 27
+   * cross-owner second closes, 12 lost evidence, 15 mis-attributed). Without this
+   * a losing closer's declaration would be destroyed by exactly the mechanism
+   * that already destroyed evidence, in the same field, one release later.
+   */
+  assumptions: StoredAssumptionDeclaration | null;
   outcome: 'attested' | 'superseded';
 }
 

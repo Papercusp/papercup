@@ -45,7 +45,8 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import { resolveProject } from './harness-core';
 import { mintFixFeatureRow } from './promote-issue';
 import type { Issue as PipelineIssue } from './harness/issue-types';
-import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
+import { TERMINAL_COMPLETION_EVIDENCE_KEY, terminalPayloadMergeJson } from './coord-lifecycle/records';
+import type { StoredAssumptionDeclaration } from './coord-lifecycle/records';
 import {
   auditPredicateSql,
   auditPredicateSqlFor,
@@ -431,11 +432,10 @@ type AssertNoExtraInTuple = ExtraInTuple extends never ? true : { ISSUE_ROW_DB_K
 // tree-shaken away and dead-code-eliminated before tsc ever sees the assertion.
 export const _issueRowDbKeysParityAssertion: [AssertNoMissingFromTuple, AssertNoExtraInTuple] = [true, true];
 
-function completionEvidencePayloadJson(evidence: CompletionVerificationEvidence | undefined): string | null {
-  return evidence && Object.keys(evidence).length > 0
-    ? JSON.stringify({ [TERMINAL_COMPLETION_EVIDENCE_KEY]: evidence })
-    : null;
-}
+// P-008 (d): the byte-identical private copy that used to live here (and in
+// work-items.ts) is gone — `terminalPayloadMergeJson` in coord-lifecycle/records.ts
+// is now the single builder for both families, so the evidence key and the
+// assumptions key cannot land differently depending on which family closed.
 
 // EI-13285: a fixed epoch (arbitrary — keeps the millis component shorter) so the
 // numeric tail stays well inside a bigint/JS-safe-integer range for centuries.
@@ -1481,6 +1481,13 @@ export async function setIssueState(
   completionRef?: string,
   opts: {
     completionEvidence?: CompletionVerificationEvidence;
+    /**
+     * P-008 (d) / D-050 / D-079 — the RESOLVED assumption declaration this close
+     * rests on, stored under `TERMINAL_ASSUMPTIONS_KEY`. Optional here for the same
+     * reason as on the feature family: this is also the system write path
+     * (watchdog auto-close, restore, reconcile), and those are not completions.
+     */
+    assumptions?: StoredAssumptionDeclaration;
     skipCompletionGate?: boolean;
     /**
      * agent-protocol-authority-semantics-2026-07-26 P-004 — the completion-authority
@@ -1525,7 +1532,7 @@ export async function setIssueState(
   }
   const { sql } = getOrgPg();
   const ws = await resolveIssueWorkspace(id);
-  const evidencePayloadJson = completionEvidencePayloadJson(opts.completionEvidence);
+  const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
   const rows = isTerminal
     ? await sql<IssueRowDb[]>`
         UPDATE harness_shared.engineer_issues

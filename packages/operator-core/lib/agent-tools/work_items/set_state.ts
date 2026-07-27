@@ -18,7 +18,12 @@ import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemStateWithAliasInfo } from '../../work-items';
 import { planWorkItemArm, commitWorkItemArm } from './arm-reversible-work-item';
 import { runBulk, bulkContent } from '../_bulk';
-import { assumptionsArg, hasAssumptionDeclaration, ASSUMPTIONS_REQUIRED_MESSAGE } from './_assumptions';
+import {
+  assumptionsArg,
+  hasAssumptionDeclaration,
+  resolveDeclaredAssumptions,
+  ASSUMPTIONS_REQUIRED_MESSAGE,
+} from './_assumptions';
 import {
   TERMINAL_INPUT_STATES,
   NON_TERMINAL_INPUT_STATES,
@@ -168,10 +173,13 @@ export default defineTool({
       ? args.items.map((it) => ({
           ...it,
           completionRef: 'completionRef' in it ? it.completionRef : undefined,
+          // P-008 (d): flattened exactly like `completionRef` above — the union's
+          // terminal arm carries it, the non-terminal arm has no such field.
+          assumptions: 'assumptions' in it ? it.assumptions : undefined,
         }))
-      : args.ids?.length
-        ? args.ids.map((id) => ({ id, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef, force: args.force }))
-        : [{ id: args.id as string, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef, force: args.force }];
+        : args.ids?.length
+        ? args.ids.map((id) => ({ id, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef, assumptions: args.assumptions, force: args.force }))
+        : [{ id: args.id as string, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef, assumptions: args.assumptions, force: args.force }];
     const env = await runBulk(
       list,
       async (it) => {
@@ -192,11 +200,25 @@ export default defineTool({
         // longer be told ok:true for a write that landed somewhere other than what it asked
         // (the WI-2381 incident: set_state->blocked returned ok:true, state silently stayed
         // 'open', discovered only by an unrelated list read 10min later).
+        // P-008 (d) / D-050 / D-079: resolve the declared assumptions BEFORE the
+        // mutation, so a dangling reference refuses the close instead of being
+        // discovered after the item has already left the queue. Only a terminal
+        // write carries a declaration — a non-terminal state removes nobody's
+        // ability to check you, which is D-050's whole definition of the class.
+        const assumptions = isTerminalStateInput(it.state) && it.assumptions
+          ? await resolveDeclaredAssumptions({
+              declared: it.assumptions,
+              workItemId: it.id,
+              ownerId: ident.ownerId,
+              harnessSlug: harness,
+            })
+          : undefined;
         const { workItem, aliased, requestedState, appliedState, aliasNote } =
           await setWorkItemStateWithAliasInfo(it.id, it.state, {
             harness,
             by: ident.ownerId,
             completionRef: it.completionRef,
+            assumptions,
             force: it.force,
           });
         if (armPlan && workItem) await commitWorkItemArm(armPlan).catch(() => {});

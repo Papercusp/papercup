@@ -956,7 +956,7 @@ export async function composeOrient(
             ]);
             const wm = await readWatermark(ownerId);
             const delta = factsCellDelta(withDeps, wm.cursors?.[FACTS_CELL_SURFACE]);
-            changedCells = new Set(delta.changed.map((f) => `${f.scope} ${f.scopeRef ?? ''} ${f.key}`));
+            changedCells = new Set(delta.changed.map((f) => `${f.scope}\x00${f.scopeRef ?? ''}\x00${f.key}`));
             // Advance deterministically at fold time, like messages_shown_ts (EI-2042)
             // rather than at turn end: the agent HAS been shown these. Only write when
             // the position actually moved, so a quiet fold costs no row write.

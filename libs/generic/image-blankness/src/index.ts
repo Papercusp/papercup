@@ -59,8 +59,22 @@ export interface BlanknessThresholds {
   minJudgeableArea: number;
 }
 
+/**
+ * Calibrated against 400 real captures from one workstation, not chosen by feel.
+ *
+ * The two populations do not overlap, and they are not close. Every genuinely dead
+ * capture in that corpus — the failed Tauri grabs, the unpainted console windows —
+ * scores EXACTLY 0.00000: a gradient or a flat fill has no sharp step anywhere, by
+ * definition. The sparsest frame that really did composite (a boot screen: one logo
+ * and a progress bar on black) scores 0.00938. The floor sits between them, an order
+ * of magnitude clear of both.
+ *
+ * Read literally, `minPeakRowDetail: 0.001` says: across a 1280-wide frame, not one
+ * row anywhere contains even two adjacent pixels with a visible step between them.
+ * Nothing was drawn. Anything at all — a single window border, one glyph — clears it.
+ */
 export const DEFAULT_BLANKNESS_THRESHOLDS: Readonly<BlanknessThresholds> = Object.freeze({
-  minPeakRowDetail: 0.01,
+  minPeakRowDetail: 0.001,
   detailLumaDelta: 8,
   minJudgeableArea: 4096,
 });
@@ -139,15 +153,20 @@ export function analyzeImageBlankness(
     };
   }
 
-  const rowStep = Math.max(1, Math.floor(height / Math.max(1, cfg.maxSampledRows)));
+  // Every row is scanned rather than sampled. The decode already touched every pixel,
+  // so the extra pass is cheap — and sampling would risk stepping straight over a
+  // content band only a few pixels tall, which is the one mistake that turns into a
+  // false `blank` and therefore a wrongly rejected close.
   const histogram = new Map<number, number>();
   let histogramCapped = false;
-  let sampledPixels = 0;
   let adjacentPairs = 0;
   let detailPairs = 0;
+  let peakRowDetail = 0;
+  let peakRowIndex = 0;
 
-  for (let y = 0; y < height; y += rowStep) {
+  for (let y = 0; y < height; y += 1) {
     let previousLuma = -1;
+    let rowDetail = 0;
     for (let x = 0; x < width; x += 1) {
       const o = (y * width + x) * 3;
       const r = rgb[o];
@@ -160,14 +179,19 @@ export function analyzeImageBlankness(
         if (seen === undefined && histogram.size >= COLOR_HISTOGRAM_CAP) histogramCapped = true;
         else histogram.set(key, (seen ?? 0) + 1);
       }
-      sampledPixels += 1;
 
       const l = luma(r, g, b);
-      if (previousLuma >= 0) {
-        adjacentPairs += 1;
-        if (Math.abs(l - previousLuma) >= cfg.detailLumaDelta) detailPairs += 1;
-      }
+      if (previousLuma >= 0 && Math.abs(l - previousLuma) >= cfg.detailLumaDelta) rowDetail += 1;
       previousLuma = l;
+    }
+    if (width > 1) {
+      adjacentPairs += width - 1;
+      detailPairs += rowDetail;
+      const fraction = rowDetail / (width - 1);
+      if (fraction > peakRowDetail) {
+        peakRowDetail = fraction;
+        peakRowIndex = y;
+      }
     }
   }
 
@@ -175,15 +199,18 @@ export function analyzeImageBlankness(
   const distinctColors = histogramCapped ? COLOR_HISTOGRAM_CAP : histogram.size;
   let dominantCount = 0;
   for (const count of histogram.values()) if (count > dominantCount) dominantCount = count;
-  const dominantFraction = sampledPixels > 0 ? dominantCount / sampledPixels : 0;
+  // Once the histogram is capped this is the most common of the first COLOR_HISTOGRAM_CAP
+  // colours rather than of all of them — a fine approximation, since an image with that
+  // many distinct colours has no meaningful dominant one anyway.
+  const dominantFraction = dominantCount / (width * height);
 
-  const stats = { width, height, distinctColors, dominantFraction, detailFraction };
+  const stats = { width, height, distinctColors, dominantFraction, detailFraction, peakRowDetail, peakRowIndex };
 
   if (adjacentPairs === 0) {
     return { verdict: 'inconclusive', reason: 'no adjacent pixel pairs to compare', ...stats };
   }
 
-  if (detailFraction < cfg.minDetailFraction) {
+  if (peakRowDetail < cfg.minPeakRowDetail) {
     const shape =
       distinctColors <= 2
         ? `a flat ${distinctColors === 1 ? 'single-colour' : 'two-colour'} fill`
@@ -191,9 +218,9 @@ export function analyzeImageBlankness(
     return {
       verdict: 'blank',
       reason:
-        `${width}x${height} capture carries no rendered content — ${shape} ` +
-        `(only ${(detailFraction * 100).toFixed(4)}% of adjacent pixels show an edge, ` +
-        `floor ${(cfg.minDetailFraction * 100).toFixed(4)}%). The window did not paint.`,
+        `${width}x${height} capture carries no rendered content anywhere — ${shape} ` +
+        `(its densest row is only ${(peakRowDetail * 100).toFixed(3)}% edges, floor ` +
+        `${(cfg.minPeakRowDetail * 100).toFixed(3)}%). The window did not paint.`,
       ...stats,
     };
   }
@@ -202,7 +229,7 @@ export function analyzeImageBlankness(
     verdict: 'has-content',
     reason:
       `${width}x${height} capture carries rendered content ` +
-      `(${(detailFraction * 100).toFixed(2)}% of adjacent pixels show an edge, ${distinctColors} distinct colours)`,
+      `(row ${peakRowIndex} is ${(peakRowDetail * 100).toFixed(1)}% edges; ${distinctColors} distinct colours)`,
     ...stats,
   };
 }

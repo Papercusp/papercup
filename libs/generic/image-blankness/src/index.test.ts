@@ -141,7 +141,25 @@ describe('analyzeImageBlankness', () => {
   it('calls a rendered UI frame has-content', () => {
     const report = analyzeImageBlankness(encodePng(320, 240, fakeUiScreenshot(320, 240)));
     expect(report.verdict).toBe('has-content');
-    expect(report.detailFraction).toBeGreaterThan(DEFAULT_BLANKNESS_THRESHOLDS.minDetailFraction);
+    expect(report.peakRowDetail).toBeGreaterThan(DEFAULT_BLANKNESS_THRESHOLDS.minPeakRowDetail);
+  });
+
+  it('finds content that occupies only a narrow band of an otherwise empty frame', () => {
+    // The case a whole-frame average gets wrong, and the reason the verdict is per-row:
+    // a real capture of an app that painted nothing but a title strip. It composited,
+    // so it is evidence — 99% emptiness must not make it read as a dead grab.
+    const width = 1280;
+    const height = 800;
+    const pixels = rgbImage(width, height, (x, y) => (y === 3 && x % 5 < 2 ? [20, 20, 25] : [250, 250, 250]));
+    const report = analyzeImageBlankness(encodePng(width, height, pixels));
+
+    expect(report.verdict).toBe('has-content');
+    expect(report.peakRowIndex).toBe(3);
+    // The decisive bit: spread over the whole frame this content averages out BELOW the
+    // floor. Judged per row it is 40% edges. A global average would have called a real
+    // capture dead and rejected a legitimate close.
+    expect(report.detailFraction).toBeLessThan(DEFAULT_BLANKNESS_THRESHOLDS.minPeakRowDetail);
+    expect(report.peakRowDetail).toBeGreaterThan(0.3);
   });
 
   it('treats a fully transparent RGBA capture as blank (composited over black)', () => {
@@ -225,11 +243,11 @@ describe('configureImageBlankness', () => {
     expect(analyzeImageBlankness(uiPng).verdict).toBe('has-content');
 
     // An absurd floor makes even a busy frame read blank — proof the knob is live.
-    configureImageBlankness({ minDetailFraction: 0.99 });
+    configureImageBlankness({ minPeakRowDetail: 0.99 });
     expect(analyzeImageBlankness(uiPng).verdict).toBe('blank');
 
     // A per-call override wins over the configured value.
-    expect(analyzeImageBlankness(uiPng, { minDetailFraction: 0.001 }).verdict).toBe('has-content');
+    expect(analyzeImageBlankness(uiPng, { minPeakRowDetail: 0.001 }).verdict).toBe('has-content');
 
     resetImageBlanknessConfig();
     expect(analyzeImageBlankness(uiPng).verdict).toBe('has-content');

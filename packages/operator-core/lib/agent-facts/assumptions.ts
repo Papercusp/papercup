@@ -1,0 +1,404 @@
+/**
+ * assumptions.ts — resolving a commitment's declared assumption keys against the
+ * facts ledger (unified-agent-state-plane-2026-07-27 P-008 (d), per D-050/D-079).
+ *
+ * ── THE HOLE THIS CLOSES ────────────────────────────────────────────────────
+ *
+ * D-050 gated the commitment class (`work_items:set_state` at a terminal state,
+ * and `work_items:complete`) on a REQUIRED `assumptions` declaration, and named
+ * one thing it deliberately did not do:
+ *
+ *   "Keys are FORMAT-checked, not resolved against `harness_shared.agent_facts`.
+ *    `relayOf` refuses a dangling msg_id on the principle that a reference nobody
+ *    can resolve is laundering, and the same argument applies here — but P-008
+ *    owns the assumption substrate and has not landed."
+ *
+ * P-008 (a)(b)(c) have landed, so this discharges that debt.
+ *
+ * ⚠ D-079: the substrate was not the only thing missing. `assumptions` was
+ * required, format-checked, and then referenced ZERO times downstream — neither
+ * handler persisted it. So D-050's claim that the gate "enforces that an
+ * assumption was STATED, not that it exists — which is strictly more than the
+ * nothing that preceded it" was false as built: a declaration that is validated
+ * and discarded is exactly nothing, plus a required field on every close.
+ * PERSISTENCE therefore lands with resolution, and comes first — resolving keys
+ * before persisting them would be decoration on a discarded value.
+ *
+ * ── WHAT COUNTS AS DANGLING (the question D-050 deferred to P-008) ──────────
+ *
+ * D-050: "is an expired key dangling, or merely old?" — MERELY OLD. Only total
+ * non-existence refuses. `lapsed`, `superseded` and `retracted` all RESOLVE and
+ * carry their condition, because:
+ *
+ *   • a SUSPECTED fact defaults to a SIX HOUR TTL, so treating lapse as dangling
+ *     would refuse an agent who declared a suspected assumption and closed seven
+ *     hours later — a gate that punishes the exact behaviour it exists to
+ *     encourage;
+ *   • a RETRACTED assumption is often retracted BECAUSE the work resolved it.
+ *     Refusing would force the closer to lie with 'none';
+ *   • a version-pinned ref that has since been SUPERSEDED is the D-026 staleness
+ *     signal working as designed, not an error.
+ *
+ * The line is D-016's own division of labour: this GATE's question is structural
+ * — "does this reference resolve at all". "Is it still TRUE" is a DETECTOR
+ * question and stays P-011's. A lapsed fact is fully resolvable (body, author and
+ * timestamp all readable); a key that never existed is not.
+ *
+ * ── WHY THE STAMP MATTERS MORE THAN THE REFUSAL ─────────────────────────────
+ *
+ * A bare key is only meaningful RELATIVE to the closer's own scope set, and that
+ * context is gone the moment the item leaves the queue. So resolution stamps the
+ * ABSOLUTE versioned ref (plus a body excerpt) onto the record: the closed item
+ * then says which fact, which version, and what it said — self-contained, and
+ * still readable after {@link sweepExpiredFacts} hard-deletes the row 30d past
+ * expiry. That is the actual point of refusing dangles.
+ */
+import type { Sql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from '../workspace-registry';
+import {
+  FACT_PROVENANCE_QUOTE_CHARS,
+  factCitationRef,
+  type FactScope,
+  type FactSelector,
+} from './store';
+
+/**
+ * The condition a declared assumption resolved to. Ordered from strongest to
+ * weakest; only the last refuses.
+ */
+export const ASSUMPTION_CONDITIONS = [
+  'live',
+  'lapsed',
+  'superseded',
+  'retracted',
+  'dangling',
+] as const;
+export type AssumptionCondition = (typeof ASSUMPTION_CONDITIONS)[number];
+
+/** The one condition that REFUSES a commitment (D-079 R3). */
+export function isDanglingCondition(c: AssumptionCondition): boolean {
+  return c === 'dangling';
+}
+
+/**
+ * A declared entry, parsed. Either a BARE key (resolved relative to the closer's
+ * scope set) or an ABSOLUTE `fact:<scope>:<ref>:<key>@v<N>` ref.
+ *
+ * The absolute form is deliberately the grammar {@link factCitationRef} already
+ * EMITS and `classifyPremiseRef` already PARSES — D-079 R2. Minting a second
+ * citation grammar is the near-synonym failure D-041 renamed to fix, and would
+ * make every such ref degrade to `opaque` at the message layer.
+ */
+export interface ParsedAssumptionRef {
+  /** Exactly what the caller typed, trimmed. */
+  raw: string;
+  key: string;
+  /** Present only for an absolute ref. */
+  scope: FactScope | null;
+  scopeRef: string | null;
+  /** The `@v<N>` pin, when one was given. */
+  versionId: number | null;
+  absolute: boolean;
+}
+
+const FACT_SCOPE_SET = new Set<string>(['workspace', 'role', 'owner', 'harness', 'work_item']);
+
+/**
+ * Parse one declared entry. PURE.
+ *
+ * Returns `null` only for an entry that OPENS with the `fact:` marker but is not
+ * a well-formed ref — a caller who reached for the absolute grammar and mistyped
+ * it must be told, not silently demoted to a bare key whose "key" is the whole
+ * malformed string (which would then dangle with a baffling message).
+ */
+export function parseAssumptionRef(raw: string): ParsedAssumptionRef | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (!trimmed.startsWith('fact:')) {
+    return { raw: trimmed, key: trimmed, scope: null, scopeRef: null, versionId: null, absolute: false };
+  }
+
+  // fact:<scope>:<ref>:<key>[@v<N>]  — workspace carries no ref: fact:workspace:<key>
+  let rest = trimmed.slice('fact:'.length);
+  let versionId: number | null = null;
+  const at = rest.lastIndexOf('@v');
+  if (at >= 0) {
+    const n = Number(rest.slice(at + 2));
+    if (!Number.isInteger(n) || n <= 0) return null;
+    versionId = n;
+    rest = rest.slice(0, at);
+  }
+
+  const firstColon = rest.indexOf(':');
+  if (firstColon <= 0) return null;
+  const scope = rest.slice(0, firstColon);
+  if (!FACT_SCOPE_SET.has(scope)) return null;
+  const tail = rest.slice(firstColon + 1);
+  if (!tail) return null;
+
+  if (scope === 'workspace') {
+    return { raw: trimmed, key: tail, scope: 'workspace', scopeRef: null, versionId, absolute: true };
+  }
+  // Every other scope is `<ref>:<key>`. The KEY may not contain ':' (facts:assert
+  // keys are slugs), so split on the FIRST colon and let the ref keep any others
+  // — an ownerId like `su-8d9a…` is colon-free, but a role/harness ref need not be.
+  const lastColon = tail.lastIndexOf(':');
+  if (lastColon <= 0) return null;
+  const scopeRef = tail.slice(0, lastColon);
+  const key = tail.slice(lastColon + 1);
+  if (!scopeRef || !key) return null;
+  return { raw: trimmed, key, scope: scope as FactScope, scopeRef, versionId, absolute: true };
+}
+
+/** One resolved assumption — what gets STAMPED onto the commitment record. */
+export interface ResolvedAssumption {
+  /** Exactly what the caller declared. Kept so the record shows the citation as
+   *  typed, not only as normalized. */
+  declared: string;
+  /** The ABSOLUTE versioned ref this resolved to; null when dangling. */
+  ref: string | null;
+  key: string;
+  scope: FactScope | null;
+  scopeRef: string | null;
+  versionId: number | null;
+  condition: AssumptionCondition;
+  /** A short quote of the fact body, so the record survives the expiry sweep. */
+  excerpt?: string;
+  /** The key matched in MORE THAN ONE scope; `ref` names the most-specific hit. */
+  ambiguous?: boolean;
+}
+
+/**
+ * The scopes a closer's BARE key is resolved against, in PRECEDENCE order
+ * (most specific first): the item being closed, then the closer, then their role,
+ * then their harness, then the workspace.
+ *
+ * Most-specific-wins because a closer citing a bare key almost always means the
+ * one THEY asserted; a workspace-wide fact that happens to share the slug is the
+ * coincidence, not the intent. PURE — unit-tested without PG.
+ */
+export function assumptionSelectorsFor(ctx: {
+  workItemId?: string | null;
+  ownerId?: string | null;
+  role?: string | null;
+  harnessSlug?: string | null;
+}): FactSelector[] {
+  const out: FactSelector[] = [];
+  const push = (scope: FactScope, ref: string | null | undefined) => {
+    const r = (ref ?? '').trim();
+    if (r) out.push({ scope, scopeRef: r });
+  };
+  push('work_item', ctx.workItemId);
+  push('owner', ctx.ownerId);
+  push('role', ctx.role);
+  push('harness', ctx.harnessSlug);
+  out.push({ scope: 'workspace', scopeRef: null });
+  return out;
+}
+
+interface RawRow {
+  id: string | number;
+  scope: FactScope;
+  scope_ref: string | null;
+  key: string;
+  body: string;
+  retracted_at: string | null;
+  superseded_at: string | null;
+  expired: boolean;
+}
+
+function excerptOf(body: string): string {
+  const b = body.trim();
+  return b.length <= FACT_PROVENANCE_QUOTE_CHARS ? b : `${b.slice(0, FACT_PROVENANCE_QUOTE_CHARS)}…`;
+}
+
+/**
+ * Resolve every declared entry against the ledger.
+ *
+ * Reads the FULL history — retracted, expired and superseded rows included —
+ * because `foldFacts` filters all three out and therefore cannot tell "lapsed"
+ * from "never existed", which is the only distinction this gate turns on.
+ *
+ * LOCAL partition only (`source_hive IS NULL`), matching {@link factVersions}: a
+ * foreign hive's fact with the same slug is not the one the closer asserted.
+ */
+export async function resolveAssumptions(
+  declared: readonly string[],
+  selectors: readonly FactSelector[],
+  opts: { workspaceId?: string } = {},
+  inject?: Sql,
+): Promise<ResolvedAssumption[]> {
+  const parsed = declared.map((d) => ({ declared: d.trim(), parsed: parseAssumptionRef(d) }));
+  const keys = Array.from(
+    new Set(parsed.map((p) => p.parsed?.key).filter((k): k is string => Boolean(k))),
+  );
+  if (keys.length === 0) {
+    return parsed.map((p) => malformedOrDangling(p.declared, p.parsed));
+  }
+
+  const sql = inject ?? getOrgPg().sql;
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+
+  // Absolute refs may name a scope OUTSIDE the closer's selector set — that is
+  // the whole point of an absolute citation — so the read spans the union of both.
+  const scopes = Array.from(
+    new Set([
+      ...selectors.map((s) => s.scope),
+      ...parsed.map((p) => p.parsed?.scope).filter((s): s is FactScope => Boolean(s)),
+    ]),
+  );
+  const refs = Array.from(
+    new Set([
+      ...selectors.map((s) => (s.scopeRef ?? '').trim()),
+      ...parsed.map((p) => (p.parsed?.scopeRef ?? '').trim()),
+    ]),
+  );
+
+  // The (scope, ref) pairs are matched EXACTLY in JS below; SQL takes the cheap
+  // cross-product prefilter because the row set is tiny by construction (≤10
+  // keys × the 50-per-scope cap) and a dynamic tuple-IN buys nothing here.
+  const rows = await sql<RawRow[]>`
+    SELECT id, scope, scope_ref, key, body,
+           retracted_at::text AS retracted_at,
+           superseded_at::text AS superseded_at,
+           (expires_at <= now()) AS expired
+      FROM harness_shared.agent_facts
+     WHERE workspace_id = ${ws}
+       AND source_hive IS NULL
+       AND key = ANY(${keys}::text[])
+       AND scope = ANY(${scopes as string[]}::text[])
+       AND coalesce(scope_ref,'') = ANY(${refs}::text[])
+     ORDER BY id DESC`;
+
+  return parsed.map((p) => resolveOne(p.declared, p.parsed, rows, selectors));
+}
+
+function malformedOrDangling(declared: string, parsed: ParsedAssumptionRef | null): ResolvedAssumption {
+  return {
+    declared,
+    ref: null,
+    key: parsed?.key ?? declared,
+    scope: parsed?.scope ?? null,
+    scopeRef: parsed?.scopeRef ?? null,
+    versionId: parsed?.versionId ?? null,
+    condition: 'dangling',
+  };
+}
+
+function conditionOfRow(r: RawRow): AssumptionCondition {
+  if (r.retracted_at) return 'retracted';
+  if (r.expired) return 'lapsed';
+  return 'live';
+}
+
+function resolveOne(
+  declared: string,
+  parsed: ParsedAssumptionRef | null,
+  rows: readonly RawRow[],
+  selectors: readonly FactSelector[],
+): ResolvedAssumption {
+  if (!parsed) return malformedOrDangling(declared, parsed);
+
+  const matching = rows.filter((r) => r.key === parsed.key);
+
+  // ── absolute ref: exactly one identity, possibly version-pinned ────────────
+  if (parsed.absolute) {
+    const ref = (parsed.scopeRef ?? '').trim();
+    const identity = matching.filter(
+      (r) => r.scope === parsed.scope && (r.scope_ref ?? '').trim() === ref,
+    );
+    if (identity.length === 0) return malformedOrDangling(declared, parsed);
+
+    if (parsed.versionId != null) {
+      const pinned = identity.find((r) => Number(r.id) === parsed.versionId);
+      // A pinned version that is superseded — or that the version sweep already
+      // reclaimed while the identity lives — is D-026 staleness, not a dangle.
+      if (!pinned || pinned.superseded_at) {
+        const current = identity.find((r) => !r.superseded_at) ?? identity[0];
+        return {
+          declared,
+          ref: factCitationRef({ ...current, scopeRef: current.scope_ref, id: Number(current.id) }),
+          key: parsed.key,
+          scope: current.scope,
+          scopeRef: current.scope_ref,
+          versionId: Number(current.id),
+          condition: 'superseded',
+          excerpt: excerptOf(current.body),
+        };
+      }
+      return {
+        declared,
+        ref: factCitationRef({ ...pinned, scopeRef: pinned.scope_ref, id: Number(pinned.id) }),
+        key: parsed.key,
+        scope: pinned.scope,
+        scopeRef: pinned.scope_ref,
+        versionId: Number(pinned.id),
+        condition: conditionOfRow(pinned),
+        excerpt: excerptOf(pinned.body),
+      };
+    }
+
+    const current = identity.find((r) => !r.superseded_at) ?? identity[0];
+    return {
+      declared,
+      ref: factCitationRef({ ...current, scopeRef: current.scope_ref, id: Number(current.id) }),
+      key: parsed.key,
+      scope: current.scope,
+      scopeRef: current.scope_ref,
+      versionId: Number(current.id),
+      condition: conditionOfRow(current),
+      excerpt: excerptOf(current.body),
+    };
+  }
+
+  // ── bare key: most-specific scope wins (D-079 R2) ──────────────────────────
+  let chosen: RawRow | undefined;
+  let hitScopes = 0;
+  for (const sel of selectors) {
+    const ref = sel.scope === 'workspace' ? '' : (sel.scopeRef ?? '').trim();
+    const inScope = matching.filter(
+      (r) => r.scope === sel.scope && (r.scope_ref ?? '').trim() === ref,
+    );
+    if (inScope.length === 0) continue;
+    hitScopes += 1;
+    if (!chosen) chosen = inScope.find((r) => !r.superseded_at) ?? inScope[0];
+  }
+  if (!chosen) return malformedOrDangling(declared, parsed);
+
+  return {
+    declared,
+    ref: factCitationRef({ ...chosen, scopeRef: chosen.scope_ref, id: Number(chosen.id) }),
+    key: parsed.key,
+    scope: chosen.scope,
+    scopeRef: chosen.scope_ref,
+    versionId: Number(chosen.id),
+    condition: conditionOfRow(chosen),
+    excerpt: excerptOf(chosen.body),
+    ...(hitScopes > 1 ? { ambiguous: true } : {}),
+  };
+}
+
+/**
+ * The refusal a commitment gets when one or more declared assumptions do not
+ * resolve. Shared so `work_items:set_state` and `work_items:complete` refuse
+ * IDENTICALLY — D-050: "a half-verification that resolves on one tool and not
+ * the other is worse than none."
+ */
+export function danglingAssumptionsMessage(
+  dangling: readonly ResolvedAssumption[],
+  selectors: readonly FactSelector[],
+): string {
+  const names = dangling.map((d) => `"${d.declared}"`).join(', ');
+  const scopes = selectors
+    .map((s) => (s.scope === 'workspace' ? 'workspace' : `${s.scope}:${(s.scopeRef ?? '').trim()}`))
+    .join(', ');
+  return (
+    `assumption ${dangling.length === 1 ? 'key' : 'keys'} ${names} ${dangling.length === 1 ? 'does' : 'do'} ` +
+    `not resolve to any fact — searched ${scopes}. A reference nobody can resolve is laundering (D-050/D-079): ` +
+    'assert it first with facts:assert { scope, key, body, kind:"assumption" }, cite an absolute ' +
+    '`fact:<scope>:<ref>:<key>` ref if it lives outside your own scopes, or pass "none" if this close ' +
+    'rests on nothing you recorded. An EXPIRED or RETRACTED key still resolves — only a key that never ' +
+    'existed is refused.'
+  );
+}
