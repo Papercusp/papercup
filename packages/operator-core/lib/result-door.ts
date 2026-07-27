@@ -162,6 +162,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         originalChars: number; returnedChars: number; omittedCount: number;
       } } | undefined
     )?.payloadProjection;
+    // EI-18745696571494110: no upstream `_meta` marker fired, but the tool may
+    // have still truncated individual FIELDS inside its own body (coord:inbox's
+    // per-entry `body_truncated`, a list's `summary_truncated`, …) — check only
+    // when upstreamProjection didn't already explain the shortfall, since that
+    // case is more severe (the WHOLE result is a partial projection) and takes
+    // priority over a field-level marker.
+    const innerTruncationMarkers = upstreamProjection ? [] : detectInnerTruncationMarkers(fullText);
     const header = upstreamProjection
       ? `# result-door spill — an ALREADY-PROJECTED (partial) tool result\n` +
         `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
@@ -174,6 +181,15 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         `(or narrower args) for the missing detail.\n` +
         `# What follows is only that already-partial projection, further capped at the ` +
         `per-result door (${doorTokens} tokens) below.\n\n`
+      : innerTruncationMarkers.length > 0
+      ? `# result-door spill — FULL door-level text, but the TOOL ITSELF already truncated field(s)\n` +
+        `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
+        `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${doorTokens} tokens\n` +
+        `# detected marker(s): ${innerTruncationMarkers.join(', ')} — these mark field(s) the tool cut\n` +
+        `# short BEFORE this door ever ran. This file holds everything the tool DID emit, but the\n` +
+        `# marked field(s) are themselves incomplete and were never fully serialized — paging this\n` +
+        `# file will NOT recover them. Re-call ${opts.toolName} with a wider per-field limit/budget\n` +
+        `# argument for the missing detail.\n\n`
       : `# result-door spill — FULL tool result (the in-context copy was truncated at the door)\n` +
         `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
         `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${doorTokens} tokens\n\n`;
@@ -209,6 +225,14 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           `file at ${fsPath} (scratch URI: ${uri}) contains only that already-partial projection, NOT ` +
           `the omitted content — paging it will never recover what was omitted upstream. For full ` +
           `detail, re-call ${opts.toolName} with payloadTier:'full'.]`
+        : innerTruncationMarkers.length > 0
+        ? `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
+          `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
+          `⚠ it ALSO contains field(s) the TOOL ITSELF already truncated before spilling ` +
+          `(marker${innerTruncationMarkers.length > 1 ? 's' : ''}: ${innerTruncationMarkers.join(', ')}). ` +
+          `The spilled file at ${fsPath} (scratch URI: ${uri}) preserves everything the tool emitted, ` +
+          `but those marked field(s) were never fully serialized — paging it will NOT recover them. ` +
+          `Re-call ${opts.toolName} with a wider per-field limit/budget argument for the missing detail.]`
         : `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
           `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
           `The FULL result is at ${fsPath} (scratch URI: ${uri}) — page it with a bounded read ` +
