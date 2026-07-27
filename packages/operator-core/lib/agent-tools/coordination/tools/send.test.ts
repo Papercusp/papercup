@@ -263,25 +263,41 @@ describe('coord:send handler (bulk keyed-array)', () => {
 });
 
 describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
-  it('persists expectsReply:true only when the sender declares a response is wanted', async () => {
-    await body({ to: ['bee-1'], summary: 'question', expectsReply: true });
-    const question = sendM.mock.calls[0][1] as { expectsReply?: boolean };
-    expect(question.expectsReply).toBe(true);
+  // D-048: `expectsReply` is DERIVED from the required `expects` — the caller no longer
+  // passes it, and nothing infers it. These three replace the pre-D-048 trio (which
+  // asserted the old opt-in boolean and the wake+deadline derivation).
+  it('derives expectsReply from `expects` — persisted for ack/answer/action, absent for none', async () => {
+    for (const expects of ['ack', 'answer', 'action'] as const) {
+      sendM.mockClear();
+      await body({ to: ['bee-1'], summary: 'question', expects });
+      const opts = sendM.mock.calls[0][1] as { expectsReply?: boolean };
+      expect(opts.expectsReply, `expects:'${expects}' must set expectsReply`).toBe(true);
+    }
 
     sendM.mockClear();
-    await body({ to: ['bee-1'], summary: 'FYI', expectsReply: false });
+    await body({ to: ['bee-1'], summary: 'FYI', expects: 'none' });
     const fyi = sendM.mock.calls[0][1] as { expectsReply?: boolean };
     expect(fyi.expectsReply).toBeUndefined();
   });
 
-  it('derives expectsReply from wake:"required" plus replyDeadlineSec', async () => {
-    await body({ to: ['bee-1'], summary: 'please answer', wake: 'required', replyDeadlineSec: 60 });
-    const opts = sendM.mock.calls[0][1] as { expectsReply?: boolean };
-    expect(opts.expectsReply).toBe(true);
+  it('stamps the 4-valued `expects` itself on the envelope extra (the richer signal consumers graduate to)', async () => {
+    await body({ to: ['bee-1'], summary: 'please confirm', expects: 'ack' });
+    const opts = sendM.mock.calls[0][1] as { extra?: { expects?: string } };
+    expect(opts.extra?.expects).toBe('ack');
   });
 
-  it('does not infer expectsReply from a plain directed send or wakeOnReply', async () => {
-    await body({ to: ['bee-1'], summary: 'status', wakeOnReply: true });
+  // The property the deleted 'derives from wake+replyDeadlineSec' test asserted is now
+  // INVERTED: that derivation was D-016's "a default is how a field dies" in live code,
+  // so wake/replyDeadlineSec/wakeOnReply must NOT move expectsReply at all.
+  it('D-048: nothing infers expectsReply — wake:"required" + replyDeadlineSec on an `expects:none` send stays false', async () => {
+    await body({
+      to: ['bee-1'],
+      summary: 'status, no reply wanted',
+      expects: 'none',
+      wake: 'required',
+      replyDeadlineSec: 60,
+      wakeOnReply: true,
+    });
     const opts = sendM.mock.calls[0][1] as { expectsReply?: boolean };
     expect(opts.expectsReply).toBeUndefined();
   });
@@ -810,45 +826,98 @@ describe('coord:send — fleet-scoped broadcast default (queen-fleet-authority-b
 });
 
 describe('coord:send args schema (EI-7838: missing-summary must not be masked by a sibling field error)', () => {
-  it('missing `summary` alone reports the actionable "pass { to, summary }" message', () => {
-    const r = tool.args.safeParse({ to: ['bee-1'], wake: true });
+  const CROSS_FIELD_MSG =
+    'pass { to, summary, expects } for one message, or items:[{ to, summary, expects }] for many distinct messages';
+
+  it('missing `summary` alone reports the actionable "pass { to, summary, expects }" message', () => {
+    const r = tool.args.safeParse({ to: ['bee-1'], expects: 'none', wake: true });
     expect(r.success).toBe(false);
     if (!r.success) {
-      expect(r.error.issues.map((i) => i.message)).toContain(
-        'pass { to, summary } for one message, or items:[{ to, summary }] for many distinct messages',
-      );
+      expect(r.error.issues.map((i) => i.message)).toContain(CROSS_FIELD_MSG);
     }
   });
 
-  it('a genuinely-invalid `wake` value ALONE (to+summary both present) reports the wake issue, not the cross-field one', () => {
-    const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', wake: 'not-a-real-value' });
+  it('a genuinely-invalid `wake` value ALONE (to+summary+expects all present) reports the wake issue, not the cross-field one', () => {
+    const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'none', wake: 'not-a-real-value' });
     expect(r.success).toBe(false);
     if (!r.success) {
       expect(r.error.issues.some((i) => i.path.join('.') === 'wake')).toBe(true);
-      expect(r.error.issues.map((i) => i.message)).not.toContain(
-        'pass { to, summary } for one message, or items:[{ to, summary }] for many distinct messages',
-      );
+      expect(r.error.issues.map((i) => i.message)).not.toContain(CROSS_FIELD_MSG);
     }
   });
 
   it('EI-7838 repro: missing `summary` AND an invalid `wake` value together — the cross-field "need to+summary" message must still surface (previously the wake type error alone was reported, silently hiding the missing-summary problem)', () => {
-    const r = tool.args.safeParse({ to: ['bee-1'], body: 'test', wake: 'not-a-real-value' });
+    const r = tool.args.safeParse({ to: ['bee-1'], expects: 'none', body: 'test', wake: 'not-a-real-value' });
     expect(r.success).toBe(false);
     if (!r.success) {
-      expect(r.error.issues.map((i) => i.message)).toContain(
-        'pass { to, summary } for one message, or items:[{ to, summary }] for many distinct messages',
-      );
+      expect(r.error.issues.map((i) => i.message)).toContain(CROSS_FIELD_MSG);
     }
   });
 
   it('a fully valid single-message payload still parses cleanly through the preprocess wrapper', () => {
-    const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', wake: true });
+    const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'none', wake: true });
     expect(r.success).toBe(true);
   });
 
   it('a valid items:[…] payload (no top-level to/summary) still parses cleanly', () => {
-    const r = tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi' }] });
+    const r = tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects: 'none' }] });
     expect(r.success).toBe(true);
+  });
+});
+
+/**
+ * P-017 (b) gate #1 / D-016 / D-048 — `expects` is REQUIRED with an explicit `none`,
+ * never defaulted. D-016: "A default is how a field dies — everyone takes it, and the
+ * field then carries no information."
+ *
+ * The gate must hold on BOTH axes. The shorthand is the cheaper call and therefore the
+ * one that would carry the traffic, so a gate enforced only on items[] would not be a
+ * gate — it would just relocate.
+ */
+describe('coord:send `expects` gate (P-017 b#1 — required-with-explicit-none, never defaulted)', () => {
+  it('REFUSES a single-form send with no `expects`, naming the field and the explicit-none rule', () => {
+    const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi' });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const onExpects = r.error.issues.filter((i) => i.path.join('.') === 'expects');
+      expect(onExpects.length).toBeGreaterThan(0);
+      expect(onExpects[0]!.message).toContain("'none'");
+    }
+  });
+
+  it('REFUSES an items[] send whose item omits `expects` (the union enforces it structurally)', () => {
+    const r = tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi' }] });
+    expect(r.success).toBe(false);
+  });
+
+  it('REFUSES a value outside the enum — the vocabulary is closed, not free text', () => {
+    expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'maybe' }).success).toBe(false);
+    expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: true }).success).toBe(false);
+  });
+
+  it('ACCEPTS every enumerated value on both axes — including the explicit `none`', () => {
+    for (const expects of ['ack', 'answer', 'action', 'none'] as const) {
+      expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects }).success, expects).toBe(true);
+      expect(
+        tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects }] }).success,
+        `items:${expects}`,
+      ).toBe(true);
+    }
+  });
+
+  it('the OLD `expectsReply` input is gone — passing it does not satisfy the gate', () => {
+    const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expectsReply: true });
+    expect(r.success).toBe(false);
+  });
+
+  it('a mixed items[] batch refuses as a whole when ONE item omits `expects` (no partial default)', () => {
+    const r = tool.args.safeParse({
+      items: [
+        { to: ['bee-1'], summary: 'ok', expects: 'ack' },
+        { to: ['bee-2'], summary: 'missing' },
+      ],
+    });
+    expect(r.success).toBe(false);
   });
 });
 
@@ -916,7 +985,9 @@ describe('report card payload (agent-report-cards-2026-07-17 P-001)', () => {
 
   it('the report shape parses through the tool arg schema (single + items axes)', () => {
     const report = { title: 'Fleet update', plans: [{ title: 'lane', items: [{ text: 'x', status: 'done' }] }] };
-    expect(tool.args.safeParse({ to: ['human'], summary: 'hi', report }).success).toBe(true);
-    expect(tool.args.safeParse({ items: [{ to: ['human'], summary: 'hi', report }] }).success).toBe(true);
+    expect(tool.args.safeParse({ to: ['human'], summary: 'hi', expects: 'none', report }).success).toBe(true);
+    expect(
+      tool.args.safeParse({ items: [{ to: ['human'], summary: 'hi', expects: 'none', report }] }).success,
+    ).toBe(true);
   });
 });

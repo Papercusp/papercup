@@ -60,10 +60,18 @@ export const hostAudienceResolvers: AudienceResolvers = {
     // points agents at for "who is on this file" answered ZERO while a peer held a
     // live lock, and did so with language that reads as proof of absence.
     //
-    // Domain: the operator's OWN lock coordination domain (the realpath of this
-    // checkout), not a cross-domain read — a lock held on the same repo-relative
-    // path in a DIFFERENT checkout is a different physical file and its holder is
-    // not on ours.
+    // Domain: `null` = read across EVERY coordination domain, which su-lock-store
+    // documents as the right mode for a non-ENFORCEMENT reader ("wrong for any
+    // 'what is this agent holding?' read, where `owner` is already globally
+    // unique"). Deliberate, and load-bearing here: a domain-scoped read "reports a
+    // genuinely-held lock as absent — silently", which is precisely the failure this
+    // whole fix exists to remove. The domain landscape makes that risk concrete —
+    // observed live 2026-07-27, an su agent editing the STAGING tree had its lock
+    // recorded under `/…/papercup-release` (the domain resolves from whichever
+    // checkout the OPERATOR process loaded), so a reader that pinned "this
+    // checkout" could silently miss real holders. An audience is not a mutex: a
+    // false POSITIVE only means an extra agent hears about a path they are working
+    // on, while a false NEGATIVE is the collision we are fixing.
     //
     // Fail-soft on EVERY error (locks unconfigured, side-DB unreachable, a path the
     // lock plane refuses): the coord send path must never break because the lock
