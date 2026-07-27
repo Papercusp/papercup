@@ -9,10 +9,16 @@ import { describe, expect, it } from 'vitest';
 import {
   ASSUMPTION_CONDITIONS,
   assumptionSelectorsFor,
+  basisHasMoved,
+  BASIS_MOVEMENTS,
+  classifyBasisMovement,
   danglingAssumptionsMessage,
+  isComparableAtDeclaration,
   isDanglingCondition,
   parseAssumptionRef,
   resolveAssumptions,
+  wasStaleAtDeclaration,
+  type DeclaredBasisRow,
 } from './assumptions';
 
 describe('parseAssumptionRef', () => {
@@ -182,5 +188,133 @@ describe('danglingAssumptionsMessage', () => {
     );
     expect(one).toContain('key "a" does not resolve');
     expect(many).toContain('keys "a", "b" do not resolve');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE RE-CHECK (WI-6465 / D-102)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function basis(over: Partial<DeclaredBasisRow> = {}): DeclaredBasisRow {
+  return {
+    conditionAtClose: 'live',
+    pinnedVersion: 100,
+    currentVersion: 100,
+    retractedNow: false,
+    expiredNow: false,
+    ...over,
+  };
+}
+
+describe('classifyBasisMovement', () => {
+  it('reports unchanged when the pinned version is still the newest and live', () => {
+    expect(classifyBasisMovement(basis())).toBe('unchanged');
+  });
+
+  it('reports superseded when a newer version of the same identity exists', () => {
+    expect(classifyBasisMovement(basis({ currentVersion: 101 }))).toBe('superseded');
+  });
+
+  it('reports lapsed when the pinned version is still newest but has aged out', () => {
+    expect(classifyBasisMovement(basis({ expiredNow: true }))).toBe('lapsed');
+  });
+
+  it('reports vanished when the identity is gone from the ledger entirely', () => {
+    // The expiry sweep hard-deletes 30d past expiry, leaving only the excerpt
+    // D-079 stamped onto the close.
+    expect(classifyBasisMovement(basis({ currentVersion: null }))).toBe('vanished');
+  });
+
+  // ⚠ THE ORDERING RULES ARE THE DESIGN, so they get their own assertions: a
+  // reader must be told the STRONGEST news, not the first true thing. Without
+  // these, a refactor that reorders the branches still passes every test above.
+  it('prefers retracted over superseded — a withdrawn claim dominates a revised one', () => {
+    expect(classifyBasisMovement(basis({ currentVersion: 101, retractedNow: true }))).toBe('retracted');
+  });
+
+  it('prefers superseded over lapsed — revised content outranks mere ageing', () => {
+    expect(classifyBasisMovement(basis({ currentVersion: 101, expiredNow: true }))).toBe('superseded');
+  });
+
+  it('prefers vanished over every other verdict', () => {
+    expect(
+      classifyBasisMovement(basis({ currentVersion: null, retractedNow: true, expiredNow: true })),
+    ).toBe('vanished');
+  });
+
+  it('reports undeterminable for an unpinned declaration rather than guessing unchanged', () => {
+    // "We cannot tell" is not "nothing moved" — collapsing them would let a
+    // declaration that predates the version stamp certify itself as fresh.
+    expect(classifyBasisMovement(basis({ pinnedVersion: null }))).toBe('undeterminable');
+  });
+
+  it('still reports retracted/vanished for an unpinned declaration', () => {
+    // Those two verdicts hold WITHOUT a pin, which is why the pin check sits
+    // below them. A regression that hoisted it would silently mute real news.
+    expect(classifyBasisMovement(basis({ pinnedVersion: null, retractedNow: true }))).toBe('retracted');
+    expect(classifyBasisMovement(basis({ pinnedVersion: null, currentVersion: null }))).toBe('vanished');
+  });
+
+  it('never returns a movement outside the declared vocabulary', () => {
+    const rows = [
+      basis(),
+      basis({ currentVersion: 101 }),
+      basis({ retractedNow: true }),
+      basis({ expiredNow: true }),
+      basis({ currentVersion: null }),
+      basis({ pinnedVersion: null }),
+    ];
+    for (const r of rows) expect(BASIS_MOVEMENTS).toContain(classifyBasisMovement(r));
+  });
+});
+
+describe('basisHasMoved excludes undeterminable BY CONSTRUCTION', () => {
+  it('counts every real movement as moved', () => {
+    expect(basisHasMoved('superseded')).toBe(true);
+    expect(basisHasMoved('retracted')).toBe(true);
+    expect(basisHasMoved('lapsed')).toBe(true);
+    expect(basisHasMoved('vanished')).toBe(true);
+  });
+
+  it('counts neither unchanged NOR undeterminable', () => {
+    // Counting an uncomparable row as unmoved would convert missing data into a
+    // clean bill of health — the sibling staleness metric's own failure mode.
+    expect(basisHasMoved('unchanged')).toBe(false);
+    expect(basisHasMoved('undeterminable')).toBe(false);
+  });
+});
+
+describe('the close-time question is separate from the movement question (D-102)', () => {
+  it('counts a basis that was already not-current when it was cited', () => {
+    expect(wasStaleAtDeclaration('superseded')).toBe(true);
+    expect(wasStaleAtDeclaration('retracted')).toBe(true);
+    expect(wasStaleAtDeclaration('lapsed')).toBe(true);
+  });
+
+  it('does not count a live citation, nor one the ledger could not check', () => {
+    expect(wasStaleAtDeclaration('live')).toBe(false);
+    // `unresolved` is a failed READ, not a stale citation — see isDanglingCondition.
+    expect(wasStaleAtDeclaration('unresolved')).toBe(false);
+    expect(wasStaleAtDeclaration(null)).toBe(false);
+  });
+
+  it('excludes the unreadable conditions from the denominator too', () => {
+    // The numerator and denominator must exclude the SAME rows, or a ledger blip
+    // deflates the rate instead of shrinking the sample.
+    expect(isComparableAtDeclaration('unresolved')).toBe(false);
+    expect(isComparableAtDeclaration('dangling')).toBe(false);
+    expect(isComparableAtDeclaration(null)).toBe(false);
+    for (const c of ASSUMPTION_CONDITIONS) {
+      if (c === 'unresolved' || c === 'dangling') continue;
+      expect(isComparableAtDeclaration(c)).toBe(true);
+    }
+  });
+
+  it('never counts a stale-at-close row that the denominator excluded', () => {
+    // The invariant that keeps the rate in [0,1]: every condition counted by the
+    // numerator must also be counted by the denominator.
+    for (const c of ASSUMPTION_CONDITIONS) {
+      if (wasStaleAtDeclaration(c)) expect(isComparableAtDeclaration(c)).toBe(true);
+    }
   });
 });

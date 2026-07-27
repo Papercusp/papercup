@@ -1977,7 +1977,7 @@ export function scoutHealthVerdict(
   ticks: ReadonlyArray<{ status: string; ideasGenerated?: number; tickAt: string }>,
   nowMs: number,
   windowMs: number = 24 * 60 * 60 * 1000,
-): Omit<ScoutHealth, 'suIdeate' | 'grading'> {
+): Omit<ScoutHealth, 'suIdeate' | 'grading' | 'provenanceDivergence'> {
   const ms = (t: { tickAt: string }) => Date.parse(t.tickAt);
   const inWin = ticks.filter((t) => Number.isFinite(ms(t)) && nowMs - ms(t) <= windowMs);
   const ran = inWin.filter((t) => t.status === 'ran');

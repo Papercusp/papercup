@@ -74,7 +74,7 @@ export const PLANE_MEASUREMENT_INTERVAL_MS = SWEEP_LOOKBACK_MS;
 
 /** Bumped when the metric set or a derivation changes, so no trend is silently
  *  drawn across a definition change. */
-export const PLANE_MEASUREMENT_PRODUCER_VERSION = 1;
+export const PLANE_MEASUREMENT_PRODUCER_VERSION = 2;
 
 /**
  * The calls that count as an agent stopping to ask rather than proceeding on an
@@ -360,6 +360,9 @@ export interface PlaneMeasurementDeps {
   listAssumptionFacts?: typeof listAssumptionFacts;
   /** Absent by default; see the header for why the verdict leg is not run here. */
   evaluateStaleness?: (facts: unknown[]) => Promise<StalenessVerdictCounts>;
+  /** WI-6465 / D-102 — injected for tests only; these DO run by default. */
+  loadCommitmentBasisRows?: typeof loadCommitmentBasisRows;
+  loadCommitmentDeclarationTotals?: typeof loadCommitmentDeclarationTotals;
   /** Injected for tests; the default reads the series' newest row. */
   lastMeasuredAtMs?: () => Promise<number | null>;
   recordMeasurement?: (m: PlaneMeasurement, ctx: { workspaceId: string; harnessSlug: string }) => Promise<void>;
@@ -475,6 +478,22 @@ export function composeCounts(input: {
       input.staleness?.determinable ?? 0,
       input.staleness?.stale ?? 0,
     ),
+    // WI-6465 / D-102. Both legs share a population (closes that declared
+    // anything) and a fillRate numerator (closes that NAMED keys) — so the ~90%
+    // of closes answering the literal 'none' depress the fill rate honestly
+    // instead of vanishing from the denominator and flattering the rate.
+    'acted-on-stale-declared-basis': m(
+      input.commitmentBasis?.closesDeclaring ?? 0,
+      input.commitmentBasis?.closesNamingKeys ?? 0,
+      input.commitmentBasis?.comparableAtClose ?? 0,
+      input.commitmentBasis?.staleAtClose ?? 0,
+    ),
+    'closed-work-basis-moved': m(
+      input.commitmentBasis?.closesDeclaring ?? 0,
+      input.commitmentBasis?.closesNamingKeys ?? 0,
+      input.commitmentBasis?.comparableNow ?? 0,
+      input.commitmentBasis?.movedSince ?? 0,
+    ),
     // `observed` is BYTES and `comparable` is CALLS, so `rate` reads as mean
     // payload per enriched call — the baseline the eventual enrichment delta is
     // measured against. `verdictUnit: 'output byte'` on the spec says so.
@@ -533,11 +552,33 @@ export async function planeMeasurementSweep(
         ? await deps.evaluateStaleness([])
         : null;
 
+    // WI-6465 / D-102 — the commitment-backed legs. Run UNCONDITIONALLY here,
+    // unlike the cell-backed `evaluateStaleness` above: these need only SQL over
+    // stored declarations, no cell read and therefore no reader identity, which
+    // is exactly why the header's "not evaluated here" caveat does not reach
+    // them. Fail-soft on its own so a fault in the newest leg cannot cost the
+    // window every OTHER metric — it degrades to the same null the injected leg
+    // uses, which reports `nothing-comparable`, never a clean zero.
+    let commitmentBasis: CommitmentBasisCounts | null = null;
+    try {
+      const [basisRows, basisTotals] = await Promise.all([
+        (deps.loadCommitmentBasisRows ?? loadCommitmentBasisRows)({ workspaceId, sql: deps.sql }),
+        (deps.loadCommitmentDeclarationTotals ?? loadCommitmentDeclarationTotals)({
+          workspaceId,
+          sql: deps.sql,
+        }),
+      ]);
+      commitmentBasis = reduceCommitmentBasis(basisRows, basisTotals);
+    } catch {
+      commitmentBasis = null;
+    }
+
     const measurement = composePlaneMeasurement({
       counts: composeCounts({
         divergence: deps.divergence ?? null,
         calls,
         facts,
+        commitmentBasis,
         assumptionsExamined: assumptions.length,
         comparedPairs: conflictReport.coverage.comparedPairs,
         conflicts: conflictReport.conflicts.length,

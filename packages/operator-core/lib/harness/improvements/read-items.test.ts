@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { issueToCandidate, readImprovementItems, readObservationItems, IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
+import {
+  issueToCandidate,
+  readImprovementItems,
+  readObservationItems,
+  countImprovementItems,
+  IMPROVEMENT_TOPIC,
+  OBSERVATION_TOPIC,
+} from './read-items';
 import type { EngineerIssue, ListIssuesFilter } from '../../issues-engineer';
 
 function issue(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
@@ -202,6 +209,76 @@ describe('readImprovementItems', () => {
       { listIssues: async () => [issue({ id: 'EI-1', title: 'x', kind: 'bug', scope: 'harness:my-hive' })] },
     );
     expect(items).toEqual([]);
+  });
+});
+
+describe('countImprovementItems (EI-18790490225750395 D2 — the TRUE corpus total, unbounded by limit)', () => {
+  it('counts the SAME filter readImprovementItems applies, with no `limit` in it anywhere', async () => {
+    const calls: ListIssuesFilter[] = [];
+    const n = await countImprovementItems(
+      { state: 'open' },
+      { countIssues: async (f) => (calls.push(f), 4321) },
+    );
+    expect(n).toBe(4321);
+    expect(calls[0]).toMatchObject({ topic: IMPROVEMENT_TOPIC, state: 'open' });
+    expect(calls[0]).not.toHaveProperty('limit');
+  });
+
+  it('is INVARIANT under any `limit` the caller might separately pass to readImprovementItems — ' +
+    'countImprovementItems takes no limit argument at all, so there is nothing for a caller to vary', async () => {
+    // (b) of the ticket's required recurrence guard: total must not move when limit does.
+    const countIssues = async () => 777;
+    const atSmallWindow = await countImprovementItems({}, { countIssues });
+    const atLargeWindow = await countImprovementItems({}, { countIssues });
+    expect(atSmallWindow).toBe(atLargeWindow);
+    expect(atSmallWindow).toBe(777);
+  });
+
+  it('scopes to a single harnessSlug as one COUNT with scope=harness:<slug>', async () => {
+    const calls: ListIssuesFilter[] = [];
+    const n = await countImprovementItems(
+      { harnessSlug: 'foo' },
+      { countIssues: async (f) => (calls.push(f), 12) },
+    );
+    expect(n).toBe(12);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ scope: 'harness:foo' });
+  });
+
+  it('sums one COUNT per scope for a harnessScopes SET (no SQL IN-list support)', async () => {
+    const calls: ListIssuesFilter[] = [];
+    const n = await countImprovementItems(
+      { harnessScopes: ['harness:my-hive', 'harness:member-a'] },
+      { countIssues: async (f) => (calls.push(f), f.scope === 'harness:my-hive' ? 3 : 5) },
+    );
+    expect(n).toBe(8);
+    expect(calls.map((c) => c.scope).sort()).toEqual(['harness:member-a', 'harness:my-hive']);
+  });
+
+  it('an EMPTY harnessScopes set is 0 without even calling countIssues (mirrors readImprovementItems)', async () => {
+    let called = false;
+    const n = await countImprovementItems(
+      { harnessScopes: [] },
+      { countIssues: async () => ((called = true), 999) },
+    );
+    expect(n).toBe(0);
+    expect(called).toBe(false);
+  });
+
+  it('harnessScopes takes precedence over harnessSlug when both are set (mirrors readImprovementItems)', async () => {
+    const calls: ListIssuesFilter[] = [];
+    await countImprovementItems(
+      { harnessSlug: 'foo', harnessScopes: ['harness:my-hive'] },
+      { countIssues: async (f) => (calls.push(f), 1) },
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.scope).toBe('harness:my-hive');
+  });
+
+  it('fails loudly on loopOutputOnly rather than silently counting the untagged whole corpus', async () => {
+    await expect(
+      countImprovementItems({ loopOutputOnly: true }, { countIssues: async () => 0 }),
+    ).rejects.toThrow(/loopOutputOnly/);
   });
 });
 

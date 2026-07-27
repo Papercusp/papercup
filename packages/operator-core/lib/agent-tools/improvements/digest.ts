@@ -73,7 +73,7 @@ export default defineTool({
   description:
     'Triage the captured papercusp-improvement backlog: scores + dedups every improvement work-unit and splits it into the auto-eligible lane (kind=bug, no protected surface) vs the human-review queue. Read-only — surfaces the queue, implements nothing. (P-010) Supports per-Hive scope filtering.',
   guidance: {
-    when: 'To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view. (P-010) Pass harnessSlug to filter to a specific Pot\'s ideas.',
+    when: 'To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view. (P-010) Pass harnessSlug to filter to a specific Pot\'s ideas. `total` is the TRUE corpus count (never bounded by `limit`); `returned`/`windowed` say how much of it you actually got back — read `likelyDuplicatesScope` before trusting an empty `likelyDuplicates` at a small `limit` (dedup only scans what was returned).',
     notWhen: 'You want one improvement in full — work_items:get { id }. You want to file one — improvements:capture. You want to browse another area — topics:feed { topic }.',
     chaining: 'improvements:digest → work_items:get / work_items:claim on a queued item → fix it self/inline (or improvements:capture to add more).',
     seeAlso: [

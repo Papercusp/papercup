@@ -3,9 +3,11 @@ import {
   composeCounts,
   planeMeasurementSweep,
   formatMeasurementLog,
+  reduceCommitmentBasis,
   PLANE_MEASUREMENT_INTERVAL_MS,
   CLARIFICATION_TOOLS,
   ENRICHED_SURFACES,
+  type CommitmentBasisRow,
 } from './agent-plane-measurement-sweep';
 import { composePlaneMeasurement } from './agent-plane-measurement';
 import type { DivergenceReport, DivergenceCoverage } from './agent-state-divergence';
@@ -55,6 +57,7 @@ describe('composeCounts consumes the divergence report (D-038 axis 5)', () => {
       comparedPairs: 0,
       conflicts: 0,
       staleness: null,
+      commitmentBasis: null,
     });
     expect(counts['intent-action-divergence-sampling'].population).toBe(1234);
     expect(counts['intent-action-divergence-stamped'].population).toBe(1234);
@@ -69,6 +72,7 @@ describe('composeCounts consumes the divergence report (D-038 axis 5)', () => {
       comparedPairs: 0,
       conflicts: 0,
       staleness: null,
+      commitmentBasis: null,
     });
     const sampling = counts['intent-action-divergence-sampling'];
     expect(sampling.comparable).toBe(601);
@@ -90,6 +94,7 @@ describe('composeCounts consumes the divergence report (D-038 axis 5)', () => {
       comparedPairs: 0,
       conflicts: 0,
       staleness: null,
+      commitmentBasis: null,
     });
     const stamped = counts['intent-action-divergence-stamped'];
     expect(stamped.eligible).toBe(250);
@@ -107,6 +112,7 @@ describe('composeCounts consumes the divergence report (D-038 axis 5)', () => {
       comparedPairs: 0,
       conflicts: 0,
       staleness: null,
+      commitmentBasis: null,
     });
     expect(counts['intent-action-divergence-sampling'].population).toBe(42);
     expect(counts['intent-action-divergence-sampling'].comparable).toBe(0);
@@ -123,6 +129,7 @@ describe('composeCounts — the fact-backed and cost metrics', () => {
       comparedPairs: 0,
       conflicts: 0,
       staleness: null,
+      commitmentBasis: null,
     });
     const c = counts['clarification-rate'];
     expect(c.population).toBe(1000);
@@ -142,6 +149,7 @@ describe('composeCounts — the fact-backed and cost metrics', () => {
       comparedPairs: 0,
       conflicts: 0,
       staleness: null,
+      commitmentBasis: null,
     });
     const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1 })
       .metrics.find((x) => x.id === 'acted-on-stale-or-wrong-value')!;
@@ -161,6 +169,7 @@ describe('composeCounts — the fact-backed and cost metrics', () => {
       conflicts: 0,
       // 10 eligible, but only 6 produced a usable verdict; 2 of those are stale.
       staleness: { determinable: 6, stale: 2 },
+      commitmentBasis: null,
     });
     const m = counts['acted-on-stale-or-wrong-value'];
     expect(m.eligible).toBe(10);
@@ -177,6 +186,7 @@ describe('composeCounts — the fact-backed and cost metrics', () => {
       comparedPairs: 0,
       conflicts: 0,
       staleness: null,
+      commitmentBasis: null,
     });
     const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1 })
       .metrics.find((x) => x.id === 'plane-token-cost')!;
@@ -195,6 +205,7 @@ describe('composeCounts — the fact-backed and cost metrics', () => {
       comparedPairs: 0,
       conflicts: 0,
       staleness: null,
+      commitmentBasis: null,
     });
     expect(counts['clarification-rate'].population).toBe(77);
     expect(counts['conflicting-assumption-incidence'].population).toBe(2148);
@@ -270,6 +281,7 @@ describe('formatMeasurementLog', () => {
         comparedPairs: 0,
         conflicts: 0,
         staleness: null,
+        commitmentBasis: null,
       }),
       windowStartMs: 0,
       windowEndMs: 1,
@@ -295,6 +307,164 @@ describe('the measured surface lists', () => {
   it('covers the surfaces this plane enriches', () => {
     for (const t of ['coord:orient', 'work_items:list', 'work_items:get', 'locks:queue']) {
       expect(ENRICHED_SURFACES as readonly string[]).toContain(t);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The commitment-backed legs (WI-6465 / D-102)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function row(over: Partial<CommitmentBasisRow> = {}): CommitmentBasisRow {
+  return {
+    condition_at_close: 'live',
+    pinned_version: '100',
+    current_version: '100',
+    retracted_now: false,
+    expired_now: false,
+    ...over,
+  };
+}
+
+const TOTALS = { closes_declaring: 284, closes_naming_keys: 29 };
+
+describe('reduceCommitmentBasis', () => {
+  it('separates "stale when cited" from "moved since" — they are different defects', () => {
+    const counts = reduceCommitmentBasis(
+      [
+        row(), // live then, unchanged now
+        row({ current_version: '101' }), // live when cited, revised since
+        row({ condition_at_close: 'superseded' }), // ALREADY stale when cited
+      ],
+      TOTALS,
+    );
+    // Only the third was the closer's problem; only the second is a re-check.
+    expect(counts.staleAtClose).toBe(1);
+    expect(counts.movedSince).toBe(1);
+    expect(counts.comparableAtClose).toBe(3);
+    expect(counts.comparableNow).toBe(3);
+  });
+
+  it('reads bigint version ids arriving as STRINGS from postgres', () => {
+    // node-postgres returns bigint as text; a numeric comparison against a string
+    // would make '99' > '100' and report a phantom supersede.
+    expect(reduceCommitmentBasis([row({ pinned_version: '99', current_version: '100' })], TOTALS).movedSince).toBe(1);
+    expect(reduceCommitmentBasis([row({ pinned_version: '100', current_version: '100' })], TOTALS).movedSince).toBe(0);
+  });
+
+  it('treats an unparseable version as NO PIN, never as version 0', () => {
+    // Version 0 does not exist, and coercing to it would compare as superseded
+    // against every real row — a fleet-wide phantom finding.
+    const counts = reduceCommitmentBasis([row({ pinned_version: 'not-a-number' })], TOTALS);
+    expect(counts.comparableNow).toBe(0);
+    expect(counts.movedSince).toBe(0);
+  });
+
+  it('excludes an unreadable close-time condition from BOTH sides of the rate', () => {
+    const counts = reduceCommitmentBasis(
+      [row({ condition_at_close: 'unresolved' }), row({ condition_at_close: null })],
+      TOTALS,
+    );
+    expect(counts.comparableAtClose).toBe(0);
+    expect(counts.staleAtClose).toBe(0);
+  });
+
+  it('carries the declaration totals through as the population and fill numerator', () => {
+    // The ~90% of closes answering the literal 'none' must stay in the
+    // population: dropping them would flatter the rate by measuring only the
+    // agents who opted in to being measured.
+    const counts = reduceCommitmentBasis([], TOTALS);
+    expect(counts.closesDeclaring).toBe(284);
+    expect(counts.closesNamingKeys).toBe(29);
+  });
+
+  it('never reports more observed than comparable', () => {
+    const rows = [
+      row(),
+      row({ current_version: '101' }),
+      row({ retracted_now: true }),
+      row({ expired_now: true }),
+      row({ current_version: null }),
+      row({ pinned_version: null }),
+      row({ condition_at_close: 'unresolved' }),
+      row({ condition_at_close: 'lapsed' }),
+    ];
+    const counts = reduceCommitmentBasis(rows, TOTALS);
+    expect(counts.staleAtClose).toBeLessThanOrEqual(counts.comparableAtClose);
+    expect(counts.movedSince).toBeLessThanOrEqual(counts.comparableNow);
+    expect(counts.comparableNow).toBeLessThanOrEqual(rows.length);
+  });
+});
+
+describe('the commitment legs reach the composed metrics', () => {
+  const counts = composeCounts({
+    divergence: null,
+    calls: NO_CALLS,
+    facts: NO_FACTS,
+    assumptionsExamined: 0,
+    comparedPairs: 0,
+    conflicts: 0,
+    staleness: null,
+    commitmentBasis: {
+      closesDeclaring: 284,
+      closesNamingKeys: 29,
+      comparableAtClose: 30,
+      staleAtClose: 0,
+      comparableNow: 30,
+      movedSince: 5,
+    },
+  });
+
+  it('gives the close-time leg a REAL denominator with an honest clean zero', () => {
+    const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1, measuredAtMs: 1 });
+    const leg = m.metrics.find((x) => x.id === 'acted-on-stale-declared-basis');
+    expect(leg?.comparable).toBe(30);
+    expect(leg?.observed).toBe(0);
+    // The whole point of WI-6465: this used to be `nothing-eligible` (unbuilt).
+    // Over a real denominator a defect-count zero is 'clean' and interpretable.
+    expect(leg?.zeroReason).toBe('clean');
+    expect(leg?.interpretable).toBe(true);
+    expect(m.awaitingProducer).not.toContain('acted-on-stale-declared-basis');
+  });
+
+  it('reports the movement leg as a rate, not a structural zero', () => {
+    const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1, measuredAtMs: 1 });
+    const leg = m.metrics.find((x) => x.id === 'closed-work-basis-moved');
+    expect(leg?.observed).toBe(5);
+    expect(leg?.rate).toBeCloseTo(5 / 30, 4);
+    expect(leg?.zeroReason).toBeNull();
+    expect(leg?.interpretable).toBe(true);
+  });
+
+  it('fillRate exposes that only ~10% of closes name a basis at all', () => {
+    const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1, measuredAtMs: 1 });
+    const leg = m.metrics.find((x) => x.id === 'acted-on-stale-declared-basis');
+    expect(leg?.fillRate).toBeCloseTo(29 / 284, 4);
+  });
+
+  it('degrades to nothing-comparable — never a clean zero — when the loader fails', () => {
+    // The sweep catches a loader fault and passes null. That must read as "not
+    // measured", not as "no closed work rests on shifted ground".
+    const nullCounts = composeCounts({
+      divergence: null,
+      calls: NO_CALLS,
+      facts: NO_FACTS,
+      assumptionsExamined: 0,
+      comparedPairs: 0,
+      conflicts: 0,
+      staleness: null,
+      commitmentBasis: null,
+    });
+    const m = composePlaneMeasurement({
+      counts: nullCounts,
+      windowStartMs: 0,
+      windowEndMs: 1,
+      measuredAtMs: 1,
+    });
+    for (const id of ['acted-on-stale-declared-basis', 'closed-work-basis-moved'] as const) {
+      const leg = m.metrics.find((x) => x.id === id);
+      expect(leg?.zeroReason).not.toBe('clean');
+      expect(leg?.interpretable).toBe(false);
     }
   });
 });

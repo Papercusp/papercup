@@ -127,7 +127,14 @@ function deployIdentity(): AgentIdentity {
  */
 export async function realRunUnderDeployLock<T>(
   fn: () => Promise<T>,
-): Promise<{ acquired: true; result: T } | { acquired: false; holder: string | null }> {
+): Promise<
+  | { acquired: true; result: T }
+  // EI-18833814302562374: `holderAlive` must stay in lockstep with the injected
+  // `runUnderDeployLock` type in deploy-cli.ts — this annotation is a SECOND
+  // declaration of the same contract, and updating only the other one compiles
+  // nowhere but passes every test (vitest is type-blind).
+  | { acquired: false; holder: string | null; holderAlive: boolean | null }
+> {
   const id = deployIdentity();
   const outcome = await guardResource(
     {

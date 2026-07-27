@@ -305,9 +305,25 @@ export default function TasksClient(): ReactElement {
           rows={data?.rows ?? []}
           getRowKey={(r) => r.taskId}
           emptyLabel={
+            // An empty table is USUALLY correct, not a fault, so say that first — the
+            // common case is simply that nothing enrolled is running this second.
+            // Enrolment binds at SPAWN: anything started before the task manager was
+            // enabled stays outside the ledger for its whole life and never appears
+            // here, so a freshly-enabled box reads empty until its processes cycle.
+            //
+            // The old copy asserted the opposite ("check the reconcile routine is
+            // armed") and sent the reader to /admin/schedules — which is itself
+            // 403-blanked in the desktop webview (EI-18834967602055309), so the one
+            // remediation it offered was a dead end. The System rail tab shows the
+            // same routines and actually loads.
             <>
-              No tasks. If that is surprising, check that the reconcile routine is armed (
-              <a href="/admin/schedules">/admin/schedules</a> → <code>task-reconcile</code>).
+              Nothing enrolled is running right now
+              {live && typeof live.foreign === 'number' && live.foreign > 0 ? (
+                <> — {live.foreign} process group(s) on this box are foreign (your own terminals, systemd units)</>
+              ) : null}
+              . Enrolment binds at spawn, so processes started before the task manager was enabled never appear
+              here; they show up as their subtrees cycle. Tick <em>include finished</em> for completed tasks, or
+              open the <strong>System</strong> tab to check the <code>task-reconcile</code> routine is armed.
             </>
           }
         />

@@ -48,12 +48,46 @@ const UI_ROOTS = ['apps/operator/app', 'apps/operator-vite/src'];
  * without a same-change sweep of four unrelated panes — but the set may only shrink.
  */
 const BASELINE: ReadonlySet<string> = new Set([
+  // ── Admin panes. Sampled live: all 403. ──
   'apps/operator/app/admin/_components/AdminOps.tsx :: /api/admin/commands',
   'apps/operator/app/admin/_components/TableAdmin.tsx :: /api/admin/tables',
+  'apps/operator/app/admin/_components/TableAdmin.tsx :: /api/admin/tables/:param',
+  'apps/operator/app/admin/_components/TableAdmin.tsx :: /api/dev/tables/:param',
   'apps/operator/app/admin/dbos/DbosClient.tsx :: /api/admin/dbos/status',
   'apps/operator/app/admin/schedules/SchedulesClient.tsx :: /api/admin/schedules/inventory',
   'apps/operator/app/admin/plans/plans-api.ts :: /api/admin/inbox/triage',
+  'apps/operator/app/admin/plans/plans-api.ts :: /api/admin/coordination/:param/:param',
   'apps/operator/app/_components/chat/SessionChatModal.tsx :: /api/admin/coordination/sessions/list',
+
+  // ── The whole admin TESTING pane. /api/admin/testing/memory/health measured 403. ──
+  'apps/operator/app/admin/testing/_components/DesktopPerfTrendPanel.tsx :: /api/admin/testing/desktop-perf-trend',
+  'apps/operator/app/admin/testing/_components/MemoryTab.tsx :: /api/admin/testing/memory/checks',
+  'apps/operator/app/admin/testing/_components/MemoryTab.tsx :: /api/admin/testing/memory/health',
+  'apps/operator/app/admin/testing/_components/MemoryTab.tsx :: /api/admin/testing/memory/preflight',
+  'apps/operator/app/admin/testing/_components/MemoryTab.tsx :: /api/admin/testing/memory/probe',
+  'apps/operator/app/admin/testing/_components/MemoryTab.tsx :: /api/admin/testing/test-runs',
+  'apps/operator/app/admin/testing/_components/MemoryTab.tsx :: /api/admin/testing/test-runs/:param',
+  'apps/operator/app/admin/testing/_components/MemoryTab.tsx :: /api/admin/testing/test-runs/:param/cancel',
+  'apps/operator/app/admin/testing/_components/PackagedBuildTab.tsx :: /api/admin/commands',
+  'apps/operator/app/admin/testing/_components/TestRunsTab.tsx :: /api/admin/testing/test-runs',
+  'apps/operator/app/admin/testing/_components/TestRunsTab.tsx :: /api/admin/testing/test-runs/:param',
+  'apps/operator/app/admin/testing/_components/TestRunsTab.tsx :: /api/admin/testing/test-runs/:param/cancel',
+
+  // ── The /dev tools tabs. /api/dev/tables + /api/dev/route-invocations measured 403. ──
+  'apps/operator/app/dev/_components/ProcessesTab.tsx :: /api/dev/processes/kill',
+  'apps/operator/app/dev/_components/RoutesTab.tsx :: /api/dev/route-invocations',
+  'apps/operator/app/dev/_components/SqlTab.tsx :: /api/dev/sql',
+  'apps/operator/app/dev/_components/StudioTab.tsx :: /api/dev/drizzle-studio',
+  'apps/operator/app/dev/_components/TablesTab.tsx :: /api/dev/tables',
+  'apps/operator/app/dev/_components/TablesTab.tsx :: /api/dev/tables/:param',
+  'apps/operator/app/dev/_components/TablesTab.tsx :: /api/dev/tables/:param/rows',
+
+  // ── First-run / onboarding surfaces. /api/provision/state measured 403. These are the
+  //    most costly of the set: they are what a NEW user meets first. ──
+  'apps/operator/app/_components/HostCheckBanner.tsx :: /api/provision/host-check',
+  'apps/operator/app/settings/plugins/ProvisionPanel.tsx :: /api/provision/run',
+  'apps/operator/app/settings/plugins/ProvisionPanel.tsx :: /api/provision/state',
+  'apps/operator/app/settings/plugins/page.tsx :: /api/oauth/verify-paste',
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {
