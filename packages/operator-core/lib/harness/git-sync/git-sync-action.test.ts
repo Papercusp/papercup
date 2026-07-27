@@ -191,11 +191,19 @@ import { getSystemAction, getSystemActionEntry, type SystemActionCtx } from '../
 
 // --- helpers over the captured PG writes ------------------------------------------
 
-/** ALL JSONB patches applied to the routine's metadata, in order (breadcrumb included). */
+/** ALL JSONB patches applied to the routine's metadata, in order (breadcrumb included).
+ *
+ *  EI-18799539619330782: patchRoutineMetadata's params are `[slug, workspaceId, patch]`
+ *  — the patch is params[2], NOT params[1] (which is now the tenant scope). */
 const allRoutinePatches = (): Array<Record<string, unknown>> =>
   unsafeCalls
     .filter((c) => c.text.includes('UPDATE harness_shared.routines'))
-    .map((c) => JSON.parse(String(c.params[1])) as Record<string, unknown>);
+    .map((c) => JSON.parse(String(c.params[2])) as Record<string, unknown>);
+
+/** EI-18799539619330782: the workspace_id every routine-metadata UPDATE was scoped to.
+ *  An unscoped UPDATE is unbounded across tenants sharing an install_slug. */
+const routineUpdateWorkspaceIds = (): unknown[] =>
+  unsafeCalls.filter((c) => c.text.includes('UPDATE harness_shared.routines')).map((c) => c.params[1]);
 
 /** WI-1416: the `fire_started_at` breadcrumb patched at the very top of every fire. */
 const fireBreadcrumbs = (): Array<Record<string, unknown>> =>

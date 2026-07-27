@@ -547,6 +547,39 @@ export interface InfraHealth {
   /** Migration drift (P-011, the db:check_drift source): migrations on disk not
    *  yet recorded in schema_migrations. null = drift unreadable this tick. */
   migrationDrift?: { unapplied: number } | null;
+  /**
+   * Per-tool handler failure rate over a short window (EI-18798264517111160) — the
+   * WRITE-PATH outage detector. `mcpProxy` above watches the TRANSPORT (can the call
+   * be delivered); this watches the HANDLER (did the tool's own work succeed), which
+   * is the gap that let facts:assert fail fleet-wide for ~3h on 2026-07-27 while every
+   * liveness probe stayed green.
+   *
+   * Derived from `tool_invocations` — no synthetic traffic and no enumerated probe
+   * list, so it covers every tool including ones added later. OPTIONAL
+   * (deploy-skew-safe: absent on an older projection ⇒ no signal) and null when the
+   * table is unreadable this tick (greyed leg, fail-soft — never blanks the panel).
+   * See lib/tool-failure-rate.ts for the measured thresholds.
+   */
+  toolFailures?: ToolFailureVerdict | null;
+}
+
+/**
+ * The Infra panel's carry of the tool-failure reading (EI-18798264517111160). Kept
+ * deliberately small — the panel needs the verdict and enough to render/escalate it,
+ * not the whole per-tool breakdown.
+ */
+export interface ToolFailureVerdict {
+  rating: 'healthy' | 'degraded' | 'broken' | 'unknown';
+  /** Human-readable one-liner naming the worst tool, its rate, and its error code. */
+  evidence: string;
+  /** Tools at or above the crit cutoff — what the escalation names. Empty unless broken. */
+  brokenTools: string[];
+  /** Minutes of lookback behind this reading. */
+  windowMin: number;
+  /** Worst failure percentage seen, or null when nothing breached the warn cutoff. */
+  worstPct: number | null;
+  /** System-attributable calls in the window (0 ⇒ rating 'unknown'). */
+  totalCalls: number;
 }
 
 /** SU fleet (interactive collaborators) presence. */

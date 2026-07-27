@@ -256,18 +256,45 @@ const whyArg = z
   );
 
 /**
- * ENVELOPE. What the sender READ — cells, versioned (D-041).
+ * ENVELOPE. What the sender READ — refs, versioned (D-041).
  *
  * ⚠ AUTO-DERIVED, NEVER AUTHORED. It is deliberately NOT a caller argument:
  * D-002's never-author economics and D-011 both put this on the session, and
  * D-064 records that asking a sender to author it per-section contradicts both.
- * `deriveEvidence` is the seam a capture path fills; until one is wired it
- * returns undefined, which is honest — an empty trace is not a false one.
+ * `deriveBasedOn` (based-on.ts) is the seam that fills it, off the invocation
+ * log; when it has nothing to say the field is OMITTED, which is honest — an
+ * empty trace is not a false one.
+ *
+ * ── WHY `basedOn` AND NOT `evidence` (D-084 R1) ──────────────────────────────
+ *
+ * D-064 called this field `evidence`. That name is ALREADY TAKEN, on this exact
+ * object: `extra` keys are flattened onto the coord envelope (messages.ts), and
+ * P-010's evidence BAND rides `env.evidence` (`EVIDENCE_FIELD`,
+ * relay-provenance.ts) — stamped by coord:escalate and read on every rendered
+ * coord line. Two different questions ("how do you know?" — a closed band → a
+ * derived confidence — versus "what did you read?"), one key: an array here
+ * reads as a MALFORMED band, so the two would silently displace each other and
+ * a message could never carry both.
+ *
+ * So it takes D-011's own name for it: *"`basedOn` (sender's information
+ * provenance) is likewise auto-derived from recent reads, not authored"*.
+ * D-064's ruling — envelope-scoped, auto-derived, one per message — is
+ * untouched; its own text says the envelope/section boundary is the load-bearing
+ * part, "not the array".
  */
-export interface EvidenceEntry {
-  cell: string;
-  version?: string;
-  readAt?: string;
+export interface BasedOnEntry {
+  /** `kind:ref` in the dependency-tag grammar (`work-item:` · `plan:` · `file:`). */
+  ref: string;
+  /** The tool call the sender read it through. */
+  via: string;
+  /** ISO timestamp of that read. */
+  readAt: string;
+  /**
+   * The ref's version token AS OF THE SEND — never as of the read (D-084 R4).
+   * A change inside the read→send gap is invisible to it, so it must not be
+   * called `version`: that would claim to be the value the sender saw.
+   */
+  versionAtSend?: string;
 }
 
 const blockingArg = z

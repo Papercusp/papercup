@@ -455,6 +455,36 @@ describe('infraStatus — PG + gateway + perf + MCP-proxy SLO (W8/P-008)', () =>
   it('a crit MCP-proxy SLO breach OUTRANKS a greyed (null) PG leg — a real failure beats unknown', () => {
     expect(infraStatus(infra({ pg: null, mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) }))).toBe('crit');
   });
+
+  // ── tool HANDLER failure rate (EI-18798264517111160) ────────────────────────
+  // The gap this closes: the transport was fine and PG was fine for the whole
+  // 2026-07-27 facts:assert outage. Only the tool's own handler was failing.
+  const tf = (o: Partial<NonNullable<InfraHealth['toolFailures']>> = {}): InfraHealth['toolFailures'] => ({
+    rating: 'healthy', evidence: '', brokenTools: [], windowMin: 15, worstPct: null, totalCalls: 100, ...o,
+  });
+  it('ok when tools are healthy', () => {
+    expect(infraStatus(infra({ toolFailures: tf() }))).toBe('ok');
+  });
+  it('crit when a tool handler is failing fleet-wide — the signal that was missing for ~3h', () => {
+    expect(
+      infraStatus(infra({ toolFailures: tf({ rating: 'broken', brokenTools: ['facts:assert'], worstPct: 100 }) })),
+    ).toBe('crit');
+  });
+  it('warn on a partial/ramping handler failure (visible, sub-page)', () => {
+    expect(infraStatus(infra({ toolFailures: tf({ rating: 'degraded', worstPct: 40 }) }))).toBe('warn');
+  });
+  it('a broken tool OUTRANKS a greyed PG leg — an unreadable PG tick must not mask a write-path outage', () => {
+    expect(
+      infraStatus(infra({ pg: null, toolFailures: tf({ rating: 'broken', brokenTools: ['facts:assert'] }) })),
+    ).toBe('crit');
+  });
+  it("a quiet window ('unknown') never reds or yellows the panel — no traffic is not a fault", () => {
+    expect(infraStatus(infra({ toolFailures: tf({ rating: 'unknown', totalCalls: 0 }) }))).toBe('ok');
+  });
+  it('an absent leg (older projection / unreadable) contributes nothing — fail-soft', () => {
+    expect(infraStatus(infra({ toolFailures: null }))).toBe('ok');
+    expect(infraStatus(infra({ toolFailures: undefined }))).toBe('ok');
+  });
   it('a null mcpProxy leg (ledger unreadable) contributes nothing — fail-soft', () => {
     expect(infraStatus(infra({ mcpProxy: null }))).toBe('ok');
   });

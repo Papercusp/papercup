@@ -1550,6 +1550,33 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         lastStatus: last[0]?.status ?? null,
       };
     } catch { /* backup tables unreadable/absent — leave null */ }
+    // Per-tool HANDLER failure rate (EI-18798264517111160) — the write-path outage
+    // detector. mcpProxy above covers the transport; this covers the tool's own work.
+    // Deliberately computed INLINE rather than via the derived-reads substrate the
+    // toolEfficiency panel uses: those aggregates scan 7-14d and are precomputed for
+    // cost, whereas this is a 15-min index-only range scan on
+    // tool_invocations_invoked_at_cov_idx — cheap enough to run every tick, and a
+    // snapshot TTL would add exactly the detection latency this exists to remove.
+    // Fail-soft: unreadable ⇒ null (greyed leg), never blanks the panel.
+    let toolFailures: InfraHealth['toolFailures'] = null;
+    try {
+      const { readToolFailureRate, gradeToolFailures } = await import('../tool-failure-rate');
+      const { sql } = getOrgPg();
+      const roll = await readToolFailureRate(
+        async <T = unknown>(q: string, params: unknown[]): Promise<T[]> =>
+          (await sql.unsafe(q, params as never)) as unknown as T[],
+        { workspaceId: ctx.ws },
+      );
+      const grade = gradeToolFailures(roll);
+      toolFailures = {
+        rating: grade.rating,
+        evidence: grade.evidence,
+        brokenTools: grade.brokenTools,
+        windowMin: roll.windowMin,
+        worstPct: roll.failing[0]?.failPct ?? null,
+        totalCalls: roll.totalCalls,
+      };
+    } catch { /* tool_invocations unreadable — leave null (fail-soft) */ }
     // Migration drift (P-011): on-disk migrations the live DB hasn't applied.
     let migrationDrift: InfraHealth['migrationDrift'] = null;
     try {
@@ -1557,9 +1584,10 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       const d = await checkMigrationDrift();
       migrationDrift = { unapplied: d.missing.length };
     } catch { /* drift unreadable — leave null */ }
-    const data: InfraHealth = { pg, gatewayReachable: ctx.gatewayReachable, perf, mcpProxy, pool, disk, backup, migrationDrift };
+    const data: InfraHealth = { pg, gatewayReachable: ctx.gatewayReachable, perf, mcpProxy, pool, disk, backup, migrationDrift, toolFailures };
     const status = infraStatus(data);
     const perfCrit = perf?.status === 'crit';
+    const toolsCrit = toolFailures?.rating === 'broken';
     const poolNote = pool?.band === 'critical' ? ', POOL STARVATION' : pool?.band === 'elevated' ? ', pool elevated' : '';
     const mcpHard = mcpProxy?.hardFailures ?? 0;
     const mcpCrit = mcpHard >= MCP_PROXY_HARD_FAIL_CRIT;
@@ -1567,7 +1595,12 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
     const worstDisk = disk && disk.length > 0 ? Math.max(...disk.map((v) => v.usedPct)) : null;
     return {
       status,
-      summary: mcpCrit
+      summary: toolsCrit
+        // Leads the summary: this string is what the liveness-alarm catch-all copies
+        // into the escalation, so it must name the tool, the rate and the error code —
+        // enough to act on without running a query first.
+        ? `TOOL FAILING FLEET-WIDE: ${toolFailures!.evidence}`
+        : mcpCrit
         ? `MCP PROXY FAILING: ${mcpHard} hard tool-call failure(s)/1h (transient-is-normal regression — pages)`
         : perfCrit
         ? `PER-THREAD WEDGE: ${perf!.reasons[0] ?? 'operator degraded'}`
@@ -1586,6 +1619,15 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         m('disk', worstDisk === null ? 'n/a' : `${worstDisk}%`, worstDisk === null ? undefined : worstDisk >= 95 ? 'crit' : worstDisk >= 90 ? 'warn' : undefined),
         m('backup', backup?.ageMs == null ? 'n/a' : agoMin(backup.lastOkAtMs, ctx.now), backup && backup.ageMs !== null && backup.ageMs > 48 * 60 * 60_000 ? 'warn' : undefined),
         m('drift', migrationDrift ? migrationDrift.unapplied : 'n/a', (migrationDrift?.unapplied ?? 0) > 0 ? 'warn' : undefined),
+        m(
+          'tool failures',
+          toolFailures == null || toolFailures.rating === 'unknown'
+            ? 'n/a'
+            : toolFailures.worstPct === null
+              ? 'ok'
+              : `${toolFailures.brokenTools[0] ?? toolFailures.evidence.split(' ')[0]} ${toolFailures.worstPct}%/${toolFailures.windowMin}m`,
+          toolsCrit ? 'crit' : toolFailures?.rating === 'degraded' ? 'warn' : undefined,
+        ),
         // EI-12302: surface a suppressed reachability crit instead of leaving it
         // silently invisible (per PerfVerdict.suppressedReasons's own contract) —
         // 'n/a' when nothing was suppressed this tick (the common case).

@@ -317,7 +317,9 @@ export const MCP_PROXY_HARD_FAIL_CRIT = 10;
 
 /** Infra. crit = a per-thread perf WEDGE (operator unreachable / event-loop-lag /
  *  CLOSE_WAIT storm — F1/P-030), a sustained MCP tool-call-transport failure stream
- *  (W8/P-008, ≥ MCP_PROXY_HARD_FAIL_CRIT hard failures/window), or the gateway is enabled
+ *  (W8/P-008, ≥ MCP_PROXY_HARD_FAIL_CRIT hard failures/window), a tool HANDLER failing
+ *  fleet-wide (EI-18798264517111160 — the transport is fine, the tool's own work is
+ *  not), or the gateway is enabled
  *  but unreachable (the spine is down). unknown = PG unreadable. warn = a per-thread perf
  *  warn (hot worker / RSS / gateway flap) or ANY MCP-proxy hard failure in the window
  *  (visible, sub-page). ok otherwise. A null/stale perf verdict — and a null (unreadable)
@@ -327,6 +329,12 @@ export function infraStatus(d: InfraHealth): PanelStatus {
   // A real, agent-facing tool-call failure stream OUTRANKS a greyed PG leg: a crit
   // MCP-proxy SLO breach reds Infra even if PG is momentarily unreadable this tick.
   if ((d.mcpProxy?.hardFailures ?? 0) >= MCP_PROXY_HARD_FAIL_CRIT) return 'crit';
+  // A tool whose HANDLER is failing for the whole fleet (EI-18798264517111160). Same
+  // precedence reasoning as the MCP-proxy breach directly above — an agent-facing
+  // failure stream outranks a greyed PG leg, so it must sit BEFORE the `pg === null`
+  // unknown branch or a write-path outage could be masked by one unreadable PG tick.
+  // This is the signal that was missing when facts:assert failed fleet-wide for ~3h.
+  if (d.toolFailures?.rating === 'broken') return 'crit';
   // Disk pressure (health-tab-v2 P-011, thresholds mirror the fedplane script):
   // >=95% used on any watched volume is a crit (writes are about to fail).
   const worstDiskPct = d.disk && d.disk.length > 0 ? Math.max(...d.disk.map((v) => v.usedPct)) : null;
@@ -335,6 +343,8 @@ export function infraStatus(d: InfraHealth): PanelStatus {
   if (d.gatewayReachable === false) return 'crit';
   if (d.perf?.status === 'warn') return 'warn';
   if ((d.mcpProxy?.hardFailures ?? 0) > 0) return 'warn';
+  // A partial/ramping handler failure — visible, sub-page (EI-18798264517111160).
+  if (d.toolFailures?.rating === 'degraded') return 'warn';
   if (worstDiskPct !== null && worstDiskPct >= DISK_USED_WARN_PCT) return 'warn';
   // Unapplied migrations = every deploy is one restart away from surprise DDL (P-011).
   if ((d.migrationDrift?.unapplied ?? 0) > 0) return 'warn';

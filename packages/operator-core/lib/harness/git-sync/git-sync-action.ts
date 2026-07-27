@@ -395,12 +395,12 @@ export function isResolverInFlight(
   return typeof lr.at === 'number' && now - lr.at < RESOLVER_INFLIGHT_MS;
 }
 
-async function resolverInFlight(slug: string): Promise<boolean> {
+async function resolverInFlight(slug: string, workspaceId: string): Promise<boolean> {
   const { sql } = getOrgPg();
   const rows = await sql<{ lr: ResolverMarker | null }[]>`
     SELECT metadata->'last_resolver' AS lr
       FROM harness_shared.routines
-     WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+     WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
      LIMIT 1
   `;
   return isResolverInFlight(rows[0]?.lr, Date.now(), PROCESS_INSTANCE_ID);
@@ -515,14 +515,17 @@ async function writeGitSyncErrorEscalation(
 }
 
 /** Previous tick's EI-18 + content-guard counters from the routine metadata. */
-async function readEscalationCounters(slug: string): Promise<{ errTicks: number; oversizedKeys: string[]; contentTicks: number }> {
+async function readEscalationCounters(
+  slug: string,
+  workspaceId: string,
+): Promise<{ errTicks: number; oversizedKeys: string[]; contentTicks: number }> {
   const { sql } = getOrgPg();
   const rows = await sql<{ et: number; lo: string[] | null; ct: number }[]>`
     SELECT coalesce((metadata->>'consecutive_error_ticks')::int, 0) AS et,
            array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_oversized', '[]'::jsonb))) AS lo,
            coalesce((metadata->>'consecutive_content_error_ticks')::int, 0) AS ct
       FROM harness_shared.routines
-     WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+     WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
      LIMIT 1
   `;
   return { errTicks: rows[0]?.et ?? 0, oversizedKeys: rows[0]?.lo ?? [], contentTicks: rows[0]?.ct ?? 0 };
@@ -575,7 +578,7 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
   // P-006: stamp THIS process instance so a restart-orphaned dispatch (whose
   // settle-recording promise died with the old process) re-dispatches on the next
   // conflict tick instead of waiting out the RESOLVER_INFLIGHT_MS TTL.
-  await recordResolverDispatch(slug, { at: dispatchedAt, status: 'dispatched', scopes, instance: PROCESS_INSTANCE_ID });
+  await recordResolverDispatch(slug, workspaceId, { at: dispatchedAt, status: 'dispatched', scopes, instance: PROCESS_INSTANCE_ID });
 
   // Pipeline history (mig 177): log each resolver SETTLE (not the dispatch) so the
   // Git tab can show resolver success rate. Best-effort, like recordResolverDispatch.
@@ -611,7 +614,7 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
         timedOut = j?.timedOut;
         if (j?.ok === false) detail = (j.decisionLine || j.stderr || '').slice(0, 400);
         const settled = res.ok && j?.ok !== false ? 'ok' : 'failed';
-        await recordResolverDispatch(slug, {
+        await recordResolverDispatch(slug, workspaceId, {
           at: dispatchedAt,
           status: settled,
           httpStatus: res.status, exitCode, timedOut, detail,
@@ -619,22 +622,22 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
         await logResolverSettle(settled, { httpStatus: res.status, exitCode, timedOut, detail });
       } catch {
         const settled = res.ok ? 'ok' : 'failed';
-        await recordResolverDispatch(slug, { at: dispatchedAt, status: settled, httpStatus: res.status });
+        await recordResolverDispatch(slug, workspaceId, { at: dispatchedAt, status: settled, httpStatus: res.status });
         await logResolverSettle(settled, { httpStatus: res.status });
       }
     })
     .catch(async (e) => {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[git-sync] merge-resolver dispatch failed (${slug}): ${msg}`);
-      await recordResolverDispatch(slug, { at: dispatchedAt, status: 'error', error: msg.slice(0, 300) });
+      await recordResolverDispatch(slug, workspaceId, { at: dispatchedAt, status: 'error', error: msg.slice(0, 300) });
       await logResolverSettle('error', { error: msg.slice(0, 300) });
     });
 }
 
 /** Record the merge-resolver dispatch lifecycle onto the routine metadata (GAP-2). */
-async function recordResolverDispatch(slug: string, info: Record<string, unknown>): Promise<void> {
+async function recordResolverDispatch(slug: string, workspaceId: string, info: Record<string, unknown>): Promise<void> {
   try {
-    await patchRoutineMetadata(slug, { last_resolver: info });
+    await patchRoutineMetadata(slug, workspaceId, { last_resolver: info });
   } catch (e) {
     console.warn(`[git-sync] failed to record resolver dispatch (${slug}): ${e instanceof Error ? e.message : e}`);
   }
@@ -646,21 +649,21 @@ async function recordResolverDispatch(slug: string, info: Record<string, unknown
  * OWN `last_content_fixer` routine-metadata marker so the two dispatchers never
  * suppress each other. A clean re-check tick clears the escalation.
  */
-async function contentFixerInFlight(slug: string): Promise<boolean> {
+async function contentFixerInFlight(slug: string, workspaceId: string): Promise<boolean> {
   const { sql } = getOrgPg();
   const rows = await sql<{ lr: ResolverMarker | null }[]>`
     SELECT metadata->'last_content_fixer' AS lr
       FROM harness_shared.routines
-     WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+     WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
      LIMIT 1
   `;
   return isResolverInFlight(rows[0]?.lr, Date.now(), PROCESS_INSTANCE_ID);
 }
 
 /** Record the content-fixer dispatch lifecycle onto the routine metadata. */
-async function recordContentFixerDispatch(slug: string, info: Record<string, unknown>): Promise<void> {
+async function recordContentFixerDispatch(slug: string, workspaceId: string, info: Record<string, unknown>): Promise<void> {
   try {
-    await patchRoutineMetadata(slug, { last_content_fixer: info });
+    await patchRoutineMetadata(slug, workspaceId, { last_content_fixer: info });
   } catch (e) {
     console.warn(`[git-sync] failed to record content-fixer dispatch (${slug}): ${e instanceof Error ? e.message : e}`);
   }
@@ -688,7 +691,7 @@ async function spawnContentFixer(slug: string, workspaceId: string, contentError
 
   // (1) durable "dispatched" marker, awaited (instance-tagged so a restart-orphaned
   //     dispatch re-fires next tick rather than waiting out the TTL).
-  await recordContentFixerDispatch(slug, { at: dispatchedAt, status: 'dispatched', files: filePaths, instance: PROCESS_INSTANCE_ID });
+  await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: 'dispatched', files: filePaths, instance: PROCESS_INSTANCE_ID });
 
   const logSettle = (status: 'ok' | 'failed' | 'error', extra: Record<string, unknown>): Promise<void> =>
     appendPipelineEvent({ workspaceId, installSlug: slug, kind: 'content_fixer', status, detail: { files: filePaths, ...extra } });
@@ -718,35 +721,45 @@ async function spawnContentFixer(slug: string, workspaceId: string, contentError
         timedOut = j?.timedOut;
         if (j?.ok === false) detail = (j.decisionLine || j.stderr || '').slice(0, 400);
         const settled = res.ok && j?.ok !== false ? 'ok' : 'failed';
-        await recordContentFixerDispatch(slug, { at: dispatchedAt, status: settled, httpStatus: res.status, exitCode, timedOut, detail });
+        await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: settled, httpStatus: res.status, exitCode, timedOut, detail });
         await logSettle(settled, { httpStatus: res.status, exitCode, timedOut, detail });
       } catch {
         const settled = res.ok ? 'ok' : 'failed';
-        await recordContentFixerDispatch(slug, { at: dispatchedAt, status: settled, httpStatus: res.status });
+        await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: settled, httpStatus: res.status });
         await logSettle(settled, { httpStatus: res.status });
       }
     })
     .catch(async (e) => {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[git-sync] content-fixer dispatch failed (${slug}): ${msg}`);
-      await recordContentFixerDispatch(slug, { at: dispatchedAt, status: 'error', error: msg.slice(0, 300) });
+      await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: 'error', error: msg.slice(0, 300) });
       await logSettle('error', { error: msg.slice(0, 300) });
     });
 }
 
-/** Merge a partial metadata patch onto the git-sync routine's JSONB. */
-async function patchRoutineMetadata(slug: string, patch: Record<string, unknown>): Promise<void> {
+/** Merge a partial metadata patch onto the git-sync routine's JSONB.
+ *
+ *  The `workspace_id` predicate is LOAD-BEARING, not defensive: `install_slug` is NOT
+ *  unique across workspaces, so an unscoped UPDATE here is UNBOUNDED — with N workspaces
+ *  holding the same install slug, one tick overwrites all N tenants' routine metadata
+ *  with this tenant's state, and that metadata is what `bootstrap.ok`/`bootstrap.converged`
+ *  are read from (EI-18799539619330782).
+ *
+ *  Param order deliberately matches the signature ($1 slug, $2 workspaceId, $3 patch) —
+ *  do not "simplify" workspaceId to a trailing $3 to avoid re-indexing test assertions. */
+async function patchRoutineMetadata(slug: string, workspaceId: string, patch: Record<string, unknown>): Promise<void> {
   const { sql } = getOrgPg();
   await sql.unsafe(
     `UPDATE harness_shared.routines
-        SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
-      WHERE install_slug = $1 AND target_role = 'system:git-sync'`,
-    [slug, JSON.stringify(patch)],
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb, updated_at = now()
+      WHERE install_slug = $1 AND workspace_id = $2 AND target_role = 'system:git-sync'`,
+    [slug, workspaceId, JSON.stringify(patch)],
   );
 }
 
 async function recordOutcome(
   slug: string,
+  workspaceId: string,
   outcome: GitSyncOutcome,
   consecutiveErrorTicks: number,
   consecutiveContentErrorTicks: number,
@@ -758,7 +771,7 @@ async function recordOutcome(
   // status used to drop the error list entirely, e.g. a libs/papercusp push failure
   // hidden behind a libs/generic/sync conflict).
   const errors = 'errors' in outcome ? outcome.errors : [];
-  await patchRoutineMetadata(slug, {
+  await patchRoutineMetadata(slug, workspaceId, {
     last_status: outcome.status,
     last_synced_at: Date.now(),
     last_pushed: pushed,
@@ -798,7 +811,7 @@ async function recordOutcome(
  * `patchRoutineMetadata` mechanism `recordOutcome` already uses for
  * `last_pushed`/`last_conflicts` — no new table (reuse-first).
  */
-async function checkForNewStashes(slug: string, superRepoPath: string): Promise<void> {
+async function checkForNewStashes(slug: string, workspaceId: string, superRepoPath: string): Promise<void> {
   try {
     const runGit: RunGit = (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args));
     const subPaths = await discoverSubmodulesRecursive(runGit, superRepoPath);
@@ -811,7 +824,7 @@ async function checkForNewStashes(slug: string, superRepoPath: string): Promise<
     const [row] = await sql<{ known: unknown }[]>`
       SELECT metadata->'known_stash_shas' AS known
         FROM harness_shared.routines
-       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
        LIMIT 1`;
     const knownShas = Array.isArray(row?.known) ? (row.known as unknown[]).filter((s): s is string => typeof s === 'string') : [];
 
@@ -827,7 +840,7 @@ async function checkForNewStashes(slug: string, superRepoPath: string): Promise<
     // popped/dropped and never recreated should not linger in the baseline forever, and
     // an identical-content stash re-pushed after a drop legitimately re-alerts (it IS a
     // new event worth re-surfacing, not noise).
-    await patchRoutineMetadata(slug, { known_stash_shas: allShas });
+    await patchRoutineMetadata(slug, workspaceId, { known_stash_shas: allShas });
     if (fresh.length === 0) return;
 
     const detail = fresh.map((e) => `${e.scope}: ${e.sha.slice(0, 8)} "${e.subject.slice(0, 80)}"`).join('; ');
@@ -1089,10 +1102,10 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   const gate = await runCheckpointedStep(
     'git-sync:eligibility',
     async (): Promise<GitSyncEligibility & { hiveGitMode?: PotGitMode }> => {
-      await patchRoutineMetadata(slug, { fire_started_at: Date.now() });
+      await patchRoutineMetadata(slug, workspaceId, { fire_started_at: Date.now() });
       const { gate: g, entry } = await gitSyncRuntimeGate(slug);
       if (!g.eligible) {
-        await patchRoutineMetadata(slug, {
+        await patchRoutineMetadata(slug, workspaceId, {
           last_status: 'skipped',
           last_skip_reason: g.reason,
           last_skipped_at: Date.now(),
@@ -1151,7 +1164,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     return;
   }
   // EI-18: previous tick's counters BEFORE this tick overwrites them.
-  const prev = await readEscalationCounters(slug);
+  const prev = await readEscalationCounters(slug, workspaceId);
 
   // Capture HEAD before the sync so the doc-freshness sweep (P-003) can diff the
   // exact paths this tick moved. Best-effort — never gate the sync on it.
@@ -1201,7 +1214,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     const { projectDirForSlug } = await import('../../operator-notes');
     const stashRepoPath = await projectDirForSlug(slug);
     if (stashRepoPath) {
-      await runCheckpointedStep('git-sync:stash-check', () => checkForNewStashes(slug, stashRepoPath));
+      await runCheckpointedStep('git-sync:stash-check', () => checkForNewStashes(slug, workspaceId, stashRepoPath));
     }
   } catch {
     // Best-effort, silent degrade — mirrors loadAttributionRoster's fallback above:
@@ -1342,7 +1355,7 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
              metadata->'worktree_bridge'->>'stagingSha' AS wb_sha,
              metadata->'github_bridge'->>'egress_head' AS prev_egress_head
         FROM harness_shared.routines
-       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
        LIMIT 1
     `;
     const lastAdmitted = rows[0]?.la ?? null;
@@ -1405,7 +1418,7 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
       lastAdmitted,
     });
 
-    await patchRoutineMetadata(slug, {
+    await patchRoutineMetadata(slug, workspaceId, {
       github_bridge: {
         at: Date.now(),
         ran: outcome.ran,
@@ -1506,7 +1519,7 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
         `[git-sync] ${slug}: own-head published ${outcome.branch}@${outcome.headSha?.slice(0, 12)} into own namespace`,
       );
     }
-    await patchRoutineMetadata(slug, {
+    await patchRoutineMetadata(slug, workspaceId, {
       own_head_publish: {
         at: Date.now(),
         changed: outcome.changed,
@@ -1711,7 +1724,7 @@ async function runConvergenceProbe(input: {
     const stateRows = await sql<{ convergence: { devices?: ConvergenceState } | null }[]>`
       SELECT metadata->'convergence' AS convergence
         FROM harness_shared.routines
-       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
        LIMIT 1
     `;
     const priorState = stateRows[0]?.convergence?.devices ?? null;
@@ -1724,7 +1737,7 @@ async function runConvergenceProbe(input: {
       nowMs: Date.now(),
     });
 
-    await patchRoutineMetadata(slug, {
+    await patchRoutineMetadata(slug, workspaceId, {
       convergence: {
         at: Date.now(),
         // THE field a release reviewer must read instead of `bootstrap.ok`.
@@ -1941,7 +1954,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       stub.on('error', () => {});
       stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
       const outcome = await bootstrapFromPeer(repoPath, stub, { selfDevicePubkey });
-      await patchRoutineMetadata(slug, {
+      await patchRoutineMetadata(slug, workspaceId, {
         bootstrap: {
           at: Date.now(),
           // WI-6284: say WHICH path produced this record. Until this existed, the
@@ -2064,7 +2077,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // only stack another fetch ceiling for work the next tick resumes anyway.
       if (outcome.ok || outcome.progressed) break;
     }
-    await patchRoutineMetadata(slug, {
+    await patchRoutineMetadata(slug, workspaceId, {
       bootstrap: {
         at: Date.now(),
         // WI-6284: see the stub writer above — this record must SAY it came from
@@ -2260,7 +2273,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
     >`
       SELECT metadata->'ref_announce' AS ref_announce
         FROM harness_shared.routines
-       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
        LIMIT 1
     `;
     const priorState = rows[0]?.ref_announce ?? null;
@@ -2290,7 +2303,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
     if (pending.length === 0) {
       // Rows existed (e.g. a malformed payload) but nothing usable — still
       // advance the cursor past them so a bad row can't loop forever.
-      await patchRoutineMetadata(slug, {
+      await patchRoutineMetadata(slug, workspaceId, {
         ref_announce: { lastEventId: maxRowId, budgetStates: priorState?.budgetStates ?? {}, at: Date.now() },
       });
       return;
@@ -2349,7 +2362,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       maxRowId,
     );
 
-    await patchRoutineMetadata(slug, {
+    await patchRoutineMetadata(slug, workspaceId, {
       ref_announce: {
         lastEventId: cursorDecision.cursor,
         budgetStates: Object.fromEntries(receiveOutcome.budgetStates),
@@ -2460,7 +2473,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
   // the reason makes "why is canonical stuck" a one-query answer.
   const decline = async (skipped: string, detail?: string): Promise<void> => {
     try {
-      await patchRoutineMetadata(slug, { integrator_status: { at: Date.now(), skipped, detail: detail ?? null } });
+      await patchRoutineMetadata(slug, workspaceId, { integrator_status: { at: Date.now(), skipped, detail: detail ?? null } });
     } catch {
       /* best-effort: diagnostics must never break the tick */
     }
@@ -2551,7 +2564,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     >`
       SELECT metadata->'integrator' AS integrator, metadata->'worktree_bridge' AS worktree_bridge
         FROM harness_shared.routines
-       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
        LIMIT 1
     `;
     const prior = rows[0]?.integrator ?? null;
@@ -2653,7 +2666,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
              '{integrator}',
              ${JSON.stringify({ epoch, seq: outcome.announcement.seq, at: Date.now() })}::text::jsonb
            )
-         WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+         WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
       `;
       // P-505 continuous will: refresh our handoff token to the state we just
       // published, so a successor (crash OR graceful) adopts epoch+1 from it.
@@ -2757,7 +2770,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     >`
       SELECT metadata->'worktree_bridge' AS worktree_bridge, metadata->'integrator' AS integrator
         FROM harness_shared.routines
-       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
        LIMIT 1
     `;
     const priorState = rows[0]?.worktree_bridge ?? null;
@@ -2795,7 +2808,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     if (pending.length === 0) {
       // Rows existed (e.g. a malformed payload) but nothing usable — still
       // advance the cursor past them so a bad row can't loop forever.
-      await patchRoutineMetadata(slug, {
+      await patchRoutineMetadata(slug, workspaceId, {
         worktree_bridge: {
           lastEventId: maxRowId,
           epochSeq: priorWatermark.epochSeq,
@@ -2881,7 +2894,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
       }
     }
 
-    await patchRoutineMetadata(slug, {
+    await patchRoutineMetadata(slug, workspaceId, {
       worktree_bridge: {
         lastEventId: newCursor,
         epochSeq: outcome.watermark.epochSeq,
@@ -2913,7 +2926,7 @@ async function recordAndEscalateTick(a: {
   attributionOn: boolean;
 }): Promise<void> {
   const { slug, workspaceId, outcome, errTicks, contentTicks } = a;
-  await recordOutcome(slug, outcome, errTicks, contentTicks);
+  await recordOutcome(slug, workspaceId, outcome, errTicks, contentTicks);
 
   // Pipeline history (mig 177): log every tick so the /admin Git tab can show
   // sync/conflict/error rates over time (routines.metadata only keeps the LAST).
@@ -2941,7 +2954,7 @@ async function recordAndEscalateTick(a: {
     // P-010/P-012: refresh the escalation (listing every conflicted scope) + dispatch
     // a resolver UNLESS one is genuinely in-flight. Sibling submodules still pushed (GAP-1).
     await writeGitSyncEscalation(slug, workspaceId, outcome.conflicts);
-    if (!(await resolverInFlight(slug))) {
+    if (!(await resolverInFlight(slug, workspaceId))) {
       const scopes = outcome.conflicts.map((c) => c.scope).join(', ');
       console.warn(`[git-sync] ${slug}: merge conflict(s) in ${scopes} — dispatching merge-resolver`);
       await spawnMergeResolver(slug, workspaceId, outcome.conflicts, a.cfgBranch ?? 'main');
@@ -2984,7 +2997,7 @@ async function recordAndEscalateTick(a: {
         const to = await assigneesForContentErrors(slug, workspaceId, contentErrors);
         await sendMessage(GIT_SYNC_IDENTITY, { to, summary, category: 'git-sync' }).catch(() => {});
       }
-    } else if (!(await contentFixerInFlight(slug))) {
+    } else if (!(await contentFixerInFlight(slug, workspaceId))) {
       console.warn(`[git-sync] ${slug}: ${contentErrors.length} content error(s) quarantined — dispatching content-fixer`);
       await spawnContentFixer(slug, workspaceId, contentErrors);
     }

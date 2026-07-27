@@ -55,9 +55,18 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 import { upsertHiveMember } from '../../../hive-membership-store';
 import { grantEpochKeysToMembers } from '../hive-epoch-boundary-wiring';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
+import { unsafeFederatedPotScope } from '../../../federated-pot-scope';
 
 const WS = 'ws-rekey-loud';
-const HIVE = 'rekey-loud';
+// upsertHiveMember's `potHomeSlug` is branded FederatedPotScope (EI-18777176681958978)
+// so a LOCAL handle cannot be passed where the federated scope is required. This suite
+// tests re-key grant LOUDNESS, not local-vs-canonical divergence — there is no joiner
+// topology here and no scope under test — so certifying the one synthetic slug is
+// correct and removes nothing this file asserts.
+const HIVE = unsafeFederatedPotScope(
+  'rekey-loud',
+  'unit fixture: one synthetic hive slug; this suite asserts grant-failure loudness, not scope resolution',
+);
 
 afterEach(() => {
   _resetBootHistoryForTests();

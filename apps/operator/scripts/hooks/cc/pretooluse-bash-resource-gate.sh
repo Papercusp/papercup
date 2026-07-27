@@ -1121,11 +1121,35 @@ def _payload_literal_tree_path(body, canon, cwd):
         raw = _m.group(1) if _m.group(1) is not None else _m.group(2)
         if any(ch in raw for ch in ('$', '`', '{', '}')):
             continue
-        if not re.search(r'[./]', raw):
-            continue
-        resolved = _resolve_write_target(raw, cwd)
-        if resolved and (resolved == canon or resolved.startswith(canon + os.sep)):
-            return raw
+        # EI-18800669297694465: test each WHITESPACE-SEPARATED TOKEN of the
+        # literal, never the literal as a whole.
+        #
+        # A path candidate cannot contain whitespace — not as a general truth
+        # about filesystems, but as a true one about the only targets this
+        # guard gates: no tracked path in this repo has a space
+        # (`git ls-files | grep -c ' '` -> 0), and `canon` is that repo. So
+        # tokenizing cannot lose an in-tree hit, while testing the whole
+        # literal actively manufactures false ones.
+        #
+        # It did. `print("wrote /tmp/x.mts")` is ONE literal containing a `/`
+        # and a `.`, so it passed both filters; it does not START with `/`, so
+        # it was treated as RELATIVE and joined onto the cwd, yielding
+        # `<canon>/wrote /tmp/x.mts` — "inside the tree". A script whose every
+        # real target was absolute under /tmp was denied, and the refusal
+        # quoted the SENTENCE back as the offending path. Returning the token
+        # fixes the message half too: the agent is shown a path, not prose.
+        #
+        # Fourth in this family (EI-18683619680591304, -18692070370140239,
+        # -18700825865251498): each was something that is not a path being
+        # resolved as one. The through-line is that this scan is deliberately
+        # coarse, so every widening of what counts as a "path" must be paid
+        # for by a matching narrowing of what counts as a candidate.
+        for cand in raw.split():
+            if not re.search(r'[./]', cand):
+                continue
+            resolved = _resolve_write_target(cand, cwd)
+            if resolved and (resolved == canon or resolved.startswith(canon + os.sep)):
+                return cand
     return None
 
 

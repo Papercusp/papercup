@@ -1452,11 +1452,32 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
     expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
   });
 
-  it.each([
-    ['a log sentence naming a relative tree path', `python3 -c "open('/tmp/o.txt','w').write('x'); print('wrote apps/operator/generated.ts')"`],
-    ['an error message mentioning a tree file', `python3 -c "open('/tmp/o.txt','w').write('x'); print('failed to parse packages/operator-core/lib/x.ts')"`],
-  ])('allows %s — prose is not a write target', (_label, command) => {
+  it('allows a sentence whose embedded path is ABSOLUTE and outside the tree, wherever it sits in the line', () => {
+    const command = `python3 -c "open('/tmp/o.txt','w').write('x'); print('done: /tmp/o.txt and /var/log/x.log')"`;
     expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  /**
+   * The BOUNDARY of the fix above, pinned deliberately rather than left to be
+   * rediscovered as "another false positive".
+   *
+   * A sentence that names a RELATIVE tree path still denies. Tokenizing fixed
+   * the case where prose MANUFACTURED a path that never existed (`wrote
+   * /tmp/x` becoming `<canon>/wrote /tmp/x`) — it does not, and must not, try
+   * to decide whether a genuine `apps/operator/generated.ts` token is a write
+   * target or merely mentioned. That needs parsing which call the literal is
+   * an argument to, which this scan deliberately does not do (see the
+   * "Intentionally coarse" note in _payload_literal_tree_path).
+   *
+   * The asymmetry is the right one: the cost of denying here is one clear
+   * message telling the agent to use Edit/Write; the cost of allowing is an
+   * unlocked tree write, which is the side door the whole guard exists to
+   * close. If this ever needs relaxing, relax it with real argument parsing —
+   * not by widening what counts as "not a path".
+   */
+  it('still denies a sentence naming a RELATIVE tree path — the accepted coarseness, not a bug', () => {
+    const command = `python3 -c "open('/tmp/o.txt','w').write('x'); print('wrote apps/operator/generated.ts')"`;
+    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
   });
 
   /**
