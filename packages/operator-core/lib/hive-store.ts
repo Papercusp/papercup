@@ -25,6 +25,18 @@ export interface HiveRecord {
   workspaceId: string;
   /** The home `kind:'hive'` harness slug — the local handle. */
   homeSlug: string;
+  /**
+   * WI-559 — the OWNER-authored (FEDERATED) home slug this Pot's rows travel under
+   * on the wire: the scope every hive-home-grained projection persists under, and
+   * the target of `pot_members_pot_fkey` (migration 686).
+   *
+   * EQUALS `homeSlug` on the Pot's owner and on any joiner whose local handle
+   * agrees with the owner's — i.e. everywhere except a joiner whose view slug was
+   * suffixed by `freeSlug` on a local collision, or derived before the owner's
+   * announce was heard. Kept true by `reconcilePotCanonicalSlug`, resolved BY
+   * PUBKEY from the signed announce — never by name.
+   */
+  canonicalHomeSlug: string;
   /** Raw 32-byte Ed25519 public key, base64 — the Hive identity / federation key. */
   pubkeyBase64: string;
   /** OS-keychain id holding the secret (identity/hive-keypair.ts `hiveKeychainId`). */
@@ -87,6 +99,7 @@ function tryDecodePubkey(idOrSlug: string): Buffer | null {
 interface HiveRow {
   workspace_id: string;
   pot_home_slug: string;
+  canonical_pot_home_slug?: string | null;
   public_key: Buffer | Uint8Array;
   keychain_id: string;
   title: string | null;
@@ -99,6 +112,10 @@ function rowToRecord(r: HiveRow): HiveRecord {
   return {
     workspaceId: r.workspace_id,
     homeSlug: r.pot_home_slug,
+    // Pre-686 rows (and any INSERT that did not name it) read as the local handle —
+    // the same value migration 686 backfills, so the fallback can never disagree
+    // with the stored column.
+    canonicalHomeSlug: r.canonical_pot_home_slug ?? r.pot_home_slug,
     pubkeyBase64: Buffer.from(r.public_key).toString('base64'),
     keychainId: r.keychain_id,
     title: r.title,
