@@ -1454,9 +1454,26 @@ owner = (
     else agent_id
 )
 
+# `_meta.format = 'json'` is REQUIRED, not a nicety. `locks:check_command`
+# returns a tabular `substitutions[]`, so the agent transport serializes the
+# result as TOON by default — and the parse below is `json.loads`. Without this
+# the parse throws, `inner` stays None, and the fail-open at the bottom of this
+# block does exactly what it promises: every resource hold and every
+# substitution row silently stops being enforced, with no error anywhere.
+#
+# That is not hypothetical — it is the state this call was in when P-028 tried
+# to ship the registry's first `deny` and found the gate had been dead on BOTH
+# hook paths. The suites never caught it because they stub the operator with
+# JSON, which is the one thing it does not send. `_meta.format` is the
+# documented negotiation channel for exactly this (a MACHINE parser declaring
+# what it can decode); the OMP hook declares the same thing on its own call.
 body = json.dumps({
     'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-    'params': {'name': 'locks:check_command', 'arguments': {'command': command}},
+    'params': {
+        'name': 'locks:check_command',
+        'arguments': {'command': command},
+        '_meta': {'format': 'json'},
+    },
 }).encode()
 
 req = urllib.request.Request(

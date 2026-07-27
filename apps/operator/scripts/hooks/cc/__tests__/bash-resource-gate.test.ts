@@ -11,7 +11,7 @@
  * round-trip fails open fast instead of touching a live operator.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -1588,15 +1588,30 @@ describe('substitution verdict handling', () => {
     const serverJs = join(fakeHome, 'fake-operator.mjs');
     writeFileSync(
       serverJs,
+      // The stub HONOURS result-format negotiation, exactly like the real
+      // operator — this is load-bearing, not realism for its own sake. The
+      // agent transport TOON-encodes a tabular result (substitutions[]) unless
+      // the caller declares `_meta.format: 'json'`, and the gate parses with
+      // json.loads. A stub that always replied JSON is why both hook paths sat
+      // SILENTLY FAIL-OPEN — no resource hold and no substitution row enforced
+      // — through a green suite until P-028 probed the live operator by hand.
+      // Replying TOON to an undeclared caller makes the whole describe block
+      // below the regression guard: drop the `_meta.format` and these fail.
       `import { createServer } from 'node:http';
        import { readFileSync } from 'node:fs';
        const s = createServer((req, res) => {
-         req.resume();
+         let raw = '';
+         req.on('data', (c) => { raw += c; });
          req.on('end', () => {
            const body = readFileSync(process.argv[2], 'utf8');
+           let wantsJson = false;
+           try { wantsJson = JSON.parse(raw)?.params?._meta?.format === 'json'; } catch {}
+           // TOON is self-identifying and is NOT valid JSON — the same shape the
+           // real operator sends a caller that never said what it can decode.
+           const text = wantsJson ? body : 'format: toon\\nok: true\\ndecision: allow\\nmatched: []';
            res.writeHead(200, { 'Content-Type': 'application/json' });
            res.end(JSON.stringify({ jsonrpc: '2.0', id: 1,
-             result: { content: [{ type: 'text', text: body }] } }));
+             result: { content: [{ type: 'text', text }] } }));
          });
        });
        s.listen(0, '127.0.0.1', () => console.log('PORT=' + s.address().port));`,
@@ -1686,5 +1701,53 @@ describe('substitution verdict handling', () => {
     if (out.stdout.trim()) {
       expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('allow');
     }
+  });
+
+  /**
+   * The guard on the failure the tests above could not see.
+   *
+   * `locks:check_command` returns a tabular `substitutions[]`, so the agent
+   * transport TOON-encodes it unless the CALLER declares what it can decode.
+   * This gate parses with `json.loads`. When the declaration went missing the
+   * parse threw, `inner` stayed None, and the mandatory fail-open silently
+   * disabled BOTH answers this round-trip carries — every resource hold and
+   * every substitution row — with no error in any log. It stayed that way
+   * through a fully green suite, because the stub replied JSON unconditionally.
+   *
+   * So the stub now negotiates like the real operator, and this test states the
+   * contract directly: a gate that does not say what it can read is a gate that
+   * is not running. It is deliberately asserted on `deny` — the loudest tier —
+   * because a silent fail-open is indistinguishable from "nothing matched".
+   */
+  it('declares a machine-parseable result format, without which it silently fails open', () => {
+    const denyReply = {
+      decision: 'allow' as const,
+      matched: [],
+      substitutions: [{ ...SUB, tier: 'deny' }],
+      substitutionTier: 'deny',
+    };
+    setReply(denyReply);
+
+    // Live path: the gate declares `_meta.format: 'json'`, so the stub answers
+    // in JSON and the deny is enforced.
+    expect(JSON.parse(run().stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+
+    // The counterfactual the stub now makes visible: an undeclared caller gets
+    // TOON, which `json.loads` cannot read. Proven by asking the SAME stub the
+    // way the pre-fix gate asked, and observing the payload it would parse.
+    const undeclared = execFileSync(
+      process.execPath,
+      [
+        '-e',
+        `const b=JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',
+           params:{name:'locks:check_command',arguments:{command:'x'}}});
+         fetch(process.argv[1],{method:'POST',headers:{'Content-Type':'application/json'},body:b})
+           .then(r=>r.json()).then(j=>console.log(j.result.content[0].text));`,
+        url,
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(undeclared).toContain('format: toon');
+    expect(() => JSON.parse(undeclared)).toThrow();
   });
 });
