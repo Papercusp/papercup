@@ -71,14 +71,17 @@ export const OMP_MODEL_OPTIONS: ComboboxOption[] = [
 
 export const EFFORT_SELECT_DEFAULT = '__default_effort__';
 
-/** Human blurb per effort level; keyed off MODEL_EFFORT_LEVELS so a new level
-    added to psu shows up here (unlabelled) rather than silently vanishing. */
-const EFFORT_DETAIL: Record<string, string> = {
-  low: 'Fastest, cheapest — shallow reasoning',
-  medium: 'Balanced reasoning depth vs cost',
-  high: 'Deep reasoning',
-  xhigh: 'Deeper still — slower and pricier',
-  max: 'Strongest reasoning available',
+/** Display label + blurb per effort level. Keyed off MODEL_EFFORT_LEVELS so a
+    level added to psu still RENDERS (falling back to the raw token) instead of
+    silently vanishing from the menu — the failure mode this whole change fixes.
+    Labels keep psu's own token recognizable (`xhigh`, not "Extra high"), because
+    the value here is exactly what gets sent as `<model>:<effort>`. */
+const EFFORT_LABELS: Record<string, { label: string; detail: string }> = {
+  low: { label: 'Low', detail: 'Fastest, cheapest — shallow reasoning' },
+  medium: { label: 'Medium', detail: 'Balanced reasoning depth vs cost' },
+  high: { label: 'High', detail: 'Deep reasoning' },
+  xhigh: { label: 'xHigh', detail: 'Deeper still — slower and pricier' },
+  max: { label: 'Max', detail: 'Strongest reasoning available' },
 };
 
 /**
@@ -97,8 +100,8 @@ export const EFFORT_OPTIONS: ComboboxOption[] = [
   { value: EFFORT_SELECT_DEFAULT, label: 'Default effort' },
   ...MODEL_EFFORT_LEVELS.map((level) => ({
     value: level,
-    label: level.charAt(0).toUpperCase() + level.slice(1),
-    detail: EFFORT_DETAIL[level],
+    label: EFFORT_LABELS[level]?.label ?? level,
+    detail: EFFORT_LABELS[level]?.detail,
   })),
 ];
 

@@ -84,7 +84,15 @@ vi.mock('@/app/harness/Combobox', () => ({
 import NewSessionLauncher, {
   composeModelSpec,
   PLAN_SELECT_PLACEHOLDER,
+  OMP_MODEL_OPTIONS,
+  EFFORT_OPTIONS,
+  MODEL_SELECT_DEFAULT,
+  EFFORT_SELECT_DEFAULT,
 } from './NewSessionLauncher';
+import {
+  CLOUD_MODEL_MENU,
+  MODEL_EFFORT_LEVELS,
+} from '@papercusp/operator-core/lib/agent-config-constants';
 
 function plan(slug: string, over: Partial<Record<string, unknown>> = {}) {
   return {
@@ -110,6 +118,63 @@ beforeEach(() => {
   h.toastWarning.mockReset();
 });
 afterEach(() => cleanup());
+
+// WI-6300 (owner ask 2026-07-27). These lists used to be hand-maintained literals
+// that drifted behind psu: 4 of 7 models (no fable/sol/terra/luna) plus a stale
+// `gpt-5.2`, and 3 of 5 efforts (no xhigh/max). They are now DERIVED, and the
+// cross-file guard that CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS still match psu's
+// own menus lives in apps/operator/lib/psu-launcher.test.ts. What this suite pins
+// is the second half of the chain: that the pickers actually render everything
+// those constants offer, so a future "tidy-up" can't quietly re-hardcode a subset.
+describe('model + effort options are derived from the psu vocabulary (WI-6300)', () => {
+  it('offers every psu base model, plus the explicit Default row', () => {
+    expect(OMP_MODEL_OPTIONS.map((o) => o.value)).toEqual([
+      MODEL_SELECT_DEFAULT,
+      ...CLOUD_MODEL_MENU.map((m) => m.value),
+    ]);
+  });
+
+  it('includes the four models the old hand-written list was missing', () => {
+    const values = OMP_MODEL_OPTIONS.map((o) => o.value);
+    for (const missing of ['fable', 'sol', 'terra', 'luna']) {
+      expect(values, missing).toContain(missing);
+    }
+  });
+
+  it('no longer offers gpt-5.2 — it is not a psu-recognized alias', () => {
+    expect(OMP_MODEL_OPTIONS.map((o) => o.value)).not.toContain('gpt-5.2');
+  });
+
+  it('labels each model with the CLI it launches, so a codex pick is not mistaken for claude', () => {
+    for (const m of CLOUD_MODEL_MENU) {
+      const opt = OMP_MODEL_OPTIONS.find((o) => o.value === m.value);
+      expect(opt?.detail, m.value).toBe(m.backend === 'codex' ? 'codex CLI' : 'claude CLI');
+    }
+  });
+
+  it('offers every psu effort level including xhigh and max, plus the Default row', () => {
+    expect(EFFORT_OPTIONS.map((o) => o.value)).toEqual([
+      EFFORT_SELECT_DEFAULT,
+      ...MODEL_EFFORT_LEVELS,
+    ]);
+    expect(EFFORT_OPTIONS.map((o) => o.value)).toContain('xhigh');
+    expect(EFFORT_OPTIONS.map((o) => o.value)).toContain('max');
+  });
+
+  it('every effort row renders a non-empty label — a new psu level falls back to its token, never blank', () => {
+    for (const o of EFFORT_OPTIONS) expect(o.label?.trim(), o.value).toBeTruthy();
+  });
+
+  it('every offered model×effort pair composes to the spec psu expects', () => {
+    for (const m of CLOUD_MODEL_MENU) {
+      for (const e of MODEL_EFFORT_LEVELS) {
+        expect(composeModelSpec(m.value, e)).toBe(`${m.value}:${e}`);
+      }
+      // effort left at Default ⇒ bare model, no dangling colon
+      expect(composeModelSpec(m.value, '')).toBe(m.value);
+    }
+  });
+});
 
 describe('NewSessionLauncher', () => {
   it('renders a plan picker, a model picker, and an ENABLED launch button by default', () => {

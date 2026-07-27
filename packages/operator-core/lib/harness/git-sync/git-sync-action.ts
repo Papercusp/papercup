@@ -1882,8 +1882,18 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // topic diverged — the one distinction the decoy stub otherwise erases
       // (live-caught P-303: every tick decoyed while a verified hello for the
       // exact requested device key sat registered).
+      // EI-18740968796318403: say what `no-path` ACTUALLY means. It reads as
+      // "the peer is unreachable / the topic is dead" and is neither — it means
+      // the dial registry held no entry for that device AT THE INSTANT we looked,
+      // which under hello-channel churn is routinely true of a peer that is
+      // connected and exchanging data one second either side. That misreading
+      // cost two separate investigations a wrong root cause (this item, and the
+      // WI-6299 cold-join drill), so the log now carries the distinction.
       console.warn(
-        `[git-sync] ${slug}: bootstrap-tick: no live dial path to any candidate member device (topic ${topicHex.slice(0, 12)}…, dialed: ${dialLog.join(', ')})`,
+        `[git-sync] ${slug}: bootstrap-tick: no candidate member device was registered in the pot-git dial registry at this instant ` +
+          `(topic ${topicHex.slice(0, 12)}…, dialed: ${dialLog.join(', ')}). ` +
+          `NOTE: "no-path" = registry miss at sample time, NOT proof the peer is unreachable — a churning hello channel ` +
+          `de-registers between ticks. Retried next tick; persistent misses across many ticks are the real signal.`,
       );
     } else if (outcome.progressed && !outcome.ok) {
       // WI-6189: in-progress, not broken. Logged at info so a converging

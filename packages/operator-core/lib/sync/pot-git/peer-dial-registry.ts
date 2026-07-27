@@ -132,6 +132,103 @@ function registryFor(topicHex: string): Map<string, unknown> {
  *  PROVEN it owns this specific live connection". */
 const verifiedDeviceBySocket = new WeakMap<object, string>();
 
+/** Is `socket` still the registered dial target for ANY (topic, device)?
+ *  `verifiedDeviceBySocket` is keyed per-SOCKET, but a socket is shared by every
+ *  topic multiplexed on that connection — so evicting it when ONE topic's channel
+ *  closes silently drops the verified-device binding the OTHER topics' live
+ *  channels still depend on (serve-wiring.ts's scope-repo authorization gate reads
+ *  it). Call this AFTER removing this channel's own registry entry. */
+function socketStillRegisteredAnywhere(socket: unknown): boolean {
+  for (const m of registryByTopic.values()) {
+    for (const s of m.values()) if (s === socket) return true;
+  }
+  return false;
+}
+
+// ─── EI-18740968796318403: surviving a sub-second channel gap ───────────────
+// The pot-git hello channel churns constantly (measured on the live rig: 5028
+// opens on ONE topic, ~1 every 2.6s), and `onclose` evicts the registry entry.
+// `resolvePotGitPeerSocket` is an INSTANTANEOUS point lookup, so a periodic
+// sampler like git-sync's bootstrap leg lands in a gap and concludes "no live
+// dial path" for a peer that is demonstrably connected — measured duty cycle
+// 57.9%, i.e. a ~42% false-miss rate per dial. That cost the cold-join ladder a
+// whole 10-minute tick every time it lost the coin flip.
+//
+// Fix: remember WHEN each (topic, device) was last registered, and let a dial
+// briefly WAIT for the channel to come back instead of sampling one instant.
+// Bounded on both sides: a device never seen (or not seen recently) misses
+// IMMEDIATELY, so a large mostly-offline member set costs nothing — only a peer
+// we have positive evidence is live is ever waited on.
+
+/** How recently a (topic, device) must have been registered for a dial to bother
+ *  waiting for it to come back. Long enough to cover the observed churn period
+ *  by a wide margin; short enough that a genuinely departed peer misses fast. */
+const RECENT_SIGHTING_MS = 120_000;
+
+/** Default dial wait. The channel re-opens every ~1-3s under the observed churn,
+ *  so a few seconds converts a ~42% false miss into a near-certain hit. */
+const DEFAULT_REGISTRATION_WAIT_MS = 4_000;
+
+const lastRegisteredAt = new Map<string, number>();
+const registrationWaiters = new Map<string, Array<() => void>>();
+
+function sightingKey(topicHex: string, devicePubkeyBase64: string): string {
+  return `${topicHex} ${devicePubkeyBase64}`;
+}
+
+/** Record a (topic, device) registration and wake anyone waiting to dial it. */
+function noteRegistered(topicHex: string, devicePubkeyBase64: string): void {
+  const k = sightingKey(topicHex, devicePubkeyBase64);
+  lastRegisteredAt.set(k, Date.now());
+  const waiters = registrationWaiters.get(k);
+  if (!waiters) return;
+  registrationWaiters.delete(k);
+  for (const w of waiters) {
+    try {
+      w();
+    } catch {
+      /* best-effort: one bad waiter never blocks the rest */
+    }
+  }
+}
+
+/** Wait (bounded) for a recently-seen (topic, device) to re-register, then
+ *  re-resolve. Returns undefined without waiting when we have no recent evidence
+ *  the device is live — the fail-soft contract is unchanged, only better-timed. */
+async function awaitRegistration(
+  topicHex: string,
+  devicePubkeyBase64: string,
+  waitMs: number,
+): Promise<unknown | undefined> {
+  if (!(waitMs > 0)) return undefined;
+  const k = sightingKey(topicHex, devicePubkeyBase64);
+  const seen = lastRegisteredAt.get(k);
+  if (seen === undefined || Date.now() - seen > RECENT_SIGHTING_MS) return undefined;
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const list = registrationWaiters.get(k) ?? [];
+    list.push(finish);
+    registrationWaiters.set(k, list);
+    const timer = setTimeout(() => {
+      const current = registrationWaiters.get(k);
+      if (current) {
+        const i = current.indexOf(finish);
+        if (i >= 0) current.splice(i, 1);
+        if (current.length === 0) registrationWaiters.delete(k);
+      }
+      finish();
+    }, waitMs);
+    // Never hold the process open for a dial that nobody is waiting on.
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+  return registryByTopic.get(topicHex)?.get(devicePubkeyBase64);
+}
+
 // ─── per-(muxer, topic) channel state ──────────────────────────────────────
 // Mirrors serve-wiring.ts's `ensureChannel`/`resolveMuxStream` pattern
 // EXACTLY (WI-3583 follow-up: su-164d8's P-201/WI-3490 raw-byte trace found
@@ -372,9 +469,25 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
     },
     onclose: () => {
       dbg('[HGDEBUG-dial] onclose fired', { topicHex, everOpened: state!.opened });
-      if (state!.remoteDevicePubkey) registryFor(topicHex).delete(state!.remoteDevicePubkey);
+      // COMPARE-AND-DELETE (EI-18740968796318403): under connection churn a NEWER
+      // connection to the same device can re-register before this older channel's
+      // close fires. An unconditional delete then clobbers that LIVE registration
+      // and the device reads as unreachable while a working socket exists. Only
+      // ever evict our OWN entry.
+      if (state!.remoteDevicePubkey) {
+        const reg = registryFor(topicHex);
+        if (reg.get(state!.remoteDevicePubkey) === state!.localSocket) {
+          reg.delete(state!.remoteDevicePubkey);
+        }
+      }
+      // The verified-device binding is keyed per-SOCKET, and one socket carries
+      // every topic multiplexed on that connection — so only drop it once NO
+      // topic still maps a device to this socket. Dropping it here unconditionally
+      // silently de-authorized the other topics' still-live channels.
       if (state!.localSocket && typeof state!.localSocket === 'object') {
-        verifiedDeviceBySocket.delete(state!.localSocket as object);
+        if (!socketStillRegisteredAnywhere(state!.localSocket)) {
+          verifiedDeviceBySocket.delete(state!.localSocket as object);
+        }
       }
       // WI-3496/WI-5177 live-drill root cause: a closed channel cached forever
       // poisons this (muxer, topic) BOTH ways — our own re-wires resolve to a
@@ -426,6 +539,10 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
         if (typeof state!.localSocket === 'object') {
           verifiedDeviceBySocket.set(state!.localSocket as object, v.device_pubkey);
         }
+        // Wake any dial parked on this (topic, device) coming back — see
+        // awaitRegistration. Must run AFTER the registry write so a woken
+        // waiter re-resolves to the live socket, never to the gap it slept in.
+        noteRegistered(topicHex, v.device_pubkey);
       } else {
         dbg('[HGDEBUG-dial] verified hello had NO resolvable socket — not registered', { topicHex });
       }
@@ -616,9 +733,21 @@ export function resolveVerifiedDevicePubkeyForSocket(socket: unknown): string | 
 export async function openHiveGitDuplexToDevice(
   topic: Buffer,
   devicePubkeyBase64: string,
-  req: { repoKey: string; peerGithubUserId?: number },
+  req: { repoKey: string; peerGithubUserId?: number; waitForRegistrationMs?: number },
 ): Promise<Duplex> {
-  const socket = resolvePotGitPeerSocket(topic, devicePubkeyBase64);
+  let socket = resolvePotGitPeerSocket(topic, devicePubkeyBase64);
+  if (!socket) {
+    // EI-18740968796318403: the instantaneous lookup above misses ~42% of the
+    // time purely because the hello channel is mid-churn. Give a peer we have
+    // recent positive evidence for a brief chance to come back before declaring
+    // it unreachable. A never-seen device returns immediately, so the common
+    // "20 candidates, 19 offline" dial costs nothing extra.
+    socket = await awaitRegistration(
+      topic.toString('hex'),
+      devicePubkeyBase64,
+      req.waitForRegistrationMs ?? DEFAULT_REGISTRATION_WAIT_MS,
+    );
+  }
   if (!socket) {
     const d = new Duplex({
       read() {

@@ -133,6 +133,17 @@ export interface ProgramSuccessInputs {
     realCount: number;
     /** Tasks whose corpus is 'synthetic' (a generated stub substrate). */
     syntheticCount: number;
+    /**
+     * How many SCORED runs exist against real-corpus tasks.
+     *
+     * THE LOOPHOLE THIS CLOSES: without it, the bar greens on LABELS alone — insert
+     * a few `corpus='real'` rows that nothing can execute and the gate reports a real
+     * fitness signal while the gym is still learning nothing. That is the same
+     * mistake one level up (certifying an artifact's description instead of its
+     * behaviour), and it would be an easy accident for whoever implements P-001. A
+     * real corpus only counts once it has actually been RUN and SCORED.
+     */
+    realScoredRuns?: number;
     /** The harness these counts were read for, for the observed-line provenance. */
     harnessSlug?: string;
   };
