@@ -39,6 +39,25 @@ export interface Watermark {
    * snapshot-payload-specific (presence-v2 D-007 is the first consumer).
    */
   snapshot_rebootstrap_pending: boolean;
+  /**
+   * OPEN per-surface read cursors: surface key → opaque cursor string. The
+   * escape hatch from this record's closed shape — a new surface registers by
+   * adding a KEY here, with no change to this type and no migration.
+   *
+   * Why it exists (D-077, correcting a premise in D-012): the whole Watermark
+   * rides in one `coord_watermarks.surfaces` jsonb column, which reads as
+   * "extensible" — but it is NOT an open map, because {@link normaliseWatermark}
+   * rebuilds the value field-by-field from {@link emptyWatermark}. An unknown
+   * top-level key is therefore not merely ignored: PgWatermarkStore.write is a
+   * read-modify-write, so the next write by ANY caller silently DESTROYS it.
+   * Cursors added under this map survive that round-trip; cursors added as new
+   * top-level keys do not.
+   *
+   * The cursor is opaque on purpose — a surface defines its own ordering (an
+   * ISO ts, a monotonic id, an HLC). The facts surface uses the fact's
+   * `(fed_ts, fed_hlc)` cell version per D-012's reuse-the-existing-clock rule.
+   */
+  cursors: Record<string, string>;
 }
 
 /** A fresh watermark — everything unread. */
@@ -50,6 +69,7 @@ export function emptyWatermark(): Watermark {
     plan_events_since_ts: '',
     subscriptions_fired: [],
     snapshot_rebootstrap_pending: false,
+    cursors: {},
   };
 }
 
@@ -84,13 +104,37 @@ export function normaliseWatermark(parsed: Partial<Watermark> | null | undefined
       typeof parsed.snapshot_rebootstrap_pending === 'boolean'
         ? parsed.snapshot_rebootstrap_pending
         : base.snapshot_rebootstrap_pending,
+    // Preserve every well-formed entry, including surfaces this build has never
+    // heard of — that is the whole point of the map (an older peer/host must not
+    // silently drop a newer surface's cursor on its read-modify-write). Only
+    // non-string values are dropped, since the cursor contract is opaque-string.
+    cursors: normaliseCursors(parsed.cursors),
   };
+}
+
+/** Keep string-valued entries of a possibly-malformed cursor map; else empty. */
+function normaliseCursors(parsed: unknown): Record<string, string> {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof v === 'string') out[k] = v;
+  }
+  return out;
 }
 
 /**
  * Merge `patch` into `current`. Omitted fields keep their current value
  * (partial update). `subscriptions_fired` is *replaced* when supplied,
  * not appended — the caller owns dedup.
+ *
+ * `cursors` merges PER KEY, unlike every other field: a patch touching one
+ * surface must not erase another surface's cursor. Surfaces have independent
+ * writers, so whole-map replacement would make advancing the facts cursor
+ * silently drop, say, a presence cursor written moments earlier by a different
+ * code path (the read-modify-write makes that loss durable). Per-key merge
+ * still permits the deliberate BACKWARD move the protocol relies on for
+ * safe-commit recovery — the patch simply supplies an earlier value for that
+ * key.
  */
 export function mergeWatermark(current: Watermark, patch: Partial<Watermark>): Watermark {
   return {
@@ -101,5 +145,8 @@ export function mergeWatermark(current: Watermark, patch: Partial<Watermark>): W
     subscriptions_fired: patch.subscriptions_fired ?? current.subscriptions_fired,
     snapshot_rebootstrap_pending:
       patch.snapshot_rebootstrap_pending ?? current.snapshot_rebootstrap_pending,
+    cursors: patch.cursors
+      ? { ...current.cursors, ...patch.cursors }
+      : current.cursors,
   };
 }

@@ -21,6 +21,7 @@ describe('emptyWatermark', () => {
       plan_events_since_ts: '',
       subscriptions_fired: [],
       snapshot_rebootstrap_pending: false,
+      cursors: {},
     });
   });
 });

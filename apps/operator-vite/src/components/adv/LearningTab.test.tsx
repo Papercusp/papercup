@@ -1673,6 +1673,353 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
   });
 });
 
+// P-005 RE-ESTABLISHED (contracts 1-6) — the display + navigation half of the
+// retired ScoutView suite, retargeted at the merged Improve view.
+//
+// These are the contracts that decide whether an idea's PROVENANCE survived the
+// merge. The list now shows work and ideas as one population, so the only thing
+// still saying where a row came from — which lens made it, what it was grounded
+// in, where it routed, how it turned out — is the row's idea half and the trace
+// behind it. If that quietly stopped rendering, the merged list would still look
+// completely correct: a tidy list of work, with the loop's output silently
+// reduced to rows that no longer explain themselves.
+//
+// Two mechanical notes, both earned:
+//   • the nuqs mock's setters write `nuqsState` but do NOT re-render, so a
+//     round-trip is asserted in two halves — click, assert the WRITE; re-render
+//     with that state, assert the READ. Asserting only the write would pass
+//     against a component that never reads the param back.
+//   • the rail label ("plan draft") is rendered by BOTH the facet button and the
+//     row's lead id, so row assertions scope to the <li>, never the document.
+describe("LearningTab — an idea's provenance on a merged row: rail, lens, trace, deep-links (P-005: contracts 1-6)", () => {
+  beforeEach(() => {
+    // Written by the trace deep-links (contract 5); not in the shared reset.
+    nuqsState.plan = null;
+    nuqsState.view = null;
+    nuqsState.lsel = null;
+  });
+
+  const rowFor = (title: string): HTMLElement => {
+    const row = Array.from(
+      document.querySelectorAll<HTMLElement>(".pc-learning__row"),
+    ).find(
+      (li) => li.querySelector(".pc-learning__title")?.textContent === title,
+    );
+    if (!row) throw new Error(`no row titled "${title}" in the merged list`);
+    return row;
+  };
+  const txt = (el: Element | null | undefined) =>
+    (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+
+  it("1. renders a routed idea as a row carrying its rail as the lead id and its lens as a chip", () => {
+    render(<LearningTab />);
+
+    // idea-1 routed to `plan:` and idea-2 to `gym:` — neither is a `wi:` ref, so
+    // both survive the merge as standalone idea rows rather than folding into a
+    // work item.
+    const planIdea = rowFor("Cache-warmup plan draft");
+    const gymIdea = rowFor("Tighter scoper prompt");
+
+    // The rail LEADS an idea-only row (a work item would lead with its id) —
+    // the human-readable label, not the raw rail key.
+    expect(txt(planIdea.querySelector(".pc-learning__id"))).toBe("plan draft");
+    expect(txt(gymIdea.querySelector(".pc-learning__id"))).toBe("gym");
+
+    // The lens rides as its own chip: which creative move produced this.
+    expect(txt(planIdea.querySelector(".pc-learning__chip--idea"))).toBe(
+      "reframing",
+    );
+    expect(txt(gymIdea.querySelector(".pc-learning__chip--idea"))).toBe(
+      "analogical",
+    );
+
+    // An idea that never became work is "not ready yet" — the ONE stage
+    // vocabulary (P-004), and the only stage an idea-only row can hold.
+    expect(txt(planIdea.querySelector("[class*='chip--stage-']"))).toBe(
+      "not ready yet",
+    );
+  });
+
+  it("1b. keeps OUTCOME off the row and in the trace — including the won one, not just pending", () => {
+    nuqsState.itrace = "idea-2";
+    render(<LearningTab />);
+
+    // idea-2's outcome is "won" — a genuinely interesting value, and still not
+    // row furniture. The row carries what you SCAN by (rail, lens, stage, age);
+    // outcome is part of the idea's story, which is what the trace is for.
+    // Asserting this on the won row matters: a rule stated as "pending is
+    // suppressed" would be satisfied by a component that shows every other
+    // outcome, which is not the contract.
+    const row = rowFor("Tighter scoper prompt");
+    const meta = row.querySelector(".pc-learning__meta");
+    expect(txt(meta)).not.toContain("won");
+    expect(txt(meta)).not.toContain("pending");
+
+    // ...and it IS in the trace, which is open on this row.
+    const trace = screen.getByLabelText("Pipeline trace for Tighter scoper prompt");
+    expect(txt(trace)).toContain("won");
+  });
+
+  it("2. renders one tick-economics row per tick behind the loop disclosure, newest first", () => {
+    render(<LearningTab />);
+    // Radix Collapsible does not mount closed content — open it before querying.
+    fireEvent.click(
+      screen.getByRole("button", { name: /How the loop is doing/ }),
+    );
+
+    const strip = screen.getByLabelText("scout tick economics, newest first");
+    const ticks = within(strip).getAllByRole("listitem");
+    expect(ticks).toHaveLength(2);
+
+    // NEWEST FIRST — the fixture's gated tick is 5m old, the ran one 35m. The
+    // order is the whole point of the strip: it is read as a recent history.
+    const [newest, older] = ticks;
+
+    // A self-gated tick: no cycle ran, so there is no generated→routed funnel
+    // and no spend to show. It still gets a row — an invisible gate is exactly
+    // how "the loop looks idle and nobody knows why" happens.
+    expect(txt(newest)).toContain("gated");
+    expect(txt(newest)).toContain("skipped — min-interval");
+    expect(newest.querySelector(".pc-learning__tickspend")).toBeNull();
+    expect(newest.className).toContain("pc-learning__tickrow--idle");
+
+    // A completed run: the funnel that WI-4482's lens collapse hid, plus spend.
+    expect(txt(older)).toContain("8→3");
+    expect(txt(older)).toContain("generated 8, routed 3 · completed");
+    expect(txt(older.querySelector(".pc-learning__tickspend"))).toBe("$1.62");
+    expect(older.className).toContain("pc-learning__tickrow--good");
+  });
+
+  it("2b. degrades to the single last-tick chip on a legacy payload with no ticks, and reads 'none yet' with no tick at all", () => {
+    const { ticks: _ticks, ...legacy } = scoutSnapshot as Record<
+      string,
+      unknown
+    > & { ticks: unknown };
+    scoutResult = { ...scoutResult, data: [legacy] };
+    render(<LearningTab />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /How the loop is doing/ }),
+    );
+
+    // Degrade, never crash: an older server snapshot predates the per-tick rows.
+    const strip = screen.getByLabelText("scout tick economics, newest first");
+    expect(within(strip).queryAllByRole("listitem")).toHaveLength(0);
+    expect(txt(strip)).toContain("last tick");
+    // lastTick survives on the legacy shape, so it still reports WHEN.
+    expect(txt(strip)).not.toContain("none yet");
+
+    // Nothing recorded at all ⇒ say so plainly rather than rendering a blank
+    // strip, which reads as a broken instrument instead of an idle one.
+    cleanup();
+    scoutResult = {
+      ...scoutResult,
+      data: [{ ...legacy, lastTick: null }],
+    };
+    render(<LearningTab />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /How the loop is doing/ }),
+    );
+    expect(
+      txt(screen.getByLabelText("scout tick economics, newest first")),
+    ).toContain("none yet");
+  });
+
+  it("3. teaches on the empty list, and its Open Arming lands on the LIVE arming tab", () => {
+    improvementsResult = {
+      ...improvementsResult,
+      data: [
+        { ...improvementsDigest, total: 0, open: 0, autoEligible: [], humanQueue: [] },
+      ],
+    };
+    scoutResult = {
+      ...scoutResult,
+      data: [{ ...scoutSnapshot, recent: [], totalRouted: 0, railCounts: [] }],
+    };
+    render(<LearningTab />);
+
+    const empty = document.querySelector(
+      ".pc-learning-visual__empty",
+    ) as HTMLElement;
+    expect(txt(empty)).toContain("The loop has not produced anything here yet");
+    // TEACHING, not just empty: an empty learning surface is indistinguishable
+    // from a broken one unless it says what fills it.
+    expect(txt(empty)).toContain("routes surviving ideas here");
+    expect(txt(empty)).toContain("once armed");
+
+    // The banner renders its own "Open Arming" — scope to the empty state, or
+    // this asserts the wrong button (they share a hook, not a call site).
+    fireEvent.click(within(empty).getByRole("button", { name: "Open Arming" }));
+    expect(nuqsState.lsb).toBe(true);
+    expect(nuqsState.lst).toBe(ARMING_SIDEBAR_TAB);
+    // Pinned literally: `lst` is parsed with parseAsStringLiteral(TAB_IDS), so a
+    // value outside that list is SILENTLY dropped and the link no-ops — which is
+    // exactly how the retired 'blender' id rotted while still writing a URL.
+    expect(nuqsState.lst).toBe("agents");
+    expect(nuqsState.qAgents).toBe(ARMING_AGENTS_LANE);
+  });
+
+  it("3b. withholds the teaching copy when the list is empty because of a FILTER", () => {
+    // "Nothing matches your filter" must not offer to arm the loop — the loop is
+    // already producing; the reader hid it. Teaching here would misdiagnose.
+    nuqsState.irail = "instance"; // a rail nothing in the fixture routed to
+    render(<LearningTab />);
+
+    const empty = document.querySelector(
+      ".pc-learning-visual__empty",
+    ) as HTMLElement;
+    expect(txt(empty)).toContain("Nothing matches the current filter");
+    expect(within(empty).queryByRole("button", { name: "Open Arming" })).toBeNull();
+    expect(txt(empty)).not.toContain("once armed");
+  });
+
+  it("4. renders the pipeline trace end to end: resolved grounding, readable refs, stripped route, and the GAPS", () => {
+    nuqsState.itrace = "idea-1";
+    render(<LearningTab />);
+
+    const trace = screen.getByLabelText(
+      "Pipeline trace for Cache-warmup plan draft",
+    );
+    const chips = Array.from(
+      trace.querySelectorAll(".pc-learning__tracechip"),
+    );
+
+    // GROUNDING — an opaque `wi:` ref resolves to its TITLE. The raw id alone is
+    // unreadable evidence: "grounded in EI-100" tells the reader nothing about
+    // whether the grounding was any good.
+    const wiChip = chips.find((c) => txt(c).startsWith("wi"))!;
+    expect(txt(wiChip)).toContain("coord invariant: wake-queue depth growth");
+    expect(txt(wiChip)).not.toContain("EI-100");
+
+    // A typed ref that is not a work item stays readable: kind split off the
+    // front, the rest intact — never a re-doubled "fact: fact:…".
+    const factChip = chips.find((c) => txt(c).startsWith("fact"))!;
+    expect(txt(factChip)).toBe("factworkspace:some-standing-fact");
+
+    // ROUTE — the rail chip already names the destination, so the ref renders
+    // WITHOUT its prefix (owner ask 2026-07-19: "gym gym:SP-004" read as a bug).
+    const routed = trace.querySelector(
+      ".pc-learning__tracechip--link b",
+    ) as HTMLElement;
+    expect(txt(routed)).toBe("scout-cache-warmup");
+    expect(txt(trace)).not.toContain("plan:scout-cache-warmup");
+
+    // THE GAPS ARE THE SIGNAL — an ungraded idea on a starving grading loop is
+    // the finding. Render it dimmed; never omit the row, which would make a
+    // starved loop look identical to a healthy one.
+    const rows = Array.from(trace.querySelectorAll(".pc-learning__tracerow"));
+    const gradeRow = rows.find((r) => txt(r).startsWith("grade"))!;
+    expect(txt(gradeRow)).toContain("ungraded");
+    expect(gradeRow.className).toContain("is-missing");
+
+    const outcomeRow = rows.find((r) => txt(r).startsWith("outcome"))!;
+    expect(txt(outcomeRow)).toContain("pending");
+    expect(outcomeRow.className).toContain("is-missing");
+
+    // The lens row carries the origin alongside it.
+    expect(txt(rows.find((r) => txt(r).startsWith("lens")))).toContain(
+      "reframing",
+    );
+  });
+
+  it("4b. renders 'none recorded' when an idea has no grounding at all", () => {
+    // idea-2 carries no addressesPatternRefs. Same rule as above: say the
+    // evidence is missing rather than dropping the row and implying none was
+    // ever expected.
+    nuqsState.itrace = "idea-2";
+    render(<LearningTab />);
+
+    const trace = screen.getByLabelText(
+      "Pipeline trace for Tighter scoper prompt",
+    );
+    const grounded = Array.from(
+      trace.querySelectorAll(".pc-learning__tracerow"),
+    ).find((r) => txt(r).startsWith("grounded in"))!;
+    expect(txt(grounded)).toContain("none recorded");
+    expect(grounded.className).toContain("is-missing");
+    // A graded idea fills the grade row instead of dimming it.
+    const gradeRow = Array.from(
+      trace.querySelectorAll(".pc-learning__tracerow"),
+    ).find((r) => txt(r).startsWith("grade"))!;
+    expect(gradeRow.className).not.toContain("is-missing");
+  });
+
+  it("5. deep-links a plan-rail trace to Create → Plans, and a gym-rail one to the Gym view", () => {
+    nuqsState.itrace = "idea-1";
+    render(<LearningTab />);
+
+    const trace = screen.getByLabelText(
+      "Pipeline trace for Cache-warmup plan draft",
+    );
+    fireEvent.click(
+      within(trace)
+        .getAllByRole("button")
+        .find((b) => txt(b).includes("scout-cache-warmup"))!,
+    );
+
+    // All three params, all nuqs — so `ui:dispatch` can drive the same
+    // navigation an operator does. The slug is passed WITHOUT its `plan:` prefix.
+    expect(nuqsState.plan).toBe("scout-cache-warmup");
+    expect(nuqsState.view).toBe("plans");
+    expect(nuqsState.tab).toBe("plans");
+
+    // CONTRAST: a gym-rail idea stays on this tab and switches the view instead
+    // — the rail decides the destination, so both branches need pinning.
+    cleanup();
+    nuqsState.itrace = "idea-2";
+    nuqsState.tab = null;
+    render(<LearningTab />);
+    const gymTrace = screen.getByLabelText(
+      "Pipeline trace for Tighter scoper prompt",
+    );
+    fireEvent.click(
+      within(gymTrace)
+        .getAllByRole("button")
+        .find((b) => txt(b).includes("proposal-7"))!,
+    );
+    expect(nuqsState.lview).toBe("gym");
+    expect(nuqsState.tab).toBeNull(); // never leaves the Learning tab
+  });
+
+  it("6. round-trips the rail filter through ?irail — pressed state AND the filtered list", () => {
+    render(<LearningTab />);
+    // ⚠ Query the rail facet by its aria-label, NOT by `.pc-learning__idea-filters`:
+    // the provenance scope bar ("Where these came from") reuses that same class
+    // and renders FIRST, so a class query silently returns the wrong bar — whose
+    // buttons are also aria-pressed toggles, which is how it would go unnoticed.
+    const facets = () => screen.getByLabelText("Idea routing");
+    const facetNamed = (label: string) =>
+      Array.from(facets().querySelectorAll("button")).find((b) =>
+        txt(b).startsWith(label),
+      )!;
+
+    // Unfiltered: "All rails" is the pressed one.
+    expect(facetNamed("All rails").getAttribute("aria-pressed")).toBe("true");
+    expect(facetNamed("plan draft").getAttribute("aria-pressed")).toBe("false");
+    // The facet counts come from the snapshot's railCounts, not from the
+    // rendered rows — they describe the whole population, not this page of it.
+    expect(txt(facetNamed("All rails"))).toContain("4");
+    expect(txt(facetNamed("plan draft"))).toContain("3");
+
+    // WRITE half of the round-trip.
+    fireEvent.click(facetNamed("plan draft"));
+    expect(nuqsState.irail).toBe("plan");
+
+    // READ half: re-render with the state the click just wrote. Asserting only
+    // the write would pass against a component that never reads the param back.
+    cleanup();
+    render(<LearningTab />);
+    expect(facetNamed("plan draft").getAttribute("aria-pressed")).toBe("true");
+    expect(facetNamed("All rails").getAttribute("aria-pressed")).toBe("false");
+    // ...and the list is genuinely filtered, not just the button re-styled.
+    expect(screen.getByText("Cache-warmup plan draft")).toBeTruthy();
+    expect(screen.queryByText("Tighter scoper prompt")).toBeNull();
+
+    // Clicking the pressed facet clears it — a filter you cannot leave is a trap.
+    fireEvent.click(facetNamed("plan draft"));
+    expect(nuqsState.irail).toBeNull();
+  });
+});
+
 describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-042's per-tab picker)", () => {
   const badge = () => document.querySelector(".pc-learning__hivepick");
 
