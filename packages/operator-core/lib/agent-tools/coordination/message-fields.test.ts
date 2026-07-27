@@ -292,7 +292,7 @@ describe('projectAuthoredFields — making the fields readable', () => {
             text: 'a',
             premises: ['WI-1#completion'],
             forYouBecause: { relation: 'owns', ref: 'P-033' },
-            youMayNotKnow: [{ ref: 'D-072', provenance: 'plan-decision' }],
+            youMayNotKnow: [{ ref: 'D-072', provenance: 'authored' }],
             couldNotDetermine: [{ what: 'whether the deploy landed' }],
           },
           { text: 'b' },
