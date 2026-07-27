@@ -39,7 +39,15 @@ const REMOTE_LOG = 'b'.repeat(64);
 
 type StubRow = Record<string, unknown>;
 
-function stubProjection(tableTag: string, skipOwnOps: boolean): TableProjection<StubRow> {
+/**
+ * Returns `TableProjection<unknown>`, NOT `TableProjection<StubRow>`. `TableProjection`
+ * is INVARIANT in its row type — `decodeValue` produces it and `writeToPg` consumes it —
+ * so a `TableProjection<StubRow>` is not assignable to the `TableProjection<unknown>`
+ * that `applyOpVia` / `registerProjection` take, in either direction. Annotating the
+ * helper at the row type the call sites actually want keeps `StubRow` where it is
+ * useful (inside `decodeValue`) without five TS2322s at the call sites.
+ */
+function stubProjection(tableTag: string, skipOwnOps: boolean): TableProjection<unknown> {
   return {
     tableTag,
     composeKey: () => '',
@@ -47,7 +55,7 @@ function stubProjection(tableTag: string, skipOwnOps: boolean): TableProjection<
     writeToPg: vi.fn(async () => {}),
     deleteFromPg: vi.fn(async () => {}),
     ...(skipOwnOps ? { skipOwnOps: true } : {}),
-  } as TableProjection<StubRow>;
+  } as TableProjection<unknown>;
 }
 
 /**

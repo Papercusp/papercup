@@ -672,6 +672,27 @@ export interface ListIssuesFilter {
    */
   audit?: CompletionAudit;
   /**
+   * P-013 — filter TERMINAL rows by the completion-authority judgement P-004 stamps
+   * ({@link WorkItemCompletionAuthority}), or `'unjudged'` for a close that carries NO
+   * judgement (the `authority` column IS NULL).
+   *
+   * This is the read half D-012 left open. P-006/D-003 deleted the `no-evidence` audit
+   * bucket because evidence became a WRITE-time requirement — but that also removed the
+   * only way to LIST under-evidenced closes after the fact. The judgement is now a column,
+   * so the honest replacement is a filter over it, NOT a resurrected bareness sweep.
+   *
+   * `'unjudged'` is the load-bearing value, and it measures the INSTRUMENT rather than the
+   * agents: only `work_items:complete` stamps an authority, so every close routed through
+   * the bare `setWorkItemState` path lands NULL no matter how well evidenced it was (its
+   * evidence goes to `terminal_completion_ref` instead). Measured 2026-07-27: 38.2% of that
+   * day's agent closes were gate-judged, 0.1% the day before — so an `'unjudged'` hit means
+   * "this close was never judged", NOT "this close was unevidenced". Do not read it as an
+   * agent-compliance signal.
+   *
+   * Non-terminal rows never match (an open item owes no judgement yet), mirroring `audit`.
+   */
+  completionAuthority?: WorkItemCompletionAuthority | 'unjudged';
+  /**
    * EI-10422: exclude a `payload.lane === 'observation'` row — a turn-end reflection /
    * rubric scorecard filed via `improvements:capture { lane:'observation' }` that, by
    * design (D-005), "never enters the work queue/triage/auto-implement — only Scout's
@@ -801,6 +822,20 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${
          filter.audit
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+           : sql`TRUE`
+       }
+       -- P-013: the completion-authority read half (see ListIssuesFilter.completionAuthority).
+       -- Scoped to TERMINAL rows for the same reason `audit` is: a non-terminal row has no
+       -- close to judge, so an open row must never answer an 'unjudged' query — otherwise
+       -- the whole open backlog (authority NULL by construction) floods the result and the
+       -- filter reads as catastrophic under-evidencing instead of measuring closes.
+       AND ${
+         filter.completionAuthority
+           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${
+               filter.completionAuthority === 'unjudged'
+                 ? sql`authority IS NULL`
+                 : sql`authority = ${filter.completionAuthority}`
+             })`
            : sql`TRUE`
        }
        -- EI-10422: mirrors observationLaneExclusionSql (work-items.ts) — the self-select

@@ -547,6 +547,26 @@ export interface ListWorkItemsFilter {
    */
   audit?: CompletionAudit;
   /**
+   * P-013 — filter TERMINAL rows by the completion-authority judgement P-004 stamps
+   * ({@link WorkItemCompletionAuthority}), or `'unjudged'` for a close carrying NO
+   * judgement (`authority IS NULL`). The read half D-012 left open: P-006/D-003 deleted
+   * the `no-evidence` audit bucket once evidence became a WRITE-time requirement, which
+   * also removed the only way to LIST under-evidenced closes. The judgement is a column
+   * now, so the replacement is a filter over it — not a resurrected bareness sweep.
+   *
+   * ⚠ `'unjudged'` measures the INSTRUMENT, not the agents: only `work_items:complete`
+   * stamps an authority, so a close routed through the bare `setWorkItemState` path lands
+   * NULL however well evidenced it was (its evidence goes to `terminal_completion_ref`
+   * instead, and `work_items:complete`'s own structured evidence lands in
+   * `payload._completionEvidence` — three different places, so no single column is a
+   * complete evidence test). Measured 2026-07-27: 38.2% of that day's agent closes were
+   * gate-judged vs 0.1% the day before. An `'unjudged'` hit means "never judged", NOT
+   * "unevidenced".
+   *
+   * Scoped to terminal rows, mirroring `audit`. Threaded to both families.
+   */
+  completionAuthority?: WorkItemCompletionAuthority | 'unjudged';
+  /**
    * EI-10422/WI-4405: when true, INCLUDE `payload.lane === 'observation'` rows (default
    * false ⇒ EXCLUDED). Threaded to {@link listIssues}'s `excludeObservationLane`
    * (`!includeObservations`) — until this field existed, work_items:list's tool layer
@@ -672,6 +692,19 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
              ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
              : sql`TRUE`
          }
+         -- P-013: see ListWorkItemsFilter.completionAuthority. Terminal-scoped for the same
+         -- reason `audit` is — an OPEN row has no close to judge and carries authority NULL
+         -- by construction, so letting it answer 'unjudged' would return the entire open
+         -- backlog and read as mass under-evidencing rather than a measurement of closes.
+         AND ${
+           filter.completionAuthority
+             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${
+                 filter.completionAuthority === 'unjudged'
+                   ? sql`authority IS NULL`
+                   : sql`authority = ${filter.completionAuthority}`
+               })`
+             : sql`TRUE`
+         }
        ORDER BY ${filter.orderByRank ? sql`assignee_rank ASC NULLS LAST, updated_ts DESC` : sql`updated_ts DESC NULLS LAST`}
        LIMIT ${limit}`;
     out.push(...rows.map(featureRowToWorkItem));
@@ -698,6 +731,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
       // claimable, regardless of includeObservations) — otherwise honor the flag.
       excludeObservationLane: filter.admissibleOnly ? true : !filter.includeObservations,
       audit: filter.audit,
+      completionAuthority: filter.completionAuthority,
       limit,
     });
     out.push(...issues.map(issueToWorkItem));
@@ -750,6 +784,27 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
                )`
              : sql`TRUE`
+         }
+         -- P-013: `audit` and `completionAuthority` are terminal-row DIAGNOSTIC filters, and
+         -- this COUNT applied NEITHER — the same count-vs-list parity bug WI-5512 fixed for
+         -- admissibleOnly, still live for the audit branch (pre-existing) and about to be
+         -- live for completionAuthority. Unfixed, a caller filtering to a handful of flagged
+         -- closes is told the denominator is the WHOLE backlog, which reads as "0.1% of items
+         -- are flagged" when the honest figure is "N of the M closes we filtered". Both are
+         -- mirrored here, so numerator and denominator answer the same question.
+         AND ${
+           filter.audit
+             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+             : sql`TRUE`
+         }
+         AND ${
+           filter.completionAuthority
+             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${
+                 filter.completionAuthority === 'unjudged'
+                   ? sql`authority IS NULL`
+                   : sql`authority = ${filter.completionAuthority}`
+               })`
+             : sql`TRUE`
          }`;
     total += rows[0]?.n ?? 0;
   }
@@ -769,6 +824,10 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
       // as the feature-family fix above, same fix.
       admissibleOnly: filter.admissibleOnly,
       excludeObservationLane: filter.admissibleOnly ? true : !filter.includeObservations,
+      // P-013: same count-vs-list parity fix as the feature-family branch above — the
+      // issue-family COUNT ignored both diagnostic filters too.
+      audit: filter.audit,
+      completionAuthority: filter.completionAuthority,
     });
   }
 
