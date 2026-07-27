@@ -129,6 +129,18 @@ interface SendMsg {
    *  to keep `'*'` literal and reach every agent (system-wide issue / urgent notice).
    *  No effect for a non-fleeted sender or a directed send. */
   allHive?: boolean;
+  /** EI-18791996856052350: RENOUNCE your fleet-control authority for THIS message —
+   *  send it as an ordinary agent, unstamped. This is the executable form of the
+   *  `fleet_scoped_cue_allhive_contradiction` refusal's own remedy ("send it from a
+   *  non-fleet-authority context"), which was otherwise unreachable: fleet leadership
+   *  is a property of the sender's identity, not of the call, so a leader had NO way
+   *  to issue a hive-wide NOTICE (an outage warning, a shared-tree fault) at all.
+   *  Renouncing removes the fleet-members stamp, so the message informs the hive
+   *  without carrying control weight over agents outside the fleet — a leader may
+   *  INFORM the hive, never COMMAND it. The accidental EI-9501 path (a fleet-control
+   *  cue sent with a bare allHive:true) stays refused: leaking it now requires
+   *  consciously declaring the cue carries no fleet authority. */
+  asAuthority?: 'none';
   /** agent-report-cards-2026-07-17 P-001: a structured `ReportBlock` status card
    *  (shape as parseReportBlock accepts). Validated at send — an invalid payload
    *  is a loud `report_invalid` refusal (nothing sent); the NORMALIZED block is
@@ -251,6 +263,13 @@ const allHiveArg = z
     "fleet-scoped-broadcast-default: consciously claim a HIVE-WIDE broadcast. If YOU are in a fleet, a bare to:['*'] is auto-scoped to your fleet (@fleet:<slug>, leader included) so routine status doesn't flood every agent — the result reports the rewrite as `scopedBroadcast`. Set allHive:true to keep '*' literal and reach EVERY agent, for system-wide issues / urgent notices only. No effect for a non-fleeted sender or a directed send.",
   );
 
+const asAuthorityArg = z
+  .literal('none')
+  .optional()
+  .describe(
+    "Renounce your fleet-control authority for THIS message — it is delivered UNSTAMPED, as an ordinary agent. A fleet LEADER needs this to send a hive-wide NOTICE (to:['*'] + allHive:true), which is otherwise refused as fleet_scoped_cue_allhive_contradiction: a leader may INFORM the hive, never COMMAND it. Do NOT use it to push a fleet-control cue (drain/pause/steer) past that guard. No effect for a sender holding no fleet-leader authority.",
+  );
+
 const relayOfArg = z
   .string()
   .optional()
@@ -357,6 +376,7 @@ const itemSpec = z.object({
   scope: scopeArg,
   hive: hiveArg,
   allHive: allHiveArg,
+  asAuthority: asAuthorityArg,
   report: reportArg,
   fieldProvenance: fieldProvenanceArg,
 });
@@ -372,7 +392,15 @@ async function sendOne(
   msg: SendMsg,
   identity: AgentIdentity,
   harnessSlug: string | null,
-  bcast?: { scoped?: { from: '*'; to: string; reason: string }; allHive?: boolean },
+  bcast?: {
+    scoped?: { from: '*'; to: string; reason: string };
+    allHive?: boolean;
+    /** EI-18791996856052350: the sender held fleet-leader authority and RENOUNCED it
+     *  for this message (asAuthority:'none'), so it ships unstamped. Reported back so
+     *  the downgrade is never silent — the sender must see that its cue carried no
+     *  fleet-control weight. */
+    renouncedFleetAuthority?: boolean;
+  },
   cueAuthority?: CueAuthorityStamp | null,
 ): Promise<BulkItemResult> {
   // agent-report-cards-2026-07-17 P-001 / D-004: validate a structured report
@@ -1008,6 +1036,10 @@ async function sendOne(
     // is transparent + teaches the allHive override; flag a conscious hive-wide blast.
     ...(bcast?.scoped ? { scopedBroadcast: bcast.scoped } : {}),
     ...(bcast?.allHive ? { allHiveBroadcast: true } : {}),
+    // EI-18791996856052350: surface the renunciation so it is never silent — this
+    // message informed the hive WITHOUT your fleet-control authority; agents outside
+    // your fleet received a notice, not a cue they are meant to act on.
+    ...(bcast?.renouncedFleetAuthority ? { sentWithoutFleetAuthority: true } : {}),
     // P-008: await this key to confirm cross-machine delivery+wake (the
     // receiving machine emits it back as a fed event when the row applies).
     ...(wantReceipt ? { receiptEvent: `coord:receipt:${env.msg_id}` } : {}),
@@ -1213,6 +1245,7 @@ export default defineTool({
     scope: scopeArg,
     hive: hiveArg,
     allHive: allHiveArg,
+    asAuthority: asAuthorityArg,
     report: reportArg,
     items: z
       .array(itemSpec)
@@ -1262,6 +1295,7 @@ export default defineTool({
             scope: args.scope,
             hive: args.hive,
             allHive: args.allHive,
+            asAuthority: args.asAuthority,
             report: args.report,
           },
         ];
@@ -1309,7 +1343,27 @@ export default defineTool({
         // That contradiction is never intentional (a genuinely hive-wide cue has
         // no fleet-scoped stamp to begin with — see hiveWideCueAuthority) so
         // refuse it with a teaching error instead of shipping the mismatch.
-        if (wasBroadcast && bcast.allHive && senderCueAuthority?.scope === 'fleet-members') {
+        // EI-18791996856052350: the refusal's remedy — "send it from a
+        // non-fleet-authority context" — was UNREACHABLE. Fleet leadership is a
+        // property of the sender's IDENTITY, not of the call, so a leader had no
+        // context to send from and could not issue a hive-wide NOTICE at all
+        // (observed holding a fleet-wide outage item it could not warn the hive
+        // about). `asAuthority:'none'` makes that remedy executable: the message
+        // is delivered UNSTAMPED, so it informs the hive without carrying control
+        // weight over agents outside the fleet — a leader may INFORM the hive,
+        // never COMMAND it. The EI-9501 accident stays refused: leaking a
+        // fleet-control cue now requires consciously declaring it carries no
+        // fleet authority, which is not something a pause/drain directive can
+        // truthfully say. The conscious claim is still stamped allHiveBroadcast
+        // on the envelope (P-010/H5b), so the sweep detector still sees it.
+        const renouncedFleetAuthority =
+          msg.asAuthority === 'none' && senderCueAuthority?.scope === 'fleet-members';
+        if (
+          wasBroadcast &&
+          bcast.allHive &&
+          senderCueAuthority?.scope === 'fleet-members' &&
+          !renouncedFleetAuthority
+        ) {
           return {
             ok: false,
             to: msg.to,
@@ -1318,9 +1372,11 @@ export default defineTool({
               `allHive:true would broadcast to every agent in the hive, but as fleet leader of ` +
               `'${senderCueAuthority.scopeRef}' your cue is stamped fleet-members(${senderCueAuthority.scopeRef}) — ` +
               `only YOUR fleet's members are meant to act on it. Drop allHive (a bare '*' auto-scopes ` +
-              `to @fleet:${senderCueAuthority.scopeRef}, which already includes your leader) unless this ` +
-              `is a genuinely hive-wide notice unrelated to fleet control — in which case send it from a ` +
-              `non-fleet-authority context, not this fleet-leader cue.`,
+              `to @fleet:${senderCueAuthority.scopeRef}, which already includes your leader). If this is a ` +
+              `genuinely hive-wide NOTICE unrelated to fleet control (an outage, a shared-tree fault), ` +
+              `re-send it with asAuthority:'none' — that renounces your fleet-control authority for this ` +
+              `one message, so it is delivered UNSTAMPED: you INFORM the hive without commanding agents ` +
+              `outside your fleet. Do NOT use it to push a fleet-control cue (drain/pause/steer) through.`,
           };
         }
         msg.to = bcast.to;
@@ -1336,8 +1392,8 @@ export default defineTool({
           msg,
           identity,
           scoped.harnessSlug,
-          { scoped: bcast.scoped, allHive: bcast.allHive },
-          wasBroadcast ? senderCueAuthority : null,
+          { scoped: bcast.scoped, allHive: bcast.allHive, renouncedFleetAuthority },
+          wasBroadcast && !renouncedFleetAuthority ? senderCueAuthority : null,
         );
       },
       {
