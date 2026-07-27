@@ -11,8 +11,8 @@ import { getPresence } from '../coordination/presence';
 import { PLACEHOLDER_INTENT } from '../coordination/presence-payload';
 import type { AcquireBusy } from './su-lock-store';
 import type { CellReader } from '../../cell-registry';
-import { resolveHolderContext, type HolderContext } from '../../coord/holder-context';
-import { holderContextSources } from '../coordination/holder-context-sources';
+import type { HolderContext, HolderContextSources } from '../../coord/holder-context';
+import { resolveHolderAdvisoryMap } from '../coordination/holder-advisory';
 
 export interface BusyJson {
   path: string;
@@ -116,21 +116,34 @@ export function intentsDiverged(lockIntent: string, holderIntent: string): boole
  * — `resolveHolderContext` enforces this, for the same reason `getCell` requires
  * a reader: a defaulted audience is a defaulted access check.
  */
-export async function enrichBusy(rows: AcquireBusy[], reader?: CellReader): Promise<BusyJson[]> {
+export async function enrichBusy(
+  rows: AcquireBusy[],
+  reader?: CellReader,
+  opts: { sources?: HolderContextSources; nowMs?: number } = {},
+): Promise<BusyJson[]> {
   const owners = [...new Set(rows.map((r) => r.owner))];
   const byOwner = new Map<string, Awaited<ReturnType<typeof getPresence>>>();
-  const ctxByOwner = new Map<string, HolderContext | null>();
-  const sources = reader ? holderContextSources() : null;
-  await Promise.all(
-    owners.map(async (o) => {
-      byOwner.set(o, await getPresence(o).catch(() => null));
-      if (sources) {
-        // Total by contract, but caught anyway: this decorates a lock acquire,
-        // and an enrichment must never fail the operation it decorates.
-        ctxByOwner.set(o, await resolveHolderContext(o, reader, sources).catch(() => null));
-      }
-    }),
-  );
+
+  /**
+   * ⚠ ROUTED THROUGH THE SHARED FAN-OUT (P-012). This used to call
+   * `resolveHolderContext` directly in the per-owner loop below — a second copy of
+   * "resolve once per holder", in the SAME directory as `locks/queue.ts`, which
+   * already went through the shared wiring. Two surfaces resolving one projection
+   * two ways is the divergence D-038 axis 5 forbids, and it cost something real
+   * here: `resolveHolderAdvisoryMap` caps the distinct-holder fan-out at
+   * HOLDER_ADVISORY_DISTINCT_CAP and reports what it skipped, while the local copy
+   * was UNBOUNDED — one resolution per distinct owner contending the lock, however
+   * many that turned out to be.
+   *
+   * ⚠ NO `subjectRef`, and that is correct rather than an omission: D-094 subtracts
+   * the subject from `competing` so a holder is never named as its own rival, but
+   * the subject HERE is a lock PATH, which can never appear in a competing list of
+   * item refs (`HolderAdvisoryOpts.subjectRef` says exactly this).
+   */
+  const [advisory] = await Promise.all([
+    resolveHolderAdvisoryMap(reader ? owners : [], reader, { sources: opts.sources, nowMs: opts.nowMs }),
+    Promise.all(owners.map(async (o) => void byOwner.set(o, await getPresence(o).catch(() => null)))),
+  ]);
   return rows.map((b) => {
     const json = busyToJson(b);
     const p = byOwner.get(b.owner) ?? null;
@@ -156,7 +169,7 @@ export async function enrichBusy(rows: AcquireBusy[], reader?: CellReader): Prom
     ) {
       json.holder_intent_diverged = true;
     }
-    const ctx = ctxByOwner.get(b.owner);
+    const ctx = advisory.forRow(b.owner);
     if (ctx) json.holder_context = ctx;
     return json;
   });

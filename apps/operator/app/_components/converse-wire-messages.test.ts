@@ -34,8 +34,13 @@ const fullyLoaded: ChatMessage = {
   agent: 'papercup',
   id: 'opt-assistant-abc',
   seq: 42,
-  report: { kind: 'status', title: 't' } as ChatMessage['report'],
-  tools: [{ name: 'chat:ask_choice' }] as ChatMessage['tools'],
+  // Shape-irrelevant on purpose: these two only need to EXIST as extra keys so
+  // the projection can be shown to drop them. Cast through `unknown` rather than
+  // hand-building a valid ReportBlock/ChatToolCall — pinning their real shapes
+  // here would couple this test to schemas it is not about, and it would rot
+  // every time one of them changes.
+  report: { kind: 'status', title: 't' } as unknown as ChatMessage['report'],
+  tools: [{ name: 'chat:ask_choice' }] as unknown as ChatMessage['tools'],
 };
 
 describe('toConverseWireMessages', () => {
