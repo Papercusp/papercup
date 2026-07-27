@@ -283,6 +283,44 @@
   max-width: 130px;
 }
 
+/* WI-6321 — the psu-parity controls (fleet / new-fleet name + colour / account /
+   context size). Same ceiling discipline as the three above: the row already
+   wraps, so these narrow the CLOSED control without truncating the open panel. */
+.pc-new-session-launcher__select--fleet {
+  max-width: 160px;
+}
+
+.pc-new-session-launcher__select--scheme {
+  max-width: 120px;
+}
+
+.pc-new-session-launcher__select--account {
+  max-width: 150px;
+}
+
+.pc-new-session-launcher__select--context {
+  max-width: 150px;
+}
+
+/* The new-fleet name box. Matches the comboboxes' metrics so the row reads as one
+   control strip rather than a text input bolted on; inherits the shell's form
+   colours rather than restating them (theming stays in one place). */
+.pc-new-session-launcher__input {
+  max-width: 150px;
+  min-width: 0;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-subtle, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+.pc-new-session-launcher__input::placeholder {
+  color: var(--fg-dim);
+}
+
 /* ── fleet filter strip ───────────────────────────────────────────────────── */
 
 .hud__fleets {

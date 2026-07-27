@@ -60,6 +60,12 @@ VIEWS=("$@")
 DRIVE="$(mktemp -t learning-views-drive.XXXXXX.sh)"
 trap 'rm -f "$DRIVE"' EXIT
 
+# EI-18818262219163661: both were hardcoded. 45s is comfortable for a small view
+# and thin for the heaviest one (`improvements` aggregates the funnel plus the
+# full idea/work lists), and a loaded box stretches every one of them.
+PAINT_TIMEOUT_MS="${VERIFY_LEARNING_PAINT_TIMEOUT_MS:-45000}"
+PAINT_ATTEMPTS="${VERIFY_LEARNING_PAINT_ATTEMPTS:-2}"
+
 {
   echo 'set -u'
   echo 'P="$VERIFY_TAURI_PID"; PORT="$VERIFY_TAURI_PORT"'
@@ -80,8 +86,37 @@ trap 'rm -f "$DRIVE"' EXIT
     # doing exactly that: the same view probed twice in a row returned a clean
     # verdict and then a blank one. Pin the URL first, so "painted" and "boundary"
     # are both being asked about the view actually under test.
-    echo "tauri-agent-tools wait --pid \"\$P\" --eval \"location.href.indexOf('lview=$V') >= 0 && (!!document.querySelector('.pc-learning__viewpane') || /hit an error/.test(document.body.innerText))\" --timeout 45000 >/dev/null 2>&1 || true"
-    echo "tauri-agent-tools eval --pid \"\$P\" \"JSON.stringify({view:'$V', painted: !!document.querySelector('.pc-learning__viewpane'), boundary: /hit an error/.test(document.body.innerText)})\""
+    #
+    # EI-18818262219163661: the wait's exit status used to be thrown away with
+    # `|| true`, so a view that simply had not painted YET at the deadline was
+    # reported in the SAME words as a genuine crash ("NEVER PAINTED"), and the
+    # run exited 1. That is the most expensive possible ambiguity: a one-view red
+    # points at whatever you most recently edited, which is exactly when you can
+    # least afford to wave it off. Observed 2026-07-27 — `improvements` came back
+    # NEVER PAINTED, and a direct drive then painted it in 5s (nine times inside
+    # the budget). Two runs of the SAME build failed DIFFERENT views. So: keep the
+    # status, and RETRY in-session before believing it.
+    #
+    # The retry is inside the drive on purpose — the instance is already booted,
+    # so a second attempt costs seconds, where a second harness run costs a full
+    # ~2min boot. A real defect still fails every attempt; only a flake recovers.
+    echo "V_PAINTED=0; V_TIMEDOUT=false"
+    echo "for attempt in \$(seq 1 $PAINT_ATTEMPTS); do"
+    echo "  [ \"\$attempt\" -gt 1 ] && tauri-agent-tools eval --pid \"\$P\" \"location.href='http://127.0.0.1:\$PORT/adv?tab=learning&ws=papercusp-workspace&scope=all&lview=$V'; 'go'\" >/dev/null 2>&1"
+    echo "  if tauri-agent-tools wait --pid \"\$P\" --eval \"location.href.indexOf('lview=$V') >= 0 && (!!document.querySelector('.pc-learning__viewpane') || /hit an error/.test(document.body.innerText))\" --timeout $PAINT_TIMEOUT_MS >/dev/null 2>&1; then V_TIMEDOUT=false; else V_TIMEDOUT=true; fi"
+    echo "  V_RESULT=\"\$(tauri-agent-tools eval --pid \"\$P\" \"JSON.stringify({view:'$V', painted: !!document.querySelector('.pc-learning__viewpane'), boundary: /hit an error/.test(document.body.innerText)})\" 2>&1)\""
+    # The bridge PRETTY-PRINTS its JSON (`\"painted\": true`, across lines), so this
+    # must de-newline AND de-space exactly like the verdict parser below does —
+    # matching the compact form against pretty output silently never fires, which
+    # would burn every retry and mislabel healthy views as \"recovered on attempt 2\".
+    echo "  V_FLAT=\"\$(printf '%s' \"\$V_RESULT\" | tr -d ' \\n')\""
+    echo "  case \"\$V_FLAT\" in *'\"painted\":true'*|*'\"boundary\":true'*) V_PAINTED=1 ;; esac"
+    echo "  [ \"\$V_PAINTED\" = 1 ] && break"
+    echo "done"
+    # Emitted as bare tokens: the parser de-newlines the transcript, so a marker
+    # survives concatenation intact while pretty-printed JSON does not.
+    echo "echo \"TIMEDOUT:$V:\$V_TIMEDOUT ATTEMPTS:$V:\$attempt\""
+    echo "echo \"\$V_RESULT\""
   done
 } > "$DRIVE"
 
@@ -105,13 +140,26 @@ for V in "${VIEWS[@]}"; do
     FAILED=1
     continue
   fi
+  # EI-18818262219163661: a check that never CONCLUDED must not be reported in
+  # the same words as one that concluded negatively (the mirror of the
+  # a-check-that-never-ran-must-not-read-as-passed insight). The drive emits its
+  # own timeout marker because the verdict JSON cannot carry it.
+  ATTEMPTS="$(grep -o "ATTEMPTS:$V:[0-9]*" "$FLAT" | tail -1 | sed "s/.*://")"
+  RETRIED=""
+  [ -n "$ATTEMPTS" ] && [ "$ATTEMPTS" -gt 1 ] 2>/dev/null && RETRIED=" (recovered on attempt $ATTEMPTS)"
   case "$LINE" in
     *'"boundary":true'*)
       printf '  %-16s CRASHED — the tab error boundary tripped\n' "$V"; FAILED=1 ;;
     *'"painted":true'*)
-      printf '  %-16s ok\n' "$V" ;;
+      printf '  %-16s ok%s\n' "$V" "$RETRIED" ;;
     *)
-      printf '  %-16s NEVER PAINTED — no view pane, no boundary\n' "$V"; FAILED=1 ;;
+      if grep -q "TIMEDOUT:$V:true" "$FLAT"; then
+        printf '  %-16s TIMED OUT after %ss x%s — never painted, never errored. NOT proof of a defect: re-drive this one view before believing it (fact: learning-view-sweep-single-view-flake).\n' \
+          "$V" "$((PAINT_TIMEOUT_MS / 1000))" "${ATTEMPTS:-?}"
+      else
+        printf '  %-16s NEVER PAINTED — no view pane, no boundary\n' "$V"
+      fi
+      FAILED=1 ;;
   esac
 done
 rm -f "$RAW" "$FLAT"

@@ -583,6 +583,68 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
           emptyLabel="No effort levels match"
           options={EFFORT_OPTIONS}
         />
+        {/* WI-6321 (owner ask 2026-07-27): "the new session panel should ahve all
+            the same options as the psu utility. i.e. fleet selection and the
+            abiltiy to create a new fleet and choose the color, and the gateway
+            pinning and anything else I may have forgotten about in the psu launch
+            menu(s)". Fleet / account / context-size are the three psu pickers the
+            GUI could not express; their option lists come from psu's own source
+            (useSuLaunchOptions), not a parallel list. */}
+        <Combobox
+          triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--fleet"
+          value={fleet}
+          emptyValue={FLEET_SELECT_NONE}
+          onChange={(value) => setFleet(value)}
+          ariaLabel="Fleet for new session"
+          placeholder={launchOptions.loading ? 'Loading fleets…' : 'No fleet'}
+          emptyLabel="No fleets match"
+          options={fleetOptions}
+        />
+        {/* Only while creating: the name, and the colour psu's own scheme picker
+            offers. Rendered inline rather than in a modal so the whole launch
+            stays one row, per the owner's one-line constraint above. */}
+        {creatingFleet ? (
+          <>
+            <input
+              className="pc-new-session-launcher__input"
+              type="text"
+              value={newFleetName}
+              onChange={(e) => setNewFleetName(e.target.value)}
+              placeholder="New fleet name"
+              aria-label="New fleet name"
+            />
+            <Combobox
+              triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--scheme"
+              value={fleetScheme || (launchOptions.nextScheme?.name ?? '')}
+              emptyValue=""
+              onChange={(value) => setFleetScheme(value)}
+              ariaLabel="Colour for the new fleet"
+              placeholder={launchOptions.nextScheme?.name ?? 'Colour'}
+              emptyLabel="No colours match"
+              options={schemeOptions}
+            />
+          </>
+        ) : null}
+        <Combobox
+          triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--account"
+          value={account}
+          emptyValue={ACCOUNT_SELECT_DEFAULT}
+          onChange={(value) => setAccount(value)}
+          ariaLabel="Account for new session"
+          placeholder="Default account"
+          emptyLabel="No accounts match"
+          options={accountOptions}
+        />
+        <Combobox
+          triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--context"
+          value={contextSize}
+          emptyValue={CONTEXT_SELECT_NATIVE}
+          onChange={(value) => setContextSize(value)}
+          ariaLabel="Context size for new session"
+          placeholder="Native context"
+          emptyLabel="No context sizes match"
+          options={contextOptions}
+        />
         <Button
           variant="primary"
           size="sm"

@@ -139,6 +139,10 @@ import {
   composeResumeModelSpec,
   RESUME_MODEL_MENU,
   RESUME_EFFORT_MENU,
+  // WI-6321 parity sources. Aliased because the TS twins carry the same names.
+  SU_CONTEXT_CHOICES,
+  SU_CONTEXT_TOKEN_ESTIMATES as PSU_SU_CONTEXT_TOKEN_ESTIMATES,
+  SU_CONTEXT_DEFAULT as PSU_SU_CONTEXT_DEFAULT,
   resumeModelMenuFor,
   resolveResumeTarget,
   sessionPortTargetAccount,
@@ -174,6 +178,12 @@ import {
   // 4 of 7 models and 3 of 5 efforts).
   CLOUD_MODEL_MENU,
   MODEL_EFFORT_LEVELS,
+  // WI-6321: the same discipline extended to the remaining psu launch pickers —
+  // context size and the one shared model:effort spec composer.
+  SU_CONTEXT_SIZES,
+  SU_CONTEXT_TOKEN_ESTIMATES,
+  SU_CONTEXT_DEFAULT,
+  composeLaunchModelSpec,
 } from '@papercusp/operator-core/lib/agent-config-constants';
 // EI-7138: the operator-core TS TWIN of suWrapperExtraArgs's model:effort → CLI-flag mapping
 // (same psu-launcher.mjs / operator-core import-boundary constraint as WI-1993 above — the
@@ -2739,6 +2749,66 @@ describe('CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS ↔ psu menus parity (WI-6300)'
     // the two the launcher was missing, pinned explicitly so a regression names itself
     expect([...MODEL_EFFORT_LEVELS]).toContain('xhigh');
     expect([...MODEL_EFFORT_LEVELS]).toContain('max');
+  });
+});
+
+describe('SU_CONTEXT_SIZES / composeLaunchModelSpec ↔ psu parity (WI-6321)', () => {
+  // Owner ask 2026-07-27: the GUI "should share the same code for getting the
+  // options". The fleet + account lists are genuinely shared at RUNTIME (both psu
+  // and the GUI read /api/agent-mcp/console/bootstrap-su/options), so there is no
+  // second list to pin. The STATIC vocabularies below are twins by necessity —
+  // psu-launcher.mjs cannot be imported by the browser bundle — so they are pinned
+  // here, exactly as WI-6300 pinned the model/effort menus.
+
+  it('SU_CONTEXT_SIZES is exactly psu\'s context-size choices minus the no-flag Native row', () => {
+    const psuValues = (SU_CONTEXT_CHOICES as Array<{ value: string | null }>)
+      .map((c) => c.value)
+      .filter((v): v is string => v !== null);
+    expect([...SU_CONTEXT_SIZES]).toEqual(psuValues);
+  });
+
+  it('the token estimates shown beside each variant match psu\'s own', () => {
+    for (const size of SU_CONTEXT_SIZES) {
+      expect(SU_CONTEXT_TOKEN_ESTIMATES[size], size).toBe(
+        (PSU_SU_CONTEXT_TOKEN_ESTIMATES as Record<string, string>)[size],
+      );
+    }
+  });
+
+  it('the GUI default matches psu\'s picker default — the same launch either way', () => {
+    expect(SU_CONTEXT_DEFAULT).toBe(PSU_SU_CONTEXT_DEFAULT);
+  });
+
+  it('composeLaunchModelSpec produces specs psu itself accepts, for every model×effort', () => {
+    for (const row of CLOUD_MODEL_MENU) {
+      for (const effort of MODEL_EFFORT_LEVELS) {
+        const spec = composeLaunchModelSpec(row.value, effort)!;
+        expect(spec, `${row.value}:${effort}`).toBe(`${row.value}:${effort}`);
+        expect(validateModelSpec(spec).ok, spec).toBe(true);
+      }
+    }
+  });
+
+  it('REFUSES an effort with no model instead of silently dropping it (the GUI bug)', () => {
+    // The old private copy in NewSessionLauncher returned the (empty) model and
+    // discarded the effort, so a human who picked "xhigh" got the backend default
+    // and was never told. psu has no standalone effort flag — there is nowhere for
+    // it to go, so this must be an error, not a quiet no-op.
+    expect(() => composeLaunchModelSpec('', 'xhigh')).toThrow(/needs a model/);
+    expect(() => composeLaunchModelSpec(undefined, 'max')).toThrow(/needs a model/);
+  });
+
+  it('replaces an effort tail already on the spec rather than doubling it', () => {
+    expect(composeLaunchModelSpec('fable:low', 'max')).toBe('fable:max');
+  });
+
+  it('leaves a non-effort colon suffix alone (bedrock ids end in ":0")', () => {
+    // Non-vacuity guard on the peel: ':0' is part of the model id, not an effort.
+    expect(composeLaunchModelSpec('anthropic.claude-v2:0', 'high')).toBe('anthropic.claude-v2:0:high');
+  });
+
+  it('an unrecognized effort is refused, naming what psu accepts', () => {
+    expect(() => composeLaunchModelSpec('fable', 'turbo')).toThrow(/low\|medium\|high\|xhigh\|max/);
   });
 });
 

@@ -207,12 +207,17 @@ describe('NewSessionLauncher', () => {
     // Deliberately choose nothing — the placeholder is still selected.
     fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
     await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
-    expect(h.launchAgent).toHaveBeenCalledWith({
-      slug: null,
-      planSlug: null,
-      label: 'su session',
-      model: null,
-    });
+    // WI-6321 added the psu-parity options to every launch, so this asserts the
+    // fields it is about rather than the whole envelope; the parity defaults get
+    // their own test below.
+    expect(h.launchAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: null,
+        planSlug: null,
+        label: 'su session',
+        model: null,
+      }),
+    );
     await waitFor(() => expect(h.toastSuccess).toHaveBeenCalled());
     expect(h.toastError).not.toHaveBeenCalled();
     expect(onLaunched).toHaveBeenCalledTimes(1);
@@ -305,12 +310,14 @@ describe('NewSessionLauncher', () => {
     expect((btn as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(btn);
     await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
-    expect(h.launchAgent).toHaveBeenCalledWith({
-      slug: null,
-      planSlug: 'beta-plan',
-      label: 'Title for beta-plan',
-      model: null,
-    });
+    expect(h.launchAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: null,
+        planSlug: 'beta-plan',
+        label: 'Title for beta-plan',
+        model: null,
+      }),
+    );
     await waitFor(() => expect(h.toastSuccess).toHaveBeenCalled());
     expect(h.toastError).not.toHaveBeenCalled();
     expect(onLaunched).toHaveBeenCalledTimes(1);

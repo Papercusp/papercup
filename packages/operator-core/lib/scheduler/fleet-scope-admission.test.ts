@@ -685,8 +685,49 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.excludedBreakdownSummary).toMatch(/observationLane=21/);
       // zero-count buckets are dropped from the summary, not padded in
       expect(miss.excludedBreakdownSummary).not.toMatch(/taken=0/);
-      expect(miss.advice).toMatch(/FLOOR-GATED miss \(WI-5561\)/);
+      expect(miss.advice).toMatch(/FLOOR-GATED miss \(WI-5561/);
       expect(miss.advice).toMatch(/not a scope\/spec mismatch/);
+    });
+
+    // EI-18741523426513509: `spec_matches_nothing` asserts a CAUSE (the spec's filter is wrong);
+    // a floor-gated miss is an EFFECT (real rows matched, but every one is presently excluded by
+    // a transient claim floor) with the OPPOSITE remedy — await/re-poll, never rewrite the spec.
+    // These assert the two are named with distinct, machine-checkable reason tokens.
+    it('EI-18741523426513509: sets reason `all_matches_gated` (NOT spec_matches_nothing) when the spec matched real rows but every one is floor-excluded', () => {
+      const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: floorGatedBreakdown });
+      expect(miss.reason).toBe('all_matches_gated');
+      expect(miss.error).toMatch(/POOL BLOCKED, NOT SPEC-BROKEN/);
+      expect(miss.advice).toMatch(/reason: "all_matches_gated"/);
+      expect(miss.advice).not.toMatch(/spec_matches_nothing/);
+    });
+
+    // The exact recurrence this ticket documents: a plan-lane `externalBlocker` gate (not any
+    // other floor) is the sole reason every matched row is excluded — the member must still get
+    // the transient token, not a spec-authoring escalation, and not a bare undefined reason.
+    it('EI-18741523426513509 recurrence guard: an uncleared plan-lane externalBlocker gate (the live 2026-07-26 repro) returns `all_matches_gated`, never `spec_matches_nothing`', () => {
+      const externalBlockerOnlyBreakdown = {
+        matchedByFilter: 2,
+        claimable: 0,
+        excluded: {
+          taken: 0,
+          claimHold: 0,
+          needsHuman: 0,
+          observationLane: 0,
+          externalBlocker: 2,
+          planLaneReserved: 0,
+          federationDetector: 0,
+          loopNoise: 0,
+          alreadyCompleted: 0,
+          crossMachineRig: 0,
+          blockedDep: 0,
+          cooldown: 0,
+        },
+      };
+      const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: externalBlockerOnlyBreakdown });
+      expect(miss.reason).toBe('all_matches_gated');
+      expect(miss.reason).not.toBe('spec_matches_nothing');
+      expect(miss.excludedBreakdownSummary).toMatch(/externalBlocker=2/);
+      expect(miss.windDown).toBe(true);
     });
 
     it('fleetScopedMiss keeps the ORIGINAL scope-mismatch message + omits excludedBreakdown when issueBreakdown is null/absent', () => {
@@ -770,6 +811,10 @@ describe('fleet scope assignment admission (P-016)', () => {
     it('sets a distinct top-level reason + loud error + escalate advice, but still windDown:true (correct to stop pulling)', () => {
       const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: zeroMatchBreakdown });
       expect(miss.reason).toBe('spec_matches_nothing');
+      // EI-18741523426513509: a genuinely empty spec (matchedByFilter === 0) must never also
+      // carry the floor-gated token — the two are mutually exclusive by construction (floorGated
+      // requires matchedByFilter > 0).
+      expect(miss.reason).not.toBe('all_matches_gated');
       expect(miss.windDown).toBe(true);
       expect(miss.error).toMatch(/SPEC MATCHES NOTHING/);
       expect(miss.error).toMatch(/ESCALATE to your fleet leader NOW/);
