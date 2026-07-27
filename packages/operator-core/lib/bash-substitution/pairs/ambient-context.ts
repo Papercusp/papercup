@@ -102,9 +102,13 @@ export const clockRead: SubstitutionPair = {
     if (/\+%N|%N\b/.test(atom)) {
       return { covered: false, reason: 'nanosecond precision; host.now carries milliseconds' };
     }
+    // NB every expression here names `coord:orient` (the harness asserts the
+    // expression cites its pair's toolName) while saying DO NOT CALL IT — the
+    // field is already in context, and calling a compound orient to read a clock
+    // would cost strictly more than the `date` it replaces.
     return {
       covered: true,
-      expression: 'host.now // ISO-8601 UTC on the coord:orient payload already in context',
+      expression: 'coord:orient payload → host.now // ISO-8601 UTC, already in context; do not re-call',
     };
   },
 };
@@ -137,7 +141,11 @@ export const loadRead: SubstitutionPair = {
     if (/(?:^|\s)-(?:p|s)\b|--pretty|--since/.test(atom)) {
       return { covered: false, reason: 'asks for uptime/boot time, not load; host carries no boot time' };
     }
-    return { covered: true, expression: 'host.load // [1m, 5m, 15m], with host.cores as the denominator' };
+    return {
+      covered: true,
+      expression:
+        'coord:orient payload → host.load // [1m,5m,15m] against host.cores; already in context, do not re-call',
+    };
   },
 };
 
@@ -164,7 +172,11 @@ export const coreCountRead: SubstitutionPair = {
     // `nproc` and `nproc --all` differ only for a process under CPU affinity;
     // host.cores is os.cpus().length, which is the `--all` sense and matches a
     // normal agent shell's `nproc`.
-    return { covered: true, expression: "host.cores // the machine's logical core count" };
+    return {
+      covered: true,
+      expression:
+        "coord:orient payload → host.cores // the machine's logical core count; already in context, do not re-call",
+    };
   },
 };
 
@@ -195,7 +207,8 @@ export const memoryRead: SubstitutionPair = {
     }
     return {
       covered: true,
-      expression: 'host.memFreePct // % free of host.memTotalGb; host.psiMemSome60 for pressure',
+      expression:
+        'coord:orient payload → host.memFreePct // % of host.memTotalGb, + host.psiMemSome60; already in context, do not re-call',
     };
   },
 };

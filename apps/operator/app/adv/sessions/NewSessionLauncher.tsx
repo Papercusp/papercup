@@ -275,6 +275,13 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
       const label = selectedPlan
         ? selectedPlan.title?.trim() || selectedPlan.slug
         : 'su session';
+      // WI-6321 (owner ask 2026-07-27): the toast used to read `Agent launched for
+      // <label>`, and with a plan selected `label` is the plan TITLE — so it rendered as
+      // "Agent launched for Arrow-format sync reads, then an mmap'd Arrow read cache."
+      // and read like a garbled sentence rather than a plan name. The owner asked what it
+      // meant. Name the KIND of thing the label is; quote it so a long descriptive title
+      // is visibly a title. `label` itself still goes to launchAgent unchanged.
+      const target = selectedPlan ? `on plan “${label}”` : '(su session, no plan)';
       const result = await launchAgent({
         slug: null,
         planSlug: selectedPlan?.slug ?? null,
@@ -286,13 +293,13 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         // terminal process exited almost immediately — a likely silent
         // no-op. Say so instead of a flat success toast.
         toast.warning(
-          `Agent launch for ${label}${chosenModel ? ` (${chosenModel})` : ''} may not have opened a window.`,
+          `Agent launch ${target}${chosenModel ? ` (${chosenModel})` : ''} may not have opened a window.`,
           { description: result.warning, duration: 8000 },
         );
         onLaunched?.();
       } else if (result.ok) {
         toast.success(
-          `Agent launched for ${label}${chosenModel ? ` (${chosenModel})` : ''}.`,
+          `Agent launched ${target}${chosenModel ? ` (${chosenModel})` : ''}.`,
           { duration: 3000 },
         );
         onLaunched?.();

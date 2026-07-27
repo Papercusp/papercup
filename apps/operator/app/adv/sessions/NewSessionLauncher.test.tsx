@@ -207,6 +207,36 @@ describe('NewSessionLauncher', () => {
     expect(onLaunched).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * WI-6321 (owner ask 2026-07-27). The toast used to read `Agent launched for <label>`,
+   * and with a plan selected `label` IS the plan title — so a descriptive title rendered
+   * as "Agent launched for Arrow-format sync reads, then an mmap'd Arrow read cache." and
+   * read as a garbled sentence. The owner had to ask what it meant. The message must name
+   * the KIND of thing the label is, and quote it so a long title is visibly a title.
+   */
+  describe('toast names the plan AS a plan (owner ask 2026-07-27)', () => {
+    it('with a plan: says `on plan "<title>"`, not `for <title>`', async () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Plan for new session' }), {
+        target: { value: 'beta-plan' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.toastSuccess).toHaveBeenCalled());
+      const msg = String(h.toastSuccess.mock.calls.at(-1)?.[0] ?? '');
+      expect(msg).toContain('on plan');
+      expect(msg).not.toContain('launched for');
+    });
+
+    it('with NO plan: says it is a plain su session rather than naming a phantom plan', async () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.toastSuccess).toHaveBeenCalled());
+      const msg = String(h.toastSuccess.mock.calls.at(-1)?.[0] ?? '');
+      expect(msg).toContain('su session');
+      expect(msg).not.toContain('on plan');
+    });
+  });
+
   it('enables the button once a plan is chosen, and launches with the selected plan', async () => {
     const onLaunched = vi.fn();
     render(<NewSessionLauncher onLaunched={onLaunched} />, { wrapper: withNuqsTestingAdapter() });
