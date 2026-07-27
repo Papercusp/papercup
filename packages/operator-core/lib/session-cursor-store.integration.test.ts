@@ -102,6 +102,13 @@ beforeAll(async () => {
       harness_slug text,
       created_at   timestamptz NOT NULL DEFAULT now()
     )`);
+  // 605's dedup index. It was MISSING from this fixture despite the "FAITHFUL"
+  // claim above, which made recordTurnJournal unusable here (its ON CONFLICT
+  // targets exactly this expression index) — the fixture only ever seeded the
+  // journal via raw INSERTs, so nothing noticed.
+  await rootSql.unsafe(`
+    CREATE UNIQUE INDEX session_turn_journal_turn_uq
+      ON harness_shared.session_turn_journal (session_id, COALESCE(turn_ts, 'epoch'::timestamptz))`);
   h.sql = rootSql;
 }, 90_000);
 

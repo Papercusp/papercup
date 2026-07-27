@@ -407,10 +407,23 @@ export class PgCoordLog implements CoordEventLog {
     // one-time-repaired by migration 546; `id` — not `ts` — is the append-order
     // cursor everywhere in this codebase, e.g. coord-inbox-bus.ts, so this
     // does not disturb ordering semantics.)
-    await sql`
+    // RETURNING id (P-009): the bigserial is this store's sequence number, and
+    // the ONE moment it is knowable without a follow-up read. `intent_event_id`
+    // on tool_invocations points at exactly this row, so a caller that appends
+    // an intent declaration can cache the pointer here instead of re-querying
+    // for "the row I just wrote" — which under concurrent appends by the same
+    // writer is not even reliably answerable.
+    const rows = await sql<{ id: string | number }[]>`
       INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug, ts)
       VALUES (${this.resolveWs()}, ${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::text::jsonb, ${line.harness_slug ?? null}, ${line.ts}::timestamptz)
+      RETURNING id
     `;
+    // postgres-js returns bigint columns as strings (raw-serializers.ts) — a
+    // silent NaN here would poison the pointer, so coerce explicitly and
+    // degrade to null rather than stamping a bad id.
+    const raw = rows[0]?.id;
+    const id = typeof raw === 'number' ? raw : Number(raw);
+    return Number.isFinite(id) ? id : null;
   }
 
   async readLines(surface: LineSurface, _opts: ReadLinesOpts = {}): Promise<CoordEnvelope[]> {

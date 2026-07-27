@@ -33,6 +33,7 @@ import {
 import { assumptionDetectabilityWarning } from '../../agent-facts/conflicts';
 import { resolveScopeRefAlias } from './scope-ctx';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
+import { noteAssumptionAsserted } from '../../agent-state-stamp';
 
 /**
  * EI-10952: the disclosure for a truncated body. Returns undefined on the clean
@@ -353,6 +354,18 @@ export default defineTool({
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
       ...(potHomeSlug ? { potHomeSlug } : {}),
     });
+    // P-009 / D-011: an ASSUMPTION advances this agent's assumption watermark,
+    // which every subsequent tool call is stamped with. `fact.id` is the
+    // append-versioned row id P-008(a) made immutable — that immutability is
+    // precisely what lets ONE monotonic id name a SET ("every live assumption of
+    // mine at or below this id"), so no assumption-set table is needed.
+    //
+    // Only kind='assumption' moves it: a conclusion or a convention is not
+    // something the agent is provisionally taking as true, and folding them in
+    // would make the watermark mean "any fact I wrote", which no reader wants.
+    if (args.kind === 'assumption') {
+      noteAssumptionAsserted(identity.ownerId, fact.id ?? null);
+    }
     // WI-3801 lint + P-014 turn-ref verification/origin stamp — warn-only,
     // no fields on the common clean case.
     const provenanceFields = await carryProvenanceFields(slotted.body, identity.ownerId);

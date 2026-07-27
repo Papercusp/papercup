@@ -37,6 +37,7 @@ import {
 import { resolveSenderCueAuthority } from './cue-authority-resolve';
 import { collectRetractedIds, suppressRetracted } from './retraction';
 import { isMachineAuthoredSender } from './machine-authored';
+import { noteIntentDeclared } from '../../agent-state-stamp';
 
 export type { InboxOptions };
 
@@ -312,7 +313,25 @@ export async function sendMessage(
   // persists the row" behaviour, ./audience D-004). A purely-slot send is
   // delivered by the park alone.
   if (liveAddrs.length > 0 || slots.length === 0) {
-    await coordLog.appendLine('messages', identity.ownerId, env);
+    const appendedId = await coordLog.appendLine('messages', identity.ownerId, env);
+    // P-009 / D-011 / D-014: an INTENT declaration is the append-only record
+    // `tool_invocations.intent_event_id` points at, and this is the only place
+    // its row id is known. The `coord:declare-intent` handler cannot cache it —
+    // the row is written AFTER the tool settles, by the lifecycle emit rule that
+    // lands here (D-014 describes declare-intent as writing the row directly;
+    // in the live code the emit rule does, one hop later).
+    //
+    // Deliberately NOT the presence row: `coord_presence.intent` is mutated in
+    // place, so a pointer at it would name different content than it did when
+    // stamped — the D-003 violation P-008(a) fixed for facts. The event log is
+    // append-only, so this pointer is stable.
+    //
+    // `lifecycle` rides in `extra` (merged verbatim above), so it is read
+    // structurally rather than off a declared envelope field.
+    const lifecycle = (env as { lifecycle?: unknown }).lifecycle;
+    if (appendedId != null && typeof lifecycle === 'string' && lifecycle === 'intent') {
+      noteIntentDeclared(identity.ownerId, appendedId);
+    }
   }
   // Fleet DIGEST sidecar (fleet-delivery-override-mute-digest D-001): a `@fleet:`
   // broadcast's digest members were dropped from the live `to` (listFleetMembers), so

@@ -263,7 +263,7 @@ export function serveUploadPack(
      */
     const abandon = (why: string): void => {
       if (settled) return;
-      void why; // MUTATION PROBE — restore
+      killChild(why);
     };
     // Never let a stream error crash the host (peer resets, EPIPE mid-pack).
     duplex.on('error', () => abandon('abandoned: requester duplex errored'));

@@ -232,8 +232,17 @@ export function extractImports(source) {
 
 /**
  * Walk the import graph from an entry file, tracking violations.
+ *
+ * The `violations` value type was documented as `string[][]` (a bare list of
+ * chains) but has never been that — `visit()` below pushes a RECORD carrying the
+ * chain plus the importer, line and import kind, and both the CLI printer and
+ * `check-transitive-boundary.test.ts` read `.chain`/`.line` off it. The wrong
+ * annotation survived because this module shipped no `.d.mts`, so every importer
+ * got `any` and nothing ever checked the claim (WI-6394). Generating the
+ * declaration is what surfaced it.
+ *
  * @param {string} entryFile - Absolute path to entry
- * @returns {{ files: Set<string>, violations: Map<string, string[][]> }}
+ * @returns {{ files: Set<string>, violations: Map<string, Array<{ chain: string[], importer: string, line: number, kind: string }>> }}
  */
 export function walkGraph(entryFile) {
   const visited = new Set(); // Visited file paths

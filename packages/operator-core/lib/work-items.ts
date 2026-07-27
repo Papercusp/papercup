@@ -85,6 +85,7 @@ import {
 } from './work-item-completion-authority';
 import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
 import { pgTimestampToIso } from './pg-timestamp';
+import { noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
 export type {
   ExternalBlockerCapability,
@@ -2796,6 +2797,13 @@ export async function claimWorkItem(
   if (claimed) {
     const won = claimed;
     void import('./work-items-events').then((m) => m.emitWorkItemClaimedEvent(won, assignee)).catch(() => {});
+    // P-009 / D-011 / D-014: "claiming IS declaring the goal" — so the goal ref
+    // is stamped from here, the ONE chokepoint every by-id claim path funnels
+    // through (work_items:claim, claim_next, pickup, scheduler:get_next), rather
+    // than hand-patched into each tool. Same durability argument as the `auto`
+    // stamp in coordination/messages.ts: the next claim path anyone adds is
+    // covered for free and cannot silently leave the goal unstamped.
+    noteGoalClaimed(assignee, won.id);
   }
   return claimed;
 }
@@ -4544,6 +4552,15 @@ export async function releaseWorkItem(
   // events imports THIS module statically — the lazy import breaks the cycle).
   const emitReleased = (released: WorkItem | null): void => {
     if (released && wasClaimed) {
+      // P-009: the agent has put this work DOWN — clear its goal stamp so later
+      // calls are not attributed to a goal it no longer holds. Only when the
+      // released item is the one currently stamped: a release of some OTHER item
+      // must not wipe the goal the agent is actually working under. `wi.assignee`
+      // is the PRE-release holder (read above, before the UPDATE).
+      const priorHolder = wi.assignee;
+      if (priorHolder && readAgentStateStamp(priorHolder).goalRef === released.id) {
+        noteGoalClaimed(priorHolder, null);
+      }
       // P-007: emitClaimReleasedEvent internally co-fires `work-item:claimable`
       // for a row that returned to a claimable state — one hook here. EI-15019:
       // thread announceClaimable through so an internal quarantine release can
