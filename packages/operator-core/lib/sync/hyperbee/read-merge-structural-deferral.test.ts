@@ -44,11 +44,15 @@ function fkViolation(): Error & { code: string } {
 }
 
 let warn: ReturnType<typeof vi.spyOn>;
+let error: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  // The poison test below deliberately drives the WI-255 quarantine, which logs.
+  error = vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 afterEach(() => {
   warn.mockRestore();
+  error.mockRestore();
 });
 
 describe('WI-559 — a STRUCTURAL apply failure defers, it does not abort or drop', () => {

@@ -78,6 +78,9 @@ describe('buildRealCorpusSubstrate', () => {
     };
     expect(pkg.scripts.test).toContain('vitest run');
     expect(pkg.devDependencies.vitest).toBeTruthy();
+    // No `--reporter=basic`: that reporter was removed in vitest 4 and makes the gate
+    // fail with ERR_LOAD_URL before any test executes (found by running the substrate).
+    expect(pkg.scripts.test).not.toContain('--reporter=basic');
     // The old toy substrate's ONLY gate was `node --check` — a syntactically valid stub
     // passed it. Here that command may exist but must not be the test gate.
     expect(pkg.scripts.test).not.toContain('node --check');

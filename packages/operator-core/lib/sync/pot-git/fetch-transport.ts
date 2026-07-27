@@ -183,13 +183,13 @@ export function serveUploadPack(
     const armIdle = (): void => {
       if (settled) return;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => killChild(`idle for ${idleMs}ms`), idleMs);
+      timer = setTimeout(() => killChild(`timed out after ${idleMs}ms idle`), idleMs);
       timer.unref?.();
     };
     armIdle();
     // ABSOLUTE ceiling: never rearmed, so a slow-drip peer still cannot pin the
     // stream open forever.
-    hardTimer = setTimeout(() => killChild(`exceeded the ${maxMs}ms absolute ceiling`), maxMs);
+    hardTimer = setTimeout(() => killChild(`timed out after ${maxMs}ms (absolute ceiling)`), maxMs);
     hardTimer.unref?.();
     child.stderr.on('data', (d) => {
       stderr += String(d);
@@ -463,12 +463,16 @@ export function fetchOverDuplex(
     const armIdle = (): void => {
       if (settled) return;
       clearTimeout(timer);
-      timer = setTimeout(() => expire(`idle for ${idleMs}ms`), idleMs);
+      // Wording note: the `fetch timed out after <n>ms` prefix is an ASSERTED
+      // contract (fetch-transport.test.ts, WI-6184 forensics). The ceiling that
+      // fired is appended rather than replacing it, so the diagnostic gains
+      // which-ceiling information without breaking that contract.
+      timer = setTimeout(() => expire(`timed out after ${idleMs}ms idle`), idleMs);
       timer.unref?.();
     };
     armIdle();
     // ABSOLUTE ceiling — never rearmed.
-    hardTimer = setTimeout(() => expire(`exceeded the ${maxMs}ms absolute ceiling`), maxMs);
+    hardTimer = setTimeout(() => expire(`timed out after ${maxMs}ms (absolute ceiling)`), maxMs);
     hardTimer.unref?.();
 
     // FAIL FAST on an ALREADY-destroyed duplex (WI-3496 rig finding): the

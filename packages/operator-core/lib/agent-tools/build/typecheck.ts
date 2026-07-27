@@ -61,10 +61,35 @@ import {
   syntaxBrokenFiles,
 } from '../../tsc-diagnostics';
 import { inferWorkspaceRoot } from '../../testing-domain-glob';
+import {
+  FOREGROUND_TIMEOUT_CEILING_MS,
+  clampForegroundTimeoutMs,
+} from '../capability/inspect';
 
 /** A cold full-repo typecheck runs minutes, not seconds; a wedged one must still end. */
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_TIMEOUT_MS = 900_000;
+
+/**
+ * EI-18776865728050036 — this tool is dispatched FOREGROUND over the papercusp-su MCP
+ * transport, which hard-caps a call at ~55s (EI-6073). Its own budget above is 300s default /
+ * 900s max, so for any project slower than ~55s the transport killed the call BEFORE the
+ * `error:'timeout'` branch below could ever be reached — and the failure surfaced as
+ * `MCP error -32603: write CONNECTION_CLOSED 127.0.0.1:6432`, an error naming the DATABASE.
+ *
+ * Measured 2026-07-27: `packages/operator-core` takes 104.4s → failed 3/3, while `libs/flags`
+ * (2.1s) succeeded on the identical path. So the tool was structurally unusable on the largest
+ * workspace — and the one the repo's own CLAUDE.md tells every agent to typecheck after
+ * editing. Worse, the pgbouncer-shaped error sends the reader off to debug PG (it cost me
+ * several calls), and the fallback is a hand-rolled `npx tsc` — precisely the trap this tool
+ * exists to prevent (`-p .` checks ZERO files and a grep over the one-line TS5057 prints
+ * nothing, reading as "clean").
+ *
+ * EI-6073 already solved this class for the sibling `capability:inspect` — and its comment even
+ * names this case ("operator-core's tsc runs 60-90s"). We IMPORT that ceiling rather than
+ * re-declaring 50_000 here: a second copy of a transport constant is exactly the kind of twin
+ * that drifts silently the day the cap moves.
+ */
 const DEFAULT_MAX_ERRORS = 50;
 
 /** Depth-bounded scan for real tsconfigs, used only to make a refusal actionable. */
@@ -174,7 +199,9 @@ export default defineTool({
     maxErrors: z.number().int().min(1).max(500).optional()
       .describe(`Cap the returned errors list (default ${DEFAULT_MAX_ERRORS}). Counts and byFile stay complete; errorsTruncated flags the cut.`),
     timeoutMs: z.number().int().min(1000).max(MAX_TIMEOUT_MS).optional()
-      .describe(`Hard budget for the compile. Default ${DEFAULT_TIMEOUT_MS}ms.`),
+      .describe(
+        `Hard budget for the compile. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so an over-long compile returns an actionable timeout instead of an opaque transport error. A project that needs longer (packages/operator-core is ~104s) must run detached via capability:inspect { run_in_background: true }.`,
+      ),
     incremental: z.boolean().optional()
       .describe('Allow tsc to use a warm tsconfig.tsbuildinfo. Default false — EI-487: an incremental run UNDER-reports errors in files the cache has not reindexed, which read as green for days. Only set true when you want a fast re-check and already know the tree is warm.'),
   }),
@@ -205,7 +232,10 @@ export default defineTool({
       };
     }
 
-    const timeoutMs = args.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    // Clamp BELOW the ~55s MCP transport cap so this handler always wins the race and can
+    // return the structured timeout below, instead of the transport killing the call and
+    // surfacing an opaque `CONNECTION_CLOSED 127.0.0.1:6432` (EI-18776865728050036).
+    const timeoutMs = clampForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const tscArgs = ['--noEmit', '--pretty', 'false', '-p', resolved];
     if (args.incremental !== true) tscArgs.push('--incremental', 'false');
 
@@ -213,7 +243,25 @@ export default defineTool({
     const durationMs = Date.now() - started;
 
     if (outcome.timedOut) {
-      return { data: { ok: false, error: 'timeout', project: relative(root, resolved), timeoutMs, durationMs, output: outcome.output.slice(-2000) } };
+      return {
+        data: {
+          ok: false,
+          error: 'timeout',
+          project: relative(root, resolved),
+          timeoutMs,
+          durationMs,
+          // The whole point of the clamp: a timeout must hand back a WORKING next step, not a
+          // dead end. `capability:inspect` already runs a detached, uncapped typecheck and its
+          // `onlyPaths` does server-side filtering to just the files you changed — which is the
+          // real answer for a project this size (EI-18776865728050036).
+          hint:
+            `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
+            `This project is too large to typecheck inline — re-run it detached: ` +
+            `capability:inspect { check: 'typecheck', package: '${relative(root, resolved) || '.'}', run_in_background: true, onlyPaths: ['<your changed files>'] }, ` +
+            `then poll capability:bash_output. Do NOT fall back to a hand-rolled \`npx tsc -p .\` — it checks ZERO files here and reads as clean.`,
+          output: outcome.output.slice(-2000),
+        },
+      };
     }
 
     const diagnostics = parseTscDiagnostics(outcome.output);

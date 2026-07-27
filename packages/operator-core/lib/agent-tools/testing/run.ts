@@ -119,7 +119,12 @@ export default defineTool({
     void ctx;
     const root = inferWorkspaceRoot();
     const runId = randomUUID();
-    const timeoutMs = args.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    // EI-18776865728050036 — same clamp as build:typecheck, for the same reason: this tool is
+    // dispatched FOREGROUND over an MCP transport that hard-caps a call at ~55s (EI-6073), so a
+    // suite slower than that had the call killed before the `error:'timeout'` branch below could
+    // return, surfacing as an opaque `CONNECTION_CLOSED`. Clamping makes this handler win the
+    // race and hand back an actionable next step.
+    const timeoutMs = clampForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
     const dir = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-'));
     const reportPath = join(dir, 'report.json');
@@ -137,7 +142,18 @@ export default defineTool({
       );
 
       if (outcome.timedOut) {
-        return { data: { ok: false, runId, error: 'timeout', timeoutMs, routerOutput: outcome.output.slice(-2000) } };
+        return {
+          data: {
+            ok: false,
+            runId,
+            error: 'timeout',
+            timeoutMs,
+            hint:
+              `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
+              `This suite is too slow to run inline — re-run it detached: capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output.`,
+            routerOutput: outcome.output.slice(-2000),
+          },
+        };
       }
       // A route/launch error never produced a report — surface the router's own
       // diagnostics (they name the cause: unmatched path, mid-install corruption).

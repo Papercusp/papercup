@@ -278,7 +278,12 @@ export function buildRealCorpusSubstrate(
             version: '0.0.0',
             private: true,
             type: 'module',
-            scripts: { test: 'vitest run --reporter=basic', typecheck: 'node --check' },
+            // `vitest run` with the DEFAULT reporter. Verified by actually executing this
+            // substrate: `--reporter=basic` was removed in vitest 4 and makes the gate
+            // itself explode with ERR_LOAD_URL before a single test runs — which would
+            // have scored every agent as failing for a reason it could not fix. A task's
+            // gate command must be executed, not assumed.
+            scripts: { test: 'vitest run', typecheck: 'node --check' },
             devDependencies: { vitest: '^4.1.8' },
           },
           null,

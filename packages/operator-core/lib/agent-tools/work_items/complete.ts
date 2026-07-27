@@ -28,6 +28,7 @@
  */
 
 import { z } from 'zod';
+import { assumptionsArg, hasAssumptionDeclaration, ASSUMPTIONS_REQUIRED_MESSAGE } from './_assumptions';
 import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
@@ -133,6 +134,16 @@ const itemSpec = z.object({
    * decision-ledger disposition from it. Stays out of the fixed `completion` record.
    */
   outputPayload: z.unknown().optional(),
+  /**
+   * P-017 (b) gate #2 / D-016 / D-050 — REQUIRED on every item.
+   *
+   * Unconditional here, unlike work_items:set_state (where only the TERMINAL branch
+   * carries it): this tool ALWAYS writes the terminal completion record
+   * (terminal_owner + terminalCompletionRef — which is why reopening one later needs
+   * `force:true`), even on a call that deliberately omits `state` and so does not
+   * flip lifecycle. The commitment is the completion record, not the state change.
+   */
+  assumptions: assumptionsArg,
 });
 
 type CompleteItem = z.infer<typeof itemSpec>;
@@ -845,6 +856,11 @@ export default defineTool({
         completion: completionSpec.optional(),
         /** Optional kind-specific structured output (single-complete shorthand). */
         outputPayload: z.unknown().optional(),
+        /** P-017 (b) gate #2: `.optional()` ONLY so an items[]-only call need not carry
+         *  one; the single-complete shorthand's requirement is closed by the refine below. */
+        assumptions: assumptionsArg
+          .optional()
+          .describe('assumption declaration for the single-complete shorthand (see items[].assumptions)'),
         items: z
           .array(itemSpec)
           .min(1)
@@ -866,6 +882,12 @@ export default defineTool({
           '`state` is the terminal lifecycle (issue: "resolved"|"closed"; feature: "passed"|"deprecated") ' +
           'and is REQUIRED to actually close it: a completion with no `state` only records the note, ' +
           'the item stays claimable (see work_items:set_state to change state alone, without a completion record).',
+      })
+      // P-017 (b) gate #2 / D-050 — the same rule itemSpec enforces for items[], closed
+      // for the single-complete shorthand so the gate cannot simply relocate to it.
+      .refine((a) => (a.items?.length ?? 0) > 0 || hasAssumptionDeclaration(a.assumptions), {
+        path: ['assumptions'],
+        message: ASSUMPTIONS_REQUIRED_MESSAGE,
       }),
   ),
   // context-trimming-tiers P-025 (write-echo diet): trimmed/standard sessions

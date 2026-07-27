@@ -149,17 +149,17 @@ describe('serveUploadPack — idle ceiling', () => {
       allowOutsideRoot: true,
     });
     expect(res.timedOut).toBe(true);
-    expect(res.stderr).toContain('idle for 300ms');
+    expect(res.stderr).toContain('300ms idle');
   }, 20_000);
 
   /** A slow-drip peer still cannot pin the stream open indefinitely. */
   it('enforces an absolute ceiling even while bytes keep dripping', async () => {
     const repo = repoWithCommit();
-    const duplex = new PassThrough();
+    const duplex = peerDuplex();
     let stop = false;
-    duplex.write(PKT_HEADER);
+    duplex.push(PKT_HEADER);
     const drip = setInterval(() => {
-      if (!stop) duplex.write('x');
+      if (!stop) duplex.push('x');
     }, 40);
 
     const res = await serveUploadPack(repo, duplex, {

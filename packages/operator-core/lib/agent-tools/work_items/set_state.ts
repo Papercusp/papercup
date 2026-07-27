@@ -18,6 +18,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemStateWithAliasInfo } from '../../work-items';
 import { planWorkItemArm, commitWorkItemArm } from './arm-reversible-work-item';
 import { runBulk, bulkContent } from '../_bulk';
+import { assumptionsArg, hasAssumptionDeclaration, ASSUMPTIONS_REQUIRED_MESSAGE } from './_assumptions';
 import {
   TERMINAL_INPUT_STATES,
   NON_TERMINAL_INPUT_STATES,
@@ -79,6 +80,11 @@ const terminalItem = itemBase.extend({
     .describe(
       'REQUIRED for this terminal state — completion evidence (summary / commit / coord or plan-item ref). Prefer work_items:complete for a structured completion record.',
     ),
+  // P-017 (b) gate #2 / D-016 / D-050: `assumptions` joins the SAME terminal branch
+  // that already carries `completionRef`, so BOTH requirements render in the one
+  // schema shape the model sees — evidence for the claim, and the assumptions the
+  // claim rests on. Non-terminal writes carry neither field at all.
+  assumptions: assumptionsArg,
 });
 
 const nonTerminalItem = itemBase.extend({
@@ -121,6 +127,13 @@ export default defineTool({
         .max(2000)
         .optional()
         .describe('completion evidence applied to the inline id / every id in `ids` (see itemSpec.completionRef)'),
+      // P-017 (b) gate #2: `.optional()` ONLY because an items[]-only call carries its
+      // own per-item value. The requirement for the inline / ids[] shorthand is closed
+      // by the refine below — without it the gate would MOVE to the shorthand, which is
+      // the cheaper call and would therefore carry all the traffic.
+      assumptions: assumptionsArg
+        .optional()
+        .describe('assumption declaration applied to the inline id / every id in `ids` (see itemSpec.assumptions)'),
       force: z
         .boolean()
         .optional()
@@ -137,6 +150,14 @@ export default defineTool({
       path: ['completionRef'],
       message:
         'a terminal state requires completion evidence — pass `completionRef`, or (preferred) use work_items:complete for a structured completion record',
+    })
+    // P-017 (b) gate #2 / D-050 — the SAME structural rule terminalItem enforces for
+    // items[], applied to the inline / ids[] shape, exactly as the completionRef refine
+    // above does for evidence. Two separate refines rather than one so a caller missing
+    // both fields is told about both, not just whichever check ran first.
+    .refine((a) => !(a.state && isTerminalStateInput(a.state) && !hasAssumptionDeclaration(a.assumptions)), {
+      path: ['assumptions'],
+      message: ASSUMPTIONS_REQUIRED_MESSAGE,
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
