@@ -17,6 +17,8 @@ export interface PerFileGateResult {
     | 'fail-syntax'
     | 'fail-regressed'
     | 'fail-attributed'
+    /** EI-18766822535373909 — regressions in files the baseline has never seen. */
+    | 'fail-new-file'
     | 'ok-peer-drift'
     | 'ok-ratchet'
     | 'ok-below'
@@ -25,6 +27,13 @@ export interface PerFileGateResult {
   improvements: PerFileGateEntry[];
   attributed?: PerFileGateEntry[];
   peerDrift?: PerFileGateEntry[];
+  /**
+   * Regressions in files ABSENT from the baseline (brand-new files), split out of
+   * `peerDrift` so `--mine` can never greenwash them: absence from the git-status
+   * changed set does not prove a new file isn't yours, because git-sync auto-commits
+   * this shared tree every few minutes.
+   */
+  newFiles?: PerFileGateEntry[];
   total: number;
   baselineTotal: number;
   newBaselineByFile?: Record<string, number>;

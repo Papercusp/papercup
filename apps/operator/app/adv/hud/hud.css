@@ -38,11 +38,25 @@
 
 /* Same WebKitGTK button-flex collapse as .hud__count / .hud__card: the button
    is display:inline-block and any flex row lives on an inner span. */
+/* Underlined tab strip, not pills (owner ask 2026-07-26: "make these look more
+   like tabs"). The selected tab is marked by an accent RULE along its bottom
+   edge — the conventional tab affordance — rather than a rounded filled chip,
+   which read as a toggle/filter button and was easy to confuse with the
+   .hud__count and .hud__fleet chips directly below it (those ARE toggles, and
+   they legitimately keep the pill shape; the whole point of this change is that
+   the axis switch should no longer look like one of them).
+
+   Deliberately NO negative margin to fuse the underline with .hud__tabs'
+   border-bottom: this strip is `flex-wrap: wrap` and, in the narrow HUD rail,
+   the tabs DO wrap onto their own line — a bottom-margin hack aligns the first
+   row and leaves every wrapped row hanging off the border. The underline sits
+   under each tab instead, which is correct on every row. */
 .hud__tab {
   display: inline-block;
-  padding: 5px 12px;
-  border: 1px solid transparent;
-  border-radius: 4px;
+  padding: 5px 12px 6px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   background: transparent;
   color: var(--fg-mute);
   cursor: pointer;
@@ -54,13 +68,13 @@
 
 .hud__tab-row { display: inline-flex; align-items: center; gap: 6px; }
 
-.hud__tab:hover { color: var(--fg); border-color: var(--border); }
+.hud__tab:hover { color: var(--fg); border-bottom-color: var(--border); }
 .hud__tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .hud__tab--on {
   color: var(--fg);
-  border-color: var(--accent);
-  background: rgb(from var(--accent) r g b / 0.12);
+  border-bottom-color: var(--accent);
+  background: transparent;
 }
 
 /* ── header: counts + toggles ─────────────────────────────────────────────── */
@@ -164,9 +178,19 @@
    The pickers became searchable Comboboxes under
    hud-session-launcher-and-board-tabs-2026-07-26 P-003/P-008. */
 
+/* Sits immediately after the tabs now (the `.hud__spacer` that used to right-align
+   it was removed — owner ask 2026-07-26). The rule + padding give the launch
+   cluster its own visual group so "Sessions | Plans | Work items" still reads as
+   the tab axis rather than running straight into the plan/model/effort pickers.
+   margin-right:auto keeps it LEFT: without it, `flex-wrap` would stretch the last
+   line and let the cluster drift right again on some widths. */
 .hud__header-action {
   display: flex;
   align-items: center;
+  margin-left: 8px;
+  margin-right: auto;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
 }
 
 .pc-new-session-launcher {

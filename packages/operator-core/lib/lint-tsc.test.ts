@@ -149,6 +149,62 @@ describe('parseExplicitFiles feeding decidePerFile (EI-18731016038876755)', () =
     expect(r.peerDrift!.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
   });
 
+  // EI-18766822535373909 — the live failure this pins: a brand-new file's REAL error was
+  // reported under a leading ✓ as "peer drift — not your regression", because git-sync had
+  // already auto-committed the file so it was no longer in `git status` and thus not in the
+  // caller's changed set. A file the baseline has never seen can never be dismissed that way.
+  it('a NEW file (absent from baseline) NOT in the changed set is NOT peer drift — it gates', () => {
+    const r = decidePerFile({
+      currentByFile: { 'a.ts': 2, 'brand-new.ts': 1 },
+      baselineByFile: { 'a.ts': 2 },
+      brokenFiles: brokenFree,
+      // The caller's changed set does not contain the new file — exactly the live case.
+      changedFiles: new Set(['b.ts']),
+    });
+    expect(r.verdict).toBe('fail-new-file');
+    expect(r.newFiles!.map((x: { file: string }) => x.file)).toEqual(['brand-new.ts']);
+    expect(r.peerDrift).toEqual([]);
+  });
+
+  // Non-vacuousness: the case above must fail for the NEW-FILE reason specifically, not because
+  // any unchanged regression now gates. A file WITH a baseline still drifts benignly.
+  it('a KNOWN file (in the baseline) not in the changed set is STILL benign peer drift', () => {
+    const r = decidePerFile({
+      currentByFile: { 'a.ts': 3, 'b.ts': 1 },
+      baselineByFile: { 'a.ts': 2, 'b.ts': 1 },
+      brokenFiles: brokenFree,
+      changedFiles: new Set(['b.ts']),
+    });
+    expect(r.verdict).toBe('ok-peer-drift');
+    expect(r.peerDrift!.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
+    expect(r.newFiles).toEqual([]);
+  });
+
+  it('a new file that IS in the changed set stays attributed (fail-attributed, not fail-new-file)', () => {
+    const r = decidePerFile({
+      currentByFile: { 'brand-new.ts': 1 },
+      baselineByFile: {},
+      brokenFiles: brokenFree,
+      changedFiles: new Set(['brand-new.ts']),
+    });
+    expect(r.verdict).toBe('fail-attributed');
+    expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual(['brand-new.ts']);
+  });
+
+  // '(unattributed)' is not a file and is genuinely un-actionable, so it must NOT be pulled into
+  // the gating new-file bucket just because it has no baseline entry.
+  it("'(unattributed)' errors with no baseline stay in peerDrift, never gating as a new file", () => {
+    const r = decidePerFile({
+      currentByFile: { '(unattributed)': 2 },
+      baselineByFile: {},
+      brokenFiles: brokenFree,
+      changedFiles: new Set(['b.ts']),
+    });
+    expect(r.verdict).toBe('ok-peer-drift');
+    expect(r.newFiles).toEqual([]);
+    expect(r.peerDrift!.map((x: { file: string }) => x.file)).toEqual(['(unattributed)']);
+  });
+
   it('a regression in a file IN the explicit list fails, attributed', () => {
     const changedFiles = parseExplicitFiles(['--files=a.ts'])!;
     const r = decidePerFile({

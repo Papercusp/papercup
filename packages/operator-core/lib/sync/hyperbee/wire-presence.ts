@@ -258,6 +258,23 @@ export async function wirePresenceAnnounceForHarness(
   const loop = startPresenceAnnounceLoop({
     resolveIdentity,
     getState,
+    // EI-18768167802573425: "no identity → announce nothing" used to be an
+    // entirely silent state, and (before that fix) a permanent one. Surface both
+    // edges. Fired per ATTEMPT, so already throttled by identityRetryMs.
+    onIdentityUnresolved: (attempt) => {
+      console.warn(
+        `[wire-presence] no swarm identity for ${handle.workspaceId}::${handle.harnessSlug} ` +
+          `(attempt ${attempt}) — announcing NOTHING; this node is invisible to peers. ` +
+          `Expected on a gh-unauthenticated box; otherwise the device identity/keychain failed to resolve. ` +
+          `Retrying periodically.`,
+      );
+    },
+    onIdentityRecovered: (afterAttempts) => {
+      console.info(
+        `[wire-presence] swarm identity RESOLVED for ${handle.workspaceId}::${handle.harnessSlug} ` +
+          `after ${afterAttempts} attempt(s) — presence announce is live`,
+      );
+    },
     // Writer cutover: gossip beats when ON (a put op's row broadcasts as a signed
     // frame; a skipped/failed broadcast is a missed beat the TTL absorbs) — the
     // log path stays byte-identical when OFF.

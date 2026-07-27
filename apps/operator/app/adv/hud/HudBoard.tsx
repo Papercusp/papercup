@@ -308,11 +308,16 @@ export default function HudBoard({
             <span className="hud__tab-row">{HUD_TAB_LABEL[id]}</span>
           </button>
         ))}
-        <span className="hud__spacer" />
         {/* The launcher stays OUTSIDE the tab bodies: launching a session is
             not a thing you do to the sessions board, it is a thing you do from
             the HUD, and hiding it behind a tab would make it unreachable from
-            the two tabs most likely to make you want it. */}
+            the two tabs most likely to make you want it.
+
+            LEFT-aligned, directly after the tabs (owner ask 2026-07-26). It
+            previously sat behind a `.hud__spacer` (flex:1) which pushed it to
+            the far right of the strip; on a wide board that stranded the launch
+            cluster a full screen-width away from the tabs it belongs to. No
+            spacer now — it reads as one continuous control strip. */}
         {headerAction ? <span className="hud__header-action">{headerAction}</span> : null}
       </div>
 

@@ -57,6 +57,12 @@ export interface AnnounceCadenceOpts {
 
 const DEFAULT_REFRESH_MS = 30_000;
 
+/** EI-18768167802573425 — how long to wait before re-attempting an identity
+ *  resolution that returned null. Long enough that a genuinely unauthenticated
+ *  box is not re-probing its keychain every tick, short enough that a transient
+ *  boot-race failure self-heals in about a minute instead of never. */
+const DEFAULT_IDENTITY_RETRY_MS = 60_000;
+
 function stateChanged(a: PresenceState, b: PresenceState): boolean {
   return a.intent !== b.intent || a.currentView !== b.currentView || a.harnessSlug !== b.harnessSlug;
 }
@@ -240,9 +246,26 @@ export async function announceLocalPresence(
 }
 
 export interface PresenceAnnounceLoopDeps {
-  /** Resolve this machine's swarm identity, or null when gh is unauthenticated
-   *  (then the loop ticks but never announces). Called lazily + cached. */
+  /** Resolve this machine's swarm identity, or null when it cannot be resolved
+   *  (then the loop ticks but never announces). A SUCCESS is cached for the
+   *  process lifetime; a null is RETRIED every {@link identityRetryMs} — see
+   *  EI-18768167802573425 in startPresenceAnnounceLoop for why the null must
+   *  not be latched. */
   resolveIdentity: () => Promise<PresenceIdentity | null>;
+  /** EI-18768167802573425 — how long to wait before re-attempting an identity
+   *  resolution that came back null. Default 60s. A genuinely gh-unauthenticated
+   *  box just re-checks once a minute (cheap); a TRANSIENT boot failure recovers
+   *  within one window instead of staying mute until the process restarts. */
+  identityRetryMs?: number;
+  /** EI-18768167802573425 — fired when a resolution attempt yields no identity,
+   *  with the running attempt count, so the caller can surface the fact that this
+   *  node is announcing NOTHING (previously an entirely silent state). Fired per
+   *  ATTEMPT, not per tick, so it is already throttled by identityRetryMs. */
+  onIdentityUnresolved?: (attempt: number) => void;
+  /** EI-18768167802573425 — fired once when an identity resolves after one or
+   *  more failed attempts (never on a first-attempt success), so a recovery is
+   *  visible too. */
+  onIdentityRecovered?: (afterAttempts: number) => void;
   /** The current declared presence state at tick time. */
   getState: () => PresenceState;
   /** Append the announce op to the booted substrate handle's own log. */
@@ -293,7 +316,22 @@ export interface PresenceAnnounceLoopHandle {
 export function startPresenceAnnounceLoop(deps: PresenceAnnounceLoopDeps): PresenceAnnounceLoopHandle {
   const setIv = deps.setIntervalFn ?? setInterval;
   const clearIv = deps.clearIntervalFn ?? clearInterval;
-  let identity: PresenceIdentity | null | undefined;
+  let identity: PresenceIdentity | null = null;
+  // EI-18768167802573425: identity resolution is retried while it yields null.
+  // This used to be `PresenceIdentity | null | undefined` memoized behind an
+  // `identity === undefined` guard, which cached the NULL as permanently as a
+  // success — so ONE transient failure on the first tick (gh token not yet
+  // readable, device keychain not yet decryptable, a registry blip racing
+  // substrate boot) disabled this node's presence for the entire process
+  // lifetime, silently. The default resolver collapses every throw into null
+  // (wire-presence's defaultResolvePresenceIdentity), so "transient error" and
+  // "genuinely unauthenticated" were indistinguishable AND both were latched.
+  // Caching the SUCCESS is still correct and still happens; only the failure
+  // retries, at identityRetryMs (not every tick — a truly unauthed box must not
+  // re-probe the keychain every 5s).
+  let identityAttempts = 0;
+  let lastIdentityAttemptMs = 0;
+  const identityRetryMs = deps.identityRetryMs ?? DEFAULT_IDENTITY_RETRY_MS;
   let prev: LastAnnounce | null = null;
   let stopped = false;
   // Assigned right after creation, below — `tickOnce`'s SESSION_CLOSED
@@ -303,7 +341,21 @@ export function startPresenceAnnounceLoop(deps: PresenceAnnounceLoopDeps): Prese
   async function tickOnce(): Promise<void> {
     if (stopped) return;
     try {
-      if (identity === undefined) identity = await deps.resolveIdentity();
+      if (!identity) {
+        // EI-18768167802573425: attempt on the first tick, then at most once per
+        // identityRetryMs while still unresolved — never latch the null.
+        const nowMs = (deps.now ?? Date.now)();
+        if (identityAttempts === 0 || nowMs - lastIdentityAttemptMs >= identityRetryMs) {
+          lastIdentityAttemptMs = nowMs;
+          identityAttempts += 1;
+          identity = await deps.resolveIdentity();
+          if (identity) {
+            if (identityAttempts > 1) deps.onIdentityRecovered?.(identityAttempts);
+          } else {
+            deps.onIdentityUnresolved?.(identityAttempts);
+          }
+        }
+      }
       if (!identity) return; // no swarm identity → nothing to announce
       const result = await announceLocalPresence(identity, deps.getState(), {
         append: deps.append,
