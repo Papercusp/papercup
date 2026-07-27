@@ -71,6 +71,7 @@ import {
   addRevokedHivePubkeys,
   loadRevokedHivePubkeys,
 } from '../../hive-membership-store';
+import { unsafeFederatedPotScope } from '../../federated-pot-scope';
 import { makeAdmissionDecider, type AdmissionInput } from '../../sync/hyperbee/read-admission';
 import type { AdminTestCheckResult } from '../../admin-test-suites-shared';
 
@@ -524,12 +525,16 @@ async function checkAdmissionUnionPg(runId: string, sql: Sql): Promise<CheckResu
     );
     await upsertHiveMember({ workspaceId: ws, potHomeSlug: hive, githubUserId: 1, githubUsername: 'owner', bindingStatus: 'verified' }, sql);
 
+    // EI-18777176681958978: certified — `hive` is a synthetic slug this check both WRITES
+    // (insertHiveIfAbsent/upsertHiveMember above) and READS, so local == federated by
+    // construction; there is no joiner topology in a self-contained suite fixture.
+    const scope = unsafeFederatedPotScope(hive, 'suite fixture writes and reads the same synthetic pot slug');
     // Empty union before any revoke.
-    const before = await loadRevokedHivePubkeys(ws, hive, sql);
+    const before = await loadRevokedHivePubkeys(ws, scope, sql);
     const startsEmpty = before.size === 0;
 
     await addRevokedHivePubkeys(ws, hive, 1, [revokedPk], sql);
-    const revoked = await loadRevokedHivePubkeys(ws, hive, sql);
+    const revoked = await loadRevokedHivePubkeys(ws, scope, sql);
     const unionHasRevoked = revoked.has(revokedPk) && !revoked.has(freshPk);
 
     const decide = makeAdmissionDecider({ revoked, verifyBinding: async () => 'verified' });

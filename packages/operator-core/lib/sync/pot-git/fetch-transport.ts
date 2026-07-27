@@ -200,8 +200,9 @@ export function serveUploadPack(
     const killChild = (why: string): void => {
       timedOut = true;
       stderr += `\nupload-pack ${why} (served ${bytesServed}B)`;
-      // BEFORE the SIGKILL, so the reason is on the wire ahead of the end frame
-      // the child's 'close' will trigger (see `onFailure`).
+      // Report HERE, at the moment of the decision, not from the 'close'
+      // handler's generic fallback: this names the ceiling that actually fired
+      // and does not depend on SIGKILL→'close' being prompt.
       reportFailure(`upload-pack ${why} (served ${bytesServed}B)`);
       try {
         child.kill('SIGKILL');

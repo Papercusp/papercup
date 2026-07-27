@@ -197,6 +197,14 @@ const endEncoding: CompactEncoding<EndFrame> = {
  *  server's response finishes), exactly mirroring `fetchOverDuplex`'s own
  *  `allowHalfOpen` socket-pair contract. */
 class FrameDuplex extends Duplex {
+  /** EI-18776567787336109: per-session forensics. A channel that dies mid-fetch
+   *  used to destroy every session with a bare "serve channel closed", which
+   *  cannot distinguish an idle channel being reaped from a live multi-MB
+   *  transfer being cut — the exact ambiguity that made a cold-join stall
+   *  undiagnosable from the joining machine. */
+  readonly startedAt = Date.now();
+  bytesOut = 0;
+  bytesIn = 0;
   constructor(
     private readonly sendChunk: (chunk: Buffer) => void,
     private readonly onLocalEnd: (code: number) => void,
@@ -217,7 +225,9 @@ class FrameDuplex extends Duplex {
   }
   override _write(chunk: Buffer, _enc: string, cb: (e?: Error | null) => void): void {
     try {
-      this.sendChunk(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      this.bytesOut += buf.length;
+      this.sendChunk(buf);
       cb();
     } catch (e) {
       cb(e instanceof Error ? e : new Error(String(e)));
@@ -254,6 +264,7 @@ class FrameDuplex extends Duplex {
    *  all. This only closes the narrow race between those two. */
   pushChunk(chunk: Buffer): void {
     if (this.destroyed || this.readableEnded) return;
+    this.bytesIn += chunk.length;
     this.push(chunk);
   }
   /** Deliver an inbound END frame — EOF on the readable side (half-open: the
@@ -460,10 +471,35 @@ function failSoftDuplex(reason: string): Duplex {
  *  never a silent hang) — `fetchOverDuplex`/`serveUploadPack` both treat a
  *  destroyed duplex as a failed (nonzero) result, never a thrown exception. */
 function failAllSessions(state: ChannelState): void {
-  for (const d of state.serverSessions.values()) d.destroy(new Error('pot-git: serve channel closed'));
-  for (const d of state.clientSessions.values()) d.destroy(new Error('pot-git: serve channel closed'));
+  const live = [...state.serverSessions.values(), ...state.clientSessions.values()];
+  // EI-18776567787336109: say WHAT WAS LOST, not just that something closed.
+  //
+  // A bare "serve channel closed" is the same string whether an idle channel
+  // was reaped (harmless, constant background noise — pot-git channels churn
+  // 23-36x/min) or a live multi-MB transfer was cut mid-pack (a real fault).
+  // The joiner reported only that string, so a cold-join stall was
+  // indistinguishable from routine churn and could not be diagnosed from the
+  // machine that was actually failing. The counters below are what separate
+  // them: sessions in flight, how long they had been running, and how many
+  // bytes had already moved.
+  const now = Date.now();
+  let bytes = 0;
+  let oldestMs = 0;
+  for (const d of live) {
+    bytes += d.bytesOut + d.bytesIn;
+    oldestMs = Math.max(oldestMs, now - d.startedAt);
+  }
+  const sock = state.socket as { destroyed?: boolean } | null | undefined;
+  const detail = live.length
+    ? ` while ${live.length} session(s) were in flight` +
+      ` (oldest ${oldestMs}ms, ${bytes}B moved, socketDestroyed=${sock?.destroyed ?? 'unknown'})`
+    : '';
+  const reason = `pot-git: serve channel closed${detail}`;
+  for (const d of live) d.destroy(new Error(reason));
   state.serverSessions.clear();
   state.clientSessions.clear();
+  // Only worth a line when work was actually lost — an idle close is noise.
+  if (live.length) potGitLog('warn', `[pot-git] channel CLOSED${detail} peer=${peerTag(state)}`);
 }
 
 // ─── WI-6184: serve-side observability ──────────────────────────────────

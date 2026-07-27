@@ -27,6 +27,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { listHiveMembers, loadRevokedHivePubkeys } from '../../../hive-membership-store';
+import { unsafeFederatedPotScope } from '../../../federated-pot-scope';
 import { bumpRefusedOpCounter } from '../../../p2p/receipts';
 import { verifyEd25519 } from '../../../identity/ed25519';
 import {
@@ -176,9 +177,15 @@ async function realVerifyWorkOffer(
 
     // (b) A publisher-attested, non-revoked DEVICE key signed it. Fresh
     // membership read per op — security path, no TTL cache.
-    const revoked = await loadRevokedHivePubkeys(opts.workspaceId, opts.harnessSlug, opts.sql);
+    // EI-18777176681958978: certified, not resolved — this projection IS one of the writers;
+    // register-all's `hiveScoped` spread makes `harnessSlug` the federated bind scope.
+    const scope = unsafeFederatedPotScope(
+      opts.harnessSlug,
+      "register-all hiveScoped: this projection's own bind scope IS the federated pot scope",
+    );
+    const revoked = await loadRevokedHivePubkeys(opts.workspaceId, scope, opts.sql);
     if (revoked.has(row.signer_device_pubkey)) return 'signer_revoked';
-    const members = await listHiveMembers(opts.workspaceId, opts.harnessSlug, opts.sql);
+    const members = await listHiveMembers(opts.workspaceId, scope, opts.sql);
     const publisherMember = members.find((m) => m.githubUserId === record.publisherGithubUserId);
     const signerAttestedToPublisher = !!publisherMember?.deviceAttestations?.some(
       (a) => a?.device_pubkey === row.signer_device_pubkey,

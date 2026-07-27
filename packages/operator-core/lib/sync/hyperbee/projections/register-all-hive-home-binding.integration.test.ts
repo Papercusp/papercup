@@ -287,3 +287,76 @@ describe('WI-3734 — owned-hive member rebind with home-log exclusion', () => {
     expect(Number(rows[0].count)).toBe(1);
   });
 });
+
+// EI-18771324701216281 — the WI-5136 demux-drop counter was UNREACHABLE on JOINERS, the
+// exact population the demux bug afflicts, so its emptiness read as HEALTH.
+//
+// Why it was unreachable: `hh()` in register-all wrapped the apply guard only when boot
+// threaded `resolveHomeLogKeyHex`, and boot sets that ONLY for `memberHomeRebindSlug` —
+// a block that returns undefined when `remote_hive === true`, i.e. for every joiner. So
+// on a joiner the guard was the identity function and the counter could never bump. On
+// WI-559 a zero drop-count was nearly read as "the fold is fine" while ~49,762 ops were
+// being discarded.
+//
+// The guard's two duties are independent, and these tests pin BOTH halves of that split:
+// the counter must now fire for a joiner (no resolver), and the home-log exclusion must
+// stay OFF for one (a joiner MUST apply home-log ops — its home is remote, so excluding
+// them would silently re-break the very roster this whole chain exists to deliver).
+// Teeth: reverting `hh()` to `opts.resolveHomeLogKeyHex ? … : p` flips the first RED.
+describe('EI-18771324701216281 — the demux-drop counter is reachable on a JOINER', () => {
+  it('a joiner (potHomeSlug bound, NO resolver) COUNTS a demux-mismatch instead of dropping it silently', async () => {
+    await seedHive(HOME);
+    await seedHive('other-hive');
+    const apply = joinerApply(); // exactly the shape boot.ts hands a joiner
+    await apply(settingsOp({ harness_slug: 'other-hive' }));
+
+    // Unchanged: the projection's own harness_slug guard still performs the actual drop.
+    expect(await getHiveSetting(WS, 'other-hive', 'theme', db.adminSql)).toBeNull();
+
+    // The fix: the drop is now OBSERVABLE on the population that actually suffers it.
+    const rows = await db.adminSql`
+      SELECT source_hive, table_tag, reason, count
+      FROM harness_shared.federation_refused_op_counters
+      WHERE workspace_id = ${WS} AND harness_slug = ${HOME} AND reason = 'demux-mismatch'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].table_tag).toBe('hive-settings-by-key');
+    expect(rows[0].source_hive).toBe(REMOTE_LOG);
+    expect(Number(rows[0].count)).toBe(1);
+  });
+
+  it('a joiner counts hive-members drops too — the table whose silent loss WAS WI-559', async () => {
+    await seedHive(HOME);
+    await seedHive('other-hive');
+    await joinerApply()(memberOp({ pot_home_slug: 'other-hive', github_user_id: 9 }));
+    expect(await getHiveMember(WS, 'other-hive', 9, db.adminSql)).toBeNull();
+    const rows = await db.adminSql`
+      SELECT table_tag, count FROM harness_shared.federation_refused_op_counters
+      WHERE workspace_id = ${WS} AND harness_slug = ${HOME} AND reason = 'demux-mismatch'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].table_tag).toBe('hive-members');
+    expect(Number(rows[0].count)).toBe(1);
+  });
+
+  it('NO REGRESSION: the home-log exclusion stays OFF for a joiner — home-log ops still LAND', async () => {
+    await seedHive(HOME);
+    // Broadening the wrap must NOT start excluding ops for a joiner: with no resolver
+    // `homeLog` is null, so nothing is excluded. A joiner's home is remote and never
+    // locally booted, so these ops are exactly the roster rows it MUST apply.
+    const apply = joinerApply();
+    await apply({ ...memberOp(), sourceLogKeyHex: 'any-home-log-hex' });
+    await apply({ ...settingsOp(), sourceLogKeyHex: 'any-home-log-hex' });
+    expect((await getHiveMember(WS, HOME, 7, db.adminSql))?.githubUsername).toBe('octo');
+    expect(await getHiveSetting(WS, HOME, 'theme', db.adminSql)).not.toBeNull();
+  });
+
+  it('a matching-home op is never counted — the counter measures MISMATCH, not traffic', async () => {
+    await seedHive(HOME);
+    const apply = joinerApply();
+    await apply(memberOp());
+    await apply(settingsOp());
+    const rows = await db.adminSql`
+      SELECT count FROM harness_shared.federation_refused_op_counters
+      WHERE workspace_id = ${WS} AND reason = 'demux-mismatch'`;
+    expect(rows).toHaveLength(0);
+  });
+});

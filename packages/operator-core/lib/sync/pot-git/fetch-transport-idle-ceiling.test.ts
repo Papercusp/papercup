@@ -228,7 +228,13 @@ describe('serveUploadPack — failure reason reaches the requester', () => {
     // Delivered at all...
     const failure = log.find((l) => l.startsWith('fail:'));
     expect(failure).toBeDefined();
-    expect(failure).toContain('300ms idle');
+    expect(failure).toContain('timed out after 300ms idle');
+    // ...and delivered by the TIMEOUT path specifically, not by the generic
+    // nonzero-exit fallback. Mutation testing caught this: removing the
+    // timeout's own report still passed a looser assertion, because the
+    // fallback message embeds stderr — which quotes the idle text. Pinning the
+    // absence of the fallback prefix is what makes this test discriminate.
+    expect(failure).not.toContain('upload-pack exited');
     // ...and delivered while the requester still has a session to destroy.
     expect(log.indexOf(failure as string)).toBeLessThan(log.indexOf('end'));
   }, 20_000);

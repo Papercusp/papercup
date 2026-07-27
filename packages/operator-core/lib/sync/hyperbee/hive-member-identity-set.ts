@@ -24,7 +24,12 @@
  * the content-plane membership check, not the crypto cut.
  */
 import type { Sql } from 'postgres';
-import { listHiveMembers } from '../../hive-membership-store';
+// EI-18777176681958978 (found by the branded-scope typecheck, NOT in the filing's site list):
+// this module's `potHomeSlug` comes from a content projection's opts and from the scope-repo
+// serve gate, so its provenance is not provable here — resolve rather than certify
+// (idempotent on an already-federated scope). Reading a joiner's LOCAL handle yields an
+// EMPTY member device set, which the member-content guard reads as "author is not a member".
+import { listHiveMembersForLocalPot } from '../../federated-pot-scope';
 
 /** Backstop TTL (ms). The join/leave invalidation is the fast path; this only bounds the
  *  staleness window if an invalidation is ever missed. Kept small — the lookup is cheap. */
@@ -47,7 +52,7 @@ async function loadMemberDeviceSet(
   workspaceId: string,
   potHomeSlug: string,
   sql: Sql | undefined,
-  loadMembers: typeof listHiveMembers,
+  loadMembers: typeof listHiveMembersForLocalPot,
 ): Promise<Set<string>> {
   const members = await loadMembers(workspaceId, potHomeSlug, sql);
   const set = new Set<string>();
@@ -63,7 +68,7 @@ async function loadMemberDeviceSet(
 
 export interface MemberDeviceSetDeps {
   /** Injectable for hermetic tests (default: the real federated hive_members read). */
-  loadMembers?: typeof listHiveMembers;
+  loadMembers?: typeof listHiveMembersForLocalPot;
   /** Injectable clock for deterministic TTL tests (default: Date.now). */
   now?: () => number;
 }
@@ -78,7 +83,7 @@ export async function resolveHiveMemberDeviceSet(
   sql?: Sql,
   deps: MemberDeviceSetDeps = {},
 ): Promise<ReadonlySet<string>> {
-  const { loadMembers = listHiveMembers, now = Date.now } = deps;
+  const { loadMembers = listHiveMembersForLocalPot, now = Date.now } = deps;
   const key = cacheKey(workspaceId, potHomeSlug);
   const hit = cache.get(key);
   if (hit && hit.expiresAt > now()) return hit.set;
@@ -104,7 +109,7 @@ export async function resolveGithubUserIdForDevicePubkey(
   sql?: Sql,
   deps: Pick<MemberDeviceSetDeps, 'loadMembers'> = {},
 ): Promise<number | null> {
-  const { loadMembers = listHiveMembers } = deps;
+  const { loadMembers = listHiveMembersForLocalPot } = deps;
   const members = await loadMembers(workspaceId, potHomeSlug, sql);
   for (const m of members) {
     for (const a of m.deviceAttestations ?? []) {
