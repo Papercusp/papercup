@@ -50,7 +50,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { distillVitestRun } from '../../testing-run-store';
-import { resolveCapabilityBaseDir } from '../capability/base-dir';
+import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
@@ -133,7 +133,7 @@ export default defineTool({
     // `resolveCapabilityBaseDir` is the same projectDir → PAPERCUSP_INTEGRATION_ROOT
     // → cwd resolver every capability tool (read/write/edit/bash/inspect) already
     // uses, so this tool now reads the same tree those tools write.
-    const root = resolveCapabilityBaseDir(ctx);
+    const root = resolveAgentWorkspaceRoot(ctx);
     const runId = randomUUID();
     // EI-18776865728050036 — same clamp as build:typecheck, for the same reason: this tool is
     // dispatched FOREGROUND over an MCP transport that hard-caps a call at ~55s (EI-6073), so a

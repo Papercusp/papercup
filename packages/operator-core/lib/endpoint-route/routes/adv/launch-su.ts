@@ -168,8 +168,16 @@ const launchSu = defineTool({
     // Deliberately built BEFORE the defer_spawn branch so BOTH paths carry it —
     // the deferred path records these args as `launch_argv`, so the pui-run
     // session binds to the same pre-pinned owner when it eventually starts.
-    const ownerId = `su-${randomUUID()}`;
-    const psuArgs = [psuRef, '--no-picker', `--agent=${agent}`, `--owner-id=${ownerId}`];
+    //
+    // NOT pinned on a RESUME: a resumed session already HAS an identity, and
+    // forcing a freshly-minted owner onto it would either be refused by
+    // bootstrap-su (the id is bound to a live un-ended row) or, worse, split the
+    // resumed session away from its own history — the exact failure the pin
+    // exists to prevent, inverted. A resume returns no `ownerId`, and callers
+    // treat that as "nothing to open" rather than guessing.
+    const ownerId = resumeSessionId ? null : `su-${randomUUID()}`;
+    const psuArgs = [psuRef, '--no-picker', `--agent=${agent}`];
+    if (ownerId) psuArgs.push(`--owner-id=${ownerId}`);
     if (harness) psuArgs.push(`--harness=${harness}`);
     psuArgs.push(plan ? `--plan=${plan}` : '--no-plan');
     if (model) psuArgs.push(`--model=${model}`);
@@ -209,7 +217,15 @@ const launchSu = defineTool({
       // explicitly. Best-effort: the row is already committed, so a notify
       // hiccup must not fail the launch (the safety-net still backs it up).
       void notifySyncInvalidate('roster').catch(() => {});
-      return json({ status: 'ok', deferred: true, advSessionId, ownerId, agent, harnessSlug: harness, planSlug: plan });
+      return json({
+        status: 'ok',
+        deferred: true,
+        advSessionId,
+        ...(ownerId ? { ownerId } : {}),
+        agent,
+        harnessSlug: harness,
+        planSlug: plan,
+      });
     }
 
     const oneliner = `exec ${psuArgs.map(shellEscape).join(' ')}`;
@@ -235,7 +251,8 @@ const launchSu = defineTool({
       // WI-6363: the pre-pinned coord owner id this session will register as.
       // The caller opens its chat with this — it is stable from launch onward,
       // unlike the adv_sessions row, which does not exist yet on this path.
-      ownerId,
+      // Absent on a resume (see the mint above).
+      ...(ownerId ? { ownerId } : {}),
       harnessSlug: harness,
       planSlug: plan,
       terminal: spawned.terminal,

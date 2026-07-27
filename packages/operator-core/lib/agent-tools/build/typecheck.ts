@@ -60,7 +60,7 @@ import {
   summariseByFile,
   syntaxBrokenFiles,
 } from '../../tsc-diagnostics';
-import { resolveCapabilityBaseDir } from '../capability/base-dir';
+import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
@@ -211,7 +211,7 @@ export default defineTool({
     // this tool typechecked the RELEASE tree, not the tree the agent just edited,
     // and reported it clean. Use the same projectDir → PAPERCUSP_INTEGRATION_ROOT
     // → cwd resolver every capability tool uses.
-    const root = resolveCapabilityBaseDir(ctx);
+    const root = resolveAgentWorkspaceRoot(ctx);
     const started = Date.now();
 
     // Pre-flight the project so the refusal can be specific and name alternatives.

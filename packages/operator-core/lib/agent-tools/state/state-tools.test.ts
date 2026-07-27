@@ -285,3 +285,54 @@ describe('state:read — the unknown stays branchable, and the role fails CLOSED
     expect(readCellMock.mock.calls[0][3]).toBe('su-peer');
   });
 });
+
+describe('P-021 — state:subscribe never applies materiality silently', () => {
+  const withMateriality = () =>
+    spec({
+      materiality: {
+        path: 'serving.startedSinceCodeChange',
+        why: 'the headline follows every commit; this is the question the caller actually has.',
+      },
+    });
+
+  it('DEFAULTS to the headline path — an existing subscription is unchanged', async () => {
+    registerCell(withMateriality());
+
+    await subscribeTool.handler({ cell: 'test.cell', on: { op: 'eq', value: true } } as never, CTX as never);
+
+    const sent = watchHandler.mock.calls[0][0] as { predicate: { path: string } };
+    expect(sent.predicate.path).toBe('positions.deployed');
+  });
+
+  it('watches the MATERIALITY path only when explicitly asked', async () => {
+    registerCell(withMateriality());
+
+    await subscribeTool.handler(
+      { cell: 'test.cell', of: 'material', on: { op: 'eq', value: false } } as never,
+      CTX as never,
+    );
+
+    const sent = watchHandler.mock.calls[0][0] as { predicate: { path: string }; note: string };
+    expect(sent.predicate.path).toBe('serving.startedSinceCodeChange');
+    expect(sent.note).toContain('material');
+  });
+
+  it('⚠ REFUSES `of:material` on a cell that declares none — never a silent fallback', async () => {
+    // The failure this prevents is concrete and severe. Silently re-pointing a
+    // caller's condition at a different path does not narrow it, it evaluates it
+    // against a DIFFERENT DOMAIN: `{op:'ne', value:'<a sha>'}` aimed at a boolean
+    // is true on the first poll, so the agent is woken instantly and told it was
+    // a material change. A wake is an interrupt (D-044), and a spurious one is a
+    // false all-clear that resumes an agent on a condition never established.
+    registerCell(spec());
+
+    const b = body(
+      await subscribeTool.handler({ cell: 'test.cell', of: 'material', on: { op: 'exists' } } as never, CTX as never),
+    );
+
+    expect(b.ok).toBe(false);
+    expect(String(b.error)).toContain('no materiality');
+    expect(b.watchedPath).toBe('positions.deployed');
+    expect(watchHandler).not.toHaveBeenCalled();
+  });
+});

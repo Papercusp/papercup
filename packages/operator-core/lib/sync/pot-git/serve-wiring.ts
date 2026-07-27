@@ -662,6 +662,34 @@ function peerTag(state: ChannelState): string {
   }
 }
 
+/**
+ * WI-6364 (fix C): is `requestedKey` an ABANDONED alias of a repo this pot
+ * serves? The decision itself is pure (`findSupersededRepoKey` in
+ * repo-identity.ts, where it is unit-tested); this only supplies the entry set.
+ *
+ * SCOPED TO THIS POT — the pot home entry (`slug === potHomeSlug`, `self_repo`)
+ * plus its members (`hive_slug === potHomeSlug`) — because that is exactly the
+ * set whose stores live under `hiveGitRepoPath(potHomeSlug, …)`. A registry-wide
+ * scan would let an UNRELATED pot's abandoned alias refuse a fetch here.
+ *
+ * FAILS OPEN by contract. An unreadable/absent registry means "no verdict", not
+ * "refuse": a diagnostic improvement must never be able to take the serve plane
+ * down, and falling through leaves exactly today's behaviour (the existence gate
+ * below). Same fail-soft posture as `getPotGitMode`'s catch above.
+ */
+async function resolveSupersededRepoKey(
+  potHomeSlug: string,
+  requestedKey: string,
+): Promise<SupersededRepoKeyVerdict | null> {
+  try {
+    const { projects } = await loadHarnessRegistry();
+    const entries = projects.filter((p) => p.slug === potHomeSlug || p.hive_slug === potHomeSlug);
+    return findSupersededRepoKey(requestedKey, entries);
+  } catch {
+    return null;
+  }
+}
+
 function handleReq(state: ChannelState, v: ReqFrame): void {
   const startedAt = Date.now();
   const refuse = (reason: string): void => {

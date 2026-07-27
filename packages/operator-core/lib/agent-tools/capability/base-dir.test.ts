@@ -10,7 +10,8 @@ import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { mkdtempSync, mkdirSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveCapabilityBaseDir, realpathSoft } from './base-dir';
+import { resolveCapabilityBaseDir, realpathSoft, resolveAgentWorkspaceRoot } from './base-dir';
+import { writeFileSync } from 'node:fs';
 
 describe('EI-1754 — resolveCapabilityBaseDir', () => {
   const orig = process.env.PAPERCUSP_INTEGRATION_ROOT;
@@ -66,5 +67,59 @@ describe('EI-5912 — symlink resolution so the exec-sandbox writable-cwd bind m
     const missing = join(root, 'does', 'not', 'exist');
     expect(realpathSoft(missing)).toBe(missing);
     expect(resolveCapabilityBaseDir({ projectDir: missing })).toBe(missing);
+  });
+});
+
+/**
+ * resolveAgentWorkspaceRoot — for tools that run a REPO-ROOT-relative script
+ * (testing:run's scripts/test-files.mjs) or resolve a repo-root-relative project
+ * (build:typecheck). It must walk UP from the agent's tree, never from the
+ * operator's cwd.
+ */
+describe('EI-1754 — resolveAgentWorkspaceRoot', () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = realpathSync(mkdtempSync(join(tmpdir(), 'pc-ws-root-')));
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  /** A superproject root: `.git` DIRECTORY + package.json declaring workspaces. */
+  function makeRepoRoot(dir: string): string {
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(join(dir, '.git'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ workspaces: ['packages/*'] }));
+    return dir;
+  }
+
+  it('walks UP from ctx.projectDir to the workspace root — a workspace subdir is not the root', () => {
+    const repo = makeRepoRoot(join(tmp, 'repo'));
+    const pkg = join(repo, 'packages', 'operator-core');
+    mkdirSync(pkg, { recursive: true });
+    // The regression this pins: resolveCapabilityBaseDir alone returns `pkg`, and
+    // join(pkg,'scripts','test-files.mjs') does not exist — the router never runs.
+    expect(resolveAgentWorkspaceRoot({ projectDir: pkg })).toBe(repo);
+  });
+
+  it('does NOT stop inside a git SUBMODULE (a submodule carries a .git FILE, not a directory)', () => {
+    const repo = makeRepoRoot(join(tmp, 'repo'));
+    const sub = join(repo, 'libs', 'submodule');
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, '.git'), 'gitdir: ../../.git/modules/submodule');
+    writeFileSync(join(sub, 'package.json'), JSON.stringify({ workspaces: ['x'] }));
+    expect(resolveAgentWorkspaceRoot({ projectDir: sub })).toBe(repo);
+  });
+
+  it('ignores the operator’s cwd — the agent’s tree decides, even when cwd is another repo', () => {
+    const agentRepo = makeRepoRoot(join(tmp, 'staging'));
+    makeRepoRoot(join(tmp, 'release'));
+    // Whatever the operator's cwd is, projectDir wins and its OWN root is returned.
+    expect(resolveAgentWorkspaceRoot({ projectDir: join(agentRepo, 'apps', 'operator') }))
+      .not.toBe(join(tmp, 'release'));
+  });
+
+  it('fails soft to the base dir when no workspace root marker exists', () => {
+    const bare = join(tmp, 'bare');
+    mkdirSync(bare, { recursive: true });
+    expect(resolveAgentWorkspaceRoot({ projectDir: bare })).toBe(bare);
   });
 });

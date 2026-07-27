@@ -36,10 +36,62 @@
  * never throwing — the selection semantics above are unchanged, only the final path
  * is canonicalized.
  */
-import { realpathSync } from 'node:fs';
+import { realpathSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 
 export function resolveCapabilityBaseDir(ctx: { projectDir?: string }): string {
   return realpathSoft(pickCapabilityBaseDir(ctx));
+}
+
+/**
+ * The WORKSPACE ROOT of the tree the agent is editing — for tools that must run a
+ * repo-root-relative script (`scripts/test-files.mjs`) or resolve a repo-root-relative
+ * project path, rather than just read one file.
+ *
+ * Why not `inferWorkspaceRoot()` (@papercusp/testing-shell/glob): two independent
+ * defects make it wrong HERE, and both are invisible under vitest (where cwd is
+ * already the repo root), which is why they reached production.
+ *   1. It walks up from `process.cwd()` — the :3070 operator's cwd is the RELEASE
+ *      checkout, so it returned the release tree and tools silently judged code the
+ *      agent never edited (EI-1754's symptom, re-observed 2026-07-27 on testing:run).
+ *   2. It MEMOIZES its answer in a module-level `_cachedRoot` that ignores the `from`
+ *      argument on every later call — so passing the right starting point does not
+ *      reliably fix (1): whichever caller happens to run first pins the root process-wide.
+ *
+ * So: start from the capability base dir (the agent's tree) and walk up WITHOUT
+ * caching. A git SUBMODULE carries a `.git` FILE, not a directory — requiring a
+ * DIRECTORY is what stops the walk from halting inside a submodule and reporting a
+ * submodule-relative root (the same trap already documented in
+ * libs/test-config/src/admin-test-runs-reporter.ts).
+ */
+export function resolveAgentWorkspaceRoot(ctx: { projectDir?: string }): string {
+  const baseDir = resolveCapabilityBaseDir(ctx);
+  let dir = resolve(baseDir);
+  while (true) {
+    if (isWorkspaceRoot(dir)) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // Fail-soft: no marker found (a bare/unusual tree) — the base dir is still the
+  // agent's tree, which beats the operator's cwd in every case this exists to fix.
+  return baseDir;
+}
+
+/** A superproject root: `.git` as a DIRECTORY (never a submodule's gitlink FILE),
+ *  plus a `package.json` declaring npm workspaces. */
+function isWorkspaceRoot(dir: string): boolean {
+  try {
+    if (!statSync(join(dir, '.git')).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { workspaces?: unknown };
+    return pkg.workspaces !== undefined;
+  } catch {
+    return false;
+  }
 }
 
 /** The raw base-dir selection (projectDir → PAPERCUSP_INTEGRATION_ROOT → cwd),

@@ -160,6 +160,22 @@ describe('launch-su', () => {
     expect(recorded?.launchArgv).toContain(`--owner-id=${json.ownerId}`);
   });
 
+  // A RESUME must keep the identity it already has. Pinning a fresh owner onto
+  // it would either be refused by bootstrap-su (id bound to a live row) or split
+  // the resumed session from its own history.
+  it('does NOT pre-pin an owner id when resuming an existing session', async () => {
+    const res = await callPost({
+      agent: 'claude',
+      harness_slug: 'papercup',
+      resume_session_id: 'abcd1234-5678-90ab-cdef-1234567890ab',
+    });
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.ownerId).toBeUndefined();
+    expect(lastOneliner()).not.toContain('--owner-id=');
+    expect(lastOneliner()).toContain('--resume-session=');
+  });
+
   it('mints a DIFFERENT owner id per launch (a reused id is refused as already-bound)', async () => {
     const a = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
     vi.clearAllMocks();

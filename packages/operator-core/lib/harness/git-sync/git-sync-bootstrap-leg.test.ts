@@ -38,6 +38,7 @@ const {
   bootstrapFromPeerMock,
   hasPendingQuarantineMock,
   resolveUsageActorMock,
+  saveHarnessRegistryMock,
   unsafeMock,
   getBootedHarnessMock,
   bootSingleHarnessMock,
@@ -47,6 +48,7 @@ const {
   loadHarnessRegistryMock: vi.fn<() => Promise<{ projects: RegistryProject[] }>>(async () => ({
     projects: [{ slug: 'shop-hive', hive_slug: 'shop-hive', self_repo: true }],
   })),
+  saveHarnessRegistryMock: vi.fn(async (_reg: { projects: RegistryProject[] }) => {}),
   listHiveMembersMock: vi.fn(async (_ws: string, _hive: string) => [
     { deviceAttestations: [{ device_pubkey: 'cGVlci1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISE=' }] },
   ]),
@@ -117,7 +119,14 @@ const {
   unsafeMock: vi.fn(async (_text: string, _params: unknown[]) => []),
 }));
 
-vi.mock('../../harness-registry', () => ({ loadHarnessRegistry: loadHarnessRegistryMock }));
+// WI-6364: `saveHarnessRegistry` is reached through adopt-refused-repo-key.ts
+// (the re-key adoption below). It MUST be in this mock even though no
+// pre-WI-6364 case touches it — vitest throws on ANY missing key the moment the
+// module is accessed, with an error naming an unrelated module.
+vi.mock('../../harness-registry', () => ({
+  loadHarnessRegistry: loadHarnessRegistryMock,
+  saveHarnessRegistry: saveHarnessRegistryMock,
+}));
 vi.mock('../../hive-membership-store', () => ({ listHiveMembers: listHiveMembersMock }));
 /* Storage is fully stubbed (no real git/fs from a unit test), but the stub set is
  * derived from the REAL export list so a new export in storage.ts cannot silently
@@ -773,6 +782,79 @@ describe('runBootstrapLeg', () => {
       expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1); // unchanged
       const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'));
       expect(warnMsg).toContain(`${PEER_DEVICE.slice(0, 8)}:backoff(no-such-repo)`);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  // ── WI-6364 (fix C): a superseded-store refusal RE-KEYS this device ──
+  // The peer refused because the key we asked for names a store IT ABANDONED,
+  // and named the store it actually writes. That refusal is the one repair
+  // channel needing nothing but the dial we already made — see
+  // adopt-refused-repo-key.ts.
+
+  it('WI-6364: a superseded-repo-key refusal adopts the peer-named key and stops the tick', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+      // TWO candidates: the tick must STOP after the re-key rather than dial on
+      // under a key it has just replaced.
+      listHiveMembersMock.mockResolvedValue([
+        { deviceAttestations: [{ device_pubkey: PEER_DEVICE }, { device_pubkey: PEER_DEVICE_2 }] },
+      ]);
+      openHiveGitDuplexToDeviceMock.mockImplementation(async () => ({
+        on: (_ev: string, _cb: () => void) => {},
+        destroyed: false,
+        errored: new Error('pot-git serve refused: superseded-repo-key:gh-1223568103'),
+      }));
+      bootstrapFromPeerMock.mockImplementation(
+        bootstrapOutcome({ ok: false, namespaces: [], skippedExisting: [], skippedSelf: null, stderr: 'refused' }),
+      );
+
+      await runBootstrapLeg(SLUG, WS);
+
+      // The registry was re-keyed onto the peer's key, stamped 'peer' so the
+      // boot backfill cannot re-derive over it.
+      expect(saveHarnessRegistryMock).toHaveBeenCalledTimes(1);
+      const saved = saveHarnessRegistryMock.mock.calls[0]![0] as { projects: RegistryProject[] };
+      const entry = saved.projects.find((p) => p.slug === SLUG) as Record<string, unknown>;
+      expect(entry.pot_repo_key).toBe('gh-1223568103');
+      expect(entry.pot_repo_key_source).toBe('peer');
+
+      // Broke out — the second candidate was never dialed under the dead key.
+      expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1);
+
+      // And it SAYS SO. A silent re-key is how the original divergence went
+      // unnoticed for 7 days; this line is the whole point of the branch.
+      const msg = logSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('RE-KEYED'));
+      expect(msg).toContain('gh-1223568103');
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('WI-6364: a NON-superseded refusal never touches the registry', async () => {
+    // The guard that keeps this off the hot path: every other refusal reason
+    // (and every generic dial failure) must short-circuit before any registry
+    // read, or a re-key becomes reachable from a transient error.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+      listHiveMembersMock.mockResolvedValue([{ deviceAttestations: [{ device_pubkey: PEER_DEVICE }] }]);
+      openHiveGitDuplexToDeviceMock.mockImplementation(async () => ({
+        on: (_ev: string, _cb: () => void) => {},
+        destroyed: false,
+        errored: new Error('pot-git serve refused: no-such-repo'),
+      }));
+      bootstrapFromPeerMock.mockImplementation(
+        bootstrapOutcome({ ok: false, namespaces: [], skippedExisting: [], skippedSelf: null, stderr: 'no-such-repo' }),
+      );
+
+      await runBootstrapLeg(SLUG, WS);
+
+      expect(saveHarnessRegistryMock).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }

@@ -70,6 +70,7 @@ import {
   sweepStalePackTmpFiles,
 } from '../../sync/pot-git/storage';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
+import { adoptRefusedRepoKey } from '../../sync/pot-git/adopt-refused-repo-key';
 import { runOwnHeadPublishTick } from '../../sync/pot-git/own-head-publish';
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer, hasPendingQuarantine } from '../../sync/pot-git/bootstrap';
@@ -1855,6 +1856,22 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // re-dialed every tick.
       if (!outcome.ok && dialErr?.message?.includes('no-such-repo')) {
         noSuchRepoBackoffUntil.set(backoffKey, Date.now() + NO_SUCH_REPO_BACKOFF_MS);
+      }
+      // WI-6364 (fix C, joiner half): the peer refused because the key we asked
+      // for names a store IT ABANDONED, and told us what its store is really
+      // called. Adopt it — this is the one repair channel that needs nothing but
+      // the dial we just made (see adopt-refused-repo-key.ts). Deliberately NOT
+      // arming any backoff: the whole point is that the NEXT tick dials again,
+      // under the corrected key, against this same peer.
+      const refusedKey = await adoptRefusedRepoKey(slug, dialErr?.message);
+      if (refusedKey.adopted) {
+        console.log(
+          `[git-sync] ${slug}: pot-git RE-KEYED ${refusedKey.from ?? repoKey} → ${refusedKey.adopted} ` +
+            `— peer ${peerDevicePubkeyBase64.slice(0, 8)} refused the old key as a store it has abandoned. ` +
+            `The next tick bootstraps from the live store; the old one at ` +
+            `${refusedKey.from ?? repoKey} is now orphaned locally and can be reclaimed.`,
+        );
+        break; // nothing more this tick can do under a key we just replaced
       }
       // Stop on a finished join, and ALSO on real durable progress: the rungs
       // this tick climbed are on disk, so re-dialing a second peer now would
