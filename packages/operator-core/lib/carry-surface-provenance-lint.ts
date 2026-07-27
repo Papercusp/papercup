@@ -74,7 +74,19 @@ const OWNER_TAG_RE = /\[owner:[^\]]+\]/i;
  * `[owner:jane 2026-07-10]` — is untouched and still flags `manual-owner-tag`
  * exactly as before.
  */
-const OWNER_TAG_PLACEHOLDER_RE = /\[owner:\s*(?:name|someone|tbd|foo|bar|x|<[^>]+>|\.{3}|…)\s*\]/i;
+// EI-18762822878138952: the repo's own documented tag SHAPE — e.g. `[owner:<name> <date>]`,
+// written out verbatim in root CLAUDE.md's "Directive provenance" convention and reused by
+// every agent that documents/implements it — chains TWO placeholder tokens ("<name>" then
+// "<date>") separated by whitespace. The single-alternative form below only ever matched ONE
+// token before the closing bracket, so that exact canonical example fell through to the loud
+// `manual-owner-tag` category instead of being recognized as a placeholder mention. Allow one
+// or more whitespace-separated placeholder tokens (each still restricted to the same known
+// stand-ins) so a chained placeholder still reads as a placeholder, not a real attribution.
+const OWNER_TAG_PLACEHOLDER_TOKEN = '(?:name|someone|tbd|foo|bar|x|<[^>]+>|\\.{3}|…)';
+const OWNER_TAG_PLACEHOLDER_RE = new RegExp(
+  `\\[owner:\\s*${OWNER_TAG_PLACEHOLDER_TOKEN}(?:\\s+${OWNER_TAG_PLACEHOLDER_TOKEN})*\\s*\\]`,
+  'i',
+);
 const BACKTICK_WRAPPED_OWNER_TAG_RE = /`\[owner:[^\]]*\]`/i;
 const OWNER_TAG_MENTION_CONTEXT_RE =
   /(?:\bforms?\b|\bconvention\b|\bpatterns?\b|\bsyntax\b|\bexamples?\b|\be\.g\.,?|->)[^[]{0,30}\[owner:/i;

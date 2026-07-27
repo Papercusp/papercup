@@ -123,6 +123,27 @@ describe('lintCarrySurfaceProvenance', () => {
       expect(r.matches.some((m) => m.kind === 'manual-owner-tag')).toBe(true);
       expect(r.matches.some((m) => m.kind === 'possible-owner-tag-mention')).toBe(false);
     });
+
+    // EI-18762822878138952: the repo's OWN documented tag shape — root CLAUDE.md's
+    // "Directive provenance" convention spells the example as `[owner:<name> <date>]`,
+    // chaining TWO placeholder tokens. Before the fix, only a single placeholder token
+    // was recognized, so this exact canonical example (which any agent implementing or
+    // documenting the convention naturally reproduces) fell through to the loud
+    // `manual-owner-tag` category instead of being downgraded as a mention.
+    it('EI-18762822878138952: downgrades a chained multi-token placeholder like [owner:<name> <date>]', () => {
+      const r = lintCarrySurfaceProvenance(
+        'tag every directive with its source: [owner:<name> <date>] · [self-imposed] · [peer:<sid>] · [inferred]',
+      );
+      expect(r.flagged).toBe(true);
+      expect(r.matches.some((m) => m.kind === 'manual-owner-tag')).toBe(false);
+      expect(r.matches.some((m) => m.kind === 'possible-owner-tag-mention')).toBe(true);
+    });
+
+    it('EI-18762822878138952: a real name chained with a placeholder token still flags manual-owner-tag', () => {
+      const r = lintCarrySurfaceProvenance('[owner:jane <date>] hold off until Friday');
+      expect(r.matches.some((m) => m.kind === 'manual-owner-tag')).toBe(true);
+      expect(r.matches.some((m) => m.kind === 'possible-owner-tag-mention')).toBe(false);
+    });
   });
 
   it('P-014: a [turn:<session>@<ts>] ref clears the line — with or without an owner tag', () => {

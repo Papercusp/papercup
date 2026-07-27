@@ -150,6 +150,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       completionAuthority: null,
       createdAt: '2026-07-13T00:00:00.000Z',
       updatedAt: '2026-07-13T00:00:00.000Z',
+      closedAt: null,
     });
     expect(subject).toMatchObject({ plan: 'ops', planItem: ['P-9'], riskTier: 'high' });
     expect(subject.paths).toEqual(['packages/operator-core/lib/x.ts']);
