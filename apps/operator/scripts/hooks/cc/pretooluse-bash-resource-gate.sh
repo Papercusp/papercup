@@ -1387,10 +1387,19 @@ _SUBST_ENV_RE = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+')
 # pattern excludes the non-window shapes (follow, boot selection, kernel,
 # cursors, maintenance verbs) and elevated reads, so this only decides which
 # atoms pay the operator round-trip at all.
+#
+# P-026/P-027 add the AMBIENT-CONTEXT family ('date', 'uptime', 'nproc',
+# 'free') — the four reads whose answer coord:orient already delivers in the
+# agent's `host` block, so the substitution is "call nothing". Only a
+# COMMAND-POSITION atom head is tested, so an inline `$(date …)` string
+# interpolation inside a larger command is NOT claimed (its head is the outer
+# verb) — which is exactly right: that shape has no tool form and the pairs
+# deliberately exclude it.
 _SUBSTITUTION_HEADS = frozenset((
     'sed', 'cat', 'head', 'tail', 'psql', 'systemctl', 'curl', 'git',
     'ss', 'netstat', 'lsof',
     'npx', 'vitest', 'journalctl',
+    'date', 'uptime', 'nproc', 'free',
 ))
 
 # Narrow phrases a substitution row claims whose bare head is too common for the

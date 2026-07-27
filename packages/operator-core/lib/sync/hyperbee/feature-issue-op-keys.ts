@@ -748,13 +748,35 @@ function toHiveEpochKeyValue(row: Record<string, unknown>): HiveEpochKeyRow {
 /** Map an outbox `row` jsonb to the `EngineerIssueRow` the engineer-issues projection
  *  INSERT consumes — the federated subset of harness_shared.engineer_issues. The capture
  *  trigger (mig 197) stamped `harness_slug` (the federation slug derived from `scope`)
- *  into the row for the projection demux. assigned_at/created_at are TIMESTAMPTZ → ISO
- *  strings under to_jsonb; the projection inserts them straight (PG casts ISO →
- *  timestamptz). payload stays jsonb-opaque. created_at falls back to now ISO if absent
- *  (a real row always carries it; defensive against a malformed op). The per-bee
- *  work-list ordering (assignee_rank/rank_writer/rank_updated_at) is NOT federated. */
+ *  into the row for the projection demux. assigned_at is TIMESTAMPTZ → ISO string under
+ *  to_jsonb; the projection inserts it straight (PG casts ISO → timestamptz). payload
+ *  stays jsonb-opaque. The per-bee work-list ordering (assignee_rank/rank_writer/
+ *  rank_updated_at) is NOT federated.
+ *
+ *  WI-6327 — `created_ts` is the AUTHORITATIVE creation instant and `created_at` is a
+ *  derived convenience, NOT the other way round. Until mig 688 the capture trigger's
+ *  hand-built issue wire row omitted the creation timestamp entirely, and this mapper
+ *  papered over it with `new Date().toISOString()` under a comment asserting "a real row
+ *  always carries it". It did not: that fallback was the ONLY branch ever taken for the
+ *  whole issue family, so every op claimed it was created at drain time — and the
+ *  receiver's EI-13285 id-collision guard, which compares exactly this field against the
+ *  local row's created_ts, therefore read EVERY update as a distinct-entity collision and
+ *  DROPPED it (10,070 distinct ids refused on the P-302 rig; issue federation was dead
+ *  for any row the peer already held).
+ *
+ *  The rule that failed here is general: NEVER hand a correctness guard a value you
+ *  synthesized, because the guard cannot tell your invention from the real thing. So
+ *  `created_ts` is passed through UNFABRICATED — null when the op did not carry one — and
+ *  the guard keys off it alone. `created_at` keeps a now() fallback because it feeds only
+ *  the INSERT's created_ts default, where "unknown ⇒ now" is the correct semantic and no
+ *  decision rests on it. */
 function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
+  // Pre-688 ops carry no `created_ts`. Passing null (never a fabricated stand-in) is what
+  // lets the projection distinguish "authoritative creation instant" from "legacy op we
+  // cannot judge" and fail OPEN on the latter instead of dropping it.
+  const createdTs = numOrNull(row.created_ts);
   return {
+    created_ts: createdTs,
     harness_slug: String(row.harness_slug ?? ''),
     issue_id: String(row.issue_id ?? ''),
     scope: String(row.scope ?? ''),
@@ -771,9 +793,14 @@ function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
     found_during: strOrNull(row.found_during),
     linked_feature_id: strOrNull(row.linked_feature_id),
     created_by: strOrNull(row.created_by),
-    created_at: typeof row.created_at === 'string' && row.created_at
-      ? row.created_at
-      : new Date().toISOString(),
+    // Derived from created_ts when the op carries one (post-688); else the legacy
+    // wire value; else now — see the fallback rationale in the doc comment above.
+    created_at:
+      createdTs !== null
+        ? new Date(createdTs).toISOString()
+        : typeof row.created_at === 'string' && row.created_at
+          ? row.created_at
+          : new Date().toISOString(),
     // work-item-completion-integrity-2026-07-01 (WI-1403 / EI-5269): same pair as
     // toFeatureValue above — must federate so a peer sees who resolved/closed an
     // issue-family item and the evidence.

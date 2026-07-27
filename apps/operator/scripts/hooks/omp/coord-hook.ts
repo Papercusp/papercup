@@ -1362,6 +1362,15 @@ export const SUBSTITUTION_PREFILTER_HEADS = new Set([
   // verbs) and elevated reads, so this head only decides which atoms pay the
   // round-trip at all.
   'journalctl',
+  // P-026/P-027 (ambient-context family) → "call nothing": coord:orient already
+  // delivers the answer in the agent's `host` block. Only a COMMAND-POSITION
+  // atom head is tested, so an inline `$(date …)` interpolation inside a larger
+  // command is NOT claimed (its head is the outer verb) — exactly right, since
+  // that shape has no tool form and the pairs deliberately exclude it.
+  'date',
+  'uptime',
+  'nproc',
+  'free',
 ]);
 
 /**

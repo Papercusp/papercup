@@ -155,6 +155,57 @@ export default defineTool({
       ...(args.owner ? { owner: args.owner } : {}),
       ...(detail ? { detail } : {}),
     });
+    // Self-identification overlay (caller-dependent, so applied HERE, after the
+    // shared/byte-stable snapshot — never inside it; see self-marker.ts): a
+    // top-level `self` names the caller's own ownerId, and `isSelf:true` is
+    // stamped on the caller's own row. A reader of its own roster can now tell
+    // which agent is itself without a separate coord:whoami. Best-effort: an
+    // unattributable caller just gets no marker (`self` omitted).
+    const self = resolveSelfRef(ctx);
+    // unified-agent-state-plane P-031 leg (d): THE UNION CONSUMER. Opt-in
+    // `expanded[]` — the peers this caller is coupled to, resolved through the
+    // ONE shared predicate (`resolveCoupledPeers` = derived ∪ declared −
+    // suppressed) so no consumer re-implements the merge.
+    //
+    // ⚠ D-053: this APPENDS a top-level block and never touches the base rows.
+    // The roster is byte-identical whether include_coupling is on or off —
+    // coupling decides only WHO appears in the appended block. The block is
+    // reader-relative BY DESIGN (that is what `expanded[]` is for), which is
+    // also why it must never migrate INTO a row: `since:`/[coord+N] diff the raw
+    // rows, and a reader-relative field there would break the byte-stable delta
+    // contract.
+    //
+    // COMPUTED BEFORE THE `since:` SHORT-CIRCUIT, and deliberately so. The block
+    // is not etag-tracked (a coupling change is not a roster change), so a
+    // caller polling with `since:` + include_coupling would otherwise get a stub
+    // that silently omits the very block it asked for — and could not tell that
+    // from "I have no coupled peers". It projects from the PRE-overlay snapshot
+    // rows, which carry every field it reads, so the block is identical on both
+    // paths and provably independent of the modes/parkedOn/deafness/cursor
+    // overlays below.
+    //
+    // `derived: []` until P-013 builds the derivation — the union is already the
+    // call site, so P-013 plugs its half in here and nothing else changes. Being
+    // empty today is exactly why this is OPT-IN rather than always-on: paying a
+    // query on every read of a hot poll surface to append an empty array is the
+    // wrong trade, and P-013 owns the always-on decision.
+    let coupling: Record<string, unknown> = {};
+    if (args.include_coupling === true && self) {
+      try {
+        const edges = await listCouplingsFor(self.ownerId, c.workspaceId ?? undefined);
+        const peers = resolveCoupledPeers(self.ownerId, [], edges);
+        const expansion = buildCoupledExpansion(peers, snapshot.active);
+        coupling = {
+          expanded: expansion.expanded,
+          expandedTotal: expansion.total,
+          ...(expansion.truncated
+            ? { expandedTruncated: `showing ${expansion.expanded.length} of ${expansion.total} coupled peers` }
+            : {}),
+        };
+      } catch {
+        /* fail-soft — a coupling read must never degrade the roster */
+      }
+    }
     // P-006 `since:` short-circuit — if the caller passes the etag from its prior read
     // and the delta-eligible roster (identity+state) is byte-identical, return a ~100B
     // stub instead of the full payload. Liveness churn (heartbeat / live↔parked) is
@@ -169,16 +220,13 @@ export default defineTool({
           as_of: snapshot.as_of,
           scope: snapshot.scope,
           note: 'roster identity+state unchanged since your etag; liveness (live↔parked) is not tracked here — re-read without since: before you dispatch',
+          // The opt-in coupling block rides the stub too (see above): it is not
+          // etag-tracked, so withholding it here would be indistinguishable from
+          // having no coupled peers.
+          ...coupling,
         },
       };
     }
-    // Self-identification overlay (caller-dependent, so applied HERE, after the
-    // shared/byte-stable snapshot — never inside it; see self-marker.ts): a
-    // top-level `self` names the caller's own ownerId, and `isSelf:true` is
-    // stamped on the caller's own row. A reader of its own roster can now tell
-    // which agent is itself without a separate coord:whoami. Best-effort: an
-    // unattributable caller just gets no marker (`self` omitted).
-    const self = resolveSelfRef(ctx);
     // modes-and-intake-ux-2026-07-05 P-007: ambient mode visibility — attach each
     // ACTIVE row's official modes (e.g. modes:['auto','grade']) in ONE batched read,
     // AFTER the byte-stable snapshot (mode churn is deliberately etag-excluded, same
@@ -274,49 +322,11 @@ export default defineTool({
     const cursorEnabled =
       args.include_cursor === true && (cursorFlag === '1' || cursorFlag === 'true');
     active = await overlayPresenceCursors(active, { enabled: cursorEnabled });
-    // unified-agent-state-plane P-031 leg (d): THE UNION CONSUMER. Opt-in
-    // `expanded[]` — the peers this caller is coupled to, resolved through the
-    // ONE shared predicate (`resolveCoupledPeers` = derived ∪ declared −
-    // suppressed) so no consumer re-implements the merge.
-    //
-    // ⚠ D-053: this APPENDS a top-level block and never touches `active`. The
-    // base roster is byte-identical whether include_coupling is on or off —
-    // coupling decides only WHO appears in the appended block. The block is
-    // reader-relative BY DESIGN (that is what `expanded[]` is for), which is
-    // also why it must never migrate into a row: `since:`/[coord+N] diff the
-    // raw rows, and a reader-relative field there would break the byte-stable
-    // delta contract. It is likewise NOT etag-tracked — same rule as the
-    // modes/parkedOn/coordHook overlays above, so a `since:` stub can lag a
-    // coupling change; re-read without `since:` after coupling.
-    //
-    // `derived: []` until P-013 builds the derivation — the union is already the
-    // call site, so P-013 plugs its half in here and nothing else changes. Being
-    // empty today is exactly why this is OPT-IN rather than always-on: paying a
-    // query on every read of a hot poll surface to append an empty array is the
-    // wrong trade, and P-013 owns the always-on decision.
-    let expansion: ReturnType<typeof buildCoupledExpansion> | null = null;
-    if (args.include_coupling === true && self) {
-      try {
-        const edges = await listCouplingsFor(self.ownerId, c.workspaceId ?? undefined);
-        const peers = resolveCoupledPeers(self.ownerId, [], edges);
-        expansion = buildCoupledExpansion(peers, active);
-      } catch {
-        /* fail-soft — a coupling read must never degrade the roster */
-      }
-    }
     const out = {
       ...snapshot,
       ...(self ? { self } : {}),
       active,
-      ...(expansion
-        ? {
-            expanded: expansion.expanded,
-            expandedTotal: expansion.total,
-            ...(expansion.truncated
-              ? { expandedTruncated: `showing ${expansion.expanded.length} of ${expansion.total} coupled peers` }
-              : {}),
-          }
-        : {}),
+      ...coupling,
     };
     // {data} envelope so the payload-tier shapers apply; HTTP consumers (the
     // pui roster panes) still read identical lossless JSON text.

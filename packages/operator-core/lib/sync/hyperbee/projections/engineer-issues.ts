@@ -49,6 +49,19 @@ export interface EngineerIssueRow {
   created_by: string | null;
   created_at: string; // ISO string
   /**
+   * WI-6327 — the row's creation instant in epoch ms, the SAME unit and value as the
+   * `work_items.created_ts` column. This, not `created_at`, is what the EI-13285
+   * collision guard compares: `created_at` is derived/defaulted by the mapper and so
+   * can be a synthesized stand-in, while `created_ts` is passed through untouched and
+   * is null exactly when the op did not carry one.
+   *
+   * OPTIONAL on the wire, and its ABSENCE is load-bearing: ops appended to the
+   * hypercore before mig 688 carry a FABRICATED `created_at` (drain time) that is
+   * indistinguishable from a genuine one, so the guard must not judge them. Null here
+   * ⇒ legacy op ⇒ fail open. Non-null ⇒ authoritative ⇒ guard applies.
+   */
+  created_ts?: number | null;
+  /**
    * work-item-completion-integrity-2026-07-01 (WI-1403 / EI-5269): the "who did
    * it + what proves it" pair recorded at the terminal-state choke point. OPTIONAL
    * on the wire (pre-432 history lacks them → dropped on write → NULL).
@@ -91,6 +104,9 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   if (!isStringOrNull(r.linked_feature_id)) return false;
   if (!isStringOrNull(r.created_by)) return false;
   if (!isString(r.created_at)) return false;
+  // WI-6327: optional on the wire (absent on every pre-688 op) — but when present it
+  // must be a real finite epoch, since the collision guard trusts it.
+  if (r.created_ts !== undefined && r.created_ts !== null && !Number.isFinite(r.created_ts)) return false;
   if (r.terminal_owner !== undefined && !isStringOrNull(r.terminal_owner)) return false;
   if (r.terminal_completion_ref !== undefined && !isStringOrNull(r.terminal_completion_ref)) return false;
   if (r.terminal_reason !== undefined && !isStringOrNull(r.terminal_reason)) return false; // P-009/D-001 — optional on the wire
@@ -98,11 +114,11 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   return true;
 }
 
-// EI-13285: `created_at` is part of the federated document (see the module header)
-// and — for a genuine edit or re-delivery of the SAME logical issue — is ALWAYS
+// EI-13285: the creation instant is part of the federated document (see the module
+// header) and — for a genuine edit or re-delivery of the SAME logical issue — is ALWAYS
 // identical to what's already stored: it's set once at INSERT and deliberately never
 // touched by the `ON CONFLICT ... DO UPDATE SET` list below. So an existing row whose
-// `created_ts` disagrees with an incoming remote op's `created_at` by more than clock-
+// `created_ts` disagrees with an incoming remote op's by more than clock-
 // skew slop is NOT an edit of that row — it's a DIFFERENT logical issue that happens
 // to have been allocated the same issue_id (root cause + the fix to the allocator
 // itself: issues-engineer.ts's nextIssueId / newCollisionResistantIssueTail). Refuse
@@ -111,20 +127,35 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
 // untouched); silently overwriting was unbounded, silent, PERMANENT local data loss —
 // the actual EI-13285 incident (a freshly captured local improvement replaced by an
 // unrelated remote issue).
+//
+// WI-6327: the comparison keys on the wire's `created_ts` (epoch ms, passed through
+// untouched), NOT on `created_at` (mapper-derived, and before mig 688 outright
+// fabricated as drain-time `now()` because the capture trigger emitted no creation
+// timestamp at all). Keying a REFUSE-THE-WRITE decision on a field the mapper was free
+// to invent turned this guard into a 100% false positive for the entire issue family:
+// on the P-302 rig it refused ops for 10,070 distinct issue_ids, so no issue update
+// could ever land on a peer that already held the row. A missing `created_ts` (every
+// pre-688 op) now fails OPEN rather than being judged against an invented value.
 const COLLISION_CREATED_AT_TOLERANCE_MS = 5_000;
 
 async function isDistinctEntityCollision(
   sql: postgres.Sql,
   harnessSlug: string,
   featureId: string,
-  incomingCreatedAtIso: string,
+  incomingCreatedTs: number | null | undefined,
 ): Promise<{ collided: boolean; existingCreatedAtIso?: string }> {
+  // WI-6327: fail OPEN when the op carries no authoritative creation instant. Every op
+  // appended before mig 688 has a `created_at` fabricated at drain time (the capture
+  // trigger never emitted one) which is indistinguishable from a genuine value — judging
+  // those dropped 10,070 distinct ids on the P-302 rig. Only a carried `created_ts` is
+  // trustworthy enough to refuse a write over.
+  if (incomingCreatedTs === null || incomingCreatedTs === undefined) return { collided: false };
   const rows = await sql<{ created_ts: string | number }[]>`
     SELECT created_ts FROM harness_shared.work_items
      WHERE harness_slug = ${harnessSlug} AND feature_id = ${featureId}`;
   const existing = rows[0];
   if (!existing) return { collided: false };
-  const incomingMs = Date.parse(incomingCreatedAtIso);
+  const incomingMs = Number(incomingCreatedTs);
   const existingMs = Number(existing.created_ts);
   if (!Number.isFinite(incomingMs) || !Number.isFinite(existingMs)) return { collided: false };
   if (Math.abs(incomingMs - existingMs) <= COLLISION_CREATED_AT_TOLERANCE_MS) return { collided: false };
@@ -214,7 +245,7 @@ async function writeToPg(
   // EI-13285: id-collision guard — see isDistinctEntityCollision's header. Must run
   // BEFORE the upsert below, which would otherwise blindly clobber a distinct local
   // record sharing this issue_id.
-  const collision = await isDistinctEntityCollision(sql, vSlug, row.issue_id, row.created_at);
+  const collision = await isDistinctEntityCollision(sql, vSlug, row.issue_id, row.created_ts);
   if (collision.collided) {
     console.warn(
       `[engineer-issues projection] EI-13285 id collision: refusing to apply remote op for ` +

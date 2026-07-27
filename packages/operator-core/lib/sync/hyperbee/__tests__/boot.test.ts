@@ -2772,13 +2772,26 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     const harnessSlug = 's-repair-confirm-observable';
     const keyHex = 'c3'.repeat(32);
 
-    // The re-opened session is HEALTHY: `fakeCloseableRemoteLog` reports
-    // length 0, so `knownLength <= mergedPosition` — the caught-up half of the
-    // genuine-recovery branch. This is the exact path that used to `return`
-    // without recording anything at all.
+    // The re-opened session is HEALTHY and GENUINELY caught up.
+    //
+    // WI-6324: this test used to reach the caught-up branch via a bare
+    // `fakeCloseableRemoteLog` (length 0), i.e. `0 <= 0`. That is ABSENCE of
+    // knowledge — the state a session is in before replication has delivered
+    // anything — not evidence of catch-up, and treating it as recovery silently
+    // disarmed the escalation ladder on a real zombie connection. `caughtUp` now
+    // requires positive knowledge of the writer, so this test states its premise
+    // honestly instead of relying on the zero case: a writer of length 3 whose
+    // entries all resolve `null` (read-merge's "version-gated drop", which
+    // ADVANCES the cursor) leaves mergedPosition at 3 with knownLength 3 — a real
+    // caught-up session. The BEHAVIOUR under test (a confirmed recovery is
+    // observable and carries the incident clock) is unchanged.
     const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
     const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
-      const fresh = fakeCloseableRemoteLog(k);
+      const fresh: RemoteLog & { close: ReturnType<typeof vi.fn> } = {
+        ...fakeCloseableRemoteLog(k),
+        length: 3,
+        contiguousLength: 3,
+      };
       sessions.push(fresh);
       return fresh;
     });
