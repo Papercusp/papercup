@@ -27,6 +27,12 @@ import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
 import { probeServiceStart } from './agent-tools/dev/systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './agent-tools/dev/restart-target-units';
+import {
+  classifyPathsAgainstCandidate,
+  gitReadForRepo,
+  type MissingReason,
+  type PathContainment,
+} from './candidate-contains';
 
 const pexec = promisify(execFile);
 
@@ -472,6 +478,13 @@ export interface PipelinePosition {
    */
   serving: ServingTruth;
   /**
+   * P-004: does the commit the GATE is judging actually contain this path's current
+   * content? Every other field here answers "where is my change in the pipeline";
+   * this one answers the question that comes first and was unanswerable —
+   * "is the thing being judged even my code?".
+   */
+  changeInCandidate: ChangeInCandidate;
+  /**
    * git-pipeline-agent-state-2026-07-26 P-001: per-stage POSITION x HEALTH,
    * ordered source->live.
    *
@@ -659,6 +672,130 @@ export function evaluateServing(args: {
   };
 }
 
+/**
+ * P-004 (EI-18752644493166307): whether the commit the GATE judges contains this
+ * path's current content.
+ *
+ * The gate checks out a COMMITTED candidate into an isolated tree — it cannot see
+ * the working tree, and the quiet-cut routinely steps the candidate BACK from the
+ * tip. So "is my change committed / pushed" (which `positions` answers) does not
+ * imply "the run about to red is testing my code".
+ *
+ * When it isn't, the verdict is actively misleading rather than merely useless: the
+ * suite reds on the PRE-FIX failure with the PRE-FIX count, which reads as *your fix
+ * did not work* instead of *your fix was not present*, and sends the caller off to
+ * re-debug correct code. That misread — not the wasted run — is what this measures
+ * away.
+ *
+ * TWO candidates, because they answer different questions:
+ *  - `judgingSha`       the run that is ALREADY IN FLIGHT. Its verdict is the one
+ *                       about to land, so this is what to read a red against.
+ *  - `nextCandidateSha` what a `release:checkpoint-run` fired RIGHT NOW would judge
+ *                       (post quiet-cut). This is what to check BEFORE firing.
+ * Both are `null` when no run is active / nothing could be resolved, and every
+ * `contains` verdict is three-valued — an unresolvable read is `null` (unknown),
+ * never `false` (and never a silent `true`).
+ */
+export interface ChangeInCandidate {
+  /** The commit an in-flight gate run is judging, if one is active. */
+  judgingSha: string | null;
+  /** Does that candidate carry this path's WORKING-TREE content? null = not comparable. */
+  judgingContainsPath: boolean | null;
+  /** The commit a checkpoint fired right now would judge (post quiet-cut). */
+  nextCandidateSha: string | null;
+  nextContainsPath: boolean | null;
+  /** When a verdict is false: which lever fixes it (uncommitted / newer-commit / absent). */
+  missingReason: MissingReason | null;
+  /** One line: what these verdicts mean, and the concrete next move. */
+  detail: string | null;
+}
+
+/** Nothing measurable — a sha-only probe, a submodule path, or an unresolved candidate. */
+const NO_CHANGE_IN_CANDIDATE: ChangeInCandidate = {
+  judgingSha: null,
+  judgingContainsPath: null,
+  nextCandidateSha: null,
+  nextContainsPath: null,
+  missingReason: null,
+  detail: null,
+};
+
+/** The two candidate shas the gate machinery can name, resolved together. */
+export interface GateCandidates {
+  /** Candidate of the run in flight right now, or null when none is. */
+  judgingSha: string | null;
+  /** Candidate a fresh launch would pick (quiet-cut applied). */
+  nextCandidateSha: string | null;
+}
+
+/**
+ * Pure: turn the two candidates + their per-path containment into the caller-facing
+ * verdict. Separated from the git/systemd reads so the phrasing — which is the whole
+ * deliverable here — is unit-testable without a repo.
+ */
+export function evaluateChangeInCandidate(args: {
+  relPath: string | null;
+  candidates: GateCandidates;
+  judging: PathContainment | null;
+  next: PathContainment | null;
+}): ChangeInCandidate {
+  const { relPath, candidates, judging, next } = args;
+  if (!relPath) return NO_CHANGE_IN_CANDIDATE;
+  const base: ChangeInCandidate = {
+    judgingSha: candidates.judgingSha,
+    judgingContainsPath: judging ? judging.inCandidate : null,
+    nextCandidateSha: candidates.nextCandidateSha,
+    nextContainsPath: next ? next.inCandidate : null,
+    missingReason: judging?.reason ?? next?.reason ?? null,
+    detail: null,
+  };
+
+  const lever = (reason: MissingReason | null): string => {
+    switch (reason) {
+      case 'uncommitted':
+        return 'The edit is still only in the working tree, which the gate cannot see. Commit it first: git-sync:run.';
+      case 'absent':
+        return 'That file does not exist at all in the judged commit (it is new). Commit it first: git-sync:run.';
+      case 'newer-commit':
+        return 'It IS committed, but in a commit newer than the candidate (the quiet-cut steps the candidate back ~4 min). Re-fire once the commit ages past the quiet window, or let the next run pick it up.';
+      default:
+        return '';
+    }
+  };
+
+  // The in-flight run's verdict is the one about to land, so it outranks the
+  // hypothetical next candidate whenever both are known.
+  if (base.judgingContainsPath === false) {
+    return {
+      ...base,
+      detail:
+        `The gate run IN FLIGHT is judging ${base.judgingSha?.slice(0, 12)}, which does NOT contain this file's current content. ` +
+        `A RED from that run is NOT evidence your change failed — it is testing code without it. ${lever(base.missingReason)}`,
+    };
+  }
+  if (base.judgingContainsPath === true) {
+    return {
+      ...base,
+      detail: `The gate run in flight (${base.judgingSha?.slice(0, 12)}) DOES carry this file's current content, so its verdict is a real verdict on your change.`,
+    };
+  }
+  if (base.nextContainsPath === false) {
+    return {
+      ...base,
+      detail:
+        `A checkpoint fired right now would judge ${base.nextCandidateSha?.slice(0, 12)}, which does NOT contain this file's current content — ` +
+        `firing now buys a verdict on code without your change. ${lever(base.missingReason)}`,
+    };
+  }
+  if (base.nextContainsPath === true) {
+    return {
+      ...base,
+      detail: `A checkpoint fired now would judge ${base.nextCandidateSha?.slice(0, 12)}, which DOES carry this file's current content.`,
+    };
+  }
+  return base;
+}
+
 /** A stage a change must clear to be live, ordered source->live. */
 export type StageName = 'committed' | 'pushed' | 'gate' | 'main' | 'deployed' | 'serving';
 
@@ -696,6 +833,7 @@ export function computeStages(
     | 'gitSyncLastStatus'
     | 'gitSync'
     | 'serving'
+    | 'changeInCandidate'
   >,
 ): StageState[] {
   // A path whose runtime does NOT go through the release pipeline (bg-host, gateway,
@@ -777,15 +915,27 @@ export function computeStages(
       : g.stalled || g.consecutiveReds > 0
         ? 'stalled'
         : 'advancing';
+    // P-004: a red gate and a candidate that lacks your change are the SAME reading
+    // for a caller unless something separates them — and the wrong separation is the
+    // expensive one (re-debugging a correct fix). So when the candidate provably does
+    // not carry this file, that fact LEADS the gate detail, ahead of the red count.
+    const cic = p.changeInCandidate;
+    const notInCandidate = cic.judgingContainsPath === false || cic.nextContainsPath === false;
     stages.push({
       name: 'gate',
       position: p.positions.inMain ? 'past' : 'pending',
       health: gateHealth,
-      detail: g.fireStale
-        ? `The green-checkpoint is NOT FIRING${g.fireStaleReason ? ` (${g.fireStaleReason})` : ''} — no verdict is coming until that is fixed. Waiting will not help; fire one with release:checkpoint-run.`
-        : gateHealth === 'stalled'
-          ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.`
-          : null,
+      detail: notInCandidate
+        ? `${cic.detail}${
+            gateHealth === 'stalled'
+              ? ` (The gate is also RED — ${g.consecutiveReds} consecutive — but do NOT read that red as your change failing until a run that CONTAINS it completes.)`
+              : ''
+          }`
+        : g.fireStale
+          ? `The green-checkpoint is NOT FIRING${g.fireStaleReason ? ` (${g.fireStaleReason})` : ''} — no verdict is coming until that is fixed. Waiting will not help; fire one with release:checkpoint-run.`
+          : gateHealth === 'stalled'
+            ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.`
+            : null,
     });
 
     stages.push({
@@ -869,7 +1019,46 @@ export interface PipelinePositionDeps {
   probeUnitStart?: (unit: string) => Promise<{ pid: number | null; startedAtMs: number | null } | null>;
   /** P-003: mtime (ms) of a repo-relative file — what a working-tree tsx host would load. */
   fileMtimeMs?: (absPath: string) => Promise<number | null>;
+  /**
+   * P-004: the two gate candidates (in-flight run + what a fresh launch would judge).
+   * Injected by TESTS only — the default really reads systemd + git, for the same
+   * reason `probeUnitStart` does: a null-by-default dep would ship the containment
+   * check dark while looking implemented.
+   */
+  resolveGateCandidates?: (root: string) => Promise<GateCandidates>;
 }
+
+/**
+ * Default gate-candidate resolution: the SAME functions `release:checkpoint-run`
+ * itself uses, so this surface and that tool can never disagree about which commit
+ * is being judged — a disagreement between them would recreate the exact
+ * false-confidence this check exists to remove.
+ *
+ * Imported lazily: `release-checkpoint-launch` pulls in spawnSync/systemctl plumbing
+ * that a sha-only or submodule probe never needs, and this module is on the hot path
+ * of `dev:pipeline_position`.
+ */
+const realResolveGateCandidates = async (root: string): Promise<GateCandidates> => {
+  try {
+    const { checkActiveCheckpointRun, currentCheckpointCandidate } = await import('./release-checkpoint-launch');
+    const { spawnSync } = await import('node:child_process');
+    const execFn = (cmd: string, args: string[]) => {
+      const r = spawnSync(cmd, args, { encoding: 'utf8' });
+      return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    };
+    const active = checkActiveCheckpointRun(root, execFn);
+    const current = currentCheckpointCandidate(root, execFn);
+    return {
+      // Only a genuinely ACTIVE run has a judging sha. `current_candidate` describes a
+      // HYPOTHETICAL fresh launch and must never be reported as "what is being judged"
+      // (EI-18695275971973546 cost a wrong fleet-wide broadcast to that exact conflation).
+      judgingSha: active.active ? (active.candidate ?? null) : null,
+      nextCandidateSha: current.current_candidate,
+    };
+  } catch {
+    return { judgingSha: null, nextCandidateSha: null };
+  }
+};
 
 /** Default unit-start probe: the shared systemd probe, mapped into ms. */
 const realProbeUnitStart = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> => {
@@ -977,11 +1166,20 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
         : sv.startedSinceCodeChange === true
           ? ` ✓ ${sv.unit} started after this file last changed, so the running host has loaded it.`
           : '';
+    // EI-18752644493166307: the parenthetical below used to end at "even an uncommitted
+    // edit is what it loads on restart" — true for the RESTART consumer, and read by an
+    // agent as blanket permission to fire the gate dirty. The green-checkpoint is a
+    // SECOND consumer of the same file and judges a COMMITTED candidate, so for IT an
+    // uncommitted edit is invisible. One reassurance, two consumers, opposite answers:
+    // qualify it rather than letting the true half cover the false one.
+    const gateBlind = p.dirtyUncommitted
+      ? ' ⚠ but the GREEN GATE is a different consumer of this same file and judges a COMMITTED candidate — your uncommitted edit is INVISIBLE to it, so a gate run fired now tests the code WITHOUT it (commit first: git-sync:run).'
+      : '';
     return `${label} @${p.targetShortSha}${subj}: runs in ${p.runtime.host} — NOT carried by the staging→main→:3070 deploy.${live} ${
       p.runtime.activation
     } (git position: committed ${tick(p.positions.committedLocal)} · staging ${tick(
       p.positions.onStaging,
-    )}${dirty} — durability/peer-visibility only; the running host reads THIS TREE, so even an uncommitted edit is what it loads on restart.)`;
+    )}${dirty} — durability/peer-visibility only; the running host reads THIS TREE, so even an uncommitted edit is what it loads on restart.)${gateBlind}`;
   }
 
   if (p.submodule) {
@@ -1019,11 +1217,19 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
               p.verdictProvenance.lastGreenShortSha ?? '?'
             } — may be an in-flight retriage/refire or another hold consecutiveReds doesn't capture; not necessarily broken, but don't read this as fully healthy)`
           : '';
+  // P-004: when the judged candidate provably lacks this file's content, that outranks
+  // every tick above it — the ticks describe where the change IS, this describes whether
+  // the verdict about to land is even about it. Appended last so it is the final thing
+  // read, which is where a caller stops.
+  const candidateNote =
+    p.changeInCandidate.judgingContainsPath === false || p.changeInCandidate.nextContainsPath === false
+      ? ` ⚠ ${p.changeInCandidate.detail}`
+      : '';
   return `${label} @${p.targetShortSha}${subj}: committed ${tick(p.positions.committedLocal)} · staging ${tick(
     p.positions.onStaging,
   )} · main ${tick(p.positions.inMain)}${gateNote} · deployed ${tick(p.positions.deployed)}${servingNote(
     p,
-  )}${dirty}.`;
+  )}${dirty}.${candidateNote}`;
 }
 
 export async function gitPipelinePosition(
@@ -1213,6 +1419,40 @@ export async function gitPipelinePosition(
     );
   }
 
+  // P-004: is the commit the gate judges even this file's code? Scoped to a
+  // SUPERPROJECT path: the gate judges the superproject, which stores only a gitlink
+  // for a submodule, so a blob comparison across that boundary compares nothing (the
+  // same absence-reads-as-evidence trap resolveSubmodulePin exists for). Saying
+  // "unknown" there is the honest answer; a false `true` would be the dangerous one.
+  let changeInCandidate: ChangeInCandidate = NO_CHANGE_IN_CANDIDATE;
+  if (relPath && !submodule) {
+    const candidates = await (deps.resolveGateCandidates ?? realResolveGateCandidates)(root);
+    const shas = [candidates.judgingSha, candidates.nextCandidateSha].filter((s): s is string => !!s);
+    const gitRead = gitReadForRepo(git, root);
+    const byShaEntries = await Promise.all(
+      [...new Set(shas)].map(
+        async (sha) => [sha, (await classifyPathsAgainstCandidate(gitRead, sha, [relPath]))[0]] as const,
+      ),
+    );
+    const bySha = new Map(byShaEntries);
+    changeInCandidate = evaluateChangeInCandidate({
+      relPath,
+      candidates,
+      judging: candidates.judgingSha ? (bySha.get(candidates.judgingSha) ?? null) : null,
+      next: candidates.nextCandidateSha ? (bySha.get(candidates.nextCandidateSha) ?? null) : null,
+    });
+    if (changeInCandidate.judgingContainsPath === false || changeInCandidate.nextContainsPath === false) {
+      notes.push(`CANDIDATE DOES NOT CONTAIN THIS FILE: ${changeInCandidate.detail}`);
+    }
+  } else if (relPath && submodule) {
+    changeInCandidate = {
+      ...NO_CHANGE_IN_CANDIDATE,
+      detail:
+        'Containment is not measured for a submodule path: the gate judges the SUPERPROJECT, which stores only a gitlink for this submodule. ' +
+        'Whether your change is in the judged build depends on the PIN the superproject candidate carries — check that the superproject has committed the bumped gitlink.',
+    };
+  }
+
   const preStages: Omit<PipelinePosition, 'summary' | 'stages'> = {
     input: { path: inp.path ?? null, sha: inp.sha ?? null },
     repoRoot: root,
@@ -1248,6 +1488,7 @@ export async function gitPipelinePosition(
     runtime,
     runtimes,
     serving,
+    changeInCandidate,
     notes,
   };
   const base: Omit<PipelinePosition, 'summary'> = { ...preStages, stages: computeStages(preStages) };

@@ -325,11 +325,25 @@ describe('skipOwnOps — the EI-117 echo breaker (own-log replays on CDC tables)
     expect(writes).toEqual([{ id: 'k' }]);
   });
 
-  it('without an ownLogKeyHex (legacy/global path) nothing is skipped — the skip is gated on log-source verification', async () => {
-    const { lookup, writes } = spyWithFlag(true);
-    const applied = await applyOpVia(lookup, putOp({ sourceLogKeyHex: 'OWN-LOG-KEY' }));
-    expect(applied).toBe(true);
-    expect(writes).toEqual([{ id: 'k' }]);
+  it('without an ownLogKeyHex (legacy/global path) nothing is skipped — the skip is gated on log-source verification, and the WI-6210 detector fires', async () => {
+    // WI-6210: this is not a benign legacy case — with no own-log key the echo
+    // breaker cannot fire AND provenance defaults to origin='local' from the
+    // forgeable writerPubkey, which is how a remote publisher's row gets
+    // permanently shadowed by this host's own echo. The apply still proceeds
+    // (the fix belongs at the caller), but it must be AUDIBLE.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resetUnthreadedApplyDetectorForTest();
+    try {
+      const { lookup, writes } = spyWithFlag(true);
+      const applied = await applyOpVia(lookup, putOp({ sourceLogKeyHex: 'OWN-LOG-KEY' }));
+      expect(applied).toBe(true);
+      expect(writes).toEqual([{ id: 'k' }]);
+      expect(unthreadedSkipOwnOpsApplyCount()).toBe(1);
+      expect(String(warn.mock.calls[0]?.[0] ?? '')).toContain('WI-6210 UN-THREADED apply');
+    } finally {
+      warn.mockRestore();
+      resetUnthreadedApplyDetectorForTest();
+    }
   });
 });
 

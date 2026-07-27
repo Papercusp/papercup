@@ -85,9 +85,17 @@ beforeEach(() => {
   // P-003 verify-read default: the read-back mirrors whatever the store's LAST write
   // resolved to, so every pre-existing write-path test verifies clean without each
   // one re-declaring the round-trip. Verify-failure tests override this per-case.
+  //
+  // P-007: mirror setWorkItemCheckpointWithPrior — checkpoint.ts now routes EVERY
+  // path (replace, append, clear) through it, so keying this off the old
+  // setWorkItemCheckpoint made the read-back return null for any test that stubs the
+  // WithPrior path directly. The default shim above still delegates to
+  // setWorkItemCheckpoint, so tests that stub only that one keep working unchanged.
   getWorkItemCheckpoint.mockImplementation(async () => {
-    const last = setWorkItemCheckpoint.mock.results.at(-1);
-    return last && last.type === 'return' ? await (last.value as Promise<string | null>) : null;
+    const last = setWorkItemCheckpointWithPrior.mock.results.at(-1);
+    if (!last || last.type !== 'return') return null;
+    const resolved = (await last.value) as { stored?: string | null } | null;
+    return resolved?.stored ?? null;
   });
 });
 

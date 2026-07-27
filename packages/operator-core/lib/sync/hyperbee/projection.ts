@@ -250,6 +250,43 @@ function resolveOpProvenance(op: OpEnvelope, applyOpts?: ApplyOpOpts): Provenanc
 }
 
 /**
+ * WI-6210 detector state. Capped so a legitimately peerless single-harness /
+ * global-registry context cannot spam the log — the first occurrences carry the
+ * call-site stack (which is what names the offending caller); after the cap a
+ * single suppression line is emitted and the counter keeps counting.
+ */
+const UNTHREADED_APPLY_WARN_CAP = 20;
+let unthreadedApplyWarnCount = 0;
+
+/** Test seam: reset the WI-6210 detector's warn budget between cases. */
+export function resetUnthreadedApplyDetectorForTest(): void {
+  unthreadedApplyWarnCount = 0;
+}
+
+/** Observed count of un-threaded skipOwnOps applies this process (WI-6210). */
+export function unthreadedSkipOwnOpsApplyCount(): number {
+  return unthreadedApplyWarnCount;
+}
+
+function noteUnthreadedSkipOwnOpsApply(op: OpEnvelope): void {
+  unthreadedApplyWarnCount += 1;
+  if (unthreadedApplyWarnCount > UNTHREADED_APPLY_WARN_CAP) return;
+  const suffix =
+    unthreadedApplyWarnCount === UNTHREADED_APPLY_WARN_CAP
+      ? ' [further occurrences suppressed]'
+      : '';
+  console.warn(
+    `[projection] WI-6210 UN-THREADED apply (no ownLogKeyHex) on a skipOwnOps table — the echo ` +
+      `breaker cannot fire and provenance will be stamped origin='local' from the FORGEABLE ` +
+      `writerPubkey: table=${op.table ?? '?'} key=${op.hbKey ?? '?'} ` +
+      `sourceLog=${op.sourceLogKeyHex?.slice(0, 8) ?? 'none'} ` +
+      `writer=${op.writerPubkey?.slice(0, 8) ?? 'none'} ts=${op.ts ?? '?'} hlc=${op.hlc ?? 'none'} ` +
+      `(#${unthreadedApplyWarnCount})${suffix}. Caller must pass ownLogKeyHex / use ` +
+      `buildHarnessProjectionApply.\n${new Error('un-threaded apply call site').stack ?? ''}`,
+  );
+}
+
+/**
  * Core op-dispatch: resolve `op.table` via `lookup`, then write/delete the row
  * to PG and fire the clobber-event hook. Returns true iff the op was applied
  * (false on unknown table / non-put-del / decode failure / missing key).
@@ -296,6 +333,31 @@ export async function applyOpVia(
     op.sourceLogKeyHex === applyOpts.ownLogKeyHex
   ) {
     return false;
+  }
+  // ── WI-6210 DETECTOR: un-threaded apply on a skipOwnOps table ───────────────
+  // Fires for EITHER apply path (global registry OR a scoped apply that was
+  // built without an own-log key) — that is the point: the class is defined by
+  // the MISSING `ownLogKeyHex`, not by which caller omitted it, and a detector
+  // installed on only one of the two paths can miss the real one.
+  //
+  // Why this is corruption and not a legacy nicety: with no own-log key the
+  // echo breaker above cannot fire (it needs the key to recognise this host's
+  // own op), AND `resolveOpProvenance` falls through to origin='local' attributed
+  // by the FORGEABLE `writerPubkey`. So this host re-applies its own captured
+  // echo of a REMOTE publisher's row and re-stamps it origin='local' with a
+  // locally-generated clock NEWER than the wire — after which every redelivery
+  // of the publisher's genuine op loses the LWW compare and the federated record
+  // stays permanently shadowed, with no repair path. Observed live on the p2p
+  // first-green rig (2026-07-27, frame a re-stamping b's seat offer ~120ms after
+  // applying it correctly); invisible in both the logs and the database, which is
+  // the only reason it survived four gate runs and three wrong diagnoses.
+  //
+  // The FIX belongs at the caller (thread `ownLogKeyHex` / use the per-harness
+  // scoped apply), so this changes no behaviour — it makes the class AUDIBLE and
+  // the stack names the caller. Capped so a single-harness/global context that
+  // legitimately has no peers cannot spam the log.
+  if (p.skipOwnOps === true && op.type === 'put' && applyOpts?.ownLogKeyHex === undefined) {
+    noteUnthreadedSkipOwnOpsApply(op);
   }
   // P-010 RECV seam: observing a REMOTE op's HLC advances this process's logical
   // clock past the remote causal frontier, so a subsequent LOCAL write is
@@ -371,34 +433,11 @@ export async function applyOpVia(
  * for any caller that still has a single-harness global view.
  */
 export async function applyHyperbeeOpToPg(op: OpEnvelope): Promise<boolean> {
-  // WI-6210 DETECTOR. This global apply carries NO `ApplyOpOpts`, so it has no
-  // `ownLogKeyHex` — and for a projection that sets `skipOwnOps` that is not a
-  // harmless legacy nicety, it is a provenance CORRUPTION path: with no own-log
-  // key, (1) `skipOwnOps` cannot recognise this host's own echo and re-applies
-  // it, and (2) `resolveOpProvenance` defaults `origin` to 'local' and attributes
-  // by the FORGEABLE `writerPubkey`. Observed live on the p2p first-green rig
-  // (2026-07-27): frame a applied b's publisher-signed seat offer correctly
-  // (origin='remote', b's wire clock), then re-applied its own capture echo
-  // through this path ~120ms later, re-stamping the row origin='local' with a
-  // locally-generated clock NEWER than the wire — after which every redelivery
-  // of b's genuine op lost the LWW compare (9 `lww_superseded` drops) and the
-  // federated record stayed permanently shadowed, with no repair path.
-  //
-  // The fix belongs at the caller (thread `ownLogKeyHex`, or use the per-harness
-  // scoped apply), so this does not change behaviour — it makes the class
-  // AUDIBLE, and it is the recurrence guard for it: the failure was invisible in
-  // both the logs and the database, which is the only reason it survived four
-  // gate runs and three wrong diagnoses. The stack names the caller.
-  const p = op.table ? registry.get(op.table) : undefined;
-  if (p?.skipOwnOps === true && op.type === 'put') {
-    console.warn(
-      `[projection] GLOBAL apply (no ownLogKeyHex) for a skipOwnOps table — provenance will be ` +
-        `stamped origin='local' and this host's own echo cannot be skipped: table=${op.table} ` +
-        `key=${op.hbKey ?? '?'} sourceLog=${op.sourceLogKeyHex?.slice(0, 8) ?? 'none'} ` +
-        `(WI-6210). Caller should pass ownLogKeyHex / use buildHarnessProjectionApply.\n` +
-        `${new Error('global-apply call site').stack ?? ''}`,
-    );
-  }
+  // WI-6210: this global apply carries NO `ApplyOpOpts`, so every op it applies
+  // is un-threaded by construction. The DETECTOR for that class lives inside
+  // `applyOpVia` (see the block above the P-010 RECV seam) so it covers BOTH
+  // this path and a scoped apply that was built without an own-log key —
+  // installing it only here would miss the other half of the class.
   return applyOpVia((tableTag) => registry.get(tableTag) ?? null, op);
 }
 
