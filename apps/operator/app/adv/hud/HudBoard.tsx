@@ -309,30 +309,38 @@ export default function HudBoard({
           them: the controls BELONG to a tab (fleet chips are a session idea),
           so nesting the switch among the things it switches would read as a
           sibling filter rather than the axis it is. */}
-      <div className="hud__tabs" role="tablist" aria-label="HUD board">
-        {HUD_TABS.map((id) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            className={`hud__tab${tab === id ? ' hud__tab--on' : ''}`}
-            aria-selected={tab === id}
-            onClick={() => onSelectTab(id)}
-          >
-            <span className="hud__tab-row">{HUD_TAB_LABEL[id]}</span>
-          </button>
-        ))}
+      <div className="hud__tabs">
         {/* The launcher stays OUTSIDE the tab bodies: launching a session is
             not a thing you do to the sessions board, it is a thing you do from
             the HUD, and hiding it behind a tab would make it unreachable from
             the two tabs most likely to make you want it.
 
-            LEFT-aligned, directly after the tabs (owner ask 2026-07-26). It
-            previously sat behind a `.hud__spacer` (flex:1) which pushed it to
-            the far right of the strip; on a wide board that stranded the launch
-            cluster a full screen-width away from the tabs it belongs to. No
-            spacer now — it reads as one continuous control strip. */}
+            LEFTMOST in the strip (owner ask 2026-07-26, refined): it first sat
+            behind a `.hud__spacer` (flex:1) that pushed it to the far right —
+            a screen-width from the tabs it belongs to — then directly after the
+            tabs, and now ahead of them.
+
+            It is also a SIBLING of the tablist rather than a child of it: a
+            `role="tablist"` must contain only tabs, and parking a launch button
+            (three comboboxes and a submit) inside one misreports the strip to a
+            screen reader as a four-tab axis. The tablist role now sits on the
+            inner wrapper that holds exactly the tabs. */}
         {headerAction ? <span className="hud__header-action">{headerAction}</span> : null}
+
+        <div className="hud__tablist" role="tablist" aria-label="HUD board">
+          {HUD_TABS.map((id) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              className={`hud__tab${tab === id ? ' hud__tab--on' : ''}`}
+              aria-selected={tab === id}
+              onClick={() => onSelectTab(id)}
+            >
+              <span className="hud__tab-row">{HUD_TAB_LABEL[id]}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {!onSessions ? (

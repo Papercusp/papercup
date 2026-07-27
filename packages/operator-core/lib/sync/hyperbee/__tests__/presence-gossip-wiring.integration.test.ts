@@ -153,6 +153,12 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
         fed_ts bigint,
         fed_hlc text,
         author_pubkey text,
+        -- The projection's upsert writes runs_routines (the cadence-owner leg).
+        -- Omitting it here made every put SILENTLY fail to land: applyPut's PG
+        -- error is swallowed best-effort, so the symptom was "expected undefined
+        -- to be 'gossip presence e2e'" with no hint of a schema mismatch. Keep
+        -- this column list in step with projections/presence.ts's INSERT.
+        runs_routines boolean,
         PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label));
     `);
     await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '434-shared-session-presence.sql'), 'utf8')));
@@ -241,18 +247,34 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     expect(pinned.pot_slug).toBe(HIVE); // never 'evil-foreign-hive'
   });
 
-  it('a NON-member device\'s validly-signed frame is dropped (fail-closed member gate)', async () => {
-    channel.inbound!(
-      await buildPresencePutFrame(
-        row({ device_pubkey: stranger.pubB64, github_user_id: 666, machine_label: 'evil' }),
-        T0,
-        stranger.sign,
-      ),
-    );
-    await new Promise((r) => setTimeout(r, 300));
-    expect(
-      await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=666`,
-    ).toHaveLength(0);
+  it('a NON-member device\'s validly-signed frame is dropped — and SAYS SO (fail-closed member gate)', async () => {
+    // EI-18769392276881557: the drop must also be VISIBLE. A silent fail-closed
+    // gate is what made WI-559 unreadable — a node rejecting every inbound frame
+    // looked exactly like a node nobody was sending to. The warning is asserted
+    // here (rather than silenced) because new console output IS a behavior change.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      channel.inbound!(
+        await buildPresencePutFrame(
+          row({ device_pubkey: stranger.pubB64, github_user_id: 666, machine_label: 'evil' }),
+          T0,
+          stranger.sign,
+        ),
+      );
+      await new Promise((r) => setTimeout(r, 300));
+      expect(
+        await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=666`,
+      ).toHaveLength(0);
+
+      const line = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes('REJECTED'));
+      expect(line, 'the fail-closed drop must be reported, not silent').toBeDefined();
+      // The admitted-set size is what distinguishes "the gate is defending itself"
+      // from "this node can admit NOBODY" (the WI-559 misconfiguration).
+      expect(line).toContain('2 admitted device(s) known');
+      expect(line).toContain('not an attested device');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('H3: a put frame whose github_user_id ≠ the signer device\'s ATTESTED id is dropped (real membership gate, not just fail-closed-on-stranger)', async () => {

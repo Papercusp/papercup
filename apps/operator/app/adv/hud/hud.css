@@ -25,38 +25,57 @@
    different entity types. flex:none for the same reason .hud__top declares it:
    this is fixed chrome, and letting it shrink squashes the strip when the rows
    below get tall. */
+/* padding-bottom:0 + align-items:flex-end so the tabs sit ON the strip's bottom
+   border and the selected one can bridge it (see .hud__tab--on). Anything else
+   in this row restores its own bottom padding. */
 .hud__tabs {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 4px;
-  padding: 8px 14px;
+  padding: 8px 14px 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg-2);
   flex-wrap: wrap;
   flex: none;
 }
 
+/* Holds exactly the tabs, so `role="tablist"` describes only tabs (the launcher
+   is a sibling, not a member). */
+.hud__tablist {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
 /* Same WebKitGTK button-flex collapse as .hud__count / .hud__card: the button
    is display:inline-block and any flex row lives on an inner span. */
-/* Underlined tab strip, not pills (owner ask 2026-07-26: "make these look more
-   like tabs"). The selected tab is marked by an accent RULE along its bottom
-   edge — the conventional tab affordance — rather than a rounded filled chip,
-   which read as a toggle/filter button and was easy to confuse with the
-   .hud__count and .hud__fleet chips directly below it (those ARE toggles, and
-   they legitimately keep the pill shape; the whole point of this change is that
-   the axis switch should no longer look like one of them).
+/* Real folder tabs (owner ask 2026-07-26, asked twice — an accent underline was
+   still not reading as a tab). Three affordances now do the work together:
+   top-rounded corners, a hairline border on the three exposed sides, and — the
+   one that actually sells it — the SELECTED tab is filled with the CONTENT
+   colour (--bg, what the board below uses) and pulled down 1px so it bridges the
+   strip's own border-bottom. The tab visually opens into the panel it controls,
+   which is what distinguishes a tab from a toggle.
 
-   Deliberately NO negative margin to fuse the underline with .hud__tabs'
-   border-bottom: this strip is `flex-wrap: wrap` and, in the narrow HUD rail,
-   the tabs DO wrap onto their own line — a bottom-margin hack aligns the first
-   row and leaves every wrapped row hanging off the border. The underline sits
-   under each tab instead, which is correct on every row. */
+   That also fixes what was wrong with the pill version: a filled rounded chip is
+   the exact shape of .hud__count and .hud__fleet below it, and those genuinely
+   ARE toggles, so the board's axis switch read as one more filter. They keep the
+   pill; the tabs no longer share it.
+
+   The strip is flex-wrap:wrap and DOES wrap in the narrow HUD rail. Only one tab
+   is selected at a time, so the -1px bridge is visible on at most one row and
+   the rest simply read as inactive tabs — the failure the earlier note worried
+   about (every wrapped row hanging off the border) cannot occur with a single
+   selection. */
 .hud__tab {
   display: inline-block;
-  padding: 5px 12px 6px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
+  padding: 7px 14px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  margin-bottom: -1px;
+  padding-bottom: 8px;
   background: transparent;
   color: var(--fg-mute);
   cursor: pointer;
@@ -68,14 +87,21 @@
 
 .hud__tab-row { display: inline-flex; align-items: center; gap: 6px; }
 
-.hud__tab:hover { color: var(--fg); border-bottom-color: var(--border); }
-.hud__tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hud__tab:hover {
+  color: var(--fg);
+  background: rgb(from var(--fg) r g b / 0.06);
+}
+.hud__tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 .hud__tab--on {
   color: var(--fg);
-  border-bottom-color: var(--accent);
-  background: transparent;
+  background: var(--bg);
+  border-color: var(--border);
+  /* Sits on top of .hud__tabs' border-bottom, so the tab and the board below it
+     read as one continuous surface. */
+  box-shadow: 0 1px 0 0 var(--bg);
 }
+.hud__tab--on:hover { background: var(--bg); }
 
 /* ── header: counts + toggles ─────────────────────────────────────────────── */
 
@@ -178,19 +204,21 @@
    The pickers became searchable Comboboxes under
    hud-session-launcher-and-board-tabs-2026-07-26 P-003/P-008. */
 
-/* Sits immediately after the tabs now (the `.hud__spacer` that used to right-align
-   it was removed — owner ask 2026-07-26). The rule + padding give the launch
-   cluster its own visual group so "Sessions | Plans | Work items" still reads as
-   the tab axis rather than running straight into the plan/model/effort pickers.
-   margin-right:auto keeps it LEFT: without it, `flex-wrap` would stretch the last
-   line and let the cluster drift right again on some widths. */
+/* LEFTMOST in the strip, ahead of the tabs (owner ask 2026-07-26). The divider
+   is on the RIGHT because the cluster now leads: it separates the launcher from
+   the tab axis that follows, so "Sessions | Plans | Work items" still reads as
+   one group rather than running on from the plan/model/effort pickers.
+
+   padding-bottom restores the vertical rhythm .hud__tabs gave up: that strip now
+   has padding-bottom:0 and align-items:flex-end so the TABS can bridge its bottom
+   border, which would otherwise drop this cluster flush onto the border too. */
 .hud__header-action {
   display: flex;
   align-items: center;
-  margin-left: 8px;
-  margin-right: auto;
-  padding-left: 12px;
-  border-left: 1px solid var(--border);
+  margin-right: 10px;
+  padding-right: 12px;
+  padding-bottom: 8px;
+  border-right: 1px solid var(--border);
 }
 
 .pc-new-session-launcher {

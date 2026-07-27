@@ -97,8 +97,23 @@ export interface AdmissionReporter {
  */
 export function createAdmissionReporter(opts: AdmissionReporterOpts): AdmissionReporter {
   const warnIntervalMs = opts.warnIntervalMs ?? ADMISSION_WARN_INTERVAL_MS;
-  const warn = opts.warn ?? ((m: string) => console.warn(m));
-  const info = opts.info ?? ((m: string) => console.info(m));
+  // "Never throws" has to be enforced, not just asserted: this sink is called
+  // from INSIDE the admission gate, so a log seam that throws would turn a
+  // reporting failure into a DROPPED FRAME — the reporter causing the very
+  // symptom it exists to explain. (Caught for real: a console-patching test
+  // guard threw here and silently broke admission.) A sink failure is swallowed;
+  // the verdict is never affected.
+  const safely =
+    (sink: (m: string) => void) =>
+    (m: string): void => {
+      try {
+        sink(m);
+      } catch {
+        /* observability must never change behavior */
+      }
+    };
+  const warn = safely(opts.warn ?? ((m: string) => console.warn(m)));
+  const info = safely(opts.info ?? ((m: string) => console.info(m)));
   const rejectStreak = new Map<string, number>();
   const lastWarnAt = new Map<string, number>();
 

@@ -1743,6 +1743,52 @@ function GymView({
     }
     return newest;
   }, [runs]);
+
+  /**
+   * ONE card per challenger (owner ask 2026-07-27: "why isn't RECENT CHALLENGERS
+   * just cards like the other section?").
+   *
+   * The two blocks were the SAME events rendered twice: a compact line per
+   * gym_runs group (execution: when, run count, terminal states, decision) and a
+   * card per gym_proposals row (proposal: prompt, benchmark delta, cost, probes,
+   * judge rationale) — measured 17 run groups vs 17 proposals with 15 overlapping.
+   * WI-5696 added the lines only so a cycle that minted NO proposal stayed
+   * visible, and promised they would "vanish via the dedupe" once every decision
+   * minted one (WI-5697); the dedupe was never written, so both rendered and the
+   * duplicate block pushed the cards out of the pane.
+   *
+   * Merge instead of choosing: each proposal card carries its own execution facts,
+   * so nothing the lines conveyed is lost, and the compact line survives ONLY for
+   * its designed exception (see `orphanRuns`).
+   */
+  const runByVariant = useMemo(() => {
+    const at = (r: GymRecentRun) => r.finishedAt ?? r.startedAt ?? 0;
+    const m = new Map<string, GymRecentRun>();
+    for (const r of runs) {
+      const prior = m.get(r.variantId);
+      if (!prior || at(r) > at(prior)) m.set(r.variantId, r);
+    }
+    return m;
+  }, [runs]);
+
+  /** Challengers newest-first, each paired with the run group that executed it. */
+  const challengerCards = useMemo(
+    () =>
+      proposals
+        .map((p) => ({ p, run: p.variantId ? runByVariant.get(p.variantId) ?? null : null }))
+        .sort((a, b) => (b.p.createdAt ?? 0) - (a.p.createdAt ?? 0)),
+    [proposals, runByVariant],
+  );
+
+  /**
+   * Executions with NO proposal card — the champion baseline (mints none by
+   * design) and any cycle that minted nothing. This is the only case the compact
+   * line was ever for, so it is the only case that still renders one.
+   */
+  const orphanRuns = useMemo(() => {
+    const carded = new Set(proposals.map((p) => p.variantId).filter(Boolean) as string[]);
+    return runs.filter((r) => !carded.has(r.variantId));
+  }, [runs, proposals]);
   const t = useLexicon();
   const running = activeAutoloops.length;
   useEffect(() => {
@@ -1892,16 +1938,15 @@ function GymView({
                   </span>
                 ) : null}
               </div>
-              {/* WI-5696 (owner ask): a completed cycle is not a separate
-                  category — it is a challenger EVENT, so it lives under this
-                  header as a compact time-stamped line. Rendered ONLY for
-                  cycles with no matching proposal card (a cycle that minted a
-                  proposal is already told by that card); once WI-5697 restores
-                  proposal-minting for every decision, these lines vanish via
-                  the dedupe. */}
-              {runs.length > 0 ? (
-                <div className="pc-learning__gymcycles" aria-label="Recent gym runs">
-                  {runs.map((r) => {
+              {/* WI-5696's dedupe, finally implemented (owner ask 2026-07-27):
+                  a compact line renders ONLY for an execution with no proposal
+                  card — the champion baseline, or a cycle that minted nothing.
+                  Every other challenger is a card below, carrying these same
+                  execution facts, so this block no longer duplicates the cards
+                  (it was 15 of 17 duplicates) or pushes them out of the pane. */}
+              {orphanRuns.length > 0 ? (
+                <div className="pc-learning__gymcycles" aria-label="Gym runs without a proposal">
+                  {orphanRuns.map((r) => {
                     const promoted = r.decision === "accept" || r.decision === "promote";
                     const tone = r.isBaseline
                       ? "pending"
@@ -1963,45 +2008,26 @@ function GymView({
           ) : null}
           {proposals.length > 0 ? (
             <>
-              {/* One deck per target ROLE (owner ask 2026-07-19e — the gym in
-                  cards too): the role is the deck's category + accent. */}
-              <div className="pc-learning__lensstacks">
-                {[...proposals
-                  .reduce((m, p) => {
-                    const role = p.role || "unknown";
-                    const bucket = m.get(role);
-                    if (bucket) bucket.push(p);
-                    else m.set(role, [p]);
-                    return m;
-                  }, new Map<string, GymProposal[]>())
-                  .entries()]
-                  .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
-                  .map(([role, group]) => (
+              {/* A GRID of challenger cards, newest first — not a per-role
+                  1-of-N carousel (owner ask 2026-07-27). The carousel showed one
+                  card at a time, which is why the compact duplicate lines were
+                  silently doing overview duty; a grid is the overview AND the
+                  detail, so both jobs are done once. Role moves onto the card as
+                  a chip + accent, so the per-role grouping information survives. */}
+              <div className="pc-learning__gymcardgrid">
+                {challengerCards.map(({ p, run }) => {
+                  const role = p.role || "unknown";
+                  const accent = lensColor(role);
+                  const delta = deltaLabel(p.devAnchorDelta);
+                  const statusColor = statusToneColor(p.status);
+                  return (
                     <section
-                      key={role}
-                      className="pc-learning__lensgroup"
-                      aria-label={`${role} challengers`}
+                      key={p.id}
+                      className="pc-learning__gymcard"
+                      style={{ borderLeftColor: accent }}
+                      aria-label={`${role} challenger ${p.variantId ?? p.id}`}
                     >
-                      <CardStack
-                        items={group}
-                        getKey={(p) => p.id}
-                        ariaLabel={`${role} challengers`}
-                        accent={lensColor(role)}
-                        header={
-                          <>
-                            <span className="pc-cardstack__header-label">
-                              {role}
-                            </span>
-                            <span className="pc-cardstack__header-count">
-                              {group.length}
-                            </span>
-                          </>
-                        }
-                        renderCard={(p) => {
-                          const delta = deltaLabel(p.devAnchorDelta);
-                          const statusColor = statusToneColor(p.status);
-                          return (
-                            <div className="pc-learning__ideacard">
+                      <div className="pc-learning__ideacard">
                               <div className="pc-learning__ideacard-head">
                                 <span
                                   className="pc-learning__chip"
@@ -2016,9 +2042,28 @@ function GymView({
                                   )}
                                   {p.status === "accepted" ? "champion" : p.status}
                                 </span>
+                                <span
+                                  className="pc-learning__chip"
+                                  style={{ color: accent, borderColor: accent }}
+                                  title="The agent role whose prompt this challenger rewrites"
+                                >
+                                  {role}
+                                </span>
                                 <span className="pc-learning__chip" title="Gym cycle number">
                                   cycle {p.cycle}
                                 </span>
+                                {/* The execution facts the compact line used to
+                                    carry — folded in so removing the duplicate
+                                    line loses nothing. */}
+                                {run ? (
+                                  <span
+                                    className="pc-learning__chip"
+                                    title={`${run.runCount} scored run(s) of ${run.variantId}${run.states.length ? ` — outcomes: ${run.states.join(", ")}` : ""}`}
+                                  >
+                                    {run.runCount} run{run.runCount === 1 ? "" : "s"}
+                                    {run.states.length ? ` · ${run.states.join(", ")}` : ""}
+                                  </span>
+                                ) : null}
                                 <span className="pc-learning__age">
                                   {whenLabel(p.createdAt)}
                                   {p.decidedAt
@@ -2069,11 +2114,9 @@ function GymView({
                                 </pre>
                               ) : null}
                             </div>
-                          );
-                        }}
-                      />
                     </section>
-                  ))}
+                  );
+                })}
               </div>
             </>
           ) : null}
@@ -5335,6 +5378,25 @@ export function LearningStyles() {
         position: sticky; top: 0; z-index: 3;
         background: var(--bg, #07101d); padding: 4px 0 5px;
         box-shadow: 0 6px 10px -8px rgba(0,0,0,0.85);
+      }
+      /* Challenger cards as a GRID, newest first (owner ask 2026-07-27) — replaces
+         the per-role 1-of-N CardStack carousel so the list IS the overview. Wide
+         panes get columns; a narrow dock pane collapses to one column via the
+         container query below. */
+      .pc-learning__gymcardgrid {
+        display: grid; gap: 8px; margin-top: 6px;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        align-items: start;
+      }
+      .pc-learning__gymcard {
+        min-width: 0; border-left: 3px solid var(--border, #2a2a2a);
+        border-radius: 8px; background: var(--bg-1, #0b1220);
+      }
+      .pc-learning__gymcard .pc-learning__gymprompt {
+        max-height: 148px; overflow: auto;
+      }
+      @container learning (max-width: 560px) {
+        .pc-learning__gymcardgrid { grid-template-columns: minmax(0, 1fr); }
       }
       .pc-learning__runsrecency {
         font-size: 11px; font-weight: 600; color: var(--fg-dim, #b9d4e8);
