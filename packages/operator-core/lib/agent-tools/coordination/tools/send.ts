@@ -562,9 +562,16 @@ async function sendOne(
     const isFleet = audienceSelectors.some(
       (s) => s.startsWith('@fleet:') || s.startsWith('@fleet-leader:'),
     );
+    // EI-18772330418885814: a `@file:` zero is the one that gets MISREAD as a
+    // clearance to edit ("nobody is on this file"). Say what was actually checked —
+    // and name the lock plane as the authority — so a reader never treats a coord
+    // audience miss as proof the file is free.
+    const isFile = audienceSelectors.some((s) => s.startsWith('@file:'));
     const hint = isFleet
       ? ' A fleet selector with no live members usually means the members were launched WITHOUT fleet registration (the EI-5835 --fleet trap: fleetSlug:null) — verify via coord:roster that each member row carries the fleetSlug, or address the members by ownerId directly.'
-      : ' Nobody currently subscribes to / is present on this audience; the row persisted to audience history, so a later joiner can still catch up via coord:catch-up.';
+      : isFile
+        ? ' No live agent has declared this file (coord:declare-intent { current_files }) NOR holds/awaits a file-lock on it. This is an AUDIENCE miss, not a clearance to edit: the lock plane is the authority on who is on a file — confirm with locks:queue { paths } before editing, and rely on your acquire being refused rather than on this answer.'
+        : ' Nobody currently subscribes to / is present on this audience; the row persisted to audience history, so a later joiner can still catch up via coord:catch-up.';
     const note =
       `coord:send audience ${audienceSelectors.join(', ')} resolved to ZERO live recipients — ` +
       `the message reached NOBODY live.` +

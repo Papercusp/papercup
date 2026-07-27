@@ -4,13 +4,25 @@ Description=Live 2-peer federation gate (WI-261) — runs the two-instance smoke
 [Service]
 Type=oneshot
 WorkingDirectory=%h/papercupai-workspace/papercusp/papercusp-desktop
-# SKIP_FROMREPO=1: the from-repo leg is expected-RED while WI-971 is open (outbox drain
-# never wired for joined/created hive harnesses; WI-259 was closed as its duplicate,
-# WI-280 + WI-1666 are resolved) — running it would file a noise EI for a known-open bug.
-# Flip to 0 (or drop) when WI-971 lands; content-matrix + build are the reliable signal.
-# The script self-gates: core-aware load gate, GREEN-freshness TTL (hourly timer ⇒ ~daily
-# run), storm downgrade, staleness EI when no green for GATE_STALE_DAYS (P-013).
-Environment=SKIP_FROMREPO=1
+# SKIP_FROMREPO=0 as of 2026-07-27 (p2p-release leader su-e3b21, plan
+# p2p-public-release-remaining-lanes-2026-07-16 D-016). This line USED to read
+# SKIP_FROMREPO=1 with the note "the from-repo leg is expected-RED while WI-971 is open ...
+# flip to 0 (or drop) when WI-971 lands". BOTH conditions that justified the skip are now
+# closed, so the skip's own stated flip condition is met:
+#   · WI-971 / WI-5628 (outbox drain never wired for joined/created hive harnesses) —
+#     RESOLVED and live-verified TWICE on the real packaged binary under P-418/WI-5775:
+#     two two-instance-hive-from-repo-smoke.sh runs (plain, and with this gate's exact
+#     WITNESS_PROBE=1 + rekey flags) both OVERALL:PASS, incl. the bidirectional and
+#     continuous post-join federation assertions WI-971 specifically closed.
+#   · WI-5783 (the from-repo-WITNESS sub-probe: AK-ban write-plane drop failed live) —
+#     RESOLVED: root-caused to two concurrent boot/merge-pass loops on the Hive owner's
+#     instance (pot/home slug vs the owner's own member sub-harness slug) and fixed.
+# Keeping the skip past that point was the release-gate analogue of shipping dark: the gate
+# reported GREEN while silently not running this leg (first green 2026-07-27T02:00:39Z read
+# "from-repo=SKIPPED from-repo-witness=SKIPPED"), and a skipped leg is not a green leg
+# (D-015). This restores real coverage. If the leg reds, that is a genuine finding — triage
+# it; do NOT re-set this to 1 to quiet it without recording why on the plan.
+Environment=SKIP_FROMREPO=0
 ExecStart=/usr/bin/env bash bin/live-federation-gate.sh
 # rebuild + repack + content-matrix (≈15-30 min) PLUS the local-matrix leg. Budget
 # history: 2700s killed every local-matrix-day run at exactly 45 min (2026-07-17 00:30);

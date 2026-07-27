@@ -161,8 +161,8 @@ GO/NO-GO prep. Everything else proceeds to ready in the meantime.
 
 | Leg | Why it did not run | Flip condition |
 |---|---|---|
-| `from-repo` | Gate runs with `SKIP_FROMREPO` still set as a standing default | Drop the flag and take one green gate run with the leg enabled. The underlying fix is already live-verified twice (row 31) — this is a gate-configuration debt, not a code debt |
-| `from-repo-witness` | Same | Same |
+| `from-repo` | Gate ran with `SKIP_FROMREPO=1`, a standing skip-by-default | ✅ **RESOLVED THIS PASS (D-016)** — default flipped 1→0 in both `bin/live-federation-gate.sh` and the systemd unit; verified live via `systemctl --user show … -p Environment` → `SKIP_FROMREPO=0`. Both reasons for the skip were already closed (see §8.5). **Still not a green row until a gate run actually exercises it** — the next run is TTL-deferred (green is 22h-fresh), so expect coverage on the next real window |
+| `from-repo-witness` | Same | ✅ Same flip. Its own blocker — the AK-ban write-plane drop failure, WI-5783 — is **resolved** (root cause: two concurrent boot/merge passes on the owner's instance, pot/home slug vs the owner's member sub-harness slug) |
 | `membership_churn` (order 35) | Needs a third frame; the gate runs `FRAMES=2`, so it has **never executed** (D-007). Until 2026-07-25 this exclusion was silent; it is now a declared SKIP with a stated reason and is covered by the roll-call invariant | D-007's stated trigger — *"flip `--frames=3` the moment the 2-frame gate is genuinely green"* — **is now met.** Flip it |
 
 ---

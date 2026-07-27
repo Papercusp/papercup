@@ -77,6 +77,14 @@ beforeAll(async () => {
     async listFleetLeader() {
       return [];
     },
+    // The LOCK half of `@file:` (EI-18772330418885814) reads the separate
+    // papercusp_su side-database, which this throwaway coord-tables container does
+    // not host; the union logic is unit-tested in ./audience.test.ts and the host
+    // resolver in ./audience-host.test.ts. Stubbed empty here so this suite keeps
+    // exercising the PRESENCE half exactly as before.
+    async listPathLockAgents() {
+      return [];
+    },
   };
 });
 

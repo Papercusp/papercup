@@ -21,6 +21,8 @@ function makeResolvers(opts: {
   fleets?: Record<string, string[]>;
   /** fleet slug → leader ownerId. */
   fleetLeaders?: Record<string, string>;
+  /** repo-relative path → ownerIds holding/awaiting a live file-lock on it. */
+  lockAgents?: Record<string, string[]>;
 }): AudienceResolvers {
   return {
     async listTargetSubscribers(kind, ref) {
@@ -38,6 +40,9 @@ function makeResolvers(opts: {
     async listFleetLeader(slug) {
       const leader = opts.fleetLeaders?.[slug];
       return leader ? [leader] : [];
+    },
+    async listPathLockAgents(path) {
+      return opts.lockAgents?.[path] ?? [];
     },
   };
 }
@@ -90,6 +95,47 @@ describe('expandAudience', () => {
       ],
     });
     expect(await expandAudience(['@file:apps/tui/src/app.rs'], r)).toEqual(['editor']);
+  });
+
+  // EI-18772330418885814 — the recurrence guard. `@file:` used to read ONLY
+  // presence.current_files, which is opt-in and reset to [] by every
+  // coord:declare-intent that omits it (live: 119 presence rows, 0 with files). So
+  // it answered "reached NOBODY live" while a peer held a lock on that exact path,
+  // and that answer reads as a clearance to edit. If any of these four regress,
+  // `@file:` is back to being unable to see a lock-holder.
+  describe('@file: must see the LOCK plane, not just declared presence', () => {
+    const PATH = 'apps/operator-vite/src/components/adv/LearningTab.tsx';
+
+    it('resolves to a live lock-HOLDER even when NO agent declared the file', async () => {
+      const r = makeResolvers({
+        presence: [{ ownerId: 'someone-else', planSlug: null, files: [] }],
+        lockAgents: { [PATH]: ['su-29fe4'] },
+      });
+      expect(await expandAudience([`@file:${PATH}`], r)).toEqual(['su-29fe4']);
+    });
+
+    it('resolves to an agent QUEUED on the path — a waiter is trying to edit it too', async () => {
+      const r = makeResolvers({ lockAgents: { [PATH]: ['waiting-agent'] } });
+      expect(await expandAudience([`@file:${PATH}`], r)).toEqual(['waiting-agent']);
+    });
+
+    it('UNIONS the declared-presence and lock halves, deduping an agent in both', async () => {
+      const r = makeResolvers({
+        presence: [
+          { ownerId: 'declarer', planSlug: null, files: [PATH] },
+          { ownerId: 'both', planSlug: null, files: [PATH] },
+        ],
+        lockAgents: { [PATH]: ['holder', 'both'] },
+      });
+      const out = await expandAudience([`@file:${PATH}`], r);
+      expect(new Set(out)).toEqual(new Set(['declarer', 'both', 'holder']));
+      expect(out).toHaveLength(3);
+    });
+
+    it('still resolves to empty — never a * fallback — when nobody is on the file', async () => {
+      const r = makeResolvers({ lockAgents: { 'some/other/file.ts': ['elsewhere'] } });
+      expect(await expandAudience([`@file:${PATH}`], r)).toEqual([]);
+    });
   });
 
   it('@fleet = the live members of that named fleet', async () => {
@@ -192,6 +238,9 @@ describe('expandAudience', () => {
       async listFleetLeader() {
         return [];
       },
+      async listPathLockAgents() {
+        return [];
+      },
     };
     expect(await expandAudience(['@object:plainref'], r)).toEqual(['direct']);
     expect(taggedCalls).toBe(0); // colon <= 0 → the tagged-topic branch is skipped
@@ -214,6 +263,9 @@ describe('expandAudience', () => {
         return [];
       },
       async listFleetLeader() {
+        return [];
+      },
+      async listPathLockAgents() {
         return [];
       },
     };

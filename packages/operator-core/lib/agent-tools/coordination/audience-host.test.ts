@@ -33,6 +33,19 @@ vi.mock('../../sync/hyperbee/session-presence-store', async (importOriginal) => 
   // Default: no federated peers (single box). Federated tests override per-case.
   listFederatedFleetMembers: vi.fn(async () => []),
 }));
+// The lock half of `@file:` (EI-18772330418885814). Spread the real module so the
+// REAL normalizePaths (validation + canonicalization) is exercised — only the
+// side-database access is stubbed.
+vi.mock('../locks/su-lock-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../locks/su-lock-store')>()),
+  ensureBootstrap: vi.fn(async () => {}),
+  getTxPool: vi.fn(() => ({}) as never),
+  readQueue: vi.fn(async () => ({ active_locks: [], waiting: [] })),
+}));
+vi.mock('../locks/coordination-domain', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../locks/coordination-domain')>()),
+  lockCoordinationDomain: vi.fn(() => '/realpath/of/this/checkout'),
+}));
 
 import {
   audienceMode,
@@ -45,8 +58,31 @@ import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { getFleet } from '../../agent-fleets-store';
 import { getFleetDeliveryOverrides } from './fleet-delivery';
 import { listFederatedFleetMembers } from '../../sync/hyperbee/session-presence-store';
+import { readQueue } from '../locks/su-lock-store';
 
 const mockListPresence = listPresence as unknown as ReturnType<typeof vi.fn>;
+const mockReadQueue = readQueue as unknown as ReturnType<typeof vi.fn>;
+
+const lock = (owner: string, path: string) => ({
+  path,
+  owner,
+  owner_label: null,
+  intent: 'editing',
+  acquired_ts: new Date(),
+  expires_ts: new Date(Date.now() + 60_000),
+  coordination_domain: '/realpath/of/this/checkout',
+});
+const waiter = (owner: string, paths: string[]) => ({
+  ticket_id: `t-${owner}`,
+  owner,
+  owner_label: null,
+  paths,
+  intent: 'queued',
+  queued_ts: new Date(),
+  wait_until: new Date(Date.now() + 60_000),
+  status: 'waiting' as const,
+  coordination_domain: '/realpath/of/this/checkout',
+});
 
 describe('audienceMode — the PAPERCUSP_COORD_EMIT_SCOPE kill-switch (D-005)', () => {
   const KEY = 'PAPERCUSP_COORD_EMIT_SCOPE';
@@ -223,5 +259,46 @@ describe('hostAudienceResolvers — federated (cross-machine) fleet view (P-301)
     vi.mocked(listFederatedFleetMembers).mockResolvedValue([] as never);
     expect(await hostAudienceResolvers.listFleetMembers('git-plan')).toEqual(['local-a', 'local-b']);
     expect(await hostAudienceResolvers.listFleetLeader('git-plan')).toEqual([]);
+  });
+});
+
+describe('hostAudienceResolvers.listPathLockAgents — the LOCK half of @file: (EI-18772330418885814)', () => {
+  const PATH = 'apps/operator-vite/src/components/adv/LearningTab.tsx';
+
+  beforeEach(() => {
+    mockReadQueue.mockReset();
+    mockReadQueue.mockResolvedValue({ active_locks: [], waiting: [] });
+  });
+
+  it('returns the owner of a live lock on the path — the case that answered ZERO', async () => {
+    mockReadQueue.mockResolvedValue({ active_locks: [lock('su-29fe4', PATH)], waiting: [] });
+    expect(await hostAudienceResolvers.listPathLockAgents(PATH)).toEqual(['su-29fe4']);
+  });
+
+  it('includes an agent QUEUED on the path, and dedupes one that both holds and waits', async () => {
+    mockReadQueue.mockResolvedValue({
+      active_locks: [lock('holder', PATH)],
+      waiting: [waiter('holder', [PATH]), waiter('queued', [PATH])],
+    });
+    expect(await hostAudienceResolvers.listPathLockAgents(PATH)).toEqual(['holder', 'queued']);
+  });
+
+  it("reads THIS checkout's coordination domain with the CANONICALIZED path", async () => {
+    await hostAudienceResolvers.listPathLockAgents(`./${PATH}`);
+    expect(mockReadQueue).toHaveBeenCalledWith(expect.anything(), {
+      coordinationDomain: '/realpath/of/this/checkout',
+      paths: [PATH], // the leading './' canonicalized away — it is the same lock key
+    });
+  });
+
+  it('is FAIL-SOFT: a lock plane that throws degrades to the presence-only audience, never a failed send', async () => {
+    mockReadQueue.mockRejectedValue(new Error('papercusp_su unreachable'));
+    await expect(hostAudienceResolvers.listPathLockAgents(PATH)).resolves.toEqual([]);
+  });
+
+  it('rejects a path the lock plane would refuse (absolute/traversal) without querying', async () => {
+    expect(await hostAudienceResolvers.listPathLockAgents(`/abs/${PATH}`)).toEqual([]);
+    expect(await hostAudienceResolvers.listPathLockAgents('../escape.ts')).toEqual([]);
+    expect(mockReadQueue).not.toHaveBeenCalled();
   });
 });

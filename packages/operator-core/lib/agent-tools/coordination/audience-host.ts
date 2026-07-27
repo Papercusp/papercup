@@ -13,6 +13,10 @@ import { getOrgPg } from '@papercusp/db-org';
 import { PgEntitySubscriptionStore, PgLinkStore } from '@papercusp/coordination/capabilities';
 import { listPresence } from './presence';
 import { coordWorkspaceId } from './log';
+// The locks shim (NOT `@papercusp/locks` directly) — it imports ./configure for its
+// side effect, so the package's host seam is wired before the first store call.
+import { ensureBootstrap, getTxPool, readQueue, normalizePaths } from '../locks/su-lock-store';
+import { lockCoordinationDomain } from '../locks/coordination-domain';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { getFleet, fleetSlugFromName } from '../../agent-fleets-store';
 import { getFleetDeliveryOverrides } from './fleet-delivery';
@@ -48,6 +52,42 @@ export const hostAudienceResolvers: AudienceResolvers = {
       active.push({ ownerId: r.ownerId, planSlug: r.currentPlanSlug, files: r.currentFiles });
     }
     return active;
+  },
+  async listPathLockAgents(path): Promise<string[]> {
+    // The AUTOMATIC half of `@file:` (EI-18772330418885814). The presence half
+    // (current_files) is opt-in and near-always empty — see the rationale on the
+    // `@file:` branch in ./audience — so without this the selector the playbook
+    // points agents at for "who is on this file" answered ZERO while a peer held a
+    // live lock, and did so with language that reads as proof of absence.
+    //
+    // Domain: the operator's OWN lock coordination domain (the realpath of this
+    // checkout), not a cross-domain read — a lock held on the same repo-relative
+    // path in a DIFFERENT checkout is a different physical file and its holder is
+    // not on ours.
+    //
+    // Fail-soft on EVERY error (locks unconfigured, side-DB unreachable, a path the
+    // lock plane refuses): the coord send path must never break because the lock
+    // plane is down — degrade to the presence-only audience, i.e. exactly the
+    // pre-fix behavior.
+    try {
+      // Canonicalize to the form the lock key hashes on, so `./a/b.ts` and `a/b.ts`
+      // both match the stored row. Throws on absolute/traversal paths — caught below.
+      const canonical = normalizePaths([path])[0];
+      if (!canonical) return [];
+      await ensureBootstrap();
+      const queue = await readQueue(getTxPool(), {
+        coordinationDomain: lockCoordinationDomain(),
+        paths: [canonical],
+      });
+      const ids = new Set<string>();
+      // readQueue already filters holders to expires_ts > clock_timestamp() and
+      // waiters to status='waiting', so both sets are live by construction.
+      for (const lock of queue.active_locks) ids.add(lock.owner);
+      for (const waiter of queue.waiting) ids.add(waiter.owner);
+      return [...ids];
+    } catch {
+      return [];
+    }
   },
   async listTaggedTopics(objectKind, objectRef) {
     // Best-effort: a links-query failure must never drop the whole emission.

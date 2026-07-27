@@ -13,8 +13,10 @@
  *   @object:<kind>:<ref>  — subscribers of that coord object (the full stored
  *                           subscription target_ref, e.g. `feature:<h>#<id>` /
  *                           `issue:<id>`) ∪ its tagged-topic subscribers
- *   @file:<path>          — active presence whose current_files includes <path>
- *                           (the file-collision signal, for intent/window)
+ *   @file:<path>          — everyone on that file: active presence whose
+ *                           current_files includes <path> ∪ agents holding or
+ *                           queued on a LIVE file-lock for it (the
+ *                           file-collision signal, for intent/window)
  *   @fleet:<slug>         — live (fresh-heartbeat) members of a named fleet
  *                           (membership IS the subscription — the soft
  *                           coord_presence.fleet_slug label, no rows to manage)
@@ -55,6 +57,14 @@ export interface AudienceResolvers {
   /** The named fleet's current leader → ownerId(s) (0 or 1; the durable registry,
    *  liveness-independent). Backs the `@fleet-leader:` selector. */
   listFleetLeader(fleetSlug: string): Promise<string[]>;
+  /**
+   * Agents on a repo-relative path per the LOCK plane — holders of a live
+   * (unexpired) file-lock ∪ agents queued waiting for one. The automatic half of
+   * `@file:` (EI-18772330418885814); see the selector branch for why presence
+   * alone is not enough. MUST be fail-soft in the host: a lock plane that is
+   * unreachable/unconfigured returns `[]` rather than failing the send.
+   */
+  listPathLockAgents(path: string): Promise<string[]>;
 }
 
 export type AudienceMode = 'scoped' | 'broadcast';
@@ -143,6 +153,19 @@ async function resolveSelector(
     if (!path) return [];
     const ids = new Set<string>();
     for (const p of await presenceOnce()) if (p.files.includes(path)) ids.add(p.ownerId);
+    // EI-18772330418885814 — the presence half alone is NOT a check for who is on a
+    // file. `current_files` is populated only by an explicit
+    // `coord:declare-intent { current_files }`, and every declare that OMITS the arg
+    // RESETS it to [] — so in practice it is empty for essentially every agent
+    // (measured live 2026-07-27: 119 live presence rows, ZERO with a non-empty
+    // current_files). That made `@file:` resolve to nobody even while a peer
+    // verifiably held a lock on the path, and coord:send answered with a confident
+    // `zero_recipients` / "reached NOBODY live" — read as positive evidence of
+    // absence, it invites an agent to edit straight into a live peer's work. A live
+    // file-lock is the strongest, and the only AUTOMATIC, "this agent is on this
+    // file" signal there is, so union it in. Waiters count too: an agent queued on
+    // the path is by definition trying to edit it.
+    for (const id of await resolvers.listPathLockAgents(path)) ids.add(id);
     return [...ids];
   }
 
