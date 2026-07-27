@@ -70,6 +70,13 @@ export const PLANE_METRIC_IDS = [
   'clarification-rate',
   'conflicting-assumption-incidence',
   'acted-on-stale-or-wrong-value',
+  // WI-6465 / D-102: the two COMMITMENT-backed legs. Separate ids rather than a
+  // widening of the cell-backed leg above, for the reason D-091 already split
+  // divergence in two — the cell leg cannot run in a background sweep (it needs
+  // a reader identity) while these two need only SQL, and a single fused metric
+  // would either suppress the working leg or report from the dead one.
+  'acted-on-stale-declared-basis',
+  'closed-work-basis-moved',
   'plane-token-cost',
 ] as const;
 export type PlaneMetricId = (typeof PLANE_METRIC_IDS)[number];
@@ -302,6 +309,36 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
     polarity: 'defect',
     vacuousPassWhen:
       'No fact has ever declared `dependsOn` (0 of 2,148), so there is nothing to re-digest. Worse in the non-empty case: an `undeterminable` verdict — the declared cell no longer resolves — is EXCLUDED from `comparable` rather than counted fresh, because counting a broken resolver as fresh converts an instrument failure into a clean bill of health, which is this metric’s own failure mode.',
+  },
+  'acted-on-stale-declared-basis': {
+    id: 'acted-on-stale-declared-basis',
+    question:
+      'How often was a terminal close resting on a fact that was ALREADY superseded, retracted or lapsed at the moment it closed?',
+    // ⚠ NAMED AS THE PRODUCER THAT ALREADY WRITES. Unlike every other metric here
+    // whose fillRate of 0 points at an unbuilt writer, this one's producer has
+    // been live since D-079 — the input was there all along and nothing read it.
+    inputProducer:
+      'work_items:complete / set_state { assumptions } → resolveDeclaredAssumptions → work_items.payload._assumptions.declared[].condition',
+    unit: 'terminal close carrying a declaration',
+    verdictUnit: 'declared basis entry',
+    polarity: 'defect',
+    vacuousPassWhen:
+      'The denominator is REAL but SMALL and self-selected: 254 of 284 closes declared the literal "none", so only ~30 entries across 29 closes are comparable and one careless close moves the rate several points. Worse, `none` is unfalsifiable — a closer who rested on an unrecorded assumption and typed "none" is indistinguishable from one who genuinely rested on nothing, and BOTH leave this metric clean. Read it with `fillRate` (the ~10% of closes that name anything), never alone. A zero here says the citations that WERE made were current when made; it says nothing about the closes that made none.',
+  },
+  'closed-work-basis-moved': {
+    id: 'closed-work-basis-moved',
+    question:
+      'How much closed work rests on a declared basis that has since changed — the re-check nobody performs once an item leaves the queue?',
+    inputProducer:
+      'the same stored declaration, re-resolved against harness_shared.agent_facts by classifyBasisMovement',
+    unit: 'terminal close carrying a declaration',
+    verdictUnit: 'declared basis entry',
+    // `observed` counts bases that moved — a state you would like to be zero, so
+    // the defect ladder's "clean over a real denominator" reading is correct.
+    // ⚠ It is NOT an accusation against the closer: see vacuousPassWhen.
+    polarity: 'defect',
+    vacuousPassWhen:
+      'A NON-zero here is NOT a closer error and must never be read as one — a peer revising a fact after the close moves this number without anyone having done anything wrong. It is a RE-CHECK QUEUE, not a scorecard, which is why D-102 keeps it apart from `acted-on-stale-declared-basis` (that one, and only that one, is about the closer). The vacuous pass runs the other way: this metric goes quiet exactly when the fleet stops revising facts — indistinguishable from a fleet whose facts are all correct — and it can only ever see the ~10% of closes that name a basis at all. It also DECAYS: a fact hard-deleted 30d past expiry reports `vanished`, so an old window measures ledger retention as much as it measures drift.',
   },
   'plane-token-cost': {
     id: 'plane-token-cost',

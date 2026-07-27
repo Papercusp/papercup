@@ -39,10 +39,23 @@ const h = vi.hoisted(() => ({
   // EI-18159491440495603: default behavior mirrors the original inline mock (acquire +
   // run the callback); individual tests override with mockImplementationOnce to throw
   // a transient connection error before eventually resolving.
-  guardResource: vi.fn(async (_spec: unknown, run: (fence: unknown) => Promise<unknown>) => ({
-    acquired: true,
-    result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }),
-  })),
+  //
+  // EI-18769559897594065: explicit return-type annotation (the acquired/not-acquired
+  // union, matching resource-lock-guard.ts's real GuardOutcome<T>) — otherwise TS infers
+  // the mock's type from ONLY this success-shape literal, and a later
+  // `.mockResolvedValue({ acquired: false, reason, holders })` override (the
+  // drain-timeout test below) fails to typecheck against that narrowed inference.
+  guardResource: vi.fn(
+    async (
+      _spec: unknown,
+      run: (fence: unknown) => Promise<unknown>,
+    ): Promise<
+      { acquired: true; result: unknown } | { acquired: false; reason: string; holders: unknown[] }
+    > => ({
+      acquired: true,
+      result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }),
+    }),
+  ),
 }));
 
 vi.mock('node:child_process', () => ({ spawnSync: h.spawnSync }));

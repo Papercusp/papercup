@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { readImprovementItems } from '../../harness/improvements/read-items';
+import { readImprovementItems, countImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
 import { readOwnerFullAutonomyGrant } from '../../harness/improvements/full-autonomy-grant';
 import { applyHumanQueueRanking } from '../../queue-ranker/human-queue';
@@ -96,7 +96,17 @@ export default defineTool({
     try {
       const result = await Promise.race([
         (async () => {
-          const items = await readImprovementItems({ state: args.state, limit: args.limit, harnessSlug: args.harnessSlug });
+          const readOpts = { state: args.state, limit: args.limit, harnessSlug: args.harnessSlug };
+          // D2 (EI-18790490225750395): the TRUE corpus total — a real COUNT(*), never
+          // bounded by `limit` — read alongside the (possibly windowed) items so
+          // `digest.total` can stop reporting the window size. Best-effort: a count
+          // failure must never sink an otherwise-good digest, so it degrades to
+          // `undefined` (buildDigest then falls back to candidates.length, the prior
+          // behavior) rather than throwing.
+          const [items, corpusTotal] = await Promise.all([
+            readImprovementItems(readOpts),
+            countImprovementItems(readOpts).catch(() => undefined),
+          ]);
           // The OWNER FULL-AUTONOMY grant (Phase 2): keep this review lens consistent with the
           // live dispatch — when ON, protected-surface kind=bugs show in the auto lane.
           const { activeWorkspaceId } = await import('../../workspace-registry');
@@ -106,7 +116,10 @@ export default defineTool({
           // Human lane ordered by the ONE ranker (frontier P-040; blocking impact is
           // feature #1); same enrichment the Learning tab resolver applies, so the
           // shapes can't drift.
-          const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs: Date.now(), ownerFullAutonomy }), { candidates: items });
+          const digest = await applyHumanQueueRanking(
+            buildDigest(items, { nowMs: Date.now(), ownerFullAutonomy, corpusTotal }),
+            { candidates: items },
+          );
           return { ok: true as const, digest };
         })(),
         new Promise<never>((_resolve, reject) => {

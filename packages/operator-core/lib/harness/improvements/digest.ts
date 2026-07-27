@@ -137,7 +137,24 @@ export interface AlreadyDecidedRecall {
 
 export interface ImprovementDigest {
   generatedAt: string;
+  /**
+   * The TRUE corpus total for this filter (EI-18790490225750395 D2) — a real
+   * `COUNT(*)`, never bounded by the caller's `limit`. Falls back to
+   * `candidates.length` (== `returned`) when the caller does not supply
+   * {@link BuildDigestOptions.corpusTotal} (e.g. a caller that already fetched the
+   * FULL corpus with no limit — `total` and `returned` are then identical and
+   * `windowed` is false). NEVER read this as "candidates I got back" — that is
+   * {@link returned}.
+   */
   total: number;
+  /** How many candidates this digest actually scored/considered — i.e.
+   *  `candidates.length`. Always the window size when the caller applied a
+   *  `limit`. Compare against `total` to see whether you are looking at the whole
+   *  corpus (`returned === total`) or a slice of it. */
+  returned: number;
+  /** True when `total > returned` — the caller applied a `limit` (or the read
+   *  otherwise capped) and is looking at a SLICE of the corpus, not all of it. */
+  windowed: boolean;
   open: number;
   byKind: Record<string, number>;
   bySeverity: Record<string, number>;
@@ -152,6 +169,23 @@ export interface ImprovementDigest {
    *  wants the scalar rollups should treat `null` as "not computed", not as
    *  "no duplicates". */
   likelyDuplicates: DupCluster[] | null;
+  /**
+   * Makes the dedup pass's SCOPE explicit (EI-18790490225750395 D1) — a caller
+   * reading `likelyDuplicates: []` at a small `limit` could otherwise reasonably
+   * (and wrongly) conclude "no duplicates exist" when the pass never saw the rest
+   * of the corpus. `null` when dedup itself did not run (`nearDuplicates: false`,
+   * mirroring `likelyDuplicates`'s own null-means-skipped convention) or when
+   * `total`/`windowed` are unknown (no `corpusTotal` supplied).
+   *
+   * The dedup pass deliberately stays WINDOW-scoped rather than re-fetching the
+   * whole corpus to stay exhaustive: the corpus can run to five figures, the
+   * O(n²) near-dup leg is already cost-gated at {@link NEAR_DUP_MAX_CANDIDATES},
+   * and a prior full-corpus dedup pass measurably saturated the operator event
+   * loop (WI-5820, ~840ms/cycle). This field is the documented fallback the
+   * ticket that reported D1 itself proposed for exactly that cost tradeoff:
+   * make the scoping VISIBLE instead of paying to eliminate it.
+   */
+  likelyDuplicatesScope: { consideredCount: number; corpusTotal: number; windowed: boolean } | null;
   /**
    * Recurring friction signatures (P-003) — every signature seen more than once,
    * recurrence + decay attached. The Queen reads this to weight a *recurring*
@@ -184,6 +218,17 @@ export interface BuildDigestOptions {
    * paying ~840ms/cycle for a dedup clustering it discarded outright).
    */
   nearDuplicates?: boolean;
+  /**
+   * The TRUE corpus total for the SAME filter that produced `candidates`
+   * (EI-18790490225750395 D2) — typically `countImprovementItems(sameOpts)`, a
+   * real `COUNT(*)` unbounded by `limit`. Omit when the caller already fetched
+   * the WHOLE corpus (no limit applied) — `total` then falls back to
+   * `candidates.length` and `windowed` is false, unchanged from before this
+   * option existed. Passing a value SMALLER than `candidates.length` is a caller
+   * bug (the count and the read must agree on the same filter) — treated as
+   * `candidates.length` rather than reporting a nonsensical negative window.
+   */
+  corpusTotal?: number;
 }
 
 /** Normalize a title into a dedup signature: strip a leading `[kind]`, lowercase,
@@ -552,15 +597,34 @@ export function buildDigest(
   // actually recurred (count > 1) are interesting for triage.
   const recurringSignatures = signatureRecurrence(candidates, { nowMs }).filter((s) => s.count > 1);
   const generatedAt = new Date(nowMs).toISOString();
+
+  // D2: the TRUE corpus total, when the caller supplied it — never smaller than
+  // what was actually returned (a caller passing a stale/mismatched count is a
+  // bug on ITS side; clamping here keeps `windowed` sane rather than surfacing a
+  // negative or nonsensical window from that bug).
+  const returned = candidates.length;
+  const total = opts.corpusTotal !== undefined ? Math.max(opts.corpusTotal, returned) : returned;
+  const windowed = total > returned;
+
+  const likelyDuplicatesScope =
+    likelyDuplicates === null
+      ? null
+      : { consideredCount: returned, corpusTotal: total, windowed };
+
   const headline =
-    `papercusp-improvement digest: ${candidates.length} captured (${open} open) — ` +
+    `papercusp-improvement digest: ${returned} of ${total} loaded${windowed ? ' (windowed)' : ''} (${open} open) — ` +
     `${autoEligible.length} auto-eligible, ${humanQueue.length} need a human` +
     (likelyDuplicates && likelyDuplicates.length ? `, ${likelyDuplicates.length} likely-dup cluster(s)` : '') +
+    (windowed && likelyDuplicates && likelyDuplicates.length === 0
+      ? ` (dedup scoped to the ${returned}-item window — pass a higher \`limit\` to check the rest of the ${total}-item corpus)`
+      : '') +
     (recurringSignatures.length ? `, ${recurringSignatures.length} recurring signature(s)` : '');
 
   return {
     generatedAt,
-    total: candidates.length,
+    total,
+    returned,
+    windowed,
     open,
     byKind,
     bySeverity,
@@ -568,6 +632,7 @@ export function buildDigest(
     autoEligible,
     humanQueue,
     likelyDuplicates,
+    likelyDuplicatesScope,
     recurringSignatures,
     headline,
   };

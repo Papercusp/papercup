@@ -46,6 +46,13 @@ import type { DivergenceReport } from './agent-state-divergence';
 import { listAssumptionFacts } from './agent-facts/store';
 import { detectAssumptionConflicts } from './agent-facts/conflicts';
 import {
+  basisHasMoved,
+  classifyBasisMovement,
+  isComparableAtDeclaration,
+  wasStaleAtDeclaration,
+  type AssumptionCondition,
+} from './agent-facts/assumptions';
+import {
   composePlaneMeasurement,
   isStructuralZero,
   isConcerningZero,
@@ -180,6 +187,157 @@ export async function loadFactAggregates(opts: {
   return rows[0] ?? { live_facts: 0, with_deps: 0 };
 }
 
+/**
+ * One stored commitment declaration joined to the ledger's CURRENT state of the
+ * same fact identity — the raw material for both commitment-backed legs.
+ */
+export interface CommitmentBasisRow {
+  condition_at_close: string | null;
+  pinned_version: string | number | null;
+  current_version: string | number | null;
+  retracted_now: boolean;
+  expired_now: boolean;
+}
+
+/** Counts for the two commitment-backed legs (WI-6465 / D-102). */
+export interface CommitmentBasisCounts {
+  /** Closes carrying ANY declaration, incl. the literal 'none' — the population. */
+  closesDeclaring: number;
+  /** Of those, the ones that NAMED keys. The honest fillRate numerator: most
+   *  closes say 'none', and a rate computed over all of them would be ~90%
+   *  diluted (D-102's floor rule). */
+  closesNamingKeys: number;
+  /** Entries whose close-time condition supports a verdict. */
+  comparableAtClose: number;
+  /** Of those, entries already not-current when the close cited them. */
+  staleAtClose: number;
+  /** Entries whose CURRENT movement is determinable. */
+  comparableNow: number;
+  /** Of those, entries whose basis has since moved. */
+  movedSince: number;
+}
+
+/**
+ * Load every stored commitment declaration alongside the current state of the
+ * fact identity it pinned.
+ *
+ * ⚠ THE JOIN IS ON THE FULL IDENTITY `(scope, scope_ref, key)`, NOT ON `key`
+ * ALONE. `agent_facts` is keyed by scope + scope_ref, and the same slug legitimately
+ * exists in several scopes at once — `assumptionSelectorsFor` is built entirely
+ * around that fact (it resolves a bare key most-specific-first precisely BECAUSE
+ * a workspace-wide fact can share a slug with an owner-scoped one). A key-only
+ * join would compare the close's pinned version against some other tenant's
+ * unrelated row and report a confident `superseded` for a fact that never moved.
+ *
+ * ⚠ `source_hive IS NULL` matches {@link resolveAssumptions}: a foreign hive's
+ * fact with the same slug is not the one the closer pinned.
+ */
+export async function loadCommitmentBasisRows(opts: {
+  workspaceId: string;
+  sql?: Sql;
+}): Promise<CommitmentBasisRow[]> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  return sql<CommitmentBasisRow[]>`
+    WITH declared AS (
+      SELECT e.entry
+        FROM harness_shared.work_items w
+        CROSS JOIN LATERAL jsonb_array_elements(w.payload->'_assumptions'->'declared') AS e(entry)
+       WHERE w.workspace_id = ${opts.workspaceId}
+         AND jsonb_typeof(w.payload->'_assumptions'->'declared') = 'array'
+    )
+    SELECT d.entry->>'condition'                AS condition_at_close,
+           (d.entry->>'versionId')              AS pinned_version,
+           cur.current_version                  AS current_version,
+           coalesce(cur.retracted_now, false)   AS retracted_now,
+           coalesce(cur.expired_now, false)     AS expired_now
+      FROM declared d
+      LEFT JOIN LATERAL (
+        SELECT a.id                            AS current_version,
+               a.retracted_at IS NOT NULL      AS retracted_now,
+               a.expires_at <= now()           AS expired_now
+          FROM harness_shared.agent_facts a
+         WHERE a.workspace_id = ${opts.workspaceId}
+           AND a.source_hive IS NULL
+           AND a.key = d.entry->>'key'
+           AND a.scope = d.entry->>'scope'
+           AND coalesce(a.scope_ref, '') = coalesce(d.entry->>'scopeRef', '')
+         ORDER BY a.id DESC
+         LIMIT 1
+      ) cur ON true
+  `;
+}
+
+/** How many closes carry a declaration at all, and how many named keys. */
+export async function loadCommitmentDeclarationTotals(opts: {
+  workspaceId: string;
+  sql?: Sql;
+}): Promise<{ closes_declaring: number; closes_naming_keys: number }> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ closes_declaring: string | number; closes_naming_keys: string | number }>>`
+    SELECT count(*)                                                                    AS closes_declaring,
+           count(*) FILTER (WHERE jsonb_typeof(payload->'_assumptions'->'declared') = 'array') AS closes_naming_keys
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${opts.workspaceId}
+       AND payload ? '_assumptions'
+  `;
+  const r = rows[0] ?? { closes_declaring: 0, closes_naming_keys: 0 };
+  return { closes_declaring: num(r.closes_declaring), closes_naming_keys: num(r.closes_naming_keys) };
+}
+
+/**
+ * Reduce the loaded rows to counts. PURE — and it classifies in JS through the
+ * SHARED {@link classifyBasisMovement} rather than re-expressing the movement
+ * rules as SQL `FILTER` clauses. That is D-038 axis 5 (one derivation, many
+ * lenses) applied here deliberately: a second copy of "what counts as moved"
+ * living in a query would drift from the exported one silently, and the unit
+ * tests would keep passing against the copy nobody runs.
+ */
+export function reduceCommitmentBasis(
+  rows: readonly CommitmentBasisRow[],
+  totals: { closes_declaring: number; closes_naming_keys: number },
+): CommitmentBasisCounts {
+  let comparableAtClose = 0;
+  let staleAtClose = 0;
+  let comparableNow = 0;
+  let movedSince = 0;
+
+  for (const r of rows) {
+    const condition = (r.condition_at_close ?? null) as AssumptionCondition | null;
+    if (isComparableAtDeclaration(condition)) {
+      comparableAtClose += 1;
+      if (wasStaleAtDeclaration(condition)) staleAtClose += 1;
+    }
+    const movement = classifyBasisMovement({
+      conditionAtClose: condition,
+      pinnedVersion: intOrNull(r.pinned_version),
+      currentVersion: intOrNull(r.current_version),
+      retractedNow: r.retracted_now === true,
+      expiredNow: r.expired_now === true,
+    });
+    if (movement !== 'undeterminable') {
+      comparableNow += 1;
+      if (basisHasMoved(movement)) movedSince += 1;
+    }
+  }
+
+  return {
+    closesDeclaring: totals.closes_declaring,
+    closesNamingKeys: totals.closes_naming_keys,
+    comparableAtClose,
+    staleAtClose,
+    comparableNow,
+    movedSince,
+  };
+}
+
+/** Postgres returns bigint as a string; a non-numeric value must read as "no
+ *  pin", never as 0 — version 0 does not exist and would compare as superseded. */
+function intOrNull(v: string | number | null | undefined): number | null {
+  if (v == null) return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
 /** The verdict half of `acted-on-stale-or-wrong-value`, injected — see header. */
 export interface StalenessVerdictCounts {
   /** Facts whose dependency comparison produced a usable verdict. EXCLUDES
@@ -260,6 +418,7 @@ export function composeCounts(input: {
   comparedPairs: number;
   conflicts: number;
   staleness: StalenessVerdictCounts | null;
+  commitmentBasis: CommitmentBasisCounts | null;
 }): PlaneCounts {
   const cov = input.divergence?.coverage ?? null;
   const callsExamined = cov?.callsExamined ?? num(input.calls.calls);

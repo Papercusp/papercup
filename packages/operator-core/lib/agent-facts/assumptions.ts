@@ -413,6 +413,117 @@ function resolveOne(
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE RE-CHECK (WI-6465, per D-102)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How a declared basis stands NOW, re-checked against the ledger long after the
+ * close that declared it.
+ *
+ * ── WHY THIS EXISTS, AND WHY IT IS NOT A NEW PRODUCER ───────────────────────
+ *
+ * D-102 settled WI-6465: the assumption vertical's missing piece was never a
+ * producer. {@link resolveDeclaredAssumptions} ALREADY writes a fully-resolved,
+ * version-pinned edge (`fact:<scope>:<ref>:<key>@vN`) onto every terminal close.
+ * What had never existed is anything that re-resolves it.
+ *
+ * That gap is exactly the hazard D-050 collected the field for: *"a terminal
+ * close removes the item from the shared queue, so an assumption that was wrong
+ * leaves with it."* Measured on the live corpus the day this landed: of 30
+ * declared bases across 29 closes, **5 had already moved** (2 superseded, 4
+ * retracted, 1 both) — every one of them under a closed item nobody would
+ * re-read.
+ *
+ * ⚠ THE COMPARISON MUST USE THE STORED ABSOLUTE PINNED REF, NEVER THE BARE
+ * `declared` STRING. A bare key is meaningful only relative to the CLOSER's own
+ * scope set (see {@link assumptionSelectorsFor}), and that context is gone once
+ * the item leaves the queue — re-resolving it later against a different agent's
+ * selectors silently answers a question about a different fact. Stamping the
+ * absolute ref is precisely what D-079 did it for.
+ */
+export const BASIS_MOVEMENTS = [
+  /** Same version, live, not retracted. The ground has not moved. */
+  'unchanged',
+  /** A newer version of the same identity exists — the content was revised. */
+  'superseded',
+  /** The identity was retracted outright. */
+  'retracted',
+  /** Still the pinned version, but it has aged out of folds. */
+  'lapsed',
+  /** The identity is gone from the ledger entirely (swept 30d past expiry): only
+   *  the stamped excerpt survives, so the basis can no longer be verified. */
+  'vanished',
+  /** No pin to compare against — a declaration predating the version stamp.
+   *  NEVER folded into `unchanged`: "we cannot tell" is not "nothing moved". */
+  'undeterminable',
+] as const;
+export type BasisMovement = (typeof BASIS_MOVEMENTS)[number];
+
+/** One stored declaration, paired with the ledger's CURRENT state of the same
+ *  identity. The shape the re-check compares — deliberately free of PG types so
+ *  the classification below is unit-testable without a database. */
+export interface DeclaredBasisRow {
+  /** The condition resolution recorded AT CLOSE TIME. */
+  conditionAtClose: AssumptionCondition | null;
+  /** The version the close pinned. */
+  pinnedVersion: number | null;
+  /** Newest version of that identity now; null when the identity is gone. */
+  currentVersion: number | null;
+  retractedNow: boolean;
+  expiredNow: boolean;
+}
+
+/**
+ * Classify one declared basis. PURE.
+ *
+ * ORDER IS THE DESIGN: a reader is told the STRONGEST news about the basis, not
+ * the first true thing. A fact that was revised and then retracted is reported
+ * `retracted`, because "this claim was withdrawn" strictly dominates "this claim
+ * changed" for someone deciding whether to re-open a closed item. Likewise
+ * `superseded` outranks `lapsed`: revised content is a stronger signal than the
+ * same content merely ageing out of folds.
+ */
+export function classifyBasisMovement(row: DeclaredBasisRow): BasisMovement {
+  if (row.currentVersion == null) return 'vanished';
+  if (row.retractedNow) return 'retracted';
+  // A declaration with no pin cannot be compared at all. Checked AFTER the two
+  // verdicts above because those hold regardless of the pin — an identity that
+  // vanished or was retracted is news even for an unpinned declaration.
+  if (row.pinnedVersion == null) return 'undeterminable';
+  if (row.currentVersion > row.pinnedVersion) return 'superseded';
+  if (row.expiredNow) return 'lapsed';
+  return 'unchanged';
+}
+
+/** True when the basis is no longer what the close rested on. `undeterminable`
+ *  is excluded BY CONSTRUCTION — counting an uncomparable row as unmoved would
+ *  convert missing data into a clean bill of health, which is the failure mode
+ *  the sibling staleness metric already names as its own. */
+export function basisHasMoved(m: BasisMovement): boolean {
+  return m !== 'unchanged' && m !== 'undeterminable';
+}
+
+/**
+ * The conditions that mean the closer was ALREADY resting on something
+ * not-current AT THE MOMENT IT CLOSED — a strictly different question from
+ * {@link basisHasMoved}, and D-102 forbids fusing them: a basis a PEER revised
+ * after the close says nothing about the closer's diligence, while one that was
+ * already superseded when they cited it does.
+ *
+ * `unresolved` is excluded: the ledger could not be consulted at close time (see
+ * {@link isDanglingCondition}), so it is missing data, not a stale citation.
+ */
+export function wasStaleAtDeclaration(c: AssumptionCondition | null): boolean {
+  return c === 'superseded' || c === 'retracted' || c === 'lapsed';
+}
+
+/** True when a close-time condition supports a verdict either way. Mirrors the
+ *  exclusion above so the numerator and denominator cannot drift apart. */
+export function isComparableAtDeclaration(c: AssumptionCondition | null): boolean {
+  return c != null && c !== 'unresolved' && c !== 'dangling';
+}
+
 /**
  * The refusal a commitment gets when one or more declared assumptions do not
  * resolve. Shared so `work_items:set_state` and `work_items:complete` refuse

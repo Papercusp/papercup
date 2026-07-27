@@ -73,14 +73,28 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Literal `fetch('/api/...')` call sites. Template holes become `:param`. */
+/**
+ * Literal `fetch('/api/...')` call sites, normalised to a comparable path.
+ *
+ * The two interpolation shapes mean DIFFERENT things and must not be conflated:
+ *   `/api/admin/tables/${name}`      — its own path SEGMENT  -> `/api/admin/tables/:param`
+ *   `/api/admin/schedules/inventory${qs}` — a glued QUERY suffix -> path is unchanged
+ * Treating the second as a segment (the first cut of this file did) invents a path
+ * that matches no route, so a real violation silently reads as "no route found" and
+ * is skipped. Anything after a literal `?` is likewise query, not path.
+ */
 function findFetchPaths(src: string): string[] {
   const found: string[] = [];
   const re = /fetch\(\s*[`'"](\/api\/[^`'"]*)[`'"]/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(src))) {
-    // Strip query string and normalise `${...}` interpolations to a param segment.
-    const path = m[1].split('?')[0].replace(/\$\{[^}]*\}/g, ':param');
+    const path = m[1]
+      // A trailing interpolation NOT preceded by `/` is a query-string suffix.
+      .replace(/(?<!\/)\$\{[^}]*\}$/, '')
+      .split('?')[0]
+      // What remains is a genuine dynamic path segment.
+      .replace(/\$\{[^}]*\}/g, ':param')
+      .replace(/\/$/, '');
     found.push(path);
   }
   return found;
