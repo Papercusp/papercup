@@ -52,8 +52,8 @@ interface SendMsg {
   files?: string[];
   plan_slug?: string;
   related_msg_id?: string;
-  /** Sender-side intent: unanswered-directed should treat this as awaiting a reply. */
-  expectsReply?: boolean;
+  /** D-048: REQUIRED reply-expectation. `expectsReply` is derived from it, never passed. */
+  expects: ExpectsKind;
   /** H2 (coord-authority-hardening P-004): relay provenance — the coord msg_id
    *  of the ORIGINAL you are relaying, or the 'owner-turn' sentinel for the
    *  human turn you are currently answering. Platform-verified at send. */
@@ -144,11 +144,38 @@ const replyDeadlineSecArg = z
     'EI-8986: "nudge if silent" — the dual of wakeOnReply (which wakes you when a reply ARRIVES; this wakes you when one does NOT). If no reply lands within this many seconds, a periodic backstop sweep nudges you ONCE: a coord message + a fail-soft wake — never a recurring alarm. Independent of wakeOnReply — set either, both, or neither. Omit for no deadline tracking (today\'s behavior).',
   );
 
-const expectsReplyArg = z
-  .boolean()
-  .optional()
+/**
+ * D-015 / D-016 / D-048 — the reply-expectation field, REQUIRED with no default.
+ *
+ * It REPLACES the old optional `expectsReply?: boolean`, which was silently derived:
+ *
+ *   msg.expectsReply ?? (wakeMode === 'required' && typeof msg.replyDeadlineSec === 'number')
+ *
+ * That derivation is D-016's "a default is how a field dies" sitting in the live code
+ * of the very field D-016 wrote its gate for: everyone took the default, so the field
+ * carried almost no sender intent — while `unanswered_directed` (and the delivery
+ * ladder) depended on it meaning something.
+ *
+ * Forcing an explicit choice, INCLUDING the explicit 'none', is what makes the field
+ * real. Do NOT reintroduce a default, and do NOT infer it from `wake`/`replyDeadlineSec`
+ * — that inference is the defect, not a convenience.
+ */
+export type ExpectsKind = 'ack' | 'answer' | 'action' | 'none';
+
+const expectsArg = z
+  .enum(['ack', 'answer', 'action', 'none'], {
+    error:
+      "coord:send needs `expects`: what you want back. 'ack' = confirm receipt · 'answer' = reply " +
+      "with information · 'action' = do something (a reply is optional) · 'none' = FYI/status, " +
+      "nothing expected. There is deliberately NO default — an FYI must say 'none' explicitly. " +
+      'This replaces `expectsReply`, which is now DERIVED (anything but `none`).',
+  })
   .describe(
-    'Explicit sender-side reply expectation. Set true only when you are waiting for a response; omit (or set false) for FYI/status/fire-and-forget messages. When omitted, wake:"required" plus replyDeadlineSec also declares this intent.',
+    "REQUIRED — what you want back from the recipient: 'ack' (confirm receipt) | 'answer' (reply " +
+      "with information) | 'action' (do something; a reply is optional) | 'none' (FYI/status, nothing " +
+      "expected). No default and no inference from `wake`: an FYI must say 'none' explicitly. Anything " +
+      'other than `none` marks the message unanswered-directed until the recipient threads a reply ' +
+      '(related_msg_id), which drives leader-brief / fleet:assignments.',
   );
 
 const endTurnArg = z
@@ -273,7 +300,11 @@ const itemSpec = z.object({
     .describe(
       "Replying? The EXACT msg_id you are answering (copy from coord:inbox) — this fires the asker's wake-on-reply. A dangling id refuses the send (related_msg_not_found); never hand-type or placeholder it.",
     ),
-  expectsReply: expectsReplyArg,
+  // D-048: REQUIRED here — not `.optional()`. The items[] axis enforces the gate
+  // STRUCTURALLY: because itemSpec is what the generated tool schema advertises for
+  // `items`, a caller SEES that `expects` is required rather than reading it in prose
+  // (the work_items:set_state terminal-evidence precedent, P-005/D-006).
+  expects: expectsArg,
   relayOf: relayOfArg,
   relayQuote: relayQuoteArg,
   gateRefs: gateRefsArg,
@@ -489,11 +520,19 @@ async function sendOne(
   if (bcast?.allHive) extra[ALLHIVE_BROADCAST_FIELD] = true;
   if (wakeMode) extra.wake = true;
   if (effectiveWakeOnReply) extra.wakeOnReply = true;
-  // WI-4553: unanswered-directed must use sender intent, not the absence of a
-  // reply, to infer an obligation. A deadline is itself an explicit request
-  // for a response, so retain the ergonomic wake+deadline derivation.
-  const expectsReply =
-    msg.expectsReply ?? (wakeMode === 'required' && typeof msg.replyDeadlineSec === 'number');
+  // WI-4553: unanswered-directed must use sender INTENT, not the absence of a reply,
+  // to infer an obligation. D-048 keeps that principle and removes the derivation that
+  // undermined it: `expectsReply` is now computed from the REQUIRED `expects`, never
+  // taken from the caller and never inferred from wake/replyDeadlineSec.
+  //
+  // Both keys ride the persisted envelope on purpose:
+  //   • `expectsReply` — because unanswered-directed.ts (`body->>'expectsReply' = 'true'`)
+  //     and the delivery ladder already read it. D-048 is an INPUT-surface change, not a
+  //     consumer migration; every existing reader keeps working untouched.
+  //   • `expects` — the 4-valued intent those consumers can graduate to (an 'ack' that
+  //     never arrives is a different obligation from an unanswered 'answer').
+  const expectsReply = msg.expects !== 'none';
+  extra.expects = msg.expects;
   // EI-8986: stamp an absolute deadline (epoch ms) so the reply-deadline-sweep
   // (dbos/periodic-workflows.ts) can select it with a simple `<= now` compare —
   // no need to re-derive "elapsed since send" from `ts` at sweep time. Positive
@@ -998,7 +1037,7 @@ async function effectiveFederationScope(
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send one or many coordination messages. Single: {to, summary, …}; many distinct: items:[…]. `to` accepts ownerIds, ["*"] fleet-scoped broadcasts, or ["human"] for the user. Default injects; `wake` re-invokes a sleeping recipient (`required` reports a miss, `optimistic` needs `backstop`). Set `expectsReply:true` when awaiting a response; directed sends default `wakeOnReply`. Returns {ok, results:[{ok, to, msg_id? … | error}], counts}; failures are per-message.',
+    'Send one or many coordination messages. Single: {to, summary, expects, …}; many distinct: items:[…]. `to` accepts ownerIds, ["*"] fleet-scoped broadcasts, or ["human"] for the user. `expects` is REQUIRED — ack|answer|action|none, no default, so an FYI must say `none` explicitly (replaces `expectsReply`, now derived). Default injects; `wake` re-invokes a sleeping recipient (`required` reports a miss, `optimistic` needs `backstop`). Returns {ok, results:[{ok, to, msg_id? … | error}], counts}; failures are per-message.',
   guidance: {
     when: 'Sharing context or asking a question. Use items:[…] for many distinct messages. wake:\'required\' = recipient must act now, miss → recipient_absent. wake:\'optimistic\' = best-effort over a named backstop (`backstop:`). A running recipient already sees the inject — a wake is wasted on it.',
     notWhen: 'Human reply: just speak. File lock: locks:acquire. Don\'t wake for ambient notes (inject is default; wake = billable). ONE msg to MANY: single `to:[…]` — `items` is many-distinct-messages. Work transfer: coord:handoff. Without a backstop, wake:\'optimistic\' miss is SILENT — use wake:\'required\' + confirm woken≥1.',
@@ -1007,7 +1046,7 @@ export default defineTool({
       'coord:inbox (read replies to what you sent)',
       'coord:roster { view:"live" } (confirm a recipient is awake before wake:required)',
       'EI-9940: self-resolved a failure you already reported? reply via related_msg_id, not a fresh send',
-      'WI-5341: replying to an expectsReply ping? set related_msg_id to it — a broadcast or unthreaded reply keeps you reading as "unanswered" in leader-brief/fleet:assignments even though you replied.',
+      'WI-5341: replying to a message whose `expects` was not `none`? set related_msg_id to it — a broadcast or unthreaded reply keeps you reading as "unanswered" in leader-brief/fleet:assignments even though you replied.',
     ],
   },
   capability: 'coord:write',
@@ -1028,13 +1067,37 @@ export default defineTool({
   // issue (confirmed via z.toJSONSchema: preprocess is transparent to schema
   // introspection, so the advertised tool schema is byte-identical either way).
   args: z.preprocess((data, pctx) => {
-    const a = data as { items?: unknown[]; to?: unknown[]; summary?: unknown } | null | undefined;
+    const a = data as
+      | { items?: unknown[]; to?: unknown[]; summary?: unknown; expects?: unknown }
+      | null
+      | undefined;
     const hasItems = Array.isArray(a?.items) && a.items.length > 0;
     const hasSingle = Array.isArray(a?.to) && a.to.length > 0 && Boolean(a?.summary);
     if (!hasItems && !hasSingle) {
       pctx.addIssue({
         code: 'custom',
-        message: 'pass { to, summary } for one message, or items:[{ to, summary }] for many distinct messages',
+        message:
+          'pass { to, summary, expects } for one message, or items:[{ to, summary, expects }] for many distinct messages',
+      });
+    }
+    // D-016 / D-048 — `expects` is required-with-explicit-'none', never defaulted.
+    //
+    // itemSpec enforces it structurally for the items[] axis, but the SHORTHAND cannot
+    // use the same mechanism: `expects` must stay `.optional()` on the top-level object
+    // so an items[]-only call need not carry one. So the identical requirement is closed
+    // HERE — exactly as work_items:set_state closes its terminal-evidence rule for its
+    // own shorthand with a second check (P-005/D-006). Without this the gate would not be
+    // enforced, it would merely MOVE to the shorthand, which is the cheaper call and
+    // therefore the one that would carry all the traffic.
+    if (!hasItems && hasSingle && a?.expects === undefined) {
+      pctx.addIssue({
+        code: 'custom',
+        path: ['expects'],
+        message:
+          "coord:send needs `expects`: 'ack' (confirm receipt) | 'answer' (reply with information) | " +
+          "'action' (do something) | 'none' (FYI/status, nothing expected). There is deliberately no " +
+          "default — an FYI must say 'none' explicitly. This replaces the old optional `expectsReply`, " +
+          'which was silently derived from wake+replyDeadlineSec and so carried no sender intent.',
       });
     }
     return data;
@@ -1053,7 +1116,10 @@ export default defineTool({
     .describe(
       "Replying? The EXACT msg_id you are answering (copy from coord:inbox) — this fires the asker's wake-on-reply. A dangling id refuses the send (related_msg_not_found); never hand-type or placeholder it.",
     ),
-    expectsReply: expectsReplyArg,
+    // D-048: `.optional()` ONLY so an items[]-only call need not carry one. The
+    // requirement for the single form is enforced in the preprocess above — see the
+    // comment there for why it cannot live on this field.
+    expects: expectsArg.optional(),
     relayOf: relayOfArg,
     relayQuote: relayQuoteArg,
     gateRefs: gateRefsArg,
@@ -1072,7 +1138,7 @@ export default defineTool({
       .min(1)
       .max(100)
       .optional()
-      .describe('send many DISTINCT messages at once — each { to, summary, body?, files?, plan_slug?, related_msg_id?, expectsReply?, wake?, wakeOnReply?, endTurn? }'),
+      .describe('send many DISTINCT messages at once — each { to, summary, expects, body?, files?, plan_slug?, related_msg_id?, wake?, wakeOnReply?, endTurn? } — `expects` is required on EVERY item'),
   })),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -1097,7 +1163,9 @@ export default defineTool({
             files: args.files,
             plan_slug: args.plan_slug,
             related_msg_id: args.related_msg_id,
-            expectsReply: args.expectsReply,
+            // Non-null assertion is safe: the preprocess above refuses a single-form
+            // call whose `expects` is undefined, so this branch is unreachable without it.
+            expects: args.expects as ExpectsKind,
             relayOf: args.relayOf,
             relayQuote: args.relayQuote,
             gateRefs: args.gateRefs,

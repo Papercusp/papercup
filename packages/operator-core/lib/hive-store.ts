@@ -129,7 +129,17 @@ function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
 }
 
+/** The INSERT column list — positional, matched by the `VALUES ($1..$7, $7)` in the
+ *  writers below. Do NOT add to it without re-numbering those placeholders.
+ *  `canonical_pot_home_slug` is deliberately absent: migration 686's
+ *  `pots_fill_canonical_slug_trg` fills it from `pot_home_slug`, so every existing
+ *  writer keeps canonical == local with no call-site change. */
 const COLS = `workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at`;
+
+/** The READ column list — everything in COLS plus the federated scope key, so
+ *  `rowToRecord` can populate `canonicalHomeSlug` from the stored column rather
+ *  than the local-handle fallback. Used by every SELECT and RETURNING. */
+const SELECT_COLS = `${COLS}, canonical_pot_home_slug`;
 
 /** Get one Hive by its pot-home-slug. */
 export async function getHiveBySlug(
@@ -139,7 +149,7 @@ export async function getHiveBySlug(
 ): Promise<HiveRecord | null> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.pots WHERE workspace_id = $1 AND pot_home_slug = $2 LIMIT 1`,
+    `SELECT ${SELECT_COLS} FROM harness_shared.pots WHERE workspace_id = $1 AND pot_home_slug = $2 LIMIT 1`,
     [workspaceId, homeSlug],
   )) as unknown as HiveRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
@@ -155,7 +165,7 @@ export async function getHiveByPubkey(
   if (!buf) return null;
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.pots WHERE workspace_id = $1 AND public_key = $2 LIMIT 1`,
+    `SELECT ${SELECT_COLS} FROM harness_shared.pots WHERE workspace_id = $1 AND public_key = $2 LIMIT 1`,
     [workspaceId, buf],
   )) as unknown as HiveRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
@@ -177,7 +187,7 @@ export async function getHive(
 export async function listHives(workspaceId: string, sql?: Sql): Promise<HiveRecord[]> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.pots WHERE workspace_id = $1 ORDER BY created_at DESC`,
+    `SELECT ${SELECT_COLS} FROM harness_shared.pots WHERE workspace_id = $1 ORDER BY created_at DESC`,
     [workspaceId],
   )) as unknown as HiveRow[];
   return rows.map(rowToRecord);
@@ -201,7 +211,7 @@ export async function insertHiveIfAbsent(
     `INSERT INTO harness_shared.pots (${COLS})
        VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
      ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING
-     RETURNING ${COLS}`,
+     RETURNING ${SELECT_COLS}`,
     [
       input.workspaceId,
       input.homeSlug,
@@ -253,7 +263,7 @@ export async function upsertRemoteHiveIdentity(
            updated_at = EXCLUDED.updated_at
        WHERE harness_shared.pots.keychain_id LIKE 'remote:%'
           OR harness_shared.pots.keychain_id = ANY($8::text[])
-     RETURNING ${COLS}`,
+     RETURNING ${SELECT_COLS}`,
     [
       input.workspaceId,
       input.homeSlug,
@@ -278,6 +288,64 @@ export async function upsertRemoteHiveIdentity(
   return { record: existing, created: false, repaired: false };
 }
 
+/**
+ * WI-559 (migration 686) — stamp the FEDERATED scope key on a Pot's identity row.
+ *
+ * This is the ONLY writer of `canonical_pot_home_slug`. It exists so a JOINER whose
+ * local handle differs from the owner's announced slug can still be the FK parent
+ * for the `pot_members` rows its projections persist under the OWNER's slug.
+ *
+ * Deliberately NARROW — the local handle is never touched, and:
+ *  - REMOTE VIEWS ONLY. An owned Pot IS the authority for its own slug; canonical
+ *    must stay equal to the local handle there, so this refuses any row whose
+ *    keychain_id is not `remote:%`. (`reason: 'not_a_remote_view'`.)
+ *  - COLLISION-SAFE. `pots_canonical_home_slug_key` forbids two Pots claiming one
+ *    federated scope. A collision returns `reason: 'canonical_taken'` and leaves the
+ *    row untouched (fail-open to today's behavior) rather than forcing it — two
+ *    identity rows for one wire Pot would make the demux ambiguous, which is a worse
+ *    failure than the one being repaired.
+ * Never throws for these cases; a genuine PG fault still propagates to the caller,
+ * which is best-effort at every call site.
+ */
+export async function setPotCanonicalHomeSlug(
+  workspaceId: string,
+  homeSlug: string,
+  canonicalSlug: string,
+  sql?: Sql,
+): Promise<
+  | { ok: true; changed: boolean; record: HiveRecord }
+  | { ok: false; reason: 'not_found' | 'not_a_remote_view' | 'canonical_taken' }
+> {
+  const s = pg(sql);
+  const current = await getHiveBySlug(workspaceId, homeSlug, sql);
+  if (!current) return { ok: false, reason: 'not_found' };
+  if (current.canonicalHomeSlug === canonicalSlug) {
+    return { ok: true, changed: false, record: current };
+  }
+  if (!current.keychainId.startsWith('remote:')) {
+    return { ok: false, reason: 'not_a_remote_view' };
+  }
+  // Pre-check the uniqueness invariant so the common collision is a typed result
+  // rather than a thrown 23505 the caller has to string-match.
+  const clash = (await s.unsafe(
+    `SELECT pot_home_slug FROM harness_shared.pots
+      WHERE workspace_id = $1 AND canonical_pot_home_slug = $2 AND pot_home_slug <> $3
+      LIMIT 1`,
+    [workspaceId, canonicalSlug, homeSlug],
+  )) as unknown as Array<{ pot_home_slug: string }>;
+  if (clash.length > 0) return { ok: false, reason: 'canonical_taken' };
+
+  const rows = (await s.unsafe(
+    `UPDATE harness_shared.pots
+        SET canonical_pot_home_slug = $3, updated_at = $4
+      WHERE workspace_id = $1 AND pot_home_slug = $2
+      RETURNING ${SELECT_COLS}`,
+    [workspaceId, homeSlug, canonicalSlug, Date.now()],
+  )) as unknown as HiveRow[];
+  if (!rows[0]) return { ok: false, reason: 'not_found' };
+  return { ok: true, changed: true, record: rowToRecord(rows[0]) };
+}
+
 /** Edit a Hive's directory metadata (title/description). No identity side effects. */
 export async function updateHiveMeta(
   workspaceId: string,
@@ -292,7 +360,7 @@ export async function updateHiveMeta(
             description = COALESCE($4, description),
             updated_at = $5
       WHERE workspace_id = $1 AND pot_home_slug = $2
-      RETURNING ${COLS}`,
+      RETURNING ${SELECT_COLS}`,
     [workspaceId, homeSlug, meta.title ?? null, meta.description ?? null, Date.now()],
   )) as unknown as HiveRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
