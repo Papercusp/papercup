@@ -180,10 +180,18 @@ export async function listWorkspaceMembers(
   return rows.map(rowToRecord);
 }
 
-/** Get one Hive member. */
+/**
+ * Get one Hive member.
+ *
+ * ⚠ SCOPE (WI-6312, the write/single-row sibling of EI-18777176681958978): `potHomeSlug` is
+ * the FEDERATED (owner-authored) scope. A joiner's LOCAL handle returns `null` here — and
+ * `null` is indistinguishable from "not a member", so every membership/tier gate built on
+ * this silently DENIES (or, read the other way round, never recognises) a real member on a
+ * divergent joiner. Holding a local handle? Resolve it first (`resolveFederatedPotScope`).
+ */
 export async function getHiveMember(
   workspaceId: string,
-  potHomeSlug: string,
+  potHomeSlug: FederatedPotScope,
   githubUserId: number,
   sql?: Sql,
 ): Promise<HiveMemberRecord | null> {

@@ -286,12 +286,26 @@ questions that agents routinely conflate; hand-resolving them cost 11 tool calls
 | is this leg stuck, or just slow | `stages[].health` (`advancing`/`stalled`/`disabled`/`broken`) | `positions.*` alone — that read a 2h52m push freeze as "not yet" |
 | did my work reach origin | `gitSync.pushedRepos` | `gitSync.status` — `'synced'` is reachable with **nothing** pushed |
 | is the running process executing my code | `serving.startedSinceCodeChange` | `positions.deployed` — a git fact stating a process conclusion ("deployed ✓" ≠ live; filed 4× independently) |
-| is the gate judging MY code | `changeInCandidate.judgingContainsPath` | assuming a red is about your change — a run judging a candidate without it isn't |
+| is the gate judging MY code | `changeInCandidate.judgingContainsPath` — but ONLY trust a `true`, and read `missingReason` before believing a `false` (see below) | assuming a red is about your change — a run judging a candidate without it isn't |
 | will the next tick commit my half-finished refactor | `sweepExposure` (blast radius + when) | nothing — git-sync sweeps the WHOLE tree, so `git-sync:run` mid-refactor commits the broken intermediate on purpose |
 
 `nextAction: null` is a **positive** answer ("waiting is correct"), never a missing one —
 do not invent a lever when the honest move is to wait. Full field-by-field guide:
 [reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction).
+
+⚠ **`judgingContainsPath: false` with `missingReason: 'newer-commit'` does NOT mean your
+change missed the candidate — and on a shared file it usually means the opposite.** That
+verdict compares the path's **current content**, so the moment ANY peer commits to the same
+file after you, it flips false and stays false: the tip is always newer than the quiet-cut
+candidate. Following the re-fire lever it used to emit can therefore never succeed — it just
+restarts a ~55min suite clock. This cost ~2h of the 2026-07-27 fleet-wide `facts:assert`
+outage (EI-18797292094433710): two wakes re-fired the gate while *every* candidate already
+carried the fix. **Ask the real question yourself** — `git merge-base --is-ancestor <the
+commit carrying your change> <candidate>` (exit 0 ⇒ the candidate carries you, and its
+verdict IS about your code), or `git show <candidate>:<path> | grep -c '<your marker>'`.
+`uncommitted` / `absent` are the honest misses where the tool's exoneration does hold. And
+when a run is in flight, trust its own log line (`checkpointing candidate <sha>` in
+`/tmp/papercup-green-checkpoint-manual-*.log`) over `judgingSha`, which can lag it.
 
 ## Server-side edits and the two-port model — no hot-reload
 
