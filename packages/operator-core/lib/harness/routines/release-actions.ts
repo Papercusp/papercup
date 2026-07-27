@@ -279,6 +279,20 @@ export interface CheckpointVerdict {
    *  logs (which don't even contain the isolation re-run's own output). Present whenever
    *  the isolation/worker-crash absorber actually ran. */
   isolationNote?: string;
+  /** EI-18685041726970077 (owner-flagged highest-leverage fix from the nine-detector
+   *  audit): structural mirror of green-checkpoint.ts's `GateLineage` — the judged
+   *  candidate's lineage vs the integration branch's tip AT VERDICT TIME (commits
+   *  behind + which failing files were touched in that range). Persisted into the
+   *  append-only pipeline event detail so a red's staleness is readable from the
+   *  DURABLE record (/admin/git, gate_health) without re-deriving it by hand — the
+   *  exact archaeology the owner's report named as costing hours. Never used to
+   *  change the gate's green/red decision. */
+  lineage?: {
+    candidate: string;
+    tip: string;
+    commitsBehind: number;
+    failingFilesChangedInRange: string[];
+  };
 }
 
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
@@ -305,6 +319,16 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   // even on a red (not absorbed) — see CheckpointVerdict.isolationNote for why this closes
   // a real diagnosability gap.
   if (v.isolationNote) detail.isolationNote = v.isolationNote.slice(0, 2000);
+  // EI-18685041726970077: persist the lineage so a red's staleness is readable from the
+  // durable pipeline-event record itself, not only from the transient broadcast/escalate text.
+  if (v.lineage) {
+    detail.lineage = {
+      candidate: v.lineage.candidate.slice(0, 12),
+      tip: v.lineage.tip.slice(0, 12),
+      commitsBehind: v.lineage.commitsBehind,
+      failingFilesChangedInRange: v.lineage.failingFilesChangedInRange.slice(0, 20),
+    };
+  }
   return detail;
 }
 
