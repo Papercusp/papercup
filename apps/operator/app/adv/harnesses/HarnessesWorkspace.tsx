@@ -10,7 +10,6 @@ import HarnessTopBar from './HarnessTopBar';
 import HarnessesDock from './HarnessesDock';
 import HarnessWelcome from './HarnessWelcome';
 import HiveMemberRail from './HiveMemberRail';
-import HiveHeaderStrip from './HiveHeaderStrip';
 import HiveWorkspaceCards from './HiveWorkspaceCards';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
 import { useSyncQuery } from '@papercusp/sync';
@@ -170,15 +169,15 @@ export default function HarnessesWorkspace() {
   const hiveLabel = t('pot');
   const hivesLabel = t('pot', { plural: true });
 
-  // The hive header strip (P-022) — the selected hive's face. Shown for a real
-  // multi-member hive or a formal kind:'hive' home; a solo non-hive harness
-  // renders no header (zero regression, same gate the member rail uses).
-  const hiveRoot = useMemo(() => projects.find((p) => p.slug === slug) ?? null, [projects, slug]);
-  const showHiveHeader = !!slug && (members.length > 1 || hiveRoot?.harness_kind === 'hive');
-  const headerMembers = useMemo(
-    () => members.map((m) => ({ slug: m.slug, hasState: livenessBySlug[m.slug] ?? false })),
-    [members, livenessBySlug],
-  );
+  // NOTE (owner ask 2026-07-27): the HiveHeaderStrip that used to render here —
+  // the pot's "face" (name · 👑 POT · directory badge · N Harnesses · N/N set up ·
+  // Share… · beacon toggle) — is GONE, component and all. The pot bar (AdvPotBar,
+  // added the same day) sits directly above this tab and already carries the pot
+  // identity, the selector, and Share, so the strip was a second, staler copy of
+  // the same row. Its two controls with no other home — the beacon toggle and
+  // (via HarnessTopBar) Workspaces / Register sub-pots — moved onto the pot bar,
+  // which renders on every pot-scoped tab. Do not reintroduce a per-tab pot header
+  // here: if a pot-level affordance is missing, it belongs on the pot bar.
 
   return (
     <div className="pc-adv-harnesses pc-adv-dock">
@@ -193,16 +192,6 @@ export default function HarnessesWorkspace() {
         />
       ) : (
         <>
-          {/* The hive header strip (P-022) — the selected hive's face above the
-              member surface. Gated so a solo non-hive harness is byte-identical. */}
-          {showHiveHeader && (
-            <HiveHeaderStrip
-              potSlug={slug}
-              hiveKind={hiveRoot?.harness_kind ?? null}
-              isShared={hiveRoot?.is_shared}
-              members={headerMembers}
-            />
-          )}
           {/* The dock, meta line, and welcome all key off the FOCUSED MEMBER
               (`?harness=` resolved against the hive's members), not the raw hive
               `?slug=` — so a hive with several member harnesses shows the picked

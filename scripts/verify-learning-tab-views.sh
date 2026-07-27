@@ -29,6 +29,13 @@
 #
 # EXIT: 0 when every probed view painted, 1 when any crashed or never appeared
 # (so it is usable as a release gate, not just an eyeball check).
+#
+# WHAT IT DOES NOT CHECK — do not over-trust an `ok`. It asks "did SOMETHING paint
+# without crashing", not "did the RIGHT view paint": a flag-hidden id degrades to
+# the default view by design (`?lview=gym` with FLAGS.TESTING off lands on
+# Improvements — LearningTab's `view` fallback), and that reports ok here. Content
+# correctness per view is the jsdom suites' job; this covers exactly the failure
+# they are structurally blind to.
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

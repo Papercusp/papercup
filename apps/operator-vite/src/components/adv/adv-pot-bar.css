@@ -111,13 +111,23 @@
   background: color-mix(in srgb, var(--accent), transparent 74%);
   color: #e7f7ff;
 }
-/* Shared = a non-interactive status badge (green "done" tint) shown in place of
-   the Share button once the pot has been shared. */
+/* Shared = the green "done" tint the Share button takes once the pot IS shared,
+   labelled with the live directory visibility (Public / Invite). It stayed
+   CLICKABLE as of 2026-07-27 — it reopens the share dialog, because the Work
+   tab's hive header (the only other way back into it) was deleted. Rendered as a
+   passive <span> in exactly one remaining place: the legacy per-harness
+   shared.json badge on a NON-pot harness, which has no dialog to open. */
 .pc-advshell__action--shared {
   background: rgba(34, 197, 94, 0.16);
   color: #86efac;
   border-color: rgba(34, 197, 94, 0.4);
+}
+span.pc-advshell__action--shared {
   cursor: default;
+}
+button.pc-advshell__action--shared:hover {
+  background: rgba(34, 197, 94, 0.28);
+  color: #e7f7ff;
 }
 
 /* The row now lives INSIDE .pc-advshell__body, which flattens in-page buttons

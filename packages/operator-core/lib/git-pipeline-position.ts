@@ -30,6 +30,8 @@ import { RESTART_TARGET_UNITS } from './agent-tools/dev/restart-target-units';
 import {
   classifyPathsAgainstCandidate,
   gitReadForRepo,
+  markerAtCommit,
+  type MarkerContainment,
   type MissingReason,
   type PathContainment,
 } from './candidate-contains';
@@ -98,6 +100,15 @@ async function isExactRemoteTip(git: GitRunner, repo: string, remoteRef: string,
 export interface PipelinePositionInput {
   path?: string;
   sha?: string;
+  /**
+   * EI-18797292094433710 — a distinctive literal string from the CALLER'S OWN change.
+   * Supplying it upgrades `changeInCandidate` from "does the candidate carry this file
+   * byte-for-byte" (which a peer's later commit to the same file breaks, permanently, on
+   * any hot shared file) to the question actually being asked: "is MY change in the
+   * commit the gate is judging?" Not derivable — git-sync commits the whole tree under
+   * one identity, so no commit is identifiably "yours".
+   */
+  marker?: string;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -794,6 +805,19 @@ export interface ChangeInCandidate {
   nextContainsPath: boolean | null;
   /** When a verdict is false: which lever fixes it (uncommitted / newer-commit / absent). */
   missingReason: MissingReason | null;
+  /**
+   * EI-18797292094433710 — containment of a caller-supplied MARKER, when one was given.
+   *
+   * `judgingContainsPath` compares the file's CURRENT content, so it answers "does the
+   * candidate carry exactly what I have?" and not "is MY change in it". These diverge
+   * whenever a peer commits to the same file after you, and on this tree that is the
+   * common case rather than the exotic one. The marker settles it: a distinctive string
+   * from the caller's own change either IS or IS NOT in the judged commit, whatever else
+   * moved. When present, this OUTRANKS the blob-identity verdict for deciding whether a
+   * re-fire is warranted — see `evaluateChangeInCandidate`.
+   */
+  markerJudging: MarkerContainment | null;
+  markerNext: MarkerContainment | null;
   /** One line: what these verdicts mean, and the concrete next move. */
   detail: string | null;
 }
@@ -805,6 +829,8 @@ const NO_CHANGE_IN_CANDIDATE: ChangeInCandidate = {
   nextCandidateSha: null,
   nextContainsPath: null,
   missingReason: null,
+  markerJudging: null,
+  markerNext: null,
   detail: null,
 };
 
@@ -826,17 +852,57 @@ export function evaluateChangeInCandidate(args: {
   candidates: GateCandidates;
   judging: PathContainment | null;
   next: PathContainment | null;
+  markerJudging?: MarkerContainment | null;
+  markerNext?: MarkerContainment | null;
 }): ChangeInCandidate {
   const { relPath, candidates, judging, next } = args;
   if (!relPath) return NO_CHANGE_IN_CANDIDATE;
+  const markerJudging = args.markerJudging ?? null;
+  const markerNext = args.markerNext ?? null;
   const base: ChangeInCandidate = {
     judgingSha: candidates.judgingSha,
     judgingContainsPath: judging ? judging.inCandidate : null,
     nextCandidateSha: candidates.nextCandidateSha,
     nextContainsPath: next ? next.inCandidate : null,
     missingReason: judging?.reason ?? next?.reason ?? null,
+    markerJudging,
+    markerNext,
     detail: null,
   };
+
+  /**
+   * EI-18797292094433710: when the caller named a marker, IT is the answer — it speaks
+   * to "is my change in there", which is the question, while blob identity only speaks
+   * to "is the whole file identical", which is not. So this runs BEFORE the
+   * content-identity branches and returns outright; letting those run first would
+   * re-emit the ambiguity the marker just resolved.
+   */
+  const markerVerdict = (m: MarkerContainment, sha: string | null, which: 'in flight' | 'next'): string | null => {
+    const at = sha?.slice(0, 12);
+    if (m.present === true) {
+      const times = m.count === 1 ? 'once' : `${m.count}×`;
+      return which === 'in flight'
+        ? `The gate run IN FLIGHT (${at}) DOES carry your change — the marker occurs ${times} in its version of this file. ` +
+            `Its verdict IS a real verdict on your code, so a RED there is about your change, not about a missing one. ` +
+            `Do NOT re-fire: you already have the run you would be asking for.`
+        : `A checkpoint fired now would judge ${at}, which DOES carry your change (marker occurs ${times}).`;
+    }
+    if (m.present === false) {
+      const why = m.pathPresent === false ? ' (that commit has no such file at all)' : '';
+      return which === 'in flight'
+        ? `The gate run IN FLIGHT (${at}) does NOT carry your change — the marker is absent from its version of this file${why}. ` +
+            `A RED from it is NOT evidence your change failed; it is testing code without it.`
+        : `A checkpoint fired now would judge ${at}, which does NOT carry your change (marker absent${why}).`;
+    }
+    return null;
+  };
+
+  if (markerJudging && markerJudging.present !== null) {
+    return { ...base, detail: markerVerdict(markerJudging, candidates.judgingSha, 'in flight') };
+  }
+  if (markerNext && markerNext.present !== null && !candidates.judgingSha) {
+    return { ...base, detail: markerVerdict(markerNext, candidates.nextCandidateSha, 'next') };
+  }
 
   const lever = (reason: MissingReason | null): string => {
     switch (reason) {
@@ -856,7 +922,8 @@ export function evaluateChangeInCandidate(args: {
         return (
           'It IS committed, but the file has been committed AGAIN since the candidate was cut (the quiet-cut steps the candidate back ~4 min). ' +
           'This does NOT by itself mean YOUR change is missing — a peer commit to the same file reads identically. ' +
-          'Settle it before firing anything: `git merge-base --is-ancestor <the commit carrying your change> <candidate>` (exit 0 ⇒ the candidate carries you and its verdict IS about your change).'
+          'SETTLE IT IN ONE CALL instead of guessing: re-call with `marker` set to a distinctive string from your own change ' +
+          '(a new function name, an error message, an id you added) and this verdict becomes definitive either way.'
         );
       default:
         return '';
@@ -2017,11 +2084,22 @@ export async function gitPipelinePosition(
       ),
     );
     const bySha = new Map(byShaEntries);
+    // EI-18797292094433710: only paid for when the caller actually named a marker —
+    // this is the hot path CLAUDE.md points agents at for "is my edit live".
+    const markerBySha = new Map<string, MarkerContainment>();
+    if (marker) {
+      const markerEntries = await Promise.all(
+        [...new Set(shas)].map(async (sha) => [sha, await markerAtCommit(gitRead, sha, relPath, marker)] as const),
+      );
+      for (const [sha, m] of markerEntries) markerBySha.set(sha, m);
+    }
     changeInCandidate = evaluateChangeInCandidate({
       relPath,
       candidates,
       judging: candidates.judgingSha ? (bySha.get(candidates.judgingSha) ?? null) : null,
       next: candidates.nextCandidateSha ? (bySha.get(candidates.nextCandidateSha) ?? null) : null,
+      markerJudging: candidates.judgingSha ? (markerBySha.get(candidates.judgingSha) ?? null) : null,
+      markerNext: candidates.nextCandidateSha ? (markerBySha.get(candidates.nextCandidateSha) ?? null) : null,
     });
     if (changeInCandidate.judgingContainsPath === false || changeInCandidate.nextContainsPath === false) {
       notes.push(`CANDIDATE DOES NOT CONTAIN THIS FILE: ${changeInCandidate.detail}`);

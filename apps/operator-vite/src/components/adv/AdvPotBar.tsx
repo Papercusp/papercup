@@ -8,6 +8,9 @@ import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { defaultFetchShareMeta, type HiveShareVisibility } from '@/app/harness/ShareHiveDialog';
+import HarnessWorkspacesButton from '@/app/adv/harnesses/HarnessWorkspacesButton';
+import RegisterSubsButton from '@/app/adv/harnesses/RegisterSubsButton';
+import HiveBeaconToggle from '@/app/adv/harnesses/HiveBeaconToggle';
 import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
 import { useLexicon } from '@/lib/useLexicon';
 import AdvNowRunning from './AdvNowRunning';
@@ -21,8 +24,14 @@ import './adv-pot-bar.css';
 
 /**
  * AdvPotBar — the POT cluster: `POT` label · selector · sub-pots toggle · New ·
- * Share/Shared, optionally followed by the status pills (pots running · agents
- * running · the pot's own start/stop + "N plans waiting" bar · Discord).
+ * Share/Public/Invite · Beacon · Workspaces · Register sub-pots, optionally
+ * followed by the status pills (pots running · agents running · the pot's own
+ * start/stop + "N plans waiting" bar · Discord).
+ *
+ * The last three arrived 2026-07-27 from the Work tab, whose HiveHeaderStrip
+ * restated this row's identity + Share cluster one line below it and was deleted
+ * for it. Anything POT-level belongs here — one row, on every pot-scoped tab —
+ * rather than in whichever tab happened to grow it first.
  *
  * WHY it is a component and not part of AdvShell's header (owner ask 2026-07-27):
  * the cluster used to sit in the "ADVANCED ORCHESTRATION / <title>" bar ABOVE the
@@ -172,19 +181,29 @@ export default function AdvPotBar({ withStatus = false }: { withStatus?: boolean
         </Tooltip>
         {!allMode && activeSlug && activeIsHive && (
           activeHiveShared ? (
-            // Already shared to the directory → a passive Shared badge in place of
-            // the Share button (manage/change visibility from the Work tab's hive
-            // header).
-            <Tooltip label={`${activeSlug} is shared to the directory (${hiveShareViz}) — manage sharing from the Work tab`}>
-              <span className="pc-advshell__action pc-advshell__action--shared">
-                <Check size={13} aria-hidden /> Shared
-              </span>
+            // Already shared → the SAME dialog, relabelled to the live directory
+            // state. This used to be a passive badge that told you to "manage
+            // sharing from the Work tab" — but the Work tab's hive header (the
+            // only other Share affordance) was deleted on 2026-07-27, so a passive
+            // badge here would strand share management with no way back into the
+            // dialog. It is a button now, and it carries the granular visibility
+            // (Public / Invite) the deleted strip's directory badge used to show.
+            <Tooltip label={`${activeSlug} is shared to the directory (${hiveShareViz}) — change visibility, title, or invite`}>
+              <button
+                type="button"
+                className="pc-advshell__action pc-advshell__action--shared"
+                data-testid="potbar-share-button"
+                onClick={() => void setShareOpen(true)}
+              >
+                <Check size={13} aria-hidden /> {hiveShareViz === 'invite' ? 'Invite' : 'Public'}
+              </button>
             </Tooltip>
           ) : (
             <Tooltip label={`Share ${activeSlug} — publish the ${t('pot', { lower: true })} to the P2P directory so others can join`}>
               <button
                 type="button"
                 className="pc-advshell__action pc-advshell__action--share"
+                data-testid="potbar-share-button"
                 onClick={() => void setShareOpen(true)}
               >
                 <Share2 size={13} aria-hidden /> Share
@@ -200,6 +219,17 @@ export default function AdvPotBar({ withStatus = false }: { withStatus?: boolean
             <Check size={13} aria-hidden /> Shared
           </span>
         )}
+        {/* ── The three controls lifted off the Work tab (owner ask 2026-07-27) ──
+            "put those buttons where that's the only consumer you are removing on
+            the pot selector bar above it (and all tabs that have the pot selector
+            bar should also have it)". Each had exactly one home — the Work tab's
+            HiveHeaderStrip / HarnessTopBar — and each is pot-level, not
+            work-level, so they belong on this row and therefore on every tab in
+            POT_BAR_TAB_IDS. They need a single concrete pot, so all three are
+            hidden in all-mode; the beacon additionally needs a formal Pot home. */}
+        {!allMode && activeSlug && activeIsHive && <HiveBeaconToggle potSlug={activeSlug} />}
+        {!allMode && activeSlug && <HarnessWorkspacesButton slug={activeSlug} />}
+        {!allMode && activeSlug && <RegisterSubsButton slug={activeSlug} />}
       </div>
       {/* The status cluster — HUD only (owner ask 2026-07-27). Pots running +
           workspace-wide agents running + this pot's start/stop and "N plans

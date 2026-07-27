@@ -19,13 +19,10 @@
  *     subscription (cancelled_at) and notices the exit — the P-004 handover.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../test/_pg-helpers';
+import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../test/_pg-helpers';
 import type { AdjacencyParams } from './adjacency-cross-feed';
 
-const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -112,16 +109,22 @@ beforeAll(async () => {
     DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
     DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
   `);
-  for (const m of [
-    '123-coordination-substrate.sql',
-    '602-work-item-follow-blockers.sql', // adds follow_blockers/derived_from_* the sub store writes
-    '609-session-cursor.sql',
-    '610-push-delivery.sql',
-    '612-collision-hysteresis.sql',
-    '614-adjacency-state.sql',
-  ]) {
-    await applyMigrationForTest(db.sql, join(SQL_DIR, m));
-  }
+  // EI-18808675015292160: applyMigrationsForTest AUDITS this list before applying
+  // it, so a migration landing on one of these tables without being listed fails
+  // naming the FILE, not a bare `column "..." does not exist`.
+  await applyMigrationsForTest(
+    db.sql,
+    [
+      '123-coordination-substrate.sql',
+      '149-coord-threads-federation.sql', // must follow 123, which creates coord_threads/_posts
+      '602-work-item-follow-blockers.sql', // adds follow_blockers/derived_from_* the sub store writes
+      '609-session-cursor.sql',
+      '610-push-delivery.sql',
+      '612-collision-hysteresis.sql',
+      '614-adjacency-state.sql',
+    ],
+    { label: 'adjacency-cross-feed-io.integration.test.ts' },
+  );
   h.sql = db.sql;
 }, 90_000);
 

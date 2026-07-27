@@ -76,7 +76,7 @@ beforeAll(async () => {
       RETURN NEW;
     END $$;
   `);
-  for (const m of [
+  const migrations = [
     '444-agent-facts.sql',
     '455-agent-facts-shareable.sql',
     '461-agent-facts-federation.sql',
@@ -111,11 +111,14 @@ beforeAll(async () => {
     // edit as the migration, which is the discipline the 498/505/664 drift
     // comment above exists to enforce.
     '693-agent-facts-federation-stamp-regime.sql',
-  ]) {
-    // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper
-    // (lifted from this file's own former inline version).
-    await applyMigrationForTest(db.sql, join(SQL_DIR, m));
-  }
+  ];
+  // EI-18808675015292160: applies the list (EI-6887 strip semantics unchanged)
+  // but AUDITS it first against the real sql/ dir — so the "list DRIFTED from the
+  // real agent_facts migration set" failure described above now reds by NAMING the
+  // missing file, instead of surfacing as `column "..." does not exist`.
+  await applyMigrationsForTest(db.sql, migrations, {
+    label: 'agent-facts/store.integration.test.ts',
+  });
 });
 afterAll(async () => {
   await db?.cleanup();

@@ -72,6 +72,107 @@ export async function blobInWorkingTree(git: GitRead, relPath: string): Promise<
 }
 
 /**
+ * EI-18797292094433710 — the containment verdicts above compare the path's CURRENT
+ * content, which answers "does the candidate carry exactly what I have?" and NOT the
+ * question a caller actually asks: **"is MY change in the candidate?"**
+ *
+ * Those come apart the moment a PEER commits to the same file after you. The candidate
+ * then carries your change and still fails blob-identity, so `inCandidate` reads false
+ * with reason `newer-commit` — forever, on a hot shared file, because the tip is always
+ * newer than the quiet-cut candidate. That misreading cost ~2h of a 3h+ fleet-wide
+ * outage whose fix was sitting in every candidate the whole time.
+ *
+ * ## Why the caller must supply the marker — it cannot be derived
+ *
+ * The obvious repair is "resolve the commit carrying the caller's change and test
+ * ancestry". It does not work HERE, and the reason is structural rather than
+ * incidental: **git-sync commits the entire shared tree under one identity**, so the
+ * fleet's commits are indistinguishable auto-commits ("chore(git-sync): auto-commit
+ * …") that each carry many agents' unrelated edits. There is no commit that is "yours",
+ * and listing the commits a candidate lacks yields N identical subjects — useless for
+ * recognition, which is exactly why the tool punted this to a hand-run
+ * `git merge-base --is-ancestor` instead of answering it.
+ *
+ * What IS decidable is content the caller can name: a distinctive string from its own
+ * change. That is precisely what agents were already doing by hand
+ * (`git show <sha>:<path> | grep -c '<marker>'`), so this promotes the established
+ * workaround into the tool rather than inventing a new mechanism.
+ *
+ * The three-valued discipline of this module applies unchanged, and the '' vs null
+ * distinction does the work: `git ls-tree` prints an entry when the path exists at that
+ * commit and EMPTY on a clean miss, so "absent at that commit" is a DEFINITIVE negative
+ * while a failed read stays `null`. A `false` here therefore never comes from a broken
+ * git call — the failure this module exists to prevent.
+ */
+export interface MarkerContainment {
+  marker: string;
+  sha: string;
+  /** true = the marker occurs at least once in that commit's version of the file. */
+  present: boolean | null;
+  /** Occurrences of the literal marker; 0 with `present:false`, null when unknown. */
+  count: number | null;
+  /** false = the path does not exist at that commit at all (a definitive miss). */
+  pathPresent: boolean | null;
+  unknownReason: CellUnknown | null;
+}
+
+/** Occurrences of a LITERAL (never regex) marker — the caller supplies code, not a pattern. */
+function countLiteral(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+/**
+ * Does `sha`'s version of `relPath` contain `marker`, and how many times?
+ *
+ * Counting happens in JS over `git show` output rather than via `git grep -c`, because
+ * `git grep` signals "no match" through EXIT CODE 1 — which every runner in this tree
+ * collapses to `null`, making a clean miss indistinguishable from a broken call. Reading
+ * the blob keeps the miss inside the DATA (a string with zero occurrences) where it is
+ * unambiguous.
+ */
+export async function markerAtCommit(
+  git: GitRead,
+  sha: string,
+  relPath: string,
+  marker: string,
+): Promise<MarkerContainment> {
+  const base = { marker, sha };
+  const unknown = (code: Parameters<typeof cellUnknown>[0], detail: string): MarkerContainment => ({
+    ...base,
+    present: null,
+    count: null,
+    pathPresent: null,
+    unknownReason: cellUnknown(code, detail),
+  });
+  if (!marker) {
+    return unknown('not-applicable', 'No marker was supplied, so there is nothing to look for.');
+  }
+  const resolved = await git(['rev-parse', '--verify', `${sha}^{commit}`]);
+  if (!resolved || !SHA_RE.test(resolved)) {
+    return unknown(
+      'resolver-failed',
+      `Commit '${sha.slice(0, 12)}' does not resolve in this repo — marker containment is UNKNOWN, not missing.`,
+    );
+  }
+  // '' (exit 0, no output) = the tree genuinely has no such path at that commit — a
+  // DEFINITIVE negative. null = the read failed, which must never read as a negative.
+  const entry = await git(['ls-tree', sha, '--', relPath]);
+  if (entry === null) {
+    return unknown('resolver-failed', `Could not list '${relPath}' at ${sha.slice(0, 12)} — containment is UNKNOWN.`);
+  }
+  if (entry === '') {
+    return { ...base, present: false, count: 0, pathPresent: false, unknownReason: null };
+  }
+  const blob = await git(['show', `${sha}:${relPath}`]);
+  if (blob === null) {
+    // ls-tree says the path IS there, so a failed read is a genuine anomaly, not absence.
+    return unknown('resolver-failed', `'${relPath}' exists at ${sha.slice(0, 12)} but could not be read.`);
+  }
+  const count = countLiteral(blob, marker);
+  return { ...base, present: count > 0, count, pathPresent: true, unknownReason: null };
+}
+
+/**
  * Why a path is not in the candidate. The reason picks the LEVER, which is the only
  * part the caller can act on:
  *  - `uncommitted`  → the edit never left the working tree. Commit it (git-sync:run).
