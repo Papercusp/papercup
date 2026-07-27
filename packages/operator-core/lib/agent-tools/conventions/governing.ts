@@ -10,6 +10,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { InvalidInputError } from '@papercusp/tooldef';
 import { governingConventions, type Convention } from '../../conventions/registry';
 import { renderEnforcement } from '../../agent-facts/store';
 
@@ -84,12 +85,12 @@ export default defineTool({
   async handler(args, ctx) {
     const harness = (args.harness ?? ctx.harnessSlug ?? '').trim();
     if (!harness) {
-      return {
-        ok: false as const,
-        error: 'harness_required',
-        detail:
-          'conventions:governing needs a harness to search plan decisions in — pass `harness` (a workspace-scoped session does not imply one).',
-      };
+      // InvalidInputError, not a 500 — a missing arg is the caller's to fix, and
+      // EI-7463's class says a caller-input error must not inflate the tool's
+      // error rate as if the handler had broken.
+      throw new InvalidInputError(
+        'conventions:governing — harness_required: pass `harness` (a workspace-scoped session does not imply one). It scopes which plans\' decisions are searched.',
+      );
     }
     // Default the scope filter to the caller's own governed refs, mirroring
     // facts:list's EI-7517 context defaulting: a role/owner convention naming

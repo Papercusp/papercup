@@ -290,6 +290,33 @@ describe('runBootstrapLeg', () => {
   });
 
   /**
+   * WI-6372 (fix D) — THE PLACEMENT TEST. The convergence probe MUST run on the
+   * WARM path, i.e. ABOVE the gate the test directly above proves is a no-op.
+   *
+   * This is the whole fix, expressed as a regression guard. A seeded-but-STALE
+   * joiner — the WI-6364 shape, and the only machine that actually needs a
+   * convergence verdict — satisfies the warm gate on EVERY tick and so never
+   * reaches any code below it. Move this probe under the gate (an easy,
+   * innocent-looking refactor: "it's part of bootstrapping, put it with the
+   * bootstrap") and it silently stops firing on precisely the broken case while
+   * continuing to pass every other test in this file. That is the 7-day silent
+   * failure restored, so it gets an explicit test rather than a comment.
+   */
+  it('WI-6372: the convergence probe runs on the WARM path — above the gate, not below it', async () => {
+    const peerHex = Buffer.from(PEER_DEVICE, 'base64').toString('hex');
+    listNamespacesMock.mockResolvedValue([peerHex]);
+    await runBootstrapLeg(SLUG, WS);
+    // Warm: the leg returned before dialing or writing any bootstrap record...
+    expect(bootstrapFromPeerMock).not.toHaveBeenCalled();
+    expect(routinesPatchCallsWithKey('bootstrap')).toHaveLength(0);
+    // ...and the convergence verdict was STILL computed and persisted.
+    const convergencePatches = routinesPatchCallsWithKey('convergence');
+    expect(convergencePatches).toHaveLength(1);
+    const patched = JSON.parse(String(convergencePatches[0]![1][1])).convergence as Record<string, unknown>;
+    expect(patched).toMatchObject({ converged: true, judged: 0 });
+  });
+
+  /**
    * WI-6189, live-caught on the P-302 rig 2026-07-26 in the tick right AFTER
    * the first successful cold join.
    *
