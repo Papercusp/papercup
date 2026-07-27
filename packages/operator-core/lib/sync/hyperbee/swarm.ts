@@ -551,8 +551,13 @@ interface TopicRejoinParticipant {
   /** Evict THIS participant's own dead/zombie sockets and drop its claim on
    *  them in `swarmJoinSocketTopics`, BEFORE the shared `swarm.leave()` — the
    *  same per-instance eviction the old (pre-WI-5923-topic-fix) `forceRejoinNow`
-   *  did for itself alone. Never throws (best-effort, mirrors the original). */
-  evictOwnSockets(): void;
+   *  did for itself alone. Never throws (best-effort, mirrors the original).
+   *
+   *  `escalating` is TRUE only for the participant whose OWN detector fired this
+   *  rejoin, and FALSE for the siblings dragged along by the topic-wide repair —
+   *  see the WI-6324 block on the implementation for why that distinction is
+   *  load-bearing. */
+  evictOwnSockets(escalating: boolean): void;
   /** Re-`swarm.join()` to obtain a fresh session for THIS participant on the
    *  coordinator's newly-recreated shared discovery, and re-arm this
    *  participant's own fast self-heal window — called once per participant
@@ -590,27 +595,43 @@ class TopicRejoinCoordinator {
    * second (and any later) request during an in-flight rejoin is folded into
    * the first's single leave()+rejoin() sequence.
    */
-  async requestRejoin(): Promise<void> {
+  async requestRejoin(requester?: symbol): Promise<void> {
     if (this.inFlight) {
+      // WI-6324: coalescing must not swallow the REQUESTER's own eviction. The
+      // in-flight run was started by a different participant, so it already
+      // passed (or will pass) this requester through the SIBLING branch — and a
+      // sibling is deliberately spared any socket with a proven data path. That
+      // is right for a sibling and wrong for the escalating participant, whose
+      // own link is proven dead. Evict its sockets here, unconditionally, before
+      // folding into the shared rejoin; the leave()+rejoin() itself still
+      // happens exactly once, which is all the WI-5923 ping-pong fix required.
+      if (requester !== undefined) {
+        const self = this.participants.get(requester);
+        try {
+          self?.evictOwnSockets(true);
+        } catch {
+          /* best-effort, mirrors the per-instance eviction below */
+        }
+      }
       await this.inFlight;
       return;
     }
-    const run = this.performRejoin().finally(() => {
+    const run = this.performRejoin(requester).finally(() => {
       this.inFlight = null;
     });
     this.inFlight = run;
     await run;
   }
 
-  private async performRejoin(): Promise<void> {
+  private async performRejoin(requester?: symbol): Promise<void> {
     // Snapshot: a participant can unregister (its own `close()`) mid-flight —
     // iterate a copy so a concurrent close() can't mutate the Map we're
     // walking, and a since-unregistered participant simply won't be asked to
     // rejoin (its own close() already tore its session down correctly).
-    const participants = Array.from(this.participants.values());
-    for (const p of participants) {
+    const participants = Array.from(this.participants.entries());
+    for (const [token, p] of participants) {
       try {
-        p.evictOwnSockets();
+        p.evictOwnSockets(token === requester);
       } catch {
         /* best-effort, mirrors the original per-instance eviction */
       }
@@ -621,7 +642,7 @@ class TopicRejoinCoordinator {
     // `forceRejoinNow`'s doc). Every registered sibling below rebuilds its own
     // session on the fresh discovery this creates, so nobody is left orphaned.
     await Promise.resolve(this.swarm.leave(this.topic)).catch(() => {});
-    for (const p of participants) {
+    for (const [, p] of participants) {
       try {
         p.rejoinOwnSession();
       } catch {
@@ -2730,7 +2751,7 @@ export async function joinHarnessSwarm(
    * (`evictOwnSockets` / `rejoinOwnSession` below) is BYTE-IDENTICAL to what
    * used to run inline here; only the orchestration moved out.
    */
-  const evictOwnSockets = (): void => {
+  const evictOwnSockets = (escalating: boolean): void => {
     // WI-6324 explicit-presence diagnostic. A forced rejoin is a rare recovery
     // action, so one line per pass is cheap — and its ABSENCE of detail is what
     // made "escalated but never reconnected" undiagnosable twice: the eviction
@@ -2767,7 +2788,31 @@ export async function joinHarnessSwarm(
           `[br=${wire.bytesReceived ?? '?'} pr=${wire.packetsReceived ?? '?'} proven=${proven === null ? 'unknown' : proven}]`,
         );
       }
-      if (proven === true) {
+      // WI-6324: this guard applies to SIBLINGS ONLY — never to the participant
+      // whose own detector fired this rejoin.
+      //
+      // WI-5971 added it because WI-5923 made this function run for every
+      // participant registered on the (swarm, topic), so a topic that never
+      // escalated could have a healthily-replicating socket destroyed just
+      // because a CO-TENANT topic died. That reasoning is sound, and for a
+      // sibling it still holds — but it was applied to ALL participants, which
+      // silently disabled the eviction for the ESCALATING one and so undid
+      // EI-13317's entire fix. `dataPathProven` reads a CUMULATIVE, monotone
+      // counter (`bytesReceived > 0`), so it cannot mean "replicating now"; it
+      // means "has ever received a byte" — which is true of every socket that
+      // completed a Noise handshake, INCLUDING a zombie that has replicated
+      // nothing since. Measured on the WI-6324 repro: the zombie socket sat at
+      // br=988 pr=3 → proven=true → considered=1 evicted=0, so the forced
+      // rejoin evicted nothing, hyperswarm still believed the peer connected,
+      // never re-dialled, and the repair ladder detected-but-never-healed.
+      //
+      // Reaching a forced rejoin as the ESCALATING participant is itself the
+      // positive evidence that this link is dead, and a dead handshake is dead
+      // for every topic muxed over the same socket (EI-13317) — so it evicts
+      // unconditionally, exactly as it did before WI-5971. A sibling that is
+      // ALSO zombied is not stranded by this: its own detector escalates
+      // independently, and it is the escalating participant on that pass.
+      if (proven === true && !escalating) {
         skippedLiveDataPath++;
         continue;
       }
@@ -2793,7 +2838,8 @@ export async function joinHarnessSwarm(
     }
     try {
       console.info(
-        `[swarm] force-rejoin eviction topic=${topicHex.slice(0, 16)}… considered=${considered} ` +
+        `[swarm] force-rejoin eviction topic=${topicHex.slice(0, 16)}… ` +
+          `role=${escalating ? 'escalating' : 'sibling'} considered=${considered} ` +
           `evicted=${evicted} skippedLiveDataPath=${skippedLiveDataPath}` +
           (wireDetail.length > 0 ? ` wire=${wireDetail.join('')}` : ''),
       );
@@ -2806,7 +2852,10 @@ export async function joinHarnessSwarm(
     fastWindowStartMs = Date.now();
   };
   async function forceRejoinNow(): Promise<void> {
-    await topicRejoinCoordinator.requestRejoin();
+    // WI-6324: identify THIS instance as the escalating participant — both
+    // callers (the ladder tick, rung (a), and `handle.forceRejoin()`, rung (b))
+    // are by definition the instance whose own link is proven dead.
+    await topicRejoinCoordinator.requestRejoin(rejoinParticipantToken);
   }
   try {
     discovery = opts.swarm.join(opts.topic, { server: true, client: true });

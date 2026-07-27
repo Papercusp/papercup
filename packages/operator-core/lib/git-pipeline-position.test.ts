@@ -259,6 +259,126 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.positions.onStaging).toBe(true);
   });
 
+  /**
+   * P-007. The four verdict cells declare `unknownHoist: 'verdictUnknown'`, and that
+   * declaration is only honest if the resolver actually populates it. These are the
+   * tests that keep the registration from becoming a claim about code that changed.
+   *
+   * Each leg below degrades into a value that reads as GOOD NEWS, which is why a
+   * comment would not have been enough.
+   */
+  describe('P-007: verdictUnknown hoists the three verdict legs', () => {
+    const measuring = () =>
+      fakeGit({
+        pathCommit: 'abc1234567',
+        contains: { HEAD: ['abc1234567'], 'origin/staging': ['abc1234567'], 'origin/main': ['abc1234567'] },
+      });
+
+    it('is EMPTY when every verdict leg was genuinely measured', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'apps/operator/app/x.ts' },
+        { git: measuring(), loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      // A hoist that cries wolf is one agents learn to ignore — the healthy case must
+      // stay silent or the whole mechanism is worse than the bare value it qualifies.
+      expect(res.verdictUnknown).toEqual([]);
+    });
+
+    /**
+     * THE ONE THIS ITEM NEARLY GOT WRONG. `gate.consecutiveReds` is typed `number`, so
+     * a reader would conclude it cannot be unknown — but `git-pipeline-stats` applies
+     * `?? 0` to an absent counter, so the 0 that arrives here may be a DEFAULT reading
+     * as a passing gate. `verdictStale` cannot catch it: its evaluator short-circuits
+     * on `consecutiveReds <= 0` because "a stale green is inert", which is true of a
+     * stale green and false of an unmeasured one.
+     */
+    it('names a DEFAULTED reds counter, whose 0 otherwise reads as a passing gate', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'apps/operator/app/x.ts' },
+        {
+          git: measuring(),
+          loadDeploy: async () => deploy(),
+          loadSnapshot: async () =>
+            snap({
+              consecutiveReds: 0,
+              countersUnknown: { code: 'resolver-failed', detail: 'no readable red-streak counter' },
+            }),
+        },
+      );
+      // The number still arrives as a number, so no consumer changes…
+      expect(res.gate.consecutiveReds).toBe(0);
+      // …but it is now sayable that this particular 0 was not a measurement.
+      const leg = res.verdictUnknown.find((v) => v.leg === 'gate.consecutiveReds');
+      expect(leg?.unknown.code).toBe('resolver-failed');
+      // And the prose surface must carry it too — an agent reading `notes` and not the
+      // hoist is the hurried consumer the hoist exists for.
+      expect(res.notes.join(' ')).toMatch(/gate\.consecutiveReds/);
+    });
+
+    /**
+     * A null `deployedSha` was documented in this file as "there is simply nothing
+     * deployed". It is not: `devDeployState` pushes 'could not resolve HEAD of release
+     * checkout …' onto `errors[]` whenever that read fails, so a null is a FAILED read
+     * — and the confident `positions.deployed: false` derived from it was the same
+     * axis-2 defect, thirty lines below the hoist built to prevent it.
+     */
+    it('names an unreadable deployed sha AND stops deriving a confident position from it', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'apps/operator/app/x.ts' },
+        {
+          git: measuring(),
+          loadDeploy: async () =>
+            deploy({
+              deployed: null,
+              releaseRoot: '/release',
+              errors: ['could not resolve HEAD of release checkout /release'],
+            }),
+          loadSnapshot: async () => snap(),
+        },
+      );
+      const leg = res.verdictUnknown.find((v) => v.leg === 'deployedSha');
+      expect(leg?.unknown.code).toBe('resolver-failed');
+      // The REASON existed all along in deploy.errors and was being discarded.
+      expect(leg?.unknown.detail).toContain('could not resolve HEAD of release checkout /release');
+      // The corrected derivation: `deployed: false` is no longer asserted as measured.
+      expect(res.positions.deployed).toBe(false);
+      expect(res.positionsUnknown).toContain('deployed');
+    });
+
+    /** Which OPERAND was missing is asked directly, rather than sniffed out of the
+     *  error strings — a substring match on prose is the thing cell-contract exists to
+     *  replace, so it must not reappear in the code that reports the unknown. */
+    it('names WHICH operand of the main-vs-staging comparison was unreadable', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'apps/operator/app/x.ts' },
+        {
+          git: measuring(),
+          loadDeploy: async () => deploy(),
+          loadSnapshot: async () =>
+            snap({}, 'synced', { greenPinAtStagingHead: null, stagingHead: null, integrationBranch: 'staging' }),
+        },
+      );
+      const leg = res.verdictUnknown.find((v) => v.leg === 'verdictProvenance.mainFastForwarded');
+      expect(leg?.unknown.code).toBe('resolver-failed');
+      expect(leg?.unknown.detail).toContain('staging head');
+    });
+
+    /**
+     * `not-applicable` vs `resolver-failed` is the distinction the enum exists for —
+     * one is final, the other is retry-or-escalate. A sha-only probe has no path to
+     * compare, so "no candidate is judging it" is not an answer about the pipeline.
+     */
+    it('reports a sha-only probe as not-applicable, never as "no run in flight"', async () => {
+      const res = await gitPipelinePosition(
+        { sha: 'abc1234567' },
+        { git: measuring(), loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      const leg = res.verdictUnknown.find((v) => v.leg === 'changeInCandidate.judgingSha');
+      expect(leg?.unknown.code).toBe('not-applicable');
+      expect(res.changeInCandidate.judgingSha).toBeNull();
+    });
+  });
+
   // EI-18694888339365359: the local origin/staging remote-tracking ref lagged
   // one commit behind (git-sync had not yet fetched this push) — refContains
   // against it said "not present", which would otherwise emit a false BLOCKING

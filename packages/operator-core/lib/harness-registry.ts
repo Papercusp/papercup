@@ -83,6 +83,20 @@ export interface ProjectEntry {
   /** GitHub's immutable numeric repository id (needs API auth at registration —
    *  best-effort; the binding layer keys on this when present). */
   github_repository_id?: number;
+  /**
+   * The PINNED pot-git federated repoKey (EI-18788176839043286, 2026-07-27).
+   * Names both this repo's bare store on disk (`hiveGitRepoPath`) and the repo
+   * on the wire, so it MUST stay stable for the life of the repo.
+   *
+   * Minted once — `pinRepoKey` (pot-git/repo-identity.ts) — and thereafter
+   * authoritative over the derivation ladder, INCLUDING over a
+   * `github_repository_id` that only shows up later. Without the pin the key was
+   * a function of the mutable fields above, so a pot created local-only and
+   * bound to GitHub afterwards silently re-keyed itself, abandoned its store and
+   * orphaned every peer (live: the P-302 rig sat 7 days on an abandoned store
+   * reporting success). Absent ⇒ predates pinning; backfilled on boot.
+   */
+  pot_repo_key?: string;
   /** Upstream default branch (API-authoritative when available, else the fresh
    *  clone's HEAD). Fork-PRs target this instead of assuming 'main'. */
   github_default_branch?: string;

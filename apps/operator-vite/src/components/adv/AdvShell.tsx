@@ -976,12 +976,13 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
            panes (Plans, Sessions) scroll there; tabs that don't (e.g.
            Insights) scroll here instead of growing the shell + window. */
         .pc-advshell__body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
-        /* The tab body, BELOW the pot bar (which is `flex: none` chrome inside
+        /* The tab body, BELOW the pot bar (flex:none chrome inside
            .pc-advshell__body). It carries the same fallback-scroller contract the
            body has, because with a sibling row above it the body's own height is
-           no longer the tab's height: a tab that manages its own overflow gets a
-           definite height to lay out against (`.hud { height: 100% }` resolves
-           here), and a tab that doesn't scrolls here rather than being clipped. */
+           no longer the tab's height: a tab that manages its own overflow needs a
+           definite height to lay out against (.hud's height:100% resolves here),
+           and a tab that doesn't scrolls here rather than being clipped.
+           NOTE: no backticks in this <style> template literal — one terminates it. */
         .pc-advshell__tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
 
         /* Flat in-page buttons. Action buttons / pills inside the page body

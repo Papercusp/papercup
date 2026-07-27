@@ -53,6 +53,13 @@ function fakeStoredFact(input: AssertFactInput): AgentFact {
     // Echo the caller's tier rather than hardcoding null: this stand-in models
     // the persisted row, so it should reflect whatever the assert was given.
     confidence: input.confidence ?? null,
+    // P-008 (b): echoed from the input for the same reason `confidence` is —
+    // this stand-in models the PERSISTED row, and the assert handler's
+    // dependency disclosure reads `fact.dependsOn` back to decide what it
+    // could not resolve. Hardcoding [] here would make that path untestable.
+    kind: input.kind ?? null,
+    dependsOn: [...(input.dependsOn ?? [])],
+    claim: input.claim ?? null,
     sourceRef: input.sourceRef ?? null,
     audienceScope: input.audienceScope ?? null,
     sourceProvenance: input.sourceProvenance ?? null,

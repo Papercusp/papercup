@@ -1,32 +1,39 @@
 // @vitest-environment jsdom
 //
-// AdvShell render coverage — the /adv shell: header (pot selector · scope
-// toggle · New/Share · status bar) + the Radix tab strip. Mounts against a
-// mocked harnessProjects.lite sync query (data-sync-push P-010 — the live
-// registry list replaced the old one-shot /api/harness/projects/lite fetch;
-// nuqs mocked with STABLE per-key setter spies — the restore effect keyed on
-// the project count would re-fire forever with per-render vi.fn() identities;
-// otherwise the pinned sibling pattern, see AdvNowRunning.test.tsx). Children with their own suites
-// (AdvNowRunning, Select, CreateHarnessPicker, PublishHiveCard) are stubbed;
-// the pure exports (buildHarnessSelectOptions, visibleAdvTabs, ADV_TABS shape,
-// the D-001 primary/secondary split, recent-tabs helpers) are pinned in
-// __tests__/adv-shell-logic.test.ts. Asserts:
+// AdvShell render coverage — the /adv shell: the Radix tab strip (now the
+// TOPMOST chrome) + the two URL-mounted modals + the persisted-selection
+// restore. Mounts against a mocked harnessProjects.lite sync query
+// (data-sync-push P-010 — the live registry list replaced the old one-shot
+// /api/harness/projects/lite fetch; nuqs mocked with STABLE per-key setter
+// spies — the restore effect keyed on the project count would re-fire forever
+// with per-render vi.fn() identities; otherwise the pinned sibling pattern, see
+// AdvNowRunning.test.tsx). Children with their own suites (CreateHarnessPicker,
+// PublishHiveCard) are stubbed; the pure exports (buildHarnessSelectOptions,
+// visibleAdvTabs, ADV_TABS shape, the D-001 primary/secondary split, recent-tabs
+// helpers) are pinned in __tests__/adv-shell-logic.test.ts.
+//
+// ⚠ The POT CLUSTER IS NOT HERE ANY MORE (owner ask 2026-07-27: the title bar
+// that held it was removed so the tabs sit at the very top). The selector, the
+// sub-pots toggle, New/Share and the status pills moved to AdvPotBar, which
+// renders inside the pot-scoped tab bodies — their coverage moved with them to
+// AdvPotBar.test.tsx. What stays here is what the SHELL still owns: the strip,
+// the restore effect, and the ?create=/?share= modals the bar only opens.
+//
+// Asserts:
 //   - D-001 (owner decision 2026-07-26, option C): ONLY the PRIMARY_ADV_TAB_IDS
 //     set renders as real strip tabs, in every scope (single-pot AND All Pots)
 //     — Overview + HUD, plus Work (id 'harnesses') and Learning, promoted out
 //     of the More menu by later owner asks the same day; every other tab —
 //     including an all-mode-pinned per-pot tab — is reachable only via the
 //     "More" menu, whose trigger reflects an active secondary tab,
+//   - no title/kicker bar renders above the strip (owner ask 2026-07-27),
 //   - the More menu itself: grouped headings, type-to-filter search, selecting
 //     an item writes ?tab= and closes the menu, and the last-visited secondary
 //     tabs pin under "Recent" (most-recent first, capped at 3),
 //   - the persisted-selection restore precedence (URL slug > persisted >
 //     All), written SEQUENTIALLY (slug then scope),
-//   - selector changes: concrete pick persists + exits all-mode first; the
-//     All row flips ?scope=all and persists the sentinel,
-//   - Share = hive publish (hive pots only — per-harness sharing retired,
-//     comb-retire-per-harness-sharing-2026-06-11); legacy Shared badge,
-//   - the create flow (?create= → picker, onCreated selects + persists),
+//   - the two URL-mounted modals: the hive-publish share card (?share=) and the
+//     create picker (?create=, incl. the into-hive hiveScope gating + onCreated),
 //   - the Discord-parity shortcuts (tab cycling, harness cycling, goto.inbox,
 //     harness.create).
 
@@ -72,53 +79,6 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
-// Radix Select portals are noise here — render a native select with the same
-// contract so options + onChange routing stay assertable.
-vi.mock('@/app/harness/Select', () => ({
-  Select: ({
-    value,
-    onChange,
-    options,
-    ariaLabel,
-    disabled,
-  }: {
-    value: string;
-    onChange: (v: string) => void;
-    // SelectEntry[] — flat options OR { kind:'group', label, options } groups.
-    options: Array<
-      | { value: string; label: string; disabled?: boolean }
-      | { kind: 'group'; label: string; options: Array<{ value: string; label: string; disabled?: boolean }> }
-    >;
-    ariaLabel?: string;
-    disabled?: boolean;
-  }) => (
-    <select
-      aria-label={ariaLabel}
-      value={value}
-      disabled={disabled}
-      onChange={(e) => onChange(e.target.value)}
-    >
-      {options.map((o, i) =>
-        // `'kind' in o` alone narrows the union (only the group has it); the extra
-        // `&& o.kind === 'group'` defeated else-branch narrowing (TS can't tell
-        // which conjunct failed), leaving `o` untyped in the option branch.
-        'kind' in o ? (
-          <optgroup key={`g-${i}`} label={o.label}>
-            {o.options.map((opt) => (
-              <option key={opt.value} value={opt.value} disabled={opt.disabled}>
-                {opt.label}
-              </option>
-            ))}
-          </optgroup>
-        ) : (
-          <option key={o.value} value={o.value} disabled={o.disabled}>
-            {o.label}
-          </option>
-        ),
-      )}
-    </select>
-  ),
-}));
 vi.mock('@/app/harness/CreateHarnessPicker', () => ({
   CreateHarnessPicker: ({
     open,
@@ -142,14 +102,6 @@ vi.mock('@/app/harness/PublishHiveCard', () => ({
     <div data-testid="publish-hive-card" data-slug={potSlug} />
   ),
 }));
-// The active hive's directory share-meta (GET /api/discovery/pot-meta) drives
-// the header's Share-button → Shared-badge swap (comb-hive-native-sharing).
-// Seed `hiveShareMeta` per test; default null = never published (unshared → the
-// Share button shows). `public`/`invite` = shared → the Shared badge shows.
-let hiveShareMeta: { found: boolean; visibility: 'public' | 'invite' | 'private' | null } | null = null;
-vi.mock('@/app/harness/ShareHiveDialog', () => ({
-  defaultFetchShareMeta: vi.fn(async () => hiveShareMeta),
-}));
 // The share modal wrapper — passthrough so the card renders without Radix.
 vi.mock('@/app/harness/Modal', () => ({
   Modal: ({
@@ -169,16 +121,6 @@ vi.mock('@/app/harness/Modal', () => ({
         {children}
       </div>
     ) : null,
-}));
-vi.mock('./AdvNowRunning', () => ({
-  default: ({ slug }: { slug: string | null }) => (
-    <div data-testid="now-running" data-slug={slug ?? ''} />
-  ),
-}));
-vi.mock('./DiscordBadge', () => ({
-  default: ({ slug }: { slug: string | null }) => (
-    <div data-testid="discord-badge" data-slug={slug ?? ''} />
-  ),
 }));
 vi.mock('@/lib/useLexicon', () => ({
   useLexicon: () => (key: string, opts?: { plural?: boolean; lower?: boolean }) => {
@@ -257,16 +199,16 @@ function stubProjects(rows: unknown[] = PROJECTS, opts: { fail?: boolean } = {})
   }
 }
 
-/** Render the shell and wait for the live projects list to render. */
+/** Render the shell and wait for the strip to mount (so effects have flushed).
+ *  The anchor used to be a selector <option> — the selector lives in AdvPotBar
+ *  now, so the strip itself is the shell's own first paint. */
 async function renderShell() {
   const utils = render(
-    <AdvShell title="Advanced">
+    <AdvShell>
       <div data-testid="tab-body" />
     </AdvShell>,
   );
-  await waitFor(() =>
-    expect(screen.getByRole('option', { name: 'pot-a' })).toBeTruthy(),
-  );
+  await waitFor(() => expect(screen.getByRole('tab', { name: 'overview' })).toBeTruthy());
   return utils;
 }
 
@@ -289,10 +231,18 @@ afterEach(() => {
 });
 
 describe('AdvShell — strip + header', () => {
-  it('renders the title, kicker, and ONLY the promoted tabs as real strip tabs (D-001 option C)', async () => {
+  it('renders ONLY the promoted tabs as real strip tabs (D-001 option C), with NO title bar above them', async () => {
     await renderShell();
-    expect(screen.getByRole('heading', { name: 'Advanced' })).toBeTruthy();
-    expect(screen.getByText('Advanced orchestration')).toBeTruthy();
+    // Owner ask 2026-07-27: "remove the whole ADVANCED ORCHESTRATION / HUD bar so
+    // the tabs sit at the very top". Both halves of that bar are gone — the copy
+    // AND the pot cluster it carried (now AdvPotBar, inside the tab bodies).
+    expect(screen.queryByText('Advanced orchestration')).toBeNull();
+    expect(screen.queryByRole('heading')).toBeNull();
+    expect(screen.queryByLabelText('Select Pot')).toBeNull();
+    expect(screen.queryByText('sub-pots')).toBeNull();
+    // The strip is the header's first element — nothing renders above it.
+    const header = document.querySelector('.pc-advshell__header')!;
+    expect(header.firstElementChild?.className).toContain('pc-advshell__tabs');
     // D-001 (owner decision, 2026-07-26): only the PRIMARY_ADV_TAB_IDS set
     // renders as real Tabs.Trigger elements — Overview + HUD, plus Work and
     // Learning promoted out of the More menu by later owner asks the same day.
@@ -312,21 +262,15 @@ describe('AdvShell — strip + header', () => {
     // …while e.g. Docs stays behind the More menu.
     expect(screen.queryByRole('tab', { name: 'docs' })).toBeNull();
     expect(screen.getByRole('button', { name: 'More sections' })).toBeTruthy();
-    expect(screen.getByText('sub-pots')).toBeTruthy();
-    // single-slug widgets get the active slug
-    expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('pot-a');
   });
 
-  it('keeps only the promoted tabs on the strip under All Pots too, and blanks single-pot widgets', async () => {
+  it('keeps only the promoted tabs on the strip under All Pots too', async () => {
     nuqsState.scope = 'all';
     await renderShell();
     const tabs = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
     // Work + Learning are workspace-level (WORKSPACE_TAB_IDS), so they survive
     // the All-Pots filter alongside Overview + HUD.
     expect(tabs).toEqual(['overview', 'hud', 'work', 'learning']);
-    expect(screen.queryByText('sub-pots')).toBeNull();
-    expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
-    expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('');
   });
 
   it('keeps a per-pot tab pinned (no snap to Overview) under All scope — reachable via More, and the trigger reads active', async () => {
@@ -409,18 +353,8 @@ describe('AdvShell — "More" menu (D-001 mitigations: grouped, searchable, rece
 });
 
 describe('AdvShell — hive pick resets the member focus (?harness)', () => {
-  it('picking a hive in the selector CLEARS ?harness so the Harnesses dock re-scopes (bugfix: panels stayed pinned to a drilled-into sub-hive)', async () => {
-    nuqsState.slug = 'pot-a';
-    nuqsState.harness = 'pot-b'; // a sticky within-hive member focus from a prior drill-in
-    await renderShell();
-    fireEvent.change(screen.getByLabelText(/Select pot/i), { target: { value: 'pot-b' } });
-    await waitFor(() => expect(nuqsSetters.slug).toHaveBeenCalledWith('pot-b'));
-    // THE FIX: the member focus is reset to null so dockSlug follows the picked hive
-    // instead of the stale sub-hive (which is a valid member, so the stale-guard kept it).
-    await waitFor(() => expect(nuqsSetters.harness).toHaveBeenCalledWith(null));
-    nuqsState.harness = undefined; // don't leak into other tests
-  });
-
+  // (The SELECTOR path of this same bugfix moved to AdvPotBar.test.tsx with the
+  // selector; this is the keyboard path, which AdvShell still owns.)
   it('cycling the harness via the keyboard (harness.next) ALSO clears ?harness so the dock follows the newly-cycled hive (same stale-?harness bugfix, keyboard path)', async () => {
     nuqsState.slug = 'pot-a';
     nuqsState.harness = 'pot-a-child'; // a sticky within-hive member focus from a prior drill-in
@@ -458,81 +392,9 @@ describe('AdvShell — selection restore (resolveAdvHarnessSelection wiring)', (
     expect(nuqsSetters.slug).not.toHaveBeenCalled();
   });
 
-  it('surfaces a projects/lite failure in the selector placeholder', async () => {
-    stubProjects([], { fail: true });
-    render(
-      <AdvShell title="Advanced">
-        <div />
-      </AdvShell>,
-    );
-    expect(
-      await screen.findByRole('option', { name: 'Failed to load Pots' }),
-    ).toBeTruthy();
-  });
 });
 
-describe('AdvShell — selector + actions', () => {
-  it('picking a concrete pot writes the slug and persists it', async () => {
-    await renderShell();
-    fireEvent.change(screen.getByLabelText('Select Pot'), { target: { value: 'pot-b' } });
-    await waitFor(() => expect(nuqsSetters.slug).toHaveBeenCalledWith('pot-b'));
-    expect(localStorage.getItem(LS_KEY())).toBe('pot-b');
-    // already out of all-mode — no scope write needed
-    expect(nuqsSetters.scope).not.toHaveBeenCalled();
-  });
-
-  it('picking a pot from All-mode exits all FIRST (sequential scope→slug)', async () => {
-    nuqsState.scope = 'all';
-    await renderShell();
-    fireEvent.change(screen.getByLabelText('Select Pot'), { target: { value: 'pot-b' } });
-    await waitFor(() => expect(nuqsSetters.slug).toHaveBeenCalledWith('pot-b'));
-    expect(nuqsSetters.scope).toHaveBeenCalledWith('expanded');
-    expect(nuqsSetters.scope.mock.invocationCallOrder[0]).toBeLessThan(
-      nuqsSetters.slug.mock.invocationCallOrder[0],
-    );
-  });
-
-  it('the All row routes to the scope axis and persists the sentinel', async () => {
-    await renderShell();
-    fireEvent.change(screen.getByLabelText('Select Pot'), { target: { value: '__all__' } });
-    await waitFor(() => expect(nuqsSetters.scope).toHaveBeenCalledWith('all'));
-    expect(localStorage.getItem(LS_KEY())).toBe('__all__');
-    // ?slug= keeps the last real harness — switching back is one click
-    expect(nuqsSetters.slug).not.toHaveBeenCalled();
-  });
-
-  it('the sub-harnesses toggle flips scope between expanded and self', async () => {
-    await renderShell();
-    const toggle = screen.getByRole('checkbox', { name: /include sub-pots/i });
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
-    fireEvent.click(toggle);
-    await waitFor(() => expect(nuqsSetters.scope).toHaveBeenCalledWith('self'));
-  });
-
-  it('shows Share (hive publish) for a hive pot; legacy Shared badge for a shared non-hive pot', async () => {
-    await renderShell();
-    fireEvent.click(screen.getByRole('button', { name: /Share/ }));
-    await waitFor(() => expect(nuqsSetters.share).toHaveBeenCalledWith(true));
-
-    cleanup();
-    nuqsState.slug = 'pot-b'; // legacy shared.json share, NOT a hive
-    await renderShell();
-    expect(screen.getByText('Shared')).toBeTruthy();
-    // Per-harness sharing is retired: a non-hive pot gets no Share button.
-    expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
-  });
-
-  it('swaps the Share button for a Shared badge once a hive pot is shared to the directory', async () => {
-    // pot-a is a hive; a public directory listing means it is already shared, so
-    // the header shows a passive Shared badge instead of the Share button
-    // (comb-hive-native-sharing — the badge reads the discovery meta, not the
-    // legacy `is_shared`/shared.json).
-    hiveShareMeta = { found: true, visibility: 'public' };
-    await renderShell();
-    await waitFor(() => expect(screen.getByText('Shared')).toBeTruthy());
-    expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
-  });
-
+describe('AdvShell — the URL-mounted modals (the pot bar only opens them)', () => {
   it('mounts the hive-publish share modal from URL state and closes it', async () => {
     nuqsState.share = true;
     await renderShell();
@@ -542,12 +404,7 @@ describe('AdvShell — selector + actions', () => {
     await waitFor(() => expect(nuqsSetters.share).toHaveBeenCalledWith(false));
   });
 
-  it('New opens the create picker; onCreated persists the new pot', async () => {
-    await renderShell();
-    fireEvent.click(screen.getByRole('button', { name: /New/ }));
-    await waitFor(() => expect(nuqsSetters.create).toHaveBeenCalledWith(true));
-
-    cleanup();
+  it('mounts the create picker from URL state; onCreated persists the new pot', async () => {
     nuqsState.create = true;
     await renderShell();
     fireEvent.click(screen.getByText('simulate-created'));

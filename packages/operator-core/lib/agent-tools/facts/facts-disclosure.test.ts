@@ -17,6 +17,10 @@ const fact = (body: string, extra: Partial<AgentFact> = {}): AgentFact => ({
   key: 'k',
   body,
   confidence: null,
+  // P-008 (b), migration 690.
+  kind: null,
+  dependsOn: [],
+  claim: null,
   sourceRef: 'wi:EI-10951',
   audienceScope: null,
   sourceProvenance: null,

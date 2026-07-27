@@ -28,6 +28,7 @@ import {
   factVersions,
   FACTS_PER_SCOPE_CAP,
   listLapsedWallFacts,
+  type FactDependency,
 } from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
 
@@ -65,6 +66,10 @@ beforeAll(async () => {
     // exactly the guard that catches an ON CONFLICT spec drifting away from the
     // live index — the mig-461 break this file was written for.
     '689-agent-facts-append-versioning.sql',
+    // P-008 (b): depends_on / kind / claim + the kind CHECK constraint and the
+    // partial `agent_facts_kind` index. Added in the SAME edit as the migration,
+    // which is the discipline the 498/505/664 drift above exists to enforce.
+    '690-agent-facts-depends-on-kind-claim.sql',
   ]) {
     // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper
     // (lifted from this file's own former inline version).
@@ -252,6 +257,113 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(live.filter((f) => f.key === 'ver')).toHaveLength(1);
     // …and it is the newest revision, not an evicted one.
     expect(live.find((f) => f.key === 'ver')?.body).toBe(`rev ${FACTS_PER_SCOPE_CAP + 4}`);
+  });
+});
+
+describe('P-008 (b) depends_on / kind / claim (migration 690)', () => {
+  const base = { scope: 'owner' as const, scopeRef: 'su-d', key: 'dep', createdBy: 'su-int', workspaceId: WS };
+  const dep = (over: Partial<FactDependency> = {}): FactDependency => ({
+    cell: 'pipeline.myChange',
+    observedAt: '2026-07-27T00:00:00.000Z',
+    digest: 'abc123def4567890',
+    observed: 'deployed',
+    ...over,
+  });
+  const read = async () =>
+    (await foldFacts([{ scope: 'owner', scopeRef: 'su-d' }], { workspaceId: WS, audiences: 'all' }, db.sql)).find(
+      (f) => f.key === 'dep',
+    );
+
+  it('round-trips all three columns through assert → fold', async () => {
+    await assertFact(
+      {
+        ...base,
+        body: 'the reds are unrelated to my change',
+        kind: 'assumption',
+        confidence: 'suspected',
+        dependsOn: [dep()],
+        claim: { subject: 'cell:gate.greenCheckpoint.verdict', assertion: 'unrelated-to-my-change' },
+      },
+      db.sql,
+    );
+    const f = await read();
+    expect(f?.kind).toBe('assumption');
+    expect(f?.claim).toEqual({ subject: 'cell:gate.greenCheckpoint.verdict', assertion: 'unrelated-to-my-change' });
+    expect(f?.dependsOn).toEqual([dep()]);
+  });
+
+  it('a fact with no declaration reads kind:null, claim:null and an EMPTY dependsOn (never null)', async () => {
+    await assertFact({ ...base, body: 'plain' }, db.sql);
+    const f = await read();
+    expect(f?.kind).toBeNull();
+    expect(f?.claim).toBeNull();
+    // [] not null: "cannot go stale on declared terms" is one state, and every
+    // consumer iterates it without a guard.
+    expect(f?.dependsOn).toEqual([]);
+  });
+
+  it('an UNREADABLE dependency stores its unknown code instead of a digest — never an empty one', async () => {
+    // The laundering this forbids: a blank digest would later compare EQUAL to
+    // another failed read and certify the fact as fresh.
+    await assertFact(
+      { ...base, body: 'rests on something I could not read', dependsOn: [dep({ digest: undefined, unknown: 'not-measured' })] },
+      db.sql,
+    );
+    const f = await read();
+    expect(f?.dependsOn[0].digest).toBeUndefined();
+    expect(f?.dependsOn[0].unknown).toBe('not-measured');
+  });
+
+  it('⚠ depends_on does NOT carry forward to a corrected version — it is an observation, not an identity', async () => {
+    await assertFact({ ...base, body: 'one', dependsOn: [dep()] }, db.sql);
+    await assertFact({ ...base, body: 'two' }, db.sql);
+    // Inheriting the old digest would stamp a reading taken at v1's time onto a
+    // claim made later, and it would fail in the CONFIDENT direction (reporting
+    // fresh against an anchor that was never re-observed).
+    expect((await read())?.dependsOn).toEqual([]);
+    // …while the superseded version keeps its own, intact.
+    const hist = await factVersions({ scope: 'owner', scopeRef: 'su-d', key: 'dep', workspaceId: WS }, db.sql);
+    expect(hist[1].dependsOn).toEqual([dep()]);
+  });
+
+  it('normalizes on write: de-dupes by cell, drops anchorless entries, and bounds the list', async () => {
+    await assertFact(
+      {
+        ...base,
+        body: 'messy declaration',
+        dependsOn: [
+          dep({ cell: 'a' }),
+          dep({ cell: 'a', observed: 'a second observation of the same cell' }), // dupe
+          { cell: 'b', observedAt: '2026-07-27T00:00:00.000Z' } as FactDependency, // anchorless
+          dep({ cell: 'c' }),
+        ],
+      },
+      db.sql,
+    );
+    const f = await read();
+    expect(f?.dependsOn.map((d) => d.cell)).toEqual(['a', 'c']);
+    expect(f?.dependsOn[0].observed).toBe('deployed'); // FIRST occurrence wins
+  });
+
+  it('the DB CHECK rejects an out-of-vocabulary kind written around the store', async () => {
+    await expect(
+      db.sql`INSERT INTO harness_shared.agent_facts
+               (workspace_id, scope, scope_ref, key, body, created_by, expires_at, kind)
+             VALUES (${WS}, 'owner', 'su-d', 'bad-kind', 'x', 'su-int', now() + interval '1 day', 'guess')`,
+    ).rejects.toThrow();
+  });
+
+  it('the store refuses an unknown kind as INVALID INPUT, not as a 500 from the CHECK', async () => {
+    await expect(
+      assertFact({ ...base, body: 'x', kind: 'hunch' as never }, db.sql),
+    ).rejects.toThrow(/unknown kind/);
+  });
+
+  it('a version chain preserves each version OWN kind — a modality change is history, not a rewrite', async () => {
+    await assertFact({ ...base, body: 'one', kind: 'assumption' }, db.sql);
+    await assertFact({ ...base, body: 'two', kind: 'conclusion' }, db.sql);
+    const hist = await factVersions({ scope: 'owner', scopeRef: 'su-d', key: 'dep', workspaceId: WS }, db.sql);
+    expect(hist.map((h) => h.kind)).toEqual(['conclusion', 'assumption']);
   });
 });
 

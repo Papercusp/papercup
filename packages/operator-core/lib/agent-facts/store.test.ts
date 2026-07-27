@@ -191,6 +191,11 @@ describe('renderFactsFold', () => {
     key: 'k',
     body: 'WI-1439 is owner-residue — exclude from the placeable frontier',
     confidence: null,
+    // P-008 (b), migration 690 — the three columns AgentFact gained. Spelled out
+    // rather than defaulted so this fixture keeps mirroring a real persisted row.
+    kind: null,
+    dependsOn: [],
+    claim: null,
     sourceRef: 'WI-1574',
     audienceScope: null,
     sourceProvenance: null,
