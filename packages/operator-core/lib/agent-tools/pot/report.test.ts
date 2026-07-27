@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   getPotMember: vi.fn(),
   countReportsSince: vi.fn(),
   resolveHiveWorkspaceId: vi.fn(),
+  resolveFederatedPotScope: vi.fn(),
 }));
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
@@ -30,6 +31,13 @@ vi.mock('../../hive-membership-store', () => ({ getHiveMember: h.getPotMember })
 // so the ambient-vs-resolved-workspace-mismatch class has a fast, deterministic unit test
 // instead of relying solely on the live two-instance smoke witness.
 vi.mock('../../hive-store', () => ({ resolveHiveWorkspaceId: h.resolveHiveWorkspaceId }));
+// WI-6318: the SLUG-axis twin of the WI-5334 mock above. `args.pot` is a tool argument, so on
+// a joiner it is the LOCAL handle, while hive_policy / pot_members / hive_reports are all
+// `hiveScoped` — persisted under the OWNER-authored slug. Mocked (like resolveHiveWorkspaceId)
+// so the divergence has a fast deterministic unit test rather than only a live witness.
+vi.mock('../../federated-pot-scope', () => ({
+  resolveFederatedPotScope: h.resolveFederatedPotScope,
+}));
 
 import tool from './report';
 

@@ -25,6 +25,7 @@ import { renderModesPolicy } from '../operating-modes-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWaitLoopNote } from '../wait-loop-policy';
 import { renderPeerWakeNote } from '../peer-wake-policy';
+import { renderCouplingNote } from '../coupling-policy';
 import { renderWorkspaceMapSection } from './workspace-map';
 import { renderPromotionModelSection } from './promotion-model';
 import { renderWireSchemasSection } from '../prompt-assembly';
@@ -370,7 +371,14 @@ function injectSharedBaseNotes(text: string): string {
   // not). Insert the notes just BEFORE it; NEVER append, so a marker-less base is returned untouched
   // (mirrors spliceGeneratedSection's no-append contract).
   if (!text.includes(PROJECT_GUIDE_MARKER)) return text;
-  const notes = [renderDeployPipelineNote(), renderWaitLoopNote(), renderPeerWakeNote()].filter((n) => n && n.trim());
+  const notes = [
+    renderDeployPipelineNote(),
+    renderWaitLoopNote(),
+    renderPeerWakeNote(),
+    // Coupling (owner directive 2026-07-27; P-031, D-061/D-062) — the owner's ask was
+    // explicitly ALL agents, and su sessions couple/decouple like any other role.
+    renderCouplingNote(),
+  ].filter((n) => n && n.trim());
   if (notes.length === 0) return text;
   return text.split(PROJECT_GUIDE_MARKER).join(`${notes.join('\n\n')}\n\n${PROJECT_GUIDE_MARKER}`);
 }

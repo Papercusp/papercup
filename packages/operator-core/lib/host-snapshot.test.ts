@@ -68,8 +68,16 @@ describe('getHostSnapshot', () => {
     expect(snap.memTotalGb).toBeGreaterThan(0);
   });
 
-  it('answers `nproc` with a positive effective core count', () => {
+  it('answers `nproc` with the MACHINE core count, not this process cgroup quota', async () => {
+    // Caught live 2026-07-27: the operator runs under a systemd CPUQuota that
+    // makes its effective core count 12 on a 128-core box. Reporting the
+    // effective count is a different answer from the one `nproc` gives an agent
+    // in its own shell, AND it misreads the load average by an order of
+    // magnitude. Pin the machine count so a future "reuse the resource profile"
+    // refactor cannot silently reintroduce it.
+    const os = await import('node:os');
     const snap = getHostSnapshot();
+    expect(snap.cores).toBe(os.cpus().length);
     expect(snap.cores).toBeGreaterThan(0);
     expect(Number.isInteger(snap.cores)).toBe(true);
   });

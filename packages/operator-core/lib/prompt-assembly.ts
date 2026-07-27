@@ -64,6 +64,7 @@ import { renderFinishTheRolloutNote } from './finish-the-rollout-policy';
 import { renderAgentActivityTruthNote } from './agent-activity-truth-policy';
 import { renderWaitLoopNote } from './wait-loop-policy';
 import { renderPeerWakeNote } from './peer-wake-policy';
+import { renderCouplingNote } from './coupling-policy';
 import { renderObservationRubricNudge } from './observation-rubric-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
@@ -728,6 +729,20 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (peerWakeNote) {
     parts.push(peerWakeNote);
     sections.push({ name: 'peer-wake-note', chars: peerWakeNote.length });
+  }
+
+  // Coupling note (owner directive 2026-07-27; unified-agent-state-plane P-031, D-061/D-062) — the
+  // SHARED base every operator-launched role inherits, mirroring the spawned-bee base. Coupling is
+  // the relevance gate on peer state and was DERIVED-only; coord:couple/coord:decouple are the
+  // declaration path, either agent arg takes "self", and ANY agent may couple ANY two agents
+  // (including a pair it is not part of). The note teaches the DECOUPLE trigger and the cost SHAPE —
+  // per peer, per read, paid on BOTH sides — not just the couple verb. Sourced from the one
+  // COUPLING_NOTE constant (orchestrator) so this base, the spawned-bee base, and the su playbooks
+  // can't desync.
+  const couplingNote = renderCouplingNote();
+  if (couplingNote) {
+    parts.push(couplingNote);
+    sections.push({ name: 'coupling-note', chars: couplingNote.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

@@ -48,7 +48,6 @@
  */
 import type { Sql } from 'postgres';
 import { canonicalHiveHomeSlug } from './hive-federation';
-import { getHiveBySlug } from './hive-store';
 import {
   listHiveMembers,
   loadRevokedHivePubkeys,
@@ -140,9 +139,22 @@ export async function resolveFederatedPotScope(
   // no resolvable home in this process, or it threw). Migration 686's column is reconciled BY
   // PUBKEY from the signed announce (`reconcilePotCanonicalSlug`), so it can still know the
   // owner's slug when the registry/announce read here cannot.
-  const readPot = opts?.seams?.getHiveBySlug ?? getHiveBySlug;
-  const pot = await readPot(workspaceId, local, opts?.sql).catch(() => null);
-  if (pot?.canonicalHomeSlug) return pot.canonicalHomeSlug as FederatedPotScope;
+  //
+  // DYNAMICALLY IMPORTED, deliberately. A static `import { getHiveBySlug } from './hive-store'`
+  // makes hive-store (and its db-org chain) a hard dependency of EVERY module that resolves a
+  // pot scope — which promptly broke a unit test three modules away that legitimately
+  // partial-mocks hive-store ("No getHiveBySlug export is defined on the mock"). Loading it
+  // lazily, inside the try, means: not loaded at all on the common path (source 1 answers), and
+  // a caller's partial mock degrades to the documented fail-open instead of throwing. Same
+  // reasoning as hive-federation.ts's own dynamic import of hive-membership-store.
+  try {
+    const readPot =
+      opts?.seams?.getHiveBySlug ?? (await import('./hive-store')).getHiveBySlug;
+    const pot = await readPot(workspaceId, local, opts?.sql);
+    if (pot?.canonicalHomeSlug) return pot.canonicalHomeSlug as FederatedPotScope;
+  } catch {
+    /* fail-open to the local handle below — never let scope resolution break a caller */
+  }
   return local as FederatedPotScope;
 }
 

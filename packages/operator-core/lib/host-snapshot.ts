@@ -40,13 +40,8 @@
  * the orient around it.
  */
 
-import { freemem, loadavg, totalmem } from 'node:os';
+import { cpus, freemem, loadavg, totalmem } from 'node:os';
 import { readFileSync } from 'node:fs';
-// The Papercusp BINDING, not the generic lib directly: it injects the two domain
-// signals (embeddedPg, hostRole) the generic derivation needs, and is the one
-// place this app reads the host. Importing the generic export here would read an
-// unconfigured profile.
-import { getResourceProfile } from './resource-profile';
 
 /** How long a `/proc/pressure/memory` read is reused. Orient is called often
  *  enough that re-reading per call is pointless; PSI avg10/avg60 cannot move
@@ -65,11 +60,24 @@ export interface HostSnapshot {
    *  `date` / `date -u` reads: every other format the corpus asks for (`+%s`,
    *  `+%H:%M:%SZ`, `+%FT%TZ`, …) is a pure rendering of this same instant. */
   now: string;
-  /** Effective (cgroup-quota-aware) core count — the `nproc` answer. */
+  /**
+   * The MACHINE's logical core count — the `nproc` answer, and the denominator
+   * that makes {@link load} readable.
+   *
+   * Deliberately `os.cpus().length` and NOT the resource profile's effective
+   * (cgroup-quota-aware) core count. Verified live on this box 2026-07-27: the
+   * operator runs under a systemd `CPUQuota=` that makes its EFFECTIVE count 12
+   * while the machine has 128. An agent typing `nproc` in its own shell sees
+   * 128, so reporting 12 here would not be the same answer — and it would make a
+   * load average of ~80 read as 6x oversubscription instead of ~60% utilisation,
+   * which is the exact wrong conclusion to hand an agent. The effective count is
+   * the right number for sizing THIS process's own concurrency caps, which is
+   * why `@papercusp/resource-profile` computes it — it is not the right number
+   * for "how big is this box".
+   */
   cores?: number;
-  /** Coarse host bucket from the resource profile: laptop | workstation | server. */
-  hostClass?: string;
-  /** 1/5/15-minute load averages — the `uptime` / `cat /proc/loadavg` answer. */
+  /** 1/5/15-minute load averages — the `uptime` / `cat /proc/loadavg` answer.
+   *  Read against {@link cores}: this is a RUN-QUEUE DEPTH, not a percentage. */
   load?: [number, number, number];
   /** Free RAM as a percentage of total, rounded — the `free -h` answer, in the
    *  form the question is actually asked in ("is this box out of memory?"). */
@@ -125,16 +133,10 @@ export function getHostSnapshot(): HostSnapshot {
   const snap: HostSnapshot = { now: new Date(nowMs).toISOString() };
 
   try {
-    const profile = getResourceProfile();
-    // NB: the core count lives on `signals`, not on the profile root — the root
-    // carries DERIVED caps (maxSimultaneousAgents, pgPoolMax, …), not the raw
-    // signal. Reading `profile.cores` returns undefined SILENTLY, which is how
-    // this field shipped absent the first time.
-    const cores = profile.signals?.cores;
-    if (typeof cores === 'number' && Number.isFinite(cores)) snap.cores = cores;
-    if (profile.hostClass) snap.hostClass = profile.hostClass;
+    const n = cpus().length;
+    if (n > 0) snap.cores = n;
   } catch {
-    /* profile unavailable — cores/hostClass absent */
+    /* absent */
   }
 
   try {
