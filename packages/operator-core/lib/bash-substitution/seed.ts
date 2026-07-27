@@ -51,6 +51,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { auditPair } from './equivalence';
 import { ALL_PAIRS } from './pairs';
+import { assertPolicyTier } from './types';
 import type { CorpusFixture } from './corpus';
 import type { PairAudit, SubstitutionPair } from './types';
 
@@ -80,6 +81,14 @@ export interface SeedOutcome {
  * window (P-020), and re-running the seed must not silently demote a rule that
  * has already been promoted, nor erase the false-positive evidence that would
  * argue against promoting it.
+ *
+ * The ONE exception is a POLICY tier (`assertPolicyTier` — D-003): that tier is
+ * not earned by observation, it is DECLARED by the pair because a rule already
+ * existed independently. It is therefore the pair, not the database, that owns
+ * it, and it IS re-asserted on conflict — otherwise a row seeded before the
+ * declaration would sit at `observe` forever and the policy would be enforced
+ * nowhere, which is the exact silent-staleness this file's header is about.
+ * Rows without a policy tier keep the old behaviour untouched.
  */
 async function upsertPair(
   sql: OrgSql,
@@ -97,7 +106,7 @@ async function upsertPair(
     ) VALUES (
       ${workspaceId}, ${audit.intentLabel}, ${audit.bashPattern}, ${audit.bashPatternFlags}, ${audit.toolName},
       ${audit.verdict}, ${audit.sampleSize}, ${JSON.stringify(audit.failingCases)}::text::jsonb, ${fixture.evidenceRef},
-      'observe', ${pair.advisoryText}, true,
+      ${assertPolicyTier(pair)}, ${pair.advisoryText}, true,
       ${fixture.totalAtoms}, ${fixture.totalSessions}, now()
     )
     ON CONFLICT (workspace_id, intent_label) DO UPDATE SET
@@ -109,6 +118,11 @@ async function upsertPair(
       failing_cases       = EXCLUDED.failing_cases,
       evidence_ref        = EXCLUDED.evidence_ref,
       advisory_text       = EXCLUDED.advisory_text,
+      -- Policy tiers are pair-owned and re-asserted (see the header); an
+      -- ordinary row's tier stays exactly where its observation window left it.
+      tier                = CASE WHEN ${pair.policyTier ?? null}::text IS NULL
+                                 THEN bash_tool_substitutions.tier
+                                 ELSE EXCLUDED.tier END,
       baseline_calls      = EXCLUDED.baseline_calls,
       baseline_sessions   = EXCLUDED.baseline_sessions,
       updated_at          = now()

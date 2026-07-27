@@ -26,6 +26,7 @@
  */
 
 import { compileRegistryPattern, normalizeRegistryFlags } from './match';
+import { assertPolicyTier } from './types';
 import type {
   CoverageResult,
   EquivalenceVerdict,
@@ -233,10 +234,12 @@ export function auditToRegistryRow(
     sample_size: audit.sampleSize,
     failing_cases: audit.failingCases,
     evidence_ref: evidenceRef,
-    // Always enter at `observe`; promotion to `advise` is P-020's staged
-    // decision after a real observation window, never automatic on a green
-    // verdict. `maxTier` states what the verdict PERMITS, not what it does.
-    tier: 'observe',
+    // Enter at `observe` unless the pair carries an authorized `policyTier`:
+    // promotion to `advise` is P-020's staged decision after a real observation
+    // window, never automatic on a green verdict (`maxTier` states what the
+    // verdict PERMITS, not what it does). `assertPolicyTier` is what makes the
+    // exception narrow — it refuses any pair that is not a `policy-violation:`.
+    tier: assertPolicyTier(pair),
     advisory_text: pair.advisoryText,
     baseline_sessions: audit.sessionCount,
   };

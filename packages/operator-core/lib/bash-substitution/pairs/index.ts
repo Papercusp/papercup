@@ -9,6 +9,7 @@
 
 import type { SubstitutionPair } from '../types';
 import { AMBIENT_CONTEXT_PAIRS } from './ambient-context';
+import { DEPENDENCY_INSTALL_PAIRS } from './dependency-install';
 import { FILE_READ_PAIRS } from './file-read';
 import { GIT_READ_PAIRS } from './git-read';
 import { LOGS_PAIRS } from './logs';
@@ -20,6 +21,7 @@ import { TYPECHECK_PAIRS } from './typecheck';
 
 export {
   AMBIENT_CONTEXT_PAIRS,
+  DEPENDENCY_INSTALL_PAIRS,
   FILE_READ_PAIRS,
   GIT_READ_PAIRS,
   LOGS_PAIRS,
@@ -54,4 +56,9 @@ export const ALL_PAIRS: SubstitutionPair[] = [
   // already rides on coord:orient's `host` block, so the advisory says "read what
   // you already have" rather than naming a verb to call.
   ...AMBIENT_CONTEXT_PAIRS,
+  // P-028. The only pair that BLOCKS. Every row above argues cost; this one
+  // argues correctness (a bare install corrupts other agents' trees), which is
+  // why it is also the only one carrying a `policyTier` — see its header for the
+  // D-003 authorization that permits it.
+  ...DEPENDENCY_INSTALL_PAIRS,
 ];

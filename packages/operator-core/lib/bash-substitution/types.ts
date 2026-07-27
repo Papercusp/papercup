@@ -111,8 +111,50 @@ export interface SubstitutionPair {
    * instead of silently leaving a stale row. This is the anti-rot latch.
    */
   expectedVerdict: EquivalenceVerdict;
+  /**
+   * OPT-IN: seed this row at a tier above `observe` instead of earning one
+   * through P-020's observation window.
+   *
+   * Every ordinary row enters at `observe` and is promoted only by evidence —
+   * that staging is the whole safety story of this registry, and this field is
+   * the ONE documented way past it. It exists because D-003 recognises a second,
+   * narrower class: a rule that ALREADY EXISTED INDEPENDENTLY of this plan, for
+   * which the registry supplies a mechanism rather than a judgement. Such a rule
+   * has nothing to observe — the decision was taken elsewhere, before the
+   * pattern was ever measured.
+   *
+   * Guarded rather than trusted: {@link assertPolicyTier} refuses any pair whose
+   * `intentLabel` does not carry the `policy-violation:` prefix, mirroring
+   * migration 665's `tier_requires_equivalence` CHECK so the invariant is stated
+   * in the same terms on both sides of the wire. A cost argument ("the tool is
+   * cheaper") must never reach `deny` this way; only a correctness rule that
+   * some human already wrote down somewhere else may.
+   */
+  policyTier?: SubstitutionTier;
   /** Model of what the tool can express. See the warning above. */
   cover(atom: string): CoverageResult;
+}
+
+/** The prefix an `intentLabel` must carry to be allowed a {@link SubstitutionPair.policyTier}. */
+export const POLICY_INTENT_PREFIX = 'policy-violation:';
+
+/**
+ * The tier a pair actually seeds at, refusing an unauthorized escalation.
+ *
+ * @throws if `policyTier` is set on a pair whose intent is not a
+ *   `policy-violation:` — the check that keeps "the gate enforces policy, never
+ *   invents it" (D-003) a property of the code rather than of reviewer memory.
+ */
+export function assertPolicyTier(pair: SubstitutionPair): SubstitutionTier {
+  if (pair.policyTier === undefined) return 'observe';
+  if (!pair.intentLabel.startsWith(POLICY_INTENT_PREFIX)) {
+    throw new Error(
+      `pair ${pair.id} sets policyTier='${pair.policyTier}' but its intentLabel ` +
+        `'${pair.intentLabel}' is not a '${POLICY_INTENT_PREFIX}…'. A tier above 'observe' is ` +
+        'earned by P-020 observation, or authorized by a pre-existing rule (D-003) — never asserted.',
+    );
+  }
+  return pair.policyTier;
 }
 
 /** A sampled command the tool could not express, with the reason why. */

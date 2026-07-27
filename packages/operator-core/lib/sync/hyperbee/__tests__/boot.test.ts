@@ -2803,7 +2803,14 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       mergePollMs: 0,
       loadRevokedOverride: async () => new Set(),
       openRemoteLogOverride,
-      replicationStallGraceMs: 0,
+      // WI-6324: a SMALL but non-zero confirmation grace. With 0 the confirmation
+      // is judged inside the very pass that applies the repair — before the fresh
+      // session has merged anything — so a genuine recovery would be recorded as a
+      // failure first, breaking this test's own "a recovery is NOT a failure"
+      // invariant for a purely fixture-level reason. Production uses a ~3min grace,
+      // so a re-attached session has long since learned the writer's length by the
+      // time it is judged; this just reproduces that ordering cheaply.
+      replicationStallGraceMs: 25,
     });
     cleanups.push(() => handle.close());
 
@@ -2818,13 +2825,15 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       { graceMs: 0 },
     );
     await handle.mergeNow();
-    // WI-6324: the repair swaps in the fresh session and judges it within this
-    // SAME pass, before that session has merged anything — so its merge cursor is
-    // still 0 here. Catch-up only becomes OBSERVABLE on the next pass, once the
-    // cursor has actually advanced to the writer's length. (Previously this test
-    // "confirmed" on the first pass only because a zero-length view trivially
-    // satisfied `knownLength <= mergedPosition` — it was reading not-yet-started
-    // as finished, which is precisely the production bug WI-6324 fixes.)
+    // WI-6324: the repair swaps in the fresh session and would judge it within this
+    // SAME pass, before that session has merged anything — its merge cursor is still
+    // 0 here, which the grace above correctly defers past. Recovery only becomes
+    // OBSERVABLE on the next pass, once the cursor has actually advanced to the
+    // writer's length. (Previously this test "confirmed" on the first pass only
+    // because a zero-length view trivially satisfied `knownLength <= mergedPosition`
+    // — reading not-yet-started as finished, which is exactly the production bug
+    // WI-6324 fixes.)
+    await new Promise((resolve) => setTimeout(resolve, 40));
     await handle.mergeNow();
 
     expect(sessions).toHaveLength(1);

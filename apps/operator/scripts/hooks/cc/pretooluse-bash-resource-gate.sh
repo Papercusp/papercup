@@ -1405,7 +1405,13 @@ _SUBSTITUTION_HEADS = frozenset((
 # Narrow phrases a substitution row claims whose bare head is too common for the
 # set above (see the P-021 note). Byte-for-byte twin of the TS hook's
 # SUBSTITUTION_PHRASE_RE; tested against the atom AFTER runner/env stripping.
-_SUBSTITUTION_PHRASE_RE = re.compile(r'^npm\s+run\s+test:file\b')
+#
+# P-028 adds `npm install|ci|i` for the same reason `npm run test:file` is here
+# rather than in the head set: `npm` fronts nearly every command in this repo,
+# and `npm run lint` must keep paying nothing. The pair's own pattern is far
+# narrower still (flags-only whole-tree reifies); this phrase only decides which
+# atoms pay the operator round-trip at all.
+_SUBSTITUTION_PHRASE_RE = re.compile(r'^npm\s+run\s+test:file\b|^npm\s+(?:install|ci|i)(?=\s|$)')
 
 
 def _substitution_prefilter_hit(cmd):
