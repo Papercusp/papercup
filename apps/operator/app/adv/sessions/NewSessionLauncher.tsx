@@ -30,6 +30,7 @@ import { Button } from '@/app/harness/Button';
 import { Combobox, type ComboboxEntry, type ComboboxOption } from '@/app/harness/Combobox';
 import { useLexicon } from '@/lib/useLexicon';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
+import type { SuAgent } from '@papercusp/operator-core/lib/su-agents';
 // WI-6300: the canonical model/effort vocabulary psu itself launches with. This
 // module is deliberately client-safe (no node/server imports) — see its header —
 // so the renderer can read it without dragging the PG/fs subtree into the bundle.
@@ -112,6 +113,27 @@ export const EFFORT_OPTIONS: ComboboxOption[] = [
  *
  * Pure — exported for unit-test access.
  */
+/**
+ * The CLI backend the picked model belongs to, or undefined for "no explicit model"
+ * (→ launch-su resolves the configured default agent, unchanged).
+ *
+ * Load-bearing, not cosmetic: `CLOUD_MODEL_MENU` spans backends, so a model pick IS
+ * implicitly an agent pick. Sending the model without its backend produced a launch psu
+ * rejects outright ("model `sol` belongs to the `codex` backend, but this launch requested
+ * `--agent=claude`"), which it reports by exiting 0 before recording anything — a terminal
+ * that flashes and closes, plus a success toast. Derived from the SAME menu the options
+ * are built from, so a model added there can never disagree with the agent we send.
+ *
+ * Pure — exported for unit-test access.
+ */
+export function modelBackend(model: string): SuAgent | undefined {
+  const m = model.trim();
+  if (!m || m === MODEL_SELECT_DEFAULT) return undefined;
+  // Tolerate a "<model>:<effort>" spec as well as a bare model id.
+  const base = m.split(':')[0];
+  return CLOUD_MODEL_MENU.find((c) => c.value === base)?.backend as SuAgent | undefined;
+}
+
 export function composeModelSpec(model: string, effort: string): string | null {
   const m = model.trim();
   if (!m) return null;
@@ -287,6 +309,18 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         planSlug: selectedPlan?.slug ?? null,
         label,
         model: chosenModel,
+        // The model picker offers the WHOLE CLOUD_MODEL_MENU, which spans backends — it
+        // even tags each row "claude CLI" / "codex CLI". But this call used to send no
+        // `agent`, so launch-su fell back to the configured default (claude) and psu
+        // refused the pairing outright:
+        //   psu: model `sol` belongs to the `codex` backend, but this launch requested
+        //        `--agent=claude`. Pass `--agent=codex`, or omit `--agent` …
+        // psu prints that and exits — with status 0, before it records its adv_sessions
+        // row. So the terminal window opened, flashed one line and closed, the launch left
+        // no trace anywhere, AND the zero exit meant the caller still showed a SUCCESS
+        // toast. Picking any of sol / luna / terra could therefore never work.
+        // The menu already knows each model's backend; send it (owner bug 2026-07-27).
+        agent: modelBackend(model),
       });
       if (result.ok && result.warning) {
         // EI-18696184925888288: launch-su's spawn call succeeded but the

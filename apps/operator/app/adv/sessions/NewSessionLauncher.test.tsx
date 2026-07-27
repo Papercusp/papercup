@@ -237,6 +237,53 @@ describe('NewSessionLauncher', () => {
     });
   });
 
+  /**
+   * OWNER BUG 2026-07-27 ("when I launch the new session the console shows up and then
+   * disappears"). The model picker lists the WHOLE CLOUD_MODEL_MENU, which spans backends,
+   * but the launch sent no `agent` — so launch-su used the configured default (claude) and
+   * psu refused: "model `sol` belongs to the `codex` backend, but this launch requested
+   * `--agent=claude`". psu prints that and exits 0 BEFORE writing its adv_sessions row, so
+   * the window flashed shut, nothing was recorded, and the caller still showed SUCCESS.
+   * Reproduced directly:
+   *   psu --no-picker --agent=claude --no-plan --model=sol  → that message, exit 0, instant.
+   */
+  describe('the picked model carries its backend (owner bug 2026-07-27)', () => {
+    const launchWithModel = async (value: string) => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Model for new session' }), {
+        target: { value },
+      });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+      return h.launchAgent.mock.calls.at(-1)?.[0] as { agent?: string; model?: string | null };
+    };
+
+    it('a codex model launches the CODEX agent, not the default claude', async () => {
+      expect((await launchWithModel('sol')).agent).toBe('codex');
+    });
+
+    it('a claude model launches the claude agent', async () => {
+      expect((await launchWithModel('opus')).agent).toBe('claude');
+    });
+
+    it('no model chosen sends NO agent, leaving the configured default intact', async () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+      const call = h.launchAgent.mock.calls.at(-1)?.[0] as { agent?: string };
+      expect(call.agent).toBeUndefined();
+    });
+
+    it('modelBackend covers every menu entry and tolerates a <model>:<effort> spec', () => {
+      for (const m of CLOUD_MODEL_MENU) {
+        expect(modelBackend(m.value)).toBe(m.backend);
+        expect(modelBackend(`${m.value}:high`)).toBe(m.backend);
+      }
+      expect(modelBackend('')).toBeUndefined();
+      expect(modelBackend('not-a-model')).toBeUndefined();
+    });
+  });
+
   it('enables the button once a plan is chosen, and launches with the selected plan', async () => {
     const onLaunched = vi.fn();
     render(<NewSessionLauncher onLaunched={onLaunched} />, { wrapper: withNuqsTestingAdapter() });
