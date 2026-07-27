@@ -1,23 +1,28 @@
 'use client';
 
-import { useState } from 'react';
-import { LayoutGrid, Network } from 'lucide-react';
+import { LayoutGrid } from 'lucide-react';
 import { FLAGS } from '@papercusp/flags';
 import { AddPanelCatalog } from '../../harness/dock/AddPanelCatalog';
 import { resetLayout } from '../../harness/dock/dock-actions';
 import { Tooltip } from '../../harness/Tooltip';
-import { toast } from 'sonner';
 import { useFlag } from '../../../lib/flag-hooks';
 import { useLexicon } from '../../../lib/useLexicon';
-import HarnessWorkspacesButton from './HarnessWorkspacesButton';
 
 interface Props {
   slug: string;
 }
 
 /**
- * /adv/harnesses top bar — Hive-level actions: workspaces, register
- * sub-hives, add panel, reset layout.
+ * /adv/harnesses top bar — DOCK-level actions only: add panel, reset layout.
+ *
+ * The POT-level actions that used to sit here — "Workspaces (N)"
+ * (HarnessWorkspacesButton) and "Register sub-pots" (RegisterSubsButton) — moved
+ * UP to the pot bar (AdvPotBar) on 2026-07-27 (owner ask: "in the work tab remove
+ * these buttons they dont belong there … put those buttons on the pot selector bar
+ * above it, and all tabs that have the pot selector bar should also have it").
+ * They were pot administration wearing dock chrome, and keying them to the Work
+ * tab's drilled-into MEMBER slug was the wrong scope besides. What is left here is
+ * genuinely about THIS dock: which panels it shows and how they are laid out.
  *
  * The legacy coding-pipeline stat cards (pulse / lanes / passed/total /
  * $ spent / health) were removed 2026-06-30. They read the superseded
@@ -46,8 +51,6 @@ export default function HarnessTopBar({ slug }: Props) {
   return (
     <div className="pc-adv-topbar">
       <div className="pc-adv-topbar__actions">
-        {slug && <HarnessWorkspacesButton slug={slug} />}
-        {slug && <RegisterSubsButton slug={slug} />}
         {slug && (
           <AddPanelCatalog
             defaultSlug={slug}
@@ -127,6 +130,9 @@ export default function HarnessTopBar({ slug }: Props) {
     </div>
   );
 }
+
+/* MOVED 2026-07-27 → ./RegisterSubsButton.tsx, rendered by the pot bar
+   (AdvPotBar) on every pot-scoped tab. See the header comment above. */
 
 /**
  * P-019 — one-click "register sub-harnesses" action. POSTs to

@@ -139,13 +139,21 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
     `);
 
     // Apply the REAL federation migrations verbatim.
-    for (const m of [
-      '562-memory-shareable-federation.sql',
-      '563-memory-federation-capture-triggers.sql',
-      '564-memory-federation-columns.sql',
-    ]) {
-      await applyMigrationForTest(db.sql, resolve(SQL_DIR, m));
-    }
+    // EI-18808675015292160: applyMigrationsForTest AUDITS this list before
+    // applying it. 570 + 578 were MISSING and that is what reddened this file —
+    // 578 adds memory_canonical.valid_at, so the suite failed with
+    // `column "valid_at" ... does not exist`, naming a column and never the list.
+    await applyMigrationsForTest(
+      db.sql,
+      [
+        '562-memory-shareable-federation.sql',
+        '563-memory-federation-capture-triggers.sql',
+        '564-memory-federation-columns.sql',
+        '570-memory-canonical-rls.sql',
+        '578-memory-canonical-temporal-lite.sql',
+      ],
+      { label: 'memory-federation-privacy.integration.test.ts' },
+    );
   }, 60_000);
 
   afterAll(async () => {
