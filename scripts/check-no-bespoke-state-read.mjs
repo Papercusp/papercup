@@ -541,6 +541,28 @@ export const VERDICTS = new Map([
   // ── Cluster H — work-item hygiene
   ['work_items:redundancy_status', { verdict: 'bespoke', cluster: 'work-items', calls: 1,
     reason: 'An analysis report over work-item overlap, computed on demand; not a standing value anything coordinates on.' }],
+  ['work_items:burn_down', { verdict: 'delegates', cluster: 'work-items', calls: 73,
+    reason: 'Explicitly documents itself as a rejoin of work_items:list + coord:presence liveness (its own header: "instead of rejoining ... client-side on every wake"). Same merged-durable+live shape as plan_items:status; the leader-facing rollup is worth keeping, but the liveness half should consume a presence cell rather than re-listing it.' }],
+
+  // ── Cluster I — EI-18791777695307535 second seeding wave: fleet/coord/locks doors the
+  // widened noun list newly catches. Verdicts assigned 2026-07-27 from reading each tool's
+  // own implementation (not call-volume alone, since these were previously unmeasured by
+  // this gate's own signature) — `calls` here is the 30d figure from the filing bug's evidence
+  // table where available.
+  ['fleet:assignments', { verdict: 'delegates', cluster: 'presence', calls: 5883,
+    reason: 'THE busiest state read in the corpus (5,883 calls/5,851 callers/30d, ~9x coord:presence) — exactly the shape most worth catching, per the filing bug. Already consumes the SAME unified liveness oracle as coord:presence (deriveVerdict from coordination/liveness-oracle.ts, presence-derivation-unification-2026-07-17) and joins it with its own plan-item/work-item claim data — same merged-durable+live shape as plan_items:status (already delegates). Keep the claim-join; the liveness half already IS the shared oracle, so this mainly needs a @cell-lens declaration once the oracle itself is registered as a cell.' }],
+  ['coord:roster', { verdict: 'bespoke', cluster: 'presence', calls: 22,
+    reason: 'Explicitly designed AS the future consolidation door for coord:presence/fleet:assignments/fleet:status/coord:glance (its own header proposes the others become thin aliases or deprecate) — not itself a duplication site. Its default view reuses the shared assemblePresenceSnapshot helper directly rather than re-deriving; the other 3 view lenses (members/claims/history) answer genuinely different questions.' }],
+  ['coord:walls', { verdict: 'bespoke', cluster: 'presence', calls: 392,
+    reason: 'A UNION read over two existing write surfaces (loop:checkpoint walls + needs-human work-items) that previously had no query at all (EI-10890) — filed to close a real blind spot, not a duplicate derivation. Single door.' }],
+  ['coord:conditions', { verdict: 'bespoke', cluster: 'presence', calls: 16,
+    reason: 'Folds the condition-keyed alarm/resolution broadcast stream into current open/resolved state (EI-6138); single door, nothing else derives this view.' }],
+  ['locks:list', { verdict: 'bespoke', cluster: 'locks', calls: 245,
+    reason: 'The authoritative registry + live-holder view for NAMED RESOURCE locks (locks:acquire_resource domain, P-013/P-014). Single door for that domain.' }],
+  ['locks:queue', { verdict: 'bespoke', cluster: 'locks', calls: 0,
+    reason: 'Live holder/waiter view for PATH/FILE locks (locks:acquire domain, backed by su-lock-store) — a distinct lock domain from locks:list\'s named-resource registry. Single door for that domain.' }],
+  ['locks:check_command', { verdict: 'bespoke', cluster: 'locks', calls: 0,
+    reason: 'A derived VERDICT (allow|warn|block) for a PreToolUse Bash gate, combining live resource-lock state with a bash-substitution registry match into one round-trip a hook makes on every shell command. Not a standing value re-derived elsewhere; single door serving one caller shape.' }],
 ]);
 
 /**

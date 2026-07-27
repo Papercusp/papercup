@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import digestTool, { boundDigestForSerialization, DIGEST_MAX_BYTES } from './digest';
-import { readImprovementItems } from '../../harness/improvements/read-items';
+import { readImprovementItems, countImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
 import { applyHumanQueueRanking } from '../../queue-ranker/human-queue';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -15,6 +15,7 @@ vi.mock('../../queue-ranker/human-queue');
 vi.mock('../coordination/identity');
 
 const mockRead = vi.mocked(readImprovementItems);
+const mockCount = vi.mocked(countImprovementItems);
 const mockBuild = vi.mocked(buildDigest);
 const mockRank = vi.mocked(applyHumanQueueRanking);
 const mockIdentity = vi.mocked(resolveAgentIdentity);
@@ -38,6 +39,7 @@ describe('improvements:digest tool envelope', () => {
     vi.clearAllMocks();
     mockIdentity.mockReturnValue({ ownerId: 'su-test' } as ReturnType<typeof resolveAgentIdentity>);
     mockRead.mockResolvedValue(ITEMS);
+    mockCount.mockResolvedValue(2); // EI-18790490225750395 D2: the TRUE corpus total, read alongside the window
     mockBuild.mockReturnValue(BUILT);
     mockRank.mockResolvedValue(RANKED);
     // MUG_FULL_AUTONOMY graduated to default-ON (flip-dark-flags-default-on-2026-06-23). This
@@ -61,8 +63,26 @@ describe('improvements:digest tool envelope', () => {
 
   it('builds the digest from the read items, then ranks the human lane with the same items as candidates', async () => {
     await callTool({});
-    expect(mockBuild).toHaveBeenCalledWith(ITEMS, { nowMs: expect.any(Number), ownerFullAutonomy: false });
+    expect(mockBuild).toHaveBeenCalledWith(ITEMS, { nowMs: expect.any(Number), ownerFullAutonomy: false, corpusTotal: 2 });
     expect(mockRank).toHaveBeenCalledWith(BUILT, { candidates: ITEMS });
+  });
+
+  it('EI-18790490225750395 D2: reads the TRUE corpus total via countImprovementItems with the SAME filter as the read, and threads it into buildDigest', async () => {
+    mockCount.mockResolvedValue(4321);
+    await callTool({ state: 'open', limit: 25, harnessSlug: 'foo' });
+    expect(mockCount).toHaveBeenCalledWith({ state: 'open', limit: 25, harnessSlug: 'foo' });
+    expect(mockBuild).toHaveBeenCalledWith(
+      ITEMS,
+      expect.objectContaining({ corpusTotal: 4321 }),
+    );
+  });
+
+  it('a count failure degrades to corpusTotal:undefined rather than sinking the whole digest', async () => {
+    mockCount.mockRejectedValue(new Error('pg blip'));
+    const res = await callTool({});
+    const body = JSON.parse(res.content[0].text);
+    expect(body.ok).toBe(true);
+    expect(mockBuild).toHaveBeenCalledWith(ITEMS, expect.objectContaining({ corpusTotal: undefined }));
   });
 
   it('returns { ok:true, digest:<ranked> } — the ranked digest, not the raw build', async () => {

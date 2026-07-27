@@ -324,7 +324,6 @@ export function judgeSquare(obs: CellObservation): SquareResult {
           'a subject known to HAVE a value produced a null headline while the declared unknown channel reported a ' +
           'MEASURED SILENCE — the cell is asserting it looked and found nothing unknown, which is a measurement it ' +
           'did not make. The reason is in the resolver\'s own result and was dropped.',
-        ...(obs.hoist ? {} : {}),
       };
     }
     return { ...base, verdict: 'ok', detail: 'a real subject produced a real measurement' };

@@ -88,6 +88,10 @@ async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | 
       // one vague "walled/rate-paused/edge-throttled" phrase that reads as generic quota exhaustion.
       edgeThrottledCount: rows.filter((r) => r.edgeThrottled).length,
       usageWalledCount: rows.filter((r) => r.usageWalled).length,
+      // EI-18791793869559327: a sustainedlyLimited account is still `available`/not-edge-throttled (it
+      // counts toward `usable` above), so without this the DEGRADED tier in buildCapacityReport can never
+      // fire from a live read — the capacity advisor stayed blind to the pool's own scale-out signal.
+      sustainedlyLimitedCount: rows.filter((r) => r.sustainedlyLimited).length,
       edgeThrottledSharedEgress: sharedEgress,
       edgeThrottledRearming: rearming,
     };

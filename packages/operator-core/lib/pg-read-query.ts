@@ -536,6 +536,16 @@ export function assertSingleReadStatement(raw: string): string {
  * so the row cap is enforced in the DB (not after pulling every row into memory).
  * A query whose output has duplicate column names must alias them (PG rejects a
  * subquery with duplicate output columns — a clear error the caller can fix).
+ *
+ * Defaults to `getOrgPgLosslessBigint()`, NOT `getOrgPg()` — this is arbitrary
+ * agent-authored SQL, so a bigint/int8 column (a `pg_stat_statements.queryid`, a
+ * snowflake id, …) must come back at EXACT precision rather than silently rounded
+ * to the nearest representable `number` past 2^53 (EI-18789855771421275: the
+ * rounded value is a syntactically valid bigint that matches zero rows — a
+ * confidence-inspiring empty result, not an error). Pass `opts.client` to use a
+ * different connection (e.g. a test fixture) — it is NOT defaulted to
+ * getOrgPg() and callers overriding it should apply the same lossless-bigint
+ * consideration if they pass a client that has the bigint→number override installed.
  */
 export async function pgReadQuery(
   rawQuery: string,
@@ -551,7 +561,7 @@ export async function pgReadQuery(
     Math.min(PG_READ_QUERY_HARD_TIMEOUT_MS, Math.trunc(opts.timeoutMs ?? PG_READ_QUERY_DEFAULT_TIMEOUT_MS)),
   );
 
-  const sql = opts.client ?? getOrgPg().sql;
+  const sql = opts.client ?? getOrgPgLosslessBigint().sql;
   const startedAt = Date.now();
   let rows: Record<string, unknown>[] = [];
   await sql.begin(async (tx) => {

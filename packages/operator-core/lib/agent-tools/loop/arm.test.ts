@@ -467,7 +467,73 @@ describe('loop:arm — EI-18221784742583615 overwrite guard (through the handler
     expect(b.ok).toBe(true);
     expect(b.priorLoopOverwrite).toBeNull();
     // the failure is logged (best-effort), not surfaced as an error
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('overwrite-guard read failed'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('prior-loop read failed'));
+    warnSpy.mockRestore();
+  });
+});
+
+// EI-18792078711601844 — a re-arm with `carry` omitted must PRESERVE the loop's prior
+// carry (when one is active) instead of silently recomputing a fresh headless/interactive
+// default that can legitimately differ (host-discovery flakiness, a flag flip mid-run).
+// The playbook's own prescribed remedy for a blocked loop — "re-loop:arm with a larger
+// intervalSec" — passes only intervalSec, so this is exactly the call the bug's repro hit.
+describe('loop:arm — EI-18792078711601844 carry preserved on re-arm', () => {
+  beforeEach(() => {
+    // Force the fresh-default resolution path to 'warm' whenever it's reached, so a test
+    // asserting 'cold' survives can ONLY be passing because of preservation, never a
+    // coincidental default. Interactive (no live host) always resolves 'warm'.
+    findHostM.mockReturnValue(null);
+  });
+
+  it('an active prior loop with carry cold + carry omitted ⇒ re-arm PRESERVES cold (not the fresh warm default)', async () => {
+    priorLoopM.mockResolvedValue(priorLoop({ carry: 'cold' }) as never);
+    const b = body(await call({ intervalSec: 1200, goal: 'watch WI-5672 for the next fire' }));
+    expect(b.ok).toBe(true);
+    expect(b.loop.carry).toBe('cold');
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ carry: 'cold' }));
+    expect(b.note).toContain("carry 'cold' PRESERVED from the loop's prior config");
+    // this is the preservation path, not the headless-default path — no "Defaulted to COLD" text
+    expect(b.note).not.toContain('Defaulted to COLD carry');
+  });
+
+  it('an active prior loop with carry warm + carry omitted ⇒ re-arm PRESERVES warm', async () => {
+    priorLoopM.mockResolvedValue(priorLoop({ carry: 'warm' }) as never);
+    const b = body(await call({ intervalSec: 1200, goal: 'watch WI-5672 for the next fire' }));
+    expect(b.loop.carry).toBe('warm');
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ carry: 'warm' }));
+    expect(b.note).toContain("carry 'warm' PRESERVED from the loop's prior config");
+  });
+
+  it('an EXPLICIT carry always overrides preservation, even over an active cold prior', async () => {
+    priorLoopM.mockResolvedValue(priorLoop({ carry: 'cold' }) as never);
+    const b = body(await call({ carry: 'warm', goal: 'watch WI-5672 for the next fire' }));
+    expect(b.loop.carry).toBe('warm');
+    expect(b.note).not.toContain('PRESERVED from the');
+  });
+
+  it('an INACTIVE prior loop (ended) ⇒ NOT preserved — falls through to the fresh default (warm, no live host)', async () => {
+    priorLoopM.mockResolvedValue(priorLoop({ carry: 'cold', active: false }) as never);
+    const b = body(await call({}));
+    expect(b.loop.carry).toBe('warm');
+    expect(b.note).not.toContain('PRESERVED from the');
+  });
+
+  it('no prior loop at all ⇒ NOT preserved — falls through to the fresh default (cold, headless host)', async () => {
+    findHostM.mockReturnValue({ bridgeTty: false } as never);
+    priorLoopM.mockResolvedValue(null as never);
+    const b = body(await call({}));
+    expect(b.loop.carry).toBe('cold');
+    expect(b.note).toContain('Defaulted to COLD carry');
+    expect(b.note).not.toContain('PRESERVED from the');
+  });
+
+  it('the prior-loop read throwing falls back to fresh-default resolution (fail-soft, arming never fails)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    priorLoopM.mockRejectedValue(new Error('db down') as never);
+    const b = body(await call({}));
+    expect(b.ok).toBe(true);
+    expect(b.loop.carry).toBe('warm'); // fresh-default path, no live host
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('prior-loop read failed'));
     warnSpy.mockRestore();
   });
 });

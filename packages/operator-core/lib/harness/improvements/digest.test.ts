@@ -412,6 +412,103 @@ describe('buildDigest', () => {
       expect(d.headline).not.toMatch(/likely-dup cluster/);
     });
   });
+
+  describe('total / returned / windowed (EI-18790490225750395 D2 — total must not be the window size)', () => {
+    it('without corpusTotal: total falls back to candidates.length, unchanged from before this option existed', () => {
+      const d = buildDigest(items, { nowMs: NOW });
+      expect(d.total).toBe(items.length);
+      expect(d.returned).toBe(items.length);
+      expect(d.windowed).toBe(false);
+    });
+
+    it('with corpusTotal LARGER than what was fetched: total reports the TRUE corpus, returned stays the window size', () => {
+      // Exactly the filed repro's shape: limit 30 (fetched 5 here for the test),
+      // real corpus far bigger (200+).
+      const d = buildDigest(items, { nowMs: NOW, corpusTotal: 4321 });
+      expect(d.total).toBe(4321);
+      expect(d.returned).toBe(items.length);
+      expect(d.windowed).toBe(true);
+    });
+
+    it('with corpusTotal EQUAL to what was fetched (no real limit in effect): windowed is false', () => {
+      const d = buildDigest(items, { nowMs: NOW, corpusTotal: items.length });
+      expect(d.total).toBe(items.length);
+      expect(d.windowed).toBe(false);
+    });
+
+    it('clamps a caller-bug corpusTotal SMALLER than candidates.length rather than reporting a negative window', () => {
+      const d = buildDigest(items, { nowMs: NOW, corpusTotal: 1 });
+      expect(d.total).toBe(items.length); // clamped up, never below what was actually returned
+      expect(d.windowed).toBe(false);
+    });
+
+    it('the headline reports "returned of total" and flags (windowed) when they differ', () => {
+      const windowed = buildDigest(items, { nowMs: NOW, corpusTotal: 999 });
+      expect(windowed.headline).toMatch(new RegExp(`${items.length} of 999 loaded \\(windowed\\)`));
+      const full = buildDigest(items, { nowMs: NOW });
+      expect(full.headline).not.toMatch(/windowed/);
+    });
+  });
+
+  describe('likelyDuplicatesScope (EI-18790490225750395 D1 — make the dedup window EXPLICIT)', () => {
+    it('is null when the dedup pass itself did not run (nearDuplicates: false)', () => {
+      const d = buildDigest(items, { nowMs: NOW, nearDuplicates: false, corpusTotal: 999 });
+      expect(d.likelyDuplicatesScope).toBeNull();
+    });
+
+    it('reports consideredCount/corpusTotal/windowed matching the digest’s own total/returned/windowed', () => {
+      const d = buildDigest(items, { nowMs: NOW, corpusTotal: 999 });
+      expect(d.likelyDuplicatesScope).toEqual({ consideredCount: items.length, corpusTotal: 999, windowed: true });
+    });
+
+    it('an EMPTY likelyDuplicates at a small window is now DISTINGUISHABLE from "no duplicates in the corpus"', () => {
+      // The exact filed complaint: likelyDuplicates: [] at limit 30 read as "no
+      // dupes exist" when the corpus (200) actually had some. likelyDuplicatesScope
+      // makes that unsound inference impossible to make silently.
+      const noDupesInWindow: ImprovementCandidate[] = [cand({ id: 'x1', title: 'alpha' }), cand({ id: 'x2', title: 'beta' })];
+      const d = buildDigest(noDupesInWindow, { nowMs: NOW, corpusTotal: 200 });
+      expect(d.likelyDuplicates).toEqual([]);
+      expect(d.likelyDuplicatesScope).toEqual({ consideredCount: 2, corpusTotal: 200, windowed: true });
+    });
+  });
+
+  /**
+   * The ticket's OWN required recurrence guard (EI-18790490225750395, "no guard =
+   * not done"): (a) N filings quoting one identical error string cluster together
+   * regardless of the window they're read through, and (b) total is invariant
+   * under whatever limit produced that window.
+   */
+  describe('EI-18790490225750395 required recurrence guard', () => {
+    const quotedErr =
+      '"no unique or exclusion constraint matching the ON CONFLICT specification"';
+    const dupes: ImprovementCandidate[] = [
+      cand({ id: 'dup1', title: 'LIVE OUTAGE: facts:assert fails ' + quotedErr }),
+      cand({ id: 'dup2', title: 'facts:assert broken again', body: `handler_error: ${quotedErr}` }),
+      cand({ id: 'dup3', title: 'weird PG write failure', body: `saw ${quotedErr} on write` }),
+    ];
+
+    it('(a) three filings quoting an identical error string cluster together at every window size', () => {
+      const filler = (n: number) => Array.from({ length: n }, (_, i) => cand({ id: `fill${n}-${i}`, title: `filler ${n} ${i}` }));
+      for (const windowSize of [0, 5, 50]) {
+        const window = [...dupes, ...filler(windowSize)];
+        const clusters = findLikelyDuplicates(window);
+        const quoteCluster = clusters.find((c) => c.signature.startsWith('quote:'));
+        expect(quoteCluster?.ids.sort()).toEqual(['dup1', 'dup2', 'dup3']);
+      }
+    });
+
+    it('(b) total (corpusTotal) is invariant under limit — it never tracks the window size', () => {
+      // Simulates the filed repro table: the SAME true corpus (here: 4321), read
+      // through three different window sizes. `total` must report 4321 every time;
+      // `returned` is free to vary with the window, `total` is not.
+      const corpusTotal = 4321;
+      for (const windowSize of [5, 30, 200]) {
+        const window = dupes.slice(0, Math.min(windowSize, dupes.length));
+        const d = buildDigest(window, { nowMs: NOW, corpusTotal });
+        expect(d.total).toBe(corpusTotal);
+      }
+    });
+  });
 });
 
 /**

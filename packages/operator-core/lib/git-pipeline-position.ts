@@ -456,8 +456,19 @@ export interface PipelinePosition {
     lastGreenShortSha: string | null;
     /** How long ago that commit was made (ms) — the age of the current green pin. */
     lastGreenAgeMs: number | null;
-    /** True iff `ready` (the green pin) is exactly at `main` HEAD — main is fully
-     *  fast-forwarded to the newest green verdict, no un-gated commits ahead of it. */
+    /**
+     * True iff the green pin (`main` HEAD) is exactly at `staging` HEAD — i.e. there is
+     * no un-checkpointed staging buffer. ⚠ DESPITE THE NAME, `false` here is the fleet's
+     * NORMAL steady state (staging outruns the ~hourly green-checkpoint) and does NOT by
+     * itself mean main has stopped advancing — `ready` IS `main` HEAD by this module's
+     * own definition (see the naming note atop dev-deploy-state.ts), so "main vs the
+     * green pin" can never diverge; what this field actually measures is the green pin
+     * vs `staging`. WI-6357 / EI-18790908999972569: an earlier version of this comment
+     * claimed "main is fully fast-forwarded to the newest green verdict", which does not
+     * describe what is computed and is what led `false` to be read as a stall. For the
+     * real stall signal, see `mainBufferIsStale`, which requires the buffer to have
+     * outlived the pipeline's own normal cadence, not merely exist.
+     */
     mainFastForwarded: boolean | null;
     /** Commits `ready` has that the deployed ref doesn't (0 once the live host has
      *  caught up to the latest green verdict). */
@@ -1155,6 +1166,51 @@ export interface StageState {
 }
 
 /**
+ * WI-6357 / EI-18790908999972569 — how long a nonzero staging→main buffer
+ * (`verdictProvenance.mainFastForwarded === false`) may persist before it stops
+ * being NORMAL lag and starts being a genuine main-stall signal.
+ *
+ * A nonzero buffer BY ITSELF is the ordinary steady state on this fleet: staging
+ * (git-sync commits continuously) outruns the green-checkpoint, which fires only
+ * ~hourly and takes up to ~55min per run — so `mainFastForwarded === false` reads
+ * true on virtually every healthy call. Firing 'stalled' on that alone reproduces
+ * the EI-11012 anti-pattern this same module already fixed once for the deploy
+ * stage, just under a new field name.
+ *
+ * 2h sits comfortably past any single normal cycle (cadence + one suite run) while
+ * still catching a genuine multi-hour stall — it is also the window from the
+ * incident that first motivated tracking this at all (EI-18719549079738452, a
+ * torn git-sync candidate silently wedging retriage for ~2h while `gate.stalled`/
+ * `consecutiveReds` both read clean).
+ */
+export const MAIN_BUFFER_STALL_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Is the staging→main buffer's AGE — not merely its existence — suspicious?
+ *
+ * `mainFastForwarded !== false` (no buffer, or unmeasured) is never stale — a
+ * buffer that doesn't exist can't be stuck, and a `null` (unmeasured) must not be
+ * read as a confident stall (axis 2: a missing measurement is not a negative
+ * result). Otherwise, staleness is judged against `gate.lastGreenAtMs`: a RECENT
+ * green verdict with a buffer still ahead of it is the expected in-between state
+ * of a fleet whose commits outpace its checkpoint cadence; only a buffer that has
+ * outlived `MAIN_BUFFER_STALL_MS` since the last green verdict is worth surfacing
+ * — `gate.lastGreenAtMs === null` (no green verdict measured yet) is likewise left
+ * unstale rather than asserted stuck.
+ *
+ * Pure + directly unit-testable, mirroring `computeStages`'s own contract.
+ */
+export function mainBufferIsStale(
+  gate: Pick<PipelinePosition['gate'], 'lastGreenAtMs'>,
+  mainFastForwarded: boolean | null,
+  now: number = Date.now(),
+): boolean {
+  if (mainFastForwarded !== false) return false;
+  if (gate.lastGreenAtMs === null) return false;
+  return now - gate.lastGreenAtMs > MAIN_BUFFER_STALL_MS;
+}
+
+/**
  * Derive the stage table from state the caller ALREADY computed — this function
  * makes no git calls and adds no measurement, so it is pure and unit-testable.
  * P-002/P-003/P-004 replace the `unknown` healths with real signals.
@@ -1379,14 +1435,26 @@ export function computeStages(
         : null,
     });
 
+    // WI-6357 / EI-18790908999972569: a nonzero staging buffer is the fleet's normal
+    // steady state (see MAIN_BUFFER_STALL_MS above) — reporting 'stalled' on its mere
+    // existence cried wolf on virtually every healthy call and buried the ONE thing
+    // that actually determines whether main is stuck: the gate's own health (main only
+    // advances as a consequence of a green verdict, per the `lever: null` note below),
+    // or — when the gate itself reads clean — a buffer that has genuinely outlived the
+    // pipeline's normal cadence (mainBufferIsStale).
+    const gateBlocked = gateHealth === 'stalled' || gateHealth === 'broken';
+    const mainBufferStale = mainBufferIsStale(g, p.verdictProvenance.mainFastForwarded);
     stages.push({
       name: 'main',
       position: p.positions.inMain ? 'past' : 'pending',
-      health: p.verdictProvenance.mainFastForwarded === false ? 'stalled' : 'advancing',
-      detail:
-        p.verdictProvenance.mainFastForwarded === false
-          ? 'main is not fast-forwarded to the newest green pin — un-gated commits sit ahead of it.'
-          : null,
+      health: gateBlocked || mainBufferStale ? 'stalled' : 'advancing',
+      detail: gateBlocked
+        ? 'main is not fast-forwarded to the newest green pin — see the gate stage above, which is what is actually holding it back.'
+        : mainBufferStale
+          ? `main has not fast-forwarded to the newest green pin in over ${Math.round(MAIN_BUFFER_STALL_MS / 3_600_000)}h despite the gate reporting clean — the buffer may be stuck on a silent retriage (EI-18719549079738452) rather than genuinely healthy; worth a closer look, not necessarily broken.`
+          : p.verdictProvenance.mainFastForwarded === false
+            ? 'a staging buffer awaits the next green-checkpoint run before main catches up — normal, not a stall.'
+            : null,
       // main advances only as a CONSEQUENCE of a green verdict — there is no lever that
       // acts on it directly, so anything offered here would send the caller at the wrong
       // stage. The gate above owns this move.
@@ -1796,10 +1864,14 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
       ? ` (green gate STALLED: ${p.gate.consecutiveReds} reds)`
       : !p.positions.inMain && p.gate.consecutiveReds > 0
         ? ` (gate red: ${p.gate.consecutiveReds})`
-        : !p.positions.inMain && p.gate.consecutiveReds === 0 && p.verdictProvenance.mainFastForwarded === false
+        : // WI-6357 / EI-18790908999972569: gated on BUFFER AGE, not mere existence — a
+          // nonzero buffer is the fleet's normal steady state (see MAIN_BUFFER_STALL_MS),
+          // so the un-aged version of this check fired on virtually every healthy call
+          // and taught readers to scroll past the exact combination it exists to catch.
+          !p.positions.inMain && p.gate.consecutiveReds === 0 && mainBufferIsStale(p.gate, p.verdictProvenance.mainFastForwarded)
           ? ` (gate reports 0 reds, but main has NOT fast-forwarded to the last green pin ${
               p.verdictProvenance.lastGreenShortSha ?? '?'
-            } — may be an in-flight retriage/refire or another hold consecutiveReds doesn't capture; not necessarily broken, but don't read this as fully healthy)`
+            } for over ${Math.round(MAIN_BUFFER_STALL_MS / 3_600_000)}h — may be an in-flight retriage/refire or another hold consecutiveReds doesn't capture; not necessarily broken, but don't read this as fully healthy)`
           : '';
   // P-004: when the judged candidate provably lacks this file's content, that outranks
   // every tick above it — the ticks describe where the change IS, this describes whether

@@ -298,36 +298,44 @@ export default function TasksClient(): ReactElement {
         </span>
       </div>
 
-      <div style={{ overflowX: 'auto' }}>
-        <Table
-          style={{ minWidth: 1100, ...mono }}
-          columns={TASK_COLUMNS}
-          rows={data?.rows ?? []}
-          getRowKey={(r) => r.taskId}
-          emptyLabel={
-            // An empty table is USUALLY correct, not a fault, so say that first — the
-            // common case is simply that nothing enrolled is running this second.
-            // Enrolment binds at SPAWN: anything started before the task manager was
-            // enabled stays outside the ledger for its whole life and never appears
-            // here, so a freshly-enabled box reads empty until its processes cycle.
-            //
-            // The old copy asserted the opposite ("check the reconcile routine is
-            // armed") and sent the reader to /admin/schedules — which is itself
-            // 403-blanked in the desktop webview (EI-18834967602055309), so the one
-            // remediation it offered was a dead end. The System rail tab shows the
-            // same routines and actually loads.
-            <>
-              Nothing enrolled is running right now
-              {live && typeof live.foreign === 'number' && live.foreign > 0 ? (
-                <> — {live.foreign} process group(s) on this box are foreign (your own terminals, systemd units)</>
-              ) : null}
-              . Enrolment binds at spawn, so processes started before the task manager was enabled never appear
-              here; they show up as their subtrees cycle. Tick <em>include finished</em> for completed tasks, or
-              open the <strong>System</strong> tab to check the <code>task-reconcile</code> routine is armed.
-            </>
-          }
-        />
-      </div>
+      {/* The empty state renders OUTSIDE the horizontally-scrolling table wrapper,
+          and that placement is the whole point. The table carries minWidth:1100 so its
+          11 columns stay legible; inside it, a prose empty-state is laid out against
+          1100px and CLIPPED in the ~365px left rail — the reader sees "Nothing enrolled
+          is running right now — 115 proce" and nothing more, with the rest only
+          reachable by horizontal scroll nobody thinks to try. Caught by screenshotting
+          the rail (the DOM assertion passed happily: the full text IS in innerText,
+          just not visible). Outside the wrapper it wraps to the pane's real width in
+          both the rail and the full-width admin page. */}
+      {data && data.rows.length === 0 ? (
+        // An empty table is USUALLY correct, not a fault, so lead with that — the common
+        // case is simply that nothing enrolled is running this second. Enrolment binds at
+        // SPAWN, so anything started before the task manager was enabled stays outside the
+        // ledger for its whole life and never appears here.
+        //
+        // The previous copy asserted the opposite ("check the reconcile routine is armed")
+        // and linked to /admin/schedules — itself 403-blanked in the desktop webview
+        // (EI-18834967602055309), so its one remediation was a dead end. The System rail
+        // tab shows the same routines and actually loads.
+        <div style={{ ...cell, opacity: 0.8, maxWidth: 780, lineHeight: 1.5 }}>
+          Nothing enrolled is running right now
+          {live && typeof live.foreign === 'number' && live.foreign > 0 ? (
+            <> — {live.foreign} process group(s) on this box are foreign (your own terminals, systemd units)</>
+          ) : null}
+          . Enrolment binds at spawn, so processes started before the task manager was enabled never appear here;
+          they show up as their subtrees cycle. Tick <em>include finished</em> for completed tasks, or open the{' '}
+          <strong>System</strong> tab to check the <code>task-reconcile</code> routine is armed.
+        </div>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <Table
+            style={{ minWidth: 1100, ...mono }}
+            columns={TASK_COLUMNS}
+            rows={data?.rows ?? []}
+            getRowKey={(r) => r.taskId}
+          />
+        </div>
+      )}
     </div>
   );
 }

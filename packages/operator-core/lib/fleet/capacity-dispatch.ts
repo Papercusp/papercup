@@ -497,6 +497,20 @@ export function buildCapacityReport(
   const poolExhausted =
     !restartRecovering && acct != null && acct.total > 0 && acct.usable <= 0 && (dispatchBudget ?? 0) > 0;
   if (poolExhausted) factor = 0;
+  // EI-18791793869559327: `poolExhausted` is a binary all-dead check (usable<=0) against a failure mode
+  // that is fundamentally gradual — an account can be fully `usable` (not walled, not edge-throttled) and
+  // still be `sustainedlyLimited` (the rate governor's own "repeatedly hitting penalties" verdict, already
+  // the system's scale-out trigger elsewhere). A pool where every usable account is sustainedly limited is
+  // degrading, not abundant, but the old binary check reported it exactly as "abundant → place broadly" —
+  // the reading a Mug's capacity-dispatch actually saw. Cap (never RAISE) the factor so a genuinely-scarcer
+  // signal elsewhere still wins; suppressed by restart-grace/poolExhausted for the same reason those are.
+  const degraded =
+    !restartRecovering &&
+    !poolExhausted &&
+    acct != null &&
+    acct.usable > 0 &&
+    (acct.sustainedlyLimitedCount ?? 0) >= acct.usable;
+  if (degraded) factor = Math.min(factor, config.degradedFactorCap);
   const tieredSpareCapacity = hasTieredBeeCapacity(signal);
   // A weekly-capped account reports BOTH paused:true and rejected:true; trust the tier oracle
   // (healthy accounts + bee-tier spare slots) over the bound-account block — same rationale as
@@ -512,6 +526,13 @@ export function buildCapacityReport(
       // signal (the floor still lets top-ranked tier-1 work attempt; broad placement is held).
       const floor = Math.max(0, Math.floor(config.minHeadroom));
       recommendedHeadroom = Math.min(opts.headroom, floor);
+      throttled = recommendedHeadroom < opts.headroom;
+    } else if (degraded) {
+      // `computeCapacityHeadroom` recomputes its own factor from `signal` alone (it has no
+      // accountAvailability visibility), so it would ignore the degraded cap applied above — clamp
+      // directly using the already-capped `factor` instead, same floor/min shape as that helper.
+      const floor = Math.max(0, Math.floor(config.minHeadroom));
+      recommendedHeadroom = Math.min(opts.headroom, Math.max(floor, Math.floor(opts.headroom * factor)));
       throttled = recommendedHeadroom < opts.headroom;
     } else {
       const decision = computeCapacityHeadroom(opts.headroom, signal, config);
@@ -567,6 +588,8 @@ export function buildCapacityReport(
     ? `pool EXHAUSTED: gateway reports ~${dispatchBudget ?? 0} bee slots but ${acct!.usable}/${acct!.total} ${acct!.provider ?? 'claude'} accounts are usable (rest walled/rate-paused/edge-throttled) → HOLD placements; dispatchBudget is a QUEUE figure, not real inference capacity (fresh spawns will die on their first call)${exhaustionCause ?? ''}`
     : poolBlocked
     ? 'pool SATURATED (paused/rejected) → place ONLY top-ranked tier-1 work; hold bee batch until it recovers'
+    : degraded
+    ? `DEGRADED: all ${acct!.usable}/${acct!.total} usable ${acct!.provider ?? 'claude'} account(s) are sustainedly rate-limited (repeated governor penalties) — not exhausted, but not abundant either → place conservatively (top-ranked only), prefer a warm-inject over a fresh spawn`
     : factor <= 0.25
       ? `scarce (factor ${factor.toFixed(2)}) → place the top-ranked items only, hold the rest${dispatchBudget != null ? `; ~${dispatchBudget} bee slots free` : ''}`
       : factor < 1
@@ -589,6 +612,8 @@ export function buildCapacityReport(
     usableAccounts: acct?.usable ?? null,
     availableAccounts: acct?.available ?? null,
     poolExhausted,
+    sustainedlyLimitedAccounts: acct?.sustainedlyLimitedCount ?? null,
+    degraded,
     capByTier,
     inFlight: hr.inFlight ?? null,
     queueDepth: hr.queueDepth ?? null,
