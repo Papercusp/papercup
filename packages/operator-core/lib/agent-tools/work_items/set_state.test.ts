@@ -177,8 +177,29 @@ describe('work_items:set_state — aliased/requestedState/appliedState on every 
  */
 describe('terminal writes structurally require completion evidence (P-005)', () => {
   const parse = (args: unknown) => (tool.args as { safeParse: (v: unknown) => { success: boolean } }).safeParse(args);
-  const accepts = (args: unknown) => expect(parse(args).success).toBe(true);
-  const rejects = (args: unknown) => expect(parse(args).success).toBe(false);
+
+  /**
+   * P-017 (b) gate #2 added a SECOND terminal requirement (`assumptions`, D-050). This
+   * block is about the EVIDENCE rule, so every payload here carries a satisfied
+   * assumption declaration — otherwise `rejects(...)` would pass for the wrong reason
+   * (missing assumptions rather than missing evidence) and would keep passing even if
+   * the evidence gate were deleted. The assumption gate is isolated symmetrically in
+   * its own describe block below.
+   */
+  const withAssumptions = (args: unknown): unknown => {
+    if (typeof args !== 'object' || args === null) return args;
+    const o = { ...(args as Record<string, unknown>) };
+    if (Array.isArray(o.items)) {
+      o.items = o.items.map((it) =>
+        typeof it === 'object' && it !== null ? { assumptions: 'none', ...(it as Record<string, unknown>) } : it,
+      );
+    }
+    if (o.assumptions === undefined) o.assumptions = 'none';
+    return o;
+  };
+
+  const accepts = (args: unknown) => expect(parse(withAssumptions(args)).success).toBe(true);
+  const rejects = (args: unknown) => expect(parse(withAssumptions(args)).success).toBe(false);
 
   it('rejects an evidence-less terminal write in ALL THREE call shapes', () => {
     // Fixing only itemSpec would MOVE the bypass to the shorthand rather than close it.
@@ -221,5 +242,79 @@ describe('terminal writes structurally require completion evidence (P-005)', () 
     // row in a non-dispatchable state no queue would ever offer again.
     rejects({ id: 'WI-1', state: 'donee' });
     rejects({ items: [{ id: 'WI-1', state: 'complete' }] });
+  });
+});
+
+/**
+ * P-017 (b) gate #2 / D-016 / D-050 — a terminal close must DECLARE the assumptions it
+ * rests on, or say "none" explicitly.
+ *
+ * Isolated from the evidence block above by construction: every payload here carries a
+ * satisfied `completionRef`, so each assertion can only be about `assumptions`. If the
+ * two gates shared fixtures, either could be deleted without a test going red.
+ */
+describe('terminal writes structurally require an assumption declaration (P-017 b#2)', () => {
+  const parse = (args: unknown) => (tool.args as { safeParse: (v: unknown) => { success: boolean } }).safeParse(args);
+  const REF = 'landed in abc123';
+
+  it('rejects a terminal write with evidence but NO assumption declaration, in all three shapes', () => {
+    // Fixing only itemSpec would MOVE the bypass to the shorthand rather than close it —
+    // and the shorthand is the cheaper call, so it would carry all the traffic.
+    expect(parse({ id: 'WI-1', state: 'done', completionRef: REF }).success).toBe(false);
+    expect(parse({ ids: ['WI-1', 'WI-2'], state: 'dropped', completionRef: REF }).success).toBe(false);
+    expect(parse({ items: [{ id: 'WI-1', state: 'done', completionRef: REF }] }).success).toBe(false);
+  });
+
+  it('accepts the explicit "none" — saying nothing-recorded is a valid answer', () => {
+    expect(parse({ id: 'WI-1', state: 'done', completionRef: REF, assumptions: 'none' }).success).toBe(true);
+    expect(
+      parse({ items: [{ id: 'WI-1', state: 'done', completionRef: REF, assumptions: 'none' }] }).success,
+    ).toBe(true);
+  });
+
+  it('accepts one or more facts:assert keys', () => {
+    expect(
+      parse({ id: 'WI-1', state: 'done', completionRef: REF, assumptions: ['gate-red-is-flake'] }).success,
+    ).toBe(true);
+    expect(
+      parse({ id: 'WI-1', state: 'done', completionRef: REF, assumptions: ['a-key', 'b-key'] }).success,
+    ).toBe(true);
+  });
+
+  it('rejects the shapes that would let the field die — empty array, empty string, wrong type', () => {
+    const bad: unknown[] = [[], [''], ['   '], '', 'None', true, 0, null, {}];
+    for (const assumptions of bad) {
+      expect(
+        parse({ id: 'WI-1', state: 'done', completionRef: REF, assumptions }).success,
+        `assumptions: ${JSON.stringify(assumptions)} must be refused`,
+      ).toBe(false);
+    }
+  });
+
+  it('leaves NON-terminal writes alone — no declaration required', () => {
+    for (const state of ['wip', 'blocked', 'needs-human', 'open', 'todo']) {
+      expect(parse({ id: 'WI-1', state }).success, state).toBe(true);
+    }
+  });
+
+  it('enforces the rule on LEGACY terminal spellings and case drift, not just done/dropped', () => {
+    for (const state of ['passed', 'resolved', 'closed', 'deprecated', 'DONE']) {
+      expect(parse({ id: 'WI-1', state, completionRef: REF }).success, state).toBe(false);
+      expect(
+        parse({ id: 'WI-1', state, completionRef: REF, assumptions: 'none' }).success,
+        `${state} + assumptions`,
+      ).toBe(true);
+    }
+  });
+
+  it('a mixed items[] batch refuses as a whole when ONE item omits the declaration', () => {
+    expect(
+      parse({
+        items: [
+          { id: 'WI-1', state: 'done', completionRef: REF, assumptions: 'none' },
+          { id: 'WI-2', state: 'done', completionRef: REF },
+        ],
+      }).success,
+    ).toBe(false);
   });
 });

@@ -58,7 +58,32 @@ import complete from './complete';
 import { coerceCompletionShape, gatherFlatCompletion } from './completion-coerce';
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
-const parse = (x: unknown) => (complete.args as { parse: (x: unknown) => unknown }).parse(x);
+/**
+ * P-017 (b) gate #2 / D-050: `assumptions` is now REQUIRED on every commitment-class
+ * call. These ~100 tests are about completion semantics, not about the new gate, so the
+ * helper supplies the field exactly as a real caller must — keeping each test testing
+ * what it was written to test. A test that passes only because the helper filled a
+ * required field is fine; a GATE that passes only because of that would not be, so the
+ * gate has its own dedicated raw-schema tests at the bottom of this file which never
+ * go through this helper.
+ */
+const withAssumptions = (x: unknown): unknown => {
+  if (typeof x !== 'object' || x === null) return x;
+  const o = { ...(x as Record<string, unknown>) };
+  if (Array.isArray(o.items)) {
+    o.items = o.items.map((it) =>
+      typeof it === 'object' && it !== null && (it as Record<string, unknown>).assumptions === undefined
+        ? { ...(it as Record<string, unknown>), assumptions: 'none' }
+        : it,
+    );
+  } else if (o.assumptions === undefined) {
+    o.assumptions = 'none';
+  }
+  return o;
+};
+
+const parse = (x: unknown) =>
+  (complete.args as { parse: (x: unknown) => unknown }).parse(withAssumptions(x));
 type Out = { data: any };
 /** Full envelope. */
 const env = async (x: unknown) => {

@@ -10,12 +10,20 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import '../index';
 import { lookupByMcpName } from '@papercusp/tooldef';
 import buildTypecheck, { resolveProjectPath, suggestProjects } from './typecheck';
+import {
+  FOREGROUND_TIMEOUT_CEILING_MS,
+  MCP_TRANSPORT_CAP_MS,
+  clampForegroundTimeoutMs,
+} from '../capability/inspect';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe('registration', () => {
   it('is reachable through the projection registry (the index import is not optional)', () => {
@@ -121,4 +129,56 @@ describe('suggestProjects — a refusal has to be actionable', () => {
       rmSync(bare, { recursive: true, force: true });
     }
   });
+});
+
+/**
+ * EI-18776865728050036 — the CLASS guard, not a per-tool patch.
+ *
+ * A tool dispatched FOREGROUND over the papercusp-su MCP transport gets ~55s (EI-6073). A tool
+ * that declares a longer budget cannot honour it: the transport kills the call first and the
+ * agent sees `MCP error -32603: write CONNECTION_CLOSED 127.0.0.1:6432` — an error naming the
+ * DATABASE, which sends them off debugging PG. Measured: build:typecheck on packages/operator-core
+ * (104.4s) failed 3/3 while libs/flags (2.1s) passed on the identical path.
+ *
+ * This has now happened THREE times — capability:inspect (EI-6073, fixed), then build:typecheck
+ * and testing:run (both found together and fixed here) — so a per-tool fix demonstrably does not
+ * stop the next one. These assertions fail if a foreground subprocess tool stops clamping.
+ */
+describe('EI-18776865728050036 — no FOREGROUND subprocess tool may declare a budget the transport cannot honour', () => {
+  // Tools that spawn a child process and return its result INLINE. Add a row here when you add
+  // another; that is the point of the list.
+  const FOREGROUND_SUBPROCESS_TOOLS = ['build/typecheck.ts', 'testing/run.ts'];
+
+  it('the shared foreground ceiling sits below the transport cap', () => {
+    expect(FOREGROUND_TIMEOUT_CEILING_MS).toBeLessThan(MCP_TRANSPORT_CAP_MS);
+  });
+
+  it('clamping a budget far above the cap still lands below it', () => {
+    // 900_000 is MAX_TIMEOUT_MS on both tools — the worst case a caller can ask for.
+    expect(clampForegroundTimeoutMs(900_000)).toBeLessThan(MCP_TRANSPORT_CAP_MS);
+  });
+
+  it.each(FOREGROUND_SUBPROCESS_TOOLS)(
+    '%s routes its foreground budget through clampForegroundTimeoutMs',
+    (rel) => {
+      const src = readFileSync(join(__dirname, '..', rel), 'utf8');
+      expect(src, `${rel} must import the shared clamp rather than re-declaring the ceiling`)
+        .toMatch(/clampForegroundTimeoutMs/);
+      // The teeth: the un-clamped form is what shipped and what a revert would restore.
+      expect(src, `${rel} passes its raw default straight to the spawn — the transport will kill it`)
+        .not.toMatch(/timeoutMs\s*=\s*args\.timeoutMs\s*\?\?\s*DEFAULT_TIMEOUT_MS\s*;/);
+    },
+  );
+
+  it.each(FOREGROUND_SUBPROCESS_TOOLS)(
+    '%s hands back an actionable next step on timeout, not a bare error',
+    (rel) => {
+      const src = readFileSync(join(__dirname, '..', rel), 'utf8');
+      // A timeout that names no escape route is how an agent ends up hand-rolling `npx tsc -p .`
+      // — which checks ZERO files here and reads as clean.
+      expect(src, `${rel} timeout branch must point at the detached run`).toMatch(
+        /run_in_background/,
+      );
+    },
+  );
 });

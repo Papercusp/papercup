@@ -51,6 +51,10 @@ import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { distillVitestRun } from '../../testing-run-store';
 import { inferWorkspaceRoot } from '../../testing-domain-glob';
+import {
+  FOREGROUND_TIMEOUT_CEILING_MS,
+  clampForegroundTimeoutMs,
+} from '../capability/inspect';
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
  *  indefinitely. 21% of corpus commands already hand-wrapped a `timeout`; this
@@ -111,7 +115,9 @@ export default defineTool({
     testNamePattern: z.string().min(1).max(200).optional()
       .describe("Run only tests whose full name matches (Vitest `-t`). Use to re-run ONE failing test from a previous result's `failures[].test`."),
     timeoutMs: z.number().int().min(1000).max(MAX_TIMEOUT_MS).optional()
-      .describe(`Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms.`),
+      .describe(
+        `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so a slow suite returns an actionable timeout instead of an opaque transport error. For a longer suite run it detached via capability:inspect { run_in_background: true }.`,
+      ),
     maxFailures: z.number().int().min(1).max(100).optional()
       .describe('Cap the returned failures list (default 20). Counts stay complete; `failuresTruncated` flags the cut.'),
   }),
