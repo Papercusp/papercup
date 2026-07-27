@@ -68,6 +68,28 @@ describe('applyTriageDecision — the decision PERSISTS (the G1 fix)', () => {
     expect(res.closed).toBe(false);
   });
 
+  // EI-18812833212023413 — the gate verdict must reach the field the CLAIM FLOOR reads.
+  // Before this, 'gate' wrote only ideaLifecycle.triageDecision while issue-family
+  // admission keys on payload.needsHuman, so a human-gated item stayed fully claimable
+  // and scheduler:get_next served it (51 open items were unfenced when found, including
+  // protected-path ones). Asserting the MIRROR, not just the record.
+  it('gate sets payload.needsHuman so the claim floor actually fences it', async () => {
+    const deps = depsOf(issueOf({ id: 'i-gate', scope: 'operator' }));
+    const res = await applyTriageDecision(
+      { id: 'i-gate', decision: 'gate', reason: 'touches apps/operator/lib/release/** → human' },
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageDecision).toBe('gate');
+    expect(deps.merged[0].needsHuman).toBe(true);
+  });
+
+  it('a NON-gate decision does not set needsHuman (the mirror is gate-only)', async () => {
+    const deps = depsOf(issueOf({ id: 'i-place', scope: 'operator' }));
+    await applyTriageDecision({ id: 'i-place', decision: 'place', reason: 'auto-eligible bug' }, deps);
+    expect(deps.merged[0].needsHuman).toBeUndefined();
+  });
+
   it('reject CLOSES the issue and records decidedReason (queue-as-memory recall)', async () => {
     const deps = depsOf(issueOf({ id: 'i2' }));
     const res = await applyTriageDecision({ id: 'i2', decision: 'reject', reason: 'duplicate of EI-12' }, deps);

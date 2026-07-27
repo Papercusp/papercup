@@ -4452,6 +4452,17 @@ export interface WorkItemObservation {
    * discovering it via a claim that bounces back to the pool.
    */
   planItemBlocked?: { reason: string; planSlug: string; itemId: string; effectiveStatus: string };
+  /**
+   * WI-5343 (secondary ask): true when the item is UNCLAIMED yet carries a
+   * `payload._claimHold` durable park (WI-2797 — `work_items:release { claimHold:true }` /
+   * a `blocked` state auto-applies it) that excludes it from `scheduler:get_next` /
+   * `claim_next` self-select just like the G2 gate and the plan-lane block above. Before
+   * this field existed, a claim-held item read back as `available:true` here (and in the
+   * `work_items:list { admissibleOnly:true }` fold this function backs, pre the WI-5343
+   * floor-parity fix) — a caller weighing "should I claim this by id" had no way to see
+   * the hold short of a bounced `claim_hold_blocked` claim attempt.
+   */
+  claimHoldParked?: boolean;
 }
 
 /**
@@ -4497,6 +4508,15 @@ export async function observeWorkItem(
   // too, not just report unclaimed and let the real claim bounce with not_claimable.
   if (unclaimed && wi.family === 'issue' && !isIssueLocallyClaimable(wi.origin)) {
     return { item: wi, available: false, claimedBy: wi.assignee, gated: true };
+  }
+  // WI-5343 (secondary ask): an unclaimed row can still carry a durable WI-2797
+  // claim-hold (payload._claimHold) — the same floor claimFloorsWhereSql /
+  // claimHoldExclusionSql enforce at claim time (both families). Surface it here
+  // too, same shape as the G2/origin gates above and the plan-lane block below, so
+  // a caller sees WHY a claim-by-id would bounce with claim_hold_blocked instead of
+  // discovering it only via that bounce.
+  if (unclaimed && isClaimHoldParked(wi.payload)) {
+    return { item: wi, available: false, claimedBy: wi.assignee, gated: true, claimHoldParked: true };
   }
   // WI-3667/P-003: an unclaimed row can still carry a plan-item back-pointer whose
   // linked lane is effectively `blocked`/needs-human even though it cleared every SQL
