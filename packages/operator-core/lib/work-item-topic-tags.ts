@@ -178,6 +178,14 @@ export async function syncTopicTagToClaimTags(args: SyncTopicTagArgs): Promise<T
 
   // issue-family: the JS evaluator reads `payload.tags`, so maintain exactly that
   // key (merged into the existing payload, never replacing it).
+  //
+  // `origin IS DISTINCT FROM 'remote'` (EI-18810823481386446) refuses the write for a
+  // federated row IN THE STATEMENT, rather than leaving it to the view's INSTEAD OF
+  // trigger. Both refuse — but doing it here means (a) the refusal is legible where
+  // the write is, (b) no doomed round-trip, and (c) the behavior is reproducible
+  // against a plain-table fixture instead of only against the real view. NULL origin
+  // is legacy-local and stays writable, which IS DISTINCT FROM gets right and `<>`
+  // would not.
   const rows = remove
     ? await sql<{ issue_id: string }[]>`
         UPDATE harness_shared.engineer_issues
@@ -187,6 +195,7 @@ export async function syncTopicTagToClaimTags(args: SyncTopicTagArgs): Promise<T
                updated_at = now()
          WHERE workspace_id = ${workspaceId}
            AND issue_id = ${id}
+           AND origin IS DISTINCT FROM 'remote'
            AND ${hasIssueTagSql(sql, topic)}
         RETURNING issue_id`
     : await sql<{ issue_id: string }[]>`
@@ -201,6 +210,7 @@ export async function syncTopicTagToClaimTags(args: SyncTopicTagArgs): Promise<T
                updated_at = now()
          WHERE workspace_id = ${workspaceId}
            AND issue_id = ${id}
+           AND origin IS DISTINCT FROM 'remote'
            AND NOT ${hasIssueTagSql(sql, topic)}
         RETURNING issue_id`;
   if (rows.length > 0) return mirrorResult('applied');

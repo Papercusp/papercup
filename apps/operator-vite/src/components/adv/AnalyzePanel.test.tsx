@@ -138,14 +138,19 @@ describe("CycleDetailLoader — the three states (WI-6395)", () => {
   it("renders the cycle when the read succeeds (proves the probe is not blind)", () => {
     cycleResult = {
       data: [
+        // Every array CycleDetail touches must be present — it indexes
+        // `.length` on them directly. The first draft of this fixture omitted
+        // `ideatorSlots` and the test THREW, which is the non-blindness check
+        // earning its place: it proved the probe reaches real render code
+        // rather than passing on a component that never mounted.
         {
           cycleId: "cyc-1",
-          startedAt: new Date(1_000_000).toISOString(),
+          at: new Date(1_000_000).toISOString(),
           ideas: [{ id: "idea-1", title: "A real idea" }],
           scored: [],
-          fusions: [],
+          proposals: [],
           routed: [],
-          ideators: [],
+          ideatorSlots: [],
         },
       ],
       loading: false,

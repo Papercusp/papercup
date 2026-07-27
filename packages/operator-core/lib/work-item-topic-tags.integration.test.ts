@@ -15,6 +15,17 @@
  * plus the pure set semantics, idempotence, untag symmetry, non-array tolerance,
  * and workspace/harness scoping. Gated on Docker like the other *-integration
  * tests; inline DDL carries only the columns under test.
+ *
+ * EI-18810823481386446 adds the OUTCOME contract: a 0-row write is classified
+ * (`already` vs `remote-origin` vs `no-row`) instead of collapsing to one `false`.
+ *
+ * ⚠ SCOPE OF THE remote-origin TEST BELOW: the inline `engineer_issues` DDL here is
+ * a plain TABLE. Production's is a VIEW whose INSTEAD OF trigger is what actually
+ * no-ops the write on a federated row. So these tests pin the TypeScript
+ * classification (origin='remote' ⇒ outcome 'remote-origin', payload untouched) —
+ * NOT the trigger itself. That is the right split: the trigger is DB-side behavior
+ * already covered by its migration, and the defect being fixed was that the TS
+ * layer could not TELL the two 0-row cases apart.
  */
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
@@ -75,11 +86,15 @@ async function featureTags(id: string, harness = HARNESS): Promise<unknown> {
      WHERE feature_id = ${id} AND harness_slug = ${harness}`;
   return rows[0]?.tags ?? null;
 }
-async function seedIssue(id: string, payload: unknown = null, workspaceId = WS) {
+async function seedIssue(id: string, payload: unknown = null, workspaceId = WS, origin: string | null = 'local') {
   await db.sql`
-    INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title, payload)
-    VALUES (${workspaceId}, ${id}, 'seed', ${payload === null ? null : JSON.stringify(payload)}::text::jsonb)`;
+    INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title, payload, origin)
+    VALUES (${workspaceId}, ${id}, 'seed', ${payload === null ? null : JSON.stringify(payload)}::text::jsonb, ${origin})`;
 }
+
+/** The outcome alone — most assertions below only care WHICH of the five it is. */
+const outcomeOf = async (args: Parameters<typeof syncTopicTagToClaimTags>[0]) =>
+  (await syncTopicTagToClaimTags(args)).outcome;
 async function issuePayload(id: string, workspaceId = WS): Promise<Record<string, unknown> | null> {
   const rows = await db.sql<{ payload: Record<string, unknown> | null }[]>`
     SELECT payload FROM harness_shared.engineer_issues
@@ -106,48 +121,58 @@ describe('feature-family: the `tags` COLUMN the claim SQL reads (EI-186541380870
     await seedFeature('WI-5779', null);
     expect(await featureTags('WI-5779')).toBeNull(); // pre-fix state: invisible to the claim SQL
 
-    const changed = await syncTopicTagToClaimTags({
-      id: 'WI-5779',
-      family: 'feature',
-      workspaceId: WS,
-      harness: HARNESS,
-      topic: 'p2p-release',
-    });
-
-    expect(changed).toBe(true);
+    expect(
+      await syncTopicTagToClaimTags({
+        id: 'WI-5779',
+        family: 'feature',
+        workspaceId: WS,
+        harness: HARNESS,
+        topic: 'p2p-release',
+      }),
+    ).toEqual({ outcome: 'applied', mirrored: true, changed: true });
     expect(await featureTags('WI-5779')).toEqual(['p2p-release']);
   });
 
   it('appends to an existing set and is idempotent', async () => {
     await seedFeature('WI-1', ['existing']);
-    expect(await syncTopicTagToClaimTags({ id: 'WI-1', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release' })).toBe(true);
+    expect(await outcomeOf({ id: 'WI-1', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release' })).toBe('applied');
     expect(await featureTags('WI-1')).toEqual(['existing', 'p2p-release']);
-    // Re-tagging changes nothing (no duplicate, no spurious row update).
-    expect(await syncTopicTagToClaimTags({ id: 'WI-1', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release' })).toBe(false);
+    // Re-tagging writes nothing — but the field DOES hold the tag, so this is
+    // `already`/mirrored, never the same answer as a refused write.
+    expect(await syncTopicTagToClaimTags({ id: 'WI-1', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release' })).toEqual({
+      outcome: 'already',
+      mirrored: true,
+      changed: false,
+    });
     expect(await featureTags('WI-1')).toEqual(['existing', 'p2p-release']);
   });
 
   it('untag removes only that tag, and is idempotent', async () => {
     await seedFeature('WI-2', ['a', 'p2p-release', 'b']);
-    expect(await syncTopicTagToClaimTags({ id: 'WI-2', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release', remove: true })).toBe(true);
+    expect(await outcomeOf({ id: 'WI-2', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release', remove: true })).toBe('applied');
     expect(await featureTags('WI-2')).toEqual(['a', 'b']);
-    expect(await syncTopicTagToClaimTags({ id: 'WI-2', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release', remove: true })).toBe(false);
+    // Idempotent UNTAG: desired state is "tag absent", which holds — `already`.
+    expect(await outcomeOf({ id: 'WI-2', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release', remove: true })).toBe('already');
     expect(await featureTags('WI-2')).toEqual(['a', 'b']);
   });
 
   it('tolerates a legacy NON-ARRAY tags value instead of throwing', async () => {
     await seedFeature('WI-3', 'legacy-string');
-    expect(await syncTopicTagToClaimTags({ id: 'WI-3', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release' })).toBe(true);
+    expect(await outcomeOf({ id: 'WI-3', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release' })).toBe('applied');
     expect(await featureTags('WI-3')).toEqual(['p2p-release']);
   });
 
-  it('is workspace- and harness-scoped (never writes another tenant\'s row)', async () => {
+  it('is workspace- and harness-scoped, and reports the miss as `no-row` (NOT `already`)', async () => {
     await seedFeature('WI-4', null, 'other-ws', HARNESS);
-    expect(await syncTopicTagToClaimTags({ id: 'WI-4', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release' })).toBe(false);
+    expect(await syncTopicTagToClaimTags({ id: 'WI-4', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release' })).toEqual({
+      outcome: 'no-row',
+      mirrored: false,
+      changed: false,
+    });
     expect(await featureTags('WI-4')).toBeNull();
 
     await seedFeature('WI-5', null, WS, 'other-harness');
-    expect(await syncTopicTagToClaimTags({ id: 'WI-5', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release' })).toBe(false);
+    expect(await outcomeOf({ id: 'WI-5', family: 'feature', workspaceId: WS, harness: HARNESS, topic: 'p2p-release' })).toBe('no-row');
     expect(await featureTags('WI-5', 'other-harness')).toBeNull();
   });
 });
@@ -155,27 +180,57 @@ describe('feature-family: the `tags` COLUMN the claim SQL reads (EI-186541380870
 describe('issue-family: the `payload.tags` the JS evaluator reads (EI-18654138087054247)', () => {
   it('tagging an issue with no payload makes the tag claim-visible', async () => {
     await seedIssue('EI-1', null);
-    expect(await syncTopicTagToClaimTags({ id: 'EI-1', family: 'issue', workspaceId: WS, topic: 'p2p-release' })).toBe(true);
+    expect(await outcomeOf({ id: 'EI-1', family: 'issue', workspaceId: WS, topic: 'p2p-release' })).toBe('applied');
     expect(await issuePayload('EI-1')).toEqual({ tags: ['p2p-release'] });
   });
 
   it('MERGES into the existing payload — never replaces sibling keys', async () => {
     await seedIssue('EI-2', { implementAttempts: 2, tags: ['a'] });
-    expect(await syncTopicTagToClaimTags({ id: 'EI-2', family: 'issue', workspaceId: WS, topic: 'p2p-release' })).toBe(true);
+    expect(await outcomeOf({ id: 'EI-2', family: 'issue', workspaceId: WS, topic: 'p2p-release' })).toBe('applied');
     expect(await issuePayload('EI-2')).toEqual({ implementAttempts: 2, tags: ['a', 'p2p-release'] });
   });
 
   it('is idempotent, and untag removes only that tag', async () => {
     await seedIssue('EI-3', { tags: ['a', 'p2p-release'] });
-    expect(await syncTopicTagToClaimTags({ id: 'EI-3', family: 'issue', workspaceId: WS, topic: 'p2p-release' })).toBe(false);
-    expect(await syncTopicTagToClaimTags({ id: 'EI-3', family: 'issue', workspaceId: WS, topic: 'p2p-release', remove: true })).toBe(true);
+    expect(await outcomeOf({ id: 'EI-3', family: 'issue', workspaceId: WS, topic: 'p2p-release' })).toBe('already');
+    expect(await outcomeOf({ id: 'EI-3', family: 'issue', workspaceId: WS, topic: 'p2p-release', remove: true })).toBe('applied');
     expect(await issuePayload('EI-3')).toEqual({ tags: ['a'] });
-    expect(await syncTopicTagToClaimTags({ id: 'EI-3', family: 'issue', workspaceId: WS, topic: 'p2p-release', remove: true })).toBe(false);
+    expect(await outcomeOf({ id: 'EI-3', family: 'issue', workspaceId: WS, topic: 'p2p-release', remove: true })).toBe('already');
   });
 
-  it('is workspace-scoped', async () => {
+  it('is workspace-scoped, and reports the miss as `no-row`', async () => {
     await seedIssue('EI-4', null, 'other-ws');
-    expect(await syncTopicTagToClaimTags({ id: 'EI-4', family: 'issue', workspaceId: WS, topic: 'p2p-release' })).toBe(false);
+    expect(await outcomeOf({ id: 'EI-4', family: 'issue', workspaceId: WS, topic: 'p2p-release' })).toBe('no-row');
     expect(await issuePayload('EI-4', 'other-ws')).toBeNull();
+  });
+
+  describe('EI-18810823481386446 — a federated row must NOT report success', () => {
+    it('THE BUG: a remote-origin row returns `remote-origin`/mirrored:false, not the `already`-shaped false a caller reads as fine', async () => {
+      // WI-3669's exact live shape: the row resolves, payload.tags is NULL, and the
+      // production view's INSTEAD OF trigger refuses the local write. Pre-fix this
+      // returned the SAME `false` as an idempotent re-tag, and tagWorkItem discarded
+      // it — so work_items:tag answered ok:true having written nothing.
+      await seedIssue('EI-REMOTE', null, WS, 'remote');
+
+      expect(await syncTopicTagToClaimTags({ id: 'EI-REMOTE', family: 'issue', workspaceId: WS, topic: 'p2p-excluded' })).toEqual({
+        outcome: 'remote-origin',
+        mirrored: false,
+        changed: false,
+      });
+      // and it genuinely wrote nothing.
+      expect(await issuePayload('EI-REMOTE')).toBeNull();
+    });
+
+    it('reports `remote-origin` for an UNTAG too — the refusal is a property of the row, not the direction', async () => {
+      await seedIssue('EI-REMOTE-2', { tags: ['p2p-excluded'] }, WS, 'remote');
+      expect(await outcomeOf({ id: 'EI-REMOTE-2', family: 'issue', workspaceId: WS, topic: 'p2p-excluded', remove: true })).toBe('remote-origin');
+      expect(await issuePayload('EI-REMOTE-2')).toEqual({ tags: ['p2p-excluded'] });
+    });
+
+    it('a LOCAL row is unaffected — the guard is origin-specific, not a blanket refusal', async () => {
+      await seedIssue('EI-LOCAL', null, WS, 'local');
+      expect(await outcomeOf({ id: 'EI-LOCAL', family: 'issue', workspaceId: WS, topic: 'p2p-excluded' })).toBe('applied');
+      expect(await issuePayload('EI-LOCAL')).toEqual({ tags: ['p2p-excluded'] });
+    });
   });
 });
