@@ -127,7 +127,21 @@ export interface HudRosterEntry {
   compactionLimit: number | null;
   openAwait: HudOpenAwait | null;
   thinking: boolean;
+  /** The adv_sessions `display` hint. Optional — only the launch-record tiers
+   *  carry one ('workbench' for a D-006 pane launch, 'terminal' for a WI-6376
+   *  terminal spawn); a presence-derived row has none. Read ONLY to tell a
+   *  terminal launch that never came online from one that is still booting. */
+  display?: string | null;
+  /** When the session (or its launch record) started. Optional for the same
+   *  reason as `display`. */
+  startedAt?: string | null;
 }
+
+/** How long a terminal-spawned launch may sit un-registered before the board
+ *  stops calling it "starting" and calls it a launch that never came online.
+ *  Matches the 60s did-not-come-online fallback WI-6367 gave the chat modal —
+ *  the two surfaces should not disagree about the same session. */
+export const TERMINAL_LAUNCH_ONLINE_GRACE_SEC = 60;
 
 /** An unanswered thing addressed to the human, keyed to the agent that asked.
  *  Sourced from the SAME `plans.attention` feed the inbox and Queue read — the
@@ -488,6 +502,23 @@ export function deriveColumn(
   //     calling it "needs you" would put unfixable rows in the column whose whole
   //     value is that everything in it is actionable.
   if (e.lastActiveAt == null && !e.stale && e.liveness !== 'stale') {
+    // WI-6376: a TERMINAL launch that is still un-registered well past the point
+    // it should have booted is not "fresh", it is a launch that failed — the
+    // terminal never opened, or psu died on startup. Say so. It stays in
+    // needs-you because it is still the human's to fix (relaunch it); what
+    // changes is that the card stops implying a healthy session is on its way.
+    const sinceStart = ageSec(e.startedAt ?? null, nowMs);
+    if (
+      e.display === 'terminal' &&
+      sinceStart != null &&
+      sinceStart >= TERMINAL_LAUNCH_ONLINE_GRACE_SEC
+    ) {
+      return {
+        column: 'needs-you',
+        reason: `Launched ${formatAge(sinceStart)} ago but never came online — the terminal may have failed to start. Relaunch it.`,
+        sinceSec: sinceStart,
+      };
+    }
     return {
       column: 'needs-you',
       reason:

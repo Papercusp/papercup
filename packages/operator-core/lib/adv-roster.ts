@@ -710,6 +710,110 @@ export function pendingLaunchesToRosterEntries(
 }
 
 /**
+ * Map TERMINAL-spawned psu launches (display='terminal', still inside the boot
+ * window) into RosterEntry-shaped rows for the roster's `starting` tier
+ * (WI-6376). The board's whole promise is that a session shows up "whether or
+ * not they are launched with the new session button or if they are launched with
+ * the psu utility" [owner 2026-07-25]; the roster is presence-primary, so
+ * until psu registers its own coord_presence there is nothing to render and the
+ * session appeared in no column at all.
+ *
+ * Two differences from `pendingLaunchesToRosterEntries`, both load-bearing:
+ *
+ *  1. `ownerId` is the REAL pre-pinned coord owner id (launch-su mints it and
+ *     passes `psu --owner-id=`), not a synthetic `pending:adv:<id>`. That makes
+ *     the card the same identity the chat modal opens, and it is what lets the
+ *     caller drop this row the instant the session comes online — otherwise a
+ *     booted session would render twice, once from here and once from presence.
+ *  2. `display` stays 'terminal', so the pui's `is_displayable` (which requires
+ *     'workbench') can never pane one of these even if it read this tier. The
+ *     primary guard is that the pui reads only `pending`; this is the backstop.
+ */
+export function startingLaunchesToRosterEntries(
+  rows: AdvSessionRow[],
+  localHost: string,
+): RosterEntry[] {
+  return rows.map((r) => {
+    const pane = classifyAgentPane({ role: r.role, launch: launchHintFromArgv(r.launchArgv) });
+    return {
+      // Fall back to a synthetic id only for a pre-WI-6363 row that carries no
+      // pre-pinned owner; such a row can still be SEEN, it just cannot be opened.
+      ownerId: r.coordOwnerId ?? `starting:adv:${r.id}`,
+      label: r.label ?? `${r.agent ?? 'session'}${r.planSlug ? ` · ${r.planSlug}` : ''}`,
+      source: r.agent ?? '',
+      intent: 'starting up',
+      currentFiles: [],
+      host: localHost,
+      pid: r.pid,
+      startedAt: r.startedAt,
+      heartbeatAt: r.startedAt,
+      // Never taken a turn — this is what puts the card in `needs-you` via
+      // deriveColumn step 1c rather than in `parked`.
+      lastActiveAt: null,
+      liveness: 'pending' as Liveness,
+      stale: false,
+      loopArmed: false,
+      modes: [],
+      machineLabel: null,
+      isLocal: true,
+      workspaceId: r.workspaceId,
+      userId: null,
+      revoked: false,
+      pidAlive: null,
+      lastOutputAt: null,
+      claims: [],
+      declaredUnclaimed: false,
+      hasLaunchRecord: true,
+      advSessionId: r.id,
+      currentPlanSlug: r.planSlug,
+      role: r.role,
+      feature: r.feature,
+      agent: r.agent,
+      mode: r.mode,
+      windowId: null,
+      ompThreadId: null,
+      cwd: r.cwd,
+      launchStartedAt: r.startedAt,
+      display: r.display,
+      launchArgv: r.launchArgv ?? [],
+      agentPaneKind: pane.kind,
+      driveMode: pane.driveMode,
+      sessionId: null,
+      nativeSession: null,
+      wakeMode: null,
+      pendingWakes: 0,
+      fleetSlug: null,
+      fleetColor: null,
+      fleetRole: null,
+      contextTokens: null,
+      compactionLimit: null,
+      intentDeclaredAt: null,
+      openAwait: null,
+      runId: null,
+      harnessSlug: null,
+      thinking: false,
+      thinkingResolvable: true,
+    };
+  });
+}
+
+/**
+ * Drop starting-tier rows whose session has since come online (WI-6376). The
+ * `starting` row and the live presence row describe the SAME session — they
+ * share the pre-pinned coord owner id — so without this the board would show a
+ * duplicate card for every session during the overlap. Presence always wins: it
+ * is the one with real state.
+ */
+export function dedupeStartingAgainstActive(
+  starting: RosterEntry[],
+  active: RosterEntry[],
+): RosterEntry[] {
+  if (starting.length === 0) return starting;
+  const online = new Set(active.map((e) => e.ownerId));
+  return starting.filter((e) => !online.has(e.ownerId));
+}
+
+/**
  * Whether a roster entry's OS process is worth a `process.kill(pid, 0)` probe:
  * it must have a pid, be non-stale (a stale entry is already known-gone, and
  * the probe would only add noise), and live on THIS host (a pid on another

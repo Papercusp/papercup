@@ -15,6 +15,8 @@
 
 import { coordLog } from './agent-tools/coordination/log';
 import { readAckedMsgIds } from './agent-tools/coordination/messages';
+import { readWatermark, pickUnreadCursor } from './agent-tools/coordination/watermarks';
+import { lastInboxReadAtBatch } from './agent-tools/coordination/inbox-read-freshness';
 import { listHandoffs, type HandoffWithAcceptance } from './agent-tools/coordination/handoffs';
 import { listEscalations, type EscalationRecord } from './agent-tools/coordination/escalations';
 import { latestAdvSessionByCoordOwner } from './adv-sessions';
@@ -305,7 +307,8 @@ function recipientsOf(env: { to?: unknown }): string[] {
  * Shape one agent's coord state from the raw message log + handoff/escalation
  * folds. Pure → unit-tested. `messages` is the full `messages` surface;
  * `acked` is the set the owner has acknowledged; `handoffs`/`escalations` are
- * already folded to status=open.
+ * already folded to status=open; `readCursor` is the agent's last read
+ * receipt (see `readUnreadCursor`), or null when it has none on record.
  */
 export function deriveCoordState(
   messages: CoordEnvelope[],
@@ -313,6 +316,7 @@ export function deriveCoordState(
   handoffs: HandoffWithAcceptance[],
   escalations: EscalationRecord[],
   owner: string,
+  readCursor: string | null,
 ): AgentCoordState {
   // Last message directly involving the agent — sent by it or addressed to it.
   // Pure '*' broadcasts where the agent isn't explicitly listed are excluded:
@@ -333,13 +337,32 @@ export function deriveCoordState(
       }
     : null;
 
-  // Unread = inbox messages (to the agent or broadcast) of kind 'message',
-  // not self-sent, not yet acked by the agent. Mirrors coord:inbox semantics.
+  // Unread = inbox messages (to the agent or broadcast) of kind 'message', not
+  // self-sent, that arrived AFTER the agent's last read receipt and were not
+  // explicitly acked.
+  //
+  // The read-cursor leg is unread-count-truthfulness-2026-07-27 P-002. Before
+  // it, this counted the WHOLE log minus explicit acks — and agents essentially
+  // never send an explicit `kind:'ack'`, so the badge was an all-time total. It
+  // read 19,391 for one live agent (19,390 of them broadcasts), which is the
+  // ~19k the owner reported. Note the fix is to INTRODUCE a cursor, not to add
+  // a fallback to a dead one: unlike the continuation gate, this path never
+  // consulted `messages_since_ts` at all (D-004).
+  //
+  // ts values are ISO strings and compare lexicographically — the same
+  // assumption `byTs` above already relies on.
+  //
+  // NOT yet coord:inbox semantics, deliberately: coord:inbox excludes ambient
+  // system broadcasts and collapses repeats, and this does neither, so a
+  // broadcast-heavy window still over-counts relative to what the agent is
+  // actually shown. That is Phase 2 (P-004/P-005) and is kept out of this
+  // change-set per D-001.
   const unreadCount = messages.filter(
     (m) =>
       m.kind === 'message' &&
       m.from !== owner &&
       (recipientsOf(m).includes(owner) || recipientsOf(m).includes('*')) &&
+      (readCursor === null || m.ts > readCursor) &&
       !acked.has(m.msg_id),
   ).length;
 
@@ -404,16 +427,49 @@ export async function getAgentLocks(owner: string): Promise<AgentLocks> {
   }
 }
 
+/**
+ * This agent's last read receipt (ISO), or null if it has none on record.
+ *
+ * Three signals, folded by the shared `pickUnreadCursor` rule (the LATER wins):
+ *   - `messages_since_ts` — the turn-END settle watermark. ATTACHED-ONLY, so a
+ *     detached/headless session keeps its initial `''` forever; on its own it
+ *     is a dead pointer for ~95% of rows.
+ *   - `messages_shown_ts` — advanced deterministically by `coord:inbox` at
+ *     injection. The authoritative "this agent was shown it" signal (D-002).
+ *   - the newest `coord:inbox`/`coord:orient` row in `tool_invocations`, via
+ *     the shared `lastInboxReadAtBatch` — the same list the coord-deafness
+ *     derivation uses, so the two cannot drift on what counts as a read.
+ *
+ * Fail-soft to null: an unreadable receipt must not silently claim the agent
+ * has read something it has not. Null is honest ("no receipt on record") and
+ * simply restores the pre-cursor behaviour for that one agent.
+ */
+async function readUnreadCursor(owner: string): Promise<string | null> {
+  try {
+    const [wm, lastReadByOwner] = await Promise.all([
+      readWatermark(owner),
+      lastInboxReadAtBatch([owner]),
+    ]);
+    return pickUnreadCursor(
+      pickUnreadCursor(wm?.messages_since_ts, wm?.messages_shown_ts),
+      lastReadByOwner.get(owner) ?? null,
+    );
+  } catch {
+    return null;
+  }
+}
+
 /** Read one agent's coord state (last message, unread, open handoffs/escalations). */
 export async function getAgentCoordState(owner: string): Promise<AgentCoordState> {
   try {
-    const [messages, acked, handoffs, escalations] = await Promise.all([
+    const [messages, acked, handoffs, escalations, readCursor] = await Promise.all([
       coordLog.readLines('messages') as Promise<CoordEnvelope[]>,
       readAckedMsgIds(owner),
       listHandoffs({ status: 'open' }),
       listEscalations({ status: 'open' }),
+      readUnreadCursor(owner),
     ]);
-    return deriveCoordState(messages, acked, handoffs, escalations, owner);
+    return deriveCoordState(messages, acked, handoffs, escalations, owner, readCursor);
   } catch (e) {
     return {
       lastMessage: null,

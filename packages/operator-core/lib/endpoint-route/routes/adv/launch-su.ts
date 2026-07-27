@@ -22,7 +22,7 @@ import { isSuAgent, isSuContextSize, type SuAgent, type SuContextSize } from '..
 import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
 import { validateKickoffKind } from '../../../agent-kickoff/kickoff-kind';
 import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn';
-import { recordAdvSession } from '../../../adv-sessions';
+import { DISPLAY_TERMINAL_LAUNCH, recordAdvSession } from '../../../adv-sessions';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
 
@@ -245,9 +245,47 @@ const launchSu = defineTool({
       : 'the spawned terminal process exited almost immediately — it may not have opened a window ' +
         '(a headless/offscreen display, or the terminal emulator failed silently). Check /adv/sessions ' +
         'for the new session; if it never appears, the launch did not actually happen.';
+
+    // WI-6376 (owner ask 2026-07-25: sessions must show up on the board "whether
+    // or not they are launched with the new session button or if they are
+    // launched with the psu utility"). Record the launch NOW, keyed to the
+    // pre-pinned coord owner above, so the board can render it for the whole
+    // boot window. Until this existed the terminal path wrote no row at all, and
+    // the roster is presence-primary — so between the click and psu's own
+    // registration the session appeared in NO column, and a launch that never
+    // booted showed as nothing rather than as a failure.
+    //
+    // display=DISPLAY_TERMINAL_LAUNCH, never 'workbench': that value is D-006's
+    // pui pane queue, and a terminal launch already has its own terminal. This
+    // row is read by listStartingTerminalLaunches into the roster's `starting`
+    // tier, which the pui does not consume.
+    //
+    // Best-effort: the terminal is already running, so a bookkeeping miss must
+    // not turn a successful launch into a reported failure.
+    const startingAdvSessionId = ownerId
+      ? await recordAdvSession({
+          planSlug: plan,
+          agent,
+          role: kickoffKind === 'new-plan' ? 'planner' : null,
+          mode: 'console',
+          cwd: null, // psu cds itself from --harness/--plan
+          label: plan ? `${agent} · ${plan}` : agent,
+          coordOwnerId: ownerId,
+          pid: spawned.pid ?? null,
+          terminalBin: spawned.terminal ?? null,
+          display: DISPLAY_TERMINAL_LAUNCH,
+          launchArgv: psuArgs,
+        }).catch(() => null)
+      : null;
+    // Push the new row to open boards immediately rather than waiting for the
+    // next roster poll — the boot window is short, and a card that appears late
+    // is the same defect in miniature.
+    if (startingAdvSessionId != null) void notifySyncInvalidate('roster').catch(() => {});
+
     return json({
       status: 'ok',
       agent,
+      ...(startingAdvSessionId != null ? { advSessionId: startingAdvSessionId } : {}),
       // WI-6363: the pre-pinned coord owner id this session will register as.
       // The caller opens its chat with this — it is stable from launch onward,
       // unlike the adv_sessions row, which does not exist yet on this path.

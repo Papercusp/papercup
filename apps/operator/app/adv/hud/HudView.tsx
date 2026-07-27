@@ -61,6 +61,10 @@ import {
 interface RosterPayload {
   active: HudRosterEntry[];
   pending?: HudRosterEntry[];
+  /** WI-6376: terminal-spawned psu launches inside their boot window, already
+   *  deduped server-side against `active`. A separate tier from `pending`
+   *  because the pui panes that one and these sessions own a terminal already. */
+  starting?: HudRosterEntry[];
 }
 
 /** The board re-derives ages from a clock; without a tick, a card would say
@@ -205,7 +209,12 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     // board (they are real, the human asked for them) and classify as `needs-you`
     // — owner ask 2026-07-27, "all fresh sessions start as needs you". They used
     // to land in `parked`; see deriveColumn step 1c for why that was backwards.
-    return [...(payload.active ?? []), ...(payload.pending ?? [])];
+    //
+    // `starting` is the same argument for the OTHER launch path (WI-6376): a
+    // terminal-spawned psu session is equally real and equally the human's, and
+    // before this tier existed it appeared in no column for its whole boot
+    // window. Already deduped against `active` server-side.
+    return [...(payload.active ?? []), ...(payload.pending ?? []), ...(payload.starting ?? [])];
   }, [roster.data]);
 
   // `null` in the URL array marks the solo group — encoded as the literal

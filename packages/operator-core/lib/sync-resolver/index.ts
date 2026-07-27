@@ -1057,20 +1057,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         endedLimit?: number;
       };
       const os = await import('node:os');
-      const { mergeRosterWithAssignments, dedupeEndedAgainstActive, pendingLaunchesToRosterEntries } =
-        await import('../adv-roster');
-      const { listEndedAdvSessions, listPendingWorkbenchLaunches } = await import('../adv-sessions');
-      const [{ active, orphanedClaims }, endedAll, pendingRows] = await Promise.all([
+      const {
+        mergeRosterWithAssignments,
+        dedupeEndedAgainstActive,
+        pendingLaunchesToRosterEntries,
+        startingLaunchesToRosterEntries,
+        dedupeStartingAgainstActive,
+      } = await import('../adv-roster');
+      const { listEndedAdvSessions, listPendingWorkbenchLaunches, listStartingTerminalLaunches } =
+        await import('../adv-sessions');
+      const [{ active, orphanedClaims }, endedAll, pendingRows, startingRows] = await Promise.all([
         mergeRosterWithAssignments({ workspaceId }),
         listEndedAdvSessions({ workspaceId, limit: endedLimit }),
         listPendingWorkbenchLaunches({ workspaceId }),
+        listStartingTerminalLaunches({ workspaceId }),
       ]);
+      const host = os.hostname();
       return [
         {
           active,
           ended: dedupeEndedAgainstActive(endedAll, active),
           orphanedClaims,
-          pending: pendingLaunchesToRosterEntries(pendingRows, os.hostname()),
+          pending: pendingLaunchesToRosterEntries(pendingRows, host),
+          // WI-6376: terminal-spawned launches inside their boot window, minus
+          // any that already came online (presence wins — see the dedupe's doc).
+          starting: dedupeStartingAgainstActive(
+            startingLaunchesToRosterEntries(startingRows, host),
+            active,
+          ),
         },
       ];
     },

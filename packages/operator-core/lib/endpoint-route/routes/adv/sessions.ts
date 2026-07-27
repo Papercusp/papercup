@@ -26,6 +26,7 @@ import {
   listEndedAdvSessions,
   listPendingWorkbenchLaunches,
   listResumableSessions,
+  listStartingTerminalLaunches,
   markAdvSessionLaunched,
   setAdvSessionOmpThreadId,
   setAdvSessionWindowId,
@@ -36,6 +37,8 @@ import {
   resolveThinkingForEntries,
   dedupeEndedAgainstActive,
   pendingLaunchesToRosterEntries,
+  startingLaunchesToRosterEntries,
+  dedupeStartingAgainstActive,
 } from '../../../adv-roster';
 // Pure recency-param parsing (WI-5097; the rest of adv-session-search stays
 // dynamically imported inside the handler with the other search-only deps).
@@ -1117,22 +1120,32 @@ const roster = defineTool({
     const endedLimitRaw = Number(url.searchParams.get('endedLimit') ?? 50);
     const endedLimit = Number.isFinite(endedLimitRaw) && endedLimitRaw > 0 ? endedLimitRaw : 50;
 
-    const [{ active, orphanedClaims }, endedAll, pendingRows] = await Promise.all([
+    const [{ active, orphanedClaims }, endedAll, pendingRows, startingRows] = await Promise.all([
       mergeRosterWithAssignments({ workspaceId }),
       listEndedAdvSessions({ workspaceId, limit: endedLimit }),
       listPendingWorkbenchLaunches({ workspaceId }),
+      listStartingTerminalLaunches({ workspaceId }),
     ]);
     const ended = dedupeEndedAgainstActive(endedAll, active);
+    const host = os.hostname();
     // Pending workbench launches (pui-reactive-session-panes D-006): recorded but
     // not-yet-running sessions the pui reactively opens a pane for. Synthesized as
     // RosterEntry-shaped rows (liveness 'pending', local host) in a SEPARATE tier
     // so the human roster (`active`) is untouched; only the pui consumes `pending`.
-    const pending = pendingLaunchesToRosterEntries(pendingRows, os.hostname());
+    const pending = pendingLaunchesToRosterEntries(pendingRows, host);
+    // WI-6376: terminal-spawned launches still inside their boot window, in a
+    // THIRD tier. Deliberately not folded into `pending` — the pui panes that
+    // tier, and these sessions already own a terminal. Rows whose session has
+    // come online are dropped so presence renders it exactly once.
+    const starting = dedupeStartingAgainstActive(
+      startingLaunchesToRosterEntries(startingRows, host),
+      active,
+    );
 
     // Each active entry carries `claims` from the canonical fleet_assignment
     // view; `orphanedClaims` is the claim-keyed remainder — active claims whose
     // holder is absent/stale from the roster (state-not-chat-fleet-state D-002).
-    return new Response(JSON.stringify({ active, ended, orphanedClaims, pending }), {
+    return new Response(JSON.stringify({ active, ended, orphanedClaims, pending, starting }), {
       status: 200,
       headers: JSON_HEADERS,
     });
