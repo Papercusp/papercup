@@ -1839,7 +1839,7 @@ describe("GymView — recent-challengers header carries recency", () => {
    * challenger is ONE grid card carrying both halves, and a line renders only for an
    * execution with no proposal.
    */
-  it("renders one card per challenger — all at once (no 1-of-N carousel) and newest first", () => {
+  it("groups challenger cards by role (collapsible), groups newest-first, cards newest-first inside", () => {
     nuqsState.lview = "gym";
     advScopeState.slug = "papercusp";
     advScopeState.hive = "papercusp";
@@ -1886,17 +1886,30 @@ describe("GymView — recent-challengers header carries recency", () => {
     };
     render(<LearningTab />);
 
+    // Grouped by role — the per-type stacks the CardStack decks used to give.
+    const groups = document.querySelectorAll(".pc-learning__gymrolegroup");
+    expect(groups).toHaveLength(2); // worker + director
+    const groupLabels = [...groups].map((g) => g.getAttribute("aria-label") ?? "");
+    // Groups ordered by the recency of their newest challenger: worker (1h) before
+    // director (5h) — NOT by group size.
+    expect(groupLabels[0]).toContain("worker");
+    expect(groupLabels[1]).toContain("director");
+    // Each group header carries its count + newest age, so a collapsed group still
+    // tells you whether it is active.
+    const head = groups[0]!.querySelector(".pc-learning__gymrolehead");
+    expect(head?.textContent).toContain("worker");
+    expect(head?.textContent).toContain("2"); // two worker challengers
+    expect(head?.getAttribute("aria-expanded")).toBe("true"); // expanded by default
+
     const cards = document.querySelectorAll(".pc-learning__gymcard");
-    expect(cards).toHaveLength(3); // every challenger visible simultaneously
-    // Newest first: p-new (1h) → p-mid (5h) → p-old (9h).
-    const labels = [...cards].map((c) => c.getAttribute("aria-label") ?? "");
-    expect(labels[0]).toContain("cand-new");
-    expect(labels[2]).toContain("cand-old");
-    // Role survives on the card (it used to be the deck's grouping).
-    expect(labels[1]).toContain("director");
+    expect(cards).toHaveLength(3); // every challenger visible at once (no 1-of-N)
+    // Newest-first WITHIN the worker group: p-new (1h) before p-old (9h).
+    const workerCards = groups[0]!.querySelectorAll(".pc-learning__gymcard");
+    expect(workerCards[0]!.getAttribute("aria-label")).toContain("cand-new");
+    expect(workerCards[1]!.getAttribute("aria-label")).toContain("cand-old");
     // The matching run group's execution facts are folded into the card…
-    expect(cards[0]!.textContent).toContain("3 runs");
-    expect(cards[0]!.textContent).toContain("escalated");
+    expect(workerCards[0]!.textContent).toContain("3 runs");
+    expect(workerCards[0]!.textContent).toContain("escalated");
     // …and that run no longer ALSO renders a duplicate compact line.
     expect(document.querySelector(".pc-learning__gymcycles")).toBeNull();
   });

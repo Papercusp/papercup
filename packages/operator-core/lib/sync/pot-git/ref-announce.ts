@@ -279,7 +279,28 @@ export function shouldFetchOnAnnouncement(
 export type RefAnnounceHandleResult =
   | { action: 'rejected'; reason: RefAnnounceRejectReason; budgetState: AnnounceBudgetState | null }
   | { action: 'noop'; budgetState: AnnounceBudgetState | null }
-  | { action: 'fetch-failed'; stderr: string; budgetState: AnnounceBudgetState | null }
+  /**
+   * WI-6277: `stderr` ALONE cannot describe this failure, and the gap is not
+   * cosmetic — it stranded a live replication stall on the P-302 rig with an
+   * operator line that ended in a bare colon.
+   *
+   * The transport already distinguishes the cases (`TransportResult.timedOut`
+   * is set immediately before `child.kill('SIGKILL')` on the ceiling path), but
+   * a SIGKILLed git writes NOTHING to stderr — so the one failure mode we can
+   * positively identify was the one that rendered as an empty string, and a
+   * ceiling timeout, a transient dial miss, and a genuine git error all printed
+   * identically. Carry the discriminators so the log site can say which.
+   *
+   * `code: -1` means NO git process ran at all (the stream never opened), which
+   * is why it cannot be conflated with a real exit status.
+   */
+  | {
+      action: 'fetch-failed';
+      stderr: string;
+      timedOut: boolean;
+      code: number;
+      budgetState: AnnounceBudgetState | null;
+    }
   | {
       action: 'fetched';
       /** G-4/G-4b verdict on the fetched snapshot. When NOT accepted the caller
@@ -427,12 +448,22 @@ export async function handleRefAnnouncement(
       stderr:
         `openStream did not resolve within ${opts.timeoutMs ?? DEFAULT_STREAM_OPEN_TIMEOUT_MS}ms ` +
         `(no duplex was ever produced — see EI-18752434722211671)`,
+      timedOut: true,
+      // No git process ever ran on this branch, so there is no exit status to
+      // report — -1 marks that explicitly rather than implying a clean exit 0.
+      code: -1,
       budgetState: acceptance.budgetState,
     };
   }
   const res = await fetchPeerNamespace(repoPath, duplex, device, { timeoutMs: opts.timeoutMs });
   if (res.code !== 0) {
-    return { action: 'fetch-failed', stderr: res.stderr, budgetState: acceptance.budgetState };
+    return {
+      action: 'fetch-failed',
+      stderr: res.stderr,
+      timedOut: res.timedOut,
+      code: res.code,
+      budgetState: acceptance.budgetState,
+    };
   }
 
   const fetched = await readSigrefs(repoPath, device, runGit);

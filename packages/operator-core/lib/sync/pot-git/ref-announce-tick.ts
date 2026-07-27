@@ -343,7 +343,7 @@ export interface RefAnnounceReceiveCursorDecision {
   held: boolean;
   /** Ordered fetch-failed rows for the caller to LOG loudly — a transient
    *  transport failure that left the announced namespace UN-mirrored. */
-  fetchFailed: { rowId: number; device: string; stderr: string }[];
+  fetchFailed: { rowId: number; device: string; stderr: string; timedOut: boolean; code: number }[];
 }
 
 /**
@@ -377,7 +377,16 @@ export function decideRefAnnounceReceiveCursor(
     const rowId = rowIds[i];
     if (!res || rowId === undefined) continue;
     if (res.result.action === 'fetch-failed') {
-      fetchFailed.push({ rowId, device: res.device, stderr: res.result.stderr });
+      // WI-6277: carry the discriminators, not just stderr — a SIGKILLed git
+      // (the ceiling path) writes no stderr, so stderr alone renders the one
+      // positively-identifiable failure as an empty string.
+      fetchFailed.push({
+        rowId,
+        device: res.device,
+        stderr: res.result.stderr,
+        timedOut: res.result.timedOut,
+        code: res.result.code,
+      });
       if (oldestFailedRowId === null || rowId < oldestFailedRowId) oldestFailedRowId = rowId;
     }
   }

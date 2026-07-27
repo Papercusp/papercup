@@ -2085,9 +2085,22 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
     // missed receive is invisible: no operator signal distinguishes "nothing
     // to receive" from "receive failed".
     for (const f of cursorDecision.fetchFailed) {
+      // WI-6277: this line used to end in `${f.stderr}` and nothing else, which
+      // on the ceiling path is the EMPTY STRING — a SIGKILLed git writes no
+      // stderr. Live on the P-302 rig that produced a stuck replication cursor
+      // whose operator line literally ended in a bare colon, with a timeout, a
+      // transient dial miss and a real git error all printing identically.
+      // Lead with the discriminator the transport already knew.
+      const reason = f.timedOut
+        ? `TIMED OUT (git SIGKILLed at the fetch ceiling)`
+        : f.code === -1
+          ? `no git process ran`
+          : `git exited ${f.code}`;
+      const detail = f.stderr.trim();
       console.warn(
         `[git-sync] ${slug}: ref-announce receive fetch FAILED for ${f.device.slice(0, 12)} (event ${f.rowId}); ` +
-          `holding cursor at ${cursorDecision.cursor} to re-dial next tick: ${f.stderr}`,
+          `holding cursor at ${cursorDecision.cursor} to re-dial next tick: ${reason}` +
+          (detail ? `: ${detail}` : ` (no stderr)`),
       );
     }
     if (receiveOutcome.errors.length) {

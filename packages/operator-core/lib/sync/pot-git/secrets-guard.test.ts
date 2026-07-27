@@ -129,12 +129,60 @@ describe('secrets-guard rules', () => {
     // structural: a path that BLOCKS a publish must scan via `scanForSecrets`.
     // (content-op-egress-guard is deliberately excluded — it REDACTS lines
     // rather than blocking, so it cannot deadlock a publish plane.)
+    //
+    // WI-6278: the check follows LOCAL (`./sibling`) delegation TRANSITIVELY
+    // rather than grepping only the named file. A blocking path may legitimately
+    // move the scan one hop into a helper — WI-6254 did exactly that, routing
+    // publish-guard.ts and foreign-mirror-quarantine.ts through
+    // chunked-blob-scan.ts for a bounded-memory scan — and the old single-file
+    // grep read that refactor as a violation (green-checkpoint red, candidate
+    // 0482a285) while the invariant was in fact intact. It also left the real
+    // hole open in the other direction: a helper calling the raw primitive was
+    // invisible, because only the three named files were ever read. Walking the
+    // closure closes both, so this is strictly stronger than the grep it replaces.
+    const readLocalClosure = (entry: string): Map<string, string> => {
+      const seen = new Map<string, string>();
+      const queue = [entry];
+      while (queue.length > 0) {
+        const rel = queue.shift() as string;
+        if (seen.has(rel)) continue;
+        let src: string;
+        try {
+          src = readFileSync(join(__dirname, rel), 'utf8');
+        } catch {
+          continue; // not a sibling .ts module (node builtin / package / dir index)
+        }
+        seen.set(rel, src);
+        // `import ... from './x'`, `export ... from './x'`, `await import('./x')`.
+        for (const m of src.matchAll(/(?:from|import)\s*\(?\s*'(\.\/[\w./-]+)'/g)) {
+          const spec = m[1].slice(2); // drop the leading './'
+          if (spec.includes('..') || /\.(test|integration\.test)$/.test(spec)) continue;
+          queue.push(spec.endsWith('.ts') ? spec : `${spec}.ts`);
+        }
+      }
+      return seen;
+    };
+
     const blockingPublishPaths = ['github-egress.ts', 'publish-guard.ts', 'foreign-mirror-quarantine.ts'];
     for (const file of blockingPublishPaths) {
-      const src = readFileSync(join(__dirname, file), 'utf8');
-      const calls = src.match(/\bscanTextForSecrets\s*\(/g) ?? [];
-      expect(calls, `${file} must not call scanTextForSecrets directly — use scanForSecrets`).toEqual([]);
-      expect(src, `${file} must scan via scanForSecrets`).toMatch(/\bscanForSecrets\s*\(/);
+      const closure = readLocalClosure(file);
+      expect(closure.has(file), `${file} must be readable`).toBe(true);
+      let reachesScanForSecrets = false;
+      for (const [name, src] of closure) {
+        // secrets-guard.ts DEFINES both entrypoints (scanForSecrets is implemented
+        // in terms of the per-line primitive), so it is the one legitimate caller.
+        if (name === 'secrets-guard.ts') continue;
+        const calls = src.match(/\bscanTextForSecrets\s*\(/g) ?? [];
+        expect(
+          calls,
+          `${file} → ${name} must not call scanTextForSecrets directly — use scanForSecrets`,
+        ).toEqual([]);
+        if (/\bscanForSecrets\s*\(/.test(src)) reachesScanForSecrets = true;
+      }
+      expect(
+        reachesScanForSecrets,
+        `${file} must scan via scanForSecrets (directly, or through a local helper it imports)`,
+      ).toBe(true);
     }
   });
 });
