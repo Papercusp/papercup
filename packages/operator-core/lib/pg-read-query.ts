@@ -20,7 +20,7 @@
  * early error; the READ ONLY transaction is the real enforcement.
  */
 
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, getOrgPgLosslessBigint } from '@papercusp/db-org';
 
 /** The postgres-js client type the org handle exposes. */
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];

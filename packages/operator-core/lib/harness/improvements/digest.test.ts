@@ -399,8 +399,11 @@ describe('buildDigest', () => {
     it('nearDuplicates: false does not change any other field (scalar rollups untouched)', () => {
       const withPass = buildDigest(dupItems, { nowMs: NOW });
       const withoutPass = buildDigest(dupItems, { nowMs: NOW, nearDuplicates: false });
-      const { likelyDuplicates: _a, headline: _h1, ...restWith } = withPass;
-      const { likelyDuplicates: _b, headline: _h2, ...restWithout } = withoutPass;
+      // likelyDuplicatesScope is dedup-pass metadata (mirrors likelyDuplicates'
+      // own null-when-skipped convention on purpose), not a scalar rollup —
+      // excluded here for the same reason likelyDuplicates itself is.
+      const { likelyDuplicates: _a, likelyDuplicatesScope: _sa, headline: _h1, ...restWith } = withPass;
+      const { likelyDuplicates: _b, likelyDuplicatesScope: _sb, headline: _h2, ...restWithout } = withoutPass;
       expect(restWithout).toEqual(restWith);
     });
 

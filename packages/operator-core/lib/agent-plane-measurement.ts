@@ -323,7 +323,7 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
     verdictUnit: 'declared basis entry',
     polarity: 'defect',
     vacuousPassWhen:
-      'The denominator is REAL but SMALL and self-selected: 254 of 284 closes declared the literal "none", so only ~30 entries across 29 closes are comparable and one careless close moves the rate several points. Worse, `none` is unfalsifiable — a closer who rested on an unrecorded assumption and typed "none" is indistinguishable from one who genuinely rested on nothing, and BOTH leave this metric clean. Read it with `fillRate` (the ~10% of closes that name anything), never alone. A zero here says the citations that WERE made were current when made; it says nothing about the closes that made none.',
+      'The denominator is REAL but SMALL and self-selected: measured 2026-07-27, 271 of 301 closes declared the literal "none", leaving 31 entries across 30 closes — so one careless close moves the rate several points. Worse, `none` is unfalsifiable: a closer who rested on an unrecorded assumption and typed "none" is indistinguishable from one who genuinely rested on nothing, and BOTH leave this metric clean. Read it with `fillRate` (the ~10% of closes that name anything), never alone. A zero here says the citations that WERE made were current when made; it says nothing about the closes that made none.',
   },
   'closed-work-basis-moved': {
     id: 'closed-work-basis-moved',

@@ -356,6 +356,7 @@ export default defineTool({
     // retune ONE field (usually intervalSec), not to re-decide the lifecycle. An
     // explicit args.carry always wins either way. `carry` from here on is the
     // RESOLVED value, threaded into materializeLoop + the kickoff + response.
+    const carryPreservedFromPrior = args.carry == null && Boolean(prior?.active);
     const carry = args.carry ?? (prior?.active ? prior.carry : await resolveDefaultCarry(ownerId));
     const resolvedMode = args.mode ?? 'work';
 
@@ -521,11 +522,17 @@ export default defineTool({
     // B (cold-with-carry-activation-2026-07-20): disclose when the headless default
     // kicked in, so the arming agent knows its loop will go COLD (transcript reset to
     // the carry-note each wake) and must keep loop:checkpoint fresh — and how to
-    // override if it wants warm.
+    // override if it wants warm. EI-18792078711601844: a RE-ARM that PRESERVED the
+    // prior loop's carry (rather than recomputing a fresh default) gets its own,
+    // distinct disclosure — "defaulted" would misstate what happened, and this is
+    // exactly the surfacing the filed bug's "minimum viable" fix asked for (carry
+    // shown prominently on re-arm so an omission is never silent).
     const coldDefaultNote =
-      args.carry == null && carry === 'cold'
-        ? ' ❄️ Defaulted to COLD carry (headless/unattended): each wake RESETS this session to its carry-note instead of re-waking warm, so keep loop:checkpoint { did, left, insight, next } fresh every wake. Pass carry:"warm" to override.'
-        : '';
+      carryPreservedFromPrior
+        ? ` (carry '${carry}' PRESERVED from the loop's prior config — pass carry explicitly to change it.)`
+        : args.carry == null && carry === 'cold'
+          ? ' ❄️ Defaulted to COLD carry (headless/unattended): each wake RESETS this session to its carry-note instead of re-waking warm, so keep loop:checkpoint { did, left, insight, next } fresh every wake. Pass carry:"warm" to override.'
+          : '';
     const note = baseNote + overwriteNoteText + claimNote + warningNote + coldDefaultNote;
 
     return {

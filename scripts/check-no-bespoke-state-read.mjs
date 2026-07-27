@@ -138,6 +138,23 @@ export const STATE_NOUNS = [
   'capacity',
   'usage',
   'uptime',
+  // EI-18791777695307535 — widened from the measured corpus (tool_invocations, 30d,
+  // 2026-07-27): the original list missed `fleet:assignments` (5,883 calls/30d, the
+  // single busiest live-state read in the system, ~9x coord:presence) and several
+  // other real state-read doors, because none of their names contained an original
+  // STATE_NOUN token. This is a STOPGAP (option 1 of that bug's 3 suggested fixes):
+  // it chases the corpus rather than detecting the *shape* of a state read, and will
+  // still miss the next unremarkably-named one (`blender:success-metrics`,
+  // `facts:list`, `pot:get`, `dev:pg_active_queries` — none of these contain any noun
+  // in this list either). The evidence-based real fix (select on measured call
+  // volume from `tool_invocations` rather than on the name) is filed as a follow-up:
+  // WI-6479's sibling — see the bug for the analysis.
+  'assignments',
+  'roster',
+  'walls',
+  'conditions',
+  'locks',
+  'burn_down',
 ];
 
 export const STATE_NOUN_RE = new RegExp(`(^|[:_-])(${STATE_NOUNS.join('|')})([:_-]|$)`);
@@ -340,7 +357,16 @@ export const BASELINE = new Set([
   'accounts:status',
   'autoloop:status',
   'autonomy:graduation_status',
+  // ── EI-18791777695307535 — SECOND SEEDING WAVE (2026-07-27). The STATE_NOUNS
+  // widening above (assignments/roster/walls/conditions/locks/burn_down) makes these
+  // 8 PRE-EXISTING tools trip the signature for the FIRST time — they are not new
+  // work, exactly like the original 2026-07-27 seed was "the signature applied to the
+  // tree at seed time". Each carries a VERDICTS entry below with the same evidence
+  // discipline as the original set.
+  'coord:conditions',
   'coord:presence',
+  'coord:roster',
+  'coord:walls',
   'curation:state-of-pot',
   'deploy:status',
   'dev:build_status',
@@ -358,12 +384,16 @@ export const BASELINE = new Set([
   'dev:state_counter',
   'egress:health',
   'events:status',
+  'fleet:assignments',
   'fleet:capacity',
   'fleet:status',
   'gateway:status',
   'harness:health',
   'harness:status',
   'improvements:watchdog-status',
+  'locks:check_command',
+  'locks:list',
+  'locks:queue',
   'operator:credentials_status',
   'operator:trigger_state',
   'plan_items:status',
@@ -376,6 +406,7 @@ export const BASELINE = new Set([
   'ui:get_state',
   'voice:status',
   'watchdog:status',
+  'work_items:burn_down',
   'work_items:redundancy_status',
 ]);
 

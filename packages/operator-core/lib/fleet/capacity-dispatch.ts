@@ -73,6 +73,15 @@ export interface AccountPoolAvailability {
    */
   usageWalledCount?: number;
   /**
+   * EI-18791793869559327: how many of the `usable` accounts are `sustainedlyLimited` (the rate
+   * governor's own "this account is repeatedly hitting penalties" verdict — the scale-out trigger
+   * elsewhere in the system). A `sustainedlyLimited` account is still `available`/`usable` by the
+   * pause/wall/edge-throttle definitions above (it is NOT walled or edge-throttled), so it never trips
+   * `poolExhausted` — but a pool where EVERY usable account is sustainedly limited is degrading in
+   * practice, not abundant. Optional, same fail-safe-omit contract as the other optional fields here.
+   */
+  sustainedlyLimitedCount?: number;
+  /**
    * EI-18683773458136367: whether the edge-throttled accounts share ONE known egress identity (proxy
    * URL / bound local IP) — the actual "down forward-proxy forcing every account onto one shared,
    * already-throttled IP" signature that justifies an owner-gated infra escalation. `true` = confirmed
@@ -171,6 +180,11 @@ export interface CapacityDispatchConfig {
   /** Grace window after gateway process start where a paused/zero-capacity snapshot is treated as recovering,
    *  not sustained pool exhaustion. Env: `QUEEN_CAPACITY_RESTART_GRACE_MS`. Default 30s. */
   restartRecoveryWindowMs: number;
+  /** EI-18791793869559327: ceiling on `factor` (the read-model only — see `buildCapacityReport`) when every
+   *  `usable` account is `sustainedlyLimited`: the pool is degrading even though nothing is walled/paused, so
+   *  it must not read as full-headroom `abundant`. Env: `QUEEN_CAPACITY_DEGRADED_FACTOR_CAP`. Default 0.25
+   *  (the same threshold the advice text already uses to mean "scarce — place top-ranked only").*/
+  degradedFactorCap: number;
 }
 
 export const DEFAULT_CAPACITY_DISPATCH_CONFIG: CapacityDispatchConfig = {
@@ -178,6 +192,7 @@ export const DEFAULT_CAPACITY_DISPATCH_CONFIG: CapacityDispatchConfig = {
   queueSoftCap: 24,
   utilizationHigh: 0.85,
   restartRecoveryWindowMs: 30_000,
+  degradedFactorCap: 0.25,
 };
 
 export interface CapacityDecision {
@@ -293,6 +308,12 @@ export function resolveCapacityConfig(
       env.QUEEN_CAPACITY_RESTART_GRACE_MS,
       over?.restartRecoveryWindowMs ?? DEFAULT_CAPACITY_DISPATCH_CONFIG.restartRecoveryWindowMs,
     ),
+    degradedFactorCap: clamp01(
+      num(
+        env.QUEEN_CAPACITY_DEGRADED_FACTOR_CAP,
+        over?.degradedFactorCap ?? DEFAULT_CAPACITY_DISPATCH_CONFIG.degradedFactorCap,
+      ),
+    ),
   };
 }
 
@@ -379,6 +400,13 @@ export interface CapacityReport {
    *  real account pool has ZERO usable accounts for the provider — a fresh spawn will die on its first call.
    *  When true, `factor` is forced to 0, `recommendedHeadroom` to the floor, and `advice` is the loud hold. */
   poolExhausted: boolean;
+  /** Real usable accounts (from the account-pool projection) that are `sustainedlyLimited`, when supplied.
+   *  null when no cross-check was passed or the accountAvailability omitted the count (EI-18791793869559327). */
+  sustainedlyLimitedAccounts: number | null;
+  /** DEGRADED tier (EI-18791793869559327): `usable > 0` but EVERY usable account is `sustainedlyLimited` — not
+   *  `poolExhausted` (nothing is walled/edge-throttled), but not abundant either. When true, `factor` is
+   *  capped at `degradedFactorCap` and `advice` says place conservatively instead of "abundant". */
+  degraded: boolean;
   capByTier: { tier: number; cap: number | null; inFlight: number; queued: number }[] | null;
   inFlight: number | null;
   queueDepth: number | null;
@@ -441,6 +469,8 @@ export function buildCapacityReport(
       usableAccounts: opts.accountAvailability?.usable ?? null,
       availableAccounts: opts.accountAvailability?.available ?? null,
       poolExhausted: false,
+      sustainedlyLimitedAccounts: opts.accountAvailability?.sustainedlyLimitedCount ?? null,
+      degraded: false,
       capByTier: null, inFlight: null, queueDepth: null,
       processUptimeMs: null, restartRecovering: false,
       factor: 1, recommendedHeadroom: opts.headroom ?? null, throttled: opts.headroom != null ? false : null,
