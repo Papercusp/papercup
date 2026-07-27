@@ -33,7 +33,9 @@ import {
   _testing,
   resolveServeAdmission,
   DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO,
+  DEFAULT_SERVE_PROGRESS_WINDOW_MS,
   type InFlightServe,
+  type ServeProgress,
 } from './serve-wiring';
 
 const { SESSION_LEAK_WARN_AT, noteSessionHighWater, newChannelState, formatRefusalTarget } = _testing;
@@ -342,12 +344,21 @@ describe('resolveServeAdmission (EI-18802033487678337)', () => {
   const chanA = { c: 'A' };
   const chanB = { c: 'B' };
   const chanC = { c: 'C' };
-  const serve = (channel: object, repoPath: string, sessionId: number): InFlightServe => ({
+  // Default progress is "never wrote a byte", which is what every pre-WI-6412
+  // case here assumed implicitly — so the rule-1/rule-2 expectations below are
+  // unchanged by the progress rule, and still assert exactly what they used to.
+  const serve = (
+    channel: object,
+    repoPath: string,
+    sessionId: number,
+    progress: ServeProgress = { bytesOut: 0, lastWriteAt: 0 },
+  ): InFlightServe => ({
     channel,
     repoPath,
     repoKey: 'papercusp',
     sessionId,
     startedAt: 0,
+    progress,
   });
 
   it('admits freely when the repo is idle', () => {

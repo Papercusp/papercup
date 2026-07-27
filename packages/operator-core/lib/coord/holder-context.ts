@@ -69,10 +69,10 @@
  * is injected and fail-soft, and a dead source degrades ONE field rather than
  * taking down the read that called it.
  */
-import type { CellReader } from '../cell-registry';
+import { getCell, type CellReader } from '../cell-registry';
 import { computeIntentStale, INTENT_STALE_SEC } from '../agent-tools/coordination/presence-tier1';
 import { declaredGoalOf } from '../plan-items/claim-holder';
-import { asGoalRef } from '../agent-goal-ref';
+import { asGoalRef, AGENT_GOAL_CELL_ID, type GoalAgreement } from '../agent-goal-ref';
 
 /**
  * How many assumption KEYS are named before the projection relies on `count`
@@ -85,10 +85,12 @@ export const HOLDER_ASSUMPTION_KEY_CAP = 12;
 /**
  * What a holder is doing and assuming, as EVERY D-055 enrichment point renders it.
  *
- * ⚠ THE SHAPE IS FIXED BY D-055 AND RESTATED BY D-083 (iv) — these five fields,
- * no more. `holder-context.test.ts` gates it, because "one shape for eight
- * consumers" is the entire reason this module exists and a field added for one
- * consumer's convenience is how that erodes.
+ * ⚠ THE SHAPE IS FIXED BY D-055, RESTATED BY D-083 (iv), AND AMENDED ONCE BY
+ * D-093 — these SEVEN fields, no more. `holder-context.test.ts` gates it, because
+ * "one shape for eight consumers" is the entire reason this module exists and a
+ * field added for one consumer's convenience is how that erodes. The amendment
+ * rule is unchanged: a sixth (now eighth) field is a plan Decision, never a quiet
+ * addition here.
  */
 export interface HolderContext {
   /** The work-item / plan-item / cell ref the goal is ABOUT. Never a raw bigint
@@ -104,6 +106,27 @@ export interface HolderContext {
   /** Goal older than INTENT_STALE_SEC. null ⇒ undated, so staleness is UNKNOWN —
    *  never `false`, which would read as "freshly declared". */
   stale: boolean | null;
+  /**
+   * D-093 / D-092 — do the INDEPENDENT legs agree about what this holder is doing?
+   * `null` only when there is no resolvable goal at all.
+   *
+   * ⚠ NOT DECORATION. Measured 2026-07-27: 3 of 19 holders hold TWO work-items at
+   * once, and the row carries no link back to the plan. `goalRef` alone tells a
+   * blocked peer "this is their goal" in exactly the population where precedence
+   * had to pick one arbitrarily; `agreement` is what says whether to believe it.
+   */
+  agreement: GoalAgreement | null;
+  /**
+   * The other ITEM refs this holder also holds, which `goalRef` does NOT subsume.
+   * `[]` when there are none.
+   *
+   * ⚠ DISCLOSED, NEVER DROPPED (D-092). A projection that silently discards a
+   * claim the agent demonstrably holds manufactures a confident wrong answer —
+   * which is what this projection did before D-093, having computed the value and
+   * thrown it away one line later. A FLEET MISSION is deliberately absent: it is
+   * the container the work happens in, not a rival goal (D-092's refinement).
+   */
+  competing: string[];
 }
 
 /** The goal facts this projection reads — structural, so any producer (today a
@@ -116,6 +139,12 @@ export interface HolderGoalRecord {
   intent?: string | null;
   /** When the claim, and so the goal, was declared. */
   acquiredTs?: string | null;
+  /** D-093 — the producer's leg-agreement verdict, carried through rather than
+   *  recomputed here (the projection has only ONE leg's data and could not derive
+   *  it). Absent from a producer that cannot answer ⇒ `agreement: null`. */
+  agreement?: GoalAgreement | null;
+  /** D-093 / D-092 — the other item refs the holder also holds. Absent ⇒ `[]`. */
+  competing?: readonly string[] | null;
 }
 
 /**
@@ -197,12 +226,21 @@ export function projectHolderContext(
   if (!goalRef && !goalText && assumptions.count === 0) return null;
 
   const declaredAt = goal?.acquiredTs ?? null;
+  // ⚠ THE DISCLOSURE IS BOUND TO A RESOLVED GOAL (D-093). With no `goalRef` there
+  // is nothing for a competing ref to compete WITH, and reporting `divergent`
+  // beside an absent goal would be an unreadable verdict about a value the reader
+  // cannot see — so the pair collapses to (null, []) exactly when `goalRef` does.
+  const competing = goalRef
+    ? [...new Set((goal?.competing ?? []).map(cleanKey).filter(Boolean))].sort()
+    : [];
   return {
     goalRef,
     goalText,
     assumptions,
     declaredAt,
     stale: computeIntentStale(secAgo(declaredAt, nowMs)),
+    agreement: goalRef ? (goal?.agreement ?? null) : null,
+    competing,
   };
 }
 
@@ -218,6 +256,22 @@ export function projectHolderContext(
  * FAIL-SOFT PER LEG: a thrown or rejected source contributes nothing while the
  * other still lands, so a dead facts store costs the assumptions field and leaves
  * the goal intact.
+ *
+ * ⚠ THE GOAL LEG NOW PASSES THE CELL GATE — this is the swap the module header
+ * above anticipated ("when P-016/P-009 land their cells they swap in behind
+ * `HolderContextSources` with NO consumer change"), and P-016 landed
+ * {@link AGENT_GOAL_CELL_ID}. The goal is read ONLY when
+ * `getCell(AGENT_GOAL_CELL_ID, reader)` discloses the cell to THIS reader, so
+ * every holder surface — the lock-block message, P-030's work-item lens, the six
+ * D-051 surfaces still to come — inherits ONE audience check instead of each
+ * re-implementing it. D-042 names re-implementation as the failure; P-028's
+ * parity suite is what mechanically holds this to it.
+ *
+ * ⚠ AND A REFUSAL IS INDISTINGUISHABLE FROM AN ABSENCE (rule b / D-056). A reader
+ * the gate refuses gets `goal: null` — byte-identical to a holder who has
+ * declared nothing — never a distinct error, a flag, or a differently-shaped
+ * result. That is deliberate: a refusal that LOOKS different from empty is a
+ * probe oracle for the existence of state the reader may not read.
  */
 export async function resolveHolderContext(
   holderOwnerId: string,
@@ -228,6 +282,12 @@ export async function resolveHolderContext(
   const holder = cleanKey(holderOwnerId);
   if (!holder) return null;
   if (!cleanKey(reader?.ownerId)) return null; // no identified reader ⇒ no reader-relative state
+
+  // GATE 1 (P-019 audience) for the goal leg. Pure — a Map lookup plus
+  // `canReadCell`, no I/O and no throw — so it cannot violate rule (f) on the hot
+  // paths this decorates. An unregistered cell fails CLOSED here, which is the
+  // correct reading of "the goal cell does not exist in this process".
+  const goalDisclosed = getCell(AGENT_GOAL_CELL_ID, reader as CellReader) !== undefined;
 
   const settle = async <T>(f: (() => Promise<T>) | undefined, fallback: T): Promise<T> => {
     if (!f) return fallback;
@@ -240,7 +300,7 @@ export async function resolveHolderContext(
 
   const [goal, keys] = await Promise.all([
     settle(
-      sources.holderGoal ? () => sources.holderGoal!(holder) : undefined,
+      goalDisclosed && sources.holderGoal ? () => sources.holderGoal!(holder) : undefined,
       null as HolderGoalRecord | null,
     ),
     settle(

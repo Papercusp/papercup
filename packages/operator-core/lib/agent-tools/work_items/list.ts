@@ -18,6 +18,8 @@ import {
   type CompletionAuthorityFilter,
 } from "../../completion-audit";
 import { cachedRead, type CachedReadCtx } from "../../cache";
+import { cellReaderFromCtx } from "../cell-reader-ctx";
+import { attachHolderContext } from "./_holder-lens";
 
 /**
  * SWR backstop for work_items:list (cache-expensive-tool-reads-2026-06-22 P-005).

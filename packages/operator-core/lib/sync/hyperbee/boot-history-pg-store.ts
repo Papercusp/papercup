@@ -31,6 +31,15 @@ import type { BootHistoryEntry, BootHistoryKind } from './boot-history';
 export const DEFAULT_BOOT_HISTORY_PG_CAP =
   Number(process.env.PAPERCUSP_BOOT_HISTORY_PG_CAP) || 2000;
 
+/** EI-18736339540215666: is THIS process a vitest run? The existing, already-used-
+ *  elsewhere convention (rubrics.ts, work-items.ts) for "are we under test" — reused
+ *  here rather than inventing a second one. Exported so a caller with a more specific
+ *  notion of "test" (e.g. an integration-test harness that doesn't set VITEST itself)
+ *  can override the stamped origin explicitly via `entry.origin`. */
+export function isVitestOrigin(): boolean {
+  return Boolean(process.env.VITEST);
+}
+
 /** Insert one durable boot-history row + evict this scope's oldest rows past the cap. */
 export async function insertBootHistoryEventPg(
   entry: BootHistoryEntry,
@@ -38,12 +47,17 @@ export async function insertBootHistoryEventPg(
 ): Promise<void> {
   const sql = sqlIn ?? getOrgPg().sql;
   const createdTs = Date.now();
+  // EI-18736339540215666: stamp provenance so a federation-health aggregate can exclude
+  // test-fixture writes by default (see migration 695). `entry.origin` lets a caller
+  // override explicitly (e.g. a test that wants to assert against a 'real' row, or a
+  // non-vitest integration harness); absent that, fall back to the VITEST env detection.
+  const origin = entry.origin ?? (isVitestOrigin() ? 'test' : 'real');
   await sql`
     INSERT INTO harness_shared.boot_history_events
-      (workspace_id, harness_slug, kind, message, ts, created_ts)
+      (workspace_id, harness_slug, kind, message, ts, created_ts, origin)
     VALUES
       (${entry.workspaceId}, ${entry.harnessSlug}, ${entry.kind}, ${entry.message ?? null},
-       ${entry.ts}, ${createdTs})
+       ${entry.ts}, ${createdTs}, ${origin})
   `;
   // Bound: evict this scope's oldest rows past the cap (mirrors
   // harness_shared.coord_quarantine's per-author eviction, migration 436) —

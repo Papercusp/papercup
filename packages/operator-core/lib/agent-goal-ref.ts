@@ -56,6 +56,19 @@
  * the operation it decorates. The PG reads live in `agent-goal-sources.ts`.
  */
 
+/**
+ * The registry id of the cell this resolver backs (`AGENT_GOAL_CELL.cell`).
+ *
+ * ⚠ IT LIVES HERE, NOT IN `cell-registrations.ts`, SO THERE IS ONE SPELLING.
+ * Every holder surface gates its goal read on `getCell(AGENT_GOAL_CELL_ID,
+ * reader)`, and a gate keyed on a hand-typed `'agent.goal'` that drifts from the
+ * registration does not throw — `getCell` simply returns `undefined` and the
+ * surface silently discloses NOTHING, forever, while every test that stubs the
+ * registry still passes. Declaring it in the module the registration imports
+ * makes that drift impossible.
+ */
+export const AGENT_GOAL_CELL_ID = 'agent.goal';
+
 /** WHICH record produced the ref, in precedence order. */
 export type GoalSource =
   /** The agent said its true purpose differs from its claimed lane (D-011). */

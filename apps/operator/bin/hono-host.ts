@@ -164,6 +164,55 @@ const port = Number(
 );
 const hostname = resolveBindHost();
 
+// EI-18734124566158657: a straggling peer process that recently held this exact
+// port (another verify-tauri-headless.sh instance mid-teardown, a dev-restart
+// still draining, …) can leave it genuinely bound for a few seconds AFTER a
+// caller's ss-probe/`fed_pick_free_port` reported it free — the classic
+// pick-then-bind TOCTOU race. Today that surfaces as a bare EADDRINUSE 'error'
+// event with no listener attached, which Node re-raises as an uncaught
+// exception straight into the process-level handler above ("[hono-host] fatal
+// uncaughtException — exiting") — instant, no recovery, even though the
+// straggler is typically gone within a second or two. Retry a BOUNDED number
+// of times with a short fixed delay before giving up: this absorbs a
+// transient squatter without masking a genuine, persistent port conflict
+// (which still fails — just a few seconds later — with the SAME fatal
+// message callers already grep for, e.g. verify-tauri-headless.sh's own
+// `EADDRINUSE.*:$DEV_PORT` check).
+const LISTEN_RETRY_MAX_ATTEMPTS = Number(process.env.PAPERCUSP_LISTEN_EADDRINUSE_RETRIES ?? 8);
+const LISTEN_RETRY_DELAY_MS = Number(process.env.PAPERCUSP_LISTEN_EADDRINUSE_RETRY_MS ?? 1000);
+function listenWithEaddrinuseRetry(
+  srv: import('node:http').Server,
+  listenOpts: { port: number; host: string; reusePort?: boolean },
+  onBound: () => void,
+  attempt = 1,
+): void {
+  const onError = (err: NodeJS.ErrnoException): void => {
+    srv.removeListener('error', onError);
+    if (err?.code === 'EADDRINUSE' && attempt < LISTEN_RETRY_MAX_ATTEMPTS) {
+      console.warn(
+        `[hono-host] listen EADDRINUSE on ${listenOpts.host}:${listenOpts.port} ` +
+          `(attempt ${attempt}/${LISTEN_RETRY_MAX_ATTEMPTS}) — retrying in ${LISTEN_RETRY_DELAY_MS}ms ` +
+          `(transient-straggler recovery, EI-18734124566158657)`,
+      );
+      setTimeout(() => {
+        listenWithEaddrinuseRetry(srv, listenOpts, onBound, attempt + 1);
+      }, LISTEN_RETRY_DELAY_MS);
+      return;
+    }
+    // Exhausted retries, or a non-EADDRINUSE error: re-throw so the existing
+    // process-level `uncaughtException` handler logs + exits exactly as before
+    // (same message, same exit code — only a genuinely persistent conflict or
+    // a different error class ever reaches this branch).
+    throw err;
+  };
+  srv.once('error', onError);
+  if (listenOpts.reusePort) {
+    srv.listen({ port: listenOpts.port, host: listenOpts.host, reusePort: true }, onBound);
+  } else {
+    srv.listen(listenOpts.port, listenOpts.host, onBound);
+  }
+}
+
 /**
  * Start the request-serving plane: the HTTP server + per-process loop monitors +
  * (opt-in) the PTY WS data plane + the RSS self-recycle watchdog. Runs in EACH
@@ -273,15 +322,18 @@ function startRequestServers(): void {
   // when its loop is busy → workers never bind (the observed 0-listeners / ~150s hang).
   // `@hono/node-server` serve() can't forward `reusePort` (it calls listen(port,host,cb)),
   // so we build the server via createAdaptorServer and listen() ourselves with reusePort.
-  // SINGLE-PROCESS / primary path is unchanged: the original serve() call, byte-identical.
-  let server: ReturnType<typeof serve>;
+  // Both paths now go through listenWithEaddrinuseRetry (EI-18734124566158657) — the
+  // SINGLE-PROCESS / primary path used to call serve() directly (which listens
+  // internally with no bind-retry); it now builds the same createAdaptorServer and
+  // listens itself, byte-identical to serve()'s own listen(port, hostname, cb) except
+  // for the retry wrapper.
+  const server: ReturnType<typeof createAdaptorServer> = createAdaptorServer({ fetch: handler });
   if (cluster.isWorker) {
-    server = createAdaptorServer({ fetch: handler });
-    (server as import('node:http').Server).listen({ port, host: hostname, reusePort: true }, () =>
+    listenWithEaddrinuseRetry(server, { port, host: hostname, reusePort: true }, () =>
       onListening(port),
     );
   } else {
-    server = serve({ fetch: handler, port, hostname }, (info) => onListening(info.port));
+    listenWithEaddrinuseRetry(server, { port, host: hostname }, () => onListening(port));
   }
 
   // B2 (infra-fail-fast-build-integrity P-006) — the "safe half": explicit inbound

@@ -42,6 +42,7 @@ import {
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import { foldFacts } from '../../agent-facts/store';
 import { declaredGoalOf } from '../../plan-items/claim-holder';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import type { HolderGoalRecord } from '../../coord/holder-context';
 
 /**
@@ -54,9 +55,25 @@ import type { HolderGoalRecord } from '../../coord/holder-context';
  */
 export const GOAL_OVERRIDE_FACT_KEY = 'goal.override';
 
-/** Work-item states that must NOT produce a goal: an agent still named on a
- *  finished row is not working toward it. */
-const TERMINAL_WORK_ITEM_STATES = ['done', 'cancelled', 'closed'];
+/**
+ * Work-item states that must NOT produce a goal: an agent still named on a
+ * finished row is not working toward it.
+ *
+ * ⚠⚠ IMPORTED, NEVER HAND-LISTED — AND THIS FILE GOT IT WRONG FIRST TIME.
+ * P-016 shipped a local `['done', 'cancelled', 'closed']` under this exact name,
+ * beside `work-items.ts`'s canonical export of the SAME name. Two defects:
+ *   · it MISSED `passed`, `resolved`, `dropped` and `deprecated` — 5,073 live
+ *     rows, and `passed`/`resolved` are the NORMAL close for the feature and
+ *     issue families respectively. A holder still named on one would have kept
+ *     producing a goal from finished work.
+ *   · `cancelled` is not in the vocabulary at all and matches zero rows.
+ * It survived review because the close path usually clears `taken_by`, so the
+ * live population (0 of those 5,073 rows carried a holder) hid it completely —
+ * a shape of bug no fixture and no live-count could catch, only reading the
+ * canonical constant could. `work-item-dispatch-states.ts` is a leaf module, so
+ * the canonical union is importable here with no cycle.
+ */
+const TERMINAL_WORK_ITEM_STATES: readonly string[] = ANY_FAMILY_TERMINAL_STATES;
 
 /**
  * Ceiling on rows per leg. A BOUND, not a filter — the resolver must SEE the
@@ -287,6 +304,11 @@ export async function fetchHolderGoalRecord(ownerId: string): Promise<HolderGoal
       itemId: goal.ref,
       intent: claim ? declaredGoalOf(claim.intent, claim.itemId).goalText : null,
       acquiredTs: goal.declaredAt,
+      // D-093: carry D-092's disclosure through instead of dropping it. These two
+      // fields were computed here and discarded one line later, so the guarantee
+      // that a losing leg is "DISCLOSED, never dropped" reached no reader at all.
+      agreement: goal.agreement,
+      competing: goal.competing,
     };
   } catch {
     // P-026 rule (f): a dead store costs this ONE field, never the read it decorates.

@@ -36,6 +36,7 @@
  */
 
 import { registerCell, type CellSpec } from './cell-registry';
+import { AGENT_GOAL_CELL_ID } from './agent-goal-ref';
 
 /**
  * The pipeline-position cell. Owned by su-28464 per P-006 — registration does not
@@ -447,7 +448,11 @@ export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
  * an agent that has declared but not yet acted. Nothing here reads the stamp.
  * ══════════════════════════════════════════════════════════════════════════════ */
 export const AGENT_GOAL_CELL: CellSpec = {
-  cell: 'agent.goal',
+  // ⚠ THE ID IS IMPORTED, NEVER RETYPED. Every holder surface gates its goal read
+  // on `getCell(AGENT_GOAL_CELL_ID, reader)`; a literal here that drifts from the
+  // gate's literal there fails SILENTLY (getCell returns undefined and the surface
+  // discloses nothing, forever). See the constant's own note.
+  cell: AGENT_GOAL_CELL_ID,
   owner: 'unified-agent-state-plane-2026-07-27',
   headline: 'goalRef',
 

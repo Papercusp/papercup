@@ -327,14 +327,28 @@ describe('AdvPotBar — New / Share', () => {
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
   });
 
-  it('swaps the Share button for a Shared badge once a hive pot is shared to the directory', async () => {
+  it('relabels the Share button to the live visibility once a hive pot is shared to the directory', async () => {
     // pot-a is a hive; a public directory listing means it is already shared, so
-    // the row shows a passive Shared badge instead of the Share button
-    // (comb-hive-native-sharing — the badge reads the discovery meta, not the
-    // legacy is_shared/shared.json).
+    // the action relabels to the granular visibility (Public / Invite) and reads
+    // the discovery meta, not the legacy is_shared/shared.json.
+    //
+    // It stays a BUTTON on purpose (EI-18814950644299297): this used to assert a
+    // passive "Shared" badge, but the Work tab's hive header — the only other
+    // Share affordance — was deleted on 2026-07-27, so a passive badge here would
+    // strand share management with no way back into the dialog. Asserting the
+    // badge is what made this test red; the behavior it described is the one that
+    // was deliberately removed.
     hiveShareMeta = { found: true, visibility: 'public' };
     await renderBar();
-    await waitFor(() => expect(screen.getByText('Shared')).toBeTruthy());
-    expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
+    const shareBtn = await screen.findByTestId('potbar-share-button');
+    await waitFor(() => expect(shareBtn.textContent).toMatch(/Public/));
+    expect(shareBtn.textContent).not.toMatch(/Share$/);
+  });
+
+  it('shows Invite (not Public) for an invite-only hive pot', async () => {
+    hiveShareMeta = { found: true, visibility: 'invite' };
+    await renderBar();
+    const shareBtn = await screen.findByTestId('potbar-share-button');
+    await waitFor(() => expect(shareBtn.textContent).toMatch(/Invite/));
   });
 });

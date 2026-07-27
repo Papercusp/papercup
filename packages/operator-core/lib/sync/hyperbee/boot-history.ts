@@ -253,6 +253,11 @@ export interface BootHistoryEntry {
   harnessSlug: string;
   kind: BootHistoryKind;
   message?: string;
+  /** EI-18736339540215666: explicit provenance override for the durable PG mirror
+   *  (boot-history-pg-store.ts) — 'real' | 'test'. Omitted ⇒ the PG store infers it
+   *  from `process.env.VITEST`. This in-memory ring itself carries no provenance
+   *  (it's process-local and always reflects this process's own reality). */
+  origin?: 'real' | 'test';
 }
 
 function envCap(name: string, fallback: number): number {

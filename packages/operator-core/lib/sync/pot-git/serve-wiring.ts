@@ -211,6 +211,11 @@ class FrameDuplex extends Duplex {
   readonly startedAt = Date.now();
   bytesOut = 0;
   bytesIn = 0;
+  /** WI-6412: wall-clock of the most recent outbound write, i.e. the last moment
+   *  this serve made real progress. `0` until the first byte leaves — which is
+   *  what lets the admission rule tell "streaming a 4GB pack right now" from
+   *  "spawned, never produced anything, requester is long gone". */
+  lastWriteAt = 0;
   constructor(
     /** Returns protomux's `drained` flag — `false` means the wire is backed up
      *  and this duplex must stop writing until `onBackpressure` resolves. */
@@ -239,6 +244,7 @@ class FrameDuplex extends Duplex {
     try {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       this.bytesOut += buf.length;
+      this.lastWriteAt = Date.now();
       // EI-18776567787336109 — REAL BACKPRESSURE.
       //
       // This used to call cb() unconditionally, which told node "that write is
@@ -824,6 +830,17 @@ function formatRefusalTarget(
 // push every serve past the requester's 120s ceiling, which made the requester
 // re-dial, which made it worse.
 
+/** WI-6412: the streaming-progress view the admission rule reads. Deliberately
+ *  the narrowest shape that answers "is this serve moving bytes right now?", so
+ *  a live `FrameDuplex` satisfies it structurally (no second counter to drift
+ *  from the real one) while a test can construct it as a plain object. */
+export interface ServeProgress {
+  /** Total bytes written toward the requester so far. */
+  readonly bytesOut: number;
+  /** Wall-clock of the last outbound write; `0` before the first byte. */
+  readonly lastWriteAt: number;
+}
+
 /** A serve this process is running right now, and the lever to stand it down. */
 export interface InFlightServe {
   /** Identity of the requesting channel — one per (muxer, topic), i.e. per
@@ -835,6 +852,9 @@ export interface InFlightServe {
   readonly repoKey: string;
   readonly sessionId: number;
   readonly startedAt: number;
+  /** WI-6412: live progress for this serve. Read by rule 0 below so a serve
+   *  that is actively streaming is never discarded for a re-request. */
+  readonly progress: ServeProgress;
 }
 
 export interface ServeAdmission {
@@ -1092,6 +1112,9 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       repoKey: v.repoKey,
       sessionId: v.id,
       startedAt,
+      // The duplex IS the progress view (it already counts every outbound byte),
+      // so there is no second counter that could disagree with the real one.
+      progress: duplex,
     };
     const aborter = new AbortController();
     serveAborters.set(entry, aborter);
