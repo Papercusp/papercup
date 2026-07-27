@@ -1229,19 +1229,28 @@ function ImprovementsView({
 
   const resolved = digest?.byState?.resolved ?? 0;
   const showDashboard = (digest?.open ?? 0) >= 4;
+  // The badge reports whether the LOOP is healthy, not whether the pile is big.
+  // The drift markers (single-lens collapse, budget-exhausted streak, grading
+  // starvation) are server-evaluated against the blender-release-readiness
+  // rubric — they are the health spec, so they win over any row count here.
+  //
+  // The old "humanQueue is non-empty ⇒ warn" rule is deliberately GONE: it
+  // nagged about a review queue the human is not supposed to action ["the
+  // learning loops is designed to be full auto so needs a call makes no sense"
+  // — owner 2026-07-27]. Retiring the queue's remaining vocabulary is P-004.
   useEffect(() => {
     onStatus?.(
-      sync.error
+      sync.error || scoutSync.error
         ? "bad"
-        : !digest
-          ? "neutral"
-          : digest.humanQueue.length > 0
-            ? "warn"
+        : health.status !== "neutral"
+          ? health.status
+          : !digest
+            ? "neutral"
             : digest.open === 0
               ? "good"
               : "neutral",
     );
-  }, [digest, onStatus, sync.error]);
+  }, [digest, health.status, onStatus, scoutSync.error, sync.error]);
 
   return (
     <section className="pc-learning__section">
