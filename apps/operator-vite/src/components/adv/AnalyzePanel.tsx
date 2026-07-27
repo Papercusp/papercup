@@ -37,6 +37,7 @@ import {
   LearningVisualEmpty,
   LearningVisualError,
 } from "./LearningVisuals";
+import { snapshotFault } from "./snapshot-fault";
 
 function cycleWhen(at: string | null): string {
   const ms = at ? Date.parse(at) : NaN;
@@ -326,16 +327,33 @@ function CycleDetailLoader({ cycleId }: { cycleId: string }) {
     staleTime: 30_000,
   });
   const cycle = sync.data?.[0];
-  if (sync.error) {
+  // WI-6395. Three states used to collapse into two, and the collapse was the
+  // bug: `sync.error` covered TRANSPORT failure only, because the resolver
+  // catches a data-layer failure and returns a successful empty — so a broken
+  // read fell through to `!cycle` and rendered "Loading cycle artifacts…"
+  // FOREVER. A permanent fake spinner is worse than a wrong empty state: it
+  // tells the reader to keep waiting for something that already failed, and
+  // nothing in the UI will ever change. The resolver now tags its degraded
+  // return, so all three states are separable here.
+  const fault = snapshotFault(sync.error, cycle, "This cycle's artifacts");
+  if (fault.failed) {
     return (
       <LearningVisualError
-        title="This cycle's artifacts failed to load"
+        title={fault.message ?? "This cycle's artifacts failed to load"}
         onRetry={() => sync.invalidate()}
       />
     );
   }
   if (!cycle) {
-    return <p className="pc-learning__quietempty">Loading cycle artifacts…</p>;
+    // Only claim to be loading while a read is genuinely in flight.
+    return sync.loading ? (
+      <p className="pc-learning__quietempty">Loading cycle artifacts…</p>
+    ) : (
+      <p className="pc-learning__quietempty">
+        This cycle recorded no artifacts — its generation ran but stored nothing
+        to show.
+      </p>
+    );
   }
   return <CycleDetail cycle={cycle} />;
 }

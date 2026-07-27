@@ -182,16 +182,23 @@ export default defineTool({
                 .string()
                 .max(300)
                 .optional()
-                .describe('Evidence pointer (what was observed, where). Absent ⇒ renders as PREDICTED.'),
+                .describe(
+                  'The EVIDENCE STRING itself (max 300 chars) — e.g. "Verified 15:14Z: 30/30 passed, tree clean". ' +
+                    'NOT a boolean (`true`/`false` is rejected) and NOT `{status, evidence}` — this ONE string field ' +
+                    'carries both the verified/PREDICTED flag and its justification: presence of `verified` (however ' +
+                    'short) renders the row VERIFIED; omitting it entirely renders PREDICTED. There is no separate ' +
+                    'boolean flag to set.',
+                ),
             }),
           ).max(CARRY_NOTE_MAX_CHECKS),
         )
         .optional()
         .describe(
           'Carried CHECKS — claims about EXTERNAL STATE as {claim, recheck, verified?} rows (the non-owner analog ' +
-            'of walls; renders a ## Checks section every wake). A claim without `verified` renders PREDICTED — a ' +
-            'successor must run its recheck before relying on it. Put hash/id/timestamp expectations HERE, never in ' +
-            'Left prose. Same carry-forward semantics as walls: OMITTED ⇒ carried; [] clears.',
+            'of walls; renders a ## Checks section every wake). `verified` is a STRING (evidence, ≤300 chars), never ' +
+            'a boolean — a claim OMITTING `verified` renders PREDICTED, a successor must run its recheck before ' +
+            'relying on it. Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
+            'semantics as walls: OMITTED ⇒ carried; [] clears.',
         ),
       ownerId: z
         .string()

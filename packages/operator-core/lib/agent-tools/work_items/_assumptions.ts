@@ -103,7 +103,11 @@ export const assumptionsArg = z
     ],
     // Without this, ANY malformed value (a bare key string being by far the most
     // likely) surfaces as zod's bare "Invalid input".
-    { errorMap: () => ({ message: `assumptions is malformed. ${ASSUMPTIONS_SHAPE_HINT}` }) },
+    //
+    // ⚠ `error`, NOT zod 3's `errorMap`: this repo is on zod 4, which IGNORES an
+    // unknown params key rather than rejecting it — so the v3 spelling type-checks,
+    // runs, and silently does nothing. The test below is what caught that.
+    { error: () => `assumptions is malformed. ${ASSUMPTIONS_SHAPE_HINT}` },
   )
   .describe(
     "REQUIRED — the `facts:assert` KEYS this close rests on (e.g. [\"gate-red-is-flake-not-regression\"]), " +
