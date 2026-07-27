@@ -2,7 +2,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { computeSchemaAhead, classifyMissingByDeployedTree, resolveDeployedSqlDir, resolveSqlDir } from './migration-drift';
+import {
+  computeSchemaAhead,
+  classifyMissingByDeployedTree,
+  resolveDeployedSqlDir,
+  resolveSqlDir,
+  resolveCanonicalStagingSqlDir,
+} from './migration-drift';
 
 /**
  * WI-5050 (WI-4070 class): `schemaAhead` flags applied migrations numbered
@@ -199,5 +205,57 @@ describe('resolveDeployedSqlDir', () => {
     const parent = makeTree('papercusp', false);
     const currentSqlDir = path.join(parent, 'papercusp/libs/papercusp/libs/db/sql');
     expect(resolveDeployedSqlDir(currentSqlDir)).toBeNull();
+  });
+});
+
+/**
+ * EI-18757486483124756: `resolveCanonicalStagingSqlDir` resolves the CANONICAL
+ * tree agents author migrations in (`PAPERCUSP_INTEGRATION_ROOT`) directly —
+ * unlike `resolveDeployedSqlDir`, it does NOT derive from whatever tree is
+ * currently running, so it still finds the canonical tree even when the
+ * current process IS the release checkout (db:next-migration already solved
+ * this identical problem, EI-353, the same way).
+ */
+describe('resolveCanonicalStagingSqlDir', () => {
+  const tmpRoots: string[] = [];
+  const savedEnv = process.env.PAPERCUSP_INTEGRATION_ROOT;
+
+  afterEach(() => {
+    for (const p of tmpRoots.splice(0)) fs.rmSync(p, { recursive: true, force: true });
+    if (savedEnv === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    else process.env.PAPERCUSP_INTEGRATION_ROOT = savedEnv;
+  });
+
+  it('returns null when PAPERCUSP_INTEGRATION_ROOT is unset', () => {
+    delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    expect(resolveCanonicalStagingSqlDir()).toBeNull();
+  });
+
+  it('resolves libs/papercusp/libs/db/sql under PAPERCUSP_INTEGRATION_ROOT when it exists', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-canonical-'));
+    tmpRoots.push(root);
+    const sqlDir = path.join(root, 'libs/papercusp/libs/db/sql');
+    fs.mkdirSync(sqlDir, { recursive: true });
+    process.env.PAPERCUSP_INTEGRATION_ROOT = root;
+    expect(resolveCanonicalStagingSqlDir()).toBe(sqlDir);
+  });
+
+  it('returns null when PAPERCUSP_INTEGRATION_ROOT is set but has no sql dir', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-canonical-empty-'));
+    tmpRoots.push(root);
+    process.env.PAPERCUSP_INTEGRATION_ROOT = root;
+    expect(resolveCanonicalStagingSqlDir()).toBeNull();
+  });
+
+  it('is independent of the CURRENT tree — unlike resolveDeployedSqlDir, it does not derive from a sibling', () => {
+    // Simulate the exact bug: PAPERCUSP_INTEGRATION_ROOT names a tree that is
+    // NOT any sibling relationship of "current" — it is found directly.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-canonical-direct-'));
+    tmpRoots.push(root);
+    const sqlDir = path.join(root, 'libs/papercusp/libs/db/sql');
+    fs.mkdirSync(sqlDir, { recursive: true });
+    fs.writeFileSync(path.join(sqlDir, '680-new.sql'), '-- noop\n');
+    process.env.PAPERCUSP_INTEGRATION_ROOT = root;
+    expect(resolveCanonicalStagingSqlDir()).toBe(sqlDir);
   });
 });

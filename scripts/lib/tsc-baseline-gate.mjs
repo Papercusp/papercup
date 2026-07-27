@@ -619,7 +619,20 @@ export function runTscBaselineGate({
   // files are theirs, so never fall back to the git-status guess for the same run.
   const changedFiles = explicitFiles ?? (mineFlag ? gitChangedFiles(root) : null);
 
-  const result = decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles });
+  // EI-18756182128903253 — cause-aware widening: when scoped (--mine or --files), also attribute
+  // a regression OUTSIDE the changed set when that file references an exported type/interface one
+  // of the changed files also exports (the "I added a required field, an unchanged fixture broke"
+  // shape --mine was otherwise structurally blind to). Cheap: only reads the changed files plus the
+  // files that already have a regression, never a tree-wide scan.
+  const typeReferencedFiles = changedFiles
+    ? filesReferencingTypeNames(
+        root,
+        Object.keys(currentByFile).filter((f) => f !== '(unattributed)' && !changedFiles.has(f)),
+        exportedTypeNames(root, changedFiles),
+      )
+    : null;
+
+  const result = decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles, typeReferencedFiles });
   console.log(
     `TSC ${label}: ${result.total} type errors across ${Object.keys(currentByFile).length} file(s) ` +
       `(baseline total ${result.baselineTotal})${explicitFiles ? ' [--files]' : mineFlag ? ' [--mine]' : ''}`,
