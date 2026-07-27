@@ -31,15 +31,27 @@ afterEach(() => vi.unstubAllGlobals());
 afterEach(cleanup);
 
 // jsdom has no layout, so the real virtualizer renders nothing — render every row.
-vi.mock('@tanstack/react-virtual', () => ({
-  useVirtualizer: (opts: { count: number }) => ({
-    getVirtualItems: () =>
-      Array.from({ length: opts.count }, (_, i) => ({ index: i, key: `vk-${i}`, start: i * 64, size: 64 })),
-    getTotalSize: () => opts.count * 64,
-    measureElement: () => {},
-    scrollToIndex: () => {},
-  }),
-}));
+//
+// `measureElement`/`scrollToIndex` are hoisted OUT of the hook body on purpose:
+// the real `useVirtualizer` holds ONE Virtualizer instance
+// (`React.useState(() => new Virtualizer(...))`) and binds `measureElement` once
+// in its constructor, so their identity is stable across renders. A fresh arrow
+// per call would fabricate prop churn the running app never sees — and, since
+// `measureElement` is a prop of every row, would break the <ChatMessageRow> memo
+// in the test ONLY, making a correct fix look broken (WI-6502).
+vi.mock('@tanstack/react-virtual', () => {
+  const measureElement = () => {};
+  const scrollToIndex = () => {};
+  return {
+    useVirtualizer: (opts: { count: number }) => ({
+      getVirtualItems: () =>
+        Array.from({ length: opts.count }, (_, i) => ({ index: i, key: `vk-${i}`, start: i * 64, size: 64 })),
+      getTotalSize: () => opts.count * 64,
+      measureElement,
+      scrollToIndex,
+    }),
+  };
+});
 
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({
@@ -125,5 +137,94 @@ describe('ChatConversation — typing does not re-parse message markdown', () =>
 
     // Exactly one more: the new message parses, the three existing ones do not.
     expect(markdownRender.mock.calls.length).toBe(afterMount + 1);
+  });
+});
+
+/**
+ * The SECOND half of the same owner bug (WI-6502). Memoizing the markdown alone
+ * left the rest of every row re-rendering per keystroke — avatar, role label,
+ * tool cards, and one tool CHIP per tool call. Measured in a driven Tauri webview
+ * against :3270: ~70ms of main-thread block per keystroke vs a 32ms idle floor,
+ * with 28 chip tooltips rebuilt each keystroke (each eagerly JSON.stringify-ing
+ * its payload) and zero network requests / zero forced reflows — pure re-render.
+ *
+ * The chip renderer is the probe precisely BECAUSE it sits outside
+ * ChatMessageContent: it is the work the markdown guard above cannot see, so
+ * these tests fail on the pre-fix tree even though that suite passes.
+ */
+describe('ChatConversation — typing does not re-render message ROWS', () => {
+  const MESSAGES_WITH_TOOLS: ChatMessage[] = [
+    { role: 'assistant', content: 'first', tools: [{ name: 'coord:orient', input: { a: 1 } }] },
+    { role: 'user', content: 'second' },
+    { role: 'assistant', content: 'third', tools: [{ name: 'plans:get', input: { b: 2 } }] },
+  ] as unknown as ChatMessage[];
+  const TOOL_COUNT = 2;
+
+  /** One call per tool-chip RENDER — row work the markdown memo does NOT cover. */
+  const chipRender = vi.fn();
+  const renderToolChip = (t: { name: string }, i: number) => {
+    chipRender();
+    return <span key={i} data-testid="chip">{t.name}</span>;
+  };
+  // Stable across rerenders, exactly as OperatorChat passes a module-level fn.
+  const rowProps = (over: Record<string, unknown> = {}) =>
+    props({ messages: MESSAGES_WITH_TOOLS, renderToolChip, ...over });
+
+  beforeEach(() => chipRender.mockClear());
+
+  it('re-renders NO row across a burst of keystrokes', () => {
+    const { rerender } = render(<ChatConversation {...rowProps()} />);
+    const afterMount = chipRender.mock.calls.length;
+    // Sanity: mount really did render every chip, so a zero delta means
+    // "skipped", not "the probe never fired".
+    expect(afterMount).toBe(TOOL_COUNT);
+
+    for (const typed of ['h', 'he', 'hel', 'hell', 'hello']) {
+      rerender(<ChatConversation {...rowProps({ inputValue: typed })} />);
+    }
+
+    // 5 keystrokes × 2 chips = 10 rebuilds before the row memo.
+    expect(chipRender.mock.calls.length).toBe(afterMount);
+  });
+
+  it('STILL re-renders the row when its message actually changes', () => {
+    // Non-vacuity companion: a frozen row would pass the assertion above while
+    // silently breaking the transcript, so the probe must still fire here.
+    const { rerender } = render(<ChatConversation {...rowProps()} />);
+    const afterMount = chipRender.mock.calls.length;
+
+    rerender(
+      <ChatConversation
+        {...rowProps({
+          messages: [
+            ...MESSAGES_WITH_TOOLS.slice(0, 2),
+            { role: 'assistant', content: 'third', tools: [{ name: 'plans:edit', input: { b: 3 } }] },
+          ] as unknown as ChatMessage[],
+        })}
+      />,
+    );
+
+    expect(chipRender.mock.calls.length).toBeGreaterThan(afterMount);
+  });
+
+  it('STILL renders rows for a message that arrives while typing', () => {
+    const { rerender } = render(<ChatConversation {...rowProps({ inputValue: 'draft' })} />);
+    const afterMount = chipRender.mock.calls.length;
+
+    rerender(
+      <ChatConversation
+        {...rowProps({
+          inputValue: 'draft!',
+          messages: [
+            ...MESSAGES_WITH_TOOLS,
+            { role: 'assistant', content: 'new', tools: [{ name: 'fleet:status', input: {} }] },
+          ] as unknown as ChatMessage[],
+        })}
+      />,
+    );
+
+    // Exactly one more: the arriving message's chip renders, the existing ones
+    // are skipped even though a keystroke landed in the same commit.
+    expect(chipRender.mock.calls.length).toBe(afterMount + 1);
   });
 });
