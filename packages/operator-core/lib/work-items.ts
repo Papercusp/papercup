@@ -4035,6 +4035,22 @@ export interface ClaimFloorAttribution {
   refusedBy: string | null;
   /** Operator-facing explanation of that floor. */
   detail: string | null;
+  /**
+   * P-027 / D-055 A2 — the owner id currently holding the row, present ONLY when
+   * `refusedBy === 'already-taken'`.
+   *
+   * The `already-taken` floor is the one refusal in this list that is caused by
+   * ANOTHER AGENT rather than by the row's own properties, so it is the only one
+   * where "who, and are they actually working on it?" is an actionable question.
+   * `scheduler:get_next` resolves this into the holder's goal; every other floor
+   * leaves it absent because there is no holder to name.
+   *
+   * ⚠ OPTIONAL ON PURPOSE. This is a shared interface with fixtures constructed
+   * across the tree (set_claim_spec builds `unknownRows` by hand), and a REQUIRED
+   * field here would go stale in files this change never touches — the exact trap
+   * the repo conventions call out for shared-interface widening.
+   */
+  heldBy?: string | null;
 }
 
 /** The floors, in claim-path order, as (name, predicate-is-SATISFIED) pairs + why a miss means. */
@@ -4090,6 +4106,7 @@ export async function explainIssueClaimFloors(
   const rows = await sql<
     {
       id: string;
+      taken_by: string | null;
       ok_status: boolean;
       ok_untaken: boolean;
       ok_observation: boolean;
@@ -4104,6 +4121,7 @@ export async function explainIssueClaimFloors(
     }[]
   >`
     SELECT wi.feature_id AS id,
+           wi.taken_by                                                            AS taken_by,
            (wi.status = ANY(${[...states]}::text[]))                              AS ok_status,
            (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
            (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
@@ -4155,6 +4173,10 @@ export async function explainIssueClaimFloors(
       admissible: refusedBy === null,
       refusedBy,
       detail: refusedBy ? (ISSUE_FLOOR_EXPLANATIONS[refusedBy] ?? null) : null,
+      // Only the already-taken floor has a holder to name (P-027). Every other
+      // refusal is a property of the ROW, so `heldBy` stays absent rather than
+      // carrying a stale `taken_by` that had nothing to do with the refusal.
+      ...(refusedBy === 'already-taken' && r?.taken_by ? { heldBy: r.taken_by } : {}),
     };
   });
 }

@@ -537,6 +537,18 @@ jobs:
       - name: Lint agent-insights doc citations resolve on disk
         run: npm run lint:insight-citations
 
+      # Normative-insight frontmatter guard (unified-agent-state-plane-2026-07-27
+      # P-022, per D-028): an insight declaring `normative: true` asserts it is a
+      # CONVENTION (something that can be violated, and so something a downstream
+      # projector/guard can act on) rather than an explanation. This enforces the one
+      # rule that makes the marker meaningful — `normative: true` REQUIRES `governs:`,
+      # the trigger/surface the convention applies to. A rule with no stated trigger is
+      # worse than an unmarked doc: it inflates the D-016 adoption denominator with an
+      # entry nothing can act on. GATING, but never forces opt-in — an unmarked
+      # explanatory doc is the corpus default and always passes.
+      - name: Lint normative agent-insights declare `governs`
+        run: npm run lint:insight-normative
+
       # Rubric method_ref parity guard (EI-8795): rubrics/<id>/METHOD.md and its served
       # apps/operator-docs agent-insights/<id>.mdx twin are hand-synced with no
       # generation link — an author who edits only one leaves docs:search/docs:get (what

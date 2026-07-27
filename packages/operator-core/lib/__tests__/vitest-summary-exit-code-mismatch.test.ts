@@ -1,5 +1,6 @@
 /**
- * vitest-summary-exit-code-mismatch.test.ts — EI-18653696921091778 regression guard.
+ * vitest-summary-exit-code-mismatch.test.ts — EI-18653696921091778 regression guard,
+ * extended by EI-18819483316574031 (the ANSI blindness that disabled it in production).
  *
  * Observed live 2026-07-25: a `npm run test:affected` run captured a vitest
  * child that printed
@@ -11,6 +12,11 @@
  * cross-checking `scripts/lib/vitest-summary.mjs`'s `parseSummaryFailedCounts`
  * against a captured run's exit code and treating a mismatch as a failure.
  *
+ * 2026-07-27 (EI-18819483316574031): that cross-check had never once fired on real
+ * gate output, because every matcher was line-anchored while vitest COLOURISES the
+ * summary rows. The guard was dead code in production and the green pin advanced over
+ * a deterministic operator-vite failure. The ANSI cases below are the regression guard.
+ *
  * These tests exercise the REAL helper + assert the runner actually wires it in.
  */
 import { describe, it, expect } from 'vitest';
@@ -21,15 +27,20 @@ import { fileURLToPath } from 'node:url';
 // @ts-expect-error vitest-summary.mjs is a standalone Node script without declarations.
 import { parseSummaryFailedCounts, parseFailedTestFiles } from '../../../../scripts/lib/vitest-summary.mjs';
 
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
+
 /**
  * EI-18819483316574031 — VERBATIM bytes from the gate run that advanced the green pin
  * over a real, deterministic failure (candidate e1e2dfdbbcda, 2026-07-27T17:17Z,
- * ~/.papercusp/checkpoint-logs/2026-07-27T17-17-31-003Z-...-cand-e1e2dfdbbcda.log
+ * ~/.papercusp/checkpoint-logs/2026-07-27T17-17-31-003Z-...-cand-e1e2dfdbbcda.log,
  * lines 273/274 and the operator-vite rollup row).
  *
  * These are NOT hand-written approximations of "what vitest probably prints" — that is
- * precisely the mistake that let this bug live: every pre-existing case above uses clean,
- * uncoloured text, so the parser looked correct while being blind on real gate output.
+ * precisely the mistake that let this bug live: every pre-existing case in this file uses
+ * clean, uncoloured text, so the parser looked correct while being blind on real output.
+ * Escapes are written as explicit  rather than raw ESC bytes so they stay visible
+ * and survive formatters (a raw control byte in a fixture is invisible and easy to lose).
  */
 const REAL_ANSI_SUMMARY =
   '[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m161 passed[39m[22m[90m (162)[39m\n' +
@@ -37,9 +48,6 @@ const REAL_ANSI_SUMMARY =
 
 const REAL_ANSI_ROLLUP =
   ' [31m❯[39m src/components/adv/learning-empty-state-copy.guard.test.ts [2m([22m[2m5 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 15[2mms[22m[39m\n';
-
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
 
 describe('parseSummaryFailedCounts (EI-18653696921091778)', () => {
   it('extracts failed test-file and test counts from a real vitest failure summary', () => {
@@ -83,8 +91,8 @@ describe('parseSummaryFailedCounts (EI-18653696921091778)', () => {
 
   it('still returns null for a colourised ALL-GREEN summary (no false positives)', () => {
     const green =
-      '[2m Test Files [22m [1m[32m162 passed[39m[22m[90m (162)[39m\n' +
-      '[2m      Tests [22m [1m[32m1599 passed[39m[22m[90m (1599)[39m\n';
+      '[2m Test Files [22m [1m[32m162 passed[39m[22m[90m (162)[39m\n' +
+      '[2m      Tests [22m [1m[32m1599 passed[39m[22m[90m (1599)[39m\n';
     expect(parseSummaryFailedCounts(green)).toBeNull();
   });
 });
@@ -97,7 +105,8 @@ describe('parseFailedTestFiles (EI-18819483316574031)', () => {
   });
 
   it('extracts the failing file from a COLOURISED bare FAIL row', () => {
-    const failRow = ' [41m[1m FAIL [22m[49m [36msrc/components/adv/x.test.ts[39m\n';
+    const failRow =
+      '[41m[1m FAIL [22m[49m [36msrc/components/adv/x.test.ts[39m\n';
     expect(parseFailedTestFiles(failRow)).toEqual(['src/components/adv/x.test.ts']);
   });
 

@@ -12,9 +12,11 @@
  * the caller's OWN input — inherently recoverable, flagged once at the
  * envelope by `echo_note`, D-004). Outcome fields (ok/id/error/holder/hint/
  * stateError/stateWarning/verificationWarning/authorityWarning/completionAuthority/
- * assigneeMismatchWarning/reflect) always pass through verbatim — this shaper only
- * ever touches `workItem`, `completion` and `outputPayload`, so a new outcome field
- * needs no change here.
+ * assigneeMismatchWarning/reflect/holderContext) always pass through verbatim — this
+ * shaper only ever touches `workItem`, `completion` and `outputPayload`, so a new
+ * outcome field needs no change here. (P-027's `holderContext` on a claim_conflict is
+ * exactly such a field: it rides through untouched because the row is SPREAD, not
+ * rebuilt from an allowlist — which is the property that keeps this claim true.)
  */
 
 export const WRITE_ECHO_TIER_CAPS = {

@@ -21,6 +21,14 @@ import {
   renderPresenceRebootstrapBlock,
   consumePresenceRebootstrap,
 } from "../presence-snapshot";
+// These three are USED below but were never imported — 5 x TS2304 that red the
+// per-file tsc gate for the whole fleet. All three are exported from
+// inbox-visibility.ts; this restores the missing import only.
+import {
+  isAmbientBroadcast,
+  excludeIntentDeclares,
+  coalesceRepeatedBroadcasts,
+} from "../inbox-visibility";
 import { COORD_ROLES } from "../roles";
 import { renderInjection, type CoordLineSource } from "../../../coord-schema";
 import { fetchPresenceFleet } from "../presence-fleet";
@@ -99,11 +107,13 @@ const COORD_KINDS = [
 // owner-visible unread counter can apply the SAME rules without importing this
 // defineTool module (unread-count-truthfulness-2026-07-27 P-005 / D-006).
 // Re-exported here so this module's public surface is unchanged.
-export {
+import {
   excludeIntentDeclares,
   isAmbientBroadcast,
   coalesceRepeatedBroadcasts,
 } from "../inbox-visibility";
+
+export { excludeIntentDeclares, isAmbientBroadcast, coalesceRepeatedBroadcasts };
 
 const DEFAULT_INBOX_LIMIT = 50;
 

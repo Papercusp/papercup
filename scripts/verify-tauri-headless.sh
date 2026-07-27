@@ -684,7 +684,12 @@ fi
 # disappears when no snapshot was frozen.
 SPA_ENV_LINE=""
 [ -n "$SPA_DIST" ] && SPA_ENV_LINE="PAPERCUSP_SPA_DIST=\"$SPA_DIST\""
-cat > "$WORK/launch.sh" <<LAUNCH
+# write_and_launch_tauri — (re)generate launch.sh for the CURRENT $DEV_PORT /
+# $PTY_PORT / $LOG and exec it, setting $TAURI_PID. Factored out so the
+# bind-time retry below (EI-18734124566158657) can call it again against a
+# freshly-picked port pair instead of duplicating the heredoc.
+write_and_launch_tauri() {
+  cat > "$WORK/launch.sh" <<LAUNCH
 #!/usr/bin/env bash
 cd "$DESKTOP_DIR"
 exec env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
@@ -695,28 +700,61 @@ exec env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
   $ISOLATED_ENV_LINE \\
   ${LAUNCH_PREFIX[*]} npm run tauri -- dev --config '{"build":{"devUrl":"http://127.0.0.1:$DEV_PORT"}}'
 LAUNCH
-chmod +x "$WORK/launch.sh"
-setsid "$WORK/launch.sh" >"$LOG" 2>&1 &
-TAURI_PID=$!
+  chmod +x "$WORK/launch.sh"
+  setsid "$WORK/launch.sh" >"$LOG" 2>&1 &
+  TAURI_PID=$!
+}
 
-log "waiting up to ${TIMEOUT}s for the dev bridge (pid=$TAURI_PID, log=$LOG)"
-ELAPSED=0
-until grep -q "dev bridge listening" "$LOG" 2>/dev/null; do
-  kill -0 "$TAURI_PID" 2>/dev/null || { echo "FATAL: tauri dev exited before the bridge came up — tail:" >&2; tail -40 "$LOG" >&2; exit 1; }
-  [ "$ELAPSED" -ge "$TIMEOUT" ] && { echo "FATAL: bridge did not come up within ${TIMEOUT}s — tail:" >&2; tail -40 "$LOG" >&2; exit 1; }
-  sleep 2; ELAPSED=$((ELAPSED + 2))
-done
-log "bridge is up after ${ELAPSED}s"
+# EI-18734124566158657: the advisory port lock (pick_and_lock_ports, above)
+# closes the race between two CONCURRENT invocations of THIS script, but not
+# against a squatter that never took the lock at all — a leaked/orphaned
+# sidecar from a crashed prior run, or an unrelated process that happened to
+# bind the same port in the ~seconds-to-minutes between our ss-probe and our
+# sidecar's actual bind. That still surfaces as the EADDRINUSE guard below
+# firing (correctly — refusing to verify against a peer's operator is right;
+# see the header). Rather than making the caller notice a non-zero exit and
+# re-run the whole ~2min boot by hand, retry ONCE automatically: tear down
+# this attempt, re-pick+re-lock a fresh port pair, and re-launch — only the
+# SECOND such loss surfaces as fatal.
+BOOT_ATTEMPTS=0
+MAX_BOOT_ATTEMPTS="${VERIFY_TAURI_MAX_BOOT_ATTEMPTS:-2}"
+while :; do
+  BOOT_ATTEMPTS=$((BOOT_ATTEMPTS + 1))
+  write_and_launch_tauri
 
-# Our OWN sidecar must own DEV_PORT. If it lost a race for it, the webview is
-# pointed at SOMEONE ELSE's operator on that port and every assertion below is
-# meaningless (WI-4342) — fail loudly instead of "verifying" a peer's tree.
-if grep -qE "EADDRINUSE.*:$DEV_PORT\b" "$LOG" 2>/dev/null; then
+  log "waiting up to ${TIMEOUT}s for the dev bridge (pid=$TAURI_PID, log=$LOG, attempt=$BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS)"
+  ELAPSED=0
+  until grep -q "dev bridge listening" "$LOG" 2>/dev/null; do
+    kill -0 "$TAURI_PID" 2>/dev/null || { echo "FATAL: tauri dev exited before the bridge came up — tail:" >&2; tail -40 "$LOG" >&2; exit 1; }
+    [ "$ELAPSED" -ge "$TIMEOUT" ] && { echo "FATAL: bridge did not come up within ${TIMEOUT}s — tail:" >&2; tail -40 "$LOG" >&2; exit 1; }
+    sleep 2; ELAPSED=$((ELAPSED + 2))
+  done
+  log "bridge is up after ${ELAPSED}s"
+
+  # Our OWN sidecar must own DEV_PORT. If it lost a race for it, the webview is
+  # pointed at SOMEONE ELSE's operator on that port and every assertion below is
+  # meaningless (WI-4342) — fail loudly instead of "verifying" a peer's tree.
+  if ! grep -qE "EADDRINUSE.*:$DEV_PORT\b" "$LOG" 2>/dev/null; then
+    break   # our sidecar owns the port — proceed
+  fi
+
+  if [ "$BOOT_ATTEMPTS" -lt "$MAX_BOOT_ATTEMPTS" ]; then
+    log "EADDRINUSE racing :$DEV_PORT at bind-time (attempt $BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS) — tearing down this attempt and re-picking a fresh port once (EI-18734124566158657)"
+    [ -n "$TAURI_PID" ] && { kill -TERM -- -$TAURI_PID 2>/dev/null; sleep 1; kill -9 -- -$TAURI_PID 2>/dev/null; }
+    mv "$LOG" "$WORK/tauri.attempt${BOOT_ATTEMPTS}.log" 2>/dev/null || true
+    fed_release_port_locks
+    PORT_BASE=$((DEV_PORT + 1))
+    pick_and_lock_ports
+    log "re-picked display=:$DISPLAY_NUM devPort=$DEV_PORT ptyPort=$PTY_PORT"
+    continue
+  fi
+
   echo "FATAL: our operator sidecar could not bind :$DEV_PORT (EADDRINUSE) — another instance owns it," >&2
-  echo "       so this webview is loading a PEER's operator, not our tree. Refusing to verify. Tail:" >&2
+  echo "       so this webview is loading a PEER's operator, not our tree. Refusing to verify, after" >&2
+  echo "       $BOOT_ATTEMPTS attempt(s) across freshly-picked ports. Tail:" >&2
   grep -aE "EADDRINUSE|pty-ws" "$LOG" | head -5 >&2
   exit 1
-fi
+done
 
 # EI-10387 recurrence guard: when isolation was requested, verify GROUND TRUTH —
 # the REAL running sidecar's own /proc/<pid>/environ — not just that we set the

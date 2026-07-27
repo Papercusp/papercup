@@ -26,6 +26,8 @@ import {
   readWorkItemClaimHoldProvenance,
 } from '../../work-items';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { holderContextReader, resolveHolderAdvisory } from '../coordination/holder-advisory';
+import type { CellReader } from '../../cell-registry';
 import { shapeWorkItemWriteEcho } from './write-echo-shape';
 import {
   admitWorkItemForFleetTarget,
@@ -113,7 +115,11 @@ export function terminalClaimWarning(
  * error (claim_conflict + holder, not_found, or not_claimable) rather than a
  * phantom "not found".
  */
-async function claimOne(itRaw: ClaimItem, identity: AgentIdentity): Promise<BulkItemResult> {
+async function claimOne(
+  itRaw: ClaimItem,
+  identity: AgentIdentity,
+  reader: CellReader | null,
+): Promise<BulkItemResult> {
   const claimerDefault = identity.ownerId;
   // EI-9274: a literal `'self'` assignee is treated identically to an OMITTED one
   // (resolved to the caller) — including for the implicit-identity guards below, so
@@ -260,12 +266,30 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity): Promise<Bulk
     return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };
   }
   if (failure.reason === 'conflict') {
+    // P-027 / D-055 A2 — THE contention point: the caller is blocked BY a named
+    // holder and is deciding whether to wait, escalate, or go elsewhere. The
+    // refusal already names WHO; this names what they are DOING, which is the
+    // input that decision actually turns on.
+    //
+    // ⚠ ADVISORY ONLY, AND STRICTLY AFTER THE VERDICT. `failure.reason` is
+    // already decided above; nothing here can promote a conflict to a grant. It
+    // is also total (`resolveHolderAdvisory` never throws), so a dead facts store
+    // costs the explanation and never the refusal — P-026 rule (f).
+    //
+    // D-094: the subject is subtracted, so the holder is never reported as
+    // "also competing on" the very item being refused.
+    const holderContext = await resolveHolderAdvisory({
+      holder: failure.holder,
+      reader,
+      subjectRef: it.id,
+    });
     return {
       ok: false,
       id: it.id,
       error: 'claim_conflict',
       holder: failure.holder,
       workItem: current,
+      ...(holderContext ? { holderContext } : {}),
       hint: `Already claimed by ${failure.holder} — the item exists (get/observe/comment/complete resolve it). Coordinate with the holder via coord:send, or pick another item; if that agent is dead, the stale-claim reclaim lane frees it. Do not blind-retry with a different harness.`,
     };
   }
@@ -355,6 +379,10 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    // P-027: resolved ONCE for the whole batch — the advisory is reader-relative,
+    // and every item in this call shares one reader. Guarded, so an
+    // unattributable caller gets no advisory rather than a failed claim.
+    const reader = holderContextReader(ctx as Parameters<typeof holderContextReader>[0]);
     const list: ClaimItem[] = args.items?.length
       ? args.items.map((it) => ({
           id: it.id,
@@ -366,7 +394,9 @@ export default defineTool({
       : args.ids?.length
         ? args.ids.map((id) => ({ id, assignee: args.assignee, harness: args.harness, force: args.force, ownerOverride: args.ownerOverride }))
         : [{ id: args.id as string, assignee: args.assignee, harness: args.harness, force: args.force, ownerOverride: args.ownerOverride }];
-    const env = await runBulk(list, (it) => claimOne(it, ident), { keyOf: (it) => ({ id: it.id }) });
+    const env = await runBulk(list, (it) => claimOne(it, ident, reader), {
+      keyOf: (it) => ({ id: it.id }),
+    });
     // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
     // D-006): piggyback a targeted memory recall for the just-claimed item(s)
     // on the response — deadline-bounded, epoch-deduped (port 'claim'),

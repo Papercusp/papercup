@@ -28,18 +28,11 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findStaleInsightCitations, formatStaleCitations } from '../packages/operator-core/lib/content-lint/insight-citations';
+import { isInsightDoc } from '../packages/operator-core/lib/content-lint/insight-corpus';
 
 export { findStaleInsightCitations, formatStaleCitations };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-
-const DOCS_PREFIX = 'apps/operator-docs/src/content/docs/agent-insights/';
-
-const isExcluded = (f) =>
-  f.startsWith('_retired/') ||
-  f.includes('/_retired/') ||
-  f.includes('/node_modules/') ||
-  f.includes('/dist/');
 
 function main() {
   const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
@@ -48,9 +41,7 @@ function main() {
 
   const offenders = [];
   for (const f of tracked) {
-    if (isExcluded(f)) continue;
-    if (!f.endsWith('.mdx') && !f.endsWith('.md')) continue;
-    if (!f.startsWith(DOCS_PREFIX)) continue; // only the agent-insights corpus (this WI's scope)
+    if (!isInsightDoc(f)) continue; // shared corpus scope (insight-corpus.ts) — see that module
     let text;
     try {
       text = readFileSync(new URL(f, `file://${ROOT}/`), 'utf8');

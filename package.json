@@ -168,6 +168,7 @@
     "lint:vacuous-negatives": "node scripts/check-vacuous-negative-assertions.mjs",
     "lint:vacuous-negatives:report": "node scripts/check-vacuous-negative-assertions.mjs --report",
     "lint:insight-citations": "tsx scripts/check-insight-citations.mjs",
+    "lint:insight-normative": "tsx scripts/check-insight-normative.mjs",
     "lint:no-retired": "node scripts/check-no-retired-imports.mjs",
     "lint:no-retired-style": "node scripts/check-no-retired-style.mjs",
     "scan:retirement-surface": "node scripts/scan-retirement-surface.mjs",
