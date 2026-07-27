@@ -56,9 +56,19 @@ import {
 import {
   REF_ANNOUNCE_EVENT_KEY,
   isSignedRefAnnouncement,
+  verifyRefAnnouncement,
   type SignedRefAnnouncement,
   type AnnounceBudgetState,
 } from '../../sync/pot-git/ref-announce';
+import {
+  formatConvergenceVerdict,
+  judgeConvergence,
+  type AnnouncedSnapshot,
+  type ConvergenceState,
+  type ConvergenceVerdict,
+  type LocalMirror,
+} from '../../sync/pot-git/convergence-probe';
+import { readSigrefs } from '../../sync/pot-git/sigrefs';
 import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/pot-git/staging-advance';
 import {
   defaultRunGit,
@@ -1611,6 +1621,128 @@ export function __resetBootstrapDialBackoffForTest(): void {
   noSuchRepoBackoffUntil.clear();
 }
 
+/**
+ * WI-6372 (fix D) — is our mirror actually LEVEL WITH THE POT, or merely the
+ * result of a fetch that completed?
+ *
+ * `bootstrapFromPeer` answers "did a fetch succeed". That is NOT the same
+ * question, and conflating them is what let WI-6364 run silently for 7 days: a
+ * joiner served a complete, internally-consistent pack from a store frozen a
+ * week earlier reported COLD JOIN COMPLETE and stamped `ok:true`.
+ *
+ * The correlator is the REF-ANNOUNCE plane, and its value comes entirely from
+ * being a DIFFERENT channel: announcements ride the hive-keyed fed-event log,
+ * so they are independent of `repoKey` and of the pot-git transport. A repoKey
+ * divergence makes the two channels disagree while each looks internally
+ * healthy — a disagreement no amount of asking pot-git about itself can
+ * surface.
+ *
+ * Best-effort by contract: a probe failure must never break the tick (it is a
+ * detector, not a gate), so everything here is caught and reported.
+ */
+async function runConvergenceProbe(input: {
+  slug: string;
+  workspaceId: string;
+  potHomeSlug: string;
+  repoPath: string;
+  candidateDevicePubkeys: string[];
+}): Promise<ConvergenceVerdict | null> {
+  const { slug, workspaceId, potHomeSlug, repoPath, candidateDevicePubkeys } = input;
+  try {
+    const { sql } = getOrgPg();
+    // Read announcements INDEPENDENTLY of the ref-announce leg's own cursor:
+    // that cursor is a CONSUMPTION watermark and has already moved past exactly
+    // the rows we need to judge against. Deliberately NO sql cast on `version`
+    // (one garbage row would throw the whole query) and no ORDER BY on it —
+    // rows come back newest-first and the max per device is taken in JS AFTER
+    // the signature check. The 500-row bound is a scan ceiling: a device that
+    // has not announced within it simply cannot be judged, which is the
+    // conservative direction (no alarm) rather than a false one.
+    const rows = await sql<{ body: Record<string, unknown> }[]>`
+      SELECT body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${potHomeSlug}
+         AND surface = 'messages'
+         AND body->'fed_event'->>'key' = ${REF_ANNOUNCE_EVENT_KEY}
+       ORDER BY id DESC
+       LIMIT 500
+    `;
+    const announced: AnnouncedSnapshot[] = [];
+    for (const row of rows) {
+      const fe = row.body?.fed_event as { payload?: unknown } | undefined;
+      const payload = fe?.payload;
+      if (!isSignedRefAnnouncement(payload)) continue;
+      // ANYTHING can write a fed-event row, so an unverified one must never be
+      // able to pin this device NOT-CONVERGED forever. Verify against the
+      // EMBEDDED key; hive membership is gated separately by the candidate set.
+      if (!verifyRefAnnouncement(payload)) continue;
+      announced.push({
+        devicePubkeyBase64: payload.device_pubkey,
+        version: payload.version,
+        sigrefsOid: payload.sigrefs_oid,
+      });
+    }
+
+    const local: LocalMirror[] = [];
+    for (const device of candidateDevicePubkeys) {
+      const stored = await readSigrefs(repoPath, device).catch(() => null);
+      local.push({ devicePubkeyBase64: device, version: stored?.version ?? null });
+    }
+
+    const stateRows = await sql<{ convergence: { devices?: ConvergenceState } | null }[]>`
+      SELECT metadata->'convergence' AS convergence
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       LIMIT 1
+    `;
+    const priorState = stateRows[0]?.convergence?.devices ?? null;
+
+    const verdict = judgeConvergence({
+      candidateDevicePubkeys,
+      announced,
+      local,
+      priorState,
+      nowMs: Date.now(),
+    });
+
+    await patchRoutineMetadata(slug, {
+      convergence: {
+        at: Date.now(),
+        // THE field a release reviewer must read instead of `bootstrap.ok`.
+        converged: verdict.converged,
+        judged: verdict.judged,
+        behindCount: verdict.behind.length,
+        notConverged: verdict.notConverged.map((d) => ({
+          device: d.devicePubkeyBase64.slice(0, 12),
+          announced: d.announced,
+          local: d.local,
+          stuckForMs: d.lagMs,
+        })),
+        summary: formatConvergenceVerdict(verdict),
+        // The per-device persistence watermark the NEXT tick carries forward.
+        devices: verdict.state,
+      },
+    });
+
+    if (!verdict.converged) {
+      // The loudest line this leg can emit, and deliberately so: this is the
+      // exact condition that previously printed nothing at all while every
+      // green artifact kept saying the join had succeeded.
+      console.warn(
+        `[git-sync] ${slug}: pot-git NOT CONVERGED WITH THE POT — ${formatConvergenceVerdict(verdict)}. ` +
+          `A completed fetch is NOT convergence: our mirror has not advanced while the pot announced newer ` +
+          `snapshots on the (repoKey-independent) ref-announce plane. Treat any 'COLD JOIN COMPLETE' / ` +
+          `bootstrap ok:true for this pot as UNSOUND until this clears.`,
+      );
+    }
+    return verdict;
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: convergence probe failed: ${e instanceof Error ? e.message : e}`);
+    return null;
+  }
+}
+
 export async function runBootstrapLeg(slug: string, workspaceId: string): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
@@ -1695,6 +1827,29 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // reverse-leg drill 2026-07-17 with a live registered peer sitting unused).
     const candidateDevicePubkeys = memberDevicePubkeysBase64.filter((d) => d !== selfDevicePubkey);
     if (candidateDevicePubkeys.length === 0) return; // no member peer other than self yet — nothing to seed from
+
+    // WI-6372 (fix D) — CRITICAL PLACEMENT: the convergence probe runs HERE,
+    // ABOVE the warm gate, and its position is the whole point of the fix.
+    //
+    // The warm gate below returns the moment a peer namespace exists with no
+    // pending quarantine. A joiner that is SEEDED BUT STALE — the WI-6364 shape
+    // exactly — satisfies that gate on every tick and therefore never re-enters
+    // this leg at all, while the ref-announce leg keeps dialing under the same
+    // diverged repoKey. So a probe placed on the cold-join path (or anywhere
+    // after the gate) would never fire on precisely the machine that needs it:
+    // the stuck one. Being above the gate is what makes this a detector of
+    // ONGOING divergence rather than a post-condition of a join we happened to
+    // run this tick.
+    //
+    // Its verdict never gates the leg — a detector that can block the thing it
+    // watches is a second outage waiting to happen.
+    const convergence = await runConvergenceProbe({
+      slug,
+      workspaceId,
+      potHomeSlug,
+      repoPath,
+      candidateDevicePubkeys,
+    });
 
     // Warm means "already seeded from a PEER MEMBER's device" — nothing else
     // counts. Our own namespace is local (own-head-publish), and the

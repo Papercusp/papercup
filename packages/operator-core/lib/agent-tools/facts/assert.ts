@@ -205,6 +205,16 @@ export default defineTool({
       .describe(
         'P-008: the optional TYPED assertion a contradiction detector can compare, e.g. { subject: "cell:gate.greenCheckpoint.verdict", assertion: "unrelated-to-my-change" }. `body` stays the prose humans read. Omit freely — a fact without a claim is fully valid, just invisible to the detector.',
       ),
+    enforcement: z
+      .object({
+        tier: z.enum(CONVENTION_ENFORCEMENT_TIERS),
+        floor: z.number().optional(),
+        reviewBy: z.string().max(40).optional(),
+      })
+      .optional()
+      .describe(
+        "P-018: HOW this convention is enforced (kind:'convention' only) — 'structural' (impossible to do wrong; no agent decision involved), 'gate' (refused at a chokepoint), or 'detector' (measured, never silently tolerated). gate/detector REQUIRE floor (a rate in (0,1]) + reviewBy: D-016 — \"a detector without a floor is prose exhortation in a costume\". 'structural' takes neither. There is deliberately no 'prompt' tier: a convention carried only by documentation omits this and reads as untiered.",
+      ),
     ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
     acceptTruncation: z

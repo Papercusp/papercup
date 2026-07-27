@@ -1467,7 +1467,14 @@ describe("LearningTab — Benchmark view", () => {
 // into Improvements. The BEHAVIOUR they pinned did not go away with the
 // component, so P-005 re-establishes each contract against the merged view
 // (rendered as <LearningTab /> at ?lview=improvements, with BOTH
-// learning.improvements and learning.scout mocked):
+// learning.improvements and learning.scout mocked).
+//
+// STATUS (P-005): contracts 7-11 are DONE — see the grading describe-block
+// below, which also carries the ResizeObserver note that unblocked them.
+// 1-6 below are STILL OUTSTANDING. They are display/navigation contracts, so
+// nothing about them is hard now that the Popover renders in jsdom; they were
+// simply ranked behind grading, which is the only row control the owner kept
+// and therefore the only one whose loss would be silent.
 //
 //   1. routed ideas appear as rows carrying rail label, lens, and outcome
 //      (pending suppressed on the chip, shown in the trace)

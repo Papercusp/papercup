@@ -1142,6 +1142,52 @@ export async function listFacts(
 }
 
 /**
+ * P-018: every live DECLARED CONVENTION (`kind='convention'`) in the workspace,
+ * across scopes — the fact half of the conventions read model.
+ *
+ * Cross-scope BY DESIGN, unlike every other read here, and that is the point:
+ * P-018 requires a convention be "discovered without knowing which plan it came
+ * from", and requiring the caller to already know a fact's SCOPE is the same
+ * defect one axis over. Optionally narrowed to the scopes a given caller is
+ * actually governed by (`scopeRefs`) — a harness/role/owner convention that
+ * names someone else's ref governs THEM, not you.
+ *
+ * Audience-UNfiltered ('all' semantics): a convention is normative, and hiding a
+ * rule from the agent it binds is strictly worse than showing one that turns out
+ * to be irrelevant. Uses the mig-690 partial index (workspace_id, kind, …), so
+ * this stays a small index scan over live current rows rather than the seq scan
+ * a `kind` filter without that index would be.
+ */
+export async function listConventionFacts(
+  opts: {
+    workspaceId?: string;
+    /** Restrict role/owner/harness/work_item scopes to these refs. A workspace-
+     *  scoped convention is unconditional and always included. */
+    scopeRefs?: readonly string[];
+    limit?: number;
+  } = {},
+  inject?: Sql,
+): Promise<AgentFact[]> {
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const refs = (opts.scopeRefs ?? []).map((r) => r.trim()).filter(Boolean);
+  const rows = await sql<AgentFactRow[]>`
+    SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
+           confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text
+      FROM harness_shared.agent_facts
+     WHERE workspace_id = ${ws} AND kind = 'convention'
+       AND superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
+       AND ${
+         refs.length > 0
+           ? sql`(scope = 'workspace' OR coalesce(scope_ref,'') = ANY(${refs as string[]}))`
+           : sql`TRUE`
+       }
+     ORDER BY updated_at DESC
+     LIMIT ${opts.limit ?? 100}`;
+  return rows.map(rowToFact);
+}
+
+/**
  * Every VERSION of one fact identity, newest first — the read that makes
  * append-versioning (P-008 a) worth having. The current version is the row with
  * `supersededAt === null`; walk `supersedesId` to follow the chain back.
