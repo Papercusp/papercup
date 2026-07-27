@@ -31,6 +31,8 @@ const pipelineCell = (): CellSpec => ({
   nullable: true,
   unknownHoist: 'stagesUnknown',
   callerRelativity: { kind: 'parameter', param: 'path' },
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
   provenance: {
     obtainedBy: 'git rev-list / rev-parse against the live repo',
     liveExercised: true,
@@ -55,6 +57,8 @@ const sessionCell = (): CellSpec => ({
   nullable: true,
   unknownHoist: 'subjectsWithoutSignal',
   callerRelativity: { kind: 'global' },
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'shareable' },
   provenance: {
     obtainedBy: 'resolveSessionStates over coord_presence + event_awaits + adv_sessions',
     liveExercised: true,
@@ -78,6 +82,8 @@ const portCell = (): CellSpec => ({
   nullable: true,
   unknownHoist: 'ownerHidden',
   callerRelativity: { kind: 'ambient', source: 'the calling process uid' },
+  visibility: { kind: 'harness', ref: 'papercusp' },
+  federation: { kind: 'local' },
   provenance: {
     obtainedBy: 'ss -ltnp over the live host',
     liveExercised: true,
@@ -103,8 +109,10 @@ describe('the three independent cells the contract was derived from all register
   it('registers and reads back, sorted', () => {
     registerCell(portCell());
     registerCell(sessionCell());
-    expect(listCells().map((c) => c.cell)).toEqual(['port.listener', 'session.state']);
-    expect(getCell('port.listener')?.owner).toBe('papercusp');
+    // portCell is harness-scoped, so the reader must be in that harness to see both.
+    const reader = { ownerId: 'su-anyone', harnessSlug: 'papercusp' };
+    expect(listCells(reader).map((c) => c.cell)).toEqual(['port.listener', 'session.state']);
+    expect(getCell('port.listener', reader)?.owner).toBe('papercusp');
   });
 });
 

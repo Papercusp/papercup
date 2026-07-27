@@ -1800,6 +1800,28 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const pgMergeCursorStore: MergeCursorStore | null = opts.mergeCursorStore ?? null;
   let pgCursorSeeded = false;
 
+  // EI-18773697830188393 — the COLD-BOOT counterpart of the rekey's `forceReFold`.
+  // A persisted cursor position claims "every op below this index was APPLIED", but
+  // whether an op applies is decided by the pot-home projection scope it was folded
+  // through (the federation demux key) — EXACTLY the value `buildScopedApply` binds
+  // below. An op folded under a WRONG hive-home binding is demux-DROPPED while the
+  // cursor still advances past it, so correcting the binding is not enough: the next
+  // cold boot would seed from that stale progress and resume past the very rows it
+  // dropped (WI-559 live: fed-b's `pot_members` stayed empty after the demux fix
+  // because ~49.7k already-"done" owner rows were never re-folded). `forceReFold`
+  // covers only the mid-session REKEY (see rekey() below), never a cold boot.
+  //
+  // So the fold's SCOPE is stamped on the persisted progress and re-checked on load
+  // (migration 685): a changed binding simply seeds nothing → fold from 0 → the
+  // dropped rows re-apply through the corrected scope, idempotently (LWW put/del).
+  // Read LIVE at every call — `hiveHomeProjectionSlug` is reassigned by the rekey
+  // rebind, and the re-fold that rebind triggers must persist under the NEW stamp.
+  // Mirrors `buildScopedApply`'s `potHomeSlug` expression exactly (line ~1161); if
+  // that fallback chain ever changes, this must change with it or a boot will either
+  // re-fold forever (stamp never matches) or resume across a real scope change.
+  const currentApplyBinding = (): string | null =>
+    hiveHomeProjectionSlug ?? ownPotHomeSlug ?? memberHomeRebindSlug ?? null;
+
   // A-003 apply-side determinism (su-81f2e): set by rekey() after a hive-home
   // projection rebind to force ONE full re-fold of all admitted logs through the
   // freshly-rebound scopedApply. The owner's hive_members op may have been admitted
@@ -2781,7 +2803,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (pgMergeCursorStore && !pgCursorSeeded) {
         pgCursorSeeded = true;
         try {
-          await seedCursorFromPg(mergeCursor, pgMergeCursorStore);
+          await seedCursorFromPg(mergeCursor, pgMergeCursorStore, currentApplyBinding());
         } catch (e) {
           recordBootEvent(
             opts.workspaceId,

@@ -30,6 +30,13 @@ import { Button } from '@/app/harness/Button';
 import { Combobox, type ComboboxEntry, type ComboboxOption } from '@/app/harness/Combobox';
 import { useLexicon } from '@/lib/useLexicon';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
+// WI-6300: the canonical model/effort vocabulary psu itself launches with. This
+// module is deliberately client-safe (no node/server imports) — see its header —
+// so the renderer can read it without dragging the PG/fs subtree into the bundle.
+import {
+  CLOUD_MODEL_MENU,
+  MODEL_EFFORT_LEVELS,
+} from '@papercusp/operator-core/lib/agent-config-constants';
 import {
   formatAbsoluteUpdated,
   formatRelativeUpdated,
@@ -39,28 +46,60 @@ import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 export const PLAN_SELECT_PLACEHOLDER = '__select_plan__';
 export const MODEL_SELECT_DEFAULT = '__default_model__';
 
+/**
+ * The base-model choices, DERIVED from `CLOUD_MODEL_MENU` — the client-safe twin
+ * of psu-launcher's own `RESUME_MODEL_MENU`, held to it by a parity test in
+ * apps/operator/lib/psu-launcher.test.ts.
+ *
+ * WI-6300 (owner ask 2026-07-27: "why is the model list missing so many levels?
+ * Don't we have a list somewhere in our repo that launching our psu utility
+ * uses?"). We did, and this list was NOT it: it was a hand-maintained rival that
+ * had fallen four models behind psu (no fable / sol / terra / luna) while still
+ * offering `gpt-5.2`, which is not a recognized alias at all — the OpenAI
+ * families are the GPT-5.6 sol/terra/luna trio. Derive; never re-declare. The
+ * backend tag rides along as `detail` so it is visible WHICH CLI a pick launches
+ * (a codex model starts a codex session, not a claude one).
+ */
 export const OMP_MODEL_OPTIONS: ComboboxOption[] = [
   { value: MODEL_SELECT_DEFAULT, label: 'Default' },
-  { value: 'sonnet', label: 'Claude Sonnet' },
-  { value: 'opus', label: 'Claude Opus' },
-  { value: 'haiku', label: 'Claude Haiku' },
-  { value: 'gpt-5.2', label: 'GPT-5.2' },
+  ...CLOUD_MODEL_MENU.map((m) => ({
+    value: m.value,
+    label: m.label,
+    detail: m.backend === 'codex' ? 'codex CLI' : 'claude CLI',
+  })),
 ];
 
 export const EFFORT_SELECT_DEFAULT = '__default_effort__';
 
+/** Human blurb per effort level; keyed off MODEL_EFFORT_LEVELS so a new level
+    added to psu shows up here (unlabelled) rather than silently vanishing. */
+const EFFORT_DETAIL: Record<string, string> = {
+  low: 'Fastest, cheapest — shallow reasoning',
+  medium: 'Balanced reasoning depth vs cost',
+  high: 'Deep reasoning',
+  xhigh: 'Deeper still — slower and pricier',
+  max: 'Strongest reasoning available',
+};
+
 /**
- * Effort levels (P-008, owner ask 2026-07-26). These are the reasoning-depth
- * suffixes the launcher appends to the model spec — `psu --model` takes
- * `<modelId>[:<effort>]`, so "sonnet" + "high" is sent as "sonnet:high".
- * Kept as its own control rather than exploding the model list into
- * model×effort combinations.
+ * Effort levels (P-008, owner ask 2026-07-26), DERIVED from `MODEL_EFFORT_LEVELS`.
+ * These are the reasoning-depth suffixes appended to the model spec — psu has no
+ * `--effort` flag; effort rides the spec as `<modelId>[:<effort>]`, so "sonnet" +
+ * "high" is sent as "sonnet:high". Kept as its own control rather than exploding
+ * the model list into model×effort combinations.
+ *
+ * WI-6300 (owner ask 2026-07-27: "Some models support an xhigh settins but the
+ * effort is only low medium high"). psu accepts five — low|medium|high|xhigh|max
+ * — and this list hardcoded three, so xhigh and max were unreachable from the UI
+ * even though the launcher would have honoured them. Now derived + parity-tested.
  */
 export const EFFORT_OPTIONS: ComboboxOption[] = [
   { value: EFFORT_SELECT_DEFAULT, label: 'Default effort' },
-  { value: 'low', label: 'Low', detail: 'Fastest, cheapest — shallow reasoning' },
-  { value: 'medium', label: 'Medium', detail: 'Balanced reasoning depth vs cost' },
-  { value: 'high', label: 'High', detail: 'Deepest reasoning, slowest and priciest' },
+  ...MODEL_EFFORT_LEVELS.map((level) => ({
+    value: level,
+    label: level.charAt(0).toUpperCase() + level.slice(1),
+    detail: EFFORT_DETAIL[level],
+  })),
 ];
 
 /**
@@ -284,6 +323,13 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         emptyLabel="No plans match"
         options={planOptions}
       />
+      {/* WI-6300 (owner ask 2026-07-27): "move these things to the row below it
+          — Model for new session / Effort level for new session / + New session".
+          The plan picker stays on the top line; these three drop to their own
+          line beneath it, flush-left. Grouping them in a real element (rather
+          than a flex line-break hack) keeps them one focus/tab group and lets the
+          row keep its own alignment when the strip wraps. */}
+      <div className="pc-new-session-launcher__row2">
       <Combobox
         triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--model"
         value={model || MODEL_SELECT_DEFAULT}
@@ -313,6 +359,7 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
       >
         {launching ? 'Launching…' : '+ New session'}
       </Button>
+      </div>
     </div>
   );
 }

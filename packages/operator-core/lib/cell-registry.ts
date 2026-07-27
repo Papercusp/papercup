@@ -170,6 +170,10 @@ export interface CellSpec {
    * `agent-tools/coordination/liveness-parity.test.ts`.
    */
   resolver: string;
+  /** P-019 (a) — REQUIRED. `{ kind: 'workspace' }` is a valid answer; omission is not. */
+  visibility: CellVisibility;
+  /** P-019 (b) — REQUIRED. */
+  federation: CellFederation;
   /** How a subscriber learns it changed. `poll` rides predicate_watches (P-004 is
    *  wiring, not a build); do NOT add a second subscription mechanism. */
   changeSignal: { kind: 'poll'; tool: string; path: string } | { kind: 'event'; key: string };
@@ -186,7 +190,10 @@ export interface CellSpec {
 
 export interface CellRejection {
   cell: string;
-  axis: 1 | 2 | 3 | 4 | 5;
+  /** A D-038 axis number, or a P-019 dimension. The two are labelled differently on
+   *  purpose: `visibility`/`federation` are NOT contract axes, they are the access
+   *  model P-019 added, and blurring them would misrepresent D-038 as having eight. */
+  axis: 1 | 2 | 3 | 4 | 5 | 'visibility' | 'federation';
   rule: string;
   detail: string;
 }
@@ -251,7 +258,49 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
     reject(5, 'no-resolver', 'a cell must name exactly ONE resolver; surfaces may project or subset it, never re-derive it.');
   }
 
+  // ── P-019 (a) — visibility is DECLARED, never defaulted.
+  const vis = spec.visibility;
+  const VIS_KINDS = ['workspace', 'harness', 'role', 'owner', 'work_item'];
+  if (!vis || typeof (vis as { kind?: unknown }).kind !== 'string' || !VIS_KINDS.includes(vis.kind)) {
+    reject('visibility', 'visibility-undeclared', `visibility is REQUIRED and must be one of ${VIS_KINDS.join(' | ')}. \`{ kind: "workspace" }\` is a valid answer; omission is not — a defaulted audience is how a field dies (D-016), and for an access field the default fails OPEN.`);
+  } else if (vis.kind !== 'workspace' && !vis.ref?.trim()) {
+    reject('visibility', 'visibility-ref-missing', `visibility.kind="${vis.kind}" must name a \`ref\`. Mirrors agent_facts' own rule that every scope except 'workspace' requires a scope_ref.`);
+  }
+
+  // ── P-019 (b) — federation, and the one cross-rule that matters.
+  const fed = spec.federation;
+  if (!fed || (fed.kind !== 'local' && fed.kind !== 'shareable')) {
+    reject('federation', 'federation-undeclared', 'federation is REQUIRED: `{ kind: "local" }` (never leaves this hive) or `{ kind: "shareable" }`.');
+  } else if (fed.kind === 'shareable' && vis?.kind && vis.kind !== 'workspace') {
+    reject('federation', 'shareable-narrow-visibility', `a \`shareable\` cell must be workspace-visible; this one is "${vis.kind}"-scoped. A ref like an owner id, role or work-item does NOT resolve in a foreign hive, so the receiving side can neither evaluate nor honour the audience — it either fails open (a leak) or fails closed (silently invisible). Both are wrong answers, so the combination is refused rather than guessed.`);
+  }
+
   return out;
+}
+
+/**
+ * P-019 — THE AUDIENCE CHECK. Pure (spec, reader) -> boolean.
+ *
+ * Gates EXISTENCE as well as value: callers below treat "not readable" as "absent",
+ * so a stranger cannot enumerate narrow cells or infer one from a refusal.
+ */
+export function canReadCell(spec: CellSpec, reader: CellReader): boolean {
+  const v = spec.visibility;
+  switch (v?.kind) {
+    case 'workspace':
+      return true;
+    case 'owner':
+      return reader.ownerId === v.ref;
+    case 'role':
+      return (reader.roles ?? []).includes(v.ref);
+    case 'harness':
+      return reader.harnessSlug === v.ref;
+    case 'work_item':
+      return (reader.workItems ?? []).includes(v.ref);
+    default:
+      // An unregistrable spec should never reach here, but if it does, fail CLOSED.
+      return false;
+  }
 }
 
 /** Registered cells, keyed by id. Registration is ONE call — that cheapness is a
@@ -263,7 +312,9 @@ export class CellRegistrationError extends Error {
   constructor(readonly rejections: CellRejection[]) {
     super(
       `cell "${rejections[0]?.cell}" refused by the D-038 contract:\n` +
-        rejections.map((r) => `  · axis ${r.axis} [${r.rule}] ${r.detail}`).join('\n'),
+        rejections
+          .map((r) => `  · ${typeof r.axis === 'number' ? `axis ${r.axis}` : r.axis} [${r.rule}] ${r.detail}`)
+          .join('\n'),
     );
     this.name = 'CellRegistrationError';
   }
@@ -290,12 +341,42 @@ export function registerCell(spec: CellSpec): CellSpec {
   return spec;
 }
 
-export function getCell(cell: string): CellSpec | undefined {
-  return CELLS.get(cell);
+/**
+ * Read a cell's spec AS a specific reader. P-019: a cell the reader may not see
+ * comes back `undefined` — indistinguishable from one that does not exist, so a
+ * refusal cannot be used to probe for narrow cells.
+ *
+ * The reader argument is REQUIRED rather than optional on purpose. An optional
+ * audience is a defaulted audience, and a defaulted access check fails OPEN — the
+ * precise failure D-016 calls out ("a default is how a field dies") applied to the
+ * one field class where the default is also a vulnerability.
+ */
+export function getCell(cell: string, reader: CellReader): CellSpec | undefined {
+  const spec = CELLS.get(cell);
+  if (!spec) return undefined;
+  return canReadCell(spec, reader) ? spec : undefined;
 }
 
-export function listCells(): CellSpec[] {
+/** Every cell THIS reader may see, sorted. Narrow cells are omitted, not marked. */
+export function listCells(reader: CellReader): CellSpec[] {
+  return [...CELLS.values()]
+    .filter((s) => canReadCell(s, reader))
+    .sort((a, b) => a.cell.localeCompare(b.cell));
+}
+
+/**
+ * UNCHECKED registry introspection — no audience filtering. Named loudly because
+ * every call site is a potential P-019 bypass: use it for admin/inventory surfaces
+ * that legitimately enumerate the registry itself, NEVER to serve an agent a value.
+ * P-013's presence expansion must use `listCells(reader)`, not this.
+ */
+export function listCellsUnchecked(): CellSpec[] {
   return [...CELLS.values()].sort((a, b) => a.cell.localeCompare(b.cell));
+}
+
+/** UNCHECKED single read — same caveat as `listCellsUnchecked`. */
+export function getCellUnchecked(cell: string): CellSpec | undefined {
+  return CELLS.get(cell);
 }
 
 /** Test seam — drops every registration. */

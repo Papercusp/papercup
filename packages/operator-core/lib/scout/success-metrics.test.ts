@@ -713,8 +713,10 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
     const r = evaluateProgramSuccess(inputs([], []));
     expect(r.verdict).toBe('incomplete');
     expect(r.failed).toBe(0);
-    // Every bar (incl. lens-diversity) is unknown on an empty window — nothing certifies.
-    expect(r.unknown).toBe(6);
+    // Every bar is unknown on an empty window — nothing certifies. That now includes
+    // fitness-signal-is-real (P-011): an unread corpus is unproven, not fine.
+    expect(r.unknown).toBe(7);
+    expect(bar(r, 'fitness-signal-is-real').status).toBe('unknown');
   });
 });
 

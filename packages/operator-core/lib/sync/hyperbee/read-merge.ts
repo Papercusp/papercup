@@ -557,10 +557,20 @@ export async function seedCursorFromSnapshots(
  * interface speaks only the per-log keyHex→position map.
  */
 export interface MergeCursorStore {
-  /** All persisted positions for this (workspace, harness): keyHex → next index. */
-  load(): Promise<Map<string, number>>;
-  /** Upsert the given positions. Best-effort; may throw — the caller isolates it. */
-  save(positions: ReadonlyMap<string, number>): Promise<void>;
+  /**
+   * Persisted positions for this (workspace, harness) that are VALID under
+   * `applyBinding`: keyHex → next index. EI-18773697830188393 — a position means
+   * "every op below this index has been applied", and whether an op applies is
+   * decided by the pot-home projection scope it was folded through (the federation
+   * demux key). Progress recorded under a DIFFERENT scope is therefore not resumable
+   * (its ops were dropped, not applied), so the store must not return it.
+   */
+  load(applyBinding: string | null): Promise<Map<string, number>>;
+  /**
+   * Upsert the given positions, STAMPED with the apply binding they were folded
+   * under. Best-effort; may throw — the caller isolates it.
+   */
+  save(positions: ReadonlyMap<string, number>, applyBinding: string | null): Promise<void>;
 }
 
 /**
@@ -579,9 +589,22 @@ export interface MergeCursorStore {
  * (LWW put/del), so seeding is strictly safe and strictly cheaper. A load
  * failure is the caller's to isolate → leaves positions at 0 (full re-fold,
  * slower but correct).
+ *
+ * SCOPE-CONDITIONAL (EI-18773697830188393): `applyBinding` is the pot-home projection
+ * scope the fold is about to run under. Only progress recorded under the SAME scope is
+ * resumable — an op folded through a different (e.g. mis-resolved) hive-home binding was
+ * DEMUX-DROPPED rather than applied, even though the cursor marked it done. Passing the
+ * live binding here is what makes a corrected binding self-heal: the store returns
+ * nothing, the fold restarts from 0 through the new scope, and the re-apply is
+ * idempotent (LWW put/del). This is the COLD-BOOT counterpart of the mid-session
+ * `forceReFold` the rekey rebind sets.
  */
-export async function seedCursorFromPg(cursor: MergeCursor, store: MergeCursorStore): Promise<void> {
-  const saved = await store.load();
+export async function seedCursorFromPg(
+  cursor: MergeCursor,
+  store: MergeCursorStore,
+  applyBinding: string | null,
+): Promise<void> {
+  const saved = await store.load(applyBinding);
   for (const [keyHex, position] of saved) {
     if (position > 0 && !cursor.positions.has(keyHex)) {
       cursor.positions.set(keyHex, position);
@@ -596,12 +619,19 @@ export async function seedCursorFromPg(cursor: MergeCursor, store: MergeCursorSt
  * LWW) rather than SKIPPING it — that ordering is the whole correctness argument
  * for PG-cursor (17c98, mr5ymwgw). Thin pass-through over the injected store so
  * the boot `onCursorAdvance` hook and any future caller share one code path.
+ *
+ * `applyBinding` (EI-18773697830188393) is the pot-home projection scope these ops were
+ * folded through; it is stamped alongside the positions so a LATER boot can tell whether
+ * this progress is resumable under ITS binding (see `seedCursorFromPg`). Read it LIVE at
+ * each call — a mid-session rekey rebind changes the scope, and the re-fold it triggers
+ * must persist under the NEW stamp, not the one that was current at boot.
  */
 export async function persistCursor(
   positions: ReadonlyMap<string, number>,
   store: MergeCursorStore,
+  applyBinding: string | null,
 ): Promise<void> {
-  await store.save(positions);
+  await store.save(positions, applyBinding);
 }
 
 /**

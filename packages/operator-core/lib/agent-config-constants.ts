@@ -241,6 +241,50 @@ export function isDefault1mModelSpec(spec?: string | null): boolean {
     and OpenAI GPT-5.6 (sol/terra/luna) families. */
 export const KNOWN_CLOUD_ALIASES = ['opus', 'sonnet', 'haiku', 'fable', 'sol', 'terra', 'luna'] as const;
 
+/** One selectable base model in a model-picker menu: the bare alias, a human
+    label, and the CLI backend that alias launches on. */
+export interface CloudModelChoice {
+  /** The bare alias sent as the `--model` spec (before any `:<effort>` suffix). */
+  value: (typeof KNOWN_CLOUD_ALIASES)[number];
+  /** Display label for a UI picker. */
+  label: string;
+  /** Which CLI actually launches this family (`cloudModelBackendHint`). A RESUME
+      is hard-bound to the session's own backend, so a resume menu filters on this;
+      a NEW session may pick either, so a new-session picker offers all rows. */
+  backend: 'claude' | 'codex';
+}
+
+/**
+ * The canonical selectable base-model menu — the client-safe TS twin of
+ * psu-launcher `RESUME_MODEL_MENU` (owner directives WI-4889 / WI-4891).
+ *
+ * WHY A TWIN AND NOT A SHARED IMPORT: `psu-launcher.mjs` is exec'd DIRECTLY by
+ * node and can neither import this TS module nor be imported by the browser
+ * bundle (it pulls node built-ins + inquirer). That is the same boundary that
+ * already forces `normalizeModelSpec` / `KNOWN_CLOUD_ALIASES` / `validateModelSpec`
+ * to exist here as twins. The pairing is NOT left to convention: the parity test
+ * in `apps/operator/lib/psu-launcher.test.ts` — which CAN import the .mjs — asserts
+ * this array matches `RESUME_MODEL_MENU` value-for-value, so adding a model family
+ * to psu without adding it here FAILS THE BUILD.
+ *
+ * This exists because the HUD's new-session launcher previously hand-maintained
+ * its own four-entry list, which silently fell behind psu (missing fable / sol /
+ * terra / luna, and offering a stale `gpt-5.2` that is not a recognized alias) —
+ * owner-reported 2026-07-27. UI pickers must derive from THIS, never re-declare.
+ *
+ * Labels are the psu menu's text minus the redundant leading `<alias> — ` prefix
+ * (a UI picker already shows the value); the parity test pins that relationship.
+ */
+export const CLOUD_MODEL_MENU: readonly CloudModelChoice[] = [
+  { value: 'opus', label: 'Anthropic Claude Opus (1M, strongest)', backend: 'claude' },
+  { value: 'sonnet', label: 'Anthropic Claude Sonnet (1M, balanced)', backend: 'claude' },
+  { value: 'fable', label: 'Anthropic Claude Fable (1M)', backend: 'claude' },
+  { value: 'haiku', label: 'Anthropic Claude Haiku (fast, cheap)', backend: 'claude' },
+  { value: 'sol', label: 'OpenAI GPT-5.6 “Sol” (codex)', backend: 'codex' },
+  { value: 'luna', label: 'OpenAI “Luna” (codex)', backend: 'codex' },
+  { value: 'terra', label: 'OpenAI “Terra” (codex)', backend: 'codex' },
+] as const;
+
 /** Damerau optimal-string-alignment distance: Levenshtein PLUS adjacent
     transpositions as a single edit — so a swap typo (`fabel`↔`fable`) is distance 1,
     without widening the substitution radius (`o3`/`gpt4`/`grok` stay far from every

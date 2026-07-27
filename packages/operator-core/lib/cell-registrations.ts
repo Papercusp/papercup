@@ -103,6 +103,18 @@ export const GIT_PIPELINE_POSITION_CELL: CellSpec = {
   /** Axis 5. ONE resolver; dev:pipeline_position PROJECTS it and never re-derives. */
   resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
 
+  /**
+   * P-019 (a)/(b). Workspace-visible: pipeline position is about the SHARED tree, so
+   * every agent in the workspace legitimately reads it — and narrowing it would break
+   * the very "did my commit land" question it exists to answer.
+   *
+   * `local` despite that: the positions are relative to THIS hive's checkout and
+   * serving process, so the value is not merely uninteresting to a foreign hive, it
+   * would be actively misread there as a statement about their own pipeline.
+   */
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+
   /** Poll rides predicate_watches — deliberately NOT a second subscription mechanism. */
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'positions.deployed' },
 

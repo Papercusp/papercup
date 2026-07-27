@@ -55,23 +55,41 @@ export async function _resetPgMergeCursorPoolForTests(): Promise<void> {
  * last-write-wins — persist-after-apply already guarantees a persisted position
  * never points past a durably-applied op, and a truncated/forked log MUST be
  * able to write a LOWER position so the next boot re-folds it from there).
+ *
+ * SCOPE-STAMPED (EI-18773697830188393, migration 685): each row also records the
+ * `apply_binding` — the pot-home projection scope (the federation demux key) the fold
+ * ran under — and `load` returns ONLY rows matching the caller's current binding. A
+ * position is a claim that the ops below it were APPLIED, but an op folded through the
+ * wrong hive-home binding is demux-DROPPED while the cursor still advances past it
+ * (WI-559: fed-b bound the shared hive to its local slug and discarded ~49.7k rows this
+ * way). Making the stamp part of the row is what lets a CORRECTED binding self-heal on a
+ * cold boot — stale progress simply does not load, so the fold restarts from 0 through
+ * the right scope. Pre-migration rows carry NULL, which matches only a NULL binding
+ * (non-hive harnesses and hive owners resume unchanged; a joiner re-folds exactly once).
  */
 export function createPgMergeCursorStore(
   workspaceId: string,
   harnessSlug: string,
 ): MergeCursorStore {
   return {
-    async load(): Promise<Map<string, number>> {
+    async load(applyBinding: string | null): Promise<Map<string, number>> {
+      // `IS NOT DISTINCT FROM` (not `=`) so a NULL binding — a non-hive harness, or a
+      // hive OWNER, whose scope is genuinely "no pot-home" — matches the NULL stamp
+      // instead of the `= NULL` three-valued miss that would silently re-fold every
+      // such harness on every boot. The ::text cast pins the parameter type for the
+      // NULL case (postgres cannot infer it from a bare NULL parameter).
       const rows = await sql()<{ log_keyhex: string; position: string | number }[]>`
         SELECT log_keyhex, position
         FROM harness_shared.substrate_merge_cursor
-        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+        WHERE workspace_id = ${workspaceId}
+          AND harness_slug = ${harnessSlug}
+          AND apply_binding IS NOT DISTINCT FROM ${applyBinding}::text
       `;
       const out = new Map<string, number>();
       for (const r of rows) out.set(r.log_keyhex, Number(r.position));
       return out;
     },
-    async save(positions: ReadonlyMap<string, number>): Promise<void> {
+    async save(positions: ReadonlyMap<string, number>, applyBinding: string | null): Promise<void> {
       if (positions.size === 0) return;
       const s = sql();
       const now = new Date();
@@ -80,6 +98,7 @@ export function createPgMergeCursorStore(
         harness_slug: harnessSlug,
         log_keyhex,
         position,
+        apply_binding: applyBinding,
         updated_at: now,
       }));
       await s`
@@ -89,10 +108,16 @@ export function createPgMergeCursorStore(
           'harness_slug',
           'log_keyhex',
           'position',
+          'apply_binding',
           'updated_at',
         )}
         ON CONFLICT (workspace_id, harness_slug, log_keyhex)
-        DO UPDATE SET position = EXCLUDED.position, updated_at = EXCLUDED.updated_at
+        DO UPDATE SET position = EXCLUDED.position,
+                      -- Re-stamp on every write: after a rebind the fold re-runs under the
+                      -- NEW scope, so the row must stop advertising the old one (otherwise
+                      -- the healed progress would be discarded again on the next boot).
+                      apply_binding = EXCLUDED.apply_binding,
+                      updated_at = EXCLUDED.updated_at
       `;
     },
   };

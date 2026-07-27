@@ -164,7 +164,17 @@ import { GATEWAY_CLIENT_AUTH_TOKEN as SERVER_GATEWAY_CLIENT_AUTH_TOKEN } from '@
 import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator-core/lib/agent-fleets-store';
 // WI-1993: the operator-core TS TWIN of validateModelSpec (node can't import the .mjs, so the
 // tool boundary carries its own copy). The parity suite below pins them value-for-value.
-import { validateCloudModelSpec } from '@papercusp/operator-core/lib/agent-config-constants';
+import {
+  validateCloudModelSpec,
+  // WI-6300: the client-safe TS twins the UI pickers derive from. psu-launcher.mjs
+  // cannot be imported by the browser bundle (node built-ins + inquirer), so the
+  // renderer reads these instead — and the parity suite below pins them to the
+  // launcher's own menus so a model/effort added to psu can never again leave the
+  // HUD launcher silently behind (owner-reported 2026-07-27: the launcher offered
+  // 4 of 7 models and 3 of 5 efforts).
+  CLOUD_MODEL_MENU,
+  MODEL_EFFORT_LEVELS,
+} from '@papercusp/operator-core/lib/agent-config-constants';
 // EI-7138: the operator-core TS TWIN of suWrapperExtraArgs's model:effort → CLI-flag mapping
 // (same psu-launcher.mjs / operator-core import-boundary constraint as WI-1993 above — the
 // mapping is duplicated by necessity, not oversight). The parity suite below pins them
@@ -2671,6 +2681,57 @@ describe('composeResumeModelSpec + resume model menu (WI-4889 — menu, not free
         expect(validateModelSpec(String(spec)).ok, String(spec)).toBe(true);
       }
     }
+  });
+});
+
+// WI-6300 (owner ask 2026-07-27: "why is the model list missing so many levels?
+// Don't we have a list somewhere in our repo that launching our psu utility uses?").
+// We DO — RESUME_MODEL_MENU / RESUME_EFFORT_MENU right here. The HUD's new-session
+// launcher used to hand-maintain a rival 4-entry list that fell behind (no fable /
+// sol / terra / luna, plus a stale `gpt-5.2` that is not even a recognized alias)
+// and a 3-entry effort list missing xhigh/max. The launcher now derives from the
+// operator-core twins; THIS suite is what makes the twins trustworthy — it fails
+// the build the moment psu's menu and the UI's source of truth diverge.
+describe('CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS ↔ psu menus parity (WI-6300)', () => {
+  it('CLOUD_MODEL_MENU carries EXACTLY psu\'s base models, in the same order', () => {
+    expect(CLOUD_MODEL_MENU.map((c) => c.value)).toEqual(RESUME_MODEL_MENU.map((c) => c.value));
+  });
+
+  it('each twin row keeps psu\'s backend tag — a codex model can never be mislabelled claude', () => {
+    for (const row of CLOUD_MODEL_MENU) {
+      const psuRow = RESUME_MODEL_MENU.find((c) => c.value === row.value);
+      expect(psuRow, `no psu row for ${row.value}`).toBeTruthy();
+      expect(row.backend, row.value).toBe(psuRow.backend);
+      // and the tag agrees with the launcher's own resolver, not just the literal
+      expect(cloudModelBackendHint(row.value), row.value).toBe(row.backend);
+    }
+  });
+
+  it('each twin label is psu\'s menu text minus the redundant "<alias> — " prefix', () => {
+    for (const row of CLOUD_MODEL_MENU) {
+      const psuRow = RESUME_MODEL_MENU.find((c) => c.value === row.value);
+      expect(psuRow.name, row.value).toBe(`${row.value} — ${row.label}`);
+    }
+  });
+
+  it('every twin value is a spec validateModelSpec accepts (bare and with every effort)', () => {
+    for (const row of CLOUD_MODEL_MENU) {
+      expect(validateModelSpec(row.value).ok, row.value).toBe(true);
+      for (const effort of MODEL_EFFORT_LEVELS) {
+        const spec = `${row.value}:${effort}`;
+        expect(validateModelSpec(spec).ok, spec).toBe(true);
+        // the operator-side tool-boundary twin must agree with the launcher
+        expect(validateCloudModelSpec(spec).ok, spec).toBe(true);
+      }
+    }
+  });
+
+  it('MODEL_EFFORT_LEVELS is exactly psu\'s effort menu minus the empty model-default row', () => {
+    const psuEfforts = RESUME_EFFORT_MENU.map((c) => c.value).filter((v) => v !== '');
+    expect([...MODEL_EFFORT_LEVELS]).toEqual(psuEfforts);
+    // the two the launcher was missing, pinned explicitly so a regression names itself
+    expect([...MODEL_EFFORT_LEVELS]).toContain('xhigh');
+    expect([...MODEL_EFFORT_LEVELS]).toContain('max');
   });
 });
 
