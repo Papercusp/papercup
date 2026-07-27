@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { listTasks } from '../../task-manager/store';
+import { isTaskManagerEnabled } from '../../task-manager/enabled';
 import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { REPO_ROOT } from '../docs/_repo-paths';
@@ -67,6 +68,20 @@ export default defineTool({
     limit: z.number().int().positive().max(2000).optional(),
   }),
   async handler(args) {
+    // WI-6499: with the task manager flag-OFF nothing enrols, so the ledger is
+    // frozen at whatever it last held. Serving those rows would be worse than
+    // serving none — they read as "what is running" while describing processes
+    // that exited long ago. Say the subsystem is off instead.
+    if (!(await isTaskManagerEnabled('processes:list'))) {
+      return {
+        ok: true,
+        enabled: false,
+        reason: 'The task manager is disabled (papercusp-task-manager is off), so no spawns are being ledgered. Use `ps`/`pgrep` for a raw process list, or `dev:processes` for the tracked agent kinds.',
+        counts: { byState: {}, byClass: {} },
+        tasks: [],
+      };
+    }
+
     let live: unknown;
     if (args.live) {
       const tick = await reconcileTick({

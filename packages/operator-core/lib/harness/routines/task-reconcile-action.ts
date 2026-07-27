@@ -18,6 +18,7 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
+import { isTaskManagerEnabled } from '../../task-manager/enabled';
 import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { gcTerminalTasks } from '../../task-manager/store';
@@ -39,6 +40,11 @@ const GC_EVERY_N_TICKS = 120;
 let tickCount = 0;
 
 registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
+  // WI-6499: the routine stays REGISTERED but no-ops while the task manager is
+  // flag-OFF. Gating here rather than at seed time means a flip takes effect on
+  // the next 30s tick instead of requiring an operator restart to re-seed.
+  if (!(await isTaskManagerEnabled('routine:task-reconcile'))) return;
+
   await reconcileTick({
     scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
     notify: async ({ summary, kind }) =>

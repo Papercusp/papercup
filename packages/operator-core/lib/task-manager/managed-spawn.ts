@@ -25,6 +25,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { readProcessIdentity } from '../process-identity';
 import { buildTaskScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../systemd-scope';
 import { nodeCgroupFs, readProcessCgroupPath, type CgroupFs } from './cgroup-read';
+import { isTaskManagerEnabled } from './enabled';
 import { closeTask, markSpawned, registerTask } from './store';
 import { newTaskId, scopeUnitForTask, sliceForClass, type TaskRow, type TaskSpec } from './types';
 
@@ -140,9 +141,18 @@ let scopeProbeResult: { ok: boolean; reason?: string } | null = null;
  * still warming up must never be the reason a command does not run.
  */
 export function warmScopeProbe(spawnFn: typeof spawn = spawn): void {
-  void probeScopeSupport(spawnFn)
-    .then((r) => {
-      scopeProbeResult = r;
+  // WI-6499: resolve the flag FIRST. Three spawn modules call this at module
+  // import, so an unconditional probe means every operator boot fires a
+  // `systemd-run` for a subsystem the owner has switched off. Resolving the flag
+  // here also warms the sync cache that `beginSyncEnrolment` reads, so one call
+  // arms both decisions.
+  void isTaskManagerEnabled('task-manager:probe')
+    .then(async (on) => {
+      if (!on) {
+        scopeProbeResult = { ok: false, reason: 'task manager disabled (papercusp-task-manager)' };
+        return;
+      }
+      scopeProbeResult = await probeScopeSupport(spawnFn);
     })
     .catch(() => {
       scopeProbeResult = { ok: false, reason: 'probe threw' };
@@ -172,6 +182,23 @@ export async function managedSpawn(
   const spawnFn = opts.spawnFn ?? spawn;
   const fs = opts.fs ?? nodeCgroupFs;
   const taskId = newTaskId();
+
+  // WI-6499 — the master switch. OFF ⇒ a plain spawn: no scope, no ledger row,
+  // no exit wiring. Byte-identical to what this seam's callers did before the
+  // task manager existed, which is what makes the flag an honest kill-switch
+  // rather than a dashboard blanker.
+  if (!(await isTaskManagerEnabled('task-manager:spawn'))) {
+    const child = spawnFn(command, args as string[], opts.spawnOptions ?? {});
+    return {
+      taskId,
+      row: unledgeredRow(taskId, { ...spec, argv: [command, ...args] }, opts.workspaceId, child.pid ?? null),
+      child,
+      scopeUnit: null,
+      confined: false,
+      confinementSkippedReason: 'task manager disabled (papercusp-task-manager)',
+    };
+  }
+
   const wantConfine = opts.confine !== false;
 
   let scopeOk = false;
@@ -240,6 +267,33 @@ export async function managedSpawn(
     scopeUnit,
     confined: scopeOk,
     confinementSkippedReason: scopeOk ? undefined : skippedReason,
+  };
+}
+
+/**
+ * The row a caller gets back when the task manager is OFF.
+ *
+ * Never persisted and never reconciled — it exists only so the return shape does
+ * not change under the flag, sparing every caller a null check for a subsystem
+ * that is off. `state: 'running'` is the honest reading: the process really is
+ * running, we simply are not keeping a ledger of it.
+ */
+function unledgeredRow(taskId: string, spec: TaskSpec, workspaceId: string | undefined, pid: number | null): TaskRow {
+  const now = new Date().toISOString();
+  return {
+    ...spec,
+    taskId,
+    workspaceId: workspaceId ?? 'default',
+    rootTaskId: spec.parentTaskId ?? taskId,
+    scopeUnit: null,
+    cgroupPath: null,
+    pid,
+    processIdentity: null,
+    confined: false,
+    state: 'running',
+    startedAt: now,
+    lastSeenAt: now,
+    detail: { unledgered: true, reason: 'papercusp-task-manager off' },
   };
 }
 

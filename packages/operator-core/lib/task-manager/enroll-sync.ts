@@ -24,6 +24,7 @@
 import { readProcessIdentity } from '../process-identity';
 import { buildTaskScopeArgv } from '../systemd-scope';
 import { nodeCgroupFs, readProcessCgroupPath, type CgroupFs } from './cgroup-read';
+import { taskManagerEnabledSync } from './enabled';
 import { scopeSupportKnown } from './managed-spawn';
 import { closeTask, markSpawned, registerTask } from './store';
 import { newTaskId, scopeUnitForTask, sliceForClass, type TaskSpec } from './types';
@@ -32,6 +33,11 @@ export interface SyncEnrolment {
   taskId: string;
   confined: boolean;
   scopeUnit: string | null;
+  /** False when the task manager is flag-OFF: no ledger row will be written and
+   *  `wrap` is the identity. Carried on the enrolment rather than re-read later so
+   *  a flip mid-job cannot leave a half-written row (a `complete` with no
+   *  `register`, or a `finish` closing a row that never existed). */
+  enrolled: boolean;
   /** Wrap a resolved binary+argv into the task's scope. Identity when unconfined. */
   wrap: (binary: string, argv: string[]) => { binary: string; argv: string[] };
 }
@@ -39,28 +45,33 @@ export interface SyncEnrolment {
 /**
  * Decide confinement and mint the id — synchronously, before the fork.
  *
- * `confined:false` here is never an error. It means either the probe has not
- * landed yet (first job after boot) or this host cannot make user scopes at all
- * (a container, macOS). Both still get a ledger row.
+ * `confined:false` here is never an error. It means the task manager is flag-OFF,
+ * or the probe has not landed yet (first job after boot), or this host cannot make
+ * user scopes at all (a container, macOS).
  */
 export function beginSyncEnrolment(
   spec: Pick<TaskSpec, 'class'> & Partial<TaskSpec>,
   opts: {
-    /** Caller-side veto (a feature flag, a platform check). `false` never confines;
-     *  `true`/omitted still defers to the probe. Enrolment happens either way — the
-     *  LEDGER row is not the part anyone should be able to turn off. */
+    /** Caller-side veto (a platform check). `false` never confines; `true`/omitted
+     *  still defers to the flag and then the probe. */
     confine?: boolean;
   } = {},
 ): SyncEnrolment {
   const taskId = newTaskId();
+  // WI-6499: the flag gates ENROLMENT ITSELF, not just confinement. OFF must mean
+  // byte-identical-to-pre-feature behaviour — an unconfined, unledgered spawn —
+  // because a ledger the reconciler is not running to maintain is just an
+  // ever-growing table of rows nothing ever closes.
+  const enrolled = taskManagerEnabledSync();
   const probe = scopeSupportKnown();
-  const confined = opts.confine !== false && probe?.ok === true;
+  const confined = enrolled && opts.confine !== false && probe?.ok === true;
   const scopeUnit = confined ? scopeUnitForTask(taskId) : null;
 
   return {
     taskId,
     confined,
     scopeUnit,
+    enrolled,
     wrap: (binary, argv) =>
       confined
         ? {
@@ -88,6 +99,7 @@ export function completeSyncEnrolment(
   pid: number | null,
   opts: { workspaceId?: string; fs?: CgroupFs } = {},
 ): void {
+  if (!enrolment.enrolled) return;
   const fs = opts.fs ?? nodeCgroupFs;
   void (async () => {
     await registerTask(spec, {
@@ -114,5 +126,6 @@ export function finishSyncEnrolment(
   enrolment: SyncEnrolment,
   outcome: { state: 'exited' | 'killed' | 'timed_out'; exitCode?: number | null; exitReason?: string | null },
 ): void {
+  if (!enrolment.enrolled) return;
   void closeTask(enrolment.taskId, outcome).catch(() => {});
 }

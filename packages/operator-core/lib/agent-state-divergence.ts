@@ -100,6 +100,14 @@ export const DIVERGENCE_ZERO_REASONS = [
   /** The sampling legs ran and found nothing, but the stamped legs could not run
    *  at all (fill rate 0). A PARTIAL answer wearing a zero. */
   'stamped-legs-empty',
+  /**
+   * The stamped leg had comparable buckets, and EVERY one of them collapsed
+   * because its goals are already terminal (P-010 / EI-18830083673617307). A
+   * distinct reason from `stamped-legs-empty`, which blames a missing stamp — the
+   * stamp was present here and the goals were simply finished. Reporting this as
+   * `agreement` would be the worst option: nothing was compared.
+   */
+  'all-goals-terminal',
   'agreement',
 ] as const;
 export type DivergenceZeroReason = (typeof DIVERGENCE_ZERO_REASONS)[number];
@@ -331,6 +339,22 @@ export interface DivergenceCoverage {
   stampedLegRan: boolean;
   /** Did the sampling leg have anything at all to examine? */
   samplingLegRan: boolean;
+  /**
+   * Were terminal goals filtered out at all? FALSE means the caller supplied no
+   * terminal set, so the goal legs ran UNFILTERED and may cite closed work
+   * (P-010). Recorded rather than inferred: "0 excluded" is ambiguous between
+   * "the filter ran and everything was live" and "no filter ran", and those are
+   * opposite states — the first is clean, the second is the bug.
+   */
+  terminalFilterApplied: boolean;
+  /** Goal-stamped calls dropped because their goal is already terminal. */
+  terminalGoalCallsExcluded: number;
+  /**
+   * Buckets that COULD have been compared before the terminal filter and could
+   * not after. This is the suppression rate — the number that says how much of
+   * the detector's old output was unactionable noise about finished work.
+   */
+  bucketsCollapsedByTerminal: number;
 }
 
 export interface DivergenceReport {
@@ -414,6 +438,22 @@ export function detectIntentActionDivergence(
      * must not read a hidden clock, and the tests assert exactly that.
      */
     now?: number;
+    /**
+     * Goal refs that are already TERMINAL — excluded from the stamped leg
+     * (P-010, EI-18830083673617307).
+     *
+     * ⚠ WHY THE CALLER SUPPLIES THIS RATHER THAN THE DETECTOR RESOLVING IT.
+     * A work-item's state is I/O, and this function is documented as "same input,
+     * same output, no I/O". Passing the resolved set in keeps that true and keeps
+     * the detector unit-testable against any goal population.
+     *
+     * ⚠ OMITTING IT IS NOT THE SAME AS PASSING AN EMPTY SET, and the difference is
+     * recorded in `coverage.terminalFilterApplied`. Omitted = the filter did not
+     * run and findings may cite finished work (the pre-P-010 behaviour). Empty =
+     * the filter ran and every goal was live. A detector that could not tell those
+     * apart would report the bug as a clean result.
+     */
+    terminalGoalRefs?: ReadonlySet<string>;
   } = {},
 ): DivergenceReport {
   const rows = ordered(calls);

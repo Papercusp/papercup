@@ -2029,6 +2029,19 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
           converged: convergence?.converged ?? null,
           namespaceCount: outcome.namespaces.length,
           skippedExisting: outcome.skippedExisting.length,
+          // EI-18799556647570956: two host processes CAN run this leg concurrently
+          // for the same install (nothing here takes a per-install lease), and each
+          // `patchRoutineMetadata` call replaces the WHOLE `bootstrap` key — so a
+          // stale process (older code, missing a field like `converged`) racing a
+          // freshly-restarted one silently erases fields tick-to-tick with no way
+          // to tell which process/build wrote the record you're looking at. This is
+          // the cheap half of the fix (self-evident staleness, not the lease): stamp
+          // the writer's identity so a reader can tell "this record came from a
+          // stale process" instead of "the fix regressed". `instance` reuses
+          // PROCESS_INSTANCE_ID (pid + process-start stamp, already used for the
+          // resolver/content-fixer dispatch markers above) so all three "who wrote
+          // this" stamps in this file share one identity, never three.
+          writer: { pid: process.pid, instance: PROCESS_INSTANCE_ID, sha: getBuildInfo().sha },
         },
       });
       if (!outcome.ok) {
@@ -2155,6 +2168,10 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         quarantineRefs: outcome?.quarantineRefs ?? 0,
         shallow: outcome?.shallow ?? null,
         deepenNext: outcome?.deepenNext ?? null,
+        // EI-18799556647570956: see the stub writer above — same writer stamp, same
+        // rationale (two processes CAN race this leg for one install; the stamp makes
+        // a stale-process overwrite self-evident instead of reading as a regression).
+        writer: { pid: process.pid, instance: PROCESS_INSTANCE_ID, sha: getBuildInfo().sha },
       },
     });
     if (!outcome) {
