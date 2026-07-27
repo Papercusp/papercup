@@ -326,7 +326,11 @@ export async function divergenceSweep(
       // spend a second agent's attention on something the first agent was about
       // to fix itself, which is how a detector becomes a thing people mute.
       await (deps.openEscalation ?? openEscalation)(DIVERGENCE_IDENTITY, {
-        severity: 'warning',
+        // EscalationSeverity is 'blocker' | 'question' | 'advisory' — there is no
+        // 'warning'. 'advisory' is the correct member, not merely the compiling one:
+        // a repeat divergence draws a leader's attention but blocks nothing and asks
+        // no decision, which is exactly what separates advisory from blocker/question.
+        severity: 'advisory',
         summary: `REPEAT: ${summary}`,
         body:
           `${body}\n\n` +

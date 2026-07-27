@@ -241,6 +241,12 @@ export type WatchdogSource =
   // exercised now that seeded installs only carry the delta. A fire records each
   // canary run (pass or fail) + doubles as the interval debounce clock.
   | 'cold-join-canary'
+  // unified-agent-state-plane-2026-07-27 P-010: the intent↔action divergence
+  // detector's per-(owner, tool) debounce. Scoped by that key so two different
+  // flails page independently rather than one masking the other, and re-read at
+  // a longer window to decide whether a finding is a REPEAT (self-correction did
+  // not take) and therefore worth the leader's attention.
+  | 'intent-action-divergence'
   // su-ideate-learning-substrate-2026-07-10 P-006: the ungraded su-filings grading
   // backstop — a debounced Mug-triage nudge when su-originated filings sit ungraded
   // past SU_IDEATE_UNGRADED_STALE_SEC (D-013: epoch-floored + batch-capped).

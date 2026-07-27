@@ -164,7 +164,16 @@ export type WatchdogSource =
   // (the await log lives in one coord workspace, NOT per-harness); no flag gate (a healthy
   // await log emits nothing, and an unwitnessed suspect never pages — see the detector's
   // module doc for why the witness leg is required):
-  | 'lost-wake';
+  | 'lost-wake'
+  // an agent's OBSERVED tool mix diverged from the intent it DECLARED — the
+  // intent↔action divergence detector (unified-agent-state-plane-2026-07-27
+  // P-010; sweep in lib/agent-state-divergence-sweep.ts). Buckets calls by
+  // `tool_invocations.intent_event_id` and compares them against the declared
+  // intent, so it can only see anything once P-009's dispatch stamp is DEPLOYED
+  // (the columns are live in staging but absent from the release checkout, so
+  // this is naturally inert until then). Notifies the AGENT ITSELF first and
+  // only escalates to the leader on a repeat, per P-010:
+  | 'intent-action-divergence';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
