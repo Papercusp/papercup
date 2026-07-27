@@ -8,6 +8,7 @@
  */
 
 import type { SubstitutionPair } from '../types';
+import { AMBIENT_CONTEXT_PAIRS } from './ambient-context';
 import { FILE_READ_PAIRS } from './file-read';
 import { GIT_READ_PAIRS } from './git-read';
 import { LOGS_PAIRS } from './logs';
@@ -17,7 +18,17 @@ import { SERVICE_PAIRS } from './service';
 import { TESTS_PAIRS } from './tests';
 import { TYPECHECK_PAIRS } from './typecheck';
 
-export { FILE_READ_PAIRS, GIT_READ_PAIRS, LOGS_PAIRS, POSTGRES_PAIRS, PROCESS_PAIRS, SERVICE_PAIRS, TESTS_PAIRS, TYPECHECK_PAIRS };
+export {
+  AMBIENT_CONTEXT_PAIRS,
+  FILE_READ_PAIRS,
+  GIT_READ_PAIRS,
+  LOGS_PAIRS,
+  POSTGRES_PAIRS,
+  PROCESS_PAIRS,
+  SERVICE_PAIRS,
+  TESTS_PAIRS,
+  TYPECHECK_PAIRS,
+};
 
 /**
  * Every audited pair, in registry order.
@@ -39,4 +50,8 @@ export const ALL_PAIRS: SubstitutionPair[] = [
   ...TESTS_PAIRS,
   ...LOGS_PAIRS,
   ...TYPECHECK_PAIRS,
+  // P-026/P-027. The only pairs whose replacement is NOT a tool call: the answer
+  // already rides on coord:orient's `host` block, so the advisory says "read what
+  // you already have" rather than naming a verb to call.
+  ...AMBIENT_CONTEXT_PAIRS,
 ];

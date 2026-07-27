@@ -66,6 +66,42 @@ beforeEach(() => {
   // back, exactly like the real resolveHiveWorkspaceId when the Hive IS minted under the
   // caller's ambient workspace (the common case; existing tests below assume 'default').
   h.resolveHiveWorkspaceId.mockImplementation(async (ambientWorkspaceId: string) => ambientWorkspaceId);
+  // Default: no slug divergence either — echo the caller's slug back, exactly like the real
+  // resolver on a Pot's OWNER (canonical == local). Existing tests below assume 'sheets'.
+  h.resolveFederatedPotScope.mockImplementation(async (_ws: string, localSlug: string) => localSlug);
+});
+
+describe('WI-6318 — a joiner whose local pot handle differs from the owner slug', () => {
+  it('every hive-home-grained read AND the report WRITE use the RESOLVED (federated) scope, never the caller’s local handle', async () => {
+    // The joiner topology: the caller names its LOCAL handle, the projections persist under
+    // the OWNER's slug. Before this fix each of the four operations below silently used the
+    // local handle: the policy gate answered reporting_not_enabled, the WI-567 membership gate
+    // refused an admitted member, the rate count was always 0, and the report WRITE landed in
+    // a scope no reader queries — while the tool still returned ok:true.
+    h.resolveFederatedPotScope.mockResolvedValue('sheets-owner');
+    const b = await env({ pot: 'sheets-2', targetKind: 'content', targetRef: 'F-1' });
+    expect(b).toMatchObject({ ok: true });
+
+    expect(h.resolveFederatedPotScope).toHaveBeenCalledWith('default', 'sheets-2');
+    // 1. the owner-signed policy gate
+    expect(h.getPotPolicy).toHaveBeenCalledWith('default', 'sheets-owner');
+    // 2. the WI-567 fail-closed membership gate
+    expect(h.getPotMember).toHaveBeenCalledWith('default', 'sheets-owner', 123);
+    // 3. the rate-limit count — must count under the scope the rows are WRITTEN to
+    expect(h.countReportsSince).toHaveBeenCalledWith('default', 'sheets-owner', 123, expect.any(Number));
+    // 4. the write itself — the one that silently vanished
+    expect(h.fileReport).toHaveBeenCalledWith(expect.objectContaining({ potHomeSlug: 'sheets-owner' }));
+    // The caller's own handle is NEVER what reaches the store.
+    expect(h.fileReport).not.toHaveBeenCalledWith(expect.objectContaining({ potHomeSlug: 'sheets-2' }));
+  });
+
+  it('is a NO-OP on an owner (canonical == local): the caller’s slug is used unchanged', async () => {
+    // The regression half: every owned Pot must behave byte-identically to pre-fix.
+    const b = await env({ pot: 'sheets', targetKind: 'content', targetRef: 'F-1' });
+    expect(b).toMatchObject({ ok: true });
+    expect(h.getPotPolicy).toHaveBeenCalledWith('default', 'sheets');
+    expect(h.fileReport).toHaveBeenCalledWith(expect.objectContaining({ potHomeSlug: 'sheets' }));
+  });
 });
 
 describe('pot:report handler (member-filed moderation reports)', () => {
