@@ -14,14 +14,15 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { topicFeed } from '../../../topics-feed';
+import { readCoupledTopics } from '../coupled-topics-read';
 import { mergeIds, runBulk, bulkContent } from '../../_bulk';
 
 export default defineTool({
   name: 'topics:feed',
   description:
-    'Read everything tagged with one OR many topics — across issues, conversations, features, and plans — the whole work-stream of an area. Each item carries its title + current state. Single: { topic }. Many: { topics:[…] } or items:[{ topic }]. Returns { ok, results:[{ ok, topic, count, items | error }], counts } — correlate by topic, not position; a topic that fails to read never fails the rest.',
+    'Read everything tagged with one OR many topics — across issues, conversations, features, and plans — the whole work-stream of an area. Each item carries its title + current state. Single: { topic }. Many: { topics:[…] } or items:[{ topic }]. Or { coupled: true } to DERIVE the topics from your coupling graph — what the peers you are coupled to are working on — when you do not know which topics to name. Returns { ok, results:[{ ok, topic, count, items | error }], counts } — correlate by topic, not position; a topic that fails to read never fails the rest.',
   guidance: {
-    when: 'To understand all current work in a relevance area before you start in it, or to see what is happening with e.g. `zero-cache` across every object kind. Read several areas at once via topics:[…].',
+    when: 'To understand all current work in a relevance area before you start in it, or to see what is happening with e.g. `zero-cache` across every object kind. Read several areas at once via topics:[…]. Use { coupled: true } when you do NOT yet know which topics matter to you: it derives them at read-time from your coupled peers\' held work (each result carries `because`), writes nothing, and narrows by itself as coupling decays.',
     notWhen: 'You want messages waiting for you (coord:inbox) or just the list of topics (topics:list).',
     chaining: 'topics:list → topics:feed { topic } → work_items:get / conversations:get on an item.',
     seeAlso: [
@@ -43,13 +44,46 @@ export default defineTool({
         .max(100)
         .optional()
         .describe('read many topic feeds at once — each { topic }'),
+      coupled: z
+        .boolean()
+        .optional()
+        .describe(
+          'derive the topics from YOUR coupled peers instead of naming them: what the agents you are coupled to are working on, by topic',
+        ),
     })
-    .refine((a) => (a.items?.length ?? 0) > 0 || (a.topics?.length ?? 0) > 0 || Boolean(a.topic), {
-      message: 'pass { topic } for one, or { topics:[…] } / items:[{ topic }] for many',
-    }),
+    .refine(
+      (a) =>
+        a.coupled === true ||
+        (a.items?.length ?? 0) > 0 ||
+        (a.topics?.length ?? 0) > 0 ||
+        Boolean(a.topic),
+      {
+        message:
+          'pass { topic } for one, { topics:[…] } / items:[{ topic }] for many, or { coupled: true } to derive them from your coupling graph',
+      },
+    ),
   async handler(args, ctx) {
-    resolveAgentIdentity(ctx);
+    const identity = resolveAgentIdentity(ctx);
+
+    // P-023: the DERIVED mode — no topic slug, because the point is that you do
+    // not yet know which topics are live for you. Computed at READ from the
+    // coupling union, writing zero subscription rows, so it narrows by itself as
+    // coupling decays (D-044 / D-081). A caller may combine it with explicit
+    // topics; the derived ones are simply merged in.
+    let derivedTopics: string[] = [];
+    let derivedBecause: Record<string, string> = {};
+    if (args.coupled === true) {
+      const derived = await readCoupledTopics(
+        typeof identity?.ownerId === 'string' ? identity.ownerId : '',
+        { workspaceId: ctx?.workspaceId ?? null, harnessSlug: ctx?.harnessSlug ?? null },
+        { withFeed: false },
+      );
+      derivedTopics = derived.map((d) => d.topic);
+      derivedBecause = Object.fromEntries(derived.map((d) => [d.topic, d.because]));
+    }
+
     const topics = mergeIds(args.topic, [
+      ...derivedTopics,
       ...(args.topics ?? []),
       ...(args.items?.map((it) => it.topic) ?? []),
     ]);
@@ -57,7 +91,10 @@ export default defineTool({
       topics,
       async (topic) => {
         const items = await topicFeed(topic);
-        return { ok: true as const, topic, count: items.length, items };
+        const because = derivedBecause[topic];
+        // `because` is present only on a DERIVED topic — it is what tells the
+        // reader why a topic it never named is in front of it.
+        return { ok: true as const, topic, count: items.length, items, ...(because ? { because } : {}) };
       },
       { keyOf: (topic) => ({ topic }) },
     );

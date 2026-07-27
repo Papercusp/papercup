@@ -15,7 +15,7 @@
  * a live Postgres.
  */
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { blankPng, contentPng } from '@papercusp/image-blankness/testing';
@@ -421,6 +421,25 @@ describe('verifyLiveDroveUiArtifacts (EI-18797014705631713)', () => {
       });
       expect(verdict.ok).toBe(true);
       expect(verdict.artifacts[0].status).toBe('unresolvable');
+    });
+
+    it('ignores a URL rather than resolving it to a local path that was never there', async () => {
+      const verdict = await verifyLiveDroveUiArtifacts({
+        verifiedHow: 'live-drove-ui',
+        testsRun: `drove the UI, reference shot at https://example.com/expected.png and ${dir}/real.png`,
+      });
+      expect(verdict.ok).toBe(true);
+      expect(verdict.artifacts.map((a) => a.cited)).toEqual([join(dir, 'real.png')]);
+    });
+
+    it('expands ~ before deciding a cited artifact is missing', async () => {
+      // Resolving `~/x.png` literally would stat './~/x.png' and condemn a path that
+      // was never the one cited.
+      const verdict = await verifyLiveDroveUiArtifacts({
+        verifiedHow: 'live-drove-ui',
+        testResult: 'saved ~/definitely-not-here-8f3a.png',
+      });
+      expect(verdict.artifacts[0].resolved).toBe(join(homedir(), 'definitely-not-here-8f3a.png'));
     });
 
     it('never applies to any other verifiedHow, and never to a bare completion', async () => {

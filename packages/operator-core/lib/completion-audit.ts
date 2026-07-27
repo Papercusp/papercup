@@ -34,6 +34,7 @@
  */
 
 import { readFile, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -516,14 +517,27 @@ const ASSERTION_BEARING_PATTERN = /\btauri-agent-tools\b[^\n]{0,80}\bcheck\b/i;
 
 const IMAGE_PATH_PATTERN = /[\w./~-]*[\w~-]\.(?:png|jpe?g|webp|gif)\b/gi;
 
-/** Every image path cited anywhere in the evidence, de-duplicated, order preserved. */
+/**
+ * Every image path cited anywhere in the evidence, de-duplicated, order preserved.
+ *
+ * A URL is skipped rather than resolved: `https://example.com/a.png` would otherwise
+ * match as `example.com/a.png`, resolve to a local path that is obviously not there,
+ * and be reported as a confidently-missing artifact. It is not missing — it was never
+ * local. Same principle as everywhere else here: only condemn what we can actually judge.
+ */
 export function citedImagePaths(evidence: CompletionVerificationEvidence | null | undefined): string[] {
   if (!evidence) return [];
   const found = new Set<string>();
   const sources = [evidence.testsRun, evidence.testResult, ...(evidence.filesChanged ?? [])];
   for (const source of sources) {
     if (!source) continue;
-    for (const match of source.matchAll(IMAGE_PATH_PATTERN)) found.add(match[0]);
+    for (const match of source.matchAll(IMAGE_PATH_PATTERN)) {
+      // `/` is a path character, so a URL match STARTS at the `//` of its scheme rather
+      // than after it — hence both checks.
+      const before = match.index === undefined ? '' : source.slice(Math.max(0, match.index - 3), match.index);
+      if (match[0].startsWith('//') || before.includes('//')) continue;
+      found.add(match[0]);
+    }
   }
   return [...found];
 }
@@ -537,8 +551,11 @@ export function citesAssertionBearingRun(evidence: CompletionVerificationEvidenc
 }
 
 async function inspectCitedArtifact(cited: string, cwd: string): Promise<CitedArtifact> {
-  const hasDirectory = cited.includes('/');
-  const resolved = isAbsolute(cited) ? cited : hasDirectory ? resolvePath(cwd, cited) : null;
+  // `~/shot.png` is a perfectly ordinary way to write a path down; expanding it here is
+  // the difference between judging the real file and condemning a path that never existed.
+  const expanded = cited.startsWith('~/') ? resolvePath(homedir(), cited.slice(2)) : cited;
+  const hasDirectory = expanded.includes('/');
+  const resolved = isAbsolute(expanded) ? expanded : hasDirectory ? resolvePath(cwd, expanded) : null;
   if (!resolved) {
     return { cited, resolved: null, status: 'unresolvable', detail: 'bare filename — no directory to resolve against' };
   }
