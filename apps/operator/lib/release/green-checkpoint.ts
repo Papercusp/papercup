@@ -647,6 +647,29 @@ export function createTerminationSignalHandler(
  *  stdout (P-008). MUST stay in sync with the literal in release-actions.ts. */
 export const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
 
+/** What a captured fixture marker is rewritten to before the suite log is persisted. */
+export const CAPTURED_RESULT_MARKER_PLACEHOLDER = '__CAPTURED_TEST_FIXTURE_RESULT__';
+
+/** EI-18832272104497819: the persisted suite log is NOT the verdict channel. This run's
+ *  verdict goes to the CLI's own stdout (behind GREEN_CHECKPOINT_RESULT_MARKER) only
+ *  AFTER the log file is written, so any marker appearing inside captured suite output is
+ *  necessarily a test fixture — release-actions.test.ts drives the routine with fake
+ *  stdout, and the routine echoes it (release-actions.ts:427).
+ *
+ *  Left raw, that hands a reader an impostor verdict in BOTH grep directions. Measured on
+ *  four consecutive real logs on 2026-07-27: 9 markers each, all fixtures, this run's own
+ *  verdict absent entirely — `grep -m1` yields {"reason":"up-to-date","green":true} and
+ *  `| tail -1` yields candidate "deadbeefcafe0123" failing "lib/y.test.ts". The FIRST one
+ *  is the dangerous read: a false GREEN is how an agent concludes the gate cleared and
+ *  stops. (Production's own parse is unaffected — release-actions parses `r.stdout`, the
+ *  ~40-line stdout log, which carries exactly one marker: the real one.)
+ *
+ *  Neutralise the token, keep the payload: the lines stay legible as fixtures instead of
+ *  vanishing, which would read as corruption to the next person diagnosing a red. */
+export function defangCapturedResultMarkers(output: string): string {
+  return output.split(GREEN_CHECKPOINT_RESULT_MARKER).join(CAPTURED_RESULT_MARKER_PLACEHOLDER);
+}
+
 /** Strip SGR colour codes. The suite runs under a pty-less pipe but vitest still
  *  colourizes (FORCE_COLOR in the fleet env), and EVERY line-anchored matcher below
  *  would otherwise see `\x1b[41m FAIL \x1b[0m …` and miss: a red verdict on
@@ -3212,10 +3235,13 @@ export function realCheckpointDeps(
         logPath = path.join(logDir, `${stamp}-base-${(base ?? 'none').slice(0, 12)}${candidatePart}.log`);
         // ...and restate the identity in the BODY too, so a log that gets copied, pasted,
         // or tailed out of its filename is still self-identifying.
+        // EI-18832272104497819: state this run's OWN verdict in the header. The body
+        // carries only captured fixture markers (defanged below), so without this the
+        // file that claims to be the run's record never states how the run went.
         const header =
           `[green-checkpoint] candidate=${candidateSha ?? 'unresolved'} ` +
-          `base=${base ?? 'none'} written=${new Date().toISOString()}\n`;
-        writeFileSync(logPath, header + fullOutput);
+          `base=${base ?? 'none'} written=${new Date().toISOString()} green=${green}\n`;
+        writeFileSync(logPath, header + defangCapturedResultMarkers(fullOutput));
         log(`full suite output → ${logPath}`);
         // P-014: prune logs older than 14 days so this dir doesn't grow unbounded.
         pruneOldLogs(logDir, 14);

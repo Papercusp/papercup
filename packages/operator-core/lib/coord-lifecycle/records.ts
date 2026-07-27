@@ -62,7 +62,13 @@ export const CompletionVerificationEvidenceSchema = z.object({
   /** Verification mode, coarse enough for leader/Queen completion audits. */
   verifiedHow: CompletionVerifiedHowSchema.optional(),
   /** Whether this completion added or changed tests. */
-  addedTests: z.boolean().optional(),
+  addedTests: z
+    .boolean()
+    .optional()
+    .describe(
+      'A boolean FLAG — did this completion add or change tests? true/false, NOT a description of ' +
+        'what was added (put that prose in `testsRun` / `testResult`).',
+    ),
 });
 export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificationEvidenceSchema>;
 
@@ -305,7 +311,13 @@ export const CompletionRecordSchema = z.object({
   testsRun: z.string().min(1).optional(),
   testResult: z.string().min(1).optional(),
   verifiedHow: CompletionVerifiedHowSchema.optional(),
-  addedTests: z.boolean().optional(),
+  addedTests: z
+    .boolean()
+    .optional()
+    .describe(
+      'A boolean FLAG — did this completion add or change tests? true/false, NOT a description of ' +
+        'what was added (put that prose in `testsRun` / `testResult`).',
+    ),
   /** Deploy note, e.g. "additive, loads next :3070 restart" | "restarted :3070". */
   deploy: z.string().min(1).optional(),
   /**
