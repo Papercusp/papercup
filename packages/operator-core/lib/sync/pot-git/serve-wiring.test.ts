@@ -17,7 +17,18 @@
  * the detector fired. Confirmed non-vacuous: stubbing `noteSessionHighWater` to a
  * no-op fails the "fires" and "new high-water" cases below.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// WI-6364: the superseded-store lookup reads the harness registry. PARTIAL mock
+// (importOriginal) is mandatory — serve-wiring's transitive imports touch other
+// exports of this module at import time, and vitest throws on ANY missing key
+// with an error naming an unrelated module.
+const { loadRegistryMock } = vi.hoisted(() => ({ loadRegistryMock: vi.fn() }));
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadHarnessRegistry: loadRegistryMock,
+}));
+
 import { _testing } from './serve-wiring';
 
 const { SESSION_LEAK_WARN_AT, noteSessionHighWater, newChannelState } = _testing;
@@ -160,5 +171,63 @@ describe('FrameDuplex backpressure (EI-18776567787336109)', () => {
 
     expect(writeDone).toBe(true);
     expect(resumes).toHaveLength(0);
+  });
+});
+
+/**
+ * WI-6364 (fix C) — the serve path must REFUSE a store it has abandoned rather
+ * than answer a fetch out of it.
+ *
+ * The VERDICT is pure and tested in repo-identity.test.ts. What only this side
+ * can cover is the wiring around it: which registry entries are even eligible,
+ * and the fail-open contract. Both matter more than they look — a too-wide
+ * entry set lets an unrelated pot's abandoned alias refuse a healthy fetch, and
+ * a fail-CLOSED registry error would take the whole serve plane down on a
+ * diagnostic improvement.
+ */
+describe('WI-6364: the serve path\'s superseded-store lookup', () => {
+  const { resolveSupersededRepoKey } = _testing;
+
+  /** The live tower shape: the pot home (re-keyed to gh-<id> on 2026-07-20,
+   *  stranding `papercusp.git`), a member repo under the SAME pot directory,
+   *  and an unrelated pot that has its own abandoned alias. */
+  const REGISTRY = {
+    projects: [
+      { slug: 'papercusp', self_repo: true, github_repository_id: 1223568103 },
+      { slug: 'hive-canary', hive_slug: 'papercusp' },
+      { slug: 'other-pot', self_repo: true, github_repository_id: 999 },
+    ],
+  };
+
+  it('THE LIVE REPRO: the pot home\'s abandoned alias is refused, naming the canonical key', async () => {
+    loadRegistryMock.mockResolvedValue(REGISTRY);
+    await expect(resolveSupersededRepoKey('papercusp', 'papercusp')).resolves.toEqual({
+      requested: 'papercusp',
+      canonical: 'gh-1223568103',
+      entrySlug: 'papercusp',
+    });
+  });
+
+  it('serves the canonical key, and serves a member repo sharing the pot directory', async () => {
+    loadRegistryMock.mockResolvedValue(REGISTRY);
+    await expect(resolveSupersededRepoKey('papercusp', 'gh-1223568103')).resolves.toBeNull();
+    await expect(resolveSupersededRepoKey('papercusp', 'hive-canary')).resolves.toBeNull();
+  });
+
+  it('SCOPING: another pot\'s abandoned alias can never refuse a fetch here', async () => {
+    // `other-pot` is a superseded alias — but of a pot whose stores do not live
+    // under this potHomeSlug. A registry-wide scan would refuse this.
+    loadRegistryMock.mockResolvedValue(REGISTRY);
+    await expect(resolveSupersededRepoKey('papercusp', 'other-pot')).resolves.toBeNull();
+  });
+
+  it('a pot with no registry entries at all yields no verdict', async () => {
+    loadRegistryMock.mockResolvedValue(REGISTRY);
+    await expect(resolveSupersededRepoKey('unknown-pot', 'papercusp')).resolves.toBeNull();
+  });
+
+  it('FAILS OPEN: an unreadable registry never refuses — a diagnostic must not take the serve plane down', async () => {
+    loadRegistryMock.mockRejectedValue(new Error('registry unreadable'));
+    await expect(resolveSupersededRepoKey('papercusp', 'papercusp')).resolves.toBeNull();
   });
 });

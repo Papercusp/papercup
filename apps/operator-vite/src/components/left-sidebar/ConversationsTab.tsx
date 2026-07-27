@@ -101,6 +101,7 @@ import {
   LinkifiedText,
   useConversationRefPopup,
 } from '../conversations/ConversationRefs';
+import { AuthoredFields } from '../conversations/AuthoredFields';
 
 /** The rail is a navigation surface, not an archive export — one bounded window
  *  per source, merged. Matches /adv's per-source cap so both read the same slice. */
@@ -679,6 +680,11 @@ function AgentMessageDetailBody({ id, summary, onOpenRef }: DetailBodyProps) {
             <LinkifiedText text={head.body} harnessSlug={head.harness_slug} onOpen={onOpenRef} />
           </p>
         )}
+
+        {/* P-033 (e): the fields the sender authored ABOUT this message. `body`
+            above is a flattened projection of them, so without this the structure
+            was invisible on the one surface built to read a message in full. */}
+        <AuthoredFields authored={head?.authored} />
 
         {!detail ? (
           <p className="pclsb-conv__loading">Loading message…</p>

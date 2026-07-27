@@ -150,7 +150,12 @@ const TABS = [
   // reshuffle it. Label is "Convos": a 3-column tab cell fits ~8 characters
   // beside its icon at the rail's 300px minimum, and "Conversations" would
   // ellipsise; the pane header carries the full word.
-  { id: 'conversations', label: (_t: BoundLexicon) => 'Convos', icon: MessagesSquare, tip: (_t: BoundLexicon) => 'Conversations — questions, group decisions, agent chats and work-item mail', render: (a: boolean) => <ConversationsTab active={a} /> },
+  // The tip names the pane's ACTUAL sources. It previously advertised
+  // "questions ... and work-item mail" — both gone: Q&A left the rail with
+  // conversations-agent-messages-2026-07-27 D-001, and the work-item mail
+  // surface was retired 2026-07-26 (WI-6097). Agent messages replaced them as
+  // the pane's highest-volume source, so it leads.
+  { id: 'conversations', label: (_t: BoundLexicon) => 'Convos', icon: MessagesSquare, tip: (_t: BoundLexicon) => 'Conversations — agent messages, group decisions and agent chats', render: (a: boolean) => <ConversationsTab active={a} /> },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];

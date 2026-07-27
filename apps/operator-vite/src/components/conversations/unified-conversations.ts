@@ -178,6 +178,9 @@ export interface AgentMessageRow {
   reply_count: number;
   ts: string;
   last_reply_ts: string | null;
+  /** Absent on an ordinary message — only a send that actually authored these
+   *  carries the block, so a plain message renders exactly as it always did. */
+  authored?: AuthoredMessageFields;
 }
 
 export interface AgentMessageReply {

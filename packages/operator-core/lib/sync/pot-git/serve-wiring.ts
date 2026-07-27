@@ -1140,6 +1140,10 @@ export const _testing = {
   /** The framed per-fetch duplex, so `pushChunk`'s fail-closed drop is directly
    *  assertable rather than only reachable through a live two-peer fetch. */
   FrameDuplex,
+  /** WI-6364: the serve path's superseded-store lookup — the ENTRY SCOPING and
+   *  the fail-open contract, neither of which the pure decision function
+   *  (`findSupersededRepoKey`) can cover on its own. */
+  resolveSupersededRepoKey,
   /** The leak DETECTOR (`noteSessionHighWater`) and a bare state to drive it.
    *  Exposed because `potGitLog` is a no-op under vitest (the repo runs
    *  `vitest-fail-on-console`), so the warn itself is unobservable in a test —

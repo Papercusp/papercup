@@ -100,6 +100,7 @@ import {
   LinkifiedText,
   useConversationRefPopup,
 } from '../conversations/ConversationRefs';
+import { AuthoredFields } from '../conversations/AuthoredFields';
 import AskComposer from '../conversations/AskComposer';
 import '@/app/admin/coordination/coordination.css';
 import '@/app/adv/harnesses/adv-panel-chrome.css';
@@ -2398,6 +2399,11 @@ function AgentMessagesView({
                   />
                 </p>
               ) : null}
+
+              {/* P-033 (e): same block as the sidebar pane, from the same
+                  server-side projection — two renderings of D-064's split would
+                  be two chances to drift from it. */}
+              <AuthoredFields authored={head.authored} />
 
               {replies.length === 0 ? (
                 <EmptyState
