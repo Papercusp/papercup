@@ -1,0 +1,40 @@
+# What the GitNexus code-graph indexer must NOT ingest (WI-6445).
+#
+# gitnexus reads .gitignore, which is not enough here: this tree TRACKS a large
+# amount of build output and binary seed data, and a first `npx gitnexus analyze`
+# spent its whole run enumerating those rather than source. Everything below is
+# either generated, vendored, binary, or a verbatim copy of source indexed
+# elsewhere — none of it is a symbol anyone will ever look up.
+#
+# Regenerate the index with: npx gitnexus analyze . --skip-agents-md --name papercusp
+# (--skip-agents-md is REQUIRED: the default rewrites a section into the shared
+# CLAUDE.md / AGENTS.md, which are prompt SOURCES in this repo.)
+
+# Binary seed corestore + hypercore blobs (tracked, ~thousands of .blob/.sst).
+papercusp-desktop/src-tauri/seed/
+**/corestore/
+
+# Built SPA bundles + the composed sidecar, including its verbatim COPIES of the
+# prompts tree and all db migrations — indexing these double-counts every symbol.
+papercusp-desktop/src-tauri/sidecar/
+papercusp-desktop/src-tauri/env-sidecars/
+**/spa/assets/
+**/storybook-static/
+**/dist/
+**/build/
+**/.next/
+**/out/
+
+# Retired-but-preserved surfaces: deliberately not deployed and not to be
+# extended (see CLAUDE.md § retired surfaces). A code-graph hit here would point
+# an agent at code the repo forbids wiring into.
+_retired/
+**/_retired/
+
+# Vendored / generated / non-source.
+**/node_modules/
+**/.venv/
+**/target/
+**/*.min.js
+**/*.map
+**/coverage/

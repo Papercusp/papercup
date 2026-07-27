@@ -497,6 +497,28 @@ describe('planItemLaneBlockReason', () => {
       expect(got?.reason).toMatch(/owner-gated \("owner-gated"\)/);
     });
 
+    // EI-18754937921052867: an item's OWN text describing a FEATURE's semantics
+    // ("...disabled when push is owner-gated.") must NOT false-gate the item —
+    // the marker there is a predicate about "push", not a label about the item.
+    it('does NOT gate an item whose OWN text merely describes owner-gating as a feature/spec detail', async () => {
+      getPlanRowMock.mockResolvedValue({
+        items: [
+          planItem({
+            id: 'P-002',
+            storedStatus: 'todo',
+            text: 'Report git-sync health via a derived enum: health=stalled when pushLagSec far exceeds the sync interval; disabled when push is owner-gated.',
+          }),
+        ],
+      });
+      const got = await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'git-pipeline-agent-state-2026-07-26', item_id: 'P-002' } },
+        harness: 'papercusp',
+        id: UNUSED_ID,
+        family: UNUSED_FAMILY,
+      });
+      expect(got).toBeNull();
+    });
+
     it("reports owner-gated for an item named (by id) in the plan's ## Now block (WI-1774/P-003 shape)", async () => {
       getPlanRowMock.mockResolvedValue({
         items: [planItem({ id: 'P-003', storedStatus: 'todo', text: 'W1.1 — Zero-downtime :3070 deploy' })],

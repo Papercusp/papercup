@@ -20,7 +20,7 @@
  * Idempotent. Safe to re-run. Logs to stderr; never throws.
  */
 
-import { existsSync, mkdirSync, copyFileSync, chmodSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, copyFileSync, chmodSync, statSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -150,8 +150,19 @@ function ensureFileCopy(srcPath: string, destPath: string, mode = 0o644): boolea
       } catch { /* fall through to copy */ }
     }
     mkdirSync(dirname(destPath), { recursive: true });
-    copyFileSync(srcPath, destPath);
-    chmodSync(destPath, mode);
+    // EI-18755593630003816: copy to a same-directory temp file then rename() into
+    // place, NOT a direct in-place copyFileSync. This is the OMP-side sibling of the
+    // Claude-hooks installer's install path (installClaudeHooks in
+    // desktop-install/papercusp-files.ts) — the same box, the same shared `home`, the
+    // same "this helper re-runs on every session bootstrap while a concurrent
+    // process may be reading the destination file right now" hazard. A plain
+    // copyFileSync truncates-then-writes destPath in place, so a concurrent reader
+    // (e.g. an OMP hook loading papercusp-coord.ts mid-write) can observe a torn/
+    // truncated file. rename(2) is atomic on the same filesystem.
+    const tmpPath = `${destPath}.ensure-omp-su.${process.pid}.tmp`;
+    copyFileSync(srcPath, tmpPath);
+    chmodSync(tmpPath, mode);
+    renameSync(tmpPath, destPath);
     return true;
   } catch (e) {
     dlog(`copy ${srcPath} → ${destPath} failed: ${(e as Error).message}`);

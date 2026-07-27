@@ -102,6 +102,34 @@ function escapeRegExp(s: string): string {
   return s.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 }
 
+/**
+ * EI-18754937921052867: an item's OWN `text` is frequently long, free-form
+ * prose describing WHAT IS BEING BUILT — and that prose can itself use marker
+ * language to describe a FEATURE's semantics rather than to say the ITEM is
+ * owner-gated. Real repro: a plan item whose text ends "...health=stalled
+ * when pushLagSec far exceeds the sync interval; disabled when push is
+ * owner-gated." is describing a git-sync health enum the code should report,
+ * not declaring the item itself gated — but `findOwnerGateMarker`'s bare
+ * substring search can't tell that apart from a genuine gate note.
+ *
+ * The genuine shape (WI-357/P-008) is a LABEL: "(Owner-gated: needs a
+ * coordinated quiescent window …)" — the marker introduces a clause, set off
+ * by a leading position, an opening bracket/paren, or a trailing bracket
+ * ("[owner-gated]"). Require that anchor for the item's OWN text specifically
+ * (the Now-block / Decision scans keep their existing, already-scoped
+ * substring search — they're targeted metadata, not open-ended spec prose,
+ * so they carry much less of this false-positive risk).
+ */
+function findAnchoredOwnerGateMarker(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const trimmed = text.trim();
+  for (const marker of OWNER_GATE_MARKERS) {
+    const anchored = new RegExp(`(?:^|[([])\\s*${escapeRegExp(marker)}\\s*[:\\])]`, 'i');
+    if (anchored.test(trimmed)) return marker;
+  }
+  return null;
+}
+
 /** Whether `itemId` (e.g. "P-003") is mentioned, as a whole token, in `text` —
  *  used to scope a plan-wide Now/Decision marker hit to the item it actually
  *  names, so a marker about ONE gated item in a plan never blanket-excludes
@@ -309,7 +337,7 @@ export async function planItemLaneBlockReason(
     const nowText = [row.nowState, row.nowNext].filter(Boolean).join('\n');
     const allItemIds = items.map((i) => i.id);
     for (const li of linked) {
-      const ownMarker = findOwnerGateMarker(li.text);
+      const ownMarker = findAnchoredOwnerGateMarker(li.text);
       const nowMarker = findNowOwnerGateMarker(nowText, li.id, allItemIds);
       const decisionMarker = (row.decisions ?? [])
         .filter((d) => d.itemRefs.includes(li.id))

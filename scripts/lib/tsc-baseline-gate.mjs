@@ -18,6 +18,7 @@
 
 import { execSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 /**
  * One diagnostic parsed out of tsc's output.
@@ -101,6 +102,9 @@ import { readFileSync, writeFileSync } from 'node:fs';
  * @property {PerFileGateEntry[]} regressions
  * @property {PerFileGateEntry[]} improvements
  * @property {PerFileGateEntry[]} [attributed]
+ * @property {PerFileGateEntry[]} [typeAttributed] - Subset of `attributed` NOT in the caller's
+ *   changed-file set, attributed instead because the file references an exported type/interface
+ *   one of the changed files also exports (EI-18756182128903253's cause-aware widening).
  * @property {PerFileGateEntry[]} [peerDrift]
  * @property {PerFileGateEntry[]} [newFiles] - Regressions in files ABSENT from the baseline.
  * @property {number} total
@@ -236,6 +240,75 @@ export function parseExplicitFiles(argv) {
     .map((s) => s.trim())
     .filter(Boolean);
   return new Set(list);
+}
+
+/**
+ * EI-18756182128903253 — the cause-aware widening (fix option 1 of the filed bug): `--mine` /
+ * `--files` scope attribution to the literal set of files the caller changed, which is
+ * structurally BLIND to the single most common gate-redding change shape — adding a REQUIRED
+ * field to a shared exported interface. By definition, the new type errors that causes land in
+ * OTHER files (the fixtures/constructors that build that type and were never updated), not in
+ * the file the caller edited. So the caller's own `--mine` reads clean, and the break first
+ * surfaces hours later at green-checkpoint, redding the gate for the whole fleet.
+ *
+ * The fix: when a changed file exports a type/interface/class/enum, treat every OTHER file that
+ * textually references that name as ALSO attributed to the caller if it regresses — not just the
+ * changed file itself. This is a coarse, name-based proxy (it does not diff which specific
+ * declaration line changed, and cannot tell a real reference from an unrelated identifier of the
+ * same name) — deliberately so: for a lint GATE, the dangerous failure direction is a false
+ * negative (silently missing the real cause), not a false positive (a name collision needlessly
+ * widening attribution by one entry). Widening is always safe; missing is what cost the fleet a
+ * gate cycle four times in 24 hours.
+ *
+ * Exported top-level type/interface/class/enum names declared in the given files' CURRENT
+ * on-disk content.
+ *
+ * @param {string} root
+ * @param {Iterable<string>} files
+ * @returns {Set<string>}
+ */
+export function exportedTypeNames(root, files) {
+  const names = new Set();
+  const re = /^export\s+(?:declare\s+)?(?:default\s+)?(?:abstract\s+)?(?:interface|type|class|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)/gm;
+  for (const file of files) {
+    let content;
+    try {
+      content = readFileSync(resolve(root, file), 'utf-8');
+    } catch {
+      continue; // unreadable (deleted, renamed, outside cwd) — skip, never crash the gate over it
+    }
+    let m;
+    while ((m = re.exec(content)) !== null) names.add(m[1]);
+  }
+  return names;
+}
+
+/**
+ * Which of `candidateFiles` reference any of `typeNames` as a standalone identifier — the other
+ * half of `exportedTypeNames` above (EI-18756182128903253): cross-reference a changed file's
+ * exported type names against every OTHER file, so a fixture that never added the new required
+ * field gets attributed to the change that added it, instead of reported as unrelated peer drift.
+ *
+ * @param {string} root
+ * @param {Iterable<string>} candidateFiles
+ * @param {Set<string>} typeNames
+ * @returns {Set<string>}
+ */
+export function filesReferencingTypeNames(root, candidateFiles, typeNames) {
+  const referencing = new Set();
+  if (typeNames.size === 0) return referencing;
+  const escaped = [...typeNames].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const re = new RegExp(`\\b(?:${escaped.join('|')})\\b`);
+  for (const file of candidateFiles) {
+    let content;
+    try {
+      content = readFileSync(resolve(root, file), 'utf-8');
+    } catch {
+      continue;
+    }
+    if (re.test(content)) referencing.add(file);
+  }
+  return referencing;
 }
 
 /**
