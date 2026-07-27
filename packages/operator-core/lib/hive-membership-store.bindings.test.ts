@@ -186,3 +186,73 @@ describe('registry-view leg (2026-07-01 Brief-3 live finding: join-time stamped 
     ]);
   });
 });
+
+/**
+ * WI-559 — the federation demux key must come from the OWNER's announce, keyed by hive
+ * PUBKEY, never from the joiner's local view slug.
+ *
+ * On the 2-machine rig, owner and joiner held the same hive pubkey but different
+ * `pots.pot_home_slug` ('spoon-knife-pot' vs 'octocat-spoon-knife'), so the joiner
+ * demux-dropped EVERY inbound row across ~12 hive-home-grained projections — a
+ * whole-hive federation blackout that surfaced only as one-directional presence.
+ */
+describe('loadAnnouncedHiveHomeSlug — the owner-authored slug, by pubkey (WI-559)', () => {
+  const announce = (
+    hivePubkey: string,
+    potId: string,
+    extra: Record<string, unknown> = {},
+  ): unknown => ({ potId, title: 'octocat/Spoon-Knife', hivePubkey, ...extra });
+
+  it('resolves the owner slug from the LIVE directory', async () => {
+    listDiscoveredHives.mockReturnValue([announce('HP_a', 'spoon-knife-pot')]);
+    readOperatorState.mockResolvedValue(null);
+    expect(await loadAnnouncedHiveHomeSlug(WS, 'HP_a')).toBe('spoon-knife-pot');
+  });
+
+  it('falls back to the PG cache when the live directory has not heard the announce', async () => {
+    listDiscoveredHives.mockReturnValue([]);
+    readOperatorState.mockResolvedValue({ hives: [announce('HP_a', 'spoon-knife-pot')] });
+    expect(await loadAnnouncedHiveHomeSlug(WS, 'HP_a')).toBe('spoon-knife-pot');
+  });
+
+  it('returns null for a pubkey with no announce — the caller keeps its local slug', async () => {
+    listDiscoveredHives.mockReturnValue([announce('HP_other', 'someone-else')]);
+    readOperatorState.mockResolvedValue({ hives: [announce('HP_other2', 'another')] });
+    expect(await loadAnnouncedHiveHomeSlug(WS, 'HP_a')).toBeNull();
+  });
+
+  // THE REGRESSION THIS FIX COULD HAVE INTRODUCED. The D-007 join-link seed
+  // (defaultSeedOwnerBinding) writes a VERIFIED hivePubkey with a DERIVED potId
+  // (`${repoName}-pot`) and is add-if-absent, so it can outlive the real beacon.
+  // Treating that guess as authoritative could rebind a joiner whose local slug was
+  // already CORRECT onto a wrong one — breaking federation that currently works.
+  it('SKIPS a synthetic seed descriptor rather than trusting its guessed slug', async () => {
+    listDiscoveredHives.mockReturnValue([
+      announce('HP_a', 'wrong-guess-pot', { potIdSynthetic: true, title: '' }),
+    ]);
+    readOperatorState.mockResolvedValue(null);
+    expect(await loadAnnouncedHiveHomeSlug(WS, 'HP_a')).toBeNull();
+  });
+
+  it('prefers a REAL announce over a synthetic seed for the same pubkey', async () => {
+    listDiscoveredHives.mockReturnValue([
+      announce('HP_a', 'wrong-guess-pot', { potIdSynthetic: true }),
+      announce('HP_a', 'spoon-knife-pot'),
+    ]);
+    readOperatorState.mockResolvedValue(null);
+    expect(await loadAnnouncedHiveHomeSlug(WS, 'HP_a')).toBe('spoon-knife-pot');
+  });
+
+  it('ignores a blank slug and never throws when both sources fail', async () => {
+    listDiscoveredHives.mockReturnValue([announce('HP_a', '   ')]);
+    readOperatorState.mockRejectedValue(new Error('no PG in this process'));
+    expect(await loadAnnouncedHiveHomeSlug(WS, 'HP_a')).toBeNull();
+
+    listDiscoveredHives.mockImplementation(() => {
+      throw new Error('directory unwired');
+    });
+    readOperatorState.mockRejectedValue(new Error('no PG'));
+    expect(await loadAnnouncedHiveHomeSlug(WS, 'HP_a')).toBeNull();
+    expect(await loadAnnouncedHiveHomeSlug(WS, '')).toBeNull();
+  });
+});

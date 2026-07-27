@@ -12,6 +12,8 @@
  */
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore -- plain .mjs lint script, no type declarations
 import {
   driftFragment,
   extractNegativeLiterals,

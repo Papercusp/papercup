@@ -14,16 +14,8 @@
  */
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only.
-import {
-  isStateReadCandidate,
-  isMutatingVerb,
-  parseToolDefs,
-  judgeToolDef,
-  BASELINE,
-  MIN_EXEMPTION_REASON,
-  STATE_NOUNS,
-} from '../../../scripts/check-cell-adoption.mjs';
+// @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
+import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS } from '../../../scripts/check-cell-adoption.mjs';
 
 /** Build the text of a defineTool literal, optionally carrying a marker. */
 const toolSrc = (name: string, opts: { capability?: string; marker?: string } = {}) => `
