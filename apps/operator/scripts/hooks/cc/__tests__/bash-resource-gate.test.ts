@@ -1687,6 +1687,16 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
  * nearly reported as inert. A false positive here degrades verification itself.
  */
 describe('interpreter literal scan — prose periods are not extensions (EI-18828567391761902)', () => {
+  // Same assertion as the sibling describe's local helper: this guard's deny
+  // must be attributable to the interpreter leg (its own EI ref) rather than to
+  // the shell-write leg, which would otherwise satisfy a bare "it denied" check.
+  const expectInterpDeny = (out: { stdout: string; status: number | null }) => {
+    const reason = denyReason(out);
+    expect(reason).toContain('EI-18691482279179647');
+    expect(reason).toMatch(/Edit or Write/);
+    return reason;
+  };
+
   it('allows the exact repro: a heredoc searching for a docstring sentence while writing only to /tmp', () => {
     const command =
       "python3 - <<'PY'\n" +

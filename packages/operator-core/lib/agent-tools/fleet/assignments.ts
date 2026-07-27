@@ -526,20 +526,20 @@ export default defineTool({
   name: 'fleet:assignments',
   profile: 'engineer',
   description:
-    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified. `self`=your ownerId (your row is `isSelf:true`). Each live agent carries its ordered work-list — `doing`/`queued`/`load` — the placement read. Surfaces `orphaned` (dead-holder) and `stalled` (no progress) claims with a derived `verdict`+`action`: only `orphan`/`reclaim` may be freed — `held-by-live-agent`/`ask` means a live holder just has not checkpointed, never grounds to release. Act on `summary.reclaimable_claims`, not raw counts. `progress` distinguishes `never-checkpointed` vs `stale-since`; each row also carries a lifecycle `verdict`, `wakeMode` (auto|manual), and `unanswered` message state. Read this, not a stale coord broadcast. Full field reference: /internal/docs/agent-insights/fleet-assignments-field-reference.',
+    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified. `self`=your ownerId (your row is `isSelf:true`). Each live agent carries its ordered work-list — `doing`/`queued`/`load` — the placement read. Surfaces `orphaned` (dead-holder) and `stalled` (no progress) claims with a derived `verdict`+`action`: only `orphan`/`reclaim` may be freed — `held-by-live-agent`/`ask` means a live holder just has not checkpointed, never grounds to release; `residue`/`close` means the claim\'s LINKED plan item is already done/dropped (stale residue of finished work, regardless of holder liveness) — close it with evidence, never release/re-place it. Act on `summary.reclaimable_claims`, not raw counts (`summary.residue_claims` is the separate close-it count). `progress` distinguishes `never-checkpointed` vs `stale-since`; each row also carries a lifecycle `verdict`, `wakeMode` (auto|manual), and `unanswered` message state. Read this, not a stale coord broadcast. Full field reference: /internal/docs/agent-insights/fleet-assignments-field-reference.',
   guidance: {
     when: 'Answering "who\'s running / what is X doing / X\'s work-list / how loaded is X / is anyone on plan P" — the state + placement-decision read, instead of scanning coord:inbox or replaying lifecycle messages.',
     notWhen:
       'You want future-change notifications (subscribe the fleet_assignment change-feed) or full message history (coord:inbox).',
     chaining:
-      'fleet:assignments { plan } → row action:\'reclaim\' → work_items:release / plan_items:release, or take it yourself; action:\'ask\' → coord:send the holder and WAIT, never release. Never assume "someone\'s on it" from a coord message. fleet:assignments { agent } before messaging about their work.',
+      'fleet:assignments { plan } → row action:\'reclaim\' → work_items:release / plan_items:release, or take it yourself; action:\'ask\' → coord:send the holder and WAIT, never release; action:\'close\' (verdict:\'residue\') → work_items:complete / work_items:set_state with evidence citing the row\'s `residue` field, NEVER work_items:release (that just re-places already-done work). Never assume "someone\'s on it" from a coord message. fleet:assignments { agent } before messaging about their work.',
     // Result-aware (D-003): the work_items:release pointer surfaces with a REAL
     // count ONLY when there are orphaned/stalled claims to reclaim — dynamically
     // gated so a clean fleet pays no "See also:" bloat. The two adjacent-lens
     // pointers are always relevant, so they stay static in the returned list.
     seeAlso: (result) => {
       const j = readJsonResult<{
-        summary?: { reclaimable_claims?: number };
+        summary?: { reclaimable_claims?: number; residue_claims?: number };
       }>(result);
       // seeAlso runs on the SERIALIZED result — the {data} envelope may be TOON
       // on the MCP transport (readJsonResult → undefined). TOON renders nested
@@ -552,10 +552,20 @@ export default defineTool({
       // claim was held by a live, actively-working agent still got told to go
       // free N claims — the tool prescribing the exact action the bug is about.
       const reclaimable = j?.summary?.reclaimable_claims ?? num('reclaimable_claims');
+      // EI-18763117665515043: residue claims are NEVER counted into the
+      // work_items:release nudge above — releasing residue just re-places
+      // already-done work. They get their own pointer, to the close-it verbs.
+      const residue = j?.summary?.residue_claims ?? num('residue_claims');
       const out: SeeAlsoEntry[] = [
         'coord:roster { view:"claims" } (the unified who-on-what-item lens)',
         "fleet:status (the fleet's leader + live members)",
       ];
+      if (residue > 0) {
+        out.unshift({
+          tool: 'work_items:complete',
+          reason: `close ${residue} claim${residue === 1 ? '' : 's'} whose linked plan item is already done/dropped (never release these)`,
+        });
+      }
       if (reclaimable > 0) {
         out.unshift({
           tool: 'work_items:release',
@@ -944,6 +954,16 @@ export default defineTool({
                 `${liveHeldRows.length} of the rows above are held by agents the presence oracle reports LIVE ` +
                 `(verdict:'held-by-live-agent'). They are not abandoned — a missing checkpoint is not evidence of a ` +
                 `stopped agent. ASK the holder before touching the claim; do not release it.`,
+            }
+          : {}),
+        ...(residueRows.length
+          ? {
+              residue_note:
+                `${residueRows.length} of the rows above are STALE RESIDUE (verdict:'residue') — each row's linked ` +
+                `plan item (see its 'residue' field) is already done/dropped, so the claim is completed/abandoned ` +
+                `work, regardless of whether its holder is alive or gone. CLOSE it with evidence citing the plan ` +
+                `item's terminal status (work_items:complete / work_items:set_state); never work_items:release it ` +
+                `— that just re-places already-finished work on the next self-select pass.`,
             }
           : {}),
         // Coverage collisions (EI-6074): two distinct principals resolving to the

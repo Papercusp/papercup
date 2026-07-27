@@ -986,7 +986,14 @@ def _has_inplace_flag(seg, kind):
 # so this also — harmlessly — sits out whenever one of those appears anywhere
 # in the command; the guard just falls back to its original (correct, if
 # occasionally over-cautious) behavior in that case.
-_CD_RE = re.compile(r'\bcd\s+(\S+)')
+#
+# `cd` only counts as a REAL invocation when it starts a statement — preceded
+# by nothing, a `;`, a newline, `&&`, or `||`. Without this a bare mention of
+# the word (`echo cd /tmp`, `echo "please cd to /tmp first"`) would read as an
+# actual directory change and could fold a FAKE cwd move into the replay —
+# the same "worse than the false deny" shape as the subshell case above, just
+# via ordinary text instead of a paren.
+_CD_RE = re.compile(r'(?:\A|[;\n]|&&|\|\|)\s*cd\s+(\S+)')
 
 
 def _effective_cwd_before(pos, base_cwd, clean, has_paren):

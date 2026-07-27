@@ -71,6 +71,136 @@ export async function blobInWorkingTree(git: GitRead, relPath: string): Promise<
   return out && SHA_RE.test(out) ? out : null;
 }
 
+/* ------------------------------------------------------------------------- *
+ * Submodule-aware containment (EI-18828378090895599)
+ *
+ * A path inside a submodule is NOT a superproject blob: the superproject tree stores
+ * only a GITLINK (mode 160000) for the submodule directory. So `rev-parse
+ * <sha>:papercusp-desktop/bin/x.sh` FAILS — while `hash-object -- <same path>` happily
+ * succeeds, because it just hashes bytes on disk and knows nothing about submodules.
+ *
+ * That asymmetry is what made the bug CONFIDENTLY WRONG rather than merely blind:
+ * candidate-side null + tree-side present fell into the "new file" branch, HEAD was
+ * read the same failing way (null), and `headBlob === treeBlob` was false — so a fully
+ * committed file was reported `uncommitted`, whose prescribed lever is "git-sync:run,
+ * then re-fire". On an already-red gate that costs another ~55min suite run and cannot
+ * possibly help, because the file was committed all along. It is the exact inverse of
+ * the misread the `marker` arg was added to kill.
+ *
+ * The repair is to ask the question in the repo that can answer it: resolve the
+ * submodule commit the candidate PINS via its gitlink, then compare blobs INSIDE the
+ * submodule. `git -C <root> -C <sub>` is the idiom — git accumulates relative `-C`
+ * options, and both adapters at the bottom of this file lead with `-C <repo>`, so one
+ * prepended pair re-scopes any read without a second runner.
+ *
+ * The module's absence-is-never-a-positive rule is unchanged and is why the gitlink
+ * read below is THREE-valued: a submodule missing from the candidate ('' from ls-tree)
+ * is a definitive negative, while an unreadable gitlink is `unknown` — never a verdict.
+ * ------------------------------------------------------------------------- */
+
+/** Re-scope a bound GitRead into a subdirectory (see the cumulative `-C` note above). */
+export function gitReadInSubdir(git: GitRead, subdir: string): GitRead {
+  return (args) => git(['-C', subdir, ...args]);
+}
+
+/**
+ * Submodule paths from `.gitmodules`, LONGEST FIRST so a nested submodule wins over its
+ * parent. Best-effort: a repo without `.gitmodules` yields `[]`, which restores the
+ * plain superproject behaviour exactly.
+ */
+export async function submodulePrefixes(git: GitRead): Promise<string[]> {
+  const out = await git(['config', '--file', '.gitmodules', '--get-regexp', 'path']);
+  if (!out) return [];
+  return out
+    .split('\n')
+    .map((l) => l.trim().split(/\s+/)[1])
+    .filter((p): p is string => !!p)
+    .sort((a, b) => b.length - a.length);
+}
+
+/** The submodule commit a superproject commit pins, three-valued (see above). */
+export type Gitlink =
+  | { state: 'pinned'; pin: string }
+  /** The superproject commit has no such submodule — a DEFINITIVE negative. */
+  | { state: 'absent' }
+  /** The read failed; nothing may be concluded. */
+  | { state: 'unreadable' };
+
+export async function submoduleGitlinkAt(git: GitRead, sha: string, sub: string): Promise<Gitlink> {
+  const out = await git(['ls-tree', sha, '--', sub]);
+  if (out === null) return { state: 'unreadable' };
+  if (out === '') return { state: 'absent' };
+  const m = /^160000\s+commit\s+([0-9a-f]{7,40})\b/.exec(out.trim());
+  // An entry that is NOT a gitlink means the path is an ordinary directory/file at that
+  // commit — not something this helper may turn into a pin.
+  return m ? { state: 'pinned', pin: m[1] } : { state: 'absent' };
+}
+
+/**
+ * Containment for one path inside `sub`, evaluated in the submodule's own object store.
+ *
+ * Reason selection keeps every value pointing at a lever that actually works, which is
+ * the whole reason the false `uncommitted` was expensive:
+ *  - not committed INSIDE the submodule        → `uncommitted`  (git-sync:run — correct)
+ *  - committed there, but this candidate's pin
+ *    predates it (or the pointer bump is still
+ *    pending in the superproject)              → `newer-commit` (wait / next run — correct)
+ */
+async function classifySubmodulePath(
+  git: GitRead,
+  candidateSha: string,
+  committedSha: string | null,
+  sub: string,
+  relPath: string,
+  fullPath: string,
+): Promise<PathContainment> {
+  const unknown = (detail: string): PathContainment => ({
+    path: fullPath,
+    inCandidate: null,
+    reason: null,
+    unknownReason: cellUnknown('resolver-failed', detail),
+  });
+  if (!relPath) {
+    return {
+      path: fullPath,
+      inCandidate: null,
+      reason: null,
+      unknownReason: cellUnknown(
+        'not-applicable',
+        `'${fullPath}' is the submodule directory itself (a gitlink), not a file inside it — blob containment does not apply.`,
+      ),
+    };
+  }
+  const subGit = gitReadInSubdir(git, sub);
+  const treeBlob = await blobInWorkingTree(subGit, relPath);
+  if (!treeBlob) {
+    return unknown(
+      `Could not read '${relPath}' from submodule '${sub}' working tree (deleted, or the submodule is not checked out) — containment is UNKNOWN, not confirmed.`,
+    );
+  }
+  const link = await submoduleGitlinkAt(git, candidateSha, sub);
+  if (link.state === 'unreadable') {
+    return unknown(
+      `Could not read the gitlink for submodule '${sub}' at ${candidateSha.slice(0, 12)} — containment is UNKNOWN, not missing.`,
+    );
+  }
+  // Committed-ness is decided in the submodule, where the file actually lives.
+  const subHeadBlob = committedSha ? await blobAtCommit(subGit, 'HEAD', relPath) : null;
+  const reasonWhenMissing = (): MissingReason => {
+    if (!committedSha) return 'absent';
+    return subHeadBlob === treeBlob ? 'newer-commit' : 'uncommitted';
+  };
+  if (link.state === 'absent') {
+    // The candidate predates the submodule entirely; it cannot carry the file.
+    return { path: fullPath, inCandidate: false, reason: reasonWhenMissing(), unknownReason: null };
+  }
+  const candidateBlob = await blobAtCommit(subGit, link.pin, relPath);
+  if (candidateBlob === treeBlob) {
+    return { path: fullPath, inCandidate: true, reason: null, unknownReason: null };
+  }
+  return { path: fullPath, inCandidate: false, reason: reasonWhenMissing(), unknownReason: null };
+}
+
 /**
  * EI-18797292094433710 — the containment verdicts above compare the path's CURRENT
  * content, which answers "does the candidate carry exactly what I have?" and NOT the
@@ -213,6 +343,13 @@ export async function classifyPathsAgainstCandidate(
   candidateSha: string | null,
   paths: string[],
   committedSha: string | null = 'HEAD',
+  opts: {
+    /**
+     * Submodule prefixes to recognise. Omitted ⇒ discovered from `.gitmodules`
+     * (EI-18828378090895599); pass `[]` to force plain superproject behaviour.
+     */
+    submodules?: string[];
+  } = {},
 ): Promise<PathContainment[]> {
   if (!candidateSha) {
     return paths.map((path) => ({
@@ -250,8 +387,26 @@ export async function classifyPathsAgainstCandidate(
       ),
     }));
   }
+  // EI-18828378090895599: a path inside a submodule cannot be answered by superproject
+  // blob reads at all — see the submodule block above. Discovered once per call, not
+  // per path, and skipped entirely when the caller passes an explicit list.
+  const submodules = opts.submodules ?? (await submodulePrefixes(git));
+  const submoduleFor = (p: string): string | null =>
+    submodules.find((s) => p === s || p.startsWith(s + '/')) ?? null;
+
   return Promise.all(
     paths.map(async (path): Promise<PathContainment> => {
+      const sub = submoduleFor(path);
+      if (sub) {
+        return classifySubmodulePath(
+          git,
+          candidateSha,
+          committedSha,
+          sub,
+          path.slice(sub.length).replace(/^\//, ''),
+          path,
+        );
+      }
       const [candidateBlob, treeBlob] = await Promise.all([
         blobAtCommit(git, candidateSha, path),
         blobInWorkingTree(git, path),
@@ -317,8 +472,9 @@ export async function callerEditsInCandidate(
   candidateSha: string | null,
   paths: string[],
   committedSha: string | null = 'HEAD',
+  opts: { submodules?: string[] } = {},
 ): Promise<CallerEditsInCandidate> {
-  const results = await classifyPathsAgainstCandidate(git, candidateSha, paths, committedSha);
+  const results = await classifyPathsAgainstCandidate(git, candidateSha, paths, committedSha, opts);
   return {
     included: results.filter((r) => r.inCandidate === true).map((r) => r.path),
     missing: results.filter((r) => r.inCandidate === false).map((r) => r.path),
