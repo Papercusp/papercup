@@ -67,6 +67,16 @@ describe('unknownToolReferral', () => {
     expect(text).not.toContain('Closest catalog matches');
     expect(text).toContain('tools:invoke');
   });
+
+  // EI-18752546668875973: a doc-cited name can miss for a third reason besides "typo" and
+  // "the doc is wrong" — it exists in source but hasn't reached THIS operator's deployed
+  // code yet. Name that possibility + the diagnostic step at the moment of failure, instead
+  // of leaving the agent to conclude the doc/registry itself is wrong.
+  it('names "not yet deployed" as a possibility and points at dev:pipeline_position', () => {
+    const text = unknownToolReferral('testing:run');
+    expect(text).toContain('not be deployed to THIS operator yet');
+    expect(text).toContain('dev:pipeline_position');
+  });
 });
 
 describe('dangling tool-ref integrity (EI-9011 leg c)', () => {

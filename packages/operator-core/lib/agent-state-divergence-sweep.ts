@@ -40,7 +40,7 @@ import {
   type DivergenceCall,
   type DivergenceReport,
 } from './agent-state-divergence';
-import { recentWatchdogFires, recordFire } from './pot/watchdog';
+import { claimWatchdogFire, recentWatchdogFires } from './pot/watchdog';
 import { openEscalation } from './agent-tools/coordination/escalations';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
@@ -135,6 +135,23 @@ export function divergenceFireKey(d: Divergence): string {
   return `${d.ownerId}:${d.kind === 'unconverged-retry-loop' ? d.a.toolName : `intent-${d.intentEventId}`}`;
 }
 
+/**
+ * The `reason` a fire is recorded under — and the reason the debounce WORKS.
+ *
+ * `recentWatchdogFires`/`claimWatchdogFire` match a `scopeKey` as
+ * `reason LIKE '%scopeKey%'`, so the caller MUST embed the key verbatim in the
+ * reason it records. This sweep previously recorded the bare summary, which
+ * never contains the `<ownerId>:<toolName>` key — so the lookup could not match,
+ * `priorFires` was structurally always 0, and the debounce silently never fired.
+ * Measured cost: 113 fires across only 2 distinct conditions in 37 minutes
+ * (~one per 20s, forever), and ~91% of one agent's inbox left as coalesced
+ * duplicates. The same dead lookup also pinned `isRepeat` to false, so the
+ * leader-escalation backstop had never once fired either (EI-18824142520274965).
+ */
+export function divergenceFireReason(key: string, summary: string): string {
+  return `[${key}] ${summary}`;
+}
+
 // ── the PG read ──────────────────────────────────────────────────────────────
 
 interface CallRow {
@@ -204,7 +221,7 @@ export interface DivergenceSweepResult {
 export interface DivergenceSweepDeps {
   loadRecentCalls?: typeof loadRecentCalls;
   recentWatchdogFires?: typeof recentWatchdogFires;
-  recordFire?: typeof recordFire;
+  claimWatchdogFire?: typeof claimWatchdogFire;
   openEscalation?: typeof openEscalation;
   sendMessage?: typeof sendMessage;
   workspaceId?: string;
@@ -219,9 +236,7 @@ export interface DivergenceSweepDeps {
  *
  * Fail-soft per finding AND overall: a detector that throws guards nothing.
  */
-export async function divergenceSweep(
-  deps: DivergenceSweepDeps = {},
-): Promise<DivergenceSweepResult> {
+export async function divergenceSweep(deps: DivergenceSweepDeps = {}): Promise<DivergenceSweepResult> {
   const now = deps.now ?? Date.now();
   const workspaceId = deps.workspaceId ?? 'papercusp-workspace';
   const installSlug = deps.installSlug ?? DEFAULT_INSTALL_SLUG;
@@ -241,7 +256,10 @@ export async function divergenceSweep(
     };
   }
 
-  const report = detectIntentActionDivergence(calls);
+  // `now` is threaded in so the detector can apply CONVERGENCE_SETTLE_MS — a run
+  // whose fix may simply not have happened yet is deferred to a later sweep
+  // instead of being reported as un-converged.
+  const report = detectIntentActionDivergence(calls, { now });
 
   // The per-leg delivery gate (P-011's ordering rule, applied per leg because
   // the stamped leg is structurally empty until P-009 deploys while the sampling
@@ -256,9 +274,7 @@ export async function divergenceSweep(
         {
           key: '*',
           outcome: 'suppressed',
-          reason: z
-            ? `${isStructuralZero(z) ? 'STRUCTURAL ZERO' : 'clean'}: ${explainZero(z)}`
-            : 'no findings',
+          reason: z ? `${isStructuralZero(z) ? 'STRUCTURAL ZERO' : 'clean'}: ${explainZero(z)}` : 'no findings',
         },
       ],
       report,
@@ -277,20 +293,11 @@ export async function divergenceSweep(
         continue;
       }
 
-      const priorFires = await (deps.recentWatchdogFires ?? recentWatchdogFires)(
-        workspaceId,
-        installSlug,
-        DIVERGENCE_DEBOUNCE_HOURS,
-        'intent-action-divergence',
-        key,
-      );
-      if (priorFires > 0) {
-        outcomes.push({ key, outcome: 'debounced', reason: 'fires-ledger debounce' });
-        continue;
-      }
-
       // Already told this agent about this exact flail inside the repeat window?
       // Then the cheap self-correction path was tried and did not take.
+      //
+      // Read BEFORE the claim below, which inserts a row of its own — reading it
+      // after would count this very fire and pin `isRepeat` to true forever.
       const isRepeat =
         (await (deps.recentWatchdogFires ?? recentWatchdogFires)(
           workspaceId,
@@ -301,13 +308,26 @@ export async function divergenceSweep(
         )) > 0;
 
       const { summary, body } = formatDivergenceAlert(d);
-      await (deps.recordFire ?? recordFire)({
+
+      // Claim the debounce slot ATOMICALLY, and only notify if we won it.
+      // `claimWatchdogFire` replaces the old check-then-act pair
+      // (`recentWatchdogFires(...) > 0` … later … `recordFire(...)`), which
+      // races every concurrent tick into duplicate pages (EI-6777) — the very
+      // shape this sweep was firing in. The claim still precedes the notify, so
+      // a crash mid-delivery cannot re-page forever.
+      const claimed = await (deps.claimWatchdogFire ?? claimWatchdogFire)({
         workspaceId,
         installSlug,
         source: 'intent-action-divergence',
-        reason: summary,
+        reason: divergenceFireReason(key, summary),
         wakeAt: null,
+        windowHours: DIVERGENCE_DEBOUNCE_HOURS,
+        scopeKey: key,
       });
+      if (!claimed) {
+        outcomes.push({ key, outcome: 'debounced', reason: 'fires-ledger debounce' });
+        continue;
+      }
 
       // THE AGENT ITSELF, FIRST — always, and on its own the first time.
       await (deps.sendMessage ?? sendMessage)(DIVERGENCE_IDENTITY, {

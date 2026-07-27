@@ -151,12 +151,12 @@ export async function reapDeadExecutorWorkflows(
     // EI-18752434722211671: when this process knows its own start time, a
     // 'local'-executor routineFire created before that instant is provably
     // orphaned (its executor is dead — see the param doc above) and reapable
-    // immediately, independent of staleRoutineFireNoOutputMs. `sql\`\`` (empty) is a
-    // no-op fragment when processStartedAtMs is unset, so every existing caller
-    // (the 2-min periodic tick before this fix, and any other embedder) is
-    // byte-for-byte unaffected.
-    const localDeadExecutorFragment =
-      processStartedAtMs != null ? sql`OR (executor_id = 'local' AND created_at < ${processStartedAtMs})` : sql``;
+    // immediately, independent of staleRoutineFireNoOutputMs. Passed as plain scalar
+    // params (not a nested `sql` fragment) so the extra clause is a pure no-op
+    // (`false AND …`) when processStartedAtMs is unset — every existing caller (the
+    // periodic tick before this fix, and any other embedder) is behavior-identical.
+    const hasProcessStartedAtMs = processStartedAtMs != null;
+    const processStartedAtMsParam = processStartedAtMs ?? 0;
 
     // Dead executors: stale (no workflow_status update in the window) AND still
     // holding at least one non-terminal workflow worth reaping.
@@ -266,7 +266,7 @@ export async function reapDeadExecutorWorkflows(
                          AND w2.status IN ('PENDING', 'SUCCESS', 'ERROR')
                     )
                   )
-                  ${localDeadExecutorFragment}
+                  OR (${hasProcessStartedAtMs} AND executor_id = 'local' AND created_at < ${processStartedAtMsParam})
                 )
                 AND NOT EXISTS (
                   SELECT 1
@@ -316,7 +316,7 @@ export async function reapDeadExecutorWorkflows(
                       AND w2.status IN ('PENDING', 'SUCCESS', 'ERROR')
                  )
                )
-               ${localDeadExecutorFragment}
+               OR (${hasProcessStartedAtMs} AND executor_id = 'local' AND created_at < ${processStartedAtMsParam})
              )
              AND NOT EXISTS (
                SELECT 1

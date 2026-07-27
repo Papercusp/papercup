@@ -153,19 +153,45 @@ export const THRASH_WINDOW_MS = 10 * 60_000;
  * genuine refusal; it was missing from the first cut of this set, which is the
  * kind of gap only real rows expose.
  */
-const FAILURE_STATUSES = new Set([
-  'error',
-  'invalid-input',
-  'timeout',
-  'refused',
-  'denied',
-  'role-not-allowed',
-]);
+const FAILURE_STATUSES = new Set(['error', 'invalid-input', 'timeout', 'refused', 'denied', 'role-not-allowed']);
 
 export function isFailureStatus(status: string | null | undefined): boolean {
   if (!status) return false;
   return FAILURE_STATUSES.has(status.trim().toLowerCase());
 }
+
+/**
+ * Statuses that count as a call having SUCCEEDED.
+ *
+ * Deliberately an explicit allow-list rather than `!isFailureStatus(...)`, and
+ * the distinction is the whole point: "not a failure" is true of a NULL status
+ * too, and treating an absent status as a success would let a gap in the input
+ * silently suppress a real finding. That is the same rule `digestArgs` already
+ * follows for absent args — a missing value is never evidence in either
+ * direction. Measured vocabulary of `tool_invocations.status` over a live 3h
+ * window: ok (27,777), invalid-input (90), timeout (15), error (7).
+ */
+const SUCCESS_STATUSES = new Set(['ok']);
+
+export function isSuccessStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return SUCCESS_STATUSES.has(status.trim().toLowerCase());
+}
+
+/**
+ * How long a run's LAST failure must have been allowed to sit before the run is
+ * judged un-converged.
+ *
+ * Without this, the convergence test below is a race the detector loses at the
+ * cadence it actually runs: the sweep ticks every ~30s, so a run whose fix lands
+ * on the agent's very next turn is read as "still failing" simply because the
+ * sweep looked between the last failure and the retry. Waiting is free here — the
+ * debounce window is hours, so a genuine flail is reported a minute later rather
+ * than not at all.
+ *
+ * Only applied when the caller supplies a clock (see `opts.now`).
+ */
+export const CONVERGENCE_SETTLE_MS = 2 * 60_000;
 
 /** One `tool_invocations` row, reduced to the fields a verdict can rest on. */
 export interface DivergenceCall {
@@ -279,8 +305,28 @@ export interface DivergenceCoverage {
   comparableBuckets: number;
   /** Failed calls — the false-positive denominator for the sampling leg. */
   failuresSeen: number;
-  /** Runs that reached {@link RETRY_THRASH_THRESHOLD} — the numerator. */
+  /**
+   * Runs that reached {@link RETRY_THRASH_THRESHOLD}.
+   *
+   * NOT the same as the number of findings: a run counted here is still
+   * suppressed if it converged or has not settled. `thrashRuns -
+   * convergedRuns - unsettledRuns` is what was actually reported, and keeping
+   * the three separate is what makes the suppression measurable instead of
+   * invisible.
+   */
   thrashRuns: number;
+  /**
+   * Runs the agent RECOVERED from — a later `ok` on the same (owner, tool)
+   * ended the run. Self-correction, which this detector exists not to page on;
+   * counted so the rate stays visible without anyone being notified.
+   */
+  convergedRuns: number;
+  /**
+   * Runs whose last failure was newer than {@link CONVERGENCE_SETTLE_MS} at
+   * sweep time — the agent may be mid-correction, so the verdict is deferred to
+   * a later sweep rather than guessed at now. Always 0 when no clock was passed.
+   */
+  unsettledRuns: number;
   /** Did the stamped leg have anything at all to compare? */
   stampedLegRan: boolean;
   /** Did the sampling leg have anything at all to examine? */
@@ -358,7 +404,18 @@ function ordered(calls: readonly DivergenceCall[]): DivergenceCall[] {
  *   {@link RETRY_THRASH_THRESHOLD} is where the population stops looking like
  *   self-correction and starts looking like flailing.
  */
-export function detectIntentActionDivergence(calls: readonly DivergenceCall[]): DivergenceReport {
+export function detectIntentActionDivergence(
+  calls: readonly DivergenceCall[],
+  opts: {
+    /**
+     * The sweep's clock, used ONLY for {@link CONVERGENCE_SETTLE_MS}. Omitted ⇒
+     * the settle rule does not apply at all, rather than defaulting to
+     * `Date.now()` — a detector documented as "same input, same output, no I/O"
+     * must not read a hidden clock, and the tests assert exactly that.
+     */
+    now?: number;
+  } = {},
+): DivergenceReport {
   const rows = ordered(calls);
   const divergences: Divergence[] = [];
   let truncated = false;
@@ -432,85 +489,146 @@ export function detectIntentActionDivergence(calls: readonly DivergenceCall[]): 
 
   let failuresSeen = 0;
   let thrashRuns = 0;
+  let convergedRuns = 0;
+  let unsettledRuns = 0;
   for (const owned of byOwner.values()) {
-    // Failures of ONE tool, in time order. Grouping by tool BEFORE running the
-    // window is what makes "the same call keeps failing" distinguishable from
-    // "this agent had a bad minute across five different tools" — only the
-    // former is a convergence failure.
-    const failuresByTool = new Map<string, DivergenceCall[]>();
+    // Calls of ONE tool, in time order — SUCCESSES INCLUDED. Grouping by tool
+    // before running the window is what makes "the same call keeps failing"
+    // distinguishable from "this agent had a bad minute across five different
+    // tools"; keeping the successes in the timeline is what makes "without
+    // converging" an observable claim rather than an unfalsifiable one.
+    //
+    // ⚠ This previously filtered to failures FIRST, which discarded the only
+    // rows that could ever disprove the verdict — so the detector asserted a
+    // negative it structurally could not see, and paged agents for runs that had
+    // already succeeded on the very next call (EI-18824142520274965).
+    const callsByTool = new Map<string, DivergenceCall[]>();
     for (const c of owned) {
-      if (!isFailureStatus(c.status)) continue;
-      failuresSeen += 1;
-      const b = failuresByTool.get(c.toolName);
+      const isFailure = isFailureStatus(c.status);
+      if (isFailure) failuresSeen += 1;
+      // A status that is neither a known failure nor a known success is NEUTRAL:
+      // it neither extends a run nor ends one. Letting an unknown status close a
+      // run would manufacture convergence out of a gap in the input.
+      if (!isFailure && !isSuccessStatus(c.status)) continue;
+      const b = callsByTool.get(c.toolName);
       if (b) b.push(c);
-      else failuresByTool.set(c.toolName, [c]);
+      else callsByTool.set(c.toolName, [c]);
     }
 
-    for (const [toolName, failures] of failuresByTool) {
+    for (const [toolName, timeline] of callsByTool) {
       const ns = toolNamespace(toolName);
-      let start = 0;
-      while (start < failures.length) {
-        // Extend the run while each further failure stays inside the window
-        // measured from the run's FIRST attempt.
-        const runStartAt = timeOf(failures[start]);
-        let end = start + 1;
-        while (end < failures.length && timeOf(failures[end]) - runStartAt <= THRASH_WINDOW_MS) {
-          end += 1;
+
+      // Cut the timeline into failure groups separated by successes. A success
+      // is proof the agent got this tool working, so failures on either side of
+      // it are separate episodes — not one long flail. This also fixes the
+      // fail,fail,ok,fail,fail shape, which used to merge into a single
+      // "4× without converging" run despite having converged twice.
+      const groups: { failures: DivergenceCall[]; converged: boolean }[] = [];
+      let pending: DivergenceCall[] = [];
+      for (const c of timeline) {
+        if (isSuccessStatus(c.status)) {
+          if (pending.length > 0) groups.push({ failures: pending, converged: true });
+          pending = [];
+        } else {
+          pending.push(c);
         }
-        const run = failures.slice(start, end);
-        if (run.length >= RETRY_THRASH_THRESHOLD) {
-          thrashRuns += 1;
-          let argsChangedTransitions = 0;
-          let identicalRetries = 0;
-          for (let k = 1; k < run.length; k += 1) {
-            const prevDigest = digestArgs(run[k - 1].args);
-            const curDigest = digestArgs(run[k].args);
-            // Both digests must EXIST. A null means "args were not supplied to
-            // the detector", and calling that a change would invent signal from
-            // a gap in the input — the failure mode this module is guarding.
-            if (prevDigest == null || curDigest == null) continue;
-            if (prevDigest === curDigest) identicalRetries += 1;
-            else argsChangedTransitions += 1;
+      }
+      // The trailing group has no success after it — the only shape that can
+      // honestly be called un-converged.
+      if (pending.length > 0) groups.push({ failures: pending, converged: false });
+
+      for (const group of groups) {
+        const failures = group.failures;
+        let start = 0;
+        while (start < failures.length) {
+          // Extend the run while each further failure stays inside the window
+          // measured from the run's FIRST attempt.
+          const runStartAt = timeOf(failures[start]);
+          let end = start + 1;
+          while (end < failures.length && timeOf(failures[end]) - runStartAt <= THRASH_WINDOW_MS) {
+            end += 1;
           }
+          const run = failures.slice(start, end);
+          if (run.length >= RETRY_THRASH_THRESHOLD) {
+            thrashRuns += 1;
 
-          // A same-namespace fallback anywhere between the run's first and last
-          // attempt — P-010's second named trigger.
-          const lastAt = timeOf(run[run.length - 1]);
-          const fallbackObserved =
-            ns !== '' &&
-            owned.some(
-              (c) =>
-                c.toolName !== toolName &&
-                toolNamespace(c.toolName) === ns &&
-                timeOf(c) >= runStartAt &&
-                timeOf(c) <= lastAt,
-            );
+            // ── The two reasons a threshold run is still NOT a finding ──────────
+            //
+            // Both are suppressions of a claim the detector cannot support, not
+            // politeness. Counted in coverage so the rate stays measurable.
+            if (group.converged) {
+              // The agent recovered on this tool. Reporting "without converging"
+              // here is simply false, and it is worse than noise: agents are told
+              // to treat that phrase as "suspect the tooling and stop", so firing
+              // it on successful self-correction teaches them to distrust the
+              // signal — and can push one to abandon a strategy one call from
+              // working.
+              convergedRuns += 1;
+              start = end;
+              continue;
+            }
+            if (opts.now != null && opts.now - timeOf(run[run.length - 1]) < CONVERGENCE_SETTLE_MS) {
+              // Too soon to tell: the retry that fixes this may not have happened
+              // yet. Defer to a later sweep rather than guess.
+              unsettledRuns += 1;
+              start = end;
+              continue;
+            }
 
-          const statuses = [
-            ...new Set(run.map((c) => (c.status ?? '').trim().toLowerCase()).filter((s) => s !== '')),
-          ].sort();
+            let argsChangedTransitions = 0;
+            let identicalRetries = 0;
+            for (let k = 1; k < run.length; k += 1) {
+              const prevDigest = digestArgs(run[k - 1].args);
+              const curDigest = digestArgs(run[k].args);
+              // Both digests must EXIST. A null means "args were not supplied to
+              // the detector", and calling that a change would invent signal from
+              // a gap in the input — the failure mode this module is guarding.
+              if (prevDigest == null || curDigest == null) continue;
+              if (prevDigest === curDigest) identicalRetries += 1;
+              else argsChangedTransitions += 1;
+            }
 
-          push({
-            kind: 'unconverged-retry-loop',
-            ownerId: run[0].ownerId,
-            intentEventId: run[0].intentEventId ?? null,
-            detail:
-              `${toolName} failed ${run.length}× within ` +
-              `${Math.round(THRASH_WINDOW_MS / 60_000)}min (${statuses.join(', ')}) without converging` +
-              (fallbackObserved ? `, with a fallback to another '${ns}' verb in between` : '') +
-              (identicalRetries > 0 ? `; ${identicalRetries} retr${identicalRetries === 1 ? 'y' : 'ies'} re-sent IDENTICAL args` : ''),
-            a: sideOf(run[0]),
-            b: sideOf(run[run.length - 1]),
-            retryLoop: {
-              attempts: run.length,
-              argsChangedTransitions,
-              identicalRetries,
-              fallbackObserved,
-              statuses,
-            },
-          });
+            // A same-namespace fallback anywhere between the run's first and last
+            // attempt — P-010's second named trigger.
+            const lastAt = timeOf(run[run.length - 1]);
+            const fallbackObserved =
+              ns !== '' &&
+              owned.some(
+                (c) =>
+                  c.toolName !== toolName &&
+                  toolNamespace(c.toolName) === ns &&
+                  timeOf(c) >= runStartAt &&
+                  timeOf(c) <= lastAt,
+              );
+
+            const statuses = [
+              ...new Set(run.map((c) => (c.status ?? '').trim().toLowerCase()).filter((s) => s !== '')),
+            ].sort();
+
+            push({
+              kind: 'unconverged-retry-loop',
+              ownerId: run[0].ownerId,
+              intentEventId: run[0].intentEventId ?? null,
+              detail:
+                `${toolName} failed ${run.length}× within ` +
+                `${Math.round(THRASH_WINDOW_MS / 60_000)}min (${statuses.join(', ')}) without converging` +
+                (fallbackObserved ? `, with a fallback to another '${ns}' verb in between` : '') +
+                (identicalRetries > 0
+                  ? `; ${identicalRetries} retr${identicalRetries === 1 ? 'y' : 'ies'} re-sent IDENTICAL args`
+                  : ''),
+              a: sideOf(run[0]),
+              b: sideOf(run[run.length - 1]),
+              retryLoop: {
+                attempts: run.length,
+                argsChangedTransitions,
+                identicalRetries,
+                fallbackObserved,
+                statuses,
+              },
+            });
+          }
+          start = end;
         }
-        start = end;
       }
     }
   }
@@ -525,6 +643,8 @@ export function detectIntentActionDivergence(calls: readonly DivergenceCall[]): 
     comparableBuckets,
     failuresSeen,
     thrashRuns,
+    convergedRuns,
+    unsettledRuns,
     stampedLegRan: comparableBuckets > 0,
     // The leg RAN if it had failures to examine — not if it found something.
     // Same distinction as `comparableBuckets`: an agent whose every failure
@@ -559,7 +679,7 @@ export function explainZero(reason: DivergenceZeroReason): string {
     case 'nothing-comparable':
       return 'STRUCTURAL ZERO — calls exist but NONE carried an intent stamp and NONE failed, so neither the stamped legs nor the sampling legs could run. This is not "no divergence": nothing was compared.';
     case 'stamped-legs-empty':
-      return 'PARTIAL — the sampling legs ran and found nothing, but stampFillRate is 0 so the intent/goal legs never ran. Until P-009\'s stamp is DEPLOYED every call carries NULL, and a zero here says nothing about intent↔action divergence.';
+      return "PARTIAL — the sampling legs ran and found nothing, but stampFillRate is 0 so the intent/goal legs never ran. Until P-009's stamp is DEPLOYED every call carries NULL, and a zero here says nothing about intent↔action divergence.";
     case 'agreement':
       return 'A REAL ZERO — intent buckets were compared and the goals held within them agree.';
   }

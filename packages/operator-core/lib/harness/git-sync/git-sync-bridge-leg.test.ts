@@ -141,26 +141,36 @@ describe('runGithubBridgeLeg — EI-18751829787526583: a STALE-but-present canon
   });
 
   it('canonical DIVERGED from the watermark (not an ancestor) → never re-pinned (not this guard\'s problem)', async () => {
-    pathExistsMock.mockResolvedValue(true);
-    sqlMock.mockResolvedValue([{ la: null, wb_sha: WATERMARK, prev_egress_head: null }]);
-    defaultRunGitMock.mockImplementation(async (args: string[]) => {
-      if (args[0] === 'rev-parse') return { code: 0, stdout: `${STALE}\n`, stderr: '' };
-      if (args[0] === 'merge-base') return { code: 1, stdout: '', stderr: 'not an ancestor' };
-      return { code: 0, stdout: '', stderr: '' };
-    });
-    await runGithubBridgeLeg(SLUG, WS);
-    const calls = defaultRunGitMock.mock.calls.map((c) => c[0] as string[]);
-    expect(calls).not.toContainEqual(['update-ref', BRIDGE_CANONICAL_REF, WATERMARK, STALE]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      pathExistsMock.mockResolvedValue(true);
+      sqlMock.mockResolvedValue([{ la: null, wb_sha: WATERMARK, prev_egress_head: null }]);
+      defaultRunGitMock.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'rev-parse') return { code: 0, stdout: `${STALE}\n`, stderr: '' };
+        if (args[0] === 'merge-base') return { code: 1, stdout: '', stderr: 'not an ancestor' };
+        return { code: 0, stdout: '', stderr: '' };
+      });
+      await runGithubBridgeLeg(SLUG, WS);
+      const calls = defaultRunGitMock.mock.calls.map((c) => c[0] as string[]);
+      expect(calls).not.toContainEqual(['update-ref', BRIDGE_CANONICAL_REF, WATERMARK, STALE]);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('canonical already equals the watermark → no merge-base call at all (the healthy case)', async () => {
-    pathExistsMock.mockResolvedValue(true);
-    sqlMock.mockResolvedValue([{ la: null, wb_sha: WATERMARK, prev_egress_head: null }]);
-    defaultRunGitMock.mockImplementation(async (args: string[]) =>
-      args[0] === 'rev-parse' ? { code: 0, stdout: `${WATERMARK}\n`, stderr: '' } : { code: 0, stdout: '', stderr: '' },
-    );
-    await runGithubBridgeLeg(SLUG, WS);
-    const argv0s = defaultRunGitMock.mock.calls.map((c) => (c[0] as string[])[0]);
-    expect(argv0s).not.toContain('merge-base');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      pathExistsMock.mockResolvedValue(true);
+      sqlMock.mockResolvedValue([{ la: null, wb_sha: WATERMARK, prev_egress_head: null }]);
+      defaultRunGitMock.mockImplementation(async (args: string[]) =>
+        args[0] === 'rev-parse' ? { code: 0, stdout: `${WATERMARK}\n`, stderr: '' } : { code: 0, stdout: '', stderr: '' },
+      );
+      await runGithubBridgeLeg(SLUG, WS);
+      const argv0s = defaultRunGitMock.mock.calls.map((c) => (c[0] as string[])[0]);
+      expect(argv0s).not.toContain('merge-base');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

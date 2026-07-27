@@ -3,9 +3,12 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactElement } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 
-import { Checkbox } from '../../harness/Checkbox';
-import { Select } from '../../harness/Select';
-import { Table, type TableColumn } from '../../harness/Table';
+// `@/app/...` (not a relative path): this component is rendered from BOTH trees —
+// apps/operator's own /admin/tasks page and operator-vite's route + left-rail tab —
+// and the alias is the form both resolve, matching every sibling admin pane.
+import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
+import { Table, type TableColumn } from '@/app/harness/Table';
 
 /**
  * /admin/tasks — the Task Manager pane
