@@ -20,7 +20,7 @@
  */
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 
 const REL_DIR = '.papercusp';
 const REL_FILE = 'endpoint-ipc.json';
@@ -66,7 +66,8 @@ export interface EndpointIpcDiscovery {
  * this file).
  */
 export async function writeEndpointIpcDiscovery(socketPath: string): Promise<void> {
-  await mkdir(join(homedir(), REL_DIR), { recursive: true });
+  const dir = join(homedir(), REL_DIR);
+  await mkdir(dir, { recursive: true });
   const port = Number(process.env.PAPERCUSP_HONO_PORT) || 3070;
   const payload: EndpointIpcDiscovery = {
     socketPath,
@@ -77,6 +78,69 @@ export async function writeEndpointIpcDiscovery(socketPath: string): Promise<voi
   const body = JSON.stringify(payload, null, 2);
   await writeFile(endpointIpcDiscoveryPathForPort(port), body, 'utf8');
   await writeFile(endpointIpcDiscoveryPath(), body, 'utf8');
+  // EI-18763945004822208 item 2: sweep sibling discovery files whose
+  // advertised pid is dead. Not the source of the ENOENT-storm bug (the Rust
+  // reader now validates before dialing regardless — see
+  // `discovery_socket_still_live` in papercusp-desktop), but ~90 stale
+  // advertisements were observed piling up under `~/.papercusp` (mostly from
+  // `scripts/verify-tauri-headless.sh`'s 33xxx/34xxx port families, which
+  // never clean up after themselves) — hygiene only, best-effort, and must
+  // never fail the real write above.
+  try {
+    await pruneStaleSiblingDiscoveryFiles(dir);
+  } catch {
+    /* best-effort hygiene only */
+  }
+}
+
+/** `process.kill(pid, 0)` liveness probe — mirrors the same tiny helper
+ * already duplicated in release-checkpoint-launch.ts / idle-session-reaper.ts
+ * / test-desktop-reaper.ts (none of them export it, so this follows the same
+ * local-copy convention rather than inventing a new shared surface for a
+ * three-line check). */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // ESRCH = genuinely dead. EPERM means a process WITH that pid exists but
+    // we can't signal it (owned by another user) — that still proves alive.
+    return (e as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+/**
+ * Delete any `endpoint-ipc(.<port>)?.json` in `dir` whose advertised `pid` is
+ * dead. Runs on every publish, so a box that keeps writing discovery files
+ * (every dev restart, every headless verify run) also keeps cleaning up
+ * after itself instead of accumulating stale entries forever. Never throws:
+ * a missing dir, an unreadable/corrupt sibling file, or a delete race (the
+ * file's own writer restarted in the meantime) are all silently skipped —
+ * this is cleanup, not correctness.
+ */
+async function pruneStaleSiblingDiscoveryFiles(dir: string): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return;
+  }
+  await Promise.all(
+    names
+      .filter((n) => /^endpoint-ipc(\.\d+)?\.json$/.test(n))
+      .map(async (name) => {
+        const path = join(dir, name);
+        try {
+          const j = JSON.parse(await readFile(path, 'utf8')) as Partial<EndpointIpcDiscovery>;
+          const pid = Number(j?.pid);
+          if (Number.isFinite(pid) && pid > 0 && !pidAlive(pid)) {
+            await rm(path, { force: true });
+          }
+        } catch {
+          /* unreadable/corrupt/raced-away — leave it for a future sweep */
+        }
+      }),
+  );
 }
 
 /** Read the discovery file, or null when missing/corrupt. */

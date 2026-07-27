@@ -1010,6 +1010,112 @@ describe('background-pipe exit-code trap advisory (EI-8871/EI-14065)', () => {
 });
 
 /**
+ * EI-18764990059061608 — background-log-read-race advisory: reading a
+ * background job's redirected-to-file output while the job is STILL WRITING
+ * it is indistinguishable, at the read call, from the job having finished and
+ * genuinely produced nothing — both look like an empty/short file. The
+ * advisory only fires when a REAL process is still holding the tracked path
+ * open (a live /proc fd scan), so these tests spawn a real short-lived
+ * child that holds a log file's fd open to simulate "still running" —
+ * exactly the liveness signal the hook itself checks.
+ */
+describe('background-log-read-race advisory (EI-18764990059061608)', () => {
+  let raceHome = '';
+  let logDir = '';
+
+  beforeEach(() => {
+    raceHome = mkdtempSync(join(tmpdir(), 'gate-race-home-'));
+    mkdirSync(join(raceHome, '.papercusp'), { recursive: true });
+    writeFileSync(join(raceHome, '.papercusp', 'superuser-token'), 'test-token\n');
+    writeFileSync(join(raceHome, '.papercusp', 'su-agent-id'), 'test-agent\n');
+    logDir = mkdtempSync(join(tmpdir(), 'gate-race-log-'));
+  });
+
+  afterEach(() => {
+    rmSync(raceHome, { recursive: true, force: true });
+    rmSync(logDir, { recursive: true, force: true });
+  });
+
+  const runRace = (payload: unknown) => runGate(payload, { HOME: raceHome });
+  const bgCmd = (command: string, cwd: string, extra: Record<string, unknown> = {}) => ({
+    tool_name: 'Bash',
+    tool_input: { command, ...extra },
+    session_id: 's-race',
+    cwd,
+  });
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /** Holds `path` open for writing until killed — the liveness signal the
+   *  advisory's /proc fd scan checks for. */
+  function spawnOpenHolder(path: string) {
+    return spawn('bash', ['-c', `exec 3>'${path}'; sleep 30 >&3`], { stdio: 'ignore' });
+  }
+
+  it('fires when the redirected file is still open by a live process', async () => {
+    const log = join(logDir, 'still-running.log');
+    const holder = spawnOpenHolder(log);
+    try {
+      await wait(300);
+      expectAllow(runRace(bgCmd(`npx tsc --noEmit > ${log} 2>&1`, logDir, { run_in_background: true })));
+
+      const out = runRace(bgCmd(`cat ${log}`, logDir));
+      expect(out.status).toBe(0);
+      const hso = JSON.parse(out.stdout).hookSpecificOutput;
+      expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+      expect(hso.additionalContext).toContain('background-log-read-race advisory');
+      expect(hso.additionalContext).toContain('still OPEN for writing');
+      expect(hso.additionalContext).toContain(String(holder.pid));
+    } finally {
+      holder.kill();
+    }
+  });
+
+  it('is silent once the writer has closed the file (the job actually finished)', async () => {
+    const log = join(logDir, 'finished.log');
+    const holder = spawnOpenHolder(log);
+    await wait(300);
+    expectAllow(runRace(bgCmd(`npx tsc --noEmit > ${log} 2>&1`, logDir, { run_in_background: true })));
+    holder.kill();
+    await wait(300); // let the fd actually close
+    expectAllow(runRace(bgCmd(`cat ${log}`, logDir)));
+  });
+
+  it('is silent for a plain read with no tracked path', () => {
+    expectAllow(runRace(bgCmd('cat /tmp/some-untracked-file-EI18764990059061608.log', logDir)));
+  });
+
+  it('does not fire on the very call that (re-)establishes the redirect (a write, not a read)', async () => {
+    const log = join(logDir, 'rewrite.log');
+    const holder = spawnOpenHolder(log);
+    try {
+      await wait(300);
+      expectAllow(runRace(bgCmd(`npx tsc --noEmit > ${log} 2>&1`, logDir, { run_in_background: true })));
+      expectAllow(runRace(bgCmd(`echo restart > ${log} 2>&1`, logDir, { run_in_background: true })));
+    } finally {
+      holder.kill();
+    }
+  });
+
+  it('still fires for a READ from a different tool_name than the one that backgrounded it', async () => {
+    // Recording only happens for `run_in_background` (a Claude-Bash-only
+    // concept), but the RACE is real regardless of which tool later reads the
+    // path — a codex shell reading the same still-open file is just as blind.
+    const log = join(logDir, 'cross-tool.log');
+    const holder = spawnOpenHolder(log);
+    try {
+      await wait(300);
+      expectAllow(runRace(bgCmd(`npx tsc --noEmit > ${log} 2>&1`, logDir, { run_in_background: true })));
+      const out = runRace({ ...bgCmd(`cat ${log}`, logDir), tool_name: 'exec_command' });
+      expect(out.status).toBe(0);
+      const hso = JSON.parse(out.stdout).hookSpecificOutput;
+      expect(hso.additionalContext).toContain('background-log-read-race advisory');
+    } finally {
+      holder.kill();
+    }
+  });
+});
+
+/**
  * EI-15605 — tauri-agent-tools raw-JSON --token advisory.
  *
  * The dev-bridge token file (/tmp/tauri-dev-bridge-<pid>.token) is JSON

@@ -252,7 +252,8 @@ export default defineTool({
       '(PAPERCUSP_ALLOW_DB_MIGRATE is host-only); confirm:true still returns the exact psql + schema_migrations ' +
       'INSERT command to run by hand. EI-13299: no shell/PG access (a cup) + genuinely urgent + deploy gate red? ' +
       'Re-call with escalate:true instead — opens a blocker coord:escalate carrying that same ready command for ' +
-      'a human/su to run. Omit escalate for routine attempts (no spam).',
+      'a human/su to run. Omit escalate for routine attempts (no spam). Emits ctx.progress during drain/apply; a ' +
+      'client-side timeout does NOT stop the server call — verify schema_migrations before retrying, never assume failure.',
     seeAlso: [
       'db:check_drift (verify schema drift first)',
       'db:next-migration (scaffold a new migration)',
@@ -550,11 +551,22 @@ export default defineTool({
     );
 
     if (outcome.acquired) return outcome.result;
+    // EI-18769559897594065: a failure at THIS point means guardResource's run()
+    // never started — no psql apply was attempted, so no DDL ran. Say so
+    // explicitly: the failure mode this closes is a caller (or a downstream
+    // reader of a client-side timeout report) assuming "failed" means "may have
+    // partially applied" and manually verifying/hesitating before a retry that
+    // is, at this stage, always safe.
     return json({
       ok: false,
       reason: `resource_${outcome.reason}`,
       resource: 'db-schema',
       holders: outcome.holders.map(holderJson),
+      note:
+        'No DDL was applied — this failure occurred while acquiring/draining exclusive(db-schema), before the ' +
+        'migration script ever ran. Safe to retry immediately (raise max_drain_sec if holders keep blocking). If ' +
+        'YOUR client reported a timeout/abort but the server call kept running (it does not stop server-side), ' +
+        'a re-call now will report the true current state rather than repeating a stale client-side guess.',
     });
   },
 });

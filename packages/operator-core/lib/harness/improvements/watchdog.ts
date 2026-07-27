@@ -926,6 +926,14 @@ export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {})
          -- synthetic fixture rows ('b', 'fail', 'no-such-bin') into test_runs;
          -- a real run always carries a repo-relative path with a separator.
          AND file_path LIKE '%/%'
+         -- EI-18767688096795873: a run whose vitest config resolved OUTSIDE the repo
+         -- tree (a throwaway/mutation-testing config synthesized under /tmp, aliasing
+         -- in a deliberately-broken module and asserting the suite goes red) is not a
+         -- real regression signal — exclude it from BOTH the fail count and the
+         -- "latest run" freshness check (rn=1) below, since the mutant run's file path
+         -- is identical to the real test's and would otherwise mask which run is
+         -- actually the newest genuine one.
+         AND is_scratch_config = false
     )
     SELECT file_path,
            max(framework) AS framework,
