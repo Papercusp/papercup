@@ -14,7 +14,7 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { requireWorkspaceId, resolveAgentIdentity } from '../coordination/identity';
 import {
   detectClaimLedgerMismatch,
   extractJournalFromAssistantText,
@@ -63,6 +63,9 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     const ownerId = args.owner ?? identity.ownerId ?? null;
     const sourceKind = args.source_kind ?? 'claude';
+    // D-005 / P-007: the journal + cursor writers now REQUIRE an explicit
+    // workspace. Resolved once here so both rows land in the same partition.
+    const journalWorkspaceId = requireWorkspaceId(identity, 'journal:record-turn');
 
     const filePath = await resolveTranscriptPath(sourceKind, args.session_id, args.transcript_path);
     if (!filePath) {
@@ -107,6 +110,7 @@ export default defineTool({
     const tripwire = claimTripwire ?? unguardedHaltTripwire ?? artifactTripwire;
 
     const { id, deduped } = await recordTurnJournal({
+      workspaceId: journalWorkspaceId,
       ownerId,
       agent: args.agent ?? null,
       sourceKind,
@@ -149,6 +153,7 @@ export default defineTool({
       if (v === '1' || v === 'true') {
         const { boundedBuildAndPersistCursor } = await import('../../session-cursor-io');
         cursorPersisted = await boundedBuildAndPersistCursor({
+          workspaceId: journalWorkspaceId,
           sessionId: args.session_id,
           ownerId,
           harnessSlug: args.harness ?? null,
