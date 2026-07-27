@@ -250,11 +250,15 @@ except Exception:
 # Backgrounded `| head` is already covered by the exit-code advisory above
 # (which lists head alongside tail/grep/tee/…) and takes the one ADVISORY
 # slot first, so this block only adds the FOREGROUND case — the gap the
-# incident actually fell through. Skipped when the writer is already
-# protected (`cat >/dev/null` anywhere after head keeps the pipe drained so
-# the writer never sees SIGPIPE).
+# incident actually fell through. UNLIKE the exit-code advisory (Claude-only:
+# `run_in_background` is a Claude Bash feature), SIGPIPE is a real OS signal
+# that applies equally to Codex's exec_command/local_shell/shell — no
+# tool_name restriction here (the tool_name in ('bash', 'exec_command',
+# 'local_shell', 'shell') gate already ran at the top of the script). Skipped
+# when the writer is already protected (`cat >/dev/null` anywhere after head
+# keeps the pipe drained so the writer never sees SIGPIPE).
 try:
-    if tool_name.lower() == 'bash' and not tool_input.get('run_in_background') and not ADVISORY:
+    if not tool_input.get('run_in_background') and not ADVISORY:
         if 'cat >/dev/null' not in command and 'cat > /dev/null' not in command:
             _head_cmd = _strip_shell_quotes(command)
             _HEAD_PIPE_RE = re.compile(r'(?<!\|)\|(?!\|)\s*(?:\S*/)?head\b[^|;&\n]*$')

@@ -160,7 +160,10 @@ async function claimOne(
     workspaceId: identity.workspaceId,
   });
   if (!admission.allowed) {
-    await notifyFleetScopeRefusal(identity, admission, `work_items:claim ${it.id} → ${claimer}`);
+    // WI-6326: reuse the SAME liveness read notifyFleetScopeRefusal just performed for
+    // the leader notification — never a second lookup — so the caller-facing hint's
+    // "route elsewhere" advice is code-conditional too, not just the leader's copy.
+    const { liveRouteTarget } = (await notifyFleetScopeRefusal(identity, admission, `work_items:claim ${it.id} → ${claimer}`)) ?? {};
     return {
       ok: false,
       id: it.id,
@@ -172,7 +175,7 @@ async function claimOne(
       // the exact scheduler:set_claim_spec call shape, so a member acting on an explicit
       // leader directive had to file the work unclaimed and wait, blind, for their leader
       // to notice the notification.
-      hint: `${admission.reason}. The claim was refused before mutation. ${fleetScopeLeaderRemedy(admission)}`,
+      hint: `${admission.reason}. The claim was refused before mutation. ${fleetScopeLeaderRemedy(admission, liveRouteTarget)}`,
     };
   }
   // WI-5946: the by-id claim path never checked `payload._claimHold` — an owner-gated hold

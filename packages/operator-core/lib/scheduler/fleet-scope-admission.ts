@@ -235,6 +235,46 @@ export async function admitSubjectForFleetTarget(args: {
 }
 
 /**
+ * WI-6326 (residual half of EI-18784357226895330): does ANY OTHER agent in this
+ * fleet — the leader, or a different member — look genuinely reachable right now?
+ * Reuses the SAME fleet_assignment-backed presence read fleet-idle-drain.ts's
+ * `allFleetMembersIdle` already treats as this codebase's shared liveness oracle
+ * (`present && alive`, the view's own heartbeat-freshness fields), rather than
+ * inventing a second heuristic. Deliberately does NOT require `speaking`/recent
+ * tool-call activity — an idle-but-alive parked agent is still a legitimate
+ * routing target; the question here is reachability, not current activity.
+ *
+ * The incident this closes: a refused member found "route the work elsewhere"
+ * unconditionally in the remedy text, checked coord:presence, and found the
+ * fleet was themself plus one member idle 22h40m — no live target anywhere —
+ * and had to escalate by hand to discover the exit was closed.
+ *
+ * FAILS SOFT (same philosophy as every other diagnosis in this file): any lookup
+ * error, or an unresolvable workspace, returns null (UNKNOWN) rather than a false
+ * negative — a liveness-check hiccup must never turn a refusal into a thrown
+ * error, and 'unknown' degrades {@link fleetScopeLeaderRemedy} to its ORIGINAL
+ * unconditional wording rather than asserting a live target does not exist.
+ */
+export async function hasLiveFleetRouteTarget(
+  fleetSlug: string,
+  workspaceId?: string | null,
+  excludeOwnerId?: string,
+): Promise<boolean | null> {
+  try {
+    const ws = resolveClaimSpecWorkspace(workspaceId);
+    if (!ws) return null;
+    const { listFleetAssignments, groupByAgent } = await import('../fleet/assignments');
+    const rows = await listFleetAssignments({ workspaceId: ws });
+    const members = groupByAgent(rows).filter(
+      (a) => a.fleetSlug === fleetSlug && a.agentId !== excludeOwnerId,
+    );
+    return members.some((m) => m.present && m.alive);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * EI-18221674485894260: the CONCRETE, ready-to-run leader remedy for a fleet-scope
  * admission refusal. The prior notification said only "Re-steer the member's claim
  * spec or route the work elsewhere" — naming neither the TOOL nor the call shape, so
@@ -246,10 +286,22 @@ export async function admitSubjectForFleetTarget(args: {
  *
  * Code-conditional: a `fleet_winding_down` refusal is NEVER widened — the fleet is
  * paused, so the member must stand down, and the remedy is `fleet:resume`, not a spec
- * bump. Pure (no I/O) so it is unit-testable and reused by the member-facing hint path.
+ * bump. Pure (no I/O) so it is unit-testable and reused by the member-facing hint path
+ * — `liveRouteTarget` is the CALLER's own I/O result ({@link hasLiveFleetRouteTarget}),
+ * never fetched here, so this function itself stays synchronous/pure.
+ *
+ * WI-6326: `liveRouteTarget` is code-conditional on that presence read. `false` (no
+ * live agent found anywhere in the fleet) replaces the unconditional "(Or route the
+ * work elsewhere / complete it yourself.)" with an honest statement that the exit is
+ * closed AND the concrete fallback that survives regardless (the item stays filed,
+ * on the ledger, reachable by whichever lane/agent next admits it). `true` or
+ * `null`/undefined (a live target exists, or the check could not run) keep the
+ * original wording — an unknown result must never manufacture a false "no target"
+ * claim.
  */
 export function fleetScopeLeaderRemedy(
   admission: Extract<FleetScopeAdmission, { allowed: false }>,
+  liveRouteTarget?: boolean | null,
 ): string {
   const fleetSlug = admission.scope.fleetSlug;
   if (admission.code === 'fleet_winding_down') {
@@ -260,11 +312,17 @@ export function fleetScopeLeaderRemedy(
   }
   const spec = admission.scope.record?.spec;
   const specRef = spec?.specId ? formatSpecRef(spec.specId, spec.revision) : 'the fleet lane (no authored spec yet — default)';
+  const routeElsewhereNote =
+    liveRouteTarget === false
+      ? `Do NOT rely on "route the work elsewhere" — no other live agent (leader or member) was found in fleet ` +
+        `'${fleetSlug}' right now. The work-item is NOT lost: it stays filed, unassigned, on the ledger — it will ` +
+        `surface to whichever lane/agent next admits it — or complete it yourself.`
+      : `(Or route the work elsewhere / complete it yourself.)`;
   return (
     `To let this member self-claim it, WIDEN the fleet lane in ONE call: ` +
     `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
     `whose view.filter admits this work } } — the member picks it up on its next scheduler:get_next, ` +
-    `no re-dispatch. (Or route the work elsewhere / complete it yourself.)`
+    `no re-dispatch. ${routeElsewhereNote}`
   );
 }
 
@@ -272,14 +330,21 @@ export async function notifyFleetScopeRefusal(
   identity: AgentIdentity,
   admission: Extract<FleetScopeAdmission, { allowed: false }>,
   action: string,
-): Promise<void> {
+): Promise<{ liveRouteTarget: boolean | null }> {
+  // WI-6326: irrelevant while winding-down (that remedy branch never mentions
+  // "route elsewhere" at all) — skip the extra lookup.
+  const liveRouteTarget =
+    admission.code === 'fleet_winding_down'
+      ? null
+      : await hasLiveFleetRouteTarget(admission.scope.fleetSlug, admission.scope.workspaceId, admission.scope.ownerId);
   const { sendMessage } = await import('../agent-tools/coordination/messages');
   await sendMessage(identity, {
     to: [`@fleet-leader:${admission.scope.fleetSlug}`],
     summary: `fleet-scope admission blocked ${action}`,
-    body: `${admission.reason}. The assignment was not mutated. ${fleetScopeLeaderRemedy(admission)}`,
+    body: `${admission.reason}. The assignment was not mutated. ${fleetScopeLeaderRemedy(admission, liveRouteTarget)}`,
     category: 'fleet-scope-admission',
   }).catch(() => undefined);
+  return { liveRouteTarget };
 }
 
 export interface FleetScopeReconciliation {

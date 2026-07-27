@@ -36,9 +36,13 @@ vi.mock('./claim-spec-store', () => ({
 vi.mock('../fleet-membership-store', () => ({
   latestFleetMembership: admissionMocks.latestFleetMembership,
 }));
-vi.mock('../fleet/assignments', () => ({
-  listFleetAssignments: admissionMocks.listFleetAssignments,
-}));
+vi.mock('../fleet/assignments', async (importOriginal) => {
+  // WI-6326: keep groupByAgent REAL (hasLiveFleetRouteTarget's own dependency) — only
+  // listFleetAssignments (the PG I/O) is mocked, same pattern as reconcileFleetScopeClaims
+  // already relies on elsewhere in this file.
+  const actual = await importOriginal<typeof import('../fleet/assignments')>();
+  return { ...actual, listFleetAssignments: admissionMocks.listFleetAssignments };
+});
 vi.mock('../work-items', () => ({
   getWorkItem: admissionMocks.getWorkItem,
   releaseWorkItem: admissionMocks.releaseWorkItem,

@@ -506,7 +506,7 @@ export async function reclaimStaleWorkItemClaims(
            -- classifyItemActivity) — live-verified: WI-5130/WI-5136/WI-5137 sat
            -- unclaimed for 10+ days, reclaimed by this exact reaper on
            -- 2026-07-17, yet still read as "genuinely active" against their
-           -- already-`done` plan items P-104/P-301/P-402 because last_progress_at
+           -- already-'done' plan items P-104/P-301/P-402 because last_progress_at
            -- was never cleared here.
            last_progress_at = NULL,
            -- WI-6039 (fixes the EI-6992 special-case, now STALE): EI-6992 special-cased

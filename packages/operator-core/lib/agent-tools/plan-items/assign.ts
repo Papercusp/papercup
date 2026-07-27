@@ -142,7 +142,11 @@ export default defineTool({
           },
         });
         if (!admission.allowed) {
-          await notifyFleetScopeRefusal(identity, admission, `plan_items:assign ${it.plan}#${it.item} → ${it.assignee}`);
+          // WI-6326: reuse the SAME liveness read the leader notification just performed
+          // (never a second lookup) so the caller-facing refusal's "route elsewhere"
+          // advice is code-conditional too.
+          const { liveRouteTarget } =
+            (await notifyFleetScopeRefusal(identity, admission, `plan_items:assign ${it.plan}#${it.item} → ${it.assignee}`)) ?? {};
           return {
             ok: false,
             plan: it.plan,
@@ -150,7 +154,7 @@ export default defineTool({
             // EI-18673501896258575: same concrete remedy already sent to the fleet leader
             // (via notifyFleetScopeRefusal) — echoed to the caller so they see the exact
             // scheduler:set_claim_spec shape instead of only a bare refusal reason.
-            refused: `${admission.code}: ${admission.reason} ${fleetScopeLeaderRemedy(admission)}`,
+            refused: `${admission.code}: ${admission.reason} ${fleetScopeLeaderRemedy(admission, liveRouteTarget)}`,
           };
         }
         const existingOwner = await agentNameOwner(workspaceId, it.assignee);

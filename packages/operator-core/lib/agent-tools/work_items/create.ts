@@ -332,11 +332,14 @@ export default defineTool({
             workspaceId: ident.workspaceId,
           });
           if (!admission.allowed) {
-            await notifyFleetScopeRefusal(
+            // WI-6326: reuse the SAME liveness read the leader notification just performed
+            // (never a second lookup) so the caller-facing downgrade note's "route
+            // elsewhere" advice is code-conditional too.
+            const { liveRouteTarget } = (await notifyFleetScopeRefusal(
               ident,
               admission,
               `work_items:create+assign '${spec.title}' → ${spec.assign_to}`,
-            );
+            )) ?? {};
             const requestedAssignee = spec.assign_to;
             spec.payload = {
               ...(typeof spec.payload === 'object' && spec.payload !== null ? spec.payload : {}),
@@ -358,7 +361,7 @@ export default defineTool({
                 `FILED UNASSIGNED — the item exists on the ledger, but you do NOT hold it: ` +
                 `${admission.reason}. No out-of-scope claim was created. You are recorded as the ` +
                 `reporter, so the finding is durable and attributable while it waits for an owner. ` +
-                `${fleetScopeLeaderRemedy(admission)}`,
+                `${fleetScopeLeaderRemedy(admission, liveRouteTarget)}`,
             };
           }
         }

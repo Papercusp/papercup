@@ -1010,6 +1010,81 @@ describe('background-pipe exit-code trap advisory (EI-8871/EI-14065)', () => {
 });
 
 /**
+ * EI-18787618439028592 — foreground `| head` SIGPIPE-kill advisory: distinct
+ * from the background-pipe exit-code trap above. `head` exits after N lines
+ * and SIGPIPEs the upstream writer, killing it mid-run — a hazard that exists
+ * in the FOREGROUND too, where the exit-code advisory never looks (it's
+ * gated on `run_in_background`).
+ */
+describe('foreground `| head` SIGPIPE-kill advisory (EI-18787618439028592)', () => {
+  const bashWithInput = (tool_input: Record<string, unknown>, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input,
+    session_id: 's-test',
+  });
+
+  const expectHeadAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain('foreground `| head` SIGPIPE-kill advisory');
+    expect(hso.additionalContext).toContain('SIGPIPE');
+  };
+
+  it('fires on a FOREGROUND `cmd | head -N`', () => {
+    expectHeadAdvisory(runGate(bashWithInput({ command: "node -e \"import('./x.mjs')\" 2>&1 | head -3" })));
+  });
+
+  it('does NOT fire on a foreground `cmd | tail -N` (tail is safe — it consumes all input)', () => {
+    expectAllow(runGate(bashWithInput({ command: 'npm run test:affected 2>&1 | tail -100' })));
+  });
+
+  it('silent when BACKGROUNDED — the exit-code advisory above takes the one slot instead', () => {
+    const out = runGate(bashWithInput({ command: 'rsync -av a b 2>&1 | head -50', run_in_background: true }));
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.additionalContext).toContain('background-pipe exit-code advisory');
+    expect(hso.additionalContext).not.toContain('SIGPIPE-kill');
+  });
+
+  it('silent when the writer is already protected (`cat >/dev/null` drains the pipe)', () => {
+    expectAllow(
+      runGate(bashWithInput({ command: 'long-running-cmd | { head -3; cat >/dev/null; }' })),
+    );
+  });
+
+  it('still fires when `head` is reached via a path', () => {
+    expectHeadAdvisory(runGate(bashWithInput({ command: 'npm run build 2>&1 | /usr/bin/head -20' })));
+  });
+
+  it('does not false-positive on a pipe-to-head token INSIDE quotes', () => {
+    expectAllow(runGate(bashWithInput({ command: 'grep -E "a|head" some-file.ts' })));
+  });
+
+  it('does NOT confuse `||` with a real pipe', () => {
+    expectAllow(runGate(bashWithInput({ command: 'some-cmd || head -3 fallback.txt' })));
+  });
+
+  it('silent for a plain command with no pipe (`head` reading a real file directly)', () => {
+    expectAllow(runGate(bashWithInput({ command: 'head -20 /tmp/some.log' })));
+  });
+
+  it('fires for Codex shells too — SIGPIPE is a real OS signal, not a Claude-only concern', () => {
+    for (const tool of ['exec_command', 'local_shell', 'shell']) {
+      expectHeadAdvisory(runGate(bashWithInput({ command: 'long-running-cmd | head -3' }, tool)));
+    }
+  });
+
+  it('a deny gate still WINS over the head advisory', () => {
+    const out = runGate(
+      { tool_name: 'Bash', tool_input: { command: 'crontab -e | head' }, session_id: 's-test' },
+      AGENT,
+    );
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});
+
+/**
  * EI-18764990059061608 — background-log-read-race advisory: reading a
  * background job's redirected-to-file output while the job is STILL WRITING
  * it is indistinguishable, at the read call, from the job having finished and
