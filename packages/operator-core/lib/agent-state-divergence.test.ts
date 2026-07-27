@@ -88,108 +88,138 @@ describe('what is deliberately NOT a divergence', () => {
     expect(out.divergences).toHaveLength(0);
   });
 
-  it('a retry with IDENTICAL args — a plain retry, declaration and action agree', () => {
+  it('a ONE-OFF failure the agent then fixed — self-correction, not divergence', () => {
+    // 456 of 601 real failure groups in 24h are exactly this shape.
     const out = detectIntentActionDivergence([
-      call({ id: 1, status: 'error', args: { a: 1 } }),
-      call({ id: 2, status: 'ok', args: { a: 1 } }),
+      call({ id: 1, status: 'invalid-input', args: { a: 1 } }),
+      call({ id: 2, status: 'ok', args: { a: 2 } }),
     ]);
     expect(out.divergences).toHaveLength(0);
+    expect(out.coverage.failuresSeen).toBe(1);
   });
 
-  it('args that differ only in KEY ORDER are the same args', () => {
+  it('TWO failures — still inside normal correction', () => {
     const out = detectIntentActionDivergence([
-      call({ id: 1, status: 'error', args: { a: 1, b: 2 } }),
-      call({ id: 2, status: 'ok', args: { b: 2, a: 1 } }),
+      call({ id: 1, status: 'invalid-input', args: { a: 1 } }),
+      call({ id: 2, status: 'invalid-input', args: { a: 2 } }),
+      call({ id: 3, status: 'ok', args: { a: 3 } }),
     ]);
     expect(out.divergences).toHaveLength(0);
+    expect(out.coverage.thrashRuns).toBe(0);
   });
 
-  it('a failure followed by a DIFFERENT namespace is not a fallback', () => {
+  it('failures spread across DIFFERENT tools are a bad minute, not a flail', () => {
     const out = detectIntentActionDivergence([
       call({ id: 1, toolName: 'work_items:claim', status: 'error' }),
-      call({ id: 2, toolName: 'plans:get' }),
+      call({ id: 2, toolName: 'plans:get', status: 'error' }),
+      call({ id: 3, toolName: 'facts:assert', status: 'error' }),
     ]);
     expect(out.divergences).toHaveLength(0);
   });
 
-  it('a successful call followed by anything is never sampled', () => {
+  it('a successful call is never counted as a failure', () => {
     const out = detectIntentActionDivergence([
       call({ id: 1, toolName: 'work_items:claim', status: 'ok' }),
       call({ id: 2, toolName: 'work_items:list' }),
     ]);
-    expect(out.divergences).toHaveLength(0);
     expect(out.coverage.failuresSeen).toBe(0);
-  });
-
-  it('does NOT invent a retry finding when args were never supplied', () => {
-    // A null digest means "cannot tell". Calling that a change would manufacture
-    // signal out of a gap in the input.
-    const out = detectIntentActionDivergence([
-      call({ id: 1, status: 'error' }),
-      call({ id: 2, status: 'ok' }),
-    ]);
-    expect(out.divergences).toHaveLength(0);
-    expect(out.coverage.failuresSampled).toBe(1);
   });
 });
 
-describe('the sampling legs — live without any stamp', () => {
-  it('flags a retry with changed args', () => {
-    const out = detectIntentActionDivergence([
-      call({ id: 1, status: 'error', args: { path: 'a.ts' } }),
-      call({ id: 2, status: 'ok', args: { path: 'b.ts' } }),
-    ]);
+describe('the sampling leg — live without any stamp', () => {
+  /** N failures of one tool, `gapMs` apart, with optionally-varying args. */
+  function flail(n: number, opts: { gapMs?: number; sameArgs?: boolean } = {}): DivergenceCall[] {
+    const gap = opts.gapMs ?? 1000;
+    return Array.from({ length: n }, (_, i) =>
+      call({
+        id: i + 1,
+        toolName: 'work_items:claim',
+        status: 'invalid-input',
+        invokedAt: new Date(T0 + i * gap).toISOString(),
+        args: opts.sameArgs ? { a: 1 } : { a: i },
+      }),
+    );
+  }
+
+  it('flags an unconverged run at exactly the threshold', () => {
+    const out = detectIntentActionDivergence(flail(RETRY_THRASH_THRESHOLD));
     expect(out.divergences).toHaveLength(1);
-    expect(out.divergences[0].kind).toBe('retry-with-changed-args');
+    expect(out.divergences[0].kind).toBe('unconverged-retry-loop');
+    expect(out.divergences[0].retryLoop?.attempts).toBe(RETRY_THRASH_THRESHOLD);
+    expect(out.coverage.thrashRuns).toBe(1);
   });
 
-  it('flags a same-namespace verb fallback after a failure', () => {
-    const out = detectIntentActionDivergence([
-      call({ id: 1, toolName: 'work_items:claim', status: 'error' }),
-      call({ id: 2, toolName: 'work_items:claim_next' }),
-    ]);
-    expect(out.divergences).toHaveLength(1);
-    expect(out.divergences[0].kind).toBe('tool-fallback-after-failure');
-    expect(out.divergences[0].detail).toContain('work_items');
+  it('does NOT flag one attempt below the threshold', () => {
+    const out = detectIntentActionDivergence(flail(RETRY_THRASH_THRESHOLD - 1));
+    expect(out.divergences).toHaveLength(0);
   });
 
   it('fires with a ZERO stamp fill rate — the state of the fleet today', () => {
-    const out = detectIntentActionDivergence([
-      call({ id: 1, toolName: 'work_items:claim', status: 'error' }),
-      call({ id: 2, toolName: 'work_items:claim_next' }),
-    ]);
+    const out = detectIntentActionDivergence(flail(3));
     expect(out.coverage.stampFillRate).toBe(0);
     expect(out.divergences).toHaveLength(1);
   });
 
-  it('stops looking after SAMPLING_LOOKAHEAD_CALLS', () => {
-    const calls = [call({ id: 1, toolName: 'work_items:claim', status: 'error' })];
-    for (let i = 0; i < SAMPLING_LOOKAHEAD_CALLS; i += 1) {
-      calls.push(call({ id: i + 2, toolName: 'plans:get' }));
-    }
-    // The same-namespace fallback sits just beyond the lookahead.
-    calls.push(call({ id: 99, toolName: 'work_items:claim_next' }));
+  it('counts changed-args transitions — P-010\'s first named trigger, as evidence', () => {
+    const out = detectIntentActionDivergence(flail(3));
+    expect(out.divergences[0].retryLoop?.argsChangedTransitions).toBe(2);
+    expect(out.divergences[0].retryLoop?.identicalRetries).toBe(0);
+  });
+
+  it('calls out IDENTICAL retries, which cannot succeed for a deterministic refusal', () => {
+    const out = detectIntentActionDivergence(flail(3, { sameArgs: true }));
+    expect(out.divergences[0].retryLoop?.identicalRetries).toBe(2);
+    expect(out.divergences[0].detail).toContain('IDENTICAL args');
+  });
+
+  it('records a same-namespace fallback inside the run — the second named trigger', () => {
+    const calls = flail(3);
+    calls.splice(1, 0, call({ id: 50, toolName: 'work_items:claim_next', invokedAt: new Date(T0 + 500).toISOString() }));
+    const out = detectIntentActionDivergence(calls);
+    expect(out.divergences[0].retryLoop?.fallbackObserved).toBe(true);
+    expect(out.divergences[0].detail).toContain('fallback');
+  });
+
+  it('does not treat a different NAMESPACE as a fallback', () => {
+    const calls = flail(3);
+    calls.splice(1, 0, call({ id: 50, toolName: 'plans:get', invokedAt: new Date(T0 + 500).toISOString() }));
+    expect(detectIntentActionDivergence(calls).divergences[0].retryLoop?.fallbackObserved).toBe(false);
+  });
+
+  it('splits runs that straddle THRASH_WINDOW_MS rather than merging them', () => {
+    // Two failures, a long gap, then two more: neither side reaches 3.
+    const calls = [
+      ...flail(2),
+      call({ id: 10, toolName: 'work_items:claim', status: 'invalid-input', invokedAt: new Date(T0 + THRASH_WINDOW_MS + 1).toISOString(), args: { a: 9 } }),
+      call({ id: 11, toolName: 'work_items:claim', status: 'invalid-input', invokedAt: new Date(T0 + THRASH_WINDOW_MS + 2000).toISOString(), args: { a: 10 } }),
+    ];
     expect(detectIntentActionDivergence(calls).divergences).toHaveLength(0);
   });
 
-  it('stops looking after SAMPLING_WINDOW_MS, so a wake boundary is not spanned', () => {
-    const out = detectIntentActionDivergence([
-      call({ id: 1, toolName: 'work_items:claim', status: 'error', invokedAt: new Date(T0).toISOString() }),
-      call({
-        id: 2,
-        toolName: 'work_items:claim_next',
-        invokedAt: new Date(T0 + SAMPLING_WINDOW_MS + 1).toISOString(),
-      }),
-    ]);
-    expect(out.divergences).toHaveLength(0);
+  it('never merges two owners into one run', () => {
+    const calls = [
+      ...flail(2),
+      call({ id: 20, ownerId: 'su-b', toolName: 'work_items:claim', status: 'invalid-input', args: { a: 7 } }),
+    ];
+    expect(detectIntentActionDivergence(calls).divergences).toHaveLength(0);
   });
 
-  it('treats each failure status as a failure', () => {
-    for (const s of ['error', 'invalid-input', 'timeout', 'refused', 'denied']) {
+  it('treats each failure status as a failure, including role-not-allowed', () => {
+    for (const s of ['error', 'invalid-input', 'timeout', 'refused', 'denied', 'role-not-allowed']) {
       expect(isFailureStatus(s)).toBe(true);
     }
     expect(isFailureStatus('ok')).toBe(false);
     expect(isFailureStatus(null)).toBe(false);
+  });
+
+  it('does not invent changed-args evidence when args were never supplied', () => {
+    const calls = Array.from({ length: 3 }, (_, i) =>
+      call({ id: i + 1, toolName: 'work_items:claim', status: 'error', invokedAt: new Date(T0 + i * 1000).toISOString() }),
+    );
+    const out = detectIntentActionDivergence(calls);
+    expect(out.divergences).toHaveLength(1);
+    expect(out.divergences[0].retryLoop?.argsChangedTransitions).toBe(0);
+    expect(out.divergences[0].retryLoop?.identicalRetries).toBe(0);
   });
 });
 
@@ -255,15 +285,12 @@ describe('deliverableKinds — the per-leg notification gate', () => {
     expect(deliverableKinds(out.coverage)).toEqual([]);
   });
 
-  it('offers ONLY the sampling kinds while the stamp is undeployed', () => {
+  it('offers ONLY the sampling kind while the stamp is undeployed', () => {
     const out = detectIntentActionDivergence([
       call({ id: 1, status: 'error', args: { a: 1 } }),
       call({ id: 2, status: 'ok', args: { a: 2 } }),
     ]);
-    expect(deliverableKinds(out.coverage)).toEqual([
-      'retry-with-changed-args',
-      'tool-fallback-after-failure',
-    ]);
+    expect(deliverableKinds(out.coverage)).toEqual(['unconverged-retry-loop']);
   });
 
   it('adds the stamped kind once stamped calls appear', () => {
@@ -297,15 +324,28 @@ describe('helpers', () => {
 
 describe('bounds and determinism', () => {
   it('caps findings at DIVERGENCE_LIMIT but keeps counts complete', () => {
+    const runs = DIVERGENCE_LIMIT + 10;
     const calls: DivergenceCall[] = [];
-    for (let i = 0; i < DIVERGENCE_LIMIT + 10; i += 1) {
-      calls.push(call({ id: i * 2 + 1, ownerId: `su-${i}`, toolName: 'work_items:claim', status: 'error' }));
-      calls.push(call({ id: i * 2 + 2, ownerId: `su-${i}`, toolName: 'work_items:claim_next' }));
+    for (let i = 0; i < runs; i += 1) {
+      for (let k = 0; k < RETRY_THRASH_THRESHOLD; k += 1) {
+        calls.push(
+          call({
+            id: i * 10 + k,
+            ownerId: `su-${i}`,
+            toolName: 'work_items:claim',
+            status: 'error',
+            invokedAt: new Date(T0 + k * 1000).toISOString(),
+            args: { a: k },
+          }),
+        );
+      }
     }
     const out = detectIntentActionDivergence(calls);
     expect(out.divergences).toHaveLength(DIVERGENCE_LIMIT);
     expect(out.truncated).toBe(true);
-    expect(out.coverage.failuresSeen).toBe(DIVERGENCE_LIMIT + 10);
+    // Counts stay COMPLETE even though the list was cut.
+    expect(out.coverage.thrashRuns).toBe(runs);
+    expect(out.coverage.failuresSeen).toBe(runs * RETRY_THRASH_THRESHOLD);
   });
 
   it('is deterministic and order-independent', () => {

@@ -11,6 +11,7 @@
 import type { GatewayStats } from './gateway';
 import { gatewayPort } from './spawn-env';
 import type { RawGatewayStats } from './gateway-wedge';
+import type { LocalBackend, LocalBackendCandidate } from './local-backend-pool';
 
 export interface GatewayHeadroom {
   reachable: boolean;
@@ -37,6 +38,11 @@ export interface GatewayHeadroom {
   queueDepth?: number;
   /** Per-priority queue breakdown (queen/interactive vs batch). */
   byPriority?: { priority: number; count: number }[];
+  /** Pool-wide count of accounts that can serve a request RIGHT NOW (the `GatewayStats.healthyAccounts`
+   *  top-level field — reported unconditionally, unlike `priorityTiers.healthyAccounts` which is absent
+   *  under flag-OFF). `0` = the whole pool is walled/paused, so there is no remote capacity at all.
+   *  Undefined when the live gateway predates the field (deploy-skew) — treat as UNKNOWN, not as zero. */
+  healthyAccounts?: number;
   /** Per-TIER admission breakdown (gateway-priority-tiers-2026-06-22) — present only when the gateway's
    *  tier layer is on (GATEWAY_PRIORITY_TIERS). The pool-wide `healthyAccounts` capacity denominator, the
    *  reserved tier-1 floor, and per-tier {cap,inFlight,queued}. Feeds the Queen's `fleet:capacity` /
@@ -86,6 +92,7 @@ export function projectHeadroom(stats: GatewayStats, now = Date.now()): GatewayH
     paused: stats.pausedUntil > now,
     inFlight: stats.inFlight,
     queueDepth: stats.queueDepth,
+    healthyAccounts: Number.isFinite(stats.healthyAccounts) ? stats.healthyAccounts : undefined,
     byPriority: stats.admission?.byPriority,
     priorityTiers: stats.priorityTiers,
     totalRequests: stats.totalRequests,
@@ -206,6 +213,82 @@ export async function readmitGatewayAccounts(
     }
   }
   return { reachable: true, readmitted, healthyAccounts };
+}
+
+/** One local-backend row as the gateway's `GET /admin/local-backends` reports it: the durable
+ *  registry record PLUS the two live in-process values the operator cannot see any other way
+ *  (`inFlight` from the pool's counter map, `health` from its probe map). */
+interface LocalBackendAdminRow {
+  id?: unknown;
+  kind?: unknown;
+  baseUrl?: unknown;
+  models?: unknown;
+  maxConcurrent?: unknown;
+  enabled?: unknown;
+  inFlight?: unknown;
+  health?: { healthy?: unknown } | null;
+}
+
+export interface LocalBackendsSnapshot {
+  /** False when the gateway is down / the route 404s (deploy-skew) — the caller must treat this as
+   *  UNKNOWN capacity and fail closed, never as "zero backends". */
+  reachable: boolean;
+  /** The gateway runs without a local-backend pool at all (`configured:false`) — a genuine, known
+   *  zero, distinct from `reachable:false`. */
+  configured: boolean;
+  /** Live selection candidates, in exactly the shape `local-backend-pool`'s pure predicates take. */
+  candidates: LocalBackendCandidate[];
+  error?: string;
+}
+
+/**
+ * Fetch the LIVE local-backend pool (registry + per-backend `inFlight` + health) over the same
+ * localhost hop `/stats` uses. The pool's in-flight counters live in the GATEWAY process's memory
+ * (`createLocalBackendPool`'s `inFlightCounts` Map), so `GET /admin/local-backends` is the ONLY way
+ * another process can read real local capacity — the durable `local_backends` table carries
+ * `maxConcurrent` but knows nothing about what is running right now.
+ *
+ * Never throws (mirrors fetchGatewayHeadroom): an unreachable gateway returns `reachable:false` so
+ * a capacity reader fails CLOSED rather than mistaking silence for an idle pool.
+ */
+export async function fetchLocalBackends(
+  opts: { port?: number; fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+): Promise<LocalBackendsSnapshot> {
+  const port = opts.port ?? gatewayPort();
+  const doFetch = opts.fetchImpl ?? fetch;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 1500);
+  try {
+    const res = await doFetch(`http://127.0.0.1:${port}/admin/local-backends`, { signal: ctrl.signal });
+    if (!res.ok) return { reachable: false, configured: false, candidates: [], error: `gateway /admin/local-backends ${res.status}` };
+    const body = (await res.json()) as { configured?: unknown; backends?: unknown };
+    const rows: LocalBackendAdminRow[] = Array.isArray(body.backends) ? (body.backends as LocalBackendAdminRow[]) : [];
+    const candidates: LocalBackendCandidate[] = [];
+    for (const r of rows) {
+      const maxConcurrent = Number(r.maxConcurrent);
+      if (typeof r.id !== 'string' || !Number.isFinite(maxConcurrent)) continue; // malformed row — not capacity
+      candidates.push({
+        backend: {
+          id: r.id,
+          kind: (typeof r.kind === 'string' ? r.kind : 'llama-server') as LocalBackend['kind'],
+          baseUrl: typeof r.baseUrl === 'string' ? r.baseUrl : '',
+          models: Array.isArray(r.models) ? (r.models.filter((m) => typeof m === 'string') as string[]) : [],
+          maxConcurrent,
+          enabled: r.enabled !== false,
+        },
+        inFlight: Number.isFinite(Number(r.inFlight)) ? Number(r.inFlight) : 0,
+        // Mirrors the pool's OWN optimistic default (candidatesFor): never-probed ⇒ usable; only a
+        // real probe/live failure demotes a backend. Diverging here would count capacity the
+        // gateway's own selection refuses, or vice versa.
+        healthy: r.health?.healthy !== false,
+      });
+    }
+    return { reachable: true, configured: body.configured === true, candidates };
+  } catch (e) {
+    return { reachable: false, configured: false, candidates: [], error: (e as Error).message };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
