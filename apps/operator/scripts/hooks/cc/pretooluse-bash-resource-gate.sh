@@ -1002,7 +1002,14 @@ def _effective_cwd_before(pos, base_cwd, clean, has_paren):
     _cwd = base_cwd
     for _m in _CD_RE.finditer(clean[:pos]):
         _target = _m.group(1)
-        if not _target or any(ch in _target for ch in ('$', '`', '~', '*', '?', '[')):
+        # A QUOTED cd argument containing a space (`cd "/tmp/some dir"`) was
+        # already collapsed to a single space by quote-stripping upstream, so
+        # `\S+` here can land on leftover operator debris instead (`&&`, `;`)
+        # rather than the real target — bail rather than fold operator text
+        # into the replayed cwd as if it were a directory.
+        if not _target or re.fullmatch(r'[&|;<>]+', _target) or any(
+            ch in _target for ch in ('$', '`', '~', '*', '?', '[')
+        ):
             return base_cwd  # can't tell where cwd ended up — don't guess
         try:
             _cwd = _target if os.path.isabs(_target) else os.path.realpath(os.path.join(_cwd, _target))

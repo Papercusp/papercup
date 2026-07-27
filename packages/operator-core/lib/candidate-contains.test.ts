@@ -398,3 +398,186 @@ describe('gitReadFromExecSync', () => {
     expect(seen).toEqual(['-C', '/my/repo', 'rev-parse', 'HEAD']);
   });
 });
+
+/**
+ * EI-18828378090895599 — a COMMITTED file inside a submodule was reported `uncommitted`.
+ *
+ * Why this was expensive rather than cosmetic: `uncommitted` prescribes "git-sync:run,
+ * then re-fire". The file was committed all along, so that lever cannot help — it just
+ * burns another ~55min gate run on an already-red gate and delays the whole fleet. It is
+ * the exact inverse of the misread `marker` was added to kill: a CONFIDENT WRONG answer,
+ * not a blind spot.
+ *
+ * Mechanism: the superproject stores only a gitlink (160000) for a submodule, so
+ * `rev-parse <sha>:<sub>/<file>` fails — while `hash-object -- <sub>/<file>` succeeds,
+ * because it hashes bytes on disk. Candidate-null + tree-present + HEAD-null then fell
+ * into the "new file" branch and `headBlob === treeBlob` was false ⇒ `uncommitted`.
+ */
+describe('submodule paths — the false "uncommitted" verdict (EI-18828378090895599)', () => {
+  const SUB = 'papercusp-desktop';
+  const FILE = `${SUB}/bin/lib/federation-asserts.selftest.sh`;
+  const REL = 'bin/lib/federation-asserts.selftest.sh';
+  const FIXED = 'f'.repeat(40);
+  const OLD = '0'.repeat(40);
+
+  /**
+   * A superproject fake whose reads FAIL for any `<sha>:<sub>/<path>` — exactly as real
+   * git does — and which routes an accumulated `-C <sub>` into the submodule's own store.
+   * Modelling that failure faithfully is the point: it is what produced the wrong answer.
+   */
+  function fakeSuperGit(opts: {
+    /** superproject sha → the submodule commit it pins. Absent ⇒ ls-tree '' (absent). */
+    pins?: Record<string, string>;
+    /** `${subSha}:${relPath}` → blob sha inside the submodule. */
+    subBlobs?: Record<string, string>;
+    /** relPath → submodule working-tree blob. */
+    subTree?: Record<string, string>;
+    /** No `.gitmodules` at all (a plain repo). */
+    noGitmodules?: boolean;
+    /** The gitlink read fails outright. */
+    gitlinkUnreadable?: boolean;
+  }): GitRead {
+    const sub: GitRead = async (args) => {
+      if (args[0] === 'rev-parse' && args[1] === '--verify') {
+        if (args[2].endsWith('^{commit}')) return 'c'.repeat(40);
+        return opts.subBlobs?.[args[2]] ?? null;
+      }
+      if (args[0] === 'hash-object') return opts.subTree?.[args[2]] ?? null;
+      return null;
+    };
+    return async (args) => {
+      if (args[0] === '-C') return sub(args.slice(2));
+      if (args[0] === 'config') {
+        return opts.noGitmodules ? null : `submodule.${SUB}.path ${SUB}`;
+      }
+      if (args[0] === 'ls-tree') {
+        if (opts.gitlinkUnreadable) return null;
+        const pin = opts.pins?.[args[1]];
+        return pin ? `160000 commit ${pin}\t${SUB}` : '';
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') {
+        if (args[2].endsWith('^{commit}')) return 'c'.repeat(40);
+        return null; // a `<sha>:<sub>/<file>` read — always fails in the superproject
+      }
+      if (args[0] === 'hash-object') return FIXED; // succeeds on disk; the trap
+      return null;
+    };
+  }
+
+  it('THE INCIDENT: a committed, pinned submodule file is CONTAINED — not "uncommitted"', async () => {
+    const git = fakeSuperGit({
+      pins: { cand: 'e0ebb3c6' },
+      subBlobs: { [`e0ebb3c6:${REL}`]: FIXED, [`HEAD:${REL}`]: FIXED },
+      subTree: { [REL]: FIXED },
+    });
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', [FILE]);
+    expect(r.inCandidate).toBe(true);
+    // The regression guard proper: the old code said false/'uncommitted' here.
+    expect(r.reason).toBeNull();
+  });
+
+  it('never prescribes git-sync:run for a file already committed in the submodule', async () => {
+    // Pin PREDATES the fix: genuinely missing, but the lever is "wait", not "commit".
+    const git = fakeSuperGit({
+      pins: { cand: 'oldpin' },
+      subBlobs: { [`oldpin:${REL}`]: OLD, [`HEAD:${REL}`]: FIXED },
+      subTree: { [REL]: FIXED },
+    });
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', [FILE]);
+    expect(r.inCandidate).toBe(false);
+    expect(r.reason).toBe('newer-commit');
+    expect(r.reason).not.toBe('uncommitted');
+  });
+
+  it('still reports a genuinely uncommitted submodule edit as uncommitted', async () => {
+    // The tree differs from the submodule's own HEAD ⇒ git-sync:run really is the lever.
+    const git = fakeSuperGit({
+      pins: { cand: 'e0ebb3c6' },
+      subBlobs: { [`e0ebb3c6:${REL}`]: OLD, [`HEAD:${REL}`]: OLD },
+      subTree: { [REL]: FIXED },
+    });
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', [FILE]);
+    expect(r.inCandidate).toBe(false);
+    expect(r.reason).toBe('uncommitted');
+  });
+
+  it('an UNREADABLE gitlink is unknown, never a verdict', async () => {
+    const git = fakeSuperGit({ gitlinkUnreadable: true, subTree: { [REL]: FIXED } });
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', [FILE]);
+    expect(r.inCandidate).toBeNull();
+    expect(r.unknownReason?.code).toBe('resolver-failed');
+    expect(r.unknownReason?.detail).toMatch(/UNKNOWN, not missing/);
+  });
+
+  it('a candidate predating the submodule is a definitive miss, with a real lever', async () => {
+    const git = fakeSuperGit({
+      pins: {}, // ls-tree '' ⇒ the submodule is not in that commit at all
+      subBlobs: { [`HEAD:${REL}`]: FIXED },
+      subTree: { [REL]: FIXED },
+    });
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', [FILE]);
+    expect(r.inCandidate).toBe(false);
+    expect(r.reason).toBe('newer-commit');
+  });
+
+  it('an unchecked-out submodule is unknown, not "uncommitted"', async () => {
+    const git = fakeSuperGit({ pins: { cand: 'e0ebb3c6' } }); // no subTree ⇒ unreadable
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', [FILE]);
+    expect(r.inCandidate).toBeNull();
+    expect(r.unknownReason?.detail).toMatch(/UNKNOWN, not confirmed/);
+  });
+
+  it('the submodule directory itself is not-applicable, not a blob verdict', async () => {
+    const git = fakeSuperGit({ pins: { cand: 'e0ebb3c6' } });
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', [SUB]);
+    expect(r.inCandidate).toBeNull();
+    expect(r.unknownReason?.code).toBe('not-applicable');
+  });
+
+  it('callerEditsInCandidate reports the incident file as included, not missing', async () => {
+    const git = fakeSuperGit({
+      pins: { df300ebf: 'e0ebb3c6' },
+      subBlobs: { [`e0ebb3c6:${REL}`]: FIXED, [`HEAD:${REL}`]: FIXED },
+      subTree: { [REL]: FIXED },
+    });
+    const r = await callerEditsInCandidate(git, 'df300ebf', [FILE]);
+    expect(r.included).toEqual([FILE]);
+    expect(r.missing).toEqual([]);
+    expect(r.unknown).toEqual([]);
+  });
+
+  /**
+   * The blast radius: this tree has 39 submodules (libs/papercusp, every libs/generic/*),
+   * so the deepest prefix must win or a nested submodule is evaluated in its parent.
+   */
+  it('resolves the DEEPEST submodule prefix, not the first match', async () => {
+    const git: GitRead = async (args) => {
+      if (args[0] === 'config') return 'submodule.a.path libs\nsubmodule.b.path libs/generic/sse';
+      if (args[0] === '-C') {
+        expect(args[1]).toBe('libs/generic/sse'); // not 'libs'
+        if (args[2] === 'hash-object') return FIXED;
+        if (args[2] === 'rev-parse') return FIXED;
+        return null;
+      }
+      if (args[0] === 'ls-tree') return `160000 commit deadbee\t${args[3]}`;
+      if (args[0] === 'rev-parse') return 'c'.repeat(40);
+      return null;
+    };
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['libs/generic/sse/src/index.ts']);
+    expect(r.inCandidate).toBe(true);
+  });
+
+  it('a repo with no .gitmodules behaves exactly as before', async () => {
+    const git = fakeSuperGit({ noGitmodules: true, subTree: { [REL]: FIXED } });
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', [FILE]);
+    // Falls through to the plain superproject path — no submodule handling engaged.
+    expect(r.inCandidate).toBe(false);
+    expect(r.reason).toBe('uncommitted');
+  });
+
+  it('an explicit empty submodule list forces plain superproject behaviour', async () => {
+    const git = fakeSuperGit({ pins: { cand: 'e0ebb3c6' }, subTree: { [REL]: FIXED } });
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', [FILE], 'HEAD', { submodules: [] });
+    expect(r.inCandidate).toBe(false);
+  });
+});

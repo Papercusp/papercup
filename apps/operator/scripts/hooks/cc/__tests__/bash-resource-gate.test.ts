@@ -1366,6 +1366,81 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
   it('a genuine in-tree `cp` destination right next to a `docker cp` invocation still denies (the exemption is scoped to container refs, not to `cp` generally)', () => {
     expectShellWriteDeny(runGate(bashCmd('cp /tmp/x.ts apps/operator/foo.ts', { cwd: CANON }), CANON_ENV));
   });
+
+  /**
+   * EI-18763270524857214 — a `cd <dir>` earlier in the SAME compound command
+   * changes the cwd every LATER relative target actually resolves against.
+   * The guard used to resolve every target against the session's STARTING
+   * cwd regardless, so the sanctioned "build a scratch probe in /tmp" idiom
+   * (`cd /tmp/probe && ... > relative.md`) got told its target "resolves
+   * INSIDE the shared staging tree" as flat, stated fact — filed by an agent
+   * doing the CAREFUL thing (deliberately building outside the tree) whom the
+   * guard sent hunting a cwd-drift bug that never happened.
+   */
+  describe('cd-tracking (EI-18763270524857214)', () => {
+    it('allows the exact filed repro: a heredoc write to a relative path after `cd /tmp/...`', () => {
+      const command =
+        'set -e\n' +
+        'rm -rf /tmp/idlint-probe; mkdir -p /tmp/idlint-probe\n' +
+        'cd /tmp/idlint-probe\n' +
+        'git init -q .\n' +
+        "cat > probe.md <<'EOF'\n" +
+        'hello\n' +
+        'EOF';
+      expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    });
+
+    it('allows a simple `cd /tmp/x && printf ... > relative-name` idiom', () => {
+      expectAllow(runGate(bashCmd('cd /tmp/x && printf hi > relative-name.txt', { cwd: CANON }), CANON_ENV));
+    });
+
+    it('allows a `;`-separated `cd` (not just `&&`)', () => {
+      expectAllow(runGate(bashCmd('cd /tmp/x; echo hi > relative-name.txt', { cwd: CANON }), CANON_ENV));
+    });
+
+    it('allows a MULTI-cd chain that walks out of the tree via relative `cd ..`', () => {
+      // CANON = /ws/papercupai-workspace/papercusp — two `cd ..` walks land
+      // at /ws, well outside the tree, before the relative redirect.
+      expectAllow(runGate(bashCmd('cd .. && cd .. && echo hi > escaped.txt', { cwd: CANON }), CANON_ENV));
+    });
+
+    it('still denies when there is NO preceding cd (the original guard behavior, unaffected)', () => {
+      expectShellWriteDeny(runGate(bashCmd('echo hi > apps/operator/foo.txt', { cwd: CANON }), CANON_ENV));
+    });
+
+    it('still denies when a `cd` moves INTO a tree subdirectory (the tracking correctly keeps it in-tree)', () => {
+      const reason = expectShellWriteDeny(
+        runGate(bashCmd('cd apps/operator && echo hi > foo.txt', { cwd: CANON }), CANON_ENV),
+      );
+      expect(reason).toContain('foo.txt');
+    });
+
+    it('still denies a genuine in-tree write when `cd` appears only as ORDINARY TEXT, not a real invocation (`echo cd ...`)', () => {
+      // "cd" here is an argument to `echo`, not a statement of its own — must
+      // NOT be folded into the replayed cwd as if it really changed directory.
+      expectShellWriteDeny(
+        runGate(bashCmd('echo "please cd to /tmp first" && cat > apps/operator/foo.ts', { cwd: CANON }), CANON_ENV),
+      );
+    });
+
+    it('still denies when `cd`s target is a shell expansion the replay cannot resolve (fails safe to the original cwd)', () => {
+      expectShellWriteDeny(
+        runGate(bashCmd('cd $SOME_DIR && cat > apps/operator/foo.ts', { cwd: CANON }), CANON_ENV),
+      );
+    });
+
+    it('is inert (falls back to original behavior) when the command contains a paren — a subshell-scoped `cd` must not leak out', () => {
+      // `(cd /tmp/x && true)` only changes cwd INSIDE the subshell in a real
+      // shell; cwd is back to CANON by the time the real redirect runs. This
+      // replay has no paren-depth tracking, so it must sit out entirely
+      // rather than risk folding the subshell's cd into the outer cwd and
+      // turning a genuine in-tree write into a false allow.
+      const reason = expectShellWriteDeny(
+        runGate(bashCmd('(cd /tmp/x && true); cat > apps/operator/foo.ts', { cwd: CANON }), CANON_ENV),
+      );
+      expect(reason).toContain('foo.ts');
+    });
+  });
 });
 
 /**
