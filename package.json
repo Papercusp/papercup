@@ -151,6 +151,7 @@
     "lint:knip": "knip --no-config-hints",
     "lint:knip:fix": "knip --fix --no-config-hints",
     "lint:drizzle-drift": "node scripts/check-drizzle-drift.mjs",
+    "lint:migration-forward-compat": "node scripts/check-migration-forward-compat.mjs",
     "lint:affected-gate": "node scripts/lint-affected-gate.mjs",
     "lint:workspace-deps-complete": "node scripts/check-workspace-deps-complete.mjs",
     "lint:no-restart": "node scripts/check-no-restart-imports.mjs",

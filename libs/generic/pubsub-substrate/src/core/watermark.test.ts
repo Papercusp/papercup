@@ -118,4 +118,33 @@ describe('mergeWatermark', () => {
     // omitted → keeps current true
     expect(mergeWatermark(base, {}).snapshot_rebootstrap_pending).toBe(true);
   });
+
+  // D-077: `cursors` merges PER KEY — the one field that does not follow the
+  // whole-value rule above. Surfaces have independent writers.
+  describe('cursors', () => {
+    const base = { ...cur, cursors: { facts: 'v1', presence: 'p1' } };
+
+    it('does NOT erase a sibling surface when one cursor advances', () => {
+      // The reason per-key merge exists: whole-map replacement would make
+      // advancing `facts` durably destroy `presence` via the read-modify-write.
+      const out = mergeWatermark(base, { cursors: { facts: 'v2' } });
+      expect(out.cursors).toEqual({ facts: 'v2', presence: 'p1' });
+    });
+
+    it('adds a brand-new surface key without touching existing ones', () => {
+      const out = mergeWatermark(base, { cursors: { plans: 'x1' } });
+      expect(out.cursors).toEqual({ facts: 'v1', presence: 'p1', plans: 'x1' });
+    });
+
+    it('omitted → preserved', () => {
+      expect(mergeWatermark(base, {}).cursors).toEqual({ facts: 'v1', presence: 'p1' });
+    });
+
+    it('permits the deliberate BACKWARD move safe-commit recovery relies on', () => {
+      // Not monotonic, by design — same contract as the ts cursors (P1-11):
+      // a consumer that stops mid-(same-version)-group commits the previous
+      // version so the unconsumed siblings are re-seen, never skipped.
+      expect(mergeWatermark(base, { cursors: { facts: 'v0' } }).cursors.facts).toBe('v0');
+    });
+  });
 });
