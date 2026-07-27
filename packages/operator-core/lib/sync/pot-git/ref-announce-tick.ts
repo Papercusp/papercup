@@ -84,7 +84,7 @@ export interface RefAnnouncePublishTickInput {
    * LAST-RESORT genesis baseline for FIRST-EVER sigrefs, used only when the
    * per-ref walk below cannot answer.
    *
-   * ⚠ WI-6249: this is a WORKTREE-derived, SINGLE-BRANCH sha, and this tick
+   * ⚠ WI-6251: this is a WORKTREE-derived, SINGLE-BRANCH sha, and this tick
    * judges EVERY ref of this device's namespace in the BARE store. It is the
    * right answer for at most one of them. Relying on it as the primary was the
    * 4GB-heap OOM on the rig — see namespace-genesis-baseline.ts. The tick now
@@ -182,7 +182,7 @@ export async function runRefAnnouncePublishTick(
   for (const r of currentRefs) {
     // Genesis: no prior sigrefs entry for this ref → judge from the verified
     // already-exposed baseline instead of the whole history (see input doc).
-    // WI-6249: derive that baseline PER REF and IN THIS STORE — a single
+    // WI-6251: derive that baseline PER REF and IN THIS STORE — a single
     // worktree-derived sha is the right answer for at most one namespace ref,
     // and is catastrophically wrong for one on a different line of history.
     const fromOid =

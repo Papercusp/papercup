@@ -2,7 +2,7 @@
  * pot-git/namespace-genesis-baseline.ts — the G-10 genesis baseline for a ref
  * under THIS device's own namespace, resolved in the BARE pot-git store.
  *
- * WI-6249 (live-caught on the P-302 rig, 2026-07-27) — the sibling bug to
+ * WI-6251 (live-caught on the P-302 rig, 2026-07-27) — the sibling bug to
  * WI-6243, and the one that actually took the box down.
  *
  * `harness/git-sync/genesis-baseline.ts` answers for ONE branch in the WORKTREE.

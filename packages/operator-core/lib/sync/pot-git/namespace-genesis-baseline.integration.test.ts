@@ -1,5 +1,5 @@
 /**
- * namespace-genesis-baseline.integration.test.ts — WI-6249.
+ * namespace-genesis-baseline.integration.test.ts — WI-6251.
  *
  * Real git repos (no mocked seam), for the same reason as its WI-6243 sibling:
  * the bug was a wrong answer under a REF TOPOLOGY, and a fake seam would have
