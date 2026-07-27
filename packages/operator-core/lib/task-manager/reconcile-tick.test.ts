@@ -59,7 +59,8 @@ function scanResult(processes: ScannedProcess[], over: Partial<ScanResult> = {})
     ownedRootAbs: `/sys/fs/cgroup${OURS}`,
     ownedRootExists: true,
     userManagerRoot: '/user.slice/user@1000.service',
-    truncated: false,
+    ownedTruncated: false,
+    foreignTruncated: false,
     ...over,
   };
 }
@@ -172,14 +173,29 @@ describe('reconcileTick — refusing to act on a bad scan', () => {
     expect(store.stranded).toHaveLength(0);
   });
 
-  it('does NOT strand when the scan hit its process cap', async () => {
+  it('does NOT strand when the OWNED scan hit its process cap', async () => {
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'fff666' })],
-      scan: () => scanResult([], { truncated: true }),
+      scan: () => scanResult([], { ownedTruncated: true }),
       fs: memFs({}),
     });
     expect(out.degraded).toBe(true);
     expect(out.strandedCount).toBe(0);
+  });
+
+  it('a truncated FOREIGN pass does NOT degrade the verdict', async () => {
+    // Found by the P-021 live run: on this box the foreign population (500+
+    // matching processes) exhausted a SHARED cap, set `truncated`, and put the
+    // reconciler into permanent degraded mode — so it would never have closed a
+    // stranded row again. A display-only view must never be able to disable the
+    // ledger's correctness path.
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'fff667' })],
+      scan: () => scanResult([], { foreignTruncated: true }),
+      fs: memFs({}),
+    });
+    expect(out.degraded).toBe(false);
+    expect(out.strandedCount).toBe(1);
   });
 
   it('STILL records positive confirmations on a degraded scan', async () => {
@@ -191,7 +207,7 @@ describe('reconcileTick — refusing to act on a bad scan', () => {
       scan: () =>
         scanResult(
           [{ pid: 7, cgroupPath: dir, processIdentity: 'linux:b:7', cmdline: 'x', owned: true }],
-          { truncated: true },
+          { ownedTruncated: true },
         ),
       fs: memFs({}),
     });

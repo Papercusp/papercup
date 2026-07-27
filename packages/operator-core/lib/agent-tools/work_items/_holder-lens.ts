@@ -46,6 +46,7 @@
 import { z } from 'zod';
 import {
   resolveHolderContext,
+  forSubject,
   type HolderContext,
   type HolderContextSources,
 } from '../../coord/holder-context';
@@ -122,33 +123,19 @@ export function holderLensReader(ctx: CellReaderCtxLike): CellReader | null {
 }
 
 /**
- * Re-project one holder's context ONTO ONE ROW.
+ * Re-project one holder's context ONTO ONE ROW — a row IS a subject, so this is
+ * {@link forSubject} under the name this lens's call sites read by.
  *
- * ⚠⚠ THE ROW'S OWN REF MUST NOT APPEAR IN ITS OWN `competing` LIST — found by
- * running this lens over the LIVE fleet, and invisible to every fixture.
- *
- * `HolderContext.competing` is a HOLDER-level fact: "the other item refs this
- * agent holds". Projected onto a row it becomes a ROW-level claim, and for a
- * holder of two items that reads absurdly: on row `WI-6410`, with the holder's
- * resolved goal being `EI-1881…`, the raw list said *"…and they are also
- * competing on WI-6410"* — naming the very row the reader is looking at as a
- * rival to itself. Measured live 2026-07-27: 3 of 18 decorated rows, i.e. every
- * multi-item holder, which is exactly the population the field exists to serve.
- *
- * Dropping it loses NOTHING (the reader knows which row they are on) and sharpens
- * the real signal: when `goalRef` differs from this row's id, the holder is
- * claiming this item but working on something else — which is precisely what a
- * reader deciding whether to wait wants to know.
- *
- * This is D-092's cry-wolf lesson one lens further out: a verdict that is correct
- * about the HOLDER can still be wrong about the ROW.
+ * ⚠ THE RULE MOVED, THE BEHAVIOUR DID NOT (D-094). P-030 found the defect here —
+ * a holder-level `competing` list naming the very row it was rendered on — and
+ * fixed it here. P-027 then renders the SAME projection against four more
+ * subjects (a claim refusal, a release request, a lock-queue entry, a plan-item
+ * conflict), so the rule now lives once in `coord/holder-context.ts` beside the
+ * shape it constrains. Keeping a private copy here would be the second
+ * derivation D-038 axis 5 forbids: two filters that agree today and drift later,
+ * each looking correct in isolation.
  */
-function forRow(ctx: HolderContext, rowId: string | null | undefined): HolderContext {
-  const id = (rowId ?? '').trim();
-  if (!id || ctx.competing.length === 0) return ctx;
-  const competing = ctx.competing.filter((ref) => ref !== id);
-  return competing.length === ctx.competing.length ? ctx : { ...ctx, competing };
-}
+const forRow = forSubject;
 
 /** The row fields this lens needs. Structural, so it never drags a work-item row
  *  type (or its schema) into the shared projection. */

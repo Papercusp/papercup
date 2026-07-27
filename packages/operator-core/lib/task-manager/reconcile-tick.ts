@@ -49,7 +49,13 @@ export interface ReconcileTickDeps {
 export interface ReconcileTickResult {
   summary: ReturnType<typeof summarizeReconcile>;
   result: ReconcileResult;
-  scan: { ownedRootExists: boolean; truncated: boolean; processes: number; userManagerRoot: string | null };
+  scan: {
+    ownedRootExists: boolean;
+    ownedTruncated: boolean;
+    foreignTruncated: boolean;
+    processes: number;
+    userManagerRoot: string | null;
+  };
   /** True when the scan could not be trusted enough to close rows. */
   degraded: boolean;
   degradedReason?: string;
@@ -75,8 +81,12 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   if (!scan.ownedRootExists && live.length > 0) {
     degradedReason =
       'our cgroup slice does not exist on this host — every row would strand, which is a scan fault, not an outage';
-  } else if (scan.truncated) {
-    degradedReason = 'scan hit its process cap, so absence does not prove absence';
+  } else if (scan.ownedTruncated) {
+    // Only the OWNED cap degrades the verdict. A truncated FOREIGN pass means the
+    // courtesy view is partial — it says nothing about whether our own tasks are
+    // alive, and letting it disable stranding put the reconciler into permanent
+    // degraded mode on this box (found by the P-021 live run).
+    degradedReason = 'the owned-slice scan hit its process cap, so absence does not prove absence';
   }
   const degraded = Boolean(degradedReason);
 
@@ -86,7 +96,8 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       result,
       scan: {
         ownedRootExists: scan.ownedRootExists,
-        truncated: scan.truncated,
+        ownedTruncated: scan.ownedTruncated,
+        foreignTruncated: scan.foreignTruncated,
         processes: scan.processes.length,
         userManagerRoot: scan.userManagerRoot,
       },
@@ -156,7 +167,8 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     result,
     scan: {
       ownedRootExists: scan.ownedRootExists,
-      truncated: scan.truncated,
+      ownedTruncated: scan.ownedTruncated,
+      foreignTruncated: scan.foreignTruncated,
       processes: scan.processes.length,
       userManagerRoot: scan.userManagerRoot,
     },

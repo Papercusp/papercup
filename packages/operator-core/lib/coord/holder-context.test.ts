@@ -5,6 +5,7 @@ import { resolveRepoFile, readRepoFile } from '@papercusp/test-config';
 import {
   projectHolderContext,
   resolveHolderContext,
+  forSubject,
   asGoalRef,
   HOLDER_ASSUMPTION_KEY_CAP,
   INTENT_STALE_SEC,
@@ -866,5 +867,75 @@ describe('the resolver has a live consumer', () => {
     // It must pass the BLOCKED caller through as the reader, not a default one:
     // holder context is reader-relative, and a defaulted audience fails open.
     expect(src).toMatch(/reader\s*\?\s*holderContextSources\(\)\s*:\s*null/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// forSubject — D-094's rule, now shared by P-030's lens and P-027's four sites.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('forSubject (D-094)', () => {
+  const ctx = (competing: string[]): HolderContext => ({
+    goalRef: 'EI-18816386093046558',
+    goalText: 'ship the thing',
+    assumptions: { count: 0, keys: [] },
+    declaredAt: null,
+    stale: null,
+    agreement: 'divergent',
+    competing,
+  });
+
+  it('never names the SUBJECT among its own competing claims', () => {
+    // The live defect verbatim: rendered against WI-6410, the holder-level list
+    // told the reader they were "also competing on WI-6410" — the very thing
+    // being looked at, named as a rival to itself.
+    const out = forSubject(ctx(['WI-6410', 'some-plan#P-007']), 'WI-6410');
+    expect(out.competing).toEqual(['some-plan#P-007']);
+  });
+
+  it('leaves a genuine rival list untouched when the subject is not in it', () => {
+    const input = ctx(['some-plan#P-402']);
+    const out = forSubject(input, 'WI-1');
+    expect(out.competing).toEqual(['some-plan#P-402']);
+    // Returns the SAME object when nothing was filtered, so a caller can detect
+    // the no-op without a deep compare.
+    expect(out).toBe(input);
+  });
+
+  it('subtracts ONLY the subject, never the goal or any other field', () => {
+    const out = forSubject(ctx(['WI-6410', 'WI-99']), 'WI-6410');
+    expect(out.competing).toEqual(['WI-99']);
+    expect(out.goalRef).toBe('EI-18816386093046558');
+    expect(out.goalText).toBe('ship the thing');
+    expect(out.agreement).toBe('divergent');
+  });
+
+  it('is TOTAL — a blank, null or undefined subject returns the context unchanged', () => {
+    const input = ctx(['WI-1', 'WI-2']);
+    for (const subject of [null, undefined, '', '   ']) {
+      expect(forSubject(input, subject)).toBe(input);
+    }
+  });
+
+  it('trims the subject before comparing', () => {
+    expect(forSubject(ctx(['WI-6410']), '  WI-6410  ').competing).toEqual([]);
+  });
+
+  it('handles an empty competing list without allocating', () => {
+    const input = ctx([]);
+    expect(forSubject(input, 'WI-6410')).toBe(input);
+  });
+});
+
+describe('the subject rule is stated ONCE (D-038 axis 5)', () => {
+  it('the work-item lens delegates rather than keeping its own filter', () => {
+    const src = readRepoFile(
+      __dirname,
+      'packages/operator-core/lib/agent-tools/work_items/_holder-lens.ts',
+    );
+    expect(src).toMatch(/forSubject/);
+    // A second copy of the filter is the drift this lift exists to prevent: two
+    // implementations that agree today, disagree later, and each look right alone.
+    expect(src).not.toMatch(/competing\.filter\(/);
   });
 });

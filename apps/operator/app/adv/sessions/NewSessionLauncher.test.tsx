@@ -37,6 +37,15 @@ const h = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
   toastWarning: vi.fn(),
+  /** WI-6321: what psu's options endpoint would return. Empty by default — the
+   *  picker must render and launch with no fleets and no gateway pool. */
+  launchOptions: {
+    fleets: [] as Array<{ slug: string; title: string | null; color?: { name?: string } | null }>,
+    nextScheme: null as { name: string } | null,
+    schemes: [] as Array<{ name: string; bg: string; fg: string; cursor: string }>,
+    accounts: [] as Array<{ id: string; label?: string | null; detail?: string | null }>,
+  },
+  optionsRefresh: vi.fn(),
 }));
 
 vi.mock('sonner', () => ({
@@ -48,6 +57,21 @@ vi.mock('@papercusp/operator-core/lib/launch-agent', () => ({
 }));
 vi.mock('@/app/admin/plans/plans-api', () => ({
   usePlanList: () => ({ data: { plans: h.planListData.plans }, loading: h.planListData.loading }),
+}));
+// WI-6321: the fleet/account picker source hits psu's own options endpoint over
+// HTTP. Stubbed so these stay LAUNCHER tests (which options reach launchAgent)
+// and never depend on a running operator — the hook's own fail-soft + payload
+// normalization are covered in use-su-launch-options.test.ts.
+vi.mock('./use-su-launch-options', () => ({
+  useSuLaunchOptions: () => ({
+    fleets: h.launchOptions.fleets,
+    nextScheme: h.launchOptions.nextScheme,
+    schemes: h.launchOptions.schemes,
+    accounts: h.launchOptions.accounts,
+    loading: false,
+    error: null,
+    refresh: h.optionsRefresh,
+  }),
 }));
 // The pickers became searchable Comboboxes under
 // `hud-session-launcher-and-board-tabs-2026-07-26` P-003. Stubbed to a native
@@ -92,8 +116,15 @@ vi.mock('@/app/harness/Combobox', () => ({
 }));
 
 import NewSessionLauncher, {
+  buildAccountOptions,
+  buildContextSizeOptions,
+  buildFleetOptions,
   composeModelSpec,
   modelBackend,
+  ACCOUNT_SELECT_DEFAULT,
+  CONTEXT_SELECT_NATIVE,
+  FLEET_SELECT_NEW,
+  FLEET_SELECT_NONE,
   PLAN_SELECT_PLACEHOLDER,
   OMP_MODEL_OPTIONS,
   EFFORT_OPTIONS,
@@ -103,6 +134,7 @@ import NewSessionLauncher, {
 import {
   CLOUD_MODEL_MENU,
   MODEL_EFFORT_LEVELS,
+  SU_CONTEXT_SIZES,
 } from '@papercusp/operator-core/lib/agent-config-constants';
 
 function plan(slug: string, over: Partial<Record<string, unknown>> = {}) {
@@ -411,25 +443,109 @@ describe('NewSessionLauncher', () => {
     expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ model: 'opus:high' }));
   });
 
-  it('drops a bare effort when no model is chosen (never sends ":high")', async () => {
-    // Effort is meaningless without an explicit model — the default model's
-    // effort is the backend's to choose, so a lone effort must not synthesise
-    // a malformed spec.
+  /**
+   * WI-6321 (owner ask 2026-07-27: the GUI "should share the same code for getting
+   * the options"). A bare effort with no model used to be DROPPED silently — the
+   * launcher's own private composeModelSpec returned null and the session launched
+   * at the backend's default effort with nothing said. That is the drift the shared
+   * source removes: `composeLaunchModelSpec` throws (psu has no standalone effort
+   * flag, so there is nowhere for it to go) and the launcher SHOWS it.
+   *
+   * The old expectation — launch anyway with `model: null` — is deliberately
+   * inverted here: refusing to launch is the fix, not a regression.
+   */
+  it('REFUSES a bare effort with no model, and says so instead of dropping it', async () => {
     render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
     fireEvent.change(screen.getByRole('combobox', { name: 'Effort level for new session' }), {
       target: { value: 'high' },
     });
     fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
-    await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
-    expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ model: null }));
+    await waitFor(() => expect(h.toastError).toHaveBeenCalled());
+    expect(String(h.toastError.mock.calls[0]?.[0])).toMatch(/needs a model/);
+    // The launch must NOT have happened — a silently-wrong session is the bug.
+    expect(h.launchAgent).not.toHaveBeenCalled();
   });
 
-  it('composeModelSpec joins model and effort, and degrades cleanly', () => {
+  it('composeModelSpec joins model and effort, and refuses effort-without-model', () => {
     expect(composeModelSpec('sonnet', 'high')).toBe('sonnet:high');
     expect(composeModelSpec('sonnet', '')).toBe('sonnet');
-    expect(composeModelSpec('', 'high')).toBe(null);
     expect(composeModelSpec('', '')).toBe(null);
     expect(composeModelSpec('  sonnet  ', '  high  ')).toBe('sonnet:high');
+    // Was `toBe(null)` — the silent drop. Now an explicit refusal.
+    expect(() => composeModelSpec('', 'high')).toThrow(/needs a model/);
+  });
+
+  /**
+   * WI-6321 — the psu-parity options the GUI could not previously express. The
+   * owner's ask was that the panel carry "all the same options as the psu
+   * utility"; these assert the wire values a default launch now sends.
+   */
+  describe('psu-parity launch options (WI-6321)', () => {
+    it('renders the fleet, account and context-size pickers', () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      expect(screen.getByRole('combobox', { name: 'Fleet for new session' })).toBeTruthy();
+      expect(screen.getByRole('combobox', { name: 'Account for new session' })).toBeTruthy();
+      expect(screen.getByRole('combobox', { name: 'Context size for new session' })).toBeTruthy();
+    });
+
+    it('ALWAYS sends an account — psu with none opens a picker that would hang the spawn', async () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+      expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ account: 'default' }));
+    });
+
+    it('sends no fleet and no context-size override by default (unchanged launch)', async () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+      expect(h.launchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ fleet: null, fleetName: null, contextSize: undefined }),
+      );
+    });
+
+    it('threads a chosen context size through as the psu --context-size value', async () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Context size for new session' }), {
+        target: { value: 'trimmed' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+      expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ contextSize: 'trimmed' }));
+    });
+
+    it('refuses to create a fleet with no name rather than launching unfleeted', async () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Fleet for new session' }), {
+        target: { value: FLEET_SELECT_NEW },
+      });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.toastError).toHaveBeenCalled());
+      expect(h.launchAgent).not.toHaveBeenCalled();
+    });
+
+    it('builds the fleet rows psu offers: no-fleet, create-new, then each existing fleet', () => {
+      const opts = buildFleetOptions(
+        [{ slug: 'alpha', title: 'Alpha', color: { name: 'ember' } }],
+        'cobalt',
+      );
+      expect(opts.map((o) => o.value)).toEqual([FLEET_SELECT_NONE, FLEET_SELECT_NEW, 'alpha']);
+      // The create row previews the colour a new fleet would actually get.
+      expect(opts[1].detail).toMatch(/cobalt/);
+      expect(opts[2].detail).toMatch(/ember/);
+    });
+
+    it('builds account rows: psu\'s two modes first, then any gateway pool accounts', () => {
+      const opts = buildAccountOptions([{ id: 'pool-1', label: 'Pool one' }]);
+      expect(opts.map((o) => o.value)).toEqual(['default', 'auto', 'pool-1']);
+    });
+
+    it('offers Native plus exactly psu\'s context-size variants', () => {
+      expect(buildContextSizeOptions().map((o) => o.value)).toEqual([
+        CONTEXT_SELECT_NATIVE,
+        ...SU_CONTEXT_SIZES,
+      ]);
+    });
   });
 
   it('the plan picker default value is the placeholder sentinel with no selection', () => {

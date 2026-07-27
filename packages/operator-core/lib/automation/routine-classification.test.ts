@@ -38,14 +38,22 @@ describe('spendForTargetRole', () => {
     }
   });
 
-  // These two are live target_roles with NO registered handler — the tick logs
-  // "no handler registered … skipping" and the routine silently does nothing while
-  // presenting as running (EI-18741229858124453 / EI-18741240128927188). Leaving
-  // them unclassified routes them to Needs-you instead of laundering the bug into
-  // an ordinary row; classifying them would hide it.
-  it('leaves the two unregistered-but-live roles unclassified on purpose', () => {
+  // `system:template-gym` is a live target_role with NO registered handler — the
+  // tick logs "no handler registered … skipping" and the routine silently does
+  // nothing while presenting as running (EI-18741229858124453). Leaving it
+  // unclassified routes it to Needs-you instead of laundering the bug into an
+  // ordinary row; classifying it would hide it.
+  //
+  // `system:scout-cycle` USED to be in the same boat (EI-18741240128927188,
+  // `registerScoutCycleAction()` exported but never called) — now fixed
+  // (register-scout-action.ts self-registers it), so it gets a real classification
+  // below instead of staying in this unclassified group.
+  it('leaves the one unregistered-but-live role unclassified on purpose', () => {
     expect(spendForTargetRole('system:template-gym')).toBe('unknown');
-    expect(spendForTargetRole('system:scout-cycle')).toBe('unknown');
+  });
+
+  it('classifies system:scout-cycle now that it is registered (EI-18741240128927188)', () => {
+    expect(spendForTargetRole('system:scout-cycle')).toBe('llm');
   });
 
   it('classifies the deterministic sweeps as none', () => {

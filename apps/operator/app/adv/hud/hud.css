@@ -107,13 +107,14 @@
      THIS opaque background — the -1px pulls the tab over the strip's 1px border
      and the background paints it out. Do NOT remove either: they are the
      load-bearing pair.
-     The box-shadow below is a belt-and-braces duplicate of the same 1px and is
-     INERT inside /adv — verified live 2026-07-27: an inline global
+     The box-shadow below is a belt-and-braces duplicate of the same 1px. It USED
+     to be inert inside /adv — an inline global
        .pc-advshell__body :is(button,[role=button]):not(:focus-visible)
          { box-shadow: none !important }
-     strips it (computed box-shadow reads `none` there). Kept only for the
-     non-adv consumer of this sheet (SessionChatModal imports hud.css), where it
-     is not overridden. Never rely on it for the bridge. */
+     stripped it (computed box-shadow read `none`, verified live 2026-07-27).
+     EI-18772095428507037 gave that reset a `:not([data-shadow-ok])` opt-out and
+     the tab now sets `data-shadow-ok`, so this declaration is live in /adv too.
+     It is still NOT the bridge — the margin/background pair above is. */
   box-shadow: 0 1px 0 0 var(--bg);
 }
 .hud__tab--on:hover { background: var(--bg); }

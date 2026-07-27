@@ -49,13 +49,29 @@ export interface ScanOptions {
    *  caller-supplied signature: a hardcoded one would silently stop matching the
    *  day the tree moves, and would be untestable. */
   foreignSignature?: RegExp;
-  /** Hard cap so one pathological box cannot blow up a tick. */
-  maxProcesses?: number;
+  /**
+   * Cap on the OWNED pass — processes inside our slice. Truncating this one is
+   * serious: it makes absence unprovable, so the reconciler must stop closing rows.
+   */
+  maxOwnedProcesses?: number;
+  /**
+   * Separate cap on the FOREIGN pass.
+   *
+   * Separate BECAUSE they are not the same kind of budget, which a live run on
+   * this box proved the hard way: with one shared cap of 4000, the foreign pass
+   * (124 groups, 500+ matching processes on a busy fleet host) consumed the entire
+   * allowance before the owned pass had finished, set `truncated`, and thereby put
+   * the reconciler into permanent DEGRADED mode — where it never closes a stranded
+   * row again. A display-only view must never be able to disable the ledger's
+   * correctness path. Foreign is capped low on purpose; it is a courtesy pane.
+   */
+  maxForeignProcesses?: number;
   /** Our own pid, excluded from the foreign pass (we are not foreign to ourselves). */
   selfPid?: number;
 }
 
-const DEFAULT_MAX_PROCESSES = 4000;
+const DEFAULT_MAX_OWNED = 4000;
+const DEFAULT_MAX_FOREIGN = 400;
 
 /**
  * The systemd user-manager cgroup that owns our slice, derived from our OWN
@@ -86,7 +102,12 @@ export interface ScanResult {
   ownedRootAbs: string;
   ownedRootExists: boolean;
   userManagerRoot: string | null;
-  truncated: boolean;
+  /** The OWNED pass hit its cap — absence is no longer provable, so the caller must
+   *  not close rows on this scan. */
+  ownedTruncated: boolean;
+  /** The FOREIGN pass hit its cap — the courtesy view is partial. Carries NO
+   *  implication for ledger correctness and must never degrade the verdict. */
+  foreignTruncated: boolean;
 }
 
 /**
@@ -97,7 +118,8 @@ export interface ScanResult {
 export function scanProcesses(opts: ScanOptions = {}): ScanResult {
   const fs = opts.fs ?? nodeCgroupFs;
   const cgroupRoot = opts.cgroupRoot ?? CGROUP_ROOT;
-  const maxProcesses = opts.maxProcesses ?? DEFAULT_MAX_PROCESSES;
+  const maxOwned = opts.maxOwnedProcesses ?? DEFAULT_MAX_OWNED;
+  const maxForeign = opts.maxForeignProcesses ?? DEFAULT_MAX_FOREIGN;
   const selfPid = opts.selfPid ?? process.pid;
 
   const bootId = fs.readFile('/proc/sys/kernel/random/boot_id');
@@ -111,13 +133,27 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
 
   const processes: ScannedProcess[] = [];
   const seen = new Set<number>();
-  let truncated = false;
+  let ownedCount = 0;
+  let foreignCount = 0;
+  let ownedTruncated = false;
+  let foreignTruncated = false;
 
   const push = (pid: number, absDir: string, owned: boolean): void => {
     if (seen.has(pid)) return;
-    if (processes.length >= maxProcesses) {
-      truncated = true;
-      return;
+    // Two independent budgets — a busy foreign population must never be able to
+    // starve the owned pass and put the reconciler into permanent degraded mode.
+    if (owned) {
+      if (ownedCount >= maxOwned) {
+        ownedTruncated = true;
+        return;
+      }
+      ownedCount++;
+    } else {
+      if (foreignCount >= maxForeign) {
+        foreignTruncated = true;
+        return;
+      }
+      foreignCount++;
     }
     seen.add(pid);
     processes.push({
@@ -151,7 +187,7 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
     }
   }
 
-  return { processes, ownedRootAbs, ownedRootExists, userManagerRoot, truncated };
+  return { processes, ownedRootAbs, ownedRootExists, userManagerRoot, ownedTruncated, foreignTruncated };
 }
 
 /**

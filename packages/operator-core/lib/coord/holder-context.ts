@@ -245,6 +245,47 @@ export function projectHolderContext(
 }
 
 /**
+ * Re-project a holder's context ONTO ONE SUBJECT — the item/lock/plan-item the
+ * reader is actually looking at, or being refused.
+ *
+ * ⚠⚠ A HOLDER-LEVEL FACT MUST NEVER NAME THE SUBJECT IT IS RENDERED ON (D-094).
+ * `competing` means "the OTHER refs this holder also holds". Rendered against a
+ * subject, the unfiltered list names that subject as a rival to itself: on row
+ * `WI-6410`, with the holder's resolved goal being `EI-1881…`, it read *"…and
+ * they are also competing on WI-6410"*. Measured live 2026-07-27: 3 of 18
+ * decorated rows — every multi-item holder, i.e. exactly the population the field
+ * exists to serve. A fixture cannot catch it, because a fixture author already
+ * knows which row is which; it only appears when ONE holder's context lands on
+ * TWO subjects of one response.
+ *
+ * ⚠ IT LIVES HERE, NOT AT THE CALL SITES. P-030 discovered the rule inside
+ * `work_items/_holder-lens.ts` and implemented it privately there. P-027 renders
+ * this same projection against four MORE subjects (a claim refusal, a release
+ * request, a lock queue entry, a plan-item conflict), and four copies of a
+ * one-line filter is precisely the second-derivation trap D-038 axis 5 forbids —
+ * they would drift, and the drift would be invisible because each looks correct
+ * alone. So the rule is stated once, where the shape is defined.
+ *
+ * Dropping the self-reference loses NOTHING (the reader knows which subject they
+ * asked about) and sharpens the real signal: when `goalRef` differs from the
+ * subject, the holder is holding this thing while working on something else —
+ * exactly what a reader deciding whether to wait needs to know.
+ *
+ * TOTAL, like everything else here: a blank/absent subject returns the context
+ * unchanged rather than throwing, and the identical object is returned when
+ * nothing was filtered so callers can cheaply detect a no-op.
+ */
+export function forSubject(
+  ctx: HolderContext,
+  subjectRef: string | null | undefined,
+): HolderContext {
+  const id = (subjectRef ?? '').trim();
+  if (!id || ctx.competing.length === 0) return ctx;
+  const competing = ctx.competing.filter((ref) => ref !== id);
+  return competing.length === ctx.competing.length ? ctx : { ...ctx, competing };
+}
+
+/**
  * THE ORCHESTRATOR: resolve one holder's context for one reader.
  *
  * FAILS CLOSED ON A MISSING READER. `reader` is required rather than optional for

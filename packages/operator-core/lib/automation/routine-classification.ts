@@ -266,6 +266,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:bee-transcript-cap': { spend: 'none', why: 'Truncates oversized transcripts' },
   'system:precompute-derived-reads': { spend: 'none', why: 'Refreshes derived read tables' },
   'system:interactive-usage-ingest': { spend: 'none', why: 'Tails local transcripts into usage samples (SQL/FS only)' },
+  'system:task-reconcile': { spend: 'none', why: 'REPORT-ONLY kernel-vs-ledger reconcile — no kill/freeze path exists' },
   'system:token-weekly-report': { spend: 'none', why: 'Aggregates usage into a report (SQL/FS only)' },
   'system:unclaimed-work-digest': { spend: 'none', why: 'Read-only: lists unclaimed items and posts a digest' },
   'system:improvement-human-digest': { spend: 'none', why: 'Ranks the human queue and sends it — no model' },

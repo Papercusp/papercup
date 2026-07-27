@@ -698,7 +698,10 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.reason).toBe('all_matches_gated');
       expect(miss.error).toMatch(/POOL BLOCKED, NOT SPEC-BROKEN/);
       expect(miss.advice).toMatch(/reason: "all_matches_gated"/);
-      expect(miss.advice).not.toMatch(/spec_matches_nothing/);
+      // the advice explicitly disambiguates from spec_matches_nothing (a DIFFERENT reason token
+      // with the opposite remedy) rather than ever claiming/escalating a spec-authoring bug itself
+      expect(miss.error).not.toMatch(/SPEC MATCHES NOTHING/);
+      expect(miss.advice).not.toMatch(/ESCALATE to your fleet leader NOW \(EI-18663622382734446\)/);
     });
 
     // The exact recurrence this ticket documents: a plan-lane `externalBlocker` gate (not any

@@ -97,12 +97,38 @@ describe('scanProcesses — the owned pass', () => {
     expect(r.processes).toHaveLength(0);
   });
 
-  it('caps the result and says so', () => {
+  it('caps the owned result and says so', () => {
     const cgroups: Record<string, number[]> = {};
     for (let i = 0; i < 20; i++) cgroups[`${OURS}/pc-s${i}0000.scope`] = [100 + i];
-    const r = scanProcesses({ fs: box({ cgroups }), selfPid: 999, maxProcesses: 5 });
+    const r = scanProcesses({ fs: box({ cgroups }), selfPid: 999, maxOwnedProcesses: 5 });
     expect(r.processes).toHaveLength(5);
-    expect(r.truncated).toBe(true);
+    expect(r.ownedTruncated).toBe(true);
+    expect(r.foreignTruncated).toBe(false);
+  });
+
+  it('a busy FOREIGN population cannot starve the owned pass', () => {
+    // The P-021 live-run bug: with one shared budget, 500+ signature-matching
+    // foreign processes consumed the whole allowance, and the resulting
+    // `truncated` flag put the reconciler into permanent degraded mode. Two
+    // independent budgets, and the foreign one must be the one that gives.
+    const cgroups: Record<string, number[]> = {};
+    for (let i = 0; i < 50; i++) cgroups[`${MGR}/foreign-${i}.scope`] = [1000 + i];
+    for (let i = 0; i < 3; i++) cgroups[`${OURS}/pc-o${i}0000.scope`] = [10 + i];
+    const cmdlines: Record<number, string> = {};
+    for (let i = 0; i < 50; i++) cmdlines[1000 + i] = '/srv/ws/papercusp/thing';
+
+    const r = scanProcesses({
+      fs: box({ cgroups, cmdlines }),
+      selfPid: 999,
+      foreignSignature: /\/srv\/ws\/papercusp/,
+      maxOwnedProcesses: 4000,
+      maxForeignProcesses: 5,
+    });
+    expect(r.processes.filter((p) => p.owned)).toHaveLength(3);
+    expect(r.processes.filter((p) => !p.owned)).toHaveLength(5);
+    expect(r.foreignTruncated).toBe(true);
+    // The load-bearing assertion: the ledger's correctness path stays trustworthy.
+    expect(r.ownedTruncated).toBe(false);
   });
 });
 

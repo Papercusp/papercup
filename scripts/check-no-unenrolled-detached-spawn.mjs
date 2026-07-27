@@ -52,19 +52,19 @@ export const ALLOWLIST = new Map([
   ['packages/operator-core/lib/sync/hyperbee/substrate-sidecar-spawn.ts', 'sidecar with its own respawn/circuit-breaker supervision; ledger enrolment is a P-009 follow-up'],
 
   // ── gym / bench harnesses: throwaway rigs, torn down by their own runner ──
-  ['packages/operator-core/lib/gym/ab-run.ts', 'gym rig, torn down by its own runner'],
-  ['packages/operator-core/lib/gym/blueprint-cycle.ts', 'gym rig'],
-  ['packages/operator-core/lib/gym/smoke.ts', 'gym rig'],
-  ['packages/operator-core/lib/gym/autoloop-cycle.ts', 'gym rig'],
-  ['packages/operator-core/lib/gym/wake-mode.ts', 'gym rig'],
-  ['packages/operator-core/lib/behaviour-suite/runner-node.ts', 'behaviour-suite rig'],
-  ['packages/operator-core/lib/harness/routines/p2p-perf-actions.ts', 'perf rig'],
-  ['packages/operator-core/lib/harness/routines/cargo-test-action.ts', 'cargo test run'],
-  ['libs/papercusp/packages/orchestrator/src/scratch-env.ts', 'scratch env for a throwaway harness'],
+  ['packages/operator-core/lib/gym/ab-run.ts', 'gym A/B rig: bounded, torn down by its own runner at the end of the cycle, never outlives it'],
+  ['packages/operator-core/lib/gym/blueprint-cycle.ts', 'gym blueprint cycle: bounded rig torn down by its own runner when the cycle ends'],
+  ['packages/operator-core/lib/gym/smoke.ts', 'gym smoke rig: own process group purely so teardown can kill the npx->node tree'],
+  ['packages/operator-core/lib/gym/autoloop-cycle.ts', 'gym autoloop cycle: bounded rig torn down by its own runner'],
+  ['packages/operator-core/lib/gym/wake-mode.ts', 'gym wake-mode rig: bounded, torn down by its own runner'],
+  ['packages/operator-core/lib/behaviour-suite/runner-node.ts', 'behaviour-suite runner: a bounded test rig whose lifetime is the suite run itself'],
+  ['packages/operator-core/lib/harness/routines/p2p-perf-actions.ts', 'p2p perf bench: a bounded advisory run, reaped by the routine that started it'],
+  ['packages/operator-core/lib/harness/routines/cargo-test-action.ts', 'cargo test run: bounded by the test command, reaped by the routine that started it'],
+  ['libs/papercusp/packages/orchestrator/src/scratch-env.ts', 'scratch env for a throwaway harness; the harness lifecycle owns teardown, not the ledger'],
 
   // ── release/deploy: detached BY DESIGN so it survives the operator restart ─
   ['packages/operator-core/lib/harness/routines/release-actions.ts', 'release cut must survive the operator restart it performs — a ledger row the operator owns cannot outlive it'],
-  ['packages/operator-core/lib/endpoint-route/routes/admin/run.ts', 'admin-triggered script run'],
+  ['packages/operator-core/lib/endpoint-route/routes/admin/run.ts', 'admin-triggered script run, owned by the admin request that started it and killed with it'],
 
   // ── media/device pipelines: lifetime bound to a stream, not a task ───────
   ['packages/operator-core/lib/voice-node/screen-track/screen-capture-source.ts', 'capture pipeline bound to a live stream'],

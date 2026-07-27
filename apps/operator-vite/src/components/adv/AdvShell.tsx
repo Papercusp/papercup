@@ -990,8 +990,23 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
            those "3D" treatments are hard to read. The large top tab strip
            lives in .pc-advshell__header (page-level nav, a different
            category) and is intentionally NOT affected. Focus-visible rings
-           are preserved for keyboard a11y. See /internal/docs/design#buttons. */
-        .pc-advshell__body :is(button, [role="button"]):not(:focus-visible) {
+           are preserved for keyboard a11y. See /internal/docs/design#buttons.
+
+           EI-18772095428507037 — the [data-shadow-ok] opt-out. This reset is
+           `!important` on a DESCENDANT selector, so it silently beat every
+           box-shadow any component inside the shell body declared, no matter
+           what that component's own stylesheet said. It failed invisibly:
+           no console warning, the losing rule sits right there in the CSS file
+           and in devtools' stylesheet list, and unit tests cannot read computed
+           style — so an author reasonably concluded their shadow worked. It was
+           only found by reading computed style in a live shell, where
+           .hud__tab--on's 1px board-bridge shadow computed to `none`.
+
+           The blanket ban was too broad because it cannot tell a DECORATIVE
+           bevel (what it exists to kill) from a STRUCTURAL hairline (a tab
+           bridging its panel's border). Opting in with `data-shadow-ok` is that
+           distinction, made explicit at the call site and greppable. */
+        .pc-advshell__body :is(button, [role="button"]):not(:focus-visible):not([data-shadow-ok]) {
           box-shadow: none !important;
         }
         .pc-advshell__body :is(button, [role="button"]):hover,

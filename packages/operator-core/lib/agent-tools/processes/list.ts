@@ -70,6 +70,7 @@ export default defineTool({
         degraded: tick.degraded,
         degradedReason: tick.degradedReason,
         scannedProcesses: tick.scan.processes,
+        foreignTruncated: tick.scan.foreignTruncated,
         unaccountedGroups: tick.result.unaccounted.map((g) => ({
           cgroupPath: g.cgroupPath,
           pids: g.pids,
