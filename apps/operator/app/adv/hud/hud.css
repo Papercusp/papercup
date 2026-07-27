@@ -97,8 +97,19 @@
   color: var(--fg);
   background: var(--bg);
   border-color: var(--border);
-  /* Sits on top of .hud__tabs' border-bottom, so the tab and the board below it
-     read as one continuous surface. */
+  /* The tab must sit ON TOP of .hud__tabs' border-bottom so it and the board
+     below read as one continuous surface. That bridge is delivered by
+     `margin-bottom:-1px` + `border-bottom:none` on .hud__tab (base rule) plus
+     THIS opaque background — the -1px pulls the tab over the strip's 1px border
+     and the background paints it out. Do NOT remove either: they are the
+     load-bearing pair.
+     The box-shadow below is a belt-and-braces duplicate of the same 1px and is
+     INERT inside /adv — verified live 2026-07-27: an inline global
+       .pc-advshell__body :is(button,[role=button]):not(:focus-visible)
+         { box-shadow: none !important }
+     strips it (computed box-shadow reads `none` there). Kept only for the
+     non-adv consumer of this sheet (SessionChatModal imports hud.css), where it
+     is not overridden. Never rely on it for the bridge. */
   box-shadow: 0 1px 0 0 var(--bg);
 }
 .hud__tab--on:hover { background: var(--bg); }
