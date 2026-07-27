@@ -34,8 +34,24 @@
  * `Quillon` is fictional and deliberately NOT in PLACEHOLDER_NAMES, so it must be
  * DETECTED; `Jane` IS a placeholder, so it must be IGNORED. Never substitute a real
  * contributor's name for either.
+ *
+ * THE SAME RULE NOW APPLIES TO TWO MORE CLASSES (EI-18759401203875869). The hook grew from one
+ * identity class to three, and each new class's fixtures are self-referential in the same way:
+ *
+ *   - CLASS 2 (hardcoded home paths) — a literal `/home/<user>/…` in this file fails
+ *     lint:no-box-identity. So `HOME`/`MUNGED`/`USER_SEG` below are assembled at runtime, exactly
+ *     like `NAME`. Inlining any of them re-arms the trap.
+ *   - CLASS 3 (bare box-identity literals) — a fixture CANNOT spell this box's git name, email,
+ *     hostname or OS account without failing lint:no-identity-literals. Two consequences, both
+ *     deliberate: the detector-level tests pass SYNTHETIC literals (which is why
+ *     `findIdentityLiterals` takes them as a parameter instead of resolving internally), and the
+ *     one hook-level test that must use a REAL literal reads it from the environment at run time
+ *     and never writes it down. On a bare/CI box where nothing resolves, that test skips — the
+ *     same documented no-op the gate lint has.
  */
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runHookProcess } from './spawn-hook';
 
@@ -47,12 +63,50 @@ const DETECTOR = join(REPO_ROOT, 'scripts', 'lib', 'identity-leak-patterns.mjs')
 /** Split so this file never contains a literal named tag — see the header. */
 const NAME = `Quill${'on'}`;
 
+/** Split so this file never contains a literal home path / munged home path — see the header. */
+const HOME = `/ho${'me'}`;
+const MUNGED = `-ho${'me'}`;
+const USER_SEG = `quill${'on'}`;
+
+/** The gate's OWN identity-lint family list, so a fourth class cannot be added there without
+ *  being given edit-time coverage here. `{ script: '…', label: '…' }` is unique to that block. */
+const GATE = join(REPO_ROOT, 'apps', 'operator', 'lib', 'release', 'green-checkpoint.ts');
+function gateIdentityLints(): string[] {
+  const src = readFileSync(GATE, 'utf8');
+  return [...src.matchAll(/\{ script: '(lint:[^']+)', label: '/g)].map((m) => m[1]);
+}
+
+/**
+ * Does a real box identity resolve here? A non-empty `git config user.name` is enough: unlike the
+ * OS account and hostname, the resolver applies no exclusion list to it, so it always becomes a
+ * hunted literal. Empty ⇒ the bare/CI box no-op, and the one test that needs a real literal skips.
+ */
+const BOX_GIT_NAME = (() => {
+  try {
+    return execFileSync('git', ['config', '--get', 'user.name'], { encoding: 'utf8', timeout: 5000 }).trim();
+  } catch {
+    return '';
+  }
+})();
+
 type Leak = { line: number; name: string; form: 'bracket' | 'paren'; text: string };
+type PathLeak = { line: number; user: string; text: string };
+type LiteralLeak = { line: number; key: string; text: string };
 interface Detector {
   findOwnerNameLeaks(text: string): Leak[];
+  findBoxIdentityPaths(text: string): PathLeak[];
+  findIdentityLiterals(
+    text: string,
+    entries: [string, string][],
+    opts?: { vendor?: boolean },
+  ): LiteralLeak[];
+  resolveIdentityLiterals(): Record<string, string>;
   isSkippedPath(file: string): boolean;
+  isSkippedPathForIdentityLiterals(file: string): boolean;
   renderLeak(f: Leak): string;
   FIX_HINT: string;
+  BOX_IDENTITY_FIX_HINT: string;
+  IDENTITY_LITERAL_FIX_HINT: string;
 }
 const loadDetector = (): Promise<Detector> => import(DETECTOR) as Promise<Detector>;
 
