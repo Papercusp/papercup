@@ -250,9 +250,28 @@ describe('P-016: agent.goal registers under the D-038 contract', () => {
 
   /** Axis 2. A held-nothing agent has no goal, and the competing claims must be
    *  hoisted to the RESULT so a caller who skips `agreement` still cannot miss them. */
-  it('is nullable and hoists the competing claims', () => {
+  it('is nullable and hoists the reason there is no goal', () => {
     expect(AGENT_GOAL_CELL.nullable).toBe(true);
-    expect(AGENT_GOAL_CELL.unknownHoist).toBe('goal.competing');
+    expect(AGENT_GOAL_CELL.unknownHoist).toBe('goalUnknown');
+  });
+
+  /**
+   * ⚠ THE REGRESSION THIS PINS, and it is not cosmetic. `valueAtPath` returns
+   * `undefined` the moment ANY path segment is null, so a nested headline like
+   * `goal.ref` would make `readCell` answer `insufficient-data` for every agent
+   * holding nothing — and that code's message tells the reader the resolver's
+   * shape has "drifted apart" from the cell. A confidently wrong diagnosis of the
+   * most ordinary case there is. Flattened, the same case reads `value: null`.
+   *
+   * Anyone "tidying" this back under the `goal` object reintroduces it silently,
+   * because every fixture with a goal still passes.
+   */
+  it('keeps the headline path FLAT so a goal-less agent reads null, not a fake drift error', () => {
+    expect(AGENT_GOAL_CELL.headline).toBe('goalRef');
+    expect(AGENT_GOAL_CELL.headline).not.toContain('.');
+    if (AGENT_GOAL_CELL.changeSignal.kind !== 'poll') throw new Error('expected a poll cell');
+    expect(AGENT_GOAL_CELL.changeSignal.path).toBe('goalRef');
+    expect(AGENT_GOAL_CELL.changeSignal.path).not.toContain('.');
   });
 
   /**
@@ -274,7 +293,7 @@ describe('P-016: agent.goal registers under the D-038 contract', () => {
     expect(AGENT_GOAL_CELL.changeSignal).toEqual({
       kind: 'poll',
       tool: 'coord:goal',
-      path: 'goal.ref',
+      path: 'goalRef',
     });
   });
 

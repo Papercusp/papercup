@@ -449,7 +449,7 @@ export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
 export const AGENT_GOAL_CELL: CellSpec = {
   cell: 'agent.goal',
   owner: 'unified-agent-state-plane-2026-07-27',
-  headline: 'goal.ref',
+  headline: 'goalRef',
 
   /**
    * Axis 1. NOT staleness — `HolderContext` rule (e) already carries that, and
@@ -477,11 +477,19 @@ export const AGENT_GOAL_CELL: CellSpec = {
    * they are enumerated at the result level (D-039).
    */
   nullable: true,
-  unknownHoist: 'goal.competing',
+  unknownHoist: 'goalUnknown',
 
   /** Axis 3. Relative to WHICH AGENT you are asking about — the cell cell-read.ts
    *  names as the motivating example for the `subject` parameter. */
   callerRelativity: { kind: 'parameter', param: 'ownerId' },
+
+  /* ⚠ WHY THE HEADLINE IS TOP-LEVEL `goalRef` AND NOT `goal.ref`. `valueAtPath`
+   * returns `undefined` as soon as any path segment is null, so a nested path
+   * against a goal-less agent (`goal: null`) makes `readCell` answer
+   * `insufficient-data` — a code whose message says the resolver's shape has
+   * "drifted apart" from the cell. That would be a confidently WRONG diagnosis of
+   * the most ordinary case there is: an agent holding nothing. Flattened, the same
+   * case reads `value: null`, and `goalUnknown` carries the reason. */
 
   /**
    * Axis 4. Live-exercised against the real fleet BEFORE the resolver was
@@ -517,10 +525,10 @@ export const AGENT_GOAL_CELL: CellSpec = {
   visibility: { kind: 'workspace' },
   federation: { kind: 'local' },
 
-  changeSignal: { kind: 'poll', tool: 'coord:goal', path: 'goal.ref' },
+  changeSignal: { kind: 'poll', tool: 'coord:goal', path: 'goalRef' },
 
   shape:
-    '{ ownerId, goal: { ref, source, declaredAt, corroboratedBy, competing[], agreement } | null }',
+    '{ ownerId, goalRef: string|null, goalUnknown: "nothing-held"|null, goal: { ref, source, declaredAt, corroboratedBy, competing[], agreement } | null }',
 
   /**
    * Axis 6 is deliberately ABSENT. A goal has no stage order — the four SOURCES

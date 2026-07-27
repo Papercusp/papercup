@@ -239,7 +239,19 @@ export function resolveAgentGoal(candidates: GoalCandidates): ResolvedGoal | nul
     declaredAt: string | null,
     corroboratedBy: string | null,
   ): ResolvedGoal => {
-    const competing = [...allRefs].filter((r) => r !== ref && r !== corroboratedBy).sort();
+    const competing = [...allRefs]
+      .filter((r) => r !== ref && r !== corroboratedBy)
+      // ⚠ A FLEET MISSION IS A CONTAINER, NOT A COMPETITOR — measured, not assumed.
+      // Running the resolver over the live fleet, 12 of 16 owners came back
+      // `divergent`, but NINE of those were nothing more than "holds a work-item
+      // AND belongs to a fleet". That is the normal state of every fleet member,
+      // so counting it as divergence makes the signal fire constantly and mean
+      // nothing — the same cry-wolf failure D-091 caught in P-010's trigger.
+      // A mission is the context the work happens IN; only same-granularity
+      // ITEM claims can genuinely be the goal instead of one another. The fleet
+      // is one `fleet:status` call away and is not lost by omitting it here.
+      .filter((r) => r !== fleetRef)
+      .sort();
     return {
       ref,
       source,

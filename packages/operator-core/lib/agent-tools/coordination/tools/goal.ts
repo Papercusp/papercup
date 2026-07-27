@@ -61,11 +61,29 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             ownerId,
+            /**
+             * ⚠ HOISTED TO THE TOP LEVEL DELIBERATELY — this is the cell's
+             * declared `changeSignal.path`, and nesting it would break the read.
+             * `valueAtPath` returns `undefined` the moment any segment is null,
+             * so a path of `goal.ref` against a goal-less agent (`goal: null`)
+             * would make `readCell` report `insufficient-data` — whose message
+             * says the resolver's shape has "drifted apart" from the cell. That
+             * is a FALSE diagnosis of the most ordinary case there is: an agent
+             * holding nothing. Hoisted, the same case reads as `value: null`,
+             * which is honest and is what the other nullable cells do.
+             */
+            goalRef: goal?.ref ?? null,
+            /**
+             * Axis 2's hoist. A null `goalRef` is not self-explaining, and the
+             * caller who skips the detail object is exactly the one who would
+             * read the null as "unknown/broken" rather than "holds nothing".
+             * Named to match `ClaimHolder.goalUnknown`, which already draws this
+             * distinction for the reader-independent projection.
+             */
+            goalUnknown: goal ? null : 'nothing-held',
             goal,
-            // A null goal is an HONEST unknown and must not read as a failure:
-            // the agent genuinely holds nothing. Saying so in prose keeps a
-            // human-facing surface from rendering a bare `null`, while `goal`
-            // stays branchable because prose cannot be branched on.
+            // Prose for a human-facing surface. `goal`/`goalRef` stay branchable
+            // because prose cannot be branched on.
             summary: goal
               ? `${ownerId} → ${goal.ref} (${goal.source}, ${goal.agreement})`
               : `${ownerId} holds no work-item, plan-item claim or fleet mission, so there is no goal to report. That is an honest "nothing declared", not a failed read.`,
