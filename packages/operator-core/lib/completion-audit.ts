@@ -35,6 +35,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY, type CompletionVerificationEvidence } from './coord-lifecycle/records';
+import type { WorkItemCompletionAuthority } from './work-item-completion-authority';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -261,6 +262,38 @@ function intermittentUnderevidencedWhereSql(sql: OrgSql, titleExpr: unknown, tes
       OR COALESCE(${testsRunExpr as string}, '') ~* ${INTERMITTENT_EVIDENCE_SQL_RE}
     )
   )`;
+}
+
+/**
+ * P-013 — the completion-AUTHORITY filter value: one of the judgements P-004 stamps, or
+ * `'unjudged'` for a close that carries none (`authority IS NULL`).
+ */
+export type CompletionAuthorityFilter = WorkItemCompletionAuthority | 'unjudged';
+
+/**
+ * The completion-authority WHERE fragment, `alias`-qualified when the caller joins.
+ *
+ * Centralized for the SAME reason {@link auditPredicateSql} is (EI-10867): this predicate
+ * is repeated across five call sites — listWorkItems/countWorkItems (feature family) and
+ * listIssues/countIssues/countIssuesByState (issue family, two of them alias-qualified) —
+ * and a hand-pasted copy in any one of them is how a read and its own COUNT companion
+ * silently start answering different questions. One definition, five callers.
+ *
+ * Callers AND this with their own terminal-state predicate; the two families spell the
+ * state column differently (`status` vs `state`), which is why that half stays outside.
+ * Terminal-scoping is NOT optional: an open row has `authority` NULL by construction, so
+ * an unscoped `'unjudged'` query returns the whole open backlog and reads as mass
+ * under-evidencing instead of a measurement of closes.
+ */
+export function completionAuthorityPredicateSql(
+  sql: OrgSql,
+  authority: CompletionAuthorityFilter,
+  alias?: string,
+) {
+  const col = alias ? sql.unsafe(`${alias}.authority`) : sql.unsafe('authority');
+  return authority === 'unjudged'
+    ? sql`${col as string} IS NULL`
+    : sql`${col as string} = ${authority}`;
 }
 
 /**

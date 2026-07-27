@@ -46,7 +46,12 @@ import { resolveProject } from './harness-core';
 import { mintFixFeatureRow } from './promote-issue';
 import type { Issue as PipelineIssue } from './harness/issue-types';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
-import { auditPredicateSql, auditPredicateSqlFor, type CompletionAudit } from './completion-audit';
+import {
+  auditPredicateSql,
+  auditPredicateSqlFor,
+  completionAuthorityPredicateSql,
+  type CompletionAudit,
+} from './completion-audit';
 import { dedupSignature } from './harness/improvements/digest';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import {
@@ -831,11 +836,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        -- filter reads as catastrophic under-evidencing instead of measuring closes.
        AND ${
          filter.completionAuthority
-           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${
-               filter.completionAuthority === 'unjudged'
-                 ? sql`authority IS NULL`
-                 : sql`authority = ${filter.completionAuthority}`
-             })`
+           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
            : sql`TRUE`
        }
        -- EI-10422: mirrors observationLaneExclusionSql (work-items.ts) — the self-select
@@ -885,6 +886,12 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSqlFor(sql, filter.audit, 'ei')})`
              : sql`TRUE`
          }
+         -- P-013: completion-authority filter, alias-qualified for the topic-joined branch.
+         AND ${
+           filter.completionAuthority
+             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
+             : sql`TRUE`
+         }
          AND ${filter.excludeObservationLane ? sql`COALESCE(ei.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
     return rows[0]?.n ?? 0;
   }
@@ -905,6 +912,13 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        AND ${
          filter.audit
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+           : sql`TRUE`
+       }
+       -- P-013: completion-authority filter — mirrors listIssues so this COUNT and the LIST
+       -- it pairs with can never answer different questions.
+       AND ${
+         filter.completionAuthority
+           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
            : sql`TRUE`
        }
        AND ${filter.excludeObservationLane ? sql`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
@@ -961,6 +975,12 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSqlFor(sql, filter.audit, 'ei')})`
              : sql`TRUE`
          }
+         -- P-013: completion-authority filter, alias-qualified for the topic-joined branch.
+         AND ${
+           filter.completionAuthority
+             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
+             : sql`TRUE`
+         }
          AND ${filter.excludeObservationLane ? sql`COALESCE(ei.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}
        GROUP BY ei.state`
     : await sql<{ state: string | null; n: number }[]>`
@@ -982,6 +1002,13 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${
            filter.audit
              ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+             : sql`TRUE`
+         }
+         -- P-013: completion-authority filter — keeps this histogram's WHERE identical to
+         -- countIssues', which its own contract requires.
+         AND ${
+           filter.completionAuthority
+             ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
              : sql`TRUE`
          }
          AND ${filter.excludeObservationLane ? sql`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}
@@ -1031,6 +1058,12 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSqlFor(sql, filter.audit, 'ei')})`
              : sql`TRUE`
          }
+         -- P-013: completion-authority filter, alias-qualified for the topic-joined branch.
+         AND ${
+           filter.completionAuthority
+             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
+             : sql`TRUE`
+         }
       GROUP BY kind`;
     const result: Record<string, number> = {};
     for (const row of rows) {
@@ -1056,6 +1089,12 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
        AND ${
          filter.audit
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+           : sql`TRUE`
+       }
+       -- P-013: completion-authority filter — mirrors the other issue-family reads.
+       AND ${
+         filter.completionAuthority
+           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
            : sql`TRUE`
        }
     GROUP BY kind`;

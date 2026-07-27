@@ -70,7 +70,7 @@ import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
 import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
 import { COMPLETION_ATTESTATIONS_KEY, TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
-import { auditPredicateSql, type CompletionAudit } from './completion-audit';
+import { auditPredicateSql, completionAuthorityPredicateSql, type CompletionAudit } from './completion-audit';
 import type { CompletionAttestation, CompletionVerificationEvidence } from './coord-lifecycle/records';
 import {
   isSufficientEvidence,
@@ -698,11 +698,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
          -- backlog and read as mass under-evidencing rather than a measurement of closes.
          AND ${
            filter.completionAuthority
-             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${
-                 filter.completionAuthority === 'unjudged'
-                   ? sql`authority IS NULL`
-                   : sql`authority = ${filter.completionAuthority}`
-               })`
+             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
              : sql`TRUE`
          }
        ORDER BY ${filter.orderByRank ? sql`assignee_rank ASC NULLS LAST, updated_ts DESC` : sql`updated_ts DESC NULLS LAST`}
@@ -799,11 +795,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
          }
          AND ${
            filter.completionAuthority
-             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${
-                 filter.completionAuthority === 'unjudged'
-                   ? sql`authority IS NULL`
-                   : sql`authority = ${filter.completionAuthority}`
-               })`
+             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
              : sql`TRUE`
          }`;
     total += rows[0]?.n ?? 0;

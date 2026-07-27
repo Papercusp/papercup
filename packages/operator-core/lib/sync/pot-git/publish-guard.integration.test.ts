@@ -423,7 +423,7 @@ describe('pot-git publish-guard (real bare repo)', () => {
           'src/multiline.ts': 'const line = 1;\n'.repeat(500),
           // Content with NUL bytes: must be SKIPPED as binary, and the frame
           // AFTER it must still be read at the correct byte offset.
-          'assets/blob.bin': 'PK  binary payload '.repeat(50),
+          'assets/blob.bin': 'PK\x00\x00binary\x00payload\x00'.repeat(50),
           // Secret on LINE 3, never line 1 — see the equivalence test above. A
           // parser that truncated each blob at its first newline would miss it
           // regardless of the order git enumerates the range in, so this
