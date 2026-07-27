@@ -141,15 +141,38 @@ function deepEq(a: unknown, b: unknown): boolean {
 }
 
 /** Evaluate `observed <op> value`. Numeric ops coerce both sides via Number()
- *  and are false on non-finite operands (never throw on a shape surprise). */
+ *  and are false on non-finite operands (never throw on a shape surprise).
+ *
+ *  ⚠ ABSENT EVIDENCE MUST NEVER SATISFY A PREDICATE. A watch fires a WAKE, so a
+ *  spurious true is not a vague answer — it is a false all-clear that resumes an
+ *  agent on a condition that was never established. Every op is therefore false
+ *  on an absent observation unless absence is what you explicitly asked about:
+ *
+ *    - `exists`  — the explicit way to ask "is there a value at all".
+ *    - `eq` with `value: null` — the explicit way to ask "is it UNKNOWN".
+ *    - `gt/gte/lt/lte` — already false via the non-finite guard.
+ *    - `contains` — already false on a non-string/non-array.
+ *    - `ne`      — see below.
+ *
+ *  `ne` is the one that bit: it is the natural way to write a readiness wait
+ *  ("wake me when `blocked` is no longer true"), and a bare `!deepEq` made BOTH
+ *  `null` (a 3-valued cell reporting UNKNOWN) and `undefined` (a MISSPELLED
+ *  path) compare not-equal, so the watch fired immediately and the caller could
+ *  not tell that wake from a real one. A typo'd path was a guaranteed instant
+ *  false wake. This is the same defect class as `systemctl is-active` printing
+ *  `inactive` for a unit that does not exist — see systemd-service-probe.ts.
+ *  To wait for "definitely not X", the observation must BE something. */
 export function comparePredicate(observed: unknown, op: PredicateOp, value: unknown): boolean {
+  const absent = observed === undefined || observed === null;
   switch (op) {
     case 'exists':
-      return observed !== undefined && observed !== null;
+      return !absent;
     case 'eq':
       return deepEq(observed, value);
     case 'ne':
-      return !deepEq(observed, value);
+      // Absence establishes nothing, so it can never satisfy "is not X".
+      // Ask about absence with `exists`, or about UNKNOWN with `eq value:null`.
+      return !absent && !deepEq(observed, value);
     case 'gt':
     case 'gte':
     case 'lt':

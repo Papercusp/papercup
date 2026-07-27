@@ -65,6 +65,30 @@ describe('comparePredicate', () => {
     expect(comparePredicate([{ id: 1 }], 'contains', { id: 2 })).toBe(false);
     expect(comparePredicate(42, 'contains', 4)).toBe(false);
   });
+
+  // A watch fires a WAKE, so a spurious true is a false all-clear that resumes an
+  // agent on a condition never established. `ne` is the natural readiness idiom
+  // ("wake me when `blocked` is no longer true") and used to fire on BOTH an
+  // UNKNOWN (null) and a MISSPELLED path (undefined).
+  it('ne — an absent observation never satisfies "is not X"', () => {
+    expect(comparePredicate(true, 'ne', true)).toBe(false); // genuinely still blocked
+    expect(comparePredicate(false, 'ne', true)).toBe(true); // genuinely unblocked — the only true
+    expect(comparePredicate(null, 'ne', true)).toBe(false); // 3-valued UNKNOWN establishes nothing
+    expect(comparePredicate(undefined, 'ne', true)).toBe(false); // misspelled path
+  });
+
+  it('ne — a typo\'d dot-path cannot manufacture a wake', () => {
+    const cell = { blocked: null as boolean | null, health: 'advancing' };
+    expect(valueAtPath(cell, 'blocekd')).toBeUndefined();
+    expect(comparePredicate(valueAtPath(cell, 'blocekd'), 'ne', true)).toBe(false);
+  });
+
+  it('asking about absence stays explicit — exists, and eq against null', () => {
+    expect(comparePredicate(null, 'exists', undefined)).toBe(false);
+    expect(comparePredicate(null, 'eq', null)).toBe(true); // "is it UNKNOWN?" — yes
+    expect(comparePredicate(false, 'eq', null)).toBe(false); // a known false is not unknown
+    expect(comparePredicate(undefined, 'eq', null)).toBe(false); // a missing path is not a reported unknown
+  });
 });
 
 describe('extractToolPayload', () => {

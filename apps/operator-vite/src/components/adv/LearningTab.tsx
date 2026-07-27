@@ -15,6 +15,8 @@ import { useSyncQuery } from "@papercusp/sync";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
   AlertTriangle,
+  ChevronDown,
+  ChevronRight,
   RefreshCw,
   ShieldCheck,
   UserRound,
@@ -1703,6 +1705,20 @@ function GymView({
   onStatus?: (status: LearningViewStatus) => void;
 }) {
   const openArming = useOpenArming();
+  // Collapsed challenger role groups — comma-separated roles, in the URL so the
+  // view is shareable and agent-readable (repo convention: user-meaningful state
+  // goes in nuqs, never useState).
+  const [collapsedRolesRaw, setCollapsedRoles] = useQueryState("gymroles", parseAsString);
+  const collapsedRoles = useMemo(
+    () => new Set((collapsedRolesRaw ?? "").split(",").map((s) => s.trim()).filter(Boolean)),
+    [collapsedRolesRaw],
+  );
+  const toggleRole = (role: string) => {
+    const next = new Set(collapsedRoles);
+    if (next.has(role)) next.delete(role);
+    else next.add(role);
+    void setCollapsedRoles(next.size ? [...next].sort().join(",") : null);
+  };
   // P-042: scope the gym rollup to one hive's gym harness; '' ⇒ the whole
   // workspace (every gym harness). Gated on hiveReady (WI-5412) so the first
   // click never pays a wrong-lens fetch + refetch.
@@ -1789,6 +1805,35 @@ function GymView({
     const carded = new Set(proposals.map((p) => p.variantId).filter(Boolean) as string[]);
     return runs.filter((r) => !carded.has(r.variantId));
   }, [runs, proposals]);
+
+  /**
+   * Cards stay GROUPED BY ROLE (owner ask 2026-07-27: "why are the new cards not
+   * collapsed by type like previously") — the flat grid lost the per-role stacks
+   * the CardStack decks gave. Group ordering is by RECENCY of the group's newest
+   * challenger, not by size, so the role the gym is actually working on leads;
+   * within a group cards stay newest-first. Each group collapses (state in nuqs
+   * per repo convention, so it is shareable + agent-visible).
+   */
+  const challengerGroups = useMemo(() => {
+    const byRole = new Map<string, typeof challengerCards>();
+    for (const entry of challengerCards) {
+      const role = entry.p.role || "unknown";
+      const bucket = byRole.get(role);
+      if (bucket) bucket.push(entry);
+      else byRole.set(role, [entry]);
+    }
+    return [...byRole.entries()]
+      .map(([role, items]) => ({
+        role,
+        items,
+        accent: lensColor(role),
+        newestAt: items.reduce<number | null>((acc, { p, run }) => {
+          const when = p.createdAt ?? run?.finishedAt ?? null;
+          return when != null && (acc == null || when > acc) ? when : acc;
+        }, null),
+      }))
+      .sort((a, b) => (b.newestAt ?? 0) - (a.newestAt ?? 0) || a.role.localeCompare(b.role));
+  }, [challengerCards]);
   const t = useLexicon();
   const running = activeAutoloops.length;
   useEffect(() => {
@@ -2014,8 +2059,43 @@ function GymView({
                   silently doing overview duty; a grid is the overview AND the
                   detail, so both jobs are done once. Role moves onto the card as
                   a chip + accent, so the per-role grouping information survives. */}
+              {challengerGroups.map((group) => {
+                const collapsed = collapsedRoles.has(group.role);
+                return (
+                  <section
+                    key={group.role}
+                    className="pc-learning__gymrolegroup"
+                    aria-label={`${group.role} challengers`}
+                  >
+                    <button
+                      type="button"
+                      className="pc-learning__gymrolehead"
+                      style={{ borderLeftColor: group.accent }}
+                      onClick={() => toggleRole(group.role)}
+                      aria-expanded={!collapsed}
+                      title={`${collapsed ? "Expand" : "Collapse"} the ${group.role} challengers`}
+                    >
+                      {collapsed ? (
+                        <ChevronRight size={12} aria-hidden />
+                      ) : (
+                        <ChevronDown size={12} aria-hidden />
+                      )}
+                      <span
+                        className="pc-learning__gymrolename"
+                        style={{ color: group.accent }}
+                      >
+                        {group.role}
+                      </span>
+                      <span className="pc-learning__chip">{group.items.length}</span>
+                      {group.newestAt != null ? (
+                        <span className="pc-learning__age">
+                          newest {whenLabel(group.newestAt)}
+                        </span>
+                      ) : null}
+                    </button>
+                    {collapsed ? null : (
               <div className="pc-learning__gymcardgrid">
-                {challengerCards.map(({ p, run }) => {
+                {group.items.map(({ p, run }) => {
                   const role = p.role || "unknown";
                   const accent = lensColor(role);
                   const delta = deltaLabel(p.devAnchorDelta);
@@ -2118,6 +2198,10 @@ function GymView({
                   );
                 })}
               </div>
+                    )}
+                  </section>
+                );
+              })}
             </>
           ) : null}
           {/* WI-5412 item 4: the gym-rail pills in Ideas reference Scout-SEEDED
@@ -5391,6 +5475,19 @@ export function LearningStyles() {
       .pc-learning__gymcard {
         min-width: 0; border-left: 3px solid var(--border, #2a2a2a);
         border-radius: 8px; background: var(--bg-1, #0b1220);
+      }
+      /* Per-role challenger groups (owner ask 2026-07-27) — the stacks the
+         CardStack decks used to give, but collapsible instead of 1-of-N. */
+      .pc-learning__gymrolegroup { margin-top: 8px; min-width: 0; }
+      .pc-learning__gymrolehead {
+        display: flex; align-items: center; gap: 8px; width: 100%;
+        padding: 4px 8px; border: 0; border-left: 3px solid var(--border, #2a2a2a);
+        border-radius: 6px; background: var(--bg-2, #0b1220);
+        color: var(--fg, #e7f7ff); cursor: pointer; text-align: left;
+      }
+      .pc-learning__gymrolehead:hover { background: var(--bg-3, #101a28); }
+      .pc-learning__gymrolename {
+        font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em;
       }
       .pc-learning__gymcard .pc-learning__gymprompt {
         max-height: 148px; overflow: auto;
