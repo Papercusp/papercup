@@ -130,8 +130,28 @@ the registry assertion stays accurate.
 - **`version`** — bump when the behavior contract changes (not when
   you tweak the description). Combined with the persona traits and
   rubric version into the `identity_hash` for trend lines.
-- **`description`** — fed verbatim into the judge prompt. Be concrete
-  about what success looks like.
+- **`description`** — fed verbatim into the judge prompt **and into the
+  sim-user's system prompt**. Be concrete about what success looks
+  like — but see the warning below before you write a single fact here.
+
+  > ⚠ **The description reaches the SUT.** `replay.ts` passes it to the
+  > sim-user (`sim-user.ts` → `buildSystemPrompt`), which is told:
+  > *"Be specific about concrete things named in the scenario (harness
+  > slugs, file paths, feature ids) — a real user would name them, not
+  > gesture."* So the sim-user will **volunteer** whatever facts you put
+  > here, in conversation, on top of your `toolOverride` world.
+  >
+  > Harmless for a scenario that only asserts behavior. **Fatal** for any
+  > scenario whose validity depends on the agent NOT knowing something —
+  > a matched A/B, an information-asymmetry test, a "does it discover X"
+  > check, any negative-knowledge control. It fails SILENTLY: the runs
+  > complete and the numbers look plausible.
+  >
+  > Rule of thumb: be concrete about **what success looks like**, never
+  > about **facts the agent is supposed to discover, or supposed not to
+  > have**. Put those only in the world. (EI-18767396817867279 — cost a
+  > scrapped 3-arm run on P-011; the `su/_S31-asymmetry-world.ts` header
+  > is a worked example.)
 - **`goal`** — the sim-user's success criterion:
   - `'user_satisfied'` — sim decides when to stop (most common)
   - `'tool_fired'` — sim succeeds as soon as the SUT calls `toolName`
@@ -306,7 +326,12 @@ the lineage is auditable.
   feature owner* and bump `version` whenever the contract changes.
 - **Don't smuggle the assertion into the prompt.** "Make sure to call
   harness:status" in the persona prompt biases the test — the persona
-  speaks as a USER would, not as a tester.
+  speaks as a USER would, not as a tester. **The `description` is the
+  second, less obvious channel:** it also becomes the sim-user's
+  scenario context, and the sim-user is instructed to name concrete
+  details from it — so a fact written there reaches the SUT just as
+  surely as one written in the persona. See the ⚠ under `description`
+  in §4.
 - **Don't N=1 a judge-heavy scenario.** With LLM variance, N=1
   pass/fail is noise. Either use N=3+ or rely entirely on
   deterministic asserts.

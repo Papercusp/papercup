@@ -84,6 +84,76 @@ export interface WirePresenceOpts {
 
 const DEFAULT_PRESENCE_INTERVAL_MS = 5_000;
 
+/** EI-18767449529288937: rate limit for the "presence not reaching peers" warning.
+ *  A permanently-unbound gossip writer re-attempts every ~30s (shouldAnnounce's
+ *  refresh window) forever, so the warning is throttled to one per 5 min after the
+ *  first — visible immediately, then steady evidence without flooding the log. */
+const BROADCAST_WARN_INTERVAL_MS = 300_000;
+
+export interface BroadcastFailureReporterOpts {
+  /** `<workspaceId>::<harnessSlug>` — names the node in the log line. */
+  label: string;
+  now: () => number;
+  /** Override the throttle window (tests). */
+  warnIntervalMs?: number;
+  /** Log seams (tests). Default console. */
+  warn?: (msg: string) => void;
+  info?: (msg: string) => void;
+}
+
+/**
+ * EI-18767449529288937 — the pure, testable core of the broadcast-failure signal.
+ *
+ * Before this, a failed presence gossip broadcast was COMPLETELY silent:
+ * `broadcastPresencePut` returns false both for an unbound writer and for a
+ * swallowed throw, and the sole call site discarded that boolean. A node could
+ * therefore be invisible to every peer with clean logs — and because the gossip
+ * path never materializes our OWN `shared_presence` row either (we return before
+ * `handle.append`), "read your own presence row" was not a self-check. Observed
+ * live on the 2-machine rig (WI-559): fed-a published to nobody, zero error lines.
+ *
+ * Returns a `note(delivered, topicHex)` sink: warns on the FIRST failure (a fault
+ * is visible at once), then at most once per `warnIntervalMs`, and reports a
+ * one-line RECOVERY when a beat lands after a failing streak — so the log carries
+ * both edges, not just the onset.
+ *
+ * Purely observational by design: it never throws and never influences the
+ * announce cadence, so a missed beat stays the TTL-absorbed miss the protocol
+ * already models.
+ */
+export function createBroadcastFailureReporter(
+  opts: BroadcastFailureReporterOpts,
+): (delivered: boolean, topicHex: string) => void {
+  const warnIntervalMs = opts.warnIntervalMs ?? BROADCAST_WARN_INTERVAL_MS;
+  const warn = opts.warn ?? ((m: string) => console.warn(m));
+  const info = opts.info ?? ((m: string) => console.info(m));
+  let failStreak = 0;
+  let lastWarnMs = 0;
+  return (delivered: boolean, topicHex: string): void => {
+    if (delivered) {
+      if (failStreak > 0) {
+        info(
+          `[wire-presence] presence broadcast RECOVERED for ${opts.label} after ` +
+            `${failStreak} consecutive failed beat(s)`,
+        );
+      }
+      failStreak = 0;
+      return;
+    }
+    failStreak += 1;
+    const nowMs = opts.now();
+    if (failStreak === 1 || nowMs - lastWarnMs >= warnIntervalMs) {
+      lastWarnMs = nowMs;
+      warn(
+        `[wire-presence] presence NOT reaching peers for ${opts.label} — ${failStreak} consecutive ` +
+          `failed gossip broadcast(s) on topic ${topicHex.slice(0, 12)}… (no bound writer for the ` +
+          `topic, or a swallowed send/sign error). This node is INVISIBLE to peers' presence, ` +
+          `lock-authority election and runner election.`,
+      );
+    }
+  };
+}
+
 /**
  * Wire + start the presence-announce loop for `handle`. Returns the loop handle
  * (its `stop` is also registered as a close-hook so teardown is automatic), or
@@ -166,6 +236,25 @@ export async function wirePresenceAnnounceForHarness(
       `gossipWriter=${gossipWriterOn ? 'on' : 'off'} topic=${gossipTopicHex ? gossipTopicHex.slice(0, 12) : 'none'} pot=${potSlug ?? 'none'}`,
   );
 
+  // EI-18767449529288937: a failed gossip broadcast used to be COMPLETELY silent —
+  // broadcastPresencePut returns false for an unbound writer (and swallows every
+  // throw into the same false), the call site discarded that boolean, and nothing
+  // counted or logged it. A node could therefore be invisible to every peer while
+  // its logs stayed clean, which is undiagnosable: the gossip path also never
+  // materializes our OWN shared_presence row (we return before handle.append), so
+  // "read your own presence row" is not a self-check either. Observed live on the
+  // 2-machine rig (WI-559) — fed-a published to nobody, with zero error lines.
+  //
+  // Deliberately OBSERVABILITY-ONLY: we do NOT change `prev` advancement. A failed
+  // beat still counts as announced, so the retry stays on the designed ~30s
+  // refresh cadence (shouldAnnounce's refreshMs) rather than every intervalMs —
+  // the TTL absorbs a missed beat by design, and turning one absorbable miss into
+  // a 6x-faster retry is a behavior change this bug does not justify.
+  const noteBroadcastResult = createBroadcastFailureReporter({
+    label: `${handle.workspaceId}::${handle.harnessSlug}`,
+    now: opts.now ?? Date.now,
+  });
+
   const loop = startPresenceAnnounceLoop({
     resolveIdentity,
     getState,
@@ -177,7 +266,7 @@ export async function wirePresenceAnnounceForHarness(
         ? async (op) => {
             const row = (op as { value?: SharedPresenceRow }).value;
             if (op.type === 'put' && row) {
-              await broadcastPresencePut(gossipTopicHex, row);
+              noteBroadcastResult(await broadcastPresencePut(gossipTopicHex, row), gossipTopicHex);
               return;
             }
             await handle.append(op); // non-put presence ops keep the log path

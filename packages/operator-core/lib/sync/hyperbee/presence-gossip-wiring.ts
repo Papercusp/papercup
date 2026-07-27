@@ -273,7 +273,18 @@ export async function broadcastPresencePut(topicHex: string, row: SharedPresence
     const frame = await buildPresencePutFrame(row, Date.now(), writer.sign);
     s.gossip.broadcast(topicHex, frame);
     return true;
-  } catch {
+  } catch (e) {
+    // EI-18767449529288937: this catch used to be fully silent, collapsing a real
+    // send/sign FAILURE into the same bare `false` as the benign "no writer bound
+    // for this topic" case. The caller can only see the boolean, so without this
+    // line an exception here is unattributable. Logged (not rethrown) so a failed
+    // beat stays a missed beat the TTL absorbs; the caller rate-limits its own
+    // consecutive-failure warning, and this fires only on the exceptional path.
+    console.warn(
+      `[presence-gossip] presence PUT broadcast threw for topic ${topicHex.slice(0, 12)}… ` +
+        `(beat dropped, TTL will absorb it):`,
+      e instanceof Error ? e.message : String(e),
+    );
     return false;
   }
 }

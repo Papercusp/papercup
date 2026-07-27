@@ -33,7 +33,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/serve-wiring.integration.test.ts
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { rm, mkdtemp } from 'node:fs/promises';
 import { createServer, connect, type Server, type Socket } from 'node:net';
 import { join } from 'node:path';
@@ -196,6 +196,80 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
     expect(rev.stdout.trim()).toBe(sha);
     const cat = await defaultRunGit(['cat-file', '-e', sha], clientRepo);
     expect(cat.code).toBe(0);
+  });
+
+  /**
+   * EI-18765930091826096 recurrence guards — THE SESSION LEAK THAT DEGRADED A
+   * PEER CHANNEL UNTIL ONLY A PROCESS RESTART CLEARED IT.
+   *
+   * Every other test in this file asserts on a fetch's RESULT, and a leaked
+   * session does not change any result — which is precisely why this defect
+   * survived to a live 2-machine rig, where it presented as "the one reachable
+   * peer returns `unexpected disconnect` on every rung, at every rung size, for
+   * 40 minutes". These assert on the SESSION MAPS instead: the state that
+   * accumulates.
+   *
+   * The mechanism they pin, in order:
+   *   1. a fetch that COMPLETES releases its session on both sides;
+   *   2. a fetch that is ABANDONED LOCALLY (the ceiling fires, git is SIGKILLed,
+   *      the caller walks away) releases it too — this is the one that leaked,
+   *      because the map was only ever pruned by REMOTE events (refuse / end
+   *      frame / channel close);
+   *   3. an abandoned duplex can no longer absorb inbound pack bytes.
+   */
+  it('EI-18765930091826096: a COMPLETED fetch leaves no session registered on either side', async () => {
+    const duplex = await openHiveGitFetchDuplex(clientNoise, TOPIC, { repoKey: 'repo-1' });
+    const res = await fetchOverDuplex(clientRepo, duplex, ['+refs/heads/work:refs/heads/work'], {
+      timeoutMs: 30_000,
+    });
+    expect(res.code, res.stderr).toBe(0);
+    // `fetchOverDuplex` OWNS the duplex's lifetime and must release it on every
+    // path. Asserted separately from the session count below, because on THIS
+    // (happy) path the peer's own end-frame already prunes the map — so the map
+    // assertion alone would stay green with the ownership fix reverted, and the
+    // ceiling path (where no end-frame ever arrives) would leak undetected.
+    expect(duplex.destroyed, 'fetchOverDuplex must release the caller duplex').toBe(true);
+    // The release is driven by stream 'close' / the serve `finally`, both of
+    // which land a tick or two after the fetch resolves.
+    await vi.waitFor(
+      () => {
+        const counts = serveTesting.sessionCounts(clientNoise, TOPIC);
+        expect(counts?.client ?? 0).toBe(0);
+      },
+      { timeout: 5_000 },
+    );
+  });
+
+  it('EI-18765930091826096: a fetch ABANDONED LOCALLY still releases its session (the leak: the map was only pruned by REMOTE events)', async () => {
+    const before = serveTesting.sessionCounts(clientNoise, TOPIC)?.client ?? 0;
+    const duplex = await openHiveGitFetchDuplex(clientNoise, TOPIC, { repoKey: 'repo-1' });
+    // The session is live now — that is what makes the assertion below meaningful
+    // rather than vacuously true against a map that was never populated.
+    expect(serveTesting.sessionCounts(clientNoise, TOPIC)?.client).toBe(before + 1);
+
+    // Abandon exactly as a ceiling-fired fetch does: no refuse, no end frame,
+    // no channel close — purely a LOCAL give-up.
+    duplex.destroy();
+
+    await vi.waitFor(
+      () => {
+        expect(serveTesting.sessionCounts(clientNoise, TOPIC)?.client).toBe(before);
+      },
+      { timeout: 5_000 },
+    );
+  });
+
+  it('EI-18765930091826096: an abandoned duplex absorbs no further pack bytes (fail-closed pushChunk)', () => {
+    const sent: Buffer[] = [];
+    const d = new serveTesting.FrameDuplex(
+      (chunk) => sent.push(chunk),
+      () => {},
+    );
+    d.destroy();
+    // The peer keeps streaming its pack at a session whose reader (git) is gone.
+    // Buffering it is what turned each failed rung into permanently-held memory.
+    expect(() => d.pushChunk(Buffer.alloc(64 * 1024, 1))).not.toThrow();
+    expect(d.readableLength).toBe(0);
   });
 
   /**

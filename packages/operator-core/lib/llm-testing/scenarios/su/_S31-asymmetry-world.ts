@@ -338,7 +338,7 @@ export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
  * mentioned, and the judge asserted "the checkpoint explicitly stated the key"
  * for an arm whose checkpoint says no such thing. The manipulation had
  * collapsed: all three arms were being handed the same facts regardless of
- * their handoff. Filed as EI-18766744707113163.
+ * their handoff. Filed as EI-18767396817867279.
  *
  * AUTHORING.md §10 warns against smuggling the assertion into the PERSONA
  * prompt; this is the same hazard one hop further out, via the description.

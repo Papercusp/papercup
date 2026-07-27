@@ -230,13 +230,36 @@ export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, upda
   if (regressions.length > 0) {
     if (changedFiles) {
       const attributed = regressions.filter((r) => changedFiles.has(r.file));
-      const peerDrift = regressions.filter((r) => !changedFiles.has(r.file));
-      // Under --mine the gate fails ONLY when a regression lands in a file you changed. Peer drift
-      // in files you did not touch is reported, not gated — that is the "verify MY change is clean"
-      // affordance (EI-1984), and it is why --mine is opt-in and never the CI default.
-      return attributed.length > 0
-        ? { verdict: 'fail-attributed', ...base, attributed, peerDrift }
-        : { verdict: 'ok-peer-drift', ...base, attributed: [], peerDrift };
+      const unattributed = regressions.filter((r) => !changedFiles.has(r.file));
+      // EI-18766822535373909 — a regression in a file with NO baseline entry is a BRAND-NEW file,
+      // and it must never be dismissed as peer drift. Two independent reasons:
+      //
+      //  1. It is not "drift" in the only sense the peer-drift affordance is safe for. That
+      //     affordance (EI-1984) exists to let pre-existing shared-tree debt flap without redding
+      //     an unrelated agent — debt the baseline already KNOWS about. A file absent from the
+      //     baseline has no known-good state to drift from; every error in it is NEW, which is
+      //     precisely what this ratchet exists to catch. Bare mode already fails it
+      //     ('fail-regressed'); only --mine was letting it through, so this closes an
+      //     inconsistency between the two modes rather than adding a new policy.
+      //  2. `changedFiles` CANNOT prove the file is not yours on this checkout. It is derived from
+      //     `git status`, and git-sync auto-commits the whole tree every few minutes — so your own
+      //     brand-new file stops being dirty, drops out of the "mine" set, and lands here. That is
+      //     exactly how this was found: a new file's real TS2352 was reported under a leading ✓ as
+      //     "peer drift — not your regression", and it would have red the green-checkpoint for the
+      //     whole fleet hours later.
+      //
+      // '(unattributed)' (errors tsc did not pin to a file) is deliberately LEFT in peerDrift: it
+      // is not a new file, and it is genuinely unattributable, so gating on it would red callers
+      // for something they cannot act on.
+      const newFiles = unattributed.filter((r) => r.file !== '(unattributed)' && !(r.file in baselineByFile));
+      const peerDrift = unattributed.filter((r) => r.file === '(unattributed)' || r.file in baselineByFile);
+      // Under --mine the gate fails when a regression lands in a file you changed, OR in a file so
+      // new the baseline has never seen it. Drift in KNOWN files you did not touch stays reported
+      // but not gated — that is the "verify MY change is clean" affordance (EI-1984), and it is why
+      // --mine is opt-in and never the CI default.
+      if (attributed.length > 0) return { verdict: 'fail-attributed', ...base, attributed, peerDrift, newFiles };
+      if (newFiles.length > 0) return { verdict: 'fail-new-file', ...base, attributed: [], peerDrift, newFiles };
+      return { verdict: 'ok-peer-drift', ...base, attributed: [], peerDrift, newFiles: [] };
     }
     return { verdict: 'fail-regressed', ...base };
   }
@@ -379,15 +402,34 @@ export function runTscBaselineGate({
     case 'fail-attributed':
       console.error(`❌ ${result.attributed.length} file(s) YOU changed added type errors above their baseline:`);
       for (const r of result.attributed) console.error(formatRow(r));
+      if (result.newFiles.length > 0) {
+        console.error(`   (also ${result.newFiles.length} NEW file(s) with errors — see below)`);
+        for (const r of result.newFiles) console.error(formatRow(r));
+      }
       if (result.peerDrift.length > 0) {
-        console.error(`   (also ${result.peerDrift.length} regressed file(s) you did NOT change — peer drift, not gated under --mine)`);
+        console.error(`   (also ${result.peerDrift.length} regressed file(s) not in your changed set — not gated under --mine)`);
       }
       process.exit(1);
       break;
+    case 'fail-new-file':
+      // EI-18766822535373909: these are files the baseline has NEVER seen. Absence from the
+      // changed set does not clear you — git-sync commits the tree every few minutes, so your own
+      // new file is dirty for only a short window. Never greenwash this one.
+      console.error(`❌ ${result.newFiles.length} NEW file(s) (not in the baseline) have type errors:`);
+      for (const r of result.newFiles) console.error(formatRow(r));
+      console.error(`   These files are new, so every error in them is new — the baseline has no known-good state to drift from.`);
+      console.error(`   They are not in your git-status changed set, but that does NOT establish they aren't yours: git-sync`);
+      console.error(`   auto-commits this shared tree every few minutes, which silently drops your own recent work out of that set.`);
+      console.error(`   If a file here really isn't yours, its author needs to know — a bare run of this gate reds the fleet on it.`);
+      console.error(`   To scope this check to exactly the files you touched, re-run with --files=<comma-separated paths>.`);
+      process.exit(1);
+      break;
     case 'ok-peer-drift':
-      console.log(`✓ Your changed files are tsc-clean. ${result.peerDrift.length} file(s) regressed in the shared tree but you did not touch them:`);
+      console.log(`✓ Your changed files are tsc-clean. ${result.peerDrift.length} file(s) already in the baseline regressed but are not in your changed set:`);
       for (const r of result.peerDrift) console.log(formatRow(r));
-      console.log(`   (peer drift — not your regression. A bare npm run of this gate will still catch these for whoever owns them.)`);
+      console.log(`   (Not gated under --mine. Note the changed set comes from git status, and git-sync auto-commits this tree`);
+      console.log(`    every few minutes — so a file you edited a while ago can appear here. Use --files= to scope precisely.`);
+      console.log(`    A bare npm run of this gate will still catch these for whoever owns them.)`);
       process.exit(0);
       break;
     case 'ok-ratchet':
