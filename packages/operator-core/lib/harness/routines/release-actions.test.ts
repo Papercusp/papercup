@@ -976,6 +976,31 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     const d = buildCheckpointDetail({ reason: 'not-green', green: false, isolationNote: 'x'.repeat(5000) });
     expect((d.isolationNote as string).length).toBe(2000);
   });
+
+  it('EI-18685041726970077: buildCheckpointDetail persists the gate lineage (candidate/tip truncated to 12, list capped)', () => {
+    const d = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      candidate: 'a'.repeat(40),
+      lineage: {
+        candidate: 'a'.repeat(40),
+        tip: 'b'.repeat(40),
+        commitsBehind: 5,
+        failingFilesChangedInRange: Array.from({ length: 30 }, (_, i) => `t${i}.test.ts`),
+      },
+    });
+    expect(d.lineage).toEqual({
+      candidate: 'a'.repeat(12),
+      tip: 'b'.repeat(12),
+      commitsBehind: 5,
+      failingFilesChangedInRange: Array.from({ length: 20 }, (_, i) => `t${i}.test.ts`),
+    });
+  });
+
+  it('buildCheckpointDetail omits lineage entirely when absent (no lineage read this run)', () => {
+    const d = buildCheckpointDetail({ reason: 'not-green', green: false, candidate: 'a'.repeat(40) });
+    expect(d.lineage).toBeUndefined();
+  });
 });
 
 describe('WI-4494: the routine defers to a run that already recorded (no double-counted reds)', () => {
