@@ -78,6 +78,35 @@ export function resetConflictJudgeWarnForTest(): void {
   _warnedJudgeUnavailable = false;
 }
 
+let _warnedPackJudgeUnavailable = false;
+
+/**
+ * One-time, leading-edge warning for the knowledge-packs conflict judge
+ * (manage.ts `realJudge()` / candidates.ts `lazyConflictJudge()`) — the OTHER
+ * consumer of `createAnthropicJudge()` besides memory:remember
+ * (EI-18746586784230719: "the same no-op judge is wired into knowledge-packs
+ * ... so pack-install conflict classification and the hive conflict sweep are
+ * equally inert"). Unlike memory:remember there is no feature flag to check —
+ * pack install/upgrade/sweep call the judge unconditionally — so the only
+ * signal that it is silently inert is this warning.
+ */
+export function warnKnowledgePackJudgeUnavailableOnce(): void {
+  if (_warnedPackJudgeUnavailable) return;
+  _warnedPackJudgeUnavailable = true;
+  if (process.env.NODE_ENV === 'test') return;
+  console.warn(
+    '[knowledge-packs] conflict/duplicate classification (classifyPackInstall, sweepHiveConflicts, ' +
+      'candidate auto-review) runs unconditionally, but no ANTHROPIC_API_KEY resolves in this process, ' +
+      'so the judge is a no-op: every item classifies as "clean"/no-pair regardless of actual conflicts. ' +
+      'Set a key (gateway-routed) to enable real conflict detection for knowledge packs.',
+  );
+}
+
+/** Test-only: reset the knowledge-packs one-time warn latch. */
+export function resetKnowledgePackJudgeWarnForTest(): void {
+  _warnedPackJudgeUnavailable = false;
+}
+
 /**
  * Build the Anthropic-backed judge. Returns a no-op judge when no
  * API key is present (caller still calls it; it just returns empty

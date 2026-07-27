@@ -100,9 +100,52 @@ export type CellRead =
        * `materiality.why` rule exists to keep auditable.
        */
       material?: { path: string; value: unknown };
+      /**
+       * D-039 — THE HOIST. Present exactly when the spec declares `unknownHoist`,
+       * which the registry allows only on a `nullable` cell (axis 2). Carries the
+       * RESULT-LEVEL unknown channel the resolver already emits — `positionsUnknown[]`,
+       * `verdictUnknown[]`, `goalUnknown` — so `value: null` is never handed to a
+       * caller with the reason stripped off.
+       *
+       * ⚠ EMITTED WHETHER OR NOT THE HEADLINE IS NULL, and that is the point rather
+       * than an oversight. The hoist is RESULT-level, not headline-level: a
+       * `git.pipelinePosition` read can answer `positions.deployed = true` while
+       * `positionsUnknown` names `inMain` as never measured. Gating the hoist on a
+       * null headline would drop exactly that case — an unknown leg hiding behind a
+       * known one, which is the shape of the defect D-039 exists to surface.
+       */
+      unknownHoist?: CellHoist;
     }
   | { status: 'unknown'; cell: string; unknown: CellUnknown }
   | { status: 'absent'; cell: string };
+
+/**
+ * The hoisted result-level unknown channel, named so a consumer can branch on it
+ * without reading the registry to learn what to look for.
+ *
+ * `key` is the declared field name (`spec.unknownHoist`) — carried rather than
+ * spliced in as a dynamic top-level key, because a caller that must first consult
+ * the spec to know which key to read is the "hurried consumer" D-039's rule is
+ * written against. A fixed field is what a caller cannot miss.
+ *
+ * `drifted` distinguishes the two ways this channel can be quiet, which demand
+ * OPPOSITE responses and are indistinguishable without it:
+ *
+ *   • absent flag, `value: []` / `null` — the resolver MEASURED and has nothing to
+ *     report. A real negative result, and the one worth trusting: a hoist that fired
+ *     on the healthy path is one agents learn to ignore.
+ *   • `drifted: true` — the declared key was NOT in the resolver's result at all.
+ *     The channel is broken, not silent. This is the failure that produced this
+ *     field (the hoist was declared on six cells, enforced at registration, and
+ *     emitted by nothing), so it is reported LOUDLY rather than omitted.
+ */
+export interface CellHoist {
+  key: string;
+  value: unknown;
+  /** True ⇒ the declared key was absent from the resolver result: registration
+   *  drift, NOT a measured silence. `value` is null and means nothing. */
+  drifted?: true;
+}
 
 /**
  * Dispatcher error code → unknown code. Explicit and total-by-fallback rather than an
@@ -246,10 +289,30 @@ export async function readCell(
     value,
     headline: spec.headline,
     resolver: spec.resolver,
+    ...(spec.unknownHoist === undefined ? {} : { unknownHoist: hoistFrom(payload, spec.unknownHoist) }),
     ...(materialPath !== undefined && materialValue !== undefined
       ? { material: { path: materialPath, value: materialValue } }
       : {}),
   };
+}
+
+/**
+ * D-039 — lift the resolver's result-level unknown channel out of the payload the
+ * dispatch ALREADY returned. Off the same payload, exactly as `material` is: axis 5
+ * (one derivation, many lenses) forbids a second call, and a hoist that cost an extra
+ * dispatch would be a hoist authors quietly stop declaring.
+ *
+ * ⚠ THE `drifted` BRANCH IS THE WHOLE REASON THIS FUNCTION IS NOT A ONE-LINER, and it
+ * is deliberately the OPPOSITE of `material`'s missing-path rule. `material` OMITS on
+ * drift, so a caller falls back to the loud reading and nothing is lost. Omitting here
+ * would reproduce the defect this fixes byte for byte: a nullable cell answering
+ * `value: null` with no reason attached, silently, forever. So a declared-but-absent
+ * hoist is REPORTED — the read still succeeds (P-026: an enrichment may never fail its
+ * caller), and the caller is told the channel is broken rather than empty.
+ */
+function hoistFrom(payload: unknown, key: string): CellHoist {
+  const hoisted = valueAtPath(payload, key);
+  return hoisted === undefined ? { key, value: null, drifted: true } : { key, value: hoisted };
 }
 
 /** Sentinel for "this cell needs a subject and none was given" — distinct from the

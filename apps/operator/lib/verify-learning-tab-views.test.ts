@@ -160,7 +160,7 @@ describe('the generated drive (the text no parser-only test ever sees)', () => {
   });
 
   it('requires the pot lens on hive-aware views and only those', () => {
-    const CLAUSE = "if(!document.querySelector('.pc-learning__hivepick'))return false;";
+    const CLAUSE = "if(!document.querySelector('.pc-learning__hivepick'))ok=false;";
     // improvements is hive-aware; signals is not. Split the drive at the second
     // view's verdict token so each half can be asserted on its own.
     const drive = generateDrive(['improvements', 'signals']);
@@ -186,6 +186,19 @@ describe('the generated drive (the text no parser-only test ever sees)', () => {
 
   it('rejects a loading placeholder as a render', () => {
     expect(generateDrive(['pipeline'])).toContain('Loading [^\\n]*');
+  });
+
+  it('DEBOUNCES the settle condition across consecutive polls', () => {
+    // Not defensive padding. The pot lens resolves BEFORE the scoped read
+    // fires, so there is a window where the chip is present and the view is not
+    // YET loading; an instantaneous check passes there and the probe lands a
+    // moment later on "Loading what the loop produced…".
+    const drive = generateDrive(['improvements']);
+    expect(drive).toContain('window.__pcSettled=(window.__pcSettled||0)+1');
+    expect(drive).toContain('window.__pcSettled>=3');
+    // It must also RESET, or a single satisfying poll anywhere in the run would
+    // latch the counter and satisfy every later check.
+    expect(drive).toContain('window.__pcSettled=0');
   });
 });
 
@@ -241,6 +254,24 @@ describe('verdict classification, end to end through the generated drive', () =>
       ['frontier'],
     );
     expect(out).toContain('STILL LOADING');
+    expect(code).toBe(1);
+  });
+
+  it('does not trust a SUCCESSFUL wait that the probe contradicts', () => {
+    // The bug this guards, caught by a real 16-view run: the loop treated a
+    // clean wait as settled without consulting the probe, so a view the probe
+    // measured as `loading=1` was reported after ONE attempt — the retry that
+    // exists precisely for this never ran. waitExit=0 + loading=1 is that exact
+    // shape: the wait concluded, and the measurement disagrees.
+    const { out, code } = runGate(
+      ['improvements|0|VERDICT~improvements~pane=1~visible=improvements~boundary=0~scoped=1~loading=1~chars=300'],
+      ['improvements'],
+    );
+    expect(out).toContain('STILL LOADING');
+    // It must have spent its retries rather than concluding on the first pass.
+    // runGate pins VERIFY_LEARNING_PAINT_ATTEMPTS=2, so a correct loop reports
+    // x2; the bug reported x1, which is the whole point of asserting the count.
+    expect(out).toMatch(/STILL LOADING after \d+s x2/);
     expect(code).toBe(1);
   });
 

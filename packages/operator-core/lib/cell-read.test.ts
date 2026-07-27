@@ -29,6 +29,7 @@ vi.mock('./events/await/predicate-watch', async (importOriginal) => {
 });
 
 import { readCell, unknownForDispatchError } from './cell-read';
+import { BUILTIN_CELLS } from './cell-registrations';
 import { ReadOnlyDispatchError } from './events/await/predicate-watch';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from './cell-registry';
 
