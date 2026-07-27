@@ -25,6 +25,8 @@ let projects: Array<{
   harness_kind?: string;
   self_repo?: boolean;
 }>;
+/** hive pubkey → the OWNER-authored home slug carried by its signed announce (WI-559). */
+let announces: Map<string, string>;
 
 beforeEach(() => {
   vi.resetModules();
@@ -40,12 +42,21 @@ beforeEach(() => {
   vi.doMock('./harness-registry', () => ({
     loadHarnessRegistry: async () => ({ projects }),
   }));
+  // WI-559: the owner's signed directory announce, keyed by HIVE PUBKEY — the only
+  // sound key, since the joiner's local view slug is a naming affordance that can
+  // legitimately differ from the owner's home slug.
+  announces = new Map();
+  vi.doMock('./hive-membership-store', () => ({
+    loadAnnouncedHiveHomeSlug: async (_ws: string, pubkey: string) =>
+      announces.get(pubkey) ?? null,
+  }));
 });
 
 afterEach(() => {
   vi.doUnmock('./hive-store');
   vi.doUnmock('./hive-directory-meta');
   vi.doUnmock('./harness-registry');
+  vi.doUnmock('./hive-membership-store');
 });
 
 /** Register a Hive home with the given visibility. */
@@ -176,6 +187,117 @@ describe('joinerPotHomeSlug — the member-projection rebind gate', () => {
   it('a non-hive harness → null', async () => {
     projects = [{ slug: 'loner' }];
     expect(await joinerHome('loner')).toBeNull();
+  });
+});
+
+// WI-559 — the joiner's LOCAL view slug is not the federation demux key.
+//
+// Live failure (2-machine rig, 2026-07-27): owner fed-a and joiner fed-b held the SAME
+// hive pubkey but different `pots.pot_home_slug` — 'spoon-knife-pot' vs
+// 'octocat-spoon-knife'. That column IS the demux key, so fed-b dropped EVERY inbound row
+// for the hive across ~12 hive-home-grained projections (pot_members, pot_settings,
+// agent_facts, memories, gym elites, policy, reports, epoch keys, p2p tags) — a whole-hive
+// federation blackout that surfaced only as "presence is one-directional". Observed
+// end-to-end in one boot: `hive-members-drop own=octocat-spoon-knife
+// row.hive_home=spoon-knife-pot` (x20+) → `NO admitted devices for topic 726696c069e9`.
+//
+// TWO independent causes produce the disagreement, which is why the demux key must be
+// derived from the PUBKEY rather than either side's slug:
+//   (a) lookup-hive-for-repo leg 3 fabricated `potId` from a display TITLE —
+//       kebab('octocat/Spoon-Knife') === 'octocat-spoon-knife';
+//   (b) STRUCTURAL and unfixable at the origin: join-hive.ts:265 derives the view slug
+//       `freeSlug(kebab(potId), taken)`, which SUFFIXES on a local name collision. Two
+//       joiners of the same hive, or one joiner that already owns the name locally, get
+//       'spoon-knife-pot-2' on a perfectly healthy join.
+describe('canonicalHiveHomeSlug — the federation demux key (WI-559)', () => {
+  async function canonical(slug: string) {
+    const { canonicalHiveHomeSlug } = await import('./hive-federation');
+    return canonicalHiveHomeSlug('ws', slug);
+  }
+  async function joinerHome(slug: string) {
+    const { joinerPotHomeSlug } = await import('./hive-federation');
+    return joinerPotHomeSlug('ws', slug);
+  }
+
+  /** The live rig's topology: a joined view whose local slug != the owner's home slug. */
+  function pollutedJoiner() {
+    hives.set('octocat-spoon-knife', {
+      homeSlug: 'octocat-spoon-knife',
+      pubkeyBase64: PUBKEY,
+    });
+    projects = [
+      { slug: 'octocat-spoon-knife', remote_hive: true },
+      { slug: 'joined-member', hive_slug: 'octocat-spoon-knife' },
+    ];
+    announces.set(PUBKEY, 'spoon-knife-pot');
+  }
+
+  it('a JOINED view resolves the OWNER-authored slug from the announce, not its local slug', async () => {
+    pollutedJoiner();
+    expect(await canonical('joined-member')).toBe('spoon-knife-pot');
+    expect(await canonical('octocat-spoon-knife')).toBe('spoon-knife-pot');
+  });
+
+  it('joinerPotHomeSlug (the projection WRITE scope) returns the canonical slug', async () => {
+    pollutedJoiner();
+    // This is the value boot.ts binds hive_members/hive_settings projections to. Before
+    // the fix it returned 'octocat-spoon-knife' and every owner row was demux-dropped.
+    expect(await joinerHome('joined-member')).toBe('spoon-knife-pot');
+  });
+
+  it('an OWNED hive is byte-for-byte unchanged — the announce is never consulted', async () => {
+    hives.set('ownedhive', { homeSlug: 'ownedhive', pubkeyBase64: PUBKEY });
+    publishHive('ownedhive', 'public');
+    projects = [{ slug: 'ownedhive' }, { slug: 'member-x', hive_slug: 'ownedhive' }];
+    // An announce for this very pubkey exists and must be IGNORED: the owner is the
+    // authority for its own slug, and rebinding would re-apply its own rows as remote.
+    announces.set(PUBKEY, 'someone-elses-slug');
+    expect(await canonical('member-x')).toBe('ownedhive');
+    expect(await canonical('ownedhive')).toBe('ownedhive');
+  });
+
+  it('fails OPEN to the local slug when no announce matches the hive pubkey', async () => {
+    pollutedJoiner();
+    announces.clear(); // never heard the owner's announce (cold, pre-discovery)
+    expect(await canonical('joined-member')).toBe('octocat-spoon-knife');
+    expect(await joinerHome('joined-member')).toBe('octocat-spoon-knife');
+  });
+
+  it('ignores an announce for a DIFFERENT hive pubkey', async () => {
+    pollutedJoiner();
+    announces.clear();
+    announces.set(Buffer.alloc(32, 9).toString('base64'), 'unrelated-hive');
+    expect(await canonical('joined-member')).toBe('octocat-spoon-knife');
+  });
+
+  it('fails OPEN when the joined view has no identity row to match a pubkey on', async () => {
+    projects = [
+      { slug: 'octocat-spoon-knife', remote_hive: true },
+      { slug: 'joined-member', hive_slug: 'octocat-spoon-knife' },
+    ];
+    announces.set(PUBKEY, 'spoon-knife-pot'); // unreachable without a pubkey to match
+    expect(await canonical('joined-member')).toBe('octocat-spoon-knife');
+  });
+
+  it('a non-hive harness → null (no home to canonicalize)', async () => {
+    projects = [{ slug: 'loner' }];
+    expect(await canonical('loner')).toBeNull();
+  });
+
+  it('survives the collision case the origin fix can never reach (freeSlug suffix)', async () => {
+    // A local name collision suffixed the view slug at join time — the potId was CORRECT
+    // and the slugs still disagree. Only pubkey-keyed resolution fixes this.
+    hives.set('spoon-knife-pot-2', {
+      homeSlug: 'spoon-knife-pot-2',
+      pubkeyBase64: PUBKEY,
+    });
+    projects = [
+      { slug: 'spoon-knife-pot' }, // an unrelated LOCAL harness already owns the name
+      { slug: 'spoon-knife-pot-2', remote_hive: true },
+      { slug: 'joined-member', hive_slug: 'spoon-knife-pot-2' },
+    ];
+    announces.set(PUBKEY, 'spoon-knife-pot');
+    expect(await canonical('joined-member')).toBe('spoon-knife-pot');
   });
 });
 

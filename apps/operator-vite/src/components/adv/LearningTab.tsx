@@ -2102,7 +2102,6 @@ function GymView({
                       style={{ borderLeftColor: group.accent }}
                       onClick={() => toggleRole(group.role)}
                       aria-expanded={!collapsed}
-                      title={`${collapsed ? "Expand" : "Collapse"} the ${group.role} challengers`}
                     >
                       {collapsed ? (
                         <ChevronRight size={12} aria-hidden />
@@ -5516,7 +5515,7 @@ export function LearningStyles() {
       }
       .pc-learning__gymrolehead:hover { background: var(--bg-3, #101a28); }
       .pc-learning__gymrolename {
-        font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em;
+        font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0;
       }
       .pc-learning__gymcard .pc-learning__gymprompt {
         max-height: 148px; overflow: auto;

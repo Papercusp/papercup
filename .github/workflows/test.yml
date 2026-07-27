@@ -463,6 +463,22 @@ jobs:
       - name: Lint scenario assert integrity
         run: npm run lint:assert-integrity
 
+      # Vacuous-negative-assertion guard (EI-18765867705399052): the mirror image of the
+      # class above, in the TEST suite. A POSITIVE assertion pinning a literal fails
+      # loudly when that string is reworded; a NEGATIVE one starts passing — silently,
+      # permanently, and as a direct consequence of doing the rename correctly. The suite
+      # then reports a guard it no longer has. checkpoint-run.test.ts held such a dead
+      # guard while the very grammar it excluded drifted back into the file
+      # (EI-18759622667757826): the dead guard and the regression it was meant to prevent
+      # were the same story. GATING on the narrow, decisive case — a PROSE literal that
+      # exists nowhere emittable, while a long fragment of it IS in the source (the guard
+      # is pinned to that string's OLD wording). Value pins, shape guards and
+      # fixture-composed output are reported by `lint:vacuous-negatives:report` and never
+      # gate. Replaying the real pre-fix commit through the judge flags that one
+      # assertion and only it — pinned in check-vacuous-negative-assertions.test.ts.
+      - name: Lint vacuous negative test assertions
+        run: npm run lint:vacuous-negatives
+
       # Insight-doc citation guard (WI-1576): an agent-insights doc's `documents:`
       # frontmatter citation that no longer resolves on disk (the cited file was
       # renamed/moved/deleted and the doc never updated) silently points an agent
