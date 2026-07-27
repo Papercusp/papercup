@@ -632,6 +632,12 @@ import './coordination/tools/inbox';
 // Live open/resolved severe-condition state (WI-1444 lifecycle reader, EI-6138)
 import './coordination/tools/conditions';
 import './coordination/tools/ack';
+// DECLARED coupling (unified-agent-state-plane P-031 / D-061): coupling was
+// derived-only, so an agent that already knew it was working alongside a peer had
+// to wait for a derivation to notice. Unrestricted and third-party-capable by
+// ruling — coupling decides RELEVANCE, never access.
+import './coordination/tools/couple';
+import './coordination/tools/decouple';
 import './coordination/tools/thread';
 import './coordination/tools/read';
 // L3 escalations + handoffs (Phase C)
