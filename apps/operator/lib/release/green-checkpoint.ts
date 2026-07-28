@@ -3034,9 +3034,17 @@ export async function runPostSuiteLegs(
   // predecessor plan shipped 8 defects past a fully green unit gate, every one the same shape
   // — the derivation was correct and the DISCLOSURE was dropped between derivation and reader
   // — so this plan built producer-existence + declared-vs-consumed + guard-integrity probes to
-  // catch that class. All four landed as npm scripts and NOTHING RAN THEM: a repo-wide grep
+  // catch that class. They all landed as npm scripts and NOTHING RAN THEM: a repo-wide grep
   // found zero references outside comments and one test. A probe nobody runs is the same
   // defect as a producer nobody reads, so they are gated here.
+  //
+  // `lint:plane-guards` is P-020's second half — the Phase 3 MUTATION TESTS (each plants the
+  // defect its guard exists to catch and asserts it REDS). They are ordinary vitest files, so
+  // `test:affected` runs them only when their workspace is in the candidate's affected set —
+  // and the guards they cover are root `scripts/*.mjs`, which the affected graph does not map
+  // back to operator-core's suite. Pinned explicitly here via scripts/test-files.mjs (same
+  // device as lint:design-primitives) because that router hard-fails a zero/partial match, so
+  // renaming one of the five files breaks LOUDLY instead of silently un-gating it.
   //
   // WHY NOT `test:affected` (the suite leg): the census question is "did a producer write a
   // row in the last 7d", which is a STATE fact, not a code fact — it flips pass->fail with an
@@ -3088,7 +3096,7 @@ export async function runPostSuiteLegs(
     legs.lintPlane = planeFailures.length > 0
       ? { status: 'failed' }
       : planeRan === 0
-        ? { status: 'skipped', skipReason: 'candidate provides none of the 4 agent-state-plane lint scripts' }
+        ? { status: 'skipped', skipReason: 'candidate provides none of the 5 agent-state-plane lint scripts' }
         : { status: 'passed' };
     if (planeFailures.length) {
       haltedBy = 'agent-state-plane lints failed';

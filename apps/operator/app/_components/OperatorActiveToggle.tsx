@@ -311,7 +311,7 @@ const TOGGLE_CSS = `
   flex-shrink: 0;
   background: currentColor;
 }
-/* WI-6530: this dot used to pulse on a 1.25s `infinite` animation. ANY always-on
+/* WI-6530: this dot used to pulse on a 1.25s infinite animation. ANY always-on
    animation keeps the whole 60fps repaint loop alive, and on this software-rendered
    webview that repaint costs ~40% of a CPU core permanently (measured: 48-63% of a
    core at idle with animations running, 9-16% with all of them paused; pausing only

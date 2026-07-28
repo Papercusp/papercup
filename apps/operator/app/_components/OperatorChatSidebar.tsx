@@ -1391,7 +1391,7 @@ body.has-op-chat .pc-header {
   z-index: 1;
 }
 
-/* WI-6530: the header sheen used to sweep on a 9s `infinite` animation. ANY
+/* WI-6530: the header sheen used to sweep on a 9s infinite animation. ANY
    always-on animation keeps the whole 60fps repaint loop alive, and on this
    software-rendered webview that repaint costs ~40% of a CPU core permanently
    (measured: 48-63% of a core at idle with animations running, 9-16% with all
@@ -1408,7 +1408,7 @@ body.has-op-chat .pc-header {
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
 }
 
-/* WI-6530: the banner sheen was the same always-on `infinite` sweep as the header
+/* WI-6530: the banner sheen was the same always-on infinite sweep as the header
    one above — it only escaped the idle-CPU measurement because the banner was not
    rendered at the time. Also invisible at rest (opacity 0 for 0%/72%/100% of its
    cycle), so dropping it leaves the banner looking identical between sweeps. */

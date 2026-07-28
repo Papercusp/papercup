@@ -1110,12 +1110,13 @@ describe('runGreenCheckpoint', () => {
       expect(nonTestGateIdsFrom(['lint:tsc', 'lint:plane-integrity'])).toEqual(['lint:tsc', 'lint:plane-integrity']);
     });
 
-    it('maps to exactly the four plane probes', () => {
+    it('maps to exactly the five plane probes — 4 lints plus the Phase 3 guard mutation tests', () => {
       expect(NON_TEST_GATE_SCRIPTS['lint:plane-integrity']).toEqual([
         'lint:plane-producers',
         'lint:declared-consumed',
         'lint:no-bespoke-state-read',
         'lint:plane-ratchet',
+        'lint:plane-guards',
       ]);
     });
 
