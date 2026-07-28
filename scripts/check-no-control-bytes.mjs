@@ -12,7 +12,7 @@
  *   node scripts/check-no-control-bytes.mjs --self-test
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -141,8 +141,9 @@ export function uncoveredSubmodules(scanned, prefixes = submodulePrefixes()) {
 }
 
 function scanTree() {
+  const scanned = trackedSourceFiles();
   const offenders = [];
-  for (const file of trackedSourceFiles()) {
+  for (const file of scanned) {
     let buf;
     try {
       buf = readFileSync(join(ROOT, file));
@@ -151,7 +152,7 @@ function scanTree() {
     }
     offenders.push(...findControlBytes(file, buf));
   }
-  return offenders;
+  return { offenders, scanned };
 }
 
 function runSelfTest() {
@@ -171,11 +172,37 @@ function runSelfTest() {
       console.error(`  x ${c.name} — got ${JSON.stringify(hits)}`);
     }
   }
+  // Coverage logic (EI-18896048946123172). Both branches are exercised without touching a
+  // real submodule: a prefix the scan reached, and a prefix that is not checked out here
+  // (which must NOT raise — an absent submodule is not a coverage gap).
+  const coverageCases = [
+    {
+      name: 'submodule reached by the scan is covered',
+      scanned: ['libs/fake-sub/a.ts'],
+      prefixes: ['libs/fake-sub/'],
+      expect: 0,
+    },
+    {
+      name: 'submodule not checked out is not a gap',
+      scanned: [],
+      prefixes: ['libs/definitely-not-checked-out-here/'],
+      expect: 0,
+    },
+  ];
+  for (const c of coverageCases) {
+    const got = uncoveredSubmodules(c.scanned, c.prefixes);
+    if (got.length !== c.expect) {
+      failed++;
+      console.error(`  x ${c.name} — got ${JSON.stringify(got)}`);
+    }
+  }
+
+  const total = cases.length + coverageCases.length;
   if (failed) {
     console.error(`\ncheck-no-control-bytes --self-test: ${failed} case(s) FAILED`);
     process.exit(1);
   }
-  console.log(`check-no-control-bytes --self-test: all ${cases.length} cases passed`);
+  console.log(`check-no-control-bytes --self-test: all ${total} cases passed`);
 }
 
 function main() {
@@ -183,15 +210,39 @@ function main() {
     runSelfTest();
     return;
   }
-  const offenders = scanTree();
+  const { offenders, scanned } = scanTree();
+
+  // A "clean" verdict is worth exactly as much as the set it looked at. EI-18896048946123172:
+  // this guard printed "clean" for three days while scanning NONE of the submodules, so the
+  // scan must now prove its own coverage before it is allowed to pass. This is the guard
+  // against the failure the guard itself exists to prevent — a confident zero from an
+  // instrument nobody proved was pointed at the thing being measured.
+  const uncovered = uncoveredSubmodules(scanned);
+  if (uncovered.length > 0) {
+    console.error(
+      `\ncheck-no-control-bytes: COVERAGE GAP — ${uncovered.length} submodule(s) hold files this guard ` +
+        'would scan but contributed ZERO to the scan.\n' +
+        'A pass here would be evidence of nothing. Check that `git ls-files --recurse-submodules` still recurses.\n',
+    );
+    for (const prefix of uncovered) console.error(`  unscanned submodule: ${prefix}`);
+    process.exit(1);
+  }
+
   if (offenders.length === 0) {
-    console.log('check-no-control-bytes: clean — no forbidden raw control bytes in tracked source files');
+    console.log(
+      `check-no-control-bytes: clean — ${scanned.length} tracked source files scanned ` +
+        `across the superproject and ${submodulePrefixes().length} submodule(s), no forbidden raw control bytes`,
+    );
     return;
   }
+  const files = new Set(offenders.map((o) => o.path));
   console.error(
-    `\ncheck-no-control-bytes: ${offenders.length} forbidden raw control byte(s) found.\n` +
-      'These bytes make tools like ripgrep treat source as binary and silently skip it (EI-7432).\n' +
-      'Remove the byte or, for an intentional binary-ish fixture, add a narrow prefix to ALLOW_PREFIXES.\n',
+    `\ncheck-no-control-bytes: ${offenders.length} forbidden raw control byte(s) in ${files.size} file(s), of ${scanned.length} scanned.\n` +
+      'These bytes make tools like ripgrep treat source as binary and silently skip it (EI-7432),\n' +
+      'and a NUL additionally makes git diff render the file as binary — so review goes blind too.\n' +
+      "FIX: write the character as an ESCAPE ('\\x1b', '\\u001f') rather than a raw byte — the runtime\n" +
+      'string is byte-identical, but the source stays greppable and diffable. For a generated/vendored\n' +
+      'artifact that is not hand-authored source, add a narrow prefix to ALLOW_PREFIXES with a reason.\n',
   );
   for (const o of offenders) {
     console.error(

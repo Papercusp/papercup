@@ -953,6 +953,7 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   'lint:migrations': ['lint:migrations'],
   'lint:identity-leak': ['lint:no-owner-name-tags', 'lint:no-box-identity', 'lint:no-identity-literals'],
   'lint:design-primitives': ['lint:design-primitives'],
+  'lint:no-control-bytes': ['lint:no-control-bytes'],
   // P-020: the agent-state plane's standing probes. Deterministic and repo-wide like the
   // rest, so the same auto-refire applies. NOTE the census + ratchet legs are PG-backed, so
   // a re-verify at tip re-reads live state — which is correct here: if the producer resumed
@@ -2817,6 +2818,7 @@ interface PostSuiteLegs {
   lintMigrations: LegOutcome;
   lintIdentity: LegOutcome;
   lintDesignPrimitives: LegOutcome;
+  lintNoControlBytes: LegOutcome;
   lintPlane: LegOutcome;
   build: LegOutcome;
   /** Concatenated failure detail, appended verbatim to the suite output. */
@@ -2836,6 +2838,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     lintMigrations: skipped,
     lintIdentity: skipped,
     lintDesignPrimitives: skipped,
+    lintNoControlBytes: skipped,
     lintPlane: skipped,
     build: skipped,
     output: '',
@@ -3190,7 +3193,7 @@ export async function runPostSuiteLegs(
     }
   }
 
-  legs.ok = ![legs.typecheck, legs.lintMigrations, legs.lintIdentity, legs.lintDesignPrimitives, legs.lintPlane, legs.build].some(
+  legs.ok = ![legs.typecheck, legs.lintMigrations, legs.lintIdentity, legs.lintDesignPrimitives, legs.lintNoControlBytes, legs.lintPlane, legs.build].some(
     (l) => l.status === 'failed',
   );
   legs.output = outputs.join('');
