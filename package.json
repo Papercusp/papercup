@@ -171,6 +171,8 @@
     "lint:insight-normative": "tsx scripts/check-insight-normative.mjs",
     "lint:no-retired": "node scripts/check-no-retired-imports.mjs",
     "lint:no-retired-style": "node scripts/check-no-retired-style.mjs",
+    "lint:no-ungated-infinite-animation": "node scripts/check-no-ungated-infinite-animation.mjs",
+    "lint:no-ungated-infinite-animation:report": "node scripts/check-no-ungated-infinite-animation.mjs --report",
     "scan:retirement-surface": "node scripts/scan-retirement-surface.mjs",
     "lint:no-raw-spawn": "node scripts/check-no-raw-agent-spawn.mjs",
     "lint:no-unenrolled-spawn": "node scripts/check-no-unenrolled-detached-spawn.mjs",
