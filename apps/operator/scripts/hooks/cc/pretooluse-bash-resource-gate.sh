@@ -115,6 +115,49 @@ def _advisory_class_key(text):
     return 'adv-' + hashlib.sha1(norm.encode('utf-8', 'replace')).hexdigest()[:16]
 
 
+# A session key must never suppress an advisory FOREVER. The seen-set is keyed
+# on a session id, and session ids RECUR — a fixture/harness that reuses one, a
+# long-lived pane, a plain collision. Without an expiry the first fire of a
+# class is the ONLY one that box ever sees, which is exactly the "silently
+# swallow a safety advisory" failure this dedup promises above not to be.
+_ADVISORY_SEEN_TTL_SEC = 24 * 3600
+# Bound the opportunistic prune's work — it must stay cheap, not be exhaustive.
+_ADVISORY_SEEN_PRUNE_SCAN = 500
+
+
+def _advisory_seen_dir():
+    """Per-$HOME seen-set, alongside this hook's other state (_BG_TRACK_FILE).
+
+    Deliberately NOT tempfile.gettempdir(): /tmp is machine-global — shared by
+    every user, install and test run on the box — and invisible to anything
+    that cleans up ~/.papercusp. Keying suppression there silently broke the
+    hermetic-fake-$HOME contract every caller of this hook is tested against:
+    state leaked in from unrelated runs and suppressed advisories that had
+    never fired for that caller at all (WI-6671).
+    """
+    return os.path.join(os.path.expanduser('~'), '.papercusp', 'advisory-seen')
+
+
+def _prune_advisory_seen(base):
+    """Drop seen-sets past the TTL so the dir cannot grow without bound.
+
+    Best-effort, and deliberately only on the FIRST-write path (~590/day) —
+    never on the suppression decision (~10,216/day), which stays one stat plus
+    one small read on the latency-critical path of every bash command.
+    """
+    try:
+        now = time.time()
+        for name in os.listdir(base)[:_ADVISORY_SEEN_PRUNE_SCAN]:
+            p = os.path.join(base, name)
+            try:
+                if now - os.path.getmtime(p) > _ADVISORY_SEEN_TTL_SEC:
+                    os.unlink(p)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def _claim_advisory(key):
     """True if THIS call is the first to say `key` in this session.
 
@@ -122,18 +165,29 @@ def _claim_advisory(key):
     local filesystems, so two hook processes racing the same advisory can at
     worst both emit once — the race can never SUPPRESS a first emit, which is
     the only direction that would lose information.
+
+    A seen-set older than _ADVISORY_SEEN_TTL_SEC is treated as a NEW session
+    (re-armed by truncation, not appended to), so a recurring session id
+    re-arms instead of suppressing for the life of the box. The re-arm race is
+    the same safe direction: two racing processes can only make an advisory
+    emit twice, never suppress its first emit.
     """
     try:
-        base = os.path.join(tempfile.gettempdir(), 'papercusp-advisory-seen')
+        base = _advisory_seen_dir()
         os.makedirs(base, exist_ok=True)
         path = os.path.join(base, _session_key())
+        fresh = True  # no seen-set yet, or one old enough to have lapsed
         try:
-            with open(path, 'r', encoding='utf-8') as fh:
-                if key in {ln.strip() for ln in fh}:
-                    return False
-        except FileNotFoundError:
-            pass
-        with open(path, 'a', encoding='utf-8') as fh:
+            if time.time() - os.path.getmtime(path) <= _ADVISORY_SEEN_TTL_SEC:
+                fresh = False
+                with open(path, 'r', encoding='utf-8') as fh:
+                    if key in {ln.strip() for ln in fh}:
+                        return False
+        except OSError:
+            pass  # missing or unreadable — treat as a first fire, never suppress
+        if fresh:
+            _prune_advisory_seen(base)
+        with open(path, 'w' if fresh else 'a', encoding='utf-8') as fh:
             fh.write(key + '\n')
         return True
     except Exception:

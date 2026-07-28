@@ -36,6 +36,18 @@ afterAll(() => {
   rmSync(fakeHome, { recursive: true, force: true });
 });
 
+// Advisories are SAY-ONCE per session (context-injection-audit P-020): the
+// hook suppresses a repeat of the same advisory CLASS within one session key.
+// Every call below is a distinct hook invocation standing for a distinct
+// session, so each gets its own id — sharing one would mean only the FIRST
+// test of each advisory class could ever pass, and the rest would assert the
+// dedup rather than the advisory they name (WI-6671). `_session_key()` reads
+// PAPERCUSP_SID ahead of the payload's session_id, so this isolates a call
+// whichever helper built its payload. A test that deliberately exercises the
+// dedup pins PAPERCUSP_SID explicitly in `env` — the spread below lets it win.
+let sidSeq = 0;
+const nextSid = () => `gate-suite-${process.pid}-${++sidSeq}`;
+
 function runGate(
   payload: unknown,
   env: Record<string, string> = {},
@@ -46,6 +58,7 @@ function runGate(
     env: {
       PATH: process.env.PATH ?? '',
       HOME: fakeHome,
+      PAPERCUSP_SID: nextSid(),
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', // dead port — fail-open fast
       ...env,
     },
