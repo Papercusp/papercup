@@ -249,13 +249,12 @@ describe('composeDispatch', () => {
       const hydrateRefs = vi.fn(async () => [hydratedRef('P-001', 'Wire the DHT bootstrap fixture.')]);
       await composeDispatch({ ...baseArgs, body: 'extra context up top' }, call, { hydrateRefs });
 
-      const sendArgs = calls[calls.length - 1].args as { body?: string };
-      expect(sendArgs.body?.indexOf('extra context up top')).toBeLessThan(
-        sendArgs.body?.indexOf('Wire the DHT bootstrap fixture.') ?? -1,
-      );
+      const sendArgs = calls[calls.length - 1].args as { body?: Array<{ text?: string }> };
+      const text = sendArgs.body?.[0]?.text ?? '';
+      expect(text.indexOf('extra context up top')).toBeLessThan(text.indexOf('Wire the DHT bootstrap fixture.'));
     });
 
-    it('fail-soft: a hydrate error still delivers the plain note (no body added, wake unaffected)', async () => {
+    it('fail-soft: a hydrate error still delivers the plain note (falls back to the note, wake unaffected)', async () => {
       const { call, calls } = mockCall({
         'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
         'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
@@ -266,8 +265,14 @@ describe('composeDispatch', () => {
       });
       const res = await composeDispatch(baseArgs, call, { hydrateRefs });
 
-      const sendArgs = calls[calls.length - 1].args as { body?: string };
-      expect(sendArgs.body).toBeUndefined();
+      // Pre-gate this asserted `body === undefined`. It can no longer be: dispatch sends
+      // expects:'action', which now REQUIRES a body — so the fail-soft path degrades to a
+      // one-section body carrying the plain note, rather than dropping the body entirely and
+      // making the send itself unsendable. What the test is really pinning is unchanged: a
+      // hydration failure must not cost the note or the wake.
+      const sendArgs = calls[calls.length - 1].args as { body?: Array<{ text?: string }> };
+      expect(sendArgs.body).toHaveLength(1);
+      expect(sendArgs.body?.[0]?.text).toBe(baseArgs.note);
       expect(res.itemsHydrated).toBeUndefined();
       expect(res.woken).toBe(1); // the critical leg is unaffected by the hydration failure
     });
