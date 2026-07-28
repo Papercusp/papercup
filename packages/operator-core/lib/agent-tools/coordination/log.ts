@@ -52,10 +52,51 @@ import { systemDistinctId } from '../../flag-distinct-id';
 //     than to the dead partition);
 //  2. `coordScopeReady()` — awaited by every `coordLog` method below — so the
 //     async path does not guess at all.
-const COORD_PER_WORKSPACE_DEFAULT = FLAG_DEFAULTS[FLAGS.COORD_PER_WORKSPACE];
-let coordPerWorkspaceOn = COORD_PER_WORKSPACE_DEFAULT;
+//
+// EI-18825928993608425: every line below that touches the flags surface is
+// reached through `ensureCoordFlagInit()` — NEVER at module scope. Importing
+// this module must have no load-time side effect, because the coord graph is
+// transitively imported by a large and GROWING set of suites, and a module-scope
+// read of a NAMED export makes the whole module un-importable under a partial
+// `vi.mock('@papercusp/flags')` that omits it. That fails at COLLECTION time, so
+// it reds the entire suite (and therefore the fleet's gate), not one test.
+//
+// This has now fired TWICE on this same file, from two different exports:
+// `onFlagChange` (WI-6449) and then `FLAG_DEFAULTS` (WI-6588 → 2 suites red on
+// 2026-07-28). The census is why it keeps recurring: 89 test files mock
+// flags/server without `onFlagChange` and 22 mock flags without `FLAG_DEFAULTS`
+// — each one latent until its subject happens to grow a coord import, a change
+// whose author has no reason to connect it to a flags mock they never touched.
+// Patching mocks treats the symptom N times; this removes the coupling once.
+const COORD_PER_WORKSPACE_DEFAULT = (): boolean => FLAG_DEFAULTS[FLAGS.COORD_PER_WORKSPACE];
+/** null until `ensureCoordFlagInit()` seeds it from the flag's own default. */
+let coordPerWorkspaceOn: boolean | null = null;
 let coordFlagLoaded = false;
 let coordFlagFirstLoad: Promise<void> | null = null;
+let coordFlagInitDone = false;
+
+/**
+ * Idempotent lazy init — the ONLY place this module touches the flags surface.
+ *
+ * Seeds the sync cache from the flag's own default and subscribes to changes,
+ * exactly as the old module-scope code did, but on FIRST USE rather than on
+ * import. Production behavior is unchanged: every `coordLog` method already
+ * awaits `coordScopeReady()`, so no coord read is ever scoped by an assumed
+ * value — the flag load simply starts at the first coord call instead of at
+ * import. A consumer that imports the coord graph without ever using it (which
+ * is exactly what a transitively-importing test suite does) now touches nothing.
+ */
+function ensureCoordFlagInit(): void {
+  // Set FIRST: `coordScopeReady()` below calls back into this function, and the
+  // flag is what makes that re-entrancy terminate.
+  if (coordFlagInitDone) return;
+  coordFlagInitDone = true;
+  coordPerWorkspaceOn = COORD_PER_WORKSPACE_DEFAULT();
+  onFlagChange((key) => {
+    if (key === null || key === FLAGS.COORD_PER_WORKSPACE) void refreshCoordPerWorkspace();
+  });
+  void coordScopeReady();
+}
 /**
  * Re-read the COORD_PER_WORKSPACE flag into the sync cache. Fired on an initial
  * read + every flag change (the lexicon/configure.ts pattern). Exported so tests
