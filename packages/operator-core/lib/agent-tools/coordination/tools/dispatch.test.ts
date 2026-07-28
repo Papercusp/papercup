@@ -228,11 +228,15 @@ describe('composeDispatch', () => {
         { kind: 'plan-item', slug: baseArgs.planSlug, item: 'P-002' },
       ]);
 
-      const sendArgs = calls[calls.length - 1].args as { body?: string };
-      expect(sendArgs.body).toContain('Wire the DHT bootstrap fixture.');
-      expect(sendArgs.body).toContain('Verify the cold-join path.');
-      expect(sendArgs.body).toContain('P-001');
-      expect(sendArgs.body).toContain('P-002');
+      // The structured-body gate (owner directive 2026-07-28) makes `body` a SECTION ARRAY:
+      // coord:send refuses a plain string, and dispatch sends expects:'action', for which a
+      // body is mandatory. The hydrated text rides the first section's `text`.
+      const sendArgs = calls[calls.length - 1].args as { body?: Array<{ text?: string }> };
+      const text = sendArgs.body?.[0]?.text;
+      expect(text).toContain('Wire the DHT bootstrap fixture.');
+      expect(text).toContain('Verify the cold-join path.');
+      expect(text).toContain('P-001');
+      expect(text).toContain('P-002');
       expect(res.itemsHydrated).toBe(2);
     });
 

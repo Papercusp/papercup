@@ -965,6 +965,62 @@ describe('coord:send args schema (EI-7838: missing-summary must not be masked by
  * one that would carry the traffic, so a gate enforced only on items[] would not be a
  * gate — it would just relocate.
  */
+describe('coord:send structured-body gate (owner directive 2026-07-28 — the string body is refused)', () => {
+  const sections = [{ text: 'the substance', forYouBecause: { relation: 'owns' as const, note: 'yours' } }];
+
+  it('REFUSES a plain-string body, and the refusal TEACHES the array shape', () => {
+    const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'none', body: 'just some prose' });
+    expect(r.success).toBe(false);
+    // The whole reason the union still admits a string is to produce THIS message instead of
+    // zod's "expected array, received string", which says what is wrong but not what to do.
+    const msg = r.success ? '' : r.error.issues.map((i) => i.message).join(' | ');
+    expect(msg).toContain('body: [{ text:');
+    expect(msg).toContain('couldNotDetermine');
+  });
+
+  it('ACCEPTS the minimum section array — the shape is forced, the authored fields are not', () => {
+    expect(
+      tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'none', body: [{ text: 'x' }] }).success,
+    ).toBe(true);
+  });
+
+  it("REQUIRES a body for 'action'/'answer' — so `summary` cannot become the new string escape hatch", () => {
+    for (const expects of ['action', 'answer'] as const) {
+      expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects }).success, expects).toBe(false);
+    }
+  });
+
+  it("leaves 'ack' and 'none' body-OPTIONAL — a receipt request and an FYI need no sections", () => {
+    for (const expects of ['ack', 'none'] as const) {
+      expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects }).success, expects).toBe(true);
+    }
+  });
+
+  it("a DIRECTED 'action'/'answer' needs `forYouBecause` on at least one section", () => {
+    const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'action', body: [{ text: 'x' }] });
+    expect(r.success).toBe(false);
+    expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'action', body: sections }).success).toBe(true);
+  });
+
+  it('EXEMPTS a broadcast from forYouBecause — "why YOU specifically" is not well-formed for `*`', () => {
+    expect(
+      tool.args.safeParse({ to: ['*'], summary: 'hi', expects: 'action', body: [{ text: 'x' }] }).success,
+    ).toBe(true);
+  });
+
+  it('enforces the same rules on the items[] axis, not just the shorthand', () => {
+    expect(
+      tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects: 'action' }] }).success,
+    ).toBe(false);
+    expect(
+      tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects: 'action', body: 'prose' }] }).success,
+    ).toBe(false);
+    expect(
+      tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects: 'action', body: sections }] }).success,
+    ).toBe(true);
+  });
+});
+
 describe('coord:send `expects` gate (P-017 b#1 — required-with-explicit-none, never defaulted)', () => {
   it('REFUSES a single-form send with no `expects`, naming the field and the explicit-none rule', () => {
     const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi' });
@@ -987,10 +1043,22 @@ describe('coord:send `expects` gate (P-017 b#1 — required-with-explicit-none, 
   });
 
   it('ACCEPTS every enumerated value on both axes — including the explicit `none`', () => {
+    // The structured-body gate (owner directive 2026-07-28) additionally requires a sectioned
+    // `body` for the two expectations that ask the recipient to act on / answer CONTENT, and
+    // `forYouBecause` when such a message is DIRECTED. 'ack' and 'none' stay body-optional, so
+    // they still parse from summary alone. Supplying the body here keeps this test about the
+    // `expects` enum, which is what it exists to pin.
+    const bodyFor = (expects: string) =>
+      expects === 'action' || expects === 'answer'
+        ? { body: [{ text: 'why', forYouBecause: { relation: 'owns' as const, note: 'yours' } }] }
+        : {};
     for (const expects of ['ack', 'answer', 'action', 'none'] as const) {
-      expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects }).success, expects).toBe(true);
       expect(
-        tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects }] }).success,
+        tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects, ...bodyFor(expects) }).success,
+        expects,
+      ).toBe(true);
+      expect(
+        tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects, ...bodyFor(expects) }] }).success,
         `items:${expects}`,
       ).toBe(true);
     }

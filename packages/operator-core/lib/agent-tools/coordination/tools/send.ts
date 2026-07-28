@@ -1319,18 +1319,24 @@ export default defineTool({
     // must carry a body; a genuine FYI (`expects: 'none'`) still may not.
     const checkStructured = (m: { to?: unknown; expects?: unknown; body?: unknown }, path: (string | number)[]) => {
       const expects = typeof m.expects === 'string' ? m.expects : undefined;
-      if (!expects || expects === 'none') return;
+      // Scoped to the two expectations that ask the recipient to DO something with content.
+      // 'none' is an FYI and 'ack' asks only for a receipt — for both, `summary` genuinely can
+      // be the whole message, and requiring sections there would manufacture the empty ceremony
+      // this gate is supposed to prevent. Deliberately narrower than "everything but none": the
+      // failure mode of an over-tight gate is filler, which leaves the field carrying LESS than
+      // the prose it replaced — the same way a defaulted field dies, one level up.
+      if (expects !== 'action' && expects !== 'answer') return;
       if (m.body === undefined) {
         pctx.addIssue({
           code: 'custom',
           path: [...path, 'body'],
           message:
-            `\`body\` is REQUIRED when expects is '${expects}' — you are asking the recipient for ` +
-            'something, so say what you are asking about in sections rather than compressing it into ' +
-            '`summary`. Minimum: body: [{ text: "..." }]. Only an FYI (expects:\'none\') may omit it. ' +
-            'A section also carries `premises`, `forYouBecause`, `youMayNotKnow` and — the one most ' +
-            'worth filling — `couldNotDetermine`, which is how you hand over a gap instead of letting ' +
-            'silence read as certainty.',
+            `\`body\` is REQUIRED when expects is '${expects}' — you are asking the recipient to act ` +
+            'on or answer something, so put the substance in sections rather than compressing it into ' +
+            "`summary`. Minimum: body: [{ text: \"...\" }]. An FYI (expects:'none') and a receipt " +
+            "request (expects:'ack') may still omit it. A section also carries `premises`, " +
+            '`forYouBecause`, `youMayNotKnow` and — the one most worth filling — `couldNotDetermine`, ' +
+            'which is how you hand over a gap instead of letting silence read as certainty.',
         });
         return;
       }
