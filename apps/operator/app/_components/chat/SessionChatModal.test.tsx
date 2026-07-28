@@ -1159,55 +1159,27 @@ describe('SessionChatModal', () => {
     });
   });
 
-  // WI-6513 / D-004. Live measurement before the fix (modal top=80 bottom=720):
-  // the Grade card sat at top=669 height=131, running to 800 — 80px past the
-  // popup's bottom edge onto the viewport floor.
+  // WI-6513 / D-006: there is deliberately NO structural test here for the
+  // Grade card's placement inside the popup, and that absence is a finding
+  // rather than a gap.
   //
-  // jsdom computes no layout, so this CANNOT assert the geometry itself; the
-  // real verdict is a live `cardBottom <= modalBottom` measurement. What it CAN
-  // do is guard the structural precondition that made the overflow possible:
-  // the card + action bar being bare, unbounded flex children. If someone
-  // unwraps them or drops the bound, the overflow returns silently — and this
-  // fails instead.
-  describe('WI-6513 the card + action bar are a bounded footer group', () => {
-    it('wraps them together in a non-growing, height-bounded, internally-scrolling flex item', async () => {
-      mockFetchOnce(200, {
-        sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: '2026-07-17T00:00:00Z' }],
-      });
-      render(<SessionChatModal sessionOwnerId="su-live-1" ownerLabel="su · live-1" onClose={vi.fn()} />);
-
-      const footer = await waitFor(() => screen.getByTestId('session-chat-card-footer'));
-
-      // flex-grow/shrink 0 + an explicit cap: the group can never claim more
-      // than 45% of the popup, and cannot be stretched by its own content.
-      expect(footer.style.flex).toBe('0 0 auto');
-      expect(footer.style.maxHeight).toBe('45%');
-      // Past the cap it scrolls INSIDE the popup rather than overflowing it.
-      expect(footer.style.overflowY).toBe('auto');
-      // Without min-height:0 a flex item refuses to shrink below its content —
-      // which is precisely how the 131px card overflowed 51px of room.
-      expect(footer.style.minHeight).toBe('0px');
-    });
-
-    it('keeps the action bar inside that same bounded group', async () => {
-      mockFetchOnce(200, {
-        sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: '2026-07-17T00:00:00Z' }],
-      });
-      render(<SessionChatModal sessionOwnerId="su-live-1" ownerLabel="su · live-1" onClose={vi.fn()} />);
-
-      const footer = await waitFor(() => screen.getByTestId('session-chat-card-footer'));
-
-      // The action bar is the OBSERVABLE proxy for the group's membership here:
-      // LocalCardHost is mounted as its sibling inside the same wrapper, but
-      // returns null while its card queue is empty (`queue.length === 0`), so
-      // asserting on `.local-card-host` in this state would be vacuous — it is
-      // absent for a reason unrelated to the bound under test.
-      //
-      // What matters structurally is that the bar is a DESCENDANT of the
-      // bounded group rather than a sibling of it: a sibling is unbounded
-      // again, which is exactly the pre-fix shape that overflowed.
-      const bar = screen.getByTestId('chat-action-bar');
-      expect(footer.contains(bar)).toBe(true);
-    });
-  });
+  // D-004 reported the card overflowing the popup's bottom edge by 80px and
+  // this suite briefly guarded a wrapper meant to bound it. Both were wrong:
+  // D-004 resolved `.pc-modal-content` and `.local-card-host-select` with two
+  // INDEPENDENT unscoped querySelectors, and two card hosts render the same
+  // global askUserLocal queue at once — one in this modal, one in the
+  // `.op-chat-sidebar`. It measured the SIDEBAR's card (h=131 top=669 bot=800)
+  // against THIS modal's box (bot=720) and read the difference as overflow.
+  //
+  // Scoped to the modal, measured live (app pid 1349850, viewport 1280x800):
+  // card h=89 top=593 bot=682 vs modal bottom 720 — 38px of clearance, 13.9%
+  // of the popup, listbox unclipped, 25 options. A live A/B that stripped the
+  // wrapper's bound produced byte-identical geometry, proving the modal's
+  // existing flex column already contains the card and the wrapper was inert.
+  //
+  // jsdom computes no layout, so no unit test here can measure any of that —
+  // which is exactly why the false conclusion survived unit-green for a full
+  // cycle. The guard for this invariant is the scoped live measurement recorded
+  // on the plan, and the lesson is to scope a geometry selector to the surface
+  // under test whenever more than one host can render the same component.
 });

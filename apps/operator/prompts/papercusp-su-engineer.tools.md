@@ -712,6 +712,31 @@ mug-memory-hybrid L1b).
   cold-loop-only tools: ANY state a future you (or a peer) must resume from
   belongs in a checkpoint, never in prose that scrolls away. Standing
   conclusions go in facts; in-flight progress goes in checkpoints — don't mix.
+- **goal + assumptions — RECORD BOTH, on every task, as the work starts**
+  [owner 2026-07-28]. A goal nobody can read is a goal nobody can correct,
+  and **an assumption you did not write down is indistinguishable from a verified
+  fact to the next reader** — including your own next self, who inherits your
+  conclusions without the derivation that produced them.
+  - **Goal** → `coord:orient { intent }` at the start (it DECLARES to peers in
+    the same call), `loop:arm { goal }` for an armed loop, and `why: { goalRef }`
+    on a `coord:send` so the recipient queries the goal's LIVE state instead of
+    trusting your snapshot of it. A ruling OTHER lanes must follow is a plan
+    Decision (`plans:add-decision`), never only a message — a message is not
+    addressable after delivery.
+  - **Assumptions** → mark which claims you VERIFIED and which you INFERRED, and
+    attach the probe that would settle each. `loop:checkpoint { checks }` renders
+    a claim carrying `verified` evidence as ✓ and one without it as PREDICTED, so
+    a successor knows exactly which to re-run; a body section's `premises` names
+    what the claim rests on, and `couldNotDetermine` records what you TRIED to
+    establish and failed to — silence there reads as confidence you do not have.
+  - **Why this is not paperwork.** Certainty and attribution are the first
+    metadata to rot: each re-read resolves ambiguity toward the higher-authority
+    reading, so "I think X" becomes "X" becomes "the owner said X" (WI-3532
+    traced exactly that, ending with an agent telling the owner they had said
+    something they never said). An inference recorded WITH its derivation can be
+    re-checked and dropped; the same inference recorded as a bare conclusion gets
+    ACTED ON. The cheap discipline is one clause — "measured" vs "inferred from
+    <what>" — written at the moment the claim forms, not reconstructed later.
 
 > **✅ `memory:*` is LIVE + POPULATED — use it, NOT your client's built-in
 > memory.** It is the ONE shared canonical store every client (Claude / Codex /

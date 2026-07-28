@@ -12,6 +12,11 @@ vi.mock('./backend', () => ({
   getMemoryBackend: vi.fn(),
 }));
 
+// P-026: the push-path recall telemetry is fire-and-forget behind a dynamic
+// import; mocking it lets the wiring be asserted (see the P-026 describe below).
+const recordRecallStatsMock = vi.hoisted(() => vi.fn(async (_sql: unknown, _input: unknown) => {}));
+vi.mock('./recall-stats', () => ({ recordRecallStats: recordRecallStatsMock }));
+
 // The harness registry backs the member→hive resolution (knowledge-packs
 // P-004). Canned per-test via `registryProjects`; default empty ⇒ no hive pull.
 let registryProjects: Array<{ slug: string; harness_kind?: string; hive_slug?: string }> = [];
@@ -43,9 +48,115 @@ const useBackend = (b: ReturnType<typeof mockBackend>): void => {
 
 beforeEach(() => {
   vi.mocked(getMemoryBackend).mockReset();
+  recordRecallStatsMock.mockClear();
   sqlRows = [];
   registryProjects = [];
   _resetForTests();
+});
+
+/**
+ * context-injection-audit-2026-07-28 P-026 — the WIRING guard.
+ *
+ * recall-stats.ts can grow the richest per-pool schema in the world and it
+ * changes nothing if the push path keeps calling it with a flat `entries` list:
+ * the column stays NULL in production and the measurement every other fix in
+ * that plan is judged by silently does not exist. This block fails if the call
+ * site regresses to a flat record — the failure that is invisible in staging,
+ * because a flat write succeeds just as quietly as a per-pool one.
+ */
+describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
+  /** Flush the fire-and-forget telemetry task (dynamic import + insert). */
+  const flush = async (): Promise<void> => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+
+  it('passes a per-pool breakdown, never a flat entries list', async () => {
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why is the recall empty',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: [],
+    });
+    await flush();
+
+    expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+    const input = recordRecallStatsMock.mock.calls[0]![1] as {
+      pools?: Record<string, { entries: unknown[]; limit: number; scopes: string[] }>;
+      entries?: unknown[];
+    };
+    // The collapse must not come back.
+    expect(input.entries).toBeUndefined();
+    expect(input.pools).toBeDefined();
+    expect(Object.keys(input.pools!).sort()).toEqual(['harness', 'hive', 'user']);
+  });
+
+  it('stamps each pool with the budget and the SCOPE KEYS it actually queried', async () => {
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why is the recall empty',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: ['hivey'],
+      limit: 6,
+    });
+    await flush();
+
+    const { pools } = recordRecallStatsMock.mock.calls[0]![1] as {
+      pools: Record<string, { entries: unknown[]; limit: number; scopes: string[] }>;
+    };
+    expect(pools.user).toMatchObject({ limit: 6, scopes: ['u1'] });
+    // The gate-2 detector: the harness pool records the slug it was keyed on,
+    // so a pool queried under a slug nothing writes to is identifiable later.
+    expect(pools.harness!.scopes).toEqual(['harness:papercusp']);
+    expect(pools.hive!.scopes).toEqual(['hive:hivey']);
+  });
+
+  it('records a pool that returned ZERO — the row a flat hit_count could not express', async () => {
+    // Backend returns rows for the user scope only; harness/hive come back empty.
+    const backend = {
+      name: 'fake',
+      available: vi.fn(async () => ({ ok: true })),
+      search: vi.fn(async (_q: string, opts: { scope: string | readonly string[] }) => {
+        const scope = typeof opts.scope === 'string' ? opts.scope : opts.scope[0]!;
+        return scope.startsWith('harness:') || scope.startsWith('hive:')
+          ? []
+          : [{ id: 'u-only', text: 'personal', scope }];
+      }),
+    };
+    useBackend(backend as unknown as ReturnType<typeof mockBackend>);
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why is the recall empty',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: [],
+    });
+    await flush();
+
+    const { pools } = recordRecallStatsMock.mock.calls[0]![1] as {
+      pools: Record<string, { entries: unknown[]; scopes: string[] }>;
+    };
+    expect(pools.user!.entries).toHaveLength(1);
+    expect(pools.harness!.entries).toHaveLength(0);
+    expect(pools.harness!.scopes).toEqual(['harness:papercusp']);
+  });
+
+  it('stamps workspace and pot so the telemetry is sliceable (dead since migration 290)', async () => {
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws-42',
+      queryContext: 'why is the recall empty',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: [],
+    });
+    await flush();
+    expect(recordRecallStatsMock.mock.calls[0]![1]).toMatchObject({
+      workspaceId: 'ws-42',
+      potSlug: 'papercusp',
+    });
+  });
 });
 
 describe('lastUserContext', () => {
