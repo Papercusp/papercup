@@ -1088,10 +1088,11 @@ const sessionThinkingStream = defineTool({
         const backfillFromDb = async (): Promise<boolean> => {
           if (!corpusKey) return false;
           try {
-            const fromParts = await backfillFromSessionParts(corpusKey, { anchorTs });
-            const backfill = fromParts?.entries.length
-              ? fromParts
-              : await backfillFromSessionTurns(corpusKey, { anchorTs });
+            const [fromParts, fromTurns] = await Promise.all([
+              backfillFromSessionParts(corpusKey, { anchorTs }),
+              backfillFromSessionTurns(corpusKey, { anchorTs }),
+            ]);
+            const backfill = preferHigherFidelityBackfill(fromParts, fromTurns);
             if (!backfill || backfill.entries.length === 0) return false;
             sink.event('backfill', backfill.entries);
             if (find) {
