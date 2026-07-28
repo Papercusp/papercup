@@ -428,7 +428,7 @@ export async function readRecallHealthByPool(
         (p.value ->> 'hits')::int               AS hits,
         (p.value ->> 'limit')::int              AS budget,
         (p.value ->> 'top')::double precision   AS top,
-        -- Every pool's `top` came from the same backend call as the row's
+        -- Every pool top came from the same backend call as the row's
         -- top_score, so the row-level scale governs them all (P-036).
         ${effectiveScaleSql(sql)}               AS scale,
         p.value -> 'scopes'                     AS scopes
