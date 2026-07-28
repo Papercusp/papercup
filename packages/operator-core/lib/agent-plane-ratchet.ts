@@ -49,6 +49,34 @@
  * Collapsing them into "not interpretable" is the same mistake as P-001's
  * `no-producer` vs `no-data`, one layer up: it makes a dead producer read like a
  * feature that was never built, so nobody is paged for it.
+ *
+ * ── ⚠ AND: A QUIET WINDOW IS NOT A DEAD PRODUCER ────────────────────────────
+ *
+ * The third confusion, and the one that actually red the fleet gate — caught live
+ * at 2026-07-28T03:08Z, when `intent-action-divergence-stamped` was judged
+ * `regressed` while its producer was demonstrably healthy.
+ *
+ * This module is careful never to round a zero UP to a pass. It was rounding a
+ * quiet window DOWN to a regression, which is the same error with the sign
+ * flipped, and it is worse for the fleet: a vacuous pass is silent, but a false
+ * regression stops every deploy. The window read `eligible: 37, comparable: 0,
+ * fillRate: 0.022, zeroReason: 'nothing-comparable'` — 37 calls DID carry the
+ * stamp. The fleet had simply gone from 2,439 calls / 59 agents to 529 / 7, so no
+ * single intent bucket held two calls to compare. Nothing broke. Nothing was
+ * deployed. The gate red anyway, and no commit could have greened it.
+ *
+ * A metric whose interpretability depends on TRAFFIC VOLUME will always have quiet
+ * windows. Treating each one as an incident is how a gate earns the fleet-wide
+ * habit of ignoring it — the exact outcome `companionsUnavailable` reasons about
+ * below, and the failure mode that nearly killed the no-bespoke-state-read gate.
+ *
+ * So the regression test is now: the producer WROTE (`nothing-comparable` with a
+ * non-zero fill rate — the measurement layer's own distinction, not a heuristic)
+ * AND this is not yet a sustained run. One quiet window is `window-unjudgeable`;
+ * {@link UNJUDGEABLE_WINDOW_RUN} consecutive uninterpretable windows is still
+ * `regressed`. A producer that genuinely dies reports `nothing-eligible` and
+ * reaches `regressed` on the very first window, exactly as before — the teeth are
+ * unchanged for the case they were built for.
  */
 import {
   METRIC_SPECS,
@@ -68,6 +96,13 @@ export const RATCHET_VERDICTS = [
   'regressed',
   /** Never once interpretable across the whole series. An unbuilt producer. */
   'never-interpretable',
+  /**
+   * Was interpretable before and is not in THIS window — but the producer
+   * demonstrably still wrote, and the window simply held no comparable unit.
+   * "We could not judge this window", which is NOT "a producer died". See
+   * {@link producerWroteButNothingComparable}.
+   */
+  'window-unjudgeable',
   /**
    * Claims `interpretable: true` while its OWN funnel says nothing was eligible.
    * A metric cannot have a comparable unit it never made eligible, so this is not
@@ -179,7 +214,46 @@ export function judgeMetricRatchet(windows: readonly MetricWindow[]): RatchetVer
   if (isIncoherent(latest)) return 'incoherent';
   const everInterpretable = windows.some((w) => w.interpretable && !isIncoherent(w));
   if (latest.interpretable) return 'holding';
-  return everInterpretable ? 'regressed' : 'never-interpretable';
+  if (!everInterpretable) return 'never-interpretable';
+  // ⚠ A QUIET WINDOW IS NOT A DEAD PRODUCER — see the header section of the same
+  // name. Only a SUSTAINED inability to compare is a degradation.
+  if (producerWroteButNothingComparable(latest) && !sustainedlyUninterpretable(windows)) {
+    return 'window-unjudgeable';
+  }
+  return 'regressed';
+}
+
+/**
+ * How many consecutive uninterpretable windows stop being noise and start being a
+ * degradation. At the live ~30min cadence this is ~1.5h of a metric never once
+ * finding a comparable unit — long past "the fleet was quiet for half an hour".
+ */
+export const UNJUDGEABLE_WINDOW_RUN = 3;
+
+/**
+ * Did the producer WRITE this window, with the funnel simply yielding no unit that
+ * admits a verdict?
+ *
+ * THE DISCRIMINATOR, and it is the measurement layer's own vocabulary rather than a
+ * heuristic I invented (`explainZero`, agent-plane-measurement.ts):
+ *   · `nothing-eligible`  — "units were examined but none carried this metric's
+ *     input — THE PRODUCER HAS NOT WRITTEN". That is a producer signal; it must
+ *     still reach `regressed`.
+ *   · `nothing-comparable` — "THE INPUT WAS PRESENT but no unit admitted a verdict
+ *     — a partial answer wearing a zero". The producer wrote. Nothing died.
+ *
+ * `fillRate` (= eligible/population) is required to be > 0 as the independent
+ * corroboration: a zero fill rate means nothing was eligible at all, whatever the
+ * reason string claims, and this must never excuse that.
+ */
+export function producerWroteButNothingComparable(w: MetricWindow): boolean {
+  return !w.interpretable && w.zeroReason === 'nothing-comparable' && (w.fillRate ?? 0) > 0;
+}
+
+/** Have the last {@link UNJUDGEABLE_WINDOW_RUN} windows ALL failed to interpret? */
+export function sustainedlyUninterpretable(windows: readonly MetricWindow[]): boolean {
+  const tail = windows.slice(-UNJUDGEABLE_WINDOW_RUN);
+  return tail.length >= UNJUDGEABLE_WINDOW_RUN && tail.every((w) => !w.interpretable);
 }
 
 /**

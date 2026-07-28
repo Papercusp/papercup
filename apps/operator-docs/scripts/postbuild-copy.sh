@@ -104,4 +104,28 @@ if [[ -d "$DEST" ]]; then
 fi
 mv "$DEST_TMP" "$DEST"
 
+# ── reap THIS run's swap-out too, after the same grace period ────────────────
+# WI-6539. The reap above only runs at the START of a run, so the LAST build's
+# DEST_OLD survived until some future build happened to come along — and if none
+# did, forever. That is not hypothetical: on 2026-07-28 a `docs.old.160411` was
+# found still sitting in public/internal/ (and copied onward into
+# operator-vite/dist/), 242MB each, 484MB total — and, because the Vite dev
+# server walks publicDir, ~5,200 of its ~12,000 inotify watches (42%) were being
+# spent on those two dead trees alone. Same class was found and hand-purged from
+# the desktop sidecar copy on 2026-07-06 (build-desktop-sidecar.sh) without ever
+# being fixed at the source; this is the source fix.
+#
+# The grace period is load-bearing (see the long comment at the top — an eager
+# same-run rm -rf demonstrably broke concurrent readers mid-walk), so we do NOT
+# reap inline. Instead detach a reaper that waits out the SAME grace period and
+# then removes only this run's own swap-out. Fails safe: if the reaper is killed
+# with its process group, the tree simply survives to be reaped by the
+# start-of-run sweep above, i.e. exactly today's behaviour, never worse.
+if [[ -d "$DEST_OLD" ]]; then
+  DEST_OLD_ABS="$(cd "$(dirname "$DEST_OLD")" && pwd)/$(basename "$DEST_OLD")"
+  setsid nohup sh -c 'sleep "$1"; rm -rf -- "$2"' _ \
+    "$((DEST_OLD_GRACE_MIN * 60))" "$DEST_OLD_ABS" \
+    </dev/null >/dev/null 2>&1 &
+fi
+
 echo "postbuild-copy: $(find "$DEST" -type f | wc -l | tr -d ' ') files → $DEST"
