@@ -174,6 +174,8 @@ export interface IngestStats {
   filesScanned: number;
   filesIngested: number;
   turnsInserted: number;
+  /** P-001: faithful session_turn_parts rows written this sweep. */
+  partsInserted?: number;
   chatsIngested: number;
   /** Historical session_ingest_state rows whose EI-9970 counters advanced. */
   countBackfillFiles: number;
@@ -1191,6 +1193,14 @@ async function writeState(
     ON CONFLICT (source_kind, file_path) DO UPDATE SET
       byte_offset       = EXCLUDED.byte_offset,
       turn_count        = EXCLUDED.turn_count,
+      -- P-001: PRESERVE on omission, don't zero. Several callers write this row
+      -- without knowing the parts cursor at all (the counts backfill, the
+      -- agent_chat sync, the CHAT_HWM row) — with plain EXCLUDED semantics each
+      -- of those ticks would silently reset part_count to 0 and the next real
+      -- ingest would renumber parts from 0, colliding with existing part_idx
+      -- values and losing the whole tail to ON CONFLICT DO NOTHING. Passing an
+      -- explicit 0 still resets it, which is what a deliberate re-ingest wants.
+      part_count        = COALESCE(${st.part_count ?? null}, harness_shared.session_ingest_state.part_count),
       prompt_count      = EXCLUDED.prompt_count,
       response_count    = EXCLUDED.response_count,
       tool_call_count   = EXCLUDED.tool_call_count,
@@ -1417,8 +1427,11 @@ export async function ingestFileNow(
   // by the file size; this is one file, not the fleet).
   for (let guard = 0; guard < 32; guard += 1) {
     const st = await readState(sql, adapter.sourceKind, filePath);
-    const { turns, newOffset, promptCount, responseCount, toolCallCount, lastInferenceId } =
-      await readNewLines(filePath, st.byte_offset, adapter.parseLine, adapter.classifyLine, st.last_inference_id);
+    const { turns, parts, newOffset, promptCount, responseCount, toolCallCount, lastInferenceId } =
+      await readNewLines(
+        filePath, st.byte_offset, adapter.parseLine, adapter.classifyLine, st.last_inference_id,
+        undefined, [], adapter.parseParts,
+      );
     if (newOffset === st.byte_offset) break;
     const meta = adapter.meta(filePath);
     const rows: TurnRow[] = turns.map((t, i) => ({
@@ -1434,9 +1447,22 @@ export async function ingestFileNow(
       text: t.text,
     }));
     inserted += await insertTurns(sql, rows);
+    // Best-effort by contract (see insertParts): the render store must never
+    // block the recall index or hold back the offset.
+    try {
+      await insertParts(sql, partRowsFrom(parts, {
+        sourceKind: adapter.sourceKind,
+        sessionId: opts.sessionId ?? meta.sessionId,
+        owner: opts.owner ?? meta.owner,
+        partCount: st.part_count,
+      }));
+    } catch (err) {
+      console.warn(`[session-ingest] parts write skipped (non-fatal): ${(err as Error).message}`);
+    }
     await writeState(sql, adapter.sourceKind, filePath, {
       byte_offset: newOffset,
       turn_count: st.turn_count + turns.length,
+      part_count: st.part_count + parts.length,
       prompt_count: st.prompt_count + promptCount,
       response_count: st.response_count + responseCount,
       tool_call_count: st.tool_call_count + toolCallCount,
@@ -1553,9 +1579,10 @@ async function syncAgentChats(sql: Sql, budget: { turns: number }): Promise<numb
 
 /** Batched retention prune — the index stays bounded; the JSONL stays the
  * archive. Called from the daily retention tick (periodic-workflows.ts). */
-export async function pruneSessionTurnsOnce(): Promise<{ deleted: number }> {
+export async function pruneSessionTurnsOnce(): Promise<{ deleted: number; partsDeleted: number }> {
   const { sql } = getOrgPg();
   let deleted = 0;
+  let partsDeleted = 0;
   for (let i = 0; i < 40; i += 1) {
     const r = await sql`
       DELETE FROM harness_shared.session_turns
@@ -1580,7 +1607,27 @@ export async function pruneSessionTurnsOnce(): Promise<{ deleted: number }> {
     DELETE FROM harness_shared.session_turn_journal
      WHERE created_at < now() - make_interval(days => ${RETENTION_DAYS})
   `;
-  return { deleted };
+  // P-001/D-002: the faithful parts store rides a SHORTER window than the
+  // turns index (14 d vs 45 d). Measured at ~134 MB/7 d against session_turns'
+  // 472 MB heap for 45 d, so an equal window would have made the render
+  // convenience three times the size of the recall corpus it serves. Beyond
+  // this window the pane degrades to text turns, then to session_archives —
+  // each tier strictly cheaper and lossier, and none of them a dead click.
+  // Batched exactly like the turns prune above: one unbounded DELETE over the
+  // bulkiest table in the corpus is a long lock on the daily tick.
+  for (let i = 0; i < 40; i += 1) {
+    const r = await sql`
+      DELETE FROM harness_shared.session_turn_parts
+       WHERE ctid IN (
+         SELECT ctid FROM harness_shared.session_turn_parts
+          WHERE COALESCE(ts, ingested_at) < now() - make_interval(days => ${PART_RETENTION_DAYS})
+          LIMIT 5000
+       )
+    `;
+    partsDeleted += r.count ?? 0;
+    if ((r.count ?? 0) < 5000) break;
+  }
+  return { deleted, partsDeleted };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1668,12 +1715,12 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       // candidate files was minutes of serial round-trips (perf anti-pattern
       // A1: per-item queries in a loop; observed live 2026-07-05).
       const stateRows = await sql<Array<{
-        file_path: string; byte_offset: string | number; turn_count: number;
+        file_path: string; byte_offset: string | number; turn_count: number; part_count: number | null;
         prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
         counts_backfill_offset: string | number; counts_backfill_last_inference_id: string | null;
         counts_backfilled_at: string | null;
       }>>`
-        SELECT file_path, byte_offset, turn_count, prompt_count, response_count, tool_call_count, last_inference_id,
+        SELECT file_path, byte_offset, turn_count, part_count, prompt_count, response_count, tool_call_count, last_inference_id,
                counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at
           FROM harness_shared.session_ingest_state
          WHERE source_kind = ${adapter.sourceKind}
@@ -1682,6 +1729,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
         stateRows.map((r) => [r.file_path, {
           byte_offset: Number(r.byte_offset),
           turn_count: r.turn_count,
+          part_count: r.part_count ?? 0,
           prompt_count: r.prompt_count ?? 0,
           response_count: r.response_count ?? 0,
           tool_call_count: r.tool_call_count ?? 0,
@@ -1702,10 +1750,10 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           if (meta.owner) ownerBackfill.set(meta.sessionId, meta.owner);
           if (cand.size <= st.byte_offset) continue; // nothing new
           filesThisAdapter += 1;
-          const { turns, newOffset, promptCount, responseCount, toolCallCount, lastInferenceId, usage } =
+          const { turns, parts, newOffset, promptCount, responseCount, toolCallCount, lastInferenceId, usage } =
             await readNewLines(
               cand.path, st.byte_offset, adapter.parseLine, adapter.classifyLine, st.last_inference_id, adapter.usageOf,
-              substitutionRows,
+              substitutionRows, adapter.parseParts,
             );
           if (newOffset === st.byte_offset) continue;
           const rows: TurnRow[] = turns.map((t, i) => ({
@@ -1721,9 +1769,25 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             text: t.text,
           }));
           stats.turnsInserted += await insertTurns(sql, rows);
+          // P-001 faithful parts — best-effort by contract (see insertParts):
+          // a parts failure costs the render pane its fidelity for this window,
+          // never the recall index and never the offset.
+          try {
+            stats.partsInserted = (stats.partsInserted ?? 0) + await insertParts(sql, partRowsFrom(parts, {
+              sourceKind: adapter.sourceKind,
+              sessionId: meta.sessionId,
+              owner: meta.owner,
+              partCount: st.part_count,
+            }));
+          } catch (err) {
+            if ((stats.errorSample ??= []).length < 3) {
+              stats.errorSample.push(`parts ${meta.sessionId}: ${(err as Error).message.slice(0, 160)}`);
+            }
+          }
           await writeState(sql, adapter.sourceKind, cand.path, {
             byte_offset: newOffset,
             turn_count: st.turn_count + turns.length,
+            part_count: st.part_count + parts.length,
             prompt_count: st.prompt_count + promptCount,
             response_count: st.response_count + responseCount,
             tool_call_count: st.tool_call_count + toolCallCount,

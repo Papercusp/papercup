@@ -150,6 +150,28 @@ export interface AgentSignals {
   unavailableSignals: AgentSignalKey[];
 }
 
+/** One event the agent is currently subscribed to. Mirrors the server-side
+ *  `AgentSubscription` (adv-agent-detail.ts) — see that file for field meaning. */
+export interface AgentSubscription {
+  eventKey: string;
+  policy: string;
+  note: string | null;
+  once: boolean;
+  wakes: boolean;
+  urgent: boolean;
+  createdAt: string;
+  expiresTs: string | null;
+}
+
+/** Mirrors the server-side `AgentSubscriptions`. `error` set ⇒ the read FAILED;
+ *  that is not the same as an empty list, and the dossier renders them
+ *  differently on purpose. */
+export interface AgentSubscriptions {
+  items: AgentSubscription[];
+  count: number;
+  error?: string;
+}
+
 export interface AgentDetail {
   ownerId: string;
   locks: AgentLocks;
@@ -158,6 +180,9 @@ export interface AgentDetail {
   codex: CodexHomeDiagnostics | null;
   /** Optional — see the server-side AgentDetail doc (adv-agent-detail.ts) for why. */
   signals?: AgentSignals;
+  /** Optional for the same reason as `signals`, and additionally because an
+   *  operator predating this field serves a payload without it. */
+  subscriptions?: AgentSubscriptions;
 }
 
 /** Lazy-load the Tier-3 dossier for one owner id through sync. Any number of
