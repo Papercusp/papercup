@@ -337,7 +337,9 @@ const launchSu = defineTool({
         const workspaceId = activeWorkspaceId();
         const base = await buildConsoleEnvelope({
           workspaceId,
-          slug: harness ?? undefined,
+          // null (not undefined) is the "no harness" value here — the envelope
+          // builder then resolves the workspace's home checkout as cwd.
+          slug: harness,
           operatorBaseUrl: resolveSpawnHostOperatorBaseUrl(),
           // Each psu bootstraps its own MCP — same reason capability:terminal and
           // fleet:launch-on-plan skip it.
