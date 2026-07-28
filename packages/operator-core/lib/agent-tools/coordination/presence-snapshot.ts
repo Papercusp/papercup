@@ -303,10 +303,18 @@ export function projectRosterRows(
  * one that LIES on the cheap one. Callers who want the cheap re-poll ask for a
  * cheap lens, which is the behaviour we want to reward anyway.
  *
- * The `coord:roster/v1` salt makes a cross-tool mix-up (passing a coord:presence
- * etag here, or the reverse) impossible to collide rather than merely unlikely; a
- * foreign or stale token simply misses and yields a full read, which is the safe
- * direction.
+ * A foreign or stale token simply misses and yields a full read — the safe
+ * direction, and the reason this guard cannot cause a wrong answer even when a
+ * caller mixes tokens up.
+ *
+ * ⚠ The `coord:roster/v1` salt is a VERSION NAMESPACE, not a collision defence —
+ * do not justify it as the latter. Mutation-testing showed removing it leaves the
+ * whole suite green, because the lens fields hashed above ALREADY make a
+ * coord:presence token unable to collide with one from here. What the salt buys
+ * is forward safety: if the hash composition below ever changes, bump it to /v2
+ * so outstanding tokens miss by construction instead of a stale token
+ * accidentally matching a new-format read. That is a real property, but it is a
+ * property of the NEXT change, which is why no test today can pin it.
  */
 export function computeRosterViewEtag(
   emitted: readonly Record<string, unknown>[] | readonly string[],

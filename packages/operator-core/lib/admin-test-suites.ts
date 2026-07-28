@@ -549,23 +549,54 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         // exact in both directions, needing no instrumentation of the transport
         // that is itself under suspicion, and it catches XHR/img/third-party calls
         // a patched-fetch counter cannot see by construction.
-        const probe = await runTauriEvalJson<{
+        // The control is REAL, not a proxy. It used to be "did the timeline
+        // collect >20 resources" — which is worthless in the shipped app, where
+        // WebKitGTK records nothing for `papercusp://` loads, so a fully mounted
+        // SPA legitimately shows ZERO entries (measured: 483/483 polls, WI-6657).
+        // Instead ask the sensor to prove itself: emit one nonce-tagged request
+        // it MUST see, and only trust a zero once that lands. This is the one
+        // place that deliberate HTTP request is allowed — a test rig auditing the
+        // invariant, never the shipped app.
+        const controlUrl = new URL(
+          '/__egress_control__',
+          (await getDesktopState(ctx)).origin,
+        ).toString();
+        const probe = await runTauriEvalResultJson<{
           monitorPresent: boolean;
+          verdict: string | null;
           total: number | null;
-          byPath: Record<string, number>;
+          byPath: Record<string, { count: number }>;
+          controlObserved: boolean;
+          controlReason: string | null;
+          blindTo: string[];
           resourceEntries: number;
           appMounted: boolean;
         }>(
           ctx,
-          `(() => {
+          `(async () => {
             const m = window.__papercusp_egress__;
-            const r = m ? m.report() : null;
-            return {
-              monitorPresent: Boolean(m),
-              total: r ? r.total : null,
-              byPath: r ? r.byPath : {},
+            const base = {
               resourceEntries: performance.getEntriesByType('resource').length,
               appMounted: Boolean(document.querySelector('#root')?.firstElementChild),
+            };
+            if (!m) {
+              return { ...base, monitorPresent: false, verdict: null, total: null, byPath: {},
+                       controlObserved: false, controlReason: 'no monitor', blindTo: [] };
+            }
+            let proof = { observed: false, reason: 'verify() is absent — this build predates the sensor control' };
+            try {
+              if (typeof m.verify === 'function') proof = await m.verify({ controlUrl: ${JSON.stringify(controlUrl)} });
+            } catch (e) { proof = { observed: false, reason: String(e) }; }
+            const r = m.report();
+            return {
+              ...base,
+              monitorPresent: true,
+              verdict: r.verdict,
+              total: r.total,
+              byPath: r.byPath,
+              controlObserved: Boolean(proof.observed),
+              controlReason: proof.reason || null,
+              blindTo: (r.sensor && r.sensor.blindTo) || [],
             };
           })()`,
         );
@@ -588,36 +619,53 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
             ],
           );
         }
-        // Positive control: an unloaded page trivially reports zero egress, and a
-        // green "no HTTP" from a blank webview is the most dangerous false pass
-        // available here — it is indistinguishable from success.
-        if (!v.appMounted || v.resourceEntries <= 20) {
+        // An unloaded page trivially reports zero egress, and a green "no HTTP"
+        // from a blank webview is the most dangerous false pass available here.
+        // Note what is NOT asserted any more: resource-entry COUNT. In the
+        // packaged shell that count is legitimately zero however healthy the app
+        // is, because WebKitGTK records nothing for `papercusp://` loads — so the
+        // old `resourceEntries <= 20` guard failed the shipped app for a reason
+        // that had nothing to do with egress (WI-6657).
+        if (!v.appMounted) {
           return statusResult(
             false,
             'Webview reports zero HTTP egress.',
-            `sample is not trustworthy: appMounted=${v.appMounted}, resourceEntries=${v.resourceEntries}.`,
+            'sample is not trustworthy: the app never mounted, so nothing ran to escape.',
+            ['A zero from a blank webview is meaningless rather than clean.'],
+          );
+        }
+
+        // THE CONTROL. `unknown` is a failure, not a pass: it is what a dead
+        // detector reports, and it is exactly what a zero looks like.
+        if (v.verdict === 'unknown' || !v.controlObserved) {
+          return statusResult(
+            false,
+            'Webview reports zero HTTP egress.',
+            `egress is UNKNOWN, not zero: the sensor could not prove itself live (${v.controlReason ?? 'no reason given'}).`,
             [
-              'The shell loads hundreds of resources when healthy, so a near-empty timeline means nothing ran — a zero here would be meaningless rather than clean.',
+              'A deliberate control request was issued and the sensor never saw it, so a zero here carries no information. Fix the sensor before trusting any green from this check.',
+              ...(v.blindTo.length > 0 ? [`Sensor blind spots: ${v.blindTo.join('; ')}.`] : []),
             ],
           );
         }
 
-        const pass = v.total === 0;
+        const pass = v.verdict === 'clean';
         const worst = Object.entries(v.byPath)
-          .sort((a, b) => b[1] - a[1])
+          .sort((a, b) => (b[1]?.count ?? 0) - (a[1]?.count ?? 0))
           .slice(0, 5)
-          .map(([p, n]) => `${p}×${n}`)
+          .map(([p, agg]) => `${p}×${agg?.count ?? 0}`)
           .join(', ');
         return statusResult(
           pass,
           'Every /api call inside the desktop shell rides the IPC bridge (0 HTTP requests).',
           pass
-            ? `0 escapes across ${v.resourceEntries} resources.`
+            ? `0 escapes, and the sensor proved itself live on a control request.`
             : `${v.total} HTTP escape(s): ${worst}.`,
           pass
             ? undefined
             : [
                 'A path recurring at ~30s boundaries is a background poll escaping on a ROUTING rule (see D-008), not a startup race; one appearing only before the polyfill installs is genuinely an ordering bug.',
+                ...(v.blindTo.length > 0 ? [`Sensor blind spots: ${v.blindTo.join('; ')}.`] : []),
               ],
         );
       },

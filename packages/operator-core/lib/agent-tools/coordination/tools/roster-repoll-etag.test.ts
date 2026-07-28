@@ -25,7 +25,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeRosterViewEtag, projectRosterRows, filterRosterRowsByState } from '../presence-snapshot';
+import {
+  computeRosterViewEtag,
+  computeRosterEtag,
+  projectRosterRows,
+  filterRosterRowsByState,
+} from '../presence-snapshot';
 
 const BASE_LENS = {
   view: 'live',
@@ -248,22 +253,20 @@ describe('coord:roster re-poll etag (WI-6665)', () => {
     });
   });
 
-  it('is salted apart from coord:presence, so a foreign token cannot collide', () => {
+  it('does not collide with a coord:presence token for the same roster', () => {
     // A mismatch is always safe (it yields a full read); a false MATCH is not.
-    // The salt makes cross-tool confusion impossible rather than improbable.
+    //
+    // ⚠ This passes because of the LENS FIELDS, not the `coord:roster/v1` salt.
+    // Mutation-testing (2026-07-28) confirmed removing the salt leaves this and
+    // every other test here green — so do not read this as salt coverage. The
+    // salt is a version namespace for a future hash change; see the note on
+    // computeRosterViewEtag. Kept as a regression guard on the real property:
+    // the two tools' tokens must never be interchangeable.
     const underlying = rows(['live', 'parked']);
     const rosterEtag = computeRosterViewEtag(emit(underlying, 'full'), BASE_LENS);
     expect(rosterEtag).toMatch(/^[0-9a-f]{16}$/);
 
-    // Same rows through presence's identity+state etag → a different token.
-    // (Imported lazily to keep this file's surface to the roster contract.)
-    return import('../presence-snapshot').then(({ computeRosterEtag }) => {
-      const presenceEtag = computeRosterEtag(
-        underlying as never,
-        BASE_LENS.scope,
-        BASE_LENS.potId,
-      );
-      expect(rosterEtag).not.toBe(presenceEtag);
-    });
+    const presenceEtag = computeRosterEtag(underlying as never, BASE_LENS.scope, BASE_LENS.potId);
+    expect(rosterEtag).not.toBe(presenceEtag);
   });
 });

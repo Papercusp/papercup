@@ -50,17 +50,29 @@ interface EgressEntry {
   path: string;
   startMs: number;
   durationMs: number;
+  via?: string;
 }
 interface EgressReport {
+  verdict: "clean" | "breach" | "unknown";
   total: number;
-  byPath: Record<string, number>;
+  byPath: Record<string, { count: number }>;
   firstAtMs: number | null;
   entries: EgressEntry[];
+  sensor?: { controlObserved: boolean; blindTo: string[] };
 }
 interface EgressProbe {
   report: EgressReport | null;
   monitorPresent: boolean;
-  /** Positive control — see the assertion order below. */
+  /**
+   * THE positive control: did a deliberate, nonce-tagged request land in the
+   * sensor's own buffer? This replaces the `resourceEntries > 20` proxy, which
+   * was measured WRONG for the shipped app — WebKitGTK records nothing at all
+   * for `papercusp://` loads, so a perfectly healthy packaged shell reports zero
+   * resource entries and the old proxy read that as a blind sensor (WI-6657).
+   */
+  controlObserved: boolean;
+  controlReason: string | null;
+  /** Retained for diagnosis only — NEVER as a control. See above. */
   resourceEntries: number;
   appMounted: boolean;
   shellPresent: boolean;
@@ -95,25 +107,47 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
     //    gap between first paint and the first background refresh.
     await browser.pause(SAMPLE_WINDOW_MS);
 
-    const probe: EgressProbe = await browser.execute(() => {
+    const probe: EgressProbe = await browser.executeAsync((done: (r: EgressProbe) => void) => {
       const monitor = (
         window as unknown as {
-          __papercusp_egress__?: { report: () => EgressReport };
+          __papercusp_egress__?: {
+            report: () => EgressReport;
+            verify?: (o?: { timeoutMs?: number }) => Promise<{
+              observed: boolean;
+              reason?: string;
+            }>;
+          };
         }
       ).__papercusp_egress__;
-      return {
-        report: monitor ? monitor.report() : null,
-        monitorPresent: Boolean(monitor),
-        resourceEntries: performance.getEntriesByType("resource").length,
-        appMounted: Boolean(document.querySelector("#root")?.firstElementChild),
-        shellPresent: Boolean(
-          document.querySelector('[data-testid="operator-shell"], .pc-advshell'),
-        ),
-        url: String(window.location?.href ?? "(no location)"),
-        readyState: String(document.readyState),
-        docToken:
-          (window as unknown as { __papercusp_perf_doc__?: string }).__papercusp_perf_doc__ ?? null,
-      };
+
+      // Prove the sensor is alive BEFORE reading a zero off it. The control
+      // deliberately emits one HTTP request — allowed here, in a test rig
+      // auditing the invariant, and nowhere near the shipped app.
+      const proof = monitor?.verify
+        ? monitor.verify({ timeoutMs: 4000 })
+        : Promise.resolve({
+            observed: false,
+            reason: "verify() is absent — this build predates the sensor control",
+          });
+
+      void proof.then((p: { observed: boolean; reason?: string }) => {
+        done({
+          report: monitor ? monitor.report() : null,
+          monitorPresent: Boolean(monitor),
+          controlObserved: Boolean(p.observed),
+          controlReason: p.reason ?? null,
+          resourceEntries: performance.getEntriesByType("resource").length,
+          appMounted: Boolean(document.querySelector("#root")?.firstElementChild),
+          shellPresent: Boolean(
+            document.querySelector('[data-testid="operator-shell"], .pc-advshell'),
+          ),
+          url: String(window.location?.href ?? "(no location)"),
+          readyState: String(document.readyState),
+          docToken:
+            (window as unknown as { __papercusp_perf_doc__?: string }).__papercusp_perf_doc__ ??
+            null,
+        });
+      });
     });
 
     // 3. Record BEFORE asserting (P-003c). Every `expect` below throws, and a
@@ -193,25 +227,29 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
       );
     }
 
-    // 4c. Same document, app alive, and STILL no resource timings. That is not a
-    //     blank page — it means the sensor this whole spec is built on records
-    //     nothing in this environment, e.g. because the packaged app is served
-    //     over the `papercusp://` custom protocol rather than HTTP. A blind
-    //     sensor reports the same clean zero as a clean shell, so it must fail
-    //     LOUDLY and with its own name: "no egress observed" and "unable to
-    //     observe egress" need opposite fixes.
-    if (probe.resourceEntries === 0) {
+    // 4c. Same document, app alive — so is the SENSOR alive? This used to be
+    //     inferred from `resourceEntries === 0`, and that inference was wrong in
+    //     the direction that matters. Measured on WebKitGTK 2.52.3 with the
+    //     scheme registered as wry does (WI-6657): a `papercusp://` document
+    //     gets NO resource-timing entry for its own html/js/css, so a perfectly
+    //     healthy packaged shell reports ZERO entries — the old guard failed
+    //     every packaged run and called a working sensor blind. What the same
+    //     probe also showed: http fetch/XHR/img/sendBeacon from that document
+    //     ARE recorded. The sensor works; only the proxy control was broken.
+    //
+    //     So ask directly instead of inferring: emit one nonce-tagged request
+    //     the sensor MUST see, and require that it saw it. That is the only
+    //     reading that distinguishes "nothing escaped" from "I cannot tell".
+    if (!probe.controlObserved) {
       throw new Error(
-        `resource timing recorded NOTHING while a live operator shell was rendered — this spec's ` +
-          `sensor is BLIND here, it did not observe a clean run.\n${sampleContext}\n` +
-          `PerformanceResourceTiming is the sensor: an IPC-routed request leaves no entry, which is ` +
-          `only meaningful if entries appear for requests that DO hit the network. Zero entries on a ` +
-          `mounted shell means the API records nothing in this webview — check whether the packaged ` +
-          `app serves over the papercusp:// custom protocol (custom schemes need not populate ` +
-          `resource timing) and pick a sensor that works there before trusting any egress verdict.`,
+        `the egress sensor could not prove itself live — this run did NOT observe a clean shell, ` +
+          `it observed nothing.\n${sampleContext}` +
+          `  control:         ${probe.controlReason ?? "(no reason given)"}\n\n` +
+          `A deliberate control request was issued to a URL the sensor must record, and it never ` +
+          `appeared. Until that lands, a zero here carries no information: "no egress observed" and ` +
+          `"unable to observe egress" look identical and need opposite fixes.`,
       );
     }
-    expect(probe.resourceEntries).toBeGreaterThan(20);
 
     // 5. Only now: a MISSING detector must fail, never pass. `getEgressReport()`
     //    returns null when no monitor is installed, and null means UNKNOWN — a
