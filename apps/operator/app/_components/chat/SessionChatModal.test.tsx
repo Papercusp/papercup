@@ -507,7 +507,14 @@ describe('SessionChatModal', () => {
 
       const chip = await waitFor(() => screen.getByTestId('session-chat-footer-detail-chip'));
       expect(chip.textContent).toContain('1 lock');
-      expect(chip.textContent).toContain('3 unread');
+      // WI-6504: the count must NAME its corpus. A bare "3 unread" in this
+      // footer reads as "this conversation has 3 unread messages", but it
+      // counts COORD messages — the owner reported "32 unread" beside a single
+      // rendered message. Assert the qualifier so the ambiguous label cannot
+      // come back, and assert the tooltip says which list it means.
+      expect(chip.textContent).toContain('3 coord unread');
+      expect(chip.getAttribute('title')).toContain('coord message');
+      expect(chip.getAttribute('title')).toContain('separate list');
 
       fireEvent.click(chip);
       expect(nuqsSetters['chatDossier']).toHaveBeenCalledWith(true);

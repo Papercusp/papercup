@@ -298,12 +298,22 @@ function SessionFooter({
   const { detail } = useAgentDetail(entry.ownerId);
   const locksCount = (detail?.locks.held.length ?? 0) + (detail?.locks.waiting.length ?? 0);
   const unreadCount = detail?.coord.unreadCount ?? 0;
+  // WI-6504 (owner-reported): this counts COORD messages addressed to the agent
+  // — a DIFFERENT corpus from the conversation rendered directly above it. That
+  // is why "32 unread" sat beside a single visible message and read as a
+  // contradiction: two truthful numbers about different things, presented as if
+  // they described the same pane. D-003 forbids clamping or hiding the count, so
+  // the fix is to NAME what it counts rather than shrink it.
   const detailChipLabel = [
     locksCount > 0 ? `${locksCount} lock${locksCount === 1 ? '' : 's'}` : null,
-    unreadCount > 0 ? `${unreadCount} unread` : null,
+    unreadCount > 0 ? `${unreadCount} coord unread` : null,
   ]
     .filter(Boolean)
     .join(' ');
+  const detailChipTitle =
+    unreadCount > 0
+      ? `${unreadCount} unread coord message${unreadCount === 1 ? '' : 's'} addressed to this agent — a separate list from the conversation shown here. Opens the agent detail panel.`
+      : 'Open the agent detail panel to this section';
 
   return (
     <div className="oracle-session-footer" data-testid="session-chat-footer">
@@ -323,7 +333,7 @@ function SessionFooter({
             type="button"
             className="oracle-session-footer-detail-chip"
             onClick={() => onOpenDetail?.(locksCount > 0 ? 'locks' : 'coord')}
-            title="Open the agent detail panel to this section"
+            title={detailChipTitle}
             data-testid="session-chat-footer-detail-chip"
           >
             ⚠ {detailChipLabel}
