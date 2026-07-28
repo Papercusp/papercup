@@ -233,6 +233,72 @@ export function selectRosterRows(rows: RosterRow[], owner?: string): RosterRow[]
   return picked.sort((a, b) => String(a.ownerId).localeCompare(String(b.ownerId)));
 }
 
+/** The emitted-row lens for a cheap liveness read (WI-6658). `full` is the
+ *  default and is byte-identical to the historical payload. */
+export type RosterProjection = 'ids' | 'liveness' | 'full';
+
+/** Fields kept by the `liveness` lens — the oracle's verdict and nothing else. */
+const LIVENESS_PROJECTION_FIELDS = ['ownerId', 'sessionState', 'confirmLiveness'] as const;
+
+/**
+ * PURE projection of the EMITTED roster rows down to the fields a liveness
+ * question actually needs (WI-6658). This runs on the OUTPUT of
+ * `assemblePresenceSnapshot`, deliberately: `sessionState` is assembled by
+ * `deriveVerdict` from six legs (two of which — a `kill(pid,0)` probe and the
+ * box-local psu-pty registry — are not in Postgres at all), so a cheap path that
+ * recomputed a subset would reintroduce exactly the per-surface divergence
+ * `presence-derivation-unification-2026-07-17` closed. We project the SAME
+ * verdict; we just emit fewer fields. Assembly is ~300ms and is not the cost
+ * being addressed — the payload is (a full workspace read measured 135KB /
+ * ~34k tokens across 132 rows, at ~1KB and 37 keys per row).
+ */
+export function projectRosterRows(
+  rows: Record<string, unknown>[],
+  projection: RosterProjection,
+): Record<string, unknown>[] | string[] {
+  if (projection === 'full') return rows;
+  if (projection === 'ids') return rows.map((r) => String(r.ownerId));
+  return rows.map((r) => {
+    const out: Record<string, unknown> = {};
+    for (const k of LIVENESS_PROJECTION_FIELDS) {
+      // confirmLiveness is a nudge, not a state — emit it only when it is set,
+      // so the common row stays two fields wide.
+      if (k === 'confirmLiveness' && !r[k]) continue;
+      out[k] = r[k];
+    }
+    return out;
+  });
+}
+
+/**
+ * PURE `sessionState` filter over the emitted rows (WI-6658).
+ *
+ * ⚠ A row whose `sessionState` is null — a federated/unknown peer, which has no
+ * LOCAL wakeability entry to derive a verdict from — matches NO state and is
+ * therefore excluded by any filter. That is the honest reading (it is not
+ * known-live), but silently dropping it would be the same failure mode as
+ * steering a liveness question onto a keepalive column: a confident wrong
+ * answer. The caller is told how many rows this removed, so an empty result is
+ * never confusable with "no live peers".
+ */
+export function filterRosterRowsByState(
+  rows: Record<string, unknown>[],
+  states: readonly string[] | undefined,
+): { rows: Record<string, unknown>[]; unknownStateExcluded: number } {
+  if (!states || states.length === 0) return { rows, unknownStateExcluded: 0 };
+  const want = new Set(states);
+  let unknownStateExcluded = 0;
+  const kept = rows.filter((r) => {
+    const s = r.sessionState;
+    if (typeof s !== 'string') {
+      unknownStateExcluded += 1;
+      return false;
+    }
+    return want.has(s);
+  });
+  return { rows: kept, unknownStateExcluded };
+}
+
 /**
  * Assemble the roster snapshot for a resolved scope. The federated roster
  * (cross-machine peers) is merged in (best-effort — [] on a single box). The

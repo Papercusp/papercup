@@ -19,7 +19,12 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolvePresenceScope, assemblePresenceSnapshot } from '../presence-snapshot';
+import {
+  resolvePresenceScope,
+  assemblePresenceSnapshot,
+  projectRosterRows,
+  filterRosterRowsByState,
+} from '../presence-snapshot';
 import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { readIdentity } from '../../locks/identity';
 import { COORD_ROLES } from '../roles';
@@ -33,8 +38,8 @@ export default defineTool({
   description:
     'ONE read door with an explicit lens: view=live (in-a-turn presence), members (fleet/hive membership), claims (who-on-what-item), history (who-was-ever-here). Same underlying model; coord:presence / fleet:status / fleet:assignments / coord:glance become thin aliases (or deprecate). Kills "which of 5 tools do I call".',
   guidance: {
-    when: 'Before dispatch/handoff/routing: who can take work (view=live)? Who joined what fleet (view=members)? Who\'s on plan P (view=claims)? Historical who-was-ever-here (view=history).',
-    notWhen: 'Being notified of future changes (subscribe fleet_assignment change-feed). Full message history (coord:inbox). Rate-limit telemetry (dev:rate_governor_status).',
+    when: 'Before dispatch/handoff/routing: who can take work (view=live)? Who joined what fleet (view=members)? Who\'s on plan P (view=claims)? Historical who-was-ever-here (view=history). Just need live ownerIds? { view:"live", project:"liveness", states:["live"] } — ~99% smaller than the default read, and the only form that reliably fits one result.',
+    notWhen: 'Being notified of future changes (subscribe fleet_assignment change-feed). Full message history (coord:inbox). Rate-limit telemetry (dev:rate_governor_status). NEVER hand-query coord_presence for liveness — sessionState is derived from six legs, two of which are not in Postgres, so no column holds it; use project/states here instead.',
     chaining: 'coord:roster { view } → read ONCE per turn; tail [coord+N] deltas for transitions. For history, use coord:catch-up after to refine by topic/plan.',
     seeAlso: [
       'coord:presence (view=live · members)',
@@ -90,6 +95,19 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('view=live,claims: also list stale idle agents (no claims, old heartbeat). Default false.'),
+    project: z
+      .enum(['ids', 'liveness', 'full'])
+      .optional()
+      .describe(
+        'view=live,members: how much of each row to emit. full (DEFAULT) = every field, unchanged. liveness = { ownerId, sessionState } only (~92% smaller). ids = ownerIds only (~96% smaller). The SAME oracle verdict either way — fewer fields, never a cheaper derivation.',
+      ),
+    states: z
+      .array(z.enum(['live', 'parked', 'draining', 'suspect', 'ended', 'recorded']))
+      .max(6)
+      .optional()
+      .describe(
+        'view=live,members: return only rows in these sessionStates — e.g. ["live"]. summary/byState still describe the WHOLE roster, so you can see what you filtered out. A federated peer with no derivable state matches nothing and is reported as projection.unknownStateExcluded, never silently dropped.',
+      ),
   }),
   async handler(args, ctx) {
     const view = args.view ?? 'live';
@@ -137,21 +155,35 @@ export default defineTool({
 
       const self = resolveSelfRef(ctx);
 
-      // For members view, highlight fleet membership
-      let output = {
-        ...snapshot,
-        view: 'members',
-        ...(self ? { self } : {}),
-        active: markSelfRows(snapshot.active, self),
-      };
+      // WI-6658: the state filter + field projection run on the ASSEMBLED rows,
+      // so every emitted `sessionState` is the same oracle verdict the full read
+      // would have given — this lens changes what is EMITTED, never how it is
+      // derived. `summary` (incl. byState) is deliberately left describing the
+      // WHOLE roster: a filtered read that also narrowed its own summary would
+      // be unable to tell you what it hid from you.
+      const projection = args.project ?? 'full';
+      const marked = markSelfRows(snapshot.active, self);
+      const { rows: filtered, unknownStateExcluded } = filterRosterRowsByState(marked, args.states);
+      const projected = projectRosterRows(filtered, projection);
+      const lensed = projection !== 'full' || (args.states?.length ?? 0) > 0;
 
-      // For live view, add presence summary
-      if (view === 'live') {
-        output = {
-          ...output,
-          view: 'live',
-        };
-      }
+      const output = {
+        ...snapshot,
+        view: view === 'live' ? 'live' : 'members',
+        ...(self ? { self } : {}),
+        active: projected,
+        ...(lensed
+          ? {
+              projection: {
+                project: projection,
+                ...(args.states?.length ? { states: args.states } : {}),
+                returned: projected.length,
+                ofActive: snapshot.active.length,
+                ...(unknownStateExcluded ? { unknownStateExcluded } : {}),
+              },
+            }
+          : {}),
+      };
 
       return {
         content: [
