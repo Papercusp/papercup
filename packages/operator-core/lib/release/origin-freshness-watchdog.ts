@@ -34,8 +34,14 @@
  * On a SUSTAINED alarm (EI-9030b-style debounce — a transient blip that self-heals within
  * one sweep interval never pages): an urgent owner `notifyAttention` + a durable
  * `harness_escalations` row (own phase, never clobbers git-sync's or the bridge's own rows)
- * + a fleet broadcast so any running agent can claim the rescue. Recovery (origin catches
- * back up) clears the flag + escalation idempotently.
+ * + a fleet broadcast so any running agent can claim the rescue. Recovery clears the flag +
+ * escalation idempotently.
+ *
+ * WI-6643 — the alarm is NAMED AFTER THE CAUSE (`describeOriginFreshnessAlert`), and the
+ * one-shot latch is keyed by that cause. Previously all three signals shared one hardcoded
+ * origin-behind framing and one boolean latch, so a publish REFUSAL announced itself as
+ * "GitHub origin is falling behind" and pointed the responder at the bridge — which was
+ * working fine — while the refusal detail sat in the body.
  *
  * Kill-switch: PAPERCUSP_ORIGIN_FRESHNESS_WATCHDOG='0'.
  */
@@ -51,8 +57,11 @@ import { githubOriginDevicePubkey } from '../sync/pot-git/github-ingress';
 import { BRIDGE_CANONICAL_REF } from '../sync/pot-git/github-bridge-tick';
 import {
   evaluateOriginFreshness,
+  describeOriginFreshnessAlert,
+  describeOriginFreshnessRecovery,
   DEFAULT_AHEAD_COUNT_MAX,
   DEFAULT_TIP_AGE_STALE_MS,
+  type OriginFreshnessCause,
   type OriginFreshnessThresholds,
 } from './origin-freshness';
 
@@ -208,7 +217,8 @@ export async function checkOriginFreshness(
   const runGit = opts.runGit ?? defaultRunGit;
   const stallSustainMinSweeps = opts.stallSustainMinSweeps ?? DEFAULT_STALL_SUSTAIN_MIN_SWEEPS;
   const now = Date.now();
-  const recoveredForBroadcast: string[] = [];
+  // WI-6643: carries the CAUSE that had alarmed, so the recovery line matches it.
+  const recoveredForBroadcast: { slug: string; cause: OriginFreshnessCause }[] = [];
 
   try {
     // WI-5791 — sweep EVERY workspace that owns a harness registry, not one
@@ -298,6 +308,7 @@ export async function checkOriginFreshness(
           of_origin_sha: string | null;
           of_origin_since_ms: string | number | null;
           of_alerted: boolean | null;
+          of_alerted_cause: string | null;
           of_stall_sweeps: number | null;
           of_publish_refused_sweeps: number | null;
           publish_refused: string | null;
@@ -307,6 +318,7 @@ export async function checkOriginFreshness(
         SELECT metadata->>'of_origin_sha' AS of_origin_sha,
                (metadata->>'of_origin_since_ms')::bigint AS of_origin_since_ms,
                COALESCE((metadata->>'of_alerted')::boolean, false) AS of_alerted,
+               metadata->>'of_alerted_cause' AS of_alerted_cause,
                COALESCE((metadata->>'of_stall_sweeps')::int, 0) AS of_stall_sweeps,
                COALESCE((metadata->>'of_publish_refused_sweeps')::int, 0) AS of_publish_refused_sweeps,
                metadata->'own_head_publish'->>'refused' AS publish_refused,
@@ -351,6 +363,9 @@ export async function checkOriginFreshness(
         ingressMirror: ingressMirrorSha,
       });
       const alerted = row?.of_alerted ?? false;
+      // WI-6643: null on a row that latched before this key existed — treated as
+      // the legacy framing, so an in-flight origin-behind alarm does not re-fire.
+      const alertedCause = row?.of_alerted_cause ?? 'origin-behind';
       const prevOriginSinceMs = row?.of_origin_since_ms != null ? Number(row.of_origin_since_ms) : null;
 
       let originTipAgeMs: number | null = null;
@@ -402,28 +417,44 @@ export async function checkOriginFreshness(
            WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'`;
       }
 
+      const framing = describeOriginFreshnessAlert(verdict, {
+        slug: entry.slug,
+        potHomeSlug,
+        publishRefusalCode,
+      });
+
       if (verdict.state === 'stale') {
-        if (alerted) continue; // one-shot until recovery
+        // WI-6643: the one-shot latch is keyed by CAUSE, not by a bare boolean.
+        // Three distinguishable signals used to share one `of_alerted` flag, so
+        // whichever fired first silenced the others for as long as it stayed
+        // stale — and since a publish refusal keeps `state:'stale'` pinned, an
+        // origin-behind alarm that latched first could mask a later refusal
+        // FOREVER while its summary kept describing the wrong subsystem. A
+        // change of cause re-alarms once, then falls back to one-shot.
+        if (alerted && alertedCause === framing.cause) continue; // one-shot until recovery
         if (stallSweeps < stallSustainMinSweeps) continue; // debounce a transient blip
 
         const flip = await sql`
           UPDATE harness_shared.routines
-             SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"of_alerted":true}'::jsonb,
+             SET metadata = COALESCE(metadata, '{}'::jsonb)
+                   || jsonb_build_object('of_alerted', true, 'of_alerted_cause', ${framing.cause}::text),
                  updated_at = now()
            WHERE install_slug = ${entry.slug}
              AND target_role = 'system:git-sync'
-             AND COALESCE((metadata->>'of_alerted')::boolean, false) = false`;
+             AND (COALESCE((metadata->>'of_alerted')::boolean, false) = false
+                  OR COALESCE(metadata->>'of_alerted_cause', '') IS DISTINCT FROM ${framing.cause}::text)`;
         if (flip.count !== 1) continue; // another process won the flip
 
         try {
           const { notifyAttention } = await import('../attention-notify');
           await notifyAttention({
             kind: 'intervention',
-            title: 'origin freshness STALLED — GitHub origin is falling behind local',
-            body: `${entry.slug} (bridged hive ${potHomeSlug}): ${verdict.reason}. The bridge's own divergence classifier reports clear — this is an independent freshness backstop.`,
+            title: framing.title,
+            body: `${entry.slug} (bridged hive ${potHomeSlug}): ${verdict.reason}.`,
             importance: 'urgent',
             workspaceId,
             data: {
+              cause: framing.cause,
               aheadCountStale: verdict.aheadCountStale,
               tipAgeStale: verdict.tipAgeStale,
               publishRefused: verdict.publishRefused,
@@ -435,13 +466,8 @@ export async function checkOriginFreshness(
         }
 
         await broadcastSevereEvent({
-          summary: `origin freshness STALLED on ${entry.slug} (bridged) — GitHub origin is falling behind local; bridge divergence classifier reports clear.`,
-          body:
-            `${verdict.reason}\n\nWhy it matters: the github-bridge divergence classifier only fires on structured residues ` +
-            `(rejectedNonFF / blockedSecrets / …) — a bridge that is reachable but simply stuck (a starved integrator lease, ` +
-            `a wedged egress fire) still reports 'clear' while origin freezes. Claim it: inspect the ${entry.slug} git-sync ` +
-            `routine's metadata.github_bridge for the last tick's outcome, and check whether the bridge writer (integrator ` +
-            `lock-authority lease holder) is actually running.`,
+          summary: framing.summary,
+          body: `${verdict.reason}\n\n${framing.whyItMatters}`,
           category: 'severe-event',
           conditionKey: `origin-freshness:${entry.slug}`,
           // WI-6228: one-shot until recovery (`if (alerted) continue` above) — our
@@ -480,10 +506,14 @@ export async function checkOriginFreshness(
         if (alerted) {
           await sql`
             UPDATE harness_shared.routines
-               SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"of_alerted":false}'::jsonb,
+               SET metadata = (COALESCE(metadata, '{}'::jsonb) || '{"of_alerted":false}'::jsonb)
+                     - 'of_alerted_cause',
                    updated_at = now()
              WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'`;
-          recoveredForBroadcast.push(entry.slug);
+          recoveredForBroadcast.push({
+            slug: entry.slug,
+            cause: alertedCause === 'publish-refused' ? 'publish-refused' : 'origin-behind',
+          });
           out.recovered.push(entry.slug);
         } else if (cleared.count > 0) {
           console.warn(
@@ -494,13 +524,16 @@ export async function checkOriginFreshness(
     }
 
     if (recoveredForBroadcast.length > 0) {
-      const list = recoveredForBroadcast.join(', ');
+      const list = recoveredForBroadcast.map((r) => r.slug).join(', ');
       await broadcastSevereEventResolvedMany({
-        conditionKeys: recoveredForBroadcast.map((slug) => `origin-freshness:${slug}`),
+        conditionKeys: recoveredForBroadcast.map((r) => `origin-freshness:${r.slug}`),
         summary:
+          // WI-6643: a refusal clearing is not "origin caught back up" — on
+          // 2026-07-28 the recovery said exactly that when what had actually
+          // happened was a secrets exemption landing.
           recoveredForBroadcast.length === 1
-            ? `origin freshness RECOVERED on ${list} — GitHub origin has caught back up; the earlier stall alarm is stale.`
-            : `origin freshness RECOVERED on ${recoveredForBroadcast.length} hives (${list}) — origin has caught back up.`,
+            ? describeOriginFreshnessRecovery(recoveredForBroadcast[0]!.cause, list)
+            : `origin freshness RECOVERED on ${recoveredForBroadcast.length} hives (${list}) — publish/origin flow has resumed.`,
       });
     }
     // WI-5791 — the self-report. A sweep that checked nothing is not a healthy

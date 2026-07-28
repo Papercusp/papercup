@@ -156,6 +156,98 @@ export function evaluateOriginFreshness(
 }
 
 /**
+ * WI-6643 — which of the three signals the operator should be told about.
+ *
+ * `publish-refused` is the direct self-report; `origin-behind` is the pair of
+ * inferred signals (aheadCount / tipAge) that share one runbook.
+ */
+export type OriginFreshnessCause = 'publish-refused' | 'origin-behind';
+
+export interface OriginFreshnessAlertFraming {
+  cause: OriginFreshnessCause;
+  /** notifyAttention title. */
+  title: string;
+  /** The broadcast summary — the ONE line an agent sees in coord:inbox. */
+  summary: string;
+  /** The "why it matters / claim it" paragraph appended to the alarm body. */
+  whyItMatters: string;
+}
+
+/**
+ * WI-6643 — name the alarm after the cause that actually fired.
+ *
+ * Until now the title, summary and "why it matters" runbook were hardcoded to the
+ * origin-behind framing, and `verdict.reason` (which DOES state a refusal correctly)
+ * was buried in the body. On 2026-07-28 that misdirected the responding agent for
+ * ~25min: the guard had refused the publish over a secrets finding, and the alarm
+ * announced "GitHub origin is falling behind local; bridge divergence classifier
+ * reports clear" and told them to go inspect `metadata.github_bridge` and the
+ * integrator lease — a bridge that was in fact working fine. The detector was
+ * right and the ANNOUNCEMENT sent them to the wrong subsystem.
+ *
+ * A refusal takes precedence over the inferred signals because it is both the
+ * direct self-report AND the actionable one: while the publish leg refuses, origin
+ * falls behind as a CONSEQUENCE, so reporting the consequence buries the cause.
+ */
+export function describeOriginFreshnessAlert(
+  verdict: OriginFreshnessVerdict,
+  ctx: { slug: string; potHomeSlug?: string | null; publishRefusalCode?: string | null },
+): OriginFreshnessAlertFraming {
+  const where = ctx.potHomeSlug ? `${ctx.slug} (bridged hive ${ctx.potHomeSlug})` : ctx.slug;
+
+  if (verdict.publishRefused) {
+    const code = ctx.publishRefusalCode ?? 'unknown';
+    // The recovery lever is code-specific: a `secrets` refusal is the one an agent
+    // can clear itself (WI-5591 runtime path exemptions, reachable from an ordinary
+    // workspace-scoped session as of WI-6641).
+    const lever =
+      code === 'secrets'
+        ? `Claim it: the publish guard found a secret-shaped string in the range it is judging. Inspect the git-sync ` +
+          `journal for the offending path:line, then — if and ONLY if it is a false positive (a detector fixture, a ` +
+          `documented example credential, a placeholder, never a REAL live secret) — register it with ` +
+          `\`pot_git:secrets_exemptions {action:'add', path, reason}\` and the next tick retries. If it IS a real ` +
+          `credential, rotate it; editing the file is NOT enough, because the offending blob is already in history.`
+        : `Claim it: inspect the git-sync routine's \`metadata.own_head_publish\` for the refusal detail, and the ` +
+          `git-sync journal for the guard's own log line naming the offending commit.`;
+    return {
+      cause: 'publish-refused',
+      title: `p2p publish REFUSED (${code}) — this device's commits are reaching nobody`,
+      summary:
+        `p2p publish REFUSED on ${ctx.slug} (${code}) — the publish guard is refusing every tick, so nothing this ` +
+        `device commits reaches peers or origin. This is NOT a bridge/egress fault.`,
+      whyItMatters:
+        `Why it matters: the publish guard's baseline only advances through an ADMITTED publish, so a hard refusal ` +
+        `re-judges the SAME range on every tick and stays refused until the finding is resolved — it does not ` +
+        `self-heal. Origin falling behind is a downstream SYMPTOM here; the bridge and its divergence classifier ` +
+        `are working correctly and are not where to look.\n\n${lever}`,
+    };
+  }
+
+  return {
+    cause: 'origin-behind',
+    title: 'origin freshness STALLED — GitHub origin is falling behind local',
+    summary: `origin freshness STALLED on ${ctx.slug} (bridged) — GitHub origin is falling behind local; bridge divergence classifier reports clear.`,
+    whyItMatters:
+      `Why it matters: the github-bridge divergence classifier only fires on structured residues ` +
+      `(rejectedNonFF / blockedSecrets / …) — a bridge that is reachable but simply stuck (a starved integrator lease, ` +
+      `a wedged egress fire) still reports 'clear' while origin freezes. Claim it: inspect the ${where} git-sync ` +
+      `routine's metadata.github_bridge for the last tick's outcome, and check whether the bridge writer (integrator ` +
+      `lock-authority lease holder) is actually running.`,
+  };
+}
+
+/**
+ * WI-6643 — the recovery line, worded for the cause that had alarmed. Recovering
+ * from a refusal is NOT "origin caught back up" (the 2026-07-28 recovery said
+ * exactly that when what actually happened was a secrets exemption landing).
+ */
+export function describeOriginFreshnessRecovery(cause: OriginFreshnessCause, slug: string): string {
+  return cause === 'publish-refused'
+    ? `p2p publish RECOVERED on ${slug} — the publish guard is admitting again; the earlier refusal alarm is stale.`
+    : `origin freshness RECOVERED on ${slug} — GitHub origin has caught back up; the earlier stall alarm is stale.`;
+}
+
+/**
  * Thin alias matching the exact signature WI-5607 sketched as the suggested
  * implementation (`originFreshness({ aheadCount, originTipAgeMs }, thresholds) → 'ok' |
  * 'stale'`), for anyone grepping for that name. `evaluateOriginFreshness` above (with the
