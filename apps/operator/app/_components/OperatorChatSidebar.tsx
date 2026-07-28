@@ -1408,15 +1408,10 @@ body.has-op-chat .pc-header {
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
 }
 
-.op-chat-sidebar .op-chat-banner::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.10), transparent);
-  transform: translateX(-140%);
-  animation: op-chat-banner-sheen 7s ease-in-out infinite;
-  pointer-events: none;
-}
+/* WI-6530: the banner sheen was the same always-on `infinite` sweep as the header
+   one above — it only escaped the idle-CPU measurement because the banner was not
+   rendered at the time. Also invisible at rest (opacity 0 for 0%/72%/100% of its
+   cycle), so dropping it leaves the banner looking identical between sweeps. */
 
 .op-chat-sidebar .oracle-body {
   position: relative;
@@ -1501,17 +1496,9 @@ body.has-op-chat .pc-header {
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96%), color-mix(in srgb, var(--accent-strong), transparent 78%), color-mix(in srgb, var(--accent-strong), transparent 96%));
 }
 
-@keyframes op-chat-header-sheen {
-  0%, 12%, 100% { transform: translateX(-160%) skewX(-20deg); opacity: 0; }
-  18%, 32% { transform: translateX(280%) skewX(-20deg); opacity: 1; }
-  36% { opacity: 0; }
-}
-
-@keyframes op-chat-banner-sheen {
-  0%, 72%, 100% { transform: translateX(-150%); opacity: 0; }
-  78%, 92% { transform: translateX(140%); opacity: 1; }
-}
-
+/* op-chat-header-sheen / op-chat-banner-sheen removed with their always-on
+   animations (WI-6530). op-chat-button-sheen below stays: it is hover-triggered
+   and runs once for 800ms, so it never holds the repaint loop open. */
 @keyframes op-chat-button-sheen {
   from { transform: translateX(-150%); }
   to { transform: translateX(150%); }

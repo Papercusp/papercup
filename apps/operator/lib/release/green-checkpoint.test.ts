@@ -18,6 +18,7 @@ import {
   stripAnsi,
   classifyRedAgainstTip,
   nonTestGateIdsFrom,
+  NON_TEST_GATE_SCRIPTS,
   autoRefireCapFromEnv,
   evaluateDeployStaleness,
   buildGreenCheckpointEnv,
@@ -1095,6 +1096,59 @@ describe('runGreenCheckpoint', () => {
       expect(nonTestGateIdsFrom(['lint:identity-leak', '@papercusp/web'])).toEqual([]);
       expect(nonTestGateIdsFrom(['@papercusp/operator-vite'])).toEqual([]);
       expect(nonTestGateIdsFrom(['package.json-unreadable'])).toEqual([]);
+    });
+  });
+
+  describe('agent-state-plane standing probes are GATED (P-020)', () => {
+    /* The predecessor plane shipped 8 defects past a green unit gate. This plan built four
+     * probes for that class and every one was an ORPHANED npm script — a repo-wide grep
+     * found zero references outside comments. These tests exist so that cannot recur
+     * silently: the wiring itself is now asserted, including its own vacuous pass. */
+
+    it('lint:plane-integrity is a recognised gate signature, so a plane red auto-refires like any other lint red', () => {
+      expect(nonTestGateIdsFrom(['lint:plane-integrity'])).toEqual(['lint:plane-integrity']);
+      expect(nonTestGateIdsFrom(['lint:tsc', 'lint:plane-integrity'])).toEqual(['lint:tsc', 'lint:plane-integrity']);
+    });
+
+    it('maps to exactly the four plane probes', () => {
+      expect(NON_TEST_GATE_SCRIPTS['lint:plane-integrity']).toEqual([
+        'lint:plane-producers',
+        'lint:declared-consumed',
+        'lint:no-bespoke-state-read',
+        'lint:plane-ratchet',
+      ]);
+    });
+
+    /* ⛔ THE FLEET-SAFETY ASSERTION. check-cell-live-matrix.ts's own header says "THIS MUST
+     * NOT BE ADDED TO THE CI LINT JOB": it drives reads against RUNNING operators on :3170
+     * and :3070, which the isolated checkpoint tree does not have. Adding it would fail every
+     * read and red-pin `main` for the entire fleet. It is the natural fifth member of this
+     * group, so the mistake is an easy one — pin it shut. */
+    it('NEVER gates lint:cell-matrix — it needs running operators the checkpoint tree does not have', () => {
+      for (const [signature, scripts] of Object.entries(NON_TEST_GATE_SCRIPTS)) {
+        expect(scripts, `${signature} must not gate the live cell matrix`).not.toContain('lint:cell-matrix');
+      }
+    });
+
+    /* THE VACUOUS PASS this wiring can have: the leg resolves each script with checkNpmScript
+     * and SKIPS an 'absent' one (the documented subject-hive opt-out). So if a script is
+     * renamed or dropped, the leg keeps reporting green while silently checking nothing —
+     * which is precisely the "goes quiet instead of redding the gate" failure P-020 exists to
+     * stop, reintroduced one level up. Assert every gated script really exists at the root. */
+    it('every gated script exists in the root package.json — a rename must break HERE, not go quiet', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      // Resolve from THIS file (apps/operator/lib/release/…), not process.cwd() — the router
+      // runs each file from its owning workspace, but a root-level invocation must not make
+      // this assertion silently read the wrong package.json.
+      const repoRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', '..', '..');
+      const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as {
+        scripts?: Record<string, string>;
+      };
+      const declared = pkg.scripts ?? {};
+      for (const script of NON_TEST_GATE_SCRIPTS['lint:plane-integrity']) {
+        expect(declared[script], `root package.json must declare "${script}"`).toBeTruthy();
+      }
     });
   });
 

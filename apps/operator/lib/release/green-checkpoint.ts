@@ -953,6 +953,17 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   'lint:migrations': ['lint:migrations'],
   'lint:identity-leak': ['lint:no-owner-name-tags', 'lint:no-box-identity', 'lint:no-identity-literals'],
   'lint:design-primitives': ['lint:design-primitives'],
+  // P-020: the agent-state plane's standing probes. Deterministic and repo-wide like the
+  // rest, so the same auto-refire applies. NOTE the census + ratchet legs are PG-backed, so
+  // a re-verify at tip re-reads live state — which is correct here: if the producer resumed
+  // writing, the red genuinely is stale and should clear. `lint:cell-matrix` is absent on
+  // purpose (it needs running operators — see the leg comment).
+  'lint:plane-integrity': [
+    'lint:plane-producers',
+    'lint:declared-consumed',
+    'lint:no-bespoke-state-read',
+    'lint:plane-ratchet',
+  ],
 };
 
 /** `failingTests` for a red that is ENTIRELY non-test gate failures — never a test
@@ -2811,6 +2822,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     lintMigrations: skipped,
     lintIdentity: skipped,
     lintDesignPrimitives: skipped,
+    lintPlane: skipped,
     build: skipped,
     output: '',
     failingSignatures: [],
@@ -3155,7 +3167,7 @@ export async function runPostSuiteLegs(
     }
   }
 
-  legs.ok = ![legs.typecheck, legs.lintMigrations, legs.lintIdentity, legs.lintDesignPrimitives, legs.build].some(
+  legs.ok = ![legs.typecheck, legs.lintMigrations, legs.lintIdentity, legs.lintDesignPrimitives, legs.lintPlane, legs.build].some(
     (l) => l.status === 'failed',
   );
   legs.output = outputs.join('');
@@ -3319,10 +3331,11 @@ export function realCheckpointDeps(
       // (measured 274s-2773s per run over 19 runs on 2026-07-26).
       const r = await exec(cmd, args, { cwd: treeDir, env, allowNonZero: true, heavy: true });
 
-      // WI-6053: the five post-suite legs (typecheck · migrations lint · identity lints ·
-      // design-primitives lint · SPA build) live in ONE function now, and run whenever the
-      // suite is CONSIDERED PASSING — here natively, or after flake-absorption below flips
-      // the verdict. They used to be five inline blocks each gated on `r.code === 0` with an
+      // WI-6053: the post-suite legs (typecheck · migrations lint · identity lints ·
+      // design-primitives lint · agent-state-plane lints · SPA build) live in ONE function
+      // now, and run whenever the suite is CONSIDERED PASSING — here natively, or after
+      // flake-absorption below flips the verdict. They used to be inline blocks each gated
+      // on `r.code === 0` with an
       // `*Ok` flag defaulting to `true`, so a red suite skipped every one and they all still
       // read as "passed"; absorption then set green without ever running them. See
       // runPostSuiteLegs' doc for the incident this cost us.
