@@ -822,10 +822,23 @@ export async function reconcileLoopRoutines(
         //     the 2h terminal-window floor exceeds the inter-probe gap so the guard never breaches.
         //     Routing a circuit-open loop to the guard directly (dwell window decoupled) is the fix
         //     for dead loops that otherwise climb to 55→∞ fire-circuit-open EIs and never terminate.
+        // WI-6639: "has post-fire activity" must be qualified by "…and that activity is
+        // RECENT". The original form compared two PAST instants (presence vs last_fired), so a
+        // session that emitted one beat just after its final fire and then died looked
+        // permanently "still in flight" and was `continue`d on every pass, forever. It strands
+        // COLD loops specifically: the cold branch of completionSignal() has no
+        // presence-quiescence fallback (a booted-but-idle session is indistinguishable from a
+        // finished one), so a cold loop whose iteration never produced a lifecycle 'ended' or a
+        // carry-note refresh reaches exactly this line with signal===null. Measured live:
+        // 12 loops, ALL carry:'cold', parked at 'infinity' for 38h–160h, whose routine rows had
+        // not been written since their fire (updated_at === last_fired_at to the second).
+        // A legitimately long turn keeps beating, so it stays exempt via the recency term.
+        const lastActiveMs = tsMs(row.presence_last_active_at) ?? 0;
         const looksDeadOrStuck =
-          row.parked && (tsMs(row.presence_last_active_at) ?? 0) <= lastFiredMs;
+          row.parked &&
+          (lastActiveMs <= lastFiredMs || nowMs - lastActiveMs >= stuckParkMs(intervalMs));
         if (!looksDeadOrStuck) {
-          continue; // still in flight (has post-fire activity) / nothing to fold — leave it
+          continue; // still in flight (recent post-fire activity) / nothing to fold — leave it
         }
         // Read the fire-state ONCE (only on this quiet-parked path, so healthy loops pay nothing):
         // it drives BOTH the circuit-open decision and the stuck-fire count the guard consumes.

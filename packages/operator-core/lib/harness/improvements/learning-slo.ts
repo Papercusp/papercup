@@ -67,7 +67,16 @@ import { listLearningLoops } from '../../learning-governor/store';
 import type { CollectorResult, WatchdogSignal } from './watchdog';
 // P-036: the legacy score-scale band constants. Imported rather than restated
 // so this collector's SQL and `classifyLegacyScoreScale` can never drift apart.
-import { RRF_SCORE_CEILING, COSINE_ADMISSION_FLOOR } from '../../memory/recall-stats';
+// P-013 additionally consumes the per-pool / per-surface aggregates themselves,
+// rather than re-deriving them here — see recallPoolSignalsFromHealth.
+import {
+  RRF_SCORE_CEILING,
+  COSINE_ADMISSION_FLOOR,
+  readRecallHealthByPool,
+  readRecallHealthBySurface,
+  type RecallPoolHealth,
+  type RecallSurfaceHealth,
+} from '../../memory/recall-stats';
 
 // ── SLO thresholds (exported tunables — FB-21's "SLO thresholds as exported
 //    tunables" requirement; every key is also payload-tunable on the watchdog
@@ -116,6 +125,31 @@ export const LEARNING_SLO_DEFAULTS = {
    * baseline to still count as a genuine regression.
    */
   memoryZeroHitTopScoreDropFactor: 0.85,
+  /** recall-pool: trailing window (days) for the per-pool aggregate. */
+  recallPoolWindowDays: 7,
+  /**
+   * recall-pool: minimum recalls a (surface, pool, scale) slice must have
+   * PARTICIPATED in before either pool SLO applies. Matches
+   * memoryZeroHitMinRecalls deliberately — a pool slice is a strict subset of a
+   * surface's recalls, so a laxer bar here would make the finer-grained detector
+   * the JUMPIER one, which is backwards.
+   */
+  recallPoolMinRecalls: 20,
+  /**
+   * recall-pool SLO (gate-2): a pool contributing NOTHING on at least this share
+   * of the recalls it took part in. A pool keyed on a scope nothing writes to
+   * sits at exactly 1.0; 0.85 also catches the near-total case (a scope that is
+   * populated but effectively never matches) without firing on a merely quiet
+   * pool. Measured healthy pools on this box sit at 0.0–0.25.
+   */
+  recallPoolMaxZeroHitRate: 0.85,
+  /**
+   * recall-pool SLO (gate-4): a pool returning EXACTLY its own recorded budget on
+   * at least this share of its recalls — the block is being sized by the limit
+   * rather than by relevance. Compared against the budget STORED ON THE ROW, so
+   * the test stays correct across constant retunes (P-026).
+   */
+  recallPoolMaxSaturationRate: 0.8,
 } as const;
 
 /** Per-tick overrides for the SLO tunables (CollectOptions extends this). */
@@ -137,6 +171,10 @@ export interface LearningSloOptions {
   memoryZeroHitMaxRate?: number;
   memoryZeroHitSpikeFactor?: number;
   memoryZeroHitTopScoreDropFactor?: number;
+  recallPoolWindowDays?: number;
+  recallPoolMinRecalls?: number;
+  recallPoolMaxZeroHitRate?: number;
+  recallPoolMaxSaturationRate?: number;
 }
 
 /** Injectable IO seam (unit tests run without PG / flags). */
@@ -746,4 +784,202 @@ export async function memoryZeroHitCollector(
   const dark = await darkOrNull(deps);
   if (dark) return dark;
   return { signals: await collectMemoryZeroHitSignals(deps.sql(), opts) };
+}
+
+// ── memory recall PER-POOL degradation ───────────────────────────────────────
+// context-injection-audit-2026-07-28 P-013 (D-023 / D-024).
+//
+// WHY THIS EXISTS ALONGSIDE memory-zero-hit, rather than replacing it: that
+// collector is BOX-GLOBAL and BLENDED — one aggregate over the whole table. The
+// push path concatenates three independently-budgeted pools (user / harness /
+// hive) before the row is recorded, so a pool contributing NOTHING on every
+// single call is arithmetically invisible there as long as its siblings fill the
+// block. Measured live while writing this (7d): the `claim` surface reported a
+// 0.0% zero-hit rate while its `user` pool returned nothing on 18 of 18 recalls.
+// The blended detector cannot fire on that and never will.
+//
+// `readRecallHealthByPool` already computes exactly these two rates and has
+// carried the two detectors in its own doc comments since P-026 — with no
+// non-test caller. This is the read side being wired to the alarm side; it adds
+// no new alert system, no new flag, and no new SQL.
+//
+// ⚠ WHAT THIS DOES **NOT** MEASURE, and why (D-023). P-013 originally specified
+// "% below the configured floor". That is unbuildable from recorded data, not
+// merely unbuilt: the 0.45 cosine floor is an ADMISSION predicate applied inside
+// backend.search() BEFORE fusion, and hybrid-fusion.ts then returns `{ ...e,
+// score }` with the fused RRF value — destroying the component cosine. So a
+// recorded push `top_score` carries no cosine information at all: comparing it
+// to 0.45 yields 100% "below floor" forever (RRF ≤ 2/61), which is precisely the
+// unit error D-001 had to retract. Both rates below are COUNTS, not scores, so
+// they are immune to that class by construction.
+//
+// ⚠ SCALE IS DELIBERATELY NOT FILTERED HERE, and that is not an oversight. Rows
+// are grouped per scale upstream, and a row whose scale is indeterminate is
+// tagged 'unknown'. Excluding 'unknown' is correct for a SCORE comparison and
+// actively wrong for these RATE comparisons: a legacy zero-hit row has
+// top_score IS NULL, which classifies as 'unknown' — so a scale filter would
+// delete exactly the starved-pool rows this detector exists to find. Rates are
+// scale-free; only scores are not.
+
+/** Longest offender list rendered into a signal body. */
+const RECALL_POOL_BODY_SAMPLES = 8;
+
+function ratePct(x: number): string {
+  return `${Math.round(x * 100)}%`;
+}
+
+/** `surface/pool [scale]` — the slice identity, stable for a body line. */
+function poolLabel(p: RecallPoolHealth): string {
+  return `${p.surface}/${p.pool} [${p.scoreScale}]`;
+}
+
+/**
+ * Pure: the per-pool aggregate (+ the per-surface aggregate, used ONLY to
+ * annotate the contrast) → at most one starvation signal and one saturation
+ * signal.
+ *
+ * `surfaces` is annotation, never a gate: it supplies each offending pool's
+ * BLENDED surface zero-hit rate so the finding carries its own proof that the
+ * surface-level number could not have caught this. A caller with no surface data
+ * still gets correct signals, just without the contrast clause.
+ */
+export function recallPoolSignalsFromHealth(
+  pools: readonly RecallPoolHealth[],
+  surfaces: readonly RecallSurfaceHealth[] = [],
+  opts: LearningSloOptions = {},
+): WatchdogSignal[] {
+  const minRecalls = opts.recallPoolMinRecalls ?? LEARNING_SLO_DEFAULTS.recallPoolMinRecalls;
+  const maxZero = opts.recallPoolMaxZeroHitRate ?? LEARNING_SLO_DEFAULTS.recallPoolMaxZeroHitRate;
+  const maxSat = opts.recallPoolMaxSaturationRate ?? LEARNING_SLO_DEFAULTS.recallPoolMaxSaturationRate;
+  const windowDays = opts.recallPoolWindowDays ?? LEARNING_SLO_DEFAULTS.recallPoolWindowDays;
+
+  // Underpowered slices are not evidence. No scale filter — see the module note.
+  const eligible = pools.filter((p) => p.recalls >= minRecalls);
+  if (eligible.length === 0) return [];
+
+  const surfaceZeroRate = new Map<string, number>();
+  for (const s of surfaces) {
+    // A surface appears once; if a caller passes duplicates, the busiest wins.
+    const prior = surfaceZeroRate.get(s.surface);
+    if (prior === undefined) surfaceZeroRate.set(s.surface, s.zeroHitRate7d);
+  }
+
+  const signals: WatchdogSignal[] = [];
+
+  const starved = eligible
+    .filter((p) => p.zeroHitRate >= maxZero)
+    .sort((a, b) => b.zeroHitRate - a.zeroHitRate || b.recalls - a.recalls);
+  if (starved.length > 0) {
+    const lines = starved.slice(0, RECALL_POOL_BODY_SAMPLES).map((p) => {
+      const blended = surfaceZeroRate.get(p.surface);
+      const contrast =
+        blended === undefined
+          ? ''
+          : ` — while the BLENDED ${p.surface} surface reads ${ratePct(blended)} zero-hit`;
+      const scopes = p.scopes.length > 0 ? ` scopes=[${p.scopes.slice(0, 4).join(', ')}]` : '';
+      return `  • ${poolLabel(p)}: returned nothing on ${p.zeroHit}/${p.recalls} recalls ` +
+        `(${ratePct(p.zeroHitRate)})${contrast}.${scopes}`;
+    });
+    signals.push({
+      source: 'memory-recall-pool',
+      key: 'recall-pool-starved',
+      title: 'Memory recall: an injection pool returns nothing on nearly every call',
+      body:
+        `Watchdog signal (memory-recall-pool, gate-2): over the last ${windowDays}d, ` +
+        `${starved.length} injection pool(s) with at least ${minRecalls} recalls returned NOTHING on ` +
+        `at least ${ratePct(maxZero)} of the recalls they took part in:\n` +
+        lines.join('\n') +
+        (starved.length > RECALL_POOL_BODY_SAMPLES
+          ? `\n  … and ${starved.length - RECALL_POOL_BODY_SAMPLES} more.`
+          : '') +
+        `\n\nA pool at or near 1.0 is the unmigrated-scope signature: it is being queried under a ` +
+        `scope key nothing writes to, so it contributes nothing to the injected block while its ` +
+        `sibling pools fill the space. This is invisible to the blended memory-zero-hit SLO by ` +
+        `construction — that detector aggregates the whole table, and a surface whose other pools ` +
+        `answer normally reports a healthy zero-hit rate throughout. Check the scope keys above ` +
+        `against what the writers actually key on before assuming the pool is merely empty.`,
+      severity: 'major',
+      kind: 'bug',
+      findingClass: 'learning-slo:recall-degradation',
+      paths: ['packages/operator-core/lib/memory/recall-stats.ts', 'packages/operator-core/lib/memory/injection.ts'],
+    });
+  }
+
+  const saturated = eligible
+    .filter((p) => p.saturationRate >= maxSat)
+    .sort((a, b) => b.saturationRate - a.saturationRate || b.recalls - a.recalls);
+  if (saturated.length > 0) {
+    const lines = saturated.slice(0, RECALL_POOL_BODY_SAMPLES).map(
+      (p) =>
+        `  • ${poolLabel(p)}: filled its budget on ${p.saturated}/${p.recalls} recalls ` +
+        `(${ratePct(p.saturationRate)}), median ${p.hitsP50 ?? 'n/a'} hits.`,
+    );
+    signals.push({
+      source: 'memory-recall-pool',
+      key: 'recall-pool-saturated',
+      title: 'Memory recall: an injection pool fills its budget on nearly every call',
+      body:
+        `Watchdog signal (memory-recall-pool, gate-4): over the last ${windowDays}d, ` +
+        `${saturated.length} injection pool(s) with at least ${minRecalls} recalls returned EXACTLY ` +
+        `their own recorded budget on at least ${ratePct(maxSat)} of their recalls:\n` +
+        lines.join('\n') +
+        (saturated.length > RECALL_POOL_BODY_SAMPLES
+          ? `\n  … and ${saturated.length - RECALL_POOL_BODY_SAMPLES} more.`
+          : '') +
+        `\n\nA pool that almost always returns exactly its limit is not answering "what is relevant", ` +
+        `it is answering "what is the limit" — the block is sized by K rather than by relevance. ` +
+        `The comparison is against the budget recorded ON EACH ROW, so it stays honest across ` +
+        `budget retunes. Note this is a BUDGET/admission finding, not a score finding: it says ` +
+        `nothing about how relevant the returned entries were (D-023 — a push-path top_score is a ` +
+        `post-fusion RRF rank and cannot express relevance).`,
+      severity: 'major',
+      kind: 'bug',
+      findingClass: 'learning-slo:recall-degradation',
+      paths: ['packages/operator-core/lib/memory/recall-stats.ts', 'packages/operator-core/lib/memory/injection.ts'],
+    });
+  }
+
+  return signals;
+}
+
+/**
+ * recall-pool: two aggregate passes over memory_recall_stats — the per-pool
+ * breakdown (the detector) and the per-surface roll-up (the contrast clause).
+ * Both are existing readers; nothing new is queried.
+ *
+ * BOX-GLOBAL, like its memory-zero-hit sibling: the table interleaves every
+ * workspace on the host, so findings are operator-scoped (the default) rather
+ * than harness-scoped, and the cross-host tick lock + key dedup bound this to
+ * one filed item per class regardless.
+ *
+ * Rows written before migration 703 carry `pools IS NULL` and are excluded
+ * upstream, so this reports honestly-smaller counts until the window rolls past
+ * that deploy — which is why `recallPoolMinRecalls` gates on the slice's own
+ * recall count rather than on wall-clock coverage.
+ */
+export async function collectRecallPoolSignals(
+  sql: Sql,
+  opts: LearningSloOptions = {},
+): Promise<WatchdogSignal[]> {
+  const days = opts.recallPoolWindowDays ?? LEARNING_SLO_DEFAULTS.recallPoolWindowDays;
+  const pools = await readRecallHealthByPool(sql, { days });
+  if (pools.length === 0) return [];
+  // Annotation only — a failure here must not suppress a real starvation
+  // finding, so the contrast clause degrades to absent rather than throwing.
+  let surfaces: RecallSurfaceHealth[] = [];
+  try {
+    surfaces = await readRecallHealthBySurface(sql);
+  } catch {
+    surfaces = [];
+  }
+  return recallPoolSignalsFromHealth(pools, surfaces, opts);
+}
+
+export async function recallPoolCollector(
+  opts: LearningSloOptions = {},
+  deps: LearningSloDeps = defaultDeps,
+): Promise<CollectorResult> {
+  const dark = await darkOrNull(deps);
+  if (dark) return dark;
+  return { signals: await collectRecallPoolSignals(deps.sql(), opts) };
 }

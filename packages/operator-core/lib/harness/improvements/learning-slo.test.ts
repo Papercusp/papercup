@@ -20,10 +20,12 @@ import {
   mttshRegressionCollector,
   mttshSignalsFromWindows,
   normalizedTriageEntropy,
+  recallPoolSignalsFromHealth,
   trimStatisticalOutliers,
   triageEntropyCollector,
   triageEntropySignalsFromRows,
 } from './learning-slo';
+import type { RecallPoolHealth, RecallSurfaceHealth } from '../../memory/recall-stats';
 
 const decisions = (counts: Record<string, number>): { decision: string }[] =>
   Object.entries(counts).flatMap(([decision, n]) => Array.from({ length: n }, () => ({ decision })));
@@ -391,5 +393,157 @@ describe('MTTSH dormant tolerance (the FB-20 seam)', () => {
     });
     expect(res.signals).toEqual([]);
     expect(res.note).toBeUndefined();
+  });
+});
+
+/*
+ * recall-pool (context-injection-audit-2026-07-28 P-013 / D-023 / D-024).
+ *
+ * The cases below are the traps this detector had to be built around, not
+ * coverage for its arithmetic. In order: the blend that hides a starved pool,
+ * the scale filter that would delete the very rows being detected, and the
+ * score comparison D-001 retracted.
+ */
+describe('recallPoolSignalsFromHealth (P-013)', () => {
+  const pool = (over: Partial<RecallPoolHealth> = {}): RecallPoolHealth => ({
+    surface: 'turn-start',
+    pool: 'harness',
+    scoreScale: 'rrf',
+    recalls: 40,
+    zeroHit: 0,
+    zeroHitRate: 0,
+    saturated: 0,
+    saturationRate: 0,
+    hitsP50: 4,
+    topScoreP50: 0.03,
+    scopes: ['harness:papercusp'],
+    ...over,
+  });
+  const surface = (over: Partial<RecallSurfaceHealth> = {}): RecallSurfaceHealth => ({
+    surface: 'turn-start',
+    recalls7d: 120,
+    zeroHit7d: 0,
+    zeroHitRate7d: 0,
+    topScoreP50: 0.03,
+    topScoreP90: 0.032,
+    topScoreScale: 'rrf',
+    topScoreSamples: 120,
+    scaleMix: { rrf: 120 },
+    fragmentHits7d: 0,
+    ...over,
+  });
+
+  it('fires on a fully starved pool that the BLENDED surface rate reports as healthy', () => {
+    // The live 2026-07-28 shape: one pool dead on every call, siblings filling
+    // the block, so the surface itself never records a zero hit.
+    const out = recallPoolSignalsFromHealth(
+      [
+        pool({ pool: 'user', recalls: 40, zeroHit: 40, zeroHitRate: 1 }),
+        pool({ pool: 'harness' }),
+        pool({ pool: 'hive' }),
+      ],
+      [surface({ zeroHitRate7d: 0 })],
+    );
+    const starved = out.find((s) => s.key === 'recall-pool-starved');
+    expect(starved).toBeDefined();
+    expect(starved!.body).toContain('turn-start/user');
+    // The contrast clause is the whole argument for the detector existing.
+    expect(starved!.body).toContain('BLENDED turn-start surface reads 0% zero-hit');
+    // Scope keys travel with the finding — the unmigrated-rename signature.
+    expect(starved!.body).toContain('harness:papercusp');
+  });
+
+  it('does NOT filter on score scale — an unknown-scale starved pool still fires', () => {
+    // THE self-defeating filter. A legacy zero-hit row has top_score NULL and
+    // therefore classifies as 'unknown', so excluding 'unknown' (correct for a
+    // SCORE comparison) would delete exactly the starvation being detected.
+    const out = recallPoolSignalsFromHealth(
+      [pool({ pool: 'user', scoreScale: 'unknown', recalls: 40, zeroHit: 40, zeroHitRate: 1 })],
+      [],
+    );
+    expect(out.map((s) => s.key)).toContain('recall-pool-starved');
+    expect(out[0]!.body).toContain('[unknown]');
+  });
+
+  it('never emits a score-vs-floor comparison (the D-001 / D-023 class)', () => {
+    const out = recallPoolSignalsFromHealth(
+      [
+        pool({ pool: 'user', recalls: 40, zeroHit: 40, zeroHitRate: 1 }),
+        pool({ pool: 'hive', recalls: 40, saturated: 40, saturationRate: 1 }),
+      ],
+      [surface()],
+    );
+    expect(out.length).toBeGreaterThan(0);
+    for (const s of out) {
+      // 0.45 is the cosine admission floor. A push-path top_score is a
+      // post-fusion RRF rank, so comparing the two is the retracted unit error;
+      // this detector is count-based and must never reference the floor.
+      expect(s.body).not.toContain('0.45');
+      expect(s.body.toLowerCase()).not.toContain('below the floor');
+    }
+  });
+
+  it('ignores slices below the minimum sample rather than firing on 2 recalls', () => {
+    expect(
+      recallPoolSignalsFromHealth([pool({ pool: 'user', recalls: 2, zeroHit: 2, zeroHitRate: 1 })], []),
+    ).toEqual([]);
+  });
+
+  it('stays quiet on pools that are merely quiet', () => {
+    expect(
+      recallPoolSignalsFromHealth(
+        [pool({ zeroHitRate: 0.25, zeroHit: 10 }), pool({ pool: 'hive', saturationRate: 0.5 })],
+        [surface()],
+      ),
+    ).toEqual([]);
+  });
+
+  it('reports saturation as its own signal, separate from starvation', () => {
+    const out = recallPoolSignalsFromHealth(
+      [pool({ pool: 'user', recalls: 27, saturated: 24, saturationRate: 24 / 27 })],
+      [surface()],
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.key).toBe('recall-pool-saturated');
+    expect(out[0]!.body).toContain('filled its budget on 24/27');
+  });
+
+  it('emits both signals independently when both conditions hold', () => {
+    const out = recallPoolSignalsFromHealth(
+      [
+        pool({ pool: 'user', recalls: 40, zeroHit: 40, zeroHitRate: 1 }),
+        pool({ pool: 'hive', recalls: 40, saturated: 39, saturationRate: 39 / 40 }),
+      ],
+      [surface()],
+    );
+    expect(out.map((s) => s.key).sort()).toEqual(['recall-pool-saturated', 'recall-pool-starved']);
+  });
+
+  it('works without surface data — the contrast clause is annotation, not a gate', () => {
+    const out = recallPoolSignalsFromHealth(
+      [pool({ pool: 'user', recalls: 40, zeroHit: 40, zeroHitRate: 1 })],
+      [],
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.body).not.toContain('BLENDED');
+  });
+
+  it('keeps counts OUT of the title so search-first dedup matches across ticks', () => {
+    const out = recallPoolSignalsFromHealth(
+      [pool({ pool: 'user', recalls: 40, zeroHit: 40, zeroHitRate: 1 })],
+      [],
+    );
+    expect(out[0]!.title).toBe('Memory recall: an injection pool returns nothing on nearly every call');
+    expect(out[0]!.title).not.toMatch(/\d/);
+  });
+
+  it('honours the tunables rather than hardcoding the thresholds', () => {
+    const rows = [pool({ pool: 'user', recalls: 40, zeroHit: 36, zeroHitRate: 0.9 })];
+    expect(recallPoolSignalsFromHealth(rows, [], { recallPoolMaxZeroHitRate: 0.95 })).toEqual([]);
+    expect(recallPoolSignalsFromHealth(rows, [], { recallPoolMaxZeroHitRate: 0.5 })).toHaveLength(1);
+    expect(recallPoolSignalsFromHealth(rows, [], { recallPoolMinRecalls: 100 })).toEqual([]);
+    // The defaults are the ones the collector ships with.
+    expect(LEARNING_SLO_DEFAULTS.recallPoolMaxZeroHitRate).toBe(0.85);
+    expect(LEARNING_SLO_DEFAULTS.recallPoolMinRecalls).toBe(20);
   });
 });
