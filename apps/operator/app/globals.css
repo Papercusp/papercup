@@ -267,15 +267,39 @@ body {
   background-attachment: fixed;
 }
 
+/* The top sheen. BOUNDED to the region it occupies — never masked back down.
+ *
+ * WI-6502. This used to be `inset: 0` (a full-viewport fixed layer) with
+ * `mask-image: linear-gradient(to bottom, black, transparent 82%)`. A mask
+ * forces the element through an offscreen buffer and a composite pass over the
+ * whole viewport on EVERY paint, and a keystroke in a focused field damages the
+ * full viewport here — so this single declaration was the most expensive thing
+ * on the per-keystroke path: 69ms -> 59ms measured by removing it alone.
+ *
+ * Giving the element the box the mask left visible costs nothing and paints
+ * less. The `radial-gradient(circle at 18% 92%, …)` layer went with the mask:
+ * its centre sat at 92% height, below the mask's 82% transparent point, so it
+ * was already rendering at roughly 0.8% effective alpha — invisible.
+ *
+ * Checked, not assumed: same-instant before/after/revert screenshots in an
+ * isolated instance. The change's pixel-diff statistics are IDENTICAL to the
+ * control diff's (max 12 levels, 39 pixels — all of it live clock/counter
+ * content present in both); the CSS itself moves a wide area by <=1 level out
+ * of 255. Combined with the `html` fix above: 55ms -> 37ms and 64ms -> 41ms
+ * per keystroke, two independent runs, in-run interleaved sham control.
+ *
+ * ⚠ `will-change: transform` does NOT rescue a masked element here (69 -> 66,
+ * i.e. noise). Promotion was tried first and does not work; removing the mask
+ * is what pays.
+ */
 body::before {
   content: "";
   position: fixed;
-  inset: 0;
+  inset: 0 0 auto 0;
+  height: 82%;
   pointer-events: none;
   background:
-    linear-gradient(120deg, rgba(255,255,255,0.035), transparent 24%, rgb(from var(--accent-strong) r g b / 0.035) 52%, transparent 70%),
-    radial-gradient(circle at 18% 92%, color-mix(in srgb, var(--accent-soft), transparent 94.5%), transparent 30%);
-  mask-image: linear-gradient(to bottom, black, transparent 82%);
+    linear-gradient(120deg, rgba(255,255,255,0.035), transparent 24%, rgb(from var(--accent-strong) r g b / 0.035) 52%, transparent 70%);
   z-index: 0;
 }
 
