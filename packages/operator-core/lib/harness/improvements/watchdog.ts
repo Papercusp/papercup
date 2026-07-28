@@ -1589,10 +1589,16 @@ export async function collectLoopStalledSignals(sql: Sql, stuckParkSec = 1800): 
             AND a.kind = 'lifecycle'
             AND a.summary = ${SESSION_END_MARKER}
             AND a.created_at > r.last_fired_at)
+       -- WI-6639: the exemption for "the session is still working" must be judged against
+       -- now(), not against last_fired_at. The original form (presence <= last_fired_at)
+       -- compares two PAST instants, so a session that emitted a single presence beat after
+       -- its final fire and then died was exempted FOREVER — measured live, that hid 12 loops
+       -- parked at 'infinity' for 49h–160h from this signal permanently. A genuinely long
+       -- turn keeps its beat fresh and is still exempt via the recency term.
        AND COALESCE(
              (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p WHERE p.owner_id = r.target_owner_id),
              'epoch'::timestamptz
-           ) <= r.last_fired_at
+           ) < now() - make_interval(secs => GREATEST(${stuckParkSec}::int, 4 * r.reschedule_interval_sec))
      ORDER BY r.last_fired_at ASC
      LIMIT 20`;
   return loopStalledSignalsFromRows(rows);

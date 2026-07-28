@@ -600,11 +600,30 @@ export function computeLoopStall(input: {
   parkedMs: number | null;
   intervalSec: number | null;
   hasCompletionSinceFire: boolean;
-  activeSinceFire: boolean;
+  /** WI-6639: the RAW timestamps, deliberately not a caller-computed `activeSinceFire`
+   *  boolean. That boolean was the bug: every caller derived it as `presence > lastFired`,
+   *  a comparison of two PAST instants, so a session that emitted one presence beat after
+   *  its final fire and then died pinned it `true` forever — permanently disarming the
+   *  stall check below no matter how many hours passed (measured live: 12 loops parked at
+   *  'infinity' for 49h–160h, all reading `stalled: false`). Liveness is only meaningful
+   *  against `now`, so the comparison happens HERE, under test, not at the call site. */
+  lastFiredAtMs: number | null;
+  lastActiveAtMs: number | null;
+  nowMs?: number;
 }): { stalled: boolean; stalledSinceMs: number | null } {
   const stuckParkMs = Math.max(30 * 60_000, (input.intervalSec ?? 60) * 4 * 1000);
   if (!input.parked || input.parkedMs == null) return { stalled: false, stalledSinceMs: null };
-  if (input.hasCompletionSinceFire || input.activeSinceFire) return { stalled: false, stalledSinceMs: null };
+  if (input.hasCompletionSinceFire) return { stalled: false, stalledSinceMs: null };
+  const now = input.nowMs ?? Date.now();
+  // "Still legitimately working" needs BOTH terms: active since the fire (so a pre-fire
+  // corpse never counts) AND active RECENTLY (so the judgement cannot freeze true once the
+  // session dies). A genuinely long turn keeps its presence beat fresh and stays exempt.
+  const activeSinceFire =
+    input.lastActiveAtMs != null &&
+    input.lastFiredAtMs != null &&
+    input.lastActiveAtMs > input.lastFiredAtMs &&
+    now - input.lastActiveAtMs < stuckParkMs;
+  if (activeSinceFire) return { stalled: false, stalledSinceMs: null };
   if (input.parkedMs >= stuckParkMs) return { stalled: true, stalledSinceMs: input.parkedMs };
   return { stalled: false, stalledSinceMs: null };
 }
@@ -633,6 +652,10 @@ export function computeTurnsStalled(input: {
   fireCount: number;
   lastFiredAtMs: number | null;
   lastTurnAtMs: number | null;
+  /** WI-6639: presence beat, used ONLY to exempt a session that is demonstrably still
+   *  alive right now. Without it the gap below is two frozen past instants (see the
+   *  blind-spot note in the body). */
+  lastActiveAtMs?: number | null;
   intervalSec: number | null;
   nowMs?: number;
 }): boolean {
@@ -640,11 +663,20 @@ export function computeTurnsStalled(input: {
   if (input.fireCount < TURNS_STALLED_MIN_FIRE_COUNT) return false;
   if (input.lastFiredAtMs == null) return false;
   const floorMs = Math.max(30 * 60_000, (input.intervalSec ?? 60) * 4 * 1000);
+  const now = input.nowMs ?? Date.now();
   // No turn has EVER completed for this owner, yet several fires have landed — the
   // strongest form of the signal (never masked by a stale-but-present lastTurnAt).
   if (input.lastTurnAtMs == null) return true;
   const gapMs = input.lastFiredAtMs - input.lastTurnAtMs;
-  return gapMs >= floorMs;
+  if (gapMs >= floorMs) return true;
+  // WI-6639 — THE FROZEN-GAP BLIND SPOT. The gap above is a difference between two PAST
+  // instants, so it only sees "fires kept landing while turns did not". When the scheduler
+  // stops firing too, BOTH freeze and the gap stays small forever: measured live, 11 loops
+  // dead for 49h–160h reported turnsStalled:false because their last turn happened moments
+  // after their last fire. An armed loop that has not fired in a floor's worth of time and
+  // whose session is not currently active is dead, regardless of how tidy that gap looks.
+  const activeRecently = input.lastActiveAtMs != null && now - input.lastActiveAtMs < floorMs;
+  return now - input.lastFiredAtMs >= floorMs && !activeRecently;
 }
 
 /**
@@ -669,13 +701,15 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     parkedMs,
     intervalSec,
     hasCompletionSinceFire: completedMs != null,
-    activeSinceFire: presenceMs != null && lastFiredMs != null && presenceMs > lastFiredMs,
+    lastFiredAtMs: lastFiredMs,
+    lastActiveAtMs: presenceMs,
   });
   const turnsStalled = computeTurnsStalled({
     active: Boolean(r.active),
     fireCount,
     lastFiredAtMs: lastFiredMs,
     lastTurnAtMs: lastTurnMs,
+    lastActiveAtMs: presenceMs,
     intervalSec,
   });
   return {

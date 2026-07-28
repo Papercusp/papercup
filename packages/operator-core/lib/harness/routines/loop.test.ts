@@ -92,27 +92,76 @@ describe('buildLoopWakePrompt — kind guidance is not hardcoded to task (EI-767
 
 describe('computeLoopStall (P2b — parked-healthy vs parked-dead)', () => {
   const STUCK = 30 * 60_000; // max(30min, 4×interval) for a ≤7.5min interval
+  const NOW = 1_800_000_000_000; // arbitrary fixed epoch ms
+  /** Build an input the way production does, where `parkedMs` IS `now - last_fired_at`, so
+   *  the park duration and the fire timestamp can never disagree (WI-6639: they are the two
+   *  halves of the same fact, and the old boolean interface let them drift apart). */
+  const parkedFor = (
+    parkedMs: number,
+    o: { intervalSec?: number; completion?: boolean; lastActiveAtMs?: number | null } = {},
+  ) => ({
+    parked: true,
+    parkedMs,
+    intervalSec: o.intervalSec ?? 120,
+    hasCompletionSinceFire: o.completion ?? false,
+    lastFiredAtMs: NOW - parkedMs,
+    lastActiveAtMs: o.lastActiveAtMs ?? null,
+    nowMs: NOW,
+  });
+
   it('not parked → never stalled', () => {
-    expect(computeLoopStall({ parked: false, parkedMs: 99e9, intervalSec: 120, hasCompletionSinceFire: false, activeSinceFire: false })).toEqual({ stalled: false, stalledSinceMs: null });
+    expect(
+      computeLoopStall({ ...parkedFor(99e9), parked: false }),
+    ).toEqual({ stalled: false, stalledSinceMs: null });
   });
   it('parked but recently (under the stuck threshold) → healthy in-flight', () => {
-    expect(computeLoopStall({ parked: true, parkedMs: 60_000, intervalSec: 120, hasCompletionSinceFire: false, activeSinceFire: false }).stalled).toBe(false);
+    expect(computeLoopStall(parkedFor(60_000)).stalled).toBe(false);
   });
   it('parked long, no completion, no activity → STALLED with the parked duration', () => {
-    const r = computeLoopStall({ parked: true, parkedMs: STUCK + 1000, intervalSec: 120, hasCompletionSinceFire: false, activeSinceFire: false });
+    const r = computeLoopStall(parkedFor(STUCK + 1000));
     expect(r.stalled).toBe(true);
     expect(r.stalledSinceMs).toBe(STUCK + 1000);
   });
   it('parked long but a completion marker exists → NOT stalled (the turn finished)', () => {
-    expect(computeLoopStall({ parked: true, parkedMs: STUCK + 1000, intervalSec: 120, hasCompletionSinceFire: true, activeSinceFire: false }).stalled).toBe(false);
+    expect(computeLoopStall(parkedFor(STUCK + 1000, { completion: true })).stalled).toBe(false);
   });
-  it('parked long but session ACTIVE since the fire → NOT stalled (a legitimately long turn)', () => {
-    expect(computeLoopStall({ parked: true, parkedMs: STUCK + 1000, intervalSec: 120, hasCompletionSinceFire: false, activeSinceFire: true }).stalled).toBe(false);
+  it('parked long but the session is active RIGHT NOW → NOT stalled (a legitimately long turn)', () => {
+    // Presence is both after the fire and fresh — the exemption this guard exists for.
+    expect(
+      computeLoopStall(parkedFor(STUCK + 1000, { lastActiveAtMs: NOW - 60_000 })).stalled,
+    ).toBe(false);
   });
+
+  // ── WI-6639 regression: the frozen-liveness blind spot ──────────────────────
+  it('WI-6639: presence a minute AFTER the final fire, then dead for 160h → STALLED', () => {
+    // THE BUG. `activeSinceFire` used to be the caller-computed `presence > lastFired`, a
+    // comparison of two PAST instants. This session emitted one last beat just after its
+    // final fire and then died, which pinned that boolean true FOREVER and permanently
+    // disarmed the park check — measured live as 12 loops parked at 'infinity' for
+    // 49h–160h, every one of them reporting `stalled: false`.
+    const parkedMs = 160 * 60 * 60_000;
+    const r = computeLoopStall(
+      parkedFor(parkedMs, { lastActiveAtMs: NOW - parkedMs + 60_000 }),
+    );
+    expect(r.stalled).toBe(true);
+    expect(r.stalledSinceMs).toBe(parkedMs);
+  });
+  it('WI-6639: presence after the fire but older than the floor → STALLED (liveness is judged against now)', () => {
+    expect(
+      computeLoopStall(parkedFor(STUCK * 3, { lastActiveAtMs: NOW - STUCK - 1000 })).stalled,
+    ).toBe(true);
+  });
+  it('WI-6639: presence BEFORE the fire is never an exemption, however fresh the clock', () => {
+    // A beat that predates the fire says nothing about the wake turn that followed it.
+    expect(
+      computeLoopStall(parkedFor(STUCK + 1000, { lastActiveAtMs: NOW - STUCK - 2000 })).stalled,
+    ).toBe(true);
+  });
+
   it('the threshold scales to 4×interval for a long interval', () => {
     // interval 1200s → 4× = 4800s = 80min > 30min, so 60min parked is NOT yet stalled.
-    expect(computeLoopStall({ parked: true, parkedMs: 60 * 60_000, intervalSec: 1200, hasCompletionSinceFire: false, activeSinceFire: false }).stalled).toBe(false);
-    expect(computeLoopStall({ parked: true, parkedMs: 90 * 60_000, intervalSec: 1200, hasCompletionSinceFire: false, activeSinceFire: false }).stalled).toBe(true);
+    expect(computeLoopStall(parkedFor(60 * 60_000, { intervalSec: 1200 })).stalled).toBe(false);
+    expect(computeLoopStall(parkedFor(90 * 60_000, { intervalSec: 1200 })).stalled).toBe(true);
   });
 });
 
@@ -195,6 +244,41 @@ describe('computeTurnsStalled (EI-18712914572668391 — fires attempted vs turns
         fireCount: 10,
         lastFiredAtMs: NOW,
         lastTurnAtMs: NOW - 2 * 60_000, // 2min behind — a normal in-flight turn
+        intervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(false);
+  });
+
+  // ── WI-6639 regression: the frozen-gap blind spot ───────────────────────────
+  it('WI-6639: fires STOPPED too, so the fired-vs-turn gap froze small → still flagged', () => {
+    // The measured population: last turn landed 4min after the last fire, then the whole
+    // loop went silent for 156h. `lastFiredAtMs - lastTurnAtMs` is NEGATIVE here, so the
+    // original gap check read healthy forever — 11 of 14 dead loops reported false.
+    const dead = 156 * 60 * 60_000;
+    expect(
+      computeTurnsStalled({
+        active: true,
+        fireCount: 157,
+        lastFiredAtMs: NOW - dead,
+        lastTurnAtMs: NOW - dead + 4 * 60_000,
+        lastActiveAtMs: NOW - dead + 5 * 60_000,
+        intervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(true);
+  });
+
+  it('WI-6639: a quiet-but-ALIVE session (fresh presence) is not flagged by the new clause', () => {
+    // Guards the fix against false positives: fires are stale but the session is provably
+    // active right now, so this is a long turn in flight, not a corpse.
+    expect(
+      computeTurnsStalled({
+        active: true,
+        fireCount: 20,
+        lastFiredAtMs: NOW - 4 * 60 * 60_000,
+        lastTurnAtMs: NOW - 4 * 60 * 60_000 + 60_000,
+        lastActiveAtMs: NOW - 30_000, // beating right now
         intervalSec,
         nowMs: NOW,
       }),
