@@ -83,6 +83,13 @@ export interface LaunchAgentResult {
    * failure (no window ever opened) that a flat success would hide.
    */
   warning?: string;
+  /**
+   * WI-6505: the fleet slug this launch resolved to — the server's slugify of
+   * `fleetName` when it created one, else the `fleet` joined. A multi-member
+   * launch feeds this back as `fleet` for members 2..N so they JOIN rather than
+   * each creating their own; never re-derive it client-side.
+   */
+  fleetSlug?: string;
 }
 
 /** The launch-su endpoints to try (same-origin first, then Tauri fallback ports). */
@@ -134,7 +141,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
         body,
       });
       const data = (await r.json().catch(() => null)) as
-        | { status?: string; code?: string; error?: string; advSessionId?: number; ownerId?: string; warning?: string }
+        | { status?: string; code?: string; error?: string; advSessionId?: number; ownerId?: string; warning?: string; fleetSlug?: string }
         | null;
       if (!data) { lastError = `launch-su HTTP ${r.status} (no body)`; continue; }
       if (data.code === 'psu_not_installed') {
@@ -146,7 +153,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
         };
       }
       if (r.ok && data.status === 'ok') {
-        return { ok: true, advSessionId: data.advSessionId, ownerId: data.ownerId, warning: data.warning };
+        return { ok: true, advSessionId: data.advSessionId, ownerId: data.ownerId, warning: data.warning, fleetSlug: data.fleetSlug };
       }
       lastError = data.error ?? `launch-su HTTP ${r.status}`;
     } catch (e: unknown) {

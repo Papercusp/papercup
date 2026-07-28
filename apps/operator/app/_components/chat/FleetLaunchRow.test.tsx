@@ -104,13 +104,24 @@ vi.mock('sonner', () => ({
   },
 }));
 
+// The launch seam. Mocked at `launchAgent` (not at `fetch`) because that is the
+// contract this row depends on — the GUI's one audited spawn path — and its own
+// HTTP behaviour is launch-agent.ts's to test, not this component's.
+const launchCalls: Array<Record<string, any>> = [];
+let launchImpl: (o: Record<string, any>) => Promise<Record<string, any>>;
+vi.mock('@papercusp/operator-core/lib/launch-agent', () => ({
+  launchAgent: (o: Record<string, any>) => {
+    launchCalls.push(o);
+    return launchImpl(o);
+  },
+}));
+
 import FleetLaunchRow, {
-  FLEET_LAUNCH_ROUTE,
   HEADED_VALUE,
   HEADLESS_VALUE,
   WINDOW_MODE_OPTIONS,
   clampMemberCount,
-  describeLaunchResult,
+  describeLaunchOutcome,
 } from './FleetLaunchRow';
 import { MODEL_SELECT_DEFAULT, OMP_MODEL_OPTIONS, modelBackend } from '@/app/adv/sessions/NewSessionLauncher';
 import { FLEET_MAX_MEMBERS } from '@papercusp/operator-core/lib/agent-config-constants';
@@ -123,26 +134,17 @@ import { FLEET_MAX_MEMBERS } from '@papercusp/operator-core/lib/agent-config-con
 const CLAUDE_MODEL =
   OMP_MODEL_OPTIONS.find((o) => o.value !== MODEL_SELECT_DEFAULT && modelBackend(o.value) === 'claude')!.value;
 
-/** Build the agent-tools envelope the route really answers with. */
-function envelope(payload: unknown, isError = false) {
-  return { content: [{ type: 'text', text: JSON.stringify(payload) }], ...(isError ? { isError } : {}) };
-}
-
-let fetchMock: ReturnType<typeof vi.fn>;
-
 beforeEach(() => {
   toastCalls.length = 0;
+  launchCalls.length = 0;
   suLaunchRefresh.mockClear();
-  fetchMock = vi.fn(async () => ({
-    ok: true,
-    json: async () => envelope({ ok: true, fleet: 'my-fleet', opened: [{}], failed: [] }),
-  }));
-  vi.stubGlobal('fetch', fetchMock);
+  // Default: every member launches cleanly, and the server reports the slug it
+  // assigned the new fleet.
+  launchImpl = async () => ({ ok: true, fleetSlug: 'my-fleet' });
 });
 
 afterEach(() => {
   cleanup();
-  vi.unstubAllGlobals();
 });
 
 /** Fill the two structurally-required fields (name + lane) so a launch can proceed. */
@@ -151,11 +153,10 @@ function fillRequired(planSlug = planRows[0].slug) {
   fireEvent.change(screen.getByLabelText('Plan the fleet works'), { target: { value: planSlug } });
 }
 
-/** The single POST body the component sent. */
-function sentBody(): Record<string, unknown> {
-  expect(fetchMock).toHaveBeenCalledTimes(1);
-  const [, init] = fetchMock.mock.calls[0] as [string, { body: string }];
-  return JSON.parse(init.body);
+/** The options the FIRST member was launched with. */
+function firstLaunch(): Record<string, any> {
+  expect(launchCalls.length).toBeGreaterThan(0);
+  return launchCalls[0];
 }
 
 describe('clampMemberCount', () => {
@@ -179,42 +180,50 @@ describe('clampMemberCount', () => {
   });
 });
 
-describe('describeLaunchResult', () => {
-  it('reports a real launch as success with the member count', () => {
-    const v = describeLaunchResult(envelope({ ok: true, fleet: 'alpha', opened: [{}, {}], failed: [] }));
+describe('describeLaunchOutcome', () => {
+  it('reports a full launch as success with the member count', () => {
+    const v = describeLaunchOutcome([{ ok: true }, { ok: true }], 'alpha');
     expect(v.ok).toBe(true);
     expect(v.message).toContain('2 members');
     expect(v.message).toContain('alpha');
   });
 
+  it('singularises a one-member fleet', () => {
+    expect(describeLaunchOutcome([{ ok: true }], 'alpha').message).toContain('1 member on');
+  });
+
   /**
-   * THE case a status-code check gets wrong. Capacity can clamp a wave to zero:
-   * the HTTP call is a clean 200, `ok` is false, `opened` is empty. Reporting
-   * that as success tells the human a fleet exists when none does.
+   * A PARTIAL launch is the case a naive "did the last call succeed" check gets
+   * wrong in both directions — it is neither a clean success nor a failure, and
+   * the human needs the shortfall stated or they will believe they have 3
+   * members working when they have 1.
    */
-  it('a 200 that opened ZERO members is a failure, and surfaces the tool reason', () => {
-    const v = describeLaunchResult(
-      envelope({ ok: false, fleet: 'alpha', opened: [], failed: [], message: 'capacity clamped to 0' }),
-    );
-    expect(v.ok).toBe(false);
-    expect(v.message).toBe('capacity clamped to 0');
-  });
-
-  it('counts partial failures without calling the launch a failure', () => {
-    const v = describeLaunchResult(envelope({ ok: true, fleet: 'alpha', opened: [{}], failed: [{}, {}] }));
+  it('a partial launch is a success that STATES the shortfall', () => {
+    const v = describeLaunchOutcome([{ ok: true }, { ok: false, error: 'no terminal' }, { ok: false }], 'alpha');
     expect(v.ok).toBe(true);
-    expect(v.message).toContain('2 failed to open');
+    expect(v.message).toContain('1 member');
+    expect(v.message).toContain('2 failed to start');
   });
 
-  it('passes a non-JSON refusal through verbatim rather than inventing copy', () => {
-    const v = describeLaunchResult({ content: [{ type: 'text', text: 'no such plan `nope`' }], isError: true });
+  /** Every member failed ⇒ a failure that surfaces the server's real reason. */
+  it('an all-failed launch is a failure carrying the first real error', () => {
+    const v = describeLaunchOutcome([{ ok: false, error: '`psu` not found on PATH' }, { ok: false }], 'alpha');
     expect(v.ok).toBe(false);
-    expect(v.message).toBe('no such plan `nope`');
+    expect(v.message).toBe('`psu` not found on PATH');
   });
 
-  it('does not throw on an empty/garbled envelope', () => {
-    expect(describeLaunchResult(null).ok).toBe(false);
-    expect(describeLaunchResult({}).ok).toBe(false);
+  it('still fails legibly when no member reported a reason', () => {
+    const v = describeLaunchOutcome([{ ok: false }], 'alpha');
+    expect(v.ok).toBe(false);
+    expect(v.message).toContain('alpha');
+  });
+
+  /** EI-18696184925888288: launch-su can report ok with a "window may not have
+   *  opened" warning. That must not read as an unqualified success. */
+  it('surfaces a may-not-have-opened warning on an otherwise clean launch', () => {
+    const v = describeLaunchOutcome([{ ok: true, warning: 'exited immediately' }], 'alpha');
+    expect(v.ok).toBe(true);
+    expect(v.message).toContain('may not have opened');
   });
 });
 

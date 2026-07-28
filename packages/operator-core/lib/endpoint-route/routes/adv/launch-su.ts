@@ -429,6 +429,13 @@ const launchSu = defineTool({
       ...(ownerId ? { ownerId } : {}),
       harnessSlug: harness,
       planSlug: plan,
+      // WI-6505: the slug this launch resolved the fleet to — the server-side
+      // slugify of `fleet_name` when it CREATED one, else the `fleet` it joined.
+      // Returned so a multi-member GUI launch can have members 2..N join the
+      // fleet member 1 just created WITHOUT re-implementing the slugifier
+      // client-side (it truncates at 60 chars and defaults to "fleet", so a copy
+      // would disagree exactly where it matters and split the fleet in two).
+      ...(fleetSlug ? { fleetSlug } : {}),
       terminal: spawned.terminal,
       pid: spawned.pid,
       ...(warning ? { warning } : {}),

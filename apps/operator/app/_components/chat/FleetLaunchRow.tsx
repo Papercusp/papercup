@@ -80,6 +80,7 @@ import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
 import { Combobox, type ComboboxOption } from '@/app/harness/Combobox';
 import { FLEET_MAX_MEMBERS } from '@papercusp/operator-core/lib/agent-config-constants';
+import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import { usePlanList } from '@/app/admin/plans/plans-api';
 import {
   ACCOUNT_SELECT_DEFAULT,
@@ -93,19 +94,14 @@ import {
 import { useSuLaunchOptions } from '@/app/adv/sessions/use-su-launch-options';
 
 /**
- * Slugify a fleet NAME the way the server does, so members 2..N can join the
- * fleet member 1 just created. The server is still the authority — it slugifies
- * `fleetName` itself — this only has to agree with it.
- *
- * Pure — exported for unit-test access.
+ * Members 2..N JOIN the fleet member 1 created, by slug. That slug comes back
+ * from the server (`fleetSlug` on the launch response) rather than being
+ * re-derived here on purpose: the server's slugifier truncates at 60 chars and
+ * falls back to "fleet" for a name that slugifies to nothing, so a client-side
+ * copy would silently disagree on exactly those inputs — and disagreeing means
+ * every member after the first creates its OWN fleet instead of joining. Ask the
+ * authority; never re-implement it.
  */
-export function fleetSlugFromName(name: string): string {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
 
 /**
  * Headed vs headless — the owner's "headed or headed", which is an obvious typo
@@ -146,45 +142,39 @@ export function clampMemberCount(n: number): number {
   return Math.min(FLEET_MAX_MEMBERS, Math.max(1, Math.trunc(n)));
 }
 
+/** One member's outcome, as the launch loop records it. */
+export interface MemberOutcome {
+  ok: boolean;
+  error?: string;
+  warning?: string;
+}
+
 /**
- * Turn the agent-tools envelope into a human sentence.
+ * Turn N per-member outcomes into ONE human sentence.
  *
- * Every agent-tools route answers `{ content: [{ type:'text', text }] }`, with
- * `isError` on refusals; `fleet:launch-on-plan` puts a JSON document in `text`.
- * A launch can also come back `ok:false` with a populated `failed[]` — members
- * that did not open — which is NOT an HTTP failure, so a caller keying only on
- * `r.ok` would report a launch that opened nothing as a success. Read the
- * payload, not the status.
+ * Two things this exists to get right, both of which a naive "if the last call
+ * succeeded" would report wrongly:
+ *  - a PARTIAL launch (3 asked for, 2 opened) is a success worth stating with
+ *    its shortfall, not a silent success and not a failure;
+ *  - a launch where every member failed must say WHY, using the server's own
+ *    message, rather than a generic "launch failed".
  *
  * Pure — exported for unit-test access.
  */
-export function describeLaunchResult(body: unknown): { ok: boolean; message: string } {
-  const envelope = body as { content?: Array<{ text?: string }>; isError?: boolean } | null;
-  const text = envelope?.content?.[0]?.text ?? '';
-  let parsed: Record<string, unknown> | null = null;
-  try {
-    parsed = text ? (JSON.parse(text) as Record<string, unknown>) : null;
-  } catch {
-    // A refusal is often plain prose rather than JSON — surface it verbatim
-    // instead of collapsing it to a generic failure.
-    parsed = null;
+export function describeLaunchOutcome(results: MemberOutcome[], fleetName: string): { ok: boolean; message: string } {
+  const opened = results.filter((r) => r.ok).length;
+  const failures = results.filter((r) => !r.ok);
+  if (opened === 0) {
+    // Prefer the first real reason over inventing copy — launch-su's errors are
+    // specific (no terminal, psu missing, over the concurrency ceiling).
+    const why = failures.find((f) => f.error?.trim())?.error?.trim();
+    return { ok: false, message: why ?? `Could not launch “${fleetName}”.` };
   }
-  if (!parsed) {
-    const fallback = text.trim() || 'Fleet launch failed — no response from the launcher.';
-    return { ok: false, message: fallback };
-  }
-  const opened = Array.isArray(parsed.opened) ? parsed.opened.length : 0;
-  const failed = Array.isArray(parsed.failed) ? parsed.failed.length : 0;
-  const fleet = typeof parsed.fleet === 'string' ? parsed.fleet : 'fleet';
-  if (parsed.ok === true && opened > 0) {
-    const suffix = failed > 0 ? ` (${failed} failed to open)` : '';
-    return { ok: true, message: `Launched ${opened} member${opened === 1 ? '' : 's'} on “${fleet}”${suffix}.` };
-  }
-  // `message` is the tool's own composed explanation (capacity clamps, missing
-  // lane, a refused model/agent pairing) — far better copy than anything this
-  // component could invent from the status code.
-  const why = typeof parsed.message === 'string' && parsed.message.trim() ? parsed.message.trim() : null;
-  return { ok: false, message: why ?? `Fleet launch opened no members on “${fleet}”.` };
+  const warned = results.filter((r) => r.ok && r.warning).length;
+  let message = `Launched ${opened} member${opened === 1 ? '' : 's'} on “${fleetName}”`;
+  if (failures.length > 0) message += ` — ${failures.length} failed to start`;
+  else if (warned > 0) message += ` — ${warned} may not have opened a window`;
+  return { ok: true, message: `${message}.` };
 }
 
 export interface FleetLaunchRowProps {
@@ -251,37 +241,53 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
     }
     setLaunching(true);
     try {
-      const r = await fetch(FLEET_LAUNCH_ROUTE, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          name: fleetName.trim(),
-          plan: selectedPlan.slug,
-          // The plan's OWN harness, not an ambient one: this route has no agent
-          // session to inherit a harness scope from, and the tool needs the
-          // harness the plan actually belongs to in order to resolve it.
-          ...(selectedPlan.harness ? { harness: selectedPlan.harness } : {}),
-          count: clampMemberCount(count),
-          headless,
-          // Always sent — a psu launch with no --account opens an interactive
-          // picker that would hang every spawned member waiting for a human.
-          account: account || ACCOUNT_SELECT_DEFAULT,
-          ...(model && model !== MODEL_SELECT_DEFAULT ? { model } : {}),
-          // The model implies its backend (the menu spans claude/codex/omp), and
-          // sending the model without it launches the WRONG CLI nominally set to
-          // an unrunnable id — the trap that spawned 4 mislabelled members on
-          // 2026-07-03. Send both, derived from the same menu.
-          ...(modelBackend(model) ? { agent: modelBackend(model) } : {}),
-        }),
-      });
-      const body = await r.json().catch(() => null);
-      const verdict = describeLaunchResult(body);
+      const name = fleetName.trim();
+      const members = clampMemberCount(count);
+      const chosenModel = model && model !== MODEL_SELECT_DEFAULT ? model : null;
+      const common = {
+        slug: selectedPlan.harness ?? null,
+        planSlug: selectedPlan.slug,
+        label: name,
+        model: chosenModel,
+        // The model implies its backend (the menu spans claude/codex/omp), and
+        // sending the model without it launches the WRONG CLI nominally set to an
+        // unrunnable id — the trap that spawned 4 mislabelled members on
+        // 2026-07-03. Send both, derived from the same menu.
+        agent: modelBackend(model),
+        // ALWAYS sent — a psu launch with no --account opens an interactive
+        // picker that would hang every spawned member waiting for a human.
+        account: account || ACCOUNT_SELECT_DEFAULT,
+        headless,
+      };
+
+      // Member 1 CREATES the fleet (fleetName) and reports back the slug the
+      // server assigned; members 2..N JOIN that slug. Deliberately SERIAL for the
+      // first hop — firing all N in parallel with `fleetName` would race N
+      // creations of the same fleet — then parallel for the rest, which is just
+      // N independent joins.
+      const first = await launchAgent({ ...common, fleetName: name, fleet: null });
+      const outcomes: MemberOutcome[] = [
+        { ok: first.ok, error: first.error, warning: first.warning },
+      ];
+      // Only fan out if the fleet actually exists now; otherwise N-1 more
+      // failures would just be noise on top of the real error.
+      if (first.ok && members > 1) {
+        const joinSlug = first.fleetSlug ?? null;
+        const rest = await Promise.all(
+          Array.from({ length: members - 1 }, () =>
+            launchAgent({ ...common, fleet: joinSlug, fleetName: joinSlug ? null : name }),
+          ),
+        );
+        for (const r of rest) outcomes.push({ ok: r.ok, error: r.error, warning: r.warning });
+      }
+
+      const verdict = describeLaunchOutcome(outcomes, name);
       if (verdict.ok) {
-        toast.success(verdict.message, { duration: 4000 });
-        // A launch that CREATED the fleet added a row to the picker source —
-        // re-read it so the new fleet is immediately joinable elsewhere.
+        toast.success(verdict.message, { duration: 5000 });
+        // The launch CREATED a fleet — re-read the picker source so it is
+        // immediately joinable elsewhere without a reload.
         launchOptions.refresh();
-        onLaunched?.(fleetName.trim() || null);
+        onLaunched?.(first.fleetSlug ?? name);
       } else {
         toast.error(verdict.message, { duration: 8000 });
       }

@@ -68,6 +68,11 @@ export default function HarnessTopBar({ slug }: Props) {
               // live: adv:sync-health was registered, unit-green, and absent from
               // the running catalog for exactly this reason.
               'adv:sync-health',
+              // adv:member-work was registered in HarnessesDock with the comment
+              // "openable from the panel menu" — but it was never listed here, so
+              // it has NOT been openable since it landed. Same trap, found by the
+              // guard added alongside this line.
+              'adv:member-work',
               ...(crossMemberBrowse ? ['adv:hive-content'] : []),
               'adv:chat',
             ]}
