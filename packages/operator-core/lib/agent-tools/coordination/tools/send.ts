@@ -61,9 +61,15 @@ const ENDTURN_SETTLE_MS = Number(process.env.PAPERCUSP_ENDTURN_SETTLE_MS) || 150
 interface SendMsg {
   to: string[];
   summary: string;
-  /** P-032 / D-064: a plain string is the n=1 case; an array carries the four
-   *  AUTHORED per-section fields. Flattened to text for `env.body` (every
-   *  existing reader keeps working) with the STRUCTURE stamped alongside it. */
+  /** P-032 / D-064, as amended by **D-104**: an ARRAY of sections carrying the
+   *  four AUTHORED per-section fields. A plain string is REFUSED at the tool
+   *  boundary (`messageBodyArg`) — D-064's "plain string is the n=1 case" was
+   *  overturned once measured: 5,642 messages in 30h, sectioned form used ONCE.
+   *  The `string` arm survives in THIS type because internal, non-agent senders
+   *  (owner-message.ts's GUI wrapper, inbox-reply.ts) still hand text in and are
+   *  upgraded to sections before storage — it is not a shape an agent can send.
+   *  Flattened to text for `env.body` (every existing reader keeps working) with
+   *  the STRUCTURE stamped alongside it. */
   body?: string | MessageSection[];
   /** ENVELOPE (D-064). Is the SENDER blocked until this is dealt with? */
   blocking?: boolean;

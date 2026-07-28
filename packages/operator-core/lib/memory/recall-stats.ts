@@ -40,12 +40,56 @@ export type RecallSurface =
   | 'claim'
   | 'create';
 
-export interface RecallStatsInput {
+/**
+ * One pool's contribution to a multi-pool (push-path) recall — migration 703 /
+ * context-injection-audit-2026-07-28 P-026.
+ *
+ * `limit` and `scopes` are recorded rather than inferred at read time, and that
+ * is the whole point of the shape. A saturation test (`hits === limit`) computed
+ * against TODAY's constant is wrong for every row written before the constant
+ * was retuned — and P-032/P-033 exist specifically to retune them. Likewise a
+ * pool that returns zero because it was queried under a scope key nothing writes
+ * to is indistinguishable, after the fact, from a pool that simply held nothing
+ * relevant — unless the scope it actually queried was captured at the time.
+ */
+export interface RecallPoolStats {
+  /** This pool's results (post score-floor, pre policy filtering). */
+  entries: readonly MemoryEntry[];
+  /** The per-pool budget in effect for THIS call. */
+  limit: number;
+  /** The scope keys actually queried for this pool. */
+  scopes: readonly string[];
+}
+
+interface RecallStatsCommon {
   /** The documented set (RecallSurface) OR any port string — free-text column. */
   surface: RecallSurface | (string & {});
-  /** The recall's result set (post score-floor, pre per-call caps). */
-  entries: readonly MemoryEntry[];
+  /** Workspace this recall ran for. Migration 290 added the column; nothing
+   *  ever wrote it (0 of 56,841 rows) until P-026 — see the migration note. */
+  workspaceId?: string | null;
+  /** Pot/hive slug this recall ran for. Same dead-column history as workspaceId. */
+  potSlug?: string | null;
 }
+
+/**
+ * Either a FLAT result set (the pull path — one scope, no fan-out) or a
+ * PER-POOL breakdown (the push path — user + harness + hive, each with its own
+ * budget). Deliberately a discriminated union with `never` arms rather than two
+ * optional fields: when `pools` is supplied the flat totals are DERIVED from it,
+ * so `hit_count` can never drift from the sum of the pool counts. A caller
+ * cannot supply both and cannot supply a breakdown that disagrees with itself.
+ */
+export type RecallStatsInput =
+  | (RecallStatsCommon & {
+      /** The recall's result set (post score-floor, pre per-call caps). */
+      entries: readonly MemoryEntry[];
+      pools?: never;
+    })
+  | (RecallStatsCommon & {
+      /** Per-pool breakdown; the flat columns are derived from it. */
+      pools: Readonly<Record<string, RecallPoolStats>>;
+      entries?: never;
+    });
 
 /** Results whose metadata carries entityType — entity-store leakage (the
  *  EI-366 junk class). Always 0 after the canonical-store segregation fix;
@@ -69,22 +113,55 @@ const RECALL_STATS_WARN_WINDOW_MS = 5 * 60_000;
 let _lastWarnedAt = 0;
 let _suppressedSinceWarn = 0;
 
+/** Finite scores only — a non-numeric or NaN score is absent, not zero. */
+function finiteScores(entries: readonly MemoryEntry[]): number[] {
+  return entries
+    .map((e) => e.score)
+    .filter((s): s is number => typeof s === 'number' && Number.isFinite(s));
+}
+
+/** The `pools` jsonb payload: per pool, what it returned against what it was allowed. */
+function poolsPayload(
+  pools: Readonly<Record<string, RecallPoolStats>>,
+): Record<string, { hits: number; top: number | null; limit: number; scopes: string[] }> {
+  const out: Record<string, { hits: number; top: number | null; limit: number; scopes: string[] }> = {};
+  for (const [name, pool] of Object.entries(pools)) {
+    const scores = finiteScores(pool.entries);
+    out[name] = {
+      hits: pool.entries.length,
+      top: scores.length > 0 ? Math.max(...scores) : null,
+      limit: pool.limit,
+      // Bounded: a fan-out is capped at MAX_HARNESS_FANOUT upstream, but this
+      // row must stay small whatever a future caller passes.
+      scopes: pool.scopes.slice(0, 16).map(String),
+    };
+  }
+  return out;
+}
+
 /** Insert one stats row. Never throws; never load-bearing. Call WITHOUT awaiting. */
 export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Promise<void> {
   try {
-    const scores = input.entries
-      .map((e) => e.score)
-      .filter((s): s is number => typeof s === 'number' && Number.isFinite(s));
+    // A per-pool input DERIVES its flat totals, so hit_count/top_score/scores keep
+    // exactly the meaning they have always had and cannot disagree with `pools`.
+    const entries: readonly MemoryEntry[] = input.pools
+      ? Object.values(input.pools).flatMap((p) => [...p.entries])
+      : input.entries;
+    const scores = finiteScores(entries);
     const topScore = scores.length > 0 ? Math.max(...scores) : null;
+    const pools = input.pools ? JSON.stringify(poolsPayload(input.pools)) : null;
     await sql`
       INSERT INTO harness_shared.memory_recall_stats
-        (surface, hit_count, top_score, scores, fragment_count)
+        (surface, hit_count, top_score, scores, fragment_count, pools, workspace_id, pot_slug)
       VALUES (
         ${input.surface},
-        ${input.entries.length},
+        ${entries.length},
         ${topScore},
         ${JSON.stringify(scores)}::text::jsonb,
-        ${countFragmentHits(input.entries)}
+        ${countFragmentHits(entries)},
+        ${pools}::text::jsonb,
+        ${input.workspaceId ?? null},
+        ${input.potSlug ?? null}
       )
     `;
   } catch (err) {
