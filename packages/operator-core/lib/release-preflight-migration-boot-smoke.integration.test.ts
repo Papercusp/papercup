@@ -36,6 +36,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
+import { copyFile, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config/pg';
 // Types come from the package's generated `src/index.d.ts` (EI-18804531117413708).
 // This was a verbatim copy of db-boot-migrate.ts's `@ts-expect-error` +

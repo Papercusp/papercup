@@ -308,6 +308,54 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
         'This is the routine-dispatch engine (routinesTick + the system-action registry) — it only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host); :3070/:3170 boot request-only (BACKGROUND_WORKERS=0) and never execute it. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it (EI-11120).',
     },
   },
+  // WI-6659: the rules above catch code reached through the `system:<action>`
+  // REGISTRY. But `routinesTickImpl` (lib/dbos/routines-workflow.ts) also dispatches
+  // ~24 sweeps by DIRECT `await import(...)`, bypassing the registry entirely — so
+  // they matched no rule and fell through to DEFAULT_OWNER, reporting `deployed ✓` +
+  // `nextAction: null` for code :3070 never executes. That cost ~30min and a false
+  // "the fix is live" conclusion on WI-6639: bg-host had been running 4h45m of
+  // pre-fix code while this tool reported the change live. `routines-workflow.ts`
+  // itself is covered (the `lib/dbos/` rule above); its dispatch TARGETS were not.
+  //
+  // Two tiers, because the targets are not uniform — see the guard test
+  // (git-pipeline-position-routines-tick.test.ts), which re-derives this set from
+  // routines-workflow.ts's actual imports and FAILS when sweep #25 is added without
+  // a rule here. That guard is what makes this a class fix rather than a one-off.
+  {
+    // Tier 1 — bg-host ONLY. Verified: no non-test importer outside the bg-host
+    // sweep set itself, so a deploy can never be the activation path for any consumer.
+    match: /^packages\/operator-core\/lib\/(harness\/routines\/(reconcile-loop-routines|reconcile-plan-runs|autoloop-chronic-failure|claim)|rubric-staleness-watchdog|wall-lapse-watchdog|agent-state-divergence-sweep|agent-plane-measurement-sweep|release-deploy-staleness-watchdog|search\/session-ingest-lag-watchdog|sync\/hyperbee\/cold-join-(canary|executor))\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'This is a periodic sweep dispatched DIRECTLY by `routinesTickImpl` (lib/dbos/routines-workflow.ts), not through the `system:<action>` registry — routinesTick only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host); :3070/:3170 boot request-only and never execute it. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it (WI-6659 / EI-11120).',
+    },
+  },
+  {
+    // Tier 2 — genuinely DUAL-consumer (WI-5440 plural shape). Each of these is swept
+    // by routinesTick in bg-host AND read by operator-served surfaces (agent-tools MCP
+    // handlers, sync-resolver, endpoint-route). Reporting either route alone sends half
+    // the callers to the wrong activation lever, so both are returned.
+    match: /^packages\/operator-core\/lib\/(pot\/(watchdog|placement-watchdog|started|throughput)|overwatch\/watchdog|harness\/routines\/loop-fire|autoloop)\.ts$/,
+    own: [
+      {
+        host: 'bg-host',
+        releasePipelineApplies: false,
+        restartTarget: 'bg-host',
+        activation:
+          'The SWEEP/tick half of this module is dispatched by `routinesTickImpl`, which only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). For THAT consumer it loads on RESTART: dev:restart { target: "bg-host", confirm: true } — a deploy never carries it (WI-6659).',
+      },
+      {
+        host: 'operator-release',
+        releasePipelineApplies: true,
+        restartTarget: 'staging',
+        activation:
+          'This module is ALSO read by operator-served surfaces (agent-tools MCP handlers / sync-resolver / endpoint-route). For THAT consumer the ordinary staging→green-gate→deploy pipeline is the activation path (or dev:restart { target: "staging", confirm: true } to exercise it now on :3170).',
+      },
+    ],
+  },
   {
     // Covers both the singular (`foo-action.ts`) and plural (`foo-actions.ts`,
     // e.g. improvement-actions.ts, coord-invariant-actions.ts) naming used across
