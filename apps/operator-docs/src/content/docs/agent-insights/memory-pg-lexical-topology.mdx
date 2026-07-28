@@ -18,6 +18,36 @@ Plan: `memory-pg-lexical-own-injection-2026-07-13`. Owner mandate: the lexical
 leg must be papercusp code over papercusp storage, and ambient injection must
 be papercusp-controlled — no dependency on Claude's file-memory implementation.
 
+## Update 2026-07-28 — hybrid-pg is now the DEFAULT, and the ~/.claude backends are gone
+
+`memory-declaude-and-defaults-2026-07-28` finished the job this plan started. Three
+changes to what is written below:
+
+* **`hybrid-pg` is the default backend**, not `mem0` — `DEFAULT_MEMORY_BACKEND` in
+  `backend-selection.ts`. Until then a fresh install silently got the 53%-recall
+  backend, and the 98% one was reachable only by knowing to flip a dropdown.
+* **`claude-file` and `hybrid` are NO LONGER REGISTERED** and cannot be selected.
+  The "Cutover / rollback" section below says the old `hybrid` "stays registered as
+  the rollback" — that is no longer true, and deliberately so: rolling back onto a
+  frozen file store is not a rollback, it is a data-visibility regression. The
+  rollback for `hybrid-pg` is `mem0` (same rows, cosine leg only).
+  ⚠ A persisted `memory_backend` row or `PAPERCUSP_MEMORY_BACKEND` still naming a
+  retired backend is **coerced to the default with a one-time warning** rather than
+  throwing `unknown memory backend` on every call — `RETIRED_MEMORY_BACKENDS` in
+  `backend-selection.ts`. Unregistering a backend without that coercion is a live
+  outage for anyone who had legitimately selected it.
+* **`HybridBackend` takes its `name` from options** instead of hardcoding `'hybrid'`.
+  The canary's flip-reseed guard below (`set.backend !== backend.name`) compares
+  exactly that string, so while both wirings answered `'hybrid'` a flip between them
+  skipped the reseed and scored against a baseline from the *other* backend.
+* The settings page's stale "Memory index over capacity" banner (which counted
+  ~/.claude topic files and told you to curate them, ~2 weeks after the generator
+  that consumed them was retired) is deleted, along with `claude-hygiene.ts` — the
+  last unconditional ~/.claude read in the operator.
+
+`ClaudeFileMemoryBackend` still exists as a lib class: the offline bench constructs
+it directly to reproduce the A/B numbers below. It is unreachable from the product.
+
 ## The shape
 
 **One canonical store**: `harness_shared.memory_canonical` (payload jsonb) +
