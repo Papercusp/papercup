@@ -227,7 +227,27 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
       );
     }
 
-    // 4c. Same document, app alive — so is the SENSOR alive? This used to be
+    // 4c. Same document, app alive — is the detector even THERE? This must come
+    //     before the control below, or an absent monitor fails with the control's
+    //     diagnosis ("the sensor could not prove itself") instead of its own
+    //     ("the sensor is missing"), which points at the wrong fix.
+    //
+    //     A MISSING detector must fail, never pass: absent, crashed or
+    //     tree-shaken away, it reports the same zero as a genuinely clean shell,
+    //     and treating that as success rebuilds the exact silence D-005 exists to
+    //     remove. Reaching this line means the page IS real, so a missing
+    //     detector really is a wiring bug.
+    if (!probe.monitorPresent) {
+      throw new Error(
+        `the app IS mounted (url=${probe.url}) but window.__papercusp_egress__ is absent. ` +
+          `installDesktopIpcPolyfills() installs the monitor ahead of its isTauri/forceHttp ` +
+          `guards, so — unlike a blank-page run — this is a genuine wiring or bundling fault ` +
+          `and the detector really is missing.`,
+      );
+    }
+    expect(probe.report).not.toBe(null);
+
+    // 4d. The detector exists — but is it SEEING anything? This used to be
     //     inferred from `resourceEntries === 0`, and that inference was wrong in
     //     the direction that matters. Measured on WebKitGTK 2.52.3 with the
     //     scheme registered as wry does (WI-6657): a `papercusp://` document
@@ -251,29 +271,14 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
       );
     }
 
-    // 5. Only now: a MISSING detector must fail, never pass. `getEgressReport()`
-    //    returns null when no monitor is installed, and null means UNKNOWN — a
-    //    detector that is absent, crashed, or was tree-shaken away reports the
-    //    same zero as a genuinely clean shell. Treating that as success would
-    //    rebuild the exact silence D-005 exists to remove. Reaching this line
-    //    means the page IS real, so a missing detector really is a wiring bug.
-    if (!probe.monitorPresent) {
-      throw new Error(
-        `the app IS mounted (${probe.resourceEntries} resource timings, url=${probe.url}) but ` +
-          `window.__papercusp_egress__ is absent. installDesktopIpcPolyfills() installs the ` +
-          `monitor ahead of its isTauri/forceHttp guards, so — unlike a blank-page run — this ` +
-          `is a genuine wiring or bundling fault and the detector really is missing.`,
-      );
-    }
-    expect(probe.report).not.toBe(null);
-
-    // 6. The invariant itself.
+    // 5. The invariant itself.
     const report = probe.report as EgressReport;
     if (report.total !== 0) {
       const detail = report.entries
         .map(
           (e) =>
-            `  ${e.path} @${Math.round(e.startMs)}ms (${Math.round(e.durationMs)}ms)`,
+            `  ${e.path} @${Math.round(e.startMs)}ms (${Math.round(e.durationMs)}ms)` +
+            `${e.via && e.via !== "resource-timing" ? ` [via ${e.via}]` : ""}`,
         )
         .join("\n");
       throw new Error(
@@ -282,9 +287,14 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
           `reached the real network stack instead:\n${detail}\n\n` +
           `A path that recurs at ~${POLL_TICK_MS}ms boundaries is a background ` +
           `poll escaping on a routing rule, NOT a startup race (D-008); one that ` +
-          `appears only before the polyfill installs is genuinely an ordering bug.`,
+          `appears only before the polyfill installs is genuinely an ordering bug. ` +
+          `An entry marked [via websocket] or [via eventsource] came from a stream, ` +
+          `which resource timing cannot see at all — those are caught by the ` +
+          `constructor wrappers, and desktop sync is SSE-primary, so they matter most.`,
       );
     }
-    expect(report.total).toBe(0);
+    // The verdict, not the count. A zero with an unproven sensor is `unknown`,
+    // and the whole point of this spec is that `unknown` must never read green.
+    expect(report.verdict).toBe("clean");
   });
 });

@@ -47,6 +47,13 @@ export const ALLOW_PREFIXES = [
   // highlight-matching algorithm). Hand-editing it is pointless (the next docs build
   // overwrites it) and it isn't "our" source to rewrite.
   'apps/operator/public/internal/docs/pagefind/',
+  // EI-18896048946123172: the packaged desktop sidecar — a wholesale build artifact
+  // (a 42MB bundled `serve.mjs` plus hash-named Vite chunks under spa/assets/) that
+  // only became visible once this guard started recursing into submodules. Bundlers
+  // legitimately emit raw \x01-\x1f inside minified string tables (xterm's parser
+  // tables are the bulk of it). It is regenerated wholesale by the desktop build, so
+  // editing it is pointless and it is not hand-authored source.
+  'papercusp-desktop/src-tauri/env-sidecars/',
 ];
 
 export function isForbiddenControlByte(byte) {
@@ -81,17 +88,56 @@ function isScannedPath(file) {
   return SOURCE_EXTENSIONS.has(extensionOf(file)) && !ALLOW_PREFIXES.some((prefix) => file.startsWith(prefix));
 }
 
-function trackedSourceFiles() {
-  const out = execFileSync('git', ['ls-files', '-z'], {
-    cwd: ROOT,
-    encoding: 'buffer',
-    maxBuffer: 256 * 1024 * 1024,
-  });
-  return out
+function gitLines(args, cwd = ROOT) {
+  return execFileSync('git', args, { cwd, encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 })
     .toString('utf8')
     .split('\0')
-    .filter(Boolean)
-    .filter(isScannedPath);
+    .filter(Boolean);
+}
+
+function trackedSourceFiles() {
+  // EI-18896048946123172: `git ls-files` STOPS AT THE SUPERPROJECT BOUNDARY. A submodule
+  // is listed as a single gitlink entry with no file extension, so `isScannedPath` dropped
+  // it and everything inside it was never opened. That silently exempted 4,531 tracked
+  // source files (~24% of the tree) — all of libs/generic/**, libs/papercusp/** and
+  // papercusp-desktop/** — which is why this guard printed "clean" for three days while a
+  // raw NUL byte sat in libs/generic/sync/src/persisted-cache.ts and turned that file
+  // binary to git diff and to ugrep.
+  return gitLines(['ls-files', '-z', '--recurse-submodules']).filter(isScannedPath);
+}
+
+/**
+ * Submodule prefixes, from gitlink index entries (mode 160000).
+ *
+ * Deliberately read from an oracle INDEPENDENT of the recursing listing above: if
+ * `--recurse-submodules` ever stops recursing, this still enumerates the submodules, so
+ * the coverage check below can falsify the scan instead of trusting it.
+ */
+export function submodulePrefixes() {
+  return gitLines(['ls-files', '-s', '-z'])
+    .filter((line) => line.startsWith('160000 '))
+    .map((line) => `${line.slice(line.indexOf('\t') + 1)}/`);
+}
+
+/**
+ * Submodules that hold scannable source but contributed ZERO files to the scan — i.e. the
+ * selection silently skipped them. Returns [] when coverage is sound.
+ */
+export function uncoveredSubmodules(scanned, prefixes = submodulePrefixes()) {
+  const missing = [];
+  for (const prefix of prefixes) {
+    if (scanned.some((file) => file.startsWith(prefix))) continue;
+    if (!existsSync(join(ROOT, prefix))) continue; // submodule not checked out here
+    let own;
+    try {
+      own = gitLines(['ls-files', '-z'], join(ROOT, prefix));
+    } catch {
+      continue; // not a usable git dir — nothing to assert
+    }
+    // Only a submodule that genuinely holds files this guard WOULD scan is a coverage gap.
+    if (own.some((file) => isScannedPath(prefix + file))) missing.push(prefix);
+  }
+  return missing;
 }
 
 function scanTree() {

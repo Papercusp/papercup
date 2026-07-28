@@ -41,15 +41,15 @@ const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
  * These are NOT hand-written approximations of "what vitest probably prints" — that is
  * precisely the mistake that let this bug live: every pre-existing case in this file uses
  * clean, uncoloured text, so the parser looked correct while being blind on real output.
- * Escapes are written as explicit  rather than raw ESC bytes so they stay visible
+ * Escapes are written as explicit \x1b rather than raw ESC bytes so they stay visible
  * and survive formatters (a raw control byte in a fixture is invisible and easy to lose).
  */
 const REAL_ANSI_SUMMARY =
-  '[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m161 passed[39m[22m[90m (162)[39m\n' +
-  '[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m1598 passed[39m[22m[90m (1599)[39m\n';
+  '\x1b[2m Test Files \x1b[22m \x1b[1m\x1b[31m1 failed\x1b[39m\x1b[22m\x1b[2m | \x1b[22m\x1b[1m\x1b[32m161 passed\x1b[39m\x1b[22m\x1b[90m (162)\x1b[39m\n' +
+  '\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[31m1 failed\x1b[39m\x1b[22m\x1b[2m | \x1b[22m\x1b[1m\x1b[32m1598 passed\x1b[39m\x1b[22m\x1b[90m (1599)\x1b[39m\n';
 
 const REAL_ANSI_ROLLUP =
-  ' [31m❯[39m src/components/adv/learning-empty-state-copy.guard.test.ts [2m([22m[2m5 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 15[2mms[22m[39m\n';
+  ' \x1b[31m❯\x1b[39m src/components/adv/learning-empty-state-copy.guard.test.ts \x1b[2m(\x1b[22m\x1b[2m5 tests\x1b[22m\x1b[2m | \x1b[22m\x1b[31m1 failed\x1b[39m\x1b[2m)\x1b[22m\x1b[32m 15\x1b[2mms\x1b[22m\x1b[39m\n';
 
 describe('parseSummaryFailedCounts (EI-18653696921091778)', () => {
   it('extracts failed test-file and test counts from a real vitest failure summary', () => {
@@ -93,8 +93,8 @@ describe('parseSummaryFailedCounts (EI-18653696921091778)', () => {
 
   it('still returns null for a colourised ALL-GREEN summary (no false positives)', () => {
     const green =
-      '[2m Test Files [22m [1m[32m162 passed[39m[22m[90m (162)[39m\n' +
-      '[2m      Tests [22m [1m[32m1599 passed[39m[22m[90m (1599)[39m\n';
+      '\x1b[2m Test Files \x1b[22m \x1b[1m\x1b[32m162 passed\x1b[39m\x1b[22m\x1b[90m (162)\x1b[39m\n' +
+      '\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[32m1599 passed\x1b[39m\x1b[22m\x1b[90m (1599)\x1b[39m\n';
     expect(parseSummaryFailedCounts(green)).toBeNull();
   });
 });
@@ -108,7 +108,7 @@ describe('parseFailedTestFiles (EI-18819483316574031)', () => {
 
   it('extracts the failing file from a COLOURISED bare FAIL row', () => {
     const failRow =
-      '[41m[1m FAIL [22m[49m [36msrc/components/adv/x.test.ts[39m\n';
+      '\x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m \x1b[36msrc/components/adv/x.test.ts\x1b[39m\n';
     expect(parseFailedTestFiles(failRow)).toEqual(['src/components/adv/x.test.ts']);
   });
 
