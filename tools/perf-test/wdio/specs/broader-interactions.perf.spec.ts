@@ -42,6 +42,51 @@ async function waitForAppMount(): Promise<void> {
   );
 }
 
+/**
+ * Wait for the main thread to go QUIET before measuring an interaction.
+ *
+ * WHY THIS EXISTS (perf-testing-sweep-2026-07-27, P-022 — measured, not guessed):
+ * `waitForAppMount` above resolves as soon as `#root` has its FIRST child, i.e.
+ * on the first render commit — the app is still hydrating (route data, sync
+ * queries, every pane mounting). Driving an interaction at that moment measures
+ * the interaction PLUS the whole remaining boot, and the boot dominates:
+ *
+ *   command-palette-open, opened right after waitForAppMount, RELEASE binary  = 3048ms
+ *   command-palette-open, opened on a settled app, DEV build (slower chunk
+ *     loading, so a strict UPPER bound on release cost), same host load       =  110ms
+ *
+ * A 27x gap in the wrong direction: the number was ~96% unrelated boot work.
+ * That made the check both a guaranteed false alarm against its 400ms budget
+ * AND useless as a regression signal, because the value swings with host load
+ * rather than with the code under test.
+ *
+ * Quiet is detected with rAF deltas rather than PerformanceObserver('longtask'),
+ * which WebKit does not implement — so a longtask-based gate would silently
+ * resolve instantly here and reintroduce the same bug.
+ */
+async function waitForMainThreadQuiet(): Promise<void> {
+  await browser.executeAsync((done: (v: unknown) => void) => {
+    const QUIET_FRAME_MS = 20; // a frame slower than this means work is still landing
+    const NEEDED_CONSECUTIVE = 10; // ~166ms of calm at 60fps
+    const DEADLINE_MS = 15_000; // never hang the suite waiting for calm
+    const startedAt = performance.now();
+    let calm = 0;
+    let last = performance.now();
+    const tick = () => {
+      const now = performance.now();
+      const delta = now - last;
+      last = now;
+      calm = delta <= QUIET_FRAME_MS ? calm + 1 : 0;
+      if (calm >= NEEDED_CONSECUTIVE || now - startedAt > DEADLINE_MS) {
+        done(null);
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
 /** Read the latest page-relative measure for a named interaction, or null. */
 async function latestMeasure(name: string): Promise<number | null> {
   return browser.execute((n) => {
