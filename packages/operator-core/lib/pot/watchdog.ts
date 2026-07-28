@@ -269,6 +269,15 @@ export type WatchdogSource =
   // 2026-07-28 while both were caught up and simply unused, so lag alone would
   // have paged twice for nothing. Scoped per source_kind.
   | 'session-ingest-lag'
+  // session-turn-storage-2026-07-28 D-008: the COMPLEMENT of session-ingest-lag
+  // — an adapter that CONSUMES bytes normally while its faithful-parts writer
+  // emits nothing. Invisible to the lag guard by construction (no backlog, so
+  // behindFiles is 0 and it reads "fully caught up"), and the worse half of the
+  // pair: consumed bytes are never re-read, so the gap is permanent rather than
+  // deferred. Scoped per source_kind, and judged only for adapters that
+  // implement parseParts — zero parts is the CORRECT steady state for the other
+  // three, and alarming on them is the fatigue trap D-006 forbids.
+  | 'session-parts-writer'
   // autonomous-loop-prod-audit-2026-07-02 P-006 (SPOF 5b): the Scout
   // outcome-refresh sweep's stale-pending alert — routed ideas whose cached
   // `outcome` has sat NULL/'pending' past the staleness threshold even after

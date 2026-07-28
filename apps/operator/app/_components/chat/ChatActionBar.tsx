@@ -13,7 +13,6 @@
  * single-option card; declining (Skip) cancels the run.
  */
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import { DEFAULT_REQUEST_TIMEOUT_MS } from '@papercusp/sync';
 import { z } from 'zod';
 import { askUserLocal } from '@/lib/chat-cards/ask-user-local';
 // Import the BARREL, not `chat-actions/registry` directly: the barrel's
@@ -43,14 +42,24 @@ import type { ChatAction, ChatActionContext } from '@/lib/chat-actions/types';
  * a 106-query desktop startup wave completes in ~2.9s at p50 395ms.
  *
  * What actually sets the floor is an ORDERING INVARIANT, not a latency budget.
- * The sync layer now rejects a request that cannot get a gate slot at
- * DEFAULT_REQUEST_TIMEOUT_MS with a real, specific message. This ceiling must
- * sit ABOVE that, or it fires first and replaces that message with an opaque
- * "timed out" — re-creating the very opacity WI-6559 was filed for. So derive
- * it from the layer's own published ceiling plus enough headroom for the
- * rejection to propagate and render, and let the guard test hold the ordering.
+ * The sync layer rejects a request that cannot get a gate slot at its
+ * DEFAULT_REQUEST_TIMEOUT_MS (20s) with a real, specific message. This ceiling
+ * must sit ABOVE that, or it fires first and replaces that message with an
+ * opaque "timed out" — re-creating the very opacity WI-6559 was filed for.
+ * 25s = the layer's 20s + 5s of headroom for the rejection to propagate and
+ * render.
+ *
+ * Deliberately a LITERAL rather than `DEFAULT_REQUEST_TIMEOUT_MS + 5_000`:
+ * importing that constant pulls the `@papercusp/sync` barrel into this module's
+ * graph, and ~90 test files across the tree `vi.mock('@papercusp/sync')` with
+ * hand-written factories. Any of them that transitively reaches this component
+ * would fail with "No DEFAULT_REQUEST_TIMEOUT_MS export is defined on the mock"
+ * — a tree-wide fixture break, in files this change never touched, to derive
+ * one number. The ordering is instead enforced by the guard test in
+ * ChatActionBar.test.tsx, which imports the real constant (it mocks no barrel),
+ * so the invariant is still checked without the coupling.
  */
-export const PARAMS_TIMEOUT_MS = DEFAULT_REQUEST_TIMEOUT_MS + 5_000;
+export const PARAMS_TIMEOUT_MS = 25_000;
 
 /**
  * Reject with `message` if `p` has not settled within `ms`. The pending

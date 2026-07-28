@@ -15,7 +15,7 @@
  *
  * Plan: calltool-endpoint-seam-2026-06-01 (Phase D, P-007 / D-006).
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createResilientEventSource } from '@papercusp/sse';
 import {
   IpcEventSource,
@@ -133,8 +133,21 @@ describe('SSE-over-IPC reconnect cooperation (createResilientEventSource × IpcE
   });
 
   it('a fatal error (readyState CLOSED) DOES make the wrapper rebuild', async () => {
-    // Grace 0 = "the bridge has had its chance", which is the state this test is
-    // about: a backend still unavailable AFTER the grace is genuinely dead.
+    // Grace 0 = "the bridge has had its chance".
+    //
+    // The fatal condition here used to be an unavailable BRIDGE
+    // (`invoke_failed`/`state not managed`) after the grace. That is no longer
+    // fatal: `requireIpc` now defaults ON (WI-6512), and its whole point is that
+    // an unreachable bridge stays CONNECTING and retries rather than dying —
+    // dying is what handed the stream to native HTTP, where a long-lived SSE
+    // connection holds one of libsoup's ~6 sockets for the session.
+    //
+    // So this test now drives the rebuild with a condition that is terminal in
+    // BOTH regimes: a bad HEAD. The bridge worked, the server answered, and the
+    // answer was not an event-stream — no amount of waiting fixes that, so
+    // IpcEventSource terminates and the wrapper must rebuild. The cooperation
+    // being pinned (CLOSED ⇒ wrapper rebuilds) is unchanged; only the way we
+    // provoke it had to stop depending on a fallback that no longer exists.
     configureDesktopIpc({ ipcStartupGraceMs: 0 });
     const { dispatch, conns } = makeDispatch();
     const made: IpcEventSource[] = [];
@@ -152,13 +165,57 @@ describe('SSE-over-IPC reconnect cooperation (createResilientEventSource × IpcE
     await waitFor(() => handle.status === 'open');
     expect(made).toHaveLength(1);
 
-    // Terminal backend error → IpcEventSource.terminate() sets readyState CLOSED
-    // before firing error → the wrapper recognizes the death and rebuilds.
-    conns[0]!.push({ kind: 'error', code: 'invoke_failed', message: 'state not managed' });
+    // Terminal HEAD → IpcEventSource.terminate() sets readyState CLOSED before
+    // firing error → the wrapper recognizes the death and rebuilds.
+    conns[0]!.push({
+      kind: 'event',
+      name: 'head',
+      data: { status: 500, headers: { 'content-type': 'text/plain' } },
+    });
     await waitFor(() => made.length === 2);
     expect(made).toHaveLength(2);
 
     handle.close();
+  });
+
+  it('requireIpc: an unavailable BRIDGE past the grace does NOT kill the source', async () => {
+    // The counterpart to the change above, pinned so the old behaviour cannot
+    // quietly return. Before WI-6512 this rebuilt the source, and the rebuild
+    // is what produced a native-HTTP EventSource holding a socket for the
+    // session. Now it stays CONNECTING on the SAME source and waits for the
+    // bridge — which is the entire fix for the owner's "clicking an agent takes
+    // several seconds".
+    configureDesktopIpc({ ipcStartupGraceMs: 0 });
+    // requireIpc reports the degraded bridge via console.error ON PURPOSE — a
+    // silent degrade is the defect. Assert it happened rather than suppressing
+    // it blindly (the suite fails any un-asserted console.error).
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+      errors.push(String(a[0] ?? ''));
+    });
+    try {
+      const { dispatch, conns } = makeDispatch();
+      const made: IpcEventSource[] = [];
+      const handle = createResilientEventSource({
+        url: '/api/zero-harness/sse',
+        handlers: { update: () => {} },
+        eventSourceCtor: makeCtor(dispatch, made),
+        zombieTimeoutMs: 0,
+        maxConsecutiveFailures: 0,
+        initialBackoffMs: 5,
+      });
+
+      await waitFor(() => conns.length === 1);
+      conns[0]!.push({ kind: 'error', code: 'invoke_failed', message: 'state not managed' });
+      await new Promise((r) => setTimeout(r, 80));
+      expect(made).toHaveLength(1);
+      expect(made[0]!.readyState).toBe(0); // CONNECTING, not CLOSED
+      expect(errors.some((e) => e.includes('IPC bridge unavailable'))).toBe(true);
+
+      handle.close();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('WI-6257: INSIDE the startup grace the same error WAITS for the bridge — no rebuild, no native fallback', async () => {

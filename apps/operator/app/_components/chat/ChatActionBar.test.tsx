@@ -220,4 +220,28 @@ describe('ChatActionBar', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/kaboom/));
     warn.mockRestore();
   });
+
+  // P-009 / D-003. This ordering is LOAD-BEARING and was previously expressed
+  // only as prose in another package's comment, where nothing could enforce it.
+  //
+  // The sync layer rejects a request that cannot get a gate slot at
+  // DEFAULT_REQUEST_TIMEOUT_MS with a specific, actionable message ('sync query
+  // "<name>" timed out after 20000ms waiting for a request slot'). If the bar's
+  // own ceiling fired first it would replace that message with a generic
+  // timeout, which is exactly the opacity WI-6559 was filed for — the failure
+  // would still be visible, but no longer diagnosable.
+  describe('P-009 the params ceiling stays above the sync layer ceiling', () => {
+    it('is derived from the sync layer ceiling, not a hardcoded number', () => {
+      expect(PARAMS_TIMEOUT_MS).toBeGreaterThan(DEFAULT_REQUEST_TIMEOUT_MS);
+    });
+
+    it('leaves headroom for the layer rejection to propagate and render', () => {
+      // Enough slack that a rejection at the layer ceiling reliably surfaces
+      // first, without reverting to the old arbitrary 30s (which was justified
+      // by a measurement OF WI-6559 — a bug now fixed, so the number outlived
+      // its own rationale).
+      expect(PARAMS_TIMEOUT_MS - DEFAULT_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(2_000);
+      expect(PARAMS_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+    });
+  });
 });
