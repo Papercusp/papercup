@@ -181,6 +181,16 @@ describe('extractTrajectory', () => {
     expect(out.activeFile).toBeUndefined();
   });
 
+  it('treats a file_path on a non-read/write tool as a mention, not the active file', () => {
+    // Claiming a lock or listing a dir names a file without working in it.
+    const out = extractTrajectory(
+      [{ toolName: 'locks:acquire', args: { paths: ['packages/operator-core/lib/x.ts'] } }],
+      { repoRoot: REPO },
+    );
+    expect(out.trajectory?.paths).toEqual(['packages/operator-core/lib/x.ts']);
+    expect(out.activeFile).toBeUndefined();
+  });
+
   it('accepts only strictly identifier-shaped symbols', () => {
     const out = extractTrajectory([
       { toolName: 'gitnexus.context', args: { name: 'managedSetInterval' } },

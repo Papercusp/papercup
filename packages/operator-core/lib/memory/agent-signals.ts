@@ -371,7 +371,12 @@ export function extractTrajectory(
   for (const inv of invocations) {
     const call = effectiveCall(inv);
     if (!call) continue;
-    harvestArgs(acc, call.input, opts.repoRoot, WRITE_TOOLS.has(call.tool), 0);
+    const pathKind: PathKind = WRITE_TOOLS.has(call.tool)
+      ? 'write'
+      : READ_TOOLS.has(call.tool)
+        ? 'read'
+        : 'mention';
+    harvestArgs(acc, call.input, opts.repoRoot, pathKind, 0);
   }
 
   const trajectory: NonNullable<AgentSignals['trajectory']> = {};

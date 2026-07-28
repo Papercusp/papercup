@@ -378,23 +378,100 @@ describe('deriveCoordState', () => {
       expect(deriveCoordState(messages, new Set(), [], [], 'su-1', shownTs).unreadCount).toBe(1);
     });
 
-    // The respawn trap: a coord owner id OUTLIVES any one session row, so the
-    // floor must come from the owner's EARLIEST session, not its latest. Using
-    // the latest would re-floor the cursor on every respawn and silently drop
-    // mail that arrived during an earlier leg of the same owner's life — a
-    // strictly worse bug than the over-count, since it HIDES real messages.
-    it('floors at the EARLIEST session start, so a respawn cannot hide mail', () => {
+    // The respawn trap (WI-6589). This test USED to seed the three messages as
+    // TARGETED mail and assert that flooring at the latest respawn drops one of
+    // them — encoding the very conflation that turned out to be the bug. It is
+    // re-pointed at broadcasts, which is the only thing the floor governs now;
+    // the targeted case is covered by its own describe below, where the answer
+    // is stronger (the floor never applies at all).
+    //
+    // A coord owner id OUTLIVES any one session row, so the floor must come from
+    // the owner's EARLIEST session, not its latest. `first_seen_at` (migration
+    // 707) is what makes that possible — `started_at` is bumped in place on
+    // every resume, so the MIN over it could never engage.
+    it('floors at the EARLIEST session start, so a respawn cannot hide broadcasts', () => {
       const firstStart = isoMs(NOW - 600_000);
       const respawnedAt = isoMs(NOW - 60_000);
       const messages: CoordEnvelope[] = [
-        msg({ msg_id: 'before-owner-existed', ts: isoMs(NOW - 900_000), from: 'su-2', to: ['su-1'] }),
-        msg({ msg_id: 'during-first-leg', ts: isoMs(NOW - 300_000), from: 'su-2', to: ['su-1'] }),
-        msg({ msg_id: 'after-respawn', ts: isoMs(NOW - 20_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'before-owner-existed', ts: isoMs(NOW - 900_000), from: 'su-2', to: ['*'] }),
+        msg({ msg_id: 'during-first-leg', ts: isoMs(NOW - 300_000), from: 'su-2', to: ['*'] }),
+        msg({ msg_id: 'after-respawn', ts: isoMs(NOW - 20_000), from: 'su-2', to: ['*'] }),
       ];
       // Correct: the pre-existence one drops, both in-life ones survive.
-      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', firstStart).unreadCount).toBe(2);
-      // What flooring at the LATEST session would have done — mail lost.
-      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', respawnedAt).unreadCount).toBe(1);
+      expect(
+        deriveCoordState(messages, new Set(), [], [], 'su-1', null, firstStart).unreadCount,
+      ).toBe(2);
+      // What flooring at the LATEST session does — a broadcast from the earlier
+      // leg is lost. This is the behaviour migration 707 removes at the source.
+      expect(
+        deriveCoordState(messages, new Set(), [], [], 'su-1', null, respawnedAt).unreadCount,
+      ).toBe(1);
+    });
+  });
+
+  // WI-6589 — the floor governs BROADCASTS ONLY.
+  //
+  // D-012 folded the birth floor into the same pickUnreadCursor max as the read
+  // receipts, so it bounded EVERY candidate. Its own justification never reached
+  // that far: a `to:['*']` broadcast is a fan-out to the population alive at send
+  // time, so an agent born later was never in it. A message that NAMES the owner
+  // is the opposite — a peer addressed this exact agent id.
+  //
+  // Measured on the live log before the fix (papercusp-workspace, 7d): 8,954
+  // targeted non-self messages to 153 owners, 6,957 of them (78%) below their
+  // recipient's computed floor, across 78 of 153 owners.
+  describe('the birth floor governs broadcasts only (WI-6589)', () => {
+    const bornAt = isoMs(NOW - 60_000);
+
+    it('never floors a message that names the owner, however far it predates birth', () => {
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'targeted-long-before', ts: isoMs(NOW - 86_400_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'targeted-just-before', ts: isoMs(NOW - 120_000), from: 'su-3', to: ['su-1'] }),
+      ];
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', null, bornAt).unreadCount).toBe(
+        2,
+      );
+    });
+
+    it('still floors a broadcast from the same instant, in the same call', () => {
+      const ts = isoMs(NOW - 120_000);
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'targeted', ts, from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'broadcast', ts, from: 'su-2', to: ['*'] }),
+      ];
+      const out = deriveCoordState(messages, new Set(), [], [], 'su-1', null, bornAt);
+      expect(out.unreadCount).toBe(1);
+      expect(out.unread.map((u) => u.msgId)).toEqual(['targeted']);
+    });
+
+    it('treats a fan-out that lists the owner alongside "*" as addressed, not broadcast', () => {
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'named-in-fanout', ts: isoMs(NOW - 120_000), from: 'su-2', to: ['*', 'su-1'] }),
+      ];
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', null, bornAt).unreadCount).toBe(
+        1,
+      );
+    });
+
+    it('leaves the READ-RECEIPT cursor governing every kind of message', () => {
+      // The receipt leg is untouched by this change: a message the agent has
+      // already been shown stays read whether it was addressed or broadcast.
+      const shownTs = isoMs(NOW - 90_000);
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'targeted-read', ts: isoMs(NOW - 120_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'broadcast-read', ts: isoMs(NOW - 120_000), from: 'su-2', to: ['*'] }),
+        msg({ msg_id: 'targeted-unread', ts: isoMs(NOW - 20_000), from: 'su-2', to: ['su-1'] }),
+      ];
+      const out = deriveCoordState(messages, new Set(), [], [], 'su-1', shownTs, bornAt);
+      expect(out.unreadCount).toBe(1);
+      expect(out.unread.map((u) => u.msgId)).toEqual(['targeted-unread']);
+    });
+
+    it('is inert when the owner has no birth on record (D-007 reaped-agent path)', () => {
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'old-broadcast', ts: isoMs(NOW - 86_400_000), from: 'su-2', to: ['*'] }),
+      ];
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', null, null).unreadCount).toBe(1);
     });
   });
 
