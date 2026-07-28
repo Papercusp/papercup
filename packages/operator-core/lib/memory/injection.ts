@@ -88,7 +88,13 @@ export interface MemoryInjectionInput {
   hiveSlugs?: readonly string[];
   /** Recent user-turn content concatenated. Empty string returns null. */
   queryContext: string;
-  /** Defaults to 6. */
+  /**
+   * TOTAL hits admitted across ALL pools (user + harness + hive), not a
+   * per-pool limit. F-C (context-injection-audit-2026-07-28 P-033 / D-011)
+   * deleted the per-pool quotas: every pool now competes for every slot on
+   * ONE ranking, so there is a single ceiling rather than three reservations.
+   * Defaults to INJECTION_TOTAL_LIMIT.
+   */
   limit?: number;
   /** Defaults to "Operator memory (relevant entries)". */
   heading?: string;
@@ -136,8 +142,23 @@ export interface MemoryInjectionInput {
  * SQL with IN()) is documented in the memory-harness-scope plan.
  */
 const MAX_HARNESS_FANOUT = 20;
-/** Hits requested per harness pool. Kept small so the merged section stays bounded. */
-const PER_HARNESS_LIMIT = 3;
+
+/**
+ * The TOTAL hits admitted across every pool — the block's one ceiling.
+ * F-C (context-injection-audit-2026-07-28 P-033, D-011).
+ *
+ * This REPLACES the three per-pool quotas (user 6 + harness 3 + hive 3), which
+ * P-033 found were allocated INVERSELY to where knowledge lives: 6 slots to the
+ * 487-memory CROSS-PROJECT personal pool, 3 to the 770-memory on-topic harness
+ * pool. 12 is exactly that old sum, deliberately — F-C changes WHO gets the
+ * slots, never HOW MANY exist, so the block cannot grow. (P-033 explicitly
+ * forbids the tempting fix of raising the harness quota; the quota is deleted,
+ * not retuned.)
+ *
+ * The quotas could only be deleted by ALSO collapsing the three per-pool
+ * searches into one multi-scope search — see the fan-out below for why.
+ */
+const INJECTION_TOTAL_LIMIT = 12;
 
 /**
  * Watermark window for the pre-turn dedup (docs-and-memory-as-projections D-006):
@@ -290,7 +311,7 @@ async function buildBlockInner(
     mark('availableMs', Date.now() - tAvail);
   }
 
-  const userLimit = input.limit ?? 6;
+  const totalLimit = input.limit ?? INJECTION_TOTAL_LIMIT;
 
   // P-016: exclude ephemeral/benchmark harness scopes from production recall
   // injection so benchmark memories don't pollute the pre-turn prompt.
@@ -329,8 +350,13 @@ async function buildBlockInner(
 
   // The store holds only STABLE facts now — user + harness + hive scopes
   // (D-005: the deprecated `workspace:`/`shared` scope is drained, so there is
-  // no workspace pull). The backend fans out per scope; `limit` is per-pool,
-  // which is exactly the user-pool-vs-pool asymmetry we want.
+  // no workspace pull).
+  //
+  // `ranked` holds the merged result in RELEVANCE order; the three arrays are
+  // the same entries PARTITIONED by pool (same object references, so the
+  // filters below shrink both views coherently). Attribution comes from each
+  // entry's own scope, not from which call returned it.
+  let ranked: MemoryEntry[] = [];
   let userResults: MemoryEntry[] = [];
   let harnessHits: Array<{ hit: MemoryEntry; slug: string }> = [];
   let hiveHits: Array<{ hit: MemoryEntry; slug: string }> = [];
@@ -341,109 +367,82 @@ async function buildBlockInner(
     const fusionMode = injectFusionMode();
 
     const tSearch = Date.now();
-    let sharedEmbedMs = 0;
-    const pullTimes: Record<string, number> = {};
-    const timed = async (label: string, p: Promise<MemoryEntry[]>): Promise<MemoryEntry[]> => {
-      const t = Date.now();
-      try {
-        return await p;
-      } finally {
-        pullTimes[label] = Date.now() - t;
-      }
-    };
 
-    // EI-12992: embed+3-pulls run as ONE region under the SAME MEMORY_INJECT_TIMEOUT_MS
-    // budget below (never a second, stacked timeout) — the shared embed just replaces
-    // part of what each pull used to spend its OWN slice of that same budget on.
-    const doSearch = async (): Promise<[MemoryEntry[], MemoryEntry[], MemoryEntry[]]> => {
-      // EI-12992: embed the query ONCE (best-effort) and share it across the harness +
-      // hive pulls via `SearchOptions.vector` — both already forgo mem0's entity-graph
-      // boost through the EI-12962 batched multi-scope path regardless of who embeds
-      // (see mem0-backend.ts), so sharing the vector there costs zero precision. 3
-      // independent per-pull embeds (~0.5-1s each) were riding right up against
-      // MEMORY_INJECT_TIMEOUT_MS (measured live: searchMs within ~10% of the 5s
-      // timeout) — this collapses up to 3 embeds into 1.
-      //
-      // The USER pool deliberately keeps its OWN per-call embed (never passed the
-      // shared vector): it's the highest-priority pool (userLimit=6 vs
-      // PER_HARNESS_LIMIT=3) and the ONLY one still entity-boosted today; trading
-      // that precision for speed was out of scope for this fix.
-      //
-      // `embedQuery` is an OPTIONAL backend capability (feature-tested) — a backend
-      // without it, or a failed/null embed, leaves `sharedVector` null and every
-      // pull embeds independently, exactly as before this fix (fully backward
-      // compatible; never a hard failure).
-      let sharedVector: number[] | null = null;
-      if ((harnessSlugs.length > 0 || hiveSlugs.length > 0) && backend.embedQuery) {
-        const tEmbed = Date.now();
-        try {
-          sharedVector = await backend.embedQuery(input.queryContext);
-        } catch (err) {
-          noteMemoryFailure(err);
-        } finally {
-          sharedEmbedMs = Date.now() - tEmbed;
-        }
-      }
-
-      const userPull: Promise<MemoryEntry[]> = input.userId
-        ? timed('user', backend.search(input.queryContext, { scope: input.userId, limit: userLimit, minScore, minLexScore, fusionMode }))
-        : Promise.resolve([]);
-
-      const harnessPull: Promise<MemoryEntry[]> = harnessSlugs.length > 0
-        ? timed('harness', backend.search(input.queryContext, {
-            scope: harnessSlugs.map((slug) => `harness:${slug}`),
-            limit: PER_HARNESS_LIMIT,
+    // F-C (P-033, D-011) — ONE search over the UNION of the pools, replacing the
+    // three quota'd per-pool searches.
+    //
+    // This is not merely a consolidation: it is what makes a quota-free block
+    // POSSIBLE. Removing the per-pool reservations needs some rule for who gets
+    // the block, and the intended rule is relevance — but the score that comes
+    // back cannot express relevance ACROSS calls. hybrid-fusion.ts computes RRF
+    // (`1/(k+cosRank) + lexWeight/(k+lexRank)`), a function of RANK WITHIN ONE
+    // CALL: two pools' rank-1 hits both score ~0.0328 however (ir)relevant they
+    // actually are. Worse, the pools weren't even on the same COSINE scale — the
+    // user pool took mem0's entity-BOOSTED single-scope path while harness/hive
+    // took the EI-12962 batched plain-cosine path. So with separate calls there
+    // was nothing sound to sort on, and any cross-pool ordering was a fixed
+    // priority — a quota under another name.
+    //
+    // A multi-scope search fixes that at the root (mem0-backend.ts): it embeds
+    // ONCE and fans out per-scope pgvector queries with that SAME vector, then
+    // merges and sorts by cosine desc — ONE globally-comparable ranking. fuse()
+    // then computes RRF over that global order and HybridBackend slices to
+    // `limit` GLOBALLY. Every pool now competes for every slot.
+    //
+    // ⚠ `limit` here is a TOTAL, not per-pool. SearchOptions' own doc says limit
+    // is per-scope and the merged result is "NOT globally truncated" — true of
+    // Mem0Backend, NOT of HybridBackend (which slices the fused list). Production
+    // is hybrid, so on this path it is one ceiling.
+    //
+    // The EI-12992 caller-side shared embed is GONE, not lost: the backend does
+    // that single embed internally for a multi-scope pull, so the plumbing here
+    // was redundant. This also drops the user pool's separate embed round-trip
+    // (~200-450ms) off the critical path. Accepted cost (D-011): the user pool
+    // joins the batched path and forgoes mem0's entity-graph boost when other
+    // pools are in play — the boost is precisely what made its scores
+    // incomparable, so keeping it is incompatible with one ranked block. A
+    // user-ONLY injection is a single scope and still keeps it.
+    const scopes = [
+      ...(input.userId ? [input.userId] : []),
+      ...harnessSlugs.map((slug) => `harness:${slug}`),
+      ...hiveSlugs.map(hiveScopeKey),
+    ];
+    const doSearch = async (): Promise<MemoryEntry[]> =>
+      scopes.length === 0
+        ? []
+        : backend.search(input.queryContext, {
+            scope: scopes,
+            limit: totalLimit,
             minScore,
             minLexScore,
             fusionMode,
-            ...(sharedVector ? { vector: sharedVector } : {}),
-          }))
-        : Promise.resolve([]);
+          });
 
-      const hivePull: Promise<MemoryEntry[]> = hiveSlugs.length > 0
-        ? timed('hive', backend.search(input.queryContext, {
-            scope: hiveSlugs.map(hiveScopeKey),
-            limit: PER_HARNESS_LIMIT,
-            minScore,
-            minLexScore,
-            fusionMode,
-            ...(sharedVector ? { vector: sharedVector } : {}),
-          }))
-        : Promise.resolve([]);
-
-      return Promise.all([userPull, harnessPull, hivePull]);
-    };
-
-    const [userEntries, harnessEntries, hiveEntries] = await withMemoryTimeout(
-      doSearch(),
-      'search',
-      MEMORY_INJECT_TIMEOUT_MS,
-    ).finally(() => {
+    ranked = await withMemoryTimeout(doSearch(), 'search', MEMORY_INJECT_TIMEOUT_MS).finally(() => {
       const searchMs = Date.now() - tSearch;
       mark('searchMs', searchMs);
-      // EI-12992 lever 2: per-pull + shared-embed breakdown — a SEPARATE line from
-      // the `marks` phase-sum (searchMs already covers this whole CONCURRENT block;
-      // folding these overlapping sub-legs into `marks` too would double-count and
-      // corrupt the existing postMs = totalMs − stamped-legs invariant). Only when
-      // the search phase itself was slow enough to be worth reading.
       if (searchMs > SLOW_INJECTION_LOG_MS) {
-        console.log(
-          `[memory-injection] search-detail sharedEmbedMs=${sharedEmbedMs} ` +
-            Object.entries(pullTimes)
-              .map(([k, v]) => `${k}Ms=${v}`)
-              .join(' '),
-        );
+        console.log(`[memory-injection] search-detail scopes=${scopes.length} searchMs=${searchMs}`);
       }
     });
-    userResults = userEntries;
-    harnessHits = harnessEntries.map((hit) => ({
-      hit,
-      slug: hit.scope.startsWith('harness:') ? hit.scope.slice('harness:'.length) : hit.scope,
-    }));
-    hiveHits = hiveEntries.map((hit) => ({
-      hit,
-      slug: hiveSlugFromScope(hit.scope) ?? hit.scope,
-    }));
+
+    // Partition the ONE ranked result by pool, by each entry's own scope. The
+    // entries are shared by reference with `ranked`, so the filters below shrink
+    // both views together and the relevance order is recoverable at render time.
+    const hiveScopeSet = new Set(hiveSlugs.map(hiveScopeKey));
+    for (const hit of ranked) {
+      const scope = hit.scope ?? '';
+      if (hiveScopeSet.has(scope)) {
+        hiveHits.push({ hit, slug: hiveSlugFromScope(scope) ?? scope });
+      } else if (scope.startsWith('harness:')) {
+        harnessHits.push({ hit, slug: scope.slice('harness:'.length) });
+      } else {
+        // The per-owner pool (input.userId). An unrecognized scope also lands
+        // here rather than being dropped — same posture as before F-C, where
+        // the user pool was whatever the user-scoped call returned.
+        userResults.push(hit);
+      }
+    }
   } catch (err) {
     noteMemoryFailure(err);
     if (!(err instanceof MemoryTimeoutError) && process.env.NODE_ENV !== 'test') {
@@ -466,6 +465,13 @@ async function buildBlockInner(
   // budget and the scope keys IN EFFECT FOR THIS CALL, so saturation stays
   // computable after the constants are retuned and a pool queried under a slug
   // nothing writes to is distinguishable from a pool with nothing relevant.
+  //
+  // ⚠ F-C (P-033, D-011) CHANGED WHAT THE STORED `limit` MEANS. The per-pool
+  // quotas are gone, so every pool records the SHARED total ceiling. D-007's
+  // contract still holds — read the row's OWN stored limit, never today's
+  // constants — but a pool at `limit` no longer means "it hit its private
+  // quota"; it means THIS POOL ALONE FILLED THE ENTIRE BLOCK. Any saturation
+  // measurement (P-038) must read it that way.
   {
     const userScopes = input.userId ? [input.userId] : [];
     const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
@@ -484,15 +490,15 @@ async function buildBlockInner(
           workspaceId: input.workspaceId ?? null,
           potSlug: harnessSlugs[0] ?? null,
           pools: {
-            user: { entries: userResults, limit: userLimit, scopes: userScopes },
+            user: { entries: userResults, limit: totalLimit, scopes: userScopes },
             harness: {
               entries: harnessHits.map(({ hit }) => hit),
-              limit: PER_HARNESS_LIMIT,
+              limit: totalLimit,
               scopes: harnessScopes,
             },
             hive: {
               entries: hiveHits.map(({ hit }) => hit),
-              limit: PER_HARNESS_LIMIT,
+              limit: totalLimit,
               scopes: hiveScopes,
             },
           },
@@ -625,14 +631,24 @@ async function buildBlockInner(
   const fmtId = (h: { id?: string }): string =>
     typeof h.id === 'string' && h.id ? ` (id=${h.id})` : '';
 
-  // Assembly under the P-011 budget, in priority order (D-008): the user's own
-  // facts → harness pools → hive-organic (recorded conventions) → hive-pack
-  // (seeded learnings). Pack rows are the most numerous and least
-  // turn-specific, so they yield first when the block would overflow.
+  // Assembly under the P-011 budget, in RELEVANCE order — F-C (P-033, D-011).
+  //
+  // This used to render strictly by POOL (user → harness → hive-organic →
+  // hive-pack), which mattered because the char budget truncates in render
+  // order: the render order IS the real allocator. That made it a second quota
+  // on top of the per-pool item quotas, and the worse of the two — with the item
+  // quotas gone, a pool-ordered render would let the user pool (the 487-memory
+  // CROSS-PROJECT one P-033 blames for the oddsmith contamination) consume the
+  // whole block before the harness pool rendered a line. So the two had to move
+  // together: the single ranked search now supplies one comparable ordering, and
+  // the budget cut follows it.
+  //
+  // ONE exception is PRESERVED: hive-PACK rows still yield first. Packs are the
+  // most numerous and least turn-specific, and that is a trust-tier judgment
+  // recorded before this plan — independent of pool quotas, so F-C does not
+  // overturn it.
   const isPackHit = (hit: MemoryEntry): boolean =>
     hit.metadata?.source === 'pack' && typeof hit.metadata?.pack_id === 'string';
-  const hiveOrganic = hiveHits.filter(({ hit }) => !isPackHit(hit));
-  const hivePack = hiveHits.filter(({ hit }) => isPackHit(hit));
 
   const budget =
     input.budgetChars && input.budgetChars > 0 ? input.budgetChars : injectBudgetChars();
@@ -646,15 +662,32 @@ async function buildBlockInner(
     if (id) surfacedIds.push(id);
     return true;
   };
-  // Priority-ordered render: user's own facts → harness pools → hive-organic → hive-pack.
-  const rendered = [
-    ...userResults.map((h) => ({ line: `- ${fmtScope(h)}${fmtId(h)} ${h.text}`, id: h.id, text: h.text ?? '' })),
-    ...harnessHits.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, slug)}${fmtId(hit)} ${hit.text}`, id: hit.id, text: hit.text ?? '' })),
-    // Hive pool — labeled `@ hive:<slug>` so an agent can tell shared-Hive
-    // knowledge (learnings, conventions) from its harness's own pool.
-    ...hiveOrganic.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, `hive:${slug}`)}${fmtId(hit)} ${hit.text}`, id: hit.id, text: hit.text ?? '' })),
-    ...hivePack.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, `hive:${slug}`)}${fmtId(hit)} ${hit.text}`, id: hit.id, text: hit.text ?? '' })),
-  ];
+  // Walk the ONE ranked result in relevance order, keeping only entries that
+  // survived the filters above (identity, not id — the filters preserve object
+  // references, and not every legacy row carries an id). Each pool keeps its own
+  // label: the hive pool is tagged `@ hive:<slug>` so an agent can tell
+  // shared-Hive knowledge from its harness's own pool.
+  const survivingHive = new Map(hiveHits.map(({ hit, slug }) => [hit, slug]));
+  const survivingHarness = new Map(harnessHits.map(({ hit, slug }) => [hit, slug]));
+  const survivingUser = new Set(userResults);
+  const mainRows: Array<{ line: string; id?: string; text: string }> = [];
+  const packRows: Array<{ line: string; id?: string; text: string }> = [];
+  for (const hit of ranked) {
+    const row = (label?: string): { line: string; id?: string; text: string } => ({
+      line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${hit.text}`,
+      id: hit.id,
+      text: hit.text ?? '',
+    });
+    if (survivingHive.has(hit)) {
+      const slug = survivingHive.get(hit)!;
+      (isPackHit(hit) ? packRows : mainRows).push(row(`hive:${slug}`));
+    } else if (survivingHarness.has(hit)) {
+      mainRows.push(row(survivingHarness.get(hit)!));
+    } else if (survivingUser.has(hit)) {
+      mainRows.push(row());
+    }
+  }
+  const rendered = [...mainRows, ...packRows];
   // P-008 (WI-4538): collapse near-duplicate memories (the SAME fact stored under multiple ids
   // — the id-based dedups above can't see it) BEFORE the budget, so a dupe never consumes a
   // slot a distinct fact needed. Priority order is preserved, so the highest-priority copy of
