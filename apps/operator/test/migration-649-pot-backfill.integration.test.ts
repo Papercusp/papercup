@@ -82,7 +82,7 @@ async function slugOfSeededRow(): Promise<string | null> {
       WHERE workspace_id = $1 AND feature_id = $2`,
     [WORKSPACE, featureId],
   );
-  return rows.length ? (rows[0] as { harness_slug: string }).harness_slug : null;
+  return rows.length ? (rows[0] as unknown as { harness_slug: string }).harness_slug : null;
 }
 
 beforeAll(async () => {
