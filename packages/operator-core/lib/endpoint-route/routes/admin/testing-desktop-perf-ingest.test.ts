@@ -1,0 +1,65 @@
+/**
+ * Wire-parse coverage for the desktop-perf ingest route
+ * (no-http-anywhere-2026-07-28 P-003c).
+ *
+ * WHY THIS FILE EXISTS. `parseMeasure` REBUILDS its result field by field instead
+ * of spreading the wire object, so any field not named in it is dropped silently.
+ * That is the correct posture for untrusted input, but it makes the `invariant`
+ * flag a uniquely quiet failure: a dropped flag does not error, does not warn, and
+ * does not change the recorded value — the run still ingests and still looks
+ * healthy. It only shows up much later, as a release gate that observed a breached
+ * invariant and let the deploy through, because by the time the gate read the row
+ * the measure was an ordinary budget again.
+ *
+ * A round-trip assertion is the only thing that catches that class, so it is worth
+ * a test file of its own even though the parser is four lines long.
+ */
+import { describe, expect, it } from 'vitest';
+import { parseMeasure } from './testing-desktop-perf-ingest';
+
+const base = { key: 'invariant:webview-http-egress', value: 9, unit: 'count', budget: 0, ok: false };
+
+describe('parseMeasure — invariant passthrough (P-003c)', () => {
+  it('carries invariant:true through to the persisted measure', () => {
+    const parsed = parseMeasure({ ...base, invariant: true });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.invariant).toBe(true);
+    // The rest of the shape must survive unchanged alongside it.
+    expect(parsed?.key).toBe('invariant:webview-http-egress');
+    expect(parsed?.value).toBe(9);
+    expect(parsed?.unit).toBe('count');
+    expect(parsed?.budget).toBe(0);
+    expect(parsed?.ok).toBe(false);
+  });
+
+  it('leaves invariant undefined when the producer omits it', () => {
+    const parsed = parseMeasure({ key: 'interaction:plan-popup-open', value: 1800, unit: 'ms', budget: 1500, ok: false });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.invariant).toBeUndefined();
+  });
+
+  it('only a literal true arms the flag — no truthy coercion', () => {
+    // A blocking gate must never be armed by a sloppy producer sending "true"/1.
+    for (const bogus of ['true', 1, {}, [], 'yes']) {
+      expect(parseMeasure({ ...base, invariant: bogus })?.invariant).toBeUndefined();
+    }
+    expect(parseMeasure({ ...base, invariant: false })?.invariant).toBeUndefined();
+  });
+
+  it('still rejects a malformed measure regardless of the flag', () => {
+    // Guards the spec's -1 sentinel choice: a non-finite value is rejected, and the
+    // route rejects the WHOLE post on one bad measure — which is why the egress
+    // spec records -1 rather than NaN for an absent detector.
+    expect(parseMeasure({ ...base, value: Number.NaN, invariant: true })).toBeNull();
+    expect(parseMeasure({ ...base, value: Number.POSITIVE_INFINITY, invariant: true })).toBeNull();
+    expect(parseMeasure({ ...base, unit: 'furlongs', invariant: true })).toBeNull();
+    expect(parseMeasure({ ...base, ok: 'no', invariant: true })).toBeNull();
+    expect(parseMeasure({ ...base, key: '', invariant: true })).toBeNull();
+  });
+
+  it('accepts a budget-less invariant (the gate catches those too)', () => {
+    const parsed = parseMeasure({ key: 'invariant:console-errors', value: 3, unit: 'count', budget: null, ok: false, invariant: true });
+    expect(parsed?.budget).toBeNull();
+    expect(parsed?.invariant).toBe(true);
+  });
+});

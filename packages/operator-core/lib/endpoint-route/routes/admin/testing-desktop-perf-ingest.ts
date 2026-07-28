@@ -37,8 +37,9 @@ import { recordDesktopPerfRun } from '../../../system-health/desktop-perf-runs';
 const UNITS: readonly DesktopPerfMetricUnit[] = ['ms', 'kb', 'count'];
 const STATUSES: readonly DesktopPerfRunStatus[] = ['pass', 'warn', 'fail'];
 
-/** Parse one wire measure, or null when it does not satisfy DesktopPerfMeasure. */
-function parseMeasure(raw: unknown): DesktopPerfMeasure | null {
+/** Parse one wire measure, or null when it does not satisfy DesktopPerfMeasure.
+ *  Exported for unit test only — pure, no IO. */
+export function parseMeasure(raw: unknown): DesktopPerfMeasure | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const m = raw as Record<string, unknown>;
   const key = typeof m.key === 'string' ? m.key.trim() : '';

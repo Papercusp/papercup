@@ -179,3 +179,72 @@ describe('runDesktopPerfGate', () => {
     expect(d.verdictStatus).toBe('unknown');
   });
 });
+
+/**
+ * no-http-anywhere-2026-07-28 P-003c — invariants block, budgets warn.
+ *
+ * The whole point of the class is that it does NOT inherit the warn-until-armed
+ * posture, so the load-bearing case is the FIRST one: warn-only policy, blocked
+ * anyway. If that ever regresses to `warn`, the egress invariant silently stops
+ * gating deploys while still looking wired up.
+ */
+describe('invariant measures (P-003c)', () => {
+  it('breachedInvariants picks out only breached invariants', () => {
+    expect(breachedInvariants(run([ok, breach, egressClean]))).toEqual([]);
+    expect(breachedInvariants(run([ok, egressBreach])).map((m) => m.key)).toEqual(['invariant:webview-http-egress']);
+    // Budget-less invariants count — failingMeasures would miss this one entirely.
+    expect(breachedInvariants(run([unbudgetedInvariant]))).toHaveLength(1);
+    expect(failingMeasures(run([unbudgetedInvariant]))).toHaveLength(0);
+  });
+
+  it('BLOCKS under a warn-only policy — an invariant does not wait for block-mode', () => {
+    const d = evaluateDesktopPerfGate(run([ok, egressBreach]), WARN_ONLY, 'deadbeefcafef00d');
+    expect(d.action).toBe('block');
+    expect(d.verdictStatus).toBe('crit');
+    expect(d.summary).toContain('INVARIANT BREACHED');
+    expect(d.reasons.join()).toContain('invariant:webview-http-egress');
+  });
+
+  it('blocks under an armed policy too', () => {
+    expect(evaluateDesktopPerfGate(run([egressBreach]), ARMED).action).toBe('block');
+  });
+
+  it('a held invariant does not block', () => {
+    const d = evaluateDesktopPerfGate(run([ok, egressClean]), WARN_ONLY);
+    expect(d.action).toBe('pass');
+    expect(d.verdictStatus).toBe('ok');
+  });
+
+  it('an absent detector (-1 sentinel) blocks — unknown must never read as clean', () => {
+    const d = evaluateDesktopPerfGate(run([ok, egressUnknown]), WARN_ONLY);
+    expect(d.action).toBe('block');
+    expect(d.summary).toContain('invariant:webview-http-egress');
+  });
+
+  it('an invariant breach outranks a budget breach in the summary', () => {
+    const d = evaluateDesktopPerfGate(run([breach, egressBreach]), WARN_ONLY);
+    expect(d.action).toBe('block');
+    expect(d.summary).toContain('INVARIANT BREACHED');
+    // The budget regression must not be what gets reported as the headline.
+    expect(d.summary).not.toContain('REGRESSED');
+  });
+
+  it('a STALE run does not block, even on a breached invariant', () => {
+    const stale = run([egressBreach], 'fail', Date.now() - (DEFAULT_DESKTOP_PERF_MAX_AGE_MS + 60_000));
+    const d = evaluateDesktopPerfGate(stale, WARN_ONLY, 'deadbeefcafef00d');
+    expect(d.action).toBe('pass');
+    expect(d.verdictStatus).toBe('unknown');
+    expect(d.summary).toContain('STALE');
+  });
+
+  it('a disabled gate does not block on an invariant', () => {
+    const d = evaluateDesktopPerfGate(run([egressBreach]), { enabled: false, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS });
+    expect(d.action).toBe('pass');
+  });
+
+  it('a measure without the flag is never treated as an invariant', () => {
+    // Same failing shape, no `invariant` — must take the warn path, not block.
+    const lookalike: DesktopPerfMeasure = { key: 'invariant:webview-http-egress', value: 9, unit: 'count', budget: 0, ok: false };
+    expect(evaluateDesktopPerfGate(run([lookalike]), WARN_ONLY).action).toBe('warn');
+  });
+});
