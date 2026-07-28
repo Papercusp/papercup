@@ -574,6 +574,145 @@ export async function readRecallHealthByPool(
   });
 }
 
+/**
+ * The length under which a query is counted "short" by
+ * `readRecallQueryHealth`. 40 is not arbitrary and not a threshold anything
+ * acts on: it is exactly the `MIN_PROMPT_CHARS` gate that P-035 (F-E) DELETED,
+ * so the bucket answers a specific historical question — how much traffic that
+ * gate was silently dropping.
+ *
+ * ⚠ DESCRIPTIVE ONLY. This must never become a gate again. The gate was deleted
+ * because prompt length does not predict recall signal (it dropped the owner's
+ * 23-char question while a 40-char pleasantry sailed through), and relevance is
+ * now decided by the relevance floor. A high "short query" rate is a fact about
+ * the traffic mix, NOT evidence that short prompts should be skipped.
+ */
+export const SHORT_QUERY_CHARS = 40;
+
+/** Per-surface shape of what was ASKED in the window (migration 706 / P-041). */
+export interface RecallQueryHealth {
+  surface: string;
+  /** Rows in the window that recorded a query shape (pre-706 rows excluded). */
+  recalls: number;
+  /** Of those, how many carried a turn-origin envelope — i.e. the query text
+   *  was a relayed machine-injected prompt rather than something typed. */
+  machineOrigin: number;
+  /** machineOrigin / recalls. */
+  machineOriginRate: number;
+  /** Claimed origins → count. `(no-envelope)` covers the rest; see the note on
+   *  `readRecallQueryHealth` — its meaning is surface-dependent. */
+  originMix: Record<string, number>;
+  /** Median query length (chars actually embedded). */
+  charsP50: number | null;
+  /** 10th-percentile query length — where the near-empty tail lives. */
+  charsP10: number | null;
+  /** Queries shorter than SHORT_QUERY_CHARS — descriptive, never a gate. */
+  shortQueries: number;
+  /** shortQueries / recalls. */
+  shortQueryRate: number;
+  /** Rows that HAVE a predecessor in the same session+surface, i.e. rows for
+   *  which "is this a repeat" is even a defined question. */
+  repeatEligible: number;
+  /** Of those, how many repeated the previous query's hash exactly. */
+  repeats: number;
+  /** repeats / repeatEligible (0 when nothing is eligible). */
+  repeatRate: number;
+}
+
+/**
+ * Per-surface aggregate of the QUERY side of recall (P-041 / migration 706) —
+ * the sibling of readRecallHealthBySurface, on the other half of the call.
+ *
+ * Everything else in this module measures what a recall RETURNED. That side is
+ * structurally incapable of answering whether the QUERY was any good: the push
+ * path's `top_score` is an RRF rank, so something is always rank 1 and the
+ * number is identical for a precise question and for the word "continue"
+ * (D-015). This is the read that makes query quality visible at all.
+ *
+ * ⚠ THE REPEAT RATE EXCLUDES SESSION-LESS ROWS, DELIBERATELY. Postgres treats
+ * NULLs as equal in a PARTITION BY, so lagging over `session_id` with the pull
+ * path's NULLs included would silently lump every session-less recall on the
+ * box into ONE partition and compare one agent's query against an unrelated
+ * agent's — manufacturing both false repeats and false non-repeats at a rate
+ * that would look entirely plausible. `repeatEligible` is reported alongside
+ * `repeats` so the denominator is never guessed at.
+ *
+ * ⚠ `originMix`'s `(no-envelope)` bucket is SURFACE-DEPENDENT and must not be
+ * read as "human-typed" globally. On `turn-start` the query IS the submitted
+ * prompt, so no envelope does mean owner-typed. On a surface that builds its
+ * own query (orient, claim, brief, the cup-wake dossier) there was never an
+ * envelope to carry, and the absence says nothing about a human.
+ */
+export async function readRecallQueryHealth(
+  sql: Sql,
+  opts: { days?: number; surface?: string } = {},
+): Promise<RecallQueryHealth[]> {
+  const days = Number.isFinite(opts.days) && (opts.days as number) > 0 ? Math.floor(opts.days as number) : 7;
+  const rows = (await sql`
+    WITH scoped AS (
+      SELECT surface, session_id, query_chars, query_sha256, query_origin, created_at, id
+        FROM harness_shared.memory_recall_stats
+       WHERE created_at >= now() - make_interval(days => ${days}::int)
+         AND query_sha256 IS NOT NULL
+         ${opts.surface ? sql`AND surface = ${opts.surface}` : sql``}
+    ),
+    -- Sequenced ONLY over rows that carry a session. See the doc comment: a
+    -- NULL session_id would form one giant cross-agent partition.
+    seq AS (
+      SELECT surface, query_sha256,
+             lag(query_sha256) OVER (PARTITION BY session_id, surface ORDER BY created_at, id) AS prev_sha
+        FROM scoped WHERE session_id IS NOT NULL
+    ),
+    repeats AS (
+      SELECT surface,
+             count(*) FILTER (WHERE prev_sha IS NOT NULL)::int                       AS eligible,
+             count(*) FILTER (WHERE prev_sha IS NOT NULL AND prev_sha = query_sha256)::int AS repeated
+        FROM seq GROUP BY surface
+    ),
+    origins AS (
+      SELECT surface, coalesce(query_origin, '(no-envelope)') AS origin, count(*)::int AS n
+        FROM scoped GROUP BY surface, coalesce(query_origin, '(no-envelope)')
+    )
+    SELECT
+      s.surface,
+      count(*)::int                                                   AS recalls,
+      count(*) FILTER (WHERE s.query_origin IS NOT NULL)::int          AS machine_origin,
+      count(*) FILTER (WHERE s.query_chars < ${SHORT_QUERY_CHARS})::int AS short_queries,
+      percentile_cont(0.5) WITHIN GROUP (ORDER BY s.query_chars)       AS chars_p50,
+      percentile_cont(0.1) WITHIN GROUP (ORDER BY s.query_chars)       AS chars_p10,
+      coalesce((SELECT jsonb_object_agg(o.origin, o.n) FROM origins o WHERE o.surface = s.surface), '{}'::jsonb) AS origin_mix,
+      coalesce((SELECT r.eligible FROM repeats r WHERE r.surface = s.surface), 0)  AS repeat_eligible,
+      coalesce((SELECT r.repeated FROM repeats r WHERE r.surface = s.surface), 0)  AS repeat_count
+    FROM scoped s
+    GROUP BY s.surface
+    ORDER BY count(*) DESC
+  `) as Array<Record<string, unknown>>;
+  return rows.map((r) => {
+    const recalls = Number(r.recalls ?? 0);
+    const machineOrigin = Number(r.machine_origin ?? 0);
+    const shortQueries = Number(r.short_queries ?? 0);
+    const repeatEligible = Number(r.repeat_eligible ?? 0);
+    const repeats = Number(r.repeat_count ?? 0);
+    const mixRaw = (r.origin_mix ?? {}) as Record<string, unknown>;
+    const originMix: Record<string, number> = {};
+    for (const [k, v] of Object.entries(mixRaw)) originMix[k] = Number(v ?? 0);
+    return {
+      surface: String(r.surface ?? 'unknown'),
+      recalls,
+      machineOrigin,
+      machineOriginRate: recalls > 0 ? machineOrigin / recalls : 0,
+      originMix,
+      charsP50: r.chars_p50 == null ? null : Number(r.chars_p50),
+      charsP10: r.chars_p10 == null ? null : Number(r.chars_p10),
+      shortQueries,
+      shortQueryRate: recalls > 0 ? shortQueries / recalls : 0,
+      repeatEligible,
+      repeats,
+      repeatRate: repeatEligible > 0 ? repeats / repeatEligible : 0,
+    };
+  });
+}
+
 export async function readRecallHealthBySurface(sql: Sql): Promise<RecallSurfaceHealth[]> {
   // Segmenting by surface does NOT segment by scale — measured on the live
   // table, a single surface carries both scales on the same day (2026-07-28

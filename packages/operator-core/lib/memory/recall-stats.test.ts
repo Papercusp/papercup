@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { MemoryEntry } from './backend';
-import { countFragmentHits, readRecallHealth, recordRecallStats } from './recall-stats';
+import { countFragmentHits, describeRecallQuery, readRecallHealth, recordRecallStats } from './recall-stats';
 
 const entry = (id: string, score?: number, metadata?: Record<string, unknown>): MemoryEntry => ({
   id,
@@ -27,7 +27,109 @@ describe('countFragmentHits', () => {
   });
 });
 
+/**
+ * P-041 / migration 706 — the QUERY side. Everything else in this suite pins
+ * what a recall returned; these pin what it was asked.
+ */
+describe('describeRecallQuery', () => {
+  const envelope = (nonce: string) => `⟦turn-origin:loop-fire nonce:${nonce}⟧`;
+
+  // THE test for this migration. The nonce is freshly minted per turn, so
+  // hashing the raw prompt would make every machine-injected query unique BY
+  // CONSTRUCTION — the duplicate rate would read a permanent 0.0%, which reads
+  // as healthy. If this ever regresses, the instrument silently stops being
+  // able to detect the exact condition it exists to detect.
+  it('hashes the ENVELOPE-STRIPPED body, so a per-turn nonce cannot manufacture uniqueness', () => {
+    const body = '\n🔁 Loop wake. Continue toward: implement the plan.';
+    const a = describeRecallQuery(`${envelope('a1b2c3d4e5f60718')}${body}`);
+    const b = describeRecallQuery(`${envelope('99887766554433ff')}${body}`);
+    expect(a.sha256).toBe(b.sha256);
+    // ...and the stripped hash is the hash of the body alone, not of the whole.
+    expect(a.sha256).toBe(describeRecallQuery(body).sha256);
+  });
+
+  it('still separates genuinely different bodies under the same origin', () => {
+    const a = describeRecallQuery(`${envelope('a1b2c3d4e5f60718')}\nfix the parser`);
+    const b = describeRecallQuery(`${envelope('a1b2c3d4e5f60718')}\nship the release`);
+    expect(a.sha256).not.toBe(b.sha256);
+  });
+
+  it('records the CLAIMED origin, and null when there is no envelope', () => {
+    expect(describeRecallQuery(`${envelope('a1b2c3d4e5f60718')}\nhi`).origin).toBe('loop-fire');
+    expect(
+      describeRecallQuery('⟦turn-origin:self-compaction nonce:0011223344556677⟧\nhi').origin,
+    ).toBe('self-compaction');
+    expect(describeRecallQuery('what did we decide about the migration?').origin).toBeNull();
+  });
+
+  // chars is what the EMBEDDER saw, so the envelope counts toward it — an
+  // agent turn really is carrying ~50 chars of machine preamble into the query.
+  it('counts the RAW length, envelope included (it was embedded)', () => {
+    const raw = `${envelope('a1b2c3d4e5f60718')}\nhi`;
+    expect(describeRecallQuery(raw).chars).toBe(raw.length);
+    expect(describeRecallQuery(raw).chars).toBeGreaterThan('\nhi'.length);
+  });
+
+  it('is stable across CRLF transit mangling (PTY line endings)', () => {
+    expect(describeRecallQuery('a\r\nb').sha256).toBe(describeRecallQuery('a\nb').sha256);
+  });
+});
+
 describe('recordRecallStats', () => {
+  // Column order: surface, hit_count, top_score, scores, fragment_count, pools,
+  // workspace_id, pot_slug, score_scale, query_chars, query_sha256,
+  // query_origin, session_id.
+  const QUERY_CHARS = 9;
+  const QUERY_SHA = 10;
+  const QUERY_ORIGIN = 11;
+  const SESSION_ID = 12;
+
+  it('records the query SHAPE and the session (P-041)', async () => {
+    const calls: unknown[][] = [];
+    const sql = ((_s: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push(values);
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    const query = '⟦turn-origin:wake-pump nonce:00112233aabbccdd⟧\ncheck the deploy';
+    await recordRecallStats(sql, {
+      surface: 'turn-start',
+      entries: [entry('a', 0.5)],
+      query,
+      sessionId: 'su-abc',
+    });
+    expect(calls[0][QUERY_CHARS]).toBe(query.length);
+    expect(calls[0][QUERY_SHA]).toBe(describeRecallQuery(query).sha256);
+    expect(calls[0][QUERY_ORIGIN]).toBe('wake-pump');
+    expect(calls[0][SESSION_ID]).toBe('su-abc');
+  });
+
+  // A caller that records no query must contribute NULLs, not a zero-length
+  // row: a 0-char query is a real and meaningful observation, and conflating
+  // "not instrumented" with "asked nothing" would corrupt the short-query rate.
+  it('records NULLs — not zeros — when no query is supplied', async () => {
+    const calls: unknown[][] = [];
+    const sql = ((_s: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push(values);
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    await recordRecallStats(sql, { surface: 'search', entries: [] });
+    expect(calls[0][QUERY_CHARS]).toBeNull();
+    expect(calls[0][QUERY_SHA]).toBeNull();
+    expect(calls[0][QUERY_ORIGIN]).toBeNull();
+    expect(calls[0][SESSION_ID]).toBeNull();
+  });
+
+  it('records an EMPTY query as 0 chars, distinctly from not-instrumented', async () => {
+    const calls: unknown[][] = [];
+    const sql = ((_s: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push(values);
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    await recordRecallStats(sql, { surface: 'search', entries: [], query: '' });
+    expect(calls[0][QUERY_CHARS]).toBe(0);
+    expect(calls[0][QUERY_SHA]).toEqual(expect.any(String));
+  });
+
   it('writes surface, counts, top score and the score list', async () => {
     const calls: unknown[][] = [];
     const sql = ((_s: TemplateStringsArray, ...values: unknown[]) => {
