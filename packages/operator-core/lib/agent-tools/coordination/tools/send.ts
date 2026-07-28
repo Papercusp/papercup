@@ -157,8 +157,24 @@ function isDirected(to: string[]): boolean {
   return to.length > 0 && to.every((id) => !isSelectorOrWildcard(id));
 }
 
+// WI-6522 — this union carried NO custom `error`, so zod 4 emitted a bare
+// "Invalid input" for every malformed value, naming neither the booleans nor the
+// two string modes. That one message was 196 of 578 coord:send arg-shape refusals
+// across 80 DISTINCT senders in 14 days — second only to the {to,summary} family
+// below. The contrast that proves the text is the cause: `expectsArg` is REQUIRED
+// with deliberately no default, yet fails ~11x LESS often, and the only relevant
+// difference is that it names its accepted values inline. So: teach here too, and
+// call out the string-"true" case explicitly — a quoted "true" is the single most
+// likely agent mistake and was previously indistinguishable from any other.
 const wakeArg = z
-  .union([z.boolean(), z.enum(['required', 'optimistic'])])
+  .union([z.boolean(), z.enum(['required', 'optimistic'])], {
+    error:
+      "coord:send `wake` accepts: 'required' (the wake MUST land — a clean miss returns " +
+      "recipient_absent, a loud miss to handle) | 'optimistic' (best-effort; SAFE only when you also " +
+      'name a durable `backstop`) | true (same as \'required\') | false (no wake). OMIT it entirely for ' +
+      'a plain inject that never wakes anyone. Note: the STRING "true" is NOT the boolean true — pass ' +
+      "true unquoted, or use 'required'.",
+  })
   .optional()
   .describe(
     "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when a durable backstop re-dispatches a miss (e.g. the Mug survey) — and you must NAME that backstop via the `backstop` arg. WITHOUT a declared backstop an optimistic miss is now reported as loudly as a required miss (recipient_absent + the missed agents' fresh sessionState), so you can't silently hand work to a dead agent. For a one-off transfer to a specific agent, prefer 'required' (verify woken≥1) or coord:handoff. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
@@ -1209,17 +1225,70 @@ export default defineTool({
   // introspection, so the advertised tool schema is byte-identical either way).
   args: z.preprocess((data, pctx) => {
     const a = data as
-      | { items?: unknown[]; to?: unknown[]; summary?: unknown; expects?: unknown }
+      | { items?: unknown[]; to?: unknown[]; summary?: unknown; expects?: unknown; body?: unknown }
       | null
       | undefined;
     const hasItems = Array.isArray(a?.items) && a.items.length > 0;
-    const hasSingle = Array.isArray(a?.to) && a.to.length > 0 && Boolean(a?.summary);
+    // Keep `Boolean(a?.summary)` (not a string check) so a WRONG-TYPED summary
+    // (e.g. a number) stays "present" here and falls through to summaryArg's own
+    // type error, which is already specific. This branch is only for MISSING.
+    const toPresent = Array.isArray(a?.to) && a.to.length > 0;
+    const summaryPresent = Boolean(a?.summary);
+    const hasSingle = toPresent && summaryPresent;
     if (!hasItems && !hasSingle) {
-      pctx.addIssue({
-        code: 'custom',
-        message:
-          'pass { to, summary, expects } for one message, or items:[{ to, summary, expects }] for many distinct messages',
-      });
+      // WI-6522 — this used to emit ONE generic bulk-vs-single menu for every
+      // distinct single-send mistake: 334 refusals across 135 DISTINCT senders in
+      // 14 days, the largest arg-shape family on this tool. The good per-field
+      // messages ALREADY EXIST on toArg/summaryArg — they were simply unreachable,
+      // because a preprocess issue is raised before per-field validation runs. So
+      // the bug was never a missing message, it was MASKING: a caller who forgot
+      // exactly one field got told about bulk-vs-single and never learned which
+      // field they missed. Branch it, and keep the menu for the genuinely
+      // ambiguous case only.
+      //
+      // Do NOT "fix" this by moving the check back to a trailing .refine(): the
+      // preprocess placement is load-bearing (see the EI-7838 note above) — a
+      // refine is short-circuited whenever a SIBLING field also fails, which is
+      // the older defect where a missing `summary` went unreported and the caller
+      // was misdirected to "wake: Invalid input". Precedence must survive; only
+      // the message becomes specific.
+      const bodyHint = a?.body
+        ? ' You passed `body` — that is the OPTIONAL long-form text and does NOT satisfy `summary`.'
+        : '';
+      if (Array.isArray(a?.items) && a.items.length === 0) {
+        pctx.addIssue({
+          code: 'custom',
+          path: ['items'],
+          message:
+            '`items` is an EMPTY array — it needs at least one { to, summary, expects }. For a single ' +
+            'message, omit `items` and pass { to, summary, expects } at the top level instead.',
+        });
+      } else if (toPresent && !summaryPresent) {
+        pctx.addIssue({
+          code: 'custom',
+          path: ['summary'],
+          message:
+            'coord:send needs `summary`: a one-line headline of the message (what the recipient sees ' +
+            'in their inbox).' +
+            bodyHint,
+        });
+      } else if (!toPresent && summaryPresent) {
+        pctx.addIssue({
+          code: 'custom',
+          path: ['to'],
+          message:
+            'coord:send needs `to`: at least one recipient id. ["*"] broadcasts, ["human"] surfaces to ' +
+            'the user; audience selectors like @fleet:<slug> / @topic:<slug> expand to a group.',
+        });
+      } else {
+        pctx.addIssue({
+          code: 'custom',
+          message:
+            'pass { to, summary, expects } for one message, or items:[{ to, summary, expects }] for ' +
+            'many distinct messages.' +
+            bodyHint,
+        });
+      }
     }
     // D-016 / D-048 — `expects` is required-with-explicit-'none', never defaulted.
     //

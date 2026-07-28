@@ -24147,6 +24147,12 @@ body:has(.operator-panel) {
 
 .oracle-msg-content { white-space: pre-wrap; color: var(--fg); }
 
+/* hud-open-destinations-and-true-counts-2026-07-27 P-005: the "no answer"
+   notice for an assistant turn that produced nothing. Muted, because it is a
+   statement ABOUT the missing message rather than message content — but still
+   present, which is the whole point: it used to render as literally nothing. */
+.oracle-msg-empty { color: var(--fg-muted, var(--muted, #888)); }
+
 /* gui-chat-session-controls-2026-07-25 P-009: message content renders as
    markdown (bold/links/lists) — reset block-element defaults so it reads
    like plain chat text, not a document. `:where` keeps 0 specificity so the

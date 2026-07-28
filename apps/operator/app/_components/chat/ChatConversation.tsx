@@ -496,8 +496,15 @@ const ChatMessageRow = memo(function ChatMessageRow({
           !m.content?.trim() && (
             <div className="oracle-msg-content oracle-msg-empty" role="status">
               <em>
-                Papercup returned no answer for this turn
-                {chipTools.length > 0 ? ' after running the tools above' : ''}. Ask again to retry.
+                {/* Keyed off `m.tools`, NOT `chipTools`: the turn either ran
+                    tools or it did not, and whether this surface happens to
+                    render chips for them (chipTools is empty unless the caller
+                    passes renderToolChip) is a presentation detail that must
+                    not change what we tell the user happened. */}
+                {(m.tools?.length ?? 0) > 0
+                  ? 'Papercup ran its tools but returned no answer for this turn.'
+                  : 'Papercup returned no answer for this turn.'}{' '}
+                Ask again to retry.
               </em>
             </div>
           )}

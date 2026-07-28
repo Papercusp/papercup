@@ -274,18 +274,18 @@ describe('ChatConversation', () => {
      pot:list returned ok twice. The renderer had no way to say "no answer", so
      the failure was indistinguishable from absence. */
   describe('empty assistant turn (P-005)', () => {
-    const NOTICE = /Papercup returned no answer for this turn/;
+    const NOTICE = /returned no answer for this turn/;
 
     it('says so when an assistant turn has no content at all', () => {
       renderChat({ messages: [{ role: 'assistant', content: '' }] });
-      expect(screen.getByText(NOTICE)).toBeTruthy();
+      expect(screen.getByText(/Papercup returned no answer for this turn/)).toBeTruthy();
     });
 
-    it('names the tools when the turn ran some and still said nothing — the reported case', () => {
+    it('says the tools RAN when the turn called some and still said nothing — the reported case', () => {
       renderChat({
         messages: [{ role: 'assistant', content: '', tools: [{ name: 'pot:list' }] }],
       });
-      expect(screen.getByText(/no answer for this turn after running the tools above/)).toBeTruthy();
+      expect(screen.getByText(/ran its tools but returned no answer/)).toBeTruthy();
     });
 
     it('stays silent while the turn is still STREAMING (last row + busy)', () => {
