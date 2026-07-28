@@ -182,6 +182,19 @@ export const commands = {
 	endpointInvoke: (toolName: string, input: "Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never }, channel: Channel<EndpointEvent>) => typedError<number, string>(__TAURI_INVOKE("endpoint_invoke", { toolName, input, channel })),
 	// Tauri command — cancel an in-flight call.
 	endpointCancel: (callId: number) => typedError<null, string>(__TAURI_INVOKE("endpoint_cancel", { callId })),
+	/**
+	 *  Tauri command — IPC bridge health, for humans and agents.
+	 * 
+	 *  The observability hole this fills (WI-6512): when `/api` silently stayed on
+	 *  the capped HTTP transport there was no way to ask the app *why*. The only
+	 *  signal was a startup line that named the wrong cause, so the actual state —
+	 *  which discovery file was consulted, whether the pid it named was alive,
+	 *  whether a dial had even been attempted — had to be reconstructed by hand
+	 *  from `ss`, `/proc` and the JSON files, per investigation.
+	 * 
+	 *  Cheap and side-effect-free (one small filesystem read); safe to poll.
+	 */
+	endpointIpcStatus: () => typedError<IpcStatus, string>(__TAURI_INVOKE("endpoint_ipc_status")),
 	// Tauri command invoked from injected JS to deliver eval results back to Rust.
 	devBridgeResult: (id: string, value: "Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never }) => __TAURI_INVOKE<void>("__dev_bridge_result", { id, value }),
 	/**
@@ -303,6 +316,45 @@ export type ExternalConsoleSpec = {
 	 *  later (focus_window_by_title), so it must be stable per surface.
 	 */
 	title: string,
+};
+
+/**
+ *  A snapshot of IPC bridge health, as returned by `endpoint_ipc_status`.
+ * 
+ *  This is the answer to "is /api actually riding IPC right now, and if not
+ *  what precisely is stopping it" — a question that previously could only be
+ *  answered by correlating `ss`, the discovery JSON files, and process
+ *  liveness by hand.
+ */
+export type IpcStatus = {
+	// Live re-resolution performed at status time (a pure filesystem read).
+	resolvedPath: string | null,
+	resolutionDetail: string,
+	/**
+	 *  `connected` · `dead` · `never-connected` · `dial-in-flight` · `disabled`.
+	 * 
+	 *  `dial-in-flight` means the connection lock was held when we looked.
+	 *  Seeing it persist across repeated calls is itself the diagnosis: a
+	 *  dial is hung, and every `/api` call is queued behind it.
+	 */
+	client: string,
+	attempts: number,
+	reuses: number,
+	resolveMisses: number,
+	connectErrors: number,
+	connects: number,
+	invokes: number,
+	msSinceLastAttempt: number | null,
+	msSinceLastConnect: number | null,
+	lastError: string | null,
+	connectedPath: string | null,
+	/**
+	 *  Whether the operator owning the IPC socket is provably the one that served
+	 *  this webview — see [`SocketResolution::owner_is_content_origin`]. The
+	 *  webview reads this to decide whether content-origin-scoped paths
+	 *  (`/api/desktop/*`) may ride IPC, instead of excluding them unconditionally.
+	 */
+	ownerIsContentOrigin: boolean,
 };
 
 export type NativeTerminalStatus = {

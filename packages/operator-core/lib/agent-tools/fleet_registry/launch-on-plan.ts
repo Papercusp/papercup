@@ -41,7 +41,7 @@ import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
-import { validateCloudModelSpec } from '../../agent-config-constants';
+import { validateCloudModelSpec, FLEET_MAX_MEMBERS } from '../../agent-config-constants';
 import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
@@ -96,8 +96,12 @@ export type { MemberLaunchOpts } from '../../agent-launch-core';
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 
 /** Opening more than this many desktop windows in one call is heavy + almost always
- *  a mistake — mirrors capability:terminal's MAX_TERMINALS. */
-const MAX_MEMBERS = 12;
+ *  a mistake — mirrors capability:terminal's MAX_TERMINALS.
+ *
+ *  Defined in the CLIENT-SAFE constants module and imported here (WI-6505) so the
+ *  GUI fleet-launch row can bound its member-count input against the same number
+ *  this tool enforces, without pulling this server module into the renderer. */
+const MAX_MEMBERS = FLEET_MAX_MEMBERS;
 
 /** The operator's own base URL for the spawned terminal's API-callback env. Mirrors
  *  capability:terminal's resolver (strip a trailing /api/mcp back to the origin). */

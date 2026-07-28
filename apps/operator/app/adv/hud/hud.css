@@ -322,6 +322,54 @@
   color: var(--fg-dim);
 }
 
+/* WI-6505 — the headed/headless picker on the chat popup's fleet-launch row.
+   Same ceiling discipline as the pickers above. */
+.pc-new-session-launcher__select--window {
+  max-width: 130px;
+}
+
+/* ── chat popup: the always-visible fleet-launch row (WI-6505) ─────────────── */
+
+/* Owner ask 2026-07-27 (ii): "make this fleet launching its own always visible
+   row modeled after how the new session row works on the main hud page". So the
+   CONTROLS reuse .pc-new-session-launcher verbatim (above) and this block adds
+   only what makes it a ROW in the chat popup: the leading label that says what
+   the strip launches, and the rule separating it from the action bar it sits
+   under. Sits at the popup's bottom edge, so the border goes on TOP. */
+.pc-fleet-launch-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+  /* Fixed chrome inside a flex-column modal: never let the transcript's growth
+     squeeze the launcher out of view — always visible is the whole ask. */
+  flex: none;
+}
+
+.pc-fleet-launch-row__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex: none;
+}
+
+/* The control strip wraps within the row rather than widening the popup. */
+.pc-fleet-launch-row__controls {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A member count is at most two digits — sizing it to the shared input width
+   would leave a mostly-empty box next to the launch button. */
+.pc-fleet-launch-row__count {
+  max-width: 56px;
+}
+
 /* ── fleet filter strip ───────────────────────────────────────────────────── */
 
 .hud__fleets {

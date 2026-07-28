@@ -49,6 +49,7 @@ import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
 import { isEscalationWithOptions } from '@/app/admin/plans/attention-card';
 import { ChatActionBar } from './ChatActionBar';
 import FleetRoleGlyph from '../FleetRoleGlyph';
+import FleetLaunchRow from './FleetLaunchRow';
 import { LocalCardHost } from './LocalCardHost';
 import AgentDossier from '../../adv/sessions/AgentDossier';
 import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
@@ -800,6 +801,13 @@ export default function SessionChatModal({
             <ChatActionBar ctx={actionCtx} />
           </>
         )}
+        {/* WI-6505 (owner ask 2026-07-27): the fleet-launch row is ALWAYS
+            visible — deliberately OUTSIDE the `actionCtx` gate above. The action
+            bar needs a resolved live session to act ON; launching a fleet does
+            not, and the moment a human most wants a fleet is often exactly when
+            this session is dead, still starting, or failed to resolve — the
+            states where `actionCtx` is null and the bar is absent. */}
+        <FleetLaunchRow />
       </div>
         {open && dossierOpen ? (
           <div

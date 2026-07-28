@@ -406,6 +406,20 @@ export function isLaunchAccountValue(v: string): boolean {
   return /^[A-Za-z0-9._:-]{1,120}$/.test(v);
 }
 
+/**
+ * Most members one `fleet:launch-on-plan` call may open — opening more than this
+ * in one go is heavy and almost always a mistake (mirrors capability:terminal's
+ * MAX_TERMINALS).
+ *
+ * Lives HERE, in the client-safe module, rather than in launch-on-plan.ts, so the
+ * GUI's member-count control can bound its input against the SAME number the tool
+ * enforces. Importing it from the tool would drag that module's server subtree
+ * (node:fs, the PG state layer, the promotion graph) into the renderer chunk —
+ * the exact cascade this file's header exists to prevent. launch-on-plan.ts
+ * imports it back from here, so there is one definition, not two.
+ */
+export const FLEET_MAX_MEMBERS = 12;
+
 /** Result of {@link validateCloudModelSpec}: ok, plus a corrective `message` on reject. */
 export interface CloudModelSpecResult {
   ok: boolean;
