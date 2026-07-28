@@ -48,6 +48,7 @@
  * see coordination plumbing and conclude the signal was absent.
  */
 
+import type { Sql } from 'postgres';
 import type { AgentSignals } from './recall-query';
 import { withMemoryTimeout, MemoryTimeoutError } from './op-deadline';
 
@@ -439,6 +440,71 @@ export interface AgentSignalsSource {
   claimedItem(): Promise<ClaimedItem | null>;
   /** Recent invocations for this agent, NEWEST FIRST. */
   recentInvocations(): Promise<readonly RawInvocation[]>;
+}
+
+/**
+ * The production source: the agent's own claim + its own recent tool calls.
+ *
+ * Both reads are single-index lookups keyed by the agent's coord owner id
+ * (`work_item_claims_owner_idx` on `(workspace_id, owner)`, and
+ * `tool_invocations_coord_owner_idx` on `(coord_owner_id, invoked_at DESC)`),
+ * which is what makes this affordable on the per-turn path.
+ *
+ * ⚠ Both queries are workspace-scoped. `work_item_claims` and
+ * `tool_invocations` are multi-tenant, keyed on `(workspace_id, …)`, so a bare
+ * owner filter can match another tenant's rows.
+ */
+export function pgAgentSignalsSource(
+  sql: Sql,
+  opts: {
+    ownerId: string;
+    workspaceId: string;
+    lookbackMinutes?: number;
+    invocationLimit?: number;
+  },
+): AgentSignalsSource {
+  const lookback = opts.lookbackMinutes ?? DEFAULT_LOOKBACK_MINUTES;
+  const limit = opts.invocationLimit ?? DEFAULT_INVOCATION_LIMIT;
+
+  return {
+    async claimedItem() {
+      // The agent's LIVE claim — an expired one is not what it is working on.
+      // Most recently active first: an agent may legitimately hold several.
+      const rows = (await sql`
+        SELECT wi.feature_id AS id, wi.title, wi.summary AS body
+        FROM harness_shared.work_item_claims c
+        JOIN harness_shared.work_items wi
+          ON wi.workspace_id = c.workspace_id
+         AND wi.harness_slug = c.harness_slug
+         AND wi.feature_id   = c.work_item_id
+        WHERE c.workspace_id = ${opts.workspaceId}
+          AND c.owner        = ${opts.ownerId}
+          AND c.expires_ts   > now()
+        ORDER BY c.last_activity_ts DESC
+        LIMIT 1
+      `) as unknown as ReadonlyArray<{
+        id: string | null;
+        title: string | null;
+        body: string | null;
+      }>;
+      return rows[0] ?? null;
+    },
+
+    async recentInvocations() {
+      // NEWEST FIRST — `extractTrajectory` depends on this ordering for both
+      // its caps and its `activeFile` resolution.
+      const rows = (await sql`
+        SELECT tool_name, args_json
+        FROM harness_shared.tool_invocations
+        WHERE coord_owner_id = ${opts.ownerId}
+          AND workspace_id   = ${opts.workspaceId}
+          AND invoked_at     > now() - make_interval(mins => ${lookback})
+        ORDER BY invoked_at DESC
+        LIMIT ${limit}
+      `) as unknown as ReadonlyArray<{ tool_name: string; args_json: unknown }>;
+      return rows.map((r) => ({ toolName: r.tool_name, args: r.args_json }));
+    },
+  };
 }
 
 /**

@@ -12,11 +12,13 @@
  * from an allowlist someone could later widen by one careless key.
  */
 import { describe, it, expect, vi } from 'vitest';
+import type { Sql } from 'postgres';
 import {
   buildAgentSignals,
   extractTrajectory,
   effectiveCall,
   normalizeToolName,
+  pgAgentSignalsSource,
   relativizeRepoPath,
   resolveAgentSignals,
   MAX_PATHS,
@@ -350,6 +352,83 @@ describe('buildAgentSignals', () => {
     expect(buildAgentSignals({ claimedItem: { id: 'WI-1', title: 'Only this' } })).toEqual({
       workItem: { id: 'WI-1', title: 'Only this' },
     });
+  });
+});
+
+describe('pgAgentSignalsSource', () => {
+  /** A tagged-template stand-in that records the SQL text + bound params and
+   *  replays queued result sets, in order. */
+  function fakeSql(queued: unknown[][]) {
+    const calls: { text: string; params: unknown[] }[] = [];
+    const tag = (strings: TemplateStringsArray, ...params: unknown[]) => {
+      calls.push({ text: strings.join(' ? '), params });
+      return Promise.resolve(queued.shift() ?? []);
+    };
+    return { sql: tag as unknown as Sql, calls };
+  }
+
+  const OPTS = { ownerId: 'su-abc', workspaceId: 'papercusp-workspace' };
+
+  it('maps a claimed work-item row onto the seam shape', async () => {
+    const { sql } = fakeSql([[{ id: 'WI-6640', title: 'Widen the seam', body: 'Seam only.' }]]);
+    expect(await pgAgentSignalsSource(sql, OPTS).claimedItem()).toEqual({
+      id: 'WI-6640',
+      title: 'Widen the seam',
+      body: 'Seam only.',
+    });
+  });
+
+  it('returns null when the agent holds no live claim', async () => {
+    const { sql } = fakeSql([[]]);
+    expect(await pgAgentSignalsSource(sql, OPTS).claimedItem()).toBeNull();
+  });
+
+  it('maps invocation rows to the extraction shape', async () => {
+    const { sql } = fakeSql([
+      [{ tool_name: 'activity:report', args_json: { tool_name: 'Edit', tool_input: {} } }],
+    ]);
+    expect(await pgAgentSignalsSource(sql, OPTS).recentInvocations()).toEqual([
+      { toolName: 'activity:report', args: { tool_name: 'Edit', tool_input: {} } },
+    ]);
+  });
+
+  it('scopes BOTH reads by workspace — these tables are multi-tenant', async () => {
+    // A bare owner filter can silently match another tenant's rows; that is the
+    // documented trap for every `(workspace_id, …)`-keyed table here.
+    const { sql, calls } = fakeSql([[], []]);
+    const source = pgAgentSignalsSource(sql, OPTS);
+    await source.claimedItem();
+    await source.recentInvocations();
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.text).toMatch(/workspace_id/);
+      expect(call.params).toContain('papercusp-workspace');
+      expect(call.params).toContain('su-abc');
+    }
+  });
+
+  it('bounds the claim read to a LIVE claim and the newest activity', async () => {
+    const { sql, calls } = fakeSql([[]]);
+    await pgAgentSignalsSource(sql, OPTS).claimedItem();
+    expect(calls[0]?.text).toMatch(/expires_ts\s*>\s*now\(\)/);
+    expect(calls[0]?.text).toMatch(/ORDER BY c\.last_activity_ts DESC/);
+  });
+
+  it('orders invocations NEWEST FIRST — extraction depends on it', async () => {
+    const { sql, calls } = fakeSql([[]]);
+    await pgAgentSignalsSource(sql, OPTS).recentInvocations();
+    expect(calls[0]?.text).toMatch(/ORDER BY invoked_at DESC/);
+  });
+
+  it('passes the lookback and limit through as parameters', async () => {
+    const { sql, calls } = fakeSql([[]]);
+    await pgAgentSignalsSource(sql, {
+      ...OPTS,
+      lookbackMinutes: 15,
+      invocationLimit: 40,
+    }).recentInvocations();
+    expect(calls[0]?.params).toContain(15);
+    expect(calls[0]?.params).toContain(40);
   });
 });
 
