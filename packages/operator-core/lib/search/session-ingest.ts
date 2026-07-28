@@ -86,6 +86,19 @@ const MAX_COUNT_BACKFILL_BYTES_PER_TICK = 50 * 1024 * 1024;
 const TEXT_CAP = 8000;
 /** Skip micro-turns ("ok", "y") — noise for recall. */
 const MIN_TEXT_LEN = 3;
+/**
+ * Per-PART text cap (chars) — session_turn_parts, the faithful-render
+ * companion (session-turn-storage-2026-07-28 D-002). Deliberately TIGHTER
+ * than TEXT_CAP: measured over 7 real days of claude JSONL (443,595 lines),
+ * tool_result alone is 218 MB raw against text's 21 MB, and capping at 2k
+ * recovers 61% of it. The render pane caps at THINKING_ENTRY_TEXT_CAP anyway,
+ * so a wider store would buy nothing a reader can see.
+ */
+export const PART_TEXT_CAP = 2000;
+/** Retention for faithful parts — SHORTER than RETENTION_DAYS by design
+ * (D-002): recent sessions render faithfully, older ones degrade to the text
+ * turns in session_turns, older still to session_archives. */
+const PART_RETENTION_DAYS = 14;
 
 export type SourceKind = 'claude' | 'omp' | 'codex' | 'agent_chat';
 
@@ -94,6 +107,28 @@ export interface ParsedTurn {
   speaker: 'user' | 'assistant';
   text: string;
   cwd?: string | null;
+  sessionId?: string | null;
+}
+
+/** The faithful-render part kinds stored in session_turn_parts. Mirrors the
+ *  AgentTimelineEntry kinds the thinking pane renders, minus 'status' (which
+ *  the render path derives from part_kind rather than storing). */
+export type PartKind = 'text' | 'thinking' | 'tool_use' | 'tool_result';
+
+/**
+ * ONE content part of a transcript line (session-turn-storage-2026-07-28
+ * P-001). A single JSONL line commonly yields SEVERAL of these — an assistant
+ * line with a thinking block plus three tool_use blocks is four parts, in
+ * content order — which is precisely the fidelity `session_turns` throws away
+ * by design (it reduces the whole line to its joined text or nothing at all).
+ */
+export interface ParsedPart {
+  ts: Date | null;
+  speaker: 'user' | 'assistant';
+  partKind: PartKind;
+  /** tool_use / tool_result only. */
+  toolName?: string | null;
+  text: string;
   sessionId?: string | null;
 }
 
@@ -154,6 +189,53 @@ export interface IngestStats {
 const SECRET_RE =
   /\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,})\b/g;
 
+/**
+ * P-004 (session-turn-storage-2026-07-28): the SECOND scrubber pass, applied
+ * on top of SECRET_RE to every stored part.
+ *
+ * SECRET_RE matches *self-identifying* token shapes — a `ghp_…` is a secret
+ * wherever it appears. That was sufficient while the store held only human/
+ * model PROSE. It is NOT sufficient for tool inputs and tool results, which
+ * are the new content in session_turn_parts: those carry raw file contents,
+ * `env` dumps, curl invocations and config blobs, where the secret is an
+ * arbitrary opaque string identified only by the KEY NEXT TO IT
+ * (`API_KEY=<40 random chars>`) or by the header it rides in
+ * (`Authorization: Bearer <opaque>`). No token-shape regex can see those.
+ *
+ * So this pass is key-directed rather than value-directed, and it is
+ * deliberately applied ONLY to parts: running it over session_turns' prose
+ * would redact ordinary sentences containing the word "password".
+ *
+ * Capture-group 1 is the KEY/PREFIX and is preserved, so a reader still sees
+ * WHICH credential was elided — `AWS_SECRET_ACCESS_KEY=[redacted]` is far more
+ * useful for debugging than a blank.
+ */
+const PART_SECRET_RE = new RegExp(
+  [
+    // KEY=value / "key": "value" / key: value — the assignment family.
+    // The key must LOOK like a credential name; the value is anything opaque.
+    String.raw`((?:secret|token|password|passwd|pwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|credential)s?["'\s]*[:=]\s*["']?)([^\s"',;&)}\]]{8,})`,
+    // Authorization / Proxy-Authorization headers (scheme kept, value elided).
+    String.raw`((?:authorization|proxy-authorization)["'\s]*[:=]\s*["']?(?:bearer|basic|token)\s+)([^\s"',;&)}\]]{8,})`,
+    // PEM private-key blocks — elide the whole body, keep the banner.
+    String.raw`(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(?=-----END)`,
+  ].join('|'),
+  'gi',
+);
+
+/** Apply PART_SECRET_RE, preserving whichever key/prefix group matched.
+ *  Exported for the P-004 redaction test. */
+export function redactPartSecrets(s: string): string {
+  return s.replace(PART_SECRET_RE, (_m, ...groups) => {
+    // groups is [k1, v1, k2, v2, k3, v3, offset, string] — pick the key group
+    // of whichever alternative fired (the even indices, 0-based).
+    for (let i = 0; i < 6; i += 2) {
+      if (typeof groups[i] === 'string') return `${groups[i]}[redacted]`;
+    }
+    return '[redacted]';
+  });
+}
+
 /** Injected boilerplate prefixes that would pollute recall — not real speech. */
 const BOILERPLATE_PREFIXES = [
   '<system-reminder',
@@ -173,6 +255,23 @@ export function cleanTurnText(raw: string): string | null {
   if (t.length < MIN_TEXT_LEN) return null;
   for (const p of BOILERPLATE_PREFIXES) if (t.startsWith(p)) return null;
   return t.slice(0, TEXT_CAP).replace(SECRET_RE, '[redacted]');
+}
+
+/**
+ * The parts analog of cleanTurnText — cap + BOTH redaction passes, and
+ * deliberately NO boilerplate/min-length filtering: this store exists to
+ * render a transcript faithfully, so a `<system-reminder>` block or a
+ * two-character tool result is real content here even though it is noise for
+ * recall.
+ *
+ * Redact BEFORE capping so a secret straddling the cap boundary cannot be
+ * half-preserved, and cap after so the stored bytes stay bounded.
+ */
+export function cleanPartText(raw: string): string {
+  const redacted = redactPartSecrets(raw.replace(SECRET_RE, '[redacted]'));
+  return redacted.length > PART_TEXT_CAP
+    ? `${redacted.slice(0, PART_TEXT_CAP)}… [truncated ${redacted.length - PART_TEXT_CAP} chars]`
+    : redacted;
 }
 
 /** Join the text parts of a message content (string or parts array). */
@@ -223,6 +322,98 @@ export function parseClaudeLine(line: string): ParsedTurn | null {
     cwd: typeof obj.cwd === 'string' ? obj.cwd : null,
     sessionId: typeof obj.sessionId === 'string' ? obj.sessionId : null,
   };
+}
+
+/** Render a tool_use `input` / tool_result `content` payload as display text.
+ *  A string passes through; anything structured is JSON — the pane shows the
+ *  argument object, which is what makes a tool call readable at all. */
+function partPayloadText(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (v == null) return '';
+  if (Array.isArray(v)) {
+    // Claude tool_result content is usually [{type:'text',text}] — prefer the
+    // text parts, and fall back to JSON for image/structured blocks.
+    const texts = v
+      .filter((p): p is { type?: string; text: string } =>
+        !!p && typeof p === 'object' && typeof (p as { text?: unknown }).text === 'string')
+      .map((p) => p.text);
+    if (texts.length) return texts.join('\n');
+  }
+  try {
+    return JSON.stringify(v) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Claude Code line → FAITHFUL parts (session-turn-storage-2026-07-28 P-001).
+ *
+ * The counterpart to parseClaudeLine, which stores at most one joined-text row
+ * per line. This walks the content array in order and emits every renderable
+ * block: text, thinking, tool_use (name + input), tool_result (payload).
+ *
+ * Exported for unit tests, same convention as the parseX/classifyX family.
+ */
+export function parseClaudeParts(line: string): ParsedPart[] {
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  if (obj.type !== 'user' && obj.type !== 'assistant') return [];
+  const message = obj.message as { role?: string; content?: unknown } | undefined;
+  if (!message) return [];
+  const speaker = message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : null;
+  if (!speaker) return [];
+  const ts = parseTs(obj.timestamp);
+  const sessionId = typeof obj.sessionId === 'string' ? obj.sessionId : null;
+  const out: ParsedPart[] = [];
+  const push = (partKind: PartKind, raw: string, toolName?: string | null) => {
+    const text = cleanPartText(raw);
+    // A tool_use is worth a row on its NAME alone (an argument-less call is
+    // still a real event in the transcript); every other kind needs content.
+    if (!text.trim() && partKind !== 'tool_use') return;
+    out.push({ ts, speaker, partKind, toolName: toolName ?? null, text, sessionId });
+  };
+
+  const content = message.content;
+  if (typeof content === 'string') {
+    push('text', content);
+    return out;
+  }
+  if (!Array.isArray(content)) return out;
+  for (const p of content) {
+    if (!p || typeof p !== 'object') continue;
+    const part = p as {
+      type?: string; text?: string; thinking?: string;
+      name?: string; input?: unknown; content?: unknown;
+    };
+    switch (part.type) {
+      case 'text':
+      case 'input_text':
+      case 'output_text':
+        push('text', typeof part.text === 'string' ? part.text : '');
+        break;
+      case 'thinking':
+        // Measured near-empty in practice (58k blocks / <0.05 MB over 7 days —
+        // Claude Code writes signature-only thinking records), but stored so
+        // the part ORDER stays faithful and a future build that does emit
+        // reasoning text needs no schema change.
+        push('thinking', typeof part.thinking === 'string' ? part.thinking : '');
+        break;
+      case 'tool_use':
+        push('tool_use', partPayloadText(part.input), typeof part.name === 'string' ? part.name : null);
+        break;
+      case 'tool_result':
+        push('tool_result', partPayloadText(part.content));
+        break;
+      default:
+        break;
+    }
+  }
+  return out;
 }
 
 /** OMP line → turn. Lines: {type:'message', timestamp, message:{role, content:[{type:'text',text}]}}. */
@@ -440,6 +631,17 @@ interface FileAdapter {
   /** EI-9970: classifies EVERY line for prompt/response/tool-call
    *  counting — a superset of parseLine's TEXT-TURNS-ONLY scope. */
   classifyLine: (line: string) => LineSignal | null;
+  /**
+   * P-001 (session-turn-storage-2026-07-28): every renderable content part of
+   * the line, in order, for the FAITHFUL `session_turn_parts` companion store.
+   * A strict superset of parseLine's scope.
+   *
+   * Optional: only the claude adapter implements it today, because claude is
+   * the only source whose history pane is being flipped to the DB. An adapter
+   * without it simply contributes no parts — its pane keeps reading the file,
+   * exactly as before, with no behavior change and no empty-render risk.
+   */
+  parseParts?: (line: string) => ParsedPart[];
   /** Best-effort provenance derived from the file path. */
   meta: (filePath: string) => { sessionId: string; owner: string | null };
   /**
@@ -497,6 +699,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
     ],
     parseLine: parseClaudeLine,
     classifyLine: classifyClaudeLine,
+    parseParts: parseClaudeParts,
     meta: (filePath) => {
       // psu isolation dir carries the launching session's owner dir:
       // ~/.papercusp/session-claude/<ownerDir>/projects/<munged-cwd>/<uuid>.jsonl
@@ -627,8 +830,11 @@ export async function readNewLines(
   lastInferenceId: string | null,
   usageOf?: (l: string) => LineUsage,
   substitutionRows: SubstitutionRow[] = [],
+  parseParts?: (l: string) => ParsedPart[],
 ): Promise<{
   turns: ParsedTurn[];
+  /** P-001 faithful parts — empty when the adapter has no `parseParts`. */
+  parts: ParsedPart[];
   newOffset: number;
   promptCount: number;
   responseCount: number;
@@ -645,7 +851,7 @@ export async function readNewLines(
   try {
     const s = await fh.stat();
     if (s.size <= offset) {
-      return { turns: [], newOffset: offset, promptCount: 0, responseCount: 0, toolCallCount: 0, lastInferenceId, usage };
+      return { turns: [], parts: [], newOffset: offset, promptCount: 0, responseCount: 0, toolCallCount: 0, lastInferenceId, usage };
     }
     const toRead = Math.min(s.size - offset, MAX_BYTES_PER_FILE_PER_TICK);
     const buf = Buffer.alloc(toRead);
@@ -671,6 +877,7 @@ export async function readNewLines(
         if (nl >= 0) {
           return {
             turns: [],
+            parts: [],
             newOffset: cursor + nl + 1,
             promptCount: 0,
             responseCount: 0,
@@ -681,10 +888,11 @@ export async function readNewLines(
         }
         cursor += size;
       }
-      return { turns: [], newOffset: offset, promptCount: 0, responseCount: 0, toolCallCount: 0, lastInferenceId, usage };
+      return { turns: [], parts: [], newOffset: offset, promptCount: 0, responseCount: 0, toolCallCount: 0, lastInferenceId, usage };
     }
     const usable = chunk.slice(0, lastNl + 1);
     const turns: ParsedTurn[] = [];
+    const parts: ParsedPart[] = [];
     let promptCount = 0;
     let responseCount = 0;
     let toolCallCount = 0;
@@ -706,6 +914,15 @@ export async function readNewLines(
       if (line.trim()) {
         const t = parseLine(line);
         if (t) turns.push(t);
+        if (parseParts) {
+          // P-001. Same pass as parseLine/classifyLine — the per-line
+          // JSON.parse is the expensive thing (WI-5218), so a second walk to
+          // extract parts would add a third full parse of every line.
+          // Fail-soft per line: a malformed part must never cost the TURN.
+          try {
+            for (const p of parseParts(line)) parts.push(p);
+          } catch { /* one bad line, not the file */ }
+        }
         const sig = classifyLine(line);
         if (sig) {
           if (sig.isPrompt) promptCount += 1;
@@ -738,6 +955,7 @@ export async function readNewLines(
     }
     return {
       turns,
+      parts,
       newOffset: offset + Buffer.byteLength(usable, 'utf8'),
       promptCount,
       responseCount,
@@ -814,6 +1032,63 @@ async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
   return r.count ?? rows.length;
 }
 
+interface PartRow {
+  workspace_id: string;
+  source_kind: string;
+  session_id: string;
+  part_idx: number;
+  ts: string | null;
+  owner: string | null;
+  speaker: string;
+  part_kind: string;
+  tool_name: string | null;
+  text: string;
+}
+
+/** Build the session_turn_parts rows for one tick's parts, numbering them from
+ *  the file's persisted part cursor. Pure — exported for tests. */
+export function partRowsFrom(
+  parts: ParsedPart[],
+  base: { sourceKind: string; sessionId: string; owner: string | null; partCount: number },
+): PartRow[] {
+  return parts.map((p, i) => ({
+    workspace_id: 'default',
+    source_kind: base.sourceKind,
+    session_id: p.sessionId ?? base.sessionId,
+    part_idx: base.partCount + i,
+    ts: p.ts ? p.ts.toISOString() : null,
+    owner: base.owner,
+    speaker: p.speaker,
+    part_kind: p.partKind,
+    tool_name: p.toolName ?? null,
+    text: p.text,
+  }));
+}
+
+/**
+ * P-001 faithful-parts writer. Same ON CONFLICT DO NOTHING idempotency
+ * contract as insertTurns (the PK is (workspace_id, source_kind, session_id,
+ * part_idx)), so a reset offset re-ingests without duplicating.
+ *
+ * BEST-EFFORT BY CONTRACT, and that asymmetry is deliberate: the parts store
+ * is a RENDER convenience, the turns store is the recall index. A parts write
+ * that fails must cost the pane its fidelity for that window, never the
+ * search corpus — so the caller catches and counts rather than aborting the
+ * turn insert or holding back the byte_offset.
+ */
+async function insertParts(sql: Sql, rows: PartRow[]): Promise<number> {
+  if (!rows.length) return 0;
+  const r = await sql`
+    INSERT INTO harness_shared.session_turn_parts ${sql(
+      rows as unknown as Record<string, unknown>[],
+      'workspace_id', 'source_kind', 'session_id', 'part_idx', 'ts',
+      'owner', 'speaker', 'part_kind', 'tool_name', 'text',
+    )}
+    ON CONFLICT DO NOTHING
+  `;
+  return r.count ?? rows.length;
+}
+
 /** Repair rows ingested before a managed Codex home's owner stamp was wired
  * into the adapter. One bulk UPDATE per sweep avoids the historical
  * per-transcript-query trap while making owner-filtered session reads correct
@@ -841,6 +1116,9 @@ async function backfillSessionOwners(
 interface IngestState {
   byte_offset: number;
   turn_count: number;
+  /** P-001: the session_turn_parts cursor — the parts analog of turn_count,
+   *  carried on the SAME bookkeeping row so one writeState advances both. */
+  part_count: number;
   /** EI-9970: cumulative real-prompt / distinct-model-response / tool-call
    *  counts for this file, and the dedup cursor for the response count. */
   prompt_count: number;
@@ -855,6 +1133,7 @@ interface IngestState {
 const EMPTY_STATE: IngestState = {
   byte_offset: 0,
   turn_count: 0,
+  part_count: 0,
   prompt_count: 0,
   response_count: 0,
   tool_call_count: 0,
@@ -866,12 +1145,12 @@ const EMPTY_STATE: IngestState = {
 
 async function readState(sql: Sql, sourceKind: string, filePath: string): Promise<IngestState> {
   const rows = await sql<Array<{
-    byte_offset: string | number; turn_count: number;
+    byte_offset: string | number; turn_count: number; part_count: number | null;
     prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
     counts_backfill_offset: string | number; counts_backfill_last_inference_id: string | null;
     counts_backfilled_at: string | null;
   }>>`
-    SELECT byte_offset, turn_count, prompt_count, response_count, tool_call_count, last_inference_id,
+    SELECT byte_offset, turn_count, part_count, prompt_count, response_count, tool_call_count, last_inference_id,
            counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at
       FROM harness_shared.session_ingest_state
      WHERE source_kind = ${sourceKind} AND file_path = ${filePath}
@@ -881,6 +1160,7 @@ async function readState(sql: Sql, sourceKind: string, filePath: string): Promis
   return {
     byte_offset: Number(r.byte_offset),
     turn_count: r.turn_count,
+    part_count: r.part_count ?? 0,
     prompt_count: r.prompt_count ?? 0,
     response_count: r.response_count ?? 0,
     tool_call_count: r.tool_call_count ?? 0,
@@ -896,15 +1176,15 @@ async function writeState(
   sourceKind: string,
   filePath: string,
   st: Pick<IngestState, 'byte_offset' | 'turn_count'> &
-    Partial<Pick<IngestState, 'prompt_count' | 'response_count' | 'tool_call_count' | 'last_inference_id' | 'counts_backfill_offset' | 'counts_backfill_last_inference_id' | 'counts_backfilled_at'>> &
+    Partial<Pick<IngestState, 'part_count' | 'prompt_count' | 'response_count' | 'tool_call_count' | 'last_inference_id' | 'counts_backfill_offset' | 'counts_backfill_last_inference_id' | 'counts_backfilled_at'>> &
     { sessionId?: string | null; mtimeMs?: number; lastError?: string | null },
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.session_ingest_state
-      (source_kind, file_path, byte_offset, turn_count, prompt_count, response_count,
+      (source_kind, file_path, byte_offset, turn_count, part_count, prompt_count, response_count,
        tool_call_count, last_inference_id, counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at,
        session_id, mtime_ms, last_error, updated_at)
-    VALUES (${sourceKind}, ${filePath}, ${st.byte_offset}, ${st.turn_count},
+    VALUES (${sourceKind}, ${filePath}, ${st.byte_offset}, ${st.turn_count}, ${st.part_count ?? 0},
             ${st.prompt_count ?? 0}, ${st.response_count ?? 0}, ${st.tool_call_count ?? 0}, ${st.last_inference_id ?? null},
             ${st.counts_backfill_offset ?? st.byte_offset}, ${st.counts_backfill_last_inference_id ?? null}, ${st.counts_backfilled_at ?? null},
             ${st.sessionId ?? null}, ${st.mtimeMs != null ? Math.round(st.mtimeMs) : null}, ${st.lastError ?? null}, now())

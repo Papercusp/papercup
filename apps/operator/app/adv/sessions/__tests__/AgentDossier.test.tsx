@@ -487,4 +487,97 @@ describe('AgentDossier', () => {
     expect(queryByText("Starting up — this agent hasn't registered yet.")).toBeNull();
     expect(getByText('refactoring attempt-claim split')).toBeTruthy();
   });
+
+  // ── Events (the agent's live subscriptions) ──
+  // [owner 2026-07-28] "are the events an agent currently subscribed to listed
+  // in their chat popup? If not add that."
+  describe('Events section', () => {
+    const SUBS = {
+      count: 2,
+      items: [
+        {
+          eventKey: 'deploy:release-cut',
+          policy: 'wake',
+          note: 'waiting on the release',
+          once: true,
+          wakes: true,
+          urgent: false,
+          createdAt: new Date(Date.now() - 60_000).toISOString(),
+          expiresTs: null,
+        },
+        {
+          eventKey: 'coord:human-message',
+          policy: 'watch',
+          note: null,
+          once: false,
+          wakes: false,
+          urgent: true,
+          createdAt: new Date(Date.now() - 120_000).toISOString(),
+          expiresTs: null,
+        },
+      ],
+    };
+
+    it('lists the events the agent is subscribed to, with the count and the one-shot/standing distinction', async () => {
+      syncState.detail = { ...DETAIL, subscriptions: SUBS } satisfies AgentDetail;
+      const { findByText, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      expect(await findByText('Events')).toBeTruthy();
+      const events = within(container.querySelector('#pc-dossier-events')!);
+      expect(events.getByText('2 subscribed')).toBeTruthy();
+      expect(events.getByText('deploy:release-cut')).toBeTruthy();
+      expect(events.getByText('coord:human-message')).toBeTruthy();
+      expect(events.getByText('· waiting on the release')).toBeTruthy();
+      // A watch that records but does not wake, and an urgent one, are called out.
+      expect(events.getByText('· no wake')).toBeTruthy();
+      expect(events.getByText('· urgent')).toBeTruthy();
+      expect(container.querySelectorAll('[data-testid="dossier-events-row"]').length).toBe(2);
+      // One-shot vs standing watch is rendered, not merely implied.
+      expect(events.getByTitle('one-shot await')).toBeTruthy();
+      expect(events.getByTitle('standing watch')).toBeTruthy();
+    });
+
+    it('says the agent is waiting on nothing when it holds no subscriptions', async () => {
+      syncState.detail = {
+        ...DETAIL,
+        subscriptions: { count: 0, items: [] },
+      } satisfies AgentDetail;
+      const { findByText, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      expect(await findByText('Not waiting on any event.')).toBeTruthy();
+      expect(container.querySelectorAll('[data-testid="dossier-events-row"]').length).toBe(0);
+    });
+
+    // A READ FAILURE MUST NOT LOOK LIKE "SUBSCRIBED TO NOTHING". Those are
+    // opposite conclusions for anyone deciding whether an agent will ever wake
+    // again — the same rationale as getAgentSignals' unavailableSignals.
+    it('surfaces a read failure instead of rendering it as an empty subscription list', async () => {
+      syncState.detail = {
+        ...DETAIL,
+        subscriptions: { count: 0, items: [], error: 'event_awaits unreachable' },
+      } satisfies AgentDetail;
+      const { findByText, queryByText } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      expect(await findByText(/Couldn’t load subscriptions: event_awaits unreachable/)).toBeTruthy();
+      expect(queryByText('Not waiting on any event.')).toBeNull();
+    });
+
+    // THE WIRE CONTRACT. `subscriptions` is a NEW field and the SPA rebuilds on
+    // the vite hot path while the sidecar only rebuilds on restart, so a fresh
+    // bundle can genuinely be served a payload without it. Reading `.length`
+    // off `undefined` there took the WHOLE hud tab down once already (the coord
+    // `unread` regression) — this pins that it cannot happen again.
+    it('renders normally when an older operator serves a detail payload with no subscriptions field', async () => {
+      const { subscriptions: _omitted, ...withoutSubs } = { ...DETAIL, subscriptions: SUBS };
+      syncState.detail = withoutSubs as AgentDetail;
+      const { findByText } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      // The section still renders its empty state, and nothing throws.
+      expect(await findByText('Not waiting on any event.')).toBeTruthy();
+    });
+  });
 });

@@ -130,6 +130,10 @@ export default function AgentDossier({
   const unreadRows = coord?.unread ?? [];
   const codex = detail?.codex;
   const signals = detail?.signals;
+  const subs = detail?.subscriptions;
+  // Same normalise-once rationale as `unreadRows`: `subscriptions` is a NEW
+  // field, so an operator predating it serves a detail payload without one.
+  const subRows = subs?.items ?? [];
   const nativeSession = detail?.nativeSession ?? entry?.nativeSession ?? null;
 
   const ctxPct = signals ? contextPct(signals.contextTokens, signals.compactionLimit) : null;
@@ -502,6 +506,61 @@ export default function AgentDossier({
           </>
         ) : (
           <div className="pc-dossier__empty-line">{error ? `Couldn’t load coord: ${error}` : '—'}</div>
+        )}
+      </section>
+
+      {/* ── Events ── */}
+      {/* [owner 2026-07-28, verbatim] "are the events an agent currently
+          subscribed to listed in their chat popup? If not add that". They were
+          not. The rail showed what the agent HELD (locks) and what it had SAID
+          (coord), but never what it was WAITING FOR — and an agent parked on an
+          await is indistinguishable from a dead one until you can see the await.
+
+          `subs?.items ?? []` is the wire contract, not defensive noise, for
+          exactly the reason the coord `unread` list documents above: this is a
+          NEW field, the SPA rebuilds on the vite hot path while the sidecar only
+          rebuilds on restart, so a fresh bundle can genuinely be served a
+          `subscriptions`-less payload. Reading `.length` off it there would take
+          down the whole HUD tab over one optional list. */}
+      <section className="pc-dossier__section" id="pc-dossier-events">
+        <h4 className="pc-dossier__h">
+          Events
+          {subs && subs.count > 0 ? (
+            <span className="pc-dossier__badge-count">{subs.count} subscribed</span>
+          ) : null}
+          {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
+          {subs?.error ? (
+            <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {subs.error}</span>
+          ) : null}
+        </h4>
+        {subRows.length > 0 ? (
+          <ul className="pc-dossier__list" data-testid="dossier-events-list">
+            {subRows.map((s) => (
+              <li
+                key={`${s.eventKey}:${s.createdAt}`}
+                className="pc-dossier__coord-line"
+                data-testid="dossier-events-row"
+              >
+                {/* A standing watch keeps waking the agent; a one-shot fires
+                    once and is consumed. Opposite implications for "will this
+                    agent wake again", so the distinction is shown, not implied. */}
+                <span className="pc-dossier__dir" title={s.once ? 'one-shot await' : 'standing watch'}>
+                  {s.once ? '◉' : '↻'}
+                </span>
+                <span className="pc-dossier__coord-text">
+                  {s.eventKey}
+                  {s.note ? <span className="pc-dossier__h-note"> · {s.note}</span> : null}
+                  {!s.wakes ? <span className="pc-dossier__h-note"> · no wake</span> : null}
+                  {s.urgent ? <span className="pc-dossier__h-note"> · urgent</span> : null}
+                </span>
+                <span className="pc-dossier__coord-ts">{formatRelativeUpdated(s.createdAt)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="pc-dossier__empty-line">
+            {subs?.error ? `Couldn’t load subscriptions: ${subs.error}` : 'Not waiting on any event.'}
+          </div>
         )}
       </section>
     </aside>
