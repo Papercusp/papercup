@@ -13,11 +13,13 @@ import {
   judgeKnownGap,
   isIncoherent,
   ratchetPlaneSeries,
+  companionsUnavailable,
   METRIC_KNOWN_GAPS,
   RATCHET_VERDICTS,
   type MetricWindow,
+  type RatchetVerdict,
 } from './agent-plane-ratchet';
-import { PLANE_METRIC_IDS, type PlaneMetricId } from './agent-plane-measurement';
+import { METRIC_SPECS, PLANE_METRIC_IDS, type PlaneMetricId } from './agent-plane-measurement';
 
 const w = (interpretable: boolean, over: Partial<MetricWindow> = {}): MetricWindow => ({
   measuredAt: '2026-07-27T13:18:00Z',
@@ -125,6 +127,78 @@ describe('judgeKnownGap — the ratchet grows teeth when the item closes', () =>
 
   it('does not apply to a metric that is merely regressed', () => {
     expect(judgeKnownGap({ verdict: 'regressed', knownGap: 'WI-6465', gapClosed: false })).toBe('not-applicable');
+  });
+});
+
+describe('companionsUnavailable — a metric whose companion is dead is not a pass (P-019)', () => {
+  const specs = {
+    'clarification-rate': { interpretableOnlyWith: ['acted-on-stale-or-wrong-value'] as const },
+    'plane-token-cost': {},
+  };
+
+  it('reports the companion when it is NOT holding', () => {
+    const verdicts = new Map<PlaneMetricId, RatchetVerdict>([
+      ['clarification-rate', 'holding'],
+      ['acted-on-stale-or-wrong-value', 'never-interpretable'],
+    ]);
+    expect(companionsUnavailable('clarification-rate', verdicts, specs)).toEqual([
+      'acted-on-stale-or-wrong-value',
+    ]);
+  });
+
+  /**
+   * THE NON-VACUITY CHECK. If this returned the companion unconditionally, the
+   * disclosure would be a decoration that never clears — indistinguishable from a
+   * hardcoded warning, and it would still be shouting after WI-6465 lands.
+   */
+  it('CLEARS once the companion starts holding — the disclosure is state-dependent', () => {
+    const verdicts = new Map<PlaneMetricId, RatchetVerdict>([
+      ['clarification-rate', 'holding'],
+      ['acted-on-stale-or-wrong-value', 'holding'],
+    ]);
+    expect(companionsUnavailable('clarification-rate', verdicts, specs)).toEqual([]);
+  });
+
+  it('treats a REGRESSED companion as unavailable too, not just a never-built one', () => {
+    const verdicts = new Map<PlaneMetricId, RatchetVerdict>([
+      ['clarification-rate', 'holding'],
+      ['acted-on-stale-or-wrong-value', 'regressed'],
+    ]);
+    expect(companionsUnavailable('clarification-rate', verdicts, specs)).toEqual([
+      'acted-on-stale-or-wrong-value',
+    ]);
+  });
+
+  it('says nothing about a metric that declares no companion', () => {
+    const verdicts = new Map<PlaneMetricId, RatchetVerdict>([['plane-token-cost', 'holding']]);
+    expect(companionsUnavailable('plane-token-cost', verdicts, specs)).toEqual([]);
+  });
+
+  /**
+   * The LIVE registry, not a literal — this is the assertion that would have caught
+   * the actual defect: `clarification-rate`'s spec said in prose that it is readable
+   * only alongside `acted-on-stale-or-wrong-value`, and nothing enforced it.
+   */
+  it('the SHIPPED clarification-rate spec declares its companion structurally', () => {
+    expect(METRIC_SPECS['clarification-rate'].interpretableOnlyWith).toEqual([
+      'acted-on-stale-or-wrong-value',
+    ]);
+  });
+
+  it('marks the row unreadable-alone in a full report, WITHOUT failing the build', () => {
+    // acted-on-stale-or-wrong-value is never-interpretable here (its live state,
+    // pending WI-6465) while clarification-rate's own funnel is healthy.
+    const report = ratchetPlaneSeries({
+      series: [windowOf('2026-07-27T13:18:00Z', { 'acted-on-stale-or-wrong-value': w(false) })],
+    });
+
+    const row = report.rows.find((r) => r.metric === 'clarification-rate')!;
+    expect(row.verdict).toBe('holding');
+    expect(row.unreadableAlone).toEqual(['acted-on-stale-or-wrong-value']);
+    expect(report.unreadableAlone.map((r) => r.metric)).toContain('clarification-rate');
+    // Reported, NOT failed — the honest fix is WI-6465's producer, and reddening the
+    // fleet gate for a filed open gap teaches everyone to ignore this check.
+    expect(report.failures.map((f) => f.metric)).not.toContain('clarification-rate');
   });
 });
 
