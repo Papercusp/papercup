@@ -21,7 +21,7 @@
  * Found by the packaged perf suite, which had been measuring `/onboarding` while
  * publishing the numbers as the operator shell.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@tanstack/react-router', () => ({
   // Expose the route options object so we can call beforeLoad directly.
@@ -38,27 +38,48 @@ vi.mock('@papercusp/flags/client', () => ({
   getFlagSnapshot: () => ({ flags: {} }),
 }));
 
-import { Route } from './index';
+import { Route, resolveLanding } from './index';
 
 const beforeLoad = (Route as unknown as { beforeLoad: () => Promise<never> }).beforeLoad;
 
-/** Run beforeLoad and return the thrown redirect target (or throw a real error). */
-async function landing(): Promise<{ to?: string; search?: Record<string, unknown> }> {
-  try {
-    await beforeLoad();
-  } catch (e) {
-    if ((e as { __redirect?: boolean })?.__redirect) return e as { to?: string };
-    throw e;
-  }
-  throw new Error('beforeLoad did not redirect');
+let fetchImpl: typeof fetch;
+/** Every sleep is instant and counted: no test waits out a real settle budget. */
+let slept: number[];
+
+/**
+ * Resolve a landing against the stubbed fetch, with time INJECTED.
+ *
+ * `now` advances by whatever was slept, so "the budget expired" is exercised
+ * deterministically rather than by wall-clock — a 30s real wait is not a test
+ * anyone runs twice, and a branch nobody runs is a branch nobody checks.
+ */
+async function landing(budgetMs = 30_000): Promise<{ to?: string }> {
+  let clock = 0;
+  return {
+    to: await resolveLanding({
+      fetchImpl,
+      budgetMs,
+      now: () => clock,
+      sleep: async (ms: number) => {
+        slept.push(ms);
+        clock += ms;
+      },
+    }),
+  };
 }
 
 function stubFetch(fn: typeof fetch) {
+  fetchImpl = fn;
   vi.stubGlobal('fetch', fn);
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  slept = [];
+  fetchImpl = (async () => new Response('{}', { status: 200 })) as typeof fetch;
 });
 
 describe('/ entry beforeLoad (WI-2817 resilience)', () => {
@@ -67,7 +88,6 @@ describe('/ entry beforeLoad (WI-2817 resilience)', () => {
       new Response(JSON.stringify({ finished_at: '2026-01-01T00:00:00Z' }), { status: 200 })) as typeof fetch);
     const r = await landing();
     expect(r.to).toBe('/adv');
-    expect(r.search).toMatchObject({ tab: 'harnesses' });
   });
 
   it('unfinished wizard → a first-run target, never /adv', async () => {
@@ -103,31 +123,59 @@ describe('/ entry beforeLoad (WI-2817 resilience)', () => {
     expect(calls).toBeGreaterThan(1);
   });
 
-  it('4xx response → /adv, NEVER first-run (and does not sit out the budget)', async () => {
-    // A 4xx will not fix itself, so it must not burn the settle budget — but it
-    // is still not a statement about the user.
-    const started = Date.now();
+  it('a 5xx that NEVER recovers → /adv once the budget expires, never first-run', async () => {
+    let calls = 0;
+    stubFetch((async () => {
+      calls += 1;
+      return new Response('still booting', { status: 503 });
+    }) as typeof fetch);
+    const r = await landing(3_000);
+    expect(r.to).toBe('/adv');
+    // It really waited (rather than giving up on the first answer) and really
+    // stopped (rather than spinning forever on a dead backend).
+    expect(calls).toBeGreaterThan(1);
+    expect(slept.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(3_000);
+  });
+
+  it('4xx response → /adv, NEVER first-run, and does NOT burn the budget', async () => {
+    // A 4xx will not fix itself, so waiting on it is pure latency — but it is
+    // still not a statement about the user.
     stubFetch((async () => new Response('nope', { status: 404 })) as typeof fetch);
     const r = await landing();
     expect(r.to).toBe('/adv');
-    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(slept).toEqual([]);
   });
 
   it('2xx with an unreadable body → /adv, NEVER first-run', async () => {
     stubFetch((async () => new Response('<html>not json</html>', { status: 200 })) as typeof fetch);
     const r = await landing();
     expect(r.to).toBe('/adv');
+    expect(slept).toEqual([]);
   });
 
   it('UNREACHABLE backend (fetch keeps failing) → /adv, not a hang', async () => {
     // Every attempt rejects (network error). fetchWithTimeout exhausts its
-    // retries and throws → the outer catch lands on /adv. The pre-fix code hung
-    // here forever. (Real backoff sleeps run — a few retries, ~1.6s.)
+    // retries and throws → treated as transient-inconclusive, waited out, then
+    // /adv. The pre-fix code hung here forever.
     stubFetch((async () => {
       throw new TypeError('Failed to fetch');
     }) as typeof fetch);
-    const r = await landing();
+    const r = await landing(3_000);
     expect(r.to).toBe('/adv');
-    expect(r.search).toMatchObject({ tab: 'harnesses' });
+  });
+
+  it('beforeLoad turns the resolved landing into a real redirect (wiring)', async () => {
+    // The resolver decides; this proves beforeLoad still THROWS that decision —
+    // and carries the harnesses tab, which the resolver's bare '/adv' cannot.
+    stubFetch((async () =>
+      new Response(JSON.stringify({ finished_at: '2026-01-01T00:00:00Z' }), {
+        status: 200,
+      })) as typeof fetch);
+    const thrown = await beforeLoad().then(
+      () => null,
+      (e: unknown) => e as { to?: string; search?: Record<string, unknown> },
+    );
+    expect(thrown?.to).toBe('/adv');
+    expect(thrown?.search).toMatchObject({ tab: 'harnesses' });
   });
 });

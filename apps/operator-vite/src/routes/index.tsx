@@ -122,47 +122,75 @@ const GATEWAY_RETRY_BACKOFF_MS = 750;
  * verdict about the USER. Every packaged perf run had been measuring
  * `/onboarding` for this reason.
  */
+/** Where the gateway decided to land. `/adv` is always the harnesses tab. */
+export type Landing = '/adv' | '/onboarding' | '/setup';
+
+/**
+ * Injectable seams, following `fetchWithTimeout` / `loadOnboardConcierge`.
+ * Present so the decision can be tested WITHOUT sitting out a real 30s budget —
+ * a resolver whose only test path is "wait 30 real seconds" does not get tested.
+ */
+export interface GatewayDeps {
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  budgetMs?: number;
+}
+
+/**
+ * Decide the landing. Exported and dependency-injected so every branch is
+ * cheaply testable; `beforeLoad` below is only the redirect wiring.
+ */
+export async function resolveLanding(deps: GatewayDeps = {}): Promise<Landing> {
+  const {
+    fetchImpl = fetch,
+    sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = Date.now,
+    budgetMs = GATEWAY_SETTLE_BUDGET_MS,
+  } = deps;
+  const deadline = now() + budgetMs;
+
+  for (;;) {
+    let answer: GatewayAnswer;
+    try {
+      const res = await fetchWithTimeout('/api/desktop/setup-wizard-state', {
+        timeoutMs: 4000,
+        retries: 2,
+        init: { credentials: 'same-origin' },
+        fetchImpl,
+        sleep,
+      });
+      // A malformed/non-JSON body is inconclusive too — it is not a statement
+      // about the user either, and it must not fall through to first-run.
+      const body = await res.json().catch(() => PARSE_FAILED);
+      answer = classifyGatewayResponse(res.status, body);
+    } catch {
+      // Backend UNREACHABLE after retries (timeout/network). The
+      // substrate-restart / cold-start blip: keep waiting within the budget,
+      // then land on /adv — never on first-run.
+      answer = { kind: 'inconclusive', why: 'backend unreachable', transient: true };
+    }
+
+    // /adv is the operator's primary surface; /harness is retired as a landing
+    // (it now redirects here too).
+    if (answer.kind === 'finished') return '/adv';
+    if (answer.kind === 'first-run') return firstRunTarget(await onboardingFlagEnabled());
+    // Inconclusive. Waiting only helps a transient one, and only inside the
+    // budget; otherwise take the recoverable surface, which reconnects on its
+    // own without a manual relaunch.
+    if (!answer.transient || now() >= deadline) return '/adv';
+    await sleep(GATEWAY_RETRY_BACKOFF_MS);
+  }
+}
+
 export const Route = createFileRoute('/')({
   pendingMs: 700,
   pendingComponent: ConnectingScreen,
   beforeLoad: async () => {
-    const adv = () => redirect({ to: '/adv', search: { tab: 'harnesses' } });
-    const deadline = Date.now() + GATEWAY_SETTLE_BUDGET_MS;
-
-    for (;;) {
-      let answer: GatewayAnswer;
-      try {
-        const res = await fetchWithTimeout('/api/desktop/setup-wizard-state', {
-          timeoutMs: 4000,
-          retries: 2,
-          init: { credentials: 'same-origin' },
-        });
-        // A malformed/non-JSON body is inconclusive too — it is not a statement
-        // about the user either, and it must not fall through to first-run.
-        const body = await res.json().catch(() => PARSE_FAILED);
-        answer = classifyGatewayResponse(res.status, body);
-      } catch {
-        // Backend UNREACHABLE after retries (timeout/network). The
-        // substrate-restart / cold-start blip: keep waiting within the budget,
-        // then land on /adv — never on first-run.
-        answer = { kind: 'inconclusive', why: 'backend unreachable', transient: true };
-      }
-
-      if (answer.kind === 'finished') {
-        // /adv is the operator's primary surface; /harness is retired as a
-        // landing (it now redirects here too). Land on the harnesses tab —
-        // the mission-control / feature-queue equivalent.
-        throw adv();
-      }
-      if (answer.kind === 'first-run') {
-        throw redirect({ to: firstRunTarget(await onboardingFlagEnabled()) });
-      }
-      // Inconclusive. Waiting only helps a transient one, and only inside the
-      // budget; otherwise take the recoverable surface, which reconnects on its
-      // own without a manual relaunch.
-      if (!answer.transient || Date.now() >= deadline) throw adv();
-      await new Promise((resolve) => setTimeout(resolve, GATEWAY_RETRY_BACKOFF_MS));
-    }
+    const landing = await resolveLanding();
+    // Land on the harnesses tab — the mission-control / feature-queue surface.
+    if (landing === '/adv') throw redirect({ to: '/adv', search: { tab: 'harnesses' } });
+    throw redirect({ to: landing });
   },
 });
 
