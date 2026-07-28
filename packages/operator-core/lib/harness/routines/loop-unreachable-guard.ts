@@ -57,6 +57,20 @@ export function minStuckFiresForTermination(): number {
   return Number.isFinite(env) && env >= 1 ? Math.floor(env) : DEFAULT_MIN_STUCK_FIRES;
 }
 
+/** WI-6639 (comatose-host): the consecutive stuck-backstop streak at which even a LIVE
+ *  INJECTABLE channel stops vetoing termination. Deliberately far above both the min-fires
+ *  floor (3) and the fire-circuit threshold (8): at the ~30min stuck-park cadence this is
+ *  ~12h of a loop that settled NO turn and whose owner emitted NO presence beat. */
+export const DEFAULT_COMATOSE_STUCK_FIRES = 24;
+
+/** The comatose-host streak, env-overridable. Never lower than 3× the min-fires floor, so an
+ *  operator cannot tune this into a hair-trigger that terminates a merely-slow live session. */
+export function comatoseStuckFiresForTermination(): number {
+  const env = Number(process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES);
+  const base = Number.isFinite(env) && env >= 1 ? Math.floor(env) : DEFAULT_COMATOSE_STUCK_FIRES;
+  return Math.max(base, minStuckFiresForTermination() * 3);
+}
+
 /**
  * Pure decision: breach only when the owner is unreachable, has been parked past the
  * terminal window, AND this fire is at least the configured minimum consecutive

@@ -84,6 +84,58 @@ describe('mid-turn-context — query derivation', () => {
   });
 });
 
+describe('mid-turn-context — batch folding (the PostToolBatch payload)', () => {
+  it('folds a batch newest-FIRST — the tail of a batch is the freshest intent', () => {
+    const q = deriveBatchQuery([
+      { tool: 'Read', toolInput: { file_path: '/old.ts' }, toolResponse: 'contents' },
+      { tool: 'Grep', toolInput: { pattern: 'newest' }, toolResponse: 'a hit' },
+    ]);
+    expect(q.indexOf('newest')).toBeLessThan(q.indexOf('/old.ts'));
+  });
+
+  it('marks a BARREN result — the strongest "about to re-derive something" signal there is', () => {
+    // Only available because this fires AFTER the tools ran. A grep that found
+    // nothing is exactly when recall is most valuable.
+    expect(deriveBatchQuery([{ tool: 'Grep', toolInput: { pattern: 'WI-6512' }, toolResponse: 'No matches found' }]))
+      .toContain('(no result)');
+    expect(deriveBatchQuery([{ tool: 'Grep', toolInput: { pattern: 'WI-6512' }, toolResponse: 'packages/a.ts:12: hit' }]))
+      .not.toContain('(no result)');
+  });
+
+  it('accepts the CLAMPED string tool_input the hook actually sends', () => {
+    // The hook JSON-stringifies and clamps before POSTing, so the server must
+    // parse that back rather than assuming a structured object.
+    expect(deriveQuery('Grep', JSON.stringify({ pattern: 'abc', path: 'packages' }))).toBe('abc packages');
+  });
+
+  it('falls back to raw text when a clamp truncated the JSON mid-way', () => {
+    expect(deriveQuery('Bash', '{"command":"rg WI-65')).toContain('rg WI-65');
+  });
+
+  it('drops a batch whose calls carry no recall signal at all', async () => {
+    const out = await post({
+      owner: owner(),
+      toolCalls: [{ tool: 'Edit', toolInput: { file_path: '/a.ts' }, toolResponse: 'ok' }],
+    });
+    expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+    expect(out.text).toBe('');
+  });
+
+  it('runs the pipeline once for the whole batch, not once per call', async () => {
+    await post({
+      owner: owner(),
+      toolCalls: [
+        { tool: 'Grep', toolInput: { pattern: 'alpha' }, toolResponse: 'x' },
+        { tool: 'Grep', toolInput: { pattern: 'beta' }, toolResponse: 'y' },
+        { tool: 'Read', toolInput: { file_path: '/c.ts' }, toolResponse: 'z' },
+      ],
+      harness: 'papercusp',
+    });
+    expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
+    expect(firstCall()).toMatchObject({ session: { port: 'mid-turn' } });
+  });
+});
+
 describe('mid-turn-context — the cost properties', () => {
   it('spends NOTHING on a tool call with no recall signal', async () => {
     const out = await post({ owner: owner(), tool: 'Edit', toolInput: { file_path: '/a.ts' } });
