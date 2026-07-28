@@ -25,8 +25,17 @@ import { askUserLocal } from '@/lib/chat-cards/ask-user-local';
 import { listChatActions } from '@/lib/chat-actions';
 import type { ChatAction, ChatActionContext } from '@/lib/chat-actions/types';
 
-/** WI-6552: ceiling on a `params()` option-load before the bar gives up. */
-const PARAMS_TIMEOUT_MS = 12_000;
+/**
+ * WI-6552: ceiling on a `params()` option-load before the bar gives up.
+ *
+ * Deliberately generous. This exists to guarantee the bar RECOVERS from a load
+ * that never settles — not to enforce snappiness — so it must sit well above
+ * a legitimately slow fetch. Measured on this dev box at load average ~65,
+ * a cold `rubrics.list` can take far longer than a snappy budget would allow;
+ * erroring out a load that would have succeeded is a worse failure than making
+ * the user wait, because it turns a working feature into a broken one.
+ */
+const PARAMS_TIMEOUT_MS = 30_000;
 
 /**
  * Reject with `message` if `p` has not settled within `ms`. The pending

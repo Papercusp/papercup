@@ -225,7 +225,12 @@ export function renderPlaneClosePreflightWarning(v: PlaneClosePreflight): string
   if (v.outcome === 'not-a-gap-item' || v.outcome === 'safe') return undefined;
 
   const rows = v.outcome === 'reds-the-gate' ? v.causes : v.unjudgeable;
-  const list = rows.map((r) => `${r.metric} (exempted by ${r.knownGap})`).join(', ');
+  // Attribute the metric to its gap item only when there is more than one item in
+  // play — on the single close (every real call today) "Closing WI-6548 … exempted
+  // by WI-6548" is noise in the first sentence, which is the sentence that has to land.
+  const list = rows
+    .map((r) => (v.gapItems.length > 1 ? `${r.metric} (exempted by ${r.knownGap})` : r.metric))
+    .join(', ');
 
   const head =
     v.outcome === 'reds-the-gate'
