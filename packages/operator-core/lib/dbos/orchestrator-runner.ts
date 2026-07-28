@@ -87,7 +87,7 @@ import { initAgentGovernorObserver } from '../agent-governor-observer';
 import { maybeInstallPgGovernorStore } from '../agent-governor-pg-store';
 import { initRateLimitConfig } from '../rate-limit-config';
 import { recordUsageHeaders } from '../agent-usage-telemetry';
-import { SCOPE_LAUNCH_FAILURE_RE } from '../systemd-scope';
+import { SCOPE_LAUNCH_FAILURE_RE, buildIsolatedScopeArgv } from '../systemd-scope';
 import {
   beginSyncEnrolment,
   completeSyncEnrolment,
@@ -554,7 +554,33 @@ function runChild(
       },
       { confine: useScope },
     );
-    const wrapped = enrolment.wrap(command, args);
+    /* WI-6499 gates ENROLMENT on the task-manager flag, and defines flag-OFF as
+       "byte-identical-to-pre-feature behaviour — an unconfined, unledgered spawn".
+       That definition is right for a spawn seam the task manager INTRODUCED
+       confinement to. It is wrong HERE, and silently regressed this one: the
+       pre-task-manager behaviour of THIS seam was already scope-confined by
+       WI-1499 (bg-host-agent-spawn-scope-isolation-2026-07-02), which exists
+       because agent turns sharing papercup-bg-host.service's cgroup let one
+       restart or OOM kill every in-flight turn — the 2026-07-01 40G OOM
+       crash-loop. Flag-OFF was therefore dropping the memory cap entirely, not
+       returning to the previous behaviour.
+
+       So the flag governs the LEDGER + the NAMED unit (the new part); the memory
+       cap is not switchable. When enrolment declines to confine but this seam
+       still wants a scope, fall back to the ORIGINAL unnamed isolated scope.
+       `orchestrator-runner-scope.test.ts` is what caught this, and it is the
+       reason that file asserts on `systemd-run` rather than on the ledger. */
+    const wrapped = enrolment.confined
+      ? enrolment.wrap(command, args)
+      : useScope
+        ? (() => {
+            const argv = buildIsolatedScopeArgv(
+              [command, ...args],
+              agentSpawnScopeMemoryMaxG(),
+            );
+            return { binary: argv[0], argv: argv.slice(1) };
+          })()
+        : { binary: command, argv: args };
     const [spawnCommand, ...spawnArgs] = [wrapped.binary, ...wrapped.argv];
     // `detached: true` puts the child in its OWN process group so we can reap the
     // WHOLE tree on abort/timeout, not just the immediate child. In dev the spawn is
