@@ -71,6 +71,10 @@ vi.mock('../severe-event-broadcast', () => ({
   broadcastSevereEvent: broadcasts.alarm,
   broadcastSevereEventResolvedMany: broadcasts.resolved,
 }));
+// WI-6643: the alarm path dynamic-imports this. Stubbed so a test that drives a
+// real alarm asserts the payload instead of doing owner-notification IO.
+const notify = vi.hoisted(() => ({ attention: vi.fn(async (..._args: unknown[]) => undefined) }));
+vi.mock('../attention-notify', () => ({ notifyAttention: notify.attention }));
 
 import { checkOriginFreshness } from './origin-freshness-watchdog';
 
@@ -107,6 +111,7 @@ beforeEach(() => {
   gitModes.byPotHome.clear();
   broadcasts.alarm.mockClear();
   broadcasts.resolved.mockClear();
+  notify.attention.mockClear();
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 });
 
@@ -119,6 +124,89 @@ async function freshWatchdog() {
   vi.resetModules();
   return (await import('./origin-freshness-watchdog')).checkOriginFreshness;
 }
+
+/**
+ * WI-6643 — the WIRING half of "the alarm is named after its cause".
+ *
+ * origin-freshness.test.ts covers `describeOriginFreshnessAlert` as a pure
+ * function. That is exactly the split that let the original bug ship: the pure
+ * verdict was right (it said "REFUSED … (secrets)") while the watchdog emitted a
+ * hardcoded origin-behind summary next to it. So the property worth pinning here
+ * is not "the helper returns good text" — it is "the sweep actually EMITS that
+ * text", which no pure test can see.
+ */
+describe('WI-6643 — a publish refusal reaches the broadcast surface named as a refusal', () => {
+  /** A bridged pot whose publish leg has been refusing on `secrets` for a while. */
+  const REFUSING_ROW = {
+    of_origin_sha: null,
+    of_origin_since_ms: null,
+    of_alerted: false,
+    of_alerted_cause: null,
+    of_stall_sweeps: 3, // already past the sustain debounce
+    of_publish_refused_sweeps: 5, // already past the 3-sweep refusal threshold
+    publish_refused: 'secrets',
+    egress_head: null,
+  };
+
+  async function sweepRefusing(row: Record<string, unknown> = REFUSING_ROW) {
+    registries.byWorkspace.set('papercusp-workspace', [BRIDGED_ENTRY]);
+    gitModes.byPotHome.set('papercusp', 'bridged');
+    const { sql, writes } = makeSql({
+      workspaceIds: ['papercusp-workspace'],
+      bridgedPots: 1,
+      routineRow: row,
+    });
+    const check = await freshWatchdog();
+    const out = await check({ sql, workspaceId: 'papercusp-workspace' } as never);
+    return { out, writes };
+  }
+
+  it('broadcasts the REFUSAL, not "GitHub origin is falling behind"', async () => {
+    await sweepRefusing();
+    expect(broadcasts.alarm).toHaveBeenCalledTimes(1);
+    const ev = broadcasts.alarm.mock.calls[0][0] as { summary: string; body: string };
+    // The exact regression: this line is all an agent sees in coord:inbox.
+    expect(ev.summary).toMatch(/REFUSED/);
+    expect(ev.summary).toMatch(/secrets/);
+    expect(ev.summary).not.toMatch(/GitHub origin is falling behind/);
+    // …and the runbook must not send them to the bridge, which is fine.
+    expect(ev.body).toMatch(/pot_git:secrets_exemptions/);
+    expect(ev.body).not.toMatch(/metadata\.github_bridge/);
+  });
+
+  it('pages the owner with the refusal framing too', async () => {
+    await sweepRefusing();
+    expect(notify.attention).toHaveBeenCalledTimes(1);
+    const page = notify.attention.mock.calls[0][0] as { title: string; data: { cause: string } };
+    expect(page.title).toMatch(/REFUSED/);
+    expect(page.data.cause).toBe('publish-refused');
+  });
+
+  it('records the cause on the latch so a later cause CHANGE can re-alarm', async () => {
+    const { writes } = await sweepRefusing();
+    // The masking bug: one boolean shared by three signals meant whichever
+    // latched first silenced the others for as long as it stayed stale.
+    const latch = writes.find((w) => w.includes('of_alerted_cause'));
+    expect(latch).toBeDefined();
+    expect(latch).toContain('publish-refused');
+  });
+
+  it('stays silent when the SAME cause is already latched (one-shot holds)', async () => {
+    await sweepRefusing({ ...REFUSING_ROW, of_alerted: true, of_alerted_cause: 'publish-refused' });
+    expect(broadcasts.alarm).not.toHaveBeenCalled();
+    expect(notify.attention).not.toHaveBeenCalled();
+  });
+
+  it('RE-ALARMS when a refusal begins under an already-latched origin-behind alert', async () => {
+    // The masking case, stated: an origin-behind alarm latched first, then the
+    // publish leg starts refusing. Because a refusal pins state:'stale', the old
+    // shared boolean would never clear and the refusal would never be announced.
+    await sweepRefusing({ ...REFUSING_ROW, of_alerted: true, of_alerted_cause: 'origin-behind' });
+    expect(broadcasts.alarm).toHaveBeenCalledTimes(1);
+    const ev = broadcasts.alarm.mock.calls[0][0] as { summary: string };
+    expect(ev.summary).toMatch(/REFUSED/);
+  });
+});
 
 describe('WI-5791 — coverage: the sweep must reach every workspace, not just the default', () => {
   it('checks a bridged pot living in a NON-default workspace (the five-day blind spot)', async () => {
