@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   drillInRefToInbox,
   resolveInboxDrillIn,
+  resolveDrillInTarget,
   resolvePlanItemDrillIn,
   resolveRefDestination,
   type DrillInItem,
@@ -181,5 +182,107 @@ describe('resolveRefDestination (hud-open-destinations-and-true-counts-2026-07-2
   it('a ref shaped like a work item but glued into a larger token is NOT a work item', () => {
     expect(resolveRefDestination('XWI-123', destItems)).toEqual({ kind: 'none' });
     expect(resolveRefDestination('WI-123abc', destItems)).toEqual({ kind: 'none' });
+  });
+
+  /* ── the HARNESS-QUALIFIED shapes the curator really emits ──────────────────
+   *
+   * Every ref string below was read off the LIVE app / the real producers on
+   * 2026-07-28, not invented: `curation/deps.ts` writes `wi:<harness>#<id>` for
+   * its blocked/dead-claim/review rows and a bare `<harness>#<id>` for progress,
+   * and `blockedWorkItemToAttention` carries the same `<harness>#<id>` as the
+   * item's `itemRef`. `curation:feed` returned `wi:papercusp#WI-6594` for all 6
+   * live blocker rows; not one bare `WI-NNNN` appeared.
+   *
+   * This matters because the tests above — all bare ids — passed against the old
+   * anchored matcher while the live destination was broken: the popup opened on
+   * `papercusp#WI-6594` and rendered "No item found for papercusp#WI-6594."
+   */
+  it('a harness-qualified wi: ref (what the curator ACTUALLY emits) resolves id AND harness', () => {
+    expect(resolveRefDestination('wi:papercusp#WI-6594', destItems)).toEqual({
+      kind: 'work-item',
+      id: 'WI-6594',
+      harness: 'papercusp',
+    });
+  });
+
+  it('a bare harness-qualified ref (deps.ts progress rows) resolves the same way', () => {
+    expect(resolveRefDestination('papercusp#WI-6594', destItems)).toEqual({
+      kind: 'work-item',
+      id: 'WI-6594',
+      harness: 'papercusp',
+    });
+  });
+
+  it("a matched item's harness-qualified itemRef resolves to its work item, not its owner", () => {
+    const blocked: RefDestinationItem[] = [
+      {
+        // blockedWorkItemToAttention: id + curatorRef, verbatim shapes
+        id: 'work-item-blocked:WI-6594',
+        itemRef: 'papercusp#WI-6594',
+        planSlug: null,
+        ownerAgentId: 'su-abc12345',
+      },
+    ];
+    expect(resolveRefDestination('papercusp#WI-6594', blocked)).toEqual({
+      kind: 'work-item',
+      id: 'WI-6594',
+      harness: 'papercusp',
+    });
+  });
+
+  it('an ask-kind `:` segment is never read as a harness — it would scope the lookup to nothing', () => {
+    expect(resolveRefDestination('wi:owner-wall:WI-4271', destItems)).toEqual({
+      kind: 'work-item',
+      id: 'WI-4271',
+    });
+  });
+});
+
+describe('resolveDrillInTarget — the ONE verdict the Open button and its click share', () => {
+  const items: RefDestinationItem[] = [
+    { id: 'coord-escalation:msg-1', itemRef: null, planSlug: null, ownerAgentId: 'su-abc12345' },
+  ];
+
+  it('a harness-qualified ref is openable with NO surrounding harness — the ref carries it', () => {
+    // Measured live 2026-07-28: with no `?slug` in the URL this case rendered a
+    // button whose click pushed a bare `/adv?tab=hud`, discarding the user's
+    // scope/hudtab/hudwi view state instead of opening anything.
+    expect(resolveDrillInTarget('wi:papercusp#WI-6594', items, null)).toEqual({
+      kind: 'work-item',
+      harness: 'papercusp',
+      id: 'WI-6594',
+    });
+  });
+
+  it('an UNqualified work-item ref falls back to the surface harness, and is NOT openable without one', () => {
+    expect(resolveDrillInTarget('WI-6594', items, 'papercusp')).toEqual({
+      kind: 'work-item',
+      harness: 'papercusp',
+      id: 'WI-6594',
+    });
+    // No harness anywhere → no destination → no button (owner ruling 2026-07-28:
+    // "if there is nothing to open there should be no open button"). The old code
+    // returned openable here and then no-oped.
+    expect(resolveDrillInTarget('WI-6594', items, null)).toBeNull();
+  });
+
+  it('the ref-named harness WINS over the surface harness (a cross-harness card opens its own item)', () => {
+    expect(resolveDrillInTarget('wi:papercup-hive#WI-7', items, 'papercusp')).toEqual({
+      kind: 'work-item',
+      harness: 'papercup-hive',
+      id: 'WI-7',
+    });
+  });
+
+  it('plan and session targets pass through; nothing-openable is null', () => {
+    expect(resolveDrillInTarget('plan:my-plan-2026-07-17', items, null)).toEqual({
+      kind: 'plan',
+      slug: 'my-plan-2026-07-17',
+    });
+    expect(resolveDrillInTarget('escalation:msg-1', items, null)).toEqual({
+      kind: 'session',
+      ownerAgentId: 'su-abc12345',
+    });
+    expect(resolveDrillInTarget('health:some-panel', items, 'papercusp')).toBeNull();
   });
 });

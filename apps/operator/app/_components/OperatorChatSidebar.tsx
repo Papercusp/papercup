@@ -30,7 +30,7 @@ import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import { OperatorChat } from './OperatorChat';
-import { resolveRefDestination } from './chat/curator-card-drill-in';
+import { resolveDrillInTarget } from './chat/curator-card-drill-in';
 import { PotHealthPane } from './PotHealthPane';
 import { useInboxAttention, useInboxPendingCount, usePlansNeedingYouCount } from './inbox/use-inbox-pending';
 import { BUILT_IN_CHAT_VIEWS, dedupeChatFaces, type OpChatFace } from './op-chat-faces';
@@ -395,35 +395,37 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   // button's visibility would be frozen at first paint. `handleCardDrillIn`
   // keeps reading the ref instead, so the CLICK path stays identity-stable and
   // the WI-6502 typing-lag memo is unaffected by keystrokes.
+  // ⚠ Both the gate and the click go through `resolveDrillInTarget`, NOT
+  // `resolveRefDestination` — the latter is not the openable-verdict, and using
+  // it here is what let a rendered button disagree with its own click (a
+  // work-item destination also needs a harness). See that function's docblock
+  // for the live measurement.
   const canCardDrillIn = useCallback(
-    (ref: string) => resolveRefDestination(ref, inboxItems).kind !== 'none',
-    [inboxItems],
+    (ref: string) => resolveDrillInTarget(ref, inboxItems, harnessSlug) !== null,
+    [inboxItems, harnessSlug],
   );
   const handleCardDrillIn = useCallback(
     (ref: string) => {
-      const dest = resolveRefDestination(ref, inboxItemsRef.current);
-      switch (dest.kind) {
+      const target = resolveDrillInTarget(ref, inboxItemsRef.current, harnessSlug);
+      switch (target?.kind) {
         case 'work-item':
-          // `wpop` encodes "<harnessSlug>::<id>" — workItems.detail is
-          // harness-scoped, so with no harness there is nothing safe to open
-          // (the same gate OperatorChat's handleWorkRefActivate applies).
-          if (harnessSlug) {
-            void setOpenWorkItem(`${harnessSlug}::${dest.id}`);
-            return;
-          }
-          break;
+          // `wpop` encodes "<harness>::<id>" — workItems.detail is harness-scoped.
+          // The harness comes from the REF when it names one, so a
+          // harness-qualified curator ref opens even where `?slug` is absent.
+          void setOpenWorkItem(`${target.harness}::${target.id}`);
+          return;
         case 'plan':
-          void setOpenChatPlan(dest.slug);
+          void setOpenChatPlan(target.slug);
           return;
         case 'session':
-          router.push(buildAdvHudHref(dest.ownerAgentId));
+          router.push(buildAdvHudHref(target.ownerAgentId));
           return;
-        case 'none':
-          break;
       }
-      // Nothing openable (a `health:<panelId>` ref, or a work-item ref with no
-      // harness context): fall back to the HUD board, where the unattributed
-      // lane (hud-consolidation P-002) renders the ask itself.
+      // Unreachable from a rendered button now that the gate above agrees with
+      // this click (a `health:<panelId>` ref resolves to null and renders no
+      // button). Kept only for a click that races the items updating out from
+      // under it: the HUD board's unattributed lane (hud-consolidation P-002)
+      // renders the ask itself, so it is the least-wrong destination.
       router.push(buildAdvHudHref());
     },
     [router, harnessSlug, setOpenWorkItem, setOpenChatPlan, buildAdvHudHref],

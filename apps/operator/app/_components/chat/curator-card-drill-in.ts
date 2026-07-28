@@ -45,6 +45,7 @@
  * popup into that hook.
  */
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
+import { splitQualifiedWorkItemRef, trailingWorkItemId } from '@/lib/work-item-ref';
 
 const ESCALATION_PREFIX = 'escalation:';
 
@@ -140,8 +141,11 @@ export function resolveInboxDrillIn(
 export type RefDestinationItem = DrillInItem & { ownerAgentId?: string | null };
 
 export type RefDestination =
-  /** Open `id` in WorkItemPopupModal. */
-  | { kind: 'work-item'; id: string }
+  /** Open `id` in WorkItemPopupModal. `harness` is set when the REF ITSELF named
+   *  one (`wi:papercusp#WI-6594`) — a work-item lookup is harness-scoped, and the
+   *  ref is a stricter source than the surrounding surface's `?slug`, which is
+   *  absent on every cross-harness mount. */
+  | { kind: 'work-item'; id: string; harness?: string }
   /** Open `slug` in PlanPopupModal. */
   | { kind: 'plan'; slug: string }
   /** Open this agent's conversation (the HUD `?hudsession=` destination). */
@@ -150,14 +154,22 @@ export type RefDestination =
    *  navigate somewhere that looks like a no-op. */
   | { kind: 'none' };
 
-/** WI-/EI-/F- ids, anchored (a whole ref token, not a scan over prose — that is
- *  `parseWorkRefs`'s job). Case-insensitive so a `wi:wi-42` ref still resolves;
- *  the id is normalized to uppercase, matching `parseWorkRefs`. */
-const WORK_ITEM_ID = /^(WI|EI|F)-(\d+)$/i;
-
+/** The work-item id a ref token names, read from its TRAILING segment (not a
+ *  scan over prose — that is `parseWorkRefs`'s job). Case-insensitive so a
+ *  `wi:wi-42` ref still resolves; normalized to uppercase, matching
+ *  `parseWorkRefs`.
+ *
+ *  ⚠ This was an ANCHORED match on the whole token until 2026-07-28, which made
+ *  it fail on every ref the curator actually emits: `curation/deps.ts` writes
+ *  `wi:<harness>#<featureId>`, and `blockedWorkItemToAttention` carries the same
+ *  `<harness>#<id>` string as the item's `itemRef`. Measured live on the owner's
+ *  Fleet-status cards: `wi:papercusp#WI-6594` fell through the anchored test to
+ *  the raw-token fallback below, so the popup opened on `papercusp#WI-6594` and
+ *  rendered "No item found for papercusp#WI-6594." — with the button's own gate
+ *  reporting the ref as openable. The grammar is shared with the HUD board, which
+ *  shipped the identical bug; see `@/lib/work-item-ref`. */
 function asWorkItemId(token: string): string | null {
-  const m = WORK_ITEM_ID.exec(token.trim());
-  return m ? `${m[1].toUpperCase()}-${m[2]}` : null;
+  return trailingWorkItemId(token.trim());
 }
 
 export function resolveRefDestination(
@@ -174,13 +186,20 @@ export function resolveRefDestination(
   // 1. Explicit kind prefixes from the curator's own ref vocabulary
   //    (fleet-signals.ts) — these are unambiguous, so they win outright.
   if (prefix === 'wi' && bare) {
-    return { kind: 'work-item', id: asWorkItemId(bare) ?? bare };
+    const q = splitQualifiedWorkItemRef(bare);
+    return q.id
+      ? { kind: 'work-item', id: q.id, ...(q.harness ? { harness: q.harness } : {}) }
+      : { kind: 'work-item', id: bare };
   }
   if (prefix === 'plan' && bare) return { kind: 'plan', slug: bare };
 
-  // 2. A bare work-item id carrying no prefix at all.
-  const bareId = colon < 0 ? asWorkItemId(r) : null;
-  if (bareId) return { kind: 'work-item', id: bareId };
+  // 2. A work-item id carrying no `kind:` prefix — bare (`WI-6594`) or
+  //    harness-qualified (`papercusp#WI-6594`, which `curation/deps.ts` emits
+  //    for its review + progress rows).
+  const bareQ = colon < 0 ? splitQualifiedWorkItemRef(r) : { harness: null, id: null };
+  if (bareQ.id) {
+    return { kind: 'work-item', id: bareQ.id, ...(bareQ.harness ? { harness: bareQ.harness } : {}) };
+  }
 
   // 3. Resolve against the live items, reusing the SAME matcher the inbox
   //    destination uses — so the two can never disagree about which item a ref
@@ -194,13 +213,63 @@ export function resolveRefDestination(
   }
 
   if (match) {
-    const viaItemRef = match.itemRef ? asWorkItemId(match.itemRef) : null;
-    if (viaItemRef) return { kind: 'work-item', id: viaItemRef };
+    const viaItemRef = match.itemRef ? splitQualifiedWorkItemRef(match.itemRef) : null;
+    if (viaItemRef?.id) {
+      return {
+        kind: 'work-item',
+        id: viaItemRef.id,
+        ...(viaItemRef.harness ? { harness: viaItemRef.harness } : {}),
+      };
+    }
     if (match.planSlug) return { kind: 'plan', slug: match.planSlug };
     if (match.ownerAgentId) return { kind: 'session', ownerAgentId: match.ownerAgentId };
   }
 
   return { kind: 'none' };
+}
+
+/** A drill-in target that is CONCRETELY openable — every field the caller needs
+ *  is present, so there is no way to render a button whose click then finds it
+ *  cannot proceed. */
+export type DrillInTarget =
+  | { kind: 'work-item'; harness: string; id: string }
+  | { kind: 'plan'; slug: string }
+  | { kind: 'session'; ownerAgentId: string };
+
+/**
+ * The SINGLE openable-verdict a card's Open button and its click must share:
+ * null means "nothing to open", which per the owner's 2026-07-28 ruling means no
+ * button at all.
+ *
+ * ⚠ This exists because `resolveRefDestination` alone is NOT that verdict, and
+ * treating it as one shipped a button that lied. A work-item destination also
+ * needs a HARNESS (the lookup is harness-scoped); the click applied that gate and
+ * the button's gate did not, so on any surface without a resolvable harness the
+ * button rendered and its click fell through to a bare `/adv?tab=hud` push.
+ * Measured live 2026-07-28 on `wi:papercusp#WI-6594` with no `?slug` present: the
+ * gate promised openable, and the click navigated to the board the sidebar was
+ * ALREADY on — discarding the user's `scope`/`hudtab`/`hudwi` view state on the
+ * way. `resolvedHarness` is the surrounding surface's fallback ONLY; a
+ * harness-qualified ref carries its own and needs none.
+ */
+export function resolveDrillInTarget(
+  ref: string,
+  items: readonly RefDestinationItem[],
+  resolvedHarness: string | null | undefined,
+): DrillInTarget | null {
+  const dest = resolveRefDestination(ref, items);
+  switch (dest.kind) {
+    case 'work-item': {
+      const harness = dest.harness ?? resolvedHarness ?? null;
+      return harness ? { kind: 'work-item', harness, id: dest.id } : null;
+    }
+    case 'plan':
+      return { kind: 'plan', slug: dest.slug };
+    case 'session':
+      return { kind: 'session', ownerAgentId: dest.ownerAgentId };
+    case 'none':
+      return null;
+  }
 }
 
 /**
