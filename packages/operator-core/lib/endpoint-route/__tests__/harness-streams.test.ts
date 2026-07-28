@@ -5,6 +5,9 @@ import {
   THINKING_ENTRY_TEXT_CAP,
   sessionTurnEntryKind,
   pickSessionTurnWindow,
+  sessionPartEntryKind,
+  positionalScanLimit,
+  POSITIONAL_SCAN_CEILING,
 } from '../routes/harness/streams';
 
 describe('capEntryText (UI-bound thinking entry cap)', () => {
@@ -168,6 +171,47 @@ describe('session_turns fallback backfill (WI-4194 — pruned-transcript ended s
       const withGaps: Array<string | null> = [tsAt(0), null, tsAt(2), null, tsAt(4)];
       const { anchorPos } = pickSessionTurnWindow(withGaps, 2, tsAt(2));
       expect(anchorPos).toBe(2); // the null rows are skipped, exact ts match wins
+    });
+  });
+});
+
+describe('DB-primary history backfill (session-turn-storage-2026-07-28 P-008/P-009)', () => {
+  describe('sessionPartEntryKind', () => {
+    it('maps each stored part_kind to the entry kind the pane already renders', () => {
+      expect(sessionPartEntryKind('tool_use', 'assistant')).toBe('tool_use');
+      expect(sessionPartEntryKind('tool_result', 'user')).toBe('tool_result');
+      // A thinking block becomes a `status` entry — the same shape the JSONL
+      // timeline parsers emit for reasoning, so the pane styles it unchanged.
+      expect(sessionPartEntryKind('thinking', 'assistant')).toBe('status');
+    });
+
+    it('falls back to the SPEAKER for text parts, preserving turn boundaries', () => {
+      // The frontend groups the timeline into turns on `prompt` entries, so a
+      // user text part must stay a prompt or the pane loses its turn structure.
+      expect(sessionPartEntryKind('text', 'user')).toBe('prompt');
+      expect(sessionPartEntryKind('text', 'assistant')).toBe('text');
+      expect(sessionPartEntryKind(null, 'human')).toBe('prompt');
+      expect(sessionPartEntryKind(undefined, undefined)).toBe('text');
+    });
+  });
+
+  describe('positionalScanLimit (P-009 — the unbounded scan this replaces)', () => {
+    it('reads only the window it can actually use when tailing', () => {
+      // The old query had NO LIMIT: a row per turn of the whole session, pulled
+      // purely to choose a 200-row tail. Harmless as a rare fallback, a hot-path
+      // cost the moment P-008 makes this the primary read.
+      expect(positionalScanLimit(200, false)).toBe(200);
+      expect(positionalScanLimit(1, false)).toBe(1);
+      expect(positionalScanLimit(0, false)).toBe(1); // never a zero LIMIT
+    });
+
+    it('widens to a FIXED ceiling for an anchored deep-link, never to session length', () => {
+      // An anchor can sit anywhere in the session, so the scan widens — but to
+      // a constant, so the query stays O(1) in session length. An anchor older
+      // than the ceiling degrades to the tail window + `anchor {found:false}`,
+      // the same honest miss the file path already emits.
+      expect(positionalScanLimit(200, true)).toBe(POSITIONAL_SCAN_CEILING);
+      expect(positionalScanLimit(5000, true)).toBe(POSITIONAL_SCAN_CEILING);
     });
   });
 });
