@@ -262,6 +262,13 @@ export type WatchdogSource =
   // its threshold window (default 6h) fires one debounced alert + escalation
   // (a release bar nobody is grading is a silent gate, not a green one).
   | 'rubric-staleness'
+  // session-turn-storage-2026-07-28 P-007 (D-005): the transcript-ingest lag
+  // watchdog — an adapter sitting on unconsumed on-disk bytes past its
+  // byte_offset for longer than the threshold. SOURCE-RELATIVE by design, not
+  // a wall-clock lag threshold: codex read 2d9h "behind" and omp 6d8h on
+  // 2026-07-28 while both were caught up and simply unused, so lag alone would
+  // have paged twice for nothing. Scoped per source_kind.
+  | 'session-ingest-lag'
   // autonomous-loop-prod-audit-2026-07-02 P-006 (SPOF 5b): the Scout
   // outcome-refresh sweep's stale-pending alert — routed ideas whose cached
   // `outcome` has sat NULL/'pending' past the staleness threshold even after

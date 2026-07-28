@@ -83,7 +83,9 @@ describe('sessionIngestLagSweep', () => {
 
   const deps = (observations: AdapterLagObservation[], fires = 0) => ({
     observe: async () => observations,
-    recentWatchdogFires: vi.fn(async () => fires),
+    recentWatchdogFires: vi.fn(
+      async (_ws: string, _slug: string, _hours: number, _source?: unknown, _scopeKey?: string) => fires,
+    ),
     recordFire: vi.fn(async () => ({}) as never),
     openEscalation: vi.fn(async () => ({}) as never),
   });
