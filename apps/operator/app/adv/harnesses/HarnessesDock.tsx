@@ -22,6 +22,7 @@ import HiveContentPanel from './HiveContentPanel';
 import AdvLogsPanel from './AdvLogsPanel';
 import AdvInsightsPanel from './AdvInsightsPanel';
 import AdvContributorsPanel from './AdvContributorsPanel';
+import AdvSyncHealthPanel from './AdvSyncHealthPanel';
 
 const CHAT_PANEL_TYPE = 'adv:chat';
 
@@ -89,6 +90,13 @@ function ensureRegistered() {
   // legacy adv:features/adv:issues panels (retired 2026-06-10; row-click drives the
   // same `?sel` the Detail pane reads).
   panelRegistry.register('adv:work-items', WorkItemsPanel, { title: 'Work items' });
+  // adv:sync-health — the sync layer's own numbers (P-003(b) of
+  // no-http-anywhere-2026-07-28): live concurrency-gate depth, queue-wait vs
+  // request time, per-query bytes/ms, and desktop IPC bridge health. Additive and
+  // openable from the panel menu, like insights/contributors. NOT keepAlive: it
+  // polls a 1s display timer, and the metrics are process-wide, so a hidden copy
+  // would sample for nothing — reopening it re-reads the same singleton.
+  panelRegistry.register('adv:sync-health', AdvSyncHealthPanel, { title: 'Sync health' });
   // keepAlive: the chat keeps its SSE stream + transcript when its tab is
   // inactive. Multi-instance: several chat slots can coexist (the open-chat
   // drain fills the first free one).

@@ -34,6 +34,7 @@ import {
   PanelRight,
   Plus,
   Puzzle,
+  Gauge,
   ScrollText,
   SlidersHorizontal,
   SquareDashed,
@@ -83,6 +84,7 @@ const HUMAN_LABELS: Record<string, string> = {
   'adv:logs': 'Run log',
   'adv:contributors': 'Contributors',
   'adv:insights': 'Insights',
+  'adv:sync-health': 'Sync health',
   'adv:chat': 'Chat',
 };
 
@@ -104,6 +106,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   'adv:logs': ScrollText,
   'adv:contributors': Users,
   'adv:insights': TrendingUp,
+  'adv:sync-health': Gauge,
   'view:harness-overview': LayoutDashboard,
   'view:dashboard-overview': LayoutDashboard,
   'data:chat': MessageSquare,
