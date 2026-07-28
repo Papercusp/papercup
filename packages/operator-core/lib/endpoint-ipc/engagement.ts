@@ -67,6 +67,7 @@
  * registration must survive — a dropped handle silently returns this detector to
  * observing nothing while still presenting as coverage.
  */
+import { activeStreams } from '../harness-active-streams';
 import type { CollectorResult, WatchdogSignal } from '../harness/improvements/watchdog';
 import type { EndpointIpcServer } from './server';
 
@@ -275,15 +276,14 @@ export async function endpointIpcEngagementCollector(
   deps: EngagementCollectorDeps = {},
 ): Promise<CollectorResult> {
   const now = deps.now ?? Date.now;
-  const readBypassRaw =
-    deps.readBypassClients ??
-    (() => {
-      // Lazy: the stream registry is operator-process state.
-      const { activeStreams } = require('../harness-active-streams') as {
-        activeStreams: Map<string, unknown>;
-      };
-      return activeStreams.size;
-    });
+  // Statically imported, NOT `require`d: operator-core is ESM ("type":"module"),
+  // so a `require` here is a ReferenceError at runtime — which the guard below
+  // would have swallowed into a permanent bypassClients=0, silently disabling
+  // the only clause that can make this detector fire. A detector that can never
+  // fire while presenting as coverage is the exact defect this module exists to
+  // catch, so it must not be reintroduced. The registry is hung off globalThis,
+  // so a static import shares the one true Map.
+  const readBypassRaw = deps.readBypassClients ?? (() => activeStreams.size);
   // Guarded at the CALL, not inside the default — an injected probe is just as
   // able to throw, and a collector must never take a watchdog tick down over an
   // annotation. Degrading to 0 is the conservative direction: it can only
