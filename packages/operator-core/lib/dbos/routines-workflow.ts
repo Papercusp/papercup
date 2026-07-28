@@ -726,6 +726,33 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'rubric-staleness-sweep' },
   );
 
+  // session-turn-storage-2026-07-28 P-007 (D-005): the TRANSCRIPT-INGEST lag
+  // watchdog. Alerts when an adapter has on-disk bytes past its stored
+  // byte_offset and has not consumed them for longer than the threshold —
+  // SOURCE-RELATIVE, deliberately not a wall-clock lag threshold: codex read
+  // 2d9h "behind" and omp 6d8h on 2026-07-28 while both were fully caught up
+  // and simply unused, so a lag threshold would have paged twice for nothing.
+  // Fail-soft; kill switch: PAPERCUSP_INGEST_LAG_THRESHOLD_SEC<=0.
+  await DBOS.runStep(
+    async () => {
+      const { sessionIngestLagSweep } = await import('../search/session-ingest-lag-watchdog');
+      const results = await sessionIngestLagSweep();
+      for (const res of results) {
+        if (res.outcome === 'alerted' || res.outcome === 'error') {
+          console.warn(`[session-ingest-lag] ${res.outcome}: ${res.sourceKind} — ${res.reason}`);
+        }
+      }
+      return {
+        ranAtMs: Date.now(),
+        resultCount: results.length,
+        alertedCount: results.filter((r) => r.outcome === 'alerted').length,
+        errorCount: results.filter((r) => r.outcome === 'error').length,
+        results: results.slice(0, 10),
+      };
+    },
+    { name: 'session-ingest-lag-sweep' },
+  );
+
   // hive-seed-bundle P-008 (D-007): the COLD-JOIN CANARY. Now that seeded installs
   // only carry the join DELTA (P-006/P-007), the full cold join (no seed, whole-
   // history transfer) stops being exercised on every install and can silently

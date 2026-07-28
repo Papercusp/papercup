@@ -718,6 +718,24 @@ SPA_ENV_LINE=""
 # $PTY_PORT / $LOG and exec it, setting $TAURI_PID. Factored out so the
 # bind-time retry below (EI-18734124566158657) can call it again against a
 # freshly-picked port pair instead of duplicating the heredoc.
+#
+# `--no-watch` is deliberate and load-bearing on this shared box (WI-6502).
+# This tree is edited CONCURRENTLY by the whole fleet, so without it `tauri dev`
+# keeps its Rust file-watcher armed for the life of the run: a PEER touching any
+# src-tauri/*.rs mid-boot triggers "File src-tauri/src/<x>.rs changed. Rebuilding
+# application...", and with several verifier boots live at once the resulting
+# cargo processes convoy on the shared artifact lock ("Blocking waiting for file
+# lock on artifact directory") until this script's 180s bridge timeout expires
+# and the whole run is scrapped. Observed 2026-07-28: a measurement boot was
+# killed by a peer's edit to endpoint_ipc.rs, which has nothing to do with the
+# thing being measured.
+#
+# Freezing the binary is also the SAME contract this script already applies to
+# the frontend, which snapshots dist/ and declares it "IMMUTABLE for this run" —
+# a verification run must measure ONE artifact, not whatever the tree happened to
+# drift to mid-run. The initial build still happens; only rebuild-on-change goes
+# away. Editing Rust and re-verifying works exactly as before: the next
+# invocation builds your change.
 write_and_launch_tauri() {
   cat > "$WORK/launch.sh" <<LAUNCH
 #!/usr/bin/env bash
@@ -728,7 +746,7 @@ exec env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
   PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB=$MEMORY_LIMIT_MB \\
   $SPA_ENV_LINE \\
   $ISOLATED_ENV_LINE \\
-  ${LAUNCH_PREFIX[*]} npm run tauri -- dev --config '{"build":{"devUrl":"http://127.0.0.1:$DEV_PORT"}}'
+  ${LAUNCH_PREFIX[*]} npm run tauri -- dev --no-watch --config '{"build":{"devUrl":"http://127.0.0.1:$DEV_PORT"}}'
 LAUNCH
   chmod +x "$WORK/launch.sh"
   setsid "$WORK/launch.sh" >"$LOG" 2>&1 &

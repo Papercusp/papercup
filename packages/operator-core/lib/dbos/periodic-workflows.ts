@@ -931,7 +931,9 @@ async function sessionTurnsPruneTick(): Promise<void> {
     try {
       const { pruneSessionTurnsOnce } = await import('../search/session-ingest');
       const r = await pruneSessionTurnsOnce();
-      if (r.deleted > 0) console.log(`[session-turns-prune] pruned ${r.deleted} indexed turn(s)`);
+      if (r.deleted > 0 || r.partsDeleted > 0) {
+        console.log(`[session-turns-prune] pruned ${r.deleted} indexed turn(s), ${r.partsDeleted} faithful part(s)`);
+      }
     } catch (err) {
       console.warn(`[session-turns-prune] run skipped (non-fatal): ${(err as Error).message}`);
     }
