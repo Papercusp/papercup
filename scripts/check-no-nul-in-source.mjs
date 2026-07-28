@@ -67,8 +67,16 @@ const NUL_CHAR = String.fromCharCode(0);
 const SOURCE_RE = /\.(ts|tsx|js|jsx|mjs|cjs|json|md|mdx|css|sql|sh|yml|yaml|toml)$/;
 const SKIP_RE = /(^|\/)(fixtures?|__fixtures__|snapshots?|__snapshots__)\//;
 
+/**
+ * `--recurse-submodules` must match the lint in
+ * apps/operator/app/_lints/no-nul-bytes.test.ts — see its comment for the full
+ * story. Short version: a plain `git ls-files` treats each submodule as one
+ * gitlink and never descends, hiding ~5,400 files (21% of the tree) including
+ * ALL of `libs/generic/*`. If the checker and the --fix script disagree on
+ * scope, `--fix` cannot repair what the checker reports.
+ */
 function trackedFiles() {
-  const out = execFileSync('git', ['ls-files', '-z'], { maxBuffer: 64 * 1024 * 1024 });
+  const out = execFileSync('git', ['ls-files', '-z', '--recurse-submodules'], { maxBuffer: 64 * 1024 * 1024 });
   return out
     .toString('utf8')
     .split(NUL_CHAR)

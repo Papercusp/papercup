@@ -26,9 +26,6 @@ import path from 'node:path';
 import {
   configureMemory,
   registerMemoryBackend,
-  ClaudeFileMemoryBackend,
-  CLAUDE_FILE_BACKEND_NAME,
-  claudeProjectMemoryDir,
   HybridBackend,
   LexicalLegBackend,
   Mem0Backend,
@@ -620,37 +617,32 @@ async function resolveEmbedder(): Promise<ResolvedEmbedder> {
   });
 }
 
-// The Claude Code topic-file bridge (generalize-memory-backend-swappable
-// D-005 / claude-memory-projection-integration P-004): select with
-// PAPERCUSP_MEMORY_BACKEND=claude-file to read/write the owner's native
-// Claude file memory through the neutral seam. The store location is the
-// Claude project derived from $HOME (where the owner runs Claude Code) —
-// override the dir with PAPERCUSP_CLAUDE_MEMORY_DIR or the project with
-// PAPERCUSP_CLAUDE_PROJECT_DIR. Never creates the dir: a box without a
-// Claude store reports unavailable rather than inventing one. MEMORY.md
-// (the auto-generated index) is never touched; the SessionStart
-// memory-compact hook projects new topic files into it.
-function makeClaudeFileBackend(): ClaudeFileMemoryBackend {
-  return new ClaudeFileMemoryBackend({
-    memoryDir:
-      process.env.PAPERCUSP_CLAUDE_MEMORY_DIR ||
-      claudeProjectMemoryDir(
-        process.env.PAPERCUSP_CLAUDE_PROJECT_DIR || os.homedir(),
-        path.join(os.homedir(), '.claude'),
-      ),
-  });
-}
-registerMemoryBackend(CLAUDE_FILE_BACKEND_NAME, makeClaudeFileBackend);
-
-// The hybrid store (memory-backend-improve-and-hybrid P-020): select with
-// PAPERCUSP_MEMORY_BACKEND=hybrid (or the live settings flip). Fuses a
-// LEXICAL leg (the claude-file topic-file token search — wins exact-identifier
-// recall) and a COSINE leg (the mem0/canonical pgvector store — wins
-// paraphrase recall) via cosine-gated reciprocal-rank fusion, so one backend
-// captures both bench columns without admitting hard-negative noise (the
-// cosine leg's FP floor is the gate). WRITES delegate to the mem0 leg — the
-// canonical PG store — so the hybrid is cross-backend by construction (D-002).
-registerMemoryBackend('hybrid', () => new HybridBackend(makeClaudeFileBackend(), new Mem0Backend()));
+// ─── RETIRED: the two ~/.claude-backed backends ────────────────────────────
+// `claude-file` (the Claude Code topic-file bridge) and `hybrid` (that file
+// store fused with the mem0 cosine leg) are NO LONGER REGISTERED, and therefore
+// no longer selectable — memory-declaude-and-defaults-2026-07-28 P-004, owner
+// directive: the live memory system must not depend on Claude at all.
+//
+// They were already dead weight, not merely disfavored. The ~/.claude topic
+// files stopped being load-bearing on 2026-07-13
+// (memory-pg-lexical-own-injection-2026-07-13): all 1,806 of them were imported
+// into `harness_shared.memory_canonical`, `MEMORY.md` was replaced by a pointer
+// stub, and the SessionStart hook that regenerated it was retired. Selecting
+// either backend after that pointed live memory at a frozen file store —
+// available in the dropdown, silently wrong if chosen.
+//
+// `hybrid-pg` below is the Claude-free replacement for `hybrid`: same fusion,
+// but BOTH legs over the one canonical PG table. It measured 98% recall@10 vs
+// the old hybrid's 55% on the live 40-pair A/B, so nothing of value was lost.
+//
+// ⚠ A persisted `memory_backend` setting (or PAPERCUSP_MEMORY_BACKEND) still
+// naming a retired backend would otherwise make getMemoryBackend() throw
+// `unknown memory backend` on EVERY memory call. ./backend-selection coerces
+// those names to the default instead — see RETIRED_MEMORY_BACKENDS there.
+//
+// `ClaudeFileMemoryBackend` itself remains exported from @papercusp/memory (D-001):
+// the offline bench constructs it DIRECTLY (never via this registry) to reproduce
+// the historical A/B measurements. Unreachable from the product, still measurable.
 
 // hybrid-pg (memory-pg-lexical-own-injection-2026-07-13 P-003): the
 // SELF-OWNED hybrid — BOTH legs over the one canonical PG store, no
@@ -664,7 +656,10 @@ registerMemoryBackend('hybrid', () => new HybridBackend(makeClaudeFileBackend(),
 // flip (the P-007 cutover is exactly that persisted switch).
 registerMemoryBackend('hybrid-pg', () => {
   const mem0 = new Mem0Backend();
-  return new HybridBackend(new LexicalLegBackend(mem0), mem0);
+  // `name` MUST be passed (P-003): the class defaults to 'hybrid', and a
+  // hybrid-pg that reports itself as 'hybrid' defeats the recall canary's
+  // backend-flip reseed guard, which compares exactly this string.
+  return new HybridBackend(new LexicalLegBackend(mem0), mem0, { name: 'hybrid-pg' });
 });
 
 configureMemory({

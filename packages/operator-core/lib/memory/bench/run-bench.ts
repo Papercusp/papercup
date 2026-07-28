@@ -198,7 +198,7 @@ export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Pro
     await ensureBenchSchema(pg);
     const make = () => {
       const mem0 = new Mem0Backend();
-      return new HybridBackend(new LexicalLegBackend(mem0), mem0);
+      return new HybridBackend(new LexicalLegBackend(mem0), mem0, { name: 'hybrid-pg' });
     };
     return {
       backend: make(),
@@ -367,9 +367,12 @@ async function benchOne(
     };
 
     return {
-      // The REQUESTED bench name, not backend.name — both hybrid variants
-      // share the class's hardcoded 'hybrid', which printed two identical
-      // "hybrid" scorecard columns in the 2026-07-13 run.
+      // The REQUESTED bench name. This used to be load-bearing: both hybrid
+      // variants reported the class's hardcoded 'hybrid', which printed two
+      // identical "hybrid" scorecard columns in the 2026-07-13 run. That is
+      // fixed at the source now (HybridBackend takes its name from opts —
+      // memory-declaude-and-defaults-2026-07-28 P-003), so this is merely the
+      // more direct expression of the same value, not a workaround.
       backend: name,
       seeded: corpus.length,
       seedFailed: manifests[0].failed.length,

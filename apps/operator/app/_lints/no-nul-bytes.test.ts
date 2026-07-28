@@ -50,8 +50,28 @@ const SKIP_RE = /(?:^|\/)(?:fixtures?|__fixtures__|snapshots?|__snapshots__)\//;
 
 const NUL = String.fromCharCode(0);
 
+/**
+ * `--recurse-submodules` IS LOAD-BEARING, not a tidy-up (WI-6559 fallout).
+ *
+ * A plain `git ls-files` reports a submodule as a single GITLINK entry and never
+ * descends into it, so every file under `libs/generic/*` — where the borrowable
+ * libs live, `@papercusp/sync` among them — was invisible to this guard: 0 of
+ * `libs/generic/sync/src/**` listed, and 19,964 paths tree-wide against 25,392
+ * with recursion. That is ~5,400 files, 21% of the tree, silently unscanned.
+ *
+ * The skip was not even reachable as a failure: the gitlink path is a DIRECTORY,
+ * so `readFileSync` throws and the loop's `catch { continue }` swallows it — the
+ * guard reported green over a fifth of the repo.
+ *
+ * It bit exactly as the header predicts: `query-fetcher.ts` (the sync layer's
+ * central fetcher) carried a raw NUL in its cache-key delimiter, which made the
+ * WHOLE FILE binary to grep. Searching it for `sendOne` / `gate` / `timeout`
+ * returned nothing — grep prints "binary file matches" on STDERR and no lines —
+ * so an audit of the very code path under investigation swept straight past it
+ * and read as "that code does not exist".
+ */
 function trackedTextFiles(): string[] {
-  const out = execFileSync('git', ['ls-files', '-z'], {
+  const out = execFileSync('git', ['ls-files', '-z', '--recurse-submodules'], {
     cwd: REPO_ROOT,
     maxBuffer: 64 * 1024 * 1024,
   });

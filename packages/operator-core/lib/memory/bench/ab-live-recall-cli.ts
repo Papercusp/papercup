@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   const backends: Record<string, MemoryBackend> = {
     mem0,
     hybrid: new HybridBackend(new ClaudeFileMemoryBackend({ memoryDir: claudeDir }), mem0),
-    'hybrid-pg': new HybridBackend(new LexicalLegBackend(mem0), mem0),
+    'hybrid-pg': new HybridBackend(new LexicalLegBackend(mem0), mem0, { name: 'hybrid-pg' }),
   };
 
   console.log('backend      | recall@10 (admitted) | retrieval@10 (pre-admission) | zero-hit | p50');
