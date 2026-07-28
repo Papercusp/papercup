@@ -126,6 +126,19 @@ function fakeGit(opts: {
    * `git ls-tree <superSha> <submodulePath>` in the ROOT reports the pin.
    */
   submodulePin?: { superSha: string; pinnedSha: string; path: string };
+  /**
+   * WI-6646: ref → the newest commit touching the path that REF ALREADY CONTAINS,
+   * which is a different question from `pathCommit` (the newest touching it ANYWHERE).
+   * `''` models the measured absence (the ref has no commit for this path at all);
+   * omitting the ref entirely models a FAILED read, which must never read as absence.
+   */
+  newestInRef?: Record<string, string>;
+  /**
+   * WI-6646: ref → that ref's version of the file, which is what a `marker` is counted
+   * in. Supplying a ref here also makes it resolvable (`rev-parse`) and listable
+   * (`ls-tree`), i.e. it models a ref whose blob can genuinely be read.
+   */
+  blobAtRef?: Record<string, string>;
 }): GitRunner {
   const root = '/repo';
   return async (_repo, args) => {
@@ -147,17 +160,36 @@ function fakeGit(opts: {
       if (pin && _repo === root && args[1] === pin.superSha && args[2] === pin.path) {
         return `160000 commit ${pin.pinnedSha}\t${pin.path}`;
       }
+      // WI-6646: a ref with a known blob genuinely HAS the path.
+      if (opts.blobAtRef && args[1] in opts.blobAtRef) return `100644 blob deadbeef\t${args[3]}`;
       return null;
     }
     // The naive cross-boundary content probe: empty, because the superproject
     // commit holds a gitlink, not the file. `realGit` turns git's non-zero exit
     // into null, so null is the faithful stand-in for "grep -c => 0".
-    if (args[0] === 'show') return null;
+    if (args[0] === 'show') {
+      // WI-6646: `show <ref>:<path>` for a ref whose blob the fixture defines.
+      const ref = args[1]?.split(':')[0];
+      if (opts.blobAtRef && ref !== undefined && ref in opts.blobAtRef) return opts.blobAtRef[ref];
+      return null;
+    }
     if (args[0] === 'rev-parse') {
       const want = args[args.length - 1].replace('^{commit}', '');
       // A SUPERPROJECT sha does not exist in the submodule's object store.
       if (opts.submodulePin && _repo !== root && want === opts.submodulePin.superSha) return null;
+      // WI-6646: a symbolic ref must resolve to something SHA-SHAPED or markerAtCommit
+      // correctly refuses it as unresolvable — the fixture would otherwise test the
+      // resolver-failed path while claiming to test marker containment.
+      if (opts.blobAtRef && want in opts.blobAtRef) return 'a'.repeat(40);
       return want;
+    }
+    // WI-6646: the REF-SCOPED variant (`log -1 --pretty=%H <ref> -- <path>`) asks a
+    // different question from the bare one below and must not share its answer —
+    // conflating them is what made the newer-commit case untestable.
+    if (args[0] === 'log' && args.includes('--pretty=%H') && args[3] !== '--') {
+      const ref = args[3];
+      if (!opts.newestInRef || !(ref in opts.newestInRef)) return null; // read FAILED
+      return opts.newestInRef[ref];
     }
     if (args[0] === 'log' && args.includes('--pretty=%H')) return opts.pathCommit ?? null;
     if (args[0] === 'log' && args.includes('--pretty=%s')) return opts.subject ?? 'subj';
@@ -266,6 +298,168 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.positionsUnknown).not.toContain('deployed');
     expect(res.positions.deployed).toBe(false);
     expect(res.positions.onStaging).toBe(true);
+  });
+
+  /**
+   * WI-6646 — the NEWER-COMMIT trap in `positions.inMain` / `positions.deployed`.
+   *
+   * With a `path`, `targetSha` is "the newest commit TOUCHING that path", so both legs
+   * answer about that commit — which on a shared file is routinely a PEER'S, committed
+   * after yours by the whole-tree git-sync sweep. `inMain: false` then means "the newest
+   * commit touching this file has not reached main", NOT "your change has not reached
+   * main", and those demand opposite advice. Measured on the live repo 2026-07-28: 43 of
+   * the 54 paths then diverging between main and staging reported `inMain: false` while a
+   * real change to that same file WAS already in main.
+   *
+   * This is the identical trap `changeInCandidate.judgingContainsPath` carries, but these
+   * legs shipped without either of its mitigations — and they are what `summary`,
+   * `stages[]`, `blockedOn` and `nextAction` are all derived from.
+   */
+  describe('WI-6646: the newer-commit artifact in the inMain/deployed legs', () => {
+    const P = 'apps/operator/app/x.ts';
+    /** A peer's commit, newer than the caller's, is what `targetSha` resolves to. */
+    const PEER = 'bbbb222222';
+    /** The caller's own commit — already in main, and invisible to the bare legs. */
+    const MINE = 'aaaa111111';
+
+    it('EXPLAINS a false inMain when the ref already holds an earlier commit to the same path', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        // main does not have the peer's commit, but it DOES have the caller's earlier one.
+        newestInRef: { 'origin/main': MINE, deployedsha0: MINE },
+      });
+      const res = await gitPipelinePosition(
+        { path: P },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      // The boolean is unchanged — every existing consumer still sees the same value…
+      expect(res.positions.inMain).toBe(false);
+      // …but it is now SAYABLE that this false is about a newer commit, not the caller.
+      expect(res.positionsNewerCommit).toContain('inMain');
+      expect(res.notes.join('\n')).toMatch(/FALSE ABOUT A NEWER COMMIT/);
+      // And it must name the lever, or the caller is left with a warning and no move.
+      expect(res.notes.join('\n')).toMatch(/`marker`/);
+    });
+
+    it('applies the SAME treatment to the deployed leg, not just inMain', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        newestInRef: { 'origin/main': MINE, deployedsha0: MINE },
+      });
+      const res = await gitPipelinePosition(
+        { path: P },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      // Both legs share the one `targetSha`, so a fix that only covered inMain would
+      // leave the identical false in the leg agents actually act on ("is it LIVE?").
+      expect(res.positionsNewerCommit).toEqual(expect.arrayContaining(['inMain', 'deployed']));
+    });
+
+    it('a MARKER present in the ref CORRECTS the leg to true, in the result and the summary', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        newestInRef: { 'origin/main': MINE },
+        // main's version of the file DOES carry the caller's change.
+        blobAtRef: { 'origin/main': 'function looksDeadOrStuck() {}\n// looksDeadOrStuck again\n' },
+      });
+      const res = await gitPipelinePosition(
+        { path: P, marker: 'looksDeadOrStuck' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.positions.inMain).toBe(true);
+      expect(res.positionsMarker?.inMain?.present).toBe(true);
+      expect(res.positionsMarker?.inMain?.count).toBe(2);
+      // A corrected leg must NOT also be reported as a newer-commit artifact — the
+      // marker SETTLED it, and emitting both would re-introduce the ambiguity.
+      expect(res.positionsNewerCommit).not.toContain('inMain');
+      expect(res.notes.join('\n')).toMatch(/CORRECTED to true by the marker/);
+      // The correction has to reach the rendered verdict, not just a side field — the
+      // summary tick is what an agent actually reads.
+      expect(res.summary).toMatch(/main ✓/);
+    });
+
+    it('a MARKER absent from the ref confirms a GENUINE miss and does not cry newer-commit', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        newestInRef: { 'origin/main': MINE },
+        blobAtRef: { 'origin/main': 'nothing of yours here\n' },
+      });
+      const res = await gitPipelinePosition(
+        { path: P, marker: 'looksDeadOrStuck' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.positions.inMain).toBe(false);
+      expect(res.positionsMarker?.inMain?.present).toBe(false);
+      // The marker answered definitively, so the "may not be about your change" hedge
+      // would be actively misleading here.
+      expect(res.positionsNewerCommit).not.toContain('inMain');
+      expect(res.notes.join('\n')).toMatch(/confirmed NOT present/);
+    });
+
+    it('does NOT cry newer-commit when the file has genuinely never landed in the ref', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        // '' = measured absence: main has NO commit touching this path. "Not yet, wait"
+        // is the correct advice, and a hoist that cries wolf here is one agents learn
+        // to ignore — leaving us worse off than the bare boolean.
+        newestInRef: { 'origin/main': '', deployedsha0: '' },
+      });
+      const res = await gitPipelinePosition(
+        { path: P },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.positions.inMain).toBe(false);
+      expect(res.positionsNewerCommit).toEqual([]);
+    });
+
+    it('never relabels a DEGRADED leg as a newer-commit artifact', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], deployedsha0: [] },
+        failRefs: ['origin/main'], // could not measure
+        newestInRef: { 'origin/main': MINE, deployedsha0: MINE },
+      });
+      const res = await gitPipelinePosition(
+        { path: P },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      // An unreadable leg is UNKNOWN. Replacing that honest unknown with a confident
+      // story about WHY it is false is strictly worse than the bare false it replaced.
+      expect(res.positionsUnknown).toContain('inMain');
+      expect(res.positionsNewerCommit).not.toContain('inMain');
+    });
+
+    it('stays silent when the newer-commit probe itself fails to read', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        // no `newestInRef` at all => the probe returns null (a FAILED read). D-038 axis 2:
+        // never derive a verdict — in either direction — from an absence.
+      });
+      const res = await gitPipelinePosition(
+        { path: P },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.positions.inMain).toBe(false);
+      expect(res.positionsNewerCommit).toEqual([]);
+    });
+
+    it('reports no positionsMarker at all when the caller named no marker', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [PEER], deployedsha0: [PEER] },
+      });
+      const res = await gitPipelinePosition(
+        { path: P },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.positionsMarker).toBeNull();
+    });
   });
 
   /**

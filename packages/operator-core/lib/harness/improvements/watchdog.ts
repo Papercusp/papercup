@@ -110,6 +110,16 @@ export type WatchdogSource =
   // learning-slo.ts; flag-gated dark per D-001 until the P-001 arming gate):
   | 'triage-entropy' | 'capture-consume-imbalance' | 'mttsh-regression'
   | 'governor-starvation' | 'memory-zero-hit'
+  // context-injection-audit-2026-07-28 P-013 (D-024): the PER-POOL slice of recall
+  // health, which the blended 'memory-zero-hit' aggregate above cannot express. The
+  // push path fuses three independently-budgeted pools into ONE recorded row, so a
+  // pool returning nothing on EVERY call is invisible in the blend while its
+  // siblings fill the block — measured live: `claim`'s user pool at 18/18 zero
+  // while the `claim` surface itself reported 0.0%. Fires on a starved pool
+  // (gate-2) or one that always fills its budget (gate-4). Both are COUNT-based,
+  // never score-based: a push-path top_score is a post-fusion RRF rank and cannot
+  // be compared to the cosine floor (D-023, the retracted D-001 class):
+  | 'memory-recall-pool'
   // a single memory INJECTION POOL that is starved (returns nothing on nearly every
   // recall — the unmigrated-scope-key signature) or saturated (fills its budget every
   // call). Deliberately per-POOL: both shapes are invisible to the blended
@@ -2860,6 +2870,17 @@ export async function defaultPapercuspCollectors(
     {
       name: 'papercusp-memory-recall-zero-hit',
       collect: () => import('./learning-slo').then((m) => m.memoryZeroHitCollector(opts)),
+    },
+    // P-013 (D-024): the per-POOL sibling of the collector above. Separate sensor
+    // rather than an extra branch inside it because the two answer different
+    // questions over different aggregates — that one asks whether recall as a
+    // whole degraded against its own history, this one asks whether ONE pool of a
+    // fused push-path block is contributing nothing (or only ever its budget)
+    // while the blend reads healthy. Reads the existing readRecallHealthByPool /
+    // readRecallHealthBySurface aggregates; no new SQL:
+    {
+      name: 'papercusp-memory-recall-pool',
+      collect: () => import('./learning-slo').then((m) => m.recallPoolCollector(opts)),
     },
     // infra-perf-reliability-audit-round4 P-013: the perf/reliability regression rig —
     // snapshots four reliability SLO metrics (event-loop-lag p95, PG connection
