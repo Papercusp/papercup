@@ -13,7 +13,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { listFleetAssignments } from '../../fleet/assignments';
-import { listPots, liveAgentCountByHarness } from './_resolve';
+import { listPots, liveAgentCountByHarness, type PotDescriptor } from './_resolve';
 
 export default defineTool({
   name: 'pot:list',

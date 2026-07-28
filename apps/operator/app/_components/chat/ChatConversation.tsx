@@ -356,6 +356,10 @@ type ChatMessageRowProps = {
   renderReport?: ChatConversationProps['renderReport'];
   harnessSlug?: ChatConversationProps['harnessSlug'];
   onWorkRefActivate?: ChatConversationProps['onWorkRefActivate'];
+  /** True while this row may still be STREAMING (the last row, parent busy).
+   *  Only meaningful to the empty-turn notice below: an assistant row that is
+   *  legitimately mid-flight has no text yet and must not be called a failure. */
+  pending?: boolean;
 };
 
 /**
@@ -399,6 +403,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   renderReport,
   harnessSlug,
   onWorkRefActivate,
+  pending,
 }: ChatMessageRowProps) {
   // WI-4731: a message stamped with the speaking agent gets that
   // agent's canonical mark (the LeftSidebar tab iconography:
@@ -466,6 +471,36 @@ const ChatMessageRow = memo(function ChatMessageRow({
         {cardSlots.map(({ index: ci, node }) => (
           <div key={`tool-card-${ci}`}>{node}</div>
         ))}
+        {/* hud-open-destinations-and-true-counts-2026-07-27 P-005 — an assistant
+            turn that produced NOTHING must say so.
+
+            The branch above renders content only `m.content &&`, so an assistant
+            turn persisted with empty text rendered as literally nothing. That is
+            not hypothetical: on 2026-07-27 the owner asked "whats the status of
+            our pots?"; `pot:list` returned ok (19,400 bytes, twice) and
+            `operator_turns` seq 16456 — the answer turn — persisted with empty
+            text. Nothing rendered, ambient system cards filled the space, and it
+            read as "the pot list did not return any results". The chat had no
+            way to express "the model returned no answer", so a real failure was
+            indistinguishable from absence.
+
+            Deliberately narrow, because a false positive here would be noise on
+            every turn: assistant role only, no text, no report, no tool cards,
+            and NOT still streaming (`pending`). Tool CHIPS are allowed to be
+            present — a turn that called tools and then said nothing is exactly
+            the reported failure, not an exception to it. */}
+        {m.role === 'assistant' &&
+          !pending &&
+          !reportCard &&
+          cardSlots.length === 0 &&
+          !m.content?.trim() && (
+            <div className="oracle-msg-content oracle-msg-empty" role="status">
+              <em>
+                Papercup returned no answer for this turn
+                {chipTools.length > 0 ? ' after running the tools above' : ''}. Ask again to retry.
+              </em>
+            </div>
+          )}
       </div>
     </div>
   );
@@ -787,6 +822,9 @@ export function ChatConversation(props: ChatConversationProps) {
                   renderReport={renderReport}
                   harnessSlug={harnessSlug}
                   onWorkRefActivate={onWorkRefActivate}
+                  /* Only the LAST row can still be streaming, so only it is
+                     exempt from the empty-turn notice (P-005). */
+                  pending={busy && vi.index === messages.length - 1}
                 />
               );
             })}

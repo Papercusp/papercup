@@ -268,6 +268,56 @@ describe('ChatConversation', () => {
     });
   });
 
+  /* hud-open-destinations-and-true-counts-2026-07-27 P-005. Reported as "how
+     come the pot list did not return any results?" — the real shape was an
+     assistant turn persisted with EMPTY text (operator_turns seq 16456) after
+     pot:list returned ok twice. The renderer had no way to say "no answer", so
+     the failure was indistinguishable from absence. */
+  describe('empty assistant turn (P-005)', () => {
+    const NOTICE = /Papercup returned no answer for this turn/;
+
+    it('says so when an assistant turn has no content at all', () => {
+      renderChat({ messages: [{ role: 'assistant', content: '' }] });
+      expect(screen.getByText(NOTICE)).toBeTruthy();
+    });
+
+    it('names the tools when the turn ran some and still said nothing — the reported case', () => {
+      renderChat({
+        messages: [{ role: 'assistant', content: '', tools: [{ name: 'pot:list' }] }],
+      });
+      expect(screen.getByText(/no answer for this turn after running the tools above/)).toBeTruthy();
+    });
+
+    it('stays silent while the turn is still STREAMING (last row + busy)', () => {
+      renderChat({ messages: [{ role: 'assistant', content: '' }], busy: true });
+      expect(screen.queryByText(NOTICE)).toBeNull();
+    });
+
+    it('still flags an earlier empty turn even while a LATER turn streams', () => {
+      renderChat({
+        messages: [
+          { role: 'assistant', content: '' },
+          { role: 'user', content: 'again?' },
+          { role: 'assistant', content: '' },
+        ],
+        busy: true,
+      });
+      // The first empty assistant turn is finished, so it is a real failure;
+      // only the trailing one is exempt.
+      expect(screen.getAllByText(NOTICE)).toHaveLength(1);
+    });
+
+    it('never fires on a turn that DID answer, or on a user turn', () => {
+      renderChat({
+        messages: [
+          { role: 'user', content: '' },
+          { role: 'assistant', content: 'here you go' },
+        ],
+      });
+      expect(screen.queryByText(NOTICE)).toBeNull();
+    });
+  });
+
   it('shows load-earlier states (beginning vs loading)', () => {
     renderChat({ messages: [{ role: 'user', content: 'hi' }], onLoadEarlier: () => {}, hasMoreEarlier: false });
     expect(screen.getByText('Beginning of conversation')).toBeTruthy();
