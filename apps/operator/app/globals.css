@@ -231,16 +231,40 @@ html, body {
      aria-modal on their portal overlays, so this doesn't weaken modal
      UX. See /docs/performance #A10 for the same pattern on .h-cmd. */
   pointer-events: auto !important;
+  color: var(--fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* The app's decorative wash lives on ONE element, not two.
+ *
+ * WI-6502 (owner: "typing into the chat boxes is very laggy"). This block used
+ * to be part of the `html, body` rule above, so BOTH elements painted the same
+ * four full-viewport gradients. The last layer is opaque (`--bg-1` is a solid
+ * hex in every theme) and body is `margin:0; min-height:100vh`, so body's stack
+ * covered the viewport and html's four gradients were rasterized on every paint
+ * and then completely painted over — pure waste. Setting it on body alone is
+ * also the spec-correct shape: with html having no background, body's
+ * propagates to the canvas and body does not paint it a second time, so one
+ * rasterization replaces two.
+ *
+ * Measured in an isolated Tauri instance (/adv, in-run interleaved sham
+ * control, focus asserted, 3 rounds): worst frame after a keystroke went 68ms
+ * -> 57ms from this alone. A keystroke damages the full viewport, so anything
+ * painting viewport-sized is on the per-keystroke path.
+ *
+ * ⚠ Do NOT "optimise" this to `background-attachment: scroll`. That is the
+ * usual web advice and it is WRONG here: measured 68ms -> 81ms, replicated.
+ * `fixed` is the faster setting in this webview.
+ */
+body {
   background:
     radial-gradient(circle at 50% -12%, rgb(from var(--accent) r g b / 0.24), transparent 34%),
     radial-gradient(circle at 92% 8%, rgb(from var(--accent-strong) r g b / 0.13), transparent 28%),
     radial-gradient(circle at 12% 36%, color-mix(in srgb, var(--accent-deep), transparent 90%), transparent 30%),
     linear-gradient(180deg, var(--bg-1) 0%, var(--bg-1) 45%, var(--bg-deeper) 100%);
   background-attachment: fixed;
-  color: var(--fg);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  font-size: 14px;
-  line-height: 1.55;
 }
 
 body::before {
