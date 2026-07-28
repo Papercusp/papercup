@@ -162,6 +162,18 @@ export interface MetricWindow {
   /** `eligible / population`. Null when nothing was examined. */
   fillRate: number | null;
   zeroReason: PlaneZeroReason | null;
+  /**
+   * How much of the producer's own output this window carried (WI-6562).
+   *
+   * `fillRate` alone cannot support {@link sustainedlyUninterpretable}'s evidence
+   * test: it is a RATIO, so a window with 37 stamped calls out of 926 and one with
+   * 370 out of 9,260 are indistinguishable, while only the second carries enough
+   * output for "no comparable unit" to mean anything. Optional because a window
+   * persisted before this field existed simply has none — and the run test falls
+   * back to the old pure-count behaviour when it is absent, so an old series is
+   * judged exactly as before rather than silently excused.
+   */
+  eligible?: number | null;
 }
 
 export interface RatchetRow {
@@ -208,7 +220,15 @@ export function isIncoherent(w: MetricWindow): boolean {
  * be told apart (a died-yesterday producer, a never-built one) are exactly the
  * ones a live box will not be in on the day you write the check.
  */
-export function judgeMetricRatchet(windows: readonly MetricWindow[]): RatchetVerdict {
+export function judgeMetricRatchet(
+  windows: readonly MetricWindow[],
+  /**
+   * The judged metric's declared eligibility semantics. Defaults to `false` — the
+   * input-eligibility reading — so an undeclared metric keeps the original
+   * first-window teeth and only a metric that OPTS IN gets the occurrence reading.
+   */
+  opts: { eligibilityIsOccurrence?: boolean } = {},
+): RatchetVerdict {
   if (windows.length === 0) return 'no-data';
   const latest = windows[windows.length - 1];
   if (isIncoherent(latest)) return 'incoherent';
@@ -216,10 +236,13 @@ export function judgeMetricRatchet(windows: readonly MetricWindow[]): RatchetVer
   if (latest.interpretable) return 'holding';
   if (!everInterpretable) return 'never-interpretable';
   // ⚠ A QUIET WINDOW IS NOT A DEAD PRODUCER — see the header section of the same
-  // name. Only a SUSTAINED inability to compare is a degradation.
-  if (producerWroteButNothingComparable(latest) && !sustainedlyUninterpretable(windows)) {
-    return 'window-unjudgeable';
-  }
+  // name. Only a SUSTAINED inability to compare is a degradation. Two shapes reach
+  // here: the input was present but nothing compared, and (for an occurrence-
+  // eligibility metric) the scan ran and the defect simply did not occur.
+  const quiet =
+    producerWroteButNothingComparable(latest) ||
+    producerRanButNothingOccurred(latest, opts.eligibilityIsOccurrence ?? false);
+  if (quiet && !sustainedlyUninterpretable(windows)) return 'window-unjudgeable';
   return 'regressed';
 }
 
@@ -250,10 +273,83 @@ export function producerWroteButNothingComparable(w: MetricWindow): boolean {
   return !w.interpretable && w.zeroReason === 'nothing-comparable' && (w.fillRate ?? 0) > 0;
 }
 
-/** Have the last {@link UNJUDGEABLE_WINDOW_RUN} windows ALL failed to interpret? */
+/**
+ * The SECOND quiet-window shape: nothing was eligible because nothing HAPPENED.
+ *
+ * `nothing-eligible` normally means a producer stopped writing, and for six of the
+ * seven metrics it does. For a metric whose eligibility is the measured occurrence
+ * itself ({@link MetricSpec.eligibilityIsOccurrence}) it means the opposite: the
+ * scan ran over a real population and found none of the defect. Zero tool failures
+ * in a quiet half-hour is the outcome we want, not a dead scanner.
+ *
+ * `fillRate === 0` — never `null` — is the corroboration, and it is exactly the
+ * "population separates them" test that metric's own `vacuousPassWhen` asks for: a
+ * null fill rate means the population itself was empty (`population-empty`), i.e.
+ * nothing was examined at all, which stays a producer signal.
+ */
+export function producerRanButNothingOccurred(
+  w: MetricWindow,
+  eligibilityIsOccurrence: boolean,
+): boolean {
+  if (!eligibilityIsOccurrence) return false;
+  return !w.interpretable && w.zeroReason === 'nothing-eligible' && w.fillRate === 0;
+}
+
+/**
+ * The output level at which this metric has DEMONSTRATED it can yield a verdict —
+ * the median `eligible` across its own interpretable windows.
+ *
+ * Self-calibrating on purpose: any constant here would be tuned to one metric's
+ * funnel and to the traffic of the week it was written. The median (rather than the
+ * min) keeps one lucky low-volume window from setting a floor so low it excuses
+ * nothing — for the live stamped series it reads 363, against a lucky 43.
+ *
+ * Null when the metric has no interpretable history to calibrate against, which
+ * {@link sustainedlyUninterpretable} treats as "no basis to excuse anything".
+ */
+export function demonstratedEvidenceFloor(windows: readonly MetricWindow[]): number | null {
+  const seen = windows
+    .filter((w) => w.interpretable && !isIncoherent(w))
+    .map((w) => w.eligible)
+    .filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+  return seen.length > 0 ? seen[Math.floor(seen.length / 2)] : null;
+}
+
+/**
+ * Have the last {@link UNJUDGEABLE_WINDOW_RUN} windows ALL failed to interpret —
+ * over enough producer output for that to MEAN anything?
+ *
+ * ⚠ WI-6562: the run used to be counted purely in windows, and a window is a unit
+ * of WALL CLOCK, not of evidence. So the test got sharply more sensitive exactly
+ * when the fleet went quiet and each window carried less. Live on 2026-07-28: three
+ * "sustained" windows carried 37+129+37 = 203 stamped calls between them — fewer
+ * than the SINGLE window of 206 that had yielded a verdict two hours earlier, and
+ * in a corpus where comparable units arrive at roughly eligible/70. The gate red on
+ * a metric whose producer was visibly alive, and stayed red because no commit
+ * could move a number that only tracks traffic.
+ *
+ * So a run must now be long enough AND carry at least the output this metric has
+ * demonstrably needed. The teeth are unchanged where they matter: a producer that
+ * keeps writing at its normal volume while never yielding a comparable unit — a
+ * half-death, e.g. stamps still written but `goal_ref` dropped — clears the floor
+ * within the same three windows and still reports `regressed`. What no longer
+ * fires is a run whose windows were too small to expect an answer at all.
+ */
 export function sustainedlyUninterpretable(windows: readonly MetricWindow[]): boolean {
   const tail = windows.slice(-UNJUDGEABLE_WINDOW_RUN);
-  return tail.length >= UNJUDGEABLE_WINDOW_RUN && tail.every((w) => !w.interpretable);
+  if (tail.length < UNJUDGEABLE_WINDOW_RUN) return false;
+  if (!tail.every((w) => !w.interpretable)) return false;
+  const floor = demonstratedEvidenceFloor(windows);
+  // No calibration available (no interpretable window ever carried an `eligible`,
+  // incl. every series persisted before the field existed) — judge on run length
+  // alone, exactly as before. An absent measurement must never become an excuse.
+  if (floor == null) return true;
+  const carried = tail.reduce(
+    (n, w) => n + (typeof w.eligible === 'number' && Number.isFinite(w.eligible) && w.eligible > 0 ? w.eligible : 0),
+    0,
+  );
+  return carried >= floor;
 }
 
 /**
@@ -350,7 +446,14 @@ export function ratchetPlaneSeries(args: {
    * {@link METRIC_SPECS}; injectable so the cross-metric behaviour is testable
    * against literal specs rather than only the live registry.
    */
-  specs?: Readonly<Partial<Record<PlaneMetricId, { interpretableOnlyWith?: readonly PlaneMetricId[] }>>>;
+  specs?: Readonly<
+    Partial<
+      Record<
+        PlaneMetricId,
+        { interpretableOnlyWith?: readonly PlaneMetricId[]; eligibilityIsOccurrence?: boolean }
+      >
+    >
+  >;
   /**
    * metric → the item excusing its blindness. Defaults to the shipped
    * {@link METRIC_KNOWN_GAPS}; injectable for the same reason `specs` is — the
@@ -377,7 +480,9 @@ export function ratchetPlaneSeries(args: {
       if (found) windows.push({ ...found, measuredAt: found.measuredAt ?? point.measuredAt });
     }
     const interpretableWindows = windows.filter((w) => w.interpretable && !isIncoherent(w));
-    const verdict = judgeMetricRatchet(windows);
+    const verdict = judgeMetricRatchet(windows, {
+      eligibilityIsOccurrence: specs[metric]?.eligibilityIsOccurrence ?? false,
+    });
     const knownGap = gaps[metric];
     rows.push({
       metric,

@@ -50,6 +50,14 @@ interface StoredMetric {
   interpretable: boolean;
   fillRate: number | null;
   zeroReason: PlaneZeroReason | null;
+  /**
+   * WI-6562 — the producer's own output for this window, which
+   * `sustainedlyUninterpretable` weights the degradation run by. Persisted on every
+   * row (it is one of `MetricCounts`' four required counts) but it was never
+   * DECLARED here, so the run test could only count windows. Optional because rows
+   * written before the ratchet read it are judged on run length alone.
+   */
+  eligible?: number | null;
 }
 
 async function main() {

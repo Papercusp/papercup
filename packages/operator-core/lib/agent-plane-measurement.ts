@@ -227,6 +227,34 @@ export interface MetricSpec {
    * exists because of. Declaring it structurally makes the ratchet say so out loud.
    */
   interpretableOnlyWith?: readonly PlaneMetricId[];
+  /**
+   * Does `eligible` count an OCCURRENCE of the measured phenomenon, rather than an
+   * INPUT a producer must write? (WI-6562.)
+   *
+   * ⚠ THIS IS THE SAME ARGUMENT AGAIN, one layer below `polarity` and
+   * `interpretableOnlyWith`. Both of those exist because a zero's MEANING cannot be
+   * inferred from the number — it has to be declared. This one exists because
+   * `zeroReason: 'nothing-eligible'` carries a hard-coded causal claim — "units were
+   * examined but none carried the metric's input, THE PRODUCER HAS NOT WRITTEN" —
+   * that is true only when eligibility is an input someone writes.
+   *
+   * For most metrics it is: `eligible` is stamped calls, facts carrying `dependsOn`,
+   * closes naming keys. Zero of those over a live population really does mean a
+   * producer died, and the ratchet must keep failing on the first such window.
+   *
+   * `intent-action-divergence-sampling` is the exception, and it inverts the sign:
+   * its `eligible` is `coverage.failuresSeen`, the tool-call FAILURES it then looks
+   * for thrash within. Zero failures is not a missing producer — it is the fleet
+   * having a clean half-hour, which is the outcome we WANT. Its own
+   * `vacuousPassWhen` already names the discriminator ("`population` separates
+   * them"); this field is that sentence made machine-readable, so the ratchet stops
+   * paging for a healthy quiet window.
+   *
+   * Live proof it was needed: 2026-07-28T04:09Z, 926 calls examined, 0 failures,
+   * judged `regressed` and it held `main` for the whole fleet. No commit caused it
+   * and no commit could have greened it.
+   */
+  eligibilityIsOccurrence?: boolean;
 }
 
 /** The counts a run supplies for one metric. All four are required — an omitted
@@ -302,6 +330,13 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
     polarity: 'defect',
     vacuousPassWhen:
       'A window in which the fleet was IDLE produces the same clean zero as a window in which every agent converged. `population` separates them; `rate` alone does not. A fleet that has learned to retry more SLOWLY also improves this number without converging any better.',
+    // WI-6562. `eligible` here is `coverage.failuresSeen` — the failures this metric
+    // looks for thrash WITHIN — not an input any producer writes. So zero eligible
+    // over a real population means "nobody failed a tool this window", not "the
+    // failure-row producer died", and the ratchet must not read it as a death.
+    // This is the ONLY metric of the seven whose eligibility is an occurrence: every
+    // other one counts a written input, and keeps the first-window teeth.
+    eligibilityIsOccurrence: true,
   },
   'clarification-rate': {
     id: 'clarification-rate',
@@ -462,7 +497,16 @@ export function composePlaneMeasurement(args: {
   const metrics = PLANE_METRIC_IDS.map((id) => buildMetric(id, args.counts[id]));
   const interpretableCount = metrics.filter((m) => m.interpretable).length;
   const awaitingProducer = metrics
-    .filter((m) => m.zeroReason === 'nothing-eligible' || m.zeroReason === 'population-empty')
+    .filter((m) => {
+      if (m.zeroReason === 'population-empty') return true;
+      if (m.zeroReason !== 'nothing-eligible') return false;
+      // WI-6562 — the same conflation the ratchet had, and the reason the summary
+      // line was reporting a demonstrably-live producer as "awaiting a producer".
+      // When eligibility is the OCCURRENCE (see MetricSpec.eligibilityIsOccurrence),
+      // zero eligible over a real population means the defect did not happen, not
+      // that nothing wrote it. A null fill rate still means nothing was examined.
+      return !(m.eligibilityIsOccurrence === true && m.fillRate === 0);
+    })
     .map((m) => m.id);
 
   // ⚠ ONLY a DEFECT count is a "finding". A gauge's magnitude (bytes) listed
