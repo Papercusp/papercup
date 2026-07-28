@@ -69,11 +69,29 @@ const MUNGED = `-ho${'me'}`;
 const USER_SEG = `quill${'on'}`;
 
 /** The gate's OWN identity-lint family list, so a fourth class cannot be added there without
- *  being given edit-time coverage here. `{ script: '…', label: '…' }` is unique to that block. */
+ *  being given edit-time coverage here.
+ *
+ *  ⚠ This USED to scrape `{ script: '…', label: '…' }` from the whole gate file on the stated
+ *  assumption that the shape "is unique to that block". It is not, and was not guaranteed to
+ *  stay so: agent-state-plane-verification P-020 added a SECOND family in exactly that shape
+ *  (`lint:plane-producers`, `lint:declared-consumed`, `lint:no-bespoke-state-read`,
+ *  `lint:plane-ratchet`, `lint:plane-guards`), the unscoped scrape swallowed all five, and this
+ *  suite reded the release gate for the whole fleet over a change that had nothing to do with
+ *  identity. So anchor to the `identityLints` array itself and read only its members. */
 const GATE = join(REPO_ROOT, 'apps', 'operator', 'lib', 'release', 'green-checkpoint.ts');
 function gateIdentityLints(): string[] {
   const src = readFileSync(GATE, 'utf8');
-  return [...src.matchAll(/\{ script: '(lint:[^']+)', label: '/g)].map((m) => m[1]);
+  const block = src.match(/const identityLints:[^=]*=\s*\[([\s\S]*?)\]/);
+  // Throw rather than fall back to a whole-file scrape or an empty list: if the gate renames
+  // or restructures that array, the honest outcome is a loud failure here, not a silently
+  // vacuous assertion that green-lights an identity class with no edit-time coverage.
+  if (!block) {
+    throw new Error(
+      'green-checkpoint.ts: could not locate the `identityLints` array — this suite can no longer ' +
+        'tell which lints are the identity family. Re-anchor gateIdentityLints() to its new shape.',
+    );
+  }
+  return [...block[1]!.matchAll(/\{ script: '(lint:[^']+)', label: '/g)].map((m) => m[1]!);
 }
 
 /**
