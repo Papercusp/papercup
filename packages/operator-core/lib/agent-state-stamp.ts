@@ -99,14 +99,34 @@
  *
  * Measured live on 2026-07-28: rows carrying BOTH stamps went 587/hr -> 0/hr
  * across the 02:00Z deploy while each stamp ALONE stayed healthy (265 intent-only
- * + 237 goal-only in the 07:00Z hour). Per-owner, the collapse was total and
- * simultaneous for every long-running session — 845 -> 0 co-stamped calls for one
- * owner that stayed active throughout — which is what rules out a cluster split
- * (those were the same processes) and points at the restart. The divergence metric
- * needs both columns on ONE row, so `comparable` fell to zero every window and
- * `lint:plane-ratchet` correctly judged the leg `regressed`, redding the fleet
- * gate. Deploys run every ~15min-1h here, so this destroyed goal attribution
- * routinely and then stayed destroyed.
+ * + 237 goal-only in the 07:00Z hour). The divergence metric needs both columns on
+ * ONE row, so `comparable` fell to zero every window and `lint:plane-ratchet`
+ * correctly judged the leg `regressed`, redding the fleet gate. Deploys run every
+ * ~15min-1h here, so this destroyed goal attribution routinely and then stayed
+ * destroyed.
+ *
+ * ⚠ AN EARLIER REVISION OF THIS NOTE CLAIMED THE PER-OWNER EVIDENCE "rules out a
+ * cluster split (those were the same processes)". THAT INFERENCE WAS WRONG — do not
+ * restore it. Re-measured at 08:50Z under `PAPERCUSP_CLUSTER=16`, the steady state
+ * between restarts is positive evidence FOR a split: one owner logged 153
+ * intent-stamped and 82 goal-stamped calls out of 1,559, with an overlap of exactly
+ * ZERO, the two classes fully interleaved in time and spread across both transports.
+ * Independent stamps present on ~6% of calls each (≈1/16, the round-robin share)
+ * that NEVER coincide is what a per-worker map looks like; a restart-wipe alone
+ * would have shown `goalRef` absent, not present-but-disjoint. Exactly one owner
+ * co-stamped at all — the case where both writes happened to land on the same
+ * worker. "Same session" was never "same process": a session's calls are sprayed
+ * across all 16.
+ *
+ * So there are TWO defects, and this module fixes one of them:
+ *   · DURABILITY (this file, WI-6595) — a restart empties the ring.
+ *   · COHERENCE (WI-6594, still open) — the ring diverges between restarts.
+ * The re-hydration below happens to address BOTH for `goalRef`, because every
+ * worker independently re-derives the same durable value instead of waiting to be
+ * told: the ring converges even when replication is not delivering. `intentEventId`
+ * has no such durable source and so is still one-worker-only — which is fine for
+ * the metric, since `comparable` only needs SOME row carrying both, and the worker
+ * holding the intent now also holds the goal.
  *
  * THE FIX: on a read that finds NO goal, schedule a fire-and-forget re-hydration
  * from the DURABLE source — `resolveOwnerGoal`, the same four-leg resolver behind
