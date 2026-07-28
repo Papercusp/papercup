@@ -15,6 +15,8 @@ import {
   assumptionSetIdsToResolve,
   attachAssumptionCounts,
   groupRepeatedTimelineEntries,
+  judgeAssumptionCoverage,
+  ASSUMPTION_COVERAGE_REASONS,
   type TimelineEntry,
 } from './timeline';
 

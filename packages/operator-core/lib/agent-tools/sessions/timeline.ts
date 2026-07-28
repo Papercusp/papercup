@@ -110,6 +110,80 @@ export function assumptionSetIdsToResolve(rows: TimelineEntry[]): number[] {
 }
 
 /**
+ * P-015: what a goal-scoped read's assumption counts ACTUALLY mean.
+ *
+ * ── THE EMPTY SET THIS EXISTS TO STOP BEING MISREAD ─────────────────────────
+ *
+ * {@link attachAssumptionCounts} already separates "not resolved" from "resolved
+ * to zero" PER ROW. That is not enough, because the dangerous case is a page
+ * where every watermark resolved cleanly and every count is 0. Nothing is
+ * missing, no error fires, and the response reads exactly like a confident
+ * finding: *"this agent assumed nothing."*
+ *
+ * Today that reading is FALSE for a reason no per-row field can express:
+ * `kind='assumption'` has ZERO producers fleet-wide (WI-6465, 0 of 2,212 rows),
+ * so no agent's count can be anything but 0. The number is UNINTERPRETABLE, not
+ * clean — the same trichotomy P-001's census draws between `no-producer` and
+ * `no-data`, and the same one D-101 draws for a metric whose companion is dead.
+ *
+ * ⚠ THE DISCRIMINATOR MUST BE GLOBAL, NOT PER-OWNER. "This owner has no
+ * assumptions" cannot tell the two apart — it is equally true of an agent who
+ * simply never asserted one. Only "does ANY assumption fact exist, for anyone"
+ * separates an unbuilt producer from a genuine per-agent zero, which is why
+ * {@link AssumptionCoverage.anyAssumptionExists} is a fleet-wide probe.
+ *
+ * Pure, so every state is testable without a database — including the two this
+ * box cannot currently be in (a producer that exists, an owner who has none).
+ */
+export type AssumptionCoverageVerdict =
+  /** Not a goal-scoped read; nothing was resolved and nothing is claimed. */
+  | 'not-goal-scoped'
+  /** Goal-scoped, but no row carried a watermark — the P-009 stamp never ran. */
+  | 'no-stamp'
+  /** Watermarks resolved, all zero, and no assumption exists anywhere: UNINTERPRETABLE. */
+  | 'producer-unbuilt'
+  /** Watermarks resolved, all zero, but assumptions DO exist elsewhere: a real finding. */
+  | 'none-for-owner'
+  /** Assumptions were actually observed. The only reading that needs no caveat. */
+  | 'observed';
+
+export interface AssumptionCoverage {
+  goalScoped: boolean;
+  /** Distinct watermarks expanded on this page. */
+  setsResolved: number;
+  /** Total assumptions across those watermarks. */
+  assumptionsObserved: number;
+  /**
+   * Does ANY non-retracted assumption fact exist, for ANY owner? Probed only when
+   * it can change the verdict (see above). `null` ⇒ not probed.
+   */
+  anyAssumptionExists: boolean | null;
+}
+
+export function judgeAssumptionCoverage(c: AssumptionCoverage): AssumptionCoverageVerdict {
+  if (!c.goalScoped) return 'not-goal-scoped';
+  if (c.setsResolved === 0) return 'no-stamp';
+  if (c.assumptionsObserved > 0) return 'observed';
+  // All resolved, all zero — the ambiguous case the global probe disambiguates.
+  // Unprobed is reported as unbuilt rather than as a clean per-owner zero: an
+  // unverified zero must not be the one that reads as a finding.
+  return c.anyAssumptionExists === true ? 'none-for-owner' : 'producer-unbuilt';
+}
+
+/** Why a goal-scoped read's assumption counts are what they are, in the reader's words. */
+export const ASSUMPTION_COVERAGE_REASONS: Readonly<Record<AssumptionCoverageVerdict, string | null>> =
+  Object.freeze({
+    'not-goal-scoped': null,
+    'no-stamp':
+      'no tool call on this page carried an assumption watermark — the P-009 stamp did not run for these calls, so their assumption state is UNKNOWN, not empty',
+    'producer-unbuilt':
+      'every watermark resolved to ZERO assumptions, and no assumption fact exists anywhere — kind=\'assumption\' currently has no producer (WI-6465). This count is UNINTERPRETABLE: it is NOT evidence that this agent assumed nothing, because no agent could have registered one',
+    'none-for-owner':
+      'every watermark resolved to ZERO assumptions for this owner, while assumptions DO exist elsewhere — so this is a genuine finding about this agent, not an unbuilt producer',
+    observed: null,
+  });
+
+/**
  * Attach `assumption_count` to each row from a watermark→count map.
  *
  * A watermark with NO entry in the map is left ABSENT rather than defaulted to
@@ -278,6 +352,8 @@ export default defineTool({
     // every legacy assumption while passing every fixture that sets the new field
     // — the exact defect the facts:assert guard caught one item ago.
     let assumptionSetsResolved = 0;
+    let assumptionsObserved = 0;
+    let anyAssumptionExists: boolean | null = null;
     if (args.goalRef) {
       const wanted = assumptionSetIdsToResolve(pageRows);
       if (wanted.length > 0) {
@@ -302,8 +378,33 @@ export default defineTool({
         );
         pageRows = attachAssumptionCounts(pageRows, counts);
         assumptionSetsResolved = counts.size;
+        for (const n of counts.values()) assumptionsObserved += n;
+      }
+      // P-015: only when every resolved watermark came back ZERO is the reading
+      // ambiguous, and only then is the global probe worth a query. It asks a
+      // fleet-wide question on purpose — a per-owner count cannot separate "no
+      // producer exists" from "this agent never asserted one", and the whole
+      // failure being prevented is an empty set that reads as the latter.
+      if (assumptionSetsResolved > 0 && assumptionsObserved === 0) {
+        const [existsRow] = await ctx.tx<{ any_exists: boolean }[]>`
+          SELECT EXISTS (
+            SELECT 1 FROM harness_shared.agent_facts f
+             WHERE f.retracted_at IS NULL
+               AND f.superseded_at IS NULL
+               AND (CASE WHEN f.kind IS NOT NULL THEN f.kind = 'assumption'
+                         ELSE f.confidence = 'suspected' END)
+             LIMIT 1
+          ) AS any_exists
+        `;
+        anyAssumptionExists = Boolean(existsRow?.any_exists);
       }
     }
+    const assumptionVerdict = judgeAssumptionCoverage({
+      goalScoped: Boolean(args.goalRef),
+      setsResolved: assumptionSetsResolved,
+      assumptionsObserved,
+      anyAssumptionExists,
+    });
 
     const entries = args.group_repeated ? groupRepeatedTimelineEntries(pageRows) : pageRows;
     const nextCursor = hasMore
@@ -346,6 +447,15 @@ export default defineTool({
           stamp_coverage: {
             goal_scoped: Boolean(args.goalRef),
             assumption_sets_resolved: assumptionSetsResolved,
+            // P-015: the counts alone cannot say what a zero MEANS, so the
+            // verdict ships with them. Without this, a page of cleanly-resolved
+            // zeros reads as "this agent assumed nothing" when the truth is that
+            // nothing can assume anything yet (WI-6465).
+            assumptions_observed: assumptionsObserved,
+            assumption_coverage: assumptionVerdict,
+            ...(ASSUMPTION_COVERAGE_REASONS[assumptionVerdict]
+              ? { assumption_zero_reason: ASSUMPTION_COVERAGE_REASONS[assumptionVerdict] }
+              : {}),
             ...(args.goalRef && pageRows.length === 0
               ? {
                   zero_reason:
