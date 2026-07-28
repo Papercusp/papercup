@@ -10710,7 +10710,10 @@ html[data-visual-effects='minimal'] .pc-header-quote-text {
   background:
     linear-gradient(120deg, transparent 0 38%, rgba(255,255,255,0.12) 46%, transparent 52%) -100% 0 / 36% 100% no-repeat,
     linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.06), rgba(255,255,255,0.01));
-  animation: pc-hud-beam-drift 3.4s linear infinite;
+  /* WI-6542: always-on beam dropped. The sweep layer is parked off-canvas by its own
+     `-100% 0` background-position; opacity is pinned to the old cycle's mid value so the
+     static tint layer keeps its perceived strength instead of jumping to full. */
+  opacity: 0.4;
   pointer-events: none;
 }
 .pc-support-shell .pc-support-faq[open] {

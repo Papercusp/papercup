@@ -236,25 +236,24 @@ export function _resetRecallStatsWarnThrottleForTests(): void {
   _suppressedSinceWarn = 0;
 }
 
-/**
- * SQL for a row's EFFECTIVE score scale: the recorded label when present
- * (migration 705 onward), else the legacy value-based classification.
+/*
+ * A row's EFFECTIVE score scale in SQL is the recorded label when present
+ * (migration 705 onward), else the legacy value-based classification:
  *
- * The band logic mirrors `classifyLegacyScoreScale` and the two must agree —
- * so both read the SAME interpolated constants rather than hardcoding numbers
- * on either side. The TS function is the readable statement of the rule; this
- * is its pushed-down twin, kept here so a percentile never has to round-trip
- * whole rows to classify them.
+ *   CASE WHEN score_scale IS NOT NULL THEN score_scale
+ *        WHEN top_score IS NULL       THEN 'unknown'
+ *        WHEN top_score <= ${RRF_SCORE_CEILING}      THEN 'rrf'
+ *        WHEN top_score >= ${COSINE_ADMISSION_FLOOR} THEN 'cosine'
+ *        ELSE 'unknown' END
+ *
+ * It is written out inline in each query below rather than shared as a nested
+ * `sql` fragment. A helper returning sql`…` reads better but INVOKES the tagged
+ * template, which is indistinguishable from a query to a call-counting test
+ * double — it silently consumed a response and made a mocked aggregate return
+ * zeros, i.e. read as perfectly healthy. The duplicated text is three lines;
+ * the NUMBERS stay single-sourced through the two constants above, which is
+ * where drift would actually be dangerous.
  */
-function effectiveScaleSql(sql: Sql) {
-  return sql`CASE
-    WHEN score_scale IS NOT NULL THEN score_scale
-    WHEN top_score IS NULL THEN 'unknown'
-    WHEN top_score <= ${RRF_SCORE_CEILING} THEN 'rrf'
-    WHEN top_score >= ${COSINE_ADMISSION_FLOOR} THEN 'cosine'
-    ELSE 'unknown'
-  END`;
-}
 
 export interface RecallHealth {
   /** Recalls recorded in the trailing 7 days (both surfaces). */
@@ -316,7 +315,14 @@ function scaleAggregate(
 export async function readRecallHealth(sql: Sql): Promise<RecallHealth> {
   const rows = (await sql`
     WITH scoped AS (
-      SELECT hit_count, fragment_count, top_score, ${effectiveScaleSql(sql)} AS scale
+      SELECT hit_count, fragment_count, top_score,
+             CASE
+               WHEN score_scale IS NOT NULL THEN score_scale
+               WHEN top_score IS NULL THEN 'unknown'
+               WHEN top_score <= ${RRF_SCORE_CEILING} THEN 'rrf'
+               WHEN top_score >= ${COSINE_ADMISSION_FLOOR} THEN 'cosine'
+               ELSE 'unknown'
+             END AS scale
         FROM harness_shared.memory_recall_stats
        WHERE created_at >= now() - interval '7 days'
     ),
@@ -430,7 +436,13 @@ export async function readRecallHealthByPool(
         (p.value ->> 'top')::double precision   AS top,
         -- Every pool top came from the same backend call as the row's
         -- top_score, so the row-level scale governs them all (P-036).
-        ${effectiveScaleSql(sql)}               AS scale,
+        CASE
+          WHEN s.score_scale IS NOT NULL THEN s.score_scale
+          WHEN s.top_score IS NULL THEN 'unknown'
+          WHEN s.top_score <= ${RRF_SCORE_CEILING} THEN 'rrf'
+          WHEN s.top_score >= ${COSINE_ADMISSION_FLOOR} THEN 'cosine'
+          ELSE 'unknown'
+        END                                     AS scale,
         p.value -> 'scopes'                     AS scopes
       FROM harness_shared.memory_recall_stats s
       CROSS JOIN LATERAL jsonb_each(s.pools) AS p(key, value)
@@ -485,7 +497,14 @@ export async function readRecallHealthBySurface(sql: Sql): Promise<RecallSurface
   // would still blend.
   const rows = (await sql`
     WITH scoped AS (
-      SELECT surface, hit_count, fragment_count, top_score, ${effectiveScaleSql(sql)} AS scale
+      SELECT surface, hit_count, fragment_count, top_score,
+             CASE
+               WHEN score_scale IS NOT NULL THEN score_scale
+               WHEN top_score IS NULL THEN 'unknown'
+               WHEN top_score <= ${RRF_SCORE_CEILING} THEN 'rrf'
+               WHEN top_score >= ${COSINE_ADMISSION_FLOOR} THEN 'cosine'
+               ELSE 'unknown'
+             END AS scale
         FROM harness_shared.memory_recall_stats
        WHERE created_at >= now() - interval '7 days'
     ),
