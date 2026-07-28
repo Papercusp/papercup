@@ -16,6 +16,16 @@ import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 import { configureCoordLog, resetCoordLog } from '../log';
 
 // ── Mock the wake pump seam: capture every emit key, do not run the real pump. ──
+/**
+ * The structured-body gate (owner directive 2026-07-28) requires a sectioned `body` on a
+ * directed `expects:'action'` send, plus `forYouBecause` on one section. These fixtures
+ * exercise the WAKE path, not body validation, so they spread in the minimum valid body —
+ * keeping each case about the thing it names.
+ */
+const ACTION_BODY = {
+  body: [{ text: 'go', forYouBecause: { relation: 'owns' as const, note: 'yours to carry' } }],
+};
+
 const emitAwaitedEvent = vi.fn(async ({ key }: { key: string }) => ({
   ok: true as const,
   key,
@@ -238,7 +248,7 @@ describe('coord:send', () => {
   it("wake:'required' path does NOT emit a notWoken idle report (the wake path owns liveness via recipient_absent)", async () => {
     listActiveAwaitsForKey.mockResolvedValue([]);
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', wake: 'required' }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: 'required' }),
       ctx,
     );
     expect(send1(res).notWoken).toBeUndefined();
@@ -248,7 +258,7 @@ describe('coord:send', () => {
 
   it('wake:true ENQUEUES the message AND fires exactly the recipient keys (P-040)', async () => {
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', wake: true }),
+      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: true }),
       ctx,
     );
     // enqueue half (durable inbox) still happened
@@ -300,7 +310,7 @@ describe('coord:send', () => {
       msgId: null,
     });
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', wake: 'required' }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: 'required' }),
       ctx,
     );
     const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
@@ -325,7 +335,7 @@ describe('coord:send', () => {
       msgId: null,
     });
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', wake: true }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: true }),
       ctx,
     );
     const { wake } = send1(res);
@@ -357,7 +367,7 @@ describe('coord:send', () => {
   it("wake:'required' that DOES wake returns NO recipient_absent (woken>0 control)", async () => {
     // default mock returns woken:1 per emit → two targets ⇒ woken:2.
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', wake: 'required' }),
+      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: 'required' }),
       ctx,
     );
     const { wake } = send1(res);
@@ -372,7 +382,7 @@ describe('coord:send', () => {
     // never got the directive. The fix surfaces it LOUDLY.
     resolveWakeMode.mockResolvedValue('manual');
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1'], summary: 'stand down', expects: 'action', wake: 'required' }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'stand down', expects: 'action', ...ACTION_BODY, wake: 'required' }),
       ctx,
     );
     // it STAGED, not fired: no wake emitted, the pending-wake was recorded
@@ -400,7 +410,7 @@ describe('coord:send', () => {
       ownerId === 'su-bee-2' ? 'manual' : 'auto',
     );
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', wake: 'required' }),
+      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: 'required' }),
       ctx,
     );
     // only the auto target's key fired
