@@ -104,7 +104,7 @@ export function LocalCardHost(): ReactNode {
       <AskChoiceCard args={args} onResponse={onChoice} allowDecline={allowDecline} />
     );
   } else if (presentation && presentation.kind === 'select') {
-    // WI-6552 [owner:Avi 2026-07-27]: the COMPACT single-choice branch. Same
+    // WI-6552 [owner 2026-07-27]: the COMPACT single-choice branch. Same
     // answer shape as 'radio' ({ picks: [id] }) so no consumer changes — the
     // only difference is that the option set lives behind a dropdown instead
     // of one full-width row each, which is what let the rubric picker eat the

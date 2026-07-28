@@ -65,9 +65,9 @@ describe('GradeAction — params (async rubric picker)', () => {
     const spec = await action.params!(ctx);
     const p = spec.presentation!;
     if (p.kind !== 'select') throw new Error(`expected select, got ${p.kind}`);
-    // [owner:Avi 2026-07-27] "a simple dropdown with the default text 'Grade'".
+    // [owner 2026-07-27] "a simple dropdown with the default text 'Grade'".
     expect(p.placeholder).toBe('Grade');
-    // [owner:Avi 2026-07-27] "something that comes up that explains what grade
+    // [owner 2026-07-27] "something that comes up that explains what grade
     // mode is". The old prompt ("Pick a rubric to grade against") named the
     // input without ever saying what grade mode DOES, which is what left the
     // owner unsure what picking a rubric committed them to. Assert the prompt
@@ -82,7 +82,7 @@ describe('GradeAction — params (async rubric picker)', () => {
     const action = getChatAction('posture-grade')!;
     const spec = await action.params!(ctx);
     expect(fetchSyncQueryMock).toHaveBeenCalledWith({ queryName: 'rubrics.list', args: {} });
-    // WI-6552 [owner:Avi 2026-07-27]: MUST be the compact 'select', not 'radio'.
+    // WI-6552 [owner 2026-07-27]: MUST be the compact 'select', not 'radio'.
     // radio renders one full-width row per rubric and filled the whole chat
     // popup. This assertion is the guard against that regressing.
     expect(spec.presentation?.kind).toBe('select');

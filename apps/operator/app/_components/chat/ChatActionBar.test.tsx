@@ -118,7 +118,7 @@ describe('ChatActionBar', () => {
     });
     render(<ChatActionBar ctx={ctx} />);
     fireEvent.click(screen.getByTestId('chat-action-quiet'));
-    // [owner:Avi 2026-07-27] "I also selected one of the rubrics and nothing
+    // [owner 2026-07-27] "I also selected one of the rubrics and nothing
     // happaned." Success used to render nothing at all, so a working action
     // and a dead click looked identical.
     const done = await screen.findByTestId('chat-action-bar-done');

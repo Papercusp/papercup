@@ -163,7 +163,7 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
         value = r.payload;
       }
       await action.run(ctx, value);
-      // WI-6552 [owner:Avi 2026-07-27, verbatim] "I also selected one of the
+      // WI-6552 [owner 2026-07-27, verbatim] "I also selected one of the
       // rubrics and nothing happaned." It very likely DID happen: single-select
       // cards commit on click and `run` posts the directive, but this bar only
       // ever rendered feedback in the CATCH below — a fully successful action

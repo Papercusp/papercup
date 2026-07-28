@@ -153,7 +153,21 @@ def inotify(budget_sec=8.0):
                 comm = open(f"/proc/{pid}/comm").read().strip()
             except Exception:
                 comm = "?"
-            per_proc.append({"pid": int(pid), "comm": comm, "instances": inst, "watches": watches})
+            # WI-6538: capture the cgroup so the budget evaluator can tell OUR processes
+            # apart from third-party ones. Without it the per-process watch budget warns on
+            # whatever holds the most watches host-wide — which on a dev box is the editor
+            # (VS Code was found holding 38,937), i.e. a permanent un-actionable amber that
+            # trains everyone to ignore perf warnings. cgroup is the principled
+            # discriminator here because our own services are confined to papercup-*
+            # systemd units and the kernel accounts for every descendant of those roots.
+            # Only read for processes that actually hold inotify instances (a few dozen),
+            # so this stays cheap.
+            try:
+                cgroup = open(f"/proc/{pid}/cgroup").read().strip()
+            except Exception:
+                cgroup = ""
+            per_proc.append({"pid": int(pid), "comm": comm, "instances": inst,
+                             "watches": watches, "cgroup": cgroup})
     per_proc.sort(key=lambda r: -r["watches"])
 
     def sysctl_int(name):
@@ -166,7 +180,12 @@ def inotify(budget_sec=8.0):
         "totalInstances": total_inst,
         "totalWatches": total_watch,
         "maxPerProcess": per_proc[0] if per_proc else None,
-        "topProcs": per_proc[:5],
+        # WI-6538: widened 5 -> 20 so the budget evaluator can reliably find the worst
+        # PAPERCUSP-OWNED holder. With only 5, a run where several third-party processes
+        # out-watch ours would push ours off the list and silently read as "we hold none".
+        # Only a few dozen processes hold inotify instances at all, so 20 is effectively
+        # the whole population.
+        "topProcs": per_proc[:20],
         "scannedProcs": scanned,
         "partial": partial,
         "limits": {"maxUserWatches": sysctl_int("max_user_watches"),

@@ -132,6 +132,30 @@ export interface AgentCoordState {
    * whole log counts — that is the honest answer, not a bug.
    */
   unreadCount: number;
+  /**
+   * THE MESSAGES `unreadCount` COUNTS — newest first, bounded to
+   * `UNREAD_LIST_LIMIT`.
+   *
+   * [owner 2026-07-28, verbatim] "I looked up the conversation for
+   * su-4ef7fb1d and it says in the COORD section 38 unread, but I only see 2
+   * messages, why? fix it". Before this field the state carried the COUNT and
+   * threw the rows away, so the dossier's coord section could only ever render
+   * `lastMessage` (exactly one) plus open handoffs/escalations. A badge saying
+   * 38 sat beside a section structurally incapable of showing 38 — and there
+   * was no scroll, no pagination and no "show all", because the data to show
+   * simply was not carried.
+   *
+   * Built from the SAME array whose length is `unreadCount` (never a second
+   * query and never a re-derivation), so the list and the badge cannot drift
+   * apart — which is exactly the failure D-006 names: a counter that disagrees
+   * with its reader.
+   *
+   * `unreadCount` stays the TRUE total and is deliberately NOT capped to this
+   * list's length (D-003: capping the badge to a page size would just be a new
+   * lie). When `unreadCount > unread.length` the surface must say so — the
+   * dossier renders "showing N of M".
+   */
+  unread: CoordMessageSummary[];
   /** Open (un-accepted) handoffs this agent sent or received. */
   openHandoffs: CoordHandoffSummary[];
   /** Open (unresolved) escalations this agent raised. */

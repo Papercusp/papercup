@@ -47,7 +47,7 @@ registerChatAction({
     const rows = await fetchSyncQuery<RubricListRow>({ queryName: 'rubrics.list', args: {} });
     const active = rows.filter((r) => r.status === 'active');
     return {
-      // WI-6552 [owner:Avi 2026-07-27]: the prompt EXPLAINS what grade mode is
+      // WI-6552 [owner 2026-07-27]: the prompt EXPLAINS what grade mode is
       // rather than just naming the input. The owner met this picker with no
       // idea what it would do ("something that comes up that explains what
       // grade mode is") — the workspace can hold a dozen active rubrics, so
