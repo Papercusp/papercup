@@ -123,8 +123,8 @@ export const PLANE_PRODUCER_FIELDS = [
     tsColumn: 'created_at',
     sinceDays: 30,
     producer: 'facts:assert { dependsOn } → captureFactDependencies',
-    why: "WI-6465. D-007 auto-invalidation is what makes an assumption more than a weak-badged conclusion. With no dependsOn nothing can ever go stale on its own terms, and `acted-on-stale-or-wrong-value` is permanently uninterpretable.",
-    knownUnbuilt: 'WI-6465',
+    why: "WI-6548. D-007 auto-invalidation is what makes an assumption more than a weak-badged conclusion. With no dependsOn nothing can ever go stale on its own terms, and `acted-on-stale-or-wrong-value` is permanently uninterpretable. ⚠ This is the ONE row here that is still GENUINELY OPEN work rather than a ruled zero — D-103 measured the fix: capture must be inline-and-required in a workflow the agent already performs (as `work_items:complete { assumptions }` is), never a voluntary extra field.",
+    knownUnbuilt: 'WI-6548',
   },
   {
     id: 'agent_facts.claim',
@@ -133,8 +133,16 @@ export const PLANE_PRODUCER_FIELDS = [
     tsColumn: 'created_at',
     sinceDays: 30,
     producer: 'facts:assert { claim }',
-    why: "WI-6465. The typed assertion P-011's contradiction detector compares. Prose cannot be branched on — that is the entire argument of cell-contract.ts, applied to facts.",
-    knownUnbuilt: 'WI-6465',
+    // ⚠ INVERTED BY WI-6545 / D-103, and left here deliberately rather than deleted.
+    // This row used to be the mirror-image defect in the header: a field with a
+    // consumer and no producer. Retiring P-011's detector removed the CONSUMER, so
+    // `claim` is now the opposite — a field 3 rows of which exist and NOTHING reads.
+    // It passes this lint (3 > 0) and that pass is uninformative; the lint asks only
+    // about producers. Kept listed so the next audit sees the inversion stated rather
+    // than re-deriving it, and so nobody re-attaches a consumer without re-measuring
+    // adoption first: 3 of 2,217 rows, one identity, one author.
+    why: "D-103. Was 'the typed assertion P-011's detector compares' — that detector is retired, so this field now has a producer and NO consumer. Not a producer gap.",
+    knownUnbuilt: 'D-103 (ruled)',
   },
   {
     id: 'agent_facts.enforcement',

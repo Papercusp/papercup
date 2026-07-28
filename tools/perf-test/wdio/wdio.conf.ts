@@ -78,6 +78,50 @@ function assertNativeWebDriverAvailable(): void {
 }
 
 /**
+ * Ensure the Tauri app will have an X display, WITHOUT depending on an ambient one.
+ *
+ * WHY THIS EXISTS (perf-testing-sweep-2026-07-27, WI-6538):
+ * `@wdio/xvfb` wraps each SPEC WORKER in `xvfb-run`, but the app process is not a
+ * child of a worker — it is launched by tauri-driver, which `onPrepare` spawns in
+ * the LAUNCHER process. So the app inherits the LAUNCHER's environment, and the
+ * worker-level xvfb wrapper does nothing for it. With an ambient `DISPLAY` (an
+ * interactive shell on this box has `:1`) that goes unnoticed; run the same command
+ * from anywhere without one — a routine, a cron, CI, an operator-spawned job, i.e.
+ * exactly the UNATTENDED scheduling this suite exists to enable — and the binary
+ * dies on:
+ *
+ *   thread 'main' panicked at tao-0.35.0/.../event_loop.rs:217:
+ *   Failed to initialize gtk backend!: Failed to initialize GTK
+ *
+ * That is an opaque Rust panic several layers below the test, and it reads as "the
+ * desktop build is broken" rather than "there is no display", so it costs a real
+ * diagnosis every time. Wrapping tauri-driver in `xvfb-run -a` (auto-pick a free
+ * display) makes the runner self-sufficient: the driver, and therefore the app,
+ * always has a display, and the suite becomes schedulable unattended.
+ *
+ * Returns the argv to spawn. Prefers an ambient DISPLAY when present so an
+ * interactive/debug run still shows a real window.
+ */
+function driverCommand(args: readonly string[]): { file: string; argv: string[] } {
+  if (process.env.DISPLAY) return { file: "tauri-driver", argv: [...args] };
+  try {
+    execFileSync("which", ["xvfb-run"], { stdio: "ignore" });
+  } catch {
+    throw new Error(
+      "[wdio.conf.ts] No DISPLAY is set and `xvfb-run` is not on PATH, so the Tauri " +
+        "binary would panic with an opaque `Failed to initialize GTK` deep in tao. " +
+        "Install it with:\n\n  sudo apt install xvfb\n\n" +
+        "(or export DISPLAY=:N pointing at a running X server). " +
+        "perf-testing-sweep-2026-07-27 / WI-6538 — this used to surface as a Rust " +
+        "panic that read like a broken desktop build.",
+    );
+  }
+  // -a: pick a free display number rather than colliding with the many `Xvfb :0`
+  // instances other agents' e2e sessions keep alive on this box.
+  return { file: "xvfb-run", argv: ["-a", "tauri-driver", ...args] };
+}
+
+/**
  * Resolve the packaged Tauri binary. `TAURI_APP_PATH` wins; otherwise try the
  * real build locations in preference order. NOTE: the desktop app is the
  * in-repo `papercusp-desktop` submodule (binary name `papercusp-desktop`) — the
@@ -260,11 +304,15 @@ export const config: WebdriverIO.Config = {
     while (nativePort === driverPort) nativePort = await getFreePort();
 
     process.env.TAURI_DRIVER_PORT = String(driverPort);
-    tauriDriver = spawn(
-      "tauri-driver",
-      ["--port", String(driverPort), "--native-port", String(nativePort)],
-      { stdio: ["ignore", "inherit", "inherit"] }
-    );
+    // See driverCommand: the app inherits THIS process's environment, so the display
+    // must be arranged here — the worker-level @wdio/xvfb wrapper never reaches it.
+    const { file, argv } = driverCommand([
+      "--port",
+      String(driverPort),
+      "--native-port",
+      String(nativePort),
+    ]);
+    tauriDriver = spawn(file, argv, { stdio: ["ignore", "inherit", "inherit"] });
   },
   // Publish BEFORE killing the driver so a publish hang can't leave tauri-driver
   // orphaned; the kill is in a finally for the same reason.
