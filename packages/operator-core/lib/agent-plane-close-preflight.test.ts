@@ -22,11 +22,36 @@ import {
   type PlaneSeriesPoint,
 } from './agent-plane-close-preflight';
 import { METRIC_KNOWN_GAPS } from './agent-plane-ratchet';
-import { PLANE_METRIC_IDS, type PlaneMetricId } from './agent-plane-measurement';
+import { METRIC_SPECS, PLANE_METRIC_IDS, type PlaneMetricId } from './agent-plane-measurement';
 
-/** Two real metric ids, so the fixtures exercise the shipped id space. */
-const BLIND: PlaneMetricId = PLANE_METRIC_IDS[0];
-const OTHER: PlaneMetricId = PLANE_METRIC_IDS[1];
+/**
+ * Two real metric ids, so the fixtures exercise the shipped id space.
+ *
+ * ⚠ CHOSEN BY SEMANTICS, NEVER BY INDEX — `PLANE_METRIC_IDS[0]`/`[1]` is how this
+ * suite reds the fleet gate against an impl that is RIGHT. `windowOf` below stages
+ * an uninterpretable window as exactly `{ interpretable: false, zeroReason:
+ * 'nothing-eligible', fillRate: 0 }`, which is precisely the shape
+ * `producerRanButNothingOccurred` reads as BENIGN for a metric whose eligibility is
+ * the occurrence it measures. WI-6562 set `eligibilityIsOccurrence` on
+ * `intent-action-divergence-sampling` — which happened to sit at index 1 — so the
+ * "regression" the delta fixtures stage silently stopped registering, and two tests
+ * failed carrying no hint that a metric SPEC, not the pre-flight, had moved.
+ *
+ * A companion-dependent metric (`interpretableOnlyWith`) is excluded for the same
+ * reason: its verdict is decided cross-metric in the ratchet's second pass, so a
+ * fixture built on one asserts something other than what it reads as asserting.
+ *
+ * Select on the property the fixtures actually require — a metric whose blindness
+ * is unambiguously its own failure — and the ORDERING of the id list stops being
+ * load-bearing for a suite that never meant to depend on it.
+ */
+const FAILABLE_METRIC_IDS = PLANE_METRIC_IDS.filter(
+  (id) =>
+    METRIC_SPECS[id].eligibilityIsOccurrence !== true &&
+    METRIC_SPECS[id].interpretableOnlyWith === undefined,
+);
+const BLIND: PlaneMetricId = FAILABLE_METRIC_IDS[0];
+const OTHER: PlaneMetricId = FAILABLE_METRIC_IDS[1];
 const GAPS: PlaneGapMap = { [BLIND]: 'WI-9001' };
 
 /** A window in which `blind` is uninterpretable and everything else is fine. */
@@ -164,6 +189,31 @@ describe('⚠ the vacuous pass this probe declares', () => {
 });
 
 describe('⚠ the delta property — a red already in flight is never charged to this close', () => {
+  it('⚠ THE FIXTURE PREMISE: both ids must be metrics whose blindness genuinely FAILS', () => {
+    // The recurrence guard for the defect that reds the gate here (WI-6568). The
+    // two tests below can only stage a "pre-existing failure" with a metric that
+    // actually fails when blind — and whether a given metric does is a property of
+    // its SPEC, which moves independently of this file. Assert the premise where it
+    // can name its own reason: without this, a spec change surfaces two paragraphs
+    // down as `expected [] to include '<some metric>'`, which reads as a pre-flight
+    // regression and sends the next reader into the wrong module entirely.
+    expect(
+      FAILABLE_METRIC_IDS.length,
+      'fewer than two metrics whose uninterpretable window is a real failure — the delta fixtures below can no longer be built from the shipped id space; re-pin them against literal specs',
+    ).toBeGreaterThanOrEqual(2);
+    expect(BLIND).not.toBe(OTHER);
+    for (const id of [BLIND, OTHER]) {
+      expect(
+        METRIC_SPECS[id].eligibilityIsOccurrence,
+        `${id}: eligibility is the OCCURRENCE, so a 'nothing-eligible' window is a quiet fleet, not a dead producer — it cannot stage a regression`,
+      ).not.toBe(true);
+      expect(
+        METRIC_SPECS[id].interpretableOnlyWith,
+        `${id}: companion-dependent, so its verdict is decided cross-metric and this fixture would assert something other than what it says`,
+      ).toBeUndefined();
+    }
+  });
+
   it('does not attribute an unrelated pre-existing failure to the closer', () => {
     // OTHER worked and then died: a `regressed` verdict, failing independently of
     // any close. Misattributing a candidate-independent failure is the whole
