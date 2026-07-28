@@ -4,21 +4,34 @@ import {
   desktopPerfGatePolicyFromFlags,
   runDesktopPerfGate,
   failingMeasures,
+  DEFAULT_DESKTOP_PERF_MAX_AGE_MS,
   type DesktopPerfGatePolicy,
 } from './desktop-perf-gate';
 import type { DesktopPerfRun, DesktopPerfMeasure } from '@papercusp/operator-core/lib/system-health/desktop-perf-runs';
 
-function run(measures: DesktopPerfMeasure[], status: DesktopPerfRun['status'] = 'pass'): DesktopPerfRun {
-  return { id: 'r1', workspaceId: 'default', createdTs: 1, source: 'admin-suite', status, gitSha: 'abc12345', runId: 'testrun-1', measures };
+// `createdTs` defaults to NOW because the gate now applies a freshness window: the
+// previous fixture value of 1 (epoch+1ms, i.e. 1970) would make every run in this
+// file STALE and route all of these cases into the fail-soft branch, quietly
+// gutting the suite instead of failing it.
+function run(
+  measures: DesktopPerfMeasure[],
+  status: DesktopPerfRun['status'] = 'pass',
+  createdTs: number = Date.now(),
+): DesktopPerfRun {
+  return { id: 'r1', workspaceId: 'default', createdTs, source: 'admin-suite', status, gitSha: 'abc12345', runId: 'testrun-1', measures };
 }
 const ok: DesktopPerfMeasure = { key: 'route:harness-warm', value: 900, unit: 'ms', budget: 1500, ok: true };
 const breach: DesktopPerfMeasure = { key: 'interaction:plan-popup-open', value: 1800, unit: 'ms', budget: 1500, ok: false };
-const WARN_ONLY: DesktopPerfGatePolicy = { enabled: true, block: false };
-const ARMED: DesktopPerfGatePolicy = { enabled: true, block: true };
+const WARN_ONLY: DesktopPerfGatePolicy = { enabled: true, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS };
+const ARMED: DesktopPerfGatePolicy = { enabled: true, block: true, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS };
 
 describe('evaluateDesktopPerfGate (pure)', () => {
   it('disabled → pass, reads nothing', () => {
-    const d = evaluateDesktopPerfGate(run([breach]), { enabled: false, block: false }, 'deadbeefcafef00d');
+    const d = evaluateDesktopPerfGate(
+      run([breach]),
+      { enabled: false, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS },
+      'deadbeefcafef00d',
+    );
     expect(d.action).toBe('pass');
     expect(d.verdictStatus).toBe('unknown');
     expect(d.summary).toContain('disabled');
@@ -28,6 +41,50 @@ describe('evaluateDesktopPerfGate (pure)', () => {
     expect(evaluateDesktopPerfGate(null, WARN_ONLY).action).toBe('pass');
     expect(evaluateDesktopPerfGate(null, WARN_ONLY).verdictStatus).toBe('unknown');
     expect(evaluateDesktopPerfGate(run([]), WARN_ONLY).action).toBe('pass');
+  });
+
+  // Freshness window (WI-6538). Before this, `readLatestRun` returned the most
+  // recent row at ANY age, so ONE run would be re-applied as the verdict for every
+  // later candidate forever. That was invisible only because the table was empty.
+  describe('freshness window', () => {
+    const NOW = 1_800_000_000_000;
+    const hoursAgo = (h: number) => NOW - h * 3_600_000;
+
+    it('a run older than the window → fail-soft pass/unknown, never a breach', () => {
+      const d = evaluateDesktopPerfGate(run([breach], 'fail', hoursAgo(30)), WARN_ONLY, 'abc123', NOW);
+      expect(d.action).toBe('pass');
+      expect(d.verdictStatus).toBe('unknown');
+      expect(d.summary).toContain('STALE');
+      expect(d.summary).toContain('30h old');
+      expect(d.reasons).toEqual([]);
+    });
+
+    it('staleness outranks block-mode — an armed gate still will not block on old data', () => {
+      const d = evaluateDesktopPerfGate(run([breach], 'fail', hoursAgo(72)), ARMED, 'abc123', NOW);
+      expect(d.action).toBe('pass');
+      expect(d.verdictStatus).toBe('unknown');
+    });
+
+    it('a run INSIDE the window is still judged normally', () => {
+      const d = evaluateDesktopPerfGate(run([breach], 'fail', hoursAgo(2)), WARN_ONLY, 'abc123', NOW);
+      expect(d.action).toBe('warn');
+      expect(d.verdictStatus).toBe('crit');
+    });
+
+    // The distinction the whole window exists to preserve: an OLD run must not be
+    // reported as a healthy pass, because "clean" and "nobody measured in days"
+    // are opposite operational facts that a bare `pass` would conflate.
+    it('a stale PASSING run is reported unknown, not ok', () => {
+      const d = evaluateDesktopPerfGate(run([ok], 'pass', hoursAgo(48)), WARN_ONLY, 'abc123', NOW);
+      expect(d.verdictStatus).toBe('unknown');
+      expect(d.summary).toContain('STALE');
+    });
+
+    it('maxAgeMs of 0 disables the window rather than staling everything', () => {
+      const policy: DesktopPerfGatePolicy = { enabled: true, block: false, maxAgeMs: 0 };
+      const d = evaluateDesktopPerfGate(run([breach], 'fail', hoursAgo(9000)), policy, 'abc123', NOW);
+      expect(d.verdictStatus).toBe('crit');
+    });
   });
 
   it('all budgeted measures met → pass (ok)', () => {
@@ -73,12 +130,17 @@ describe('evaluateDesktopPerfGate (pure)', () => {
 });
 
 describe('desktopPerfGatePolicyFromFlags', () => {
+  const V1 = { block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS };
   it('enabled tracks the flag; block is always false in V1', async () => {
-    expect(await desktopPerfGatePolicyFromFlags(async () => true)).toEqual({ enabled: true, block: false });
-    expect(await desktopPerfGatePolicyFromFlags(async () => false)).toEqual({ enabled: false, block: false });
+    expect(await desktopPerfGatePolicyFromFlags(async () => true)).toEqual({ enabled: true, ...V1 });
+    expect(await desktopPerfGatePolicyFromFlags(async () => false)).toEqual({ enabled: false, ...V1 });
   });
   it('a flag-read error fails safe to disabled', async () => {
-    expect(await desktopPerfGatePolicyFromFlags(async () => { throw new Error('boom'); })).toEqual({ enabled: false, block: false });
+    expect(await desktopPerfGatePolicyFromFlags(async () => { throw new Error('boom'); })).toEqual({ enabled: false, ...V1 });
+  });
+  it('ships a freshness window by default — an unbounded gate re-asserts old runs forever', async () => {
+    const policy = await desktopPerfGatePolicyFromFlags(async () => true);
+    expect(policy.maxAgeMs).toBeGreaterThan(0);
   });
 });
 
