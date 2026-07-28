@@ -271,6 +271,81 @@ export function projectRosterRows(
 }
 
 /**
+ * PURE: the RE-POLL etag for one coord:roster READ — a hash of the
+ * REPRESENTATION ACTUALLY EMITTED, not of the underlying roster (WI-6665).
+ *
+ * This is deliberately NOT `computeRosterEtag`, and the difference is the whole
+ * point. That one hashes the roster's identity+state and EXCLUDES liveness churn
+ * (D-006) — the right trade for `coord:presence`, which has no caller lens and
+ * one payload per session. Porting it here verbatim would be wrong twice over:
+ *
+ *   1. `coord:roster` applies `filterRosterRowsByState` + `projectRosterRows`
+ *      AFTER the snapshot, so ONE roster etag maps to many different payloads
+ *      (`full` vs `liveness` vs `ids`, crossed with any `states[]` subset). A
+ *      caller that read with `project:'full'` and re-read with
+ *      `project:'liveness', since:<that etag>` would be told `unchanged:true`
+ *      — "you already have this" — when it demonstrably does not.
+ *
+ *   2. The excluded lane, liveness, is EXACTLY what this tool's cheapest lens is
+ *      for. `{ project:'liveness', states:['live'] }` asks "who is live?"; an
+ *      etag that ignores live↔parked would report `unchanged` while the answer
+ *      churned underneath the caller — a confident wrong answer on the single
+ *      most-polled read, which is the failure mode this surface keeps closing.
+ *
+ * Hashing the emitted representation fixes both by construction: `unchanged:true`
+ * means "the bytes you would get back are identical to the ones you hold", on
+ * EVERY lens, with no per-lens special-casing to get wrong.
+ *
+ * The honest trade-off, stated rather than hidden: on the DEFAULT `full` read the
+ * rows carry `lastActiveSecAgo`, which moves on nearly every read, so the etag
+ * churns and the guard degrades to a no-op — the caller pays full price, exactly
+ * as it does today. That is a guard that is USELESS on the expensive read, never
+ * one that LIES on the cheap one. Callers who want the cheap re-poll ask for a
+ * cheap lens, which is the behaviour we want to reward anyway.
+ *
+ * The `coord:roster/v1` salt makes a cross-tool mix-up (passing a coord:presence
+ * etag here, or the reverse) impossible to collide rather than merely unlikely; a
+ * foreign or stale token simply misses and yields a full read, which is the safe
+ * direction.
+ */
+export function computeRosterViewEtag(
+  emitted: readonly Record<string, unknown>[] | readonly string[],
+  lens: {
+    view: string;
+    scope: string;
+    potId: string | null;
+    project: RosterProjection;
+    states?: readonly string[] | undefined;
+    includeDetail?: boolean | undefined;
+    includeStale?: boolean | undefined;
+    owner?: string | undefined;
+  },
+): string {
+  const h = createHash('sha1');
+  h.update('coord:roster/v1');
+  h.update('\0');
+  h.update(lens.view);
+  h.update('\0');
+  h.update(lens.scope);
+  h.update('\0');
+  h.update(lens.potId ?? '');
+  h.update('\0');
+  h.update(lens.project);
+  h.update('\0');
+  // Sorted so ['live','parked'] and ['parked','live'] are the same lens — they
+  // select the same rows, so they must not produce different etags.
+  h.update([...(lens.states ?? [])].sort().join(','));
+  h.update('\0');
+  h.update(lens.includeDetail ? '1' : '0');
+  h.update(lens.includeStale ? '1' : '0');
+  h.update('\0');
+  h.update(lens.owner ?? '');
+  h.update('\0');
+  h.update(JSON.stringify(emitted));
+  return h.digest('hex').slice(0, 16);
+}
+
+/**
  * PURE `sessionState` filter over the emitted rows (WI-6658).
  *
  * ⚠ A row whose `sessionState` is null — a federated/unknown peer, which has no

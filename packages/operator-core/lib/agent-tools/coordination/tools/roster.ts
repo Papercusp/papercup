@@ -24,6 +24,7 @@ import {
   assemblePresenceSnapshot,
   projectRosterRows,
   filterRosterRowsByState,
+  computeRosterViewEtag,
 } from '../presence-snapshot';
 import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { readIdentity } from '../../locks/identity';
@@ -78,6 +79,17 @@ export default defineTool({
   // into ~17 mostly-null fields — so a trimmed session asking for the cheapest
   // form would be handed a BIGGER payload than it asked for, which is the exact
   // inversion of both items' purpose.
+  //
+  // WI-6665 added a THIRD lens (the `since:` re-poll guard) and it composes
+  // safely for the same structural reason: the `{ unchanged:true }` stub carries
+  // no `active[]`, and shapeCoordPresence returns `data` untouched unless
+  // `active[]` is an array — so the tier shaper cannot re-widen a stub any more
+  // than it can a claims/history payload. A FOURTH lens must re-check exactly
+  // this: the ordering rule is EXPLICIT-REQUEST-BEATS-AUTOMATIC-DEFAULT, and
+  // anything that rewrites `active[]` has to preserve it. Note the etags are NOT
+  // interchangeable between this tool and coord:presence — see
+  // computeRosterViewEtag for why hashing the roster instead of the emitted
+  // representation would lie here.
   shape: {
     standard: (data: unknown) => (hasCallerLens(data) ? data : shapeCoordPresence(data, 'standard')),
     trimmed: (data: unknown) => (hasCallerLens(data) ? data : shapeCoordPresence(data, 'trimmed')),
@@ -140,6 +152,13 @@ export default defineTool({
       .describe(
         'view=live,members: return only rows in these sessionStates — e.g. ["live"]. summary/byState still describe the WHOLE roster, so you can see what you filtered out. A federated peer with no derivable state matches nothing and is reported as projection.unknownStateExcluded, never silently dropped.',
       ),
+    since: z
+      .string()
+      .max(64)
+      .optional()
+      .describe(
+        'CHEAP UNCHANGED RE-POLL (view=live,members): pass the `etag` from your PRIOR coord:roster read with THE SAME lens args. If the rows you would be handed are byte-identical, you get a ~120B { unchanged:true, etag, as_of } instead of the payload. This etag hashes the EMITTED representation, so unlike coord:presence\'s it DOES track liveness — a live↔parked flip changes it, and { project:"liveness", states:["live"] } re-polls correctly. It is NOT interchangeable with a coord:presence etag (different scope, salted apart); a foreign, stale, or different-lens token simply misses and you get the full read. ⚠ On the DEFAULT project:"full" read the rows carry lastActiveSecAgo, which moves nearly every read — the etag churns and this guard does nothing. Pair `since:` with a cheap lens (ids/liveness/states), which is where re-polling is worth guarding anyway.',
+      ),
   }),
   async handler(args, ctx) {
     const view = args.view ?? 'live';
@@ -199,8 +218,50 @@ export default defineTool({
       const projected = projectRosterRows(filtered, projection);
       const lensed = projection !== 'full' || (args.states?.length ?? 0) > 0;
 
+      // WI-6665: the re-poll etag is computed over the rows we are ABOUT TO
+      // EMIT — after the state filter and the field projection — so it
+      // identifies the representation, not the roster behind it. `snapshot.etag`
+      // (identity+state, liveness deliberately excluded) is coord:presence's
+      // contract and is NOT usable here: this tool's lens means one roster etag
+      // maps to many payloads, and its cheapest lens asks precisely the liveness
+      // question that etag ignores. It was previously leaked through the
+      // `...snapshot` spread with no `since:` to spend it on; we replace it
+      // rather than emit two same-named tokens with different meanings.
+      const viewEtag = computeRosterViewEtag(projected, {
+        view: view === 'live' ? 'live' : 'members',
+        scope: resolved.scope,
+        potId: resolved.potId ?? null,
+        project: projection,
+        states: args.states,
+        includeDetail: args.include_detail,
+        includeStale: args.include_stale,
+        owner: args.owner,
+      });
+
+      // The short-circuit. Cheap by construction: we still ASSEMBLE the snapshot
+      // (the oracle is the only honest source of sessionState — see the
+      // projectRosterRows doc comment), so this saves PAYLOAD, not derivation.
+      // Payload is what the caller pays for: a full read measured ~134KB.
+      if (args.since && args.since === viewEtag) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                unchanged: true,
+                etag: viewEtag,
+                as_of: snapshot.as_of,
+                scope: resolved.scope,
+                note: 'rows identical to your etag under the SAME lens args; this etag tracks liveness, so a live↔parked flip would have changed it. A different project/states means a different etag — re-read without since:.',
+              }),
+            },
+          ],
+        };
+      }
+
       const output = {
         ...snapshot,
+        etag: viewEtag,
         view: view === 'live' ? 'live' : 'members',
         ...(self ? { self } : {}),
         active: projected,
