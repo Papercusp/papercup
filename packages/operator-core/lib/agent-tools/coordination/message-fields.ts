@@ -355,15 +355,48 @@ export const messageSectionSchema = z
     }
   });
 
+/**
+ * THE STRING BODY IS REFUSED (owner directive 2026-07-28, interactive: *"WE SHOULD NOT
+ * ALLOW JUST A STRING I WANT TO ENFORCE THE STRUCTURE THAT IS THE WHOLE POINT OF IT"*).
+ *
+ * D-064 originally admitted a plain string as "the n=1 case". Measured 30h after the
+ * format shipped: 5,642 messages, and the sectioned form was used ONCE — by the owner's
+ * admin GUI, never by an agent. The string branch was not a convenience, it was the whole
+ * traffic; an optional structure next to a free-text alternative is the same "a default is
+ * how a field dies" mechanism D-016 names, and here the default was the entire format.
+ *
+ * So the union stays only to CATCH the string and refuse it with a message that teaches
+ * the shape — a bare `z.array(...)` would emit zod's "expected array, received string",
+ * which tells an agent what it did wrong but not what to do instead. The refusal is the
+ * tier-2 GATE this behaviour never had; per D-016 the prompt was never going to be one.
+ */
 export const messageBodyArg = z
   .union([z.string(), z.array(messageSectionSchema).min(1).max(20)])
   .optional()
+  .superRefine((value, ctx) => {
+    if (typeof value !== 'string') return;
+    ctx.addIssue({
+      code: 'custom',
+      message:
+        '`body` must be an ARRAY of sections — a plain string is no longer accepted. Wrap what you ' +
+        'wrote: body: [{ text: "<your text>" }]. That minimum is always valid, and it puts the four ' +
+        'authored fields one keystroke away, which is the point: `premises` (the claims this part ' +
+        'rests on, so a reader can re-check your footing), `forYouBecause` (why THIS recipient is ' +
+        'getting it), `youMayNotKnow` (something you hold that they likely lack), `couldNotDetermine` ' +
+        '(what you could NOT establish — silence there reads as confidence you do not have). Split ' +
+        'into SEVERAL sections when parts of your message have different dispositions, so a firm ' +
+        'finding and an unverified guess are not delivered as if they were the same thing. The ' +
+        'ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and are refused on a ' +
+        'section.',
+    });
+  })
   .describe(
-    'The message body. A plain STRING is the n=1 case (one section, no authored fields). Pass an ' +
-      'ARRAY of sections when the parts of your message have different dispositions — a concession, ' +
-      'an experimental result, an explicitly-undetermined claim — each with its own `premises`, ' +
-      '`forYouBecause`, `youMayNotKnow`, `couldNotDetermine`. The ENVELOPE fields (expects, ' +
-      'blocking, why, basedOn) stay on the message and are refused on a section.',
+    'The message body: an ARRAY of sections. A plain string is REFUSED — the minimum is ' +
+      '[{ text: "..." }]. Use SEVERAL sections when the parts of your message have different ' +
+      'dispositions — a concession, an experimental result, an explicitly-undetermined claim — ' +
+      'each with its own `premises`, `forYouBecause`, `youMayNotKnow`, `couldNotDetermine`. The ' +
+      'ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and are refused on a ' +
+      'section.',
   );
 
 export { premisesArg, forYouBecauseArg, youMayNotKnowArg, couldNotDetermineArg, whyArg, blockingArg };

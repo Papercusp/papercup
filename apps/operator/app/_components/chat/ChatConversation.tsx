@@ -375,12 +375,25 @@ type ChatMessageRowProps = {
  * exactly why that guard kept passing while typing stayed slow.
  *
  * Measured in a driven Tauri webview against :3270, on the owner's own surface:
- * ~70ms of main-thread block per keystroke against a 32ms idle two-frame floor,
- * with 28 chip tooltips rebuilt per keystroke and ZERO network requests and ZERO
- * forced reflows — i.e. pure re-render cost. Key auto-repeat is ~33ms, so any
- * per-keystroke cost above that queues without bound, which is why the owner saw
- * "half a second for each next character" while HOLDING a key rather than a
- * uniform slowness.
+ * ~70ms of main-thread block per keystroke, with 28 chip tooltips rebuilt per
+ * keystroke and ZERO network requests and ZERO forced reflows. Key auto-repeat is
+ * ~33ms, so any per-keystroke cost above that queues without bound, which is why
+ * the owner saw "half a second for each next character" while HOLDING a key
+ * rather than a uniform slowness.
+ *
+ * ⚠ THAT MEASUREMENT IS PRE-FIX AND ITS OBVIOUS READING IS WRONG — do not plan a
+ * fix from this comment alone. The 28 stringifies were real but were only ~7.6ms
+ * of the ~70ms; the row memo below removed them (re-measured: 2.7x more chips,
+ * ~3x fewer stringifies, sync work 4-5ms -> 1ms) and typing stayed slow. WI-6502
+ * then eliminated 24 hypotheses by measurement, including React itself: setting
+ * the input's value with the native setter and dispatching NO event — so React
+ * never learns of the change — still costs 80-89ms, and the same cost reproduces
+ * on a plain focused <input> on /adv with no chat mounted at all. The residual is
+ * PAINT (it vanishes under `visibility:hidden` on <html> while React still
+ * renders and commits), it requires the field to be FOCUSED, and it is flat in
+ * draft length. So the memo below is worth keeping and is NOT the remaining cost.
+ * Read WI-6502's checkpoint before touching this file for performance; it lists
+ * every eliminated hypothesis so they are not re-run.
  *
  * A memo is only as good as its props' identity, so every callback here must be
  * stable at its source (see OperatorChat's module-level `labelForRole`). They are

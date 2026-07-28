@@ -1310,6 +1310,58 @@ export default defineTool({
           'which was silently derived from wake+replyDeadlineSec and so carried no sender intent.',
       });
     }
+    // STRUCTURED-BODY GATE (owner directive 2026-07-28) — the companion to the string
+    // refusal in messageBodyArg. Refusing the string alone does not force the structure;
+    // it just moves the free text one field left, into the REQUIRED `summary`. That is the
+    // same escape the `expects` gate had to close for its own shorthand above, and the same
+    // shape as D-016's "a default is how a field dies" — a rule that can be satisfied by
+    // not participating is not a gate. So a message that ASKS SOMETHING of its recipient
+    // must carry a body; a genuine FYI (`expects: 'none'`) still may not.
+    const checkStructured = (m: { to?: unknown; expects?: unknown; body?: unknown }, path: (string | number)[]) => {
+      const expects = typeof m.expects === 'string' ? m.expects : undefined;
+      if (!expects || expects === 'none') return;
+      if (m.body === undefined) {
+        pctx.addIssue({
+          code: 'custom',
+          path: [...path, 'body'],
+          message:
+            `\`body\` is REQUIRED when expects is '${expects}' — you are asking the recipient for ` +
+            'something, so say what you are asking about in sections rather than compressing it into ' +
+            '`summary`. Minimum: body: [{ text: "..." }]. Only an FYI (expects:\'none\') may omit it. ' +
+            'A section also carries `premises`, `forYouBecause`, `youMayNotKnow` and — the one most ' +
+            'worth filling — `couldNotDetermine`, which is how you hand over a gap instead of letting ' +
+            'silence read as certainty.',
+        });
+        return;
+      }
+      // A DIRECTED ask must say why THIS recipient. Excluded for broadcasts, where
+      // "why you specifically" is not a well-formed question, and for ack (a receipt
+      // confirmation needs no rationale). Kept to ONE required authored field on ONE
+      // section: requiring all four would manufacture filler, which is how a structured
+      // field ends up carrying less information than the prose it replaced.
+      const directed = Array.isArray(m.to) && m.to.length > 0 && !m.to.includes('*') && !m.to.includes('human');
+      if (!directed || (expects !== 'action' && expects !== 'answer')) return;
+      const sections = Array.isArray(m.body) ? (m.body as Array<Record<string, unknown>>) : [];
+      if (sections.length && !sections.some((s) => s && s.forYouBecause !== undefined)) {
+        pctx.addIssue({
+          code: 'custom',
+          path: [...path, 'body'],
+          message:
+            `A DIRECTED message with expects:'${expects}' needs \`forYouBecause\` on at least one ` +
+            'section — you are asking a specific agent to act or answer, so state why it is THEM. ' +
+            'Shape: forYouBecause: { relation: <how they relate to this>, note: "..." }. Use ' +
+            "relation:'other' with a note when no structural relation fits. Broadcasts and " +
+            "expects:'ack' are exempt.",
+        });
+      }
+    };
+    if (hasItems) {
+      (a?.items ?? []).forEach((it, i) => {
+        if (it && typeof it === 'object') checkStructured(it as Record<string, unknown>, ['items', i]);
+      });
+    } else if (hasSingle) {
+      checkStructured(a as Record<string, unknown>, []);
+    }
     return data;
   }, z.object({
     // Caller-DX (watchdog P-006): actionable validation messages — agents

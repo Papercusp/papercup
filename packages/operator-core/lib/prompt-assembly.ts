@@ -188,6 +188,7 @@ export interface AssembledSection {
     | 'wait-loop-note'
     | 'peer-wake-note'
     | 'coupling-note'
+    | 'state-plane-note'
     | 'runtime';
   chars: number;
 }

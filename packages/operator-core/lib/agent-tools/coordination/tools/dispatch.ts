@@ -272,7 +272,20 @@ export async function composeDispatch(
   const sendEnv = (await call('coord:send', {
     to: [args.to],
     summary: args.note,
-    ...(hydratedBody ? { body: hydratedBody } : {}),
+    // The structured-body gate refuses a plain string, and expects:'action' below makes a
+    // body mandatory — so dispatch always sends one. `forYouBecause` is satisfiable here in
+    // the strongest possible way: dispatch is a targeted hand-off, so the recipient IS the
+    // assignee, and that is a structural relation rather than a note we have to invent.
+    body: [
+      {
+        text: hydratedBody || args.note,
+        forYouBecause: {
+          relation: 'owns' as const,
+          ...(args.planSlug ? { ref: args.planSlug } : {}),
+          note: 'dispatched to you — this work is yours to carry from here',
+        },
+      },
+    ],
     ...(args.planSlug ? { plan_slug: args.planSlug } : {}),
     wake: 'required',
     // D-048: `expects` is required and never defaulted. Dispatch hands the target WORK
