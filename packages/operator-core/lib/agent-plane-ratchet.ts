@@ -277,8 +277,16 @@ export function ratchetPlaneSeries(args: {
    * against literal specs rather than only the live registry.
    */
   specs?: Readonly<Partial<Record<PlaneMetricId, { interpretableOnlyWith?: readonly PlaneMetricId[] }>>>;
+  /**
+   * metric → the item excusing its blindness. Defaults to the shipped
+   * {@link METRIC_KNOWN_GAPS}; injectable for the same reason `specs` is — the
+   * live map legitimately EMPTIES as its gaps get built, and a suite keyed off it
+   * would then go vacuously green instead of failing. The exemption/withdrawal
+   * behaviour must stay testable against a literal map once the real one is bare.
+   */
+  gaps?: Readonly<Partial<Record<PlaneMetricId, string>>>;
 }): RatchetReport {
-  const { series, closedGaps = new Set<string>(), specs = METRIC_SPECS } = args;
+  const { series, closedGaps = new Set<string>(), specs = METRIC_SPECS, gaps = METRIC_KNOWN_GAPS } = args;
   const rows: RatchetRow[] = [];
 
   for (const metric of PLANE_METRIC_IDS) {
@@ -289,7 +297,7 @@ export function ratchetPlaneSeries(args: {
     }
     const interpretableWindows = windows.filter((w) => w.interpretable && !isIncoherent(w));
     const verdict = judgeMetricRatchet(windows);
-    const knownGap = METRIC_KNOWN_GAPS[metric];
+    const knownGap = gaps[metric];
     rows.push({
       metric,
       verdict,

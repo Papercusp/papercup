@@ -71,6 +71,11 @@ import { itemTestGate } from '../../harness-test-gate';
 import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { fireReactionInProcess } from '../../events';
+import {
+  isPlaneGapItem,
+  preflightPlaneCloseLive,
+  renderPlaneClosePreflightWarning,
+} from '../../agent-plane-close-preflight';
 
 // EI-7031: coerce common LLM mis-shapes (bare string, scalar↔array swaps, missing
 // summary) to the CompletionRecord contract BEFORE validation — a finished
@@ -503,6 +508,31 @@ async function completeOne(
     : null;
   const falseLiveDroveUiClose = !unbackedLiveDroveUiClose && artifactVerdict?.ok === false;
 
+  // EI-18850142725126359 fix #4 — PRE-FLIGHT THE PLANE RATCHET.
+  //
+  // Closing a METRIC_KNOWN_GAPS item is a fleet-gate mutation: `lint:plane-ratchet`
+  // reads live work-item status, so the exemption is withdrawn the instant the row
+  // goes terminal and the very next green-checkpoint reds — candidate-independently,
+  // three minutes later, on a release-fixer who is handed a causally-irrelevant SHA.
+  // Say it HERE instead, to the agent who is about to cause it.
+  //
+  // Computed BEFORE the state write for two reasons: the warning is the caller's
+  // last cheap moment to reconsider, and it must still be reported when the write
+  // itself fails. Warn-only, and deliberately so — see the provenance argument in
+  // agent-plane-close-preflight.ts's header (this process holds the DEPLOYED gap
+  // map, the gate judges the candidate's, so a refusal could block a correct close
+  // on data known to be stale). Fully fail-open: a guard fault must never cost a
+  // completion (EI-24).
+  let planeRatchetWarning: string | undefined;
+  if (closeIntentRequested && isPlaneGapItem(it.id)) {
+    try {
+      const verdict = await preflightPlaneCloseLive({ closingIds: [it.id], workspaceId: ctx.workspaceId });
+      if (verdict) planeRatchetWarning = renderPlaneClosePreflightWarning(verdict);
+    } catch {
+      /* fail-open: never turn a ratchet-check fault into a failed completion */
+    }
+  }
+
   // P-008 (d) / D-050 / D-079: resolve the declared assumptions BEFORE the state
   // write, so a dangling reference cannot land a close.
   //
@@ -813,6 +843,13 @@ async function completeOne(
     ...(stateFailure || finishFailure ? { error: stateFailure ?? finishFailure } : {}),
     ...(stateError ? { stateError } : {}),
     ...(stateWarning ? { stateWarning } : {}),
+    // EI-18850142725126359 fix #4 — reported ONLY when the close actually LANDED.
+    // The text is written in the future tense ("will red the next checkpoint"),
+    // which is true of a terminal row and false of a close that was rejected — and
+    // a fleet-gate alarm that cries wolf on a no-op close is exactly how this
+    // channel would earn the skim it must not get. Ordered with the other LOUD
+    // signals, ahead of the bulky echo, for the EI-15982 reason above.
+    ...(planeRatchetWarning && closeLanded && !stateError ? { planeRatchetWarning } : {}),
     ...(nulBytesStripped
       ? {
           nulBytesStrippedWarning: `completion for ${it.id} contained one or more raw NUL bytes (invisible in most editors/terminals — renders as nothing or a plain space) — they were silently removed before recording, because Postgres cannot store a NUL in a text/jsonb column ("unsupported Unicode escape sequence") and an unremoved one would have failed the state write while leaving the completion recorded (EI-18764241942332131). If the NUL was meaningful (e.g. you were quoting a literal NUL byte as evidence), describe it in prose instead (e.g. "a raw NUL / 0x00 byte") rather than embedding the literal character.`,

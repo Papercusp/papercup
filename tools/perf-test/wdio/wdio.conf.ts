@@ -14,7 +14,7 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -131,10 +131,56 @@ function driverCommand(args: readonly string[]): { file: string; argv: string[] 
  * a DEBUG build runs several-fold slower, so its interaction timings blow the
  * release-tuned budgets — use debug only for wiring/smoke, never budget asserts.
  */
+/**
+ * Where cargo ACTUALLY puts build artifacts.
+ *
+ * WHY NOT JUST `CARGO_TARGET_DIR` (perf-testing-sweep-2026-07-27, WI-6538): the env
+ * var is only ONE of the ways the target dir gets redirected. On this box it is set
+ * by a `target-dir` entry in the user-level `~/.cargo/config.toml`, which the env
+ * var does not reflect — so the old resolver looked only in
+ * `<repo>/papercusp-desktop/src-tauri/target/{release,debug}`, found no build there,
+ * and silently fell back to a stale in-tree DEBUG binary from six weeks earlier.
+ *
+ * That is the most consequential bug in this file's history: the suite reported
+ * timings for a six-week-old binary while appearing to measure current code, so its
+ * numbers could not detect a regression in anything the binary predated. Silent,
+ * because falling back to a real file looks exactly like success.
+ *
+ * `cargo metadata` is the authority — it accounts for the env var, config.toml, and
+ * workspace layout in one answer. Memoized through the environment (the same trick
+ * `resolveDriverPort` uses) so the forked spec workers do not each re-shell it.
+ */
+function cargoTargetDir(): string | null {
+  if (process.env.CARGO_TARGET_DIR) return process.env.CARGO_TARGET_DIR;
+  if (process.env.PAPERCUSP_RESOLVED_CARGO_TARGET_DIR) {
+    return process.env.PAPERCUSP_RESOLVED_CARGO_TARGET_DIR;
+  }
+  try {
+    const out = execFileSync(
+      "cargo",
+      ["metadata", "--format-version", "1", "--no-deps"],
+      {
+        cwd: path.resolve(__dirname, "../../..", "papercusp-desktop", "src-tauri"),
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        maxBuffer: 32 * 1024 * 1024,
+      },
+    );
+    const dir = (JSON.parse(out) as { target_directory?: string }).target_directory;
+    if (dir) {
+      process.env.PAPERCUSP_RESOLVED_CARGO_TARGET_DIR = dir;
+      return dir;
+    }
+  } catch {
+    /* cargo unavailable / not a cargo project — fall back to the in-tree guesses */
+  }
+  return null;
+}
+
 function resolveTauriAppPath(): string {
   if (process.env.TAURI_APP_PATH) return process.env.TAURI_APP_PATH;
   const repoRoot = path.resolve(__dirname, "../../..");
-  const cargoTarget = process.env.CARGO_TARGET_DIR || null;
+  const cargoTarget = cargoTargetDir();
   const candidates = [
     cargoTarget && path.join(cargoTarget, "release", "papercusp-desktop"),
     path.join(repoRoot, "papercusp-desktop", "src-tauri", "target", "release", "papercusp-desktop"),
@@ -323,6 +369,32 @@ export const config: WebdriverIO.Config = {
   // in-place — is what actually reaches worker processes).
   async onPrepare() {
     assertNativeWebDriverAvailable();
+    // Announce WHAT is being measured, with its age. This is the detector that was
+    // missing: the resolver silently fell back to a six-week-old in-tree debug
+    // binary for this suite's entire existence (see cargoTargetDir), and nothing in
+    // the output ever named the file, so every number looked like it described
+    // current code. A perf result is meaningless without knowing which build it
+    // came from — so print it, loudly, before any measuring happens.
+    try {
+      const ageMs = Date.now() - statSync(TAURI_APP_PATH).mtimeMs;
+      const ageHrs = Math.round(ageMs / 3_600_000);
+      const profile = isDebugBinary() ? "DEBUG" : "release";
+      // eslint-disable-next-line no-console
+      console.log(
+        `[perf-report] measuring ${profile} binary ${TAURI_APP_PATH} (built ${ageHrs}h ago)`,
+      );
+      if (ageMs > 24 * 60 * 60 * 1000) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[perf-report] ⚠ that binary is ${Math.floor(ageHrs / 24)} DAY(S) OLD — these timings ` +
+            `describe the code as of that build, NOT your working tree. Rebuild ` +
+            `(cargo build --release) before treating any result as a regression signal.`,
+        );
+      }
+    } catch {
+      // eslint-disable-next-line no-console
+      console.warn(`[perf-report] could not stat the app binary at ${TAURI_APP_PATH}`);
+    }
     // Discard measures from a previously CRASHED run (one that died before
     // onComplete consumed them) so stale timings are never published against this
     // commit — reporting none beats reporting someone else's numbers.

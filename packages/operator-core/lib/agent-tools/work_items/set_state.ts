@@ -29,6 +29,11 @@ import {
   NON_TERMINAL_INPUT_STATES,
   isTerminalStateInput,
 } from '../../work-item-dispatch-states';
+import {
+  isPlaneGapItem,
+  preflightPlaneCloseLive,
+  renderPlaneClosePreflightWarning,
+} from '../../agent-plane-close-preflight';
 
 // P-114: an AUTONOMOUS agent declares the action's risk/authority so the auto-revert
 // tripwire arms faithfully to the upstream decision (the verb has no inherent item
@@ -213,6 +218,22 @@ export default defineTool({
               harnessSlug: harness,
             })
           : undefined;
+        // EI-18850142725126359 fix #4 — the SAME plane-ratchet pre-flight
+        // work_items:complete runs. Wired here too because this verb is the other
+        // way to make a row terminal: a guard that lives on only one of the two
+        // close paths is a guard with a documented bypass, and the bypass is the
+        // one an agent reaches for when the other path just refused them.
+        // Computed BEFORE the mutation (so the baseline still sees the item open)
+        // and fail-open (a guard fault never fails the state write).
+        let planeRatchetWarning: string | undefined;
+        if (isTerminalStateInput(it.state) && isPlaneGapItem(it.id)) {
+          try {
+            const verdict = await preflightPlaneCloseLive({ closingIds: [it.id], workspaceId: ctx.workspaceId });
+            if (verdict) planeRatchetWarning = renderPlaneClosePreflightWarning(verdict);
+          } catch {
+            /* fail-open */
+          }
+        }
         const { workItem, aliased, requestedState, appliedState, aliasNote } =
           await setWorkItemStateWithAliasInfo(it.id, it.state, {
             harness,
@@ -226,6 +247,14 @@ export default defineTool({
           ? {
               ok: true as const,
               id: it.id,
+              // Ahead of the echoed `workItem` row: the per-result context door
+              // truncates from the tail, and this is the field a caller must not
+              // lose (EI-15982). Only when the write actually landed terminal —
+              // the warning is future-tense about a gate red that a no-op write
+              // will not cause.
+              ...(planeRatchetWarning && isTerminalStateInput(String(appliedState ?? ''))
+                ? { planeRatchetWarning }
+                : {}),
               workItem,
               aliased,
               requestedState,

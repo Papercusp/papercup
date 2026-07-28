@@ -44,6 +44,12 @@ export const INSTRUCTIONS_HEADING = 'Instructions';
  * 2026-07-27]: typos fixed, every sentence and the voice kept. The one approved
  * structural change is that the all-caps "THE GUI NOT READY YET" line became a
  * styled warning callout carrying the same words — louder, without shouting.
+ *
+ * ⛔ "chat with Papercup" is CORRECT and deliberate — do NOT change it to
+ * "Papercusp". Papercup is the assistant in the quickpanel; Papercusp is the
+ * product. A copy-edit pass "fixed" this once and the owner had to send it back
+ * [owner 2026-07-27]. The two names differ by one letter on purpose; when in
+ * doubt, leave the owner's spelling alone.
  */
 export const INSTRUCTIONS_MD = `
 <p>I'm making myself available on <a href="https://discord.gg/HjRQ8g4Nju">this Discord</a> if you have any questions.</p>
@@ -57,7 +63,7 @@ export const INSTRUCTIONS_MD = `
 3. Ask the agent to create something for you, and choose to launch a fleet.
 4. Get floored.
 
-The agents should be smart enough now to sniff out when you are trying to do something that Papercusp has native support for, and ask you questions to get you to use the full power of the system — but in case they don't, you can ask them more specifically to *"Create a Pot for an app that does such and such using a fleet of 4 Sonnet 5 high-effort agents using the default system login."* You should see them create a plan, launch terminals on your desktop, the plan items get turned into work items and get claimed by the agents, and you should just see them communicate in a way that is obviously useful (*another agent just told me my fix had a bug, let me go fix it now*). You can launch the fleets headless or headed, but when they are on your desktop you can easily see the messages they are sending back and forth. In the Papercusp icon in your taskbar there is also a place you set the shortcut for launching the quickpanel, which lets you search docs, save prompts, or chat with Papercusp. They should put themselves on Papercusp loops and end their own sessions and pick up again where they left off (this is instead of compaction), and they should just build things for you without being annoying. The system works best with Opus 4.8 xhigh.
+The agents should be smart enough now to sniff out when you are trying to do something that Papercusp has native support for, and ask you questions to get you to use the full power of the system — but in case they don't, you can ask them more specifically to *"Create a Pot for an app that does such and such using a fleet of 4 Sonnet 5 high-effort agents using the default system login."* You should see them create a plan, launch terminals on your desktop, the plan items get turned into work items and get claimed by the agents, and you should just see them communicate in a way that is obviously useful (*another agent just told me my fix had a bug, let me go fix it now*). You can launch the fleets headless or headed, but when they are on your desktop you can easily see the messages they are sending back and forth. In the Papercusp icon in your taskbar there is also a place you set the shortcut for launching the quickpanel, which lets you search docs, save prompts, or chat with Papercup. They should put themselves on Papercusp loops and end their own sessions and pick up again where they left off (this is instead of compaction), and they should just build things for you without being annoying. The system works best with Opus 4.8 xhigh.
 
 ### Auto Loop
 

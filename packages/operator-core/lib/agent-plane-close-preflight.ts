@@ -78,6 +78,15 @@ export type PlaneSeriesPoint = {
   metrics: ReadonlyArray<{ id: string } & MetricWindow>;
 };
 
+/**
+ * metric → the work-item that excuses its blindness. Defaults to the shipped
+ * {@link METRIC_KNOWN_GAPS}; INJECTABLE for the same reason `ratchetPlaneSeries`
+ * takes `specs` — the live map legitimately empties as its gaps get built, and a
+ * suite whose cases are keyed off it would then pass while asserting nothing. The
+ * behaviour must stay testable against a literal map after the real one is empty.
+ */
+export type PlaneGapMap = Readonly<Partial<Record<PlaneMetricId, string>>>;
+
 export interface PlaneCloseImpact {
   metric: PlaneMetricId;
   /** The gap item whose exemption the close withdraws. */
@@ -115,18 +124,18 @@ export interface PlaneClosePreflight {
  * every other work-item in the fleet pays exactly this and no I/O. The database
  * is read only once an id has already matched.
  */
-export function isPlaneGapItem(id: string): boolean {
+export function isPlaneGapItem(id: string, gaps: PlaneGapMap = METRIC_KNOWN_GAPS): boolean {
   const needle = id.trim();
   if (!needle) return false;
-  for (const ref of Object.values(METRIC_KNOWN_GAPS)) {
+  for (const ref of Object.values(gaps)) {
     if (ref === needle) return true;
   }
   return false;
 }
 
 /** Every work-item id that currently grants a ratchet exemption. */
-export function planeGapItemIds(): string[] {
-  return [...new Set(Object.values(METRIC_KNOWN_GAPS))].filter((r): r is string => Boolean(r));
+export function planeGapItemIds(gaps: PlaneGapMap = METRIC_KNOWN_GAPS): string[] {
+  return [...new Set(Object.values(gaps))].filter((r): r is string => Boolean(r));
 }
 
 /**
@@ -143,10 +152,11 @@ export function preflightPlaneClose(args: {
   /** Gap items ALREADY closed, so the baseline reflects the real current gate. */
   closedGaps?: ReadonlySet<string>;
   specs?: Readonly<Partial<Record<PlaneMetricId, { interpretableOnlyWith?: readonly PlaneMetricId[] }>>>;
+  gaps?: PlaneGapMap;
 }): PlaneClosePreflight {
-  const { series, closedGaps = new Set<string>(), specs = METRIC_SPECS } = args;
+  const { series, closedGaps = new Set<string>(), specs = METRIC_SPECS, gaps = METRIC_KNOWN_GAPS } = args;
   const closing = args.closingIds.map((id) => id.trim()).filter(Boolean);
-  const gapItems = [...new Set(closing.filter(isPlaneGapItem))];
+  const gapItems = [...new Set(closing.filter((id) => isPlaneGapItem(id, gaps)))];
 
   if (gapItems.length === 0) {
     return { outcome: 'not-a-gap-item', gapItems: [], causes: [], unjudgeable: [], preExisting: [] };
@@ -160,8 +170,8 @@ export function preflightPlaneClose(args: {
   const baselineClosed = new Set([...closedGaps].filter((ref) => !gapItems.includes(ref)));
   const afterClosed = new Set([...baselineClosed, ...gapItems]);
 
-  const before = ratchetPlaneSeries({ series: series as PlaneSeriesPoint[], closedGaps: baselineClosed, specs });
-  const after = ratchetPlaneSeries({ series: series as PlaneSeriesPoint[], closedGaps: afterClosed, specs });
+  const before = ratchetPlaneSeries({ series: series as PlaneSeriesPoint[], closedGaps: baselineClosed, specs, gaps });
+  const after = ratchetPlaneSeries({ series: series as PlaneSeriesPoint[], closedGaps: afterClosed, specs, gaps });
 
   const failingBefore = new Set(before.failures.map((f) => f.metric));
   const causes: PlaneCloseImpact[] = after.failures
@@ -242,7 +252,14 @@ export function renderPlaneClosePreflightWarning(v: PlaneClosePreflight): string
  * confidently wrong. The unified enum folds the legacy tokens onto done/dropped,
  * but rows written before the fold still carry the originals.
  */
-const TERMINAL_STATUSES = new Set(['done', 'dropped', 'resolved', 'closed', 'passed', 'deprecated']);
+export const PLANE_GAP_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
+  'done',
+  'dropped',
+  'resolved',
+  'closed',
+  'passed',
+  'deprecated',
+]);
 
 /**
  * The live half: read the same series and the same work-item statuses the gate
@@ -285,7 +302,9 @@ export async function preflightPlaneCloseLive(args: {
          WHERE workspace_id = ${args.workspaceId} AND feature_id = ANY(${refs})
       `
     : [];
-  const closedGaps = new Set(items.filter((i) => TERMINAL_STATUSES.has(i.status)).map((i) => i.feature_id));
+  const closedGaps = new Set(
+    items.filter((i) => PLANE_GAP_TERMINAL_STATUSES.has(i.status)).map((i) => i.feature_id),
+  );
 
   return preflightPlaneClose({ closingIds: args.closingIds, series, closedGaps });
 }
