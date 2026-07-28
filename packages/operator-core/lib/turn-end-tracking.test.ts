@@ -9,6 +9,7 @@ import {
   detectUnguardedHalt,
   detectUnregisteredArtifacts,
   isDeliverableWrite,
+  awaitGuaranteesRewake,
   isRewakeGuaranteed,
   isStaleHeldCheckpoint,
   mergeMechanicalCheckpoint,
@@ -162,8 +163,10 @@ describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
         awaitGuaranteesRewake({ eventKey: `${PREFIX}su-8d9a671c`, expiresTs: null }, PREFIX),
       ).toBe(false);
       // Even bounded, the keepalive is not this session's pending-work wake.
+      // (Spread FIRST — `bounded` carries its own eventKey and would otherwise
+      //  overwrite the prefixed one, silently making this case test nothing.)
       expect(
-        awaitGuaranteesRewake({ eventKey: `${PREFIX}su-8d9a671c`, ...bounded }, PREFIX),
+        awaitGuaranteesRewake({ ...bounded, eventKey: `${PREFIX}su-8d9a671c` }, PREFIX),
       ).toBe(false);
     });
   });
