@@ -125,6 +125,9 @@ export default function AgentDossier({
   const { detail, error, loading } = useAgentDetail(ownerId);
   const locks = detail?.locks;
   const coord = detail?.coord;
+  // Normalised ONCE, here, rather than at each use: an operator older than the
+  // `unread` field serves a coord state without it (see the render note below).
+  const unreadRows = coord?.unread ?? [];
   const codex = detail?.codex;
   const signals = detail?.signals;
   const nativeSession = detail?.nativeSession ?? entry?.nativeSession ?? null;
@@ -449,15 +452,24 @@ export default function AgentDossier({
                 ([owner 2026-07-28] "it says in the COORD section 38 unread, but
                 I only see 2 messages"). Rendered from the same array the count
                 is the length of, so the two cannot disagree. */}
-            {coord.unread.length > 0 ? (
+            {/* `?? []`, and it is NOT defensive noise — it is the wire contract.
+                `unread` is a NEW field: a client bundle carrying it can be served
+                by an operator that predates it (the SPA rebuilds on the vite
+                hot path, the sidecar only on restart), and then `coord.unread`
+                is genuinely `undefined`. Reading `.length` off it threw
+                "undefined is not an object (evaluating 'u.unread.length')" and
+                took down the WHOLE hud tab — an error boundary away from the
+                entire surface, over one optional list. A new field must never be
+                load-bearing for a render that can be served older data. */}
+            {unreadRows.length > 0 ? (
               <div className="pc-dossier__coord-unread" data-testid="dossier-coord-unread">
                 <div className="pc-dossier__coord-unread-h">
                   Unread
-                  {coord.unreadCount > coord.unread.length
-                    ? ` · showing ${coord.unread.length} of ${coord.unreadCount}`
+                  {coord.unreadCount > unreadRows.length
+                    ? ` · showing ${unreadRows.length} of ${coord.unreadCount}`
                     : null}
                 </div>
-                {coord.unread.map((m) => (
+                {unreadRows.map((m) => (
                   <div key={m.msgId} className="pc-dossier__coord-line" data-testid="dossier-coord-unread-row">
                     <span className="pc-dossier__dir" data-dir={m.direction}>
                       {m.direction === 'outbound' ? '→' : '←'}

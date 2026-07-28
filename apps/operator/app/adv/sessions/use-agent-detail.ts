@@ -74,8 +74,16 @@ export interface AgentCoordState {
   lastMessage: CoordMessageSummary | null;
   unreadCount: number;
   /** The messages `unreadCount` counts (newest first, bounded server-side).
-   *  `unreadCount > unread.length` ⇒ the surface must say "showing N of M". */
-  unread: CoordMessageSummary[];
+   *  `unreadCount > unread.length` ⇒ the surface must say "showing N of M".
+   *
+   *  OPTIONAL ON PURPOSE — this models the WIRE, not the current server. It is a
+   *  newer field than some operators serving it: the SPA rebuilds on the vite
+   *  hot path while the sidecar only reloads on restart, so a bundle that knows
+   *  about `unread` is routinely served payloads that predate it. Declaring it
+   *  required is exactly what let `coord.unread.length` typecheck and then throw
+   *  "undefined is not an object" at runtime, killing the whole hud tab. Treat
+   *  every field added to a sync payload this way until the floor has shipped. */
+  unread?: CoordMessageSummary[];
   openHandoffs: CoordHandoffSummary[];
   openEscalations: CoordEscalationSummary[];
   error: string | null;
