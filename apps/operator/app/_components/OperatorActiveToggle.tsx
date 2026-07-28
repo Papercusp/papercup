@@ -311,16 +311,13 @@ const TOGGLE_CSS = `
   flex-shrink: 0;
   background: currentColor;
 }
+/* WI-6530: this dot used to pulse on a 1.25s `infinite` animation. ANY always-on
+   animation keeps the whole 60fps repaint loop alive, and on this software-rendered
+   webview that repaint costs ~40% of a CPU core permanently (measured: 48-63% of a
+   core at idle with animations running, 9-16% with all of them paused; pausing only
+   SOME buys nothing). The dot keeps its "active" read as a static halo — the mid-cycle
+   glow the pulse spent most of its time showing — instead of animating to get there. */
 .op-active-toggle-dot--pulsing {
-  animation: op-active-pulse 1.25s ease-in-out infinite;
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent), transparent 40%);
-}
-@keyframes op-active-pulse {
-  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent), transparent 45%); transform: scale(1); }
-  60%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent), transparent 100%);  transform: scale(1.06); }
-  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent), transparent 100%);    transform: scale(1); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .op-active-toggle-dot--pulsing { animation: none; }
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent), transparent 82%);
 }
 `;

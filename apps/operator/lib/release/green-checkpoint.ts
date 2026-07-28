@@ -2792,6 +2792,7 @@ interface PostSuiteLegs {
   lintMigrations: LegOutcome;
   lintIdentity: LegOutcome;
   lintDesignPrimitives: LegOutcome;
+  lintPlane: LegOutcome;
   build: LegOutcome;
   /** Concatenated failure detail, appended verbatim to the suite output. */
   output: string;
@@ -3012,6 +3013,75 @@ export async function runPostSuiteLegs(
         '\n\n=== DESIGN PRIMITIVES LINT FAILED (npm run lint:design-primitives) — global token/primitive scan, independent of the affected set ===\n' +
           designPrimitives.stdout +
           designPrimitives.stderr,
+      );
+    }
+  }
+
+  // agent-state-plane-verification P-020: the agent-state plane's four STANDING probes. The
+  // predecessor plan shipped 8 defects past a fully green unit gate, every one the same shape
+  // — the derivation was correct and the DISCLOSURE was dropped between derivation and reader
+  // — so this plan built producer-existence + declared-vs-consumed + guard-integrity probes to
+  // catch that class. All four landed as npm scripts and NOTHING RAN THEM: a repo-wide grep
+  // found zero references outside comments and one test. A probe nobody runs is the same
+  // defect as a producer nobody reads, so they are gated here.
+  //
+  // WHY NOT `test:affected` (the suite leg): the census question is "did a producer write a
+  // row in the last 7d", which is a STATE fact, not a code fact — it flips pass->fail with an
+  // EMPTY diff, so no affected-set selection can ever reach it. Same argument as
+  // lint:design-primitives above, one step stronger: that one is diff-independent, this one is
+  // diff-INVISIBLE. Gating it here is the whole point of P-020 ("a producer that stops writing
+  // reds the gate instead of going quiet").
+  //
+  // ⛔ `lint:cell-matrix` is DELIBERATELY EXCLUDED — it is the fifth plane lint and it must
+  // never join this list. check-cell-live-matrix.ts's own header says so ("THIS MUST NOT BE
+  // ADDED TO THE CI LINT JOB"): it drives real reads against RUNNING operators on :3170 and
+  // :3070, which the isolated checkpoint tree does not have, so every read would fail and
+  // red-pin `main` for the whole fleet. It stays a manual/live probe.
+  //
+  // The two PG-backed members (producers, ratchet) resolve DATABASE_URL with a localhost
+  // fallback and the checkpoint tree has a reachable PG — the same premise lint:migrations
+  // relies on above. Each script owns its own vacuous-pass discipline: check-plane-producers
+  // treats `no-data` as neither pass nor fail (it is `unknown`), so an empty table reports
+  // uninterpretable rather than a green tick meaning "we looked and found nothing".
+  if (haltedBy) {
+    legs.lintPlane = { status: 'skipped', skipReason: haltedBy };
+  } else {
+    const planeLints: Array<{ script: string; label: string }> = [
+      { script: 'lint:plane-producers', label: 'PRODUCER CENSUS' },
+      { script: 'lint:declared-consumed', label: 'DECLARED-VS-CONSUMED SWEEP' },
+      { script: 'lint:no-bespoke-state-read', label: 'BESPOKE STATE-READ' },
+      { script: 'lint:plane-ratchet', label: 'PLANE RATCHET' },
+    ];
+    const planeFailures: string[] = [];
+    let planeRan = 0;
+    for (const { script, label } of planeLints) {
+      const check = checkNpmScript(treeDir, script);
+      if (check === 'unreadable') {
+        // WI-6056: an unreadable package.json is a failure, never a silent opt-out.
+        planeFailures.push(
+          `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for ${script} (${label}) ===\n`,
+        );
+        continue;
+      }
+      if (check === 'absent') continue;
+      planeRan++;
+      const out = await exec('npm', ['run', script], { cwd: treeDir, env, allowNonZero: true });
+      if (out.code !== 0) {
+        planeFailures.push(`\n\n=== ${label} FAILED (npm run ${script}, P-020 class) ===\n` + out.stdout + out.stderr);
+      }
+    }
+    // Failures FIRST (WI-6056): an all-unreadable run must report failed, not a silent skip.
+    legs.lintPlane = planeFailures.length > 0
+      ? { status: 'failed' }
+      : planeRan === 0
+        ? { status: 'skipped', skipReason: 'candidate provides none of the 4 agent-state-plane lint scripts' }
+        : { status: 'passed' };
+    if (planeFailures.length) {
+      haltedBy = 'agent-state-plane lints failed';
+      failingSignatures.push('lint:plane-integrity');
+      outputs.push(
+        '\n\n=== AGENT-STATE-PLANE LINTS FAILED (P-020 — a producer stopped writing, a declared field lost its consumer, or a plane guard regressed) ===' +
+          planeFailures.join(''),
       );
     }
   }

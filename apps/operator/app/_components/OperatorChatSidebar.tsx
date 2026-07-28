@@ -1391,19 +1391,13 @@ body.has-op-chat .pc-header {
   z-index: 1;
 }
 
-.op-chat-header::after {
-  content: '';
-  position: absolute;
-  z-index: 0;
-  left: -18%;
-  top: 0;
-  width: 44%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
-  transform: skewX(-20deg);
-  animation: op-chat-header-sheen 9s ease-in-out infinite;
-  pointer-events: none;
-}
+/* WI-6530: the header sheen used to sweep on a 9s `infinite` animation. ANY
+   always-on animation keeps the whole 60fps repaint loop alive, and on this
+   software-rendered webview that repaint costs ~40% of a CPU core permanently
+   (measured: 48-63% of a core at idle with animations running, 9-16% with all
+   of them paused; pausing only SOME buys nothing). The sheen was invisible at
+   rest (opacity 0 for 0%/12%/100% of the cycle), so dropping the element keeps
+   the header exactly as it looks between sweeps. */
 
 .op-chat-sidebar .op-chat-banner {
   position: relative;
