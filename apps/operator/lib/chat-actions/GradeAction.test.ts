@@ -60,11 +60,32 @@ describe('GradeAction — registration', () => {
 });
 
 describe('GradeAction — params (async rubric picker)', () => {
-  it('fetches rubrics.list via fetchSyncQuery and offers only ACTIVE rubrics as radio options', async () => {
+  it('WI-6552: the dropdown rests on "Grade" and the prompt EXPLAINS what grade mode is', async () => {
+    const action = getChatAction('posture-grade')!;
+    const spec = await action.params!(ctx);
+    const p = spec.presentation!;
+    if (p.kind !== 'select') throw new Error(`expected select, got ${p.kind}`);
+    // [owner:Avi 2026-07-27] "a simple dropdown with the default text 'Grade'".
+    expect(p.placeholder).toBe('Grade');
+    // [owner:Avi 2026-07-27] "something that comes up that explains what grade
+    // mode is". The old prompt ("Pick a rubric to grade against") named the
+    // input without ever saying what grade mode DOES, which is what left the
+    // owner unsure what picking a rubric committed them to. Assert the prompt
+    // actually explains the behaviour rather than merely being non-empty.
+    expect(spec.prompt).toMatch(/grade mode/i);
+    expect(spec.prompt).toMatch(/rubric/i);
+    expect(spec.prompt.length).toBeGreaterThan(60);
+    expect(spec.prompt).not.toBe('Pick a rubric to grade against');
+  });
+
+  it('fetches rubrics.list via fetchSyncQuery and offers only ACTIVE rubrics as select options', async () => {
     const action = getChatAction('posture-grade')!;
     const spec = await action.params!(ctx);
     expect(fetchSyncQueryMock).toHaveBeenCalledWith({ queryName: 'rubrics.list', args: {} });
-    expect(spec.presentation?.kind).toBe('radio');
+    // WI-6552 [owner:Avi 2026-07-27]: MUST be the compact 'select', not 'radio'.
+    // radio renders one full-width row per rubric and filled the whole chat
+    // popup. This assertion is the guard against that regressing.
+    expect(spec.presentation?.kind).toBe('select');
     expect(spec.allowDecline).toBe(true);
     const options = optionsOf(spec.presentation);
     expect(options).toHaveLength(1);

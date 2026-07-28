@@ -92,8 +92,8 @@ export const PLANE_PRODUCER_FIELDS = [
     tsColumn: 'invoked_at',
     sinceDays: 7,
     producer: 'P-009 stamp writer ← facts:assert { kind:"assumption" } (noteAssumptionAsserted)',
-    why: 'WI-6465. Structurally always-NULL while no assumption facts exist, so P-024 cannot resolve the assumption set behind any historical call.',
-    knownUnbuilt: 'WI-6465',
+    why: 'ACCEPTED ZERO BY RULING (D-102 F3 + D-103), not a queued gap. Structurally always-NULL while no assumption facts exist — and D-102 F3 measured `kind` and REFUSED to force it, because agents honestly assert verified conclusions, so forcing would yield "conclusion" and leave this exactly as null at fleet-wide friction cost. P-024 therefore cannot resolve an assumption set behind any historical call, and that is the ruled outcome rather than pending work.',
+    knownUnbuilt: 'D-103 (ruled)',
   },
   {
     id: 'agent_facts.kind',
@@ -112,8 +112,8 @@ export const PLANE_PRODUCER_FIELDS = [
     tsColumn: 'created_at',
     sinceDays: 30,
     producer: 'facts:assert { kind:"assumption" }',
-    why: "WI-6465. P-011's conflicting-assumption detector compares assumptions; zero assumptions means it can never fire, and its zero is unbuilt rather than clean.",
-    knownUnbuilt: 'WI-6465',
+    why: "ACCEPTED ZERO BY RULING (D-102 F3 + D-103). The consumer this row used to name — P-011's conflicting-assumption detector — was RETIRED by WI-6545/D-103, so the old rationale is void. What still reads the modality is the P-009 assumption watermark (`isAssumptionFact` in agent-facts/store.ts), which simply never moves. D-102 F3 refused to force `kind`, so 0 here is the ruled outcome, not pending work.",
+    knownUnbuilt: 'D-103 (ruled)',
   },
   {
     id: 'agent_facts.depends_on',
