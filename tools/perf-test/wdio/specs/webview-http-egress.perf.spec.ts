@@ -63,6 +63,15 @@ interface EgressProbe {
   /** Positive control — see the assertion order below. */
   resourceEntries: number;
   appMounted: boolean;
+  /**
+   * What the document IS at probe time. Present so a blank sample can say WHY it
+   * is blank: `waitForAppMount` proves a real app existed before the pause, so a
+   * changed `url` means the webview navigated (an operator-boot fallback, an
+   * error page), while an unchanged one points at a reload or a crashed webview.
+   * Without these the failure can only report the absence, not its cause.
+   */
+  url: string;
+  readyState: string;
 }
 
 describe("Packaged Papercusp desktop — webview HTTP egress", () => {
@@ -88,6 +97,8 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
         monitorPresent: Boolean(monitor),
         resourceEntries: performance.getEntriesByType("resource").length,
         appMounted: Boolean(document.querySelector("#root")?.firstElementChild),
+        url: String(window.location?.href ?? "(no location)"),
+        readyState: String(document.readyState),
       };
     });
 
@@ -107,19 +118,61 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
       probe.report ? probe.report.total : -1,
     );
 
-    // 4. A MISSING detector must fail, never pass. `getEgressReport()` returns
-    //    null when no monitor is installed, and null means UNKNOWN — a detector
-    //    that is absent, crashed, or was tree-shaken away reports the same zero
-    //    as a genuinely clean shell. Treating that as success would rebuild the
-    //    exact silence D-005 exists to remove.
-    expect(probe.monitorPresent).toBe(true);
-    expect(probe.report).not.toBe(null);
-
-    // 5. Positive control. The shell loads hundreds of resources (measured: 249
-    //    on a live boot), so a near-empty timeline means the sample is worthless
-    //    rather than clean, and the zero below would be meaningless.
-    expect(probe.appMounted).toBe(true);
+    // 4. POSITIVE CONTROL FIRST — assert the SAMPLE before anything about the
+    //    detector. Order matters here for diagnosis, not for correctness: both
+    //    orderings fail the same run, but only this one names the right cause.
+    //
+    //    Learned the hard way (2026-07-28). The first two packaged runs both
+    //    reported `monitorPresent: false` and failed on the detector assertion —
+    //    which sent me hoisting the monitor's install site, twice, believing it
+    //    was a wiring bug. The rest of the probe said otherwise and was never
+    //    read, because the detector assertion threw before anything printed it:
+    //
+    //        appMounted: false, resourceEntries: 0, report: null
+    //
+    //    `resourceEntries: 0` is only possible on a FRESH document. The app had
+    //    mounted (`waitForAppMount` throws, and did not), so the webview was
+    //    REPLACED during the sample pause — taking the timeline, and the detector
+    //    installed on that window, with it. "No detector" was a downstream
+    //    symptom of "no document"; blaming the detector cost two rebuild cycles.
+    //
+    //    A blank page cannot report on a detector, so ask whether we have a page
+    //    before asking what the page contains.
+    // `expect-webdriverio` takes no assertion-message argument, so the diagnosis
+    // is thrown explicitly — the message IS the deliverable here, since a bare
+    // "expected false to be true" is what sent the investigation the wrong way.
+    if (!probe.appMounted || probe.resourceEntries === 0) {
+      throw new Error(
+        `webview has no mounted app at probe time — the sample is void, NOT clean.\n` +
+          `  appMounted:      ${probe.appMounted}\n` +
+          `  resourceEntries: ${probe.resourceEntries}   (a live boot measures ~249)\n` +
+          `  url:             ${probe.url}\n` +
+          `  readyState:      ${probe.readyState}\n\n` +
+          `waitForAppMount SUCCEEDED before the ${Math.round(SAMPLE_WINDOW_MS / 1000)}s sample ` +
+          `window (it throws on timeout), so a real app WAS mounted and the document was then ` +
+          `REPLACED: a reload, a navigation, or a crashed webview. resourceEntries=0 is only ` +
+          `possible on a fresh document.\n` +
+          `Do NOT read a missing detector or a zero egress count from this run — both are ` +
+          `downstream of having no page at all.`,
+      );
+    }
     expect(probe.resourceEntries).toBeGreaterThan(20);
+
+    // 5. Only now: a MISSING detector must fail, never pass. `getEgressReport()`
+    //    returns null when no monitor is installed, and null means UNKNOWN — a
+    //    detector that is absent, crashed, or was tree-shaken away reports the
+    //    same zero as a genuinely clean shell. Treating that as success would
+    //    rebuild the exact silence D-005 exists to remove. Reaching this line
+    //    means the page IS real, so a missing detector really is a wiring bug.
+    if (!probe.monitorPresent) {
+      throw new Error(
+        `the app IS mounted (${probe.resourceEntries} resource timings, url=${probe.url}) but ` +
+          `window.__papercusp_egress__ is absent. installDesktopIpcPolyfills() installs the ` +
+          `monitor ahead of its isTauri/forceHttp guards, so — unlike a blank-page run — this ` +
+          `is a genuine wiring or bundling fault and the detector really is missing.`,
+      );
+    }
+    expect(probe.report).not.toBe(null);
 
     // 6. The invariant itself.
     const report = probe.report as EgressReport;
