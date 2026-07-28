@@ -26,7 +26,7 @@
  * state attribute (see GATE_PATTERNS), or when the animated thing is a recognised
  * transient (spinners, skeletons, loading and route-transition overlays).
  *
- * OWNER RULING for this class [owner:Avi 2026-07-27, chosen from 4 options]:
+ * OWNER RULING for this class [owner 2026-07-27, chosen from 4 options]:
  * "drop always-on animation, keep the look" — keep the element and its resting
  * appearance, remove the infinite loop. A sheen that is `opacity: 0` at both ends
  * of its cycle can simply go; a state indicator keeps a static form of its
@@ -50,8 +50,9 @@
  * here; that is the intended direction of travel, and a new offender outside the
  * baseline fails the build.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -73,8 +74,8 @@ export const GATE_PATTERNS = [
   /\[aria-[^\]]*=/,
   /\.is-[a-z]/i, //  .is-settled, .is-dirty, .is-scanning
   /\.has-[a-z]/i, //  .has-unread
-  /--(?:loading|running|pending|active|busy|live|scanning|success|speaking|listening|thinking|recording)\b/,
-  /\.(?:loading|running|pending|active|busy|live|installed|clean|ok|success|selected|open)\b/,
+  /--(?:loading|running|pending|active|busy|live|scanning|success|speaking|listening|thinking|recording|streaming|connecting)\b/,
+  /\.(?:loading|running|pending|active|busy|live|installed|clean|ok|success|selected|open|streaming)\b/,
 ];
 
 /**
@@ -82,12 +83,16 @@ export const GATE_PATTERNS = [
  * mid-navigation, so its animation is bounded by that lifetime rather than always-on.
  */
 export const TRANSIENT_PATTERNS = [
-  /\bspinner\b/i,
-  /\bskeleton\b/i,
-  /\bthinking\b/i,
+  /spinner/i,
+  /[_.-]spin\b/i, //  .chat-panel__spin, .op-note-spin
+  /skeleton/i,
+  /thinking/i,
   /route-loading/i,
   /route-transition/i,
-  /\bprogress\b/i,
+  /progress/i,
+  /cursor/i, //  a text caret blinks only while the field is live
+  /caret/i,
+  /streaming/i,
 ];
 
 /** True when `selector` is one this guard permits to carry an `infinite` animation. */
@@ -127,10 +132,20 @@ export function findOffendersInCss(source) {
     const stripped = withoutComments.replace(/\/\*[\s\S]*$/, '');
 
     if (isInfiniteAnimationDeclaration(stripped)) {
-      const selector = stack.length ? stack[stack.length - 1] : '';
+      // A single-line rule (`.foo { animation: x 1s infinite; }`) opens its own
+      // selector on this very line, so it is not on the stack yet — recover it from
+      // the text before the brace rather than reporting `(unknown)`.
+      const openedHere = stripped.indexOf('{');
+      const declAt = stripped.search(/animation(-iteration-count)?\s*:/);
+      const inlineSelector =
+        openedHere !== -1 && openedHere < declAt
+          ? (pending + ' ' + stripped.slice(0, openedHere)).trim().replace(/\s+/g, ' ')
+          : '';
+      const selector = inlineSelector || (stack.length ? stack[stack.length - 1] : '');
+      const scope = stack.join(' ') + ' ' + inlineSelector;
       const inKeyframes = stack.some((s) => /@(-webkit-)?keyframes/.test(s));
-      if (!inKeyframes && !isGatedSelector(stack.join(' '))) {
-        offenders.push({ line: i + 1, selector: selector || '(unknown)', declaration: stripped.trim() });
+      if (!inKeyframes && selector && !isGatedSelector(scope)) {
+        offenders.push({ line: i + 1, selector, declaration: stripped.trim() });
       }
     }
 
@@ -191,14 +206,17 @@ export function findOffenders(root = ROOT) {
 }
 
 /**
- * SHRINK-ONLY baseline: always-on declarations that predate the guard and sit on
- * surfaces measuring 0 live animations today. Latent, not free — delete an entry
- * when you fix it. Keyed by selector text (not line number) so unrelated edits to
- * globals.css do not churn it.
+ * Path of the SHRINK-ONLY baseline: always-on declarations that predate the guard
+ * and sit on surfaces measuring 0 live animations today. Latent, not free — delete
+ * an entry when you fix it. Keyed by SELECTOR TEXT rather than line number, so
+ * unrelated edits elsewhere in globals.css do not churn it.
  */
-export const BASELINE_SELECTORS = new Set(
-  findOffenders().map((o) => o.selector),
-);
+export const BASELINE_PATH = join(ROOT, 'scripts/no-ungated-infinite-animation.baseline.json');
+
+/** Read the baselined selector set. Throws if the baseline file is missing. */
+export function readBaseline(path = BASELINE_PATH) {
+  return new Set(JSON.parse(readFileSync(path, 'utf8')).selectors);
+}
 
 function main() {
   const report = process.argv.includes('--report');
@@ -210,12 +228,11 @@ function main() {
     process.exit(0);
   }
 
-  const baselinePath = join(ROOT, 'scripts/no-ungated-infinite-animation.baseline.json');
   let baseline;
   try {
-    baseline = new Set(JSON.parse(readFileSync(baselinePath, 'utf8')).selectors);
+    baseline = readBaseline();
   } catch {
-    console.error(`missing baseline file: ${relative(ROOT, baselinePath)}`);
+    console.error(`missing or unreadable baseline file: ${relative(ROOT, BASELINE_PATH)}`);
     process.exit(1);
   }
 
@@ -247,12 +264,4 @@ function main() {
   );
 }
 
-if (process.argv[1] && import.meta.url === `file://${realpathish(process.argv[1])}`) main();
-
-function realpathish(p) {
-  try {
-    return statSync(p) && p;
-  } catch {
-    return p;
-  }
-}
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main();

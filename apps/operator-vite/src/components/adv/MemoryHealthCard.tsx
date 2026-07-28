@@ -92,10 +92,28 @@ export default function MemoryHealthCard({ memory }: { memory: MemoryHealth | nu
       </span>
       <span
         className="pc-learning__flowchip"
-        title="Median / 90th-percentile top relevance score across non-empty recalls, 7 days. A p50 collapsing toward the 0.45 injection floor means recall quality is degrading even while hits still return."
+        title={
+          `Median / 90th-percentile top relevance score across non-empty recalls, 7 days` +
+          (memory.topScoreScale
+            ? `, on the ${memory.topScoreScale} scale (${memory.topScoreSamples} of ` +
+              `${Object.values(memory.scaleMix).reduce((a, b) => a + b, 0)} scored recalls). ` +
+              (memory.topScoreScale === 'rrf'
+                ? `⚠ rrf is a RANK, not a similarity: it is bounded above by 2/61 = 0.033 and something is ` +
+                  `ALWAYS rank 1, so a healthy-looking value here says nothing about whether the QUERY was ` +
+                  `any good. Do not read it as a relevance floor.`
+                : `cosine is an absolute similarity — a p50 collapsing toward the 0.45 injection floor means ` +
+                  `recall quality is degrading even while hits still return.`)
+            : `. No scored recalls in the window.`) +
+          ` Scores from different backends live on incomparable scales, so this percentile covers ONE scale only.`
+        }
       >
         <Gauge size={11} aria-hidden />
         score p50 <strong>{fmtScore(memory.topScoreP50)}</strong> · p90 <strong>{fmtScore(memory.topScoreP90)}</strong>
+        {/* The scale is part of the number's MEANING, not a footnote: 0.03 is a
+            broken retrieval on the cosine scale and a perfect rank-1 hit on the
+            rrf one. Rendering the value bare is the exact ambiguity that
+            produced (and then forced the retraction of) this audit's headline. */}
+        {memory.topScoreScale ? <em> {memory.topScoreScale}</em> : null}
       </span>
       {memory.precision?.latest ? (
         <span

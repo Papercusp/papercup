@@ -12529,7 +12529,9 @@ body:not(.papercusp-chromeless) .pc-header {
   pointer-events: none;
   background: linear-gradient(90deg, transparent, rgba(226, 252, 255, 0.42), rgb(from var(--emerald-400) r g b / 0.20), transparent);
   filter: blur(3px);
-  animation: pcSetupCodeSweep 3.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  /* WI-6542: always-on sweep dropped. Sheen-only pseudo-element (opacity:0 at both
+     ends of the old cycle), so it rests invisible. */
+  opacity: 0;
 }
 
 .pc-setup-stuck {
@@ -12653,7 +12655,8 @@ body:not(.papercusp-chromeless) .pc-header {
   background:
     linear-gradient(120deg, transparent 0 38%, rgba(226, 252, 255, 0.12) 48%, transparent 58%) -120% 0 / 34% 100% no-repeat;
   opacity: 0.72;
-  animation: pcSetupCodeSweep 4.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  /* WI-6542: always-on sweep dropped — sheen parked off-canvas at `-120% 0`; the
+     static opacity above keeps the card's resting look. */
 }
 
 @media (prefers-reduced-motion: reduce) {
