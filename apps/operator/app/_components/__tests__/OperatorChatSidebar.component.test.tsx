@@ -596,6 +596,48 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     expect(params.get('slug')).toBe('papercusp');
   });
 
+  /* Caught on the DEPLOYED build 2026-07-28: the first cut of buildAdvHudHref
+     re-derived `ws` from useWorkspaceId(), which snapshots its value ONCE at
+     mount and had resolved to the literal 'default'. Clicking a drill-in on a
+     URL carrying ?ws=papercusp-workspace therefore REWROTE it to ws=default —
+     silently changing workspace identity, worse than the dropped param it was
+     fixing. The live URL value must win; the hook is only a fallback. */
+  it('carries the LIVE ?ws from the URL, never the mount-time hook snapshot', () => {
+    const spy = vi.spyOn(window, 'location', 'get').mockReturnValue({
+      ...window.location,
+      search: '?ws=papercusp-workspace&slug=papercusp&tab=hud',
+    } as Location);
+    try {
+      drillState.ref = 'escalation:msg-9';
+      inboxState.items = [
+        { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
+      ];
+      render(<OperatorChatSidebar />);
+      fireEvent.click(screen.getByTestId('drill-in-trigger'));
+      const href = routerPushSpy.mock.calls[0][0] as string;
+      const params = new URLSearchParams(href.slice(href.indexOf('?')));
+      // The hook mock returns 'ws-test'; the URL says 'papercusp-workspace'.
+      // The URL must win — otherwise a real workspace id gets overwritten.
+      expect(params.get('ws')).toBe('papercusp-workspace');
+      expect(params.get('slug')).toBe('papercusp');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('falls back to the hook workspace/harness when the URL carries neither (the /quick-panel mount)', () => {
+    drillState.ref = 'escalation:msg-9';
+    inboxState.items = [
+      { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
+    ];
+    render(<OperatorChatSidebar />);
+    fireEvent.click(screen.getByTestId('drill-in-trigger'));
+    const href = routerPushSpy.mock.calls[0][0] as string;
+    const params = new URLSearchParams(href.slice(href.indexOf('?')));
+    expect(params.get('ws')).toBe('ws-test');
+    expect(params.get('slug')).toBe('papercusp');
+  });
+
   it('a navigating drill-in does NOT drag view state (an open popup) across the navigation', () => {
     drillState.ref = 'health:some-panel';
     inboxState.items = [];

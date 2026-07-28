@@ -353,12 +353,27 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   // Only these two CONTEXT params are carried — not the whole param bag: this
   // sidebar also mounts outside /adv (quick-panel), and dragging view state
   // like `wpop` across the navigation would open a stale popup on arrival.
+  // ⚠ CARRY the params that are LIVE IN THE URL — do not re-derive them from the
+  // hooks. `useWorkspaceId()` snapshots `window.__PAPERCUSP_WS__ ?? ?ws ?? 'default'`
+  // ONCE at mount (useState initialiser, never re-read — a workspace switch is a
+  // full app restart), so on any surface where it resolved before `?ws` was present
+  // it returns the literal 'default'. Writing that back would OVERWRITE a real
+  // `?ws=papercusp-workspace` with 'default' — silently rewriting workspace identity,
+  // which is strictly worse than the dropped-param bug this helper exists to fix.
+  // Caught live 2026-07-28: the first cut of this helper did exactly that.
+  // So: live URL value first, hook only as a fallback when the param is absent
+  // (the /quick-panel mount, where there may be no `?ws`/`?slug` to carry).
   const buildAdvHudHref = useCallback(
     (ownerAgentId?: string) => {
+      const current = new URLSearchParams(
+        typeof window === 'undefined' ? '' : window.location.search,
+      );
       const params = new URLSearchParams();
       params.set('tab', 'hud');
-      if (workspaceId) params.set('ws', workspaceId);
-      if (harnessSlug) params.set('slug', harnessSlug);
+      const ws = current.get('ws') ?? workspaceId;
+      const slug = current.get('slug') ?? harnessSlug;
+      if (ws) params.set('ws', ws);
+      if (slug) params.set('slug', slug);
       if (ownerAgentId) params.set('hudsession', ownerAgentId);
       return `/adv?${params.toString()}`;
     },

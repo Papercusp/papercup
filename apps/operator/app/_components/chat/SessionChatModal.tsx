@@ -59,7 +59,8 @@ import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import { useAgentDetail } from '../../adv/sessions/use-agent-detail';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
-import type { ChatMessage } from './ChatConversation';
+import { Terminal } from 'lucide-react';
+import { AGENT_MARKS, type ChatMessage } from './ChatConversation';
 import {
   contextPct,
   deriveBadges,
@@ -436,6 +437,18 @@ function LiveSessionChat({
     [rosterEntry],
   );
 
+  // WI-6503 [owner 2026-07-27, verbatim] "remove the papercup icon from the
+  // chatbox for the chatboces where the conversation isnt with papercup."
+  // OperatorChat's pane mark defaults to the Papercup logo, which is right for
+  // the Papercup sidebar and wrong here: this modal's counterparty is whichever
+  // agent the roster says it is. Resolved from the COUNTERPARTY's own agent
+  // kind (never a title/label match, per the item) — so a session that really
+  // IS papercup still gets the cup, via the same AGENT_MARKS table WI-4731
+  // established for per-message stamps. Unknown/absent kind (a plain su
+  // session) falls back to a neutral terminal mark rather than someone else's
+  // branding.
+  const paneIcon = (rosterEntry?.agent ? AGENT_MARKS[rosterEntry.agent] : undefined) ?? Terminal;
+
   let banner: ReactNode = null;
   if (status === 'connecting' && events.length === 0) {
     banner = <div style={BANNER_STYLE}>Connecting to the live session…</div>;
@@ -456,6 +469,7 @@ function LiveSessionChat({
       error={sendError}
       agentName={agentName}
       renderAvatar={renderAvatar}
+      paneIcon={paneIcon}
       footer={rosterEntry ? <SessionFooter entry={rosterEntry} onOpenDetail={onOpenDetail} /> : null}
       // chat-ref-pills-2026-07-26 P-008: scopes this session's WI-/EI-/F- ref
       // pills (live hydration + the popup destination) to the harness the

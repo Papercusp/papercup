@@ -22,7 +22,12 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import { Lightbulb, Wrench } from 'lucide-react';
 import { toast } from 'sonner';
 import { parseAsString, useQueryState } from 'nuqs';
-import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
+import {
+  ChatConversation,
+  type ChatIconComponent,
+  type ChatMessage,
+  type ChatToolCall,
+} from './chat/ChatConversation';
 import type { WorkRefKind } from './chat/parse-work-refs';
 import WorkItemPopupModal from './work-items/WorkItemPopupModal';
 import PlanPopupModal from './plans/PlanPopupModal';
@@ -119,6 +124,27 @@ interface Props {
   renderAvatar?: (msg: ChatMessage) => ReactNode | null | undefined;
 
   /**
+   * The PANE's own mark — the icon a message wears when nothing more specific
+   * applies, and the icon of the empty state (ChatConversation derives its
+   * `fallbackIcon` from `emptyState.icon`).
+   *
+   * WI-6503 [owner 2026-07-27, verbatim] "remove the papercup icon from the
+   * chatbox for the chatboces where the conversation isnt with papercup." This
+   * used to be the CONSTANT `OperatorLogoMark` — the Papercup brand cup — so a
+   * SessionChatModal conversation with an arbitrary su agent branded every
+   * unstamped message as Papercup (measured live: 11 of 12 rendered avatars).
+   * The `extra` starting-prompts panel below was already gated for exactly this
+   * reason; the icon on the same object was not.
+   *
+   * It is a PROP rather than an internal `agentName === 'Papercup'` test on
+   * purpose: the item requires resolving from the conversation's actual
+   * participant, never a title match. The caller knows its counterparty;
+   * this component does not. Omit ⇒ the Papercup mark, which is correct for
+   * the one pane whose counterparty really is Papercup (OperatorChatSidebar).
+   */
+  paneIcon?: ChatIconComponent;
+
+  /**
    * Optional informational row rendered under the composer
    * (gui-chat-session-controls-2026-07-25 P-007). Pure passthrough to
    * ChatConversation's `footer` prop — same pattern as renderAvatar. Omit
@@ -161,7 +187,7 @@ export function OperatorChat({
   messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
   conversationId, workspaceId, agentName = 'Papercup', onDrillIn,
-  renderAvatar, footer, harnessSlug,
+  renderAvatar, paneIcon, footer, harnessSlug,
 }: Props) {
   // chat-ref-pills-2026-07-26 P-008 / D-002: this is the seam where a
   // WI-/EI-/F-/P- ref pill's click actually DOES something. ChatConversation
@@ -325,7 +351,12 @@ export function OperatorChat({
           body: passive
             ? 'In passive mode. Type below to wake them.'
             : 'Tell me what you want to inspect, scan, or unblock.',
-          icon: OperatorLogoMark,
+          // WI-6503: the pane's own mark, not a hard-coded Papercup cup. See
+          // the `paneIcon` prop doc — ChatConversation also derives its
+          // per-message `fallbackIcon` from this, so overriding it here is
+          // what stops a non-Papercup conversation branding its messages
+          // (and its empty state) as Papercup.
+          icon: paneIcon ?? OperatorLogoMark,
           // The starting prompts are Papercup-specific ("scan workspaces", "review
           // blockers" — operator-scoped asks). A non-Papercup caller (SessionChatModal
           // messaging an arbitrary su agent) has no business drafting these — they'd be

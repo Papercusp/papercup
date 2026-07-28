@@ -150,6 +150,23 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
     expect(screen.queryByText('Scan workspaces')).toBeNull();
   });
 
+  it('WI-6503: paneIcon overrides the Papercup mark as the pane icon, and defaults to it when omitted', async () => {
+    const { OperatorLogoMark } = await import('./OperatorLogoMark');
+
+    // The one pane whose counterparty really IS Papercup keeps the brand mark.
+    const { rerender } = render(<OperatorChat {...baseProps()} />);
+    expect(lastProps.emptyState.icon).toBe(OperatorLogoMark);
+
+    // A caller whose counterparty is NOT Papercup supplies its own. This is the
+    // owner-reported defect: ChatConversation derives every message's
+    // `fallbackIcon` from this same icon, so a hard-coded Papercup mark branded
+    // each unstamped message in a non-Papercup conversation as Papercup.
+    const AgentMark = () => null;
+    rerender(<OperatorChat {...baseProps({ paneIcon: AgentMark })} />);
+    expect(lastProps.emptyState.icon).toBe(AgentMark);
+    expect(lastProps.emptyState.icon).not.toBe(OperatorLogoMark);
+  });
+
   it('quick-draft prompt buttons populate the composer input', () => {
     render(<OperatorChat {...baseProps()} />);
     // The empty-state extra panel renders the three starting-prompt rows.
