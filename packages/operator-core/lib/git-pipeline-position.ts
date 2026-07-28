@@ -1515,9 +1515,9 @@ export function computeStages(
       position: p.positions.inMain ? 'past' : 'pending',
       health: gateBlocked || mainBufferStale ? 'stalled' : 'advancing',
       detail: gateBlocked
-        ? 'main is not fast-forwarded to the newest green pin — see the gate stage above, which is what is actually holding it back.'
+        ? 'main cannot advance past the last green pin while the gate is blocked — see the gate stage above, which is what is actually holding it back.'
         : mainBufferStale
-          ? `main has not fast-forwarded to the newest green pin in over ${Math.round(MAIN_BUFFER_STALL_MS / 3_600_000)}h despite the gate reporting clean — the buffer may be stuck on a silent retriage (EI-18719549079738452) rather than genuinely healthy; worth a closer look, not necessarily broken.`
+          ? `the gate has recorded no NEW green verdict in over ${Math.round(MAIN_BUFFER_STALL_MS / 3_600_000)}h while a staging buffer waits — so main still sits at the LAST green pin and cannot advance until the gate greens again. NOTE this measures the buffer's AGE, not that main is behind the current pin: main is normally exactly AT it, so do not go diffing main against the pin to confirm this (it will look fine and read as a false alarm). May be a silent retriage (EI-18719549079738452) rather than genuine health; worth a closer look, not necessarily broken.`
           : p.verdictProvenance.mainFastForwarded === false
             ? 'a staging buffer awaits the next green-checkpoint run before main catches up — normal, not a stall.'
             : null,
