@@ -229,7 +229,6 @@ import './facts/retract';
 import './facts/list';
 // unified-agent-state-plane-2026-07-27 P-011 — assumptions in tension over the
 // same typed referent. A read, never a push: see the file header for why.
-import './facts/conflicts';
 import './conventions/governing';
 // fleet-reliability-verification-2026-07-10 P-010 (WI-3812) — self-verifying
 // federation probes: probe:emit stamps required federation keys + refuses

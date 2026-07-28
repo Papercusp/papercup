@@ -45,6 +45,7 @@ import type { ReleaseArtifact, ReleaseRow, ShippedItem, ShippedPlan } from './re
 import { groupItemsByPlan } from './release-registry';
 import { identityLiterals, scrubIdentity, type IdentityLiteral } from './release-content-scrub';
 import { ROBOT_BG_DATA_URI } from './release-bg';
+import { INSTRUCTIONS_HEADING, INSTRUCTIONS_MD } from './release-instructions';
 
 /** A release row with the display data for its FROZEN id lists looked up. */
 export interface HydratedRelease {
@@ -327,12 +328,24 @@ ul.items li .item-body { margin: .45rem 0 .35rem 1.1em; padding: .55rem .75rem; 
 .empty { color: var(--muted); font-style: italic; }
 .back { display: inline-block; margin-bottom: 1.75rem; font-size: .88rem; font-weight: 550; }
 .prose { margin-top: 1.5rem; color: var(--fg-dim); }
-.prose h1, .prose h2, .prose h3 {
+.prose h1, .prose h2, .prose h3, .prose h4 {
   color: var(--fg); letter-spacing: -.02em;
   background: none; -webkit-background-clip: border-box; background-clip: border-box;
 }
 .prose h1 { font-size: 1.6rem; }
 .prose h2 { font-size: 1.3rem; margin-top: 2rem; }
+/* The Instructions section nests three levels deep (section h2 → topic h3 →
+   sub-topic h4), so h3/h4 need explicit sizes: the UA defaults render h4 SMALLER
+   than the body text it introduces, which reads as a caption, not a heading. */
+.prose h3 { font-size: 1.1rem; margin: 2.1rem 0 .5rem; font-weight: 660; }
+.prose h4 { font-size: .95rem; margin: 1.5rem 0 .4rem; font-weight: 640; color: var(--fg-dim); }
+.prose li { margin: .3rem 0; }
+.prose li > ul { margin: .35rem 0; }
+.prose kbd {
+  font-family: var(--mono); font-size: .78em; padding: .08rem .35rem;
+  border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px;
+  background: var(--surface-2); color: var(--fg-dim); white-space: nowrap;
+}
 .prose pre {
   background: var(--surface-2); border: 1px solid var(--border);
   padding: .9rem 1.1rem; border-radius: var(--radius); overflow-x: auto;

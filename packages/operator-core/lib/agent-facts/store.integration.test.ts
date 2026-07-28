@@ -27,11 +27,9 @@ import {
   FACTS_PER_SCOPE_CAP,
   listLapsedWallFacts,
   listConventionFacts,
-  listAssumptionFacts,
   factCitationRef,
   type FactDependency,
 } from './store';
-import { detectAssumptionConflicts } from './conflicts';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
 import { factsCellDelta } from './cells';
 import { assumptionSelectorsFor, resolveAssumptions } from './assumptions';
@@ -920,112 +918,12 @@ describe('P-008 (d) assumption resolution (D-079)', () => {
   });
 });
 
-// ── P-011 / D-087: the conflicting-assumption detector, END TO END ────────────
-//
-// The pure detector is covered in `conflicts.test.ts`. What only real PG can
-// answer is the half a pure suite structurally cannot: does the `claim jsonb`
-// survive the round-trip, and does `listAssumptionFacts`' SQL predicate actually
-// select the rows the detector was written for. This is the item's done-when
-// clause 1 — "a seeded contradiction is detected" — asserted against the real
-// query rather than a hand-built array.
-describe('P-011 — assumptions in tension (real PG)', () => {
-  const SUBJECT = 'cell:gate.greenCheckpoint.verdict';
-
-  const assume = (owner: string, key: string, claim: Record<string, unknown>) => ({
-    scope: 'owner' as const,
-    scopeRef: owner,
-    key,
-    body: `${owner} assumes: ${JSON.stringify(claim)}`,
-    kind: 'assumption' as const,
-    claim,
-    createdBy: owner,
-    workspaceId: WS,
-  });
-
-  it('SEEDED CONTRADICTION: two agents disagree over one subject and the pair is detected', async () => {
-    await assertFact(assume('su-a', 'gate-reds', { subject: SUBJECT, assertion: 'unrelated to my change' }), db.sql);
-    await assertFact(assume('su-b', 'gate-reds', { subject: SUBJECT, assertion: 'caused by my change' }), db.sql);
-
-    const facts = await listAssumptionFacts({ workspaceId: WS }, db.sql);
-    expect(facts).toHaveLength(2);
-    // The claim must survive the jsonb round-trip, or the detector compares nulls
-    // and reports a clean, permanent, WRONG zero.
-    expect(facts.map((f) => f.claim?.subject)).toEqual([SUBJECT, SUBJECT]);
-
-    const out = detectAssumptionConflicts(facts);
-    expect(out.conflicts).toHaveLength(1);
-    expect(out.structuralZero).toBeNull();
-    expect(out.conflicts[0].referent).toBe(SUBJECT);
-    expect(out.conflicts[0].sameAuthor).toBe(false);
-    expect(out.coverage).toMatchObject({ liveAssumptions: 2, comparable: 2, comparedPairs: 1 });
-    // Both sides cite as absolute versioned refs, so the pair is quotable.
-    expect(factCitationRef(facts[0])).toMatch(/^fact:owner:su-[ab]:gate-reds@v\d+$/);
-  });
-
-  it('the read INCLUDES the legacy form: confidence suspected with no kind (D-087 R2)', async () => {
-    await assertFact(
-      {
-        scope: 'owner',
-        scopeRef: 'su-legacy',
-        key: 'pre-kind-assumption',
-        body: 'filed before migration 690 added the kind discriminator',
-        confidence: 'suspected',
-        claim: { subject: SUBJECT, assertion: 'flaky' },
-        createdBy: 'su-legacy',
-        workspaceId: WS,
-      },
-      db.sql,
-    );
-    await assertFact(assume('su-b', 'gate-reds', { subject: SUBJECT, assertion: 'real regression' }), db.sql);
-
-    const facts = await listAssumptionFacts({ workspaceId: WS }, db.sql);
-    expect(facts.map((f) => f.key).sort()).toEqual(['gate-reds', 'pre-kind-assumption']);
-    expect(detectAssumptionConflicts(facts).conflicts).toHaveLength(1);
-  });
-
-  it('the read EXCLUDES conclusions and conventions however contradictory their claims', async () => {
-    await assertFact(
-      { ...assume('su-a', 'c1', { subject: SUBJECT, assertion: 'unrelated' }), kind: 'conclusion' as const },
-      db.sql,
-    );
-    await assertFact(
-      { ...assume('su-b', 'c2', { subject: SUBJECT, assertion: 'mine' }), kind: 'convention' as const },
-      db.sql,
-    );
-    expect(await listAssumptionFacts({ workspaceId: WS }, db.sql)).toHaveLength(0);
-  });
-
-  it('the read EXCLUDES a retracted and an expired assumption — a dead belief is not tension', async () => {
-    await assertFact(assume('su-a', 'gate-reds', { subject: SUBJECT, assertion: 'unrelated' }), db.sql);
-    await assertFact(assume('su-b', 'gate-reds', { subject: SUBJECT, assertion: 'mine' }), db.sql);
-    await assertFact(assume('su-c', 'gate-reds', { subject: SUBJECT, assertion: 'flaky' }), db.sql);
-    await retractFact({ scope: 'owner', scopeRef: 'su-b', key: 'gate-reds', workspaceId: WS }, db.sql);
-    await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 hour'
-                  WHERE workspace_id = ${WS} AND scope_ref = 'su-c'`;
-
-    const facts = await listAssumptionFacts({ workspaceId: WS }, db.sql);
-    expect(facts.map((f) => f.scopeRef)).toEqual(['su-a']);
-    const out = detectAssumptionConflicts(facts);
-    expect(out.conflicts).toHaveLength(0);
-    // …and the zero is reported as a STRUCTURAL one (nothing left to pair
-    // against), never as agreement.
-    expect(out.structuralZero).toBe('no-shared-referents');
-  });
-
-  it('a SUPERSEDED version cannot conflict with its own successor (D-087 R3)', async () => {
-    await assertFact(assume('su-a', 'gate-reds', { subject: SUBJECT, assertion: 'unrelated' }), db.sql);
-    await assertFact(assume('su-a', 'gate-reds', { subject: SUBJECT, assertion: 'mine after all' }), db.sql);
-    const facts = await listAssumptionFacts({ workspaceId: WS }, db.sql);
-    expect(facts).toHaveLength(1); // append-versioning: only the current row is live
-    expect(facts[0].claim?.assertion).toBe('mine after all');
-    expect(detectAssumptionConflicts(facts).conflicts).toHaveLength(0);
-  });
-
-  it('an EMPTY ledger reports a structural zero, not agreement — the state on 2026-07-27', async () => {
-    // The regression this pins: 2088 real facts, ZERO assumptions (D-087). A
-    // detector answering "0 conflicts" here would read as good news forever.
-    const out = detectAssumptionConflicts(await listAssumptionFacts({ workspaceId: WS }, db.sql));
-    expect(out.conflicts).toHaveLength(0);
-    expect(out.structuralZero).toBe('no-assumption-facts');
-  });
-});
+// ⚠ The `P-011 — assumptions in tension (real PG)` suite that stood here was
+// REMOVED by WI-6545 / D-103 together with the detector it exercised. It is worth
+// recording WHY a green, well-built suite was deleted rather than kept: it seeded
+// its own contradictions. Every case constructed two assumptions itself and then
+// proved the detector paired them — so it passed identically whether the fleet
+// wrote assumptions or not, and it did so for the detector's entire life while the
+// real corpus held 0 of 2,217. That is precisely the gap this plan was chartered to
+// find: unit-green, production-unreachable. Do not restore these tests without a
+// producer; they measure the fixture, not the plane.

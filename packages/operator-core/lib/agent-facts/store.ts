@@ -1206,44 +1206,28 @@ export async function listConventionFacts(
 }
 
 /**
- * P-011: every live DECLARED ASSUMPTION in the workspace, across scopes — the
- * input to `detectAssumptionConflicts` (see `conflicts.ts`).
+ * Is this fact an ASSUMPTION? (D-087 R2)
  *
- * ⚠ DELIBERATELY NOT NARROWED TO THE CALLER'S OWN SCOPES, unlike
- * {@link listConventionFacts}. A convention that names someone else's ref governs
- * THEM, so narrowing there removes noise. Here the opposite holds: the assumption
- * most worth knowing about is the one a PEER holds that contradicts yours, and a
- * `scopeRefs` filter would hide exactly it. Conflict detection is a
- * workspace-wide question or it is nothing.
+ * ⚠ MOVED HERE by WI-6545 / D-103, which retired P-011's contradiction detector
+ * (`agent-facts/conflicts.ts`) and the `listAssumptionFacts` read that fed it.
+ * This predicate OUTLIVED both because its surviving caller is a different
+ * feature: `facts:assert` moves the P-009 assumption WATERMARK
+ * (`noteAssumptionAsserted`) on an assumption and only on an assumption. The
+ * detector is gone; "what counts as an assumption" is still a live question.
  *
- * ⚠ AND NOT FILTERED BY `source_hive`. A foreign hive's copy of an identity
- * cannot manufacture a conflict, because the detector never pairs two rows of the
- * same `(scope, scopeRef, key)` (D-087 R3) — so including federated rows costs
- * nothing and lets a genuine cross-hive disagreement surface.
- *
- * The predicate covers the LEGACY assumption form (D-087 R2): D-019 defined an
- * assumption as `confidence:'suspected'` + `dependsOn` before its own DEFECT 1
- * added `kind` (migration 690). The `kind='assumption'` leg uses the mig-690
- * partial index; the legacy leg cannot (it is `kind IS NULL`) and falls to the
- * live-rows fold index — acceptable because that population is closed and, as of
- * 2026-07-27, empty.
+ * ⚠ The legacy form is deliberately included. D-019's model defined an assumption
+ * as `confidence:'suspected'` + `dependsOn` BEFORE its own DEFECT 1 added the
+ * `kind` discriminator (migration 690), so a `kind`-only predicate would silently
+ * miss every assumption filed in between — the violation `ASSUMPTION_KIND_FILTER`
+ * (coord/holder-context.test.ts) exists to catch. `kind` when declared WINS: a row
+ * explicitly filed as a conclusion or convention is not an assumption however
+ * hedged its confidence.
  */
-export async function listAssumptionFacts(
-  opts: { workspaceId?: string; limit?: number } = {},
-  inject?: Sql,
-): Promise<AgentFact[]> {
-  const sql = sqlOf(inject);
-  const ws = opts.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<AgentFactRow[]>`
-    SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-           confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text
-      FROM harness_shared.agent_facts
-     WHERE workspace_id = ${ws}
-       AND (kind = 'assumption' OR (kind IS NULL AND confidence = 'suspected'))
-       AND superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
-     ORDER BY updated_at DESC
-     LIMIT ${opts.limit ?? 200}`;
-  return rows.map(rowToFact);
+export function isAssumptionFact(
+  f: Pick<AgentFact, 'kind' | 'confidence'>,
+): boolean {
+  if (f.kind != null) return f.kind === 'assumption';
+  return f.confidence === 'suspected';
 }
 
 /**

@@ -207,7 +207,7 @@ describe('the two denominators are not one (D-089)', () => {
   });
 
   it('rate is NULL, never 0, when nothing was comparable', () => {
-    const m = buildMetric('conflicting-assumption-incidence', {
+    const m = buildMetric('acted-on-stale-or-wrong-value', {
       population: 2148,
       eligible: 0,
       comparable: 0,

@@ -213,13 +213,11 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
    */
   it('catches a regression that leaves interpretable_count UNCHANGED', () => {
     const before = windowOf('2026-07-27T13:18:00Z', {
-      'conflicting-assumption-incidence': w(false),
       'acted-on-stale-or-wrong-value': w(false),
     });
     const after = windowOf('2026-07-27T14:34:00Z', {
       // came online …
-      'conflicting-assumption-incidence': w(true, { measuredAt: '2026-07-27T14:34:00Z' }),
-      'acted-on-stale-or-wrong-value': w(false, { measuredAt: '2026-07-27T14:34:00Z' }),
+      'acted-on-stale-or-wrong-value': w(true, { measuredAt: '2026-07-27T14:34:00Z' }),
       // … while this one DIED.
       'intent-action-divergence-stamped': w(false, { measuredAt: '2026-07-27T14:34:00Z' }),
     });

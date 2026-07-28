@@ -210,14 +210,11 @@ describe('composeCounts — the fact-backed and cost metrics', () => {
       divergence: null,
       calls: { ...NO_CALLS, calls: '77', attributed: '70', clarification_calls: '3' } as never,
       facts: { live_facts: '2148', with_deps: '0' } as never,
-      assumptionsExamined: 0,
-      comparedPairs: 0,
-      conflicts: 0,
       staleness: null,
       commitmentBasis: null,
     });
     expect(counts['clarification-rate'].population).toBe(77);
-    expect(counts['conflicting-assumption-incidence'].population).toBe(2148);
+    expect(counts['acted-on-stale-or-wrong-value'].population).toBe(2148);
   });
 });
 
@@ -225,7 +222,6 @@ describe('planeMeasurementSweep', () => {
   const stubs = {
     loadCallAggregates: async () => NO_CALLS,
     loadFactAggregates: async () => NO_FACTS,
-    listAssumptionFacts: async () => [],
   } as const;
 
   it('records one reading and returns it', async () => {

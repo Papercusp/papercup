@@ -30,7 +30,7 @@ import {
   type FactDependency,
   type FactSourceProvenance,
 } from '../../agent-facts/store';
-import { assumptionDetectabilityWarning, isAssumptionFact } from '../../agent-facts/conflicts';
+import { isAssumptionFact } from '../../agent-facts/store';
 import { resolveScopeRefAlias } from './scope-ctx';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
@@ -369,9 +369,12 @@ export default defineTool({
     // migration 690 added the `kind` discriminator, and `kind` is still declared
     // on a small minority of rows (D-083 §2) — so a kind-only test silently
     // misses every legacy-form assumption while passing every fixture that sets
-    // the new field. One predicate, already written and already tested, decides
-    // what an assumption is (D-087 R2); a second copy here would be free to drift
-    // from the detector that consumes the very same rows.
+    // the new field. One predicate decides what an assumption is (D-087 R2); a
+    // second copy here would be free to drift from it.
+    //
+    // ⚠ The predicate now lives in `agent-facts/store.ts`. WI-6545 / D-103 retired
+    // P-011's detector, which used to be its home — this watermark is its
+    // surviving caller, and the reason it was not retired alongside.
     if (isAssumptionFact({ kind: args.kind ?? null, confidence: args.confidence ?? null })) {
       noteAssumptionAsserted(identity.ownerId, fact.id ?? null);
     }
@@ -412,12 +415,12 @@ export default defineTool({
               'their callerRelativity.',
           }
         : null;
-    // P-011 / D-087 R5: same warn-only discipline, for the one thing that decides
-    // whether an assumption is DETECTABLE at all. D-019 blesses the degradation
-    // (a claimless assumption is valid, just uncomparable) — this makes it honest
-    // rather than silent. Never a field on the clean case, and never on a
-    // conclusion/convention.
-    const detectorVisibility = assumptionDetectabilityWarning(fact);
+    // ⚠ The D-087 R5 `detectorVisibility` warning that stood here is GONE, removed
+    // by WI-6545 / D-103 along with the detector it advertised. It told an asserting
+    // agent that a claimless assumption was invisible to `facts:conflicts`; with that
+    // detector retired the warning pointed at nothing, and a warning that names a
+    // surface which no longer exists is worse than no warning — it sends the reader
+    // looking for a tool to satisfy. Do not reinstate it without a detector to name.
     return {
       content: [
         {
@@ -427,7 +430,6 @@ export default defineTool({
             fact,
             ...(truncation ? { truncated: truncation } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
-            ...(detectorVisibility ? { detectorVisibility } : {}),
             ...provenanceFields,
           }),
         },
