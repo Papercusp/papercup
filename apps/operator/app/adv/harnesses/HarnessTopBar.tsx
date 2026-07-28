@@ -62,6 +62,12 @@ export default function HarnessTopBar({ slug }: Props) {
               'adv:logs',
               'adv:contributors',
               'adv:insights',
+              // Registering a panel in HarnessesDock is NOT enough to make it
+              // reachable — this allowlist is what the catalog renders, so a type
+              // missing here is a panel that exists and nothing can open. Caught
+              // live: adv:sync-health was registered, unit-green, and absent from
+              // the running catalog for exactly this reason.
+              'adv:sync-health',
               ...(crossMemberBrowse ? ['adv:hive-content'] : []),
               'adv:chat',
             ]}
