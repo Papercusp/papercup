@@ -401,10 +401,33 @@ const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set([
   // `WHERE (workspace_id = ctx.workspaceId OR workspace_id = 'default')` (digest.ts) —
   // it never reads another workspace's tenant data from a scoped caller.
   'sessions:digest',
+  // pot_git:secrets_exemptions (WI-6641) — the RUNTIME, no-restart recovery lever
+  // for a secrets-guard false positive (WI-5591). Its table is keyed BY workspace
+  // (PK (workspace_id, path)) and every read/write filters on it, so a scoped call
+  // is well-defined; crossWorkspace:true is here only so an UNSCOPED psu gets the
+  // getOrgPg admin handle — the memory:*/autonomy:record_disposition profile. The
+  // handler now REFUSES an explicit `workspaceId` naming another workspace, so a
+  // scoped caller cannot cross out (self-confinement, secrets_exemptions.ts).
+  //
+  // Why this one matters more than the count suggests: a false positive FREEZES
+  // ALL git egress for the hive until it is cleared (the guard baseline never
+  // advances past a refused range, so the same blob is re-refused forever), and
+  // the refusal message instructs the reader to run exactly this tool. Every
+  // ordinary agent that trips the guard is workspace-scoped, so the documented
+  // remedy was unreachable by precisely the population that needs it — the
+  // EI-1810 failure shape, and a plausible reason the class kept recurring (this
+  // was at least its third occurrence; it froze the publish plane ~8h on
+  // 2026-07-28 while the fix had to be applied by hand with psql).
+  'pot_git:secrets_exemptions',
 ]);
 
 /** Whether a crossWorkspace tool is safe to call from a SCOPED superuser session —
- *  it self-confines to the caller's own workspace and is read-only (EI-1810).
+ *  it SELF-CONFINES to the caller's own workspace (EI-1810). Self-confinement is
+ *  the whole criterion; read-only is NOT required and never was — memory:remember /
+ *  :update / :forget and autonomy:record_disposition are writes, and they qualify
+ *  because they resolve their scope from the caller's principal and cannot be
+ *  pointed at another workspace. A tool that accepts a caller-supplied workspace
+ *  target does NOT qualify until it refuses a foreign one (cf. WI-6641).
  *  P-019: the runtime clamp:set_safe_tools dial can NARROW this allowlist (tighten-only) — a tool in
  *  the operator's safeToolsRemove set is treated as NOT safe (the clamp then denies it from a scoped
  *  session). It can only REMOVE entries, never add, so it can only tighten the cross-workspace gate. */

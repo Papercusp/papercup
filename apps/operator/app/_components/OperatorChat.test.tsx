@@ -36,27 +36,11 @@ vi.mock('nuqs', () => ({
   ],
   parseAsString: { withDefault: (d: unknown) => ({ _d: d }) },
 }));
-// The two popup DESTINATIONS get their own dedicated test files; here they're
-// stubbed to a tiny probe (gated on id/planSlug like the REAL components are,
-// so a "closed" assertion means the same thing) — this suite only asserts
-// OperatorChat's OWN wiring (which id/harness it hands them), not their
-// internals.
-let lastWorkItemPopupProps: Record<string, any> = {};
-vi.mock('./work-items/WorkItemPopupModal', () => ({
-  default: (props: Record<string, any>) => {
-    lastWorkItemPopupProps = props;
-    return props.id ? <div data-testid="wi-popup" data-id={props.id} data-harness={props.harnessSlug ?? ''} /> : null;
-  },
-}));
-let lastPlanPopupProps: Record<string, any> = {};
-vi.mock('./plans/PlanPopupModal', () => ({
-  default: (props: Record<string, any>) => {
-    lastPlanPopupProps = props;
-    return props.planSlug ? (
-      <div data-testid="plan-popup" data-plan={props.planSlug} data-harness={props.harnessSlug ?? ''} />
-    ) : null;
-  },
-}));
+// WI-6601: the two popup DESTINATIONS are no longer rendered by this component
+// (or imported by it) — `chat/ChatRefPopupHost` mounts them once at the router
+// root, and their render contract is asserted in that component's own test.
+// So there is deliberately nothing to stub here: this suite asserts only what
+// OperatorChat still owns, which is the param WRITE.
 // Capture the props OperatorChat hands ChatConversation, and render a tiny
 // controllable surface: the empty-state body, the banner, the composer extra,
 // and an input wired to onInputChange/onSubmit so we can drive submit().

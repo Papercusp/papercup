@@ -782,14 +782,12 @@ describe('SessionChatModal', () => {
 
       const pill = await waitFor(() => screen.getByLabelText('WI-1234'));
       fireEvent.click(pill);
-      // The mock setter mutates the shared nuqs store synchronously but that
-      // mutation alone doesn't trigger React's own re-render — force one
-      // (same as a real nuqs setter's own state update would), same pattern
-      // as OperatorChat.test.tsx's own popup-routing suite.
       rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
-      expect(lastWorkItemPopupProps.id).toBe('WI-1234');
-      expect(lastWorkItemPopupProps.harnessSlug).toBe('papercusp');
+      // WI-6601: the chat WRITES the param; `chat/ChatRefPopupHost` renders it
+      // once at the router root. The harness rides in the value, which is what
+      // lets this popup open on a surface with no `?slug` at all.
+      expect(nuqs.wpop).toBe('papercusp::WI-1234');
     });
 
     it('renders a static (non-clickable) pill when the roster entry has no harnessSlug', async () => {
@@ -807,7 +805,7 @@ describe('SessionChatModal', () => {
       // still WIRES onWorkRefActivate (renders an interactive <button>); the
       // click itself is the thing that safely does nothing.
       fireEvent.click(pill);
-      expect(lastWorkItemPopupProps.id ?? null).toBeNull();
+      expect(nuqs.wpop).toBeUndefined();
     });
 
     // WI-5997: a real transcript click on a P- ref pill previously no-op'd —
@@ -821,14 +819,10 @@ describe('SessionChatModal', () => {
           ownerId: 'su-live-1',
           fleetColor: null,
           fleetRole: 'member',
-          // Real test-data gap found while re-running this suite for P-004:
-          // OperatorChat.tsx only mounts PlanPopupModal (alongside
-          // WorkItemPopupModal) when its OWN `harnessSlug` prop is truthy —
-          // PlanPopupModal needs it to scope the plan query, same as the
-          // work-item popup. Without it this test's click never reaches a
-          // PlanPopupModal to capture props from at all (silently asserting
-          // `undefined`, not a rendering failure) — harnessSlug is real
-          // roster data every live session actually carries.
+          // harnessSlug is real roster data every live session carries, and
+          // since WI-6601 it is what gets ENCODED into the `wppop` value (the
+          // popup itself is mounted once at the router root, not here). It
+          // stays in this fixture because the plan query is harness-scoped.
           harnessSlug: 'papercusp',
           currentPlanSlug: 'gui-chat-session-controls-2026-07-25',
         },
@@ -844,7 +838,7 @@ describe('SessionChatModal', () => {
       fireEvent.click(pill);
       rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
-      expect(lastPlanPopupProps?.planSlug).toBe('gui-chat-session-controls-2026-07-25');
+      expect(nuqs.wppop).toBe('papercusp::gui-chat-session-controls-2026-07-25');
     });
 
     it('a P- ref pill click no-ops when the roster entry carries no currentPlanSlug (no plan context to open)', async () => {
@@ -860,7 +854,7 @@ describe('SessionChatModal', () => {
       fireEvent.click(pill);
       rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
-      expect(lastPlanPopupProps?.planSlug ?? null).toBeNull();
+      expect(nuqs.wppop).toBeUndefined();
     });
   });
 

@@ -576,7 +576,10 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     inboxState.items = [];
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByTestId('drill-in-trigger'));
-    expect(nuqsWrites.current.wppop).toBe('my-plan-2026-07-17');
+    // WI-6601: `wppop` now carries its harness too, like `wpop` — the single
+    // root-level renderer can otherwise only fall back to the surface's
+    // `?slug`, which is the wrong harness on a cross-harness mount.
+    expect(nuqsWrites.current.wppop).toBe('papercusp::my-plan-2026-07-17');
     expect(routerPushSpy).not.toHaveBeenCalled();
   });
 

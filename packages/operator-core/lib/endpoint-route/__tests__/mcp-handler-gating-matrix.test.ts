@@ -553,6 +553,32 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(textOf(res)).not.toContain('workspace_forbidden'); // NOT denied by the clamp
   });
 
+  it('flag ON: a scoped superuser MAY call pot_git:secrets_exemptions — the no-restart recovery lever for a guard that freezes git egress (WI-6641)', async () => {
+    // A secrets-guard false positive freezes ALL git egress for the hive until it is
+    // cleared, and the guard's own refusal message tells the reader to run this tool.
+    // Every agent that trips the guard is workspace-scoped, so the clamp made the
+    // documented remedy unreachable by exactly the population that needs it (the
+    // EI-1810 shape; it cost ~8h of frozen publish on 2026-07-28 and a manual psql
+    // INSERT). The table is keyed (workspace_id, path) and the handler pins ws to the
+    // caller's principal, so a scoped call crosses no boundary.
+    h.scopedClampFlag.value = true;
+    const res = await callTool('pot_git:secrets_exemptions', { action: 'list' }, scoped('ws-test'));
+    expect(textOf(res)).not.toContain('workspace_forbidden'); // NOT denied by the clamp
+  });
+
+  it('flag ON: pot_git:secrets_exemptions still REFUSES a scoped caller targeting ANOTHER workspace (self-confinement is what earns the exemption)', async () => {
+    // The allowlist entry is only sound while the handler cannot be pointed elsewhere.
+    // If this ever regresses, the tool must come OFF SCOPED_SAFE_CROSSWORKSPACE.
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'pot_git:secrets_exemptions',
+      { action: 'list', workspaceId: 'ws-someone-else' },
+      scoped('ws-test'),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('workspace_forbidden');
+  });
+
   it('flag ON: a NON-exempt crossWorkspace tool is STILL denied (clamp intact for tenant-data tools)', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool('gatingtest:crossworkspace', {}, scoped('ws-test'));

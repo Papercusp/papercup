@@ -536,6 +536,87 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
 
   return [
     {
+      id: 'webview-http-egress',
+      label: 'Webview HTTP egress is zero',
+      run: async () => {
+        // P-003(c) of no-http-anywhere-2026-07-28. D-005: the webview has no usable
+        // network stack, so ANY HTTP egress from it is a loud failure, never a
+        // fallback — a silence is why the same transport defect survived three
+        // separate times. This is the gate leg that makes the ruling enforceable.
+        //
+        // Sensor: resource timing. An IPC-routed request produces NO
+        // PerformanceResourceTiming entry at all, so an /api entry IS the bug —
+        // exact in both directions, needing no instrumentation of the transport
+        // that is itself under suspicion, and it catches XHR/img/third-party calls
+        // a patched-fetch counter cannot see by construction.
+        const probe = await runTauriEvalJson<{
+          monitorPresent: boolean;
+          total: number | null;
+          byPath: Record<string, number>;
+          resourceEntries: number;
+          appMounted: boolean;
+        }>(
+          ctx,
+          `(() => {
+            const m = window.__papercusp_egress__;
+            const r = m ? m.report() : null;
+            return {
+              monitorPresent: Boolean(m),
+              total: r ? r.total : null,
+              byPath: r ? r.byPath : {},
+              resourceEntries: performance.getEntriesByType('resource').length,
+              appMounted: Boolean(document.querySelector('#root')?.firstElementChild),
+            };
+          })()`,
+        );
+        if (!probe.ok || !probe.value) {
+          return statusResult(false, 'Webview reports zero HTTP egress.', describeCommandFailure(probe));
+        }
+        const v = probe.value;
+
+        // A MISSING detector must FAIL, never pass. getEgressReport() returns null
+        // for UNKNOWN, and an absent/crashed/tree-shaken monitor reports the same
+        // zero as a genuinely clean shell — treating that as green would rebuild
+        // the exact silence this check exists to remove.
+        if (!v.monitorPresent || v.total === null) {
+          return statusResult(
+            false,
+            'Webview reports zero HTTP egress.',
+            'the egress monitor is NOT installed, so egress is UNKNOWN — not zero.',
+            'window.__papercusp_egress__ is absent. installDesktopIpcPolyfills() installs it; if the shell is not Tauri, or forceHttp pulled the rollback lever, this check cannot speak.',
+          );
+        }
+        // Positive control: an unloaded page trivially reports zero egress, and a
+        // green "no HTTP" from a blank webview is the most dangerous false pass
+        // available here — it is indistinguishable from success.
+        if (!v.appMounted || v.resourceEntries <= 20) {
+          return statusResult(
+            false,
+            'Webview reports zero HTTP egress.',
+            `sample is not trustworthy: appMounted=${v.appMounted}, resourceEntries=${v.resourceEntries}.`,
+            'The shell loads hundreds of resources when healthy, so a near-empty timeline means nothing ran — a zero here would be meaningless rather than clean.',
+          );
+        }
+
+        const pass = v.total === 0;
+        const worst = Object.entries(v.byPath)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([p, n]) => `${p}×${n}`)
+          .join(', ');
+        return statusResult(
+          pass,
+          'Every /api call inside the desktop shell rides the IPC bridge (0 HTTP requests).',
+          pass
+            ? `0 escapes across ${v.resourceEntries} resources.`
+            : `${v.total} HTTP escape(s): ${worst}.`,
+          pass
+            ? undefined
+            : 'A path recurring at ~30s boundaries is a background poll escaping on a ROUTING rule (see D-008), not a startup race; one appearing only before the polyfill installs is genuinely an ordering bug.',
+        );
+      },
+    },
+    {
       id: 'harness-warm-route',
       label: 'Harness warm route',
       run: async () => {

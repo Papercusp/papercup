@@ -40,7 +40,7 @@ export default defineTool({
       workspaceId: z
         .string()
         .optional()
-        .describe('Workspace id. Defaults to the active workspace when omitted.'),
+        .describe('Workspace id — UNSCOPED (--all-workspaces) sessions only; a workspace-scoped session always acts on its own workspace and is refused if this names another. Defaults to the active workspace when omitted.'),
       path: z
         .string()
         .optional()
@@ -63,8 +63,27 @@ export default defineTool({
       addSecretsGuardPathExemption,
       removeSecretsGuardPathExemption,
     } = await import('../../sync/pot-git/secrets-guard-exemptions');
+    // SELF-CONFINEMENT (WI-6641). `crossWorkspace: true` above exists ONLY so an
+    // UNSCOPED psu gets the getOrgPg admin handle (this table is not RLS-scoped) —
+    // the same reason memory:* and autonomy:record_disposition carry it. For that to
+    // be true rather than merely intended, a SCOPED principal must be unable to reach
+    // another workspace's rows: refuse an explicit `workspaceId` that names one, and
+    // pin `ws` to the principal's own workspace. Refuse rather than silently clamp —
+    // a waiver written to a workspace the caller did not name is worse than an error.
+    // This is what makes the tool eligible for SCOPED_SAFE_CROSSWORKSPACE, so the
+    // agents who actually trip the guard can run the documented recovery.
     const principalWs = ctx?.principal?.workspaceId;
-    const ws = args.workspaceId ?? (principalWs && principalWs !== '*' ? principalWs : activeWorkspaceId());
+    const scopedWs = principalWs && principalWs !== '*' ? principalWs : null;
+    if (scopedWs && args.workspaceId && args.workspaceId !== scopedWs) {
+      return {
+        isError: true,
+        content: [{
+          type: 'text' as const,
+          text: `workspace_forbidden: this session is scoped to workspace "${scopedWs}" and cannot target "${args.workspaceId}". Omit workspaceId to act on your own workspace, or use an unscoped (--all-workspaces) superuser session to target another.`,
+        }],
+      };
+    }
+    const ws = scopedWs ?? args.workspaceId ?? activeWorkspaceId();
     const createdBy = ctx?.principal?.slug ?? ctx?.principal?.workspaceId ?? 'agent';
     let payload: Record<string, unknown>;
     if (args.action === 'list') {

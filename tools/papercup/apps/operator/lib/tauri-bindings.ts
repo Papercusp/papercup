@@ -44,6 +44,23 @@ export const commands = {
 	checkForUpdate: () => typedError<UpdateInfo, string>(__TAURI_INVOKE("check_for_update")),
 	installUpdate: () => typedError<null, string>(__TAURI_INVOKE("install_update")),
 	/**
+	 *  Roll the desktop app BACK to an older, already-released `tag` — the Update
+	 *  Center "Revert" action (desktop-update-center-and-release-tooling P-4). It is the
+	 *  deliberate-downgrade sibling of `install_update`: the SAME download → plugin
+	 *  minisign-verify (against the updater pubkey baked into `tauri.conf.json`) →
+	 *  sidecar-safe teardown → atomic swap → relaunch path, but pointed at
+	 *  `/api/updates/rollback?tag=…` and with the updater's default "remote must be
+	 *  NEWER" gate overridden so an OLDER target is accepted (`version_comparator`).
+	 * 
+	 *  The rollback route (P-5 Unit A) already bounds the tag to the caller's channel
+	 *  window, so a stable user can't land on an alpha build; here we only need to tell
+	 *  the plugin to install exactly the release the route resolved. The post-update
+	 *  self-check (P-013, `run_update_self_check`) keys off the INSTALLED build's OWN
+	 *  baked `PAPERCUSP_BUILD_SHA`, so after the downgrade the running operator's sha
+	 *  matches the now-current (older) build — a rollback does not false-alarm (D-002).
+	 */
+	revertTo: (tag: string) => typedError<null, string>(__TAURI_INVOKE("revert_to", { tag })),
+	/**
 	 *  Spawn a new native pty and start a reader thread that emits
 	 *  `pty-data` events as bytes arrive. Returns an id the renderer uses
 	 *  for subsequent write/resize/kill calls.
@@ -96,9 +113,68 @@ export const commands = {
 	wslFinalizeReady: () => typedError<null, string>(__TAURI_INVOKE("wsl_finalize_ready")),
 	wslUninstall: () => typedError<null, string>(__TAURI_INVOKE("wsl_uninstall")),
 	consoleLaunch: (envelope: ConsoleEnvelope) => __TAURI_INVOKE<ConsoleLaunchResult>("console_launch", { envelope }),
+	/**
+	 *  Enumerate visible top-level desktop windows, optionally filtered to titles
+	 *  starting with `prefix` (pass `"Papercup — "` for session terminals). Runs
+	 *  natively in this Session-1 process — the ONLY place window enumeration works
+	 *  on Windows (D-002). Returns `[]` on non-Windows (Linux uses the operator's
+	 *  wmctrl path) so the binding exists cross-platform and is always fail-soft.
+	 */
+	listWindowsByTitle: (prefix: string | null) => __TAURI_INVOKE<DesktopWindow[]>("list_windows_by_title", { prefix }),
+	/**
+	 *  Bring the window whose title EXACTLY equals `title` to the foreground
+	 *  (restoring it first if minimized). USER-INITIATED ONLY — mirrors the
+	 *  `feedback_e2e_no_focus_steal` memory; never call from an automated driver.
+	 *  Returns true iff a matching window was found and the foreground call issued.
+	 *  No-op returning false on non-Windows (Linux focus stays the wmctrl path).
+	 */
+	focusWindowByTitle: (title: string) => __TAURI_INVOKE<boolean>("focus_window_by_title", { title }),
+	/**
+	 *  Run `spec` in a new external NATIVE terminal window.
+	 * 
+	 *   - Windows: a new Windows Terminal window (conhost fallback) — WI-3033
+	 *     (the embedded ConPTY path wedges on legacy inbox WSL).
+	 *   - Linux: a new terminal window — the BUNDLED ghostty first (always shipped
+	 *     with the desktop, so a barebones install needs no system emulator), then
+	 *     $TERMINAL / the known-emulator cascade. Owner directive 2026-07-05: the
+	 *     onboarding tutorial runs in a real native terminal window, not an
+	 *     embedded webview pane.
+	 *   - macOS: unchanged (the embedded SwiftTerm pane works and stays the UX).
+	 * 
+	 *  Returns the launcher pid when one is observable.
+	 */
+	externalConsoleRun: (spec: ExternalConsoleSpec) => typedError<number | null, string>(__TAURI_INVOKE("external_console_run", { spec })),
 	nativeTerminalStatus: () => __TAURI_INVOKE<NativeTerminalStatus>("native_terminal_status"),
-	// Show/hide the native sibling terminal. Returns the new running state.
+	/**
+	 *  Show/hide the native sibling terminal. Returns the new running state.
+	 *  D-004: refuses while the FLAGS.TESTING gate is closed — the dock is
+	 *  testing-gated (flip the flag via /admin/features, then relaunch or let
+	 *  the webview relay re-open the gate live).
+	 */
 	nativeTerminalToggle: () => typedError<boolean, string>(__TAURI_INVOKE("native_terminal_toggle")),
+	/**
+	 *  D-004 (operator-chat-sidebar-revival P-014): the webview relays its
+	 *  resolved FLAGS.TESTING across the seam here, once flags load and again on
+	 *  any live flip. Rust no longer spawns the dock at boot — this is the ONLY
+	 *  path that opens the gate. Enabled + not running ⇒ spawn (restores today's
+	 *  dock exactly); disabled + running ⇒ shutdown (a live flag-off flip hides
+	 *  the dock without a relaunch). Returns the new running state.
+	 */
+	nativeTerminalSetEnabled: (enabled: boolean) => typedError<boolean, string>(__TAURI_INVOKE("native_terminal_set_enabled", { enabled })),
+	/**
+	 *  WI-3388 — the terminal's current user layout (divider width fraction +
+	 *  collapsed/rail state). Read on mount by the web UI's `<TerminalDivider>`
+	 *  so it renders the persisted position instead of flashing a default.
+	 */
+	terminalGetLayout: () => __TAURI_INVOKE<TerminalLayout>("terminal_get_layout"),
+	/**
+	 *  WI-3388 — set the terminal's layout (either field optional — pass just
+	 *  `collapsed` for the rail toggle, or just `fraction` for a divider drag),
+	 *  persist it, and apply it LIVE to whichever backend is running. A no-op
+	 *  apply (persisted only) for NewWindow/Disabled — there's no native surface
+	 *  to resize.
+	 */
+	terminalSetLayout: (fraction: number | null, collapsed: boolean | null) => typedError<TerminalLayout, string>(__TAURI_INVOKE("terminal_set_layout", { fraction, collapsed })),
 	/**
 	 *  Tauri command — invoked from the webview. The wire shape mirrors
 	 *  what `apps/operator/lib/transport-adapters/ipc-stream.ts` sends.
@@ -106,14 +182,55 @@ export const commands = {
 	endpointInvoke: (toolName: string, input: "Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never }, channel: Channel<EndpointEvent>) => typedError<number, string>(__TAURI_INVOKE("endpoint_invoke", { toolName, input, channel })),
 	// Tauri command — cancel an in-flight call.
 	endpointCancel: (callId: number) => typedError<null, string>(__TAURI_INVOKE("endpoint_cancel", { callId })),
+	/**
+	 *  Tauri command — IPC bridge health, for humans and agents.
+	 * 
+	 *  The observability hole this fills (WI-6512): when `/api` silently stayed on
+	 *  the capped HTTP transport there was no way to ask the app *why*. The only
+	 *  signal was a startup line that named the wrong cause, so the actual state —
+	 *  which discovery file was consulted, whether the pid it named was alive,
+	 *  whether a dial had even been attempted — had to be reconstructed by hand
+	 *  from `ss`, `/proc` and the JSON files, per investigation.
+	 * 
+	 *  Cheap and side-effect-free (one small filesystem read); safe to poll.
+	 */
+	endpointIpcStatus: () => typedError<IpcStatus, string>(__TAURI_INVOKE("endpoint_ipc_status")),
 	// Tauri command invoked from injected JS to deliver eval results back to Rust.
 	devBridgeResult: (id: string, value: "Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never }) => __TAURI_INVOKE<void>("__dev_bridge_result", { id, value }),
+	/**
+	 *  The canonical env set the in-webview `EnvSwitcherBar` renders — the
+	 *  AUTHORITATIVE source. The bar reads THIS (never a routable `/api` fetch), so
+	 *  it can't self-hide on a `/api` routing glitch. On the dev box it returns all
+	 *  4 TARGETS (the never-hide floor — unreachable ones render greyed). On a
+	 *  packaged (release) build it returns only the REACHABLE envs (+ the one we're
+	 *  on): "ALL INSTALLS ARE DOGFOOD INSTALLS" (owner, 2026-07-06), so a user
+	 *  install legitimately runs multiple envs (bundled per-branch sidecars —
+	 *  prod/staging), but must not paint ghost dev/local buttons for envs that need a
+	 *  source tree it doesn't ship. Reachability is probed here because Rust can
+	 *  reach the sibling operators a webview can't (CORS).
+	 */
+	listEnvs: () => __TAURI_INVOKE<EnvInfo[]>("list_envs"),
+	/**
+	 *  Tauri command form — for an in-webview trigger (menu item, button), not just
+	 *  the global shortcut.
+	 */
+	openDocsSearchPalette: () => __TAURI_INVOKE<void>("open_docs_search_palette"),
+	/**
+	 *  WI-4827 — open a same-origin app `route` in the MAIN operator window and
+	 *  dismiss the Quick Panel palette (Spotlight-style). Invoked from the panel
+	 *  webview when a control would otherwise navigate the small palette window into
+	 *  the full app. Branch-1 (dev + the Linux single-bundle install): the `main`
+	 *  window is in THIS process — focus + soft-navigate it. Branch-2 (macOS/Windows
+	 *  two-bundle): the GUI is a separate process — persist the route and launch /
+	 *  focus the GUI bundle, which applies it via `apply_pending_route`.
+	 */
+	openRouteInApp: (route: string) => __TAURI_INVOKE<void>("open_route_in_app", { route }),
 };
 
 /* Types */
 /**
  *  Mirror of the TS-side `ConsoleEnvelope` from
- *  apps/operator/lib/console-launcher.ts.
+ *  packages/operator-core/lib/console-launcher.ts.
  */
 export type ConsoleEnvelope = {
 	cwd: string,
@@ -121,9 +238,32 @@ export type ConsoleEnvelope = {
 	mcpJsonContents: string,
 	greetingCmd: string,
 	needsSuperuserBootstrap: boolean,
+	/**
+	 *  windows-desktop-feature-parity-2026-07-02 P-010: a fresh UUID minted
+	 *  per launch (console-launcher.ts `buildConsoleEnvelope`) — the WINDOW's
+	 *  own identity. Every spawner titles the OS window
+	 *  `Papercup — <session_id>` (see `window_title_for` below) so a
+	 *  launched terminal can be found + focused by TITLE, which matters most
+	 *  on Windows: the agent runs inside the `papercup-runtime` WSL2 distro
+	 *  while the terminal window is a native Win32 process, so there is no
+	 *  Windows window-ancestor for a WSL pid and pid->window mapping is
+	 *  structurally impossible — title is the only durable link.
+	 */
+	sessionId: string,
 };
 
 export type ConsoleLaunchResult = { status: "ok"; pid: number | null; displaced_mcp_json: boolean; bootstrapped: boolean } | { status: "err"; error: string };
+
+/**
+ *  A visible top-level desktop window. `hwnd` is the raw handle as a decimal
+ *  string (opaque to JS — only round-tripped back into `focus_window_by_title`).
+ *  Mirrors the TS `WindowsDesktopWindow` shape in windows-desktop-windows.ts.
+ */
+export type DesktopWindow = {
+	title: string,
+	pid: number,
+	hwnd: string,
+};
 
 /**
  *  One event surfaced to the webview JS. Tagged JSON via Serde.
@@ -150,6 +290,73 @@ data: string } |
 // Dispatch or handler failed (role gate, quota, timeout, throw).
 { kind: "error"; code: string; message: string };
 
+// One env button the in-webview bar renders. Serialized camelCase for JS.
+export type EnvInfo = {
+	id: string,
+	label: string,
+	port: number,
+	origin: string,
+	tooltip: string,
+	reachable: boolean,
+	isSelf: boolean,
+};
+
+/**
+ *  A command to run in an external native terminal window. Mirror of the
+ *  TS-side spec assembled in OnboardingConsole.tsx (camelCase over the wire).
+ */
+export type ExternalConsoleSpec = {
+	command: string,
+	args?: string[],
+	// Linux path INSIDE the WSL distro (the operator + command live there).
+	cwd: string,
+	env?: { [key in string]: string },
+	/**
+	 *  Exact window title — the frontend focuses the window by this title
+	 *  later (focus_window_by_title), so it must be stable per surface.
+	 */
+	title: string,
+};
+
+/**
+ *  A snapshot of IPC bridge health, as returned by `endpoint_ipc_status`.
+ * 
+ *  This is the answer to "is /api actually riding IPC right now, and if not
+ *  what precisely is stopping it" — a question that previously could only be
+ *  answered by correlating `ss`, the discovery JSON files, and process
+ *  liveness by hand.
+ */
+export type IpcStatus = {
+	// Live re-resolution performed at status time (a pure filesystem read).
+	resolvedPath: string | null,
+	resolutionDetail: string,
+	/**
+	 *  `connected` · `dead` · `never-connected` · `dial-in-flight` · `disabled`.
+	 * 
+	 *  `dial-in-flight` means the connection lock was held when we looked.
+	 *  Seeing it persist across repeated calls is itself the diagnosis: a
+	 *  dial is hung, and every `/api` call is queued behind it.
+	 */
+	client: string,
+	attempts: number,
+	reuses: number,
+	resolveMisses: number,
+	connectErrors: number,
+	connects: number,
+	invokes: number,
+	msSinceLastAttempt: number | null,
+	msSinceLastConnect: number | null,
+	lastError: string | null,
+	connectedPath: string | null,
+	/**
+	 *  Whether the operator owning the IPC socket is provably the one that served
+	 *  this webview — see [`SocketResolution::owner_is_content_origin`]. The
+	 *  webview reads this to decide whether content-origin-scoped paths
+	 *  (`/api/desktop/*`) may ride IPC, instead of excluding them unconditionally.
+	 */
+	ownerIsContentOrigin: boolean,
+};
+
 export type NativeTerminalStatus = {
 	// One of glued-ghostty-x11 / new-window / embedded-* / disabled.
 	strategy: string,
@@ -175,11 +382,44 @@ export type Registry = {
 	workspaces: Workspace[],
 };
 
+/**
+ *  The terminal's user-controlled layout. `fraction` is resolution-
+ *  independent (a fraction of the GUI window's docking-axis size, like
+ *  `GlueConfig::fraction`) so it's meaningful after a relaunch on a
+ *  differently-sized display; `collapsed` fully hides the terminal's native
+ *  surface, leaving only the webview's rail control. Persisted as "a
+ *  setting" (native window chrome — the owner explicitly ruled out a nuqs
+ *  URL param, which the webview's location bar has no reach into anyway).
+ */
+export type TerminalLayout = {
+	fraction: number,
+	collapsed: boolean,
+};
+
 export type UpdateInfo = {
 	available: boolean,
 	current_version: string,
 	new_version: string | null,
 	notes: string | null,
+	/**
+	 *  The update check could not actually be performed — the release host was
+	 *  unreachable, throttled, or never configured. DISTINCT from `available:
+	 *  false`, which means "checked, and you are current".
+	 * 
+	 *  The Tauri updater protocol has no slot for this: a 204 means "no update",
+	 *  and the plugin hands back `Ok(None)` whether we compared versions or
+	 *  never got an answer at all. So an unreachable host reads to the user as
+	 *  "you are up to date" — silently, forever, and indistinguishable from
+	 *  success. That is the worst failure mode an updater can have, and it is
+	 *  exactly how a 0.0.8 with no release host baked in would present: eternally
+	 *  current, never updating, saying nothing.
+	 */
+	check_failed: boolean,
+	/**
+	 *  Why the check could not be performed (`no_token` / `fetch_failed` /
+	 *  `no_candidate` / `manifest_unconfigured`), when the sidecar reports one.
+	 */
+	check_reason: string | null,
 };
 
 export type Workspace = {
