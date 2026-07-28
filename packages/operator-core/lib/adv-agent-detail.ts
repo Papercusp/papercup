@@ -240,6 +240,37 @@ export interface AgentSignals {
   unavailableSignals: AgentSignalKey[];
 }
 
+/** One event this agent is currently subscribed to — an un-fired, un-cancelled
+ *  row in `harness_shared.event_awaits`. */
+export interface AgentSubscription {
+  eventKey: string;
+  policy: string;
+  note: string | null;
+  /** One-shot await (fires once, then auto-consumes) vs a standing watch that
+   *  survives each fire. The two behave very differently for a reader deciding
+   *  whether an agent will wake AGAIN, so it is surfaced rather than inferred. */
+  once: boolean;
+  /** A fire actually WAKES the agent (it carries a wake handle). A subscription
+   *  without one is observational: it records the fire but starts no turn. */
+  wakes: boolean;
+  /** Bypasses the per-subscriber wake floor (human-message / escalation watch). */
+  urgent: boolean;
+  createdAt: string;
+  expiresTs: string | null;
+}
+
+/** The agent's live event subscriptions, for the dossier's Events section. */
+export interface AgentSubscriptions {
+  /** Newest first, bounded by the store's own LIMIT 100. */
+  items: AgentSubscription[];
+  count: number;
+  /** Set when the underlying read FAILED. Never collapse a failure into an
+   *  empty list: "subscribed to nothing" and "we could not ask" are opposite
+   *  conclusions for anyone deciding whether an agent will ever wake again
+   *  (same rationale as `getAgentSignals`' unavailableSignals). */
+  error?: string;
+}
+
 export interface AgentDetail {
   ownerId: string;
   locks: AgentLocks;
@@ -251,6 +282,10 @@ export interface AgentDetail {
    *  this SAME DTO) keep compiling without an update — `getAgentDetail`
    *  always populates it for real traffic. */
   signals?: AgentSignals;
+  /** Optional for the same reason as `signals` above: this DTO has other
+   *  readers whose fixtures predate the field. Always populated for real
+   *  traffic by `getAgentDetail`. */
+  subscriptions?: AgentSubscriptions;
 }
 
 // ──────────────────────────── pure shaping ─────────────────────────────────
@@ -767,13 +802,50 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
 }
 
 /** The full Tier-3 dossier for one agent: locks + coord + client diagnostics, fetched concurrently. */
+/**
+ * The events this agent is currently subscribed to — the un-fired, un-cancelled
+ * `event_awaits` rows that `events:status` reports as "active awaits".
+ *
+ * [owner 2026-07-28, verbatim] "are the events an agent currently subscribed to
+ * listed in their chat popup? If not add that". They were not: the dossier
+ * carried locks, coord and signals, so a reader could see what an agent HELD
+ * and what it had SAID, but not what it was WAITING FOR — which is the field
+ * that explains an agent sitting apparently idle. An agent parked on an await
+ * looks identical to a dead one until you can see the await.
+ *
+ * A read failure surfaces as `error`, never as an empty list (see the DTO).
+ */
+export async function getAgentSubscriptions(owner: string): Promise<AgentSubscriptions> {
+  try {
+    const { listActiveAwaits } = await import('./events/await/store');
+    const rows = await listActiveAwaits(owner);
+    return {
+      items: rows.map((r) => ({
+        eventKey: r.eventKey,
+        policy: r.policy,
+        note: r.note,
+        once: r.once,
+        wakes: r.wakeHandle !== null,
+        urgent: r.urgency,
+        createdAt: r.createdAt,
+        expiresTs: r.expiresTs,
+      })),
+      count: rows.length,
+    };
+  } catch (err) {
+    console.warn(`[adv-agent-detail] getAgentSubscriptions(${owner}) threw:`, err);
+    return { items: [], count: 0, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function getAgentDetail(owner: string): Promise<AgentDetail> {
-  const [locks, coord, nativeSession, codex, signals] = await Promise.all([
+  const [locks, coord, nativeSession, codex, signals, subscriptions] = await Promise.all([
     getAgentLocks(owner),
     getAgentCoordState(owner),
     getAgentNativeSession(owner),
     getAgentCodexDiagnostics(owner),
     getAgentSignals(owner),
+    getAgentSubscriptions(owner),
   ]);
-  return { ownerId: owner, locks, coord, nativeSession, codex, signals };
+  return { ownerId: owner, locks, coord, nativeSession, codex, signals, subscriptions };
 }
