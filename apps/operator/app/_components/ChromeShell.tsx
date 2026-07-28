@@ -165,10 +165,13 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
     if (!header || !fancyEffectsEnabled) return;
 
     // Entrance intro via motion's WAAPI-backed animate (gsap removed per the
-    // perf-docs animation table). Note the hud lines animate OPACITY only:
-    // their `transform` is owned by the infinite CSS sweep keyframes
-    // (pc-header-hud-line-primary/-secondary in globals.css), which beat
-    // inline styles — the old gsap scaleX leg never visibly rendered.
+    // perf-docs animation table). The hud lines animate OPACITY only. That used
+    // to be forced on us — their `transform` was owned by infinite CSS sweep
+    // keyframes that beat inline styles, so the old gsap scaleX leg never
+    // visibly rendered. Those sweeps were removed in WI-6530 (an always-on
+    // animation holds the 60fps repaint loop open and cost ~40% of a CPU core),
+    // so the constraint is gone — but keep this a one-shot entrance either way:
+    // anything that runs forever here re-arms exactly the cost WI-6530 removed.
     const items = header.querySelectorAll<HTMLElement>(
       '.pc-header-left > *, .pc-header-center > *, .pc-header-right > *',
     );

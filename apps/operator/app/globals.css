@@ -10446,22 +10446,19 @@ body.h-harness-top-collapsed .pc-header {
   opacity: 0.86;
   pointer-events: none;
 }
+/* WI-6530: these two lines used to sweep on infinite alternate animations.
+   ANY always-on animation keeps the whole 60fps repaint loop alive, and on this
+   software-rendered webview that repaint costs ~40% of a CPU core permanently
+   (measured: 48-63% of a core at idle with animations running, 9-16% with all
+   of them paused; pausing only SOME of them buys nothing, which is why every
+   one had to go). The lines keep exactly the look they had at rest — the
+   sweep transform was purely decorative motion. */
 .pc-header-hud-line--primary {
   top: 8px;
-  animation: pc-header-hud-line-primary 3.2s ease-in-out infinite alternate;
 }
 .pc-header-hud-line--secondary {
   bottom: 7px;
   opacity: 0.5;
-  animation: pc-header-hud-line-secondary 4.1s ease-in-out infinite alternate;
-}
-@keyframes pc-header-hud-line-primary {
-  from { transform: translateX(-16%); }
-  to   { transform: translateX(16%); }
-}
-@keyframes pc-header-hud-line-secondary {
-  from { transform: translateX(12%); }
-  to   { transform: translateX(-12%); }
 }
 .pc-header-brand-wrap {
   filter: drop-shadow(0 0 14px rgb(from var(--accent) r g b / 0.12));
