@@ -132,6 +132,96 @@ describe('dispatch — control flow', () => {
     expect(res.error?.message).toBe('goal: too long — 412 chars over the 500-char limit; trim to 500.');
   });
 
+  // EI-18889347809692710 — a failed union used to surface as a bare
+  // `body: Invalid input`, naming neither the offending element nor the key. Zod
+  // reports the union at its OWN path and buries every branch's real diagnosis in
+  // `issue.errors`; dispatch now unwraps the branch that got FURTHEST into the
+  // structure. Shapes below are the REAL zod v4 output captured from coord:send.
+  describe('invalid_union unwrapping (EI-18889347809692710)', () => {
+    const unionIssue = (branches: unknown[][]) => ({
+      message: 'Invalid input',
+      code: 'invalid_union',
+      path: ['body'],
+      errors: branches,
+    });
+
+    it('names the offending element AND key instead of "body: Invalid input"', async () => {
+      vi.mocked(standardValidate).mockResolvedValue({
+        ok: false,
+        issues: [
+          unionIssue([
+            [{ message: 'Invalid input: expected string, received array', code: 'invalid_type', path: [] }],
+            [
+              {
+                message: 'Invalid input: expected array, received string',
+                code: 'invalid_type',
+                path: [1, 'couldNotDetermine'],
+              },
+            ],
+          ]),
+        ],
+      } as never);
+      const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+      expect(res.error?.message).toBe(
+        'body.1.couldNotDetermine: Invalid input: expected array, received string',
+      );
+    });
+
+    it('keeps the union\'s OWN message when no branch located a specific field', async () => {
+      // The deliberate "string body is refused" teaching message (owner directive
+      // 2026-07-28) lives at the union's own path with depth-0 branches — losing it
+      // to a branch's terse "expected array, received string" would be a regression.
+      vi.mocked(standardValidate).mockResolvedValue({
+        ok: false,
+        issues: [
+          {
+            message: '`body` must be an ARRAY of sections — a plain string is no longer accepted.',
+            code: 'custom',
+            path: ['body'],
+            errors: [
+              [{ message: 'Invalid input: expected string, received number', code: 'invalid_type', path: [] }],
+              [{ message: 'Invalid input: expected array, received number', code: 'invalid_type', path: [] }],
+            ],
+          },
+        ],
+      } as never);
+      const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+      expect(res.error?.message).toBe(
+        'body: `body` must be an ARRAY of sections — a plain string is no longer accepted.',
+      );
+    });
+
+    it('recurses through a nested union without spinning', async () => {
+      vi.mocked(standardValidate).mockResolvedValue({
+        ok: false,
+        issues: [
+          unionIssue([
+            [{ message: 'shallow', code: 'invalid_type', path: [] }],
+            [
+              {
+                message: 'Invalid input',
+                code: 'invalid_union',
+                path: [0, 'premises'],
+                errors: [[{ message: 'deep leaf', code: 'invalid_type', path: [2, 'ref'] }]],
+              },
+            ],
+          ]),
+        ],
+      } as never);
+      const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+      expect(res.error?.message).toBe('body.0.premises.2.ref: deep leaf');
+    });
+
+    it('a non-union issue is unaffected', async () => {
+      vi.mocked(standardValidate).mockResolvedValue({
+        ok: false,
+        issues: [{ message: 'Invalid input: expected string', code: 'invalid_type', path: ['summary'] }],
+      } as never);
+      const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+      expect(res.error?.message).toBe('summary: Invalid input: expected string');
+    });
+  });
+
   it('handler throw → handler_error carrying the message', async () => {
     vi.mocked(lookup).mockReturnValue(
       makeTool({ handler: vi.fn(async () => { throw new Error('boom'); }) }) as never,
