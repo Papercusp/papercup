@@ -42,7 +42,7 @@
  *
  * These two have the same symptom — `interpretable: false` today — and opposite
  * causes, owners and urgencies. `never-interpretable` is an unbuilt producer: it
- * is a filed, owned gap (WI-6465) and re-failing the build for it teaches the
+ * is a filed, owned gap (WI-6545) and re-failing the build for it teaches the
  * fleet to ignore this gate. `regressed` is a producer that DEMONSTRABLY WORKED
  * and has stopped, which is a live incident nobody has noticed yet.
  *
@@ -89,19 +89,26 @@ export type RatchetVerdict = (typeof RATCHET_VERDICTS)[number];
  * someone reports the producer built.
  */
 export const METRIC_KNOWN_GAPS: Readonly<Partial<Record<PlaneMetricId, string>>> = Object.freeze({
-  'conflicting-assumption-incidence': 'WI-6465',
-  'acted-on-stale-or-wrong-value': 'WI-6465',
-  // The two COMMITMENT-backed legs added with the metric ids themselves
-  // (WI-6465 / D-102). Their SHAPE exists; their PRODUCER does not yet emit —
-  // verified against the live series 2026-07-27, where every recorded window
-  // through 18:36 still carries metric_count 6 and does not mention these ids
-  // at all. So they are `never-interpretable` for the same open item as the two
-  // above, and belong here rather than being assumed interpretable: an
-  // unexplained empty metric is designed to FAIL, and WI-6465 closing is
-  // exactly what should turn these into hard failures if the producer is still
-  // silent (see judgeKnownGap + the ratchet test that pins that).
-  'acted-on-stale-declared-basis': 'WI-6465',
-  'closed-work-basis-moved': 'WI-6465',
+  // The assumption MODALITY is still empty, and the gap is real: `isAssumption`
+  // (agent-facts/conflicts.ts) gates P-011's detector on kind==='assumption', which
+  // D-102 F3 measured at 0 of 2,194 rows — and then REJECTED forcing, because agents
+  // honestly assert VERIFIED CONCLUSIONS, so a `kind` gate would yield 'conclusion'
+  // and leave this exactly as vacuous at fleet-wide friction cost. The open item that
+  // owns the decision (widen the detector to any typed claim, or retire it) is WI-6545
+  // — NOT WI-6465, whose own producer now emits (see the note below).
+  'conflicting-assumption-incidence': 'WI-6545',
+  'acted-on-stale-or-wrong-value': 'WI-6545',
+  // ⚠ `acted-on-stale-declared-basis` and `closed-work-basis-moved` were listed here
+  // under WI-6465 while their producer was still being built. They are deliberately NOT
+  // listed any more: both now HOLD in production, measured every ~30min since
+  // 2026-07-27T23:36Z at producer_version 2 (01:38Z: rates 0 with zeroReason 'clean',
+  // and 0.1944 — both interpretable). The note that stood here claimed "every recorded
+  // window through 18:36 carries metric_count 6 and never mentions these ids"; that was
+  // TRUE when written and was falsified by the 19:36Z+ windows, which is exactly why it
+  // is recorded rather than quietly deleted. Re-adding them would be wrong twice over:
+  // an exemption is for a metric that has NEVER been interpretable, and one that HAS
+  // been can only ever reach `regressed` — which judgeKnownGap deliberately refuses to
+  // excuse, because a producer that worked and then died is never a "known gap".
 });
 
 /** One metric's state in one window, as read back from a measurement row. */
@@ -193,7 +200,7 @@ export function judgeKnownGap(args: {
  * READABLE, because its spec says the number has no direction without a companion.
  * `clarification-rate` is the live case: it is `holding` on 4,142 examined calls,
  * and its companion `acted-on-stale-or-wrong-value` is `never-interpretable`
- * pending WI-6465 — so its zero is *uninterpretable*, not clean.
+ * pending WI-6545 — so its zero is *uninterpretable*, not clean.
  *
  * ⚠ WHY THIS IS NOT A VERDICT. {@link judgeMetricRatchet} is pure over ONE metric's
  * windows, and deliberately so — the states it must separate (a producer that died
@@ -202,11 +209,11 @@ export function judgeKnownGap(args: {
  * every verdict depend on the whole report and destroy that property. It is a
  * separate disclosure on top of an unchanged verdict.
  *
- * ⚠ AND WHY IT DOES NOT FAIL THE BUILD. The honest fix is WI-6465 landing a
- * producer, which is a filed, owned gap — failing here would red the fleet gate for
- * a known-open item and teach everyone to ignore this check, the exact outcome
+ * ⚠ AND WHY IT DOES NOT FAIL THE BUILD. The honest fix is WI-6545 resolving the
+ * assumption modality, which is a filed, owned gap — failing here would red the fleet
+ * gate for a known-open item and teach everyone to ignore this check, the exact outcome
  * METRIC_KNOWN_GAPS exists to avoid. The teeth are already in the right place: when
- * WI-6465 closes with the producer still silent, the COMPANION's own row fails via
+ * WI-6545 closes with the detector still blind, the COMPANION's own row fails via
  * {@link judgeKnownGap}, and this disclosure clears on its own the moment the
  * companion starts holding.
  */

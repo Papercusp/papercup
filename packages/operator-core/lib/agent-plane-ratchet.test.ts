@@ -259,12 +259,14 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
    * interpretable-by-default — defaulting them true is what silently pushed
    * this expectation to 6 and reddened the gate.
    */
-  it('passes the real production series, with the four WI-6465 metrics exempt', () => {
+  it('passes the real production series, with the two assumption-modality metrics exempt', () => {
+    // The two COMMITMENT-backed legs are deliberately NOT blocked here any more: their
+    // producer landed (WI-6465 / D-102) and they hold in production from 2026-07-27T23:36Z
+    // onward, so they take windowOf's interpretable default. Only the assumption MODALITY
+    // is still empty, and it is exempt against WI-6545 rather than WI-6465.
     const blocked = {
       'conflicting-assumption-incidence': w(false),
       'acted-on-stale-or-wrong-value': w(false),
-      'acted-on-stale-declared-basis': w(false),
-      'closed-work-basis-moved': w(false),
     };
     const report = ratchetPlaneSeries({
       series: [
@@ -275,32 +277,48 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
     });
     expect(report.failures).toHaveLength(0);
     expect(report.exempt.map((r) => r.metric).sort()).toEqual([
-      'acted-on-stale-declared-basis',
       'acted-on-stale-or-wrong-value',
-      'closed-work-basis-moved',
       'conflicting-assumption-incidence',
     ]);
-    expect(report.highWaterCount).toBe(4);
-    expect(report.currentCount).toBe(4);
+    // 8 ids, 2 never-interpretable — matches the live headline `6/8 interpretable`.
+    expect(report.highWaterCount).toBe(6);
+    expect(report.currentCount).toBe(6);
   });
 
-  /** Closing WI-6465 must make the same series RED, not quietly retire the evidence. */
-  it('turns the exempt metrics into failures the moment WI-6465 closes', () => {
+  /**
+   * THE REGRESSION THIS PAIR EXISTS TO CATCH, pinned explicitly after WI-6465's close
+   * red the fleet gate: closing the item a metric is exempt against must FAIL it, and
+   * closing an UNRELATED item must not. Repointing an exemption is only legitimate
+   * while that second property holds — otherwise "move it to another open item" becomes
+   * a way to launder a gap indefinitely.
+   */
+  it('does NOT excuse the assumption metrics when some OTHER item closes', () => {
     const blocked = {
       'conflicting-assumption-incidence': w(false),
       'acted-on-stale-or-wrong-value': w(false),
-      'acted-on-stale-declared-basis': w(false),
-      'closed-work-basis-moved': w(false),
+    };
+    const series = [windowOf('2026-07-27T14:34:00Z', blocked), windowOf('2026-07-27T17:05:00Z', blocked)];
+    const afterUnrelated = ratchetPlaneSeries({ series, closedGaps: new Set(['WI-6465']) });
+    expect(afterUnrelated.failures).toHaveLength(0);
+    expect(afterUnrelated.exempt.map((r) => r.metric).sort()).toEqual([
+      'acted-on-stale-or-wrong-value',
+      'conflicting-assumption-incidence',
+    ]);
+  });
+
+  /** Closing WI-6545 must make the same series RED, not quietly retire the evidence. */
+  it('turns the exempt metrics into failures the moment WI-6545 closes', () => {
+    const blocked = {
+      'conflicting-assumption-incidence': w(false),
+      'acted-on-stale-or-wrong-value': w(false),
     };
     const series = [windowOf('2026-07-27T14:34:00Z', blocked), windowOf('2026-07-27T17:05:00Z', blocked)];
 
     expect(ratchetPlaneSeries({ series }).failures).toHaveLength(0);
 
-    const afterClose = ratchetPlaneSeries({ series, closedGaps: new Set(['WI-6465']) });
+    const afterClose = ratchetPlaneSeries({ series, closedGaps: new Set(['WI-6545']) });
     expect(afterClose.failures.map((f) => f.metric).sort()).toEqual([
-      'acted-on-stale-declared-basis',
       'acted-on-stale-or-wrong-value',
-      'closed-work-basis-moved',
       'conflicting-assumption-incidence',
     ]);
     expect(afterClose.exempt).toHaveLength(0);
