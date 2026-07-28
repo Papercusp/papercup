@@ -39,6 +39,37 @@ is an app cost. This matters more than it sounds: 20 chained `setTimeout(33)`
 take ~715ms on this box with **nothing typed** against a 660ms "ideal", so raw
 drift-versus-ideal is mostly the probe, not the app.
 
+### The sham is also a diagnostic: if it stalls too, typing is not your bug
+
+Above, the sham is used to *subtract* probe overhead. It answers a second, more
+important question for free, and missing it cost WI-6502 roughly 26 hypotheses of
+CSS ablation: **compare the sham's main-thread stalls to the typing arm's.**
+
+```
+run51, 12 type + 12 sham arms interleaved in ONE run
+  type  stallMax  median 50ms   mean 64.3ms
+  sham  stallMax  median 56ms   mean 64.2ms     <- no keystrokes at all
+```
+
+The sham arms stalled *as hard as* the typing arms. Typing was not causing the
+stalls — a periodic main-thread block was firing roughly once a second regardless,
+and keystrokes were **queueing behind it**. The Event Timing API says the same
+thing in one line: input **delay** 36–247ms against **processing** 3–5ms. The
+handler was always cheap; the event just waited.
+
+This distinction decides where you look next, and it is invisible to any
+instrument that samples *only while typing* — such an instrument attributes the
+periodic block to whichever keystroke happened to land on it, which reads exactly
+like "typing is expensive" and sends you into the paint stack. WI-6502's handoff
+brief confidently asserted "this is a PAINT problem, not a React problem" on
+precisely that error; the real cause was a once-per-second cache serialisation
+(`libs/generic/sync/src/persisted-cache.ts`) that had nothing to do with typing or
+painting.
+
+So make this the *first* question of any input-latency investigation, before any
+ablation: **does the cost survive when nobody types?** If yes, stop measuring
+typing and go find the periodic work.
+
 ## Schedule the burst on an ABSOLUTE timeline, or you cannot see the symptom
 
 Read this before writing the loop above. It is the single most expensive mistake
