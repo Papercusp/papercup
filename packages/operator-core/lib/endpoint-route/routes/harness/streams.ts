@@ -678,6 +678,108 @@ export function pickSessionTurnWindow(
   return { start, anchorPos };
 }
 
+/** P-001: session_turn_parts.part_kind → the timeline entry kind the pane
+ *  renders. `thinking` becomes a `status` entry carrying the same
+ *  `[thinking] …` prefix the JSONL parsers emit, so the pane's existing
+ *  styling applies unchanged. Pure — exported for tests. */
+export function sessionPartEntryKind(
+  partKind: string | null | undefined,
+  speaker: string | null | undefined,
+): AgentTimelineEntry['kind'] {
+  switch (partKind) {
+    case 'tool_use': return 'tool_use';
+    case 'tool_result': return 'tool_result';
+    case 'thinking': return 'status';
+    default: return sessionTurnEntryKind(speaker);
+  }
+}
+
+/**
+ * P-001/P-008: the FAITHFUL backfill — session_turn_parts, which carries the
+ * tool_use / tool_result / thinking blocks session_turns discards by design.
+ * Returns null when this session has no parts (outside the 14 d parts window,
+ * or a source kind with no parts adapter), so the caller falls through to the
+ * text-turns backfill below.
+ *
+ * Bounded by the same two-query shape as the turns backfill, and for the same
+ * reason (P-009): the positional scan must never pull a row per part of a
+ * long session just to pick a 200-row window.
+ */
+export async function backfillFromSessionParts(
+  key: { sourceKind: 'claude' | 'omp' | 'codex'; sessionId: string },
+  opts: { anchorTs?: string | null; cap?: number } = {},
+): Promise<{ entries: AgentTimelineEntry[]; anchorIndex: number | null } | null> {
+  const cap = Math.max(1, opts.cap ?? 200);
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const scanLimit = positionalScanLimit(cap, !!opts.anchorTs);
+  const idxRows = await sql<Array<{ part_idx: number; ts: string | null }>>`
+    SELECT part_idx, ts::text AS ts FROM (
+      SELECT part_idx, ts
+        FROM harness_shared.session_turn_parts
+       WHERE source_kind = ${key.sourceKind} AND session_id = ${key.sessionId}
+       ORDER BY part_idx DESC
+       LIMIT ${scanLimit}
+    ) recent
+    ORDER BY part_idx ASC
+  `;
+  if (idxRows.length === 0) return null;
+  const { start, anchorPos } = pickSessionTurnWindow(idxRows.map((r) => r.ts), cap, opts.anchorTs);
+  const end = Math.min(idxRows.length, start + cap);
+  const startIdx = idxRows[start].part_idx;
+  const textCap = THINKING_ENTRY_TEXT_CAP + 200;
+  const rows = await sql<Array<{
+    ts: string | null; speaker: string | null; part_kind: string | null;
+    tool_name: string | null; text: string | null;
+  }>>`
+    SELECT ts::text AS ts, speaker, part_kind, tool_name, left(text, ${textCap}) AS text
+      FROM harness_shared.session_turn_parts
+     WHERE source_kind = ${key.sourceKind} AND session_id = ${key.sessionId}
+       AND part_idx >= ${startIdx}
+     ORDER BY part_idx ASC
+     LIMIT ${cap}
+  `;
+  // Shape each entry EXACTLY as the JSONL timeline parsers do, so a DB-served
+  // pane is indistinguishable from a file-served one: a tool_use carries
+  // toolName + toolInput (never prose), a tool_result carries text, and a
+  // thinking block is a `status` entry with the `[thinking]` marker the pane
+  // already styles.
+  const entries: AgentTimelineEntry[] = rows.map((r) => {
+    const kind = sessionPartEntryKind(r.part_kind, r.speaker);
+    const body = r.text ?? '';
+    const ts = r.ts ?? undefined;
+    if (r.part_kind === 'tool_use') {
+      return { kind, toolName: r.tool_name ?? undefined, toolInput: body || undefined, ts };
+    }
+    if (r.part_kind === 'thinking') return capEntryText({ kind, text: `[thinking] ${body}`, ts });
+    return capEntryText({ kind, text: body, ts });
+  });
+  const anchorIndex = anchorPos !== null && anchorPos >= start && anchorPos < end ? anchorPos - start : null;
+  return { entries, anchorIndex };
+}
+
+/**
+ * P-009: how many of the session's TRAILING rows the positional scan needs.
+ *
+ * The old query was `ORDER BY turn_idx ASC` with NO LIMIT — a row per turn of
+ * the whole session, pulled only to choose a 200-row window. That was
+ * tolerable while this path was a rare archive fallback; P-008 makes it the
+ * hot path for every history pane, so it is bounded here BEFORE the flip.
+ *
+ * Without an anchor we only ever tail the last `cap` rows, so `cap` suffices.
+ * With an anchor (a search deep-link) the match can sit anywhere in the
+ * session, so we widen to a fixed ceiling: far enough back to find nearly
+ * every anchor, still O(1) in session length. An anchor older than the
+ * ceiling degrades to the tail window plus `anchor {found:false}` — the same
+ * honest fallback the file path already emits on a miss, never a dead pane.
+ *
+ * Pure — exported for tests.
+ */
+export const POSITIONAL_SCAN_CEILING = 20_000;
+export function positionalScanLimit(cap: number, anchored: boolean): number {
+  return anchored ? POSITIONAL_SCAN_CEILING : Math.max(1, cap);
+}
+
 export async function backfillFromSessionTurns(
   key: { sourceKind: 'claude' | 'omp' | 'codex'; sessionId: string },
   opts: { anchorTs?: string | null; cap?: number } = {},
@@ -686,12 +788,20 @@ export async function backfillFromSessionTurns(
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   // 1) Positional scan — turn_idx + ts only, ordered — to bound the window (and
-  //    match anchorTs) without pulling every turn's text.
+  //    match anchorTs) without pulling every turn's text. P-009: bounded to the
+  //    trailing slice the window can actually reach (see positionalScanLimit);
+  //    the DESC+LIMIT subquery walks the PK backwards and stops, where the old
+  //    unbounded ASC scan read the whole session.
+  const scanLimit = positionalScanLimit(cap, !!opts.anchorTs);
   const idxRows = await sql<Array<{ turn_idx: number; ts: string | null }>>`
-    SELECT turn_idx, ts::text AS ts
-      FROM harness_shared.session_turns
-     WHERE source_kind = ${key.sourceKind} AND session_id = ${key.sessionId}
-     ORDER BY turn_idx ASC
+    SELECT turn_idx, ts::text AS ts FROM (
+      SELECT turn_idx, ts
+        FROM harness_shared.session_turns
+       WHERE source_kind = ${key.sourceKind} AND session_id = ${key.sessionId}
+       ORDER BY turn_idx DESC
+       LIMIT ${scanLimit}
+    ) recent
+    ORDER BY turn_idx ASC
   `;
   if (idxRows.length === 0) return null;
   const { start, anchorPos } = pickSessionTurnWindow(idxRows.map((r) => r.ts), cap, opts.anchorTs);
@@ -944,39 +1054,86 @@ const sessionThinkingStream = defineTool({
           }
         };
 
+        // The corpus key for this session, shared by the DB-primary backfill
+        // below and the ENDED-session recovery further down. claude→sessionId,
+        // omp→ompThreadId, codex→codexRolloutId (codexSessionKey is an adv-row
+        // id with no corpus key, so a session keyed that way has no DB path).
+        const corpusKey = sessionId
+          ? ({ sourceKind: 'claude', sessionId } as const)
+          : ompThreadId
+            ? ({ sourceKind: 'omp', sessionId: ompThreadId } as const)
+            : codexRolloutId
+              ? ({ sourceKind: 'codex', sessionId: codexRolloutId } as const)
+              : null;
+
+        /**
+         * P-008 (session-turn-storage-2026-07-28): serve HISTORY from Postgres.
+         *
+         * This inverts the old order. It used to be file-first with the DB as a
+         * fallback only when the file was GONE; now the DB is the primary and
+         * the file is the fallback. Two stores are tried in fidelity order:
+         *   1. session_turn_parts — the faithful transcript (tool calls,
+         *      results, thinking), inside the 14 d parts window;
+         *   2. session_turns — text turns only, inside the 45 d window.
+         * A miss on both returns false and the caller reads the file exactly as
+         * before, so nothing regresses for a source with no parts adapter, a
+         * session older than the windows, or a DB that is down.
+         *
+         * D-003: this is BACKFILL only. The live tail keeps polling the file —
+         * the ingest cron is 2 min, so the DB is up to ~2 min behind the
+         * current turn. `pos` is therefore seeded at the file's CURRENT size by
+         * the caller, so the pane shows DB history and then live-follows
+         * appended records with neither a gap nor a duplicate.
+         */
+        const backfillFromDb = async (): Promise<boolean> => {
+          if (!corpusKey) return false;
+          try {
+            const fromParts = await backfillFromSessionParts(corpusKey, { anchorTs });
+            const backfill = fromParts?.entries.length
+              ? fromParts
+              : await backfillFromSessionTurns(corpusKey, { anchorTs });
+            if (!backfill || backfill.entries.length === 0) return false;
+            sink.event('backfill', backfill.entries);
+            if (find) {
+              sink.event('anchor', backfill.anchorIndex !== null
+                ? { found: true, index: backfill.anchorIndex }
+                : { found: false });
+            }
+            return true;
+          } catch {
+            // The DB is a convenience here, never a dependency — a failure
+            // degrades to the file read, which is what shipped before P-008.
+            return false;
+          }
+        };
+
         if (path) {
-          emitThinking(find ? await anchoredBackfillFrom(path) : backfillFrom(path));
+          const served = await backfillFromDb();
+          if (served) {
+            // Seed the follow cursor at EOF so the live tail resumes cleanly
+            // from wherever the DB history ended (D-003).
+            try {
+              const st = statSync(path);
+              pos = st.size;
+              emitThinking(Date.now() - st.mtimeMs < SESSION_THINKING_ACTIVE_MS);
+            } catch {
+              emitThinking(false);
+            }
+          } else {
+            emitThinking(find ? await anchoredBackfillFrom(path) : backfillFrom(path));
+          }
         } else if (ended) {
           // WI-4194: the transcript jsonl + archive are both gone, but the ENDED
           // session's turns may still live in the DURABLE session_turns corpus
           // (exactly what /adv search matched on to surface this hit). Reconstruct
           // the backfill from there so a search click renders the history instead
-          // of dead-clicking to "0 turns". Keyed by uuid: claude→sessionId,
-          // omp→ompThreadId, codex→codexRolloutId (codexSessionKey is an adv-row
-          // id with no corpus key, so it isn't recoverable here). Best-effort —
-          // any failure degrades to the honest empty-backfill terminate below.
-          const corpusKey = sessionId
-            ? ({ sourceKind: 'claude', sessionId } as const)
-            : ompThreadId
-              ? ({ sourceKind: 'omp', sessionId: ompThreadId } as const)
-              : codexRolloutId
-                ? ({ sourceKind: 'codex', sessionId: codexRolloutId } as const)
-                : null;
-          let recovered = false;
-          if (corpusKey) {
-            try {
-              const backfill = await backfillFromSessionTurns(corpusKey, { anchorTs });
-              if (backfill && backfill.entries.length > 0) {
-                sink.event('backfill', backfill.entries);
-                if (find) {
-                  sink.event('anchor', backfill.anchorIndex !== null
-                    ? { found: true, index: backfill.anchorIndex }
-                    : { found: false });
-                }
-                recovered = true;
-              }
-            } catch { /* degrade to the empty-backfill terminate below */ }
-          }
+          // of dead-clicking to "0 turns". Keyed by uuid — see `corpusKey`
+          // above. P-010: this is now the SAME parts-then-turns read the live
+          // branch uses (backfillFromDb), so an ended session renders with the
+          // same fidelity a live one does — where before it silently dropped to
+          // text-only. Best-effort — any failure degrades to the honest
+          // empty-backfill terminate below.
+          const recovered = await backfillFromDb();
           // WI-3990: no recoverable transcript anywhere (never archived, archive
           // incomplete/pruned AND no session_turns rows) — emit an empty backfill
           // and TERMINATE so the pane shows its honest "no output" / ended state
@@ -1014,6 +1171,11 @@ const sessionThinkingStream = defineTool({
                 if (sink.closed || path || !p) return;
                 path = p;
                 followParser = source.newParser();
+                // Deliberately FILE-first here, unlike the P-008 flip above:
+                // this branch fires the moment a live session's transcript
+                // first appears, and the ingest cron is 2 min behind, so the
+                // DB would return null (or a stale prefix) for the very turn
+                // the user is watching. History has no such freshness problem.
                 emitThinking(find ? await anchoredBackfillFrom(p) : backfillFrom(p));
               })
               .finally(() => { resolving = false; });

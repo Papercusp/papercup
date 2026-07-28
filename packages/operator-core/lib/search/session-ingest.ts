@@ -1321,6 +1321,7 @@ async function backfillHistoricalCounts(sql: Sql): Promise<number> {
       file_path: string;
       byte_offset: string | number;
       turn_count: number;
+      part_count: number | null;
       prompt_count: number;
       response_count: number;
       tool_call_count: number;
@@ -1330,7 +1331,7 @@ async function backfillHistoricalCounts(sql: Sql): Promise<number> {
       counts_backfilled_at: string | null;
       session_id: string | null;
     }>>`
-      SELECT file_path, byte_offset, turn_count, prompt_count, response_count,
+      SELECT file_path, byte_offset, turn_count, part_count, prompt_count, response_count,
              tool_call_count, last_inference_id, counts_backfill_offset,
              counts_backfill_last_inference_id, counts_backfilled_at, session_id
         FROM harness_shared.session_ingest_state
@@ -1345,6 +1346,7 @@ async function backfillHistoricalCounts(sql: Sql): Promise<number> {
         file_path: r.file_path,
         byte_offset: Number(r.byte_offset),
         turn_count: r.turn_count,
+        part_count: r.part_count ?? 0,
         prompt_count: r.prompt_count ?? 0,
         response_count: r.response_count ?? 0,
         tool_call_count: r.tool_call_count ?? 0,
