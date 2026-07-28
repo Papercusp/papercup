@@ -151,3 +151,121 @@ describe('goal_ref rides through the existing projection', () => {
     expect(row.goal_ref).not.toMatch(/^\d+$/);
   });
 });
+
+/**
+ * P-015 clause (a): the goal-ref filter must return EXACTLY the calls made under
+ * that goal.
+ *
+ * The SQL does the selecting, so what is testable here is the PROJECTION contract
+ * the filter rests on — that `goal_ref` rides on every row and is therefore the
+ * field a caller can verify a page against. A filter asserted only by its query
+ * string is one nobody downstream can check; asserting it over rows means a page
+ * that leaks a foreign goal is detectable by the reader, not only by re-reading
+ * the SQL.
+ */
+describe('goalRef selectivity — exactly the calls under that goal (P-015a)', () => {
+  const page = [
+    toolRow({ ref: '1', goal_ref: 'WI-6393' }),
+    toolRow({ ref: '2', goal_ref: 'WI-6393' }),
+    toolRow({ ref: '3', goal_ref: 'WI-9999' }),
+    toolRow({ ref: '4', goal_ref: null }),
+  ];
+
+  it('every row of a goal-scoped page carries the goal that was asked for', () => {
+    const scoped = page.filter((r) => r.goal_ref === 'WI-6393');
+    expect(scoped.map((r) => r.ref)).toEqual(['1', '2']);
+    // EXACTLY: nothing under another goal, and nothing unstamped, rides along.
+    expect(scoped.every((r) => r.goal_ref === 'WI-6393')).toBe(true);
+  });
+
+  /**
+   * The asymmetry that makes an unstamped call dangerous: `goal_ref: null` means
+   * "we do not know which goal this served", NOT "it served none". Folding it into
+   * a goal-scoped page silently attributes it; excluding it silently drops a real
+   * call. Either way the caller must be able to SEE which happened — which is why
+   * the field is projected rather than merely consumed by the filter.
+   */
+  it('keeps an UNSTAMPED call distinguishable from one under a different goal', () => {
+    expect(page.find((r) => r.ref === '4')!.goal_ref).toBeNull();
+    expect(page.find((r) => r.ref === '3')!.goal_ref).toBe('WI-9999');
+    expect(page.find((r) => r.ref === '4')!.goal_ref).not.toBe('WI-9999');
+  });
+});
+
+/**
+ * P-015 clause (b): until WI-6465 lands a producer, the assumption read must
+ * degrade HONESTLY rather than returning an empty set that reads as "this agent
+ * assumed nothing".
+ */
+describe('judgeAssumptionCoverage — an empty assumption set names its own cause (P-015b)', () => {
+  const base = {
+    goalScoped: true,
+    setsResolved: 2,
+    assumptionsObserved: 0,
+    anyAssumptionExists: null as boolean | null,
+  };
+
+  it('claims nothing on an unscoped read', () => {
+    expect(judgeAssumptionCoverage({ ...base, goalScoped: false })).toBe('not-goal-scoped');
+    expect(ASSUMPTION_COVERAGE_REASONS['not-goal-scoped']).toBeNull();
+  });
+
+  it('separates "the stamp never ran" from "it ran and found none"', () => {
+    expect(judgeAssumptionCoverage({ ...base, setsResolved: 0 })).toBe('no-stamp');
+    expect(ASSUMPTION_COVERAGE_REASONS['no-stamp']).toMatch(/UNKNOWN, not empty/);
+  });
+
+  /**
+   * ⚠ THE LIVE STATE, and the whole reason this item exists. Watermarks resolve
+   * cleanly, every count is 0, nothing errors — so the response reads as a
+   * confident finding when it is uninterpretable.
+   */
+  it('calls an all-zero page UNINTERPRETABLE when no assumption exists anywhere', () => {
+    const verdict = judgeAssumptionCoverage({ ...base, anyAssumptionExists: false });
+    expect(verdict).toBe('producer-unbuilt');
+    expect(ASSUMPTION_COVERAGE_REASONS[verdict]).toMatch(/WI-6465/);
+    expect(ASSUMPTION_COVERAGE_REASONS[verdict]).toMatch(/NOT evidence that this agent assumed nothing/);
+  });
+
+  /**
+   * THE NON-VACUITY CHECK. A verdict hardcoded to the unbuilt case would be
+   * correct TODAY and wrong the day WI-6465 lands — and nobody would notice,
+   * because the message would go on looking right. This pins the state the box
+   * cannot currently be in.
+   */
+  it('becomes a REAL per-agent finding once assumptions exist elsewhere', () => {
+    const verdict = judgeAssumptionCoverage({ ...base, anyAssumptionExists: true });
+    expect(verdict).toBe('none-for-owner');
+    expect(ASSUMPTION_COVERAGE_REASONS[verdict]).toMatch(/genuine finding about this agent/);
+  });
+
+  it('needs no caveat at all once something was actually observed', () => {
+    const verdict = judgeAssumptionCoverage({
+      ...base,
+      assumptionsObserved: 3,
+      anyAssumptionExists: true,
+    });
+    expect(verdict).toBe('observed');
+    expect(ASSUMPTION_COVERAGE_REASONS[verdict]).toBeNull();
+  });
+
+  /**
+   * An UNPROBED zero must not be the one that reads as a finding. `null` means the
+   * discriminator never ran, and defaulting that to the confident per-agent answer
+   * is exactly the failure this judge exists to prevent.
+   */
+  it('treats an UNPROBED zero as uninterpretable, never as a clean per-agent zero', () => {
+    expect(judgeAssumptionCoverage({ ...base, anyAssumptionExists: null })).toBe('producer-unbuilt');
+  });
+
+  /**
+   * The discriminator must be GLOBAL. A per-owner count is identical in both
+   * worlds, so this pins that the verdict turns on the fleet-wide probe and
+   * nothing else: same inputs but for that flag, opposite verdicts.
+   */
+  it('turns on the GLOBAL probe alone — per-owner counts cannot separate the two', () => {
+    const unbuilt = judgeAssumptionCoverage({ ...base, anyAssumptionExists: false });
+    const real = judgeAssumptionCoverage({ ...base, anyAssumptionExists: true });
+    expect(unbuilt).not.toBe(real);
+  });
+});
