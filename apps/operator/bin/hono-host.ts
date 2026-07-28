@@ -61,6 +61,11 @@ import {
   startBootedHandlesBroadcaster,
   startWorkerBootedHandlesCache,
 } from '@papercusp/operator-core/lib/sync/hyperbee/cluster-booted-handles-sync';
+import {
+  startWorkerStampPublisher,
+  startWorkerStampReceiver,
+  startPrimaryStampRelay,
+} from '@papercusp/operator-core/lib/agent-state-stamp-cluster';
 import nodeCluster from 'node:cluster';
 import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
@@ -595,6 +600,16 @@ const clusterHandle = sidecarMode ? null : startCluster({
       // map is always empty). ALWAYS-ON when true-clustered — a correctness fix, not an
       // opt-in perf feature (unlike the lag watchdog above).
       if (clusterWorkers > 1) startWorkerBootedHandlesCache();
+      // WI-6594: publish this worker's P-009 stamp declarations to the primary and
+      // apply the ones it relays back from peers. Without this, an agent's
+      // coord:declare-intent and its work_items:claim land on DIFFERENT workers and
+      // no call can ever stamp both — measured live as intent_event_id and goal_ref
+      // never co-occurring, which red the fleet gate via lint:plane-ratchet.
+      // ALWAYS-ON when true-clustered: a correctness fix, like the cache above.
+      if (clusterWorkers > 1) {
+        startWorkerStampPublisher();
+        startWorkerStampReceiver();
+      }
     });
   },
   // Boot-failure backstop (2026-06-25 incident): if a whole generation of workers
@@ -648,6 +663,16 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
   const bootedHandlesBroadcaster = clusterHandle.broadcast
     ? startBootedHandlesBroadcaster({ broadcast: clusterHandle.broadcast })
     : undefined;
+  // WI-6594: relay each worker's P-009 stamp declarations to every other worker.
+  // The primary is the hub because only it holds a handle to every worker; it also
+  // applies each patch locally, since it runs the background machinery whose own
+  // tool calls are stamped from the same map.
+  const stampRelay = clusterHandle.broadcast
+    ? startPrimaryStampRelay({
+        cluster: nodeCluster as unknown as Parameters<typeof startPrimaryStampRelay>[0]['cluster'],
+        broadcast: clusterHandle.broadcast,
+      })
+    : undefined;
   const shutdown = (sig: 'SIGTERM' | 'SIGINT'): void => {
     // P-005: the true-cluster PRIMARY is the process that runs the auto-implement
     // dispatch loop (it owns the background machinery). It serves no HTTP, so it
@@ -657,6 +682,7 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
     console.log(`[cluster] ${sig} — draining ${clusterHandle.workerCount} worker(s) + exiting primary`);
     watchdog?.stop(); // stop watching first so it doesn't fight the graceful drain
     bootedHandlesBroadcaster?.stop();
+    stampRelay?.stop();
     clusterHandle.drain?.(sig);
     // WI-3849: the primary loads the same native modules as workers. Calling
     // process.exit() after worker drain still runs their hazardous env teardown;
