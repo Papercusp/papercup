@@ -313,6 +313,18 @@ describe('durable goal re-hydration (WI-6595)', () => {
     expect(readAgentStateStamp(OWNER).goalRef).toBeNull();
   });
 
+  it('the DEFAULT hydrator\'s import specifier resolves — the one failure the catch would hide', async () => {
+    // The production path reaches the durable read through a dynamic import, and
+    // the fill is wrapped in a catch so telemetry can never fail a tool call.
+    // Those two together mean a BROKEN SPECIFIER (a move, a rename, a bundler that
+    // drops the chunk) degrades to "the goal is silently never refilled" — green
+    // tests, green types, and the exact bug this fix exists to remove, back again.
+    // Nothing else in this file would notice, because every other test injects a
+    // fake hydrator. So resolve the real specifier explicitly.
+    const mod = await import('./agent-tools/coordination/agent-goal-sources');
+    expect(typeof mod.resolveOwnerGoal).toBe('function');
+  });
+
   it('a refilled goal is still guarded by asGoalRef, exactly like a declared one', async () => {
     // The stamp and the cell share ONE ref vocabulary; a refill must not be the
     // hole through which a shape a live reader would reject gets in.
