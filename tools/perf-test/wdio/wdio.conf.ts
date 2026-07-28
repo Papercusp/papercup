@@ -19,6 +19,7 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { readMeasures, resetMeasures } from "./perf-report";
+import { SPEC_TIMEOUT_MS } from "./app-mount";
 
 /**
  * Allocate a free ephemeral TCP port from the OS: bind to :0, read back what
@@ -460,7 +461,12 @@ export const config: WebdriverIO.Config = {
   logLevel: "info",
   framework: "mocha",
   reporters: ["spec"],
-  mochaOpts: { ui: "bdd", timeout: 60_000 },
+  // DERIVED, never a literal. A hardcoded 60_000 here sat under a 180_000 mount
+  // wait for every run this suite has ever done, so mocha killed each spec two
+  // minutes before the mount wait could expire and `mountTimeoutDiagnosis` never
+  // ran once — all four specs failed with a bare `Error: Timeout` carrying no
+  // information. See SPEC_TIMEOUT_MS's doc comment in app-mount.ts.
+  mochaOpts: { ui: "bdd", timeout: SPEC_TIMEOUT_MS },
 
   // Preflight-check the native driver, allocate two DISTINCT ephemeral ports
   // (see assertNativeWebDriverAvailable's doc comment for why they must

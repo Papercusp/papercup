@@ -53,3 +53,10 @@ export type {
 export { waitUntilReady } from './wait-until-ready.js';
 export { measureGuiColdStart } from './cold-start.js';
 export { pidLivenessProbe, tcpPortProbe } from './adapters.js';
+export type {
+  DocumentObservation,
+  MountClassifierConfig,
+  MountProgress,
+  MountVerdict,
+} from './document-mount.js';
+export { classifyMountObservation, INITIAL_MOUNT_PROGRESS } from './document-mount.js';

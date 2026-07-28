@@ -149,6 +149,18 @@ export interface MountEvidence {
   resourceEntries: number;
   shellPresent: boolean;
   readyState: string;
+  /**
+   * What the document IS, for the case where `#root` is absent.
+   *
+   * Run 6 spent 94 consecutive polls reporting `rootChildren: -1` — a field that
+   * can only ever say what the document is NOT. Identifying the replacement
+   * document then required a second run. These three say what it IS in the first
+   * one: an error page has a title and body text, a blank crash-replacement page
+   * has neither, and a foreign app has both but wrong.
+   */
+  title: string;
+  bodyChildren: number;
+  bodyTextHead: string;
 }
 
 async function readDocument(browser: Browser): Promise<MountEvidence> {
@@ -159,6 +171,15 @@ async function readDocument(browser: Browser): Promise<MountEvidence> {
         "doc-" + String(Date.now()) + "-" + Math.random().toString(36).slice(2, 10);
     }
     const root = document.querySelector("#root");
+    const body = document.body;
+    // Never let the probe throw: a probe that can fail mid-diagnosis reports
+    // nothing exactly when there is most to report.
+    let bodyText = "";
+    try {
+      bodyText = String(body ? body.innerText || body.textContent || "" : "").slice(0, 200);
+    } catch {
+      bodyText = "(unreadable)";
+    }
     return {
       url: String(window.location ? window.location.href : "(no location)"),
       pathname: String(window.location ? window.location.pathname : "(no location)"),
@@ -167,9 +188,32 @@ async function readDocument(browser: Browser): Promise<MountEvidence> {
       resourceEntries: performance.getEntriesByType("resource").length,
       shellPresent: Boolean(document.querySelector(shellSelector)),
       readyState: String(document.readyState),
+      title: String(document.title || ""),
+      bodyChildren: body ? body.childElementCount : -1,
+      bodyTextHead: bodyText,
     };
   }, OPERATOR_SHELL_SELECTOR)) as MountEvidence;
 }
+
+/**
+ * The decision itself lives in `@papercusp/gui-readiness` — it is a domain-free
+ * state machine over document observations, and putting it there is what makes
+ * it testable at all (this package is not an npm workspace member, so a test
+ * beside this file would run under no framework). Everything below contributes
+ * only the I/O, the clock, and this app's routes.
+ */
+const MOUNT_CLASSIFIER_CONFIG: MountClassifierConfig = {
+  isTerminalWrongScreen: isFirstRunLanding,
+  wrongScreenDwellMs: FIRST_RUN_DWELL_MS,
+  documentDeathDwellMs: WEBVIEW_DEATH_DWELL_MS,
+};
+
+const toObservation = (ev: MountEvidence): DocumentObservation => ({
+  pathname: ev.pathname,
+  docToken: ev.docToken,
+  rootChildren: ev.rootChildren,
+  targetPresent: ev.shellPresent,
+});
 
 /**
  * Ask the app's OWN gateway endpoint what it answers, from inside the webview.
@@ -250,27 +294,21 @@ function isFirstRunLanding(pathname: string): boolean {
  */
 export async function waitForAppMount(browser: Browser): Promise<MountEvidence> {
   let last: MountEvidence | null = null;
-  let firstRunSince: number | null = null;
-  let firstRunTerminal = false;
+  let progress: MountProgress = { ...INITIAL_MOUNT_PROGRESS };
+  let terminal: MountVerdict | null = null;
 
   try {
     await browser.waitUntil(
       async () => {
         last = await readDocument(browser);
-        if (last.shellPresent && last.rootChildren > 0) return true;
-
-        // A settled first-run landing will never become the operator shell on
-        // its own — abort instead of burning the full timeout in every spec.
-        if (isFirstRunLanding(last.pathname)) {
-          firstRunSince ??= Date.now();
-          if (Date.now() - firstRunSince >= FIRST_RUN_DWELL_MS) {
-            firstRunTerminal = true;
-            return true; // exit the wait; the throw happens below
-          }
-        } else {
-          firstRunSince = null;
-        }
-        return false;
+        const step = classifyObservation(progress, last, Date.now());
+        progress = step.state;
+        if (step.verdict === "mounted") return true;
+        if (step.verdict === "waiting") return false;
+        // A terminal verdict will never improve on its own — exit the wait and
+        // let the matching diagnosis below do the talking.
+        terminal = step.verdict;
+        return true;
       },
       { timeout: APP_MOUNT_TIMEOUT_MS, interval: 500, timeoutMsg: "app mount timed out" },
     );
@@ -278,7 +316,8 @@ export async function waitForAppMount(browser: Browser): Promise<MountEvidence> 
     throw new Error(await mountTimeoutDiagnosis(browser, last));
   }
 
-  if (firstRunTerminal) throw new Error(await firstRunDiagnosis(browser, last));
+  if (terminal === "first-run-terminal") throw new Error(await firstRunDiagnosis(browser, last));
+  if (terminal === "webview-died") throw new Error(webviewDiedDiagnosis(last, progress));
   return last as unknown as MountEvidence;
 }
 
@@ -303,6 +342,36 @@ async function firstRunDiagnosis(browser: Browser, seen: MountEvidence | null): 
     `    a product bug, not a harness gap.\n\n` +
     `(EI-18889416741921988 — the old predicate accepted this screen as "mounted", so the suite ` +
     `published perf numbers for the onboarding console labelled as the operator shell.)`
+  );
+}
+
+/**
+ * The app rendered, and then its document was destroyed under us.
+ *
+ * Deliberately synchronous and browser-free: by definition the webview is gone,
+ * so any further probe of it would fail or hang. Everything printed here was
+ * captured while it was still alive.
+ */
+function webviewDiedDiagnosis(seen: MountEvidence | null, progress: MountProgress): string {
+  return (
+    `the webview DIED after the app had already rendered — this is not a slow boot.\n\n` +
+    `  rendered under document: ${progress.renderedDocToken ?? "(unknown)"}\n` +
+    `  now looking at document: ${seen?.docToken ?? "(unknown)"}\n` +
+    `  url:        ${seen?.url ?? "(unknown)"}   (UNCHANGED — so this was not a navigation)\n` +
+    `  #root:      ${seen?.rootChildren === -1 ? "ABSENT ENTIRELY" : String(seen?.rootChildren)}\n` +
+    `  title:      ${JSON.stringify(seen?.title ?? "")}\n` +
+    `  body kids:  ${seen?.bodyChildren ?? "?"}\n` +
+    `  body text:  ${JSON.stringify(seen?.bodyTextHead ?? "")}\n` +
+    `  readyState: ${seen?.readyState ?? "?"}\n\n` +
+    `A fresh document identity at an UNCHANGED url, with no \`#root\` at all, is the WebKit web\n` +
+    `process being replaced — a crash, an OOM kill, or the app tearing its own window down. The\n` +
+    `three fields above discriminate: an empty title AND empty body is a blank crash-replacement\n` +
+    `page; a populated title/body is an error page and its text names the cause.\n\n` +
+    `Check ~/.papercusp/logs/gui.log at the timestamp of this run, and \`journalctl --user\` for a\n` +
+    `WebKitWebProcess segfault or an OOM kill.\n` +
+    `(First observed in perf run 6, 2026-07-28: the app mounted 10 children, held for ~10s, then\n` +
+    `every subsequent poll for 47s saw a new blank document. Before this verdict existed the suite\n` +
+    `read that as "still booting" and waited out its entire budget.)`
   );
 }
 
