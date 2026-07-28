@@ -55,9 +55,11 @@ describe('readInsightsSnapshot', () => {
 });
 
 describe('readMemoryHealth', () => {
-  // readMemoryHealth issues three queries: the counts row, the recall-stats
-  // aggregate (readRecallHealth), then the per-surface slice (P-006,
-  // readRecallHealthBySurface). Respond per call.
+  // readMemoryHealth issues FOUR queries: the counts row, the recall-stats
+  // aggregate (readRecallHealth), the per-surface slice (P-006,
+  // readRecallHealthBySurface), then the query-shape slice (P-041,
+  // readRecallQueryHealth). Respond per call; the last response is reused for
+  // any further call, so an added read inherits it rather than running dry.
   const sqlSequence = (responses: Array<Array<Record<string, unknown>> | Error>): Sql => {
     let call = 0;
     return ((_s: TemplateStringsArray, ..._v: unknown[]) => {
@@ -89,6 +91,7 @@ describe('readMemoryHealth', () => {
       scaleMix: { cosine: 30 },
       fragmentHits7d: 0,
       recallBySurface: [],
+      queryBySurface: [],
       recallTelemetryOk: true,
     });
   });
@@ -112,6 +115,30 @@ describe('readMemoryHealth', () => {
     ]));
     expect(health.recallBySurface).toHaveLength(2);
     expect(health.recallBySurface[1]).toMatchObject({ surface: 'orient', zeroHitRate7d: 0.9 });
+  });
+
+  // P-041: the QUERY side rides the same read. Every other field here measures
+  // what recall returned, which cannot say whether the query was any good.
+  it('folds the query-shape slice into the health payload (P-041)', async () => {
+    const health = await readMemoryHealth(sqlSequence([
+      [{ total_memories: 10, entity_rows: 0, feedback_30d: 0 }],
+      [{ recalls: 30, zero_hits: 3, fragment_hits: 0, per_scale: [] }],
+      [],
+      [{
+        surface: 'turn-start', recalls: 100, machine_origin: 82, short_queries: 4,
+        chars_p50: 900, chars_p10: 60,
+        origin_mix: { 'loop-fire': 70, 'wake-pump': 12, '(no-envelope)': 18 },
+        repeat_eligible: 90, repeat_count: 27,
+      }],
+    ]));
+    expect(health.queryBySurface).toHaveLength(1);
+    expect(health.queryBySurface[0]).toMatchObject({
+      surface: 'turn-start',
+      machineOriginRate: 0.82,
+      // Denominator is repeatEligible (rows WITH a predecessor), never recalls.
+      repeatRate: 0.3,
+      shortQueryRate: 0.04,
+    });
   });
 
   it('zero-fills an empty result rather than crashing', async () => {

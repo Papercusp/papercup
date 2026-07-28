@@ -303,6 +303,104 @@ describe('deriveColumn — precedence', () => {
     expect(v.column).toBe('working');
   });
 
+  /**
+   * WI-6636 — the default board read "Stalled 110" of 133 cards, median 2 days
+   * and up to 11 days stale, while coord:presence called the same population
+   * live 5 / parked 123. Cause: `liveness` is HEARTBEAT freshness, and a parked
+   * agent waiting on its inbox keeps beating, so it read 'live' forever and
+   * then tripped the stall clocks. The board asserted the system was mostly
+   * stuck when it was mostly idle.
+   *
+   * These cases pin the fix in BOTH directions: the false positive must go, and
+   * the genuine stalls the column exists for must survive.
+   */
+  describe('sessionState (the shared liveness oracle) governs "nominally alive"', () => {
+    /** The exact 110-card shape: parked per the oracle, dead clocks, fresh heartbeat. */
+    const parkedAndQuiet = {
+      sessionState: 'parked',
+      liveness: 'live' as const,
+      stale: false,
+      lastActiveAt: iso(2 * 24 * 60 * 60_000),
+      intentDeclaredAt: iso(2 * 24 * 60 * 60_000),
+    };
+
+    it('does NOT call a parked agent stalled, however long it has been quiet', () => {
+      const v = deriveColumn(entry(parkedAndQuiet), undefined, OPTS);
+      expect(v.column).not.toBe('stalled');
+    });
+
+    it('parks it — the half that makes the fix safe, rather than inflating "working"', () => {
+      // Dropping these out of `stalled` without also teaching step 4 the oracle
+      // would send all 110 into `working`: `liveness` reads 'live' for every one
+      // of them. A board that overstates progress is worse than one that
+      // overstates stalls, so this assertion is the real regression guard.
+      const v = deriveColumn(entry(parkedAndQuiet), undefined, OPTS);
+      expect(v.column).toBe('parked');
+      expect(v.reason).toContain('Idle between turns');
+    });
+
+    it('STILL flags a genuinely live agent that stopped moving', () => {
+      // The column's whole purpose. The oracle says a turn is in flight, but the
+      // activity and intent clocks are both dead — that is a real stall.
+      const v = deriveColumn(
+        entry({
+          sessionState: 'live',
+          lastActiveAt: iso(20 * 60_000),
+          intentDeclaredAt: iso(40 * 60_000),
+        }),
+        undefined,
+        OPTS,
+      );
+      expect(v.column).toBe('stalled');
+      expect(v.reason).toContain('No tool call in 20m');
+    });
+
+    it('STILL flags an armed loop that is not producing turns, even when parked', () => {
+      // A loop is SUPPOSED to produce turns on a cadence, so an armed loop with a
+      // dead activity clock is a dead loop — the sharpest genuine stall here, and
+      // it must not be swept up by the parked exemption above.
+      const v = deriveColumn(
+        entry({
+          ...parkedAndQuiet,
+          loopArmed: true,
+        }),
+        undefined,
+        OPTS,
+      );
+      expect(v.column).toBe('stalled');
+    });
+
+    it('falls back to the heartbeat legs when the oracle has no verdict', () => {
+      // null/absent means UNKNOWN (older payload, or a degraded fetch) — never
+      // "not live". Guessing would silently empty the column and hide a real
+      // stall, so an unknown verdict must classify exactly as it did before.
+      for (const unknown of [undefined, null]) {
+        const v = deriveColumn(
+          entry({
+            sessionState: unknown,
+            lastActiveAt: iso(20 * 60_000),
+            intentDeclaredAt: iso(40 * 60_000),
+          }),
+          undefined,
+          OPTS,
+        );
+        expect(v.column).toBe('stalled');
+      }
+    });
+
+    it('treats a `recorded` session as working, not parked', () => {
+      // `recorded` means authoritatively-live-per-session-log (alive, just not
+      // inbox-wake-dispatchable) — classifying it as idle would be the same
+      // false-negative in the other direction.
+      const v = deriveColumn(
+        entry({ sessionState: 'recorded', lastActiveAt: iso(5_000), intentDeclaredAt: iso(60_000) }),
+        undefined,
+        OPTS,
+      );
+      expect(v.column).toBe('working');
+    });
+  });
+
   it('parks an idle session, and distinguishes ended from not-yet-started', () => {
     expect(deriveColumn(entry({ liveness: 'idle', lastActiveAt: iso(120_000), intentDeclaredAt: iso(120_000) }), undefined, OPTS).column).toBe('parked');
     expect(deriveColumn(entry({ liveness: 'stale', stale: true }), undefined, OPTS).reason).toContain('ended');

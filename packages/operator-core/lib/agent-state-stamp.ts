@@ -89,10 +89,24 @@
  * Replication makes the ring COHERENT; it does not make it DURABLE. A deploy
  * restarts every worker at once, so the whole ring's map is empty simultaneously
  * and there is no peer left holding the value to relay. The two stamps then
- * recover ASYMMETRICALLY, and only one of them recovers at all:
- *   · `intentEventId` self-heals within minutes — every `coord:orient` /
- *     `coord:declare-intent` rewrites it, and agents wake constantly.
- *   · `goalRef` did NOT. `noteGoalClaimed` fires only when work is CLAIMED or
+ * recover ASYMMETRICALLY:
+ *   · `intentEventId` has NO durable source and is NOT re-hydrated here. An
+ *     earlier revision of this note claimed it "self-heals within minutes —
+ *     every `coord:orient` / `coord:declare-intent` rewrites it, and agents wake
+ *     constantly", and used that to justify fixing only the goal half. ⚠ THAT IS
+ *     FALSE — do not restore it. Measured across the 2026-07-28T09:41:42Z restart:
+ *     361 calls by 5 owners in the following 4.5 minutes carried `intentEventId`
+ *     on EXACTLY ZERO of them, while re-hydrated `goalRef` reached ~78%. The
+ *     premise fails because the traffic that dominates a post-restart window is
+ *     monitor-loop work — `activity:report` (199), `coord:glance` (106),
+ *     `locks:*` (69) — and NOT ONE `coord:orient` / `declare-intent` / claim call
+ *     occurred in it. A long-running loop session re-declares on bootstrap, not on
+ *     every wake, so "agents wake constantly" does not imply they re-declare.
+ *     CONSEQUENCE: re-hydrating `goalRef` alone does NOT restore `both stamps on
+ *     one row` after a restart, because the OTHER column is null. The divergence
+ *     metric stays starved — so this module fixes the goal half of that outage,
+ *     not the whole of it.
+ *   · `goalRef` did NOT recover either, before this fix. `noteGoalClaimed` fires only when work is CLAIMED or
  *     RELEASED, so an agent that claimed WI-X an hour before the deploy and is
  *     still working it never writes the goal again — it stays null for the whole
  *     rest of that claim.

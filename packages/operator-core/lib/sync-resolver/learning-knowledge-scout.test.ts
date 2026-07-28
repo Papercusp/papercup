@@ -79,8 +79,14 @@ describe('learning.knowledge — insights snapshot + memory health (P-008)', () 
     zeroHitRate7d: 0,
     topScoreP50: null,
     topScoreP90: null,
+    // P-036: percentiles are single-scale, so they carry WHICH scale they are on.
+    topScoreScale: null,
+    topScoreSamples: 0,
+    scaleMix: {},
     fragmentHits7d: 0,
     recallBySurface: [],
+    // P-041: the query-side slice — what was ASKED, not just what came back.
+    queryBySurface: [],
     recallTelemetryOk: true,
   };
 

@@ -682,6 +682,10 @@ export function pendingLaunchesToRosterEntries(
       heartbeatAt: r.startedAt,
       lastActiveAt: null,
       liveness: 'pending' as Liveness,
+      // No presence row yet, so the shared oracle has no verdict for this owner.
+      // null is "unknown", NOT "not live" — no reader may treat it as dead.
+      sessionState: null,
+      heartbeatFresh: null,
       stale: false,
       loopArmed: false,
       modes: [],
@@ -789,6 +793,10 @@ export function startingLaunchesToRosterEntries(
       // deriveColumn step 1c rather than in `parked`.
       lastActiveAt: null,
       liveness: 'pending' as Liveness,
+      // No presence row yet, so the shared oracle has no verdict for this owner.
+      // null is "unknown", NOT "not live" — no reader may treat it as dead.
+      sessionState: null,
+      heartbeatFresh: null,
       stale: false,
       loopArmed: false,
       modes: [],

@@ -95,6 +95,17 @@ export interface HudRosterEntry {
   intent: string;
   currentFiles: string[];
   liveness: Liveness;
+  /**
+   * THE liveness verdict from the shared oracle (adv-roster's `sessionState`,
+   * via `resolveSessionStates`) — the same one coord:presence, fleet:status and
+   * leader-brief project. Optional so a payload from an older operator (or a
+   * mid-deploy SSE push) still classifies via the heartbeat legs.
+   *
+   * `liveness` above is HEARTBEAT FRESHNESS, not "is it taking turns" — a
+   * parked agent waiting on its inbox keeps beating, so `liveness` reads 'live'
+   * for a session that has not taken a turn in days. Prefer this field.
+   */
+  sessionState?: string | null;
   stale: boolean;
   lastActiveAt: string | null;
   intentDeclaredAt: string | null;
@@ -549,7 +560,31 @@ export function deriveColumn(
   //    is never mislabelled.
   const sinceActivity = ageSec(e.lastActiveAt, nowMs);
   const sinceIntent = ageSec(e.intentDeclaredAt, nowMs);
-  const nominallyAlive = e.liveness === 'live' || e.liveness === 'idle' || e.loopArmed;
+  // WI-6636: "nominally alive" MUST come from the shared liveness oracle, not
+  // from `liveness`. `liveness` is heartbeat freshness alone, and a PARKED agent
+  // — idle between turns, waiting on its inbox wake — keeps beating, so it reads
+  // 'live' forever. Combined with the stall test below (no tool call in 15min +
+  // unchanged intent for 30min), every parked agent eventually became "Stalled":
+  // measured 2026-07-28 on the default board, 110 of 133 cards, median 2 DAYS
+  // and up to 11 days stale, while coord:presence called the same population
+  // live 5 / parked 123. The board asserted the system was mostly stuck when it
+  // was mostly idle — and `parked` is column 5, whose own doc says it is "not a
+  // problem by itself".
+  //
+  // `loopArmed` stays in the test on purpose, and is the one case where a
+  // non-live verdict still belongs here: an agent whose engine loop is armed is
+  // SUPPOSED to be producing turns on a cadence, so an armed loop with a dead
+  // activity clock is a dead loop — the sharpest genuine stall this column can
+  // report, and exactly what it exists for.
+  //
+  // `sessionState` absent/null means the oracle had no verdict (an older
+  // payload, or a degraded fetch). Fall back to the heartbeat legs rather than
+  // guessing — an unknown verdict must never silently empty this column, which
+  // would hide a real stall instead of a fake one.
+  const nominallyAlive =
+    e.sessionState != null
+      ? e.sessionState === 'live' || e.loopArmed
+      : e.liveness === 'live' || e.liveness === 'idle' || e.loopArmed;
 
   // A zombie is the sharpest case: heartbeat fresh, process gone. Report it as a
   // stall with its own reason rather than letting it masquerade as working.
@@ -575,7 +610,20 @@ export function deriveColumn(
   }
 
   // 4. Working — taking turns, thinking, or carried by an armed loop.
-  if (e.liveness === 'live' || e.thinking || (e.loopArmed && e.liveness !== 'stale')) {
+  //
+  // WI-6636: this must consult the oracle for the same reason step 3 does, and
+  // it is the half that makes the fix safe. Dropping parked agents out of
+  // `stalled` without touching this test would have sent all 110 straight into
+  // `working` — `liveness` reads 'live' for every one of them — turning a board
+  // that overstated stalls into one that overstates progress, which is worse.
+  // `thinking` is kept as an independent override: it is a direct in-flight
+  // signal (transcript appended within the thinking window) that can lead the
+  // oracle, never trail it.
+  const oracleWorking =
+    e.sessionState != null
+      ? e.sessionState === 'live' || e.sessionState === 'recorded'
+      : e.liveness === 'live';
+  if (oracleWorking || e.thinking || (e.loopArmed && e.liveness !== 'stale')) {
     return {
       column: 'working',
       reason: e.intent?.trim() || 'Running',

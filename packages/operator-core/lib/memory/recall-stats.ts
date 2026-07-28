@@ -511,6 +511,12 @@ export async function readRecallHealthByPool(
   opts: { days?: number; surface?: string } = {},
 ): Promise<RecallPoolHealth[]> {
   const days = Number.isFinite(opts.days) && (opts.days as number) > 0 ? Math.floor(opts.days as number) : 7;
+  // Parameterized, not a conditional sql`` fragment — see readRecallQueryHealth
+  // for why: the `${cond ? sql`…` : sql``}` idiom invokes the tagged template in
+  // BOTH branches, issuing a phantom call that a call-counting test double
+  // cannot distinguish from a real query and leaving an unawaited promise that
+  // surfaces as an unhandled rejection outside any test.
+  const poolSurfaceFilter = opts.surface ?? null;
   const rows = (await sql`
     WITH exploded AS (
       SELECT
@@ -533,7 +539,7 @@ export async function readRecallHealthByPool(
       CROSS JOIN LATERAL jsonb_each(s.pools) AS p(key, value)
       WHERE s.pools IS NOT NULL
         AND s.created_at >= now() - make_interval(days => ${days}::int)
-        ${opts.surface ? sql`AND s.surface = ${opts.surface}` : sql``}
+        AND (${poolSurfaceFilter}::text IS NULL OR s.surface = ${poolSurfaceFilter}::text)
     )
     SELECT
       surface,
@@ -648,13 +654,21 @@ export async function readRecallQueryHealth(
   opts: { days?: number; surface?: string } = {},
 ): Promise<RecallQueryHealth[]> {
   const days = Number.isFinite(opts.days) && (opts.days as number) > 0 ? Math.floor(opts.days as number) : 7;
+  // The optional surface filter is a PARAMETER, not a conditional sql`` fragment.
+  // The house idiom `${cond ? sql`AND x = ${v}` : sql``}` invokes the tagged
+  // template in BOTH branches — including the empty one — so it issues an extra
+  // call that a call-counting test double cannot distinguish from a real query,
+  // and (worse) the resulting promise is never awaited, surfacing as an
+  // unhandled rejection that fails the suite from outside any test. One
+  // parameterized predicate has neither problem and plans identically here.
+  const surfaceFilter = opts.surface ?? null;
   const rows = (await sql`
     WITH scoped AS (
       SELECT surface, session_id, query_chars, query_sha256, query_origin, created_at, id
         FROM harness_shared.memory_recall_stats
        WHERE created_at >= now() - make_interval(days => ${days}::int)
          AND query_sha256 IS NOT NULL
-         ${opts.surface ? sql`AND surface = ${opts.surface}` : sql``}
+         AND (${surfaceFilter}::text IS NULL OR surface = ${surfaceFilter}::text)
     ),
     -- Sequenced ONLY over rows that carry a session. See the doc comment: a
     -- NULL session_id would form one giant cross-agent partition.
