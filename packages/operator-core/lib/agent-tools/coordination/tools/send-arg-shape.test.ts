@@ -142,6 +142,35 @@ describe('WI-6522 — the branch fires only for MISSING, never for wrong-typed',
   });
 });
 
+describe('EI-18887930700345699 — independent omissions are reported TOGETHER, not one per round-trip', () => {
+  // The `expects` gate keys on `to` being present, NOT on `summary` having landed:
+  // the two omissions are independent, so making the second wait for the first to be
+  // fixed cost a whole round-trip (and a re-send of the entire body) to learn a fact
+  // the validator already knew. coord:send is a DEFERRED tool, so a first-time caller
+  // has no schema in context and discovers the envelope purely from these errors.
+  it('a call missing BOTH summary and expects names both in ONE refusal', () => {
+    const args = { to: ['peer'], body: 'some long body' };
+    expect(paths(args)).toContain('summary');
+    expect(paths(args)).toContain('expects');
+  });
+
+  it('still names expects when only expects is missing', () => {
+    expect(paths({ to: ['peer'], summary: 's' })).toContain('expects');
+  });
+
+  it('does NOT demand expects when there is no single-send to attach it to', () => {
+    // No `to` and no `items` — the caller gets the bulk-vs-single menu, and adding a
+    // second complaint about `expects` here would be noise about a message shape they
+    // have not chosen yet.
+    expect(paths({ summary: 's' })).not.toContain('expects');
+  });
+
+  it('does NOT demand expects on an items[]-only call (itemSpec owns that axis)', () => {
+    const r = sendTool.args.safeParse({ items: [{ to: ['peer'], summary: 's', expects: 'none' }] });
+    expect(r.success).toBe(true);
+  });
+});
+
 describe('WI-6522 — regression pins that must not be traded away', () => {
   it('preserves EI-7838 precedence: a missing `summary` is STILL reported when `wake` also fails', () => {
     // This is the whole reason the check lives in a z.preprocess. A trailing

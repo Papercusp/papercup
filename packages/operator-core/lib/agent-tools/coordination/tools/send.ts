@@ -1305,7 +1305,19 @@ export default defineTool({
     // own shorthand with a second check (P-005/D-006). Without this the gate would not be
     // enforced, it would merely MOVE to the shorthand, which is the cheaper call and
     // therefore the one that would carry all the traffic.
-    if (!hasItems && hasSingle && a?.expects === undefined) {
+    //
+    // EI-18887930700345699 — this gate deliberately keys on `toPresent`, NOT `hasSingle`.
+    // Whether `expects` is missing does not depend on whether `summary` landed; it only
+    // depends on this being a single-send (a `to`, no `items[]`). Requiring the FULL
+    // hasSingle made the two independent omissions strictly sequential: a caller who
+    // forgot both was told about `summary`, and only learned about `expects` on the NEXT
+    // round-trip — re-paying the whole (often multi-KB) body each time. coord:send is a
+    // DEFERRED tool here, so a first-time caller has no schema in context and discovers
+    // the envelope one error at a time. Reporting both at once costs nothing: the
+    // `summary` issue is still raised by the branch above, so its precedence (EI-7838,
+    // the fundamental omission must win over a secondary field-shape complaint) is
+    // untouched — this only ADDS the second, equally-fundamental omission alongside it.
+    if (!hasItems && toPresent && a?.expects === undefined) {
       pctx.addIssue({
         code: 'custom',
         path: ['expects'],
