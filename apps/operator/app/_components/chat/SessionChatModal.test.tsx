@@ -544,7 +544,11 @@ describe('SessionChatModal', () => {
           {
             ownerId: 'su-live-1',
             locks: { held: [{ path: 'a.ts' }], waiting: [], error: null },
-            coord: { lastMessage: null, unreadCount: 3, openHandoffs: [], openEscalations: [], error: null },
+            // `unread` is REQUIRED on the coord detail (adv-agent-detail.ts). This fixture
+            // predates it. Empty is legal against a non-zero count — the contract is that
+            // `unreadCount` stays the TRUE total while `unread` is bounded server-side, so
+            // `unreadCount > unread.length` means "showing N of M", not a disagreement.
+            coord: { lastMessage: null, unreadCount: 3, unread: [], openHandoffs: [], openEscalations: [], error: null },
             nativeSession: null,
             codex: null,
           },
@@ -583,7 +587,7 @@ describe('SessionChatModal', () => {
           {
             ownerId: 'su-live-1',
             locks: { held: [], waiting: [], error: null },
-            coord: { lastMessage: null, unreadCount: 0, openHandoffs: [], openEscalations: [], error: null },
+            coord: { lastMessage: null, unreadCount: 0, unread: [], openHandoffs: [], openEscalations: [], error: null },
             nativeSession: null,
             codex: null,
           },

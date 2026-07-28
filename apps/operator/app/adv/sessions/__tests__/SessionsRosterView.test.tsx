@@ -186,7 +186,9 @@ describe('SessionsRosterView', () => {
     syncState.detail = {
       ownerId: 'a',
       locks: { held: [], waiting: [], error: null },
-      coord: { lastMessage: null, unreadCount: 0, openHandoffs: [], openEscalations: [], error: null },
+      // `unread` is REQUIRED on the coord detail (use-agent-detail.ts); an absent array
+      // crashed the dossier render on `coord.unread.length`. Empty matches unreadCount: 0.
+      coord: { lastMessage: null, unreadCount: 0, unread: [], openHandoffs: [], openEscalations: [], error: null },
     };
     syncState.roster = {
         active: [

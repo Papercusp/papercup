@@ -234,7 +234,10 @@ describe('GET /adv/roster/agent', () => {
     getAgentDetailMock.mockResolvedValue({
       ownerId: 'su-7',
       locks: { held: [], waiting: [], error: null },
-      coord: { lastMessage: null, unreadCount: 3, openHandoffs: [], openEscalations: [], error: null },
+      // `unread` is REQUIRED on the coord detail (adv-agent-detail.ts); this fixture predates
+      // it. Empty against a count of 3 is legal — `unreadCount` is the true total, `unread` is
+      // bounded server-side, and the surface renders "showing N of M" when they differ.
+      coord: { lastMessage: null, unreadCount: 3, unread: [], openHandoffs: [], openEscalations: [], error: null },
     });
     const res = await callAgentDetail('?owner=su-7');
     expect(res.status).toBe(200);

@@ -87,6 +87,32 @@ const DETAIL: AgentDetail = {
       direction: 'outbound',
     },
     unreadCount: 2,
+    // `unread` is a REQUIRED field on the coord detail (use-agent-detail.ts) — the list the
+    // "N unread" badge counts, added so the badge cannot name a number the section fails to
+    // show. This fixture predates it, and an absent array crashed the render on
+    // `coord.unread.length`. Kept at LENGTH 2 to match unreadCount above: the component's
+    // stated invariant is that the count and the list come from the same array, so a fixture
+    // where they disagree would quietly stop testing that.
+    unread: [
+      {
+        msgId: 'u-1',
+        from: 'su-2',
+        to: ['su-1'],
+        kind: 'message',
+        summary: 'can you take WI-1',
+        ts: new Date().toISOString(),
+        direction: 'inbound' as const,
+      },
+      {
+        msgId: 'u-2',
+        from: 'su-3',
+        to: ['su-1'],
+        kind: 'message',
+        summary: 'gate is red',
+        ts: new Date().toISOString(),
+        direction: 'inbound' as const,
+      },
+    ],
     openHandoffs: [
       {
         msgId: 'h-1',
