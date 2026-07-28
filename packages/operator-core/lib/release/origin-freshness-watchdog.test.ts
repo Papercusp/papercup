@@ -157,7 +157,12 @@ describe('WI-6643 — a publish refusal reaches the broadcast surface named as a
       routineRow: row,
     });
     const check = await freshWatchdog();
-    const out = await check({ sql, workspaceId: 'papercusp-workspace' } as never);
+    const out = await check(sql, { workspaceId: 'papercusp-workspace' });
+    // PREMISE, asserted rather than assumed: two tests below assert SILENCE, and
+    // a sweep that reached no entry is silent for the wrong reason. (This caught
+    // a real harness bug while writing these — the sweep was being called with
+    // the wrong arg shape, so every assertion passed or failed for no reason.)
+    expect(out.checked).toBe(1);
     return { out, writes };
   }
 
