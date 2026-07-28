@@ -445,11 +445,21 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      pills already open — PlanPopupModal / WorkItemPopupModal — rather than a
      third detail renderer.
 
-     Own nuqs keys (`hudplan`/`hudwi`), deliberately distinct from PlansPane's
+     Own nuqs keys (`hudplanpop`/`hudwi`), deliberately distinct from PlansPane's
      `pplan` and OperatorChat's `wpop`/`wppop`: the same convention those two
      already follow, so a popup opened from the HUD and one opened from the
-     sidebar can coexist instead of fighting over one URL key. */
-  const [openPlanSlug, setOpenPlanSlug] = useQueryState('hudplan', parseAsString);
+     sidebar can coexist instead of fighting over one URL key.
+
+     ⚠ `hudplanpop`, NOT `hudplan` — `hudplan` is ALREADY TAKEN, 330 lines up, by
+     the plan FILTER axis (`parseAsArrayOf`). This originally shipped as `hudplan`
+     and the two hooks silently fought over one key: clicking a plan card wrote the
+     slug, the ARRAY hook read it back as a filter, and the board emptied to zero
+     cards while no popup ever opened — strictly worse than the unwired card the
+     owner reported. The collision check that produced the comment above looked at
+     OTHER files (`pplan`, `wpop`) and missed the one in this same component, which
+     is exactly why `app/_lints/nuqs-key-collisions.test.ts` now asserts key
+     uniqueness here mechanically instead of by eye. */
+  const [openPlanSlug, setOpenPlanSlug] = useQueryState('hudplanpop', parseAsString);
   const [openItemId, setOpenItemId] = useQueryState('hudwi', parseAsString);
 
   /* PlanDetail is harness-scoped — scoping plans:get to the wrong harness is

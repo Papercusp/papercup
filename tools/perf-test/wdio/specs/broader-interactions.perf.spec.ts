@@ -101,6 +101,8 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
   it("opens the global command palette within budget", async () => {
     const NAME = "command-palette-open";
     await waitForAppMount();
+    // Measure the INTERACTION, not the app boot — see waitForMainThreadQuiet.
+    await waitForMainThreadQuiet();
 
     // Clear any stale measure, then open the palette via its deep-link. The
     // open transition begins the interaction; the lazy cmdk chunk mount ends it.
@@ -201,14 +203,32 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     const NAME = "harness-dock-open";
     await waitForAppMount();
 
-    // The dock emits harness-dock-open on mount → API bind. Navigate to the dock
-    // route so it mounts (if it hasn't), then read the recorded measure.
-    await browser.execute(() => {
-      const u = new URL(location.href);
-      if (!u.pathname.startsWith("/adv")) {
-        location.assign("/adv?slug=papercup&ws=default");
+    // The dock emits harness-dock-open on mount → API bind. Navigate to a route
+    // that ACTUALLY MOUNTS HarnessDock, then read the recorded measure.
+    //
+    // WHY NOT /adv (perf-testing-sweep-2026-07-27, P-022 — measured): this test
+    // used to settle for "any /adv URL", but /adv is a tab shell and only some of
+    // its sub-routes mount the dock (AdvCreateDock, AdvGitDock, HarnessesDock).
+    // The bare /adv landing lands on the HUD tab, which mounts no dock at all, so
+    // beginInteraction/endInteraction in HarnessDock.tsx never ran and the check
+    // died on "no measure recorded within 20s" — read as broken instrumentation
+    // when the instrumentation was fine and the TARGET was wrong. /workbench
+    // mounts <HarnessDock layoutName="workbench" slug={harness}/> unconditionally
+    // (apps/operator-vite/src/routes/workbench.tsx), so it is the honest target.
+    // NB: SPA-navigate via pushState+popstate, the same way the palette test
+    // does — NOT location.assign(). A full document reload inside the Tauri
+    // webview tears down the WebDriver session mid-test ("Could not parse script
+    // result" then "invalid session id"), so the measure could never be read
+    // back even when the dock did mount.
+    await browser.execute((name) => {
+      try {
+        if (performance.clearMeasures) performance.clearMeasures(name);
+      } catch {
+        /* ignore */
       }
-    });
+      history.pushState({}, "", "/workbench?harness=papercusp");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, NAME);
     await waitForAppMount();
 
     await browser.waitUntil(async () => (await latestMeasure(NAME)) !== null, {

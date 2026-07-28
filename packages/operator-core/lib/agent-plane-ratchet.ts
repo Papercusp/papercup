@@ -50,7 +50,12 @@
  * `no-producer` vs `no-data`, one layer up: it makes a dead producer read like a
  * feature that was never built, so nobody is paged for it.
  */
-import { PLANE_METRIC_IDS, type PlaneMetricId, type PlaneZeroReason } from './agent-plane-measurement';
+import {
+  METRIC_SPECS,
+  PLANE_METRIC_IDS,
+  type PlaneMetricId,
+  type PlaneZeroReason,
+} from './agent-plane-measurement';
 
 /**
  * `never-interpretable` and `no-data` are NEITHER pass nor fail — they are the
@@ -121,6 +126,13 @@ export interface RatchetRow {
   knownGap?: string;
   /** Set when the known gap's item has closed, so the exemption no longer applies. */
   gapClosed?: boolean;
+  /**
+   * Declared companions (`MetricSpec.interpretableOnlyWith`) that are NOT holding
+   * right now — so this metric's own verdict must not be read as a usable signal.
+   * Empty/absent means every companion it needs is available. See
+   * {@link companionsUnavailable}.
+   */
+  unreadableAlone?: PlaneMetricId[];
 }
 
 /**
@@ -174,6 +186,39 @@ export function judgeKnownGap(args: {
   return args.gapClosed ? 'fails' : 'exempt';
 }
 
+/**
+ * Which of a metric's DECLARED companions are unavailable (P-019).
+ *
+ * A metric can be perfectly interpretable on its own funnel and still not be
+ * READABLE, because its spec says the number has no direction without a companion.
+ * `clarification-rate` is the live case: it is `holding` on 4,142 examined calls,
+ * and its companion `acted-on-stale-or-wrong-value` is `never-interpretable`
+ * pending WI-6465 — so its zero is *uninterpretable*, not clean.
+ *
+ * ⚠ WHY THIS IS NOT A VERDICT. {@link judgeMetricRatchet} is pure over ONE metric's
+ * windows, and deliberately so — the states it must separate (a producer that died
+ * yesterday, one never built) are testable only against literal arrays. Companion
+ * availability is a CROSS-metric fact, so folding it into the verdict would make
+ * every verdict depend on the whole report and destroy that property. It is a
+ * separate disclosure on top of an unchanged verdict.
+ *
+ * ⚠ AND WHY IT DOES NOT FAIL THE BUILD. The honest fix is WI-6465 landing a
+ * producer, which is a filed, owned gap — failing here would red the fleet gate for
+ * a known-open item and teach everyone to ignore this check, the exact outcome
+ * METRIC_KNOWN_GAPS exists to avoid. The teeth are already in the right place: when
+ * WI-6465 closes with the producer still silent, the COMPANION's own row fails via
+ * {@link judgeKnownGap}, and this disclosure clears on its own the moment the
+ * companion starts holding.
+ */
+export function companionsUnavailable(
+  metric: PlaneMetricId,
+  verdictByMetric: ReadonlyMap<PlaneMetricId, RatchetVerdict>,
+  specs: Readonly<Partial<Record<PlaneMetricId, { interpretableOnlyWith?: readonly PlaneMetricId[] }>>>,
+): PlaneMetricId[] {
+  const needed = specs[metric]?.interpretableOnlyWith ?? [];
+  return needed.filter((companion) => verdictByMetric.get(companion) !== 'holding');
+}
+
 export interface RatchetReport {
   rows: RatchetRow[];
   windows: number;
@@ -185,6 +230,12 @@ export interface RatchetReport {
   failures: RatchetRow[];
   /** Reported and tolerated: a gap whose item is still open. */
   exempt: RatchetRow[];
+  /**
+   * Reported, never failing: metrics that are interpretable on their own funnel but
+   * whose DECLARED companion is not available, so their number must not be read as
+   * a verdict. See {@link companionsUnavailable}.
+   */
+  unreadableAlone: RatchetRow[];
 }
 
 /**
@@ -198,8 +249,14 @@ export interface RatchetReport {
 export function ratchetPlaneSeries(args: {
   series: ReadonlyArray<{ measuredAt: string; metrics: ReadonlyArray<{ id: string } & MetricWindow> }>;
   closedGaps?: ReadonlySet<string>;
+  /**
+   * Metric specs, for the companion-dependency disclosure. Defaults to the shipped
+   * {@link METRIC_SPECS}; injectable so the cross-metric behaviour is testable
+   * against literal specs rather than only the live registry.
+   */
+  specs?: Readonly<Partial<Record<PlaneMetricId, { interpretableOnlyWith?: readonly PlaneMetricId[] }>>>;
 }): RatchetReport {
-  const { series, closedGaps = new Set<string>() } = args;
+  const { series, closedGaps = new Set<string>(), specs = METRIC_SPECS } = args;
   const rows: RatchetRow[] = [];
 
   for (const metric of PLANE_METRIC_IDS) {
@@ -223,6 +280,14 @@ export function ratchetPlaneSeries(args: {
     });
   }
 
+  // SECOND PASS — companion availability is cross-metric, so every verdict must
+  // exist before any row can be judged unreadable-alone.
+  const verdictByMetric = new Map<PlaneMetricId, RatchetVerdict>(rows.map((r) => [r.metric, r.verdict]));
+  for (const row of rows) {
+    const unavailable = companionsUnavailable(row.metric, verdictByMetric, specs);
+    if (unavailable.length > 0) row.unreadableAlone = unavailable;
+  }
+
   const countAt = (point: (typeof series)[number]) =>
     point.metrics.filter((m) => m.interpretable).length;
 
@@ -239,5 +304,6 @@ export function ratchetPlaneSeries(args: {
     metricCount: PLANE_METRIC_IDS.length,
     failures,
     exempt: rows.filter((r) => judgeKnownGap(r) === 'exempt'),
+    unreadableAlone: rows.filter((r) => (r.unreadableAlone?.length ?? 0) > 0),
   };
 }

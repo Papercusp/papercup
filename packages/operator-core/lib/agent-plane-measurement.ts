@@ -198,6 +198,28 @@ export interface MetricSpec {
    * means the question cannot go unanswered for a metric that ships.
    */
   vacuousPassWhen: string;
+  /**
+   * Companion metrics this one CANNOT BE READ WITHOUT (P-019).
+   *
+   * Some metrics are not self-sufficient: the number is ambiguous in isolation and
+   * acquires a direction only alongside another metric. `clarification-rate` is the
+   * case this field was added for — a LOW rate is equally consistent with agents
+   * having enough context (the win) and with agents guessing instead of asking (the
+   * loss), and only `acted-on-stale-or-wrong-value` separates them.
+   *
+   * ⚠ THIS IS THE SAME ARGUMENT THAT MADE {@link MetricSpec.polarity} A FIELD. That
+   * one exists because without it "a desirable behaviour nobody performed reports as
+   * a clean pass". This one exists because without it a metric whose companion is
+   * DEAD reports as a clean pass too: the dependency was stated only in
+   * `vacuousPassWhen` prose, which no reader and no gate can act on, so the ratchet
+   * rendered `clarification-rate` as an unqualified `✓ holding` while the very
+   * companion its own spec demands sat `never-interpretable` (WI-6465).
+   *
+   * A prose caveat the machine then contradicts is exactly the
+   * derivation-correct/disclosure-dropped failure this plane's verification plan
+   * exists because of. Declaring it structurally makes the ratchet say so out loud.
+   */
+  interpretableOnlyWith?: readonly PlaneMetricId[];
 }
 
 /** The counts a run supplies for one metric. All four are required — an omitted
@@ -287,6 +309,13 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
     polarity: 'desirable',
     vacuousPassWhen:
       'A LOW rate is ambiguous BY CONSTRUCTION — equally consistent with agents having enough context (the win) and with agents guessing instead of asking (the loss). It is only interpretable read ALONGSIDE `acted-on-stale-or-wrong-value`, never on its own. D-030 §4 adds the opposite hazard: clarification-seeking measurably WIDENS prompt-injection exposure, so a rising rate is not automatically good either.',
+    // P-019: the companion named in `vacuousPassWhen` above, now DECLARED rather
+    // than only described. That companion is `never-interpretable` pending
+    // WI-6465, so this metric's own `holding` verdict must not be rendered as an
+    // unqualified pass — which is exactly what P-019 asked be recorded instead of
+    // "fixed". Do NOT drop this to make the ratchet look cleaner: the honest
+    // resolution is WI-6465 landing a `dependsOn` producer.
+    interpretableOnlyWith: ['acted-on-stale-or-wrong-value'],
   },
   'conflicting-assumption-incidence': {
     id: 'conflicting-assumption-incidence',

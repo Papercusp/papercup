@@ -109,7 +109,17 @@ async function main() {
 
   console.log(`  ${report.windows} windows · headline ${report.currentCount}/${report.metricCount} interpretable (high-water ${report.highWaterCount})\n`);
   for (const r of report.rows) {
-    console.log(`  ${mark[r.verdict]} ${r.metric.padEnd(36)} ${r.verdict}`);
+    // P-019: a metric whose declared companion is unavailable is NOT a clean ✓,
+    // however healthy its own funnel is. Downgrade the mark so the row cannot be
+    // skimmed as a pass — the whole point of the item was that this zero was
+    // being read as one.
+    const marker = (r.unreadableAlone?.length ?? 0) > 0 ? '⚠' : mark[r.verdict];
+    console.log(`  ${marker} ${r.metric.padEnd(36)} ${r.verdict}`);
+    if ((r.unreadableAlone?.length ?? 0) > 0) {
+      console.log(`      NOT READABLE ALONE — needs ${r.unreadableAlone!.join(', ')}, which ${r.unreadableAlone!.length === 1 ? 'is' : 'are'} not holding.`);
+      console.log(`      Its own funnel is fine; the NUMBER has no direction without that companion,`);
+      console.log(`      so this is uninterpretable, NOT a clean result. Do not read it as a pass.`);
+    }
     if (r.verdict === 'regressed') {
       console.log(`      WORKED until ${r.lastInterpretableAt}, and does not now. A producer that`);
       console.log(`      demonstrably ran has stopped — this is a live regression, not an unbuilt metric.`);
@@ -127,6 +137,7 @@ async function main() {
   console.log(
     `\n  ${report.rows.filter((r) => r.verdict === 'holding').length} holding · ` +
       `${report.failures.length} FAILING · ${report.exempt.length} filed-gap · ` +
+      `${report.unreadableAlone.length} unreadable-alone · ` +
       `${report.rows.filter((r) => r.verdict === 'no-data').length} no-data\n`,
   );
 
@@ -143,12 +154,33 @@ async function main() {
     return;
   }
 
+  // P-019: never let the closing line read as an all-clear while a metric's
+  // declared companion is missing. Printed before both terminal branches below,
+  // because the `exempt` branch returns and would otherwise swallow it.
+  if (report.unreadableAlone.length > 0) {
+    for (const r of report.unreadableAlone) {
+      console.log(
+        `⚠ ${r.metric} is interpretable but NOT READABLE — its spec requires ` +
+          `${r.unreadableAlone!.join(', ')}, which ${r.unreadableAlone!.length === 1 ? 'is' : 'are'} unavailable.`,
+      );
+    }
+    console.log(
+      '  Reported, not failed: the fix is the companion\'s producer landing, which is a\n' +
+        '  filed gap. Relabelling this metric to look clean is the one "fix" that must never\n' +
+        '  happen — that is the zero P-019 exists to keep uninterpretable.\n',
+    );
+  }
+
   if (report.exempt.length > 0) {
     console.log(
       `✓ nothing regressed — but ${report.exempt.length} metric${report.exempt.length === 1 ? '' : 's'} ` +
         `${report.exempt.length === 1 ? 'has' : 'have'} never been interpretable and ${report.exempt.length === 1 ? 'is' : 'are'} ` +
         `waiting on a filed gap. The plane is not fully measurable.\n`,
     );
+    return;
+  }
+  if (report.unreadableAlone.length > 0) {
+    console.log('✓ nothing regressed — but a metric above is not readable without its companion.\n');
     return;
   }
   console.log('✓ every plane metric is interpretable, and none has regressed.\n');
