@@ -19,9 +19,22 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { createNuqsMock } from '@papercusp/test-config/nuqs-mock';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
-vi.mock('nuqs', () => createNuqsMock());
+/**
+ * The REAL nuqs, through its first-party testing adapter — deliberately not a
+ * `vi.mock('nuqs')` stub.
+ *
+ * This component's selections ARE its URL state, so a stub whose setters write
+ * to a plain object without re-rendering would let every "pick X, then launch"
+ * assertion pass or fail for reasons unrelated to the component: the value the
+ * launch reads would be whatever leaked in from a previous test rather than
+ * what this test picked. The adapter is also what `nuqs-mock.ts` itself points
+ * at first for suites that can render through a real adapter tree.
+ */
+function renderRow(ui: React.ReactElement) {
+  return render(<NuqsTestingAdapter>{ui}</NuqsTestingAdapter>);
+}
 
 // The two option sources are network-backed; stub them to fixed lists so the
 // assertions below are about THIS component, not about plan/account fetching.
@@ -47,6 +60,41 @@ vi.mock('@/app/adv/sessions/use-su-launch-options', () => ({
   }),
 }));
 
+// Same treatment NewSessionLauncher.test.tsx gives the pickers: stub the
+// searchable Combobox to a native <select> (which also reports role="combobox")
+// so these tests exercise LAUNCH logic — which values reach the launcher — not
+// the combobox. Its own behaviour (open on focus, filter as you type, detail
+// rows) is covered for real in app/harness/__tests__/Combobox.test.tsx.
+vi.mock('@/app/harness/Combobox', () => ({
+  Combobox: ({
+    value,
+    onChange,
+    options,
+    ariaLabel,
+    disabled,
+  }: {
+    value: string;
+    onChange: (v: string) => void;
+    ariaLabel?: string;
+    disabled?: boolean;
+    options: Array<
+      | { value: string; label: string }
+      | { kind: 'group'; label: string; options: { value: string; label: string }[] }
+    >;
+  }) => {
+    const flat = options.flatMap((o) => ('kind' in o ? o.options : [o]));
+    return (
+      <select aria-label={ariaLabel} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+        {flat.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  },
+}));
+
 const toastCalls: Array<{ kind: string; message: string }> = [];
 vi.mock('sonner', () => ({
   toast: {
@@ -64,7 +112,16 @@ import FleetLaunchRow, {
   clampMemberCount,
   describeLaunchResult,
 } from './FleetLaunchRow';
+import { MODEL_SELECT_DEFAULT, OMP_MODEL_OPTIONS, modelBackend } from '@/app/adv/sessions/NewSessionLauncher';
 import { FLEET_MAX_MEMBERS } from '@papercusp/operator-core/lib/agent-config-constants';
+
+/**
+ * A real claude-backed model id taken from the SHARED menu rather than a
+ * hardcoded alias — the menu is derived from psu's own list and gains/loses
+ * models over time (WI-6300), so a literal here would rot.
+ */
+const CLAUDE_MODEL =
+  OMP_MODEL_OPTIONS.find((o) => o.value !== MODEL_SELECT_DEFAULT && modelBackend(o.value) === 'claude')!.value;
 
 /** Build the agent-tools envelope the route really answers with. */
 function envelope(payload: unknown, isError = false) {
@@ -91,9 +148,7 @@ afterEach(() => {
 /** Fill the two structurally-required fields (name + lane) so a launch can proceed. */
 function fillRequired(planSlug = planRows[0].slug) {
   fireEvent.change(screen.getByLabelText('Name for the new fleet'), { target: { value: 'my-fleet' } });
-  // The Combobox trigger is a text input; open it and pick the row by label.
-  fireEvent.click(screen.getByLabelText('Plan the fleet works'));
-  fireEvent.click(screen.getByText(planRows.find((p) => p.slug === planSlug)!.title!));
+  fireEvent.change(screen.getByLabelText('Plan the fleet works'), { target: { value: planSlug } });
 }
 
 /** The single POST body the component sent. */
@@ -165,7 +220,7 @@ describe('describeLaunchResult', () => {
 
 describe('FleetLaunchRow — the owner’s five options are all present', () => {
   it('renders unconditionally, with a control for every option', () => {
-    render(<FleetLaunchRow />);
+    renderRow(<FleetLaunchRow />);
     expect(screen.getByTestId('fleet-launch-row')).toBeTruthy();
     // (i) which account — and the same control carries the system-vs-gateway pin
     expect(screen.getByLabelText('Account routing for every fleet member')).toBeTruthy();
@@ -187,11 +242,12 @@ describe('FleetLaunchRow — the owner’s five options are all present', () => 
    * option is unreachable however good the row looks.
    */
   it('offers all three account modes: system default, gateway auto, and a pool pin', () => {
-    render(<FleetLaunchRow />);
-    fireEvent.click(screen.getByLabelText('Account routing for every fleet member'));
-    expect(screen.getByText('Default account')).toBeTruthy();
-    expect(screen.getByText('Auto (gateway)')).toBeTruthy();
-    expect(screen.getByText('pool-one')).toBeTruthy();
+    renderRow(<FleetLaunchRow />);
+    const account = screen.getByLabelText('Account routing for every fleet member') as HTMLSelectElement;
+    const values = [...account.options].map((o) => o.value);
+    expect(values).toContain('default');
+    expect(values).toContain('auto');
+    expect(values).toContain('acct-pool-1');
   });
 
   it('offers exactly headed and headless — the owner’s "headed or headed" typo resolved', () => {
@@ -199,7 +255,7 @@ describe('FleetLaunchRow — the owner’s five options are all present', () => 
   });
 
   it('bounds the count input to the launcher’s real range', () => {
-    render(<FleetLaunchRow />);
+    renderRow(<FleetLaunchRow />);
     const count = screen.getByLabelText('How many members to launch') as HTMLInputElement;
     expect(count.min).toBe('1');
     expect(count.max).toBe(String(FLEET_MAX_MEMBERS));
@@ -208,13 +264,13 @@ describe('FleetLaunchRow — the owner’s five options are all present', () => 
 
 describe('FleetLaunchRow — launching', () => {
   it('POSTs to the real fleet:launch-on-plan route with every chosen value', async () => {
-    render(<FleetLaunchRow />);
+    renderRow(<FleetLaunchRow />);
     fillRequired();
     fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '3' } });
-    fireEvent.click(screen.getByLabelText('Headed or headless members'));
-    fireEvent.click(screen.getByText('Headless'));
-    fireEvent.click(screen.getByLabelText('Account routing for every fleet member'));
-    fireEvent.click(screen.getByText('pool-one'));
+    fireEvent.change(screen.getByLabelText('Headed or headless members'), { target: { value: HEADLESS_VALUE } });
+    fireEvent.change(screen.getByLabelText('Account routing for every fleet member'), {
+      target: { value: 'acct-pool-1' },
+    });
 
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
 
@@ -235,7 +291,7 @@ describe('FleetLaunchRow — launching', () => {
    * follow the picked plan, not a fixed default.
    */
   it('sends the harness of the SELECTED plan, not an ambient one', async () => {
-    render(<FleetLaunchRow />);
+    renderRow(<FleetLaunchRow />);
     fillRequired('other-plan');
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -243,7 +299,7 @@ describe('FleetLaunchRow — launching', () => {
   });
 
   it('clamps an over-max count before it reaches the launcher', async () => {
-    render(<FleetLaunchRow />);
+    renderRow(<FleetLaunchRow />);
     fillRequired();
     fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '99' } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
@@ -252,7 +308,7 @@ describe('FleetLaunchRow — launching', () => {
   });
 
   it('defaults to one headed member on the system account', async () => {
-    render(<FleetLaunchRow />);
+    renderRow(<FleetLaunchRow />);
     fillRequired();
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -273,21 +329,19 @@ describe('FleetLaunchRow — launching', () => {
    * 2026-07-03. Both must travel together.
    */
   it('sends the model together with the backend that model belongs to', async () => {
-    render(<FleetLaunchRow />);
+    renderRow(<FleetLaunchRow />);
     fillRequired();
-    fireEvent.click(screen.getByLabelText('Model for every fleet member'));
-    fireEvent.click(screen.getByText('Opus 5'));
+    fireEvent.change(screen.getByLabelText('Model for every fleet member'), { target: { value: CLAUDE_MODEL } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const body = sentBody();
-    expect(body.model).toBeTruthy();
+    expect(body.model).toBe(CLAUDE_MODEL);
     expect(body.agent).toBe('claude');
   });
 
   it('refuses a nameless fleet without calling the launcher', async () => {
-    render(<FleetLaunchRow />);
-    fireEvent.click(screen.getByLabelText('Plan the fleet works'));
-    fireEvent.click(screen.getByText(planRows[0].title!));
+    renderRow(<FleetLaunchRow />);
+    fireEvent.change(screen.getByLabelText('Plan the fleet works'), { target: { value: planRows[0].slug } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(toastCalls.length).toBeGreaterThan(0));
     expect(fetchMock).not.toHaveBeenCalled();
@@ -295,7 +349,7 @@ describe('FleetLaunchRow — launching', () => {
   });
 
   it('refuses a fleet with no lane without calling the launcher', async () => {
-    render(<FleetLaunchRow />);
+    renderRow(<FleetLaunchRow />);
     fireEvent.change(screen.getByLabelText('Name for the new fleet'), { target: { value: 'my-fleet' } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(toastCalls.length).toBeGreaterThan(0));
@@ -308,7 +362,7 @@ describe('FleetLaunchRow — launching', () => {
       ok: true,
       json: async () => envelope({ ok: false, fleet: 'my-fleet', opened: [], failed: [], message: 'capacity clamped to 0' }),
     });
-    render(<FleetLaunchRow />);
+    renderRow(<FleetLaunchRow />);
     fillRequired();
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(toastCalls.length).toBeGreaterThan(0));
@@ -318,7 +372,7 @@ describe('FleetLaunchRow — launching', () => {
 
   it('reports a transport failure instead of silently doing nothing', async () => {
     fetchMock.mockRejectedValueOnce(new Error('offline'));
-    render(<FleetLaunchRow />);
+    renderRow(<FleetLaunchRow />);
     fillRequired();
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(toastCalls.length).toBeGreaterThan(0));
@@ -328,7 +382,7 @@ describe('FleetLaunchRow — launching', () => {
 
   it('notifies the caller and refreshes the fleet list after a successful launch', async () => {
     const onLaunched = vi.fn();
-    render(<FleetLaunchRow onLaunched={onLaunched} />);
+    renderRow(<FleetLaunchRow onLaunched={onLaunched} />);
     fillRequired();
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(onLaunched).toHaveBeenCalledWith('my-fleet'));
