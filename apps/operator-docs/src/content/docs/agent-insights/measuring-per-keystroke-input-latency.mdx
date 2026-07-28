@@ -39,6 +39,108 @@ is an app cost. This matters more than it sounds: 20 chained `setTimeout(33)`
 take ~715ms on this box with **nothing typed** against a 660ms "ideal", so raw
 drift-versus-ideal is mostly the probe, not the app.
 
+## Schedule the burst on an ABSOLUTE timeline, or you cannot see the symptom
+
+Read this before writing the loop above. It is the single most expensive mistake
+on WI-6502: ten consecutive probes were **structurally incapable of observing the
+reported symptom**, and each returned a confident, clean, wrong-shaped null.
+
+The natural way to write the burst is the broken one:
+
+```js
+for (let i = 0; i < N; i++) { typeOneChar(); await sleep(33); }   // ✗
+```
+
+The sleep starts **after** the keystroke's work, so each iteration begins
+`work + 33` after the previous one. The probe re-paces itself around the app:
+however slow the app gets, the driver politely waits for it. A backlog is
+arithmetically impossible to produce, so "no backlog" is a property of the
+instrument, not a finding about the app.
+
+Schedule against a fixed origin instead, the way key auto-repeat actually fires:
+
+```js
+const t0 = performance.now();                                     // ✓
+for (let i = 0; i < N; i++) {
+  const target = t0 + i * 33;                                     // absolute, never cumulative
+  let d = target - performance.now();
+  while (d > 1.5) { await new Promise(r => setTimeout(r, d)); d = target - performance.now(); }
+  late.push(performance.now() - target);                          // THE measurement
+  typeOneChar();
+}
+```
+
+`late[i]` is lateness against a clock the app cannot slow down. That is the
+quantity the owner is describing when they say "half a second for each next
+character" — a **growing queue**, not a large mean.
+
+**Be precise about what the self-paced version does and does not tell you.** It
+does measure mean per-character *work*, and that number is real; if mean work is
+comfortably under 33ms then a 33ms driver cannot accumulate either, so its
+conclusion is often right. But it reaches that conclusion by **inference**, and it
+is blind to the symptom's *shape*. Do not report a self-paced null as "no
+backlog"; it is "mean per-char work is X", and the backlog question was never
+asked.
+
+### The discriminator is monotonicity, not a fitted slope
+
+Once you have `late[]`, resist fitting a regression line to it. Under fleet load
+(this box sits at 47–61) ambient jank moves the fit around far more than the
+effect does, and a slope alone is unreadable.
+
+Use the structural property instead: **a real queue cannot recover.** If the app
+is falling behind the input clock, lateness rises and *stays* risen. Observed on
+WI-6502: lateness climbed to 30–50ms and then fell back to 1–4ms, repeatedly —
+ambient jank, not a queue. Quantify it as the fraction of steps that do not
+decrease, and compare that fraction against the sham in the same round (0.96 for
+the sham vs 0.74 while typing: the typing arm *recovered more often*, which no
+backlog can do).
+
+### The definitive version: real X11 key events
+
+Every JS-driven probe — including `document.execCommand('insertText')`, which
+does exercise WebKit's native editing path — still skips the real key pipeline:
+no X11 event, no GTK key handling, no engine-level auto-repeat, no IME. If you
+need to close that gap, `scripts/verify-tauri-headless.sh` gives your instance its
+**own** Xvfb, so you can drive it from outside the app entirely:
+
+```bash
+DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool search --onlyvisible --name Papercusp | tail -1   # the window id
+DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool windowactivate --sync "$WID"
+DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool type --delay 33 'abcdefghij...'
+```
+
+⚠ **`xdotool type --delay N` does not give you an N-millisecond cadence.**
+Measured on a bare Xvfb with no client attached: `--delay 33` sends 40 characters
+in 683ms — **17.1ms per character**, about half what you asked for (`--delay 0`
+gives 2.6ms/char, so the knob works, it just is not the per-character period).
+Never assume the cadence you requested. **Time it externally once** — spin a
+throwaway `Xvfb` and `date +%s%N` around the `type` — and compute your metrics
+against the interval that was actually delivered. A whole run's lateness series
+fitted to an assumed-but-wrong constant looks like a large, perfectly linear
+drift and means nothing.
+
+This also caught a near-miss worth repeating: the in-app inter-arrival gap came
+out at 17.06ms, temptingly close to one 60Hz vsync (16.67ms), which reads as
+"WebKit drains one key per frame." It is not — the external timing showed the
+*sender* was already at 17.1ms. Do not accept a floor you have not decomposed,
+even a plausible-sounding one.
+
+An external driver cannot be re-paced by the app at all, which removes the whole
+class of failure above. It also unlocks a measurement no synthetic event can
+make: a **real** keydown carries a hardware `event.timeStamp`, so
+
+```js
+performance.now() - event.timeStamp      // inside the handler: TRUE input latency
+```
+
+is how long the event sat queued before the app serviced it. A synthetic event's
+`timeStamp` is the moment JS created it, so that delta is ~0 by construction —
+which is why no probe before this one could measure input latency at all, only
+input *cost*. Assert `event.isTrusted` on every sample: it is what proves you
+measured real keys and not your own synthetic ones. Never point this at
+`DISPLAY=:0` — that is the owner's desktop.
+
 ### Metrics that are retired, and why
 
 | metric | status | why |

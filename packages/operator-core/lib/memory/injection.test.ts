@@ -33,12 +33,18 @@ type Row = { id: string; text: string; kind?: string };
 // The neutral-backend mock (generalize-memory-backend-swappable D-003):
 // `search` stamps each canned row with the scope it was queried under,
 // mimicking the real backend's per-pool attribution.
+//
+// F-C (P-033, D-011): the push path now issues ONE multi-scope search, so the
+// mock fans the canned rows out over EVERY requested scope — as the real
+// backend does (mem0-backend.ts fans out per scope and merges). The aggregate
+// is unchanged from the pre-F-C three-call era, where each call returned the
+// same rows stamped with its own scope.
 const mockBackend = (rows: Row[], availability: { ok: boolean; reason?: string } = { ok: true }) => ({
   name: 'fake',
   available: vi.fn(async () => availability),
   search: vi.fn(async (_q: string, opts: { scope: string | readonly string[] }) => {
-    const scope = typeof opts.scope === 'string' ? opts.scope : opts.scope[0];
-    return rows.map((r) => ({ ...r, scope }));
+    const scopes = typeof opts.scope === 'string' ? [opts.scope] : [...opts.scope];
+    return scopes.flatMap((scope) => rows.map((r) => ({ ...r, scope })));
   }),
 });
 
@@ -338,15 +344,24 @@ describe('buildMemoryContextBlock', () => {
     await buildMemoryContextBlock({
       userId: 'u-123', workspaceId: 'ws-7', harnessSlugs: ['papercup'], queryContext: 'foo',
     });
-    // One user pull (limit 6) + one harness pull (per-pool limit 3) —
-    // never a `workspace:*` scope. Both pulls carry the inject relevance floor
+    // ONE search over the UNION of the pools (F-C / P-033, D-011) — never a
+    // `workspace:*` scope. It carries the inject relevance floor
     // (injectMinScore() 0.45) + the hybrid push lexical bar (injectMinLexScore()
     // 0.40) — the no-LLM-in-the-loop precision gate (P-031 / D-003) — and
-    // fusionMode 'cosine-gated', which makes the per-pool limit a CEILING rather
-    // than a target (P-032 / F-B, D-010).
+    // fusionMode 'cosine-gated', which makes the limit a CEILING rather than a
+    // target (P-032 / F-B, D-010). `limit` is now the TOTAL across all pools,
+    // replacing the old per-pool quotas (user 6 + harness 3 + hive 3 = 12).
     expect(b.search.mock.calls).toEqual([
-      ['foo', { scope: 'u-123', limit: 6, minScore: 0.45, minLexScore: 0.4, fusionMode: 'cosine-gated' }],
-      ['foo', { scope: ['harness:papercup'], limit: 3, minScore: 0.45, minLexScore: 0.4, fusionMode: 'cosine-gated' }],
+      [
+        'foo',
+        {
+          scope: ['u-123', 'harness:papercup'],
+          limit: 12,
+          minScore: 0.45,
+          minLexScore: 0.4,
+          fusionMode: 'cosine-gated',
+        },
+      ],
     ]);
   });
 

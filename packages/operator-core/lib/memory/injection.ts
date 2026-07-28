@@ -690,8 +690,8 @@ async function buildBlockInner(
   const rendered = [...mainRows, ...packRows];
   // P-008 (WI-4538): collapse near-duplicate memories (the SAME fact stored under multiple ids
   // — the id-based dedups above can't see it) BEFORE the budget, so a dupe never consumes a
-  // slot a distinct fact needed. Priority order is preserved, so the highest-priority copy of
-  // each cluster survives.
+  // slot a distinct fact needed. Order is preserved, so post-F-C the highest-RELEVANCE copy of
+  // each cluster survives (it was the highest-priority-POOL copy before D-011).
   const { kept: dedupedRendered } = collapseNearDuplicates(rendered, (r) => r.text);
   let truncated = false;
   for (const { line, id } of dedupedRendered) {
