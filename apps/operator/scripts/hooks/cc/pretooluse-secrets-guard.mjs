@@ -39,16 +39,73 @@ import process from 'node:process';
 const HOME = process.env.HOME || homedir();
 const DEFAULT_TREES = [`${HOME}/papercupai-workspace/`, `${HOME}/.papercusp-workspaces/clones/`];
 
+// WI-6643 — THIS SET MUST COVER packages/operator-core/lib/sync/pot-git/secrets-guard.ts's
+// RULES. That guard runs at PUBLISH time and, on a hit, refuses the own-head publish
+// FOREVER: its baseline never advances past a refused range, so the offending blob is
+// rescanned and re-refused on every later tick. Editing the file afterwards does not help
+// — the bad blob is already in history. So anything the publish guard would refuse has to
+// be refused HERE, at write time, while the file is still editable and nothing has been
+// committed. When the two sets diverge, an author is green-lit here and the publish plane
+// freezes hours later with no signal to whoever caused it (that is exactly what happened
+// on 2026-07-28: `api_key:`-style fixtures in a redactor test froze the plane ~8h, because
+// the generic `secret-assignment` rule below existed ONLY in the publish guard).
+//
+// Parity is enforced behaviourally by secrets-guard-hook-parity.test.ts, which feeds a
+// shared corpus through both scanners and fails if the guard flags anything this hook
+// misses. `--dump-patterns` exists for that test (this file stays import-free BY DESIGN —
+// install-standalone-mcp.sh COPIES it out of the repo, so it cannot require a sibling).
+// The hook may be STRICTER than the guard (it is: `sk-…` and `github_pat_…` below have no
+// publish-side equivalent); it must never be laxer.
 const PATTERNS = [
   { name: 'OpenAI/Anthropic-style key (sk-…)', re: /\bsk-[A-Za-z0-9_-]{20,}\b/g },
-  { name: 'GitHub classic PAT (ghp_…)', re: /\bghp_[A-Za-z0-9]{36}\b/g },
   { name: 'GitHub fine-grained PAT (github_pat_…)', re: /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g },
-  { name: 'GitHub app token (gho_/ghu_/ghs_/ghr_…)', re: /\bgh[ousr]_[A-Za-z0-9]{36}\b/g },
-  { name: 'AWS access key id (AKIA…)', re: /\bAKIA[0-9A-Z]{16}\b/g },
+  // Classic/app/oauth/server/refresh tokens in ONE rule, mirroring the publish guard's
+  // `gh[posru]_[A-Za-z0-9]{36,255}`. The previous split rules pinned the suffix at exactly
+  // {36}, so a longer token failed the trailing \b and slipped through entirely.
+  { name: 'GitHub token (ghp_/gho_/ghu_/ghs_/ghr_…)', re: /\bgh[posru]_[A-Za-z0-9]{36,255}\b/g },
+  // AKIA = long-lived, ASIA = temporary session credentials. ASIA was missing here.
+  { name: 'AWS access key id (AKIA…/ASIA…)', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g },
+  { name: 'Slack token (xox…)', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
+  { name: 'Stripe live secret key (sk_live_/rk_live_…)', re: /\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b/g },
+  { name: 'Google API key (AIza…)', re: /\bAIza[0-9A-Za-z_\-]{35}\b/g },
   { name: 'PEM private key block', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
 ];
 
-// A match that is visibly a placeholder is not a secret.
+// Generic rule: a secret-NAMED assignment whose value is long and high-entropy. Kept
+// separate because it alone needs the entropy + placeholder gates (a bare shape match is
+// judged by PLACEHOLDER below). Mirrors the publish guard's `secret-assignment` rule,
+// including both gates — this is the rule whose absence caused the 2026-07-28 freeze.
+const SECRET_ASSIGNMENT =
+  /\b(?:secret|password|passwd|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret)\b\s*[:=]\s*['"]?([A-Za-z0-9+/_\-]{20,})['"]?/gi;
+
+// Min entropy (bits/char) for an assignment VALUE to count as a secret. Must match the
+// publish guard's SECRET_ASSIGNMENT_MIN_ENTROPY, or the two disagree on the exact rule
+// that caused this bug.
+const SECRET_ASSIGNMENT_MIN_ENTROPY = 3.2;
+
+// Placeholder markers for the assignment rule's VALUE. Mirrors the publish guard's
+// PLACEHOLDER_RE (broader than the shape-match PLACEHOLDER below) so the hook suppresses
+// exactly what the guard suppresses — being stricter here would block writes the publish
+// plane would have accepted, which is its own kind of breakage.
+const ASSIGNMENT_PLACEHOLDER =
+  /your|here|goes|example|changeme|change-me|placeholder|dummy|sample|redacted|xxxx|<[a-z]|\btest\b|todo|fixme|none|null|undefined/i;
+
+/** Shannon entropy (bits/char). Mirrors the publish guard's shannonEntropy. */
+function shannonEntropy(s) {
+  if (!s) return 0;
+  const counts = new Map();
+  for (const ch of s) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  let h = 0;
+  for (const c of counts.values()) {
+    const p = c / s.length;
+    h -= p * Math.log2(p);
+  }
+  return h;
+}
+
+// A match that is visibly a placeholder is not a secret. AWS reserves the literal
+// `EXAMPLE` suffix for its published docs keys, so `example` here also covers the
+// publish guard's isDocumentedExample() carve-out.
 const PLACEHOLDER = /xxx|\.\.\.|<|example|placeholder|your[-_]|redacted|1234567890/i;
 
 main();

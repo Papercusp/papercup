@@ -16,7 +16,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { PgCoordLog, DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { CoordEventLog } from '@papercusp/coordination/event-log';
-import { FLAGS } from '@papercusp/flags';
+import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 import { getFlag, onFlagChange } from '@papercusp/flags/server';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { systemDistinctId } from '../../flag-distinct-id';
