@@ -35,6 +35,7 @@
  * WebKitWebDriver. Run: `npm test` from tools/perf-test/wdio.
  */
 import { browser } from "@wdio/globals";
+import { recordInvariant } from "../perf-report";
 
 /**
  * Longest background poll interval in the shell (`EnvSwitcherBar`'s
@@ -95,7 +96,23 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
       };
     });
 
-    // 3. A MISSING detector must fail, never pass. `getEgressReport()` returns
+    // 3. Record BEFORE asserting (P-003c). Every `expect` below throws, and a
+    //    measure recorded after a throw is a measure the release gate never sees —
+    //    which would leave the gate blind to exactly the breach it exists to block.
+    //    A missing detector is recorded as a breach rather than skipped: "we could
+    //    not tell" must never reach the gate wearing the same face as "it was zero".
+    //    The -1 sentinel is deliberate and must stay FINITE. The ingest route
+    //    rejects a non-finite value, and it rejects the WHOLE POST when any one
+    //    measure fails to parse — so a `NaN` here would discard the entire run's
+    //    measures, leaving the gate with no data at all and fail-softing to a pass.
+    //    A missing detector would then read as a clean deploy. -1 is impossible for
+    //    a real request count, so it reads unambiguously as "detector absent".
+    recordInvariant(
+      "webview-http-egress",
+      probe.report ? probe.report.total : -1,
+    );
+
+    // 4. A MISSING detector must fail, never pass. `getEgressReport()` returns
     //    null when no monitor is installed, and null means UNKNOWN — a detector
     //    that is absent, crashed, or was tree-shaken away reports the same zero
     //    as a genuinely clean shell. Treating that as success would rebuild the
@@ -103,13 +120,13 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
     expect(probe.monitorPresent).toBe(true);
     expect(probe.report).not.toBe(null);
 
-    // 4. Positive control. The shell loads hundreds of resources (measured: 249
+    // 5. Positive control. The shell loads hundreds of resources (measured: 249
     //    on a live boot), so a near-empty timeline means the sample is worthless
     //    rather than clean, and the zero below would be meaningless.
     expect(probe.appMounted).toBe(true);
     expect(probe.resourceEntries).toBeGreaterThan(20);
 
-    // 5. The invariant itself.
+    // 6. The invariant itself.
     const report = probe.report as EgressReport;
     if (report.total !== 0) {
       const detail = report.entries

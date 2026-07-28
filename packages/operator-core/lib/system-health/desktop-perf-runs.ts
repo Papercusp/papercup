@@ -71,17 +71,27 @@ export function extractDesktopPerfMeasures(results: AdminTestCheckResult[]): Des
         unit: m.unit ?? UNIT_BY_STATUS_FALLBACK,
         budget: m.budget ?? null,
         ok: m.ok !== false,
+        // P-003c: this rebuilds rather than spreads, so the invariant flag has to
+        // be named explicitly or an in-app suite's invariant would reach the gate
+        // stripped down to an ordinary measure. Only a literal true arms it.
+        ...(m.invariant === true ? { invariant: true as const } : {}),
       });
     }
   }
   return out;
 }
 
-/** Worst status across a run's measures: any budgeted breach = 'fail', else 'pass'.
+/** Worst status across a run's measures: any budgeted breach — or any breached
+ *  INVARIANT, budgeted or not (P-003c) — = 'fail', else 'pass'.
  *  (The suite's own pass/warn/fail rollup lives on the run status the caller passes;
- *  this is the measure-only fallback used when the caller has no suite verdict.) */
+ *  this is the measure-only fallback used when the caller has no suite verdict.)
+ *
+ *  The invariant clause is not redundant with the budget clause: an invariant need
+ *  not carry a numeric budget, and one recorded without a budget would otherwise
+ *  roll a breached run up as 'pass' — leaving the run status contradicting the gate
+ *  decision derived from the very same measures. */
 export function summarizeMeasureStatus(measures: DesktopPerfMeasure[]): DesktopPerfRunStatus {
-  return measures.some((m) => m.budget !== null && !m.ok) ? 'fail' : 'pass';
+  return measures.some((m) => !m.ok && (m.budget !== null || m.invariant === true)) ? 'fail' : 'pass';
 }
 
 /** Collapse an AdminTestStatus to the persisted run status (skip → pass). */

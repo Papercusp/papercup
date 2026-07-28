@@ -44,6 +44,12 @@ export interface PerfMeasure {
   /** null for an unbudgeted metric — recorded, never a failure. */
   budget: number | null;
   ok: boolean;
+  /**
+   * Binary correctness invariant rather than a tunable budget: a breach BLOCKS the
+   * release gate even though ordinary budget regressions only warn
+   * (no-http-anywhere-2026-07-28 P-003c). Prefer {@link recordInvariant}.
+   */
+  invariant?: boolean;
 }
 
 const RESULTS_DIR = path.resolve(__dirname, "results");
@@ -104,6 +110,39 @@ export function recordInteractionMs(
     unit: "ms",
     budget: budgetMs,
     ok: value <= budgetMs,
+  });
+}
+
+/**
+ * Record a binary CORRECTNESS INVARIANT — a property that must hold exactly, whose
+ * breach blocks the release gate outright (no-http-anywhere-2026-07-28 P-003c).
+ *
+ * Use this instead of {@link recordMeasure} when the number is not a tunable
+ * threshold but a count that must equal `mustEqual` (default 0): escaped HTTP
+ * requests, unhandled console errors, leaked listeners. Do NOT use it for a timing
+ * budget — those are load-sensitive, and blocking the fleet's deploys on a number
+ * that moves with machine load is exactly what the gate's warn-only default exists
+ * to prevent.
+ *
+ * Like `recordInteractionMs`, CALL THIS BEFORE THE ASSERTS. A breach is precisely
+ * the observation the gate exists to act on, so it has to be recorded on the path
+ * that is about to throw.
+ */
+export function recordInvariant(
+  name: string,
+  value: number,
+  mustEqual = 0,
+): void {
+  const held = value === mustEqual;
+  // eslint-disable-next-line no-console
+  console.log(`[perf] invariant ${name} = ${value} (must be ${mustEqual})${held ? "" : " ← BREACH"}`);
+  recordMeasure({
+    key: `invariant:${name}`,
+    value,
+    unit: "count",
+    budget: mustEqual,
+    ok: held,
+    invariant: true,
   });
 }
 

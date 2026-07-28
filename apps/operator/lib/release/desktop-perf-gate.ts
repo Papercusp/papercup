@@ -20,6 +20,14 @@
  * still honors a block:true policy (parity with perf-gate + a clean seam for the
  * future owner-armed step), but nothing sets it yet.
  *
+ * ONE EXCEPTION, added by no-http-anywhere-2026-07-28 P-003c: a measure flagged
+ * `invariant: true` BLOCKS regardless of block-mode. Warn-until-trusted is the
+ * right posture for a hand-tuned, load-sensitive timing budget; it is the wrong
+ * posture for a binary correctness property that cannot produce a false red. The
+ * first such invariant is `invariant:webview-http-egress` — D-005 rules that any
+ * HTTP escape from the desktop webview is a loud failure, and it had already
+ * broken three times undetected while the rule existed only in prose.
+ *
  * Like perf-gate.ts, the green-checkpoint CALL SITE lives in green-checkpoint.ts
  * (CheckpointDeps.desktopPerfGate + realCheckpointDeps), not here — this file is
  * the buildable, framework-agnostic substrate.
@@ -124,6 +132,7 @@ function fmtInvariant(m: DesktopPerfMeasure): string {
  *   disabled                         → pass  (no-op; the gate is opt-in via the flag)
  *   no run / no measures (unknown)   → pass  (fail-soft: never block on missing data)
  *   run older than policy.maxAgeMs   → pass  (fail-soft: stale data is not a verdict)
+ *   an INVARIANT measure breached    → block ALWAYS (independent of policy.block)
  *   ok (all budgeted measures met)   → pass
  *   warn (suite warned, no breach)   → warn  (surface, never block — even when armed)
  *   crit (a budgeted measure breach) → block IFF policy.block else warn
@@ -162,6 +171,30 @@ export function evaluateDesktopPerfGate(
         `desktop-perf-gate: latest desktop-perf run is STALE (${ageHrs}h old > ${maxHrs}h window) — ` +
         `${sha} clears fail-soft; nothing is producing fresh runs`,
       verdictStatus: 'unknown',
+    };
+  }
+
+  // INVARIANTS FIRST, and they block whether or not block-mode is armed
+  // (no-http-anywhere-2026-07-28 P-003c). Ordered ahead of the budget branch so a
+  // run that breaches both reports the invariant — the correctness failure is the
+  // headline, and a timing regression is often just its symptom (the 9 escaping
+  // requests this shipped for were also 3.6s of the boot they were slowing).
+  //
+  // Deliberately AFTER the staleness branch above: stale data is not a verdict for
+  // an invariant either. A breach recorded against a tree that no longer exists
+  // must not hold today's candidate hostage — the honest reading of an old run is
+  // "nothing is measuring this", which is the fail-soft `unknown` the gate already
+  // reports, not "the invariant is broken now".
+  const breached = breachedInvariants(run);
+  if (breached.length > 0) {
+    const reasons = breached.map(fmtInvariant);
+    return {
+      action: 'block',
+      reasons,
+      summary:
+        `🟥 desktop-perf-gate: INVARIANT BREACHED — deploy of ${sha} BLOCKED: ${reasons.join('; ')}. ` +
+        `An invariant is not a tunable budget: it blocks regardless of block-mode arming.`,
+      verdictStatus: 'crit',
     };
   }
 

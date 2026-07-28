@@ -56,7 +56,15 @@ function parseMeasure(raw: unknown): DesktopPerfMeasure | null {
         : NaN;
   if (typeof budget === 'number' && Number.isNaN(budget)) return null;
   if (typeof m.ok !== 'boolean') return null;
-  return { key, value: m.value, unit, budget, ok: m.ok };
+  // no-http-anywhere-2026-07-28 P-003c: carry the invariant flag through.
+  // This parser REBUILDS the measure rather than spreading `m`, so a field that is
+  // not named here is silently dropped — which for this flag would be the worst
+  // possible failure mode: the run still records, still looks healthy, and the
+  // breach it was meant to block on arrives at the gate as an ordinary measure.
+  // Only a literal `true` counts; anything else stays undefined so a malformed
+  // producer can never accidentally arm a blocking invariant.
+  const invariant = m.invariant === true ? true : undefined;
+  return { key, value: m.value, unit, budget, ok: m.ok, ...(invariant ? { invariant } : {}) };
 }
 
 export default defineTool({

@@ -4,6 +4,7 @@ import {
   desktopPerfGatePolicyFromFlags,
   runDesktopPerfGate,
   failingMeasures,
+  breachedInvariants,
   DEFAULT_DESKTOP_PERF_MAX_AGE_MS,
   type DesktopPerfGatePolicy,
 } from './desktop-perf-gate';
@@ -22,6 +23,13 @@ function run(
 }
 const ok: DesktopPerfMeasure = { key: 'route:harness-warm', value: 900, unit: 'ms', budget: 1500, ok: true };
 const breach: DesktopPerfMeasure = { key: 'interaction:plan-popup-open', value: 1800, unit: 'ms', budget: 1500, ok: false };
+/** The P-003c invariant measures: egress held / egress escaped / detector absent. */
+const egressClean: DesktopPerfMeasure = { key: 'invariant:webview-http-egress', value: 0, unit: 'count', budget: 0, ok: true, invariant: true };
+const egressBreach: DesktopPerfMeasure = { key: 'invariant:webview-http-egress', value: 9, unit: 'count', budget: 0, ok: false, invariant: true };
+/** -1 is the spec's "detector absent" sentinel — unknown must read as a breach. */
+const egressUnknown: DesktopPerfMeasure = { key: 'invariant:webview-http-egress', value: -1, unit: 'count', budget: 0, ok: false, invariant: true };
+/** An invariant carrying NO budget — breachedInvariants must still catch it. */
+const unbudgetedInvariant: DesktopPerfMeasure = { key: 'invariant:console-errors', value: 3, unit: 'count', budget: null, ok: false, invariant: true };
 const WARN_ONLY: DesktopPerfGatePolicy = { enabled: true, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS };
 const ARMED: DesktopPerfGatePolicy = { enabled: true, block: true, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS };
 
