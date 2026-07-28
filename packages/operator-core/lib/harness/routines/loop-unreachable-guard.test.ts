@@ -6,6 +6,8 @@ import {
   checkUnreachableTerminalGuard,
   DEFAULT_TERMINAL_UNREACHABLE_MS,
   DEFAULT_MIN_STUCK_FIRES,
+  comatoseStuckFiresForTermination,
+  DEFAULT_COMATOSE_STUCK_FIRES,
 } from './loop-unreachable-guard';
 import type { WakeReachabilityVerdict } from '../../events/await/wake-reachability';
 
@@ -60,12 +62,17 @@ describe('evaluateUnreachableTerminalGuard — circuit-open fast path (EI-7006 R
     expect(v.reason).toContain('EI-7006');
   });
 
-  it('circuit-open still respects reachability — a reachable owner never breaches (healthy long turn protected)', () => {
+  it('circuit-open still respects reachability — a reachable owner never breaches below the comatose floor (healthy long turn protected)', () => {
+    // WI-6639 narrowed this the same way as the durableWhileAlive:true case below: the
+    // reachability veto is no longer unbounded in the streak dimension. It still fully protects
+    // the healthy long turn this test is about (which settles and resets the streak to 0), but a
+    // streak past `comatoseStuckFiresForTermination()` is no longer vetoed. Asserted at 999
+    // before; the healthy-long-turn intent is preserved by pinning just under the floor.
     const v = evaluateUnreachableTerminalGuard({
       reachable: true,
       parkedForMs: 1000,
       intervalMs: 60_000,
-      stuckFireCount: 999,
+      stuckFireCount: comatoseStuckFiresForTermination() - 1,
       circuitOpen: true,
     });
     expect(v.breach).toBe(false);
@@ -124,13 +131,18 @@ describe('evaluateUnreachableTerminalGuard — WI-2339 resumable-DEAD (a `resume
     expect(v.breach).toBe(false);
   });
 
-  it('a genuinely LIVE injectable owner (durableWhileAlive:true) stays protected even with an OPEN circuit', () => {
+  it('a genuinely LIVE injectable owner (durableWhileAlive:true) stays protected with an OPEN circuit, below the comatose floor', () => {
+    // WI-6639 NARROWED this invariant. It used to read "…protected even with an OPEN circuit",
+    // asserted at stuckFireCount:999 — i.e. a live injectable channel vetoed termination
+    // UNCONDITIONALLY AND FOREVER. Measured live 2026-07-28 that absolute form was wrong (see the
+    // comatose-host describe below). The protection is real but is no longer unbounded: it holds
+    // for any streak below `comatoseStuckFiresForTermination()`, which is what this now pins.
     const v = evaluateUnreachableTerminalGuard({
       reachable: true,
-      durableWhileAlive: true, // psu-socket / managed-pty — a live host, not a dead session
+      durableWhileAlive: true, // psu-socket / managed-pty — a live host
       parkedForMs: 1000,
       intervalMs: 60_000,
-      stuckFireCount: 999,
+      stuckFireCount: comatoseStuckFiresForTermination() - 1,
       circuitOpen: true,
     });
     expect(v.breach).toBe(false);
@@ -154,8 +166,68 @@ describe('evaluateUnreachableTerminalGuard — WI-2339 resumable-DEAD (a `resume
       // durableWhileAlive omitted
       parkedForMs: 1000,
       intervalMs: 60_000,
-      stuckFireCount: 999,
+      stuckFireCount: comatoseStuckFiresForTermination() - 1,
       circuitOpen: true,
+    });
+    expect(v.breach).toBe(false);
+  });
+});
+
+describe('evaluateUnreachableTerminalGuard — WI-6639 COMATOSE-HOST (a live injectable channel whose agent is wedged)', () => {
+  // Measured live 2026-07-28 (WI-6639): 12 cold loops whose psu-pty-host AND its `claude` child
+  // were BOTH genuinely alive (6-11d uptime, real listening socket — not the WI-2339 recycled-pid
+  // false positive) had settled ZERO turns in 7d across 157 fires. `reachable:true` +
+  // `durableWhileAlive:true` short-circuited every death signal, so they re-armed and re-fired
+  // every ~30min forever and could never be auto-paused.
+  it('live injectable + circuit OPEN + streak AT the comatose floor → BREACHES (the wedged-agent case)', () => {
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: true,
+      durableWhileAlive: true,
+      parkedForMs: 1000, // the re-arm resets last_fired_at, so dwell can never accumulate here
+      intervalMs: 60_000,
+      stuckFireCount: comatoseStuckFiresForTermination(),
+      circuitOpen: true,
+    });
+    expect(v.breach).toBe(true);
+    expect(v.reason).toMatch(/comatose-host/i);
+    expect(v.reason).toContain('WI-6639');
+  });
+
+  it('the comatose floor requires an OPEN circuit — a huge streak with a CLOSED circuit never terminates a live owner', () => {
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: true,
+      durableWhileAlive: true,
+      parkedForMs: 1e12,
+      intervalMs: 60_000,
+      stuckFireCount: comatoseStuckFiresForTermination() * 10,
+      circuitOpen: false,
+    });
+    expect(v.breach).toBe(false);
+  });
+
+  it('the comatose floor sits far above the ordinary min-fires floor (a slow live turn is never caught by it)', () => {
+    expect(comatoseStuckFiresForTermination()).toBeGreaterThanOrEqual(minStuckFiresForTermination() * 3);
+    expect(comatoseStuckFiresForTermination()).toBe(DEFAULT_COMATOSE_STUCK_FIRES);
+  });
+
+  it('an operator cannot tune the comatose floor into a hair-trigger (clamped to 3× min-fires)', () => {
+    const orig = process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES;
+    process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES = '1';
+    try {
+      expect(comatoseStuckFiresForTermination()).toBe(minStuckFiresForTermination() * 3);
+    } finally {
+      if (orig === undefined) delete process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES;
+      else process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES = orig;
+    }
+  });
+
+  it('an UNREACHABLE owner is unaffected by the comatose leg (classic dwell path still governs)', () => {
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: false,
+      parkedForMs: 1000, // below the dwell window
+      intervalMs: 60_000,
+      stuckFireCount: comatoseStuckFiresForTermination(),
+      circuitOpen: false, // dwell NOT decoupled → still no breach
     });
     expect(v.breach).toBe(false);
   });

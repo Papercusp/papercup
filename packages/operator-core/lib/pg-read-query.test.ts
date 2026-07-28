@@ -530,6 +530,19 @@ describe('buildDerivedColumnRedirect (EI-18801042715296007 — the derived-verdi
     }
   });
 
+  // intent_stale is the sharpest one: the row DOES carry `intent` and
+  // `last_active_at`, so a hand-rolled threshold LOOKS like it works while
+  // silently disagreeing with INTENT_STALE_SEC.
+  it('warns intent_stale against a hand-rolled last_active_at threshold', () => {
+    const out = buildDerivedColumnRedirect(
+      'SELECT owner_id, intent_stale FROM harness_shared.coord_presence',
+      NOT_EXIST('intent_stale'),
+    );
+    expect(out).toBeTruthy();
+    expect(out).toContain('INTENT_STALE_SEC');
+    expect(out).toMatch(/do NOT fall back/i);
+  });
+
   // heartbeat_fresh IS computable in SQL — the redirect exists to stop it being
   // READ as liveness, so it must not claim a view is impossible for it.
   it('treats heartbeat_fresh as computable-but-not-the-verdict', () => {

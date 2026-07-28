@@ -379,6 +379,19 @@ const DERIVED_COLUMN_REDIRECTS: Record<string, DerivedColumnRedirect> = {
     why: 'it is a function of the derived sessionState (draining/suspect need a fresh required wake), not a stored flag',
     useInstead: "coord:presence · fleet:assignments · coord:roster { view:'live' }",
   },
+  'coord_presence.intent_stale': {
+    table: 'harness_shared.coord_presence',
+    // Especially trap-shaped: the row DOES carry `intent` and `last_active_at`,
+    // so a fallback here looks like it works. It just applies a threshold of
+    // your own choosing instead of INTENT_STALE_SEC, and diverges quietly.
+    why:
+      'it is computed per read by computeIntentStale (presence-tier1.ts) from last_active_at ' +
+      'against INTENT_STALE_SEC, not stored — the row carries the intent TEXT, never its staleness',
+    useInstead: "coord:presence (Tier-1 LIVENESS lane) · coord:roster { view:'live' }",
+    notThese:
+      'a hand-rolled `now() - last_active_at > <your own interval>` — it will not match ' +
+      "INTENT_STALE_SEC, so your idea of a stalled claim silently differs from every tool's",
+  },
   'coord_presence.heartbeat_fresh': {
     table: 'harness_shared.coord_presence',
     // Unlike the others this one IS computable in SQL — the redirect exists to

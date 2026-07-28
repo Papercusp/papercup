@@ -112,7 +112,23 @@ export function evaluateUnreachableTerminalGuard(input: {
   // resume-only reachability no longer vetoes termination. A HEALTHY resumable loop between turns
   // keeps a CLOSED circuit (its resume turns settle → recordFire('ok')), so it never reaches here.
   const resumableDead = input.reachable && input.durableWhileAlive === false && input.circuitOpen === true;
-  if (input.reachable && !resumableDead) return { breach: false };
+  // WI-6639 (comatose-host) — the ONE case where a live INJECTABLE channel stops vetoing.
+  // "A live host is not a dead session" was the stated rationale for the unconditional veto, and
+  // MEASURED LIVE 2026-07-28 it is false: 12 loops whose psu-pty-host AND its `claude` child were
+  // both genuinely alive (6-11d uptime, real listening socket — NOT the WI-2339 recycled-pid false
+  // positive) had settled ZERO turns in 7d across 157 fires, with stale presence throughout. The
+  // host is up; the AGENT inside it is wedged. Those loops re-armed and re-fired every ~30min
+  // FOREVER because `reachable` short-circuits every death signal below.
+  // This is deliberately NOT a weakening of the veto into a dwell/parked-time test — the
+  // stuck-backstop re-arm RESETS last_fired_at, so `parkedForMs` can never accumulate past one
+  // cycle for exactly this population. The consecutive stuck-backstop streak is the only monotone
+  // evidence, and it only reaches this floor after ~12h of no settled turn and no presence beat,
+  // which a healthy live session (it settles turns → recordFire('ok') → streak resets to 0) cannot
+  // do. A merely SLOW live turn is excluded far earlier: the caller only counts a stuck-backstop
+  // fire when presence has not moved at all since the fire.
+  const comatoseHost =
+    input.reachable && input.circuitOpen === true && input.stuckFireCount >= comatoseStuckFiresForTermination();
+  if (input.reachable && !resumableDead && !comatoseHost) return { breach: false };
   // Classic (circuit-closed) path: require the full dwell window before terminating. Circuit-open
   // path (EI-7006): the dwell window is DECOUPLED — see the `circuitOpen` field doc above.
   if (!input.circuitOpen) {
@@ -123,13 +139,16 @@ export function evaluateUnreachableTerminalGuard(input: {
   if (input.stuckFireCount < minFires) return { breach: false };
   const channelPhrase = resumableDead
     ? 'RESUMABLE-DEAD (probe reports reachable via `claude --resume`, but the resume turns never settle)'
-    : 'unreachable (no injectable/resumable wake channel)';
+    : comatoseHost
+      ? 'COMATOSE-HOST (WI-6639: the injectable channel is genuinely live, but the agent behind it ' +
+        `has settled no turn across ${input.stuckFireCount} consecutive stuck-backstop fires)`
+      : 'unreachable (no injectable/resumable wake channel)';
   return {
     breach: true,
     reason: input.circuitOpen
       ? `dead-owner: ${channelPhrase} with fire-circuit OPEN across ` +
         `${input.stuckFireCount} consecutive failures — auto-paused (WI-1399 / EI-7006 circuit-open fast path, dwell window decoupled` +
-        `${resumableDead ? '; WI-2339 resumable-dead' : ''})`
+        `${resumableDead ? '; WI-2339 resumable-dead' : ''}${comatoseHost ? '; WI-6639 comatose-host' : ''})`
       : `dead-owner: ${channelPhrase}, parked ${Math.round(input.parkedForMs / 1000)}s ` +
         `(≥${Math.round(terminalUnreachableMs(input.intervalMs) / 1000)}s terminal window) across ${input.stuckFireCount} consecutive stuck-backstop fires ` +
         `— auto-paused (WI-1399, dead-owner loop terminal guard)`,
