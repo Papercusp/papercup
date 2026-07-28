@@ -35,6 +35,8 @@ import {
   type SyncQueryStat,
 } from '@papercusp/sync';
 import { readIpcStatus, type IpcStatusRead } from '@/lib/ipc-status-tauri';
+import { Checkbox } from '@/app/harness/Checkbox';
+import { Table, type TableColumn } from '@/app/harness/Table';
 
 const REFRESH_MS = 1000;
 
@@ -122,15 +124,15 @@ const wrap: React.CSSProperties = {
 const h: React.CSSProperties = {
   fontSize: 11,
   textTransform: 'uppercase',
-  letterSpacing: '0.06em',
   color: 'var(--fg-mute)',
   marginTop: 14,
   marginBottom: 4,
 };
 const mute: React.CSSProperties = { color: 'var(--fg-mute)' };
-const warn: React.CSSProperties = { color: 'var(--fg-warn, #b58900)' };
-const cell: React.CSSProperties = { padding: '2px 8px 2px 0', textAlign: 'right' };
-const cellL: React.CSSProperties = { ...cell, textAlign: 'left' };
+const warn: React.CSSProperties = { color: 'var(--warn)' };
+/** Column alignment only — the shared Table primitive owns padding/borders. */
+const cell: React.CSSProperties = { textAlign: 'right' };
+const cellL: React.CSSProperties = { textAlign: 'left' };
 
 /* ----------------------------------------------------------------- component */
 
@@ -171,13 +173,17 @@ export default function AdvSyncHealthPanel() {
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
         <strong>Sync health</strong>
         <span style={mute}>uptime {formatMs(snap.takenAtMs)}</span>
-        <label style={{ ...mute, marginLeft: 'auto', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={paused}
-            onChange={(e) => setPaused(e.target.checked)}
-            style={{ marginRight: 4 }}
-          />
+        <label
+          style={{
+            ...mute,
+            marginLeft: 'auto',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+          }}
+        >
+          <Checkbox checked={paused} onChange={setPaused} ariaLabel="pause sampling" />
           pause
         </label>
       </div>
