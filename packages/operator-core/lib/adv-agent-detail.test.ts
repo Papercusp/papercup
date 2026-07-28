@@ -349,7 +349,9 @@ describe('deriveCoordState', () => {
       // No receipts at all → the floor is the only thing bounding the count.
       expect(pickUnreadCursor(pickUnreadCursor('', ''), null)).toBeNull();
       expect(deriveCoordState(messages, new Set(), [], [], 'su-1', null).unreadCount).toBe(1031);
-      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', bornAt).unreadCount).toBe(0);
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', null, bornAt).unreadCount).toBe(
+        0,
+      );
     });
 
     it('still counts mail that arrived AFTER birth — the floor is not a blanket zero', () => {
@@ -359,7 +361,9 @@ describe('deriveCoordState', () => {
         msg({ msg_id: 'post-birth-1', ts: isoMs(NOW - 30_000), from: 'su-2', to: ['su-1'] }),
         msg({ msg_id: 'post-birth-2', ts: isoMs(NOW - 10_000), from: 'su-3', to: ['su-1'] }),
       ];
-      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', bornAt).unreadCount).toBe(2);
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', null, bornAt).unreadCount).toBe(
+        2,
+      );
     });
 
     it('lets a LATER read receipt win over the birth floor (the floor never un-reads mail)', () => {

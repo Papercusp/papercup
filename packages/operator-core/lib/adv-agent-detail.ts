@@ -386,7 +386,8 @@ function recipientsOf(env: { to?: unknown }): string[] {
  * folds. Pure → unit-tested. `messages` is the full `messages` surface;
  * `acked` is the set the owner has acknowledged; `handoffs`/`escalations` are
  * already folded to status=open; `readCursor` is the agent's last read
- * receipt (see `readUnreadCursor`), or null when it has none on record.
+ * receipt (see `readUnreadCursor`), or null when it has none on record;
+ * `bornAt` is the BIRTH FLOOR, which governs BROADCASTS ONLY (WI-6589).
  */
 export function deriveCoordState(
   messages: CoordEnvelope[],
@@ -395,6 +396,7 @@ export function deriveCoordState(
   escalations: EscalationRecord[],
   owner: string,
   readCursor: string | null,
+  bornAt: string | null = null,
 ): AgentCoordState {
   // Last message directly involving the agent — sent by it or addressed to it.
   // Pure '*' broadcasts where the agent isn't explicitly listed are excluded:
@@ -443,14 +445,39 @@ export function deriveCoordState(
   // not "what a default read shows"). The `kind:'message'` narrowing STAYS:
   // reading "agree with coord:inbox" literally would ADD acks/handoffs and
   // raise the number, which is the opposite of this plan's purpose.
-  const unreadCandidates = messages.filter(
-    (m) =>
-      m.kind === 'message' &&
-      m.from !== owner &&
-      (recipientsOf(m).includes(owner) || recipientsOf(m).includes('*')) &&
-      (!readCursor || m.ts > readCursor) &&
-      !acked.has(m.msg_id),
-  );
+  // WI-6589: the BIRTH FLOOR governs BROADCASTS ONLY.
+  //
+  // D-012 folded the floor into the same `pickUnreadCursor` max as the three
+  // read receipts, which made it govern EVERY candidate. Its own justification
+  // never reached that far: "a `to:['*']` broadcast is a fan-out to the
+  // population ALIVE AT SEND TIME, so an agent born afterwards was never in that
+  // population". A message that NAMES this owner is the opposite case — a peer
+  // addressed this exact agent id, so it was deliverable by construction and no
+  // statement about the agent's birth can make it un-addressed.
+  //
+  // That distinction is load-bearing because the floor is not the true birth:
+  // `adv_sessions` keeps ONE row per coord owner and four paths bump its
+  // `started_at = now()` in place on resume/re-anchor, so MIN(started_at) is the
+  // LATEST LAUNCH for every one of the 13,797 owners on record. Measured on the
+  // live log (papercusp-workspace, 7d): 8,954 targeted non-self messages to 153
+  // owners, of which 6,957 (78%) across 78 owners (51%) sit BELOW their
+  // recipient's computed floor. Every one of those was a peer writing to a
+  // specific agent.
+  //
+  // Applying the floor only to broadcasts keeps WI-6496 intact (a newborn still
+  // does not inherit the fleet's broadcast backlog) while making it impossible
+  // for a respawn to hide mail somebody actually addressed to this agent.
+  // `first_seen_at` (migration 707) makes the broadcast half honest too.
+  const unreadCandidates = messages.filter((m) => {
+    if (m.kind !== 'message' || m.from === owner || acked.has(m.msg_id)) return false;
+    const to = recipientsOf(m);
+    const addressed = to.includes(owner);
+    if (!addressed && !to.includes('*')) return false;
+    if (readCursor && m.ts <= readCursor) return false;
+    // Broadcasts only — an explicitly-addressed message is never floored.
+    if (!addressed && bornAt && m.ts <= bornAt) return false;
+    return true;
+  });
   // Retraction markers are collected from the FULL raw window, not the unread
   // slice — the "disregard that" notice may sit either side of the cursor.
   const visible = suppressRetracted(unreadCandidates, collectRetractedIds(messages)).filter(
@@ -549,11 +576,22 @@ export async function getAgentLocks(owner: string): Promise<AgentLocks> {
 }
 
 /**
- * This agent's unread cursor (ISO), or null if nothing on record bounds it.
+ * The two bounds on this agent's unread set — kept SEPARATE (WI-6589).
  *
- * FOUR signals now, folded by the shared `pickUnreadCursor` rule (the LATER
- * wins). The first three are read RECEIPTS ("what has this agent already
- * read"); the fourth is a BIRTH FLOOR ("what could ever have reached it").
+ * `receipts` answers "what has this agent already read" and applies to every
+ * message. `bornAt` answers "what could ever have reached it" and applies to
+ * BROADCASTS ONLY — see the filter in `deriveCoordState` for why, and for the
+ * measured cost of conflating them. Either may be null (nothing on record).
+ */
+type UnreadCursors = { receipts: string | null; bornAt: string | null };
+
+/**
+ * This agent's unread bounds (ISO), each null if nothing on record sets it.
+ *
+ * FOUR signals. The first three are read RECEIPTS ("what has this agent already
+ * read"), folded by the shared `pickUnreadCursor` rule (the LATER wins); the
+ * fourth is a BIRTH FLOOR ("what could ever have reached it"), returned
+ * separately because it governs only broadcasts.
  *
  * unread-count-truthfulness-2026-07-27 D-012 (owner-reported 2026-07-27: a
  * BRAND-NEW session showed 1031 unread). The three receipt legs are all empty
@@ -573,11 +611,14 @@ export async function getAgentLocks(owner: string): Promise<AgentLocks> {
  * how a candidate count is rendered.
  *
  * It composes with the existing legs rather than replacing them, and cannot
- * raise a count (`pickUnreadCursor` only ever moves the cursor later):
- *   - newborn, no receipts        → floor wins    → counts only post-birth mail
+ * raise a count above the no-floor baseline:
+ *   - newborn, no receipts        → floor wins    → counts only post-birth broadcasts
  *   - live agent with receipts    → receipt wins  → unchanged (receipts are later)
  *   - reaped agent, row GC'd      → floor is null → unchanged, D-007 preserved
  *   - reaped agent, row surviving → floor wins    → counts its LIFETIME, not all time
+ *
+ * WI-6589 narrowed WHAT the floor governs (broadcasts, not addressed mail) —
+ * not whether it applies. Every row above still holds for broadcasts.
  *
  * Deliberately folded HERE and not inside `pickUnreadCursor` itself: that
  * helper is shared with the continuation gate (loop/checkpoint.ts), and D-008 /
@@ -598,7 +639,7 @@ export async function getAgentLocks(owner: string): Promise<AgentLocks> {
  * has read something it has not. Null is honest ("no receipt on record") and
  * simply restores the pre-cursor behaviour for that one agent.
  */
-async function readUnreadCursor(owner: string): Promise<string | null> {
+async function readUnreadCursor(owner: string): Promise<UnreadCursors> {
   try {
     const [wm, lastReadByOwner, bornAt] = await Promise.all([
       readWatermark(owner),
@@ -611,23 +652,31 @@ async function readUnreadCursor(owner: string): Promise<string | null> {
       pickUnreadCursor(wm?.messages_since_ts, wm?.messages_shown_ts),
       lastReadByOwner.get(owner) ?? null,
     );
-    return pickUnreadCursor(receipts, bornAt);
+    return { receipts, bornAt };
   } catch {
-    return null;
+    return { receipts: null, bornAt: null };
   }
 }
 
 /** Read one agent's coord state (last message, unread, open handoffs/escalations). */
 export async function getAgentCoordState(owner: string): Promise<AgentCoordState> {
   try {
-    const [messages, acked, handoffs, escalations, readCursor] = await Promise.all([
+    const [messages, acked, handoffs, escalations, cursors] = await Promise.all([
       coordLog.readLines('messages') as Promise<CoordEnvelope[]>,
       readAckedMsgIds(owner),
       listHandoffs({ status: 'open' }),
       listEscalations({ status: 'open' }),
       readUnreadCursor(owner),
     ]);
-    return deriveCoordState(messages, acked, handoffs, escalations, owner, readCursor);
+    return deriveCoordState(
+      messages,
+      acked,
+      handoffs,
+      escalations,
+      owner,
+      cursors.receipts,
+      cursors.bornAt,
+    );
   } catch (e) {
     return {
       lastMessage: null,

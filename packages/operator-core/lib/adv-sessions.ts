@@ -987,13 +987,26 @@ export async function recordedLiveOwnerIds(coordOwnerIds: string[]): Promise<Set
 }
 
 /**
- * When this coord owner FIRST existed — the EARLIEST `started_at` across all of
- * its adv_sessions rows, as an ISO string (null when it has none on record).
+ * When this coord owner FIRST existed — the EARLIEST `first_seen_at` across all
+ * of its adv_sessions rows, as an ISO string (null when it has none on record).
  *
  * unread-count-truthfulness-2026-07-27 D-012: the unread cursor's birth floor.
  * A coord owner id survives respawns/carry-compactions, so this deliberately
  * takes the EARLIEST row, not the latest — flooring at the latest respawn would
  * silently drop mail that arrived during an earlier leg of the same owner's life.
+ *
+ * ⚠ WI-6589 — that safeguard used to be INERT, and reading `started_at` here was
+ * why. The table keeps exactly ONE row per coord owner (13,797 of 13,797), and
+ * `started_at` is bumped in place by every resume/re-anchor path below, so
+ * MIN(started_at) === MAX(started_at) === the LATEST LAUNCH. The MIN could never
+ * engage; a test seeding two rows for one owner asserted a shape production
+ * cannot produce. `first_seen_at` (migration 707) is written once at INSERT and
+ * never updated, so the MIN is a true birth. Do NOT revert this to `started_at`,
+ * and do not add an UPDATE that touches `first_seen_at`.
+ *
+ * Fails soft to null if the column is not yet present (a deploy that has not run
+ * migration 707): null = no floor, which OVER-counts broadcasts rather than
+ * hiding mail — the safe direction.
  *
  * NOT workspace-scoped, same rationale as advSessionsByCoordOwner above (and
  * the same as its `latest` sibling below) — a coord owner id is globally unique,
@@ -1006,7 +1019,7 @@ export async function firstAdvSessionStartByCoordOwner(
   try {
     const { sql } = getOrgPg();
     const rows = await sql<Array<{ started_at: Date | string | null }>>`
-      SELECT MIN(started_at) AS started_at
+      SELECT MIN(first_seen_at) AS started_at
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${coordOwnerId}
     `;

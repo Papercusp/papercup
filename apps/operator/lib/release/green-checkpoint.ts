@@ -2504,17 +2504,30 @@ export async function runGreenCheckpoint(
   // desktop-performance-suite-2026-07-20 P-011: the desktop-UI perf gate. The
   // candidate is GREEN — but if the latest recorded desktop-perf run shows a
   // budgeted interaction/route/RSS regression, don't silently advance the green
-  // pin into a slower desktop UX. Default-WARN (surface + still advance); BLOCK
-  // only when block-mode is armed (V1 never arms it — warn-not-block until
-  // trusted). Flag-gated + fail-soft (a no-op `pass` unless FLAGS.DESKTOP_PERF_GATE
-  // is on AND a run is recorded), so the default deploy path is unchanged.
+  // pin into a slower desktop UX. Default-WARN for BUDGETS (surface + still
+  // advance); a budget breach BLOCKs only when block-mode is armed (V1 never arms
+  // it — warn-not-block until trusted).
+  //
+  // EXCEPT invariants (no-http-anywhere-2026-07-28 P-003c): a measure flagged
+  // `invariant: true` — e.g. `invariant:webview-http-egress` — blocks regardless of
+  // block-mode, because it is a binary correctness property rather than a tuned
+  // threshold and cannot produce the false reds warn-mode exists to absorb.
+  //
+  // Flag-gated + fail-soft either way (a no-op `pass` unless FLAGS.DESKTOP_PERF_GATE
+  // is on AND a FRESH run is recorded), so the default deploy path is unchanged.
   const desktopPerf = await deps.desktopPerfGate?.(candidate).catch(() => undefined);
   if (desktopPerf && desktopPerf.action !== 'pass') {
     deps.log(desktopPerf.summary);
     await deps.broadcast(desktopPerf.summary).catch(() => {});
     if (desktopPerf.action === 'block') {
+      // The summary distinguishes an invariant breach from a timing regression;
+      // don't hard-code "regressed" into the escalation title, because paging a
+      // human at 3am with the wrong failure class costs them the first ten minutes.
+      const held = desktopPerf.summary.includes('INVARIANT BREACHED')
+        ? 'desktop-invariant-breached'
+        : 'desktop-perf-regressed';
       await deps
-        .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} desktop-perf-regressed`, desktopPerf.summary)
+        .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} ${held}`, desktopPerf.summary)
         .catch(() => {});
       return { advanced: false, candidate, from: lastReady, green: true, reason: 'desktop-perf-held', summary: desktopPerf.summary };
     }

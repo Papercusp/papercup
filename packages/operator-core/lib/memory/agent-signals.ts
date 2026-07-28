@@ -2,7 +2,7 @@
  * Resolve `AgentSignals` from ACTIONS — context-injection-audit-2026-07-28 P-043 (F-K).
  *
  * WHY THIS EXISTS. P-042 widened the injection seam to carry
- * `{ userText, agentSignals? }` but left `agentSignals`永 unpopulated. This module
+ * `{ userText, agentSignals? }` but left `agentSignals` unpopulated. This module
  * populates it, from the three v1 sources in the item's preference order:
  *
  *   (a) the claimed work-item / plan-item title+body — already structured,
@@ -150,6 +150,11 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set([
   'notebookedit',
 ]);
 
+/** Inner tools that READ a named file. Weaker evidence than a write, but still
+ *  a file the agent deliberately opened — unlike a path merely named on a
+ *  command line. Any OTHER tool's `file_path` is treated as a mention. */
+const READ_TOOLS: ReadonlySet<string> = new Set(['read', 'notebookread']);
+
 // ─────────────────────────── regexes ───────────────────────────
 
 /** `WI-6635`, `EI-18881202063786528`, `P-042`. Anchored to token boundaries so a
@@ -208,8 +213,10 @@ export function relativizeRepoPath(raw: string, repoRoot?: string): string | nul
   }
   if (p.startsWith('./')) p = p.slice(2);
   if (!p || p === '.' || p.startsWith('..')) return null;
-  // Dependency trees and build output are not the agent's work.
-  if (/(?:^|\/)(?:node_modules|\.git|dist|build|coverage)(?:\/|$)/.test(p)) return null;
+  // Dependency trees and build output are not the agent's work. `build` is
+  // deliberately NOT excluded — this repo has source dirs by that name, and a
+  // false exclusion silently drops real signal.
+  if (/(?:^|\/)(?:node_modules|\.git|dist|coverage)(?:\/|$)/.test(p)) return null;
   return p;
 }
 
@@ -238,7 +245,7 @@ export function effectiveCall(inv: RawInvocation): { tool: string; input: unknow
  * compare equal.
  */
 export function normalizeToolName(name: string): string {
-  const bare = name.replace(/^mcp__[^_]*(?:[^_]|_(?!_))*__/, '');
+  const bare = name.replace(/^mcp__.*?__/, '');
   return bare.replace(/[:.]/g, '_').toLowerCase();
 }
 
@@ -264,16 +271,27 @@ function harvestIds(acc: Acc, text: string): void {
   }
 }
 
-function harvestPath(acc: Acc, raw: string, repoRoot: string | undefined, isWrite: boolean): void {
+/**
+ * How a path was observed — this decides `activeFile` eligibility.
+ *
+ *   `write`   an Edit/Write `file_path` — the agent is working IN it.
+ *   `read`    a Read `file_path` — browsing; fills the slot only until a
+ *             write appears.
+ *   `mention` a path parsed out of a command line, or a lock claim. Evidence of
+ *             TOUCHING, never of working-in — a `rg` or a test run names a file
+ *             without the agent editing it, so a mention is never eligible for
+ *             `activeFile` even when it is the only path seen.
+ */
+type PathKind = 'write' | 'read' | 'mention';
+
+function harvestPath(acc: Acc, raw: string, repoRoot: string | undefined, kind: PathKind): void {
   const rel = relativizeRepoPath(raw, repoRoot);
   if (!rel) return;
-  // `activeFile` prefers the most recent WRITE; rows arrive newest-first, so the
-  // first write wins and no later row may override it.
-  if (!acc.activeFile || (isWrite && !acc.activeFileFromWrite)) {
-    if (!acc.activeFile || isWrite) {
-      acc.activeFile = rel;
-      acc.activeFileFromWrite = acc.activeFileFromWrite || isWrite;
-    }
+  // Rows arrive newest-first, so the first write seen wins and nothing older may
+  // override it.
+  if (kind !== 'mention' && (!acc.activeFile || (kind === 'write' && !acc.activeFileFromWrite))) {
+    acc.activeFile = rel;
+    if (kind === 'write') acc.activeFileFromWrite = true;
   }
   pushUnique(acc.paths, acc.pathSeen, rel, MAX_PATHS);
 }
@@ -283,7 +301,7 @@ function harvestArgs(
   acc: Acc,
   value: unknown,
   repoRoot: string | undefined,
-  isWrite: boolean,
+  pathKind: PathKind,
   depth = 0,
 ): void {
   if (depth > 3) return;
@@ -295,7 +313,7 @@ function harvestArgs(
 
     if (PATH_KEYS.has(key)) {
       for (const item of values) {
-        if (typeof item === 'string') harvestPath(acc, item, repoRoot, isWrite);
+        if (typeof item === 'string') harvestPath(acc, item, repoRoot, pathKind);
       }
       continue;
     }
@@ -319,16 +337,14 @@ function harvestArgs(
         const scan = item.length > MAX_SCAN_CHARS ? item.slice(0, MAX_SCAN_CHARS) : item;
         harvestIds(acc, scan);
         for (const m of scan.matchAll(PATH_TOKEN_RE)) {
-          // A command-line path is evidence of touching, never of "working in"
-          // — a grep does not make a file active — so isWrite is always false.
-          harvestPath(acc, m[0], repoRoot, false);
+          harvestPath(acc, m[0], repoRoot, 'mention');
         }
       }
       continue;
     }
     // Not an allowlisted key. Recurse into nested objects ONLY (an allowlisted
     // key may sit one level down), never harvest this value itself.
-    if (asRecord(v)) harvestArgs(acc, v, repoRoot, isWrite, depth + 1);
+    if (asRecord(v)) harvestArgs(acc, v, repoRoot, pathKind, depth + 1);
   }
 }
 
