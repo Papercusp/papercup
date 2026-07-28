@@ -272,7 +272,7 @@ describe('FleetLaunchRow — the owner’s five options are all present', () => 
 });
 
 describe('FleetLaunchRow — launching', () => {
-  it('POSTs to the real fleet:launch-on-plan route with every chosen value', async () => {
+  it('launches one member PER count, with every chosen value on each', async () => {
     renderRow(<FleetLaunchRow />);
     fillRequired();
     fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '3' } });
@@ -283,28 +283,61 @@ describe('FleetLaunchRow — launching', () => {
 
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(fetchMock.mock.calls[0][0]).toBe(FLEET_LAUNCH_ROUTE);
-    const body = sentBody();
-    expect(body.name).toBe('my-fleet');
-    expect(body.plan).toBe('hud-tab-public-release-2026-07-28');
-    expect(body.count).toBe(3);
-    expect(body.headless).toBe(true);
-    expect(body.account).toBe('acct-pool-1');
+    await waitFor(() => expect(launchCalls.length).toBe(3));
+    for (const call of launchCalls) {
+      expect(call.planSlug).toBe('hud-tab-public-release-2026-07-28');
+      expect(call.headless).toBe(true);
+      expect(call.account).toBe('acct-pool-1');
+    }
   });
 
   /**
-   * The tool resolves the plan against a harness, and an HTTP call carries no
-   * agent session to inherit a harness scope from. Sending the PLAN'S OWN
-   * harness is what makes a launch from this row resolvable at all — and it must
-   * follow the picked plan, not a fixed default.
+   * The FIRST member creates the fleet; the REST must JOIN the slug the server
+   * assigned. If they each carried `fleetName` instead, a "3-member fleet" would
+   * be three separate one-member fleets — the failure this ordering prevents.
+   */
+  it('member 1 CREATES the fleet; members 2..N join the slug the server returned', async () => {
+    launchImpl = async () => ({ ok: true, fleetSlug: 'server-assigned-slug' });
+    renderRow(<FleetLaunchRow />);
+    fillRequired();
+    fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '3' } });
+    fireEvent.click(screen.getByTestId('fleet-launch-submit'));
+
+    await waitFor(() => expect(launchCalls.length).toBe(3));
+    expect(launchCalls[0].fleetName).toBe('my-fleet');
+    expect(launchCalls[0].fleet).toBeNull();
+    for (const call of launchCalls.slice(1)) {
+      expect(call.fleet).toBe('server-assigned-slug');
+      expect(call.fleetName).toBeNull();
+    }
+  });
+
+  /** A failed first member means there is no fleet to join — do not fan out N-1
+   *  more launches whose failures would only bury the real error. */
+  it('does NOT fan out the remaining members when the first one fails', async () => {
+    launchImpl = async () => ({ ok: false, error: '`psu` not found on PATH' });
+    renderRow(<FleetLaunchRow />);
+    fillRequired();
+    fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '4' } });
+    fireEvent.click(screen.getByTestId('fleet-launch-submit'));
+
+    await waitFor(() => expect(toastCalls.length).toBeGreaterThan(0));
+    expect(launchCalls.length).toBe(1);
+    expect(toastCalls[0].kind).toBe('error');
+    expect(toastCalls[0].message).toBe('`psu` not found on PATH');
+  });
+
+  /**
+   * launch-su resolves the plan against a harness and has no agent session to
+   * inherit a scope from, so the PLAN'S OWN harness must travel with it — and it
+   * must follow the picked plan, not a fixed default.
    */
   it('sends the harness of the SELECTED plan, not an ambient one', async () => {
     renderRow(<FleetLaunchRow />);
     fillRequired('other-plan');
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(sentBody().harness).toBe('otherness');
+    await waitFor(() => expect(launchCalls.length).toBe(1));
+    expect(firstLaunch().slug).toBe('otherness');
   });
 
   it('clamps an over-max count before it reaches the launcher', async () => {
@@ -312,23 +345,21 @@ describe('FleetLaunchRow — launching', () => {
     fillRequired();
     fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '99' } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(sentBody().count).toBe(FLEET_MAX_MEMBERS);
+    await waitFor(() => expect(launchCalls.length).toBe(FLEET_MAX_MEMBERS));
   });
 
   it('defaults to one headed member on the system account', async () => {
     renderRow(<FleetLaunchRow />);
     fillRequired();
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const body = sentBody();
-    expect(body.count).toBe(1);
-    expect(body.headless).toBe(false);
-    expect(body.account).toBe('default');
+    await waitFor(() => expect(launchCalls.length).toBe(1));
+    const call = firstLaunch();
+    expect(call.headless).toBe(false);
+    expect(call.account).toBe('default');
     // No model picked ⇒ neither model nor agent is sent, so the launcher keeps
     // its own default rather than being pinned to a guess.
-    expect(body.model).toBeUndefined();
-    expect(body.agent).toBeUndefined();
+    expect(call.model).toBeNull();
+    expect(call.agent).toBeUndefined();
   });
 
   /**
@@ -342,10 +373,10 @@ describe('FleetLaunchRow — launching', () => {
     fillRequired();
     fireEvent.change(screen.getByLabelText('Model for every fleet member'), { target: { value: CLAUDE_MODEL } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const body = sentBody();
-    expect(body.model).toBe(CLAUDE_MODEL);
-    expect(body.agent).toBe('claude');
+    await waitFor(() => expect(launchCalls.length).toBe(1));
+    const call = firstLaunch();
+    expect(call.model).toBe(CLAUDE_MODEL);
+    expect(call.agent).toBe('claude');
   });
 
   it('refuses a nameless fleet without calling the launcher', async () => {
@@ -353,7 +384,7 @@ describe('FleetLaunchRow — launching', () => {
     fireEvent.change(screen.getByLabelText('Plan the fleet works'), { target: { value: planRows[0].slug } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(toastCalls.length).toBeGreaterThan(0));
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(launchCalls.length).toBe(0);
     expect(toastCalls[0].kind).toBe('error');
   });
 
@@ -362,25 +393,30 @@ describe('FleetLaunchRow — launching', () => {
     fireEvent.change(screen.getByLabelText('Name for the new fleet'), { target: { value: 'my-fleet' } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(toastCalls.length).toBeGreaterThan(0));
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(launchCalls.length).toBe(0);
     expect(toastCalls[0].message).toContain('plan');
   });
 
-  it('reports a zero-member launch as an error, not a success', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => envelope({ ok: false, fleet: 'my-fleet', opened: [], failed: [], message: 'capacity clamped to 0' }),
-    });
+  /** A partial launch must not read as a clean success in the UI either. */
+  it('reports a partial launch honestly', async () => {
+    let n = 0;
+    launchImpl = async () => {
+      n += 1;
+      return n === 1 ? { ok: true, fleetSlug: 'my-fleet' } : { ok: false, error: 'no terminal' };
+    };
     renderRow(<FleetLaunchRow />);
     fillRequired();
+    fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '3' } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(toastCalls.length).toBeGreaterThan(0));
-    expect(toastCalls[0].kind).toBe('error');
-    expect(toastCalls[0].message).toBe('capacity clamped to 0');
+    expect(toastCalls[0].kind).toBe('success');
+    expect(toastCalls[0].message).toContain('2 failed to start');
   });
 
-  it('reports a transport failure instead of silently doing nothing', async () => {
-    fetchMock.mockRejectedValueOnce(new Error('offline'));
+  it('reports a thrown transport failure instead of silently doing nothing', async () => {
+    launchImpl = async () => {
+      throw new Error('offline');
+    };
     renderRow(<FleetLaunchRow />);
     fillRequired();
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
@@ -389,7 +425,7 @@ describe('FleetLaunchRow — launching', () => {
     expect(toastCalls[0].message).toContain('offline');
   });
 
-  it('notifies the caller and refreshes the fleet list after a successful launch', async () => {
+  it('notifies the caller with the SERVER’s slug and refreshes the fleet list', async () => {
     const onLaunched = vi.fn();
     renderRow(<FleetLaunchRow onLaunched={onLaunched} />);
     fillRequired();

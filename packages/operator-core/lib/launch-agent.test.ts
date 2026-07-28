@@ -55,7 +55,17 @@ describe('launchAgent', () => {
       fleet_name: null,
       fleet_scheme: null,
       account: null,
+      // WI-6505: same always-on-the-wire discipline as the keys above. `false`
+      // rather than null because headed IS the default, not "unspecified" — a
+      // launch that omitted it would be indistinguishable from one that asked
+      // for a window, which is the one confusion this flag must never create.
+      headless: false,
     });
+  });
+
+  it('headless:true rides the wire so a GUI launch can open a windowless member (WI-6505)', async () => {
+    await launchAgent({ agent: 'claude', slug: 'papercup', headless: true });
+    expect(firstBody().headless).toBe(true);
   });
 
   it('deferSpawn → body carries defer_spawn:true and returns advSessionId (D-006)', async () => {
