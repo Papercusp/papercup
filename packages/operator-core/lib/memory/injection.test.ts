@@ -281,7 +281,9 @@ describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 /
       hiveSlugs: ['hivey'],
       limit: 3,
     });
-    expect((backend.search.mock.calls[0]![1] as { limit: number }).limit).toBe(3);
+    expect(
+      (backend.search.mock.calls[0]![1] as { scope: string[]; limit: number }).limit,
+    ).toBe(3);
   });
 });
 

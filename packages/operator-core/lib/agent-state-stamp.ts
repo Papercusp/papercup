@@ -53,6 +53,36 @@
  * nobody re-checks, so it is the one that would rot unnoticed. This is a shared
  * RULE, not a shared source: the stamp records a claim as it happens, while the
  * cell resolves precedence across every leg at read time.
+ *
+ * ── ⚠ THE MAP IS PER-PROCESS, AND THE OPERATOR IS A CLUSTER (WI-6594) ────────
+ *
+ * This module's `Map` is module-scoped, so it holds ONE PROCESS'S view. The
+ * operator runs `node:cluster` with `PAPERCUSP_CLUSTER=16` (17 processes,
+ * SO_REUSEPORT), and the three producers are separate tool calls: an agent's
+ * `coord:declare-intent` and its `work_items:claim` land on whichever workers the
+ * kernel picked. So worker A learns the intent, worker B learns the goal, and
+ * NEITHER can stamp both — the call is stamped with half the agent's declared
+ * state and a NULL that is simply false.
+ *
+ * That is not hypothetical. Measured live on 2026-07-28: calls carrying BOTH
+ * stamps fell 1217 -> 39 while each stamp ALONE stayed healthy, five different
+ * "most recent intent" values were live simultaneously for one owner, and two
+ * calls by that owner 11ms apart carried (intent, no goal) and (no intent, goal)
+ * respectively while it demonstrably held WI-6502. It red the fleet gate via
+ * `lint:plane-ratchet`, which correctly judged the stamped divergence leg
+ * `regressed`.
+ *
+ * It appeared to work for weeks only because SO_REUSEPORT balances per
+ * CONNECTION: an agent on one long-lived MCP connection got accidental worker
+ * affinity, so both its declarations happened to land in the same process. The
+ * fleet's shift toward ephemeral one-shot connections removed that accident. The
+ * stamp was never cluster-correct — it was coincidentally coherent.
+ *
+ * THE FIX (see `agent-state-stamp-cluster.ts`): every LOCAL declaration is
+ * published to a replicator, relayed by the primary, and applied into every other
+ * worker's map. The hot-path READ is untouched — still one `Map.get`, no I/O, per
+ * D-014 — because only the rare WRITES fan out. With no replicator installed
+ * (single-process host, tests) behaviour is byte-identical to before.
  */
 
 import { asGoalRef } from './agent-goal-ref';
@@ -89,8 +119,62 @@ const MAX_OWNERS = 512;
  */
 const stamps = new Map<string, AgentStateStamp>();
 
-function upsert(ownerId: string, patch: Partial<AgentStateStamp>): void {
+/**
+ * When each owner's `goalRef` was last written, by the ORIGIN process's clock.
+ *
+ * Kept in a side map rather than on the stamp because `stamps`' values are the
+ * exact object handed to readers — see that Map's note. Only `goalRef` needs it:
+ * `intentEventId` and `assumptionSetId` are PG sequence ids and therefore carry
+ * their own order, but a goal legitimately goes ref -> null -> ref, so nothing in
+ * the VALUE says which of two writes is newer. Every process on this host shares
+ * a clock, so comparing origin timestamps across workers is sound.
+ */
+const goalWrittenAt = new Map<string, number>();
+
+/** What a replicator is handed for each LOCAL declaration (WI-6594). */
+export interface AgentStampPatchEvent {
+  ownerId: string;
+  patch: Partial<AgentStateStamp>;
+  /** Origin-process wall clock, so a receiver can order concurrent goal writes. */
+  at: number;
+}
+
+/**
+ * Installed by the cluster wiring; `null` on a single-process host, where this
+ * module behaves exactly as it did before WI-6594.
+ *
+ * Never called for a REPLICATED apply — only local declarations publish, which is
+ * what stops the primary's relay from echoing a patch back around the ring.
+ */
+let publish: ((event: AgentStampPatchEvent) => void) | null = null;
+
+/**
+ * Install (or clear, with `null`) the cross-worker replicator. Injectable rather
+ * than imported so this module keeps no dependency on `node:cluster` and stays
+ * unit-testable with a plain function.
+ */
+export function setAgentStampPublisher(fn: ((event: AgentStampPatchEvent) => void) | null): void {
+  publish = fn;
+}
+
+function upsert(
+  ownerId: string,
+  patch: Partial<AgentStateStamp>,
+  opts: { at?: number; replicated?: boolean } = {},
+): void {
   if (!ownerId) return;
+  const at = opts.at ?? Date.now();
+
+  // A goal write that is OLDER than the one already applied is dropped. Only
+  // reachable via replication (a local process's own writes arrive in order), and
+  // it is what keeps a slow relay from resurrecting a goal the agent has since
+  // put down.
+  if ('goalRef' in patch) {
+    const seen = goalWrittenAt.get(ownerId);
+    if (seen != null && at < seen) return;
+    goalWrittenAt.set(ownerId, at);
+  }
+
   const prev = stamps.get(ownerId);
   const next: AgentStateStamp = {
     intentEventId: prev?.intentEventId ?? null,
@@ -105,8 +189,60 @@ function upsert(ownerId: string, patch: Partial<AgentStateStamp>): void {
     // Map preserves insertion order and we re-insert on every write, so the
     // first key is the least-recently-written owner.
     const oldest = stamps.keys().next();
-    if (!oldest.done) stamps.delete(oldest.value);
+    if (!oldest.done) {
+      stamps.delete(oldest.value);
+      goalWrittenAt.delete(oldest.value);
+    }
   }
+
+  if (!opts.replicated && publish) {
+    // Best-effort, exactly like the telemetry it feeds: a replication channel that
+    // throws must never be able to fail the tool call that declared the goal.
+    try {
+      publish({ ownerId, patch, at });
+    } catch {
+      /* a dead/draining IPC channel is not this caller's problem */
+    }
+  }
+}
+
+/**
+ * Apply a declaration another process made (WI-6594). Does NOT re-publish, so the
+ * primary's relay cannot loop.
+ *
+ * Per-field ordering rules, applied here rather than at the sender because only
+ * the receiver knows what it already holds:
+ *   · `intentEventId` / `assumptionSetId` — MONOTONIC. Both are PG sequence ids,
+ *     so a lower arrival is a reordered message, never a newer declaration, and
+ *     applying it would silently rewind the set every later call claims to have
+ *     been made under. (`noteAssumptionAsserted` already reasons this way for the
+ *     local path; replication needs the same guard for the same reason.)
+ *   · `goalRef` — LAST WRITE WINS by origin timestamp, enforced in `upsert`.
+ */
+export function applyReplicatedStamp(event: AgentStampPatchEvent): void {
+  const { ownerId, patch, at } = event;
+  if (!ownerId || !patch) return;
+  const prev = stamps.get(ownerId);
+  const next: Partial<AgentStateStamp> = {};
+
+  if ('intentEventId' in patch) {
+    const incoming = patch.intentEventId;
+    if (incoming != null && Number.isFinite(incoming) && (prev?.intentEventId == null || incoming > prev.intentEventId)) {
+      next.intentEventId = incoming;
+    }
+  }
+  if ('assumptionSetId' in patch) {
+    const incoming = patch.assumptionSetId;
+    if (incoming != null && Number.isFinite(incoming) && (prev?.assumptionSetId == null || incoming > prev.assumptionSetId)) {
+      next.assumptionSetId = incoming;
+    }
+  }
+  // `goalRef: null` is a REAL value (the agent put the work down), so membership —
+  // not truthiness — decides whether the goal is being written.
+  if ('goalRef' in patch) next.goalRef = asGoalRef(patch.goalRef ?? null);
+
+  if (Object.keys(next).length === 0) return;
+  upsert(ownerId, next, { at, replicated: true });
 }
 
 /**
@@ -154,9 +290,12 @@ export function readAgentStateStamp(ownerId: string | null | undefined): AgentSt
   return stamps.get(ownerId) ?? EMPTY_STAMP;
 }
 
-/** Test seam — the module holds process-global state. */
+/** Test seam — the module holds process-global state. Clears the installed
+ *  replicator too, so one test's fake publisher cannot leak into the next. */
 export function resetAgentStateStamps(): void {
   stamps.clear();
+  goalWrittenAt.clear();
+  publish = null;
 }
 
 /** Test/diagnostic seam: how many owners are currently held. */
