@@ -60,6 +60,9 @@ import {
 } from './tool-error-classifier';
 import type { ImprovementSeverity } from './policy';
 import type { LearningSloOptions } from './learning-slo';
+// Type-only (erased at runtime, so no import cycle with engagement.ts, which
+// type-imports CollectorResult/WatchdogSignal from here).
+import type { EngagementCollectorOptions } from '../../endpoint-ipc/engagement';
 import { isLoopArmOwnerRole } from '../routines/autoloop-chronic-failure';
 import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 
@@ -555,7 +558,7 @@ export async function readWatchdogKeyDups(keys: string[]): Promise<WatchdogKeyDu
  * tunables (learning-slo.ts LEARNING_SLO_DEFAULTS) so the five SLO sensors
  * tune from the same routine payload as every other collector.
  */
-export interface CollectOptions extends LearningSloOptions {
+export interface CollectOptions extends LearningSloOptions, EngagementCollectorOptions {
   /** Lookback for the red-test sweep. Default 6h. */
   redTestWindowHours?: number;
   /** Minimum fail count in the window (and the latest run must be a fail). Default 3. */

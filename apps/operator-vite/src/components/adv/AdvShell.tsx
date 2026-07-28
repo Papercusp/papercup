@@ -582,7 +582,13 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
   useShortcutAction('goto.insights', () => void setActiveTab('insights'));
 
   return (
-    <div className="pc-advshell">
+    // data-testid is the packaged perf suite's contract for "the OPERATOR shell
+    // is up, not a first-run lookalike" (tools/perf-test/wdio/app-mount.ts,
+    // EI-18889416741921988). It keyed on `.pc-advshell` before, which is a
+    // styling class nothing stopped a refactor from renaming — and the suite had
+    // no way to tell the operator UI from /onboarding, so it measured the wrong
+    // screen for its entire existence. Renaming this testid breaks that suite.
+    <div className="pc-advshell" data-testid="operator-shell">
       <header className="pc-advshell__header">
         {/* The tab strip is the TOPMOST chrome (owner ask 2026-07-27). What used
             to sit above it — the "ADVANCED ORCHESTRATION / <title>" copy and the

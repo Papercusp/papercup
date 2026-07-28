@@ -63,6 +63,7 @@ interface EgressProbe {
   /** Positive control — see the assertion order below. */
   resourceEntries: number;
   appMounted: boolean;
+  shellPresent: boolean;
   /**
    * What the document IS at probe time. Present so a blank sample can say WHY it
    * is blank: `waitForAppMount` proves a real app existed before the pause, so a
@@ -72,6 +73,14 @@ interface EgressProbe {
    */
   url: string;
   readyState: string;
+  /**
+   * Identity of the document, minted by `waitForAppMount` and dying with the
+   * document. Compared against the mount's token this is DEFINITIVE — where
+   * `resourceEntries === 0` was only ever an inference, and one that cannot
+   * distinguish "the webview was replaced" from "resource timing records nothing
+   * here". Those need opposite fixes, so the sample must not conflate them.
+   */
+  docToken: string | null;
 }
 
 describe("Packaged Papercusp desktop — webview HTTP egress", () => {
@@ -80,7 +89,7 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
     //    control: an unloaded page trivially reports zero egress, and a green
     //    "no HTTP" result from a blank webview is the most dangerous possible
     //    false pass — it looks exactly like success.
-    await waitForAppMount(browser);
+    const mount = await waitForAppMount(browser);
 
     // 2. Sample across a full poll tick, so a recurring escape cannot hide in the
     //    gap between first paint and the first background refresh.
@@ -97,8 +106,13 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
         monitorPresent: Boolean(monitor),
         resourceEntries: performance.getEntriesByType("resource").length,
         appMounted: Boolean(document.querySelector("#root")?.firstElementChild),
+        shellPresent: Boolean(
+          document.querySelector('[data-testid="operator-shell"], .pc-advshell'),
+        ),
         url: String(window.location?.href ?? "(no location)"),
         readyState: String(document.readyState),
+        docToken:
+          (window as unknown as { __papercusp_perf_doc__?: string }).__papercusp_perf_doc__ ?? null,
       };
     });
 
@@ -119,8 +133,11 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
     );
 
     // 4. POSITIVE CONTROL FIRST — assert the SAMPLE before anything about the
-    //    detector. Order matters here for diagnosis, not for correctness: both
-    //    orderings fail the same run, but only this one names the right cause.
+    //    detector, and assert it in the order that NARROWS: same document? → app
+    //    still there? → sensor recording anything? Order matters for diagnosis,
+    //    not for correctness: every ordering fails the same run, but only this
+    //    one names the right cause, and each step rules out the readings that
+    //    would otherwise be misattributed to the step after it.
     //
     //    Learned the hard way (2026-07-28). The first two packaged runs both
     //    reported `monitorPresent: false` and failed on the detector assertion —
@@ -130,30 +147,68 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
     //
     //        appMounted: false, resourceEntries: 0, report: null
     //
-    //    `resourceEntries: 0` is only possible on a FRESH document. The app had
-    //    mounted (`waitForAppMount` throws, and did not), so the webview was
-    //    REPLACED during the sample pause — taking the timeline, and the detector
-    //    installed on that window, with it. "No detector" was a downstream
-    //    symptom of "no document"; blaming the detector cost two rebuild cycles.
+    //    That was read as "the document was replaced" — a reasonable inference
+    //    from `resourceEntries: 0`, and still only an inference. It could equally
+    //    have meant resource timing records nothing under this webview's custom
+    //    protocol, which needs the opposite fix. The `docToken` below settles it
+    //    outright instead, and 4c gives the blind-sensor case its own name.
     //
     //    A blank page cannot report on a detector, so ask whether we have a page
     //    before asking what the page contains.
     // `expect-webdriverio` takes no assertion-message argument, so the diagnosis
     // is thrown explicitly — the message IS the deliverable here, since a bare
     // "expected false to be true" is what sent the investigation the wrong way.
-    if (!probe.appMounted || probe.resourceEntries === 0) {
+    const sampleContext =
+      `  mounted at:      ${mount.url}\n` +
+      `  probing:         ${probe.url}\n` +
+      `  docToken:        ${mount.docToken} → ${probe.docToken ?? "(absent)"}\n` +
+      `  appMounted:      ${probe.appMounted}\n` +
+      `  shellPresent:    ${probe.shellPresent}\n` +
+      `  resourceEntries: ${mount.resourceEntries} → ${probe.resourceEntries}\n` +
+      `  readyState:      ${probe.readyState}\n`;
+
+    // 4a. Is this even the same document we mounted? DEFINITIVE, both ways: the
+    //     token is minted into `window` at mount and dies with the document, so
+    //     a changed one proves replacement outright. This used to be inferred
+    //     from `resourceEntries === 0`, which is not the same claim and sent two
+    //     investigations at the detector instead of at the navigation.
+    if (probe.docToken !== mount.docToken) {
       throw new Error(
-        `webview has no mounted app at probe time — the sample is void, NOT clean.\n` +
-          `  appMounted:      ${probe.appMounted}\n` +
-          `  resourceEntries: ${probe.resourceEntries}   (a live boot measures ~249)\n` +
-          `  url:             ${probe.url}\n` +
-          `  readyState:      ${probe.readyState}\n\n` +
-          `waitForAppMount SUCCEEDED before the ${Math.round(SAMPLE_WINDOW_MS / 1000)}s sample ` +
-          `window (it throws on timeout), so a real app WAS mounted and the document was then ` +
-          `REPLACED: a reload, a navigation, or a crashed webview. resourceEntries=0 is only ` +
-          `possible on a fresh document.\n` +
-          `Do NOT read a missing detector or a zero egress count from this run — both are ` +
-          `downstream of having no page at all.`,
+        `the webview was REPLACED during the ${Math.round(SAMPLE_WINDOW_MS / 1000)}s sample — the ` +
+          `sample is void, NOT clean.\n${sampleContext}\n` +
+          `A reload, a navigation, or a crashed webview took the timeline AND the detector ` +
+          `installed on the old window with it. Do NOT read a missing detector or a zero egress ` +
+          `count from this run: both are downstream of measuring a different document than the ` +
+          `one that mounted.`,
+      );
+    }
+
+    // 4b. Same document, but did the app survive in it?
+    if (!probe.appMounted || !probe.shellPresent) {
+      throw new Error(
+        `the operator shell is gone at probe time (same document) — the sample is void, NOT ` +
+          `clean.\n${sampleContext}\n` +
+          `The document was NOT replaced, so this is a client-side unmount or route change out of ` +
+          `the operator shell (a crashed render, a redirect into first-run) rather than a reload.`,
+      );
+    }
+
+    // 4c. Same document, app alive, and STILL no resource timings. That is not a
+    //     blank page — it means the sensor this whole spec is built on records
+    //     nothing in this environment, e.g. because the packaged app is served
+    //     over the `papercusp://` custom protocol rather than HTTP. A blind
+    //     sensor reports the same clean zero as a clean shell, so it must fail
+    //     LOUDLY and with its own name: "no egress observed" and "unable to
+    //     observe egress" need opposite fixes.
+    if (probe.resourceEntries === 0) {
+      throw new Error(
+        `resource timing recorded NOTHING while a live operator shell was rendered — this spec's ` +
+          `sensor is BLIND here, it did not observe a clean run.\n${sampleContext}\n` +
+          `PerformanceResourceTiming is the sensor: an IPC-routed request leaves no entry, which is ` +
+          `only meaningful if entries appear for requests that DO hit the network. Zero entries on a ` +
+          `mounted shell means the API records nothing in this webview — check whether the packaged ` +
+          `app serves over the papercusp:// custom protocol (custom schemes need not populate ` +
+          `resource timing) and pick a sensor that works there before trusting any egress verdict.`,
       );
     }
     expect(probe.resourceEntries).toBeGreaterThan(20);

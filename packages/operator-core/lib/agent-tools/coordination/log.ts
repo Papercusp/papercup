@@ -91,7 +91,12 @@ function ensureCoordFlagInit(): void {
   // flag is what makes that re-entrancy terminate.
   if (coordFlagInitDone) return;
   coordFlagInitDone = true;
-  coordPerWorkspaceOn = COORD_PER_WORKSPACE_DEFAULT();
+  // SEED ONLY IF UNRESOLVED (`??=`, never `=`). `refreshCoordPerWorkspace()` is
+  // exported and may already have resolved a REAL value before the first call
+  // that inits us — a plain assignment here silently clobbers it back to the
+  // default. That is not hypothetical: it reds log.test.ts's "flag is OFF" case,
+  // which sets an override, awaits the refresh, and then reads the scope.
+  coordPerWorkspaceOn ??= COORD_PER_WORKSPACE_DEFAULT();
   onFlagChange((key) => {
     if (key === null || key === FLAGS.COORD_PER_WORKSPACE) void refreshCoordPerWorkspace();
   });
@@ -111,7 +116,7 @@ export async function refreshCoordPerWorkspace(): Promise<void> {
     // WI-6588: fall back to the flag's DEFAULT, never to the dead 'default'
     // partition — an unreachable flag store must not silently re-point coord at
     // a partition the cutover retired.
-    coordPerWorkspaceOn = COORD_PER_WORKSPACE_DEFAULT;
+    coordPerWorkspaceOn = COORD_PER_WORKSPACE_DEFAULT();
   } finally {
     coordFlagLoaded = true;
   }
@@ -126,20 +131,22 @@ export async function refreshCoordPerWorkspace(): Promise<void> {
  * can take the same guarantee.
  */
 export function coordScopeReady(): Promise<void> {
+  ensureCoordFlagInit();
   if (coordFlagLoaded) return Promise.resolve();
   coordFlagFirstLoad ??= refreshCoordPerWorkspace();
   return coordFlagFirstLoad;
 }
-void coordScopeReady();
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.COORD_PER_WORKSPACE) void refreshCoordPerWorkspace();
-});
 
 /** The coord scope to use NOW (F-C1): the request's active workspace when the
  *  flag is ON, else the legacy shared `default` partition. Before the flag cache
  *  has loaded this answers from the flag's DEFAULT rather than assuming OFF
  *  (WI-6588) — an unloaded cache must not silently name a retired partition. */
 export function coordScopeWorkspace(): string {
+  // Seeds the cache from the flag's own default on the very first call, so the
+  // sync answer here is the flag's DEFAULT (never a hardcoded/dead partition)
+  // even before the async refresh has resolved — the WI-6588 guarantee, now
+  // established on first use instead of at import.
+  ensureCoordFlagInit();
   return coordPerWorkspaceOn ? activeWorkspaceId() : DEFAULT_COORD_WORKSPACE;
 }
 

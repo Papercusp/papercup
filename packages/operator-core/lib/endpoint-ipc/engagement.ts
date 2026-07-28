@@ -240,6 +240,18 @@ export function engagementSignals(assessment: EngagementAssessment): WatchdogSig
   ];
 }
 
+/**
+ * Tunables, in the repo's collector convention: the watchdog's `CollectOptions`
+ * extends this (alongside `LearningSloOptions`) so the single shared options bag
+ * carries them to the collector.
+ */
+export interface EngagementCollectorOptions {
+  /** Uptime below which the bridge has not had a fair chance to be dialled. */
+  engagementGraceMs?: number;
+  /** Bypassing clients that count as proof a client exists to be carried. */
+  engagementMinBypassClients?: number;
+}
+
 export interface EngagementCollectorDeps {
   /**
    * Clients reaching this host over the transport IPC was meant to replace.
@@ -259,7 +271,7 @@ export interface EngagementCollectorDeps {
  * nothing" in the tick record. A permanently silent detector is the bug.
  */
 export async function endpointIpcEngagementCollector(
-  opts: { engagementGraceMs?: number; engagementMinBypassClients?: number } = {},
+  opts: EngagementCollectorOptions = {},
   deps: EngagementCollectorDeps = {},
 ): Promise<CollectorResult> {
   const now = deps.now ?? Date.now;
