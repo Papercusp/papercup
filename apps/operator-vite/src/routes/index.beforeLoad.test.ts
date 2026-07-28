@@ -3,11 +3,23 @@
  * The `/` entry-route `beforeLoad` — the first-run gateway that used to HANG
  * forever on a wedged backend (bare `fetch`, no timeout) and freeze the desktop
  * blank on launch (WI-2817). These lock the post-fix contract:
- *   - backend answers, wizard finished  → /adv
- *   - backend answers, wizard unfinished → first-run target (never /adv)
- *   - backend answers non-2xx            → first-run target
+ *   - backend answers 2xx, wizard finished   → /adv
+ *   - backend answers 2xx, wizard unfinished → first-run target (never /adv)
+ *   - backend answers 5xx                    → /adv, NEVER first-run
+ *   - backend answers 4xx                    → /adv, NEVER first-run
  *   - backend UNREACHABLE (retries exhausted) → /adv (recoverable surface,
  *     NOT a hang and NOT onboarding) — the core resilience change.
+ *
+ * The two non-2xx cases INVERT what this file previously asserted, deliberately
+ * (EI-18889416741921988). The old contract — "non-2xx → first-run" — meant a
+ * returning user whose sidecar lagged the webview got a 502 from the shell's own
+ * proxy and landed in the onboarding tutorial, which is precisely the outcome the
+ * UNREACHABLE case beside it was written to prevent. The endpoint answers a
+ * genuine fresh install with 200 + `{ step_status: {} }`, so a non-2xx is never
+ * evidence about the user at all — only that the backend could not answer.
+ *
+ * Found by the packaged perf suite, which had been measuring `/onboarding` while
+ * publishing the numbers as the operator shell.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -64,10 +76,47 @@ describe('/ entry beforeLoad (WI-2817 resilience)', () => {
     expect(['/setup', '/onboarding']).toContain(r.to);
   });
 
-  it('non-2xx response → a first-run target', async () => {
-    stubFetch((async () => new Response('nope', { status: 500 })) as typeof fetch);
+  it('502 from the shell proxy (sidecar still booting) → /adv, NEVER first-run', async () => {
+    // The exact packaged-app failure: the webview is served from disk by the
+    // papercusp:// protocol handler, so the SPA can render seconds before its
+    // sidecar listens, and the shell's proxy answers 502 in that gap.
+    stubFetch((async () =>
+      new Response('papercusp: upstream error: error sending request', {
+        status: 502,
+      })) as typeof fetch);
     const r = await landing();
-    expect(['/setup', '/onboarding']).toContain(r.to);
+    expect(r.to).toBe('/adv');
+  });
+
+  it('a 5xx that RECOVERS within the budget → the recovered answer decides', async () => {
+    // Waiting is the whole point of treating 5xx as transient: the second
+    // attempt is the sidecar having finished booting.
+    let calls = 0;
+    stubFetch((async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response('booting', { status: 503 })
+        : new Response(JSON.stringify({ finished_at: '2026-01-01T00:00:00Z' }), { status: 200 });
+    }) as typeof fetch);
+    const r = await landing();
+    expect(r.to).toBe('/adv');
+    expect(calls).toBeGreaterThan(1);
+  });
+
+  it('4xx response → /adv, NEVER first-run (and does not sit out the budget)', async () => {
+    // A 4xx will not fix itself, so it must not burn the settle budget — but it
+    // is still not a statement about the user.
+    const started = Date.now();
+    stubFetch((async () => new Response('nope', { status: 404 })) as typeof fetch);
+    const r = await landing();
+    expect(r.to).toBe('/adv');
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('2xx with an unreadable body → /adv, NEVER first-run', async () => {
+    stubFetch((async () => new Response('<html>not json</html>', { status: 200 })) as typeof fetch);
+    const r = await landing();
+    expect(r.to).toBe('/adv');
   });
 
   it('UNREACHABLE backend (fetch keeps failing) → /adv, not a hang', async () => {

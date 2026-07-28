@@ -1,4 +1,4 @@
-import { createFileRoute, isRedirect, redirect } from '@tanstack/react-router';
+import { createFileRoute, redirect } from '@tanstack/react-router';
 import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 import { getFlagSnapshot, loadFlags } from '@papercusp/flags/client';
 import { fetchWithTimeout } from '../lib/route-fetch';
@@ -44,6 +44,64 @@ async function onboardingFlagEnabled(): Promise<boolean> {
 }
 
 /**
+ * What the gateway endpoint actually told us.
+ *
+ * The distinction this type exists to force: **"you are a new user" and "I could
+ * not find out" are different answers**, and only the first may route to
+ * first-run. `GET /api/desktop/setup-wizard-state` answers a genuine fresh
+ * install with **200 + `{ step_status: {} }`** — it defaults the row rather than
+ * erroring (see the route handler) — so a non-2xx is NEVER evidence of a first
+ * run. It only ever means the backend could not answer.
+ */
+export type GatewayAnswer =
+  | { kind: 'finished' }
+  | { kind: 'first-run' }
+  | { kind: 'inconclusive'; why: string; transient: boolean };
+
+/**
+ * Classify one gateway response. Pure; exported for tests.
+ *
+ * `transient` decides whether waiting can help: a 5xx is the sidecar still
+ * booting (the packaged app serves this SPA from the `papercusp://` protocol
+ * handler ON DISK, so the UI can render seconds before its sidecar listens, and
+ * the shell's proxy answers 502 in the gap). A 4xx will not fix itself, so it is
+ * inconclusive-and-permanent: stop waiting, but still never first-run.
+ */
+export function classifyGatewayResponse(status: number, body: unknown): GatewayAnswer {
+  if (status >= 500) {
+    return { kind: 'inconclusive', why: `backend answered ${status}`, transient: true };
+  }
+  if (status < 200 || status >= 300) {
+    return { kind: 'inconclusive', why: `backend answered ${status}`, transient: false };
+  }
+  // A 2xx whose body did not parse is not a statement about the user either.
+  // `PARSE_FAILED` is passed for that case rather than `null`, because `null` is
+  // also what a literal `null` body would produce and the two must not merge.
+  if (body === PARSE_FAILED || typeof body !== 'object' || body === null) {
+    return { kind: 'inconclusive', why: 'backend answered 2xx with an unreadable body', transient: false };
+  }
+  const finishedAt = (body as { finished_at?: unknown }).finished_at;
+  return typeof finishedAt === 'string' && finishedAt ? { kind: 'finished' } : { kind: 'first-run' };
+}
+
+/** Sentinel for "the response body could not be parsed" — see above. */
+export const PARSE_FAILED = Symbol('gateway-body-parse-failed');
+
+/**
+ * How long to keep waiting on a transient-inconclusive gateway before landing on
+ * the recoverable surface.
+ *
+ * Bounded by what the two wrong answers cost. Waiting too long shows
+ * "Connecting…" on a genuinely broken box, where `/adv` would at least render
+ * and reconnect itself via the resilient transports + OfflineIndicator. Waiting
+ * too little re-opens the bug this constant exists for. The app's own
+ * `operator_boot_timeout` is 120s, so 30s does not claim the sidecar is dead —
+ * it claims we have waited long enough to stop blocking the UI on it.
+ */
+const GATEWAY_SETTLE_BUDGET_MS = 30_000;
+const GATEWAY_RETRY_BACKOFF_MS = 750;
+
+/**
  * A wedged/mid-restart backend used to hang this gateway fetch forever (bare
  * `fetch`, no timeout) → the router stayed `status:'pending'` → blank content
  * under a stuck `bprogress-busy` bar → "desktop isn't launching, it's stalling;
@@ -52,46 +110,58 @@ async function onboardingFlagEnabled(): Promise<boolean> {
  * enough to be an actual outage the `pendingComponent` shows an honest
  * "Connecting…" instead of a blank screen (never on the sub-second happy path,
  * gated by `pendingMs`).
+ *
+ * THE FIRST-RUN RULE (EI-18889416741921988, found by the packaged perf suite
+ * 2026-07-28). Only a CONCLUSIVE 2xx answer may route to first-run. This used to
+ * treat any non-2xx as "unfinished wizard" — so a returning user whose sidecar
+ * was a few seconds behind the webview got a 502 from the shell's own proxy and
+ * was dumped into the onboarding tutorial. That is the exact outcome the
+ * unreachable branch below was written to prevent, and it leaked through the
+ * *answered-badly* door beside it: `fetchWithTimeout` deliberately hands a
+ * non-2xx straight back for the caller to interpret, and the caller read it as a
+ * verdict about the USER. Every packaged perf run had been measuring
+ * `/onboarding` for this reason.
  */
 export const Route = createFileRoute('/')({
   pendingMs: 700,
   pendingComponent: ConnectingScreen,
   beforeLoad: async () => {
-    let res: Response;
-    try {
-      res = await fetchWithTimeout('/api/desktop/setup-wizard-state', {
-        timeoutMs: 4000,
-        retries: 2,
-        init: { credentials: 'same-origin' },
-      });
-    } catch {
-      // Backend UNREACHABLE after retries (timeout/network). This is the
-      // substrate-restart / cold-start blip, NOT a genuine first run — a first
-      // run's sidecar is serving this very page, so setup-wizard-state would
-      // have answered. A returning user must not be dumped into onboarding by a
-      // transient outage, so land on /adv (the primary surface), which
-      // reconnects via the resilient transports + OfflineIndicator and recovers
-      // WITHOUT a manual relaunch. No response arrived → nothing to swallow.
-      throw redirect({ to: '/adv', search: { tab: 'harnesses' } });
-    }
-    try {
-      if (!res.ok) throw redirect({ to: firstRunTarget(await onboardingFlagEnabled()) });
-      const state = (await res.json()) as { finished_at?: string };
-      if (!state?.finished_at) {
+    const adv = () => redirect({ to: '/adv', search: { tab: 'harnesses' } });
+    const deadline = Date.now() + GATEWAY_SETTLE_BUDGET_MS;
+
+    for (;;) {
+      let answer: GatewayAnswer;
+      try {
+        const res = await fetchWithTimeout('/api/desktop/setup-wizard-state', {
+          timeoutMs: 4000,
+          retries: 2,
+          init: { credentials: 'same-origin' },
+        });
+        // A malformed/non-JSON body is inconclusive too — it is not a statement
+        // about the user either, and it must not fall through to first-run.
+        const body = await res.json().catch(() => PARSE_FAILED);
+        answer = classifyGatewayResponse(res.status, body);
+      } catch {
+        // Backend UNREACHABLE after retries (timeout/network). The
+        // substrate-restart / cold-start blip: keep waiting within the budget,
+        // then land on /adv — never on first-run.
+        answer = { kind: 'inconclusive', why: 'backend unreachable', transient: true };
+      }
+
+      if (answer.kind === 'finished') {
+        // /adv is the operator's primary surface; /harness is retired as a
+        // landing (it now redirects here too). Land on the harnesses tab —
+        // the mission-control / feature-queue equivalent.
+        throw adv();
+      }
+      if (answer.kind === 'first-run') {
         throw redirect({ to: firstRunTarget(await onboardingFlagEnabled()) });
       }
-      // /adv is the operator's primary surface; /harness is retired as a
-      // landing (it now redirects here too). Land on the harnesses tab —
-      // the mission-control / feature-queue equivalent.
-      throw redirect({ to: '/adv', search: { tab: 'harnesses' } });
-    } catch (err) {
-      // A thrown TSR redirect must propagate; only a malformed/parse failure
-      // falls through to the safe first-run landing. TSR `redirect()` returns a
-      // `Response` with the navigation options at `err.options.to`, so the
-      // old `'to' in err` check incorrectly swallowed every redirect from
-      // this beforeLoad — including the success path — and forced /setup.
-      if (isRedirect(err)) throw err;
-      throw redirect({ to: firstRunTarget(await onboardingFlagEnabled()) });
+      // Inconclusive. Waiting only helps a transient one, and only inside the
+      // budget; otherwise take the recoverable surface, which reconnects on its
+      // own without a manual relaunch.
+      if (!answer.transient || Date.now() >= deadline) throw adv();
+      await new Promise((resolve) => setTimeout(resolve, GATEWAY_RETRY_BACKOFF_MS));
     }
   },
 });

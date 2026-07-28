@@ -248,6 +248,35 @@ describe('endpointIpcEngagementCollector', () => {
     expect(r.signals).toEqual([]);
   });
 
+  it('DEFAULT bypass probe reads the real stream registry (no injected port)', async () => {
+    // REGRESSION GUARD. Every other test here injects `readBypassClients`, so the
+    // default path shipped untested — and it was wrong: it used `require()` in an
+    // ESM package, throwing a ReferenceError that the collector's own catch
+    // swallowed into a permanent bypassClients=0. That silently disables the only
+    // clause that can make this detector fire, i.e. it turns the detector into an
+    // instance of the very class it detects. This test exercises the real default.
+    const { activeStreams } = await import('../harness-active-streams');
+    const key = '__engagement_probe_test__';
+    activeStreams.set(key, {
+      abort: () => {},
+      createdAt: Date.now(),
+      remoteIP: '127.0.0.1',
+      slug: 'test',
+    });
+    try {
+      setLiveEndpointIpcServer(
+        { connectionCount: () => 0, acceptedTotal: () => 0, socketPath: '/tmp/x.sock' },
+        0,
+      );
+      const r = await endpointIpcEngagementCollector({}, { now: () => GRACE * 3 });
+      // The default probe must have SEEN the stream we just registered.
+      expect(r.note).toMatch(/bypassing HTTP stream clients [1-9]/);
+      expect(r.signals).toHaveLength(1);
+    } finally {
+      activeStreams.delete(key);
+    }
+  });
+
   it('honors tunable thresholds', async () => {
     setLiveEndpointIpcServer(
       { connectionCount: () => 0, acceptedTotal: () => 0, socketPath: '/tmp/x.sock' },
