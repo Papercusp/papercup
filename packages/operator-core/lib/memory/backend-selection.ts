@@ -56,9 +56,52 @@ const osTable = generated.operatorSettingsInHarnessShared;
  */
 export const DEFAULT_MEMORY_BACKEND = 'hybrid-pg';
 
+/**
+ * Backends that were REGISTERED once and are not anymore
+ * (memory-declaude-and-defaults-2026-07-28 P-004): the two ~/.claude-backed
+ * stores. See ./configure for why they went.
+ *
+ * This set exists because unregistering a backend is not a code-only change —
+ * its NAME can still be sitting in a live `operator_settings` row written months
+ * ago, or in someone's `PAPERCUSP_MEMORY_BACKEND` env. `getMemoryBackend()`
+ * throws loud on an unknown name (deliberately — it stops a typo'd env var from
+ * masquerading as "memory is just empty"), and that behavior is right for a typo
+ * but catastrophic here: the operator would throw on EVERY memory call, for a
+ * value the user chose legitimately before we removed it.
+ *
+ * So a retired name degrades to the default rather than failing. That is a
+ * migration, not a compatibility shim — nothing keeps the retired backend
+ * working, the stale VALUE is simply retired too. The store is unaffected either
+ * way: every backend here reads and writes the same `memory_canonical` rows.
+ */
+export const RETIRED_MEMORY_BACKENDS: ReadonlySet<string> = new Set(['claude-file', 'hybrid']);
+
+/** Warn once per retired name so a stale setting is visible in the log without spamming it. */
+const warnedRetired = new Set<string>();
+
+/**
+ * Map a raw choice (persisted row or env) to one that can actually resolve.
+ * A retired name becomes the default; anything else passes through untouched
+ * (an unknown-but-not-retired name must still throw at `getMemoryBackend()` —
+ * that is the typo guard, and swallowing it here would defeat it).
+ */
+function coerceRetired(choice: string): string {
+  if (!RETIRED_MEMORY_BACKENDS.has(choice)) return choice;
+  if (!warnedRetired.has(choice)) {
+    warnedRetired.add(choice);
+    console.warn(
+      `[memory] backend '${choice}' is retired (it stored memories in ~/.claude, which stopped ` +
+      `being load-bearing on 2026-07-13) — using '${DEFAULT_MEMORY_BACKEND}' instead. ` +
+      `Your memories are unaffected: every backend reads the same canonical Postgres store. ` +
+      `Pick a current backend on the memory settings page to clear this.`,
+    );
+  }
+  return DEFAULT_MEMORY_BACKEND;
+}
+
 /** The env fallback, evaluated live (tests may set it per-case). */
 function envDefault(): string {
-  return process.env.PAPERCUSP_MEMORY_BACKEND || DEFAULT_MEMORY_BACKEND;
+  return coerceRetired(process.env.PAPERCUSP_MEMORY_BACKEND || DEFAULT_MEMORY_BACKEND);
 }
 
 // undefined = not yet loaded from PG → fall back to env/default.
@@ -123,7 +166,10 @@ async function writeSetting(value: string): Promise<void> {
  */
 export function currentMemoryBackendChoice(): string {
   if (booted && Date.now() - loadedAtMs > CACHE_TTL_MS) refreshInBackground();
-  return cached ?? envDefault();
+  // Coerced on READ, not on write: the persisted row may predate a retirement,
+  // and rewriting the user's stored preference as a side effect of reading it
+  // would silently discard a choice they may want to see reflected in the UI.
+  return coerceRetired(cached ?? envDefault());
 }
 
 /**
@@ -143,7 +189,7 @@ export async function initMemoryBackendSelection(): Promise<void> {
 /** Read the persisted choice (independent of the cache); env/default if unset. */
 export async function readMemoryBackendChoice(): Promise<string> {
   const stored = await readSetting();
-  return stored ?? envDefault();
+  return coerceRetired(stored ?? envDefault());
 }
 
 /**
@@ -166,4 +212,8 @@ export function __resetMemoryBackendSelectionForTest(): void {
   booted = false;
   loadedAtMs = 0;
   refreshing = false;
+  // The retired-name warn-once latch is module state too. Leaving it set would
+  // make "does it warn?" depend on which test ran first — the warning fires on
+  // the FIRST case to touch a given name and silently not on the rest.
+  warnedRetired.clear();
 }

@@ -108,6 +108,45 @@ interface FeedbackStats {
   total_deletes: number;
 }
 
+/**
+ * Per-mode copy for the "Active store" selector
+ * (memory-declaude-and-defaults-2026-07-28 P-005).
+ *
+ * This replaced a single line that described `claude-file` as "your real Claude
+ * Code memory" and named only 2 of the 5 then-selectable modes. Both halves were
+ * a problem: the file-backed stores had already been retired (their topic files
+ * stopped being load-bearing 2026-07-13), and a user comparing the unexplained
+ * options had no way to know that the difference between them is RANKING, not
+ * storage — which is the question people actually ask before switching.
+ *
+ * Keyed by the registered backend name and rendered from `availableBackends`, so
+ * retiring or adding a backend changes this list without a second edit here; an
+ * unknown name still renders, just without prose.
+ */
+const BACKEND_DOCS: Record<string, { label: string; summary: string }> = {
+  'hybrid-pg': {
+    label: 'hybrid-pg (recommended)',
+    summary:
+      'Two searches over the same store, fused: a semantic one that matches meaning and paraphrases, ' +
+      'plus an exact-text one that reliably finds identifiers (WI-4522, PAPERCUSP_MEMORY_TIMEOUT, tool names) — ' +
+      'which semantic search alone tends to blur. Best recall by a wide margin: 98% vs 53% on a 40-pair ' +
+      'live comparison, for roughly +0.25s per search.',
+  },
+  mem0: {
+    label: 'mem0',
+    summary:
+      'Semantic search only. About 0.25s faster per search, but it misses exact identifiers the ' +
+      'vector space blurs together — 53% recall on the same comparison. Prefer hybrid-pg unless ' +
+      'search latency is the thing you are optimizing.',
+  },
+  noop: {
+    label: 'noop (memory off)',
+    summary:
+      'Turns the store off. Reads return nothing and writes fail loudly rather than silently ' +
+      'dropping facts. Nothing already stored is deleted.',
+  },
+};
+
 /** Kind suggestions for the add form — the unified taxonomy
  * (memory-taxonomy-and-debt-followups D-001); free text also accepted. */
 const KIND_SUGGESTIONS = ['user', 'feedback', 'project', 'reference'];
@@ -853,22 +892,50 @@ export default function MemoryPage() {
       })()}
 
       {availableBackends.length > 1 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-2)' }}>
-          <label htmlFor="memory-backend-select" style={{ fontSize: 13, color: 'var(--fg-mute)' }}>
-            Active store:
-          </label>
-          <Select
-            id="memory-backend-select"
-            value={currentBackend}
-            disabled={switchingBackend}
-            onChange={(value) => void switchBackend(value)}
-            ariaLabel="Active memory store"
-            triggerStyle={{ padding: '4px 8px', fontSize: 13, cursor: switchingBackend ? 'wait' : 'pointer' }}
-            options={availableBackends.map((b) => ({ value: b, label: b }))}
-          />
-          <span style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
-            <code>claude-file</code> = your real Claude Code memory; <code>mem0</code> = the semantic store. Applies live, no restart.
-          </span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-2)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <label htmlFor="memory-backend-select" style={{ fontSize: 13, color: 'var(--fg-mute)' }}>
+              Active store:
+            </label>
+            <Select
+              id="memory-backend-select"
+              value={currentBackend}
+              disabled={switchingBackend}
+              onChange={(value) => void switchBackend(value)}
+              ariaLabel="Active memory store"
+              triggerStyle={{ padding: '4px 8px', fontSize: 13, cursor: switchingBackend ? 'wait' : 'pointer' }}
+              options={availableBackends.map((b) => ({ value: b, label: BACKEND_DOCS[b]?.label ?? b }))}
+            />
+          </div>
+
+          {/* The question people actually have before switching — answered up
+              front, because the honest answer ("nothing happens to your data")
+              is not guessable from the option names. */}
+          <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: 0, lineHeight: 1.5 }}>
+            Every mode reads and writes the <strong>same</strong> memories, in one Postgres table.
+            Switching changes only <em>how</em> a memory is found — never what is stored, so nothing
+            is lost or needs re-importing, and you can switch back at any time. Applies live, no restart.
+          </p>
+
+          <dl style={{ margin: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {availableBackends.map((b) => {
+              const doc = BACKEND_DOCS[b];
+              const active = b === currentBackend;
+              return (
+                <div key={b} style={{ fontSize: 12, lineHeight: 1.5 }}>
+                  <dt style={{ display: 'inline', fontWeight: 600, color: active ? 'var(--fg)' : 'var(--fg-mute)' }}>
+                    <code>{b}</code>
+                    {active && (
+                      <span style={{ marginLeft: 6, fontWeight: 400, color: 'var(--good)' }}>· in use</span>
+                    )}
+                  </dt>
+                  {doc && (
+                    <dd style={{ display: 'inline', margin: 0, color: 'var(--fg-mute)' }}> — {doc.summary}</dd>
+                  )}
+                </div>
+              );
+            })}
+          </dl>
         </div>
       )}
 
