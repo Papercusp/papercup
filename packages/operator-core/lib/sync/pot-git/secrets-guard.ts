@@ -168,9 +168,12 @@ const FIXTURE_FILES: ReadonlySet<string> = new Set([
   // describe, arriving from a subsystem whose authors would never think to look
   // at this file. The general rule this makes explicit: ANY test of a
   // redaction/detection function is a fixture file, wherever it lives in the
-  // tree. Prefer the runtime escape hatch (pot_git:secrets_exemptions) when you
-  // have a superuser session — a workspace-scoped session cannot call it, which
-  // is why this static entry exists.
+  // tree. PREFER the runtime escape hatch (pot_git:secrets_exemptions) over
+  // adding an entry here: as of WI-6641 it is reachable from an ORDINARY
+  // workspace-scoped session (it was `workspace_forbidden` before — the reason
+  // this static entry had to be hand-written and deployed while the publish
+  // plane stayed frozen ~8h). A runtime exemption needs no code edit, no
+  // restart and no deploy; it applies on the very next git-sync tick.
   'packages/operator-core/lib/search/session-turn-parts.test.ts',
 ]);
 
