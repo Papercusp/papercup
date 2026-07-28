@@ -362,6 +362,62 @@ describe('SessionChatModal', () => {
 
       await waitFor(() => expect(screen.getByText('no roster row')).toBeTruthy());
       expect(screen.queryByText('su-live-1')).toBeNull();
+
+      // WI-6503 [owner 2026-07-27]: "remove the papercup icon from the chatbox
+      // for the chatboces where the conversation isnt with papercup." THIS is
+      // the leak — with no roster row the identity chip bows out and the row
+      // takes the pane's fallback icon, which used to be the hard-coded
+      // Papercup brand mark. Measured live before the fix: 11 of 12 avatars in
+      // a conversation with an su agent were this mark. Asserting on the brand
+      // SVG's own viewBox (uniquely "18 12 92 92") is the same signal the live
+      // probe used, so the guard and the live check agree.
+      const avatarSvgs = [...document.querySelectorAll('.oracle-msg-avatar svg')];
+      expect(avatarSvgs.length).toBeGreaterThan(0);
+      for (const svg of avatarSvgs) {
+        expect(svg.getAttribute('viewBox')).not.toBe('18 12 92 92');
+      }
+    });
+
+    it('WI-6503: a counterparty that IS papercup still gets the papercup mark — resolved from the roster entry, not a title match', async () => {
+      seedRoster([{ ownerId: 'su-live-1', fleetColor: null, fleetRole: null, agent: 'papercup' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'papercup reply' }]));
+      });
+
+      await waitFor(() => expect(screen.getByText('papercup reply')).toBeTruthy());
+      // The fix must not over-correct into "never show a cup": when the
+      // counterparty's own agent kind IS papercup, the cup is the CORRECT mark.
+      // That is the point of resolving from the roster entry instead of
+      // suppressing the icon wholesale — the item forbids a title match in
+      // either direction.
+      //
+      // Observed via the pane icon's always-rendered instance: ChatConversation
+      // uses `emptyState.icon` as the composer's input icon too, so this holds
+      // whether or not the transcript has rows. lucide stamps `lucide-<name>`.
+      expect(document.querySelector('.lucide-cup-soda')).toBeTruthy();
+      expect(document.querySelector('.lucide-terminal')).toBeNull();
+    });
+
+    it('WI-6503: a plain su counterparty (no agent kind) gets the neutral terminal mark, never the papercup cup', async () => {
+      seedRoster([{ ownerId: 'su-live-1', fleetColor: null, fleetRole: null, agent: null }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'su reply' }]));
+      });
+
+      await waitFor(() => expect(screen.getByText('su reply')).toBeTruthy());
+      // The owner's actual case. Both directions asserted so neither a revert
+      // to the brand mark nor a wholesale suppression passes.
+      expect(document.querySelector('.lucide-terminal')).toBeTruthy();
+      expect(document.querySelector('.lucide-cup-soda')).toBeNull();
+      for (const svg of document.querySelectorAll('.oracle-msg-avatar svg')) {
+        expect(svg.getAttribute('viewBox')).not.toBe('18 12 92 92');
+      }
     });
   });
 
