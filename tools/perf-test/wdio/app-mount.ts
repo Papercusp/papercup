@@ -44,6 +44,49 @@ export const APP_MOUNT_TIMEOUT_MS = Number(
 );
 
 /**
+ * Headroom the enclosing test framework must leave ON TOP of the mount wait,
+ * so the diagnosis below can actually be produced and printed.
+ *
+ * WHY THIS EXISTS (run 6, 2026-07-28). `mochaOpts.timeout` was `60_000` while
+ * `APP_MOUNT_TIMEOUT_MS` was `180_000`. Mocha therefore killed every spec a full
+ * two minutes before the mount wait could expire — so `mountTimeoutDiagnosis`
+ * NEVER RAN, not once, and all four specs failed with a bare `Error: Timeout`
+ * carrying no information whatsoever. The generous 180s budget justified in such
+ * detail above was a fiction: unreachable in principle, in every run since it
+ * landed.
+ *
+ * That is this suite's recurring defect wearing a new hat — a check whose
+ * failure mode is indistinguishable from its success mode, here degraded to a
+ * DIAGNOSIS THAT CAN NEVER FIRE. The fix is not a bigger number in the config;
+ * it is removing the ability of the two numbers to disagree. `wdio.conf.ts`
+ * derives its mocha timeout from `SPEC_TIMEOUT_MS`, and `app-mount.test.ts`
+ * asserts the ordering, so this cannot silently re-invert.
+ *
+ * 30s is sized for the WORK the diagnosis does, not padding: `firstRunDiagnosis`
+ * polls the gateway for up to 5s, and both paths issue several further
+ * `executeScript` round-trips while the app is by definition unhealthy.
+ */
+export const MOUNT_DIAGNOSIS_HEADROOM_MS = 30_000;
+
+/**
+ * The per-spec timeout this suite MUST run with. Never hardcode a spec timeout:
+ * import this, so the framework's patience is always strictly greater than the
+ * mount wait it encloses.
+ */
+export const SPEC_TIMEOUT_MS = APP_MOUNT_TIMEOUT_MS + MOUNT_DIAGNOSIS_HEADROOM_MS;
+
+/**
+ * How long a destroyed document must persist before we call the webview dead.
+ *
+ * Short, because this state is not a race: a document REPLACED after we already
+ * saw it render is either a navigation (the new document gets its own `#root`
+ * within a frame or two) or a death (no `#root`, ever). The dwell only exists so
+ * the instant between "old document torn down" and "new document parsed" cannot
+ * be mistaken for the terminal case.
+ */
+const WEBVIEW_DEATH_DWELL_MS = 2_000;
+
+/**
  * How long a first-run landing must persist before we call it terminal.
  *
  * The root route's gateway redirect is one-shot: once TanStack Router has
