@@ -901,11 +901,18 @@ describe('coord:send args schema (EI-7838: missing-summary must not be masked by
   const CROSS_FIELD_MSG =
     'pass { to, summary, expects } for one message, or items:[{ to, summary, expects }] for many distinct messages';
 
-  it('missing `summary` alone reports the actionable "pass { to, summary, expects }" message', () => {
+  // WI-6522 sharpened this: the refusal used to be the generic bulk-vs-single
+  // CROSS_FIELD_MSG for every single-send mistake, which is why 135 distinct
+  // senders bounced off it. The EI-7838 property under test is unchanged — a
+  // missing `summary` must be reported actionably — but "actionable" now means
+  // the message NAMES summary and is attributed to the summary path, so this
+  // asserts that property rather than the superseded wording.
+  it('missing `summary` alone is reported ON `summary`, naming the field (WI-6522; was the generic menu)', () => {
     const r = tool.args.safeParse({ to: ['bee-1'], expects: 'none', wake: true });
     expect(r.success).toBe(false);
     if (!r.success) {
-      expect(r.error.issues.map((i) => i.message)).toContain(CROSS_FIELD_MSG);
+      expect(r.error.issues.some((i) => i.path.join('.') === 'summary')).toBe(true);
+      expect(r.error.issues.map((i) => i.message).join(' | ')).toMatch(/needs `summary`/);
     }
   });
 
@@ -918,11 +925,23 @@ describe('coord:send args schema (EI-7838: missing-summary must not be masked by
     }
   });
 
-  it('EI-7838 repro: missing `summary` AND an invalid `wake` value together — the cross-field "need to+summary" message must still surface (previously the wake type error alone was reported, silently hiding the missing-summary problem)', () => {
+  // THE LOAD-BEARING PIN. Keep the property, not the wording: the missing-summary
+  // problem must still surface when a SIBLING field (`wake`) also fails. That is
+  // what a trailing .refine() got wrong (zod short-circuits it), and why the check
+  // lives in a z.preprocess. If someone moves it back onto the object, this reds.
+  //
+  // Note the payload is exactly the confirmed real-world mistake WI-6522 found in
+  // the wild twice in ten minutes: `body` supplied where `summary` was required.
+  // So this now also pins that the caller is told body does not satisfy summary.
+  it('EI-7838 repro: missing `summary` AND an invalid `wake` together — the missing-summary problem must STILL surface, never be hidden behind the wake error', () => {
     const r = tool.args.safeParse({ to: ['bee-1'], expects: 'none', body: 'test', wake: 'not-a-real-value' });
     expect(r.success).toBe(false);
     if (!r.success) {
-      expect(r.error.issues.map((i) => i.message)).toContain(CROSS_FIELD_MSG);
+      const msgs = r.error.issues.map((i) => i.message).join(' | ');
+      expect(r.error.issues.some((i) => i.path.join('.') === 'summary')).toBe(true);
+      expect(msgs).toMatch(/needs `summary`/);
+      // WI-6522: and it names why `body` did not count.
+      expect(msgs).toMatch(/does NOT satisfy `summary`/);
     }
   });
 
