@@ -83,6 +83,49 @@
  * worker's map. The hot-path READ is untouched — still one `Map.get`, no I/O, per
  * D-014 — because only the rare WRITES fan out. With no replicator installed
  * (single-process host, tests) behaviour is byte-identical to before.
+ *
+ * ── ⚠ REPLICATION DOES NOT SURVIVE A RESTART, AND `goalRef` DID NOT (WI-6595) ──
+ *
+ * Replication makes the ring COHERENT; it does not make it DURABLE. A deploy
+ * restarts every worker at once, so the whole ring's map is empty simultaneously
+ * and there is no peer left holding the value to relay. The two stamps then
+ * recover ASYMMETRICALLY, and only one of them recovers at all:
+ *   · `intentEventId` self-heals within minutes — every `coord:orient` /
+ *     `coord:declare-intent` rewrites it, and agents wake constantly.
+ *   · `goalRef` did NOT. `noteGoalClaimed` fires only when work is CLAIMED or
+ *     RELEASED, so an agent that claimed WI-X an hour before the deploy and is
+ *     still working it never writes the goal again — it stays null for the whole
+ *     rest of that claim.
+ *
+ * Measured live on 2026-07-28: rows carrying BOTH stamps went 587/hr -> 0/hr
+ * across the 02:00Z deploy while each stamp ALONE stayed healthy (265 intent-only
+ * + 237 goal-only in the 07:00Z hour). Per-owner, the collapse was total and
+ * simultaneous for every long-running session — 845 -> 0 co-stamped calls for one
+ * owner that stayed active throughout — which is what rules out a cluster split
+ * (those were the same processes) and points at the restart. The divergence metric
+ * needs both columns on ONE row, so `comparable` fell to zero every window and
+ * `lint:plane-ratchet` correctly judged the leg `regressed`, redding the fleet
+ * gate. Deploys run every ~15min-1h here, so this destroyed goal attribution
+ * routinely and then stayed destroyed.
+ *
+ * THE FIX: on a read that finds NO goal, schedule a fire-and-forget re-hydration
+ * from the DURABLE source — `resolveOwnerGoal`, the same four-leg resolver behind
+ * P-016's goal cell, which derives the goal from claims that live in Postgres and
+ * therefore outlive any process. The hot-path read is still one `Map.get` that
+ * never blocks and never does I/O (D-014): the fill lands in the map for the NEXT
+ * call, and this call still stamps the null it honestly had.
+ *
+ * Two properties worth stating because they are what make it safe:
+ *   · IT CANNOT RESURRECT A RELEASED GOAL. The durable resolver reads what the
+ *     agent HOLDS, so an agent that put the work down hydrates to null as well.
+ *     The read-vs-release RACE is handled by stamping the fill with the timestamp
+ *     the read STARTED, so `upsert`'s existing drop-if-older rule discards a fill
+ *     that a release overtook.
+ *   · IT ALSO FIXES A GAP NOBODY HAD FILED. `noteGoalClaimed` is only ever called
+ *     from the work-item claim/release path, so an agent whose goal comes from a
+ *     PLAN-ITEM claim, a fleet mission, or an author override never stamped one at
+ *     all. The durable resolver covers all four legs, so those agents now stamp a
+ *     goal for the first time.
  */
 
 import { asGoalRef } from './agent-goal-ref';
@@ -130,6 +173,110 @@ const stamps = new Map<string, AgentStateStamp>();
  * a clock, so comparing origin timestamps across workers is sound.
  */
 const goalWrittenAt = new Map<string, number>();
+
+/**
+ * Owner -> the earliest ms at which another durable goal re-hydration may start
+ * (WI-6595).
+ *
+ * ONE map serving two jobs, which is why it is a deadline and not a boolean:
+ *   · IN-FLIGHT GUARD. The deadline is written BEFORE the async read begins, so a
+ *     burst of calls for the same owner schedules exactly one query set, not one
+ *     per call. `tool_invocations` takes ~238,866 rows a day; anything weaker here
+ *     turns a cache miss into a stampede.
+ *   · RETRY BACKOFF. A miss right after a restart is EXPECTED to fail sometimes —
+ *     `resolveOwnerGoal` returns null when the PG fast path is not up yet, which
+ *     on a fresh boot is precisely when the first calls arrive. A permanent
+ *     "already asked" mark would make that transient null stick for the life of
+ *     the process, so the attempt lapses instead and the next call retries.
+ */
+const goalHydrateAfter = new Map<string, number>();
+
+/**
+ * Backoff between re-hydration attempts for one owner. Sized against the failure
+ * it exists to absorb: a boot-time PG gap is seconds, and an agent that genuinely
+ * holds nothing should not re-query more than once a minute however hot it is.
+ */
+const GOAL_HYDRATE_COOLDOWN_MS = 60_000;
+
+/** Resolves an owner's goal ref from DURABLE state. Returns null for "holds nothing". */
+export type AgentGoalRehydrator = (ownerId: string) => Promise<string | null>;
+
+/**
+ * The durable read, loaded lazily.
+ *
+ * ⚠ DYNAMIC `import()` ON PURPOSE, AND IT IS LOAD-BEARING TWICE OVER.
+ *   · CYCLE. This is a leaf module on the dispatcher's hot path;
+ *     `agent-goal-sources` reaches into the coordination tree, which imports back
+ *     here via `work-items.ts`. A static edge would close that loop.
+ *   · INSTALLATION. WI-6594 shipped `setAgentStampPublisher` as an injectable seam
+ *     and it read as dead code for a day because the wiring that installs it lives
+ *     two files away. A DEFAULT that works with no wiring at all cannot be left
+ *     uninstalled — the setter below is a test seam, not a prerequisite.
+ * The import cost is paid once per process, off the hot path, inside the
+ * fire-and-forget fill.
+ */
+async function defaultGoalRehydrator(ownerId: string): Promise<string | null> {
+  const { resolveOwnerGoal } = await import('./agent-tools/coordination/agent-goal-sources');
+  return (await resolveOwnerGoal(ownerId))?.ref ?? null;
+}
+
+let rehydrateGoal: AgentGoalRehydrator = defaultGoalRehydrator;
+
+/**
+ * Test seam — swap the durable read (pass `null` to restore the real one). Unlike
+ * the replicator this is NOT an installation point: the default above is the live
+ * production path.
+ */
+export function setAgentGoalRehydrator(fn: AgentGoalRehydrator | null): void {
+  rehydrateGoal = fn ?? defaultGoalRehydrator;
+}
+
+/**
+ * Fire-and-forget refill of a missing `goalRef` from durable state (WI-6595).
+ *
+ * Returns immediately — the caller is the dispatcher's hot path and D-014 forbids
+ * it blocking or doing I/O. The value lands for the NEXT call; this call still
+ * stamps the null it honestly had, which is the correct retrospective answer.
+ */
+function scheduleGoalRehydration(ownerId: string): void {
+  const now = Date.now();
+  if (now < (goalHydrateAfter.get(ownerId) ?? 0)) return;
+  // Claimed BEFORE the await — see the map's note; this IS the in-flight guard.
+  goalHydrateAfter.delete(ownerId);
+  goalHydrateAfter.set(ownerId, now + GOAL_HYDRATE_COOLDOWN_MS);
+  if (goalHydrateAfter.size > MAX_OWNERS) {
+    // Insertion order tracks recency (delete-then-set above), same as `stamps`.
+    const oldest = goalHydrateAfter.keys().next();
+    if (!oldest.done) goalHydrateAfter.delete(oldest.value);
+  }
+
+  void (async () => {
+    try {
+      const ref = await rehydrateGoal(ownerId);
+      // A null is an honest "holds nothing" — writing it would be a no-op against
+      // the null already there, and would pointlessly stamp `goalWrittenAt` and so
+      // start losing legitimate older-but-real writes to the drop-if-older rule.
+      if (ref == null) return;
+      upsert(
+        ownerId,
+        { goalRef: asGoalRef(ref) },
+        {
+          // `now` is the read's START, not its completion. If the agent released
+          // the work WHILE this query was in flight, that release wrote a LATER
+          // timestamp and `upsert` drops this fill instead of resurrecting a goal
+          // the agent has put down.
+          at: now,
+          // Not a local declaration: every worker reads the same durable source and
+          // refills itself, so fanning this out would relay a value the receiver can
+          // derive — and would put a stale read into peers' maps.
+          replicated: true,
+        },
+      );
+    } catch {
+      /* best-effort, exactly like the telemetry it feeds */
+    }
+  })();
+}
 
 /** What a replicator is handed for each LOCAL declaration (WI-6594). */
 export interface AgentStampPatchEvent {
@@ -192,6 +339,7 @@ function upsert(
     if (!oldest.done) {
       stamps.delete(oldest.value);
       goalWrittenAt.delete(oldest.value);
+      goalHydrateAfter.delete(oldest.value);
     }
   }
 
@@ -284,18 +432,28 @@ export function noteGoalClaimed(ownerId: string, goalRef: string | null): void {
 /**
  * The dispatcher's hot-path read: ONE Map.get, no I/O, never throws. An unknown
  * owner yields the all-null stamp, which is written as three NULLs.
+ *
+ * A MISSING GOAL ALSO SCHEDULES A DURABLE REFILL (WI-6595) — see
+ * `scheduleGoalRehydration`. That stays inside D-014's rule: this function still
+ * returns synchronously off a `Map.get` and still stamps whatever it actually had,
+ * so the refill can only help the NEXT call and can never delay or fail this one.
  */
 export function readAgentStateStamp(ownerId: string | null | undefined): AgentStateStamp {
   if (!ownerId) return EMPTY_STAMP;
-  return stamps.get(ownerId) ?? EMPTY_STAMP;
+  const stamp = stamps.get(ownerId) ?? EMPTY_STAMP;
+  if (stamp.goalRef == null) scheduleGoalRehydration(ownerId);
+  return stamp;
 }
 
 /** Test seam — the module holds process-global state. Clears the installed
- *  replicator too, so one test's fake publisher cannot leak into the next. */
+ *  replicator AND the goal re-hydrator, so one test's fake publisher or fake
+ *  durable read cannot leak into the next. */
 export function resetAgentStateStamps(): void {
   stamps.clear();
   goalWrittenAt.clear();
+  goalHydrateAfter.clear();
   publish = null;
+  rehydrateGoal = defaultGoalRehydrator;
 }
 
 /** Test/diagnostic seam: how many owners are currently held. */
