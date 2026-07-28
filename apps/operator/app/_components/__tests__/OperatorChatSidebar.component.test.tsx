@@ -542,7 +542,11 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     ];
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByTestId('drill-in-trigger'));
-    expect(routerPushSpy).toHaveBeenCalledWith('/adv?tab=hud&hudsession=su-abc123');
+    // Carries the workspace + harness context forward (see below) rather than
+    // pushing a bare `/adv?tab=hud&hudsession=…`.
+    expect(routerPushSpy).toHaveBeenCalledWith(
+      '/adv?tab=hud&ws=ws-test&slug=papercusp&hudsession=su-abc123',
+    );
   });
 
   it('a WORK-ITEM ref opens the work-item popup instead of navigating (the reported no-op)', () => {
@@ -569,7 +573,37 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     inboxState.items = [];
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByTestId('drill-in-trigger'));
-    expect(routerPushSpy).toHaveBeenCalledWith('/adv?tab=hud');
+    expect(routerPushSpy).toHaveBeenCalledWith('/adv?tab=hud&ws=ws-test&slug=papercusp');
+  });
+
+  /* Live-confirmed regression (2026-07-28): a drill-in that NAVIGATES used to
+     push a bare `/adv?tab=hud[&hudsession=…]`, dropping `?ws` and `?slug`.
+     Because `harnessSlug` resolves from `?slug`, the next work-item drill-in
+     then failed the harness gate and fell through to the bare-HUD fallback —
+     the exact visible no-op this plan fixes, reachable again in two clicks.
+     These assert the CONTEXT survives a navigation, and that view state does
+     not ride along with it. */
+  it('a navigating drill-in carries workspace + harness context so the NEXT work-item drill-in still resolves', () => {
+    drillState.ref = 'escalation:msg-9';
+    inboxState.items = [
+      { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
+    ];
+    render(<OperatorChatSidebar />);
+    fireEvent.click(screen.getByTestId('drill-in-trigger'));
+    const href = routerPushSpy.mock.calls[0][0] as string;
+    const params = new URLSearchParams(href.slice(href.indexOf('?')));
+    expect(params.get('ws')).toBe('ws-test');
+    expect(params.get('slug')).toBe('papercusp');
+  });
+
+  it('a navigating drill-in does NOT drag view state (an open popup) across the navigation', () => {
+    drillState.ref = 'health:some-panel';
+    inboxState.items = [];
+    render(<OperatorChatSidebar />);
+    fireEvent.click(screen.getByTestId('drill-in-trigger'));
+    const href = routerPushSpy.mock.calls[0][0] as string;
+    expect(href).not.toContain('wpop');
+    expect(href).not.toContain('wppop');
   });
 
   it('passes harnessSlug to OperatorChat — without it every chat ref pill is inert', () => {

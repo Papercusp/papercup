@@ -338,6 +338,32 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   // than in component state (repo convention: user-meaningful state is nuqs).
   const [, setOpenWorkItem] = useQueryState('wpop', parseAsString);
   const [, setOpenChatPlan] = useQueryState('wppop', parseAsString);
+  // A drill-in NAVIGATION must carry the workspace + harness context params
+  // forward. Pushing a bare `/adv?tab=hud[&hudsession=…]` drops `?ws` and
+  // `?slug` (confirmed live 2026-07-28: clicking an escalation card left the
+  // URL at `/adv?tab=hud&hudsession=…`, with the workspace no longer named),
+  // which is a defect twice over:
+  //   1. the user lands on a URL that no longer identifies their workspace, so
+  //      a reload/share resolves somewhere else;
+  //   2. `harnessSlug` resolves FROM `?slug` (useResolvedHarnessSlug, with only
+  //      a best-effort localStorage fallback) — so once it is dropped, the very
+  //      next work-item drill-in fails the `harnessSlug` gate below and falls
+  //      through to the bare-HUD fallback. That is exactly the visible no-op
+  //      this plan exists to fix, reachable again in two clicks.
+  // Only these two CONTEXT params are carried — not the whole param bag: this
+  // sidebar also mounts outside /adv (quick-panel), and dragging view state
+  // like `wpop` across the navigation would open a stale popup on arrival.
+  const buildAdvHudHref = useCallback(
+    (ownerAgentId?: string) => {
+      const params = new URLSearchParams();
+      params.set('tab', 'hud');
+      if (workspaceId) params.set('ws', workspaceId);
+      if (harnessSlug) params.set('slug', harnessSlug);
+      if (ownerAgentId) params.set('hudsession', ownerAgentId);
+      return `/adv?${params.toString()}`;
+    },
+    [workspaceId, harnessSlug],
+  );
   const handleCardDrillIn = useCallback(
     (ref: string) => {
       const dest = resolveRefDestination(ref, inboxItemsRef.current);
@@ -355,7 +381,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
           void setOpenChatPlan(dest.slug);
           return;
         case 'session':
-          router.push(`/adv?tab=hud&hudsession=${encodeURIComponent(dest.ownerAgentId)}`);
+          router.push(buildAdvHudHref(dest.ownerAgentId));
           return;
         case 'none':
           break;
@@ -363,9 +389,9 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
       // Nothing openable (a `health:<panelId>` ref, or a work-item ref with no
       // harness context): fall back to the HUD board, where the unattributed
       // lane (hud-consolidation P-002) renders the ask itself.
-      router.push('/adv?tab=hud');
+      router.push(buildAdvHudHref());
     },
-    [router, harnessSlug, setOpenWorkItem, setOpenChatPlan],
+    [router, harnessSlug, setOpenWorkItem, setOpenChatPlan, buildAdvHudHref],
   );
   // The lit extra face, if any — drives both the pill state and the body swap.
   const activeFace = extraFaces.find((f) => f.id === view) ?? null;
