@@ -107,10 +107,12 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
   // panel). The toolbar was already held back for exactly this reason; this call
   // path simply was not. An item with no actions yet correctly yields no options.
   //
-  // ⚠ The declared type says `actions: AttentionAction[]` (non-optional), which
-  // is a TYPE LIE the list feed violates at runtime — that is why tsc never
-  // flagged this. Fixing the lie means widening the field to optional and
-  // guarding every consumer; tracked separately rather than done inline here.
+  // The declared type USED to say `actions: AttentionAction[]` (non-optional) —
+  // a TYPE LIE the list feed violated at runtime, and the reason tsc never
+  // flagged this. That is now fixed: `AttentionItem.actions` is optional, so tsc
+  // forces this guard at every consumer instead of leaving the next one to
+  // rediscover the crash. `attention-list-feed-shape.test.ts` holds the line by
+  // driving the REAL projection rather than a hand-written fixture.
   for (const a of item.actions ?? []) {
     // Escalation with named options: expand the generic `resolve` action into
     // one terminal option per named choice (each carries the option id the

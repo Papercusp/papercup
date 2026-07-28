@@ -228,7 +228,15 @@ export interface AttentionItem {
   triageNote: string | null;
   triagedBy: string | null;
   triagedAt: string | null;
-  actions: AttentionAction[];
+  /** DETAIL-tier (WI-6551): the `plans.attention` LIST feed drops this — see
+   *  `ATTENTION_ITEM_DROP` in operator-core's ui-read-projection.ts — and it is
+   *  re-supplied by the `plans.attentionItem` detail fetch. It is therefore
+   *  ABSENT between first paint and hydration, so it MUST stay optional: when it
+   *  was declared `AttentionAction[]`, the type asserted a guarantee the wire
+   *  format does not provide, tsc stayed silent, and `attentionItemToCardSpec`
+   *  iterated `undefined` and took down the whole HUD tab. Guard every read
+   *  (`item.actions ?? []`) rather than trusting the declaration. */
+  actions?: AttentionAction[];
   ref: { kind: AttentionKind } & Record<string, unknown>;
   /** Structured report payload — the shared ReportBlock the detail pane
    *  renders natively via ReportBlockCard. Set by `operator-report` items

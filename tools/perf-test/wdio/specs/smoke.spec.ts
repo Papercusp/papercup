@@ -1,34 +1,104 @@
 /**
- * Smoke spec: confirms the packaged Tauri binary boots and the operator UI loads.
- * Captures INP via web-vitals injected at runtime; logs to console for now.
+ * Smoke spec: confirms the packaged Tauri binary boots, the operator UI loads, and
+ * the web-vitals instrument is ACTUALLY WORKING.
  *
- * Run after a successful `tauri build`. See ../wdio.conf.ts for prereqs.
+ * READ THIS BEFORE RELAXING ANY ASSERT BELOW (EI-18895065570073000).
+ * The previous version of this spec did:
+ *
+ *     const metrics = await browser.execute(... import from "https://esm.sh/..." ...);
+ *     console.log("web-vitals:", metrics);
+ *     expect(metrics).toBeDefined();
+ *
+ * The import could not resolve inside the packaged app, module-script import
+ * failures are silent, so `metrics` was `{}` — and `expect({}).toBeDefined()`
+ * passes. The suite reported `✓ loads the operator UI and reports web-vitals` for
+ * months while measuring nothing. `toBeDefined()` on a value that is ALWAYS defined
+ * is not an assertion; it is decoration.
+ *
+ * Three things keep that from recurring, and all three matter:
+ *
+ *  1. The instrument is BUNDLED LOCALLY (../web-vitals-probe). An offline desktop
+ *     app must not reach a CDN to measure itself.
+ *  2. A BROKEN INSTRUMENT IS A DIFFERENT VALUE from an idle page — `instrument:
+ *     'broken'` vs `'ready'` with no metrics — and this spec fails on the former.
+ *     Asserting harder on the metrics object alone could never have caught it.
+ *  3. The numbers are RECORDED (perf-report), not console.logged and thrown away.
+ *     That module exists precisely because specs were discarding their measures,
+ *     which left the desktop-perf release gate with nothing to judge.
+ *
+ * Which metrics are legitimately absent here is MEASURED and documented in
+ * ../web-vitals-probe (CLS and TTFB are impossible under WebKitGTK + papercusp://;
+ * INP needs a trusted interaction). Do not "fix" a missing CLS by asserting on it.
  */
 import { browser } from "@wdio/globals";
 import { waitForAppMount } from "../app-mount";
+import { recordInvariant, recordMeasure } from "../perf-report";
+import {
+  METRIC_ENVIRONMENT,
+  collectWebVitals,
+  describeReading,
+  type WebVitalName,
+} from "../web-vitals-probe";
+
+/**
+ * Budgets are the web.dev "poor" thresholds — deliberately generous. These are
+ * tunable budgets (warn-only in the gate), NOT invariants: paint timings move with
+ * machine load, and blocking the fleet's deploys on a load-sensitive number is
+ * exactly what the gate's warn-only default exists to prevent.
+ */
+const BUDGET_MS: Partial<Record<WebVitalName, number>> = {
+  FCP: 3_000,
+  LCP: 4_000,
+};
 
 describe("Packaged Papercusp desktop binary", () => {
   it("loads the operator UI and reports web-vitals", async () => {
-    // Wait for the operator UI inside the webview to mount real app content.
     await waitForAppMount(browser);
 
-    // Inject web-vitals from CDN and collect INP/LCP/CLS for 10s while we click around.
-    const metrics = await browser.execute(async () => {
-      const script = document.createElement("script");
-      script.type = "module";
-      script.textContent = `
-        import {onINP, onLCP, onCLS} from "https://esm.sh/web-vitals@4";
-        window.__wv = {};
-        onINP(m => window.__wv.INP = m.value);
-        onLCP(m => window.__wv.LCP = m.value);
-        onCLS(m => window.__wv.CLS = m.value);
-      `;
-      document.head.appendChild(script);
-      await new Promise((r) => setTimeout(r, 10_000));
-      return (window as unknown as { __wv: Record<string, number> }).__wv;
-    });
+    const reading = await collectWebVitals(browser, { settleMs: 3_000 });
 
-    console.log("web-vitals:", metrics);
-    expect(metrics).toBeDefined();
+    // eslint-disable-next-line no-console
+    console.log(describeReading(reading));
+    if (reading.errors.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn("[web-vitals] registration errors:", reading.errors);
+    }
+
+    // Record BEFORE asserting: an assert throws, and a broken instrument is
+    // precisely the observation the gate exists to act on (same rule as
+    // recordInteractionMs / recordInvariant — see perf-report.ts).
+    recordInvariant("web-vitals-instrument-broken", reading.instrument === "broken" ? 1 : 0);
+    recordInvariant("web-vitals-expected-metrics-missing", reading.missingExpected.length);
+
+    for (const name of Object.keys(reading.metrics) as WebVitalName[]) {
+      const value = reading.metrics[name];
+      if (typeof value !== "number" || !Number.isFinite(value)) continue;
+      const budget = BUDGET_MS[name] ?? null;
+      recordMeasure({
+        key: `web-vital:${name}`,
+        value,
+        unit: "ms",
+        budget,
+        ok: budget === null ? true : value <= budget,
+      });
+    }
+
+    // 1. The apparatus came up. `{}` with a live sentinel is honest idleness; `{}`
+    //    without one is a dead instrument, and that is what used to pass.
+    expect(reading.instrument).toBe("ready");
+
+    // 2. The apparatus is SEEING something. FCP and LCP are measured-available in
+    //    this environment, so their absence means observers registered against an
+    //    engine that reports nothing — green here would be the original bug again.
+    expect(reading.missingExpected).toEqual([]);
+
+    // 3. Only now are the values meaningful. Assert they are real numbers rather
+    //    than asserting a specific speed: this is a smoke spec, and the budgets
+    //    above are recorded for the trend to judge.
+    for (const name of Object.keys(METRIC_ENVIRONMENT) as WebVitalName[]) {
+      if (METRIC_ENVIRONMENT[name].availability !== "expected") continue;
+      expect(typeof reading.metrics[name]).toBe("number");
+      expect(reading.metrics[name]).toBeGreaterThan(0);
+    }
   });
 });

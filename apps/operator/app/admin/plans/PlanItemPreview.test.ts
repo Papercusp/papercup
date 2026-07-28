@@ -52,7 +52,12 @@ describe('buildPlanItemAttention', () => {
       planSlug: 'p', itemId: 'P-001', selected: item({ id: 'P-001', storedStatus: 'todo' }),
     });
     expect(a.needsHuman).toBe(false);
-    expect(a.actions.map((x) => x.id)).toEqual(['chat']);
+    // `actions` is optional on the TYPE because the LIST FEED drops it (WI-6551),
+    // but this is the PRODUCER — it must always populate it. Assert that directly
+    // rather than `?? []`-ing it away, which would let a missing array pass as "no
+    // actions expected".
+    expect(a.actions).toBeDefined();
+    expect((a.actions ?? []).map((x) => x.id)).toEqual(['chat']);
   });
 
   it('gives a needs-human item the full Answer/Resolve/Drop/Chat toolkit', () => {
@@ -60,9 +65,11 @@ describe('buildPlanItemAttention', () => {
       planSlug: 'p', itemId: 'P-002', selected: item({ id: 'P-002', storedStatus: 'needs-human' }),
     });
     expect(a.needsHuman).toBe(true);
-    expect(a.actions.map((x) => x.id)).toEqual(['answer', 'mark-done', 'drop', 'chat']);
+    // Producer path — `actions` must be present (see the note above).
+    expect(a.actions).toBeDefined();
+    expect((a.actions ?? []).map((x) => x.id)).toEqual(['answer', 'mark-done', 'drop', 'chat']);
     // Resolve is the primary action.
-    expect(a.actions.find((x) => x.id === 'mark-done')?.primary).toBe(true);
+    expect((a.actions ?? []).find((x) => x.id === 'mark-done')?.primary).toBe(true);
   });
 
   it('falls back to the itemId for title and empty body when no item is selected', () => {
