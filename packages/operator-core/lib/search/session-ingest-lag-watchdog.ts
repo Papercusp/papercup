@@ -255,3 +255,238 @@ export async function sessionIngestLagSweep(
   }
   return results;
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * THE COMPLEMENT GUARD — a WRITER that produces nothing while the adapter
+ * happily advances (session-turn-storage-2026-07-28 D-008).
+ *
+ * The lag sweep above asks "is unconsumed work piling up?". It structurally
+ * CANNOT catch the failure that actually happened on 2026-07-28, because that
+ * failure had no backlog at all: bg-host was running a module-cached build
+ * predating the parts writer, so it consumed every byte on schedule, wrote the
+ * text turns, and wrote ZERO parts. `behindFiles` was 0, so the lag sweep
+ * correctly reported "fully caught up" on every tick, all night.
+ *
+ * These two conditions are complements, and this one is the WORSE half:
+ *   * lag wedge      — cursor stalls, bytes wait. RECOVERABLE: rewind
+ *                      byte_offset and the bytes are re-read.
+ *   * writer silence — cursor advances, writer emits nothing. PERMANENT:
+ *                      consumed bytes are never re-read, so every byte
+ *                      ingested while the writer was dead is missing from the
+ *                      parts store forever. Nothing backfills it.
+ *
+ * That asymmetry is the whole justification for a second guard: the cheap
+ * failure is the one that alarms today, and the expensive one was invisible.
+ *
+ * It inherits the anti-alert-fatigue discipline D-006 imposed on its sibling,
+ * and needs it MORE, because "part_count is 0" is the correct steady state for
+ * three of the four adapters. So it judges an adapter only when BOTH:
+ *   1. the adapter actually implements `parseParts` (derived from
+ *      FILE_ADAPTERS, never hardcoded — the day omp or codex gains a parts
+ *      parser this guard starts covering it with no edit here), and
+ *   2. the adapter demonstrably DID work in the window (turns > 0) — so a
+ *      quiet client is silent here exactly as it is in the lag sweep.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Window over which "did the writer produce anything?" is asked. Default 1 h:
+ *  long enough that a genuinely idle hour on a busy adapter is rare, short
+ *  enough that a dead writer is caught in one hour rather than one night.
+ *  `<=0` DISABLES the sweep (kill switch), matching its sibling. */
+export function partsWriterWindowSec(): number {
+  const n = Number(process.env.PAPERCUSP_PARTS_WRITER_WINDOW_SEC ?? 3_600);
+  return Number.isFinite(n) ? n : 3_600;
+}
+
+export interface PartsWriterObservation {
+  sourceKind: string;
+  /** Does this adapter implement `parseParts`? Only these are judged. */
+  expectsParts: boolean;
+  /** Turns ingested inside the window — the PROOF the adapter did work. */
+  turnsInWindow: number;
+  /** Parts written inside the window. */
+  partsInWindow: number;
+}
+
+export interface PartsWriterVerdict {
+  degraded: boolean;
+  reason: string;
+}
+
+/**
+ * PURE: is this adapter's parts WRITER silently dead?
+ *
+ * Deliberately says nothing about volume or ratios. A ratio test would have to
+ * model how many parts a turn "should" yield, which varies enormously by
+ * session shape (a tool-heavy turn yields many, a chat turn yields one) — and a
+ * wrong model here produces exactly the false alarms D-006 forbids. The only
+ * question asked is the unambiguous one: it did work, and produced nothing.
+ */
+export function evaluatePartsWriter(obs: PartsWriterObservation): PartsWriterVerdict {
+  if (!obs.expectsParts) {
+    return {
+      degraded: false,
+      reason:
+        `${obs.sourceKind}: no parseParts adapter — storing zero parts is this adapter's CORRECT ` +
+        `steady state, not a regression. (Judging it would alarm forever on three of four adapters, ` +
+        `which is the alert-fatigue failure D-006 exists to prevent.)`,
+    };
+  }
+  if (obs.turnsInWindow === 0) {
+    return {
+      degraded: false,
+      reason:
+        `${obs.sourceKind}: no turns ingested in the window — nothing was consumed, so the writer ` +
+        `cannot be judged. A quiet client is silent here exactly as in the lag sweep.`,
+    };
+  }
+  if (obs.partsInWindow > 0) {
+    return {
+      degraded: false,
+      reason:
+        `${obs.sourceKind}: writer healthy — ${obs.partsInWindow} part(s) alongside ` +
+        `${obs.turnsInWindow} turn(s) in the window.`,
+    };
+  }
+  return {
+    degraded: true,
+    reason:
+      `${obs.sourceKind} parts writer is SILENTLY DEAD: ${obs.turnsInWindow} turn(s) were ingested in ` +
+      `the window and ZERO parts were written. The adapter is consuming bytes and the faithful-parts ` +
+      `writer is producing nothing. This is NOT a quiet client and NOT a backlog — the lag sweep reads ` +
+      `"fully caught up" while this happens, which is why it needs its own guard. ` +
+      `⚠ THE LOSS IS PERMANENT: consumed bytes are never re-read, so every byte ingested while this ` +
+      `persists is missing from session_turn_parts forever. Fix it NOW, not at the next deploy.`,
+  };
+}
+
+const PARTS_WRITER_IDENTITY: AgentIdentity = {
+  ownerId: 'session-parts-writer-watchdog',
+  ownerLabel: 'system · session-parts-writer-watchdog',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+/** Read per-adapter turn/part counts inside the window. One query, two counts. */
+async function observePartsWriter(windowMs: number): Promise<PartsWriterObservation[]> {
+  const { sql } = getOrgPg();
+  const { FILE_ADAPTERS } = await import('./session-ingest');
+  // Derived, never hardcoded: the guard's scope tracks the adapter registry.
+  const expects = new Set(
+    FILE_ADAPTERS.filter((a) => typeof a.parseParts === 'function').map((a) => a.sourceKind as string),
+  );
+  const seconds = Math.max(1, Math.round(windowMs / 1_000));
+  const rows = await sql<Array<{ source_kind: string; turns: string | number; parts: string | number }>>`
+    WITH t AS (
+      SELECT source_kind, count(*) AS turns
+        FROM harness_shared.session_turns
+       WHERE ingested_at > now() - make_interval(secs => ${seconds})
+       GROUP BY source_kind
+    ), p AS (
+      SELECT source_kind, count(*) AS parts
+        FROM harness_shared.session_turn_parts
+       WHERE ingested_at > now() - make_interval(secs => ${seconds})
+       GROUP BY source_kind
+    )
+    SELECT COALESCE(t.source_kind, p.source_kind) AS source_kind,
+           COALESCE(t.turns, 0) AS turns,
+           COALESCE(p.parts, 0) AS parts
+      FROM t FULL OUTER JOIN p ON t.source_kind = p.source_kind
+  `;
+  // Seed every parts-capable adapter even with no rows at all, so a wholly
+  // silent adapter still gets an explicit verdict instead of vanishing.
+  const byKind = new Map<string, PartsWriterObservation>();
+  for (const k of expects) {
+    byKind.set(k, { sourceKind: k, expectsParts: true, turnsInWindow: 0, partsInWindow: 0 });
+  }
+  for (const r of rows) {
+    byKind.set(r.source_kind, {
+      sourceKind: r.source_kind,
+      expectsParts: expects.has(r.source_kind),
+      turnsInWindow: Number(r.turns),
+      partsInWindow: Number(r.parts),
+    });
+  }
+  return [...byKind.values()];
+}
+
+export interface PartsWriterSweepDeps {
+  observe?: (windowMs: number) => Promise<PartsWriterObservation[]>;
+  recentWatchdogFires?: typeof recentWatchdogFires;
+  recordFire?: typeof recordFire;
+  openEscalation?: typeof openEscalation;
+}
+
+/**
+ * The parts-writer sweep. Same chassis as its sibling: debounced per
+ * source_kind through the shared fires ledger, fail-soft per adapter and
+ * overall, env kill switch.
+ *
+ * Deliberately a SEPARATE sweep rather than another branch inside
+ * sessionIngestLagSweep: it asks a different question of different tables, and
+ * folding it in would have meant a second un-stubbed DB read inside a function
+ * whose existing tests inject only `observe` — silently turning ten pure unit
+ * tests into ones that need Postgres.
+ */
+export async function sessionPartsWriterSweep(
+  opts: { workspaceId?: string; installSlug?: string } = {},
+  deps: PartsWriterSweepDeps = {},
+): Promise<IngestLagSweepResult[]> {
+  const windowSec = partsWriterWindowSec();
+  if (windowSec <= 0) return [{ sourceKind: '*', outcome: 'skipped', reason: 'kill switch' }];
+  const windowMs = windowSec * 1_000;
+  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const installSlug = opts.installSlug ?? 'papercusp';
+  const results: IngestLagSweepResult[] = [];
+  try {
+    const observations = await (deps.observe ?? observePartsWriter)(windowMs);
+    for (const obs of observations) {
+      try {
+        const verdict = evaluatePartsWriter(obs);
+        if (!verdict.degraded) {
+          results.push({ sourceKind: obs.sourceKind, outcome: 'healthy', reason: verdict.reason });
+          continue;
+        }
+        const windowHours = Math.max(1, Math.round(windowSec / 3_600));
+        const firedRecently =
+          (await (deps.recentWatchdogFires ?? recentWatchdogFires)(
+            workspaceId, installSlug, windowHours, 'session-parts-writer', obs.sourceKind,
+          )) > 0;
+        if (firedRecently) {
+          results.push({ sourceKind: obs.sourceKind, outcome: 'debounced', reason: 'fires-ledger debounce' });
+          continue;
+        }
+        console.warn(`[session-parts-writer] ALERT: ${verdict.reason}`);
+        await (deps.recordFire ?? recordFire)({
+          workspaceId, installSlug, source: 'session-parts-writer', reason: verdict.reason, wakeAt: null,
+        });
+        await (deps.openEscalation ?? openEscalation)(PARTS_WRITER_IDENTITY, {
+          // Higher than the lag sweep's 'advisory' on purpose: that one reports
+          // deferred work, this one reports data being permanently lost.
+          severity: 'warning',
+          summary: `Session parts writer silently dead for source_kind '${obs.sourceKind}'`,
+          body:
+            `${verdict.reason}\n\n` +
+            `MOST LIKELY CAUSE, from the incident that motivated this guard (D-008): a long-lived host ` +
+            `is running a module-cached build older than the tree it loads from. The session ingest runs ` +
+            `on papercup-bg-host, whose WorkingDirectory is the STAGING tree and which executes tsx from ` +
+            `it — NOT from papercup-release. So a DEPLOY DOES NOT FIX THIS. Check ` +
+            `\`systemctl --user show papercup-bg-host.service -p ExecMainStartTimestamp\` against the ` +
+            `commit time of session-ingest.ts; if the host is older, restart it: ` +
+            `dev:restart { target: 'bg-host', confirm: true, authorize: true }.\n\n` +
+            `Other candidates: the parts INSERT failing every tick (it is best-effort by contract and ` +
+            `swallows its own error, so check the sweep's errorSample and the '+N part(s)' figure in the ` +
+            `[session-ingest] log line), or migration 702 not applied on this database.`,
+        });
+        results.push({ sourceKind: obs.sourceKind, outcome: 'alerted', reason: verdict.reason });
+      } catch (e) {
+        results.push({
+          sourceKind: obs.sourceKind, outcome: 'error', reason: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  } catch (e) {
+    results.push({ sourceKind: '*', outcome: 'error', reason: e instanceof Error ? e.message : String(e) });
+  }
+  return results;
+}

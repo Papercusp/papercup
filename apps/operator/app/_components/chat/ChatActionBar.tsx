@@ -13,6 +13,7 @@
  * single-option card; declining (Skip) cancels the run.
  */
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { DEFAULT_REQUEST_TIMEOUT_MS } from '@papercusp/sync';
 import { z } from 'zod';
 import { askUserLocal } from '@/lib/chat-cards/ask-user-local';
 // Import the BARREL, not `chat-actions/registry` directly: the barrel's
@@ -28,14 +29,28 @@ import type { ChatAction, ChatActionContext } from '@/lib/chat-actions/types';
 /**
  * WI-6552: ceiling on a `params()` option-load before the bar gives up.
  *
- * Deliberately generous. This exists to guarantee the bar RECOVERS from a load
- * that never settles — not to enforce snappiness — so it must sit well above
- * a legitimately slow fetch. Measured on this dev box at load average ~65,
- * a cold `rubrics.list` can take far longer than a snappy budget would allow;
- * erroring out a load that would have succeeded is a worse failure than making
- * the user wait, because it turns a working feature into a broken one.
+ * This exists to guarantee the bar RECOVERS from a load that never settles —
+ * not to enforce snappiness. Erroring out a load that would have succeeded is
+ * a worse failure than making the user wait, because it turns a working
+ * feature into a broken one.
+ *
+ * P-009 / D-003: DERIVED, not picked. The previous value was a bare 30_000
+ * justified by "a cold `rubrics.list` can take far longer than a snappy budget
+ * would allow" — but that observation was measuring WI-6559, where the sync
+ * gate's deadline did not cover the queue wait, so a cold `rubrics.list` never
+ * settled at all. That bug is fixed; the justification died with it. The real
+ * post-fix numbers are nowhere near 30s: warm resolve 250ms, server 8.8ms, and
+ * a 106-query desktop startup wave completes in ~2.9s at p50 395ms.
+ *
+ * What actually sets the floor is an ORDERING INVARIANT, not a latency budget.
+ * The sync layer now rejects a request that cannot get a gate slot at
+ * DEFAULT_REQUEST_TIMEOUT_MS with a real, specific message. This ceiling must
+ * sit ABOVE that, or it fires first and replaces that message with an opaque
+ * "timed out" — re-creating the very opacity WI-6559 was filed for. So derive
+ * it from the layer's own published ceiling plus enough headroom for the
+ * rejection to propagate and render, and let the guard test hold the ordering.
  */
-const PARAMS_TIMEOUT_MS = 30_000;
+export const PARAMS_TIMEOUT_MS = DEFAULT_REQUEST_TIMEOUT_MS + 5_000;
 
 /**
  * Reject with `message` if `p` has not settled within `ms`. The pending

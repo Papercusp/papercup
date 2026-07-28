@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { z } from 'zod';
 
-import { ChatActionBar, withTimeout } from './ChatActionBar';
+import { ChatActionBar, withTimeout, PARAMS_TIMEOUT_MS } from './ChatActionBar';
+import { DEFAULT_REQUEST_TIMEOUT_MS } from '@papercusp/sync';
 import { LocalCardHost } from './LocalCardHost';
 import { _resetAskUserLocalForTests } from '@/lib/chat-cards/ask-user-local';
 import { _resetChatActionsForTests, registerChatAction } from '@/lib/chat-actions/registry';

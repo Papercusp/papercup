@@ -753,6 +753,37 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'session-ingest-lag-sweep' },
   );
 
+  // session-turn-storage-2026-07-28 D-008: the COMPLEMENT of the sweep above.
+  // The lag sweep asks "is unconsumed work piling up?" and so is structurally
+  // blind to the failure that actually happened — bg-host running a
+  // module-cached build older than the tree, consuming every byte on schedule
+  // while writing ZERO parts. behindFiles was 0, so the lag sweep read "fully
+  // caught up" on every tick for ~7h. This one asks the complementary question:
+  // did the adapter do work and produce nothing? It is the worse half, because
+  // consumed bytes are NEVER re-read, so that loss is permanent rather than
+  // merely deferred. Judges only adapters that implement parseParts (derived
+  // from FILE_ADAPTERS) and only when turns > 0, so a quiet client stays silent.
+  // Fail-soft; kill switch: PAPERCUSP_PARTS_WRITER_WINDOW_SEC<=0.
+  await DBOS.runStep(
+    async () => {
+      const { sessionPartsWriterSweep } = await import('../search/session-ingest-lag-watchdog');
+      const results = await sessionPartsWriterSweep();
+      for (const res of results) {
+        if (res.outcome === 'alerted' || res.outcome === 'error') {
+          console.warn(`[session-parts-writer] ${res.outcome}: ${res.sourceKind} — ${res.reason}`);
+        }
+      }
+      return {
+        ranAtMs: Date.now(),
+        resultCount: results.length,
+        alertedCount: results.filter((r) => r.outcome === 'alerted').length,
+        errorCount: results.filter((r) => r.outcome === 'error').length,
+        results: results.slice(0, 10),
+      };
+    },
+    { name: 'session-parts-writer-sweep' },
+  );
+
   // hive-seed-bundle P-008 (D-007): the COLD-JOIN CANARY. Now that seeded installs
   // only carry the join DELTA (P-006/P-007), the full cold join (no seed, whole-
   // history transfer) stops being exercised on every install and can silently

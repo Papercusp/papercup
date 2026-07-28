@@ -331,7 +331,7 @@ export type IpcStatus = {
 	resolvedPath: string | null,
 	resolutionDetail: string,
 	/**
-	 *  `connected` · `dead` · `never-connected` · `dial-in-flight`.
+	 *  `connected` · `dead` · `never-connected` · `dial-in-flight` · `disabled`.
 	 * 
 	 *  `dial-in-flight` means the connection lock was held when we looked.
 	 *  Seeing it persist across repeated calls is itself the diagnosis: a
