@@ -124,6 +124,9 @@ export async function readMemoryHealth(sql: Sql): Promise<MemoryHealth> {
     zeroHitRate7d: 0,
     topScoreP50: null,
     topScoreP90: null,
+    topScoreScale: null,
+    topScoreSamples: 0,
+    scaleMix: {},
     fragmentHits7d: 0,
   };
   let recallTelemetryOk = true;

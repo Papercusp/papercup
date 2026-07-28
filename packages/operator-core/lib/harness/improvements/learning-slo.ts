@@ -65,6 +65,9 @@ import {
 } from '../../learning-governor/core';
 import { listLearningLoops } from '../../learning-governor/store';
 import type { CollectorResult, WatchdogSignal } from './watchdog';
+// P-036: the legacy score-scale band constants. Imported rather than restated
+// so this collector's SQL and `classifyLegacyScoreScale` can never drift apart.
+import { RRF_SCORE_CEILING, COSINE_ADMISSION_FLOOR } from '../../memory/recall-stats';
 
 // ── SLO thresholds (exported tunables — FB-21's "SLO thresholds as exported
 //    tunables" requirement; every key is also payload-tunable on the watchdog
@@ -604,37 +607,75 @@ export async function collectMemoryZeroHitSignals(sql: Sql, opts: LearningSloOpt
   // zero hits, so the FILTER + percentile_cont naturally excludes them) —
   // the signature that distinguishes a healthy cold-query zero burst from
   // real EI-366 index degradation (see memoryZeroHitSignalsFromAggregate).
+  //
+  // ⚠ P-036: the two medians MUST be taken on the SAME score scale, so they are
+  // computed PER SCALE and paired below. A single blended median across the
+  // window compares nothing: rrf tops out at 0.033 while cosine starts at 0.50,
+  // so if the workload mix shifts between the windows — more push-path recalls
+  // in the recent one, say — the median "collapses" by ~25x with retrieval
+  // completely unchanged. That would satisfy the score-collapse condition this
+  // guard exists to REQUIRE, converting an EI-7774 false-alarm SUPPRESSOR into
+  // a false-alarm ENABLER, and firing exactly the spurious critical D-001 had
+  // to retract. Rows whose scale cannot be established are excluded outright.
   const rows = await sql<
     {
       recent_recalls: number;
       recent_zero: number;
       base_recalls: number;
       base_zero: number;
-      recent_top_score_p50: number | null;
-      base_top_score_p50: number | null;
+      per_scale: Array<{ scale: string; recent_n: number; recent_p50: number | null; base_n: number; base_p50: number | null }>;
     }[]
   >`
+    WITH scoped AS (
+      SELECT hit_count,
+             top_score,
+             (created_at > now() - make_interval(hours => ${recentHours})) AS is_recent,
+             CASE
+               WHEN score_scale IS NOT NULL THEN score_scale
+               WHEN top_score IS NULL THEN 'unknown'
+               WHEN top_score <= ${RRF_SCORE_CEILING} THEN 'rrf'
+               WHEN top_score >= ${COSINE_ADMISSION_FLOOR} THEN 'cosine'
+               ELSE 'unknown'
+             END AS scale
+        FROM harness_shared.memory_recall_stats
+       WHERE created_at > now() - make_interval(hours => ${recentHours}) - make_interval(days => ${baselineDays})
+    )
     SELECT
-      count(*) FILTER (WHERE created_at > now() - make_interval(hours => ${recentHours}))::int AS recent_recalls,
-      count(*) FILTER (WHERE created_at > now() - make_interval(hours => ${recentHours}) AND hit_count = 0)::int AS recent_zero,
-      count(*) FILTER (WHERE created_at <= now() - make_interval(hours => ${recentHours}))::int AS base_recalls,
-      count(*) FILTER (WHERE created_at <= now() - make_interval(hours => ${recentHours}) AND hit_count = 0)::int AS base_zero,
-      percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score)
-        FILTER (WHERE created_at > now() - make_interval(hours => ${recentHours}) AND top_score IS NOT NULL) AS recent_top_score_p50,
-      percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score)
-        FILTER (WHERE created_at <= now() - make_interval(hours => ${recentHours}) AND top_score IS NOT NULL) AS base_top_score_p50
-      FROM harness_shared.memory_recall_stats
-     WHERE created_at > now() - make_interval(hours => ${recentHours}) - make_interval(days => ${baselineDays})`;
+      count(*) FILTER (WHERE is_recent)::int                        AS recent_recalls,
+      count(*) FILTER (WHERE is_recent AND hit_count = 0)::int      AS recent_zero,
+      count(*) FILTER (WHERE NOT is_recent)::int                    AS base_recalls,
+      count(*) FILTER (WHERE NOT is_recent AND hit_count = 0)::int  AS base_zero,
+      (SELECT coalesce(jsonb_agg(x), '[]'::jsonb) FROM (
+         SELECT scale,
+                count(*) FILTER (WHERE is_recent AND top_score IS NOT NULL)::int AS recent_n,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score)
+                  FILTER (WHERE is_recent AND top_score IS NOT NULL)             AS recent_p50,
+                count(*) FILTER (WHERE NOT is_recent AND top_score IS NOT NULL)::int AS base_n,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score)
+                  FILTER (WHERE NOT is_recent AND top_score IS NOT NULL)         AS base_p50
+           FROM scoped
+          WHERE scale <> 'unknown'
+          GROUP BY scale
+       ) x)                                                         AS per_scale
+    FROM scoped`;
   const r = rows[0];
   if (!r) return [];
+  // Pair on the scale best represented in the RECENT window that also has
+  // baseline data. A scale present in only one window yields no comparison at
+  // all (rather than a cross-scale one), which correctly falls back to the
+  // pre-EI-7774 rate-only gate.
+  const paired = (Array.isArray(r.per_scale) ? r.per_scale : [])
+    .filter((s) => Number(s.recent_n) > 0 && Number(s.base_n) > 0 && s.recent_p50 != null && s.base_p50 != null)
+    .sort((a, b) => Number(b.recent_n) - Number(a.recent_n))[0];
   return memoryZeroHitSignalsFromAggregate(
     {
       recentRecalls: Number(r.recent_recalls),
       recentZero: Number(r.recent_zero),
       baselineRecalls: Number(r.base_recalls),
       baselineZero: Number(r.base_zero),
-      recentTopScoreP50: r.recent_top_score_p50 == null ? null : Number(r.recent_top_score_p50),
-      baselineTopScoreP50: r.base_top_score_p50 == null ? null : Number(r.base_top_score_p50),
+      recentTopScoreP50: paired ? Number(paired.recent_p50) : null,
+      baselineTopScoreP50: paired ? Number(paired.base_p50) : null,
+      topScoreScale: paired ? String(paired.scale) : null,
     },
     opts,
   );

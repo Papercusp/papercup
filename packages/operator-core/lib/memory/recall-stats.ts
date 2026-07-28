@@ -32,7 +32,7 @@ export const RRF_SCORE_CEILING = 2 / 61;
  * Lowest score an admitted COSINE hit can carry: the relevance floor applied on
  * admission. Observed minimum on the live table is 0.50.
  */
-const COSINE_ADMISSION_FLOOR = 0.45;
+export const COSINE_ADMISSION_FLOOR = 0.45;
 
 /**
  * Best-effort scale for a row written BEFORE migration 705 (`score_scale IS
