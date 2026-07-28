@@ -963,6 +963,7 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
     'lint:declared-consumed',
     'lint:no-bespoke-state-read',
     'lint:plane-ratchet',
+    'lint:plane-guards',
   ],
 };
 
@@ -3029,7 +3030,7 @@ export async function runPostSuiteLegs(
     }
   }
 
-  // agent-state-plane-verification P-020: the agent-state plane's four STANDING probes. The
+  // agent-state-plane-verification P-020: the agent-state plane's five STANDING probes. The
   // predecessor plan shipped 8 defects past a fully green unit gate, every one the same shape
   // — the derivation was correct and the DISCLOSURE was dropped between derivation and reader
   // — so this plan built producer-existence + declared-vs-consumed + guard-integrity probes to
@@ -3063,6 +3064,7 @@ export async function runPostSuiteLegs(
       { script: 'lint:declared-consumed', label: 'DECLARED-VS-CONSUMED SWEEP' },
       { script: 'lint:no-bespoke-state-read', label: 'BESPOKE STATE-READ' },
       { script: 'lint:plane-ratchet', label: 'PLANE RATCHET' },
+      { script: 'lint:plane-guards', label: 'PLANE GUARD MUTATION TESTS' },
     ];
     const planeFailures: string[] = [];
     let planeRan = 0;
