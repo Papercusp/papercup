@@ -545,6 +545,41 @@ export function shortAssignee(assignee: string): string {
  * ratification, an owner wall) — their kind rides on the card as a badge so
  * the distinction survives the move.
  */
+/** A work-item id (WI-/EI-/F-), anchored. */
+const WORK_ITEM_ID = /^(WI|EI|F)-\d+$/i;
+
+/** The work-item id carried by a composite token, read from its TRAILING segment.
+ *
+ *  ⚠ Deliberately NOT an anchored match on the whole token: neither shape an ask
+ *  card actually carries is a bare id, which is why whole-token matching resolved
+ *  NOTHING on the live board — measured 2026-07-28, 60 of 60 work-item cards were
+ *  silent no-ops because every click fell through to null.
+ *    · a card id is `ask:<ask.id>`, itself composite with the item LAST —
+ *      `ask:work-item-needs-human:WI-1142`, `ask:owner-wall:work-item:WI-4271`
+ *    · a card ref is a DISPLAY string ({@link askToCard} sets `ask.itemRef ?? kindLabel`),
+ *      so it reads "Work item" / "Owner wall" whenever the ask has no itemRef — the
+ *      case for every live card — and when itemRef IS set the curator writes it
+ *      harness-qualified (`papercusp#WI-7`, see attention/adapters.test.ts). */
+function trailingWorkItemId(token: string | null | undefined): string | null {
+  if (!token) return null;
+  const last = token.split(/[:#]/).pop();
+  return last && WORK_ITEM_ID.test(last) ? last.toUpperCase() : null;
+}
+
+/** Which work item, if any, a Work-items board card opens.
+ *
+ *  Lives here rather than in HudView because the contract it reads is `askToCard`'s,
+ *  directly below — the two drifted apart once already and the click silently died.
+ *  An ask with no work item behind it (`ask:improvement-triage:1234`) still resolves
+ *  to null, so it opens nothing instead of pointing the popup at a kind label. */
+export function workItemIdForCard(card: Pick<HudEntityCard, 'id' | 'ref'>): string | null {
+  if (WORK_ITEM_ID.test(card.id)) return card.id.toUpperCase();
+  if (card.id.startsWith('ask:')) {
+    return trailingWorkItemId(card.id) ?? trailingWorkItemId(card.ref);
+  }
+  return null;
+}
+
 export function askToCard(ask: HudAsk, nowMs: number): HudEntityCard {
   const kindLabel = HUD_ASK_KIND_LABEL[ask.kind] ?? ask.kind;
   return {

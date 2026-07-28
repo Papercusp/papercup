@@ -20,6 +20,7 @@ import {
   planCountsSummary,
   rollUpStateCounts,
   shortAssignee,
+  workItemIdForCard,
   toBadgeTone,
   toWorkItemCard,
   workItemColumn,
@@ -415,6 +416,43 @@ describe('true per-column totals (P-004)', () => {
     const board = buildWorkItemBoard([item({ id: 'WI-1', state: 'open' })], [], { nowMs: NOW });
     expect(board.counts.ready).toBe(1);
     expect(board.total).toBe(1);
+  });
+
+  /* Regression guard for the destination that shipped "unit tested green" and was
+     DEAD on the live board: on 2026-07-28 all 60 work-item cards were silent
+     no-ops. Nothing tested this resolver at all, and the fixtures that WOULD have
+     been written by hand (a bare `WI-7` id, a bare `ref`) are shapes the real
+     board never produces — so the cases below are the id/ref strings read off the
+     LIVE cards, not invented ones. */
+  describe('workItemIdForCard — which item a card opens', () => {
+    it('resolves the id from a real ask card id, whose ref is only a kind label', () => {
+      // Both taken verbatim from the live board.
+      expect(workItemIdForCard({ id: 'ask:work-item-needs-human:WI-1142', ref: 'Work item' }))
+        .toBe('WI-1142');
+      expect(workItemIdForCard({ id: 'ask:owner-wall:work-item:WI-4271', ref: 'Owner wall' }))
+        .toBe('WI-4271');
+      expect(workItemIdForCard({ id: 'ask:work-item-needs-human:EI-9770', ref: 'Work item' }))
+        .toBe('EI-9770');
+    });
+
+    it('resolves a HARNESS-QUALIFIED curator ref, which anchored matching rejects', () => {
+      // attention/adapters.ts writes itemRef as `papercusp#WI-7`, never a bare id.
+      expect(workItemIdForCard({ id: 'ask:some-kind:opaque', ref: 'papercusp#WI-7' })).toBe('WI-7');
+    });
+
+    it('still opens nothing for an ask with no work item behind it', () => {
+      expect(workItemIdForCard({ id: 'ask:improvement-triage:1234', ref: 'Improvement' })).toBeNull();
+      expect(workItemIdForCard({ id: 'ask:dark-flag-ratification:x', ref: 'Dark flag' })).toBeNull();
+    });
+
+    it('resolves a plain work-item card id (the non-ask path)', () => {
+      expect(workItemIdForCard({ id: 'WI-1', ref: 'WI-1' })).toBe('WI-1');
+      expect(workItemIdForCard({ id: 'wi-42', ref: '' })).toBe('WI-42');
+    });
+
+    it('does not treat a plan card as a work item', () => {
+      expect(workItemIdForCard({ id: 'hud-tab-public-release-2026-07-28', ref: 'plan' })).toBeNull();
+    });
   });
 
   it('the fetch-state list covers every branch workItemColumn maps', () => {
