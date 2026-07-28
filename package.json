@@ -186,6 +186,7 @@
     "lint:timer-classification": "node scripts/check-timer-classification.mjs",
     "lint:no-wire-compression": "node scripts/check-no-wire-compression.mjs",
     "lint:no-eager-execfile-promisify": "node scripts/check-no-eager-execfile-promisify.mjs",
+    "lint:no-module-scope-flag-subscribe": "node scripts/check-no-module-scope-flag-subscribe.mjs",
     "lint:no-sql-json": "node scripts/check-no-sql-json.mjs",
     "lint:no-sql-comment-backtick": "node scripts/check-sql-comment-backtick.mjs",
     "lint:sql-guidance-justified": "node scripts/check-sql-guidance-justified.mjs",

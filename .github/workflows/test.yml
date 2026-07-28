@@ -317,6 +317,17 @@ jobs:
       - name: Lint no eager execFile promisify
         run: npm run lint:no-eager-execfile-promisify
 
+      # module-scope flags touch guard (WI-6650 / EI-18825928993608425): the same
+      # class as the guard above, with @papercusp/flags in place of child_process. A
+      # top-level `onFlagChange(...)` or eager `FLAG_DEFAULTS[...]` deref throws at
+      # COLLECTION under a test's partial `vi.mock('@papercusp/flags[/server]')`,
+      # failing the WHOLE file (0 tests run) and reding the gate — while naming the
+      # MOCK, not the importer. Fired twice on coordination/log.ts (WI-6449, then
+      # WI-6588 → 2 suites red) before that file was root-fixed. GATING on a NEW
+      # site; a shrink-to-empty BASELINE grandfathers the 14 pre-existing ones.
+      - name: Lint no module-scope flag subscribe
+        run: npm run lint:no-module-scope-flag-subscribe
+
       # sql.json guard (EI-607): postgres-js sql.json(object) THROWS on the getOrgPg
       # client (a dual-package postgres-js module-instance mismatch in @papercusp/db)
       # — it silently broke the experiment ledger + EVERY replay-harness cell's
