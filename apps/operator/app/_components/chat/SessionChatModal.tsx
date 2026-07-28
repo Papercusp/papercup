@@ -791,14 +791,40 @@ export default function SessionChatModal({
         ) : null}
         {sentOk ? <div style={BANNER_STYLE}>Sent — the agent is woken if it's live.</div> : null}
         {actionCtx && (
-          <>
-            {/* Renders whatever askUserLocal card an action's params()/confirm
-                step opens (P-002 substrate) — the SAME renderer the
-                agent-initiated card path uses, mounted here so action-bar
-                cards appear inline in this modal specifically. */}
+          // WI-6513 / D-004: the card + action bar are ONE BOUNDED footer group.
+          //
+          // Measured live before this fix (modal top=80 bottom=720): the Grade
+          // card sat at top=669 with height=131, so it ran to 800 — 80px past
+          // the popup's bottom edge, landing on the viewport floor. Only 51px
+          // of room for a 131px card.
+          //
+          // Why it overflowed rather than scrolled: as BARE flex children both
+          // of these have `min-height: auto` and visible overflow, so their
+          // automatic minimum size is their content height and neither can
+          // shrink. The transcript above them (.oracle-body) is `flex: 1` with
+          // `overflow-y: auto`, which per CSS Flexbox §4.5 makes ITS automatic
+          // minimum size zero — so it is willing to yield the space, but the
+          // shortfall was landing on children that could not absorb it.
+          // Bounding the group makes `cardBottom <= modalBottom` structural
+          // instead of incidental.
+          //
+          // `overflowY: auto` here does NOT clip the rubric dropdown: D-004
+          // confirmed the Radix listbox portals to document.body, so it escapes
+          // this subtree entirely (verified by walking its real ancestor chain,
+          // not the modal subtree — a subtree-scoped check reports "unclipped"
+          // vacuously).
+          //
+          // Renders whatever askUserLocal card an action's params()/confirm
+          // step opens (P-002 substrate) — the SAME renderer the
+          // agent-initiated card path uses, mounted here so action-bar cards
+          // appear inline in this modal specifically.
+          <div
+            data-testid="session-chat-card-footer"
+            style={{ flex: '0 0 auto', minHeight: 0, maxHeight: '45%', overflowY: 'auto' }}
+          >
             <LocalCardHost />
             <ChatActionBar ctx={actionCtx} />
-          </>
+          </div>
         )}
       </div>
         {open && dossierOpen ? (

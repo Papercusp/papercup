@@ -145,6 +145,26 @@ diagnosis of a hung dial, rather than a diagnostic that hangs alongside it.
 > expensive to reconstruct anywhere else — here it was being reconstructed by
 > hand from `ss`, `/proc`, and JSON files, once per investigation.
 
+### Side-lesson: a new Tauri command needs a capability entry, and nothing but a live invoke will tell you
+
+`endpoint_ipc_status` compiled, registered in `collect_commands!`, and appeared
+67 times in the running binary — and still failed at runtime with
+`endpoint_ipc_status not allowed. Command not found`. Tauri v2 gates app
+commands through `src-tauri/capabilities/default.json`; the command needs an
+`allow-<command-name-in-kebab-case>` entry beside its siblings:
+
+```json
+"allow-endpoint-invoke",
+"allow-endpoint-cancel",
+"allow-endpoint-ipc-status",
+```
+
+`cargo check`, `cargo test`, and the whole Rust suite pass without it. The only
+thing that catches it is invoking the command from a live webview. If you add a
+Tauri command, add the capability entry in the same edit, and prove it with one
+real `invoke` — the error text says "Command not found", which sends you
+hunting through registration code that is already correct.
+
 ## Recurrence guards
 
 - `cmdline_check_accepts_the_real_operator_entrypoints` pins the **verbatim**

@@ -3,7 +3,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { gateSite } from './gate-release-site';
-import type { IdentityLiteral } from './release-content-scrub';
+import {
+  HOLDING_PAGE_MARKER,
+  PUBLISHED_CONTACT_EMAIL,
+  type IdentityLiteral,
+} from './release-content-scrub';
 
 // A stand-in owner — never the real one (putting his name in a source file to test
 // for it would BE the leak, committed to git).
@@ -73,5 +77,62 @@ describe('gateSite — it must be able to FAIL, or it is not a gate', () => {
       'notes.txt': 'this mentions /home/jdoe but is not published and is never uploaded',
     });
     expect(gateSite(dir, LITS)).toEqual([]);
+  });
+});
+
+// WI-6580. The holding page publishes ONE address on purpose. These tests exist
+// to prove the exception stayed an exception — the gate's value is entirely in
+// what it still REFUSES.
+describe('gateSite — the holding page contact-email allowance is narrow', () => {
+  const held = (extra = '') =>
+    `<!doctype html><html><head>${HOLDING_PAGE_MARKER}</head>` +
+    `<body><h1>NEXT UPDATE COMING SOON</h1>` +
+    `<a href="mailto:${PUBLISHED_CONTACT_EMAIL}">Email us</a>${extra}</body></html>`;
+
+  it('passes the holding page carrying the published contact address', () => {
+    expect(gateSite(site({ 'index.html': held() }), LITS)).toEqual([]);
+  });
+
+  it('STILL fails the holding page on any OTHER address', () => {
+    // The allowance is one literal, not "emails are fine on this page".
+    const dir = site({ 'index.html': held('<p>or reach me at someone.else@example.com</p>') });
+    const leaks = gateSite(dir, LITS);
+    expect(leaks.map((l) => l.kind)).toContain('email');
+  });
+
+  it('STILL fails a NORMAL index.html carrying that same address', () => {
+    // No holding marker ⇒ no allowance. This is the real regression risk: the
+    // owner's address appearing in a work-item title or plan body on the live
+    // releases page, which is the leak this whole rail was built for.
+    const dir = site({
+      'index.html': `<h1>Papercusp releases</h1><p>ping ${PUBLISHED_CONTACT_EMAIL}</p>`,
+    });
+    expect(gateSite(dir, LITS).map((l) => l.kind)).toContain('email');
+  });
+
+  it('STILL fails a PLAN page carrying that address, marker or not', () => {
+    // A plan page cannot claim the allowance even if its body somehow contains
+    // the marker text — the allowance is keyed on index.html too.
+    const dir = site({
+      'index.html': '<h1>clean</h1>',
+      'plans/a.html': `${HOLDING_PAGE_MARKER}<p>owner: ${PUBLISHED_CONTACT_EMAIL}</p>`,
+    });
+    const leaks = gateSite(dir, LITS);
+    expect(leaks.map((l) => l.file)).toContain('plans/a.html');
+    expect(leaks.map((l) => l.kind)).toContain('email');
+  });
+
+  it('STILL fails history.json carrying that address', () => {
+    const dir = site({
+      'index.html': held(),
+      'history.json': JSON.stringify({ releases: [{ notes: `mail ${PUBLISHED_CONTACT_EMAIL}` }] }),
+    });
+    expect(gateSite(dir, LITS).map((l) => l.file)).toContain('history.json');
+  });
+
+  it('STILL fails the holding page on a home path — only EMAIL is allowed', () => {
+    const dir = site({ 'index.html': held('<p>built in /home/jdoe/papercusp</p>') });
+    const kinds = gateSite(dir, LITS).map((l) => l.kind);
+    expect(kinds).toContain('unix-home');
   });
 });

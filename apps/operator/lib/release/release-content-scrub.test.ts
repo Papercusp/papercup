@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PUBLISHED_CONTACT_EMAIL,
   findIdentityLeaks,
   identityLiterals,
   needsWordBoundary,
@@ -175,5 +176,51 @@ describe('every generated page is scrubbed on the way out', () => {
     // The placeholder must be VISIBLE text, not a tag a browser would swallow.
     expect(html).toContain('[owner]');
     expect(html).not.toContain('<owner>');
+  });
+});
+
+// WI-6580 — the opt-in allowance. The DEFAULT behaviour must be untouched.
+describe('scrubIdentity / findIdentityLeaks — allowEmails is opt-in and exact', () => {
+  const LITS2: IdentityLiteral[] = [{ kind: 'git-name', value: 'Jane' }];
+  const text = `contact ${PUBLISHED_CONTACT_EMAIL} or other@example.com`;
+
+  it('scrubs the published address by DEFAULT (no allowance passed)', () => {
+    // Every existing caller — the real index, plan pages, history.json — keeps
+    // the old behaviour. Otherwise this change would quietly publish the address
+    // everywhere it happens to appear, which is the original leak.
+    const out = scrubIdentity(text, LITS2);
+    expect(out).not.toContain(PUBLISHED_CONTACT_EMAIL);
+    expect(out).toContain('[email]');
+  });
+
+  it('leaves ONLY the allowed address when opted in, scrubbing the rest', () => {
+    const out = scrubIdentity(text, LITS2, { allowEmails: [PUBLISHED_CONTACT_EMAIL] });
+    expect(out).toContain(PUBLISHED_CONTACT_EMAIL);
+    expect(out).not.toContain('other@example.com');
+    expect(out).toContain('[email]');
+  });
+
+  it('reports a leak for the published address by default, none when allowed', () => {
+    expect(findIdentityLeaks(text, LITS2).map((h) => h.kind)).toContain('email');
+    expect(
+      findIdentityLeaks(`mail ${PUBLISHED_CONTACT_EMAIL}`, LITS2, {
+        allowEmails: [PUBLISHED_CONTACT_EMAIL],
+      }),
+    ).toEqual([]);
+  });
+
+  it('still flags a DIFFERENT address even when the allowance is active', () => {
+    const hits = findIdentityLeaks(text, LITS2, { allowEmails: [PUBLISHED_CONTACT_EMAIL] });
+    expect(hits.map((h) => h.kind)).toContain('email');
+  });
+
+  it('scrubs a home path on the same line as the allowed address', () => {
+    // Masking must not accidentally shield neighbouring content from the other
+    // patterns — only the address itself is exempt.
+    const out = scrubIdentity(`${PUBLISHED_CONTACT_EMAIL} built in /home/jdoe/x`, LITS2, {
+      allowEmails: [PUBLISHED_CONTACT_EMAIL],
+    });
+    expect(out).toContain(PUBLISHED_CONTACT_EMAIL);
+    expect(out).not.toContain('/home/jdoe');
   });
 });

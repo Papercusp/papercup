@@ -985,7 +985,15 @@ export async function regenerateOnly(scope: Scope, outDir: string): Promise<numb
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const version = arg(argv, '--version');
-  const regenerate = argv.includes('--regenerate');
+  // --hold-page / --restore-page flip the hold and then regenerate, so one
+  // command leaves the output dir ready to publish in the requested state.
+  const holdPage = argv.includes('--hold-page');
+  const restorePage = argv.includes('--restore-page');
+  if (holdPage && restorePage) {
+    console.error('record-release-cli: --hold-page and --restore-page are mutually exclusive.');
+    return 2;
+  }
+  const regenerate = argv.includes('--regenerate') || holdPage || restorePage;
   if (!version && !regenerate) {
     console.error('usage: record-release-cli --version <x.y.z> [--channel alpha] [--git-sha <sha>]');
     console.error('       [--changelog-file <path>] [--cut-at <iso>] [--since <iso>]');
@@ -1011,6 +1019,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       console.log(`${src}\t${outName}`);
     }
     return 0;
+  }
+  if (holdPage || restorePage) {
+    setPageHeld(holdPage);
+    console.log(
+      holdPage
+        ? '[record-release] releases page HELD — regenerating index.html as the holding page.'
+        : '[record-release] hold LIFTED — regenerating the real releases page.',
+    );
   }
   if (regenerate) return regenerateOnly(opts.scope, opts.outDir);
   return run(opts);

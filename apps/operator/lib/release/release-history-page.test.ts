@@ -3,13 +3,15 @@ import {
   escapeHtml,
   formatBytes,
   planPagePath,
+  renderHoldingHtml,
   renderIndexHtml,
   renderPlanPageHtml,
   type Analytics,
   type HydratedRelease,
 } from './release-history-page';
 import { groupItemsByPlan, isUserFacing, type ReleaseRow, type ShippedItem, type ShippedPlan } from './release-registry';
-import { INSTRUCTIONS_MD } from './release-instructions';
+import { DISCORD_URL, INSTRUCTIONS_MD } from './release-instructions';
+import { HOLDING_PAGE_MARKER, PUBLISHED_CONTACT_EMAIL } from './release-content-scrub';
 import { DEMO_VIDEO_SRC } from './release-video';
 
 const ANALYTICS: Analytics = { host: 'https://flags.example.com', projectKey: 'phc_test' };
@@ -785,5 +787,59 @@ describe('the mobile apps render in their own labelled section [owner: "make sur
   it('omits the Mobile section entirely for a desktop-only release', () => {
     const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null });
     expect(html).not.toContain('<h3 class="platform-h">Mobile</h3>');
+  });
+});
+
+// WI-6580 — the temporary holding page [owner 2026-07-28].
+describe('renderHoldingHtml — what it keeps, and what it must not leak', () => {
+  const opts = { generatedAt: GENERATED_AT, analytics: ANALYTICS };
+
+  it('says the one thing it is for', () => {
+    expect(renderHoldingHtml(opts)).toContain('NEXT UPDATE COMING SOON');
+  });
+
+  it('keeps the video, the Discord invite and a contact mailto', () => {
+    const html = renderHoldingHtml(opts);
+    expect(html).toContain(DEMO_VIDEO_SRC);
+    expect(html).toContain(DISCORD_URL);
+    expect(html).toContain(`mailto:${PUBLISHED_CONTACT_EMAIL}`);
+  });
+
+  it('publishes the contact address INTACT — the scrub must not mangle it', () => {
+    // The whole point of the allowance: without it, shell()'s scrub rewrites the
+    // address to `[email]` and the page ships a dead `mailto:[email]` link.
+    const html = renderHoldingHtml(opts);
+    expect(html).toContain(PUBLISHED_CONTACT_EMAIL);
+    expect(html).not.toContain('mailto:[email]');
+  });
+
+  it('carries the marker the publish gate keys its allowance off', () => {
+    expect(renderHoldingHtml(opts)).toContain(HOLDING_PAGE_MARKER);
+  });
+
+  it('shows NO releases: no downloads, no changelog, no plan links', () => {
+    const html = renderHoldingHtml(opts);
+    expect(html).not.toContain('papercusp_0.0.9_amd64.deb');
+    expect(html).not.toContain('Auto-update actually works now');
+    expect(html).not.toContain('plans/');
+    expect(html).not.toContain('SHA-256');
+  });
+
+  it('keeps the beacon alive so the admin panel still sees visits while held', () => {
+    const html = renderHoldingHtml(opts);
+    expect(html).toContain('release_history_viewed');
+    expect(html).toContain('contact_clicked');
+  });
+
+  it('never puts the address in an analytics property', () => {
+    // A mailto click must not travel to PostHog carrying the address — the gate
+    // only ever reads the HTML, so nothing downstream would catch that.
+    const html = renderHoldingHtml(opts);
+    expect(html).toContain("capture('contact_clicked')");
+    expect(html).not.toContain("capture('contact_clicked', { href");
+  });
+
+  it('is still a no-index unlisted page', () => {
+    expect(renderHoldingHtml(opts)).toContain('noindex, nofollow, noarchive');
   });
 });
