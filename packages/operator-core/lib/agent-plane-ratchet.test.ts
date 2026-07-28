@@ -173,12 +173,31 @@ describe('⚠ WI-6562: a QUIET FLEET is not a dead producer either', () => {
       ).toBe('regressed');
     });
 
-    it('⚠ a SUSTAINED run of zero-occurrence windows is still a regression', () => {
-      // Zero failures across three windows carrying real traffic is not a lucky
-      // quiet spell — at the live ~0.4% failure rate it is surprising enough to
-      // mean the failure rows stopped arriving. The excuse must not be permanent.
-      const run = [good(20), noFailures, noFailures, noFailures];
-      expect(judgeMetricRatchet(run, { eligibilityIsOccurrence: true })).toBe('regressed');
+    it('⚠ STILL fails when zero occurrences persist across BUSY windows', () => {
+      // The teeth. `eligible` IS the zero for an occurrence metric, so the run is
+      // weighed by what it SCANNED. Three ~4,000-call windows finding not one
+      // failure, at the live ~0.4% failure rate, is not a lucky quiet spell — the
+      // failure rows stopped arriving. The excuse must never be permanent.
+      const busy: MetricWindow = { ...noFailures, population: 4_000 };
+      const history = [good(12), good(20), good(17)]; // populations 60/100/85
+      expect(sustainedlyUninterpretable([...history, busy, busy, busy], true)).toBe(true);
+      expect(judgeMetricRatchet([...history, busy, busy, busy], { eligibilityIsOccurrence: true })).toBe(
+        'regressed',
+      );
+    });
+
+    it('but a run of QUIET windows is not — the fleet was simply idle', () => {
+      // Same three-window run, same zero failures, one-fifth the traffic. The live
+      // interpretable history scanned ~3.3k calls per window; 926 finding none is
+      // an ordinary draw, not evidence the producer died.
+      const history = [1_704, 1_667, 4_143, 4_398, 3_809].map((p) => ({
+        ...good(10),
+        population: p,
+      }));
+      expect(demonstratedEvidenceFloor(history, true)).toBe(3_809);
+      expect(sustainedlyUninterpretable([...history, noFailures, noFailures, noFailures], true)).toBe(
+        false,
+      );
     });
 
     it('the LIVE sampling series does not fail the build', () => {

@@ -58,6 +58,11 @@ interface StoredMetric {
    * written before the ratchet read it are judged on run length alone.
    */
   eligible?: number | null;
+  /**
+   * WI-6562 — the evidence weight for an occurrence-eligibility metric, whose
+   * `eligible` is the zero being explained rather than a producer's output.
+   */
+  population?: number | null;
 }
 
 async function main() {
@@ -157,7 +162,8 @@ async function main() {
       console.log(`      the producer WROTE this window, but no unit admitted a verdict — a quiet`);
       console.log(`      window, not a dead producer (last interpretable ${r.lastInterpretableAt}).`);
       console.log(`      Reported, NOT failing. ${UNJUDGEABLE_WINDOW_RUN} consecutive uninterpretable windows`);
-      console.log(`      would still be judged a regression.`);
+      console.log(`      carrying this metric's usual volume would still be judged a regression —`);
+      console.log(`      but a run of STARVED windows is not evidence of one (WI-6562).`);
     }
     if (r.verdict === 'never-interpretable') {
       const gap = judgeGapLine(r);
