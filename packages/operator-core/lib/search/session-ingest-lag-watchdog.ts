@@ -461,9 +461,14 @@ export async function sessionPartsWriterSweep(
           workspaceId, installSlug, source: 'session-parts-writer', reason: verdict.reason, wakeAt: null,
         });
         await (deps.openEscalation ?? openEscalation)(PARTS_WRITER_IDENTITY, {
-          // Higher than the lag sweep's 'advisory' on purpose: that one reports
-          // deferred work, this one reports data being permanently lost.
-          severity: 'warning',
+          // 'advisory', same rung as the lag sweep, though this condition is
+          // strictly worse (permanent loss vs deferred work). The escalation
+          // vocabulary is only blocker | question | advisory, and 'blocker'
+          // would be a lie — this loses data but blocks nobody's work. Rather
+          // than inflate the severity, the urgency is carried where a reader
+          // will actually act on it: the body leads with the permanence and
+          // names the exact lever.
+          severity: 'advisory',
           summary: `Session parts writer silently dead for source_kind '${obs.sourceKind}'`,
           body:
             `${verdict.reason}\n\n` +

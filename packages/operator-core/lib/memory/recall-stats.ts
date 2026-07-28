@@ -246,6 +246,110 @@ export interface RecallSurfaceHealth extends RecallHealth {
  * retrieval stays with the recall canary (recall-canary.ts) — this is the
  * observability slice, not a third alert system.
  */
+/** One pool's trailing-window recall health (migration 703 / P-026). */
+export interface RecallPoolHealth {
+  /** Surface the pool was recalled under (turn-start, orient, …). */
+  surface: string;
+  /** Pool name as the writer stamped it (user | harness | hive). */
+  pool: string;
+  /** Recalls in the window where this pool participated. */
+  recalls: number;
+  /** Of those, how many returned NOTHING from this pool. */
+  zeroHit: number;
+  /** zeroHit / recalls. THE gate-2 detector: a pool keyed on a scope nothing
+   *  writes to sits at 1.0 while the blended surface zero-hit-rate reads 0.0. */
+  zeroHitRate: number;
+  /** Of those, how many returned exactly the pool's own budget. */
+  saturated: number;
+  /** saturated / recalls. THE gate-4 detector: a top-K selector that always
+   *  fills its budget is sizing the result by the limit, not by relevance. */
+  saturationRate: number;
+  /** Median hits contributed by this pool. */
+  hitsP50: number | null;
+  /** Median of this pool's OWN top score — not maskable by a sibling pool. */
+  topScoreP50: number | null;
+  /** Distinct scope keys this pool was queried under in the window. A pool
+   *  whose scope set CHANGED mid-window is the unmigrated-rename signature. */
+  scopes: string[];
+}
+
+/**
+ * Per-POOL slice of the trailing window (context-injection-audit-2026-07-28
+ * P-026). The sibling of readRecallHealthBySurface, one level down.
+ *
+ * readRecallHealthBySurface can only see a surface's BLENDED result, and the
+ * push path concatenates three independently-budgeted pools before it is
+ * recorded — so a pool contributing nothing on every single call reads as a
+ * perfectly healthy surface as long as the other two fill the block. That is
+ * not hypothetical: it is exactly how a harness pool orphaned by an unmigrated
+ * slug rename stayed invisible while its surface reported a 0.0% zero-hit rate.
+ *
+ * `saturationRate` is the same argument for the budget: a pool that returns
+ * exactly its limit on ~every call is not answering "what is relevant", it is
+ * answering "what is the limit" — and comparing hits against the limit STORED
+ * ON THE ROW keeps that true across constant retunes.
+ *
+ * Rows written before migration 703 have `pools IS NULL` and are excluded, so
+ * the counts here are honestly smaller than the surface aggregate's until the
+ * window rolls past the deploy. One GROUP BY roundtrip.
+ */
+export async function readRecallHealthByPool(
+  sql: Sql,
+  opts: { days?: number; surface?: string } = {},
+): Promise<RecallPoolHealth[]> {
+  const days = Number.isFinite(opts.days) && (opts.days as number) > 0 ? Math.floor(opts.days as number) : 7;
+  const rows = (await sql`
+    WITH exploded AS (
+      SELECT
+        s.surface,
+        p.key                                   AS pool,
+        (p.value ->> 'hits')::int               AS hits,
+        (p.value ->> 'limit')::int              AS budget,
+        (p.value ->> 'top')::double precision   AS top,
+        p.value -> 'scopes'                     AS scopes
+      FROM harness_shared.memory_recall_stats s
+      CROSS JOIN LATERAL jsonb_each(s.pools) AS p(key, value)
+      WHERE s.pools IS NOT NULL
+        AND s.created_at >= now() - make_interval(days => ${days}::int)
+        ${opts.surface ? sql`AND s.surface = ${opts.surface}` : sql``}
+    )
+    SELECT
+      surface,
+      pool,
+      count(*)::int                                          AS recalls,
+      count(*) FILTER (WHERE hits = 0)::int                  AS zero_hits,
+      count(*) FILTER (WHERE budget > 0 AND hits >= budget)::int AS saturated,
+      percentile_cont(0.5) WITHIN GROUP (ORDER BY hits)      AS hits_p50,
+      percentile_cont(0.5) WITHIN GROUP (ORDER BY top)
+        FILTER (WHERE top IS NOT NULL)                       AS top_p50,
+      coalesce(
+        jsonb_agg(DISTINCT sc.scope) FILTER (WHERE sc.scope IS NOT NULL),
+        '[]'::jsonb
+      )                                                      AS scope_keys
+    FROM exploded
+    LEFT JOIN LATERAL jsonb_array_elements_text(scopes) AS sc(scope) ON true
+    GROUP BY surface, pool
+    ORDER BY count(*) DESC
+  `) as Array<Record<string, unknown>>;
+  return rows.map((r) => {
+    const recalls = Number(r.recalls ?? 0);
+    const zeroHit = Number(r.zero_hits ?? 0);
+    const saturated = Number(r.saturated ?? 0);
+    return {
+      surface: String(r.surface ?? 'unknown'),
+      pool: String(r.pool ?? 'unknown'),
+      recalls,
+      zeroHit,
+      zeroHitRate: recalls > 0 ? zeroHit / recalls : 0,
+      saturated,
+      saturationRate: recalls > 0 ? saturated / recalls : 0,
+      hitsP50: r.hits_p50 == null ? null : Number(r.hits_p50),
+      topScoreP50: r.top_p50 == null ? null : Number(r.top_p50),
+      scopes: Array.isArray(r.scope_keys) ? (r.scope_keys as unknown[]).map(String) : [],
+    };
+  });
+}
+
 export async function readRecallHealthBySurface(sql: Sql): Promise<RecallSurfaceHealth[]> {
   const rows = (await sql`
     SELECT

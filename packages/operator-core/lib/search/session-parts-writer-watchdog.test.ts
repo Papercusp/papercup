@@ -118,7 +118,10 @@ describe('sessionPartsWriterSweep', () => {
   const deps = (observations: PartsWriterObservation[], fires = 0) => ({
     observe: async (_windowMs: number) => observations,
     recentWatchdogFires: vi.fn(
-      async (_ws: string, _slug: string, _hours: number, _source?: unknown, _scopeKey?: string) => fires,
+      // `_hours` MUST be optional to match typeof recentWatchdogFires — a
+      // required param here is assignment-incompatible and vitest will not
+      // catch it (it does not typecheck), so it only surfaces at lint:tsc.
+      async (_ws: string, _slug: string, _hours?: number, _source?: unknown, _scopeKey?: string) => fires,
     ),
     recordFire: vi.fn(async () => ({}) as never),
     openEscalation: vi.fn(async () => ({}) as never),
@@ -139,11 +142,16 @@ describe('sessionPartsWriterSweep', () => {
     expect(body).toMatch(/bg-host/);
   });
 
-  it('escalates at higher severity than the lag sweep (permanent loss, not deferred work)', async () => {
+  it('carries the urgency in the BODY, since the severity vocabulary has no middle rung', async () => {
+    // blocker | question | advisory are the only values. 'blocker' would be a
+    // lie (this loses data but blocks nobody), so severity stays 'advisory' and
+    // the body must lead with the permanence — otherwise a reader triages this
+    // identically to the recoverable lag alert, which is the whole mistake.
     const d = deps([obs({ turnsInWindow: 39, partsInWindow: 0 })]);
     await sessionPartsWriterSweep({}, d);
-    const arg = (d.openEscalation.mock.calls[0] as unknown as [unknown, { severity: string }])[1];
-    expect(arg.severity).toBe('warning');
+    const arg = (d.openEscalation.mock.calls[0] as unknown as [unknown, { severity: string; body: string }])[1];
+    expect(arg.severity).toBe('advisory');
+    expect(arg.body).toMatch(/PERMANENT/);
   });
 
   it('debounces through the shared fires ledger', async () => {

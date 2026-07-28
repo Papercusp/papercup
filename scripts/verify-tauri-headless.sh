@@ -764,6 +764,43 @@ LAUNCH
 # re-run the whole ~2min boot by hand, retry ONCE automatically: tear down
 # this attempt, re-pick+re-lock a fresh port pair, and re-launch — only the
 # SECOND such loss surfaces as fatal.
+# EI-18869809874059460: when a boot dies before the bridge, the generic `tail -40`
+# below shows only the operator's own noisy shutdown chatter — a cargo/rustc error
+# that actually killed the boot sits THOUSANDS of lines earlier in the same log, so
+# nothing in the FATAL says "this could not compile". The natural read is "flaky,
+# retry", and the retry costs another ~2min and fails identically. On this tree the
+# whole fleet edits papercusp-desktop/src-tauri concurrently, so a peer's mid-edit
+# Rust is a routine cause: measured 2026-07-28, a peer's `return;` in tauri's setup
+# closure (E0069) killed an unrelated agent's WI-6502 measurement boot.
+#
+# We freeze the SPA bundle per run (EI-10364) precisely so a peer's mid-edit JS
+# cannot corrupt someone else's boot; there is no equivalent for the Rust side, so
+# at least NAME it. Patterns are deliberately narrow — an earlier draft also matched
+# bare `-->` lines, which fired 10x on a HEALTHY boot (cargo warnings carry them
+# too); a detector that cries wolf on every good boot is worse than none. Verified:
+# 2 matches on the broken boot (incl. the `-->` source locator via -A1), 0 on two
+# healthy boots.
+RUST_ERR_RE='error\[E[0-9]+\]:|error: could not compile|error: linking with|error: aborting due to'
+boot_failure_diag() {
+  echo "FATAL: $1" >&2
+  local errs
+  errs="$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$LOG" 2>/dev/null | grep -aE -A1 "$RUST_ERR_RE" | tail -24)"
+  if [ -n "$errs" ]; then
+    {
+      echo
+      echo "  ⛔ RUST BUILD BROKEN — this boot never compiled, so RETRYING WILL NOT HELP"
+      echo "     until it does. Check the '-->' paths below: if they are files you did not"
+      echo "     edit, a peer is mid-edit in the shared tree — wait and re-run. If they are"
+      echo "     yours, fix them first."
+      echo "$errs" | sed 's/^/     /'
+      echo
+    } >&2
+  fi
+  echo "  --- tail of $LOG ---" >&2
+  tail -40 "$LOG" >&2
+  exit 1
+}
+
 BOOT_ATTEMPTS=0
 MAX_BOOT_ATTEMPTS="${VERIFY_TAURI_MAX_BOOT_ATTEMPTS:-2}"
 while :; do
@@ -773,8 +810,8 @@ while :; do
   log "waiting up to ${TIMEOUT}s for the dev bridge (pid=$TAURI_PID, log=$LOG, attempt=$BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS)"
   ELAPSED=0
   until grep -q "dev bridge listening" "$LOG" 2>/dev/null; do
-    kill -0 "$TAURI_PID" 2>/dev/null || { echo "FATAL: tauri dev exited before the bridge came up — tail:" >&2; tail -40 "$LOG" >&2; exit 1; }
-    [ "$ELAPSED" -ge "$TIMEOUT" ] && { echo "FATAL: bridge did not come up within ${TIMEOUT}s — tail:" >&2; tail -40 "$LOG" >&2; exit 1; }
+    kill -0 "$TAURI_PID" 2>/dev/null || boot_failure_diag "tauri dev exited before the bridge came up"
+    [ "$ELAPSED" -ge "$TIMEOUT" ] && boot_failure_diag "bridge did not come up within ${TIMEOUT}s"
     sleep 2; ELAPSED=$((ELAPSED + 2))
   done
   log "bridge is up after ${ELAPSED}s"

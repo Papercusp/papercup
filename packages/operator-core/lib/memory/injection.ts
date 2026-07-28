@@ -414,12 +414,21 @@ async function buildBlockInner(
   // Recall telemetry (EI-366 / migration 240): record what the index returned
   // for this turn — zero hits INCLUDED (the zero-hit-rate is the signal) —
   // before any policy filtering below. Fire-and-forget.
+  //
+  // P-026 / migration 703: record it PER POOL. This block is the only place the
+  // three pools still exist separately — everything downstream is concatenated —
+  // so a flat hit_count recorded here is information destroyed at the one point
+  // it was still available. hit_count=6 cannot distinguish "6 user + 0 harness"
+  // from "3 user + 3 harness", which is precisely how a harness pool that
+  // returned zero on every call (orphaned by an unmigrated slug rename) hid
+  // behind a surface reporting a 0.0% zero-hit rate. Each pool also carries the
+  // budget and the scope keys IN EFFECT FOR THIS CALL, so saturation stays
+  // computable after the constants are retuned and a pool queried under a slug
+  // nothing writes to is distinguishable from a pool with nothing relevant.
   {
-    const pulled = [
-      ...userResults,
-      ...harnessHits.map(({ hit }) => hit),
-      ...hiveHits.map(({ hit }) => hit),
-    ];
+    const userScopes = input.userId ? [input.userId] : [];
+    const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
+    const hiveScopes = hiveSlugs.map(hiveScopeKey);
     void (async () => {
       try {
         const { sql } = getOrgPg();
@@ -431,7 +440,21 @@ async function buildBlockInner(
         // injection falls back to 'injection'.
         await recordRecallStats(sql, {
           surface: input.telemetrySurface ?? input.session?.port ?? 'injection',
-          entries: pulled,
+          workspaceId: input.workspaceId ?? null,
+          potSlug: harnessSlugs[0] ?? null,
+          pools: {
+            user: { entries: userResults, limit: userLimit, scopes: userScopes },
+            harness: {
+              entries: harnessHits.map(({ hit }) => hit),
+              limit: PER_HARNESS_LIMIT,
+              scopes: harnessScopes,
+            },
+            hive: {
+              entries: hiveHits.map(({ hit }) => hit),
+              limit: PER_HARNESS_LIMIT,
+              scopes: hiveScopes,
+            },
+          },
         });
       } catch {
         /* swallow — telemetry never blocks a turn */

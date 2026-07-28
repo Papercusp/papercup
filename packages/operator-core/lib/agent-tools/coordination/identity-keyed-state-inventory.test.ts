@@ -202,6 +202,11 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'a per-turn append-only session-history log row (which session logged this turn) — attribution, not a live claim.',
   },
+  'session_turn_parts.owner': {
+    status: 'exempt',
+    reason:
+      'same class as session_turns.owner — migration 702 makes this table the append-only PARTS companion to that log (its own header: "the FAITHFUL transcript companion to session_turns"), so the column is which session logged the part. Attribution, not a live claim; retention prunes it at 14d and no reaper keys on it.',
+  },
   'harness_plans.owner': {
     status: 'exempt',
     reason: "the plan's creator/owner attribution field, distinct from the per-lane plan_item_claims.owner (covered by the 'plan-claims' surface) — display/provenance only, no reaper keys on it.",
