@@ -22,7 +22,14 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { Sql } from 'postgres';
 import { readInsightsDir, type InsightEntry } from './insights-index';
-import { readRecallHealth, readRecallHealthBySurface, type RecallHealth, type RecallSurfaceHealth } from './recall-stats';
+import {
+  readRecallHealth,
+  readRecallHealthBySurface,
+  readRecallQueryHealth,
+  type RecallHealth,
+  type RecallQueryHealth,
+  type RecallSurfaceHealth,
+} from './recall-stats';
 import type { MemoryPrecisionSnapshot } from './bench/precision-read';
 import { DOCS_CONTENT_ROOT } from '../agent-tools/docs/_repo-paths';
 
@@ -92,6 +99,20 @@ export interface MemoryHealth extends RecallHealth {
    */
   recallBySurface: RecallSurfaceHealth[];
   /**
+   * Per-surface shape of what was ASKED (P-041 / migration 706) — the other
+   * half of the call. Every other field here measures what recall RETURNED,
+   * and that side cannot answer whether the QUERY was any good: the push
+   * path's top_score is an RRF rank, identical for a precise question and for
+   * the word "continue" (D-015).
+   *
+   * Empty when unavailable (pre-706 database) or when nothing in the window
+   * recorded a query. Unlike a zeroed rate, an absent row reads as NO ANSWER
+   * rather than as a healthy one, so it needs no companion to the
+   * `recallTelemetryOk` flag below — a present row with `recalls: 0` is the
+   * meaningful zero.
+   */
+  queryBySurface: RecallQueryHealth[];
+  /**
    * Did the recall-telemetry read SUCCEED? (EI-10625.) The aggregate degrades to
    * all-zeros on failure — and a zeroed aggregate is `zeroHitRate7d = 0`, i.e.
    * "no recall ever missed", the healthiest reading there is. Without this flag a
@@ -146,9 +167,17 @@ export async function readMemoryHealth(sql: Sql): Promise<MemoryHealth> {
   } catch {
     /* telemetry-only — never blocks the health read */
   }
+  // P-041: the query-side slice, same degrade-to-empty independence.
+  let queryBySurface: RecallQueryHealth[] = [];
+  try {
+    queryBySurface = await readRecallQueryHealth(sql);
+  } catch {
+    /* telemetry-only — never blocks the health read */
+  }
   return {
     ...recall,
     recallBySurface,
+    queryBySurface,
     recallTelemetryOk,
     totalMemories: Number(r.total_memories ?? 0),
     entityRows: Number(r.entity_rows ?? 0),

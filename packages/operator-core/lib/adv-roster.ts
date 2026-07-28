@@ -24,6 +24,8 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { advSessionsByCoordOwner, type AdvSessionRow } from './adv-sessions';
 import { deriveLiveness, LIVE_MS, type Liveness } from './liveness';
+import { resolveSessionStates } from './agent-tools/coordination/liveness-oracle';
+import type { SessionState } from './agent-tools/coordination/presence-wakeability';
 import {
   claimsByAgent,
   listFleetAssignments,
@@ -143,6 +145,22 @@ export interface RosterEntry {
    *  and the basis for activity-liveness. null when the row predates its first activity. */
   lastActiveAt: string | null;
   liveness: Liveness;
+  /**
+   * THE liveness verdict from the shared oracle (`resolveSessionStates`) — the
+   * same derivation coord:presence, fleet:status, coord:roster and leader-brief
+   * project from, so this roster cannot disagree with them (D-001: one
+   * derivation, many lenses). null when the oracle degraded for this owner.
+   *
+   * Read THIS, not `liveness`, to answer "is it taking turns?". `liveness` is
+   * derived from HEARTBEAT FRESHNESS alone, and a parked agent waiting on its
+   * inbox keeps beating — so `liveness` reads 'live' for a session that has not
+   * taken a turn in days. That gap put 110 parked agents in the HUD's "Stalled"
+   * column on the default board (WI-6636); `sessionState` is 'parked' for them.
+   */
+  sessionState: SessionState | null;
+  /** RAW heartbeat freshness from the same oracle — a process-keepalive signal,
+   *  NOT a liveness verdict. Named to make that impossible to misread. */
+  heartbeatFresh: boolean | null;
   /** The coord-store's own stale flag (heartbeat older than PRESENCE_STALE_MS). */
   stale: boolean;
   /** Whether an engine LOOP is armed for this agent (an active harness_shared.routines
@@ -504,6 +522,10 @@ export function mergeRosterEntries(
     /** P-007 finding: fallback harnessSlug source for interactive psu/su
      *  sessions — see sessionBriefHarnessByOwner's docblock. */
     sessionBriefHarness?: Map<string, string>;
+    /** WI-6636: the shared liveness oracle's verdict per owner. Absent (or
+     *  missing an owner) degrades to sessionState null, which every reader
+     *  must treat as "unknown", never as "not live". */
+    verdictByOwner?: Map<string, { sessionState: SessionState; heartbeatFresh: boolean }>;
   } = {},
 ): RosterEntry[] {
   return presence.map((p) => {
@@ -559,6 +581,8 @@ export function mergeRosterEntries(
       heartbeatAt: p.heartbeatAt,
       lastActiveAt: p.lastActiveAt ?? null,
       liveness,
+      sessionState: extra.verdictByOwner?.get(p.ownerId)?.sessionState ?? null,
+      heartbeatFresh: extra.verdictByOwner?.get(p.ownerId)?.heartbeatFresh ?? null,
       stale: p.stale,
       loopArmed: loopArmedOwners.has(p.ownerId),
       modes: modesByOwner.get(p.ownerId) ?? [],
@@ -1217,7 +1241,7 @@ export async function mergeRosterWithAssignments(
   }
   // #3: per-owner fleet label + the fleet's accent color, for the pui roster grouping —
   // and the official standing-modes read (EI-7626), both batched, in parallel.
-  const [fleetInfoByOwner, modesByOwner, awaitByOwner] = await Promise.all([
+  const [fleetInfoByOwner, modesByOwner, awaitByOwner, verdictByOwner] = await Promise.all([
     resolveFleetInfoByOwner(presence),
     agentModesByOwner(presence),
     // adv-hud P-001: the open-await join (HUD's Blocked column). Batched here
@@ -1225,6 +1249,29 @@ export async function mergeRosterWithAssignments(
     // baseline every caller pays (see the perf docs' serial-loop anti-pattern).
     // Scoped by the roster's OWNER IDS, not workspace — see openAwaitsByOwner.
     openAwaitsByOwner(presence.map((p) => p.ownerId)),
+    // WI-6636: the SHARED liveness oracle. This roster used to derive liveness
+    // from heartbeat freshness alone and so disagreed with every other surface —
+    // it read 110 parked agents as "Stalled" on the default HUD board while
+    // coord:presence called the same sessions `parked`. Batched here (one call
+    // for the whole roster, never per-subject) beside the other joins.
+    //
+    // hydratePerId stays OFF: these subjects already carry heartbeat/stale/
+    // host/pid/source from their presence rows, and per-id hydration is a
+    // point-read per owner — right for the small-N bare-id callers, wrong for a
+    // whole roster. Fail-soft is the caller's choice per the oracle's contract:
+    // an empty map degrades every entry to sessionState null ("unknown"), which
+    // deriveColumn treats as "fall back to the heartbeat legs", never as dead.
+    resolveSessionStates(
+      presence.map((p) => ({
+        ownerId: p.ownerId,
+        heartbeatAt: p.heartbeatAt,
+        stale: p.stale,
+        host: p.host,
+        pid: p.pid,
+        source: p.source,
+        agentRole: p.agentRole ?? null,
+      })),
+    ).catch(() => new Map()),
   ]);
   const entries = mergeRosterEntries(
     presence,
@@ -1240,7 +1287,7 @@ export async function mergeRosterWithAssignments(
     runInfoByOwner,
     loopArmedOwners,
     modesByOwner,
-    { awaitByOwner, sessionBriefHarness },
+    { awaitByOwner, sessionBriefHarness, verdictByOwner },
   );
   const active = enrichPidLiveness(entries, os.hostname());
   // Stamp local agents with this machine's label (federated rows already carry their
