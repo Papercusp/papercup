@@ -114,6 +114,14 @@ interface Props {
   onDrillIn?: (ref: string) => void;
 
   /**
+   * Openability predicate for a card ref, forwarded to ReportBlockCard. Pure
+   * passthrough (same pattern as onDrillIn) — the CALLER owns the resolver and
+   * the live items, so it alone can say whether a ref opens anything. Omit ⇒
+   * every ref keeps rendering an Open action.
+   */
+  canDrillIn?: (ref: string) => boolean;
+
+  /**
    * Per-message avatar override, forwarded straight through to
    * ChatConversation (gui-chat-session-controls-2026-07-25 P-012). Used by
    * SessionChatModal to swap the default agent-kind icon for a roster-driven
@@ -186,7 +194,7 @@ const STARTING_PROMPTS = [
 export function OperatorChat({
   messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
-  conversationId, workspaceId, agentName = 'Papercup', onDrillIn,
+  conversationId, workspaceId, agentName = 'Papercup', onDrillIn, canDrillIn,
   renderAvatar, paneIcon, footer, harnessSlug,
 }: Props) {
   // chat-ref-pills-2026-07-26 P-008 / D-002: this is the seam where a
@@ -326,9 +334,9 @@ export function OperatorChat({
   const renderReport = useCallback(
     (msg: ChatMessage): ReactNode | null => {
       if (!curatorCardsOn || !msg.report) return null;
-      return <ReportBlockCard report={msg.report} onDrillIn={onDrillIn} />;
+      return <ReportBlockCard report={msg.report} onDrillIn={onDrillIn} canDrillIn={canDrillIn} />;
     },
-    [curatorCardsOn, onDrillIn],
+    [curatorCardsOn, onDrillIn, canDrillIn],
   );
 
   return (

@@ -29,7 +29,7 @@
  * `interpretable_count` never decreases.
  *
  * `interpretable_count` is an AGGREGATE, and an aggregate cannot see a swap. If
- * `conflicting-assumption-incidence` becomes measurable in the same window that
+ * `acted-on-stale-or-wrong-value` becomes measurable in the same window that
  * `intent-action-divergence-stamped` dies, the count stays 4 and a count-ratchet
  * reports "holding" — while a producer this plane depends on has just failed.
  * The count is exactly as high as before, which is precisely why it is worthless:
@@ -42,7 +42,7 @@
  *
  * These two have the same symptom — `interpretable: false` today — and opposite
  * causes, owners and urgencies. `never-interpretable` is an unbuilt producer: it
- * is a filed, owned gap (WI-6545) and re-failing the build for it teaches the
+ * is a filed, owned gap (WI-6548) and re-failing the build for it teaches the
  * fleet to ignore this gate. `regressed` is a producer that DEMONSTRABLY WORKED
  * and has stopped, which is a live incident nobody has noticed yet.
  *
@@ -89,15 +89,24 @@ export type RatchetVerdict = (typeof RATCHET_VERDICTS)[number];
  * someone reports the producer built.
  */
 export const METRIC_KNOWN_GAPS: Readonly<Partial<Record<PlaneMetricId, string>>> = Object.freeze({
-  // The assumption MODALITY is still empty, and the gap is real: `isAssumption`
-  // (agent-facts/conflicts.ts) gates P-011's detector on kind==='assumption', which
-  // D-102 F3 measured at 0 of 2,194 rows — and then REJECTED forcing, because agents
-  // honestly assert VERIFIED CONCLUSIONS, so a `kind` gate would yield 'conclusion'
-  // and leave this exactly as vacuous at fleet-wide friction cost. The open item that
-  // owns the decision (widen the detector to any typed claim, or retire it) is WI-6545
-  // — NOT WI-6465, whose own producer now emits (see the note below).
-  'conflicting-assumption-incidence': 'WI-6545',
-  'acted-on-stale-or-wrong-value': 'WI-6545',
+  // ⚠ `conflicting-assumption-incidence` is NOT listed here any more, and its
+  // absence is not an oversight: WI-6545 / D-103 RETIRED the metric outright, so
+  // there is no longer a gap to excuse. An exemption is for a metric that is blind
+  // TODAY and expected to see later; that one was blind BY CONSTRUCTION. Measured
+  // over all 2,217 agent_facts rows ever written: `claim` has 3 rows spanning ONE
+  // identity, and D-087 R3 excludes same-identity pairs as supersession, so the
+  // detector computed `identities.size < 2` → zero compared pairs, permanently.
+  // Widening its gate would have changed which structural-zero string printed and
+  // nothing else. Do NOT re-add it: the metric id no longer exists.
+  //
+  // `acted-on-stale-or-wrong-value` DID NOT ride on that retirement — different
+  // producer (`dependsOn`, 0 of 2,217 rows), different question, and it is
+  // `clarification-rate`'s declared `interpretableOnlyWith` companion, so retiring
+  // it would silently promote that metric to an unqualified pass. It was pointed at
+  // WI-6545 only because that pointer was written too broadly while WI-6465 closed;
+  // WI-6548 owns it now and names the concrete fix (capture `dependsOn` inline in a
+  // workflow agents already perform, rather than asking for it voluntarily).
+  'acted-on-stale-or-wrong-value': 'WI-6548',
   // ⚠ `acted-on-stale-declared-basis` and `closed-work-basis-moved` were listed here
   // under WI-6465 while their producer was still being built. They are deliberately NOT
   // listed any more: both now HOLD in production, measured every ~30min since
@@ -200,7 +209,13 @@ export function judgeKnownGap(args: {
  * READABLE, because its spec says the number has no direction without a companion.
  * `clarification-rate` is the live case: it is `holding` on 4,142 examined calls,
  * and its companion `acted-on-stale-or-wrong-value` is `never-interpretable`
- * pending WI-6545 — so its zero is *uninterpretable*, not clean.
+ * pending WI-6548 — so its zero is *uninterpretable*, not clean.
+ *
+ * ⚠ This companion is precisely why WI-6545 / D-103 retired P-011's metric but did
+ * NOT retire this one. Dropping a blind companion is the cheapest possible way to
+ * make a ratchet look clean — and it would silently convert `clarification-rate`'s
+ * hedged zero into an unqualified pass. A companion is retired only when the
+ * QUESTION stops mattering, never because its producer is inconvenient.
  *
  * ⚠ WHY THIS IS NOT A VERDICT. {@link judgeMetricRatchet} is pure over ONE metric's
  * windows, and deliberately so — the states it must separate (a producer that died
@@ -209,11 +224,11 @@ export function judgeKnownGap(args: {
  * every verdict depend on the whole report and destroy that property. It is a
  * separate disclosure on top of an unchanged verdict.
  *
- * ⚠ AND WHY IT DOES NOT FAIL THE BUILD. The honest fix is WI-6545 resolving the
- * assumption modality, which is a filed, owned gap — failing here would red the fleet
+ * ⚠ AND WHY IT DOES NOT FAIL THE BUILD. The honest fix is WI-6548 giving `dependsOn`
+ * a producer, which is a filed, owned gap — failing here would red the fleet
  * gate for a known-open item and teach everyone to ignore this check, the exact outcome
  * METRIC_KNOWN_GAPS exists to avoid. The teeth are already in the right place: when
- * WI-6545 closes with the detector still blind, the COMPANION's own row fails via
+ * WI-6548 closes with the producer still silent, the COMPANION's own row fails via
  * {@link judgeKnownGap}, and this disclosure clears on its own the moment the
  * companion starts holding.
  */

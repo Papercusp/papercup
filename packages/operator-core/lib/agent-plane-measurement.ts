@@ -68,7 +68,13 @@ export const PLANE_METRIC_IDS = [
   'intent-action-divergence-stamped',
   'intent-action-divergence-sampling',
   'clarification-rate',
-  'conflicting-assumption-incidence',
+  // ⚠ `conflicting-assumption-incidence` (P-011) was REMOVED here by WI-6545 /
+  // D-103, and its absence is deliberate. Do not re-add it without new evidence.
+  // Measured over all 2,217 agent_facts rows ever written: `claim` had 3 rows
+  // spanning ONE identity, and D-087 R3 excludes same-identity pairs as
+  // supersession — so the detector could never assemble a single comparable pair,
+  // whatever its entry gate. It was not an unbuilt producer waiting on adoption;
+  // it was a metric whose population is empty by construction.
   'acted-on-stale-or-wrong-value',
   // WI-6465 / D-102: the two COMMITMENT-backed legs. Separate ids rather than a
   // widening of the cell-backed leg above, for the reason D-091 already split
@@ -311,21 +317,16 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
       'A LOW rate is ambiguous BY CONSTRUCTION — equally consistent with agents having enough context (the win) and with agents guessing instead of asking (the loss). It is only interpretable read ALONGSIDE `acted-on-stale-or-wrong-value`, never on its own. D-030 §4 adds the opposite hazard: clarification-seeking measurably WIDENS prompt-injection exposure, so a rising rate is not automatically good either.',
     // P-019: the companion named in `vacuousPassWhen` above, now DECLARED rather
     // than only described. That companion is `never-interpretable` pending
-    // WI-6465, so this metric's own `holding` verdict must not be rendered as an
+    // WI-6548, so this metric's own `holding` verdict must not be rendered as an
     // unqualified pass — which is exactly what P-019 asked be recorded instead of
     // "fixed". Do NOT drop this to make the ratchet look cleaner: the honest
-    // resolution is WI-6465 landing a `dependsOn` producer.
+    // resolution is WI-6548 landing a `dependsOn` producer.
+    //
+    // ⚠ WI-6545 / D-103 tested this rule rather than merely restating it. That
+    // change retired the OTHER blind metric (`conflicting-assumption-incidence`)
+    // and deliberately left this one standing, because retiring a companion is the
+    // cheapest way to launder an uninterpretable number into a clean one.
     interpretableOnlyWith: ['acted-on-stale-or-wrong-value'],
-  },
-  'conflicting-assumption-incidence': {
-    id: 'conflicting-assumption-incidence',
-    question: 'How often do two live assumptions over the same referent contradict each other?',
-    inputProducer: 'facts:assert { kind:"assumption", claim, dependsOn } → harness_shared.agent_facts',
-    unit: 'agent_facts row',
-    verdictUnit: 'compared pair',
-    polarity: 'defect',
-    vacuousPassWhen:
-      'ZERO assumptions have ever been filed (0 of 2,148 rows, measured 2026-07-27 and unchanged since D-087 measured 0 of 2,088), so `comparedPairs` is 0 and the detector reports no conflict for precisely the same reason it would in a perfectly-aligned fleet. This is D-087’s "read with no producer" — the metric is unbuilt, not clean.',
   },
   'acted-on-stale-or-wrong-value': {
     id: 'acted-on-stale-or-wrong-value',

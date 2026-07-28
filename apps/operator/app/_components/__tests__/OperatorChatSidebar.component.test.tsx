@@ -98,12 +98,24 @@ vi.mock('../OperatorChat', () => ({
   // handleWorkRefActivate returns early on a null harness).
   OperatorChat: ({
     onDrillIn,
+    canDrillIn,
     harnessSlug,
   }: {
     onDrillIn?: (ref: string) => void;
+    canDrillIn?: (ref: string) => boolean;
     harnessSlug?: string | null;
   }) => (
-    <div data-testid="operator-chat" data-harness={harnessSlug ?? ''}>
+    <div
+      data-testid="operator-chat"
+      data-harness={harnessSlug ?? ''}
+      /* The openability predicate the sidebar hands ReportBlockCard, surfaced
+         per ref-kind so a test can assert the button-visibility rule without
+         rendering a whole curator report. */
+      data-can-drill-wi={canDrillIn ? String(canDrillIn('wi:WI-1')) : ''}
+      data-can-drill-plan={canDrillIn ? String(canDrillIn('plan:my-plan-2026-07-17')) : ''}
+      data-can-drill-live-escalation={canDrillIn ? String(canDrillIn('escalation:msg-9')) : ''}
+      data-can-drill-escalation={canDrillIn ? String(canDrillIn(drillState.ref)) : ''}
+    >
       Operator chat
       {onDrillIn ? (
         <button
@@ -636,6 +648,30 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     const params = new URLSearchParams(href.slice(href.indexOf('?')));
     expect(params.get('ws')).toBe('ws-test');
     expect(params.get('slug')).toBe('papercusp');
+  });
+
+  /* [owner 2026-07-28] "if there is nothing to open there should be no open
+     button". The predicate the sidebar hands ReportBlockCard must agree with
+     what the click would actually do — same resolver, same items. */
+  it('canDrillIn says NO for a ref that resolves to nothing (the dead-button case)', () => {
+    // An escalation whose message is not in the live attention snapshot: the
+    // exact shape the owner clicked on the fleet-status cards.
+    drillState.ref = 'escalation:aged-out-msg';
+    inboxState.items = [];
+    render(<OperatorChatSidebar />);
+    const chat = screen.getByTestId('operator-chat');
+    expect(chat.getAttribute('data-can-drill-escalation')).toBe('false');
+  });
+
+  it('canDrillIn says YES for refs that DO open something (work item, plan, live escalation)', () => {
+    inboxState.items = [
+      { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
+    ];
+    render(<OperatorChatSidebar />);
+    const chat = screen.getByTestId('operator-chat');
+    expect(chat.getAttribute('data-can-drill-wi')).toBe('true');
+    expect(chat.getAttribute('data-can-drill-plan')).toBe('true');
+    expect(chat.getAttribute('data-can-drill-live-escalation')).toBe('true');
   });
 
   it('a navigating drill-in does NOT drag view state (an open popup) across the navigation', () => {

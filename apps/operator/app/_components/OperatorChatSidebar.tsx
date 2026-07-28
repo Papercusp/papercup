@@ -379,6 +379,26 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
     },
     [workspaceId, harnessSlug],
   );
+  // Does this ref open ANYTHING? Same resolver, same items, as the click below —
+  // deliberately one source of truth, so a rendered button and its click can
+  // never disagree about whether there is a destination.
+  //
+  // [owner 2026-07-28] "if there is nothing to open there should be no open
+  // button": a curator ref only resolves against the LIVE attention items, and an
+  // escalation whose message has aged out of that snapshot resolves to `none`.
+  // The old fallback then pushed the HUD board the chat is ALREADY on — a button
+  // that visibly does nothing. Measured live on the owner's fleet-status cards:
+  // 4 of the first 7 were dead this way.
+  //
+  // Depends on `inboxItems` (not the ref) ON PURPOSE: this feeds RENDER, so it
+  // must re-evaluate when the items arrive or a matching item ages out, or a
+  // button's visibility would be frozen at first paint. `handleCardDrillIn`
+  // keeps reading the ref instead, so the CLICK path stays identity-stable and
+  // the WI-6502 typing-lag memo is unaffected by keystrokes.
+  const canCardDrillIn = useCallback(
+    (ref: string) => resolveRefDestination(ref, inboxItems).kind !== 'none',
+    [inboxItems],
+  );
   const handleCardDrillIn = useCallback(
     (ref: string) => {
       const dest = resolveRefDestination(ref, inboxItemsRef.current);
@@ -629,6 +649,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
             conversationId={conv.conversationId ?? undefined}
             workspaceId={workspaceId}
             onDrillIn={handleCardDrillIn}
+            canDrillIn={canCardDrillIn}
             /* Without this, OperatorChat's own handleWorkRefActivate hits its
                `if (!harnessSlug) return` guard and EVERY WI-/EI-/F- ref pill in
                the chat is inert — the same dead-click the curator card's

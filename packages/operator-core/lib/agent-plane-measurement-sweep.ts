@@ -43,8 +43,6 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { SWEEP_LOOKBACK_MS } from './agent-state-divergence-sweep';
 import type { DivergenceReport } from './agent-state-divergence';
-import { listAssumptionFacts } from './agent-facts/store';
-import { detectAssumptionConflicts } from './agent-facts/conflicts';
 import {
   basisHasMoved,
   classifyBasisMovement,
@@ -166,11 +164,11 @@ export async function loadCallAggregates(opts: {
 }
 
 /**
- * Live-fact totals — the POPULATION for the two fact-backed metrics.
+ * Live-fact totals — the POPULATION for the fact-backed metrics.
  *
- * Scoped with exactly the liveness predicate `listAssumptionFacts` uses, so the
- * population and the eligible subset are counted over the same set. A population
- * that included retracted rows would deflate every fill rate by a drifting amount.
+ * Scoped with exactly the liveness predicate the fact reads use, so the population
+ * and the eligible subset are counted over the same set. A population that included
+ * retracted rows would deflate every fill rate by a drifting amount.
  */
 export async function loadFactAggregates(opts: {
   workspaceId: string;
@@ -357,7 +355,6 @@ export interface PlaneMeasurementDeps {
   divergence?: DivergenceReport | null;
   loadCallAggregates?: typeof loadCallAggregates;
   loadFactAggregates?: typeof loadFactAggregates;
-  listAssumptionFacts?: typeof listAssumptionFacts;
   /** Absent by default; see the header for why the verdict leg is not run here. */
   evaluateStaleness?: (facts: unknown[]) => Promise<StalenessVerdictCounts>;
   /** WI-6465 / D-102 — injected for tests only; these DO run by default. */
@@ -417,9 +414,6 @@ export function composeCounts(input: {
   divergence: DivergenceReport | null;
   calls: CallAggregateRow;
   facts: FactAggregateRow;
-  assumptionsExamined: number;
-  comparedPairs: number;
-  conflicts: number;
   staleness: StalenessVerdictCounts | null;
   commitmentBasis: CommitmentBasisCounts | null;
 }): PlaneCounts {
@@ -465,12 +459,6 @@ export function composeCounts(input: {
       attributed,
       attributed,
       num(input.calls.clarification_calls),
-    ),
-    'conflicting-assumption-incidence': m(
-      num(input.facts.live_facts),
-      input.assumptionsExamined,
-      input.comparedPairs,
-      input.conflicts,
     ),
     'acted-on-stale-or-wrong-value': m(
       num(input.facts.live_facts),
@@ -540,13 +528,6 @@ export async function planeMeasurementSweep(
       (deps.loadFactAggregates ?? loadFactAggregates)({ workspaceId, sql: deps.sql }),
     ]);
 
-    // P-011's detector, consumed — not a second contradiction comparison.
-    const assumptions = await (deps.listAssumptionFacts ?? listAssumptionFacts)(
-      { workspaceId },
-      deps.sql,
-    );
-    const conflictReport = detectAssumptionConflicts(assumptions);
-
     const staleness =
       deps.evaluateStaleness && num(facts.with_deps) > 0
         ? await deps.evaluateStaleness([])
@@ -579,9 +560,6 @@ export async function planeMeasurementSweep(
         calls,
         facts,
         commitmentBasis,
-        assumptionsExamined: assumptions.length,
-        comparedPairs: conflictReport.coverage.comparedPairs,
-        conflicts: conflictReport.conflicts.length,
         staleness,
       }),
       windowStartMs,
