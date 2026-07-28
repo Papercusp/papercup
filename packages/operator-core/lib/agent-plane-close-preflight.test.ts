@@ -14,6 +14,7 @@ import path from 'node:path';
 import {
   isPlaneGapItem,
   planeGapItemIds,
+  selectPlaneGapItems,
   preflightPlaneClose,
   renderPlaneClosePreflightWarning,
   PLANE_GAP_TERMINAL_STATUSES,
@@ -74,6 +75,26 @@ describe('isPlaneGapItem — the cheapness guard on the hot completion path', ()
     for (const ref of live) expect(isPlaneGapItem(ref)).toBe(true);
     expect(isPlaneGapItem('WI-000000-not-a-real-item')).toBe(false);
     expect(live.every((r) => isPlaneGapItem(r, METRIC_KNOWN_GAPS))).toBe(true);
+  });
+});
+
+describe('⚠ selectPlaneGapItems — the one call site allowed to select gap ids', () => {
+  it('selects, trims and de-duplicates', () => {
+    expect(selectPlaneGapItems(['WI-1234', ' WI-9001 ', 'WI-9001'], GAPS)).toEqual(['WI-9001']);
+    expect(selectPlaneGapItems([], GAPS)).toEqual([]);
+  });
+
+  it('survives being reached the way the bug reached it — an INDEX in the map slot', () => {
+    // The live pre-flight was first written `ids.filter(isPlaneGapItem)`, which hands
+    // filter's index in as `gaps`: Object.values(0) is [], nothing ever matches, and
+    // the guard degrades into a fully-green no-op that reports `not-a-gap-item` for
+    // the one id it exists to catch. Only tsc noticed — no test could, because the
+    // failure IS "the check finds nothing". Pinned here as the shape to never repeat.
+    const viaFilter = ['WI-9001', 'WI-1234'].filter((id, i) =>
+      isPlaneGapItem(id, i as unknown as PlaneGapMap),
+    );
+    expect(viaFilter, 'the broken shape must still be broken — this is the counter-example').toEqual([]);
+    expect(selectPlaneGapItems(['WI-9001', 'WI-1234'], GAPS)).toEqual(['WI-9001']);
   });
 });
 

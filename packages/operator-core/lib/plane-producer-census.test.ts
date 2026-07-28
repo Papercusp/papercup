@@ -18,16 +18,7 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS gate script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
-import {
-  judgeProducerField,
-  fillRate,
-  rollupCensus,
-  auditKnownUnbuiltRefs,
-  isWorkItemRef,
-  TERMINAL_STATUSES,
-  PLANE_PRODUCER_FIELDS,
-  PRODUCER_VERDICTS,
-} from '../../../scripts/check-plane-producers.mjs';
+import { judgeProducerField, fillRate, rollupCensus, auditKnownUnbuiltRefs, isWorkItemRef, TERMINAL_STATUSES, PLANE_PRODUCER_FIELDS, PRODUCER_VERDICTS } from '../../../scripts/check-plane-producers.mjs';
 
 describe('P-001 — the three-verdict split (the vacuous pass this gate exists to avoid)', () => {
   it('a populated field in a populated table is PRODUCING', () => {

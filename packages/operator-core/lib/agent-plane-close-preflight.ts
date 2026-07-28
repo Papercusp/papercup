@@ -71,6 +71,7 @@ import {
   type RatchetRow,
 } from './agent-plane-ratchet';
 import { METRIC_SPECS, type PlaneMetricId } from './agent-plane-measurement';
+import { activeWorkspaceId } from './workspace-registry';
 
 /** One window of the series, as the ratchet consumes it. */
 export type PlaneSeriesPoint = {
@@ -290,18 +291,19 @@ export const PLANE_GAP_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
  */
 export async function preflightPlaneCloseLive(args: {
   closingIds: readonly string[];
-  workspaceId: string;
+  /** Defaults to the active workspace — a caller's `ctx.workspaceId` is optional. */
+  workspaceId?: string;
 }): Promise<PlaneClosePreflight | null> {
-  const gapItems = args.closingIds.map((id) => id.trim()).filter(isPlaneGapItem);
-  if (gapItems.length === 0) return null;
+  if (selectPlaneGapItems(args.closingIds).length === 0) return null;
 
+  const workspaceId = args.workspaceId ?? activeWorkspaceId();
   const { getOrgPg } = await import('@papercusp/db-org');
   const sql = getOrgPg().sql;
 
   const rows = await sql<Array<{ measured_at: string; metrics: unknown }>>`
     SELECT measured_at::text AS measured_at, metrics
       FROM harness_shared.agent_plane_measurements
-     WHERE workspace_id = ${args.workspaceId}
+     WHERE workspace_id = ${workspaceId}
      ORDER BY measured_at ASC
   `;
   const series: PlaneSeriesPoint[] = rows.map((r) => ({
@@ -316,7 +318,7 @@ export async function preflightPlaneCloseLive(args: {
     ? await sql<Array<{ feature_id: string; status: string }>>`
         SELECT feature_id, status
           FROM harness_shared.work_items
-         WHERE workspace_id = ${args.workspaceId} AND feature_id = ANY(${refs})
+         WHERE workspace_id = ${workspaceId} AND feature_id = ANY(${refs})
       `
     : [];
   const closedGaps = new Set(
