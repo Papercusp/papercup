@@ -88,6 +88,26 @@ function collectedCommands(mainRs: string): string[] {
     .filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
 }
 
+/**
+ * Whether the generated file invokes `name`.
+ *
+ * Specta emits TWO call shapes and a matcher must accept both — a plain
+ * `__TAURI_INVOKE("app_version")` when the return type is inferred through a
+ * wrapper (`typedError<T, E>(...)`), and a type-parameterised
+ * `__TAURI_INVOKE<Registry>("workspaces_list")` otherwise. The first version of
+ * this guard only matched the plain form and reported 13 present commands as
+ * missing — a detector wrong in the alarming direction is still wrong, and would
+ * have trained the next reader to ignore it. The generic is matched lazily so
+ * nested type args (`__TAURI_INVOKE<DesktopWindow[]>`, `<Array<Foo>>`) still pair
+ * with the right `(`.
+ */
+function hasBinding(bindings: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`__TAURI_INVOKE\\s*(?:<[\\s\\S]{0,200}?>)?\\s*\\(\\s*"${escaped}"`).test(
+    bindings,
+  );
+}
+
 /** The path literal passed to `specta_builder.export(...)`. */
 function exportPathLiteral(mainRs: string): string {
   const m = mainRs.match(
@@ -125,6 +145,16 @@ describe('tauri-specta bindings stay in sync with the Rust command list', () => 
     ).toBe(false);
   });
 
+  it('detects a missing binding (matcher is not vacuously permissive)', () => {
+    // The loose regex above must still say NO to a command that is absent —
+    // otherwise the assertion below is decoration. Positive control on a real
+    // command, negative control on one that cannot exist.
+    const bindings = readFileSync(CANONICAL_BINDINGS, 'utf8');
+    expect(hasBinding(bindings, 'workspaces_list')).toBe(true); // parameterised form
+    expect(hasBinding(bindings, 'endpoint_ipc_status')).toBe(true); // plain form
+    expect(hasBinding(bindings, 'no_such_command_zzz')).toBe(false);
+  });
+
   it('has a binding for every collected command', () => {
     const commands = collectedCommands(mainRs);
     // Sanity floor: a parse that silently yields nothing would make this test
@@ -132,7 +162,7 @@ describe('tauri-specta bindings stay in sync with the Rust command list', () => 
     expect(commands.length).toBeGreaterThan(20);
 
     const bindings = readFileSync(CANONICAL_BINDINGS, 'utf8');
-    const missing = commands.filter((name) => !bindings.includes(`__TAURI_INVOKE("${name}"`));
+    const missing = commands.filter((name) => !hasBinding(bindings, name));
 
     expect(
       missing,
