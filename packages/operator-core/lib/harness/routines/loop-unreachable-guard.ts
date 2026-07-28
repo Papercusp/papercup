@@ -127,7 +127,7 @@ export function evaluateUnreachableTerminalGuard(input: {
   // do. A merely SLOW live turn is excluded far earlier: the caller only counts a stuck-backstop
   // fire when presence has not moved at all since the fire.
   const comatoseHost =
-    false && input.reachable && input.circuitOpen === true && input.stuckFireCount >= comatoseStuckFiresForTermination();
+    input.reachable && input.circuitOpen === true && input.stuckFireCount >= comatoseStuckFiresForTermination();
   if (input.reachable && !resumableDead && !comatoseHost) return { breach: false };
   // Classic (circuit-closed) path: require the full dwell window before terminating. Circuit-open
   // path (EI-7006): the dwell window is DECOUPLED — see the `circuitOpen` field doc above.
