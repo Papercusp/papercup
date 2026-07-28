@@ -583,7 +583,9 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
             false,
             'Webview reports zero HTTP egress.',
             'the egress monitor is NOT installed, so egress is UNKNOWN — not zero.',
-            'window.__papercusp_egress__ is absent. installDesktopIpcPolyfills() installs it; if the shell is not Tauri, or forceHttp pulled the rollback lever, this check cannot speak.',
+            [
+              'window.__papercusp_egress__ is absent. installDesktopIpcPolyfills() installs it; if the shell is not Tauri, or forceHttp pulled the rollback lever, this check cannot speak.',
+            ],
           );
         }
         // Positive control: an unloaded page trivially reports zero egress, and a
@@ -594,7 +596,9 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
             false,
             'Webview reports zero HTTP egress.',
             `sample is not trustworthy: appMounted=${v.appMounted}, resourceEntries=${v.resourceEntries}.`,
-            'The shell loads hundreds of resources when healthy, so a near-empty timeline means nothing ran — a zero here would be meaningless rather than clean.',
+            [
+              'The shell loads hundreds of resources when healthy, so a near-empty timeline means nothing ran — a zero here would be meaningless rather than clean.',
+            ],
           );
         }
 
@@ -612,7 +616,9 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
             : `${v.total} HTTP escape(s): ${worst}.`,
           pass
             ? undefined
-            : 'A path recurring at ~30s boundaries is a background poll escaping on a ROUTING rule (see D-008), not a startup race; one appearing only before the polyfill installs is genuinely an ordering bug.',
+            : [
+                'A path recurring at ~30s boundaries is a background poll escaping on a ROUTING rule (see D-008), not a startup race; one appearing only before the polyfill installs is genuinely an ordering bug.',
+              ],
         );
       },
     },

@@ -1918,14 +1918,27 @@ const handler = createMcpHandler(
           // Power-user / scoped-superuser workspace clamp (defense in depth). The
           // ctx's workspaceId is already clamped, so any tool reading
           // ctx.workspaceId is safe. But a handful of tools accept an explicit
-          // `workspace` ARG used as a filter (audit 2026-05-20: ui:list_clients is
-          // the only current one). We overwrite that arg with the clamped
-          // workspace before the tool sees it — this defends every tool, present
-          // and future, without a per-tool audit.
-          const dispatchArgs =
-            (spawnRes.ctx.isPowerUser || scopedSuperuserClamp) && args && typeof args === 'object' && 'workspace' in args
-              ? { ...args, workspace: spawnRes.ctx.workspaceId }
-              : args;
+          // workspace-target ARG used as a filter. We overwrite that arg with the
+          // clamped workspace before the tool sees it — this defends every tool,
+          // present and future, without a per-tool audit.
+          //
+          // WI-6641: BOTH spellings, `workspace` AND `workspaceId`. The original
+          // audit (2026-05-20) found only ui:list_clients and hardcoded its spelling,
+          // so the "defends every tool, present and future" claim above silently did
+          // not hold for the other one — a scoped session could hand
+          // `workspaceId: '<someone-else>'` straight through. Three tools spell it
+          // that way today (pot_git:secrets_exemptions, substrate:revoke_contributor,
+          // substrate:revoke_self_device — the last two being REVOCATION writes), and
+          // nothing stopped a fourth. Clamp on the ARG NAME, not on a tool list.
+          const WORKSPACE_TARGET_ARGS = ['workspace', 'workspaceId'] as const;
+          let dispatchArgs = args;
+          if ((spawnRes.ctx.isPowerUser || scopedSuperuserClamp) && args && typeof args === 'object') {
+            for (const key of WORKSPACE_TARGET_ARGS) {
+              if (key in (args as Record<string, unknown>)) {
+                dispatchArgs = { ...(dispatchArgs as Record<string, unknown>), [key]: spawnRes.ctx.workspaceId };
+              }
+            }
+          }
           // Replay lookup (P-046 / EI-68) — placed after the profile gate so a
           // replay grants nothing a fresh call wouldn't. Keys are scoped to the
           // caller's STABLE identity: uiClientId (the per-session SID for

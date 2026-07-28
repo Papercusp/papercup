@@ -566,17 +566,29 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(textOf(res)).not.toContain('workspace_forbidden'); // NOT denied by the clamp
   });
 
-  it('flag ON: pot_git:secrets_exemptions still REFUSES a scoped caller targeting ANOTHER workspace (self-confinement is what earns the exemption)', async () => {
-    // The allowlist entry is only sound while the handler cannot be pointed elsewhere.
-    // If this ever regresses, the tool must come OFF SCOPED_SAFE_CROSSWORKSPACE.
+  it('flag ON: a scoped caller’s foreign `workspaceId` ARG is clamped to its own workspace (WI-6641 — the clamp covers BOTH spellings)', async () => {
+    // The allowlist entry above is only sound while a scoped caller cannot point the
+    // tool at another workspace. The clamp overwrites the workspace-target arg — but
+    // it used to hardcode the spelling `workspace`, so `workspaceId` (this tool,
+    // plus both substrate:revoke_* WRITES) went through untouched. If this regresses,
+    // pot_git:secrets_exemptions must come OFF SCOPED_SAFE_CROSSWORKSPACE.
     h.scopedClampFlag.value = true;
     const res = await callTool(
       'pot_git:secrets_exemptions',
       { action: 'list', workspaceId: 'ws-someone-else' },
       scoped('ws-test'),
     );
-    expect(res.isError).toBe(true);
-    expect(textOf(res)).toContain('workspace_forbidden');
+    expect(textOf(res)).not.toContain('ws-someone-else'); // never reached the foreign workspace
+  });
+
+  it('flag ON: the workspace-target arg clamp is keyed on the ARG NAME, not a tool list (WI-6641)', async () => {
+    // Regression guard for the generalisation itself: a scoped caller's `workspaceId`
+    // must be rewritten for ANY tool that accepts it, so a future tool adding the arg
+    // inherits the defense instead of quietly reopening the hole.
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { workspaceId: 'other-ws' }, scoped('ws-test'));
+    expect(res.isError).not.toBe(true);
+    expect(seen.at(-1)?.args).toMatchObject({ workspaceId: 'ws-test' });
   });
 
   it('flag ON: a NON-exempt crossWorkspace tool is STILL denied (clamp intact for tenant-data tools)', async () => {
