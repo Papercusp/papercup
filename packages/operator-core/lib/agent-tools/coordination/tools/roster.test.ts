@@ -10,7 +10,19 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import rosterTool from './roster';
 
 // Mock dependencies
-vi.mock('../presence-snapshot', () => ({
+vi.mock('../presence-snapshot', async (importOriginal) => ({
+  // Spread the REAL module and override only the two I/O-shaped functions this
+  // test needs to control. Deliberately NOT a full factory: a full factory
+  // REPLACES the module, so every export it fails to list becomes undefined —
+  // and it breaks at RUNTIME inside the CONSUMER (roster.ts), citing a function
+  // the test author never mentioned. That is how adding filterRosterRowsByState
+  // and projectRosterRows to presence-snapshot red-gated the whole fleet with 11
+  // failures here (WI-6663) — and the comment at the foot of this mock records an
+  // EARLIER instance of the same class. importOriginal makes the mock
+  // additive-safe: a future export is inherited, not silently deleted.
+  // projectRosterRows/filterRosterRowsByState stay REAL on purpose — they are
+  // pure row transforms, better exercised than stubbed.
+  ...(await importOriginal<typeof import('../presence-snapshot')>()),
   resolvePresenceScope: vi.fn(async (ctx, args) => ({
     scope: args.scope ?? 'hive',
     wsId: 'test-ws',

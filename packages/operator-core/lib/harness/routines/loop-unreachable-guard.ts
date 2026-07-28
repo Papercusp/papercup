@@ -57,18 +57,66 @@ export function minStuckFiresForTermination(): number {
   return Number.isFinite(env) && env >= 1 ? Math.floor(env) : DEFAULT_MIN_STUCK_FIRES;
 }
 
-/** WI-6639 (comatose-host): the consecutive stuck-backstop streak at which even a LIVE
- *  INJECTABLE channel stops vetoing termination. Deliberately far above both the min-fires
- *  floor (3) and the fire-circuit threshold (8): at the ~30min stuck-park cadence this is
- *  ~12h of a loop that settled NO turn and whose owner emitted NO presence beat. */
-export const DEFAULT_COMATOSE_STUCK_FIRES = 24;
+/** The stuck-park dwell floor — how often a parked loop can accrue ONE stuck-backstop fire.
+ *  Single source of truth: `stuckParkMs` in reconcile-loop-routines.ts delegates here, so the
+ *  guard's arithmetic below can never drift from the cadence that actually feeds it. */
+const DEFAULT_STUCK_PARK_MS = 30 * 60_000;
 
-/** The comatose-host streak, env-overridable. Never lower than 3× the min-fires floor, so an
- *  operator cannot tune this into a hair-trigger that terminates a merely-slow live session. */
-export function comatoseStuckFiresForTermination(): number {
-  const env = Number(process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES);
-  const base = Number.isFinite(env) && env >= 1 ? Math.floor(env) : DEFAULT_COMATOSE_STUCK_FIRES;
-  return Math.max(base, minStuckFiresForTermination() * 3);
+/** The interval-scaled stuck-backstop cadence: env override, floored at 4× the loop's own
+ *  interval (a loop cannot be reconciled faster than it fires). */
+export function stuckBackstopCadenceMs(intervalMs: number): number {
+  const env = Number(process.env.PAPERCUSP_LOOP_STUCK_PARK_MS);
+  const base = Number.isFinite(env) && env > 0 ? env : DEFAULT_STUCK_PARK_MS;
+  return Math.max(base, intervalMs * 4);
+}
+
+/** WI-6639 (comatose-host): the WALL-CLOCK budget after which even a LIVE INJECTABLE channel
+ *  stops vetoing termination — 12h in which the loop settled NO turn and its owner emitted NO
+ *  presence beat. A healthy live session cannot do that (it settles turns → recordFire('ok') →
+ *  the streak resets to 0). */
+export const DEFAULT_COMATOSE_WINDOW_MS = 12 * 3600_000; // 12h
+
+/** The comatose wall-clock window, env-overridable. */
+export function comatoseWindowMs(): number {
+  const env = Number(process.env.PAPERCUSP_LOOP_COMATOSE_WINDOW_MS);
+  return Number.isFinite(env) && env > 0 ? env : DEFAULT_COMATOSE_WINDOW_MS;
+}
+
+/** The comatose streak expressed as a FIRE COUNT at the 30-min cadence floor — i.e. the value
+ *  `comatoseStuckFiresForTermination()` yields for a short-interval loop. Kept as a named
+ *  constant because it is the number the reason-string and the docs talk about. */
+export const DEFAULT_COMATOSE_STUCK_FIRES = Math.ceil(DEFAULT_COMATOSE_WINDOW_MS / DEFAULT_STUCK_PARK_MS); // 24
+
+/**
+ * The comatose-host streak for a loop of THIS interval.
+ *
+ * WI-6660: this used to be a flat count of 24, described in its own comment as "~12h at the
+ * ~30min stuck-park cadence". But the streak advances once per `stuckBackstopCadenceMs`, which
+ * is `max(30min, interval*4)` — so a fixed count means the wall-clock scales with the loop's
+ * interval, and the real range across the LIVE stranded population was 12h (180s loops) to 88h
+ * (3300s loops). A 3.7-day wait is not what "~12h" promised, and the mismatch is actively
+ * misleading: anyone measuring "did the stranded set clear?" on the documented horizon sees a
+ * non-zero count and concludes the fix failed.
+ *
+ * So the budget is now the WALL CLOCK, and the count is DERIVED from it per interval. The
+ * result is uniform (~12h everywhere) instead of interval-dependent.
+ *
+ * Two floors keep this conservative, so shortening the long tail cannot make it a hair-trigger:
+ *  - `minStuckFiresForTermination()` — never terminate on fewer than a few real observations;
+ *  - the caller's `circuitOpen` requirement (≥`circuitThreshold()`, default 8, consecutive
+ *    failures), which for a long-interval loop is the BINDING constraint anyway: at a 220min
+ *    cadence 8 fires is ~29h, so that population still gets far more than the 12h window.
+ *
+ * `PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES` is preserved as an explicit fire-count override (it
+ * still wins, and is still clamped to 3× the min-fires floor) so existing tuning keeps working.
+ */
+export function comatoseStuckFiresForTermination(intervalMs = 0): number {
+  const envFires = Number(process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES);
+  if (Number.isFinite(envFires) && envFires >= 1) {
+    return Math.max(Math.floor(envFires), minStuckFiresForTermination() * 3);
+  }
+  const fires = Math.ceil(comatoseWindowMs() / stuckBackstopCadenceMs(intervalMs));
+  return Math.max(fires, minStuckFiresForTermination());
 }
 
 /**
@@ -127,7 +175,9 @@ export function evaluateUnreachableTerminalGuard(input: {
   // do. A merely SLOW live turn is excluded far earlier: the caller only counts a stuck-backstop
   // fire when presence has not moved at all since the fire.
   const comatoseHost =
-    input.reachable && input.circuitOpen === true && input.stuckFireCount >= comatoseStuckFiresForTermination();
+    input.reachable &&
+    input.circuitOpen === true &&
+    input.stuckFireCount >= comatoseStuckFiresForTermination(input.intervalMs);
   if (input.reachable && !resumableDead && !comatoseHost) return { breach: false };
   // Classic (circuit-closed) path: require the full dwell window before terminating. Circuit-open
   // path (EI-7006): the dwell window is DECOUPLED — see the `circuitOpen` field doc above.

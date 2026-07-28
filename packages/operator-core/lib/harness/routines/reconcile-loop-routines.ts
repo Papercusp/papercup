@@ -209,11 +209,11 @@ const FALLBACK_QUIET_MS = 60_000;
  *  force-rearmed. Per-loop the effective bound is max(this, 4×interval). */
 const DEFAULT_STUCK_PARK_MS = 30 * 60_000;
 
-function stuckParkMs(intervalMs: number): number {
-  const env = Number(process.env.PAPERCUSP_LOOP_STUCK_PARK_MS);
-  const base = Number.isFinite(env) && env > 0 ? env : DEFAULT_STUCK_PARK_MS;
-  return Math.max(base, intervalMs * 4);
-}
+// WI-6660: delegated to the guard module so the comatose window's arithmetic (which converts a
+// wall-clock budget into a fire count) reads the SAME cadence that actually feeds the streak.
+// Two copies of `max(30min, interval*4)` is exactly the drift that made the old fixed count of
+// 24 mean "12h" in one place and "88h" in another.
+const stuckParkMs = stuckBackstopCadenceMs;
 
 /**
  * QUICK-RETRY leg (WI-2714 — "recover-then-escalate, not escalate-only"). The classic
