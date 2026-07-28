@@ -127,6 +127,16 @@ export type WatchdogSource =
   // and a surface whose other pools answer normally reads healthy throughout
   // (learning-slo.ts). WORKSPACE-GLOBAL — not in HARNESS_SCOPED_WATCHDOG_SOURCES:
   | 'memory-recall-pool'
+  // context-injection-audit-2026-07-28 P-014 (D-025): the desktop IPC bridge is
+  // LISTENING but carrying nothing while clients reach this host over the HTTP
+  // transport it exists to replace. The generalised "shipped but not engaged"
+  // class — a mechanism installed, connected to nothing, every half individually
+  // correct and unit-tested, with nothing comparing installed-ness to
+  // utilisation. Judged on the LIFETIME accept count (a live gauge cannot answer
+  // a question about history) AND on positive evidence that a client exists to
+  // carry, so a box with no desktop running stays silent (endpoint-ipc/
+  // engagement.ts). WORKSPACE-GLOBAL — process-local state, not harness-scoped:
+  | 'endpoint-ipc-engagement'
   // the perf/reliability REGRESSION RIG (infra-perf-reliability-audit-round4 P-013 —
   // system-health/perf-regression-rig.ts; flag-gated on papercusp-perf-regression-rig,
   // DEFAULT ON). Snapshots four reliability SLO metrics (event-loop-lag p95, PG
@@ -2881,6 +2891,15 @@ export async function defaultPapercuspCollectors(
     {
       name: 'papercusp-memory-recall-pool',
       collect: () => import('./learning-slo').then((m) => m.recallPoolCollector(opts)),
+    },
+    // P-014 (D-025): the "shipped but not engaged" detector. Compares the IPC
+    // bridge's LIFETIME accept count against live HTTP SSE stream clients — i.e.
+    // installed-ness against utilisation, the comparison whose absence let
+    // WI-6512 run invisibly. Process-local state only; no SQL, no flag.
+    {
+      name: 'papercusp-endpoint-ipc-engagement',
+      collect: () =>
+        import('../../endpoint-ipc/engagement').then((m) => m.endpointIpcEngagementCollector(opts)),
     },
     // infra-perf-reliability-audit-round4 P-013: the perf/reliability regression rig —
     // snapshots four reliability SLO metrics (event-loop-lag p95, PG connection

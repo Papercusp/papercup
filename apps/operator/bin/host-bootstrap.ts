@@ -604,6 +604,18 @@ export function runBootstrap(): void {
           deps: PROJECTED_DEPS,
           allowedTools,
         });
+        // Publish the running server so its ENGAGEMENT stays observable. Until
+        // this line existed, `server` was a local const in this fire-and-forget
+        // IIFE: only `socketPath` escaped and the handle was dropped, which made
+        // `connectionCount()`/`acceptedTotal()` unreachable for the life of the
+        // process — the bridge could be listening and carrying nothing with no
+        // way to find out (WI-6512). Do not refactor this registration away; the
+        // engagement collector is its only reader and silently observes nothing
+        // without it.
+        const { setLiveEndpointIpcServer } = await import(
+          '@papercusp/operator-core/lib/endpoint-ipc/engagement'
+        );
+        setLiveEndpointIpcServer(server);
         // Publish the resolved socket so the DEV desktop — which didn't spawn
         // us and so can't read our stdout PAPERCUSP_IPC_READY handshake — can
         // discover + connect. Harmless in the packaged build (that path uses
