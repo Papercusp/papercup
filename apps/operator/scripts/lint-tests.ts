@@ -185,15 +185,26 @@ function globMatches(g: CompiledGlob, relPath: string): boolean {
   return g.re.test(rel);
 }
 
-// Transient build temp dirs carry a pid suffix (e.g. `sidecar.tmp.4001496`, created
-// while the Tauri sidecar bundles); they leak into the FS walk as phantom orphans.
-// Match by pattern since the suffix is dynamic. ALSO skip every hidden (dot-)dir
-// wholesale: no canonical test home is under one, and agent scratch dirs at the
-// repo root (e.g. a `.wi3388-cargo-target/` CARGO_TARGET_DIR whose debug/ tree
-// carries sidecar-template *.test.ts COPIES) otherwise surface as phantom
-// orphans — this subsumes the .git/.next/.papercusp/.vitest-tmp/… entries above
-// and kills the whole per-scratch-dir whack-a-mole class.
-const COVERAGE_IGNORE_RE = /^\.|\.tmp\.\d+$/;
+// Transient build dirs carry a pid suffix and leak into the FS walk as phantom
+// orphans. `build-desktop-sidecar.sh` produces a PAIR of them per run — it stages
+// into `sidecar.tmp.<pid>` and renames the previous bundle aside as
+// `sidecar.old.<pid>` — so BOTH suffixes must be skipped. Only `.tmp.` was, which
+// left the lint red on pure build litter: 9 `sidecar.old.*` dirs had accumulated
+// in the shared tree (one per desktop build since 2026-07-27), contributing all 15
+// reported orphans while every genuine test file was correctly covered. Nothing in
+// the fix that added `.tmp.` was wrong; it just patched one half of a pair.
+//
+// These are untracked build output (`git ls-files` returns nothing for them), and
+// linting untracked artifacts is wrong by construction: a red gate must describe
+// the COMMITTED tree, never whatever a local build happened to leave behind.
+//
+// ALSO skip every hidden (dot-)dir wholesale: no canonical test home is under one,
+// and agent scratch dirs at the repo root (e.g. a `.wi3388-cargo-target/`
+// CARGO_TARGET_DIR whose debug/ tree carries sidecar-template *.test.ts COPIES)
+// otherwise surface as phantom orphans — this subsumes the
+// .git/.next/.papercusp/.vitest-tmp/… entries above and kills the whole
+// per-scratch-dir whack-a-mole class.
+const COVERAGE_IGNORE_RE = /^\.|\.(?:tmp|old)\.\d+$/;
 
 /** Recursively list every file under `dir` whose basename matches `match`,
  * POSIX-relative, skipping ignore dirs. Defaults to canonical TS/JS tests. */

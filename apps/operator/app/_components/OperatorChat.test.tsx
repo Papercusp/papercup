@@ -112,9 +112,11 @@ function baseProps(over: Record<string, any> = {}) {
 afterEach(() => {
   lastProps = {};
   lastCardProps = {};
-  lastWorkItemPopupProps = {};
-  lastPlanPopupProps = {};
   for (const k of Object.keys(nuqs)) delete nuqs[k];
+  // The setters are vi.fn()s memoized per key and reused across tests — their
+  // CALL history has to be cleared too, or a "never wrote" assertion passes or
+  // fails on a previous test's write.
+  for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
   cleanup();
 });
 
@@ -330,35 +332,33 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
       expect(lastProps.harnessSlug).toBe('papercusp');
     });
 
-    it('opens the WorkItemPopupModal scoped to harnessSlug on a work-item ref activation', () => {
-      const { rerender } = render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
-      expect(screen.queryByTestId('wi-popup')).toBeNull();
+    // WI-6601: OperatorChat WRITES these params and no longer renders them —
+    // `chat/ChatRefPopupHost` owns the single root-level mount. So the contract
+    // asserted here is the WRITE. The render half lives in
+    // chat/ChatRefPopupHost.test.tsx; that split is the whole point of the fix
+    // (a per-instance render is what left the sidebar with no mount at all).
+    it('writes a harness-scoped `wpop` on a work-item ref activation', () => {
+      render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
+      expect(nuqs.wpop).toBeUndefined();
 
       act(() => {
         lastProps.onWorkRefActivate({ id: 'WI-5952', kind: 'work-item' });
       });
-      // The mock setter mutates the shared nuqs store synchronously but that
-      // mutation alone doesn't trigger React's own re-render (it's a plain
-      // object write, not a state hook) — force one, same as a real nuqs
-      // setter's own state update would.
-      rerender(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
 
-      const popup = screen.getByTestId('wi-popup');
-      expect(popup.getAttribute('data-id')).toBe('WI-5952');
-      expect(popup.getAttribute('data-harness')).toBe('papercusp');
+      expect(nuqs.wpop).toBe('papercusp::WI-5952');
     });
 
-    it('opens the (reused) PlanPopupModal on a plan-item ref activation, with the message plan_slug', () => {
-      const { rerender } = render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
+    it('writes a harness-scoped `wppop` on a plan-item ref activation, with the message plan_slug', () => {
+      render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
 
       act(() => {
         lastProps.onWorkRefActivate({ id: 'P-008', kind: 'plan-item', planSlug: 'chat-ref-pills-2026-07-26' });
       });
-      rerender(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
 
-      const popup = screen.getByTestId('plan-popup');
-      expect(popup.getAttribute('data-plan')).toBe('chat-ref-pills-2026-07-26');
-      expect(popup.getAttribute('data-harness')).toBe('papercusp');
+      // The harness rides in the VALUE: the single root renderer can only fall
+      // back to the surface's `?slug`, which is the wrong harness whenever a
+      // session chat for harness X is open over a board scoped to Y.
+      expect(nuqs.wppop).toBe('papercusp::chat-ref-pills-2026-07-26');
     });
 
     it('does not open a plan popup for a plan-item ref with no message plan_slug (no safe destination)', () => {
@@ -368,21 +368,23 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
         lastProps.onWorkRefActivate({ id: 'P-008', kind: 'plan-item', planSlug: null });
       });
 
-      expect(lastPlanPopupProps.planSlug ?? null).toBeNull();
+      expect(nuqs.wppop).toBeUndefined();
+      // The setter is BOUND on every render, so its existence proves nothing —
+      // assert it was never CALLED.
+      expect(nuqsSetters.wppop).not.toHaveBeenCalled();
     });
 
-    it('does not open a work-item popup when there is no harnessSlug to scope it to', () => {
+    it('does not write a work-item ref it cannot scope (no harnessSlug to encode)', () => {
       render(<OperatorChat {...baseProps()} />);
 
       act(() => {
         lastProps.onWorkRefActivate({ id: 'WI-5952', kind: 'work-item' });
       });
 
-      // Neither popup even MOUNTS without a harnessSlug (avoids a duplicate
-      // stacked popup when the cross-harness sidebar overlaps a harness-scoped
-      // chat instance — see the render-guard comment in OperatorChat.tsx).
-      expect(screen.queryByTestId('wi-popup')).toBeNull();
-      expect(screen.queryByTestId('plan-popup')).toBeNull();
+      // Nothing is written at all — an unscoped `wpop` would resolve
+      // `workItems.detail` against whatever harness the URL happens to carry.
+      expect(nuqs.wpop).toBeUndefined();
+      expect(nuqsSetters.wpop).not.toHaveBeenCalled();
     });
   });
 });

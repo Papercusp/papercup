@@ -31,6 +31,11 @@ import { useRouter } from '@/lib/router-compat/navigation';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import { OperatorChat } from './OperatorChat';
 import { resolveDrillInTarget } from './chat/curator-card-drill-in';
+import {
+  CHAT_PLAN_POPUP_PARAM,
+  CHAT_WORK_ITEM_POPUP_PARAM,
+  encodeScopedRef,
+} from './chat/chat-ref-popup-params';
 import { PotHealthPane } from './PotHealthPane';
 import { useInboxAttention, useInboxPendingCount, usePlansNeedingYouCount } from './inbox/use-inbox-pending';
 import { BUILT_IN_CHAT_VIEWS, dedupeChatFaces, type OpChatFace } from './op-chat-faces';
@@ -336,8 +341,8 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   // The SAME two params OperatorChat declares for its own ref-pill popups —
   // driving them from here is the whole reason this state is in the URL rather
   // than in component state (repo convention: user-meaningful state is nuqs).
-  const [, setOpenWorkItem] = useQueryState('wpop', parseAsString);
-  const [, setOpenChatPlan] = useQueryState('wppop', parseAsString);
+  const [, setOpenWorkItem] = useQueryState(CHAT_WORK_ITEM_POPUP_PARAM, parseAsString);
+  const [, setOpenChatPlan] = useQueryState(CHAT_PLAN_POPUP_PARAM, parseAsString);
   // A drill-in NAVIGATION must carry the workspace + harness context params
   // forward. Pushing a bare `/adv?tab=hud[&hudsession=…]` drops `?ws` and
   // `?slug` (confirmed live 2026-07-28: clicking an escalation card left the
@@ -412,10 +417,15 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
           // `wpop` encodes "<harness>::<id>" — workItems.detail is harness-scoped.
           // The harness comes from the REF when it names one, so a
           // harness-qualified curator ref opens even where `?slug` is absent.
-          void setOpenWorkItem(`${target.harness}::${target.id}`);
+          void setOpenWorkItem(encodeScopedRef(target.harness, target.id));
           return;
         case 'plan':
-          void setOpenChatPlan(target.slug);
+          // A plan drill-in target carries no harness of its own (DrillInItem
+          // does not project one), so this scopes to the resolved surface
+          // harness — null on a cross-harness mount, which the root renderer
+          // then falls back to resolving itself. Same value as before; routed
+          // through the shared encoder so writer and reader cannot drift.
+          void setOpenChatPlan(encodeScopedRef(harnessSlug, target.slug));
           return;
         case 'session':
           router.push(buildAdvHudHref(target.ownerAgentId));

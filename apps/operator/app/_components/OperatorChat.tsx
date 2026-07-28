@@ -18,7 +18,7 @@
  * component already exposes.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Lightbulb, Wrench } from 'lucide-react';
 import { toast } from 'sonner';
 import { parseAsString, useQueryState } from 'nuqs';
@@ -29,8 +29,11 @@ import {
   type ChatToolCall,
 } from './chat/ChatConversation';
 import type { WorkRefKind } from './chat/parse-work-refs';
-import WorkItemPopupModal from './work-items/WorkItemPopupModal';
-import PlanPopupModal from './plans/PlanPopupModal';
+import {
+  CHAT_PLAN_POPUP_PARAM,
+  CHAT_WORK_ITEM_POPUP_PARAM,
+  encodeScopedRef,
+} from './chat/chat-ref-popup-params';
 import { CardAnswerError } from './OperatorConversationProvider';
 import { PendingCardsBar } from './chat/PendingCardsBar';
 import { renderCard } from '@/lib/chat-cards';
@@ -200,25 +203,16 @@ export function OperatorChat({
   // chat-ref-pills-2026-07-26 P-008 / D-002: this is the seam where a
   // WI-/EI-/F-/P- ref pill's click actually DOES something. ChatConversation
   // (P-004) only exposes the plain `onWorkRefActivate` passthrough hook —
-  // this component wires it to open the right popup, owning the "which item
-  // is open" nuqs state itself (same split PlansPane has with its own
-  // PlanPopupModal: the CALLER owns the open-id param, the popup component
-  // is a pure function of props). Distinct param names from PlansPane's own
+  // this component wires it by WRITING the "which item is open" nuqs params.
+  // It does not render them: `chat/ChatRefPopupHost` owns the single mount at
+  // the router root (WI-6601). Distinct param names from PlansPane's own
   // `pplan` (its Plans-pane popup and this chat-triggered one can be open
   // independently without fighting over the same URL key).
-  const [openWorkItem, setOpenWorkItem] = useQueryState('wpop', parseAsString);
-  const [openChatPlan, setOpenChatPlan] = useQueryState('wppop', parseAsString);
-
-  // `wpop` encodes "<harnessSlug>::<id>" (mirrors curator-card-drill-in.ts's
-  // `resolvePlanItemDrillIn`'s "<planSlug>::<itemId>" `sel` convention) — a
-  // work-item ref alone is not enough to resolve `workItems.detail`, which is
-  // harness-scoped.
-  const [openWorkItemHarness, openWorkItemId] = useMemo((): [string | null, string | null] => {
-    if (!openWorkItem) return [null, null];
-    const sep = openWorkItem.indexOf('::');
-    if (sep < 0) return [null, null];
-    return [openWorkItem.slice(0, sep), openWorkItem.slice(sep + 2)];
-  }, [openWorkItem]);
+  //
+  // Only the SETTERS are bound — reading these here would be the per-instance
+  // render this component no longer does.
+  const [, setOpenWorkItem] = useQueryState(CHAT_WORK_ITEM_POPUP_PARAM, parseAsString);
+  const [, setOpenChatPlan] = useQueryState(CHAT_PLAN_POPUP_PARAM, parseAsString);
 
   const handleWorkRefActivate = useCallback(
     (ref: { id: string; kind: WorkRefKind; planSlug?: string | null }) => {
@@ -226,14 +220,19 @@ export function OperatorChat({
         // A P- ref opens the EXISTING PlanPopupModal (D-001) — do not build a
         // second plan popup. No message plan_slug context ⇒ nothing safe to
         // open (P-006's "no plan context" stance, one layer over).
-        if (ref.planSlug) void setOpenChatPlan(ref.planSlug);
+        //
+        // Carry THIS conversation's harness in the value: `plans:get` is
+        // harness-scoped, and the single root-level renderer can only fall
+        // back to the surface's `?slug` — which is the wrong harness whenever
+        // a session chat for harness X is open over a board scoped to Y.
+        if (ref.planSlug) void setOpenChatPlan(encodeScopedRef(harnessSlug, ref.planSlug));
         return;
       }
       // A WI-/EI-/F- ref needs a harness to scope workItems.detail — with
-      // none, there is nothing safe to open (mirrors HydratedWorkRefPill's
+      // none, there is nothing safe to ENCODE (mirrors HydratedWorkRefPill's
       // own hydration gate one layer down).
       if (!harnessSlug) return;
-      void setOpenWorkItem(`${harnessSlug}::${ref.id}`);
+      void setOpenWorkItem(encodeScopedRef(harnessSlug, ref.id));
     },
     [harnessSlug, setOpenChatPlan, setOpenWorkItem],
   );
@@ -430,39 +429,20 @@ export function OperatorChat({
         harnessSlug={harnessSlug}
         onWorkRefActivate={handleWorkRefActivate}
       />
-      {/* chat-ref-pills-2026-07-26 P-008: the D-002 seam's destinations. Both
-          popups are mounted here — the ONE place both OperatorChatSidebar and
-          SessionChatModal render through — so every ChatConversation caller
-          gets working ref-pill destinations for free, without each having to
-          wire its own.
+      {/* chat-ref-pills-2026-07-26 P-008: the D-002 seam WRITES its
+          destinations (`wpop`/`wppop`, above) and deliberately does NOT render
+          them. Both popups are mounted exactly once, at the router root, by
+          `chat/ChatRefPopupHost` — see WI-6601.
 
-          `wpop`/`wppop` are GLOBAL nuqs state, and OperatorChatSidebar's own
-          instance (persistent chrome, ChromeShell.tsx) can be mounted at the
-          same time as a harness-scoped instance (e.g. SessionChatModal's, via
-          HudView) — so gate the actual RENDER on this instance's own
-          `harnessSlug` prop, not just the shared open-id state. The sidebar's
-          instance never receives one (cross-harness surface, no safe scope),
-          so it never mounts these even if a sibling instance's click set the
-          shared state — avoiding a duplicate stacked popup for the common
-          "sidebar + a harness-scoped modal" overlap. (A rarer overlap — two
-          harness-scoped instances open at once with the SAME harness — can
-          still double-render; accepted as a cosmetic edge case rather than a
-          full singleton-mount refactor.) */}
-      {harnessSlug ? (
-        <>
-          <WorkItemPopupModal
-            id={openWorkItemId}
-            harnessSlug={openWorkItemHarness}
-            onSelect={(id) => void setOpenWorkItem(openWorkItemHarness ? `${openWorkItemHarness}::${id}` : null)}
-            onClose={() => void setOpenWorkItem(null)}
-          />
-          <PlanPopupModal
-            planSlug={openChatPlan}
-            harnessSlug={harnessSlug}
-            onClose={() => void setOpenChatPlan(null)}
-          />
-        </>
-      ) : null}
+          This component used to mount them itself, gated on its own
+          `harnessSlug` so the persistent sidebar instance and a harness-scoped
+          one (SessionChatModal via HudView) could not double-render the same
+          global param. But the sidebar is a CROSS-HARNESS surface and never
+          receives a `harnessSlug`, so on any mount without a resolvable
+          `?slug` that gate closed on the only instance present: the param was
+          written correctly and nothing rendered it. One renderer at the root
+          satisfies both ends — no duplicate, and no surface where the popup
+          has no mount at all. */}
     </>
   );
 }

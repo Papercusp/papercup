@@ -51,6 +51,7 @@ import { RecorderHost } from '@papercusp/testing-shell';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@papercusp/flags/client';
 import ChromeShellWithChatFaces from '../components/chat-faces/ChatFacesHost';
+import ChatRefPopupHost from '@/app/_components/chat/ChatRefPopupHost';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 // Slim top progress bar for the "Papercusp dogfood hive clone-on-first-boot"
@@ -279,6 +280,15 @@ function RootComponent() {
                           cannot import up-layer to reach them, so the wrapper
                           composes them here and passes them down. */}
                       {!chromeless && <ChromeShellWithChatFaces />}
+                      {/* WI-6601: the ONE mount of the chat ref-pill popups
+                          (`wpop`/`wppop`). Deliberately OUTSIDE the
+                          `!chromeless` gate — /quick-panel is chromeless, and
+                          it is one of the surfaces whose drill-in wrote a
+                          correct param that nothing rendered. Inside
+                          NuqsAdapter because it reads query state; both popups
+                          are lazy inside it, so no route pays for the plan
+                          editor until a popup is actually open. */}
+                      <ChatRefPopupHost />
                       <main data-route-transition-page="true">
                         {/* Route-content error boundary: keeps ChromeShell
                             mounted on a route crash (so the user can navigate
