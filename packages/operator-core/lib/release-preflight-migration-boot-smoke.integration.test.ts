@@ -128,4 +128,143 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
     expect(appliedCount).toBe(totalKnown);
     expect(appliedCount).toBeGreaterThan(500);
   }, 300_000);
+
+  /**
+   * THE BLIND SPOT IN THE CASE ABOVE, and why it needed its own test.
+   *
+   * A from-scratch replay runs against an EMPTY database. A migration that backfills
+   * DATA therefore matches no rows, does nothing, and reports success — so replaying it
+   * proves precisely nothing about it. That blind spot shipped: migration 649 passed the
+   * check above every time while THE PACKAGED DESKTOP APP COULD NOT BOOT AT ALL
+   * (EI-18892214197928842, 0.0.13 deb, 2026-07-28 — `649 guard: 8 mapped target slug(s)
+   * are not real pots`, serve.mjs exit 1, sidecar respawn-loop, 502 forever).
+   *
+   * A real install is not an empty database. The packaged app ships a PRE-MIGRATED SEED
+   * (`sidecar/db-seed.tar.gz`) that already contains rows, and the migrations newer than
+   * that seed then apply ON TOP of them. So the shape that actually has to work — and the
+   * one nothing tested — is: rows present, backfill pending.
+   *
+   * The second ingredient is a boot-order inversion. `harness_shared.pots` is populated
+   * ONLY at runtime, by hive-store.ts; no migration, not even 000-baseline, ever inserts a
+   * Pot (asserted below, so this stops being an assumption). Migrations run BEFORE the
+   * operator boots, so on a fresh install the pots table is empty BY CONSTRUCTION — and
+   * 649 was written against a dev database where those Pots had long existed.
+   *
+   * This test reproduces both at once: replay everything BEFORE the backfill, seed the row
+   * a real install would carry, then let the backfill apply. Nothing is re-applied, so it
+   * asserts the from-scratch property the file already guards — just against a database
+   * that is not empty.
+   */
+  it('a pending data-backfill applies against a SEEDED database, not just an empty one', async () => {
+    const sqlDir = resolveSqlDir();
+    expect(sqlDir).toBeTruthy();
+
+    const files = (await readdir(sqlDir!)).filter((f) => f.endsWith('.sql')).sort();
+
+    // The cut = the first migration that reads Pots AND mutates work_items, i.e. the first
+    // one whose behaviour depends on data it did not create. Discovered rather than
+    // hardcoded, so a future backfill of the same class is covered the day it lands.
+    let cut = -1;
+    for (let i = 0; i < files.length; i++) {
+      const text = await readFile(join(sqlDir!, files[i]), 'utf8');
+      if (
+        text.includes('harness_shared.pots') &&
+        /(UPDATE|DELETE\s+FROM)\s+harness_shared\.work_items/.test(text)
+      ) {
+        cut = i;
+        break;
+      }
+    }
+    expect(cut, 'expected at least one Pots-driven work_items backfill in the set').toBeGreaterThan(0);
+
+    const seededDb = `bootseed_${randomBytes(5).toString('hex')}`;
+    const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+    try {
+      await admin.unsafe(`CREATE DATABASE "${seededDb}"`);
+    } finally {
+      await admin.end({ timeout: 5 });
+    }
+
+    const seededUrl = new URL(adminUri);
+    seededUrl.pathname = `/${seededDb}`;
+    let client: postgres.Sql | undefined;
+    let stageDir = '';
+
+    try {
+      const setup = postgres(seededUrl.toString(), { max: 1, onnotice: () => {} });
+      try {
+        await setup.unsafe(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+        await setup.unsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm`);
+        await setup.unsafe(`CREATE EXTENSION IF NOT EXISTS vector`);
+      } finally {
+        await setup.end({ timeout: 5 });
+      }
+      client = postgres(seededUrl.toString(), { max: 1, prepare: false, onnotice: () => {} });
+
+      // PHASE 1 — everything strictly BEFORE the backfill. Staged into a temp dir because
+      // the runner applies whatever it finds; this is how we stop at the cut without
+      // re-applying anything later (re-application would test idempotency, a different
+      // property these migrations never promised).
+      stageDir = await mkdtemp(join(tmpdir(), 'papercusp-mig-stage-'));
+      for (const f of files.slice(0, cut)) await copyFile(join(sqlDir!, f), join(stageDir, f));
+      await applyPendingMigrations({ client, sqlDir: stageDir, log: () => {} });
+
+      // The boot-order fact everything above rests on. If a future migration starts
+      // seeding Pots this flips to non-zero and the premise needs revisiting — which is
+      // exactly why it is asserted rather than assumed.
+      const [{ n: pots }] = (await client.unsafe(
+        `SELECT count(*)::int AS n FROM harness_shared.pots`,
+      )) as Array<{ n: number }>;
+      expect(pots, 'no migration seeds harness_shared.pots — Pots are created at runtime').toBe(0);
+
+      // The seed a real install carries: a row whose slug is not a Pot here.
+      const featureId = `EI-PREFLIGHT-${randomBytes(4).toString('hex')}`;
+      await client.unsafe(
+        `INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id)
+         VALUES ('papercusp-workspace', 'oddsmith', $1)`,
+        [featureId],
+      );
+
+      // PHASE 2 — the real directory. The runner skips by filename, so this applies exactly
+      // the backfill and everything after it, now with data present.
+      const { failed } = await applyPendingMigrations({
+        client,
+        sqlDir: sqlDir!,
+        continueOnError: true,
+        log: () => {},
+      });
+
+      if (failed.length > 0) {
+        const detail = failed.map((f) => `  - ${f.file}: ${f.error}`).join('\n');
+        throw new Error(
+          `${failed.length} migration(s) FAILED to apply over a SEEDED database (they pass ` +
+            `against an empty one, which is why the replay above missed them). A packaged ` +
+            `install carries data in its seed and would crash-loop on first boot:\n${detail}`,
+        );
+      }
+
+      // Declining to backfill must mean "touch nothing" — never "delete what cannot be
+      // homed". The row is expected to survive under EITHER slug: untouched if the
+      // migration correctly no-ops without a platform Pot, re-homed if one exists.
+      const rows = (await client.unsafe(
+        `SELECT harness_slug FROM harness_shared.work_items WHERE feature_id = $1`,
+        [featureId],
+      )) as Array<{ harness_slug: string }>;
+      expect(rows, 'the seeded row must survive the backfill, not be silently deleted').toHaveLength(1);
+    } finally {
+      await client?.end({ timeout: 5 }).catch(() => {});
+      if (stageDir) await rm(stageDir, { recursive: true, force: true }).catch(() => {});
+      const cleanup = postgres(adminUri, { max: 1, onnotice: () => {} });
+      try {
+        await cleanup
+          .unsafe(
+            `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${seededDb}' AND pid <> pg_backend_pid()`,
+          )
+          .catch(() => {});
+        await cleanup.unsafe(`DROP DATABASE IF EXISTS "${seededDb}"`).catch(() => {});
+      } finally {
+        await cleanup.end({ timeout: 5 });
+      }
+    }
+  }, 300_000);
 });
