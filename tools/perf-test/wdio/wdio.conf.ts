@@ -14,9 +14,11 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
+import os from "node:os";
 import path from "node:path";
+import { readMeasures, resetMeasures } from "./perf-report";
 
 /**
  * Allocate a free ephemeral TCP port from the OS: bind to :0, read back what
@@ -106,6 +108,94 @@ const TAURI_APP_PATH = resolveTauriAppPath();
 let tauriDriver: ChildProcess | null = null;
 
 /**
+ * POST this run's measures to the operator so they land in
+ * `harness_shared.desktop_perf_runs` — the table the desktop-perf RELEASE GATE
+ * reads (perf-testing-sweep-2026-07-27, WI-6538 / WI-6535).
+ *
+ * Until this existed the runner measured real interactions and discarded them, the
+ * table stayed empty from 2026-07-20 onward, and `desktopPerfGate` took its
+ * fail-soft "no fresh run" branch on EVERY deploy — a perf gate that had never
+ * measured anything. Publishing here is what makes the gate capable of firing.
+ *
+ * NEVER FAILS THE RUN: a publish problem (operator down, no token, stale build
+ * without the ingest route) is logged loudly and swallowed. The perf assertions
+ * already passed or failed on their own merits in the workers; turning a healthy
+ * run red because a side-channel POST failed would be a worse defect than the one
+ * this fixes. The log line is deliberately explicit about WHY, because a silent
+ * no-op here is exactly how the original starvation went unnoticed for 8 days.
+ */
+async function publishMeasures(): Promise<void> {
+  const measures = readMeasures();
+  if (measures.length === 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[perf-report] NOTHING TO PUBLISH — no measures were recorded, so no run row " +
+        "will exist and the desktop-perf gate stays starved. Check that the specs " +
+        "actually reached their recordInteractionMs calls.",
+    );
+    return;
+  }
+
+  // The ingest route requires a trusted bearer; the superuser token is the local
+  // operator credential (resolves to trust:'trusted' — packages/agent-mcp/src/auth.ts).
+  const tokenPath = path.join(os.homedir(), ".papercusp", "superuser-token");
+  let token: string;
+  try {
+    token = readFileSync(tokenPath, "utf8").trim();
+  } catch {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[perf-report] cannot publish ${measures.length} measure(s): no readable token at ${tokenPath}`,
+    );
+    return;
+  }
+
+  // Default to the green operator on :3070. Override with PAPERCUSP_OPERATOR_URL
+  // (e.g. http://127.0.0.1:3170) to target the staging operator — necessary
+  // whenever the ingest route is newer than what :3070's release checkout serves.
+  const base = (process.env.PAPERCUSP_OPERATOR_URL ?? "http://127.0.0.1:3070").replace(/\/$/, "");
+  const url = `${base}/api/admin/testing/desktop-perf-runs`;
+
+  // Best-effort commit correlation so a recorded run is attributable to code.
+  let gitSha: string | null = null;
+  try {
+    gitSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: path.resolve(__dirname, "../../.."),
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    /* not a git checkout, or git unavailable — the row is still worth recording */
+  }
+
+  const failing = measures.filter((m) => !m.ok);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ measures, gitSha, runId: process.env.PAPERCUSP_PERF_RUN_ID ?? null }),
+    });
+    if (!res.ok) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[perf-report] publish REJECTED (${res.status}) by ${url}: ${(await res.text().catch(() => "")).slice(0, 300)}`,
+      );
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `[perf-report] published ${measures.length} measure(s) to ${url} ` +
+        `(${failing.length} over budget): ${JSON.stringify(await res.json().catch(() => ({})))}`,
+    );
+    // Only clear once the operator has durably accepted them — a failed publish
+    // leaves the file so the next run's onPrepare reset is the deliberate discard.
+    resetMeasures();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[perf-report] publish FAILED to ${url}:`, err);
+  }
+}
+
+/**
  * The port workers actually connect on. wdio's `local` runner FORKS a
  * SEPARATE child process per spec file — `onPrepare` below runs only in the
  * launcher process, so mutating the exported `config` object from inside it
@@ -157,6 +247,10 @@ export const config: WebdriverIO.Config = {
   // in-place — is what actually reaches worker processes).
   async onPrepare() {
     assertNativeWebDriverAvailable();
+    // Discard measures from a previously CRASHED run (one that died before
+    // onComplete consumed them) so stale timings are never published against this
+    // commit — reporting none beats reporting someone else's numbers.
+    resetMeasures();
     const driverPort = process.env.TAURI_DRIVER_PORT
       ? Number(process.env.TAURI_DRIVER_PORT)
       : await getFreePort();
@@ -172,8 +266,14 @@ export const config: WebdriverIO.Config = {
       { stdio: ["ignore", "inherit", "inherit"] }
     );
   },
-  onComplete() {
-    tauriDriver?.kill();
+  // Publish BEFORE killing the driver so a publish hang can't leave tauri-driver
+  // orphaned; the kill is in a finally for the same reason.
+  async onComplete() {
+    try {
+      await publishMeasures();
+    } finally {
+      tauriDriver?.kill();
+    }
   },
 
   hostname: "127.0.0.1",

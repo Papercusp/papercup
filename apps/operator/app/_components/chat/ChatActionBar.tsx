@@ -100,11 +100,15 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
   const actions = useMemo(() => listChatActions(ctx), [ctx]);
   const [runningId, setRunningId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** WI-6552: last action that completed successfully — the success half of
+   *  the feedback pair below. Cleared whenever another action starts. */
+  const [done, setDone] = useState<string | null>(null);
 
   if (actions.length === 0) return null;
 
   const invoke = async (action: ChatAction): Promise<void> => {
     setError(null);
+    setDone(null);
     setRunningId(action.id);
     try {
       if (!(await confirmed(action, ctx))) return;
@@ -116,6 +120,13 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
         value = r.payload;
       }
       await action.run(ctx, value);
+      // WI-6552 [owner:Avi 2026-07-27, verbatim] "I also selected one of the
+      // rubrics and nothing happaned." It very likely DID happen: single-select
+      // cards commit on click and `run` posts the directive, but this bar only
+      // ever rendered feedback in the CATCH below — a fully successful action
+      // returned in complete silence, which is indistinguishable from a dead
+      // click. Acknowledge success too, so the two outcomes never look alike.
+      setDone(action.label);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       // eslint-disable-next-line no-console
@@ -149,6 +160,11 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
       {error && (
         <div className="chat-action-bar-error" role="alert">
           {error}
+        </div>
+      )}
+      {!error && done && (
+        <div className="chat-action-bar-done" role="status" data-testid="chat-action-bar-done">
+          ✓ {done} applied
         </div>
       )}
     </div>

@@ -341,6 +341,25 @@ ul.items li .item-body { margin: .45rem 0 .35rem 1.1em; padding: .55rem .75rem; 
 .prose h4 { font-size: .95rem; margin: 1.5rem 0 .4rem; font-weight: 640; color: var(--fg-dim); }
 .prose li { margin: .3rem 0; }
 .prose li > ul { margin: .35rem 0; }
+/* A heading's inline <code> keeps the mono face but drops the pill padding —
+   at heading weight the box reads as a gap in the middle of the words
+   ("SU Agents (  psu  command)"). */
+.prose h2 code, .prose h3 code, .prose h4 code { font-size: .86em; padding: .02rem .22rem; }
+/* The Instructions warning is a CALLOUT, not a footnote. The bare p.warn above
+   is sized for a one-line note under a download table (.82rem); reused inside
+   the prose it rendered the single most important sentence on the page —
+   "the GUI is not the part that is ready" — SMALLER than the body text around
+   it, which is the opposite of what it is for. Scoped to .prose so the
+   platform notes under the download tables keep their existing quiet size. */
+.prose p.warn {
+  font-size: 1rem; line-height: 1.55; font-weight: 500;
+  margin: 1.2rem 0; padding: .85rem 1.1rem;
+  border: 1px solid rgba(230, 162, 60, .32);
+  border-left: 3px solid #e6a23c;
+  border-radius: var(--radius);
+  background: rgba(230, 162, 60, .07);
+}
+.prose p.warn code { border-color: rgba(230, 162, 60, .3); }
 .prose kbd {
   font-family: var(--mono); font-size: .78em; padding: .08rem .35rem;
   border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px;

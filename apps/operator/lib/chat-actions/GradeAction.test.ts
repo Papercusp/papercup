@@ -14,10 +14,13 @@ import './GradeAction';
 
 const ctx: ChatActionContext = { sessionOwnerId: 'su-abc123' };
 
-/** Narrow a CardPresentation to its radio/checkbox member and pull `options`. */
+/** Narrow a CardPresentation to an option-bearing member and pull `options`. */
 function optionsOf(presentation: CardPresentation | undefined): CardOption[] {
-  if (!presentation || (presentation.kind !== 'radio' && presentation.kind !== 'checkbox')) {
-    throw new Error(`expected a radio/checkbox presentation, got ${presentation?.kind ?? 'undefined'}`);
+  if (
+    !presentation ||
+    (presentation.kind !== 'radio' && presentation.kind !== 'checkbox' && presentation.kind !== 'select')
+  ) {
+    throw new Error(`expected an option-bearing presentation, got ${presentation?.kind ?? 'undefined'}`);
   }
   return presentation.options;
 }

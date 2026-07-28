@@ -15,6 +15,7 @@
  * WebKitWebDriver. Run: `npm test` from tools/perf-test/wdio.
  */
 import { browser } from "@wdio/globals";
+import { recordInteractionMs } from "../perf-report";
 
 const INTERACTION_NAME = "plan-popup-open";
 // Budget MIRRORS DESKTOP_PERF_BUDGETS.interactions['plan-popup-open']
@@ -97,10 +98,9 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         : null;
     }, INTERACTION_NAME);
 
-    // eslint-disable-next-line no-console
-    console.log(
-      `[perf] ${INTERACTION_NAME} = ${measuredMs}ms (budget ${PLAN_POPUP_OPEN_BUDGET_MS}ms)`,
-    );
+    // Record BEFORE the asserts — `expect` throws on a breach, and a breach is
+    // exactly the observation the release gate exists to catch.
+    recordInteractionMs(INTERACTION_NAME, measuredMs, PLAN_POPUP_OPEN_BUDGET_MS);
     expect(measuredMs).not.toBeNull();
     expect(measuredMs as number).toBeLessThanOrEqual(PLAN_POPUP_OPEN_BUDGET_MS);
   });

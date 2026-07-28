@@ -47,10 +47,20 @@ registerChatAction({
     const rows = await fetchSyncQuery<RubricListRow>({ queryName: 'rubrics.list', args: {} });
     const active = rows.filter((r) => r.status === 'active');
     return {
-      prompt: 'Pick a rubric to grade against',
+      // WI-6552 [owner:Avi 2026-07-27]: the prompt EXPLAINS what grade mode is
+      // rather than just naming the input. The owner met this picker with no
+      // idea what it would do ("something that comes up that explains what
+      // grade mode is") — the workspace can hold a dozen active rubrics, so
+      // "Pick a rubric" alone gave no clue what picking one commits them to.
+      prompt:
+        'Grade mode asks this agent to score its own work against a rubric — a named checklist of criteria — and report the result, instead of just carrying on. Choose which rubric it should grade against.',
       dataSchema: z.object({ picks: z.tuple([z.string().min(1)]) }),
       presentation: {
-        kind: 'radio',
+        // 'select', not 'radio': radio renders one full-width row per option
+        // and this list is as long as the active-rubric set, which filled the
+        // entire chat popup. Same answer shape either way.
+        kind: 'select',
+        placeholder: 'Grade',
         options: active.map((r) => ({
           id: r.rubricId,
           label: r.title,

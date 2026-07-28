@@ -53,7 +53,12 @@ interface Props {
 function toAskChoiceArgs(card: OpenCardWithRun): AskChoiceArgs | null {
   const p = card.presentation;
   if (!p) return null;
-  if (p.kind !== 'radio' && p.kind !== 'checkbox') return null;
+  // WI-6552: 'select' is single-choice with the SAME answer shape as 'radio',
+  // so it is answerable here rather than dropped. This bar has no compact
+  // renderer of its own (it is a bar, not a pane), so it degrades to the
+  // rows-style choice card — losing the compactness but never the ability to
+  // answer, which is the failure mode that matters on the server-card path.
+  if (p.kind !== 'radio' && p.kind !== 'checkbox' && p.kind !== 'select') return null;
   return {
     question: card.prompt,
     options: p.options.map((o) => ({

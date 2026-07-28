@@ -33,6 +33,7 @@ import {
   subscribeAskUserLocal,
   type OpenLocalCard,
 } from '@/lib/chat-cards/ask-user-local';
+import { Select, type SelectOption } from '@/app/harness/Select';
 import type { CardPresentation } from '@papercusp/agent-mcp';
 import type { ReportBlock } from '@papercusp/chat-protocol';
 
@@ -101,6 +102,41 @@ export function LocalCardHost(): ReactNode {
     };
     body = (
       <AskChoiceCard args={args} onResponse={onChoice} allowDecline={allowDecline} />
+    );
+  } else if (presentation && presentation.kind === 'select') {
+    // WI-6552 [owner:Avi 2026-07-27]: the COMPACT single-choice branch. Same
+    // answer shape as 'radio' ({ picks: [id] }) so no consumer changes — the
+    // only difference is that the option set lives behind a dropdown instead
+    // of one full-width row each, which is what let the rubric picker eat the
+    // entire chat popup. Uses the existing Radix-backed design-system Select
+    // rather than a hand-rolled menu.
+    const selectOptions: SelectOption[] = presentation.options.map((o) => ({
+      value: o.id,
+      label: o.hint ? `${o.label} — ${o.hint}` : o.label,
+    }));
+    body = (
+      <div className="local-card-host-select" role="group" aria-label={prompt || 'Choose an option'}>
+        {prompt ? <p className="local-card-host-select-prompt">{prompt}</p> : null}
+        <div className="local-card-host-select-row">
+          <Select
+            value=""
+            onChange={(id) => resolveHead({ action: 'submit', payload: { picks: [id] } })}
+            options={selectOptions}
+            placeholder={presentation.placeholder ?? 'Choose…'}
+            ariaLabel={prompt || presentation.placeholder || 'Choose an option'}
+            testId="local-card-select"
+          />
+          {allowDecline ? (
+            <button
+              type="button"
+              className="local-card-host-select-cancel"
+              onClick={() => resolveHead({ action: 'cancel' })}
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
+      </div>
     );
   } else if (
     presentation &&

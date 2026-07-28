@@ -26,6 +26,7 @@
  * Run: `npm test` from tools/perf-test/wdio (or `npm run perf:desktop` at root).
  */
 import { browser } from "@wdio/globals";
+import { recordInteractionMs } from "../perf-report";
 
 const COMMAND_PALETTE_OPEN_BUDGET_MS = 400;
 const INBOX_LIST_SETTLE_BUDGET_MS = 300;
@@ -128,10 +129,9 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     );
 
     const measuredMs = await latestMeasure(NAME);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[perf] ${NAME} = ${measuredMs}ms (budget ${COMMAND_PALETTE_OPEN_BUDGET_MS}ms)`,
-    );
+    // Record BEFORE the asserts — `expect` throws on a breach, and a breach is
+    // exactly the observation the release gate exists to catch.
+    recordInteractionMs(NAME, measuredMs, COMMAND_PALETTE_OPEN_BUDGET_MS);
     expect(measuredMs).not.toBeNull();
     expect(measuredMs as number).toBeLessThanOrEqual(
       COMMAND_PALETTE_OPEN_BUDGET_MS,
@@ -189,10 +189,8 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     );
 
     const measuredMs = await latestMeasure(NAME);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[perf] ${NAME} = ${measuredMs}ms (budget ${INBOX_LIST_SETTLE_BUDGET_MS}ms)`,
-    );
+    // Record BEFORE the asserts — see the note in the palette test above.
+    recordInteractionMs(NAME, measuredMs, INBOX_LIST_SETTLE_BUDGET_MS);
     expect(measuredMs).not.toBeNull();
     expect(measuredMs as number).toBeLessThanOrEqual(
       INBOX_LIST_SETTLE_BUDGET_MS,
@@ -237,10 +235,8 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     });
 
     const measuredMs = await latestMeasure(NAME);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[perf] ${NAME} = ${measuredMs}ms (budget ${HARNESS_DOCK_OPEN_BUDGET_MS}ms)`,
-    );
+    // Record BEFORE the asserts — see the note in the palette test above.
+    recordInteractionMs(NAME, measuredMs, HARNESS_DOCK_OPEN_BUDGET_MS);
     expect(measuredMs).not.toBeNull();
     expect(measuredMs as number).toBeLessThanOrEqual(
       HARNESS_DOCK_OPEN_BUDGET_MS,
