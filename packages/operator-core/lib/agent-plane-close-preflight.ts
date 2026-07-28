@@ -139,6 +139,24 @@ export function planeGapItemIds(gaps: PlaneGapMap = METRIC_KNOWN_GAPS): string[]
 }
 
 /**
+ * Of these ids, the distinct ones that carry an exemption.
+ *
+ * ⚠ EXISTS TO MAKE ONE SPECIFIC BUG UNWRITABLE. `isPlaneGapItem` takes an optional
+ * SECOND parameter, so passing it straight to `Array.prototype.filter` hands the
+ * element INDEX in as the gap map — `Object.values(0)` is `[]`, every id then
+ * matches nothing, and the whole pre-flight silently degrades to a no-op that
+ * reports `not-a-gap-item` for the one item it exists to catch. It is a green,
+ * fully-passing, completely inert guard; only `tsc` noticed. Route every
+ * many-ids selection through here so there is one call site to get right.
+ */
+export function selectPlaneGapItems(
+  ids: readonly string[],
+  gaps: PlaneGapMap = METRIC_KNOWN_GAPS,
+): string[] {
+  return [...new Set(ids.map((id) => id.trim()).filter((id) => isPlaneGapItem(id, gaps)))];
+}
+
+/**
  * Judge what closing `closingIds` does to the ratchet.
  *
  * PURE ({ series, closedGaps, closingIds } -> verdict), like every other
@@ -155,8 +173,7 @@ export function preflightPlaneClose(args: {
   gaps?: PlaneGapMap;
 }): PlaneClosePreflight {
   const { series, closedGaps = new Set<string>(), specs = METRIC_SPECS, gaps = METRIC_KNOWN_GAPS } = args;
-  const closing = args.closingIds.map((id) => id.trim()).filter(Boolean);
-  const gapItems = [...new Set(closing.filter((id) => isPlaneGapItem(id, gaps)))];
+  const gapItems = selectPlaneGapItems(args.closingIds, gaps);
 
   if (gapItems.length === 0) {
     return { outcome: 'not-a-gap-item', gapItems: [], causes: [], unjudgeable: [], preExisting: [] };

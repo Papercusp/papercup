@@ -109,8 +109,28 @@ describe('the beacon — the leak detector [owner: "collect stats on visits to m
     expect(html).toContain('document.referrer');
   });
 
+  /**
+   * The beacon's own source, extracted from the page.
+   *
+   * Scoping matters here, and it was found by checking a REAL generated page
+   * rather than a fixture: the live index contains work-item bodies that quote
+   * application source, and one of them contains the literal
+   * `window.location.href` as escaped TEXT. A whole-document grep therefore
+   * says "the page contains location.href" about a page whose script is
+   * perfectly clean — a false alarm today, and worse tomorrow, because the day
+   * a fixture gains such prose the guard starts reporting on the wrong thing
+   * entirely. The question was always "what does the SCRIPT read", so ask that.
+   */
+  const beaconOf = (html: string) => {
+    const m = /<script[^>]*>([\s\S]*?)<\/script>/.exec(html);
+    return m ? m[1] : '';
+  };
+
   it('NEVER reads the real url — the url IS the secret, and an analytics store is not a place to keep it', () => {
-    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });
+    const html = beaconOf(
+      renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS }),
+    );
+    expect(html.length).toBeGreaterThan(0); // the extraction actually found the beacon
     // ── Why this no longer just forbids the token "$current_url" ──────────────
     // It used to, because the beacon sent no url of any kind. [owner 2026-07-27]
     // then asked for papercusp.com's tracking here, and PostHog's page/session
@@ -138,13 +158,15 @@ describe('the beacon — the leak detector [owner: "collect stats on visits to m
   });
 
   it('gives a plan page its own redacted identity, so plan pages are distinguishable', () => {
-    const html = renderPlanPageHtml(plan(), {
-      generatedAt: GENERATED_AT,
-      analytics: ANALYTICS,
-      version: '0.0.9',
-    });
-    expect(html).toContain(`var PAGE_PATH = "/plans/a-plan.html"`);
-    expect(html).not.toContain('location.pathname');
+    const script = beaconOf(
+      renderPlanPageHtml(plan(), {
+        generatedAt: GENERATED_AT,
+        analytics: ANALYTICS,
+        version: '0.0.9',
+      }),
+    );
+    expect(script).toContain(`var PAGE_PATH = "/plans/a-plan.html"`);
+    expect(script).not.toContain('location.pathname');
   });
 
   it('reports a same-origin referrer as $internal, never as the (secret) url it really is', () => {
@@ -553,11 +575,11 @@ describe('plan page', () => {
     expect(html).toContain('Body text.');
     expect(html).toContain('href="../index.html"');
     expect(html).toContain('document.referrer'); // the beacon is on this page too
-    // The plan page's url family is redacted the same way the index's is — see
-    // "NEVER reads the real url" for why this asserts the redaction rather than
-    // the absence of the property.
+    // The plan page's url family is redacted the same way the index's is. The
+    // absence side of that guard is asserted against the SCRIPT (not the whole
+    // document) in "NEVER reads the real url" — a plan body can legitimately
+    // contain the literal text of a browser api it is describing.
     expect(html).toContain('/<redacted>');
-    expect(html).not.toContain('location.pathname');
   });
 
   // ── The frontmatter leak, found by rendering a REAL plan page and reading it.
