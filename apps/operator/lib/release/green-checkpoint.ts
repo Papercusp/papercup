@@ -3046,6 +3046,40 @@ export async function runPostSuiteLegs(
     }
   }
 
+  // EI-18896048946123172: raw control bytes in tracked source. One NUL turns a file binary to
+  // `git diff` AND to ugrep, so review and repo-wide search both return a confident, wrong
+  // "nothing here" — a whole class of false-absence conclusions from instruments nobody
+  // proved were pointed at the file. `lint:no-control-bytes` already existed and was already
+  // wired into .github/workflows/test.yml, but that workflow does not gate this box's
+  // main-advance, and it had been failing for other reasons, so the guard's own three-day red
+  // went unread while a NUL sat in libs/generic/sync/src/persisted-cache.ts. Gate it HERE,
+  // where a red actually stops the release. Deterministic, whole-tree, ~1s.
+  const lintNoControlBytesCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:no-control-bytes');
+  if (haltedBy) {
+    legs.lintNoControlBytes = { status: 'skipped', skipReason: haltedBy };
+  } else if (lintNoControlBytesCheck === 'unreadable') {
+    legs.lintNoControlBytes = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:no-control-bytes)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:no-control-bytes ===\n`,
+    );
+  } else if (lintNoControlBytesCheck === 'absent') {
+    legs.lintNoControlBytes = { status: 'skipped', skipReason: 'candidate provides no lint:no-control-bytes script' };
+  } else {
+    const controlBytes = await exec('npm', ['run', 'lint:no-control-bytes'], { cwd: treeDir, env, allowNonZero: true });
+    legs.lintNoControlBytes = { status: controlBytes.code === 0 ? 'passed' : 'failed' };
+    if (controlBytes.code !== 0) {
+      haltedBy = 'lint:no-control-bytes failed';
+      failingSignatures.push('lint:no-control-bytes');
+      outputs.push(
+        '\n\n=== RAW CONTROL BYTES IN SOURCE (npm run lint:no-control-bytes) — a byte that makes git diff and ugrep skip the file silently ===\n' +
+          controlBytes.stdout +
+          controlBytes.stderr,
+      );
+    }
+  }
+
   // agent-state-plane-verification P-020: the agent-state plane's five STANDING probes. The
   // predecessor plan shipped 8 defects past a fully green unit gate, every one the same shape
   // — the derivation was correct and the DISCLOSURE was dropped between derivation and reader
