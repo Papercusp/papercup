@@ -35,6 +35,29 @@ vi.mock('node:os', async () => {
   return { ...actual, homedir: () => '/home/x' };
 });
 
+// WI-6505: the HEADLESS branch dynamically imports console-spawn/console-launcher.
+// Mocked here rather than exercised for real — spawnHeadless opens a log file and
+// detaches a process, neither of which belongs in a unit test — so these assert the
+// route's own contract: which spawner it chose and what command it handed over.
+// Safe to mock at module level: the HEADED path never touches console-spawn (it
+// uses terminal-spawn), so the existing suite above is unaffected.
+const { spawnHeadlessMock, buildConsoleEnvelopeMock } = vi.hoisted(() => ({
+  spawnHeadlessMock: vi.fn(async (_opts: unknown) => ({
+    status: 'ok' as const,
+    pid: 5150,
+    terminal: 'headless (log: /tmp/x.log)',
+  })),
+  buildConsoleEnvelopeMock: vi.fn(async (_opts: unknown) => ({ cwd: '/repo', env: {}, greetingCmd: '' })),
+}));
+vi.mock('../../console-spawn', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../console-spawn')>()),
+  spawnHeadless: spawnHeadlessMock,
+}));
+vi.mock('../../console-launcher', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../console-launcher')>()),
+  buildConsoleEnvelope: buildConsoleEnvelopeMock,
+}));
+
 // Deferred-launch (D-006) records via recordAdvSession instead of spawning — mock
 // it (vi.hoisted so the factory can reference the spy) so the defer_spawn path
 // doesn't need a real PG.
@@ -390,6 +413,76 @@ describe('launch-su', () => {
       expect(json.deferred).toBe(true);
       expect(json.warning).toBeUndefined();
       expect(spawnMock).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * WI-6505 — the GUI fleet-launch row needs two things this route could not do:
+   * open a member with NO window, and tell the caller which fleet slug it landed
+   * on so members 2..N can JOIN rather than each creating their own.
+   */
+  describe('headless launches (WI-6505)', () => {
+    it('a headless launch passes --headless to psu and opens NO terminal', async () => {
+      const res = await callPost({
+        agent: 'claude',
+        harness_slug: 'papercup',
+        plan_slug: 'my-plan',
+        headless: true,
+      });
+      const json = await res.json();
+      expect(json.status).toBe('ok');
+      // Routed through spawnHeadless, so the terminal spawner is never reached —
+      // this is what makes it windowless rather than merely claiming to be.
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+      const { envelope } = spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } };
+      expect(envelope.greetingCmd).toContain('--headless');
+      expect(envelope.greetingCmd).toContain('--no-picker');
+    });
+
+    it('a HEADED launch is unchanged — no --headless flag, real terminal spawn', async () => {
+      await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' });
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+      expect(lastOneliner()).not.toContain('--headless');
+    });
+
+    it('omitting `headless` is a headed launch (the flag is opt-in, never inferred)', async () => {
+      await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan', headless: false });
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+      expect(lastOneliner()).not.toContain('--headless');
+    });
+
+    it('a failed headless spawn is reported as an error, not a phantom success', async () => {
+      spawnHeadlessMock.mockResolvedValueOnce({ status: 'error', error: 'boom', code: 1 });
+      const res = await callPost({
+        agent: 'claude',
+        harness_slug: 'papercup',
+        plan_slug: 'my-plan',
+        headless: true,
+      });
+      expect(res.status).toBe(500);
+      expect((await res.json()).error).toContain('boom');
+    });
+
+    /**
+     * The slug is what makes a multi-member GUI launch ONE fleet. Without it the
+     * client would have to re-implement the server's slugifier (which truncates
+     * at 60 chars and defaults to "fleet"), and any disagreement silently splits
+     * the fleet into N one-member fleets.
+     */
+    it('returns the resolved fleetSlug when the launch JOINS an existing fleet', async () => {
+      const res = await callPost({
+        agent: 'claude',
+        harness_slug: 'papercup',
+        plan_slug: 'my-plan',
+        fleet: 'existing-fleet',
+      });
+      expect((await res.json()).fleetSlug).toBe('existing-fleet');
+    });
+
+    it('omits fleetSlug entirely for an unfleeted launch', async () => {
+      const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' });
+      expect((await res.json()).fleetSlug).toBeUndefined();
     });
   });
 });

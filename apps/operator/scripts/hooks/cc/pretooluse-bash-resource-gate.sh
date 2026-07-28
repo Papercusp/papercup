@@ -43,7 +43,7 @@ AGENT_ID=$(cat "$AGENT_ID_PATH")
 INPUT=$(cat)
 
 python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" <<'PYEOF' || { echo '[resource-gate] hook error — allowing (fail-open)' >&2; exit 0; }
-import json, os, re, sys, tempfile, time, urllib.request, urllib.parse
+import hashlib, json, os, re, sys, tempfile, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 raw, operator_url, token, agent_id = sys.argv[1:5]
@@ -54,7 +54,140 @@ raw, operator_url, token, agent_id = sys.argv[1:5]
 # advisory only decorates commands every gate already passed.
 ADVISORY = None
 
+# ── Say-once advisory suppression (context-injection-audit P-020, D-030+D-031) ──
+#
+# This gate is a STATELESS function of the current command, so before this it
+# had no dedup of any kind — every matching command re-emitted the FULL
+# advisory verbatim. Measured 2026-07-28 in ONE session: the ~700-char SIGPIPE
+# advisory fired 3x and the bash→tool routing advisory 4x, byte-identical,
+# against a TURN_START_BUDGET_CHARS of 4,000 for ALL of memory. This file is
+# 109KB carrying 29 distinct advisory classes and is subject to no budget at
+# all — it outspends the one channel that IS disciplined.
+#
+# The fix is the coord rail's cursor semantics: say it once, then suppress.
+# It is deliberately a HYBRID, because the two halves have different hot paths:
+#
+#   * the SUPPRESSION DECISION runs on EVERY guarded call (~10,216/day
+#     fleet-wide) on the latency-critical path of every bash command, so it is
+#     a LOCAL seen-set file — zero network, zero operator dependency;
+#   * the DELIVERY RECORD is written only on an advisory's FIRST appearance in
+#     a session (~590/day), so it can afford one fire-and-forget call. It goes
+#     to activity:report, NOT coord (D-031): a coord row is a MESSAGE that
+#     lands in agents' inboxes and fires migration 126's unconditional
+#     pg_notify waking every live LISTEN connection (34 measured), whereas
+#     agent_activity carries 1 trigger and already absorbs 58,764 rows/day
+#     from this same hook family.
+#
+# FAIL-OPEN IN BOTH DIRECTIONS: any error resolving, reading or writing the
+# seen-set means we EMIT — the legacy behaviour — never suppress. A dedup bug
+# must never silently swallow a safety advisory.
+
+
+def _session_key():
+    """Stable per-session id, matching the precedence the file-lock hook uses."""
+    sid = os.environ.get('PAPERCUSP_SID')
+    if not (isinstance(sid, str) and sid):
+        try:
+            sid = payload.get('session_id')
+        except Exception:
+            sid = None
+    if not (isinstance(sid, str) and sid):
+        sid = agent_id
+    return re.sub(r'[^A-Za-z0-9_.-]', '_', str(sid))[:120]
+
+
+def _advisory_class_key(text):
+    """A stable CLASS key for an advisory — deliberately NOT a hash of the text.
+
+    The bash→tool routing advisory embeds the offending command, so the same
+    advisory class arrives with different bytes every time (observed 4x in one
+    session with 4 different commands). Hashing the raw text would therefore
+    dedup nothing for exactly the advisory that repeats most. So: prefer the
+    explicit EI tag when the advisory carries one (25 of the 29 classes do),
+    and otherwise hash the text with backticked spans — the paths, commands and
+    ids that vary per fire — normalised out.
+    """
+    m = re.search(r'EI-\d+', text)
+    if m:
+        return m.group(0)
+    norm = re.sub(r'`[^`]*`', '`X`', text)
+    norm = re.sub(r'\s+', ' ', norm).strip()
+    return 'adv-' + hashlib.sha1(norm.encode('utf-8', 'replace')).hexdigest()[:16]
+
+
+def _claim_advisory(key):
+    """True if THIS call is the first to say `key` in this session.
+
+    Append-only file, one key per line. A short O_APPEND write is atomic on
+    local filesystems, so two hook processes racing the same advisory can at
+    worst both emit once — the race can never SUPPRESS a first emit, which is
+    the only direction that would lose information.
+    """
+    try:
+        base = os.path.join(tempfile.gettempdir(), 'papercusp-advisory-seen')
+        os.makedirs(base, exist_ok=True)
+        path = os.path.join(base, _session_key())
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                if key in {ln.strip() for ln in fh}:
+                    return False
+        except FileNotFoundError:
+            pass
+        with open(path, 'a', encoding='utf-8') as fh:
+            fh.write(key + '\n')
+        return True
+    except Exception:
+        return True  # fail-open: emit rather than risk swallowing an advisory
+
+
+def _record_delivery(key):
+    """Best-effort audit ledger: 'did the guard warn it, and when?' (P-020).
+
+    Fires only on an advisory's FIRST appearance in a session. Never raises and
+    never affects the verdict — a ledger write must not make a bash command
+    slower to fail than to succeed.
+    """
+    if os.environ.get('PAPERCUSP_ADVISORY_LEDGER') == '0':
+        return
+    try:
+        body = json.dumps({
+            'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+            'params': {
+                'name': 'activity:report',
+                'arguments': {
+                    'kind': 'lifecycle',
+                    'owner': agent_id,
+                    'session_id': _session_key(),
+                    'status': 'advisory',
+                    'summary': 'advisory delivered (say-once): ' + key,
+                },
+                '_meta': {'format': 'json'},
+            },
+        }).encode()
+        req = urllib.request.Request(
+            operator_url.rstrip('/') + '/api/mcp?superuser=1&client='
+            + urllib.parse.quote(agent_id, safe=''),
+            data=body,
+            headers={
+                'Authorization': 'Bearer ' + token,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json, text/event-stream',
+            },
+            method='POST',
+        )
+        urllib.request.urlopen(req, timeout=2).close()
+    except Exception:
+        pass
+
+
 def allow():
+    global ADVISORY
+    if ADVISORY:
+        _key = _advisory_class_key(ADVISORY)
+        if _claim_advisory(_key):
+            _record_delivery(_key)
+        else:
+            ADVISORY = None  # already said this session — say it once
     if ADVISORY:
         json.dump({'hookSpecificOutput': {
             'hookEventName': 'PreToolUse',
