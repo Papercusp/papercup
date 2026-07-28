@@ -36,6 +36,7 @@
  */
 import { browser } from "@wdio/globals";
 import { recordInvariant } from "../perf-report";
+import { waitForAppMount } from "../app-mount";
 
 /**
  * Longest background poll interval in the shell (`EnvSwitcherBar`'s
@@ -70,13 +71,7 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
     //    control: an unloaded page trivially reports zero egress, and a green
     //    "no HTTP" result from a blank webview is the most dangerous possible
     //    false pass — it looks exactly like success.
-    await browser.waitUntil(
-      async () =>
-        await browser.execute(() =>
-          Boolean(document.querySelector("#root")?.firstElementChild),
-        ),
-      { timeout: 30_000, timeoutMsg: "operator UI did not mount in 30s" },
-    );
+    await waitForAppMount(browser);
 
     // 2. Sample across a full poll tick, so a recurring escape cannot hide in the
     //    gap between first paint and the first background refresh.

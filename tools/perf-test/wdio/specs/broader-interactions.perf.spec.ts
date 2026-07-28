@@ -27,21 +27,11 @@
  */
 import { browser } from "@wdio/globals";
 import { recordInteractionMs } from "../perf-report";
+import { waitForAppMount } from "../app-mount";
 
 const COMMAND_PALETTE_OPEN_BUDGET_MS = 400;
 const INBOX_LIST_SETTLE_BUDGET_MS = 300;
 const HARNESS_DOCK_OPEN_BUDGET_MS = 1500;
-
-/** Wait for the operator UI to mount real app content. */
-async function waitForAppMount(): Promise<void> {
-  await browser.waitUntil(
-    async () =>
-      await browser.execute(() =>
-        Boolean(document.querySelector("#root")?.firstElementChild),
-      ),
-    { timeout: 30_000, timeoutMsg: "operator UI did not mount in 30s" },
-  );
-}
 
 /**
  * Wait for the main thread to go QUIET before measuring an interaction.
@@ -101,7 +91,7 @@ async function latestMeasure(name: string): Promise<number | null> {
 describe("Packaged Papercusp desktop — broader real interactions (P-006)", () => {
   it("opens the global command palette within budget", async () => {
     const NAME = "command-palette-open";
-    await waitForAppMount();
+    await waitForAppMount(browser);
     // Measure the INTERACTION, not the app boot — see waitForMainThreadQuiet.
     await waitForMainThreadQuiet();
 
@@ -140,7 +130,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
 
   it("re-scopes the Inbox virtualized list within budget", async () => {
     const NAME = "inbox-list-settle";
-    await waitForAppMount();
+    await waitForAppMount(browser);
 
     // Open the op-chat sidebar Inbox face and force the 'needs' filter, so
     // clicking 'all' is a real re-scope.
@@ -199,7 +189,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
 
   it("hydrates the harness dock within budget", async () => {
     const NAME = "harness-dock-open";
-    await waitForAppMount();
+    await waitForAppMount(browser);
 
     // The dock emits harness-dock-open on mount → API bind. Navigate to a route
     // that ACTUALLY MOUNTS HarnessDock, then read the recorded measure.
@@ -227,7 +217,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       history.pushState({}, "", "/workbench?harness=papercusp");
       window.dispatchEvent(new PopStateEvent("popstate"));
     }, NAME);
-    await waitForAppMount();
+    await waitForAppMount(browser);
 
     await browser.waitUntil(async () => (await latestMeasure(NAME)) !== null, {
       timeout: 20_000,

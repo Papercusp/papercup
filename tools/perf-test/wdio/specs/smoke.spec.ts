@@ -5,17 +5,12 @@
  * Run after a successful `tauri build`. See ../wdio.conf.ts for prereqs.
  */
 import { browser } from "@wdio/globals";
+import { waitForAppMount } from "../app-mount";
 
 describe("Packaged Papercusp desktop binary", () => {
   it("loads the operator UI and reports web-vitals", async () => {
     // Wait for the operator UI inside the webview to mount real app content.
-    await browser.waitUntil(
-      async () =>
-        await browser.execute(
-          () => Boolean(document.querySelector('#root')?.firstElementChild)
-        ),
-      { timeout: 30_000, timeoutMsg: "operator UI did not mount in 30s" }
-    );
+    await waitForAppMount(browser);
 
     // Inject web-vitals from CDN and collect INP/LCP/CLS for 10s while we click around.
     const metrics = await browser.execute(async () => {

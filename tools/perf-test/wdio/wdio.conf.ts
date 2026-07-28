@@ -14,7 +14,7 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -177,23 +177,123 @@ function cargoTargetDir(): string | null {
   return null;
 }
 
+/**
+ * The installed-tree completeness guard, owned by the desktop app (it mirrors
+ * that app's OWN boot-time requirement, so it must live and be tested next to
+ * the Rust that enforces it — papercusp-desktop/test/installed-app-tree.test.js).
+ * Imported by relative path because tools/perf-test/wdio is deliberately not an
+ * npm workspace member; this suite already hard-depends on papercusp-desktop's
+ * layout anyway (see cargoTargetDir, which shells `cargo metadata` in it).
+ */
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const installedAppTree = require(
+  path.resolve(__dirname, "../../../papercusp-desktop/bin/lib/installed-app-tree.js"),
+) as {
+  inspectInstalledApp: (appPath: string) => {
+    appPath: string;
+    exists: boolean;
+    sidecarDir: string;
+    missing: string[];
+    placeholder: boolean;
+    complete: boolean;
+  };
+  describeIncompleteInstall: (report: { complete: boolean }) => string | null;
+};
+
+/**
+ * Prefer a COMPLETE app tree, not merely an existing binary.
+ *
+ * WHY COMPLETENESS AND NOT JUST EXISTENCE (EI-18885442084466501). This function
+ * used to return the first path that existed, and the first candidate it tried
+ * was the bare `cargo build --release` output. A bare cargo binary has no
+ * sibling `../lib/<productName>/` resource tree AT ALL, so its sidecar is
+ * missing by construction — and the app's response to a missing sidecar is not
+ * to die but to wait out a 120s operator-boot timeout and fall back to a foreign
+ * environment. Every spec then failed on a 30s UI-mount wait that expired 90
+ * seconds before the app had even chosen an environment.
+ *
+ * That is the SAME defect this file already documents for build freshness
+ * (cargoTargetDir's note about the six-week-old debug binary): selecting a real
+ * file looks exactly like success. Freshness and profile were both fixed then;
+ * completeness is the third axis, and it is the one that decides whether the
+ * measurement describes the shipping configuration or a fallback.
+ *
+ * Bundle paths therefore come FIRST — only a bundled tree can be complete.
+ */
 function resolveTauriAppPath(): string {
   if (process.env.TAURI_APP_PATH) return process.env.TAURI_APP_PATH;
   const repoRoot = path.resolve(__dirname, "../../..");
   const cargoTarget = cargoTargetDir();
+  const inTreeTarget = path.join(repoRoot, "papercusp-desktop", "src-tauri", "target");
+  // A `tauri build` deb unpacks to <bundle>/deb/<name>_<ver>_<arch>/data/usr/bin/.
+  const debBinaries = (target: string | null): string[] => {
+    if (!target) return [];
+    const debRoot = path.join(target, "release", "bundle", "deb");
+    try {
+      return readdirSync(debRoot)
+        .map((entry) => path.join(debRoot, entry, "data", "usr", "bin", "papercusp-desktop"))
+        .filter((candidate) => existsSync(candidate))
+        // Newest bundle first — an older one alongside it is a stale artifact.
+        .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    } catch {
+      return []; // no bundle dir yet
+    }
+  };
   const candidates = [
+    ...debBinaries(cargoTarget),
+    ...debBinaries(inTreeTarget),
     cargoTarget && path.join(cargoTarget, "release", "papercusp-desktop"),
-    path.join(repoRoot, "papercusp-desktop", "src-tauri", "target", "release", "papercusp-desktop"),
+    path.join(inTreeTarget, "release", "papercusp-desktop"),
     cargoTarget && path.join(cargoTarget, "debug", "papercusp-desktop"),
-    path.join(repoRoot, "papercusp-desktop", "src-tauri", "target", "debug", "papercusp-desktop"),
+    path.join(inTreeTarget, "debug", "papercusp-desktop"),
   ].filter((candidate): candidate is string => Boolean(candidate));
-  const found = candidates.find((candidate) => existsSync(candidate));
-  // Fall back to the canonical release path so a "not built yet" failure names
-  // the expected location.
-  return found ?? candidates[0];
+
+  const existing = candidates.filter((candidate) => existsSync(candidate));
+  // A complete tree wins outright. Otherwise fall through to the first binary
+  // that exists so the preflight below can name a REAL path in its diagnosis
+  // (and finally to the canonical release path, so a "not built yet" failure
+  // still names where the build was expected to land).
+  const complete = existing.find((candidate) => installedAppTree.inspectInstalledApp(candidate).complete);
+  return complete ?? existing[0] ?? candidates[0];
 }
 
 const TAURI_APP_PATH = resolveTauriAppPath();
+
+/**
+ * Refuse to measure an app that cannot start its own operator.
+ *
+ * This is the detector that was missing (EI-18885442084466501). Without it the
+ * suite spent 3m19s producing four identical `operator UI did not mount in 30s`
+ * failures — a message that points at the UI, the webview, the wait value, and
+ * the box's load, i.e. at everything EXCEPT the artifact, which was the actual
+ * cause. Three plausible-but-wrong diagnoses are reachable from that message and
+ * none of them is "one build step was skipped".
+ *
+ * It fails rather than warns, and it fails BEFORE tauri-driver is spawned, for
+ * two reasons:
+ *
+ * 1. There is no useful degraded mode. A sidecar-less app falls back to a
+ *    foreign environment reached over HTTP — so it would still mount eventually
+ *    under a longer wait, and then report timings and egress for a configuration
+ *    the product does not ship. For the egress invariant specifically that is
+ *    worse than no data: the whole point of `webview-http-egress.perf.spec.ts` is
+ *    that the shell reaches its operator over IPC, and a fallback run could show
+ *    a green zero for a shell that has no operator to talk to at all.
+ * 2. A hard stop here is what lets the mount wait be generous. Once the
+ *    structural failure is caught in ~1ms, a long UI-mount timeout only ever
+ *    costs time on a genuinely slow boot, never on a broken build.
+ */
+function assertInstallationComplete(): void {
+  const report = installedAppTree.inspectInstalledApp(TAURI_APP_PATH);
+  if (!report.exists) {
+    throw new Error(
+      `[wdio.conf.ts] no papercusp-desktop binary at ${TAURI_APP_PATH}. Build one first:\n\n` +
+        `  cd papercusp-desktop && bash bin/build-desktop-sidecar.sh && npm run build\n`,
+    );
+  }
+  const problem = installedAppTree.describeIncompleteInstall(report);
+  if (problem) throw new Error(`[wdio.conf.ts] refusing to measure an unbootable app.\n\n${problem}`);
+}
 
 let tauriDriver: ChildProcess | null = null;
 
@@ -369,6 +469,7 @@ export const config: WebdriverIO.Config = {
   // in-place — is what actually reaches worker processes).
   async onPrepare() {
     assertNativeWebDriverAvailable();
+    assertInstallationComplete();
     // Announce WHAT is being measured, with its age. This is the detector that was
     // missing: the resolver silently fell back to a six-week-old in-tree debug
     // binary for this suite's entire existence (see cargoTargetDir), and nothing in

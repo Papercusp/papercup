@@ -16,6 +16,7 @@
  */
 import { browser } from "@wdio/globals";
 import { recordInteractionMs } from "../perf-report";
+import { waitForAppMount } from "../app-mount";
 
 const INTERACTION_NAME = "plan-popup-open";
 // Budget MIRRORS DESKTOP_PERF_BUDGETS.interactions['plan-popup-open']
@@ -27,13 +28,7 @@ const PLAN_POPUP_OPEN_BUDGET_MS = 1500;
 describe("Packaged Papercusp desktop — plan popup open interaction", () => {
   it("opens a plan from the sidebar within the warm-render budget", async () => {
     // 1. Wait for the operator UI to mount real app content.
-    await browser.waitUntil(
-      async () =>
-        await browser.execute(() =>
-          Boolean(document.querySelector("#root")?.firstElementChild),
-        ),
-      { timeout: 30_000, timeoutMsg: "operator UI did not mount in 30s" },
-    );
+    await waitForAppMount(browser);
 
     // 2. Select the op-chat sidebar Plans face (?opcv=plans) — where the real
     //    "open a plan" interaction lives (WI-5547: the sidebar Plans view).
