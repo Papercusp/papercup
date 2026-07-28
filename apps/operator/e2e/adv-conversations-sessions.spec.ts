@@ -230,7 +230,7 @@ async function stubCommonApis(page: Page) {
               {
                 ownerId: AGENT_ID,
                 locks: { held: [], waiting: [], error: null },
-                coord: { lastMessage: null, unreadCount: 0, openHandoffs: [], openEscalations: [], error: null },
+                coord: { lastMessage: null, unreadCount: 0, unread: [], openHandoffs: [], openEscalations: [], error: null },
                 nativeSession: null,
                 codex: null,
               },

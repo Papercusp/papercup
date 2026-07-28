@@ -73,6 +73,9 @@ export interface CoordEscalationSummary {
 export interface AgentCoordState {
   lastMessage: CoordMessageSummary | null;
   unreadCount: number;
+  /** The messages `unreadCount` counts (newest first, bounded server-side).
+   *  `unreadCount > unread.length` ⇒ the surface must say "showing N of M". */
+  unread: CoordMessageSummary[];
   openHandoffs: CoordHandoffSummary[];
   openEscalations: CoordEscalationSummary[];
   error: string | null;

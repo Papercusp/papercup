@@ -332,6 +332,16 @@ function directionFor(from: string, owner: string): 'inbound' | 'outbound' {
  * fix in one place and makes the degradation proportionate: a malformed row
  * simply matches no owner, instead of blinding the panel.
  */
+/**
+ * Max unread rows carried in `AgentCoordState.unread`.
+ *
+ * A BOUND ON THE LIST ONLY — never on `unreadCount`, which stays the true
+ * total (D-003: a badge capped to its page size is just a different lie). 25 is
+ * the reader's own default page, so the dossier shows what one `coord:inbox`
+ * read would show and says "showing 25 of M" past that.
+ */
+export const UNREAD_LIST_LIMIT = 25;
+
 function recipientsOf(env: { to?: unknown }): string[] {
   return Array.isArray(env.to) ? (env.to as string[]) : [];
 }
@@ -420,7 +430,27 @@ export function deriveCoordState(
     {},
   );
   // A coalesced group is ONE row in the reader, so it counts once.
-  const unreadCount = coalesceRepeatedBroadcasts(withoutIntents).length;
+  const unreadRows = coalesceRepeatedBroadcasts(withoutIntents);
+  const unreadCount = unreadRows.length;
+  // Carry the ROWS, not just their length. `unreadCount` used to be the only
+  // thing derived from this array, which left the dossier's coord section with
+  // nothing to render but `lastMessage` — one line beside a badge promising N.
+  // Newest first (the same lexicographic ISO compare `byTs` uses) and bounded,
+  // because this rides the agent-detail payload on every poll; `unreadCount`
+  // above stays the TRUE total, so the surface can say "showing N of M".
+  const unread: CoordMessageSummary[] = (unreadRows as unknown as CoordEnvelope[])
+    .slice()
+    .sort((a, b) => b.ts.localeCompare(a.ts))
+    .slice(0, UNREAD_LIST_LIMIT)
+    .map((m) => ({
+      msgId: m.msg_id,
+      from: m.from,
+      to: recipientsOf(m),
+      kind: m.kind,
+      summary: m.summary ?? m.body ?? '',
+      ts: m.ts,
+      direction: directionFor(m.from, owner),
+    }));
 
   const openHandoffs: CoordHandoffSummary[] = handoffs
     .filter((h) => h.record.from === owner || recipientsOf(h.record).includes(owner))
@@ -448,7 +478,7 @@ export function deriveCoordState(
     }))
     .sort((a, b) => b.ts.localeCompare(a.ts));
 
-  return { lastMessage, unreadCount, openHandoffs, openEscalations, error: null };
+  return { lastMessage, unreadCount, unread, openHandoffs, openEscalations, error: null };
 }
 
 // ──────────────────────────── thin async fetchers ──────────────────────────
@@ -567,6 +597,7 @@ export async function getAgentCoordState(owner: string): Promise<AgentCoordState
     return {
       lastMessage: null,
       unreadCount: 0,
+      unread: [],
       openHandoffs: [],
       openEscalations: [],
       error: e instanceof Error ? e.message : String(e),

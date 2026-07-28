@@ -442,6 +442,33 @@ export default function AgentDossier({
             ) : (
               <div className="pc-dossier__empty-line">No recent messages.</div>
             )}
+            {/* The messages the "N unread" badge above counts. Without this the
+                badge named a number the section could not show: `lastMessage`
+                renders exactly ONE line, so a badge of 38 sat beside 1-2 rows
+                with no list, no scroll and no way to reach the rest
+                ([owner 2026-07-28] "it says in the COORD section 38 unread, but
+                I only see 2 messages"). Rendered from the same array the count
+                is the length of, so the two cannot disagree. */}
+            {coord.unread.length > 0 ? (
+              <div className="pc-dossier__coord-unread" data-testid="dossier-coord-unread">
+                <div className="pc-dossier__coord-unread-h">
+                  Unread
+                  {coord.unreadCount > coord.unread.length
+                    ? ` · showing ${coord.unread.length} of ${coord.unreadCount}`
+                    : null}
+                </div>
+                {coord.unread.map((m) => (
+                  <div key={m.msgId} className="pc-dossier__coord-line" data-testid="dossier-coord-unread-row">
+                    <span className="pc-dossier__dir" data-dir={m.direction}>
+                      {m.direction === 'outbound' ? '→' : '←'}
+                    </span>
+                    <span className="pc-dossier__coord-from">{m.from}</span>
+                    <span className="pc-dossier__coord-text">{m.summary || '(no summary)'}</span>
+                    <span className="pc-dossier__coord-ts">{formatRelativeUpdated(m.ts)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {coord.openHandoffs.map((h) => (
               <div key={h.msgId} className="pc-dossier__coord-line">
                 <span className="pc-dossier__dir" data-dir={h.direction}>

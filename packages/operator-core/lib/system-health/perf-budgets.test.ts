@@ -5,7 +5,7 @@
  * (stale never reds; null/wrong-schema → unknown).
  */
 import { describe, it, expect } from 'vitest';
-import { evaluatePerfSignals, type PerfSignalsV1 } from './perf-budgets';
+import { evaluatePerfSignals, worstOwnedInotifyHolder, type PerfSignalsV1 } from './perf-budgets';
 
 const NOW = Date.parse('2026-06-19T16:35:00Z');
 const sig = (
@@ -280,5 +280,68 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     expect(ok.status).toBe('ok');
     const absent = evaluatePerfSignals(sig(), NOW);
     expect(absent.sessionDirs).toBeNull();
+  });
+});
+
+describe('worstOwnedInotifyHolder (WI-6538 — scope the per-proc budget to OUR processes)', () => {
+  const OURS = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/papercup-vite.service';
+  const THEIRS = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/snap.code-1234.scope';
+
+  it('picks our worst holder, ignoring a bigger third-party one', () => {
+    // The real shape of the bug: VS Code out-watches everything we run, so the
+    // unscoped check reported the editor and never our own watcher.
+    const r = worstOwnedInotifyHolder([
+      { pid: 1, comm: 'code', watches: 38_937, cgroup: THEIRS },
+      { pid: 2, comm: 'node', watches: 1_048, cgroup: OURS },
+    ]);
+    expect(r).toEqual({
+      attributable: true,
+      worst: { pid: 2, comm: 'node', watches: 1_048, cgroup: OURS },
+    });
+  });
+
+  it('picks the largest when we own several', () => {
+    const r = worstOwnedInotifyHolder([
+      { pid: 2, comm: 'node', watches: 1_048, cgroup: OURS },
+      { pid: 3, comm: 'node', watches: 9_001, cgroup: OURS },
+    ]);
+    expect(r.attributable && r.worst?.pid).toBe(3);
+  });
+
+  it('reports a CONFIDENT "we own none" when ownership is known — must NOT fall back', () => {
+    // This is the case that keeps the editor out of the gate: we can attribute, and
+    // none of the holders are ours, so there is nothing to warn about.
+    expect(
+      worstOwnedInotifyHolder([{ pid: 1, comm: 'code', watches: 38_937, cgroup: THEIRS }]),
+    ).toEqual({ attributable: true, worst: null });
+  });
+
+  it('reports NOT-attributable for a pre-WI-6538 capture with no cgroups', () => {
+    // Must be distinguishable from "we own none" — the caller falls back to the
+    // host-wide max here, so an old capture keeps checking something.
+    expect(worstOwnedInotifyHolder([{ pid: 1, comm: 'node', watches: 50_000 }])).toEqual({
+      attributable: false,
+    });
+  });
+
+  it('reports NOT-attributable for empty / missing input', () => {
+    expect(worstOwnedInotifyHolder([])).toEqual({ attributable: false });
+    expect(worstOwnedInotifyHolder(null)).toEqual({ attributable: false });
+    expect(worstOwnedInotifyHolder(undefined)).toEqual({ attributable: false });
+  });
+
+  it('treats a blank cgroup string as unattributable, not as "not ours"', () => {
+    // An unreadable /proc/<pid>/cgroup yields "" — that is missing data, and silently
+    // classifying it as third-party would hide our own balloon.
+    expect(
+      worstOwnedInotifyHolder([{ pid: 1, comm: 'node', watches: 50_000, cgroup: '' }]),
+    ).toEqual({ attributable: false });
+  });
+
+  it('matches descendants of a papercup unit, not just the unit leader', () => {
+    // Agent- and build-spawned children inherit the service cgroup; they are ours too.
+    const child = `${OURS}/child-scope`;
+    const r = worstOwnedInotifyHolder([{ pid: 9, comm: 'esbuild', watches: 12_000, cgroup: child }]);
+    expect(r.attributable && r.worst?.pid).toBe(9);
   });
 });

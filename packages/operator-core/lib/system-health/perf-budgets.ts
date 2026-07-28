@@ -54,6 +54,12 @@ export interface PerfSignalsV1 {
       totalWatches?: number | null;
       totalInstances?: number | null;
       maxPerProcess?: { pid: number; comm: string; watches: number } | null;
+      /** WI-6538: the top watch holders (up to 20), each with its cgroup. Needed because
+       *  `maxPerProcess` is the host-wide worst holder regardless of who owns it — on a dev
+       *  box that is the editor, so budgeting against it is a permanent false alarm. The
+       *  per-process budget is about OUR watchers ballooning, so the evaluator picks the
+       *  worst papercusp-owned entry from here instead. */
+      topProcs?: Array<{ pid: number; comm: string; watches: number; cgroup?: string | null }> | null;
       limits?: { maxUserWatches?: number | null } | null;
     } | null;
     /** Per-session dir populations (session-db-archive-retire-dirs P-007).
@@ -199,6 +205,54 @@ function lagP95(s: PerfSignalsV1['signals']): number | null {
  * wedge signals (operator unreachable, hostState=wedge-active, event-loop-lag, a
  * CLOSE_WAIT storm); worker CPU%/RSS are warn-only (noisy on a many-core box).
  */
+/** A watch-holding process, as reported by capture-signals.py's `topProcs`. */
+export interface InotifyHolder {
+  pid: number;
+  comm: string;
+  watches: number;
+  cgroup?: string | null;
+}
+
+/** WI-6538: cgroup substring identifying a process we own. Our services run as
+ *  `papercup-*` systemd user units, and the kernel accounts every descendant of those
+ *  roots to the same cgroup — so this matches agent- and build-spawned children too,
+ *  not just the top-level service. (See the task-manager no-escape-property doc.) */
+const PAPERCUSP_CGROUP_MARKER = 'papercup';
+
+/**
+ * Result of attributing inotify watches to processes we own.
+ *
+ * The two negative cases are DELIBERATELY distinct, because they must produce opposite
+ * behaviour and conflating them is the easy bug here:
+ *   - `attributable: false` — the capture carries no ownership info at all (predates
+ *     WI-6538, or a host with unreadable cgroups). The caller must FALL BACK to the
+ *     host-wide max, so an old capture keeps checking something rather than silently
+ *     reporting green.
+ *   - `attributable: true, worst: null` — ownership info IS present and we own nothing.
+ *     That is a real, confident "no papercusp process is ballooning": the caller must
+ *     NOT fall back, or it would go straight back to warning about the editor.
+ */
+export type OwnedInotifyAttribution =
+  | { attributable: false }
+  | { attributable: true; worst: InotifyHolder | null };
+
+/** The worst inotify holder AMONG PROCESSES WE OWN. See {@link OwnedInotifyAttribution}
+ *  for why "we can't tell" and "we own none" are different answers. */
+export function worstOwnedInotifyHolder(
+  topProcs: ReadonlyArray<InotifyHolder> | null | undefined,
+): OwnedInotifyAttribution {
+  if (!Array.isArray(topProcs) || topProcs.length === 0) return { attributable: false };
+  // Not one entry carries a cgroup ⇒ the capture predates ownership tagging.
+  if (!topProcs.some((p) => typeof p?.cgroup === 'string' && p.cgroup.length > 0)) {
+    return { attributable: false };
+  }
+  const owned = topProcs.filter(
+    (p) => typeof p?.cgroup === 'string' && p.cgroup.includes(PAPERCUSP_CGROUP_MARKER),
+  );
+  if (owned.length === 0) return { attributable: true, worst: null };
+  return { attributable: true, worst: owned.reduce((w, p) => (p.watches > w.watches ? p : w)) };
+}
+
 export function evaluatePerfSignals(
   signals: PerfSignalsV1 | null | undefined,
   nowMs: number,
@@ -232,6 +286,7 @@ export function evaluatePerfSignals(
   const reachable = typeof s.operator_3070_reachable === 'boolean' ? s.operator_3070_reachable : null;
   const inotifyTotal = typeof s.inotify?.totalWatches === 'number' ? s.inotify.totalWatches : null;
   const inotifyMax = s.inotify?.maxPerProcess ?? null;
+  const inotifyOwnedMax = worstOwnedInotifyHolder(s.inotify?.topProcs ?? null);
   const inotifyLimit = typeof s.inotify?.limits?.maxUserWatches === 'number' ? s.inotify.limits.maxUserWatches : null;
   const psiCpu = typeof s.psi?.cpu?.some?.avg60 === 'number' ? s.psi.cpu.some.avg60 : null;
   const psiMemSome = typeof s.psi?.memory?.some?.avg60 === 'number' ? s.psi.memory.some.avg60 : null;
@@ -303,8 +358,20 @@ export function evaluatePerfSignals(
   if (closeWait !== null && closeWait >= budgets.closeWaitWarn) warn.push(`:3070 CLOSE_WAIT ${closeWait} ≥ ${budgets.closeWaitWarn}`);
   if (worstCpu !== null && worstCpu >= budgets.workerCpuPctWarn) warn.push(`a worker at ${Math.round(worstCpu)}% CPU ≥ ${budgets.workerCpuPctWarn}% (hot thread)`);
   if (worstRss !== null && worstRss >= budgets.workerRssKbWarn) warn.push(`a worker RSS ${(worstRss / 1048576).toFixed(1)}GB ≥ ${(budgets.workerRssKbWarn / 1048576).toFixed(1)}GB`);
-  if (inotifyMax && inotifyMax.watches >= budgets.inotifyPerProcWarn) {
-    warn.push(`${inotifyMax.comm} (pid ${inotifyMax.pid}) holds ${inotifyMax.watches} fs watches ≥ ${budgets.inotifyPerProcWarn} — watch balloon (2026-07-10 meltdown class: find the recursive/unbounded watcher)`);
+  // WI-6538: budget the worst PAPERCUSP-OWNED holder, not the worst holder host-wide.
+  // This check exists to catch OUR watcher ballooning (the 2026-07-10 meltdown was our own
+  // workers: a recursive fs.watch × 16 of them). Scored against every process on the box it
+  // instead reports whatever third-party tool watches the most — on a dev workstation that
+  // is the editor (VS Code measured at 38,937 watches, 3.9x budget), which is neither our
+  // bug nor actionable by a release gate. A gate that is permanently amber for a reason
+  // nobody can fix is worse than no gate: it trains readers to ignore it.
+  // Falls back to the host-wide max when no ownership info is present, so an older capture
+  // (or a host where cgroups are unavailable) keeps the pre-WI-6538 behaviour rather than
+  // silently checking nothing. Host-TOTAL exhaustion is checked separately below and stays
+  // deliberately unscoped — the kernel limit is per-uid, so who caused it does not matter.
+  const inotifyWorst = inotifyOwnedMax.attributable ? inotifyOwnedMax.worst : inotifyMax;
+  if (inotifyWorst && inotifyWorst.watches >= budgets.inotifyPerProcWarn) {
+    warn.push(`${inotifyWorst.comm} (pid ${inotifyWorst.pid}) holds ${inotifyWorst.watches} fs watches ≥ ${budgets.inotifyPerProcWarn} — watch balloon (2026-07-10 meltdown class: find the recursive/unbounded watcher)`);
   }
   if (inotifyTotal !== null && inotifyLimit !== null && inotifyTotal >= inotifyLimit * budgets.inotifyLimitWarnFrac) {
     warn.push(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitWarnFrac * 100)}% of max_user_watches ${inotifyLimit}`);
