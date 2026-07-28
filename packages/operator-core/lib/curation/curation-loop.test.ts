@@ -470,16 +470,33 @@ describe('status cards — deterministic-status-cards P-002/P-003', () => {
     expect('ref' in item).toBe(false);
   });
 
-  it('sets a card ref ONLY for an open-escalation ref — cleared/health/wi refs get NO Open button (no dead drill-in)', () => {
-    // Open escalation (any kind derived from it) → resolvable inbox item → ref set.
+  // WI-6600: every ref the signal carries reaches the card. Openability is the
+  // RENDERER's verdict (canDrillIn → resolveDrillInTarget), not this producer's —
+  // the old escalation-only filter encoded the retired Inbox pane's reachability
+  // and zeroed out every Open button on the owner's live chat (39 rows, 0 buttons).
+  //
+  // ⚠ The ref strings below are the SHAPES THE PRODUCERS ACTUALLY EMIT
+  // (fleet-signals.ts: `escalation:<msgId>`, `wi:<harness>#<id>`, `health:<panelId>`;
+  // curation/deps.ts: `wi:<harness>#<id>`) — not hand-invented bare ids. A fixture
+  // that invents `wi:F-1` passes against a matcher that is broken for every real
+  // ref, which is exactly how the anchored-token bug (WI-6596/WI-6599) shipped
+  // twice while "unit tested green".
+  it('carries EVERY signal ref onto the card row — wi:/health:/decision:, not just escalations (WI-6600)', () => {
     expect(signalToReportItem(cs({ id: 'e', kind: 'blocker', title: 'x', ref: 'escalation:m1' }), now).ref).toBe('escalation:m1');
     expect(signalToReportItem(cs({ id: 'e', kind: 'escalation', title: 'x', ref: 'escalation:m2' }), now).ref).toBe('escalation:m2');
-    // Cleared = resolved escalation → no inbox row → NO ref, even though its ref is `escalation:`.
-    expect('ref' in signalToReportItem(cs({ id: 'c', kind: 'cleared', title: 'x', ref: 'escalation:m3' }), now)).toBe(false);
-    // Blocker (wi:), health (health:), completion (wi:) → no clean inbox target → NO ref.
-    expect('ref' in signalToReportItem(cs({ id: 'b', kind: 'blocker', title: 'x', ref: 'wi:pc#F-1' }), now)).toBe(false);
-    expect('ref' in signalToReportItem(cs({ id: 'h', kind: 'health', title: 'x', ref: 'health:panel-1' }), now)).toBe(false);
-    expect('ref' in signalToReportItem(cs({ id: 'k', kind: 'completion', title: 'x', ref: 'wi:pc#F-2' }), now)).toBe(false);
+    // A cleared escalation still names its message — the gate decides, not this.
+    expect(signalToReportItem(cs({ id: 'c', kind: 'cleared', title: 'x', ref: 'escalation:m3' }), now).ref).toBe('escalation:m3');
+    // The shapes that were being DROPPED, and that the popup resolves from the
+    // ref alone (no live attention item needed).
+    expect(signalToReportItem(cs({ id: 'b', kind: 'blocker', title: 'x', ref: 'wi:papercusp#WI-6594' }), now).ref).toBe('wi:papercusp#WI-6594');
+    expect(signalToReportItem(cs({ id: 'k', kind: 'completion', title: 'x', ref: 'wi:papercusp#F-2' }), now).ref).toBe('wi:papercusp#F-2');
+    expect(signalToReportItem(cs({ id: 'd', kind: 'decision', title: 'x', ref: 'decision:d-9' }), now).ref).toBe('decision:d-9');
+    // Emitted too — the RENDERER resolves `health:` to null and shows no button.
+    expect(signalToReportItem(cs({ id: 'h', kind: 'health', title: 'x', ref: 'health:panel-1' }), now).ref).toBe('health:panel-1');
+  });
+
+  it('a blank/whitespace ref yields no ref key (never a button with an empty target)', () => {
+    expect('ref' in signalToReportItem(cs({ id: 'b', kind: 'blocker', title: 'x', ref: '   ' }), now)).toBe(false);
   });
 
   it('buildSurfaceReport → one Fleet status plan, one item per signal, refs preserved', () => {

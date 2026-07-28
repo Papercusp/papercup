@@ -127,6 +127,47 @@ describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
     expect(detectUnguardedHalt({ ...halt, ownerInteractiveTurn: true })).toBeNull();
   });
 
+  /**
+   * WI-6604 — what `activeAwaitCount` is allowed to COUNT.
+   *
+   * The count above is the guarantee this whole tripwire rests on, so an await that
+   * cannot actually re-invoke the session must never reach it. On 2026-07-28 a session
+   * slept on `release:deployed` after firing the gate; the gate went red, so no deploy
+   * was attempted and the event could never fire. Because a sleeping await also
+   * suppresses monitor-loop fires, it silenced the armed 60s loop too — active:true,
+   * parked:true, zero turns for ~26 minutes until a human noticed.
+   */
+  describe('awaitGuaranteesRewake — registered is NOT the same as guaranteeing', () => {
+    const PREFIX = 'coord:inbox-wake:';
+    const bounded = { eventKey: 'release:deployed', expiresTs: '2026-07-28T08:34:12.000Z' };
+
+    it('counts a BOUNDED await that wakes on its deadline', () => {
+      expect(awaitGuaranteesRewake(bounded, PREFIX)).toBe(true);
+      // 'wake' is the store's default, so an absent field must not read as unbounded.
+      expect(awaitGuaranteesRewake({ ...bounded, timeoutBehavior: 'wake' }, PREFIX)).toBe(true);
+      expect(awaitGuaranteesRewake({ ...bounded, timeoutBehavior: null }, PREFIX)).toBe(true);
+    });
+
+    it('REFUSES an unbounded await — if the event never fires, nothing re-invokes you', () => {
+      expect(awaitGuaranteesRewake({ ...bounded, expiresTs: null }, PREFIX)).toBe(false);
+      expect(awaitGuaranteesRewake({ eventKey: 'release:deployed' }, PREFIX)).toBe(false);
+    });
+
+    it('REFUSES an await that expires SILENTLY instead of waking', () => {
+      expect(awaitGuaranteesRewake({ ...bounded, timeoutBehavior: 'expire' }, PREFIX)).toBe(false);
+    });
+
+    it('REFUSES the always-armed inbox-wake keepalive — liveness, not a deliberate wake', () => {
+      expect(
+        awaitGuaranteesRewake({ eventKey: `${PREFIX}su-8d9a671c`, expiresTs: null }, PREFIX),
+      ).toBe(false);
+      // Even bounded, the keepalive is not this session's pending-work wake.
+      expect(
+        awaitGuaranteesRewake({ eventKey: `${PREFIX}su-8d9a671c`, ...bounded }, PREFIX),
+      ).toBe(false);
+    });
+  });
+
   it('autonomous + no loop + no await + no owner = UNGUARDED HALT', () => {
     expect(isRewakeGuaranteed(halt)).toBe(false);
     const t = detectUnguardedHalt(halt);

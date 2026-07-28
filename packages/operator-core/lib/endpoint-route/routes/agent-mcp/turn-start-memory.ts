@@ -19,17 +19,38 @@
  *
  * CTRL is checked even for a low-signal prompt ("continue") because a mode,
  * loop, carry, or route transition must take effect at the very next boundary.
- * Memory retains its low-signal floor. Fail-soft by contract: any failure returns
+ * Memory no longer has a low-signal floor of its own (P-035 / F-E deleted the
+ * 40-char gate — see the note below): relevance is decided by the relevance
+ * floor, not by prompt length. Fail-soft by contract: any failure returns
  * `{ ok: true, text: '' }` — a hook must never surface an error into a turn.
  * `auth: 'loopback'` — the hook runs on this box.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 
-/** Prompts below this length ("continue", "y", "ok") carry no recall signal. */
-const MIN_PROMPT_CHARS = (() => {
-  const raw = Number(process.env.PAPERCUSP_TURN_START_MIN_PROMPT_CHARS);
-  return Number.isFinite(raw) && raw >= 0 ? raw : 40;
-})();
+/*
+ * NO LENGTH FLOOR HERE — deliberately (context-injection-audit-2026-07-28 P-035
+ * / F-E). A `MIN_PROMPT_CHARS = 40` gate used to skip recall for any prompt
+ * shorter than 40 characters, on the theory that "continue" / "y" / "ok" carry
+ * no recall signal. It was DELETED with no replacement heuristic, and it should
+ * not be reintroduced in any form:
+ *
+ *  - It was a PROXY for relevance, and it was measurably wrong. Prompt LENGTH
+ *    does not predict recall signal: this exact gate is what produced the
+ *    audit's founding symptom, silently dropping the owner's 23-char question —
+ *    a specific, answerable, entirely on-topic prompt — while a 40-char
+ *    pleasantry sailed through.
+ *  - What it was standing in for now exists for real. F-B (P-032, D-010) made
+ *    the push path `cosine-gated`, so the limit is a genuine CEILING and a
+ *    signal-free prompt returns ZERO hits on its own merits. Relevance is
+ *    judged by the relevance floor, not by a character count.
+ *  - The ORDERING mattered and is the whole reason this could not be deleted
+ *    when first found: before F-B the push path could not return zero, so
+ *    removing the length gate would have handed every short prompt a SATURATED
+ *    block of noise — strictly worse than dropping it. That constraint is gone.
+ *
+ * The degenerate empty-prompt case needs no guard here either: buildMemoryContextBlock
+ * returns null on a blank queryContext (injection.ts), one layer down.
+ */
 
 /** Query clamp — embed the head of a long prompt, not a pasted document. */
 const PROMPT_QUERY_CLAMP = 1_000;
@@ -79,7 +100,7 @@ const turnStartMemory = defineTool({
       })();
 
       const memoryPromise = (async (): Promise<string> => {
-        if (body.memoryEnabled === false || prompt.length < MIN_PROMPT_CHARS) return '';
+        if (body.memoryEnabled === false) return '';
         try {
           const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }] = await Promise.all([
             import('../../../memory/injection'),

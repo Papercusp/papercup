@@ -8,6 +8,7 @@
  */
 import { withBoundedTimeout } from './bounded-timeout';
 import {
+  awaitGuaranteesRewake,
   composeMechanicalCheckpoint,
   detectUnguardedHalt,
   isStaleHeldCheckpoint,
@@ -249,8 +250,17 @@ export async function sweepUnguardedHalt(input: {
       listActiveAwaits(input.ownerId).catch(() => []),
     ]);
     const autonomousModeActive = modes.some((m) => m.mode === 'auto' || m.mode === 'drain');
-    const activeAwaitCount = awaits.filter(
-      (a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX),
+    // WI-6604: an await counts as a re-wake GUARANTEE only if it is BOUNDED (has an
+    // expiry) and set to WAKE on that deadline. An unbounded await, or one that merely
+    // EXPIRES silently, wakes nobody when its event never fires — and "never fires" is a
+    // routine outcome, not an exotic one: sleeping on `release:deployed` after a gate run
+    // wakes nobody if the gate reds, because no deploy is ever attempted. Worse, a sleeping
+    // await SUPPRESSES monitor-loop fires, so it takes an armed loop down with it and the
+    // session reads active:true / parked:true while producing no turns. Counting such an
+    // await as a guarantee is precisely how a session goes dark while every surface says
+    // "safe to settle" — observed live 2026-07-28, ~26 minutes lost.
+    const activeAwaitCount = awaits.filter((a) =>
+      awaitGuaranteesRewake(a, INBOX_WAKE_KEY_PREFIX),
     ).length;
     return detectUnguardedHalt({
       autonomousModeActive,

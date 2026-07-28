@@ -185,9 +185,20 @@ export default defineTool({
       deployed || result.nextAction || !waitingOnTheDeployItself
         ? undefined
         : {
-            hint: 'Not live yet — instead of re-polling, sleep on the deploy: deploy:await (or events:await the key below), then END YOUR TURN. You are re-invoked when it lands. See events:catalog for all awaitable keys.',
+            hint:
+              'Not live yet — instead of re-polling, sleep on the deploy: deploy:await (or events:await the key below), ' +
+              'then END YOUR TURN. You are re-invoked when it lands. ' +
+              '⚠ PASS AN EXPLICIT timeout_sec (600 is a good default here) AND TREAT IT AS THE REAL GUARANTEE: an await ' +
+              'SUPPRESSES your monitor-loop fires while you sleep, so if the event never comes the wait takes your own ' +
+              'heartbeat down with it and the timeout is the ONLY thing that wakes you. It defaults to 1800s — i.e. 30 ' +
+              'minutes dark. On the deadline you are re-invoked with a TIMEOUT marker, which is your cue to RE-READ this ' +
+              'tool rather than re-arm the same wait. See events:catalog for all awaitable keys.',
             event: buildKey('deploy'), // global `release:deployed` — check payload.sha on wake
             sugar: 'deploy:await',
+            // Concrete + copy-pasteable: the bound is the part agents omit, and the schema
+            // default (1800) is far too long to be a safe fallback for a wait that also
+            // silences the monitor loop (WI-6604).
+            sugarArgs: { timeout_sec: 600 },
           };
     return { data: { ...result, ...(awaitable ? { awaitable } : {}) } };
   },

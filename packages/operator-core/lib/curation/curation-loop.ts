@@ -148,28 +148,35 @@ export function formatSignalLine(c: ClassifiedSignal, now: () => number = Date.n
   return line;
 }
 
-/** A signal ref that the chat card can turn into a WORKING inbox drill-in
- *  (P-003/D-004). Only OPEN escalations map to a live inbox item
- *  (`coord-escalation:<msgId>`, see drillInRefToInbox); a `cleared:` signal is a
- *  RESOLVED escalation (no inbox row) and every other kind (blocker `wi:`,
- *  health `health:`, completion) has no inbox target — so those get NO card ref
- *  (⇒ no dead "Open" button), while their info still rides the row text. */
-function refDrillsToInbox(c: ClassifiedSignal): boolean {
-  return (
-    typeof c.signal.ref === 'string' &&
-    c.signal.ref.startsWith('escalation:') &&
-    c.signal.kind !== 'cleared'
-  );
-}
-
 /** One card ROW for a signal — the structured counterpart of formatSignalLine
  *  (P-002). `status` drives the glyph/tone; `ref` becomes the row's actionable
- *  drill-in (P-003/D-004) — set ONLY when it resolves to an open inbox item. */
+ *  drill-in (P-003/D-004).
+ *
+ *  ⚠ This used to emit the ref ONLY for an open `escalation:` signal, filtering
+ *  out `wi:`, `plan:`, `decision:` and `health:` on the reasoning that "no other
+ *  kind has an inbox target". That reasoning DIED with the Inbox pane
+ *  (`_retired/inbox-pane/`, hud-consolidation-2026-07-26): a `wi:` ref now opens
+ *  the work-item POPUP, which resolves from the ref ALONE and needs no live
+ *  attention item at all. The filter therefore dropped precisely the refs that DO
+ *  resolve and kept the one kind that CANNOT resolve without a live item.
+ *
+ *  Measured live 2026-07-28 on the owner's own chat (11 report cards, 39 rows):
+ *  ZERO rows offered an Open button. 21 rows arrived with `ref: null` — every one
+ *  of them filtered out here — and papercusp's curator feed is 100% `wi:` refs
+ *  (40/40), so a FRESH curator turn rendered zero buttons too.
+ *
+ *  Whether a ref can be opened is NOT knowable here: it depends on the live
+ *  destinations the RENDERER holds. That verdict belongs to `resolveDrillInTarget`
+ *  via the card's `canDrillIn` predicate, which is where the owner's 2026-07-28
+ *  ruling ("if there is nothing to open there should be no open button") is
+ *  actually enforced. So carry every ref the signal has and let the gate decide —
+ *  a `health:<panelId>` still renders no button, because that resolver returns
+ *  null for it. */
 export function signalToReportItem(c: ClassifiedSignal, now: () => number = Date.now): ReportItem {
   return {
     text: signalBody(c, now),
     status: KIND_STATUS[c.signal.kind] ?? c.signal.kind,
-    ...(refDrillsToInbox(c) ? { ref: c.signal.ref } : {}),
+    ...(typeof c.signal.ref === 'string' && c.signal.ref.trim() ? { ref: c.signal.ref } : {}),
   };
 }
 

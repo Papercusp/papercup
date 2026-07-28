@@ -213,10 +213,17 @@ export interface RewakeGuaranteeState {
   autonomousModeActive: boolean;
   /** The engine loop is armed (loop:status.active === true). */
   loopActive: boolean;
-  /** Count of this owner's active event-await registrations, EXCLUDING the
-   *  always-armed `coord:inbox-wake:` keepalive (which every live agent holds,
-   *  so it is liveness — not a deliberate wake for this session's pending work).
-   *  The caller applies the exclusion (INBOX_WAKE_KEY_PREFIX). */
+  /** Count of this owner's active event-await registrations that actually
+   *  GUARANTEE a re-wake, EXCLUDING the always-armed `coord:inbox-wake:`
+   *  keepalive (which every live agent holds, so it is liveness — not a
+   *  deliberate wake for this session's pending work).
+   *
+   *  ⚠ "Guarantee" is narrower than "registered" (WI-6604). The caller counts
+   *  only awaits that are BOUNDED (an expiry is set) AND wake on that deadline
+   *  (`timeoutBehavior: 'wake'`), because an unbounded — or silently expiring —
+   *  await wakes nobody if its event never fires, and a sleeping await also
+   *  suppresses monitor-loop fires, so it can take an armed loop down with it.
+   *  The caller applies both filters (INBOX_WAKE_KEY_PREFIX + boundedness). */
   activeAwaitCount: number;
   /** The prompt that STARTED this turn was owner-interactive (a human is here
    *  and will speak next) — suppresses the flag. Best-effort; default false. */
@@ -237,6 +244,36 @@ export function isRewakeGuaranteed(s: RewakeGuaranteeState): boolean {
   return false;
 }
 
+/** The await fields that decide whether it can be relied on to re-invoke a session. */
+export interface RewakeAwaitShape {
+  eventKey: string;
+  /** ISO deadline, or null for an await with no bound. */
+  expiresTs?: string | null;
+  /** What happens at the deadline; defaults to 'wake' (the store's own default). */
+  timeoutBehavior?: string | null;
+}
+
+/**
+ * Does this await actually GUARANTEE a re-wake? (WI-6604 — pure, so it is testable
+ * without PG; the IO caller maps rows through it.)
+ *
+ * Registered is NOT the same as guaranteeing. Three ways an await fails to wake you:
+ *   · it is the always-armed `coord:inbox-wake:` keepalive — liveness every agent holds,
+ *     not a deliberate wake for this session's pending work;
+ *   · it is UNBOUNDED (no expiry), so if the event never fires nothing ever re-invokes you;
+ *   · it EXPIRES silently at its deadline instead of waking you.
+ *
+ * "The event never fires" is routine, not exotic: sleeping on `release:deployed` after a
+ * gate run wakes nobody when the gate reds, because no deploy is ever attempted. And since
+ * a sleeping await suppresses monitor-loop fires, an await that cannot fire also silences
+ * an armed loop — the session reads active:true / parked:true and produces no turns.
+ */
+export function awaitGuaranteesRewake(a: RewakeAwaitShape, inboxWakePrefix: string): boolean {
+  if (a.eventKey.startsWith(inboxWakePrefix)) return false;
+  if (a.expiresTs == null) return false;
+  return (a.timeoutBehavior ?? 'wake') === 'wake';
+}
+
 export interface UnguardedHaltTripwire {
   kind: 'unguarded-halt';
   note: string;
@@ -246,8 +283,14 @@ export const UNGUARDED_HALT_NOTE =
   'Turn ending under an autonomous mode (auto/drain) with NO guaranteed re-wake: no armed loop, ' +
   'no registered event-await, and no owner present to speak next. Nothing will re-invoke this ' +
   'session — it silently halts until a human notices (the "ended a turn expecting a wake that was ' +
-  'not armed" failure). Before ending: arm a loop (loop:arm), register a wake (events:await / ' +
-  'deploy:await), or self-compact to continue (session:request-compaction { autoContinue: true }).';
+  'not armed" failure). Before ending: arm a loop (loop:arm), register a BOUNDED wake ' +
+  '(events:await / deploy:await WITH an explicit timeout_sec), or self-compact to continue ' +
+  '(session:request-compaction { autoContinue: true }). ' +
+  '⚠ A registered await is only a guarantee if its EVENT CAN ACTUALLY FIRE and it is BOUNDED. ' +
+  'Ask what happens in the FAILURE branch: sleeping on release:deployed after a gate run wakes ' +
+  'nobody if the gate reds, because no deploy is ever attempted. And an await SUPPRESSES ' +
+  'monitor-loop fires while it sleeps, so an unbounded or impossible await silences an armed loop ' +
+  'too — the loop reads active:true while parked:true, producing no turns (WI-6604).';
 
 /** The unguarded-halt tripwire for a turn-end state, or null when a re-wake is
  *  guaranteed ({@link isRewakeGuaranteed}). Pure. */

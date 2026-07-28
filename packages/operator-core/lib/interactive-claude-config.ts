@@ -130,7 +130,7 @@ const FLEET_PRUNED_PLUGIN_NAMES = new Set(['github', 'cloudflare', 'firecrawl'])
 const FLEET_PRUNED_MCP_SERVERS = new Set(['playwright']);
 
 /**
- * WI-6603 [owner:Avi 2026-07-28] — Claude Code settings whose STOCK DEFAULTS are
+ * WI-6603 [owner 2026-07-28] — Claude Code settings whose STOCK DEFAULTS are
  * wrong for a papercusp fleet. Baked into every psu session's settings.json so
  * each session inherits them; measured against claude 2.1.220.
  *
@@ -1124,9 +1124,22 @@ function writeSessionSettings(srcSettings: string | null, dest: string): void {
     // config dir — this settings key is the reliable lever.) Baked into the
     // session settings so it survives a claude self-re-exec and never depends on
     // the mutable global settings.json.
+    // WI-6603: the fleet-policy setting defaults land AFTER `...cfg` so they win
+    // over a stale/personal value in the user's global settings — see
+    // PAPERCUSP_SESSION_SETTING_DEFAULTS for why each stock default is wrong here.
     writeFileSync(
       dest,
-      JSON.stringify({ ...cfg, permissions, hooks, skipDangerousModePermissionPrompt: true }, null, 2),
+      JSON.stringify(
+        {
+          ...cfg,
+          ...PAPERCUSP_SESSION_SETTING_DEFAULTS,
+          permissions,
+          hooks,
+          skipDangerousModePermissionPrompt: true,
+        },
+        null,
+        2,
+      ),
     );
   } catch {
     /* best-effort — argv still carries the grant on a non-re-exec launch */

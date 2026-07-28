@@ -291,6 +291,44 @@ describe('writeInteractiveClaudeConfig', () => {
     ).not.toContain('skipDangerousModePermissionPrompt');
   });
 
+  it('WI-6603: bakes the fleet-policy setting defaults every psu session inherits', () => {
+    seedHome(home);
+    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-policy', home });
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    // Claude Code's stock default (true) injects a "# Git … Commit or push only
+    // when the user asks. If on the default branch, branch first." block into every
+    // agent's Bash tool description — the opposite of this repo's rule that
+    // git-sync owns commit+push and the shared tree never branches.
+    expect(settings.includeGitInstructions).toBe(false);
+    // Stock default false makes the API return signature-only thinking blocks
+    // (thinking: ''), so agent reasoning ingests as ZERO parts and is never
+    // recallable via sessions:search.
+    expect(settings.showThinkingSummaries).toBe(true);
+    // /rewind restores files in place; this checkout is edited concurrently by the
+    // whole fleet, so a rewind silently reverts peers' uncommitted work.
+    expect(settings.fileCheckpointingEnabled).toBe(false);
+    // None of it leaks into the user's global settings.json.
+    const global = readFileSync(join(home, '.claude', 'settings.json'), 'utf8');
+    expect(global).not.toContain('includeGitInstructions');
+    expect(global).not.toContain('showThinkingSummaries');
+    expect(global).not.toContain('fileCheckpointingEnabled');
+  });
+
+  it('WI-6603: the policy defaults OVERRIDE a conflicting value in the global settings', () => {
+    seedHome(home);
+    // A stale/personal global preference must not survive into a fleet session —
+    // the policy layer is written after the global spread, so it wins.
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({ includeGitInstructions: true, fileCheckpointingEnabled: true }),
+    );
+    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-policy-override', home });
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    expect(settings.includeGitInstructions).toBe(false);
+    expect(settings.fileCheckpointingEnabled).toBe(false);
+    expect(settings.showThinkingSummaries).toBe(true);
+  });
+
   it('does NOT mirror the personal global memory (CLAUDE.md / AGENTS.md) — the P-002 / D-001 leak fix', () => {
     seedHome(home);
     const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-iso', home });
