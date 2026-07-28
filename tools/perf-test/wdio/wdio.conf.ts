@@ -168,8 +168,40 @@ let tauriDriver: ChildProcess | null = null;
  * this fixes. The log line is deliberately explicit about WHY, because a silent
  * no-op here is exactly how the original starvation went unnoticed for 8 days.
  */
+/**
+ * True when the binary under test is a DEBUG build.
+ *
+ * A debug build runs several-fold slower than release (this file's
+ * `resolveTauriAppPath` already warns that its timings blow the release-tuned
+ * budgets), so a debug timing is not a release datapoint — it is noise wearing the
+ * same shape as signal. Publishing one poisons the trend the release gate reads and
+ * produces a permanent false "desktop interaction REGRESSED" warning, which is
+ * worse than no data: a gate that cries wolf every deploy trains everyone to ignore
+ * it, and then a REAL regression lands unnoticed.
+ *
+ * Measured on this box for scale: the same command-palette-open interaction is
+ * ~346ms on release and ~857ms on debug against a 400ms budget — the build profile
+ * alone flips the verdict.
+ */
+function isDebugBinary(): boolean {
+  return /(^|\/)debug\//.test(TAURI_APP_PATH);
+}
+
 async function publishMeasures(): Promise<void> {
   const measures = readMeasures();
+  // Refuse debug-build numbers by DEFAULT (override only for deliberately testing
+  // the ingest path itself). The run's own [perf] log lines still show the timings.
+  if (isDebugBinary() && process.env.PAPERCUSP_PERF_PUBLISH_DEBUG !== "1") {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[perf-report] NOT publishing ${measures.length} measure(s): the binary under test is a ` +
+        `DEBUG build (${TAURI_APP_PATH}). Debug timings are several-fold slower than release and ` +
+        `would register as a false regression in the desktop-perf gate. Build release ` +
+        `(cargo build --release) for gate-feeding numbers, or set ` +
+        `PAPERCUSP_PERF_PUBLISH_DEBUG=1 to publish anyway when testing the ingest path.`,
+    );
+    return;
+  }
   if (measures.length === 0) {
     // eslint-disable-next-line no-console
     console.warn(

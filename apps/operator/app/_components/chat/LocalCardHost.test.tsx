@@ -47,6 +47,33 @@ describe('LocalCardHost', () => {
     expect(r).toEqual({ action: 'submit', payload: { picks: ['a'] } });
   });
 
+  it('WI-6552: a select card renders ONE compact trigger, not a row per option, and resolves the radio payload shape', async () => {
+    render(<LocalCardHost />);
+    const many = Array.from({ length: 12 }, (_, i) => ({ id: `r${i}`, label: `Rubric ${i}` }));
+    const promise = askUserLocal({
+      prompt: 'Grade mode explains itself here',
+      dataSchema: z.object({ picks: z.tuple([z.string()]) }),
+      presentation: { kind: 'select', placeholder: 'Grade', options: many },
+    });
+
+    // Keep the pending card's promise from surfacing as an unhandled rejection
+    // when the test ends without answering it.
+    promise.catch(() => {});
+
+    const trigger = await waitFor(() => screen.getByTestId('local-card-select'));
+    // THE OWNER'S COMPLAINT, ASSERTED STRUCTURALLY: a 12-option picker must not
+    // put 12 rows on screen. Rendered as `radio` — which is what GradeAction
+    // used to declare — this same card produced one full-width button per
+    // option and filled the chat popup. This loop fails in that world.
+    for (const o of many) {
+      expect(screen.queryByRole('button', { name: new RegExp(`^${o.label}$`) })).toBeNull();
+    }
+    // Resting text is the placeholder, per the owner's "default text 'Grade'".
+    expect(trigger.textContent).toContain('Grade');
+    // ...and the explainer renders alongside it.
+    expect(screen.getByText('Grade mode explains itself here')).toBeTruthy();
+  });
+
   it('submit/decline/cancel actions flow through to askUserLocal caller', async () => {
     render(<LocalCardHost />);
     const promise = askUserLocal({

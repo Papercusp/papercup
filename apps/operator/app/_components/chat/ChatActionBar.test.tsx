@@ -84,6 +84,56 @@ describe('ChatActionBar', () => {
     await waitFor(() => expect(run).toHaveBeenCalledWith(ctx, { picks: ['a'] }));
   });
 
+  it('WI-6552: a params() that never settles surfaces an error and re-enables the bar, instead of hanging aria-busy forever', async () => {
+    vi.useFakeTimers();
+    const run = vi.fn();
+    registerChatAction({
+      id: 'hangs',
+      label: 'Hangs',
+      available: () => true,
+      // Observed LIVE on 2026-07-27: Grade's params() fetches rubrics.list
+      // through the sync in-flight gate, which queued behind the HUD's other
+      // queries and never resolved OR rejected. The button stayed
+      // aria-busy + disabled with no card and no error — a dead action bar.
+      params: () => new Promise(() => {}),
+      run,
+    });
+    render(
+      <>
+        <ChatActionBar ctx={ctx} />
+        <LocalCardHost />
+      </>,
+    );
+    const btn = screen.getByTestId('chat-action-hangs');
+    fireEvent.click(btn);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(btn.getAttribute('aria-busy')).toBe('true'); // still in flight
+
+    await vi.advanceTimersByTimeAsync(13_000); // past PARAMS_TIMEOUT_MS
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toMatch(/could not load its options/i);
+    expect(btn.getAttribute('aria-busy')).toBe('false');
+    expect((btn as HTMLButtonElement).disabled).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('WI-6552: a successful action reports success, so it is never silent', async () => {
+    registerChatAction({
+      id: 'quiet',
+      label: 'Quiet',
+      available: () => true,
+      run: vi.fn(async () => {}),
+    });
+    render(<ChatActionBar ctx={ctx} />);
+    fireEvent.click(screen.getByTestId('chat-action-quiet'));
+    // [owner:Avi 2026-07-27] "I also selected one of the rubrics and nothing
+    // happaned." Success used to render nothing at all, so a working action
+    // and a dead click looked identical.
+    const done = await screen.findByTestId('chat-action-bar-done');
+    expect(done.textContent).toMatch(/Quiet/);
+  });
+
   it('declining the params card does NOT call run', async () => {
     const run = vi.fn();
     registerChatAction({
