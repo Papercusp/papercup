@@ -110,6 +110,13 @@ export type WatchdogSource =
   // learning-slo.ts; flag-gated dark per D-001 until the P-001 arming gate):
   | 'triage-entropy' | 'capture-consume-imbalance' | 'mttsh-regression'
   | 'governor-starvation' | 'memory-zero-hit'
+  // a single memory INJECTION POOL that is starved (returns nothing on nearly every
+  // recall — the unmigrated-scope-key signature) or saturated (fills its budget every
+  // call). Deliberately per-POOL: both shapes are invisible to the blended
+  // 'memory-zero-hit' SLO above by construction, since that aggregates the whole table
+  // and a surface whose other pools answer normally reads healthy throughout
+  // (learning-slo.ts). WORKSPACE-GLOBAL — not in HARNESS_SCOPED_WATCHDOG_SOURCES:
+  | 'memory-recall-pool'
   // the perf/reliability REGRESSION RIG (infra-perf-reliability-audit-round4 P-013 —
   // system-health/perf-regression-rig.ts; flag-gated on papercusp-perf-regression-rig,
   // DEFAULT ON). Snapshots four reliability SLO metrics (event-loop-lag p95, PG
