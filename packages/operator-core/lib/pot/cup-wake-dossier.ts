@@ -294,6 +294,10 @@ export async function computeCupWakeDossier(input: ComputeCupWakeDossierInput): 
       workspaceId,
       harnessSlugs: [harness],
       queryContext,
+      // TOTAL across every pool (F-C / context-injection-audit-2026-07-28 D-011).
+      // Before F-C this bound only the USER pool — which this caller never
+      // requests — so the 3 was inert and the dossier silently took up to 6
+      // (3 harness + 3 hive). It now means what it says.
       limit: 3,
       heading: 'Background recall (fuzzy memory — may be stale; the standing facts above are authoritative)',
     });

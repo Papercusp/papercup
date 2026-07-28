@@ -8,7 +8,7 @@
  * written.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   noteIntentDeclared,
   noteAssumptionAsserted,
@@ -16,6 +16,7 @@ import {
   readAgentStateStamp,
   resetAgentStateStamps,
   agentStateStampSize,
+  setAgentGoalRehydrator,
 } from './agent-state-stamp';
 
 const OWNER = 'su-8d9a671c';
@@ -188,5 +189,136 @@ describe('memory bound', () => {
     noteIntentDeclared(OWNER, 2);
     for (let i = 400; i < 900; i++) noteIntentDeclared(`filler-${i}`, i + 1);
     expect(readAgentStateStamp(OWNER).intentEventId).toBe(2);
+  });
+});
+
+/**
+ * WI-6595 — a restart wipes this map, and `goalRef` alone never came back.
+ *
+ * `intentEventId` self-heals because every wake re-declares intent, but
+ * `noteGoalClaimed` only fires on claim/release, so an agent still working a
+ * claim it took before the deploy stamped a null for the rest of that claim.
+ * Measured live: co-stamped rows went 587/hr -> 0/hr across the 02:00Z deploy,
+ * which red `lint:plane-ratchet` for the whole fleet.
+ */
+describe('durable goal re-hydration (WI-6595)', () => {
+  /** Let the fire-and-forget fill run without coupling to a real timer. */
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetAgentStateStamps();
+  });
+
+  it('refills a missing goal from durable state — WITHOUT blocking the call that missed', async () => {
+    setAgentGoalRehydrator(async () => 'WI-6595');
+
+    // The read that MISSES still returns synchronously, and still stamps the null
+    // it honestly had: this call really was made with no goal known. D-014 forbids
+    // it blocking on I/O, so the refill can only help the next call.
+    expect(readAgentStateStamp(OWNER).goalRef).toBeNull();
+
+    await settle();
+    expect(readAgentStateStamp(OWNER).goalRef).toBe('WI-6595');
+  });
+
+  it('does not query at all when the goal is already known', async () => {
+    const durable = vi.fn(async () => 'WI-STALE');
+    setAgentGoalRehydrator(durable);
+    noteGoalClaimed(OWNER, 'WI-LIVE');
+
+    readAgentStateStamp(OWNER);
+    readAgentStateStamp(OWNER);
+    await settle();
+
+    expect(durable).not.toHaveBeenCalled();
+    expect(readAgentStateStamp(OWNER).goalRef).toBe('WI-LIVE');
+  });
+
+  it('collapses a burst of misses into ONE durable read', async () => {
+    // This runs on a path that takes ~238,866 calls a day. A refill per miss
+    // would turn a cold cache into a stampede against the goal legs.
+    const durable = vi.fn(async () => null);
+    setAgentGoalRehydrator(durable);
+
+    for (let i = 0; i < 50; i++) readAgentStateStamp(OWNER);
+    await settle();
+
+    expect(durable).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a later miss once the backoff lapses — a boot-time null must not stick', async () => {
+    // The first calls after a restart are exactly when the PG fast path may not
+    // be up, so `resolveOwnerGoal` returns a null that means "could not read",
+    // not "holds nothing". A permanent already-asked mark would freeze that for
+    // the life of the process.
+    const nowSpy = vi.spyOn(Date, 'now');
+    const durable = vi.fn(async () => null);
+    setAgentGoalRehydrator(durable);
+
+    nowSpy.mockReturnValue(1_000);
+    readAgentStateStamp(OWNER);
+    await settle();
+    expect(durable).toHaveBeenCalledTimes(1);
+
+    // Still inside the backoff — no second query.
+    nowSpy.mockReturnValue(30_000);
+    readAgentStateStamp(OWNER);
+    await settle();
+    expect(durable).toHaveBeenCalledTimes(1);
+
+    nowSpy.mockReturnValue(120_000);
+    readAgentStateStamp(OWNER);
+    await settle();
+    expect(durable).toHaveBeenCalledTimes(2);
+  });
+
+  it('NEVER resurrects a goal the agent released while the read was in flight', async () => {
+    // The race that makes a cache refill dangerous: the durable read starts,
+    // the agent puts the work down, then the read answers with what it saw
+    // BEFORE the release. Stamping the fill with the read's START time lets
+    // upsert's existing drop-if-older rule discard it.
+    const nowSpy = vi.spyOn(Date, 'now');
+    let answer!: (ref: string | null) => void;
+    setAgentGoalRehydrator(() => new Promise<string | null>((r) => (answer = r)));
+
+    nowSpy.mockReturnValue(1_000);
+    noteGoalClaimed(OWNER, 'WI-6595');
+    // Clear it the way a release does, so the next read misses and refills.
+    nowSpy.mockReturnValue(2_000);
+    noteGoalClaimed(OWNER, null);
+
+    nowSpy.mockReturnValue(3_000);
+    readAgentStateStamp(OWNER); // schedules the refill at t=3000
+
+    // The agent releases AGAIN at a later instant while the read is outstanding.
+    nowSpy.mockReturnValue(4_000);
+    noteGoalClaimed(OWNER, null);
+
+    answer('WI-6595'); // the stale in-flight read finally lands
+    await settle();
+
+    expect(readAgentStateStamp(OWNER).goalRef).toBeNull();
+  });
+
+  it('a durable read that throws costs the goal, never the tool call', async () => {
+    setAgentGoalRehydrator(async () => {
+      throw new Error('pg is down');
+    });
+
+    expect(() => readAgentStateStamp(OWNER)).not.toThrow();
+    await settle();
+    expect(readAgentStateStamp(OWNER).goalRef).toBeNull();
+  });
+
+  it('a refilled goal is still guarded by asGoalRef, exactly like a declared one', async () => {
+    // The stamp and the cell share ONE ref vocabulary; a refill must not be the
+    // hole through which a shape a live reader would reject gets in.
+    setAgentGoalRehydrator(async () => '   not a ref at all   ');
+    readAgentStateStamp(OWNER);
+    await settle();
+    expect(readAgentStateStamp(OWNER).goalRef).not.toBe('   not a ref at all   ');
   });
 });

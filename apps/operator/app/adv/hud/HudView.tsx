@@ -37,7 +37,7 @@ import { usePlanList } from '@/app/admin/plans/plans-api';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import HudBoard from './HudBoard';
 import HudEntityColumns from './HudEntityColumns';
-import type { HudEntityCard } from './hud-entity-board';
+import { workItemIdForCard, type HudEntityCard } from './hud-entity-board';
 import {
   ALL_FLEETS,
   ALL_PLANS,
@@ -85,22 +85,6 @@ const CLOCK_TICK_MS = 15_000;
  *  from the store-wide aggregate, so under-fetching a column understates no
  *  number, it only means more of it sits behind "+N more". */
 const WORK_ITEM_PER_STATE = 40;
-
-/** A work-item id (WI-/EI-/F-), anchored. The Work items board also carries
- *  UNATTRIBUTED ASK cards folded into needs-you (`askToCard` ids them `ask:<id>`
- *  and puts the work-item ref, when there is one, on `ref`) — so "which id does
- *  this card open" is not simply `card.id`, and an ask with no work item behind
- *  it opens nothing rather than pointing the popup at a ref that is really a
- *  kind label. */
-const WORK_ITEM_ID = /^(WI|EI|F)-\d+$/i;
-
-function workItemIdForCard(card: HudEntityCard): string | null {
-  if (WORK_ITEM_ID.test(card.id)) return card.id.toUpperCase();
-  if (card.id.startsWith('ask:') && card.ref && WORK_ITEM_ID.test(card.ref)) {
-    return card.ref.toUpperCase();
-  }
-  return null;
-}
 
 /* The "all fleets" sentinel is imported from hud-board-model, not re-declared:
    HudBoard raises it and this file compares against it, and while each spelled
