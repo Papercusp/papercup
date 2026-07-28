@@ -25,6 +25,8 @@
  * before its panel wiring).
  */
 
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import {
   evaluatePerfSignals,
   readLatestPerfSignals,
@@ -60,11 +62,39 @@ export interface PerfGateDecision {
 
 /** Read the gate policy from the environment.
  *  - `PAPERCUSP_PERF_GATE=1`        → enable the gate (default off).
- *  - `PAPERCUSP_PERF_GATE_BLOCK=1`  → arm block-mode (default warn-only). Owner-set. */
+ *  - `PAPERCUSP_PERF_GATE_BLOCK=1`  → arm block-mode (default warn-only). Owner-set.
+ *
+ *  @deprecated WI-6538 — superseded by {@link perfGatePolicyFromFlags}, which is what
+ *  green-checkpoint now calls. Kept only so an operator can still force the gate on for
+ *  a one-off local run; it is no longer the production path. See the note on
+ *  FLAGS.HOST_PERF_GATE for why env could not actually arm this gate. */
 export function perfGatePolicyFromEnv(env: NodeJS.ProcessEnv = process.env): PerfGatePolicy {
   return {
     enabled: env.PAPERCUSP_PERF_GATE === '1',
     block: env.PAPERCUSP_PERF_GATE_BLOCK === '1',
+  };
+}
+
+/** Read the gate policy from the FLAGS system (default ON, warn-only).
+ *
+ *  Mirrors `desktopPerfGatePolicyFromFlags` deliberately — the two perf gates are
+ *  siblings and should be armed, read and reasoned about the same way.
+ *
+ *  `block` is hardwired false, exactly as the desktop sibling does: a crit verdict
+ *  flags the deploy but never holds it. Arming block-mode is a separate, owner-gated
+ *  step and is intentionally NOT reachable by flipping this flag — the flag is the
+ *  master switch only. The env override above still wins for a deliberate local run. */
+export async function perfGatePolicyFromFlags(
+  readFlag: () => Promise<boolean> = () => getFlag(FLAGS.HOST_PERF_GATE, 'system'),
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<PerfGatePolicy> {
+  // Fail-soft: a flag backend that throws must not take the release gate down with it.
+  // Falling back to `false` keeps green-checkpoint's behaviour a no-op `pass` rather
+  // than an unexplained gate error mid-deploy.
+  const enabled = await readFlag().catch(() => false);
+  return {
+    enabled: enabled || env.PAPERCUSP_PERF_GATE === '1',
+    block: false,
   };
 }
 

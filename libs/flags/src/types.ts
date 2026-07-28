@@ -2017,6 +2017,26 @@ export const FLAGS = {
   // step. Fail-soft: no persisted run / no measures ⇒ a no-op `pass`. OFF ⇒ the
   // gate reads nothing and passes (kill-switch).
   DESKTOP_PERF_GATE: "papercusp-desktop-perf-gate",
+  // WI-6538: the HOST-perf release gate — the sibling of DESKTOP_PERF_GATE above.
+  // It reads the latest perf-signals-v1 capture and evaluates it against the
+  // per-thread budgets in system-health/perf-budgets.ts.
+  //
+  // This replaces a `PAPERCUSP_PERF_GATE=1` env boolean, which was the wrong
+  // mechanism twice over. First, it is exactly the ad-hoc `process.env.PAPERCUSP_*`
+  // feature gate this repo forbids (see CLAUDE.md + lint:env-feature-gates) — env is
+  // for launch-time config, not toggles. Second and more concretely, it could not
+  // actually be armed: green-checkpoint is the ONLY evaluator, and it runs BOTH as a
+  // detached `systemd-run --user` unit (which inherits none of the launcher's env —
+  // release-checkpoint-launch.ts documents this trap twice) AND as a periodic routine
+  // spawn (which inherits a different process's env). So "arm it" meant plumbing the
+  // same variable through two unrelated launch paths, and setting it on the obvious
+  // services would have left the gate inert while looking armed. A FLAGS entry is read
+  // in-process at evaluation time and sidesteps both paths entirely.
+  //
+  // Default ON, warn-only: block-mode stays hardwired false in perf-gate.ts, so an
+  // armed gate can flag a deploy but never hold one. OFF ⇒ reads nothing, passes
+  // (kill-switch). Same posture as its desktop sibling.
+  HOST_PERF_GATE: "papercusp-host-perf-gate",
   // WI-5820: the lag-triggered CPU profiler in event-loop-lag-monitor.ts. When a
   // 10s window's p95 loop delay crosses the critical threshold, capture a short V8
   // `.cpuprofile` to ~/.papercusp/loop-profiles — the histogram says "the loop is

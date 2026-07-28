@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import {
   evaluatePerfGate,
   perfGatePolicyFromEnv,
+  perfGatePolicyFromFlags,
   runPerfGate,
   type PerfGatePolicy,
   type PerfGateIO,
@@ -88,6 +89,48 @@ describe('perfGatePolicyFromEnv', () => {
       enabled: true,
       block: true,
     });
+  });
+});
+
+describe('perfGatePolicyFromFlags (WI-6538 — the production path)', () => {
+  it('is ENABLED when the flag is on', async () => {
+    // The whole point of the migration: green-checkpoint runs detached (systemd-run)
+    // and as a periodic spawn, so an env var could not reliably arm it. A flag read
+    // in-process at evaluation time can.
+    await expect(perfGatePolicyFromFlags(async () => true, {})).resolves.toEqual({
+      enabled: true,
+      block: false,
+    });
+  });
+
+  it('is a no-op when the flag is off — the kill-switch', async () => {
+    await expect(perfGatePolicyFromFlags(async () => false, {})).resolves.toEqual({
+      enabled: false,
+      block: false,
+    });
+  });
+
+  it('NEVER arms block-mode, even with the flag on and the block env set', async () => {
+    // Load-bearing: flipping the master flag must not be able to start holding
+    // deploys. Block-mode is a separate owner-gated step by design.
+    const p = await perfGatePolicyFromFlags(async () => true, { PAPERCUSP_PERF_GATE_BLOCK: '1' });
+    expect(p.block).toBe(false);
+  });
+
+  it('fails SOFT to disabled when the flag backend throws', async () => {
+    // A flag backend outage must not take the release gate down with it — it should
+    // degrade to the old inert no-op `pass`, not surface an error mid-deploy.
+    await expect(
+      perfGatePolicyFromFlags(async () => {
+        throw new Error('flag backend down');
+      }, {}),
+    ).resolves.toEqual({ enabled: false, block: false });
+  });
+
+  it('still honours the env override for a deliberate local run', async () => {
+    await expect(
+      perfGatePolicyFromFlags(async () => false, { PAPERCUSP_PERF_GATE: '1' }),
+    ).resolves.toEqual({ enabled: true, block: false });
   });
 });
 

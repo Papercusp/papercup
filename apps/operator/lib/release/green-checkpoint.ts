@@ -36,7 +36,7 @@ import {
   type AdvanceResult,
 } from './git-ops';
 import { toolingRoot, type ReleaseConfig } from './release-config';
-import { runPerfGate, perfGatePolicyFromEnv } from './perf-gate';
+import { runPerfGate, perfGatePolicyFromFlags } from './perf-gate';
 import { runDesktopPerfGate, desktopPerfGatePolicyFromFlags } from './desktop-perf-gate';
 import { runDeltaGate, deltaGatePolicyFromEnv } from './delta-gate';
 import { heldGateAlert } from './held-gate-alarm';
@@ -3743,10 +3743,13 @@ export function realCheckpointDeps(
       }
     },
     // F2 (round-4 P-031): the real perf gate reads the latest perf-signals-v1 capture
-    // and evaluates it against the per-thread budgets; policy comes from the env flags
-    // (PAPERCUSP_PERF_GATE / PAPERCUSP_PERF_GATE_BLOCK). Inert (`pass`, reads nothing)
-    // until the owner enables it.
-    perfGate: (candidate) => runPerfGate(perfGatePolicyFromEnv(), candidate),
+    // and evaluates it against the per-thread budgets. WI-6538: policy now comes from
+    // the FLAGS system (FLAGS.HOST_PERF_GATE, default ON) rather than a PAPERCUSP_PERF_GATE
+    // env boolean — this is the only site that evaluates the gate, and it runs both as a
+    // detached systemd-run unit and as a periodic routine spawn, neither of which reliably
+    // inherits the launcher's env. Warn-only: block-mode is hardwired false, so a crit
+    // flags the deploy but never holds it. Mirrors its desktopPerfGate sibling below.
+    perfGate: async (candidate) => runPerfGate(await perfGatePolicyFromFlags(), candidate),
     // desktop-performance-suite-2026-07-20 P-011: the real desktop-perf gate reads
     // the latest persisted desktop-perf run (desktop_perf_runs) and evaluates its
     // budgeted measures. Policy from the FLAGS system (FLAGS.DESKTOP_PERF_GATE,

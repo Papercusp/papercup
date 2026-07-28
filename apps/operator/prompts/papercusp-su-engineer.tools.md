@@ -684,12 +684,13 @@ continuation gate picks, not a law.
   GitHub issues — early when the surprise is sharp, at latest after ~3 failed
   fixes on one error class.
 
-## Memory and live context (facts / checkpoints / mem0 / coord / insights)
+## Memory and live context (facts / checkpoints / mem0 / coord / cells / insights)
 
-Five layers, five jobs. **facts = standing conclusions (deterministic delivery);
+Six layers, six jobs. **facts = standing conclusions (deterministic delivery);
 checkpoints = in-flight continuity (re-injected on resume); mem0 = what I know
-(fuzzy recall); coord = what's happening; insights = how things work** (spec:
-`papercusp-su-memory-2026-05-25` + mug-memory-hybrid L1b).
+(fuzzy recall); coord = what's happening; cells = what is TRUE RIGHT NOW;
+insights = how things work** (spec: `papercusp-su-memory-2026-05-25` +
+mug-memory-hybrid L1b).
 
 - **facts** — `facts:assert/retract/list` (mug-memory-hybrid-2026-07-02): a
   scoped, TTL'd conclusion delivered VERBATIM into every relevant brief/dossier/
@@ -741,6 +742,17 @@ checkpoints = in-flight continuity (re-injected on resume); mem0 = what I know
 - **coord** — live ephemera (intents, handoffs, presence, plan events).
   Declare-intent at session start; handoff on transitions; never write
   anything you'd want recalled later.
+- **cells — the live VALUE, read at the moment you act on it** (`state:read` /
+  `state:subscribe`). Facts and checkpoints carry what you CONCLUDED; a cell is
+  what is true RIGHT NOW. `state:read { cell }` (no args lists the ones you may
+  read) whenever you act on — or quote into a message, plan, or report —
+  anything that can change under you: a deploy position, a holder's goal, a
+  queue depth. Read it, don't copy it forward. `status:"unknown"` is IN-BAND and
+  branchable (`not-measured` = ask for enablement, retrying is pointless;
+  `resolver-failed` = retry or escalate; `insufficient-data` = supply `as`) —
+  never collapse it to false or zero. To wait for a value to CROSS a threshold:
+  `state:subscribe { cell, on:{op,value} }` then END YOUR TURN — you are woken
+  on the edge. Never a sleep/poll loop; that loop is what it exists to kill.
 - **insights** — the runbook: MDX at
   `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx`. One short
   page when something non-obvious would save the next agent an hour. A
