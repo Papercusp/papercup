@@ -34,7 +34,6 @@ import { isMemoryPaused, setMemoryPaused } from '../../../memory/memory-pause';
 import { recallCanaryForEnvelope } from '../../../memory/recall-canary-envelope';
 import { detectPossibleSecrets, possibleSecretWarning } from '../../../memory/secret-detect';
 import { recordFeedback } from '../../../memory/feedback';
-import { readClaudeHygiene } from '../../../memory/claude-hygiene';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loadHarnessRegistry } from '../../../harness-registry';
@@ -91,14 +90,12 @@ const backendInfo = defineTool({
     const user = await getSessionUserOrDefault(req.headers);
     const backend = getMemoryBackend();
     const avail = await backend.available();
-    // Harness slugs for the add-memory scope select (P-010); claude-file
-    // hygiene pressure for the curation banner (P-012). Both best-effort.
+    // Harness slugs for the add-memory scope select (P-010) — best-effort.
     let harnesses: string[] = [];
     try {
       const reg = await loadHarnessRegistry(activeWorkspaceId());
       harnesses = reg.projects.map((p) => p.slug);
     } catch { /* select just offers Personal */ }
-    const hygiene = await readClaudeHygiene().catch(() => null);
     return Response.json({
       backend: backend.name,
       currentBackend: currentMemoryBackendChoice(),
@@ -106,7 +103,6 @@ const backendInfo = defineTool({
       reason: avail.ok ? null : avail.reason,
       userId: user.id,
       harnesses,
-      hygiene,
       // EI-10355: the user's memory-pause state rides the envelope the page
       // already fetches — no extra round-trip for the toggle to render truthfully.
       paused: await isMemoryPaused(user.id),

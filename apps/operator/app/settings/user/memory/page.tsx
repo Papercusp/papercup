@@ -108,12 +108,6 @@ interface FeedbackStats {
   total_deletes: number;
 }
 
-interface ClaudeHygiene {
-  activeCount: number;
-  overflowCount: number;
-  indexBytes: number;
-}
-
 /** Kind suggestions for the add form — the unified taxonomy
  * (memory-taxonomy-and-debt-followups D-001); free text also accepted. */
 const KIND_SUGGESTIONS = ['user', 'feedback', 'project', 'reference'];
@@ -150,7 +144,6 @@ export default function MemoryPage() {
   const [showAll, setShowAll] = useQueryState('full', parseAsBoolean.withDefault(false));
   const [auditBusy, setAuditBusy] = useState<boolean>(false);
   const [harnesses, setHarnesses] = useState<string[]>([]);
-  const [hygiene, setHygiene] = useState<ClaudeHygiene | null>(null);
   // EI-10355: the "stop remembering things about me" switch. Paused ⇒ agents
   // write no NEW memories; everything already stored stays readable, editable,
   // deletable and exportable (a pause must never lock you out of your own data).
@@ -193,7 +186,6 @@ export default function MemoryPage() {
         setAvailableBackends(Array.isArray(j.availableBackends) ? j.availableBackends : []);
         setCurrentBackend(j.currentBackend ?? j.backend ?? '');
         setHarnesses(Array.isArray(j.harnesses) ? j.harnesses : []);
-        setHygiene(j.hygiene ?? null);
         setPaused(j.paused === true);
         setRecallCanary(j.recallCanary?.latest ?? null);
       }
@@ -889,18 +881,6 @@ export default function MemoryPage() {
           {reason === 'memory_backend_disabled' && (
             <> The store is deliberately off (<code>PAPERCUSP_MEMORY_BACKEND=noop</code>); flip the env var to re-enable.</>
           )}
-        </div>
-      )}
-
-      {hygiene && hygiene.overflowCount > 0 && (
-        <div style={{ padding: 12, border: '1px solid var(--warn-border)', borderRadius: 6, background: 'var(--warn-bg)', fontSize: 13 }}>
-          <strong>⚠ Memory index over capacity.</strong>{' '}
-          {hygiene.overflowCount} of {hygiene.activeCount + hygiene.overflowCount} Claude
-          file-memories are paged out of the always-loaded index
-          (<code>MEMORY-overflow.md</code>) — they&rsquo;re reachable on demand but not
-          auto-loaded each session. Curate to bring them back: merge near-duplicates,
-          retire obsolete facts, and tighten long descriptions in the topic files
-          (the index itself is regenerated, never hand-edited).
         </div>
       )}
 

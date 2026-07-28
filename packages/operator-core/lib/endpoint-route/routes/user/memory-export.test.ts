@@ -28,7 +28,6 @@ vi.mock('../../../memory/write-journal', () => ({
 }));
 vi.mock('../../../memory/list-user-memories', () => ({ listUserMemories: vi.fn(async () => []) }));
 vi.mock('../../../memory/feedback', () => ({ recordFeedback: vi.fn(async () => {}) }));
-vi.mock('../../../memory/claude-hygiene', () => ({ readClaudeHygiene: vi.fn(async () => null) }));
 vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
 vi.mock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) }));

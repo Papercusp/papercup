@@ -33,9 +33,32 @@ import { activeWorkspaceId } from '../workspace-registry';
 const SETTING_KEY = 'memory_backend';
 const osTable = generated.operatorSettingsInHarnessShared;
 
+/**
+ * The operator's DEFAULT backend when nothing is persisted and no env override
+ * is set — i.e. what a brand-new install gets.
+ *
+ * `hybrid-pg`, not `mem0` (memory-declaude-and-defaults-2026-07-28 D-002). Both
+ * read and write the SAME `harness_shared.memory_canonical` rows, so this picks
+ * a RANKING, never a storage location — but the ranking difference is large:
+ * the live 40-pair A/B measured recall@10 39/40 (98%) for hybrid-pg vs 21/40
+ * (53%) for mem0, because hybrid-pg fuses a lexical leg that wins exact-identifier
+ * recall with the cosine leg that wins paraphrase. Cost is ~+265ms p50.
+ * `mem0` was the default only because it came first; nothing re-evaluated it
+ * after hybrid-pg won the A/B.
+ *
+ * ⚠ This name MUST be registered by the time a memory call resolves it — an
+ * unregistered name makes `getMemoryBackend()` throw by design. `hybrid-pg` is
+ * registered in ./configure (operator-side), NOT by @papercusp/memory itself,
+ * whose own built-ins are only `mem0` + `noop`. That is why the LIB's fallback
+ * in backend-registry.ts stays `'mem0'`: it must name something the lib can
+ * always resolve for hosts that register nothing. `default-backend.test.ts`
+ * pins this invariant.
+ */
+export const DEFAULT_MEMORY_BACKEND = 'hybrid-pg';
+
 /** The env fallback, evaluated live (tests may set it per-case). */
 function envDefault(): string {
-  return process.env.PAPERCUSP_MEMORY_BACKEND || 'mem0';
+  return process.env.PAPERCUSP_MEMORY_BACKEND || DEFAULT_MEMORY_BACKEND;
 }
 
 // undefined = not yet loaded from PG → fall back to env/default.

@@ -69,7 +69,6 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: orgSql }),
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
-vi.mock('../../memory/claude-hygiene', () => ({ readClaudeHygiene: vi.fn(async () => null) }));
 
 import { getSessionUserOrDefault } from '../../auth';
 import { registerRoute } from '../define-route';
