@@ -354,7 +354,8 @@
   font-weight: 600;
   color: var(--fg-dim);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  /* No letter-spacing: nonzero tracking is not an approved treatment here
+     (design-primitives lint), same call as the rails above. */
   flex: none;
 }
 

@@ -134,6 +134,56 @@ const warn: React.CSSProperties = { color: 'var(--warn)' };
 const cell: React.CSSProperties = { textAlign: 'right' };
 const cellL: React.CSSProperties = { textAlign: 'left' };
 
+/* ------------------------------------------------------------------- columns */
+
+/** A recent-query row carrying a collision-proof React key (the ring can repeat a name+start). */
+type SlowRow = SyncQueryEvent & { rowKey: string };
+
+const QUERY_COLUMNS: TableColumn<QueryRow>[] = [
+  { key: 'query', header: 'query', headerStyle: cellL, cellStyle: cellL, render: (r) => r.name },
+  { key: 'reqs', header: 'reqs', headerStyle: cell, cellStyle: cell, render: (r) => r.requests },
+  { key: 'bytes', header: 'bytes', headerStyle: cell, cellStyle: cell, render: (r) => formatBytes(r.bytes) },
+  { key: 'wait', header: 'wait avg', headerStyle: cell, cellStyle: cell, render: (r) => formatMs(r.waitAvgMs) },
+  { key: 'reqAvg', header: 'req avg', headerStyle: cell, cellStyle: cell, render: (r) => formatMs(r.requestAvgMs) },
+  { key: 'reqMax', header: 'req max', headerStyle: cell, cellStyle: cell, render: (r) => formatMs(r.requestMsMax) },
+  {
+    key: 'fail',
+    header: 'fail',
+    headerStyle: cell,
+    cellStyle: cell,
+    render: (r) => (r.failures > 0 ? <span style={warn}>{r.failures}</span> : r.failures),
+  },
+];
+
+const SLOW_COLUMNS: TableColumn<SlowRow>[] = [
+  { key: 'query', header: 'query', headerStyle: cellL, cellStyle: cellL, render: (e) => e.name },
+  { key: 'at', header: 'at', headerStyle: cell, cellStyle: cell, render: (e) => formatMs(e.startedAtMs) },
+  {
+    key: 'queued',
+    header: 'queued',
+    headerStyle: cell,
+    cellStyle: cell,
+    // Over the 250ms queue-wait threshold the panel already counts above.
+    render: (e) =>
+      e.waitMs > 250 ? <span style={warn}>{formatMs(e.waitMs)}</span> : formatMs(e.waitMs),
+  },
+  { key: 'request', header: 'request', headerStyle: cell, cellStyle: cell, render: (e) => formatMs(e.requestMs) },
+  {
+    key: 'bytes',
+    header: 'bytes',
+    headerStyle: cell,
+    cellStyle: cell,
+    render: (e) => (e.bytes < 0 ? '—' : formatBytes(e.bytes)),
+  },
+  {
+    key: 'outcome',
+    header: 'outcome',
+    headerStyle: cellL,
+    cellStyle: cellL,
+    render: (e) => (e.outcome === 'ok' ? e.outcome : <span style={warn}>{e.outcome}</span>),
+  },
+];
+
 /* ----------------------------------------------------------------- component */
 
 export default function AdvSyncHealthPanel() {
@@ -161,7 +211,12 @@ export default function AdvSyncHealthPanel() {
   }, [paused, sample]);
 
   const rows = useMemo(() => (snap ? topQueries(snap.byQuery) : []), [snap]);
-  const slow = useMemo(() => slowestRecent(recent), [recent]);
+  // The ring can hold two events with the same name AND start ms, so the index
+  // is folded into the key — duplicate React keys are a known perf trap here.
+  const slow = useMemo<SlowRow[]>(
+    () => slowestRecent(recent).map((e, i) => ({ ...e, rowKey: `${e.name}-${e.startedAtMs}-${i}` })),
+    [recent],
+  );
 
   if (!snap) return <div style={wrap}>Reading sync metrics…</div>;
 
@@ -230,32 +285,7 @@ export default function AdvSyncHealthPanel() {
         </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={mute}>
-                <th style={cellL}>query</th>
-                <th style={cell}>reqs</th>
-                <th style={cell}>bytes</th>
-                <th style={cell}>wait avg</th>
-                <th style={cell}>req avg</th>
-                <th style={cell}>req max</th>
-                <th style={cell}>fail</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.name}>
-                  <td style={cellL}>{r.name}</td>
-                  <td style={cell}>{r.requests}</td>
-                  <td style={cell}>{formatBytes(r.bytes)}</td>
-                  <td style={cell}>{formatMs(r.waitAvgMs)}</td>
-                  <td style={cell}>{formatMs(r.requestAvgMs)}</td>
-                  <td style={cell}>{formatMs(r.requestMsMax)}</td>
-                  <td style={r.failures > 0 ? { ...cell, ...warn } : cell}>{r.failures}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <Table columns={QUERY_COLUMNS} rows={rows} getRowKey={(r) => r.name} />
         </div>
       )}
 
@@ -264,30 +294,7 @@ export default function AdvSyncHealthPanel() {
         <div style={mute}>nothing in the recent-query ring yet</div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={mute}>
-                <th style={cellL}>query</th>
-                <th style={cell}>at</th>
-                <th style={cell}>queued</th>
-                <th style={cell}>request</th>
-                <th style={cell}>bytes</th>
-                <th style={cellL}>outcome</th>
-              </tr>
-            </thead>
-            <tbody>
-              {slow.map((e, i) => (
-                <tr key={`${e.name}-${e.startedAtMs}-${i}`}>
-                  <td style={cellL}>{e.name}</td>
-                  <td style={cell}>{formatMs(e.startedAtMs)}</td>
-                  <td style={e.waitMs > 250 ? { ...cell, ...warn } : cell}>{formatMs(e.waitMs)}</td>
-                  <td style={cell}>{formatMs(e.requestMs)}</td>
-                  <td style={cell}>{e.bytes < 0 ? '—' : formatBytes(e.bytes)}</td>
-                  <td style={e.outcome === 'ok' ? cellL : { ...cellL, ...warn }}>{e.outcome}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <Table columns={SLOW_COLUMNS} rows={slow} getRowKey={(e) => e.rowKey} />
         </div>
       )}
 
