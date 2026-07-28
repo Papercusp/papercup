@@ -80,7 +80,10 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
   const optsOf = (b: ReturnType<typeof mockBackend>, i: number) =>
     b.search.mock.calls[i]![1] as { fusionMode?: string; minScore?: number; limit?: number };
 
-  it('passes fusionMode cosine-gated on EVERY pool (user, harness, hive)', async () => {
+  // F-C (P-033, D-011) collapsed the three per-pool searches into ONE
+  // multi-scope search, so "every pool is gated" is now "the one call covering
+  // every pool is gated" — the guarantee is unchanged, its shape is not.
+  it('passes fusionMode cosine-gated on the search covering EVERY pool (user, harness, hive)', async () => {
     const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
     useBackend(backend);
     await buildMemoryContextBlock({
@@ -90,10 +93,13 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
       harnessSlugs: ['papercusp'],
       hiveSlugs: ['hivey'],
     });
-    expect(backend.search).toHaveBeenCalledTimes(3);
-    for (let i = 0; i < 3; i++) {
-      expect(optsOf(backend, i).fusionMode, `pool ${i} must be gated`).toBe('cosine-gated');
-    }
+    expect(backend.search).toHaveBeenCalledTimes(1);
+    expect(optsOf(backend, 0).fusionMode).toBe('cosine-gated');
+    expect(backend.search.mock.calls[0]![1]!.scope).toEqual([
+      'u1',
+      'harness:papercusp',
+      'hive:hivey',
+    ]);
   });
 
   // The floor is NOT the fix and must not be quietly retuned as if it were: the
@@ -142,6 +148,140 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
       if (prev === undefined) delete process.env.PAPERCUSP_MEMORY_FUSION_MODE;
       else process.env.PAPERCUSP_MEMORY_FUSION_MODE = prev;
     }
+  });
+});
+
+/**
+ * context-injection-audit-2026-07-28 P-033 (F-C / D-011) — the NO-QUOTA guard.
+ *
+ * The pools were budgeted INVERSELY to where knowledge lives: 6 slots to the
+ * 487-memory CROSS-PROJECT personal pool, 3 to the 770-memory on-topic harness
+ * pool. F-C deletes the per-pool reservations rather than retuning them (P-033
+ * explicitly forbids simply raising the harness quota).
+ *
+ * The reason this had to become ONE search is subtle and worth pinning, because
+ * a future change could "simplify" it back into three calls and silently
+ * reintroduce the quota: the score handed back is RRF, a function of rank WITHIN
+ * ONE CALL. Across separate calls two pools' rank-1 hits score identically, so
+ * there is nothing sound to allocate on and any cross-pool ordering degenerates
+ * into a fixed priority — a quota by another name.
+ */
+describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 / F-C)', () => {
+  it('issues ONE search over the union of scopes, not one per pool', async () => {
+    const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(backend);
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'q',
+      harnessSlugs: ['papercusp', 'other'],
+      hiveSlugs: ['hivey'],
+    });
+    expect(backend.search).toHaveBeenCalledTimes(1);
+    const opts = backend.search.mock.calls[0]![1] as { scope: string[]; limit: number };
+    expect(opts.scope).toEqual(['u1', 'harness:papercusp', 'harness:other', 'hive:hivey']);
+    // ONE ceiling for all of them — not 6 + 3 + 3 spent per pool.
+    expect(opts.limit).toBe(12);
+  });
+
+  it('lets a SINGLE pool fill the whole block — no pool holds a reservation', async () => {
+    // Only the harness pool returns anything. Under the old quotas it could
+    // never exceed 3 however relevant its hits were; now it competes for all 12.
+    const rows = Array.from({ length: 8 }, (_, i) => ({
+      id: `h${i}`,
+      text: `harness fact number ${i} about the deploy pipeline`,
+      kind: 'reference',
+    }));
+    const backend = {
+      name: 'fake',
+      available: vi.fn(async () => ({ ok: true })),
+      search: vi.fn(async (_q: string, opts: { scope: string | readonly string[] }) => {
+        const scopes = typeof opts.scope === 'string' ? [opts.scope] : [...opts.scope];
+        return scopes.flatMap((scope) =>
+          scope.startsWith('harness:') ? rows.map((r) => ({ ...r, scope })) : [],
+        );
+      }),
+    };
+    useBackend(backend as unknown as ReturnType<typeof mockBackend>);
+    const block = await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'deploy pipeline',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: [],
+    });
+    // All 8 render: the old PER_HARNESS_LIMIT=3 would have capped this at 3.
+    for (let i = 0; i < 8; i++) expect(block).toContain(`harness fact number ${i}`);
+  });
+
+  it('renders in the backend RELEVANCE order, not in pool order', async () => {
+    // The backend returns one ranked list; the harness hit outranks the user
+    // hit. Pre-F-C the render was strictly user-then-harness, so the user hit
+    // would lead regardless of rank — and since the char budget truncates in
+    // render order, that ordering WAS the real allocator.
+    const backend = {
+      name: 'fake',
+      available: vi.fn(async () => ({ ok: true })),
+      search: vi.fn(async () => [
+        { id: 'r1', text: 'the most relevant fact', kind: 'reference', scope: 'harness:papercusp' },
+        { id: 'r2', text: 'a less relevant personal note', kind: 'preference', scope: 'u1' },
+      ]),
+    };
+    useBackend(backend as unknown as ReturnType<typeof mockBackend>);
+    const block = await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'q',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: [],
+    });
+    expect(block!.indexOf('the most relevant fact')).toBeLessThan(
+      block!.indexOf('a less relevant personal note'),
+    );
+  });
+
+  it('still yields hive-PACK rows last, whatever their rank (preserved trust tier)', async () => {
+    // The one exception F-C keeps: packs are the most numerous and least
+    // turn-specific, so they lose the budget race even when they rank first.
+    const backend = {
+      name: 'fake',
+      available: vi.fn(async () => ({ ok: true })),
+      search: vi.fn(async () => [
+        {
+          id: 'p1',
+          text: 'a seeded pack learning',
+          kind: 'reference',
+          scope: 'hive:hivey',
+          metadata: { source: 'pack', pack_id: 'pk1' },
+        },
+        { id: 'o1', text: 'an organic harness fact', kind: 'reference', scope: 'harness:papercusp' },
+      ]),
+    };
+    useBackend(backend as unknown as ReturnType<typeof mockBackend>);
+    const block = await buildMemoryContextBlock({
+      userId: null,
+      workspaceId: 'ws',
+      queryContext: 'q',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: ['hivey'],
+    });
+    expect(block!.indexOf('an organic harness fact')).toBeLessThan(
+      block!.indexOf('a seeded pack learning'),
+    );
+  });
+
+  it('treats input.limit as the TOTAL ceiling across pools, not the user pool alone', async () => {
+    const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(backend);
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'q',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: ['hivey'],
+      limit: 3,
+    });
+    expect((backend.search.mock.calls[0]![1] as { limit: number }).limit).toBe(3);
   });
 });
 
@@ -414,20 +554,31 @@ describe('buildMemoryContextBlock', () => {
       name: 'fake',
       available: vi.fn(async () => ({ ok: true })),
       search: vi.fn(async (_q: string, opts: { scope: string | readonly string[] }) => {
-        const scope = typeof opts.scope === 'string' ? opts.scope : opts.scope[0];
-        return scope.startsWith('hive:')
-          ? [{ id: 'h1', text: 'Hive convention: tests ship with the feature', kind: 'feedback', scope }]
-          : [{ id: 'a1', text: 'Harness note: run npm test before pushing', kind: 'feedback', scope }];
+        const scopes = typeof opts.scope === 'string' ? [opts.scope] : [...opts.scope];
+        return scopes.map((scope) =>
+          scope.startsWith('hive:')
+            ? { id: 'h1', text: 'Hive convention: tests ship with the feature', kind: 'feedback', scope }
+            : { id: 'a1', text: 'Harness note: run npm test before pushing', kind: 'feedback', scope },
+        );
       }),
     };
     useBackend(b as unknown as ReturnType<typeof mockBackend>);
     const block = await buildMemoryContextBlock({
       userId: null, workspaceId: 'ws', harnessSlugs: ['member-a'], queryContext: 'testing?',
     });
-    // Second pull = harness pool, third = hive pool resolved from the registry.
+    // ONE pull over both pools — the hive scope is resolved from the registry
+    // and joins the same multi-scope search (F-C / D-011).
     expect(b.search.mock.calls).toEqual([
-      ['testing?', { scope: ['harness:member-a'], limit: 3, minScore: 0.45, minLexScore: 0.4, fusionMode: 'cosine-gated' }],
-      ['testing?', { scope: ['hive:my-hive'], limit: 3, minScore: 0.45, minLexScore: 0.4, fusionMode: 'cosine-gated' }],
+      [
+        'testing?',
+        {
+          scope: ['harness:member-a', 'hive:my-hive'],
+          limit: 12,
+          minScore: 0.45,
+          minLexScore: 0.4,
+          fusionMode: 'cosine-gated',
+        },
+      ],
     ]);
     expect(block).toContain('- [feedback @ hive:my-hive] (id=h1) Hive convention: tests ship with the feature');
     expect(block).toContain('- [feedback @ member-a] (id=a1) Harness note: run npm test before pushing');
