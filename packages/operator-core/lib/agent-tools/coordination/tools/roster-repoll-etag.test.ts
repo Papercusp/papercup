@@ -114,6 +114,59 @@ describe('coord:roster re-poll etag (WI-6665)', () => {
       expect(ab).toBe(ba);
     });
 
+    // The cases below are the ones that make the LENS FIELDS in the hash
+    // load-bearing rather than decorative. Everywhere else the emitted rows
+    // already differ, so the hash would differ even if the lens were omitted —
+    // these are where two different questions produce byte-identical rows and
+    // only the recorded lens can tell them apart.
+
+    it('does not collide across lenses on an EMPTY roster (rows alone cannot disambiguate)', () => {
+      const empty = rows([]);
+      const ids = computeRosterViewEtag(emit(empty, 'ids'), { ...BASE_LENS, project: 'ids' });
+      const liveness = computeRosterViewEtag(emit(empty, 'liveness'), {
+        ...BASE_LENS,
+        project: 'liveness',
+      });
+      const full = computeRosterViewEtag(emit(empty, 'full'), BASE_LENS);
+      // Every lens emits `[]` here. Without `project` in the hash these are one
+      // token, and an empty-roster caller could re-poll a different lens and be
+      // told "unchanged".
+      expect(new Set([ids, liveness, full]).size).toBe(3);
+    });
+
+    it('does not collide when states[] happens to select EVERY row', () => {
+      // All rows are live, so states:['live'] filters nothing — identical rows,
+      // genuinely different question.
+      const allLive = rows(['live', 'live']);
+      const unfiltered = computeRosterViewEtag(emit(allLive, 'liveness'), {
+        ...BASE_LENS,
+        project: 'liveness',
+      });
+      const filtered = computeRosterViewEtag(emit(allLive, 'liveness', ['live']), {
+        ...BASE_LENS,
+        project: 'liveness',
+        states: ['live'],
+      });
+      expect(emit(allLive, 'liveness')).toEqual(emit(allLive, 'liveness', ['live']));
+      expect(unfiltered).not.toBe(filtered);
+    });
+
+    it('does not collide on include_detail when no agent holds a file', () => {
+      // heldFiles is merged in only when present, so an unlensed read and an
+      // include_detail read of an idle roster emit the same rows.
+      const idle = emit(rows(['live']), 'full');
+      const plain = computeRosterViewEtag(idle, BASE_LENS);
+      const detailed = computeRosterViewEtag(idle, { ...BASE_LENS, includeDetail: true });
+      expect(plain).not.toBe(detailed);
+    });
+
+    it('does not collide on a targeted owner lookup that returns the same single row', () => {
+      const one = emit(rows(['live']), 'full');
+      const untargeted = computeRosterViewEtag(one, BASE_LENS);
+      const targeted = computeRosterViewEtag(one, { ...BASE_LENS, owner: 'su-0' });
+      expect(untargeted).not.toBe(targeted);
+    });
+
     it('differs across scope / hive, so a token cannot cross a scope boundary', () => {
       const underlying = emit(rows(['live']), 'liveness');
       const ws = computeRosterViewEtag(underlying, { ...BASE_LENS, project: 'liveness' });
