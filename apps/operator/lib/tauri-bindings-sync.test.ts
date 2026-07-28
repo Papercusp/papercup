@@ -108,23 +108,43 @@ function hasBinding(bindings: string, name: string): boolean {
   );
 }
 
-/** The path literal passed to `specta_builder.export(...)`. */
-function exportPathLiteral(mainRs: string): string {
-  const m = mainRs.match(
-    /specta_builder\s*\.export\(\s*specta_typescript::Typescript::default\(\)\s*,\s*"([^"]+)"/,
+/**
+ * The export destination declared in main.rs, as a path resolved from the crate
+ * dir.
+ *
+ * Two accepted spellings, because both have been in the tree:
+ *   - `concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/…")` — the current form.
+ *     CARGO_MANIFEST_DIR *is* the crate dir, so the tail resolves against it.
+ *   - a bare `"../../apps/…"` literal — resolved against the process CWD at run
+ *     time, which is why this is no longer used (the same misdirected file turned
+ *     up at three different depths). Still parsed so the assertion keeps meaning
+ *     if someone reverts to it: it is checked against the crate dir, the only
+ *     interpretation under which a relative literal is correct at all.
+ */
+function exportedBindingsPath(mainRs: string): { literal: string; resolved: string } {
+  const anchored = mainRs.match(
+    /\.export\(\s*specta_typescript::Typescript::default\(\)\s*,\s*concat!\(\s*env!\("CARGO_MANIFEST_DIR"\)\s*,\s*"([^"]+)"\s*,?\s*\)/,
   );
-  if (!m) throw new Error('tauri-bindings-sync: could not find the specta export path literal');
-  return m[1];
+  if (anchored) {
+    return {
+      literal: `CARGO_MANIFEST_DIR + ${anchored[1]}`,
+      resolved: path.resolve(CRATE_DIR, `.${anchored[1]}`),
+    };
+  }
+
+  const bare = mainRs.match(
+    /\.export\(\s*specta_typescript::Typescript::default\(\)\s*,\s*"([^"]+)"/,
+  );
+  if (bare) return { literal: bare[1], resolved: path.resolve(CRATE_DIR, bare[1]) };
+
+  throw new Error('tauri-bindings-sync: could not find the specta export destination in main.rs');
 }
 
 describe('tauri-specta bindings stay in sync with the Rust command list', () => {
   const mainRs = readFileSync(MAIN_RS, 'utf8');
 
   it('exports to the canonical bindings path, resolved from the crate dir', () => {
-    const literal = exportPathLiteral(mainRs);
-    // The literal is resolved relative to the crate dir at run time (cargo runs
-    // the binary with src-tauri as cwd), NOT the repo root.
-    const resolved = path.resolve(CRATE_DIR, literal);
+    const { literal, resolved } = exportedBindingsPath(mainRs);
     expect(
       resolved,
       `main.rs exports specta bindings to "${literal}", which resolves to\n  ${resolved}\n` +
@@ -134,15 +154,24 @@ describe('tauri-specta bindings stay in sync with the Rust command list', () => 
     ).toBe(CANONICAL_BINDINGS);
   });
 
-  it('does not resurrect the dead pre-rename `papercup/` tree', () => {
-    // The one-file tree the misdirected export used to create. Its reappearance
-    // means the export path regressed (or a second one was added).
+  it('does not resurrect a dead pre-rename `papercup/` tree', () => {
+    // All three depths the misdirected export was found writing to — three, not
+    // one, because a relative path follows the process CWD and the CWD varied.
+    // Each held exactly one file (the stray bindings); none is a real tree, so any
+    // reappearance means the export destination regressed.
+    const strays = [
+      path.join(REPO_ROOT, 'papercup'),
+      path.join(REPO_ROOT, 'tools', 'papercup'),
+      path.join(REPO_ROOT, 'papercusp-desktop', 'src-tauri', 'papercup'),
+    ].filter((p) => existsSync(p));
+
     expect(
-      existsSync(path.join(REPO_ROOT, 'papercup')),
-      'A `papercup/` directory is back at the repo root. It is not a real tree — it is ' +
-        'what a misdirected specta export creates. Check the export path in ' +
-        'papercusp-desktop/src-tauri/src/main.rs.',
-    ).toBe(false);
+      strays,
+      'A stray `papercup/` directory is back. It is not a real tree — it is what a ' +
+        'misdirected specta export creates. Check the export destination in ' +
+        'papercusp-desktop/src-tauri/src/main.rs (it must stay anchored at ' +
+        'CARGO_MANIFEST_DIR).',
+    ).toEqual([]);
   });
 
   it('detects a missing binding (matcher is not vacuously permissive)', () => {

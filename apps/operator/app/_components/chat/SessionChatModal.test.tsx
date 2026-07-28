@@ -60,6 +60,16 @@ vi.mock('../plans/PlanPopupModal', () => ({
     return null;
   },
 }));
+// WI-6505: the always-visible fleet-launch row. Stubbed to a marker for the same
+// reason as the popups above — it owns two option fetches (the plan list and
+// psu's bootstrap-su options endpoint) that have nothing to do with what this
+// file asserts, and its own behavior is covered by FleetLaunchRow.test.tsx.
+// The marker is NOT decoration: this suite's own "…is always visible" cases
+// below assert it renders in the states where `actionCtx` is null and the chat
+// action bar is therefore absent, which is the whole point of the row.
+vi.mock('./FleetLaunchRow', () => ({
+  default: () => <div data-testid="fleet-launch-row-stub" />,
+}));
 // hud-first-nav-and-dossier-2026-07-26 P-003: AgentDossier's own behavior is
 // covered by AgentDossier.test.tsx — stubbed here (same pattern as
 // WorkItemPopupModal/PlanPopupModal above) to a tiny probe asserting only
@@ -279,6 +289,46 @@ describe('SessionChatModal', () => {
     // in muted mono (both live inside the same testid'd banner).
     await waitFor(() => expect(screen.getByText(/Couldn't load this agent's conversation/)).toBeTruthy());
     expect(screen.getByTestId('session-chat-resolve-error').textContent).toContain('500');
+  });
+
+  /**
+   * WI-6505 [owner ask 2026-07-27]: "make this fleet launching its own always
+   * visible row".
+   *
+   * ALWAYS means in the degraded states too, and those are the cases that make
+   * this more than a placement detail. The chat action bar (Grade and friends)
+   * only mounts once `actionCtx` resolves — a live session with a known owner
+   * id — so in every state below it is ABSENT. Those are exactly the moments a
+   * human is most likely to give up on this agent and launch a fleet instead,
+   * so the row has to outlive the bar rather than share its gate.
+   */
+  describe('WI-6505: the fleet-launch row is always visible', () => {
+    it('renders when the session resolves normally', async () => {
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('fleet-launch-row-stub')).toBeTruthy());
+    });
+
+    it('renders when the owner has NO indexed claude session (no action bar to sit beside)', async () => {
+      mockFetchOnce(200, { sessions: [{ source_kind: 'omp', session_id: 'omp-1', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() =>
+        expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy(),
+      );
+      expect(screen.getByTestId('fleet-launch-row-stub')).toBeTruthy();
+    });
+
+    it('renders even when session resolution FAILS outright', async () => {
+      fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('session-chat-resolve-error')).toBeTruthy());
+      expect(screen.getByTestId('fleet-launch-row-stub')).toBeTruthy();
+    });
+
+    it('is NOT rendered while the popup is closed', () => {
+      render(<SessionChatModal sessionOwnerId={null} onClose={vi.fn()} />);
+      expect(screen.queryByTestId('fleet-launch-row-stub')).toBeNull();
+    });
   });
 
   it('maps the live backfill through the tool-noise-filtering layer and renders it as chat', async () => {
