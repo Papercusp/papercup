@@ -174,6 +174,19 @@ export interface MetricWindow {
    * judged exactly as before rather than silently excused.
    */
   eligible?: number | null;
+  /**
+   * How many units the window EXAMINED — the evidence weight for a metric whose
+   * eligibility is the occurrence (WI-6562).
+   *
+   * ⚠ The two eligibility semantics need DIFFERENT evidence units, which is the
+   * subtlety that makes this a second field rather than a reuse of `eligible`. For
+   * an input metric, "zero comparable is surprising" is made surprising by the
+   * PRODUCER'S OUTPUT — 400 stamps and no comparable bucket means something broke.
+   * For an occurrence metric, `eligible` IS the zero being explained, so weighing
+   * the run by it would make the run weigh zero and the excuse permanent; what
+   * makes zero failures surprising is how many calls we SCANNED to find none.
+   */
+  population?: number | null;
 }
 
 export interface RatchetRow {
@@ -239,10 +252,10 @@ export function judgeMetricRatchet(
   // name. Only a SUSTAINED inability to compare is a degradation. Two shapes reach
   // here: the input was present but nothing compared, and (for an occurrence-
   // eligibility metric) the scan ran and the defect simply did not occur.
+  const isOccurrence = opts.eligibilityIsOccurrence ?? false;
   const quiet =
-    producerWroteButNothingComparable(latest) ||
-    producerRanButNothingOccurred(latest, opts.eligibilityIsOccurrence ?? false);
-  if (quiet && !sustainedlyUninterpretable(windows)) return 'window-unjudgeable';
+    producerWroteButNothingComparable(latest) || producerRanButNothingOccurred(latest, isOccurrence);
+  if (quiet && !sustainedlyUninterpretable(windows, isOccurrence)) return 'window-unjudgeable';
   return 'regressed';
 }
 
@@ -307,13 +320,30 @@ export function producerRanButNothingOccurred(
  * Null when the metric has no interpretable history to calibrate against, which
  * {@link sustainedlyUninterpretable} treats as "no basis to excuse anything".
  */
-export function demonstratedEvidenceFloor(windows: readonly MetricWindow[]): number | null {
+export function demonstratedEvidenceFloor(
+  windows: readonly MetricWindow[],
+  eligibilityIsOccurrence = false,
+): number | null {
   const seen = windows
     .filter((w) => w.interpretable && !isIncoherent(w))
-    .map((w) => w.eligible)
-    .filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0)
+    .map((w) => windowEvidence(w, eligibilityIsOccurrence))
+    .filter((n): n is number => n != null)
     .sort((a, b) => a - b);
   return seen.length > 0 ? seen[Math.floor(seen.length / 2)] : null;
+}
+
+/**
+ * How much this window WEIGHS as evidence, in the unit its metric's eligibility
+ * semantics make meaningful. See {@link MetricWindow.population} for why the unit
+ * differs. Null when the window carries no usable count, which keeps an absent
+ * measurement from ever reading as "zero evidence" and excusing a run.
+ */
+export function windowEvidence(
+  w: MetricWindow,
+  eligibilityIsOccurrence: boolean,
+): number | null {
+  const n = eligibilityIsOccurrence ? w.population : w.eligible;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /**
@@ -336,19 +366,19 @@ export function demonstratedEvidenceFloor(windows: readonly MetricWindow[]): num
  * within the same three windows and still reports `regressed`. What no longer
  * fires is a run whose windows were too small to expect an answer at all.
  */
-export function sustainedlyUninterpretable(windows: readonly MetricWindow[]): boolean {
+export function sustainedlyUninterpretable(
+  windows: readonly MetricWindow[],
+  eligibilityIsOccurrence = false,
+): boolean {
   const tail = windows.slice(-UNJUDGEABLE_WINDOW_RUN);
   if (tail.length < UNJUDGEABLE_WINDOW_RUN) return false;
   if (!tail.every((w) => !w.interpretable)) return false;
-  const floor = demonstratedEvidenceFloor(windows);
-  // No calibration available (no interpretable window ever carried an `eligible`,
-  // incl. every series persisted before the field existed) — judge on run length
+  const floor = demonstratedEvidenceFloor(windows, eligibilityIsOccurrence);
+  // No calibration available (no interpretable window carried a usable count, incl.
+  // every series persisted before these fields existed) — judge on run length
   // alone, exactly as before. An absent measurement must never become an excuse.
   if (floor == null) return true;
-  const carried = tail.reduce(
-    (n, w) => n + (typeof w.eligible === 'number' && Number.isFinite(w.eligible) && w.eligible > 0 ? w.eligible : 0),
-    0,
-  );
+  const carried = tail.reduce((n, w) => n + (windowEvidence(w, eligibilityIsOccurrence) ?? 0), 0);
   return carried >= floor;
 }
 

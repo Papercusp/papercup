@@ -14,6 +14,9 @@ import {
   isIncoherent,
   ratchetPlaneSeries,
   companionsUnavailable,
+  demonstratedEvidenceFloor,
+  sustainedlyUninterpretable,
+  UNJUDGEABLE_WINDOW_RUN,
   METRIC_KNOWN_GAPS,
   RATCHET_VERDICTS,
   type MetricWindow,
@@ -100,6 +103,182 @@ describe('⚠ a QUIET window is not a DEAD producer (the 2026-07-28T03:08Z fleet
     const report = ratchetPlaneSeries({ series });
     expect(report.rows.find((r) => r.metric === PLANE_METRIC_IDS[0])?.verdict).toBe('window-unjudgeable');
     expect(report.failures.map((f) => f.metric)).not.toContain(PLANE_METRIC_IDS[0]);
+  });
+});
+
+/**
+ * WI-6562 — the SECOND quiet-fleet gate red, 2026-07-28T04:25Z on candidate
+ * 18bb073c. The block above fixed one shape of "quiet is not dead"; these are the
+ * two it did not cover, and between them they held `main` for the whole fleet on a
+ * plane where BOTH producers were demonstrably alive.
+ *
+ * Every number below is the live series read back from
+ * `harness_shared.agent_plane_measurements`, not an invented one — the fleet went
+ * from ~4,470 calls per window to 926 overnight and both metrics fell off their
+ * funnels for want of traffic alone.
+ */
+describe('⚠ WI-6562: a QUIET FLEET is not a dead producer either', () => {
+  const STAMPED = 'intent-action-divergence-stamped';
+  const SAMPLING = 'intent-action-divergence-sampling';
+
+  /** An interpretable window carrying `eligible` of the producer's output. */
+  const good = (eligible: number, at = '2026-07-27T20:00:00Z'): MetricWindow => ({
+    measuredAt: at,
+    interpretable: true,
+    fillRate: 0.2,
+    zeroReason: null,
+    eligible,
+    population: eligible * 5,
+  });
+
+  describe('BUG A — `nothing-eligible` when eligibility IS the occurrence', () => {
+    /** 2026-07-28T04:09Z: 926 calls examined, ZERO tool failures in the window. */
+    const noFailures: MetricWindow = {
+      measuredAt: '2026-07-28T04:09:33Z',
+      interpretable: false,
+      fillRate: 0,
+      zeroReason: 'nothing-eligible',
+      eligible: 0,
+      population: 926,
+    };
+
+    it('is a QUIET window for a metric whose eligible counts occurrences', () => {
+      // 926 calls were scanned and none failed. That is the fleet having a clean
+      // half-hour — the outcome we want — not the failure-row producer dying.
+      expect(judgeMetricRatchet([good(9), good(1), noFailures], { eligibilityIsOccurrence: true })).toBe(
+        'window-unjudgeable',
+      );
+    });
+
+    it('⚠ is STILL a regression for a metric whose eligible counts a written INPUT', () => {
+      // The teeth, unchanged and defaulted: six of the seven metrics count stamps,
+      // `dependsOn`, declared bases. Zero of those over a live population really is
+      // a dead producer, and must still fail on the FIRST window.
+      expect(judgeMetricRatchet([good(9), good(1), noFailures])).toBe('regressed');
+      expect(judgeMetricRatchet([good(9), good(1), noFailures], { eligibilityIsOccurrence: false })).toBe(
+        'regressed',
+      );
+    });
+
+    it('⚠ never excuses an EMPTY population — nothing examined is a producer signal', () => {
+      // fillRate null (not 0) means the population itself was empty, so the sweep
+      // did not run at all. `population` is what separates the two, exactly as this
+      // metric's own vacuousPassWhen says — so a null must never reach the excuse.
+      const nothingExamined: MetricWindow = { ...noFailures, fillRate: null, zeroReason: 'population-empty' };
+      expect(judgeMetricRatchet([good(9), nothingExamined], { eligibilityIsOccurrence: true })).toBe(
+        'regressed',
+      );
+      expect(
+        judgeMetricRatchet([good(9), { ...noFailures, fillRate: null }], { eligibilityIsOccurrence: true }),
+      ).toBe('regressed');
+    });
+
+    it('⚠ a SUSTAINED run of zero-occurrence windows is still a regression', () => {
+      // Zero failures across three windows carrying real traffic is not a lucky
+      // quiet spell — at the live ~0.4% failure rate it is surprising enough to
+      // mean the failure rows stopped arriving. The excuse must not be permanent.
+      const run = [good(20), noFailures, noFailures, noFailures];
+      expect(judgeMetricRatchet(run, { eligibilityIsOccurrence: true })).toBe('regressed');
+    });
+
+    it('the LIVE sampling series does not fail the build', () => {
+      // 23:08 (9 failures) · 23:39 (1) · 04:09 (0) — read from the real rows.
+      const series = [
+        windowOf('2026-07-28T03:08:34Z', { [SAMPLING]: good(9, '2026-07-28T03:08:34Z') }),
+        windowOf('2026-07-28T03:39:02Z', { [SAMPLING]: good(1, '2026-07-28T03:39:02Z') }),
+        windowOf('2026-07-28T04:09:33Z', { [SAMPLING]: noFailures }),
+      ];
+      const report = ratchetPlaneSeries({ series });
+      expect(report.rows.find((r) => r.metric === SAMPLING)?.verdict).toBe('window-unjudgeable');
+      expect(report.failures.map((f) => f.metric)).not.toContain(SAMPLING);
+    });
+
+    it('⚠ exactly ONE shipped metric declares occurrence-eligibility, and it is the sampling one', () => {
+      // A guard on the DECLARATION, not the behaviour. This flag is an exemption
+      // from the first-window teeth, so a metric acquiring it silently is how those
+      // teeth would erode — the failure mode METRIC_KNOWN_GAPS exists to prevent,
+      // one field over. Adding one is fine; adding one UNNOTICED is not.
+      const declared = PLANE_METRIC_IDS.filter((id) => METRIC_SPECS[id].eligibilityIsOccurrence === true);
+      expect(declared).toEqual([SAMPLING]);
+    });
+  });
+
+  describe('BUG B — the degradation run is counted in EVIDENCE, not wall clock', () => {
+    /** The three windows that red the gate: 37, 129, 37 stamped calls. */
+    const thin = (eligible: number, at: string): MetricWindow => ({
+      measuredAt: at,
+      interpretable: false,
+      fillRate: 0.04,
+      zeroReason: 'nothing-comparable',
+      eligible,
+    });
+    /** The live interpretable history, oldest-first: median eligible = 363. */
+    const history: MetricWindow[] = [
+      252, 409, 450, 597, 783, 955, 923, 43, 209, 280, 220, 363, 327, 487, 422, 206, 72,
+    ].map((e) => good(e));
+
+    it('reads the median of the metric’s OWN interpretable windows as the floor', () => {
+      expect(demonstratedEvidenceFloor(history)).toBe(363);
+      // The median, not the min — one lucky 43-call window must not set a floor so
+      // low that it excuses nothing and the fix is vacuous.
+      expect(demonstratedEvidenceFloor(history)).toBeGreaterThan(43);
+    });
+
+    it('does NOT call three starved windows a regression', () => {
+      // 37 + 129 + 37 = 203 stamped calls across the whole 1.5h "sustained" run —
+      // FEWER than the single 206-call window two hours earlier that yielded just 2
+      // comparable buckets. In this corpus comparable arrives at ~eligible/70, so a
+      // zero here is the noise floor, and no commit could have moved it.
+      const windows = [
+        ...history,
+        thin(37, '2026-07-28T03:08:34Z'),
+        thin(129, '2026-07-28T03:39:02Z'),
+        thin(37, '2026-07-28T04:09:33Z'),
+      ];
+      expect(sustainedlyUninterpretable(windows)).toBe(false);
+      expect(judgeMetricRatchet(windows)).toBe('window-unjudgeable');
+    });
+
+    it('⚠ STILL fails a half-dead producer writing at NORMAL volume', () => {
+      // The teeth this rule exists for: stamps still written at full rate but
+      // `goal_ref` dropped, so no bucket can ever compare. Output clears the floor
+      // inside the same three windows and the regression fires exactly as before.
+      const windows = [
+        ...history,
+        thin(400, '2026-07-28T03:08:34Z'),
+        thin(420, '2026-07-28T03:39:02Z'),
+        thin(390, '2026-07-28T04:09:33Z'),
+      ];
+      expect(sustainedlyUninterpretable(windows)).toBe(true);
+      expect(judgeMetricRatchet(windows)).toBe('regressed');
+    });
+
+    it('⚠ falls back to pure run-length when no window carries `eligible`', () => {
+      // Rows persisted before the ratchet read this field have no output to weigh,
+      // and an ABSENT measurement must never become an excuse — such a series is
+      // judged exactly as it was before, on run length alone.
+      const bare = (): MetricWindow => ({
+        measuredAt: '2026-07-28T03:08:00Z',
+        interpretable: false,
+        fillRate: 0.0222,
+        zeroReason: 'nothing-comparable',
+      });
+      expect(sustainedlyUninterpretable([good(0), bare(), bare(), bare()])).toBe(true);
+      expect(
+        judgeMetricRatchet([
+          { measuredAt: 'a', interpretable: true, fillRate: 0.5, zeroReason: null },
+          bare(),
+          bare(),
+          bare(),
+        ]),
+      ).toBe('regressed');
+    });
+
+    it('a run SHORTER than the window minimum is never sustained, however much it carries', () => {
+      const windows = [...history, thin(9_000, '2026-07-28T03:39:02Z'), thin(9_000, '2026-07-28T04:09:33Z')];
+      expect(windows.slice(-2).length).toBeLessThan(UNJUDGEABLE_WINDOW_RUN);
+      expect(sustainedlyUninterpretable(windows)).toBe(false);
+    });
   });
 });
 
