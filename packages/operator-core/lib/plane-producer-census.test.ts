@@ -82,6 +82,73 @@ describe('P-001 — the rollup decides what actually fails the build', () => {
   });
 });
 
+describe('⚠ EI-18850142725126359 — a `knownUnbuilt` pointer must not go stale in silence', () => {
+  const row = (id: string, knownUnbuilt?: string) => ({
+    id,
+    producer: 'someone',
+    why: 'because',
+    verdict: 'no-producer',
+    ...(knownUnbuilt ? { knownUnbuilt } : {}),
+  });
+  const isTerminal = (s: string) => TERMINAL_STATUSES.has(s);
+
+  it('tells a work-item ref (which expires) from a ruling (which does not)', () => {
+    expect(isWorkItemRef('WI-6548')).toBe(true);
+    expect(isWorkItemRef('EI-18850142725126359')).toBe(true);
+    expect(isWorkItemRef('D-103 (ruled)')).toBe(false);
+    expect(isWorkItemRef(undefined)).toBe(false);
+  });
+
+  it('flags a ref whose item has CLOSED — the exact WI-6465 stale pointer', () => {
+    // Four fields cited WI-6465 for 90 minutes after it closed, and every run
+    // exited 0 while printing "reported, not failing the build" for each of them.
+    const audit = auditKnownUnbuiltRefs(
+      [row('a.b', 'WI-6465'), row('c.d', 'WI-6465'), row('e.f', 'WI-6548')],
+      new Map([
+        ['WI-6465', 'done'],
+        ['WI-6548', 'open'],
+      ]),
+      isTerminal,
+    );
+    const stale = audit.find((a: { ref: string }) => a.ref === 'WI-6465');
+    expect(stale).toMatchObject({ verdict: 'closed', status: 'done' });
+    expect(stale.fields).toEqual(['a.b', 'c.d']);
+    expect(audit.find((a: { ref: string }) => a.ref === 'WI-6548')).toMatchObject({ verdict: 'open' });
+  });
+
+  it('flags a ref that matches NO work-item — an exemption nobody can verify', () => {
+    const audit = auditKnownUnbuiltRefs([row('a.b', 'WI-9999')], new Map(), isTerminal);
+    expect(audit[0]).toMatchObject({ ref: 'WI-9999', verdict: 'missing' });
+  });
+
+  it('leaves a RULING alone — a decision is permanent, not a promise that can lapse', () => {
+    const audit = auditKnownUnbuiltRefs([row('a.b', 'D-103 (ruled)')], new Map(), isTerminal);
+    expect(audit[0]).toMatchObject({ verdict: 'ruling' });
+  });
+
+  it('⚠ REPORTS the stale ref without failing the build — no second candidate-independent trap', () => {
+    // Making this fail would add a SECOND live-DB fleet-gate trap, which is the very
+    // defect EI-18850142725126359 filed against the first one. The hard transition
+    // stays P-003's, singular. Pinned as a test because the tempting "fix" is to
+    // give this teeth, and the reason not to is not obvious from the code.
+    const rows = [row('a.b', 'WI-6465')];
+    const audit = auditKnownUnbuiltRefs(rows, new Map([['WI-6465', 'done']]), isTerminal);
+    expect(audit[0].verdict).toBe('closed');
+    expect(rollupCensus(rows).failures).toHaveLength(0);
+  });
+
+  it('matches the ratchet gate on what "closed" means', () => {
+    // Divergence here would make the two plane lints disagree AGAIN, in the other
+    // direction: this one silent about a close the ratchet has already acted on.
+    for (const s of ['done', 'dropped', 'resolved', 'closed', 'passed', 'deprecated']) {
+      expect(TERMINAL_STATUSES.has(s), `${s} is terminal for the ratchet but not here`).toBe(true);
+    }
+    for (const s of ['open', 'wip', 'blocked', 'needs-human']) {
+      expect(TERMINAL_STATUSES.has(s)).toBe(false);
+    }
+  });
+});
+
 describe('P-001 — the census spec itself is non-vacuous', () => {
   it('covers the fields whose absence produced WI-6444 and WI-6465', () => {
     // Without this, deleting rows from the spec would green the gate by asking

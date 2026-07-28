@@ -55,6 +55,8 @@ async function main() {
 
   let series: Array<{ measuredAt: string; metrics: StoredMetric[] }> = [];
   let closedGaps = new Set<string>();
+  /** Who closed each spent gap, and when — the lever a release-fixer needs (fix #1). */
+  const gapClosers = new Map<string, { by: string | null; at: string | null }>();
   try {
     const rows = await sql<Array<{ measured_at: string; metrics: StoredMetric[] }>>`
       SELECT measured_at::text AS measured_at, metrics
@@ -74,12 +76,22 @@ async function main() {
       // TOOL renames both in its result shape, so the obvious query compiles in
       // your head and fails in Postgres. And the table is multi-tenant: an
       // unscoped id filter can match another workspace's row.
-      const items = await sql<Array<{ feature_id: string; status: string }>>`
-        SELECT feature_id, status
+      const items = await sql<
+        Array<{ feature_id: string; status: string; terminal_owner: string | null; closed_ts: string | null }>
+      >`
+        SELECT feature_id, status, terminal_owner, closed_ts::text AS closed_ts
           FROM harness_shared.work_items
          WHERE workspace_id = ${workspaceId} AND feature_id = ANY(${refs})
       `;
       closedGaps = new Set(items.filter((i) => TERMINAL_STATUSES.has(i.status)).map((i) => i.feature_id));
+      for (const i of items) {
+        if (!closedGaps.has(i.feature_id)) continue;
+        const ms = i.closed_ts ? Number(i.closed_ts) : NaN;
+        gapClosers.set(i.feature_id, {
+          by: i.terminal_owner,
+          at: Number.isFinite(ms) ? new Date(ms).toISOString() : null,
+        });
+      }
       const unknown = refs.filter((r) => !items.some((i) => i.feature_id === r));
       for (const u of unknown) {
         console.error(`⚠ known-gap ref ${u} matches no work-item — the exemption it grants cannot be verified.`);
@@ -144,6 +156,51 @@ async function main() {
   if (report.failures.length > 0) {
     console.error('✗ interpretability ratchet: the plane got LESS measurable, or a gap is now unexcused.\n');
     for (const f of report.failures) console.error(`    ${f.metric} — ${f.verdict}${f.gapClosed ? ` (${f.knownGap} is CLOSED)` : ''}`);
+
+    // ── EI-18850142725126359 fix #1 — SAY IT IS NOT ABOUT THE CANDIDATE ──────
+    //
+    // This leg reads LIVE Postgres, so a `gapClosed` failure is caused by a
+    // work-item STATE CHANGE, not by any commit. Every candidate reds identically
+    // and no code change can green it — but the release-fixer is dispatched with a
+    // SHA and a blueprint framed entirely around "reproduce the failing test
+    // locally to classify regression-vs-flake", which does not fit at all. That
+    // mismatch cost real diagnosis time on candidate 77e8ade1, and the fixes it
+    // invites (quarantine the leg, edit METRIC_KNOWN_GAPS, relabel the metric) are
+    // all destructive.
+    //
+    // So this banner is printed FIRST, before the generic do-not-weaken advice,
+    // and it names the actual lever: the item, who closed it, and when. Only for
+    // gapClosed failures — a `regressed`/`incoherent` verdict may well be about
+    // the code, and telling a fixer to ignore the candidate there would be the
+    // same misdirection pointed the other way.
+    const candidateIndependent = report.failures.filter((f) => f.gapClosed);
+    if (candidateIndependent.length > 0) {
+      console.error(
+        '\n  ⚠ THIS FAILURE IS INDEPENDENT OF THE CANDIDATE COMMIT. It is live-database state:\n' +
+          '    a known-gap work-item CLOSED while its metric is still blind. Every candidate reds\n' +
+          '    identically, no code change can green it, and the SHA you were dispatched with is\n' +
+          '    causally irrelevant. Do NOT try to reproduce it against the candidate, do not\n' +
+          '    bisect, and do not classify it regression-vs-flake — it is neither.\n',
+      );
+      for (const f of candidateIndependent) {
+        const who = gapClosers.get(f.knownGap!);
+        console.error(
+          `    LEVER: ${f.knownGap} (${f.metric})` +
+            `${who?.at ? ` — closed ${who.at}` : ''}${who?.by ? ` by ${who.by}` : ''}`,
+        );
+      }
+      console.error(
+        '\n    THE SANCTIONED EXIT IS TO REOPEN THAT ITEM, and that is not gate-weakening:\n' +
+          '    the exemption says "this metric is blind and the gap is FILED AND OPEN". Closing it\n' +
+          '    asserted the producer was built. If it is not, the assertion — not the gate — is the\n' +
+          '    thing that was wrong, and reopening restores a true statement. Ask its closer first;\n' +
+          "    they may have a map change in flight that greens this on the next candidate.\n" +
+          '    A close now warns the closer at the moment they cause this (work_items:complete /\n' +
+          '    set_state pre-flight this leg), so a red reaching you here means the warning was\n' +
+          '    overridden, missed, or the close predates the guard — worth saying on the item.\n',
+      );
+    }
+
     console.error(
       '\n  Do NOT green this by making a metric report a clean zero — its `vacuousPassWhen`\n' +
         '  says "the metric is unbuilt, not clean", and P-015 refusing to round a zero up to\n' +

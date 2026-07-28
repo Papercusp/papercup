@@ -187,6 +187,60 @@ export function fillRate({ populated, total }) {
  * no-bespoke-state-read gate nearly died — WI-6464). It flips to a hard failure
  * the moment its ref closes; that transition is P-003's job.
  */
+/**
+ * Is this `knownUnbuilt` ref a WORK-ITEM (which can close) or a RULING (which cannot)?
+ *
+ * `D-103 (ruled)` and `WI-6548` are both legitimate explanations for a dead field,
+ * but only one of them expires. A decision is a permanent statement that the zero is
+ * the intended outcome; a work-item is a promise that someone will fix it, and that
+ * promise goes stale the moment the item closes.
+ */
+export function isWorkItemRef(ref) {
+  return /^(?:WI|EI|F)-\d+$/.test(String(ref ?? '').trim());
+}
+
+/**
+ * ⚠ WHICH `knownUnbuilt` POINTERS HAVE GONE STALE (EI-18850142725126359, sibling finding).
+ *
+ * The two plane lints DISAGREED about what a closed gap means. P-003's ratchet
+ * WITHDRAWS the exemption the moment the item closes — that is its whole point. This
+ * census never checked at all: it carried four `knownUnbuilt: 'WI-6465'` entries for an
+ * item that had been closed for 90 minutes and printed, for each of them, "KNOWN:
+ * WI-6465 — reported, not failing the build" in a run that exited 0.
+ *
+ * A stale pointer that does not fail is worse than one that does: nothing will ever
+ * tell you. Two of those four described as their consumer a detector that was being
+ * RETIRED in the same change, and the census would have gone on citing it indefinitely.
+ *
+ * ⚠ WHY THIS REPORTS AND DOES NOT FAIL. Making it fail would add a SECOND
+ * candidate-independent, live-DB fleet-gate trap — the exact defect
+ * EI-18850142725126359 filed against the first one. One such transition is enough, it
+ * already exists, and it belongs to P-003 (see rollupCensus's doc). This census owes
+ * the fleet VISIBILITY, which is the thing that was actually missing; it does not owe
+ * it a second way to red main from a work-item state change.
+ *
+ * PURE — the live status read is injected, so the stale/missing/ruling cases are
+ * testable without a database.
+ */
+export function auditKnownUnbuiltRefs(rows, statusByRef, isTerminal) {
+  const out = [];
+  for (const ref of [...new Set(rows.filter((r) => r.knownUnbuilt).map((r) => r.knownUnbuilt))]) {
+    const fields = rows.filter((r) => r.knownUnbuilt === ref).map((r) => r.id);
+    if (!isWorkItemRef(ref)) {
+      out.push({ ref, fields, verdict: 'ruling' });
+      continue;
+    }
+    const status = statusByRef.get(ref);
+    if (status === undefined) out.push({ ref, fields, verdict: 'missing' });
+    else if (isTerminal(status)) out.push({ ref, fields, verdict: 'closed', status });
+    else out.push({ ref, fields, verdict: 'open', status });
+  }
+  return out;
+}
+
+/** Mirrors check-plane-ratchet.ts — a legacy row can still carry the pre-fold token. */
+export const TERMINAL_STATUSES = new Set(['done', 'dropped', 'resolved', 'closed', 'passed', 'deprecated']);
+
 export function rollupCensus(rows) {
   const noProducer = rows.filter((r) => r.verdict === 'no-producer');
   return {
@@ -212,10 +266,12 @@ function resolvePgUrl() {
 }
 
 async function main() {
+  const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID ?? 'papercusp-workspace';
   const postgres = (await import('postgres')).default;
   const sql = postgres(resolvePgUrl(), { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
 
   const rows = [];
+  const statusByRef = new Map();
   try {
     for (const f of PLANE_PRODUCER_FIELDS) {
       const predicate = f.predicate ?? `${f.column} IS NOT NULL`;
@@ -231,6 +287,20 @@ async function main() {
       const populated = r?.populated ?? 0;
       const total = r?.total ?? 0;
       rows.push({ ...f, populated, total, rate: fillRate({ populated, total }), verdict: judgeProducerField({ populated, total }) });
+    }
+
+    // Sibling finding: verify the `knownUnbuilt` pointers still point at something
+    // OPEN. See auditKnownUnbuiltRefs — this is a visibility fix, not new teeth.
+    const refs = [...new Set(rows.map((r) => r.knownUnbuilt).filter(isWorkItemRef))];
+    if (refs.length > 0) {
+      // ⚠ Multi-tenant table: scope on workspace_id, and the columns are
+      // feature_id/status (the work_items TOOL renames both in its result shape).
+      const items = await sql`
+        SELECT feature_id, status
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId} AND feature_id = ANY(${refs})
+      `;
+      for (const i of items) statusByRef.set(i.feature_id, i.status);
     }
   } finally {
     await sql.end({ timeout: 5 });
@@ -255,6 +325,30 @@ async function main() {
   console.log(
     `\n  ${roll.producing} producing · ${roll.failures.length} DEAD · ${roll.knownUnbuilt} known-unbuilt · ${roll.noData} no-data\n`,
   );
+
+  // Stale-pointer disclosure. Printed BEFORE both terminal branches below, because
+  // the success branch returns and would otherwise swallow it — the failure mode
+  // being fixed is precisely a stale pointer riding along inside a green run.
+  const refAudit = auditKnownUnbuiltRefs(rows, statusByRef, (s) => TERMINAL_STATUSES.has(s));
+  for (const a of refAudit) {
+    if (a.verdict === 'closed') {
+      console.log(
+        `⚠ STALE EXPLANATION: ${a.ref} is ${a.status.toUpperCase()}, but ${a.fields.length} field${a.fields.length === 1 ? '' : 's'} still cite${a.fields.length === 1 ? 's' : ''} it as the open gap:`,
+      );
+      for (const f of a.fields) console.log(`      ${f}`);
+      console.log(
+        '  Either the producer landed (retire the row) or it did not (reopen the item, or\n' +
+          '  repoint `knownUnbuilt` at the item that now owns the gap). Do NOT leave it: the\n' +
+          "  census will keep printing this ref as a live promise nobody is holding.\n",
+      );
+    }
+    if (a.verdict === 'missing') {
+      console.log(
+        `⚠ UNVERIFIABLE EXPLANATION: ${a.ref} matches no work-item in this workspace, so the\n` +
+          `  exemption it grants ${a.fields.join(', ')} cannot be checked. Fix the ref or use a ruling id.\n`,
+      );
+    }
+  }
 
   if (roll.failures.length > 0) {
     console.error('✗ producer census: a field this plane added is written by NOTHING, and no open item explains it.\n');

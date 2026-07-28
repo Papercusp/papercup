@@ -20,11 +20,24 @@
  *    What names a leak is the REFERRER: a visit arriving from a page we never
  *    shared the link with is the signal. So the beacon captures document.referrer.
  *
- * 3. ⛔ THE BEACON NEVER SENDS THE URL. The obvious thing — PostHog's usual
- *    `$current_url` — would write the secret path into an analytics store, where
- *    it lands in dashboards, exports and support tools. The URL IS the secret;
- *    shipping a leak detector that leaks the secret is not a detail, it is the bug.
- *    We send the page NAME (`index` / `plan`) and the referrer. Never the path.
+ * 3. ⛔ THE BEACON NEVER SENDS THE REAL URL. The obvious thing — PostHog's usual
+ *    `$current_url` read from `location.href` — would write the secret path into an
+ *    analytics store, where it lands in dashboards, exports and support tools. The
+ *    URL IS the secret; shipping a leak detector that leaks the secret is not a
+ *    detail, it is the bug.
+ *
+ *    [owner 2026-07-27] then asked for "the same sort of PostHog tracking we are
+ *    using for papercusp.com". The site's beacon (public-site src/page.html) is
+ *    ported here WHOLESALE — same host, same project key, same persistent
+ *    distinct_id, same session id, same UTM first/last touch, same hand-derived
+ *    browser/OS/device — with EXACTLY ONE thing changed: the URL family is
+ *    REDACTED rather than read from `location`. `$current_url`/`$pathname`/`path`
+ *    are built from a page identity baked in AT GENERATION TIME (`/index.html`,
+ *    `/plans/<slug>.html`) under a literal `<redacted>` base segment. PostHog
+ *    still gets per-page breakdowns, sessions and paths; it never gets the secret.
+ *    `$host` is sent as-is — the hostname is public, only the PATH is the secret
+ *    (D-002). If you are tempted to "fix" this by using `location.href`, don't:
+ *    a test fails, and the reason is this paragraph.
  *
  * 4. THE CONTENT RENDERS WITH JAVASCRIPT DISABLED. Markdown is rendered to HTML
  *    HERE, at generation time — not by a client-side editor. A beta tester's job
@@ -46,6 +59,7 @@ import { groupItemsByPlan } from './release-registry';
 import { identityLiterals, scrubIdentity, type IdentityLiteral } from './release-content-scrub';
 import { ROBOT_BG_DATA_URI } from './release-bg';
 import { INSTRUCTIONS_HEADING, INSTRUCTIONS_MD } from './release-instructions';
+import { DEMO_VIDEO_LABEL, DEMO_VIDEO_POSTER_DATA_URI, DEMO_VIDEO_SRC } from './release-video';
 
 /** A release row with the display data for its FROZEN id lists looked up. */
 export interface HydratedRelease {
@@ -149,36 +163,194 @@ export function planPagePath(slug: string): string {
  * `keepalive` so the POST survives the user clicking a download link immediately.
  * Every failure is swallowed: analytics must never be able to break the page.
  */
-function beaconScript(a: Analytics, page: string, version: string | null): string {
+function beaconScript(
+  a: Analytics,
+  page: string,
+  version: string | null,
+  pagePath: string,
+): string {
   const props = JSON.stringify({ page, version });
   return `<script>
 (function () {
+  // ── anonymous analytics, ported from papercusp.com (public-site src/page.html)
+  // [owner 2026-07-27: "the same sort of posthog tracking we are using for
+  // papercusp.com"]. Same host, same project key, same shape — so releases-page
+  // traffic lands in the same project and the same admin queries work on it.
+  //
+  // ⛔ THE ONE DIFFERENCE, AND IT IS LOAD-BEARING: the site reads the URL family
+  // from location.*; this page CANNOT. Its path is the unlisted secret we share
+  // with beta testers, so PAGE_PATH below is baked in at GENERATION time and the
+  // base segment is a literal <redacted>. Never replace these with location.href
+  // / location.pathname — a test fails, and the module header says why.
+  var PAGE_PATH = ${JSON.stringify(pagePath)};
   try {
-    var props = ${props};
-    // The referrer is the WHOLE POINT: a visit from a page we never shared the
-    // link with is how a leak announces itself. Empty = typed/bookmarked/direct.
-    props.referrer = document.referrer || '(direct)';
-    props.screen = screen.width + 'x' + screen.height;
-    props.lang = navigator.language;
-    // NOTE: we deliberately send NO url and NO path of any kind — not the page
-    // location, not the analytics library's usual current-url property, nothing.
-    // The URL is the shared secret; sending it would copy that secret into the
-    // analytics store. See the module header (point 3). A test greps this file
-    // for the forbidden tokens, so do not reintroduce one even in a comment.
-    fetch(${JSON.stringify(a.host)} + '/e/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      keepalive: true,
-      body: JSON.stringify({
-        api_key: ${JSON.stringify(a.projectKey)},
-        event: 'release_history_viewed',
-        properties: Object.assign(
-          { distinct_id: 'anon-' + Math.random().toString(36).slice(2) },
-          props
-        ),
-        timestamp: new Date().toISOString(),
-      }),
-    }).catch(function () {});
+    var HOST = ${JSON.stringify(a.host)},
+        KEY = ${JSON.stringify(a.projectKey)},
+        SID_KEY = 'pc_sid', SID_EXP_KEY = 'pc_sid_exp', SID_IDLE_MS = 30 * 60 * 1000,
+        FT_KEY = 'pc_first_touch', LT_KEY = 'pc_last_touch', aid;
+
+    // distinct_id: localStorage so repeat visits count as ONE visitor; falls back
+    // to sessionStorage when storage access throws (privacy mode / cookie
+    // blockers), so a blocked visitor's reloads stay one unique rather than
+    // inflating the count with a fresh id per pageload.
+    try { aid = localStorage.getItem('pc_aid'); } catch (e) {}
+    if (!aid) { try { aid = sessionStorage.getItem('pc_aid'); } catch (e) {} }
+    if (!aid) {
+      aid = 'a-' + ((window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2) + Date.now().toString(36));
+      try { localStorage.setItem('pc_aid', aid); }
+      catch (e) { try { sessionStorage.setItem('pc_aid', aid); } catch (e2) {} }
+    }
+
+    // PostHog's sessions table types $session_id as a UUID and DROPS non-UUID
+    // values, which silently kills session duration / bounce / paths. Keep this a
+    // bare RFC4122 UUID — never add a prefix.
+    function uuid() {
+      if (window.crypto && crypto.randomUUID) { try { return crypto.randomUUID(); } catch (e) {} }
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        var r = Math.random() * 16 | 0; return (c === 'x' ? r : ((r & 0x3) | 0x8)).toString(16); });
+    }
+    function sessionId() {
+      try {
+        var now = Date.now(), exp = parseInt(sessionStorage.getItem(SID_EXP_KEY) || '0', 10),
+            sid = sessionStorage.getItem(SID_KEY);
+        if (!sid || !exp || now > exp) { sid = uuid(); sessionStorage.setItem(SID_KEY, sid); }
+        sessionStorage.setItem(SID_EXP_KEY, String(now + SID_IDLE_MS));
+        return sid;
+      } catch (e) { return ''; }
+    }
+
+    // UTM / ref capture — first touch persisted forever, last touch overwritten
+    // whenever a new utm_*/ref appears, both attached to every event. Reading the
+    // QUERY STRING is safe: the secret lives in the PATH (D-002), never the query.
+    function currentTouch() {
+      try {
+        var sp = new URLSearchParams(location.search), out = {}, has = false;
+        ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'].forEach(function (k) {
+          var v = sp.get(k); if (v) { out[k] = v; has = true; } });
+        var ref = sp.get('ref'); if (ref) { out.ref = ref; has = true; }
+        if (!has) return null;
+        out.landing_path = PAGE_PATH; out.ts = Date.now();
+        return out;
+      } catch (e) { return null; }
+    }
+    function touches() {
+      var cur = currentTouch(), first = null, last = null;
+      try { var f = localStorage.getItem(FT_KEY); if (f) first = JSON.parse(f); } catch (e) {}
+      try { var l = localStorage.getItem(LT_KEY); if (l) last = JSON.parse(l); } catch (e) {}
+      if (!first) {
+        first = cur || { landing_path: PAGE_PATH, ts: Date.now(), organic: true };
+        try { localStorage.setItem(FT_KEY, JSON.stringify(first)); } catch (e) {}
+      }
+      if (cur) { last = cur; try { localStorage.setItem(LT_KEY, JSON.stringify(last)); } catch (e) {} }
+      else if (!last) { last = first; }
+      return { first: first, last: last };
+    }
+
+    // No posthog-js here (same as the site), so the reserved $browser/$os/
+    // $device_type props are derived by hand — enough for admin-panel bucketing.
+    function detectUA() {
+      var ua = navigator.userAgent || '', browser = 'Other', os = 'Other', device = 'Desktop';
+      if (/Edg\\//.test(ua)) browser = 'Edge';
+      else if (/OPR\\//.test(ua)) browser = 'Opera';
+      else if (/Chrome\\//.test(ua) && !/Chromium/.test(ua)) browser = 'Chrome';
+      else if (/Firefox\\//.test(ua)) browser = 'Firefox';
+      else if (/Safari\\//.test(ua) && /Version\\//.test(ua)) browser = 'Safari';
+      if (/Windows/.test(ua)) os = 'Windows';
+      else if (/Mac OS X/.test(ua)) os = 'Mac OS X';
+      else if (/Android/.test(ua)) os = 'Android';
+      else if (/iPhone|iPad|iPod/.test(ua)) os = 'iOS';
+      else if (/Linux/.test(ua)) os = 'Linux';
+      if (/iPad|Tablet/.test(ua)) device = 'Tablet';
+      else if (/Mobi|Android/.test(ua)) device = 'Mobile';
+      return { browser: browser, os: os, device: device };
+    }
+
+    var TOUCH_PROP_MAP = { utm_source: 'source', utm_medium: 'medium', utm_campaign: 'campaign',
+      ref: 'referrer', landing_path: 'landing', ts: 'ts' };
+
+    function capture(event, extra, opts) {
+      try {
+        var ua = detectUA(), ref = document.referrer || '', refDomain = '$direct';
+        if (ref) {
+          try {
+            var rh = new URL(ref).hostname;
+            // A same-origin referrer IS a secret url (index -> plan page). The
+            // page's <meta name="referrer" content="no-referrer"> should already
+            // blank it; this is the belt to that braces, so the secret cannot
+            // reach PostHog even if the meta is ever dropped.
+            if (rh === location.hostname) { ref = '$internal'; refDomain = '$internal'; }
+            else { refDomain = rh || '$direct'; }
+          } catch (e) { ref = '$direct'; refDomain = '$direct'; }
+        }
+        var t = touches(), base = {
+          // REDACTED url family — see the note at the top of this script.
+          '$current_url': location.origin + '/<redacted>' + PAGE_PATH,
+          '$pathname': PAGE_PATH,
+          '$host': location.host,
+          '$referrer': ref || '$direct', '$referring_domain': refDomain,
+          '$browser': ua.browser, '$os': ua.os, '$device_type': ua.device,
+          '$screen_height': screen.height, '$screen_width': screen.width,
+          // legacy lowercase names, kept because the site's admin queries use them
+          path: PAGE_PATH, referrer: ref || '(direct)',
+          screen: screen.width + 'x' + screen.height, lang: navigator.language
+        };
+        var sid = sessionId(); if (sid) { base['$session_id'] = sid; }
+        Object.keys(t.first || {}).forEach(function (k) { base['ft_' + (TOUCH_PROP_MAP[k] || k)] = t.first[k]; });
+        Object.keys(t.last || {}).forEach(function (k) { base['lt_' + (TOUCH_PROP_MAP[k] || k)] = t.last[k]; });
+        var p = Object.assign(base, ${props}, extra || {});
+        var payload = JSON.stringify({ api_key: KEY, event: event,
+          properties: Object.assign({ distinct_id: aid }, p), timestamp: new Date().toISOString() });
+        // sendBeacon for events fired on the way out — more reliably delivered
+        // during unload than a fetch, even with keepalive.
+        if (opts && opts.beacon && navigator.sendBeacon) {
+          navigator.sendBeacon(HOST + '/e/', new Blob([payload], { type: 'application/json' }));
+        } else {
+          fetch(HOST + '/e/', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            keepalive: true, body: payload }).catch(function () {});
+        }
+      } catch (e) {}
+    }
+
+    capture('release_history_viewed');
+
+    // One delegated listener covers every link on the page, so a link added later
+    // is instrumented for free. NOTE: we read getAttribute('href') — the RAW,
+    // relative value — never a.href, which the browser resolves into the full
+    // secret url. Download and plan hrefs are relative by design, so what we send
+    // is an artifact filename or a plan slug, never a path to this page.
+    document.addEventListener('click', function (e) {
+      try {
+        var t = e.target;
+        var a2 = t.closest && t.closest('a[href]');
+        if (!a2) return;
+        var href = a2.getAttribute('href') || '';
+        var text = ((a2.textContent || '') + '').trim().slice(0, 80);
+        if (/^https?:\\/\\//i.test(href)) {
+          var domain = ''; try { domain = new URL(href).hostname; } catch (e2) {}
+          if (/discord\\.(gg|com)/i.test(href)) capture('discord_clicked', { href: href });
+          else capture('outbound_link_clicked', { href: href, domain: domain, link_text: text });
+        } else if (/^plans\\//.test(href)) {
+          capture('plan_page_opened', { plan: href.replace(/^plans\\//, '').replace(/\\.html$/, '') });
+        } else if (href && href.indexOf('#') !== 0) {
+          // a relative, non-anchor link on this page is a release artifact
+          capture('download_clicked', { artifact: href, link_text: text });
+        }
+      } catch (e) {}
+    }, true);
+
+    // Demo-video engagement: did the reader actually press play, and did they
+    // finish it. One-shot each, so a scrub back and forth is not counted twice.
+    try {
+      var vid = document.getElementById('demoVid');
+      if (vid) {
+        var played = false;
+        vid.addEventListener('play', function () {
+          if (played) return; played = true; capture('demo_video_played');
+        });
+        vid.addEventListener('ended', function () { capture('demo_video_completed', {}, { beacon: true }); });
+      }
+    } catch (e) {}
   } catch (e) {}
 })();
 </script>`;
@@ -260,6 +432,16 @@ h2 { font-size: 1.45rem; margin: 0; letter-spacing: -.02em; font-weight: 640; }
 a { color: var(--accent-deep); text-decoration-color: rgba(2, 132, 199, .35); text-underline-offset: 2px; }
 a:hover { color: var(--accent); }
 .sub { color: var(--muted); font-size: .95rem; margin: 0 0 3rem; max-width: 42rem; }
+/* The homepage demo video, at the top of the page (owner ask 2026-07-27).
+   Black backing so the letterbox bars around a non-16:9 cut read as part of the
+   frame rather than as a rendering gap, and max-height so a short-but-wide
+   browser window does not push the download tables off the fold entirely. */
+.demo {
+  position: relative; z-index: 1;
+  margin: 0 0 1.75rem; border: 1px solid var(--border); border-radius: 16px;
+  overflow: hidden; background: #000; box-shadow: var(--shadow);
+}
+.demo video { display: block; width: 100%; height: auto; max-height: 74vh; background: #000; }
 .rel {
   border: 1px solid var(--border); border-radius: 16px;
   padding: 1.6rem 1.75rem; margin: 0 0 1.75rem;
@@ -579,6 +761,32 @@ ${body}${internal}
 }
 
 /**
+ * The homepage demo video, at the top of the releases page [owner 2026-07-27].
+ *
+ * Same element the homepage renders — same cut, same `controls autoplay muted
+ * playsinline`, same aria-label — so a tester who saw it on papercusp.com and a
+ * tester who lands here straight from the link see the same thing.
+ *
+ * `muted` is what makes `autoplay` actually work (browsers block unmuted
+ * autoplay), and it is the courteous default on a page someone opened to fetch
+ * an installer. `preload="metadata"` fetches a few KB rather than the whole
+ * 32 MB up front, so arriving on the page does not cost a tester a download
+ * they did not ask for; the poster is inlined, so there is something to look at
+ * either way. Index page only — a plan page is a wall of text, not a landing.
+ */
+function renderVideo(): string {
+  // The poster is our own generated base64 (safe attribute alphabet); the src
+  // and label go through escapeHtml on principle — they are lifted from the
+  // site's HTML by a script, and "it is ours" is how injection bugs start.
+  return `<section class="demo">
+  <video id="demoVid" controls autoplay muted playsinline preload="metadata"
+    poster="${DEMO_VIDEO_POSTER_DATA_URI}"
+    src="${escapeHtml(DEMO_VIDEO_SRC)}"
+    aria-label="${escapeHtml(DEMO_VIDEO_LABEL)}"></video>
+</section>`;
+}
+
+/**
  * Every link in the Instructions section opens in a new tab.
  *
  * Not a nicety: the page IS the release. A tester who clicks the Discord link
@@ -659,15 +867,17 @@ export function renderIndexHtml(releases: HydratedRelease[], opts: PageOptions):
     releases.length === 0
       ? `<h1>Papercusp releases</h1>
 <p class="sub">No releases have been recorded yet.</p>
+${renderVideo()}
 ${renderInstructions()}`
       : `<h1>Papercusp releases</h1>
 <p class="sub">Beta builds for testers. This page is unlisted — please don't share the link.</p>
+${renderVideo()}
 ${renderInstructions()}
 ${releases.map((r, i) => renderRelease(r, i === 0)).join('\n')}`;
 
   const footer = `<footer>Generated ${formatDate(opts.generatedAt)} · unlisted beta page</footer>`;
   const beacon = opts.analytics
-    ? beaconScript(opts.analytics, 'index', releases[0]?.row.version ?? null)
+    ? beaconScript(opts.analytics, 'index', releases[0]?.row.version ?? null, '/index.html')
     : '';
   return shell('Papercusp releases', `${body}\n${footer}`, beacon, opts.redact ?? identityLiterals());
 }
@@ -733,7 +943,12 @@ export function renderPlanPageHtml(
 <p class="sub">${plan.itemCount} work item${plan.itemCount === 1 ? '' : 's'} shipped in ${escapeHtml(opts.version)}</p>
 ${content}`;
 
-  const beacon = opts.analytics ? beaconScript(opts.analytics, 'plan', opts.version) : '';
+  // The plan page's identity is its own relative path — which carries the plan
+  // slug but NOT the secret base, so PostHog can break plan pages out from each
+  // other without ever learning where the site lives.
+  const beacon = opts.analytics
+    ? beaconScript(opts.analytics, 'plan', opts.version, `/${planPagePath(plan.slug)}`)
+    : '';
   return shell(
     `${plan.title} — Papercusp`,
     body,
