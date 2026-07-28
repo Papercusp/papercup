@@ -3,9 +3,15 @@
  * from what it DECLARED (unified-agent-state-plane-2026-07-27 P-010, per D-012,
  * D-016 and D-046). Targets MAST FM-2.6 (reasoning-action mismatch, 13.2%).
  *
- * PURE — no PG, no clock, no LLM. Unit-tested without a database, exactly like
- * its sibling `agent-facts/conflicts.ts` (P-011), whose shape this mirrors on
- * purpose: same coverage-block discipline, same structural-zero discipline.
+ * PURE — no PG, no clock, no LLM. Unit-tested without a database.
+ *
+ * ⚠ Its sibling `agent-facts/conflicts.ts` (P-011), whose shape this deliberately
+ * mirrored — same coverage-block discipline, same structural-zero discipline — was
+ * RETIRED by WI-6545 / D-103 for having no producer: 3 of 2,217 facts ever carried
+ * the typed `claim` it compared. The disciplines are still right and still apply
+ * here; what killed that one is the thing to check for this one too. THIS detector
+ * has a live corpus (it reads `tool_invocations`, which every agent writes without
+ * opting in) — which is exactly the difference, and worth keeping in view.
  *
  * ── WHY THIS IS A DETECTOR AND NOT A READ TOOL (D-046) ──────────────────────
  *

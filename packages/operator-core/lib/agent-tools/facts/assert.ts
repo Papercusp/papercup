@@ -206,7 +206,7 @@ export default defineTool({
       .record(z.string(), z.unknown())
       .optional()
       .describe(
-        'P-008: the optional TYPED assertion a contradiction detector can compare, e.g. { subject: "cell:gate.greenCheckpoint.verdict", assertion: "unrelated-to-my-change" }. `body` stays the prose humans read. Omit freely — a fact without a claim is fully valid, just invisible to the detector.',
+        'P-008: an optional TYPED restatement of what this fact asserts, e.g. { subject: "cell:gate.greenCheckpoint.verdict", assertion: "unrelated-to-my-change" }. `body` stays the prose humans read. ⚠ NOTHING READS THIS TODAY — the contradiction detector it was built for was retired (WI-6545 / D-103) after 3 of 2,217 facts ever carried a claim. Stored faithfully if you pass it; omit it unless you have your own reason.',
       ),
     enforcement: z
       .object({

@@ -560,6 +560,48 @@ ${body}${internal}
 }
 
 /**
+ * Every link in the Instructions section opens in a new tab.
+ *
+ * Not a nicety: the page IS the release. A tester who clicks the Discord link
+ * mid-setup and navigates away has lost the download tables and the rest of the
+ * instructions, and the only way back is the secret URL — which they got in a
+ * message they now have to go find. `noopener noreferrer` comes along because
+ * `target="_blank"` without it hands the opened page a live `window.opener`
+ * handle on this one.
+ *
+ * Applied to the RENDERED html rather than written into the markdown so the
+ * content stays plain markdown that anyone can edit without remembering to
+ * repeat the attributes (and so a link added later can't quietly miss them).
+ * Scoped to `http(s)` — the release links elsewhere on the page are relative on
+ * purpose (the base path is the secret) and must keep navigating in place.
+ */
+function openLinksInNewTab(html: string): string {
+  return html.replace(/<a href="(https?:\/\/)/g, '<a target="_blank" rel="noopener noreferrer" href="$1');
+}
+
+/**
+ * The owner's "Instructions" section — the beta-tester onboarding notes, ABOVE
+ * the downloads [owner 2026-07-27].
+ *
+ * The order is the whole point. The section opens by saying the GUI is not the
+ * part that is ready — `psu` is — and that only lands if it is read BEFORE the
+ * installer is downloaded. Underneath the downloads it would be an apology; on
+ * top it is an instruction.
+ *
+ * Rendered from markdown HERE, at generation time, like everything else on this
+ * page: a tester with JavaScript disabled (or a blocked CDN) must still get the
+ * setup steps. Content lives in release-instructions.ts.
+ */
+function renderInstructions(): string {
+  return `<section class="rel instructions">
+  <div class="rel-head">
+    <h2>${escapeHtml(INSTRUCTIONS_HEADING)}</h2>
+  </div>
+  <div class="prose">${openLinksInNewTab(renderMarkdown(INSTRUCTIONS_MD))}</div>
+</section>`;
+}
+
+/**
  * Order: downloads BEFORE the changelog. A beta tester came here to get the
  * installer; making them scroll past the release notes to reach it is backwards.
  * It also keeps the prose honest — 0.0.8's changelog says "download the installer
@@ -590,12 +632,18 @@ ${renderWork(rel)}
 
 /** The whole history — every release, newest first. */
 export function renderIndexHtml(releases: HydratedRelease[], opts: PageOptions): string {
+  // The Instructions section renders on EVERY index, including an empty one.
+  // It is the page's standing "how to get started", not a property of a release
+  // — gating it on the registry having rows would mean the one page where a
+  // reader has the least context is the page that explains the least.
   const body =
     releases.length === 0
       ? `<h1>Papercusp releases</h1>
-<p class="sub">No releases have been recorded yet.</p>`
+<p class="sub">No releases have been recorded yet.</p>
+${renderInstructions()}`
       : `<h1>Papercusp releases</h1>
 <p class="sub">Beta builds for testers. This page is unlisted — please don't share the link.</p>
+${renderInstructions()}
 ${releases.map((r, i) => renderRelease(r, i === 0)).join('\n')}`;
 
   const footer = `<footer>Generated ${formatDate(opts.generatedAt)} · unlisted beta page</footer>`;

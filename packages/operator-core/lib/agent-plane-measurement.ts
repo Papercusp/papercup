@@ -12,11 +12,12 @@
  *
  * Every number here is produced by a detector that ALREADY computes it:
  * `agent-state-divergence.ts`'s {@link DivergenceCoverage} (which documents
- * `stampFillRate` as "THE number P-015 measures"), `agent-facts/conflicts.ts`'s
- * `ConflictCoverage.comparedPairs`, and `agent-tools/facts/dependency-staleness.ts`'s
- * fresh/changed verdicts. This module owns the FUNNEL and the disclosure; it owns
- * no derivation of its own. D-046 also forbids a fourth pull read over
- * `tool_invocations`, so re-reading would be wrong twice over.
+ * `stampFillRate` as "THE number P-015 measures") and
+ * `agent-tools/facts/dependency-staleness.ts`'s fresh/changed verdicts. This module
+ * owns the FUNNEL and the disclosure; it owns no derivation of its own. D-046 also
+ * forbids a fourth pull read over `tool_invocations`, so re-reading would be wrong
+ * twice over. (A third source, `agent-facts/conflicts.ts`'s
+ * `ConflictCoverage.comparedPairs`, was retired with its metric by WI-6545 / D-103.)
  *
  * ── THE THREE-LEVEL FUNNEL, AND WHY TWO DENOMINATORS ARE NOT ONE ────────────
  *
@@ -119,8 +120,8 @@ export type MetricPolarity = (typeof METRIC_POLARITIES)[number];
  * Why a metric reported nothing. Only `'clean'` is an informative good-news zero
  * — the others mean either "nothing was measured" (the D-089 misread this module
  * exists to prevent) or, for a desirable behaviour, "it was measured and it did
- * not happen". Same shape and rule as the sibling detectors'
- * `DIVERGENCE_ZERO_REASONS` / `CONFLICT_ZERO_REASONS`.
+ * not happen". Same shape and rule as the sibling detector's
+ * `DIVERGENCE_ZERO_REASONS`.
  */
 export const PLANE_ZERO_REASONS = [
   /** Nothing was examined at all — an idle window, not a verdict. */

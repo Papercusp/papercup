@@ -96,7 +96,22 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
   const escOpts = escalationOptions(item);
   const options: AskChoiceOption[] = [];
 
-  for (const a of item.actions) {
+  // `?? []` is NOT defensive noise — the LIST FEED DELIBERATELY DROPS `actions`
+  // (see PlanOtherList's toolbar comment: "actions is dropped from the list feed,
+  // so rendering the bar early would show ZERO buttons"), and they only arrive
+  // once the per-item DETAIL fetch lands. So between first paint and that fetch
+  // resolving, this function is legitimately called with an item that has no
+  // `actions` — and an unguarded for-of over undefined THROWS, which React turns
+  // into a crashed HUD tab ("undefined is not an object (evaluating
+  // 'item.actions')" — owner-visible 2026-07-28, whole tab replaced by an error
+  // panel). The toolbar was already held back for exactly this reason; this call
+  // path simply was not. An item with no actions yet correctly yields no options.
+  //
+  // ⚠ The declared type says `actions: AttentionAction[]` (non-optional), which
+  // is a TYPE LIE the list feed violates at runtime — that is why tsc never
+  // flagged this. Fixing the lie means widening the field to optional and
+  // guarding every consumer; tracked separately rather than done inline here.
+  for (const a of item.actions ?? []) {
     // Escalation with named options: expand the generic `resolve` action into
     // one terminal option per named choice (each carries the option id the
     // dispatch passes as `choice`).

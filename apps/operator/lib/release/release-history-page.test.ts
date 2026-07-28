@@ -9,6 +9,7 @@ import {
   type HydratedRelease,
 } from './release-history-page';
 import { groupItemsByPlan, isUserFacing, type ReleaseRow, type ShippedItem, type ShippedPlan } from './release-registry';
+import { INSTRUCTIONS_MD } from './release-instructions';
 
 const ANALYTICS: Analytics = { host: 'https://flags.example.com', projectKey: 'phc_test' };
 const GENERATED_AT = new Date('2026-07-13T00:00:00Z');
@@ -157,10 +158,54 @@ describe('the page renders with JavaScript disabled', () => {
 });
 
 describe('links never carry the secret', () => {
+  /** Every host this page is allowed to link OUT to. A new entry is a deliberate
+   *  decision, which is the point of listing them: an unexpected absolute link is
+   *  exactly how the base url starts creeping into the HTML. */
+  const ALLOWED_EXTERNAL_HOSTS = ['discord.gg', 'platform.openai.com'];
+
+  const anchors = (html: string) => [...html.matchAll(/<a\b[^>]*>/g)].map((m) => m[0]);
+  const absoluteAnchors = (html: string) =>
+    anchors(html).filter((a) => /href="https?:\/\//.test(a));
+
   it('links to plan pages relatively', () => {
     const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });
     expect(html).toContain('href="plans/a-plan.html"');
-    expect(html).not.toMatch(/href="https?:\/\//);
+    // ...and so does every link INTO this release host: the base path is the
+    // secret, so a link that spells out its own url has written the secret down.
+    expect(html).not.toMatch(/href="https?:\/\/[^"]*(?:r2\.dev|cloudflarestorage|index\.html)/);
+  });
+
+  // ── Why this replaced a blanket `not.toMatch(/href="https?:\/\//)` ──────────
+  // That assertion said "no absolute links at all", which was a sound PROXY while
+  // the page had none. The owner's Instructions section (2026-07-27) added real
+  // outbound links — Discord, the OpenAI key page — so the proxy had to be
+  // restated as the invariant it was standing in for. An absolute link is fine;
+  // an absolute link that can carry the secret path is not. It could, two ways:
+  //   1. the href SPELLING OUT the base url  → the host allowlist below
+  //   2. the browser's Referer header on click → rel="noreferrer" below
+  // Both are asserted, so this is a stricter guard than the line it replaced —
+  // not a relaxed one. If you are here because you added a link and it failed:
+  // that is the guard working. Add the host on purpose, keep the rel.
+  it('only links out to hosts we chose on purpose', () => {
+    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });
+    const absolute = absoluteAnchors(html);
+    expect(absolute.length).toBeGreaterThan(0); // the section is supposed to have links
+    for (const tag of absolute) {
+      const href = /href="([^"]+)"/.exec(tag)![1];
+      expect(ALLOWED_EXTERNAL_HOSTS).toContain(new URL(href).host);
+    }
+  });
+
+  it('every outbound link is rel="noreferrer" — a click must not hand the url to the far side', () => {
+    // The page already ships <meta name="referrer" content="no-referrer">, which
+    // covers this globally. This is the per-link belt to that braces: the meta is
+    // one line in a shell() that also renders plan pages, and if it is ever
+    // dropped or overridden, the secret would ride out in the Referer header of
+    // the very first Discord click. Two independent mechanisms, on purpose.
+    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });
+    for (const tag of absoluteAnchors(html)) {
+      expect(tag).toContain('rel="noopener noreferrer"');
+    }
   });
 
   it('refuses to let a plan slug escape the plans/ directory', () => {
@@ -276,6 +321,80 @@ describe('empty / degenerate states', () => {
       analytics: null,
     });
     expect(html).toContain('No downloadable artifacts recorded');
+  });
+});
+
+describe('the Instructions section [owner 2026-07-27]', () => {
+  const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null });
+
+  it('renders a section headed "Instructions"', () => {
+    expect(html).toContain('<h2>Instructions</h2>');
+  });
+
+  it('sits ABOVE the downloads — the placement is the point, not a layout preference', () => {
+    // The section opens by saying the GUI is NOT the ready part, `psu` is. Read
+    // after the download tables that is an apology; read before them it is an
+    // instruction. If someone moves it below the releases, this fails.
+    const instructions = html.indexOf('<h2>Instructions</h2>');
+    const firstRelease = html.indexOf('<h2>0.0.9</h2>');
+    expect(instructions).toBeGreaterThan(-1);
+    expect(firstRelease).toBeGreaterThan(-1);
+    expect(instructions).toBeLessThan(firstRelease);
+  });
+
+  it('leads with the psu-not-the-GUI warning, as a callout rather than in caps', () => {
+    expect(html).toContain('class="warn"');
+    expect(html).toContain('The GUI is not ready yet');
+    expect(html).toContain('run <code>psu</code> from the command line');
+    // The owner's source line was all-caps; the callout carries the same words
+    // without shouting them. If it regresses to caps, this catches it.
+    expect(html).not.toContain('THE GUI NOT READY YET');
+  });
+
+  it('renders the setup steps as real markup — the page must work with JS disabled', () => {
+    // Same rule as the rest of the page: nothing load-bearing may depend on a
+    // script. The markdown is rendered at GENERATION time, so the steps are here.
+    expect(html).toContain('<ol>');
+    expect(html).toContain('papercusp tutorial');
+    expect(html).toContain('Get floored');
+    expect(html).toContain('Harrier-OSS-0.6b');
+    // ...and every mode the owner documented survives the render.
+    for (const mode of ['AUTO', 'COLD AUTO', 'IDEATE', 'DRAIN', 'GRADE']) {
+      expect(html).toContain(`<strong>${mode}</strong>`);
+    }
+  });
+
+  it('opens external links in a new tab — losing this page means losing the secret URL', () => {
+    // The page IS the release: navigate away mid-setup and the only way back is
+    // a URL the tester has to go dig out of a message.
+    expect(html).toContain(
+      '<a target="_blank" rel="noopener noreferrer" href="https://discord.gg/HjRQ8g4Nju"',
+    );
+    expect(html).toContain('href="https://platform.openai.com/api-keys"');
+    // (That EVERY absolute link gets the treatment, not just these two, is
+    // asserted in "links never carry the secret" above.)
+  });
+
+  it('does NOT touch the relative download links — the base path is the secret', () => {
+    // Release artifacts are linked relatively on purpose. Blanket-targeting every
+    // <a> would open the installer in a new tab AND is how a rewrite starts
+    // creeping toward absolute urls.
+    expect(html).toContain('<td><a href="desktop-v0.0.9-alpha/papercusp_0.0.9_amd64.deb">');
+  });
+
+  it('renders even when the registry has no releases at all', () => {
+    // The page where a reader has the least context must not be the page that
+    // explains the least.
+    const empty = renderIndexHtml([], { generatedAt: GENERATED_AT, analytics: null });
+    expect(empty).toContain('<h2>Instructions</h2>');
+    expect(empty).toContain('No releases have been recorded yet');
+  });
+
+  it('carries no identity for the scrub to redact', () => {
+    // The section is hand-written prose bound for a public bucket. It must pass
+    // the gate on its own merits, not because scrubIdentity happened to catch it.
+    expect(INSTRUCTIONS_MD).not.toMatch(/\/home\/[A-Za-z0-9._-]+/);
+    expect(INSTRUCTIONS_MD).not.toMatch(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/);
   });
 });
 

@@ -835,8 +835,13 @@ describe('LEG B — the goal producer has one reader', () => {
  * filed before migration 690 is discriminated) does NOT derive nothing live —
  * the legacy leg is exactly what picks up the 2,063 rows where `kind IS NULL`.
  * Flagging those too made this gate fire on the correct backward-compatible
- * implementation (`isAssumptionFact`, `listAssumptionFacts`) rather than on the
- * defect, which is the one outcome that gets a real guard deleted.
+ * implementation (`isAssumptionFact`, then in `agent-facts/store.ts`) rather than
+ * on the defect, which is the one outcome that gets a real guard deleted.
+ *
+ * ⚠ `listAssumptionFacts` was the other example here and no longer exists: WI-6545
+ * / D-103 retired it with P-011's detector. `isAssumptionFact` OUTLIVED that
+ * retirement — it moved to `agent-facts/store.ts` and still discriminates the P-009
+ * assumption watermark — so this guard's subject is unchanged.
  */
 const ASSUMPTION_KIND_FILTER_RE = /kind\s*(?:=|===)\s*['"`]assumption['"`]/;
 const LEGACY_ASSUMPTION_FALLBACK_RE = /confidence\s*(?:=|===)\s*['"`]suspected['"`]/;
@@ -919,8 +924,8 @@ describe('LEG C — assumptions are never keyed off the unpopulated `kind` colum
   /**
    * The other half of the rule: covering the LEGACY form is the CORRECT fix, so
    * it must not read as the violation. Pinned because flagging it is what made
-   * this gate fire on `isAssumptionFact` / `listAssumptionFacts` — a guard that
-   * reds on the correct implementation is a guard someone deletes.
+   * this gate fire on `isAssumptionFact` — a guard that reds on the correct
+   * implementation is a guard someone deletes.
    */
   it('a kind filter that ALSO covers the legacy form is not a violation', () => {
     expect(

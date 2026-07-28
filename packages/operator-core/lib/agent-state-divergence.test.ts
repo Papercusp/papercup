@@ -1,10 +1,17 @@
 /**
  * Tests for P-010's intent↔action divergence detector.
  *
- * Structured like `agent-facts/conflicts.test.ts` (its P-011 sibling): the
- * seeded positives first, then — at equal length, deliberately — what is
+ * The seeded positives first, then — at equal length, deliberately — what is
  * NOT a divergence, because every false positive here is a notification sent to
  * an agent that did nothing wrong, and that is how a detector earns being muted.
+ *
+ * ⚠ This structure was shared with `agent-facts/conflicts.test.ts` (the P-011
+ * sibling), which WI-6545 / D-103 deleted along with its detector. Worth knowing
+ * WHY, because the shape alone did not save it: every one of its cases SEEDED the
+ * contradiction it then detected, so the suite passed identically whether the
+ * production corpus held 2,217 assumptions or none — and it held none. These tests
+ * are only worth more than those because THIS detector's input (`tool_invocations`)
+ * is written by every agent without opting in. Check that property, not the shape.
  */
 import { describe, it, expect } from 'vitest';
 import {

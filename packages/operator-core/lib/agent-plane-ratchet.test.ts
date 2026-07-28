@@ -246,26 +246,17 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
   });
 
   /**
-   * The live series as of 2026-07-27: 3/8 then 4/8 from 14:34, and no regression.
+   * The live series after WI-6545 / D-103: 6/7, one exempt, no regression.
    *
-   * The interpretable count is 4 and the DENOMINATOR is 8 — PLANE_METRIC_IDS
-   * gained the two commitment-backed legs (WI-6465 / D-102) without gaining
-   * their producer. Verified against harness_shared.agent_plane_measurements:
-   * every recorded window through 2026-07-27T18:36 still carries metric_count 6
-   * and never mentions those two ids, so they have not once been interpretable.
-   * They are therefore listed as BLOCKED here rather than left to windowOf's
-   * interpretable-by-default — defaulting them true is what silently pushed
-   * this expectation to 6 and reddened the gate.
+   * The DENOMINATOR dropped 8 → 7 because D-103 retired
+   * `conflicting-assumption-incidence` outright rather than exempting it forever
+   * (its population was empty BY CONSTRUCTION — see METRIC_KNOWN_GAPS). The two
+   * COMMITMENT-backed legs are deliberately NOT blocked: their producer landed
+   * (WI-6465 / D-102) and they hold in production from 2026-07-27T23:36Z onward,
+   * so they take windowOf's interpretable default.
    */
-  it('passes the real production series, with the two assumption-modality metrics exempt', () => {
-    // The two COMMITMENT-backed legs are deliberately NOT blocked here any more: their
-    // producer landed (WI-6465 / D-102) and they hold in production from 2026-07-27T23:36Z
-    // onward, so they take windowOf's interpretable default. Only the assumption MODALITY
-    // is still empty, and it is exempt against WI-6545 rather than WI-6465.
-    const blocked = {
-      'conflicting-assumption-incidence': w(false),
-      'acted-on-stale-or-wrong-value': w(false),
-    };
+  it('passes the real production series, with the dependsOn-backed metric exempt', () => {
+    const blocked = { 'acted-on-stale-or-wrong-value': w(false) };
     const report = ratchetPlaneSeries({
       series: [
         windowOf('2026-07-27T13:18:00Z', { ...blocked, 'intent-action-divergence-stamped': w(false) }),
@@ -274,13 +265,36 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
       ],
     });
     expect(report.failures).toHaveLength(0);
-    expect(report.exempt.map((r) => r.metric).sort()).toEqual([
-      'acted-on-stale-or-wrong-value',
-      'conflicting-assumption-incidence',
-    ]);
-    // 8 ids, 2 never-interpretable — matches the live headline `6/8 interpretable`.
+    expect(report.exempt.map((r) => r.metric)).toEqual(['acted-on-stale-or-wrong-value']);
+    // 7 ids, 1 never-interpretable.
     expect(report.highWaterCount).toBe(6);
     expect(report.currentCount).toBe(6);
+  });
+
+  /**
+   * ⚠ RETIRING A METRIC MUST NOT BE A WAY TO LAUNDER ONE.
+   *
+   * D-103 retired `conflicting-assumption-incidence` and deliberately KEPT
+   * `acted-on-stale-or-wrong-value`, whose producer is equally silent. The
+   * difference is that the kept one is `clarification-rate`'s declared companion,
+   * so dropping it would silently upgrade that metric's hedged zero to an
+   * unqualified pass. Pinned as an executable property rather than argued in a
+   * comment, for the same reason the goalpost-moving guard below is: "retire the
+   * inconvenient metric" is the cheapest possible way to green a ratchet.
+   */
+  it('retiring one blind metric did not retire the blind COMPANION that qualifies clarification-rate', () => {
+    expect(PLANE_METRIC_IDS).not.toContain('conflicting-assumption-incidence');
+    expect(PLANE_METRIC_IDS).toContain('acted-on-stale-or-wrong-value');
+    // Still declared as the companion, so a blind companion still hedges the read.
+    expect(METRIC_SPECS['clarification-rate'].interpretableOnlyWith).toContain(
+      'acted-on-stale-or-wrong-value',
+    );
+    const verdicts = new Map<PlaneMetricId, RatchetVerdict>([
+      ['acted-on-stale-or-wrong-value', 'never-interpretable'],
+    ]);
+    expect(companionsUnavailable('clarification-rate', verdicts, METRIC_SPECS)).toEqual([
+      'acted-on-stale-or-wrong-value',
+    ]);
   });
 
   /**
@@ -290,35 +304,41 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
    * while that second property holds — otherwise "move it to another open item" becomes
    * a way to launder a gap indefinitely.
    */
-  it('does NOT excuse the assumption metrics when some OTHER item closes', () => {
-    const blocked = {
-      'conflicting-assumption-incidence': w(false),
-      'acted-on-stale-or-wrong-value': w(false),
-    };
+  it('does NOT excuse the gapped metric when some OTHER item closes', () => {
+    const blocked = { 'acted-on-stale-or-wrong-value': w(false) };
     const series = [windowOf('2026-07-27T14:34:00Z', blocked), windowOf('2026-07-27T17:05:00Z', blocked)];
     const afterUnrelated = ratchetPlaneSeries({ series, closedGaps: new Set(['WI-6465']) });
     expect(afterUnrelated.failures).toHaveLength(0);
-    expect(afterUnrelated.exempt.map((r) => r.metric).sort()).toEqual([
-      'acted-on-stale-or-wrong-value',
-      'conflicting-assumption-incidence',
-    ]);
+    expect(afterUnrelated.exempt.map((r) => r.metric)).toEqual(['acted-on-stale-or-wrong-value']);
   });
 
-  /** Closing WI-6545 must make the same series RED, not quietly retire the evidence. */
-  it('turns the exempt metrics into failures the moment WI-6545 closes', () => {
-    const blocked = {
-      'conflicting-assumption-incidence': w(false),
-      'acted-on-stale-or-wrong-value': w(false),
-    };
+  /**
+   * ⚠ THE SAFETY PROPERTY FOR D-103's OWN CLOSE, pinned rather than reasoned about.
+   *
+   * WI-6465's close red the fleet gate precisely because a lint read a
+   * machine-readable pointer at the item being closed. WI-6545 is the item that
+   * retires the metric — so closing IT must be inert here, and it is inert only
+   * because the retirement removed the id from METRIC_KNOWN_GAPS rather than
+   * repointing it. If someone re-adds `conflicting-assumption-incidence` to the gap
+   * map, this test reds instead of the fleet gate three minutes later.
+   */
+  it('closing WI-6545 is INERT — the metric it retired is no longer a gap to excuse', () => {
+    const blocked = { 'acted-on-stale-or-wrong-value': w(false) };
+    const series = [windowOf('2026-07-27T14:34:00Z', blocked), windowOf('2026-07-27T17:05:00Z', blocked)];
+    const afterClose = ratchetPlaneSeries({ series, closedGaps: new Set(['WI-6545']) });
+    expect(afterClose.failures).toHaveLength(0);
+    expect(afterClose.exempt.map((r) => r.metric)).toEqual(['acted-on-stale-or-wrong-value']);
+  });
+
+  /** Closing WI-6548 must make the same series RED, not quietly retire the evidence. */
+  it('turns the exempt metric into a failure the moment WI-6548 closes', () => {
+    const blocked = { 'acted-on-stale-or-wrong-value': w(false) };
     const series = [windowOf('2026-07-27T14:34:00Z', blocked), windowOf('2026-07-27T17:05:00Z', blocked)];
 
     expect(ratchetPlaneSeries({ series }).failures).toHaveLength(0);
 
-    const afterClose = ratchetPlaneSeries({ series, closedGaps: new Set(['WI-6545']) });
-    expect(afterClose.failures.map((f) => f.metric).sort()).toEqual([
-      'acted-on-stale-or-wrong-value',
-      'conflicting-assumption-incidence',
-    ]);
+    const afterClose = ratchetPlaneSeries({ series, closedGaps: new Set(['WI-6548']) });
+    expect(afterClose.failures.map((f) => f.metric)).toEqual(['acted-on-stale-or-wrong-value']);
     expect(afterClose.exempt).toHaveLength(0);
   });
 
