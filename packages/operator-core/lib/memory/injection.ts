@@ -536,6 +536,13 @@ async function buildBlockInner(
           // the workload mix as if it were retrieval quality. Always the
           // `search()` scale here: this path has no lexical-fallback branch.
           scoreScale: backend.scoreScale ?? null,
+          // P-041 / migration 706: what was ASKED. This is the push path, so
+          // `queryContext` here IS the injected query — for turn-start, the raw
+          // submitted prompt (envelope and all), which is precisely what makes
+          // the origin recoverable for free and the boilerplate rate
+          // measurable. Shape only; the text never leaves this call.
+          query: input.queryContext,
+          sessionId: input.session?.sessionId ?? null,
           pools: {
             user: { entries: userResults, limit: totalLimit, scopes: userScopes },
             harness: {

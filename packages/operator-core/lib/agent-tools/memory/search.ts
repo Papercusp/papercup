@@ -345,6 +345,11 @@ export default defineTool({
           scoreScale: usedLexicalFallback
             ? (backend.lexicalScoreScale ?? null)
             : (backend.scoreScale ?? null),
+          // P-041 / migration 706: what was ASKED. The pull path has no session
+          // identity on its ctx, so `sessionId` stays NULL here and per-session
+          // duplicate detection covers the push path only — which is where the
+          // Phase 11 defect lives.
+          query: args.query,
         });
       } catch { /* swallow — telemetry never fails a recall */ }
     })();

@@ -18,6 +18,7 @@
  * are swallowed (one warn per process).
  */
 import type { Sql } from 'postgres';
+import { parseEnvelope, payloadSha256 } from '../turn-provenance/turn-provenance';
 import type { MemoryEntry, ScoreScale } from './backend';
 
 /**
@@ -56,6 +57,59 @@ export function classifyLegacyScoreScale(topScore: number | null | undefined): S
   if (topScore <= RRF_SCORE_CEILING) return 'rrf';
   if (topScore >= COSINE_ADMISSION_FLOOR) return 'cosine';
   return 'unknown';
+}
+
+/**
+ * The SHAPE of a recall query — what was ASKED, recorded alongside what came
+ * back (migration 706 / P-041).
+ *
+ * Shape rather than the query text itself: the questions this has to answer
+ * ("how much recall traffic is machine boilerplate", "how often is the query a
+ * near-empty prompt", "how often is it a repeat") are all answerable without
+ * carrying prompt content into a retained telemetry table.
+ */
+export interface RecallQueryShape {
+  /**
+   * Chars actually handed to the backend — turn-origin envelope INCLUDED,
+   * because that is what got embedded. Sitting exactly at a caller's clamp
+   * (turn-start clamps to 1000) is itself the truncation signal.
+   */
+  chars: number;
+  /** sha256 of the ENVELOPE-STRIPPED, CRLF-normalized query — see below. */
+  sha256: string;
+  /** The origin CLAIMED by the envelope; null when there was none. */
+  origin: string | null;
+}
+
+/**
+ * Derive the recorded shape of one recall query.
+ *
+ * ⚠ THE ENVELOPE IS STRIPPED BEFORE HASHING, and that is the whole reason this
+ * function exists rather than an inline `sha256(query)` at each call site.
+ * Machine-injected turns arrive prefixed with `⟦turn-origin:<origin>
+ * nonce:<hex>⟧`, the nonce is freshly minted per turn, and the turn-start path
+ * embeds the raw prompt verbatim — so hashing the raw text would make every
+ * machine-injected query unique BY CONSTRUCTION. The duplicate rate would read
+ * 0.0% however identical the real prompts were, and 0% duplicates reads as
+ * healthy. That is the same structural blindness as judging query quality by an
+ * RRF `top_score` (D-015): a metric that cannot detect the thing it is for.
+ *
+ * The envelope is not discarded, it is RECORDED (`origin`) — but as the
+ * envelope's CLAIM only. The ledger-corroborated verdict (turn-provenance's
+ * `classify`) needs a filesystem read and has no place on a fire-and-forget
+ * telemetry path; nothing here is adversarial and nothing gates on it.
+ *
+ * `parseEnvelope`/`payloadSha256` are imported rather than re-implemented on
+ * purpose: a second copy of the envelope regex would silently misclassify every
+ * row the day the envelope format changes.
+ */
+export function describeRecallQuery(query: string): RecallQueryShape {
+  const envelope = parseEnvelope(query);
+  return {
+    chars: query.length,
+    sha256: payloadSha256(envelope ? envelope.payload : query),
+    origin: envelope?.origin ?? null,
+  };
 }
 
 /**
@@ -117,6 +171,28 @@ interface RecallStatsCommon {
    * labelled row — the scores are silently unusable, not merely unlabelled.
    */
   scoreScale?: ScoreScale | null;
+  /**
+   * The query text this recall ran on (migration 706 / P-041) — pass it RAW,
+   * exactly as handed to the backend. Only its SHAPE is stored
+   * (`describeRecallQuery`); the text itself never reaches the table.
+   *
+   * Supply it. Omitting it records NULLs, and a NULL query row is excluded from
+   * every query-quality measurement — which is the pre-P-041 state where the
+   * table could say in detail what came BACK and nothing at all about what was
+   * ASKED, and no query-side defect was measurable.
+   */
+  query?: string | null;
+  /**
+   * Session this recall ran for (push path: `session.sessionId`). Null on the
+   * pull path, which has no session identity on its ctx.
+   *
+   * Load-bearing for the duplicate measurement specifically: "the same query as
+   * last turn" is only defined WITHIN a session, and this table interleaves
+   * every concurrent agent on the box. Lagging by created_at across sessions
+   * compares one agent's turn to a different agent's — a number that means
+   * nothing while looking like a rate.
+   */
+  sessionId?: string | null;
 }
 
 /**
@@ -198,9 +274,14 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
     const scores = finiteScores(entries);
     const topScore = scores.length > 0 ? Math.max(...scores) : null;
     const pools = input.pools ? JSON.stringify(poolsPayload(input.pools)) : null;
+    // P-041 / migration 706: the query's SHAPE. A caller that passes no query
+    // records NULLs and is excluded from query-quality reads, rather than
+    // contributing a zero-length row that would read as a real empty query.
+    const q = typeof input.query === 'string' ? describeRecallQuery(input.query) : null;
     await sql`
       INSERT INTO harness_shared.memory_recall_stats
-        (surface, hit_count, top_score, scores, fragment_count, pools, workspace_id, pot_slug, score_scale)
+        (surface, hit_count, top_score, scores, fragment_count, pools, workspace_id, pot_slug, score_scale,
+         query_chars, query_sha256, query_origin, session_id)
       VALUES (
         ${input.surface},
         ${entries.length},
@@ -210,7 +291,11 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
         ${pools}::text::jsonb,
         ${input.workspaceId ?? null},
         ${input.potSlug ?? null},
-        ${input.scoreScale ?? null}
+        ${input.scoreScale ?? null},
+        ${q ? q.chars : null},
+        ${q ? q.sha256 : null},
+        ${q ? q.origin : null},
+        ${input.sessionId ?? null}
       )
     `;
   } catch (err) {
