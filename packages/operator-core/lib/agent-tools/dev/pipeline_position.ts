@@ -66,8 +66,10 @@ export default defineTool({
       .optional()
       .describe(
         'A distinctive LITERAL string from YOUR change (a new function name, an added error message, an id). ' +
-          'Answers "is MY change in the commit the gate is judging?" definitively — which the default containment check CANNOT, ' +
-          'because it compares the file byte-for-byte and any peer commit to the same file breaks that permanently. Use it whenever you see missingReason:"newer-commit".',
+          'Answers "is MY change there?" definitively where the default checks CANNOT: they resolve a path to its NEWEST commit, ' +
+          'so any peer commit to the same file breaks them permanently. Settles BOTH `changeInCandidate` (the commit the gate judges) ' +
+          'AND the `positions.inMain` / `positions.deployed` legs, correcting them in either direction. ' +
+          'Use it whenever you see missingReason:"newer-commit" or a leg named in `positionsNewerCommit`.',
       ),
   }),
   async handler(args) {
