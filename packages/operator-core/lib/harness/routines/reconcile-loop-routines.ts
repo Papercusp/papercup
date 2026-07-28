@@ -171,6 +171,7 @@ import {
   checkUnreachableTerminalGuard as defaultCheckUnreachableTerminalGuard,
   terminalUnreachableMs,
   minStuckFiresForTermination,
+  stuckBackstopCadenceMs,
 } from './loop-unreachable-guard';
 import { cancelInboxWake as defaultCancelInboxWake } from '../../events/await/inbox-wake-arm';
 import { openEscalation } from '../../agent-tools/coordination/escalations';
@@ -206,13 +207,12 @@ const FALLBACK_QUIET_MS = 60_000;
 /** Floor for the stuck-park backstop: a loop parked at least this long past its fire with
  *  NO post-fire activity is treated as a never-delivered/dead fire and re-armed to retry.
  *  Generous so a legitimately long turn (which keeps producing activity) is never
- *  force-rearmed. Per-loop the effective bound is max(this, 4×interval). */
-const DEFAULT_STUCK_PARK_MS = 30 * 60_000;
-
-// WI-6660: delegated to the guard module so the comatose window's arithmetic (which converts a
-// wall-clock budget into a fire count) reads the SAME cadence that actually feeds the streak.
-// Two copies of `max(30min, interval*4)` is exactly the drift that made the old fixed count of
-// 24 mean "12h" in one place and "88h" in another.
+ *  force-rearmed. Per-loop the effective bound is max(30min, 4×interval).
+ *
+ *  WI-6660: the definition now LIVES in loop-unreachable-guard.ts and is delegated to here, so
+ *  the comatose window's arithmetic (which converts a wall-clock budget into a fire count) reads
+ *  the SAME cadence that actually feeds the streak. Two copies of `max(30min, interval*4)` is
+ *  exactly the drift that let one fixed count of 24 mean "12h" in one place and "88h" in another. */
 const stuckParkMs = stuckBackstopCadenceMs;
 
 /**

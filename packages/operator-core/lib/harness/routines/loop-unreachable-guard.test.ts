@@ -8,6 +8,9 @@ import {
   DEFAULT_MIN_STUCK_FIRES,
   comatoseStuckFiresForTermination,
   DEFAULT_COMATOSE_STUCK_FIRES,
+  comatoseWindowMs,
+  DEFAULT_COMATOSE_WINDOW_MS,
+  stuckBackstopCadenceMs,
 } from './loop-unreachable-guard';
 import type { WakeReachabilityVerdict } from '../../events/await/wake-reachability';
 
@@ -218,6 +221,93 @@ describe('evaluateUnreachableTerminalGuard — WI-6639 COMATOSE-HOST (a live inj
     } finally {
       if (orig === undefined) delete process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES;
       else process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES = orig;
+    }
+  });
+
+  // ---- WI-6660: the budget is a WALL CLOCK, and the fire count is DERIVED from it -------------
+  // The floor used to be a flat 24 fires described as "~12h at the ~30min cadence". But the
+  // streak advances once per max(30min, interval*4), so a fixed count meant the real wall-clock
+  // scaled with the interval: measured across the live stranded population it ran 12h (180s
+  // loops) to 88h (3300s loops). These pin the derived-count behaviour in both directions.
+
+  it('the derived count still yields exactly the documented 24 at the 30-min cadence floor', () => {
+    // Short-interval loops are the case the old constant was calibrated for — unchanged.
+    expect(comatoseStuckFiresForTermination(180_000)).toBe(DEFAULT_COMATOSE_STUCK_FIRES);
+    expect(comatoseStuckFiresForTermination(180_000)).toBe(24);
+  });
+
+  it('a LONG-interval loop needs FEWER fires, because each one costs more wall-clock', () => {
+    // 3300s interval → cadence max(30min, 220min) = 220min → ceil(12h / 220min) = 4.
+    // Under the old flat 24 this loop needed 24 × 220min ≈ 88h (3.7 days) to auto-pause.
+    expect(comatoseStuckFiresForTermination(3_300_000)).toBe(4);
+    expect(comatoseStuckFiresForTermination(1_800_000)).toBe(6); // 120min cadence → 6 × 120min = 12h
+    expect(comatoseStuckFiresForTermination(600_000)).toBe(18); // 40min cadence → 18 × 40min = 12h
+  });
+
+  it('every interval lands within ~one cadence of the 12h budget (the property the count could not hold)', () => {
+    for (const intervalMs of [60_000, 180_000, 600_000, 1_200_000, 1_500_000, 1_800_000, 2_400_000, 3_300_000]) {
+      const fires = comatoseStuckFiresForTermination(intervalMs);
+      const cadence = stuckBackstopCadenceMs(intervalMs);
+      const wallClockMs = fires * cadence;
+      expect(wallClockMs).toBeGreaterThanOrEqual(DEFAULT_COMATOSE_WINDOW_MS);
+      // ...and never overshoots by more than a single cadence step (the ceil remainder).
+      expect(wallClockMs - DEFAULT_COMATOSE_WINDOW_MS).toBeLessThan(cadence);
+    }
+  });
+
+  it('never derives a count below the ordinary min-fires floor (no hair-trigger from a huge interval)', () => {
+    // A 24h-interval loop would need <1 fire to "cover" 12h; the min-fires floor still applies.
+    expect(comatoseStuckFiresForTermination(86_400_000)).toBeGreaterThanOrEqual(minStuckFiresForTermination());
+  });
+
+  it('a long-interval loop STILL breaches only with an open circuit — which binds harder than the window', () => {
+    // The reason shortening the long tail is safe: circuitOpen needs ≥circuitThreshold (8)
+    // consecutive failures, so at a 220min cadence this population waits ~29h regardless.
+    const atDerivedFloor = comatoseStuckFiresForTermination(3_300_000); // 4
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: true,
+      durableWhileAlive: true,
+      parkedForMs: 1000,
+      intervalMs: 3_300_000,
+      stuckFireCount: atDerivedFloor,
+      circuitOpen: false,
+    });
+    expect(v.breach).toBe(false);
+
+    const open = evaluateUnreachableTerminalGuard({
+      reachable: true,
+      durableWhileAlive: true,
+      parkedForMs: 1000,
+      intervalMs: 3_300_000,
+      stuckFireCount: atDerivedFloor,
+      circuitOpen: true,
+    });
+    expect(open.breach).toBe(true);
+    expect(open.reason).toMatch(/comatose-host/i);
+  });
+
+  it('the explicit fire-count env override still wins, and is still clamped', () => {
+    const orig = process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES;
+    process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES = '40';
+    try {
+      // Overrides the derived value for EVERY interval, short or long.
+      expect(comatoseStuckFiresForTermination(180_000)).toBe(40);
+      expect(comatoseStuckFiresForTermination(3_300_000)).toBe(40);
+    } finally {
+      if (orig === undefined) delete process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES;
+      else process.env.PAPERCUSP_LOOP_COMATOSE_STUCK_FIRES = orig;
+    }
+  });
+
+  it('the wall-clock window is env-overridable and re-derives the count', () => {
+    const orig = process.env.PAPERCUSP_LOOP_COMATOSE_WINDOW_MS;
+    process.env.PAPERCUSP_LOOP_COMATOSE_WINDOW_MS = String(6 * 3600_000); // 6h
+    try {
+      expect(comatoseWindowMs()).toBe(6 * 3600_000);
+      expect(comatoseStuckFiresForTermination(180_000)).toBe(12); // 6h / 30min
+    } finally {
+      if (orig === undefined) delete process.env.PAPERCUSP_LOOP_COMATOSE_WINDOW_MS;
+      else process.env.PAPERCUSP_LOOP_COMATOSE_WINDOW_MS = orig;
     }
   });
 
