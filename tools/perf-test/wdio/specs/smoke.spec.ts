@@ -32,7 +32,7 @@
  */
 import { browser } from "@wdio/globals";
 import { waitForAppMount } from "../app-mount";
-import { recordInvariant, recordMeasure } from "../perf-report";
+import { recordMeasure } from "../perf-report";
 import {
   METRIC_ENVIRONMENT,
   collectWebVitals,
@@ -64,11 +64,36 @@ describe("Packaged Papercusp desktop binary", () => {
       console.warn("[web-vitals] registration errors:", reading.errors);
     }
 
-    // Record BEFORE asserting: an assert throws, and a broken instrument is
-    // precisely the observation the gate exists to act on (same rule as
+    // Record BEFORE asserting: an assert throws, and instrument health is
+    // precisely the observation worth keeping from a failing run (same rule as
     // recordInteractionMs / recordInvariant — see perf-report.ts).
-    recordInvariant("web-vitals-instrument-broken", reading.instrument === "broken" ? 1 : 0);
-    recordInvariant("web-vitals-expected-metrics-missing", reading.missingExpected.length);
+    //
+    // DELIBERATELY *NOT* `recordInvariant`, though the temptation is obvious.
+    // An invariant breach BLOCKS the deploy unconditionally, bypassing the gate's
+    // warn-until-trusted posture. That is right for `invariant:webview-http-egress`,
+    // which asserts a PRODUCT property the owner ruled on ("no HTTP anywhere").
+    // Instrument health is not a product property — it is harness health, and the
+    // gate already fail-soft PASSES on every other flavour of missing data (no run,
+    // no measures, stale run). Hard-blocking every deploy because a test-harness
+    // dependency failed would contradict those three branches and make an esbuild
+    // hiccup freeze the fleet. Budgeted-at-0 instead: these surface as definitive
+    // regressions (failingMeasures picks up any budgeted measure that missed), so
+    // they warn today and block when the gate is armed, like every other budget.
+    // The loud signal is the spec's own asserts below, which fail the run outright.
+    recordMeasure({
+      key: "web-vitals-instrument-broken",
+      value: reading.instrument === "broken" ? 1 : 0,
+      unit: "count",
+      budget: 0,
+      ok: reading.instrument !== "broken",
+    });
+    recordMeasure({
+      key: "web-vitals-expected-metrics-missing",
+      value: reading.missingExpected.length,
+      unit: "count",
+      budget: 0,
+      ok: reading.missingExpected.length === 0,
+    });
 
     for (const name of Object.keys(reading.metrics) as WebVitalName[]) {
       const value = reading.metrics[name];
