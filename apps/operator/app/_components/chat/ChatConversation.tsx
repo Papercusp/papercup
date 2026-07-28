@@ -26,7 +26,7 @@
  * gives the body more vertical room).
  */
 
-import { memo, useCallback, useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
 import { ArrowUpRight, Coffee, CupSoda, Thermometer } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import ReactMarkdown from 'react-markdown';
@@ -72,6 +72,15 @@ export const AGENT_MARKS: Record<string, ChatIconComponent> = {
 function withHardBreaks(text: string): string {
   return text.replace(/\n/g, '  \n');
 }
+
+/**
+ * Hoisted so the plugin list is REFERENTIALLY STABLE across renders. As an inline
+ * `[remarkGfm, remarkWorkRefs]` literal this allocated a fresh array on every render
+ * of every visible message, which denies react-markdown (and anything downstream of
+ * it) any chance to skip work on an unchanged message. Same class of bug as an inline
+ * arrow defeating the memo below — keep it module-level.
+ */
+const MESSAGE_REMARK_PLUGINS = [remarkGfm, remarkWorkRefs];
 
 const MESSAGE_MARKDOWN_COMPONENTS = {
   // Paragraphs render as inline blocks inside the message bubble — a bare
@@ -139,6 +148,31 @@ interface WorkRefPillHastNode {
  * `onWorkRefActivate`, is `useCallback`-memoized at its source (OperatorChat's
  * `handleWorkRefActivate`). If a future caller passes an inline arrow for it this
  * silently stops memoizing and the lag returns — keep it stable.
+ *
+ * ── The OTHER half: typing WHILE AN AGENT STREAMS (WI-6502, measured 2026-07-28) ──
+ * The memo above cannot help there, and that is not a bug in it: during a stream the
+ * live message's `content` genuinely CHANGES. `sessionTimelineToChatMessages` joins a
+ * turn's text parts, so the in-flight assistant message's content GROWS with every
+ * streamed entry — and each growth re-parses the WHOLE accumulated message, which is
+ * O(m²) across a turn. Benched (node, parse + element tree only, so a LOWER bound on
+ * the real cost — the live path also pays reconciliation + DOM + layout + paint):
+ *
+ *     500ch 1.5ms | 2000ch 3.2ms | 4000ch 5.6ms | 8000ch 12.3ms | 16000ch 23.8ms
+ *
+ * i.e. an 8 KB answer streamed over 60 entries burns ~372ms of re-parse where parsing
+ * once would cost 12ms. Those land in bursts (the server polls the transcript at 1Hz
+ * and emits one SSE `event` PER ENTRY — see `adv-session-thinking-follow` in
+ * endpoint-route/routes/harness/streams.ts), which is exactly the measured signature:
+ * a dense series of 20-65ms tasks at burst onset, decaying after — no single long task,
+ * which is why max-frame-gap instruments read "healthy" while real input latency hit
+ * 100-166ms (hud-tab-public-release-2026-07-28#D-010).
+ *
+ * `useDeferredValue` is the fix: it marks the re-parse as NON-URGENT, so a keystroke
+ * preempts a queued markdown render instead of landing behind the whole burst. The
+ * displayed text is unchanged — it can just trail by a render under contention, which
+ * is the correct trade for a pane you are typing into. Requires a concurrent root
+ * (apps/operator-vite/src/main.tsx uses `createRoot`) — under a legacy root this
+ * degrades to a plain passthrough, i.e. today's behavior, never a break.
  */
 const ChatMessageContent = memo(function ChatMessageContent({
   content,
@@ -151,6 +185,8 @@ const ChatMessageContent = memo(function ChatMessageContent({
   planSlug?: string | null;
   onWorkRefActivate?: (ref: { id: string; kind: WorkRefKind; planSlug?: string | null }) => void;
 }) {
+  // Non-urgent: a keystroke's render jumps ahead of this one (see the doc above).
+  const deferredContent = useDeferredValue(content);
   const components = useMemo(
     () => ({
       ...MESSAGE_MARKDOWN_COMPONENTS,
@@ -174,8 +210,8 @@ const ChatMessageContent = memo(function ChatMessageContent({
   );
 
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm, remarkWorkRefs]} components={components}>
-      {withHardBreaks(content)}
+    <ReactMarkdown remarkPlugins={MESSAGE_REMARK_PLUGINS} components={components}>
+      {withHardBreaks(deferredContent)}
     </ReactMarkdown>
   );
 });
