@@ -79,6 +79,8 @@ beforeEach(() => {
 describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
   const optsOf = (b: ReturnType<typeof mockBackend>, i: number) =>
     b.search.mock.calls[i]![1] as { fusionMode?: string; minScore?: number; limit?: number };
+  const diversifyOf = (b: ReturnType<typeof mockBackend>, i: number) =>
+    (b.search.mock.calls[i]![1] as { diversify?: { lambda?: number } }).diversify;
 
   // F-C (P-033, D-011) collapsed the three per-pool searches into ONE
   // multi-scope search, so "every pool is gated" is now "the one call covering
@@ -116,6 +118,37 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
       hiveSlugs: [],
     });
     expect(optsOf(backend, 0).minScore).toBe(0.45);
+  });
+
+  // F-D (P-034, D-014). Only the REQUEST is asserted here, for the same reason
+  // the header gives for fusionMode: the re-rank itself is the backend's, and
+  // asserting its effect against this file's fake would prove only that the fake
+  // ignores the option. The behavior is pinned in hybrid-backend.test.ts.
+  it('requests the diversity re-rank — nothing else in the chain penalizes redundancy', async () => {
+    const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(backend);
+    await buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: 'why is the recall empty',
+      harnessSlugs: ['papercusp'], hiveSlugs: [],
+    });
+    expect(diversifyOf(backend, 0)).toEqual({ lambda: 0.7 });
+  });
+
+  it('PAPERCUSP_MEMORY_DIVERSITY_LAMBDA=1 omits the option entirely — λ=1 is a no-op, so do not pay for it', async () => {
+    const prev = process.env.PAPERCUSP_MEMORY_DIVERSITY_LAMBDA;
+    process.env.PAPERCUSP_MEMORY_DIVERSITY_LAMBDA = '1';
+    try {
+      const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+      useBackend(backend);
+      await buildMemoryContextBlock({
+        userId: 'u1', workspaceId: 'ws', queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'], hiveSlugs: [],
+      });
+      expect(diversifyOf(backend, 0)).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_MEMORY_DIVERSITY_LAMBDA;
+      else process.env.PAPERCUSP_MEMORY_DIVERSITY_LAMBDA = prev;
+    }
   });
 
   it('returns null when the pools come back empty — a zero-hit turn injects NOTHING', async () => {
@@ -493,6 +526,8 @@ describe('buildMemoryContextBlock', () => {
     // fusionMode 'cosine-gated', which makes the limit a CEILING rather than a
     // target (P-032 / F-B, D-010). `limit` is now the TOTAL across all pools,
     // replacing the old per-pool quotas (user 6 + harness 3 + hive 3 = 12).
+    // …and `diversify` (P-034 / F-D, D-014): the redundancy penalty this chain
+    // otherwise has nowhere — every other pass ranks on relevance alone.
     expect(b.search.mock.calls).toEqual([
       [
         'foo',
@@ -502,6 +537,7 @@ describe('buildMemoryContextBlock', () => {
           minScore: 0.45,
           minLexScore: 0.4,
           fusionMode: 'cosine-gated',
+          diversify: { lambda: 0.7 },
         },
       ],
     ]);
@@ -579,6 +615,7 @@ describe('buildMemoryContextBlock', () => {
           minScore: 0.45,
           minLexScore: 0.4,
           fusionMode: 'cosine-gated',
+          diversify: { lambda: 0.7 },
         },
       ],
     ]);

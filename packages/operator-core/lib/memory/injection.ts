@@ -249,6 +249,43 @@ function injectFusionMode(): 'floored-union' | 'cosine-gated' {
 }
 
 /**
+ * PUSH-path diversity re-rank λ (context-injection-audit-2026-07-28 P-034 / F-D,
+ * D-014). The redundancy lever on the owner's standing constraint: inject
+ * relevant information WITHOUT bloating the context.
+ *
+ * Nothing anywhere else in this ranking chain penalizes REDUNDANCY — mem0's
+ * fusion, the cosine floor, the recency decay and RRF all optimize relevance
+ * alone. With ~10 hits admitted per injection, a scope holding many near-copies
+ * of one fact (repetitive checkpoints, "grounds fact X" observations, loop
+ * notes — exactly what this system writes most of) spends the whole block on
+ * paraphrases of its single best hit and starves the 2nd/3rd distinct fact. MMR
+ * demotes a near-copy by its similarity to what is already selected.
+ *
+ * Why this fix is BUDGET-NEUTRAL and needs no new ceiling: the pass never adds
+ * or drops entries, and INJECTION_TOTAL_LIMIT still decides how many are
+ * admitted. It changes WHICH of the floor-passing candidates fill those slots —
+ * the same "change who gets the slots, never how many exist" posture F-C took
+ * (D-011). It also composes with the char budget, which truncates in RENDER
+ * order (D-011): a demoted near-copy is now the entry that gets truncated.
+ *
+ * λ=0.7 leans relevance-first: with the trigram-Jaccard similarity proxy a
+ * genuine near-duplicate scores ~0.5+ against an unrelated hit's ~0.1, so 0.7
+ * moves a redundant hit a few ranks — enough to lose a slot to a distinct fact,
+ * not enough to let a weakly-relevant novelty outrank a strong on-topic hit.
+ * λ=1 is an exact no-op; PAPERCUSP_MEMORY_MMR=0 kill-switches it outright.
+ * P-038's measurement window is where to tune this, NOT a priori — and note
+ * D-008's lesson before reaching for it: on this path the natural constant to
+ * retune is usually not the one governing the behavior.
+ */
+const MEMORY_INJECTION_DIVERSITY_LAMBDA = 0.7;
+
+function injectDiversityLambda(): number | undefined {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_DIVERSITY_LAMBDA);
+  if (Number.isFinite(raw)) return raw >= 1 ? undefined : raw;
+  return MEMORY_INJECTION_DIVERSITY_LAMBDA;
+}
+
+/**
  * Injected-block character budget (knowledge-packs P-011 / D-008). ~4k tokens
  * by default (≈4 chars/token). Lines are admitted in priority order — user
  * pool → harness pools → hive-organic → hive-pack — and assembly stops at the
@@ -365,6 +402,8 @@ async function buildBlockInner(
     const minLexScore = injectMinLexScore();
     // F-B (D-010): the limit is a CEILING on this path, not a target.
     const fusionMode = injectFusionMode();
+    // F-D (P-034, D-014): the redundancy penalty — see injectDiversityLambda().
+    const diversityLambda = injectDiversityLambda();
 
     const tSearch = Date.now();
 
@@ -416,6 +455,7 @@ async function buildBlockInner(
             minScore,
             minLexScore,
             fusionMode,
+            ...(diversityLambda !== undefined ? { diversify: { lambda: diversityLambda } } : {}),
           });
 
     ranked = await withMemoryTimeout(doSearch(), 'search', MEMORY_INJECT_TIMEOUT_MS).finally(() => {
