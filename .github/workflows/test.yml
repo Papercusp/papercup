@@ -253,6 +253,17 @@ jobs:
       - name: Lint no unenrolled detached spawn
         run: npm run lint:no-unenrolled-spawn
 
+      # no-ungated-infinite-animation guard (hud-tab-public-release-2026-07-28 P-010 /
+      # WI-6542): an `infinite` CSS animation on a selector that matches as soon as the
+      # element renders keeps the whole 60fps repaint loop alive forever. Measured on the
+      # Tauri webview (no GPU compositing): ~100% of a core idle vs ~18% with none — and
+      # the cost is NOT per-animation, so ONE reintroduced always-on loop re-arms the full
+      # tax for that screen while a partial fix measures identically to no fix. That is why
+      # 107 of them accumulated unnoticed. GATING on a NEW always-on animation; a
+      # shrink-only BASELINE grandfathers the sites still on latent surfaces.
+      - name: Lint no ungated infinite animation
+        run: npm run lint:no-ungated-infinite-animation
+
       # no-bespoke-state-read gate (unified-agent-state-plane-2026-07-27 P-005 / D-010,
       # named by D-016's enforcement-tier table):
       # a NEW bespoke state-read tool must declare, inside its defineTool literal,

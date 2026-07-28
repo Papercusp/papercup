@@ -60,6 +60,7 @@
     "scripts/proc-guard.mjs",
     "scripts/lib/tsc-baseline-gate.mjs",
     "scripts/check-vacuous-negative-assertions.mjs",
+    "scripts/check-no-ungated-infinite-animation.mjs",
     "scripts/lint-tsc.mjs",
     "scripts/lint-tsc-operator-vite.mjs",
     "scripts/check-transitive-boundary.mjs",

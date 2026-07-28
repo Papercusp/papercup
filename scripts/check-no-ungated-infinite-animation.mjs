@@ -95,7 +95,29 @@ export const TRANSIENT_PATTERNS = [
   /streaming/i,
 ];
 
-/** True when `selector` is one this guard permits to carry an `infinite` animation. */
+/**
+ * One always-on animation declaration, located within a single stylesheet.
+ *
+ * @typedef {object} CssOffender
+ * @property {number} line - 1-indexed line of the declaration.
+ * @property {string} selector - The rule the declaration belongs to.
+ * @property {string} declaration - The offending declaration text.
+ */
+
+/**
+ * A {@link CssOffender} resolved against the repo, so it can be reported and baselined.
+ *
+ * @typedef {CssOffender & { file: string; key: string }} TreeOffender
+ */
+
+/**
+ * True when `selector` is one this guard permits to carry an `infinite` animation —
+ * either because motion is tied to an interaction/state that ends, or because the
+ * element itself is a transient (spinner, skeleton, route overlay).
+ *
+ * @param {string} selector
+ * @returns {boolean}
+ */
 export function isGatedSelector(selector) {
   return (
     GATE_PATTERNS.some((re) => re.test(selector)) || TRANSIENT_PATTERNS.some((re) => re.test(selector))
@@ -104,22 +126,35 @@ export function isGatedSelector(selector) {
 
 /**
  * True when `declaration` starts an infinite animation. Matches the `animation`
- * shorthand and `animation-iteration-count`, and ignores `@keyframes` bodies —
- * a keyframe stop is not a declaration that starts anything.
+ * shorthand and `animation-iteration-count`. A bare mention of the word (in a
+ * comment, say) is not a declaration and does not match.
+ *
+ * @param {string} declaration
+ * @returns {boolean}
  */
 export function isInfiniteAnimationDeclaration(declaration) {
   if (!/(^|[;{\s])animation(-iteration-count)?\s*:/.test(declaration)) return false;
   return /\binfinite\b/.test(declaration);
 }
 
-/** The guard's core predicate, exported so the unit test can drive it directly. */
+/**
+ * The guard's core predicate, exported so the unit test can drive it directly.
+ *
+ * @param {string} selector
+ * @param {string} declaration
+ * @returns {boolean}
+ */
 export function isUngatedInfiniteAnimation(selector, declaration) {
   return isInfiniteAnimationDeclaration(declaration) && !isGatedSelector(selector);
 }
 
 /**
  * Walk a stylesheet tracking brace depth so each declaration can be attributed to
- * the rule that encloses it. Returns [{ line, selector, declaration }].
+ * the rule that encloses it. A gate on ANY ancestor counts, so nesting a sheen
+ * inside `.shell:hover { … }` is correctly treated as gated.
+ *
+ * @param {string} source - Full text of one stylesheet.
+ * @returns {CssOffender[]}
  */
 export function findOffendersInCss(source) {
   const lines = source.split('\n');
@@ -169,6 +204,11 @@ export function findOffendersInCss(source) {
   return offenders;
 }
 
+/**
+ * @param {string} dir
+ * @param {string[]} [out]
+ * @returns {string[]}
+ */
 function walk(dir, out = []) {
   let entries;
   try {
@@ -191,7 +231,12 @@ function walk(dir, out = []) {
   return out;
 }
 
-/** Scan the tree and return every ungated infinite animation as `path:line` records. */
+/**
+ * Scan the tree and return every ungated infinite animation as `path:line` records.
+ *
+ * @param {string} [root] - Repo root to scan; defaults to this repo.
+ * @returns {TreeOffender[]}
+ */
 export function findOffenders(root = ROOT) {
   const offenders = [];
   for (const dir of SCAN_DIRS) {
@@ -213,7 +258,12 @@ export function findOffenders(root = ROOT) {
  */
 export const BASELINE_PATH = join(ROOT, 'scripts/no-ungated-infinite-animation.baseline.json');
 
-/** Read the baselined selector set. Throws if the baseline file is missing. */
+/**
+ * Read the baselined selector set. Throws if the baseline file is missing.
+ *
+ * @param {string} [path]
+ * @returns {Set<string>}
+ */
 export function readBaseline(path = BASELINE_PATH) {
   return new Set(JSON.parse(readFileSync(path, 'utf8')).selectors);
 }
