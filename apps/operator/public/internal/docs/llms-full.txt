@@ -20693,6 +20693,20 @@ There is now also `endpoint_ipc_status` (a Tauri command, `withGlobalTauri` so `
 
 > **If a resolver can fail, make it return the reason, not just the absence.** `Option<T>` is the wrong return type for anything whose `None` a human will later have to explain. The reason is free at the point of computation and expensive to reconstruct anywhere else — here it was being reconstructed by hand from `ss`, `/proc`, and JSON files, once per investigation.
 
+### Side-lesson: a new Tauri command needs a capability entry, and nothing but a live invoke will tell you
+
+[Section titled “Side-lesson: a new Tauri command needs a capability entry, and nothing but a live invoke will tell you”](#side-lesson-a-new-tauri-command-needs-a-capability-entry-and-nothing-but-a-live-invoke-will-tell-you)
+
+`endpoint_ipc_status` compiled, registered in `collect_commands!`, and appeared 67 times in the running binary — and still failed at runtime with `endpoint_ipc_status not allowed. Command not found`. Tauri v2 gates app commands through `src-tauri/capabilities/default.json`; the command needs an `allow-<command-name-in-kebab-case>` entry beside its siblings:
+
+```json
+"allow-endpoint-invoke",
+"allow-endpoint-cancel",
+"allow-endpoint-ipc-status",
+```
+
+`cargo check`, `cargo test`, and the whole Rust suite pass without it. The only thing that catches it is invoking the command from a live webview. If you add a Tauri command, add the capability entry in the same edit, and prove it with one real `invoke` — the error text says “Command not found”, which sends you hunting through registration code that is already correct.
+
 ## Recurrence guards
 
 [Section titled “Recurrence guards”](#recurrence-guards)
@@ -23117,6 +23131,119 @@ Wire all three into a weekly check (a scorecard row or a `dev:` rollup) so a reg
 * Both are pure + unit-tested (injected `RunQuery`, no PG in tests) exactly like `code-run-adoption.ts`; each exports its canonical SQL (`LIMIT_FAILURE_RATE_SQL` / `ORIENT_DEDUP_RATE_SQL`) so it is also directly runnable via `dev:pg_query` if a caller wants the raw rows instead of the rolled-up read.
 
 **WI-839 — now ALSO a recurring measurement, not just an on-demand `dev:` read.** The dev: tools above are manual (someone has to remember to call them); the item’s real ask (“so a regression surfaces without a manual audit”) needed a periodic surface. `system-health/compute.ts`’s `collectToolEfficiency` folds all 3 grades (adoption + limit-failure + orient-dedup) into ONE new Health-tab panel (`PanelKey: 'toolEfficiency'`, `types.ts`) computed on every `computeSystemHealth` tick (the same \~30s cadence every other panel runs on) — surfaced on the read-only Health tab (flag `papercusp-system-health-tab`) with zero bespoke UI code (the tab renders generically off `PANEL_ORDER`/`health.panels[key]`). Panel status: `crit` if any leg graded `broken`, `warn` if any is `degraded`, `unknown` only when every leg’s window is too small to grade, else `ok` (`toolEfficiencyStatus`, pure + unit-tested in `compute.test.ts`). So a regression in any of the 3 now greys/reds a Health-tab card automatically, on the existing tick — no manual `dev:` call or `dev:pg_query` needed to notice one.
+
+# Measuring per-keystroke input latency in the Tauri webview
+
+> The bar is 33ms, the only sound metric is a paired delta against an in-run sham, and arm order must be counterbalanced — every rule here was earned by a wrong result on WI-6502.
+
+WI-6502 (“typing into the chat boxes is very laggy”) burned several agent-days, and most of that went to **measurements that produced confident wrong answers** rather than to the fix. This is the runbook for the next person who has to measure input latency here, written from what actually went wrong.
+
+If you take one thing: **an unpaired number from this webview means nothing.** The same unchanged arm has measured 76, 76 and 90 across three boots of identical CSS, and 781 → 683 across five rounds of a single boot. Every conclusion must be a *within-run difference against a control you ran in the same round*.
+
+## The bar is 33ms per character, and it is not arbitrary
+
+[Section titled “The bar is 33ms per character, and it is not arbitrary”](#the-bar-is-33ms-per-character-and-it-is-not-arbitrary)
+
+33ms is the **key auto-repeat interval**. It is the threshold because of what happens on each side of it:
+
+* Below it, a held key is serviced faster than it repeats — cost is invisible.
+* Above it, keystrokes **queue without bound** while the key is held. That is the qualitative symptom the owner reported: “half a second for each next character”, worsening the longer you hold.
+
+So the question is never “is typing fast?” but “is per-character cost above or below 33ms?” A per-char cost of 25ms is fine; 35ms is a visibly broken feature.
+
+## The only sound metric: paired wall-delta against an in-run sham
+
+[Section titled “The only sound metric: paired wall-delta against an in-run sham”](#the-only-sound-metric-paired-wall-delta-against-an-in-run-sham)
+
+Type N characters at 33ms intervals and measure wall time. In the **same round**, run a **sham**: the identical chained-`setTimeout` loop with *no typing*. Only
+
+```plaintext
+(burst_wall − sham_wall) / N
+```
+
+is an app cost. This matters more than it sounds: 20 chained `setTimeout(33)` take \~715ms on this box with **nothing typed** against a 660ms “ideal”, so raw drift-versus-ideal is mostly the probe, not the app.
+
+### Metrics that are retired, and why
+
+[Section titled “Metrics that are retired, and why”](#metrics-that-are-retired-and-why)
+
+| metric                       | status           | why                                                                                                                                                                                                                                                                                                    |
+| ---------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| single-keystroke worst frame | **retired**      | Had real power once (it resolved 43-55ms vs a 17ms sham and detected two CSS fixes at −11/−10ms). After those fixes it reads the vsync floor for *everything*, so any new ablation using it returns null trivially and proves nothing. Old eliminations made with it still stand; the metric does not. |
+| `over33` (frames over 33ms)  | **not evidence** | The probe drives mutations at 33ms, so frames land at \~33ms+ε with zero work. It read 14/22 in *every* typing arm including the cheapest ones.                                                                                                                                                        |
+| `max` frame                  | **not evidence** | The **sham** — no typing at all — produced max frames of 49–54ms in 2 of 12 rounds under fleet load. Long frames are ambient here, not typing-caused.                                                                                                                                                  |
+| raw drift vs ideal           | **not evidence** | Dominated by the probe’s own floor (see above).                                                                                                                                                                                                                                                        |
+
+## Counterbalance arm order — this one invented a regression
+
+[Section titled “Counterbalance arm order — this one invented a regression”](#counterbalance-arm-order--this-one-invented-a-regression)
+
+Whichever arm runs **second** in a round is penalised. Measured on WI-6502 run19, comparing the chat composer against a bare `<input>`:
+
+```plaintext
+bare-first rounds (chat ran 2nd):  +79, +47, +12   ->  "chat costs +46ms"
+chat-first rounds (chat ran 1st):  +3,  -1,  -55   ->  "chat costs nothing"
+```
+
+The position penalty was +32ms/15 chars in one boot and +6ms in the next — **the penalty itself is unstable**, so you cannot subtract a constant for it. Alternate arm order on round parity and average the two orders. A fixed-order design here would have reported a convincing chat-specific regression that does not exist, and sent the next agent hunting it.
+
+The same trap bites harder **across boots**: an A/B needing two boots (e.g. a WebKit feature flag set via env) is confounded because *the arm that boots second is slower whichever setting it carries* — measured both ways, each direction “won” when it went second. Eight rounds inside one boot is n=8 on within-boot noise and n=1 on the thing that varied.
+
+## Reaching the surfaces
+
+[Section titled “Reaching the surfaces”](#reaching-the-surfaces)
+
+### The real chat composer
+
+[Section titled “The real chat composer”](#the-real-chat-composer)
+
+It is a plain `<input>` inside `.oracle-input-shell` (`ChatConversation.tsx`), **not a textarea**. A probe that picks “the biggest visible textarea” silently measures the Mug directive box (`.pc-queen__directive`) instead — that mistake cost a whole run.
+
+`SessionChatModal` is opened by the nuqs key `hudsession=<ownerId>` (`HudView.tsx`), so:
+
+```plaintext
+/adv?tab=sessions&hudsession=<ownerId>
+```
+
+`HUD_TABS` is `['sessions','plans','items']`. Transcript rows are `.oracle-msg` and are **virtualised** (`.oracle-virtual-container`), so expect \~10 rendered rows regardless of session length.
+
+`scripts/verify-tauri-headless.sh` has **no route/URL env knob**. Navigate from inside an eval:
+
+```js
+window.__TSR_ROUTER__.navigate({ to: '/adv?tab=sessions&hudsession=' + id });
+```
+
+Have the probe **report whether it found the element** (`composerFound`, `focused`) rather than assuming. An unfocused control already caused one retraction on this item; a probe that can silently measure nothing eventually will.
+
+### Driving a React-controlled input
+
+[Section titled “Driving a React-controlled input”](#driving-a-react-controlled-input)
+
+`el.value = x` is reverted by React’s next render and measures nothing. Drive it the way the browser does:
+
+```js
+const proto = el instanceof HTMLTextAreaElement
+  ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+el.dispatchEvent(new Event('input', { bubbles: true }));
+```
+
+Clear the draft after each burst so you never leave text in a real composer.
+
+## Budgets and harness notes
+
+[Section titled “Budgets and harness notes”](#budgets-and-harness-notes)
+
+* **The bridge eval dies at \~5s.** Three arms × 6 rounds fits; five arms × 3 rounds has no statistical power and is exactly where one attempt stalled. Drop N per burst before dropping rounds.
+* **Launch detached**, with file redirects: `setsid nohup bash launchNN.sh > log 2>&1 < /dev/null &`. A long run launched as a child of a harness-tracked background task can die with “Bad file descriptor” on every write when that task’s pipe closes — which looks exactly like a probe failure and is not.
+* **A boot that dies before the bridge is often a peer’s broken Rust**, not flakiness. The whole fleet edits `src-tauri` concurrently. The FATAL now names a compile error when there is one; if you are on an older checkout, grep the run’s `tauri.log` for `error\[E` **before** retrying, because a blind retry costs another \~2min and fails identically.
+* **Never drive the owner’s window.** `tauri-agent-tools probe` lists bridges; the tty-attached pid is theirs. Boot your own.
+
+## A static grep is not an exposure count
+
+[Section titled “A static grep is not an exposure count”](#a-static-grep-is-not-an-exposure-count)
+
+“42 `backdrop-filter` declarations in the stylesheet” was 2 actually on screen. Before ablating a CSS property, count what is *rendered and visible*, not what is declared. And do not accept a “platform floor” you have not decomposed — an earlier unattributed \~18ms term was nearly written off as unfixable and turned out to be our own background gradients.
 
 # mem0 entity store leaked COMPOUND fragments into memory recall — the collectionName the canonical store ignores
 

@@ -1,0 +1,169 @@
+# Measuring per-keystroke input latency in the Tauri webview
+URL: /internal/docs/agent-insights/measuring-per-keystroke-input-latency
+
+The bar is 33ms, the only sound metric is a paired delta against an in-run sham, and arm order must be counterbalanced — every rule here was earned by a wrong result on WI-6502.
+
+WI-6502 ("typing into the chat boxes is very laggy") burned several agent-days,
+and most of that went to **measurements that produced confident wrong answers**
+rather than to the fix. This is the runbook for the next person who has to
+measure input latency here, written from what actually went wrong.
+
+If you take one thing: **an unpaired number from this webview means nothing.**
+The same unchanged arm has measured 76, 76 and 90 across three boots of identical
+CSS, and 781 → 683 across five rounds of a single boot. Every conclusion must be
+a *within-run difference against a control you ran in the same round*.
+
+## The bar is 33ms per character, and it is not arbitrary
+
+33ms is the **key auto-repeat interval**. It is the threshold because of what
+happens on each side of it:
+
+* Below it, a held key is serviced faster than it repeats — cost is invisible.
+* Above it, keystrokes **queue without bound** while the key is held. That is the
+  qualitative symptom the owner reported: "half a second for each next
+  character", worsening the longer you hold.
+
+So the question is never "is typing fast?" but "is per-character cost above or
+below 33ms?" A per-char cost of 25ms is fine; 35ms is a visibly broken feature.
+
+## The only sound metric: paired wall-delta against an in-run sham
+
+Type N characters at 33ms intervals and measure wall time. In the **same round**,
+run a **sham**: the identical chained-`setTimeout` loop with *no typing*. Only
+
+```
+(burst_wall − sham_wall) / N
+```
+
+is an app cost. This matters more than it sounds: 20 chained `setTimeout(33)`
+take \~715ms on this box with **nothing typed** against a 660ms "ideal", so raw
+drift-versus-ideal is mostly the probe, not the app.
+
+### Metrics that are retired, and why
+
+| metric                       | status           | why                                                                                                                                                                                                                                                                                                    |
+| ---------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| single-keystroke worst frame | **retired**      | Had real power once (it resolved 43-55ms vs a 17ms sham and detected two CSS fixes at −11/−10ms). After those fixes it reads the vsync floor for *everything*, so any new ablation using it returns null trivially and proves nothing. Old eliminations made with it still stand; the metric does not. |
+| `over33` (frames over 33ms)  | **not evidence** | The probe drives mutations at 33ms, so frames land at \~33ms+ε with zero work. It read 14/22 in *every* typing arm including the cheapest ones.                                                                                                                                                        |
+| `max` frame                  | **not evidence** | The **sham** — no typing at all — produced max frames of 49–54ms in 2 of 12 rounds under fleet load. Long frames are ambient here, not typing-caused.                                                                                                                                                  |
+| raw drift vs ideal           | **not evidence** | Dominated by the probe's own floor (see above).                                                                                                                                                                                                                                                        |
+
+## Counterbalance arm order — this one invented a regression
+
+Whichever arm runs **second** in a round is penalised. Measured on WI-6502 run19,
+comparing the chat composer against a bare `<input>`:
+
+```
+bare-first rounds (chat ran 2nd):  +79, +47, +12   ->  "chat costs +46ms"
+chat-first rounds (chat ran 1st):  +3,  -1,  -55   ->  "chat costs nothing"
+```
+
+The position penalty was +32ms/15 chars in one boot and +6ms in the next — **the
+penalty itself is unstable**, so you cannot subtract a constant for it. Alternate
+arm order on round parity and average the two orders. A fixed-order design here
+would have reported a convincing chat-specific regression that does not exist,
+and sent the next agent hunting it.
+
+The same trap bites harder **across boots**: an A/B needing two boots (e.g. a
+WebKit feature flag set via env) is confounded because *the arm that boots second
+is slower whichever setting it carries* — measured both ways, each direction
+"won" when it went second. Eight rounds inside one boot is n=8 on within-boot
+noise and n=1 on the thing that varied.
+
+## Reaching the surfaces
+
+### The real chat composer
+
+It is a plain `<input>` inside `.oracle-input-shell`
+(`ChatConversation.tsx`), **not a textarea**. A probe that picks "the biggest
+visible textarea" silently measures the Mug directive box
+(`.pc-queen__directive`) instead — that mistake cost a whole run.
+
+`SessionChatModal` is opened by the nuqs key `hudsession=<ownerId>`
+(`HudView.tsx`), so:
+
+```
+/adv?tab=sessions&hudsession=<ownerId>
+```
+
+`HUD_TABS` is `['sessions','plans','items']`. Transcript rows are `.oracle-msg`
+and are **virtualised** (`.oracle-virtual-container`), so expect \~10 rendered
+rows regardless of session length.
+
+`scripts/verify-tauri-headless.sh` has **no route/URL env knob**. Navigate from
+inside an eval:
+
+```js
+window.__TSR_ROUTER__.navigate({ to: '/adv?tab=sessions&hudsession=' + id });
+```
+
+Have the probe **report whether it found the element** (`composerFound`,
+`focused`) rather than assuming. An unfocused control already caused one
+retraction on this item; a probe that can silently measure nothing eventually
+will.
+
+### Driving a React-controlled input
+
+`el.value = x` is reverted by React's next render and measures nothing. Drive it
+the way the browser does:
+
+```js
+const proto = el instanceof HTMLTextAreaElement
+  ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+el.dispatchEvent(new Event('input', { bubbles: true }));
+```
+
+Clear the draft after each burst so you never leave text in a real composer.
+
+## Budgets and harness notes
+
+* **The bridge eval dies at \~5s.** Three arms × 6 rounds fits; five arms × 3
+  rounds has no statistical power and is exactly where one attempt stalled. Drop
+  N per burst before dropping rounds.
+* **Launch detached**, with file redirects:
+  `setsid nohup bash launchNN.sh > log 2>&1 < /dev/null &`. A long run launched
+  as a child of a harness-tracked background task can die with "Bad file
+  descriptor" on every write when that task's pipe closes — which looks exactly
+  like a probe failure and is not.
+* **A boot that dies before the bridge is often a peer's broken Rust**, not
+  flakiness. The whole fleet edits `src-tauri` concurrently. The FATAL now names
+  a compile error when there is one; if you are on an older checkout, grep the
+  run's `tauri.log` for `error\[E` **before** retrying, because a blind retry
+  costs another \~2min and fails identically.
+* **Never drive the owner's window.** `tauri-agent-tools probe` lists bridges;
+  the tty-attached pid is theirs. Boot your own.
+
+## A CSS-ablation arm is invalid under damage-based compositing
+
+This one generalises past input latency to **any** paint measurement in this app,
+and it produces a *fake regression* rather than a null, which is why it is worth
+knowing before you design the run.
+
+The usual way to test "is property X expensive to paint?" is to toggle a
+stylesheet that disables X and re-measure. That arm is sound under the shipping
+config, where the compositor repaints fully anyway. It is **not** sound with
+`UseDamagingInformationForCompositing` enabled
+(`papercusp-desktop/src-tauri/src/webkit_render.rs`): under damage-based
+compositing the act of toggling a stylesheet **dirties the whole viewport**, so
+the probe's own mechanism costs more than the thing being measured, and a cheap
+baseline reads as a regression. A \~37ms "regression" measured this way was an
+artifact of the ablation, not of the property.
+
+So: keep CSS-mutating arms for `PAPERCUSP_WEBKIT_DAMAGE_COMPOSITING=0` runs, and
+when you must compare damage-on against damage-off, remember it is a *two-boot*
+A/B and therefore subject to the boot-order confound above — bracket the odd arm
+between two of the other (`ON / OFF / ON`) rather than running one of each.
+
+Related: no timing probe can see the failure mode damage-based compositing
+actually risks. Under-reported dirty rects leave **stale or torn pixels**, which
+are invisible to every metric in this document — that needs a screenshot
+comparison, not a stopwatch.
+
+## A static grep is not an exposure count
+
+"42 `backdrop-filter` declarations in the stylesheet" was 2 actually on screen.
+Before ablating a CSS property, count what is *rendered and visible*, not what is
+declared. And do not accept a "platform floor" you have not decomposed — an
+earlier unattributed \~18ms term was nearly written off as unfixable and turned
+out to be our own background gradients.

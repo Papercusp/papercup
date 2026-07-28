@@ -191,7 +191,10 @@ describe('recordRecallStats per-pool breakdown (P-026)', () => {
     });
     const [, hitCount, topScore, scoresJson] = calls[0]!;
     const pools = poolsOf(calls[0]!);
-    const summed = Object.values(pools).reduce((n, p) => n + (p as { hits: number }).hits, 0);
+    // `Object.values(pools)` is `unknown[]`, so the untyped overload of reduce
+    // infers an `unknown` accumulator (TS18046). Pin it to number — the initial
+    // value already is one, so this annotates rather than changes behaviour.
+    const summed = Object.values(pools).reduce<number>((n, p) => n + (p as { hits: number }).hits, 0);
     expect(hitCount).toBe(3);
     expect(summed).toBe(hitCount);
     expect(topScore).toBe(0.9);
