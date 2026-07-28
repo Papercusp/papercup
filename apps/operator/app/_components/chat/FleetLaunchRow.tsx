@@ -29,17 +29,33 @@
  * the row exactly when a human most wants it (the session is dead/stuck — launch
  * a fleet instead).
  *
- * ── The launch path is the REAL one ─────────────────────────────────────────
- * POST /api/agent-tools/fleet/launch-on-plan — the same `fleet:launch-on-plan`
- * tool an agent calls, reached over the auto-mounted agent-tools HTTP route. It
- * is the only path that carries all five of the owner's options (`account`,
- * `model`, `headless`, `count`, and the gateway pin that rides `account`).
+ * ── The launch path, and why it is NOT the fleet:launch-on-plan tool ────────
+ * Each member goes through `launchAgent` → POST /api/adv/sessions/launch-su —
+ * the GUI's one audited spawn path, the same call the HUD's new-session row
+ * makes. The first launch CREATES the fleet (`fleetName`, so the server
+ * slugifies and allocates the colour); the rest JOIN it by slug.
  *
- * Deliberately NOT `launchAgent`/launch-su, which the HUD's new-session row uses:
- * that launches exactly ONE session and has no `headless` and no `count`, so a
- * "fleet" built on it would be a form that looks right and cannot do the job.
- * Modelling the row on the new-session row (the owner's ask) is about its SHAPE
- * and its primitives, not about reusing its endpoint.
+ * The obvious-looking alternative — POST /api/agent-tools/fleet/launch-on-plan,
+ * the agent tool that opens N members in one call — CANNOT WORK FROM A BROWSER,
+ * and this is worth stating because the failure looks like success from a
+ * distance. Those agent-tools routes carry no agent identity, so the tool's
+ * `resolveAgentIdentity` throws and every call 500s with "context carries no
+ * power-user / superuser / principal / fleet-spawn / signed-spawn identity" —
+ * verified from curl AND from inside the authenticated Tauri webview. (Probing
+ * it with an EMPTY body is what fools you: zod arg-validation runs first, so you
+ * get a tidy `invalid_args` + schema and conclude the route is callable. It only
+ * proves zod ran. See the `agent-tools-http-route-has-no-ui-identity` fact.)
+ *
+ * Nor is a loopback endpoint wrapping that tool the right fix: it makes the
+ * CALLER the fleet's leader and seeds a leader brief. A GUI launch has no
+ * caller, so a synthetic principal would become "leader" of a fleet it can never
+ * lead — worse than a leaderless one.
+ *
+ * What this costs, stated plainly: `fleet:launch-on-plan` also seeds a
+ * plan-scoped claim spec so members' `scheduler:get_next` stays on that plan.
+ * launch-su does not, so these members pull under the default spec — the SAME
+ * behaviour the existing new-session row's fleet-create already has, so this row
+ * is consistent with the GUI rather than introducing a new gap.
  *
  * ── Option sources are SHARED, never re-declared ────────────────────────────
  * Models/efforts/accounts come from the same exports the HUD's new-session row
@@ -76,8 +92,20 @@ import {
 } from '@/app/adv/sessions/NewSessionLauncher';
 import { useSuLaunchOptions } from '@/app/adv/sessions/use-su-launch-options';
 
-/** The agent-tools HTTP mount for `fleet:launch-on-plan` (`<group>/<verb>`). */
-export const FLEET_LAUNCH_ROUTE = '/api/agent-tools/fleet/launch-on-plan';
+/**
+ * Slugify a fleet NAME the way the server does, so members 2..N can join the
+ * fleet member 1 just created. The server is still the authority — it slugifies
+ * `fleetName` itself — this only has to agree with it.
+ *
+ * Pure — exported for unit-test access.
+ */
+export function fleetSlugFromName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
 
 /**
  * Headed vs headless — the owner's "headed or headed", which is an obvious typo

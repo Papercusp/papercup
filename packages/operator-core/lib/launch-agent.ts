@@ -48,6 +48,14 @@ export interface LaunchAgentOpts extends LaunchOpts {
    *  failover) | a pool account id. A GUI launch should ALWAYS send one — psu with
    *  no --account opens an interactive picker that would hang the spawn. */
   account?: string | null;
+  /**
+   * WI-6505 — psu `--headless`: launch with NO desktop window. The session still
+   * registers presence, joins its fleet and stays injectable for warm wakes; it
+   * just logs to a file instead of a terminal. Orthogonal to every other option.
+   *
+   * Omitted/false keeps the historical behaviour exactly (a visible terminal).
+   */
+  headless?: boolean;
 }
 
 export interface LaunchAgentResult {
@@ -113,6 +121,9 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     fleet_name: opts.fleetName ?? null,
     fleet_scheme: opts.fleetScheme ?? null,
     account: opts.account ?? null,
+    // WI-6505. Null-safe like the options above: an omitted flag is "not
+    // supplied", which launch-su treats as a headed launch.
+    headless: opts.headless ?? false,
   });
   let lastError = 'no spawn path available';
   for (const url of launchSuEndpoints()) {

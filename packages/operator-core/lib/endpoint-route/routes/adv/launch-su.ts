@@ -77,6 +77,13 @@ const launchSu = defineTool({
       // instead of spawning a terminal — the pui reactively opens the pane that
       // RUNS it (the single launcher). The pane materializes via the roster.
       defer_spawn?: boolean;
+      // WI-6505 (owner ask 2026-07-27, the chat popup's fleet-launch row): launch
+      // with NO desktop window — a background su session that still registers
+      // presence and joins its fleet, logging to a file instead of a terminal.
+      // psu has had `--headless` since headless-fleet-launch P-001; this route
+      // simply could not express it, which is why a GUI fleet launch could only
+      // ever open N windows.
+      headless?: boolean;
     } = {};
     try {
       const text = await req.text();
@@ -261,6 +268,10 @@ const launchSu = defineTool({
     // planner role/persona (`=` form; psu drops the space form) so the dock
     // panes it as a typed 📋 Planner pane (responsive — auto-injection OFF).
     if (kickoffKind === 'new-plan') psuArgs.push('--role=planner');
+    // WI-6505: `--headless` keeps psu's managed pty ON despite non-TTY stdio and
+    // implies --no-picker (already passed). Pushed LAST so the argv is otherwise
+    // byte-identical to a headed launch — the two paths differ by exactly this flag.
+    if (body.headless) psuArgs.push('--headless');
 
     // Deferred (D-006): record a pending "workbench launch" instead of spawning a
     // terminal. The pui reactively opens a work-area pane that RUNS `launch_argv`
@@ -303,7 +314,59 @@ const launchSu = defineTool({
 
     const oneliner = `exec ${psuArgs.map(shellEscape).join(' ')}`;
 
-    const spawned = await spawnInTerminal({ oneliner, env: process.env });
+    // WI-6505 — the two spawn shapes, normalized to ONE result so everything
+    // below (the early-exit warning, the adv_sessions row, the response) stays a
+    // single code path rather than forking per mode.
+    //
+    // Headless routes through `spawnHeadless` — the SAME helper
+    // fleet:launch-on-plan uses — deliberately, not a hand-rolled `detached:true`
+    // spawn: it enrols the child in the task ledger and, on a systemd host, puts
+    // it in a transient `systemd-run --user --scope` sibling of the operator's own
+    // service, so an operator restart cannot reap it (EI-9748). A bare detached
+    // spawn here would skip both.
+    let spawned: { ok: true; terminal: string; pid: number | undefined; likelyOpened: boolean } | { ok: false; error: string };
+    if (body.headless) {
+      try {
+        const [{ buildConsoleEnvelope }, { spawnHeadless }, { papercuspPathForWorkspace }, { resolveSpawnHostOperatorBaseUrl }] =
+          await Promise.all([
+            import('../../../console-launcher'),
+            import('../../../console-spawn'),
+            import('../../../papercusp-root'),
+            import('../../../mcp-base-url'),
+          ]);
+        const workspaceId = activeWorkspaceId();
+        const base = await buildConsoleEnvelope({
+          workspaceId,
+          slug: harness ?? undefined,
+          operatorBaseUrl: resolveSpawnHostOperatorBaseUrl(),
+          // Each psu bootstraps its own MCP — same reason capability:terminal and
+          // fleet:launch-on-plan skip it.
+          skipMcpJson: true,
+        });
+        const r = await spawnHeadless({
+          envelope: { ...base, greetingCmd: oneliner, cwd: base.cwd },
+          label: `${agent}${plan ? ` · ${plan}` : ''} (headless)`,
+          // The workspace's fleet-logs dir — NON-repo, so git-sync never tries to
+          // commit a session log into the staging tree.
+          logDir: join(papercuspPathForWorkspace(workspaceId), 'fleet-logs'),
+        });
+        // `terminal` already reads "headless (log: <path>)", so the caller is told
+        // where to tail without a second field.
+        spawned =
+          r.status === 'ok'
+            ? // A headless child has no window that could fail to open, so the
+              // early-exit warning below has nothing to be uncertain about —
+              // spawnHeadless already probed for a boot-time death and would have
+              // returned an error-with-log-tail instead.
+              { ok: true, terminal: r.terminal, pid: r.pid ?? undefined, likelyOpened: true }
+            : { ok: false, error: r.error };
+      } catch (e: any) {
+        spawned = { ok: false, error: `headless launch failed: ${e?.message ?? e}` };
+      }
+    } else {
+      const r = await spawnInTerminal({ oneliner, env: process.env });
+      spawned = r.ok ? r : { ok: false, error: r.error };
+    }
     if (!spawned.ok) {
       return json({ status: 'error', error: spawned.error }, 500);
     }
