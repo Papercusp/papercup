@@ -443,16 +443,41 @@ export interface AgentSignalsSource {
 }
 
 /**
+ * Statuses meaning the item is FINISHED. A terminal item keeps its `taken_by`
+ * — one of the 12 claimed rows measured on 2026-07-28 was already `done` — so
+ * without this filter a completed task would keep feeding signals indefinitely,
+ * pulling retrieval toward work the agent has moved on from.
+ */
+const TERMINAL_STATUSES: readonly string[] = [
+  'done',
+  'closed',
+  'resolved',
+  'deprecated',
+  'dropped',
+  'passed',
+];
+
+/**
  * The production source: the agent's own claim + its own recent tool calls.
  *
  * Both reads are single-index lookups keyed by the agent's coord owner id
- * (`work_item_claims_owner_idx` on `(workspace_id, owner)`, and
- * `tool_invocations_coord_owner_idx` on `(coord_owner_id, invoked_at DESC)`),
+ * (`hfc_taken_by_idx` on `(workspace_id, taken_by) WHERE taken_by IS NOT NULL`,
+ * and `tool_invocations_coord_owner_idx` on `(coord_owner_id, invoked_at DESC)`),
  * which is what makes this affordable on the per-turn path.
  *
- * ⚠ Both queries are workspace-scoped. `work_item_claims` and
- * `tool_invocations` are multi-tenant, keyed on `(workspace_id, …)`, so a bare
- * owner filter can match another tenant's rows.
+ * ⚠ CLAIMS LIVE ON `work_items.taken_by`, NOT IN `work_item_claims`. That table
+ * is the obvious-looking source and it is a DECOY: measured 2026-07-28 it held
+ * ZERO rows table-wide, while `work_items.taken_by` held 12 (11 non-terminal).
+ * A resolver reading the claims table returns nothing in production forever,
+ * silently — and no unit test with a fake `sql` can catch that, because the
+ * query is perfectly well-formed. Verified against live data before landing.
+ *
+ * ⚠ `expires_at` IS USUALLY NULL — 11 of those 12 rows had no expiry — so an
+ * `expires_at > now()` predicate drops nearly every real claim. NULL means "no
+ * expiry", not "expired".
+ *
+ * ⚠ Both queries are workspace-scoped: these tables are multi-tenant, keyed on
+ * `(workspace_id, …)`, so a bare owner filter can match another tenant's rows.
  */
 export function pgAgentSignalsSource(
   sql: Sql,
@@ -468,19 +493,16 @@ export function pgAgentSignalsSource(
 
   return {
     async claimedItem() {
-      // The agent's LIVE claim — an expired one is not what it is working on.
-      // Most recently active first: an agent may legitimately hold several.
+      // Most recent progress first: an agent may legitimately hold several
+      // items, and the one it last moved is the one it is working on.
       const rows = (await sql`
-        SELECT wi.feature_id AS id, wi.title, wi.summary AS body
-        FROM harness_shared.work_item_claims c
-        JOIN harness_shared.work_items wi
-          ON wi.workspace_id = c.workspace_id
-         AND wi.harness_slug = c.harness_slug
-         AND wi.feature_id   = c.work_item_id
-        WHERE c.workspace_id = ${opts.workspaceId}
-          AND c.owner        = ${opts.ownerId}
-          AND c.expires_ts   > now()
-        ORDER BY c.last_activity_ts DESC
+        SELECT feature_id AS id, title, summary AS body
+        FROM harness_shared.work_items
+        WHERE workspace_id = ${opts.workspaceId}
+          AND taken_by     = ${opts.ownerId}
+          AND status <> ALL (${TERMINAL_STATUSES as string[]})
+          AND (expires_at IS NULL OR expires_at > now())
+        ORDER BY COALESCE(last_progress_at, taken_at) DESC NULLS LAST
         LIMIT 1
       `) as unknown as ReadonlyArray<{
         id: string | null;

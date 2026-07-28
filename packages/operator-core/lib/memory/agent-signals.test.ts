@@ -407,11 +407,43 @@ describe('pgAgentSignalsSource', () => {
     }
   });
 
-  it('bounds the claim read to a LIVE claim and the newest activity', async () => {
+  // ── The two traps below were found by running the query against live data,
+  // NOT by unit testing. Both produce a perfectly well-formed query that
+  // silently returns nothing (or the wrong thing) in production, which is
+  // exactly what a fake `sql` cannot detect. These tests exist so a later
+  // refactor cannot quietly reintroduce either one.
+
+  it('reads claims from work_items.taken_by, NOT the empty work_item_claims table', async () => {
+    // Measured 2026-07-28: work_item_claims held ZERO rows table-wide while
+    // work_items.taken_by held 12. The obvious-looking table is a decoy.
     const { sql, calls } = fakeSql([[]]);
     await pgAgentSignalsSource(sql, OPTS).claimedItem();
-    expect(calls[0]?.text).toMatch(/expires_ts\s*>\s*now\(\)/);
-    expect(calls[0]?.text).toMatch(/ORDER BY c\.last_activity_ts DESC/);
+    expect(calls[0]?.text).toMatch(/harness_shared\.work_items/);
+    expect(calls[0]?.text).toMatch(/taken_by/);
+    expect(calls[0]?.text).not.toMatch(/work_item_claims/);
+  });
+
+  it('treats a NULL expires_at as "no expiry", never as expired', async () => {
+    // 11 of the 12 live claimed rows had NULL expires_at — a bare
+    // `expires_at > now()` predicate drops nearly every real claim.
+    const { sql, calls } = fakeSql([[]]);
+    await pgAgentSignalsSource(sql, OPTS).claimedItem();
+    expect(calls[0]?.text).toMatch(/expires_at IS NULL OR expires_at > now\(\)/);
+  });
+
+  it('excludes terminal items — a done item keeps its taken_by', async () => {
+    const { sql, calls } = fakeSql([[]]);
+    await pgAgentSignalsSource(sql, OPTS).claimedItem();
+    expect(calls[0]?.text).toMatch(/status <> ALL/);
+    expect(calls[0]?.params.flat()).toEqual(
+      expect.arrayContaining(['done', 'closed', 'resolved', 'deprecated', 'dropped', 'passed']),
+    );
+  });
+
+  it('orders the claim read by most recent progress', async () => {
+    const { sql, calls } = fakeSql([[]]);
+    await pgAgentSignalsSource(sql, OPTS).claimedItem();
+    expect(calls[0]?.text).toMatch(/ORDER BY COALESCE\(last_progress_at, taken_at\) DESC/);
   });
 
   it('orders invocations NEWEST FIRST — extraction depends on it', async () => {
