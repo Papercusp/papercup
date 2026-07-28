@@ -5018,6 +5018,22 @@ function ensureCcTurnStartMemoryHookEnrollment(env) {
   });
 }
 
+/** context-injection-audit-2026-07-28 P-015: the MID-TURN half of the same delta
+ *  is the same drift class again — and the reason this verifier exists at all is
+ *  EI-18891337746278593, where posttooluse-objective-title.sh sat deployed on disk
+ *  but registered under no hook event, while the plan describing it claimed it
+ *  "injects today". A hook that is copied but unenrolled is indistinguishable from
+ *  a working one unless something checks. This checks. */
+function ensureCcMidTurnContextHookEnrollment(env) {
+  ensureCcHookEnrollment(env, {
+    event: 'PreToolUse',
+    hookName: 'pretooluse-midturn-context.sh',
+    label: 'MID-TURN CONTEXT HOOK',
+    degradedNote:
+      'THIS SESSION GETS RECALL ONLY AT TURN-START — a long tool-call turn will re-derive facts already in memory, with no injection after the opening prompt',
+  });
+}
+
 /** The original plain launch: inherit the user's stdio straight into the child.
  *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
  *  start. */
@@ -5186,6 +5202,8 @@ function runWrapper({
   // WI-4394: same drift class, same self-repair path, for the turn-start memory
   // delta hook — this is the concrete fix for the near-silent-live turn-start port.
   ensureCcTurnStartMemoryHookEnrollment(env);
+  // P-015: and the mid-turn boundary the turn-start hook structurally cannot reach.
+  ensureCcMidTurnContextHookEnrollment(env);
   // turn-lifecycle-control Phase 3: when enabled + interactive, host the agent
   // through a managed pty + owner-only control socket so the operator can inject
   // a wake (or, Phase 4, an interrupt) into the LIVE session rather than parking

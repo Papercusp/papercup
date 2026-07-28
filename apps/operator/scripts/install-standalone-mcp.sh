@@ -273,6 +273,13 @@ CC_PROVENANCE_HOOK="${CC_HOOK_DEST_DIR}/userpromptsubmit-provenance.sh"
 # initialize prelude / orient / a claim port already injected). Fail-open,
 # psu-gated, 2.5s wall.
 CC_TURN_MEMORY_HOOK="${CC_HOOK_DEST_DIR}/userpromptsubmit-memory.sh"
+# PreToolUse hook (context-injection-audit-2026-07-28 P-015, D-026): the MID-TURN
+# half of the same delta. turn-start fires once per prompt, so a turn with fifty
+# tool calls got one injection and then silence; this asks per tool dispatch
+# (matcher Bash|Grep|Glob|Read), epoch-deduped through the same ledger under port
+# 'mid-turn' at ~1/10th the budget. Emits additionalContext ONLY — never a
+# permissionDecision, so it grants no permission. Fail-open, psu-gated, 1.2s wall.
+CC_MIDTURN_CONTEXT_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-midturn-context.sh"
 # Stop hook (deterministic-context-carry-2026-07-14 P-012): per-turn journal —
 # pings journal:record-turn at each turn end; the server extracts the agent's
 # ⟦journal⟧ line (mechanical first-line fallback, flagged). Fire-and-forget,
@@ -433,6 +440,44 @@ hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('UserPromptSubmit', [])) if e]
 arr.append({'hooks': [{'type': 'command', 'command': cmd}]})
 hooks['UserPromptSubmit'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+# Merge the mid-turn context PreToolUse hook (context-injection-audit-2026-07-28
+# P-015) as its OWN entry, matcher-scoped to the investigation tools — same
+# idempotent drop-ours-then-append shape as merge_turn_memory_hook.
+#   $1 = settings.json path
+merge_midturn_context_hook() {
+  python3 - "$1" "$CC_MIDTURN_CONTEXT_HOOK" "$WORKSPACE_ROOT" <<'PYEOF'
+import json, os, sys, time
+path, hook, workspace_root = sys.argv[1:4]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {hook, os.path.basename(hook)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {hook}"
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
+arr.append({'matcher': 'Bash|Grep|Glob|Read', 'hooks': [{'type': 'command', 'command': cmd}]})
+hooks['PreToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, 'w') as f:
@@ -1378,6 +1423,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/userpromptsubmit-memory.sh" "$CC_TURN_MEMORY_HOOK"
     chmod 755 "$CC_TURN_MEMORY_HOOK"
   fi
+  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-midturn-context.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/pretooluse-midturn-context.sh" "$CC_MIDTURN_CONTEXT_HOOK"
+    chmod 755 "$CC_MIDTURN_CONTEXT_HOOK"
+  fi
   if [ -f "${CC_HOOK_SRC_DIR}/stop-turn-journal.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/stop-turn-journal.sh" "$CC_TURN_JOURNAL_HOOK"
     chmod 755 "$CC_TURN_JOURNAL_HOOK"
@@ -1424,6 +1473,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_PLANS_GUARD_HOOK" ] && merge_plans_read_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_PROVENANCE_HOOK" ] && merge_provenance_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_TURN_MEMORY_HOOK" ] && merge_turn_memory_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_MIDTURN_CONTEXT_HOOK" ] && merge_midturn_context_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_TURN_JOURNAL_HOOK" ] && merge_turn_journal_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_ASK_GATE_HOOK" ] && merge_ask_gate_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_GUARD_OPERATOR_DESKTOP_HOOK" ] && merge_guard_operator_desktop_hook "$CLAUDE_SETTINGS"

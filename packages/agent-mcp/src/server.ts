@@ -81,6 +81,47 @@ interface ValidationIssue {
   readonly code?: string;
   readonly origin?: string;
   readonly maximum?: number;
+  /**
+   * Zod v4 `invalid_union`: the per-branch issue lists. Not part of the
+   * Standard-Schema Issue type, so read defensively — see `bestUnionBranch`.
+   */
+  readonly errors?: ReadonlyArray<ReadonlyArray<ValidationIssue>>;
+}
+
+/**
+ * EI-18889347809692710 — recover the ACTIONABLE issues hiding inside an
+ * `invalid_union`.
+ *
+ * Zod reports a failed union as ONE issue at the union's OWN path, with the
+ * uninformative message `Invalid input`; every branch's real diagnosis is nested
+ * in `issue.errors`. For a union-typed arg that is how an agent gets told
+ * `body: Invalid input` — naming neither the offending section index nor the key
+ * — which is exactly the report that cost three round-trips on a message that was
+ * already written, and pushed the caller to DROP the structured field and restate
+ * it as prose (losing the machine-readable disposition the field exists to carry).
+ *
+ * Which branch to believe: the one that got FURTHEST into the structure. A caller
+ * who passed an array to `z.union([z.string(), z.array(section)])` produces a
+ * shallow "expected string, received array" from the string branch and a deep
+ * `[1, 'couldNotDetermine']` from the array branch — the deep one is the branch
+ * they meant, so its path is the one worth printing. Requiring depth > 0 keeps the
+ * union's own message when NO branch located a specific field (e.g. a plain scalar
+ * mismatch), where the branch messages are no more useful than the union's.
+ */
+function bestUnionBranch(issue: ValidationIssue): ReadonlyArray<ValidationIssue> | null {
+  const branches = issue.errors;
+  if (!Array.isArray(branches) || branches.length === 0) return null;
+  let best: ReadonlyArray<ValidationIssue> | null = null;
+  let bestDepth = 0;
+  for (const branch of branches) {
+    if (!Array.isArray(branch) || branch.length === 0) continue;
+    const depth = Math.max(...branch.map((i) => (i.path ?? []).length));
+    if (depth > bestDepth) {
+      bestDepth = depth;
+      best = branch;
+    }
+  }
+  return best;
 }
 
 /** Walk a dotted path into the raw input to recover the offending value. */
@@ -104,25 +145,37 @@ function valueAtPath(input: unknown, segs: PropertyKey[]): unknown {
  * Generic over any field; non-too_big issues keep their original `path: message`.
  */
 function formatInvalidArgs(issues: ReadonlyArray<ValidationIssue>, input: unknown): string {
-  return issues
-    .map((issue) => {
-      const segs = (issue.path ?? []).map((seg) =>
+  const render = (issue: ValidationIssue, prefix: PropertyKey[], depth: number): string[] => {
+    const segs = [
+      ...prefix,
+      ...(issue.path ?? []).map((seg) =>
         typeof seg === 'object' && seg !== null ? (seg as { key: PropertyKey }).key : (seg as PropertyKey),
-      );
-      const path = segs.map((s) => String(s)).join('.');
-      if (issue.code === 'too_big' && issue.origin === 'string' && typeof issue.maximum === 'number') {
-        const max = issue.maximum;
-        const actual = valueAtPath(input, segs);
-        const over = typeof actual === 'string' ? actual.length - max : null;
-        const detail =
-          over !== null && over > 0
-            ? `too long — ${over} chars over the ${max}-char limit; trim to ${max}.`
-            : `too long — over the ${max}-char limit; trim to ${max}.`;
-        return path ? `${path}: ${detail}` : detail;
-      }
-      return path ? `${path}: ${issue.message}` : issue.message;
-    })
-    .join('; ');
+      ),
+    ];
+
+    // An `invalid_union` carries its real diagnosis in nested per-branch issues;
+    // surface the branch that located an actual field instead of "Invalid input".
+    // Bounded recursion so a union of unions cannot spin.
+    if (depth < 4) {
+      const branch = bestUnionBranch(issue);
+      if (branch) return branch.flatMap((sub) => render(sub, segs, depth + 1));
+    }
+
+    const path = segs.map((s) => String(s)).join('.');
+    if (issue.code === 'too_big' && issue.origin === 'string' && typeof issue.maximum === 'number') {
+      const max = issue.maximum;
+      const actual = valueAtPath(input, segs);
+      const over = typeof actual === 'string' ? actual.length - max : null;
+      const detail =
+        over !== null && over > 0
+          ? `too long — ${over} chars over the ${max}-char limit; trim to ${max}.`
+          : `too long — over the ${max}-char limit; trim to ${max}.`;
+      return [path ? `${path}: ${detail}` : detail];
+    }
+    return [path ? `${path}: ${issue.message}` : issue.message];
+  };
+
+  return issues.flatMap((issue) => render(issue, [], 0)).join('; ');
 }
 
 /**
