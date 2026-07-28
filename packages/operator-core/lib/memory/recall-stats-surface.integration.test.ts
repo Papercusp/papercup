@@ -196,3 +196,110 @@ describe('per-pool recall telemetry round-trips through real PG (P-026 guard)', 
     expect(await readRecallHealthByPool(db.adminSql, { surface: 'p026-flat' })).toEqual([]);
   });
 });
+
+/**
+ * context-injection-audit-2026-07-28 P-041 (migration 706) — real-PG guard for
+ * the QUERY-shape columns, for the third time and the same reason.
+ *
+ * Same swallow hazard as the two guards above: `recordRecallStats` catches
+ * everything, so a wrong column name, a bad arity, or a type mismatch in the
+ * four new columns fails INVISIBLY and the table simply keeps recording NULLs.
+ * That failure is indistinguishable at read time from "not deployed yet", which
+ * is exactly the state the table is in right now — so without this test the
+ * first honest signal would be a quantification that silently measured nothing.
+ *
+ * The read side needs real PG even more than the write side: `readRecallQueryHealth`
+ * is a WINDOW FUNCTION over a partition, and its correctness rests on a Postgres
+ * semantic a mock cannot reproduce — NULLs compare EQUAL in `PARTITION BY`, so a
+ * session-less row would silently join every other session-less row on the box
+ * into one partition. The third test below is that guard (D-016 rule 2).
+ */
+describe('query-shape telemetry round-trips through real PG (P-041 guard)', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+  }, 120_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  const envelope = (nonce: string) => `⟦turn-origin:loop-fire nonce:${nonce}⟧`;
+
+  it('persists query chars, envelope-stripped hash, claimed origin and session', async () => {
+    const { describeRecallQuery } = await import('./recall-stats');
+    const query = `${envelope('a1b2c3d4e5f60718')}\ncontinue the audit`;
+    await recordRecallStats(db.adminSql, {
+      surface: 'p041-shape',
+      entries: [entry('q1', 0.5)],
+      query,
+      sessionId: 'su-p041',
+    });
+
+    const [row] = (await db.adminSql`
+      SELECT query_chars, query_sha256, query_origin, session_id
+      FROM harness_shared.memory_recall_stats
+      WHERE surface = 'p041-shape'
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `) as Array<{
+      query_chars: number; query_sha256: string; query_origin: string | null; session_id: string | null;
+    }>;
+
+    // The insert LANDED — a swallowed error (missing column, bad arity) yields no row.
+    expect(row, 'the query-shape insert must land — a swallowed error yields no row').toBeDefined();
+    expect(row!.query_chars).toBe(query.length);
+    expect(row!.query_sha256).toBe(describeRecallQuery(query).sha256);
+    expect(row!.query_origin).toBe('loop-fire');
+    expect(row!.session_id).toBe('su-p041');
+  });
+
+  // D-016 rule 1, end-to-end. The nonce differs per turn; if the STORED hash
+  // tracked the raw text, every machine turn would be unique by construction and
+  // the duplicate rate would read a permanent — and maximally healthy — 0.0%.
+  it('stores the SAME hash for two turns whose bodies match but whose nonces differ', async () => {
+    const body = '\nfix the failing gate';
+    for (const nonce of ['1111111111111111', '2222222222222222']) {
+      await recordRecallStats(db.adminSql, {
+        surface: 'p041-nonce',
+        entries: [entry('x', 0.4)],
+        query: `${envelope(nonce)}${body}`,
+        sessionId: 'su-nonce',
+      });
+    }
+    const rows = (await db.adminSql`
+      SELECT DISTINCT query_sha256 FROM harness_shared.memory_recall_stats WHERE surface = 'p041-nonce'
+    `) as Array<{ query_sha256: string }>;
+    expect(rows, 'two differing nonces over one body must collapse to ONE hash').toHaveLength(1);
+  });
+
+  // D-016 rule 2. THE test that a mock cannot express: Postgres treats NULLs as
+  // EQUAL in PARTITION BY, so without the `session_id IS NOT NULL` guard the two
+  // session-less identical rows below would form their own partition and report a
+  // third repeat — inflating eligible 3→5 and repeats 2→3 with a plausible number.
+  it('counts repeats per session and EXCLUDES session-less rows from the lag', async () => {
+    const { readRecallQueryHealth } = await import('./recall-stats');
+    const q = (s: string) => ({ surface: 'p041-repeat', entries: [entry('e', 0.5)], query: s });
+
+    // session A: Q1, Q1 (a repeat), then Q2.
+    await recordRecallStats(db.adminSql, { ...q('alpha'), sessionId: 'sA' });
+    await recordRecallStats(db.adminSql, { ...q('alpha'), sessionId: 'sA' });
+    await recordRecallStats(db.adminSql, { ...q('beta'), sessionId: 'sA' });
+    // session B: Q1, Q1 (a repeat).
+    await recordRecallStats(db.adminSql, { ...q('alpha'), sessionId: 'sB' });
+    await recordRecallStats(db.adminSql, { ...q('alpha'), sessionId: 'sB' });
+    // pull path — no session. Byte-identical, and must NOT produce a repeat.
+    await recordRecallStats(db.adminSql, q('gamma'));
+    await recordRecallStats(db.adminSql, q('gamma'));
+
+    const [health] = await readRecallQueryHealth(db.adminSql, { surface: 'p041-repeat' });
+    expect(health?.recalls).toBe(7);
+    expect(health?.repeatEligible, 'only session-bearing rows have a defined predecessor').toBe(3);
+    expect(health?.repeats).toBe(2);
+    expect(health?.repeatRate).toBeCloseTo(2 / 3, 6);
+    // No envelope on any of these, so the mix is entirely the no-envelope bucket.
+    expect(health?.machineOrigin).toBe(0);
+    expect(health?.originMix).toEqual({ '(no-envelope)': 7 });
+  });
+});

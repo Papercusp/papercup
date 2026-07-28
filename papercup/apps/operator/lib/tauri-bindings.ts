@@ -348,6 +348,13 @@ export type IpcStatus = {
 	msSinceLastConnect: number | null,
 	lastError: string | null,
 	connectedPath: string | null,
+	/**
+	 *  Whether the operator owning the IPC socket is provably the one that served
+	 *  this webview — see [`SocketResolution::owner_is_content_origin`]. The
+	 *  webview reads this to decide whether content-origin-scoped paths
+	 *  (`/api/desktop/*`) may ride IPC, instead of excluding them unconditionally.
+	 */
+	ownerIsContentOrigin: boolean,
 };
 
 export type NativeTerminalStatus = {
