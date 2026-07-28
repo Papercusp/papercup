@@ -386,6 +386,7 @@ import adminTestingTestRuns from './admin/testing-test-runs';
 import adminTestingTestRunsById from './admin/testing-test-runs-by-id';
 import adminTestingTestRunsCancel from './admin/testing-test-runs-cancel';
 import adminTestingDesktopPerfTrend from './admin/testing-desktop-perf-trend';
+import adminTestingDesktopPerfIngest from './admin/testing-desktop-perf-ingest';
 import adminTestingMemoryHealth from './admin/testing-memory-health';
 import adminTestingMemoryPreflight from './admin/testing-memory-preflight';
 import adminTestingMemoryChecks from './admin/testing-memory-checks';
@@ -853,6 +854,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminTestingTestRunsById as AnyRoute),
   ...flatten(adminTestingTestRunsCancel as AnyRoute),
   ...flatten(adminTestingDesktopPerfTrend as AnyRoute),
+  ...flatten(adminTestingDesktopPerfIngest as AnyRoute),
   ...flatten(adminTestingMemoryHealth as AnyRoute),
   ...flatten(adminTestingMemoryPreflight as AnyRoute),
   ...flatten(adminTestingMemoryChecks as AnyRoute),
