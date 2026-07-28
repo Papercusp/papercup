@@ -72,11 +72,71 @@ describe('useAgentThinkingStream (shared live thinking-stream hook)', () => {
     expect(result.current.status).toBe('error');
   });
 
-  it('appends a single streamed event onto the existing timeline', () => {
+  it('appends a single streamed event onto the existing timeline', async () => {
     const { result } = renderHook(() => useAgentThinkingStream('my-harness', 'production', 'run-1'));
     act(() => { captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'a' }])); });
     act(() => { captured!.handlers.event!(JSON.stringify({ kind: 'text', text: 'b' })); });
-    expect(result.current.events).toEqual([{ kind: 'text', text: 'a' }, { kind: 'text', text: 'b' }]);
+    // WI-6502: streamed entries commit on the next frame, not synchronously.
+    await waitFor(() => {
+      expect(result.current.events).toEqual([{ kind: 'text', text: 'a' }, { kind: 'text', text: 'b' }]);
+    });
+  });
+
+  it('coalesces a BURST of streamed events into ONE commit (WI-6502)', async () => {
+    // The server follows the transcript on a 1Hz poll and emits one `event` per
+    // appended entry, so entries arrive in bursts. Committing them one at a time
+    // made each burst K renders — and each render re-parses the live message's
+    // markdown (12ms at 8KB, 24ms at 16KB), which is what keystrokes queued
+    // behind. The whole burst must land as a SINGLE state update.
+    let renders = 0;
+    const { result } = renderHook(() => {
+      renders += 1;
+      return useAgentThinkingStream('my-harness', 'production', 'run-1');
+    });
+    act(() => { captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'seed' }])); });
+    const rendersAfterBackfill = renders;
+
+    const BURST = 20;
+    act(() => {
+      for (let i = 0; i < BURST; i++) {
+        captured!.handlers.event!(JSON.stringify({ kind: 'text', text: `e${i}` }));
+      }
+    });
+    // Nothing committed yet — the burst is still buffered.
+    expect(result.current.events).toHaveLength(1);
+
+    await waitFor(() => { expect(result.current.events).toHaveLength(1 + BURST); });
+    // …and it arrived as ONE commit, not 20. This is the assertion that actually
+    // guards the fix: without coalescing this is BURST renders.
+    expect(renders - rendersAfterBackfill).toBe(1);
+    expect(result.current.events[BURST]).toEqual({ kind: 'text', text: `e${BURST - 1}` });
+  });
+
+  it('drops buffered entries when a reconnect re-sends the backfill snapshot', async () => {
+    // A backfill is a whole-timeline snapshot sent once per connection. Entries
+    // buffered from the connection that just dropped must NOT be replayed on top
+    // of the fresh snapshot, or the pane shows duplicated//out-of-order tail.
+    const { result } = renderHook(() => useAgentThinkingStream('my-harness', 'production', 'run-1'));
+    act(() => { captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'old' }])); });
+    act(() => { captured!.handlers.event!(JSON.stringify({ kind: 'text', text: 'stale-tail' })); });
+    // Reconnect lands before the buffered entry ever flushed.
+    act(() => { captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'fresh' }])); });
+
+    await waitFor(() => { expect(result.current.status).toBe('live'); });
+    expect(result.current.events).toEqual([{ kind: 'text', text: 'fresh' }]);
+  });
+
+  it('flushes a buffered tail when the stream reports done (no lost final burst)', async () => {
+    const { result } = renderHook(() => useAgentThinkingStream('my-harness', 'production', 'run-1'));
+    act(() => { captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'a' }])); });
+    act(() => {
+      captured!.handlers.event!(JSON.stringify({ kind: 'text', text: 'tail' }));
+      captured!.handlers.done!('{}');
+    });
+    expect(result.current.status).toBe('done');
+    await waitFor(() => {
+      expect(result.current.events).toEqual([{ kind: 'text', text: 'a' }, { kind: 'text', text: 'tail' }]);
+    });
   });
 
   it('flips status to disconnected/error when onError fires', () => {

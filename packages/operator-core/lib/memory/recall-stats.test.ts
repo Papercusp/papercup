@@ -265,13 +265,36 @@ describe('readRecallHealthBySurface (orient-recall-quality P-006)', () => {
   it('maps each surface row independently (a single-surface regression stays visible)', async () => {
     const { readRecallHealthBySurface } = await import('./recall-stats');
     const rows = await readRecallHealthBySurface(sqlReturning([
-      { surface: 'search', recalls: 100, zero_hits: 10, p50: '0.6', p90: '0.8', fragment_hits: 0 },
+      {
+        surface: 'search', recalls: 100, zero_hits: 10, fragment_hits: 0,
+        per_scale: [{ scale: 'cosine', scored: 100, p50: '0.6', p90: '0.8' }],
+      },
       // orient regressing alone: zero-hit rate 0.9 while search sits at 0.1.
-      { surface: 'orient', recalls: 20, zero_hits: 18, p50: null, p90: null, fragment_hits: 0 },
+      { surface: 'orient', recalls: 20, zero_hits: 18, fragment_hits: 0, per_scale: [] },
     ]));
     expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({ surface: 'search', recalls7d: 100, zeroHitRate7d: 0.1, topScoreP50: 0.6 });
     expect(rows[1]).toMatchObject({ surface: 'orient', recalls7d: 20, zeroHit7d: 18, zeroHitRate7d: 0.9, topScoreP50: null });
+  });
+
+  // P-036. Measured on the live table: a SINGLE surface carries both scales on
+  // the same day (2026-07-28 `search`: 17 rrf-scale rows alongside 94 cosine).
+  // So grouping by surface does NOT segment by scale, and this reader has to.
+  it('never medians a surface across MIXED scales — it reports the dominant one', async () => {
+    const { readRecallHealthBySurface } = await import('./recall-stats');
+    const rows = await readRecallHealthBySurface(sqlReturning([
+      {
+        surface: 'search', recalls: 111, zero_hits: 0, fragment_hits: 0,
+        per_scale: [
+          { scale: 'cosine', scored: 94, p50: '0.83', p90: '0.9' },
+          { scale: 'rrf', scored: 17, p50: '0.032', p90: '0.0328' },
+        ],
+      },
+    ]));
+    // The blended median of these two populations would be a number that
+    // describes the workload mix, not retrieval quality.
+    expect(rows[0]).toMatchObject({ topScoreScale: 'cosine', topScoreP50: 0.83, topScoreSamples: 94 });
+    expect(rows[0]!.scaleMix).toEqual({ cosine: 94, rrf: 17 });
   });
 
   it('an empty window yields an empty list (degrade-to-empty, never a throw)', async () => {
@@ -286,7 +309,10 @@ describe('readRecallHealth', () => {
 
   it('maps the trailing-window aggregate', async () => {
     const health = await readRecallHealth(sqlReturning([
-      { recalls: 20, zero_hits: 5, p50: '0.51', p90: '0.7', fragment_hits: 2 },
+      {
+        recalls: 20, zero_hits: 5, fragment_hits: 2,
+        per_scale: [{ scale: 'cosine', scored: 20, p50: '0.51', p90: '0.7' }],
+      },
     ]));
     expect(health).toEqual({
       recalls7d: 20,
@@ -294,13 +320,16 @@ describe('readRecallHealth', () => {
       zeroHitRate7d: 0.25,
       topScoreP50: 0.51,
       topScoreP90: 0.7,
+      topScoreScale: 'cosine',
+      topScoreSamples: 20,
+      scaleMix: { cosine: 20 },
       fragmentHits7d: 2,
     });
   });
 
   it('an empty window yields zero rate and null percentiles', async () => {
     const health = await readRecallHealth(sqlReturning([
-      { recalls: 0, zero_hits: 0, p50: null, p90: null, fragment_hits: 0 },
+      { recalls: 0, zero_hits: 0, fragment_hits: 0, per_scale: [] },
     ]));
     expect(health).toEqual({
       recalls7d: 0,
@@ -308,7 +337,57 @@ describe('readRecallHealth', () => {
       zeroHitRate7d: 0,
       topScoreP50: null,
       topScoreP90: null,
+      topScoreScale: null,
+      topScoreSamples: 0,
+      scaleMix: {},
       fragmentHits7d: 0,
     });
+  });
+
+  // P-036: 'unknown' rows are of INDETERMINATE scale, so a percentile over them
+  // is the same mixing bug wearing a label. They count in the mix and can never
+  // be chosen as the reported scale — even when they are the largest bucket.
+  it('never reports percentiles from the unknown-scale bucket, even when it dominates', async () => {
+    const health = await readRecallHealth(sqlReturning([
+      {
+        recalls: 500, zero_hits: 0, fragment_hits: 0,
+        per_scale: [
+          { scale: 'unknown', scored: 400, p50: '0.44', p90: '0.9' },
+          { scale: 'rrf', scored: 60, p50: '0.031', p90: '0.0328' },
+        ],
+      },
+    ]));
+    expect(health.topScoreScale).toBe('rrf');
+    expect(health.topScoreP50).toBe(0.031);
+    expect(health.scaleMix).toEqual({ unknown: 400, rrf: 60 });
+  });
+});
+
+describe('classifyLegacyScoreScale (P-036 — pre-migration-705 rows only)', () => {
+  it('separates the two live populations at their structural bounds', async () => {
+    const { classifyLegacyScoreScale, RRF_SCORE_CEILING } = await import('./recall-stats');
+    // 1/61 — an entry ranked 1st in ONE leg; the observed live minimum.
+    expect(classifyLegacyScoreScale(1 / 61)).toBe('rrf');
+    // 2/61 — rank 1 in BOTH legs; the exact RRF ceiling at k=60/lexWeight=1.
+    expect(classifyLegacyScoreScale(RRF_SCORE_CEILING)).toBe('rrf');
+    // 0.50 is the observed live minimum for an admitted cosine hit.
+    expect(classifyLegacyScoreScale(0.5)).toBe('cosine');
+    expect(classifyLegacyScoreScale(0.9)).toBe('cosine');
+  });
+
+  it('returns unknown inside the gap rather than guessing', async () => {
+    const { classifyLegacyScoreScale } = await import('./recall-stats');
+    // The 5 rows (0.011% of 45,069 over 30d) that live in the dead zone are
+    // lexical-fallback fractions — 5/32, 2/9, 3/8. Guessing a scale for these
+    // is what would put a wrong number in a comparison; 'unknown' excludes them.
+    expect(classifyLegacyScoreScale(0.15625)).toBe('unknown');
+    expect(classifyLegacyScoreScale(0.375)).toBe('unknown');
+  });
+
+  it('treats an absent or non-finite score as unknown, never as zero', async () => {
+    const { classifyLegacyScoreScale } = await import('./recall-stats');
+    expect(classifyLegacyScoreScale(null)).toBe('unknown');
+    expect(classifyLegacyScoreScale(undefined)).toBe('unknown');
+    expect(classifyLegacyScoreScale(Number.NaN)).toBe('unknown');
   });
 });

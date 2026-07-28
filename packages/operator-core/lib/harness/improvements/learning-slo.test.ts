@@ -12,6 +12,7 @@ import type { LearningLoopRegistration } from '../../learning-governor/core';
 import {
   LEARNING_SLO_DARK_NOTE,
   LEARNING_SLO_DEFAULTS,
+  collectMemoryZeroHitSignals,
   flowSignalsFromAggregate,
   governorStarvationSignals,
   medianOf,
@@ -254,6 +255,70 @@ describe('memoryZeroHitSignalsFromAggregate (B-10 telemetry spike)', () => {
     });
     expect(out).toHaveLength(1);
     expect(out[0].body).not.toContain('top-score P50');
+  });
+});
+
+/**
+ * P-036 regression guard. The EI-7774 top-score check exists to SUPPRESS false
+ * alarms — it refuses to fire when the recalls that hit still score normally.
+ * But it compared two medians taken over a MIXED-scale column: rrf tops out at
+ * 0.033 while cosine starts at 0.50. So a pure WORKLOAD-MIX shift between the
+ * windows (more push-path recalls recently, say) collapses the blended median
+ * ~25x with retrieval completely unchanged — converting the suppressor into a
+ * false-alarm ENABLER, and firing exactly the spurious critical D-001 had to
+ * retract. These pin the same-scale pairing that fixes it.
+ */
+describe('collectMemoryZeroHitSignals — the two P50s must be SAME-SCALE (P-036)', () => {
+  const sqlReturning = (rows: Array<Record<string, unknown>>): Sql =>
+    ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve(rows)) as unknown as Sql;
+
+  it('stays quiet when only the workload MIX shifted, not retrieval quality', async () => {
+    const out = await collectMemoryZeroHitSignals(sqlReturning([{
+      // Rate conditions all satisfied: 60% recent vs a 10% baseline, a 6x spike.
+      recent_recalls: 100, recent_zero: 60, base_recalls: 500, base_zero: 50,
+      per_scale: [
+        // The MIX inverted — cosine carried the baseline, rrf carries the
+        // recent window — while EACH scale's own median held steady.
+        { scale: 'cosine', recent_n: 5, recent_p50: 0.83, base_n: 400, base_p50: 0.85 },
+        { scale: 'rrf', recent_n: 90, recent_p50: 0.032, base_n: 80, base_p50: 0.0325 },
+      ],
+    }]));
+    // Blending would compare 0.032 against 0.85 — a 26x "collapse" out of thin
+    // air. Pairing on rrf compares 0.032 vs 0.0325: no collapse, stay quiet.
+    expect(out).toEqual([]);
+  });
+
+  it('still fires when the SAME scale genuinely collapses, and names it', async () => {
+    const out = await collectMemoryZeroHitSignals(sqlReturning([{
+      recent_recalls: 100, recent_zero: 60, base_recalls: 500, base_zero: 50,
+      per_scale: [{ scale: 'rrf', recent_n: 90, recent_p50: 0.012, base_n: 80, base_p50: 0.032 }],
+    }]));
+    expect(out).toHaveLength(1);
+    // The scale is reported so a human reading the finding can tell which
+    // population degraded — a bare score is the D-001 ambiguity again.
+    expect(out[0]!.body).toContain('[rrf scale]');
+  });
+
+  it('falls back to the rate-only gate when no scale has data in BOTH windows', async () => {
+    const out = await collectMemoryZeroHitSignals(sqlReturning([{
+      recent_recalls: 100, recent_zero: 60, base_recalls: 500, base_zero: 50,
+      // Present in the recent window only — yields no comparison at all rather
+      // than a cross-scale one.
+      per_scale: [{ scale: 'rrf', recent_n: 90, recent_p50: 0.03, base_n: 0, base_p50: null }],
+    }]));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.body).not.toContain('scale]');
+  });
+
+  it('ignores unknown-scale rows entirely rather than pairing them', async () => {
+    const out = await collectMemoryZeroHitSignals(sqlReturning([{
+      recent_recalls: 100, recent_zero: 60, base_recalls: 500, base_zero: 50,
+      // An 'unknown' bucket is INDETERMINATE — pairing it would be the mixing
+      // bug wearing a label. The SQL excludes it; nothing here may resurrect it.
+      per_scale: [{ scale: 'unknown', recent_n: 90, recent_p50: 0.01, base_n: 400, base_p50: 0.85 }],
+    }]));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.body).not.toContain('scale]');
   });
 });
 

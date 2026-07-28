@@ -12136,7 +12136,7 @@ body:not(.papercusp-chromeless) .pc-header {
     repeating-linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.045) 0 1px, transparent 1px 72px),
     repeating-linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.030) 0 1px, transparent 1px 58px),
     radial-gradient(circle at 50% 0%, rgb(from var(--accent-strong) r g b / 0.13), transparent 34rem);
-  animation: pcSupportGridDrift 9s linear infinite;
+  /* WI-6542: always-on loop dropped — background-position-only drift, rests at `from`. */
 }
 
 .pc-support-shell h1 {
@@ -12171,7 +12171,9 @@ body:not(.papercusp-chromeless) .pc-header {
   pointer-events: none;
   background: linear-gradient(90deg, transparent, rgb(from var(--accent-strong) r g b / 0.12), transparent);
   filter: blur(8px);
-  animation: pcSupportSignalSweep 4.8s ease-in-out infinite;
+  /* WI-6542: always-on sweep dropped. Sheen-only pseudo-element, opacity:0 at both ends
+     of the old cycle, so it rests invisible rather than parking a lit bar on screen. */
+  opacity: 0;
 }
 
 .pc-support-shell .pc-support-faq::after {
@@ -12416,7 +12418,7 @@ body:not(.papercusp-chromeless) .pc-header {
     repeating-linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.026) 0 1px, transparent 1px 64px),
     radial-gradient(circle at 50% 0%, rgba(226, 252, 255, 0.10), transparent 30rem);
   opacity: 0.54;
-  animation: pcSetupGridDrift 10s linear infinite;
+  /* WI-6542: always-on loop dropped — background-position-only drift, rests at `from`. */
 }
 
 .pc-setup-shell::after {
@@ -12565,7 +12567,8 @@ body:not(.papercusp-chromeless) .pc-header {
     radial-gradient(circle at 28% 0%, rgb(from var(--accent-strong) r g b / 0.12), transparent 28rem);
   opacity: 0.62;
   mask-image: linear-gradient(180deg, transparent 0, #000 8%, #000 92%, transparent 100%);
-  animation: pcSettingsMatrixSweep 12s linear infinite;
+  /* WI-6542: always-on loop dropped. The keyframes only shifted background-position,
+     and its `from` frame is the default, so the resting look is unchanged. */
 }
 
 .pc-settings-nav {
@@ -13904,7 +13907,7 @@ body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc
     radial-gradient(circle at 42% 0%, rgb(from var(--accent-strong) r g b / 0.13), transparent 28rem);
   opacity: 0.66;
   mask-image: linear-gradient(180deg, transparent 0, #000 8%, #000 92%, transparent 100%);
-  animation: pcVoiceSpectrumDrift 11s linear infinite;
+  /* WI-6542: always-on loop dropped — background-position-only drift, rests at `from`. */
 }
 
 body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc-settings-shell > section::after {
@@ -13959,7 +13962,9 @@ body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc
   pointer-events: none;
   background: linear-gradient(90deg, transparent, rgba(226, 252, 255, 0.22), rgb(from var(--emerald-400) r g b / 0.14), transparent);
   filter: blur(3px);
-  animation: pcVoicePanelSweep 5.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  /* WI-6542: always-on sweep dropped. This pseudo-element exists only to carry the
+     sweep and is opacity:0 at both ends of the old cycle, so it rests invisible. */
+  opacity: 0;
 }
 
 body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc-settings-shell :is(select, input[type="text"], input[type="password"], input[type="number"]) {
@@ -13986,7 +13991,8 @@ body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc
   pointer-events: none;
   background: linear-gradient(100deg, transparent 0 36%, rgba(255,255,255,0.18) 48%, transparent 60% 100%);
   transform: translateX(-118%);
-  animation: pcVoicePanelSweep 4.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  /* WI-6542: always-on sweep dropped — the static `translateX(-118%)` above already
+     parks this sheen off-canvas at rest. */
 }
 
 body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc-settings-shell section section:nth-of-type(1)::after {
@@ -14002,7 +14008,8 @@ body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc
   pointer-events: none;
   opacity: 0.52;
   filter: drop-shadow(0 0 16px rgb(from var(--accent-strong) r g b / 0.22));
-  animation: pcVoiceMeterPulse 2.4s ease-in-out infinite;
+  /* WI-6542: always-on pulse dropped. The static `opacity: 0.52` above sits inside the
+     old 0.42<->0.86 cycle, so the ring keeps a mid-cycle resting look. */
 }
 
 body:has(.pc-settings-nav-link[href="/settings/mobile"][aria-current="page"]) .pc-settings-content > .space-y-8.p-6 {
@@ -14145,7 +14152,7 @@ body:has(.pc-settings-nav-link[href="/settings/plugin-runtime"][aria-current="pa
     radial-gradient(circle at 50% 0%, rgba(129, 140, 248, 0.13), transparent 30rem);
   opacity: 0.68;
   mask-image: linear-gradient(180deg, transparent 0, #000 8%, #000 92%, transparent 100%);
-  animation: pcRuntimeBusDrift 13s linear infinite;
+  /* WI-6542: always-on loop dropped — background-position-only drift, rests at `from`. */
 }
 
 body:has(.pc-settings-nav-link[href="/settings/plugin-runtime"][aria-current="page"]) .pc-settings-shell .pc-card {
@@ -14165,7 +14172,7 @@ body:has(.pc-settings-nav-link[href="/settings/plugin-runtime"][aria-current="pa
     linear-gradient(120deg, transparent 0 38%, rgba(226, 252, 255, 0.13) 48%, transparent 58%) -120% 0 / 34% 100% no-repeat,
     radial-gradient(circle at 12% 0%, rgb(from var(--accent-strong) r g b / 0.07), transparent 14rem);
   opacity: 0.70;
-  animation: pcRuntimeStatusSweep 5.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  /* WI-6542: always-on sweep dropped — sheen parked off-canvas at `-120% 0`; tint remains. */
 }
 
 body:has(.pc-settings-nav-link[href="/settings/plugin-runtime"][aria-current="page"]) .pc-settings-shell table {
@@ -14452,7 +14459,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     radial-gradient(circle at 42% 0%, rgb(from var(--accent-strong) r g b / 0.12), transparent 30rem);
   opacity: 0.66;
   mask-image: linear-gradient(180deg, transparent 0, #000 8%, #000 92%, transparent 100%);
-  animation: pcSettingsCommandGrid 12s linear infinite;
+  /* WI-6542: always-on loop dropped — background-position-only drift, rests at `from`. */
 }
 
 body:has(.pc-settings-nav-link[href="/settings/oracle"][aria-current="page"]) .pc-settings-shell section h1:first-of-type,
@@ -14509,7 +14516,8 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     linear-gradient(120deg, transparent 0 38%, rgba(226, 252, 255, 0.12) 48%, transparent 58%) -120% 0 / 34% 100% no-repeat,
     radial-gradient(circle at 12% 0%, rgb(from var(--accent-strong) r g b / 0.07), transparent 14rem);
   opacity: 0.70;
-  animation: pcSettingsCommandSweep 5.4s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  /* WI-6542: always-on sweep dropped. The sheen layer is parked off-canvas by its own
+     `-120% 0` background-position, so at rest only the static radial tint shows. */
 }
 
 body:has(.pc-settings-nav-link[href="/settings/oracle"][aria-current="page"]) .pc-settings-shell form div[style*="min-height"],

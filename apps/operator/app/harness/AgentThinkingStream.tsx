@@ -46,6 +46,12 @@ export interface TimelineEntry {
  *  stalled (an upstream gateway stall / rate-limit is the common cause). */
 export const STALL_AFTER_MS = 45_000;
 
+/** Backstop for the streamed-entry flush (WI-6502) when rAF is unavailable or
+ *  paused — i.e. a hidden/backgrounded window, where rAF legitimately never fires.
+ *  Well under the server's 1Hz follow poll, so it never merges two bursts into one
+ *  and can't make a visible pane feel behind. */
+export const FLUSH_BACKSTOP_MS = 250;
+
 function fmtElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
@@ -108,6 +114,43 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
     // connection re-sends the backfill); after the cap, surface 'error' instead
     // of an eternal spinner.
     let backfillRetries = 0;
+
+    // ── Burst coalescing (WI-6502) ──────────────────────────────────────────
+    // The server follows the transcript on a 1Hz poll and emits ONE `event` per
+    // appended entry (`adv-session-thinking-follow`, endpoint-route/routes/harness/
+    // streams.ts), so entries do NOT trickle — they arrive as a BURST once a second.
+    // Appending them one setState at a time made each burst K separate renders, and
+    // every one of those re-parses the live message's markdown (its content grows per
+    // entry, so ChatMessageContent's memo cannot hold — see ChatConversation.tsx).
+    // That is the dense series of 20-65ms tasks that keystrokes were queueing behind.
+    // Buffer the burst and commit it in ONE update at the next frame instead.
+    //
+    // rAF is the coalescer because it is guaranteed to land after every event already
+    // dispatched from the same network chunk, and it aligns the commit to a frame
+    // boundary. It is also throttled/paused while the window is hidden, so a timer
+    // backstop guarantees the flush still happens for a backgrounded pane.
+    let pendingEntries: TimelineEntry[] = [];
+    let rafId: number | null = null;
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const cancelFlush = () => {
+      if (rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+      if (flushTimer !== null) clearTimeout(flushTimer);
+      rafId = null;
+      flushTimer = null;
+    };
+    const flush = () => {
+      cancelFlush();
+      if (pendingEntries.length === 0) return;
+      const batch = pendingEntries;
+      pendingEntries = [];
+      setEvents((prev) => [...prev, ...batch]);
+    };
+    const scheduleFlush = () => {
+      if (rafId !== null || flushTimer !== null) return;
+      if (typeof requestAnimationFrame === 'function') rafId = requestAnimationFrame(flush);
+      flushTimer = setTimeout(flush, FLUSH_BACKSTOP_MS);
+    };
+
     const source = createResilientEventSource({
       // A caller can pass an explicit stream URL (e.g. the interactive-session
       // transcript endpoint); default is the bee run-log stream.
@@ -115,6 +158,12 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
       handlers: {
         backfill: (data) => {
           try {
+            // A backfill is a whole-timeline SNAPSHOT and arrives on every
+            // (re)connection, so anything still buffered belongs to the connection
+            // that just went away — dropping it is what keeps a reconnect from
+            // replaying stale entries on top of the fresh snapshot.
+            cancelFlush();
+            pendingEntries = [];
             setEvents(JSON.parse(data) as TimelineEntry[]);
             setStatus('live');
             backfillRetries = 0;
@@ -124,7 +173,10 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
           }
         },
         event: (data) => {
-          try { const e = JSON.parse(data) as TimelineEntry; setEvents((prev) => [...prev, e]); } catch { /* ignore */ }
+          try {
+            pendingEntries.push(JSON.parse(data) as TimelineEntry);
+            scheduleFlush();
+          } catch { /* ignore */ }
         },
         // Session live-follow: the agent started/stopped writing the current turn.
         thinking: (data) => {
@@ -134,11 +186,14 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
         anchor: (data) => {
           try { setAnchor(JSON.parse(data) as { found: boolean; index?: number }); } catch { /* ignore */ }
         },
-        done: () => { setStatus('done'); setThinking(false); },
+        // Flush first: `done` means no further entries are coming, so a buffered
+        // tail would otherwise never be committed and the pane would end one
+        // burst short of the real transcript.
+        done: () => { flush(); setStatus('done'); setThinking(false); },
       },
       onError: () => { setStatus('error'); setThinking(false); },
     });
-    return () => { source.close(); };
+    return () => { cancelFlush(); source.close(); };
   }, [slug, phase, runId, streamUrl]);
   return { events, status, thinking, anchor };
 }

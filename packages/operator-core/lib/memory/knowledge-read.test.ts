@@ -69,7 +69,10 @@ describe('readMemoryHealth', () => {
   it('maps counts + recall aggregate, excluding entity rows from totalMemories', async () => {
     const health = await readMemoryHealth(sqlSequence([
       [{ total_memories: 341, entity_rows: 1829, feedback_30d: 2 }],
-      [{ recalls: 40, zero_hits: 10, p50: 0.52, p90: 0.74, fragment_hits: 0 }],
+      [{
+        recalls: 40, zero_hits: 10, fragment_hits: 0,
+        per_scale: [{ scale: 'cosine', scored: 30, p50: 0.52, p90: 0.74 }],
+      }],
       [],
     ]));
     expect(health).toEqual({
@@ -81,6 +84,9 @@ describe('readMemoryHealth', () => {
       zeroHitRate7d: 0.25,
       topScoreP50: 0.52,
       topScoreP90: 0.74,
+      topScoreScale: 'cosine',
+      topScoreSamples: 30,
+      scaleMix: { cosine: 30 },
       fragmentHits7d: 0,
       recallBySurface: [],
       recallTelemetryOk: true,
@@ -92,10 +98,16 @@ describe('readMemoryHealth', () => {
   it('folds the per-surface recall slice into the health payload', async () => {
     const health = await readMemoryHealth(sqlSequence([
       [{ total_memories: 10, entity_rows: 0, feedback_30d: 0 }],
-      [{ recalls: 30, zero_hits: 3, p50: 0.5, p90: 0.7, fragment_hits: 0 }],
+      [{
+        recalls: 30, zero_hits: 3, fragment_hits: 0,
+        per_scale: [{ scale: 'cosine', scored: 27, p50: 0.5, p90: 0.7 }],
+      }],
       [
-        { surface: 'search', recalls: 20, zero_hits: 1, p50: 0.6, p90: 0.8, fragment_hits: 0 },
-        { surface: 'orient', recalls: 10, zero_hits: 9, p50: null, p90: null, fragment_hits: 0 },
+        {
+          surface: 'search', recalls: 20, zero_hits: 1, fragment_hits: 0,
+          per_scale: [{ scale: 'cosine', scored: 19, p50: 0.6, p90: 0.8 }],
+        },
+        { surface: 'orient', recalls: 10, zero_hits: 9, fragment_hits: 0, per_scale: [] },
       ],
     ]));
     expect(health.recallBySurface).toHaveLength(2);

@@ -665,7 +665,17 @@ export async function collectMemoryZeroHitSignals(sql: Sql, opts: LearningSloOpt
   // all (rather than a cross-scale one), which correctly falls back to the
   // pre-EI-7774 rate-only gate.
   const paired = (Array.isArray(r.per_scale) ? r.per_scale : [])
-    .filter((s) => Number(s.recent_n) > 0 && Number(s.base_n) > 0 && s.recent_p50 != null && s.base_p50 != null)
+    .filter(
+      (s) =>
+        // 'unknown' is INDETERMINATE, not a scale — pairing it would be the
+        // mixing bug wearing a label. The SQL already excludes it; this second
+        // guard means a future query edit cannot quietly reintroduce it.
+        String(s.scale) !== 'unknown' &&
+        Number(s.recent_n) > 0 &&
+        Number(s.base_n) > 0 &&
+        s.recent_p50 != null &&
+        s.base_p50 != null,
+    )
     .sort((a, b) => Number(b.recent_n) - Number(a.recent_n))[0];
   return memoryZeroHitSignalsFromAggregate(
     {
