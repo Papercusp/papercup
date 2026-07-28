@@ -15,7 +15,11 @@
  * would be building the trap twice knowing what it is. Its runner belongs
  * alongside the P-015 sweep, on the live database.
  */
-import { ratchetPlaneSeries, type RatchetRow } from '../packages/operator-core/lib/agent-plane-ratchet';
+import {
+  ratchetPlaneSeries,
+  UNJUDGEABLE_WINDOW_RUN,
+  type RatchetRow,
+} from '../packages/operator-core/lib/agent-plane-ratchet';
 import type { PlaneZeroReason } from '../packages/operator-core/lib/agent-plane-measurement';
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
@@ -107,6 +111,7 @@ async function main() {
     regressed: '✗',
     incoherent: '✗',
     'never-interpretable': '·',
+    'window-unjudgeable': '~',
     'no-data': '?',
   };
 
@@ -140,6 +145,12 @@ async function main() {
       console.log(`      claims interpretable while its own funnel reports nothing eligible.`);
       console.log(`      A zero was relabelled instead of a producer being built.`);
     }
+    if (r.verdict === 'window-unjudgeable') {
+      console.log(`      the producer WROTE this window, but no unit admitted a verdict — a quiet`);
+      console.log(`      window, not a dead producer (last interpretable ${r.lastInterpretableAt}).`);
+      console.log(`      Reported, NOT failing. ${UNJUDGEABLE_WINDOW_RUN} consecutive uninterpretable windows`);
+      console.log(`      would still be judged a regression.`);
+    }
     if (r.verdict === 'never-interpretable') {
       const gap = judgeGapLine(r);
       console.log(`      ${gap}`);
@@ -149,6 +160,7 @@ async function main() {
   console.log(
     `\n  ${report.rows.filter((r) => r.verdict === 'holding').length} holding · ` +
       `${report.failures.length} FAILING · ${report.exempt.length} filed-gap · ` +
+      `${report.rows.filter((r) => r.verdict === 'window-unjudgeable').length} quiet-window · ` +
       `${report.unreadableAlone.length} unreadable-alone · ` +
       `${report.rows.filter((r) => r.verdict === 'no-data').length} no-data\n`,
   );

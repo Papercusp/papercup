@@ -367,7 +367,14 @@ export function ratchetPlaneSeries(args: {
     const windows: MetricWindow[] = [];
     for (const point of series) {
       const found = point.metrics.find((m) => m.id === metric);
-      if (found) windows.push(found);
+      // ⚠ Stamp the window's own timestamp when the stored metric lacks one. The
+      // persisted `metrics` jsonb holds { id, interpretable, fillRate, zeroReason }
+      // — `measured_at` is a COLUMN on the row, not a field on each metric — so
+      // every `firstInterpretableAt`/`lastInterpretableAt` derived from live data
+      // was undefined. That is why the `regressed` banner has been printing
+      // "WORKED until null", the one fact a reader needs to tell a producer that
+      // died an hour ago from one that died last week.
+      if (found) windows.push({ ...found, measuredAt: found.measuredAt ?? point.measuredAt });
     }
     const interpretableWindows = windows.filter((w) => w.interpretable && !isIncoherent(w));
     const verdict = judgeMetricRatchet(windows);

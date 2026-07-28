@@ -37,6 +37,72 @@ function windowOf(at: string, states: Partial<Record<PlaneMetricId, MetricWindow
   };
 }
 
+describe('⚠ a QUIET window is not a DEAD producer (the 2026-07-28T03:08Z fleet-gate red)', () => {
+  /** The exact live window that red the gate: 37 eligible, 0 comparable. */
+  const quiet = (over: Partial<MetricWindow> = {}): MetricWindow =>
+    w(false, { zeroReason: 'nothing-comparable', fillRate: 0.0222, ...over });
+  /** A producer that genuinely stopped writing: nothing was even eligible. */
+  const dead = (over: Partial<MetricWindow> = {}): MetricWindow =>
+    w(false, { zeroReason: 'nothing-eligible', fillRate: 0, ...over });
+
+  it('excuses ONE quiet window after a healthy run — reported, not a regression', () => {
+    expect(judgeMetricRatchet([w(true), w(true), quiet()])).toBe('window-unjudgeable');
+  });
+
+  it('⚠ STILL fails a producer that genuinely died, on the FIRST window', () => {
+    // The teeth this module exists for are unchanged. `nothing-eligible` means the
+    // producer has not written — that is a producer signal, never a quiet window.
+    expect(judgeMetricRatchet([w(true), w(true), dead()])).toBe('regressed');
+  });
+
+  it('⚠ a SUSTAINED run of uninterpretable windows is a regression even if the producer writes', () => {
+    // Otherwise a metric that can never find a comparable unit hides behind
+    // "quiet" forever — the excuse would become the new vacuous pass.
+    expect(judgeMetricRatchet([w(true), quiet(), quiet(), quiet()])).toBe('regressed');
+    expect(judgeMetricRatchet([w(true), quiet(), quiet()])).toBe('window-unjudgeable');
+  });
+
+  it('⚠ never excuses a zero FILL RATE, whatever the reason string says', () => {
+    // fillRate = eligible/population. A zero means nothing was eligible at all, so
+    // the producer did NOT write — the reason string must not override the count.
+    expect(judgeMetricRatchet([w(true), quiet({ fillRate: 0 })])).toBe('regressed');
+    expect(judgeMetricRatchet([w(true), quiet({ fillRate: null })])).toBe('regressed');
+  });
+
+  it('does not excuse a metric that was NEVER interpretable', () => {
+    expect(judgeMetricRatchet([quiet(), quiet()])).toBe('never-interpretable');
+  });
+
+  it('recovers to holding the moment a comparable unit appears again', () => {
+    expect(judgeMetricRatchet([w(true), quiet(), w(true)])).toBe('holding');
+  });
+
+  it('⚠ dates the last-good window from the ROW when the stored metric has none', () => {
+    // The persisted `metrics` jsonb carries no per-metric `measuredAt` — it is a
+    // column on the row — so live data produced "WORKED until null" on every
+    // regression banner, losing the one fact that separates a producer that died an
+    // hour ago from one that died last week.
+    const series = [
+      { measuredAt: '2026-07-28T02:38:00Z', metrics: [{ id: PLANE_METRIC_IDS[0], interpretable: true, fillRate: 0.5, zeroReason: null }] },
+      { measuredAt: '2026-07-28T03:08:00Z', metrics: [{ id: PLANE_METRIC_IDS[0], interpretable: false, fillRate: 0, zeroReason: 'nothing-eligible' as const }] },
+    ] as unknown as Parameters<typeof ratchetPlaneSeries>[0]['series'];
+    const row = ratchetPlaneSeries({ series }).rows.find((r) => r.metric === PLANE_METRIC_IDS[0])!;
+    expect(row.verdict).toBe('regressed');
+    expect(row.lastInterpretableAt).toBe('2026-07-28T02:38:00Z');
+    expect(row.firstInterpretableAt).toBe('2026-07-28T02:38:00Z');
+  });
+
+  it('a quiet window does NOT fail the build', () => {
+    const series = [
+      windowOf('2026-07-28T02:38:00Z', {}),
+      windowOf('2026-07-28T03:08:00Z', { [PLANE_METRIC_IDS[0]]: quiet() }),
+    ];
+    const report = ratchetPlaneSeries({ series });
+    expect(report.rows.find((r) => r.metric === PLANE_METRIC_IDS[0])?.verdict).toBe('window-unjudgeable');
+    expect(report.failures.map((f) => f.metric)).not.toContain(PLANE_METRIC_IDS[0]);
+  });
+});
+
 describe('judgeMetricRatchet — the four states of one metric', () => {
   it('is holding when it is interpretable now', () => {
     expect(judgeMetricRatchet([w(false), w(true)])).toBe('holding');
