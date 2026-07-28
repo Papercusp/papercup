@@ -279,18 +279,30 @@ describe('executeDeploy — rollback on failure', () => {
 
 describe('executeDeploy — pre-cutover preflight (P-001, the MODULE_NOT_FOUND crash-loop guard)', () => {
   it('a FAILING preflight aborts before cutover: no migrate, NO live restart, tree reverted, zero downtime', async () => {
-    let preflightCalled = false;
+    // preflight() answers "would the checkout AS IT IS RIGHT NOW boot", and it is asked
+    // twice about two DIFFERENT trees: first the swapped TARGET (fails here — that is
+    // what aborts the cutover), then, after rollback-code, the reverted PREV (passes —
+    // prev is the sha that was serving a moment ago). A stub returning one verdict for
+    // both conflates them, which is why this models them separately (WI-6648).
+    let preflights = 0;
     const { deps, calls } = makeDeps({
       preflight: () => {
-        preflightCalled = true;
-        return Promise.resolve({ ok: false, error: "Cannot find module '@papercusp/x' (MODULE_NOT_FOUND)" });
+        preflights++;
+        return Promise.resolve(
+          preflights === 1
+            ? { ok: false, error: "Cannot find module '@papercusp/x' (MODULE_NOT_FOUND)" }
+            : { ok: true },
+        );
       },
     });
     const res = await executeDeploy(cfg, plan, deps);
-    expect(preflightCalled).toBe(true);
+    expect(preflights).toBe(2); // target check aborted the cutover; reverted-tree check cleared it
     expect(res.ok).toBe(false);
-    // Pre-cutover failure ⇒ the live process never changed ⇒ counts as rolled back (to prev).
+    // Pre-cutover failure ⇒ the live process never changed ⇒ counts as rolled back (to
+    // prev) — but ONLY because the reverted tree was VERIFIED to boot. `rolledBack` is a
+    // claim about the checkout, and zero downtime is not evidence for it (WI-6648).
     expect(res.rolledBack).toBe(true);
+    expect(res.steps.some((s) => s.name === 'rollback-preflight')).toBe(true);
     expect(calls).toContain('runSetup:abcd'); // the swap happened
     expect(calls).not.toContain('migrate'); // aborted BEFORE migrate (no schema change)
     expect(calls).not.toContain('restart'); // :3070 was NEVER cut over (no crash-loop, no downtime)
