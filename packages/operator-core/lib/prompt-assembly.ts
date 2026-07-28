@@ -65,6 +65,7 @@ import { renderAgentActivityTruthNote } from './agent-activity-truth-policy';
 import { renderWaitLoopNote } from './wait-loop-policy';
 import { renderPeerWakeNote } from './peer-wake-policy';
 import { renderCouplingNote } from './coupling-policy';
+import { renderStatePlaneNote } from './state-plane-policy';
 import { renderObservationRubricNudge } from './observation-rubric-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
@@ -744,6 +745,23 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (couplingNote) {
     parts.push(couplingNote);
     sections.push({ name: 'coupling-note', chars: couplingNote.length });
+  }
+
+  // State-plane note — the SHARED base every operator-launched role inherits, mirroring the
+  // spawned-bee base. The two agent-CHOICE behaviours of the unified state plane: READ a cell
+  // (state:read / state:subscribe) rather than transcribing a value that can change under you,
+  // and SAY what you want back (`expects`) / split a message that MIXES dispositions into
+  // sections (premises, forYouBecause, youMayNotKnow, couldNotDetermine). Both shipped with
+  // correct per-tool guidance and were still unreached (state:read 5 agents of 157; the
+  // sectioned body 1 message in 30h, and that one the owner's GUI) — the playbook is what makes
+  // an agent reach for a tool it has not already chosen. Sourced from the one STATE_PLANE_NOTE
+  // constant (orchestrator) so this base, the spawned-bee base, and the su playbooks can't
+  // desync. ⚠ D-016: a prompt is not an enforcement tier — the constant's doc-comment records
+  // which halves carry a real gate (`expects`, cell registration) and which carries none.
+  const statePlaneNote = renderStatePlaneNote();
+  if (statePlaneNote) {
+    parts.push(statePlaneNote);
+    sections.push({ name: 'state-plane-note', chars: statePlaneNote.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

@@ -26,6 +26,7 @@ import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWaitLoopNote } from '../wait-loop-policy';
 import { renderPeerWakeNote } from '../peer-wake-policy';
 import { renderCouplingNote } from '../coupling-policy';
+import { renderStatePlaneNote } from '../state-plane-policy';
 import { renderWorkspaceMapSection } from './workspace-map';
 import { renderPromotionModelSection } from './promotion-model';
 import { renderWireSchemasSection } from '../prompt-assembly';
@@ -365,19 +366,35 @@ async function resolveProjectGuideText(
  * left untouched. Inserted just before the project-guide section so they sit in the playbook body,
  * not buried under the 600-line guide.
  */
-function injectSharedBaseNotes(text: string): string {
+function injectSharedBaseNotes(text: string, opts: { repoSpecific?: boolean } = {}): string {
   // Anchor on the project-guide marker: it is the one marker still un-spliced at this point AND a
   // reliable "this is a real su playbook" signal (engineer/power carry it; minimal/test bases do
   // not). Insert the notes just BEFORE it; NEVER append, so a marker-less base is returned untouched
   // (mirrors spliceGeneratedSection's no-append contract).
   if (!text.includes(PROJECT_GUIDE_MARKER)) return text;
+  const { repoSpecific = true } = opts;
   const notes = [
-    renderDeployPipelineNote(),
+    // REPO-SPECIFIC: the deploy-pipeline note names :3070, the green gate and this repo's
+    // promotion stages, so it is meaningful only for a profile that works the Papercusp repo.
+    // Everything below it is PLATFORM-wide and applies to any su session on any repo — that
+    // split is the whole reason this takes a flag rather than gating the entire bundle. Before
+    // the split, `profile === 'engineer'` gated ALL of these, which silently withheld the
+    // coupling note from su-power even though D-062's owner directive was explicitly "ALL
+    // agents" — a platform behaviour lost to a repo-specific gate it had been bundled with.
+    ...(repoSpecific ? [renderDeployPipelineNote()] : []),
     renderWaitLoopNote(),
     renderPeerWakeNote(),
     // Coupling (owner directive 2026-07-27; P-031, D-061/D-062) — the owner's ask was
     // explicitly ALL agents, and su sessions couple/decouple like any other role.
     renderCouplingNote(),
+    // The state plane's two agent-CHOICE behaviours (unified-agent-state-plane-2026-07-27):
+    // read a cell rather than transcribing a value, and say what you want back / section a
+    // message that mixes dispositions. su sessions are the HEAVIEST users of both surfaces —
+    // they send the directed messages and they act on live pipeline/gate values — and the
+    // measured non-adoption (state:read 5 agents of 157; the sectioned body never once
+    // agent-authored) includes them. Platform-wide: `coord:send` and `state:read` are operator
+    // tools, not repo tools, so a power-profile session needs this exactly as much.
+    renderStatePlaneNote(),
   ].filter((n) => n && n.trim());
   if (notes.length === 0) return text;
   return text.split(PROJECT_GUIDE_MARKER).join(`${notes.join('\n\n')}\n\n${PROJECT_GUIDE_MARKER}`);
@@ -1978,9 +1995,14 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
     COMPACTION_MARKER,
     await readCompactionProtocol(baseSource, input.overlayDir),
   );
-  // Only the ENGINEER profile works the Papercusp repo (where this pipeline + its green gate live);
-  // the power profile manages an EXTERNAL repo, so the Papercusp-specific note does not apply there.
-  const withNotes = profile === 'engineer' ? injectSharedBaseNotes(withCompaction) : withCompaction;
+  // Only the ENGINEER profile works the Papercusp repo (where this pipeline + its green gate live),
+  // so the deploy-pipeline note is engineer-only — but the REST of the bundle (wait-loop, peer-wake,
+  // coupling, state-plane) is platform behaviour that applies to a power-profile session managing an
+  // EXTERNAL repo just as much: `coord:send`, `coord:couple` and `state:read` are operator tools, not
+  // repo tools. Gating the whole bundle on the profile withheld all four from su-power, which
+  // silently violated D-062's "the coupling prompt goes to ALL agents". Both profiles now get the
+  // platform notes; only the repo-specific one is conditional.
+  const withNotes = injectSharedBaseNotes(withCompaction, { repoSpecific: profile === 'engineer' });
   // Project guide (P-001 / D-002): splice the repo's CLAUDE.md so a psu session
   // gets the full project conventions via psu, not client auto-load. Only read
   // the (large) guide file when the base actually carries the marker.

@@ -743,16 +743,13 @@ mug-memory-hybrid L1b).
   Declare-intent at session start; handoff on transitions; never write
   anything you'd want recalled later.
 - **cells — the live VALUE, read at the moment you act on it** (`state:read` /
-  `state:subscribe`). Facts and checkpoints carry what you CONCLUDED; a cell is
-  what is true RIGHT NOW. `state:read { cell }` (no args lists the ones you may
-  read) whenever you act on — or quote into a message, plan, or report —
-  anything that can change under you: a deploy position, a holder's goal, a
-  queue depth. Read it, don't copy it forward. `status:"unknown"` is IN-BAND and
-  branchable (`not-measured` = ask for enablement, retrying is pointless;
-  `resolver-failed` = retry or escalate; `insufficient-data` = supply `as`) —
-  never collapse it to false or zero. To wait for a value to CROSS a threshold:
-  `state:subscribe { cell, on:{op,value} }` then END YOUR TURN — you are woken
-  on the edge. Never a sleep/poll loop; that loop is what it exists to kill.
+  `state:subscribe`). The other five layers all carry something you CONCLUDED
+  earlier; a cell is what is true RIGHT NOW. So the boundary is: a conclusion
+  that should shape future turns → facts; in-flight progress → checkpoints; a
+  value that can CHANGE UNDER YOU → never any of those, always a cell read at
+  the point of use. Writing a live value into a fact or a checkpoint is how it
+  goes stale silently. (Mechanics — the `unknown`/`absent` verdicts and the
+  subscribe-then-end-your-turn rule — are in the state-plane note above.)
 - **insights** — the runbook: MDX at
   `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx`. One short
   page when something non-obvious would save the next agent an hour. A
