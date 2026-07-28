@@ -93,7 +93,7 @@ import {
   completeSyncEnrolment,
   finishSyncEnrolment,
 } from '../task-manager/enroll-sync';
-import { warmScopeProbe } from '../task-manager/managed-spawn';
+import { warmScopeProbe, scopeSupportKnown } from '../task-manager/managed-spawn';
 
 // Warm the scope probe so the first agent turn after boot can already be enrolled
 // into a NAMED scope (task-manager P-009). Fire-and-forget — an agent turn must
@@ -570,9 +570,20 @@ function runChild(
        still wants a scope, fall back to the ORIGINAL unnamed isolated scope.
        `orchestrator-runner-scope.test.ts` is what caught this, and it is the
        reason that file asserts on `systemd-run` rather than on the ledger. */
+    /* The probe is consulted here too, but with WI-1499's bias rather than the
+       ledger's. The task manager skips confinement whenever the probe has not
+       LANDED yet, on the principle that a warming-up task manager must never be
+       why a command does not run. For the ledger that is right. For the memory
+       cap it is not: this seam has always ATTEMPTED the scope and degraded on a
+       real launch failure (the retry a few lines below), so an un-landed probe
+       is not a reason to run an agent turn uncapped — it is only a reason not to
+       NAME it. A definitive "this host cannot make user scopes" (ok:false) is
+       still honoured, because there the attempt is known-futile. */
+    const scopeProbe = scopeSupportKnown();
+    const fallbackToUnnamedScope = useScope && scopeProbe?.ok !== false;
     const wrapped = enrolment.confined
       ? enrolment.wrap(command, args)
-      : useScope
+      : fallbackToUnnamedScope
         ? (() => {
             const argv = buildIsolatedScopeArgv(
               [command, ...args],

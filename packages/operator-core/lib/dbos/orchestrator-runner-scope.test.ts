@@ -107,16 +107,22 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     expect(args).toContain('--user');
     // --scope (never --service): the payload stays OUR child, so piped stdio, env
     // inheritance and the pgid tree-kill all keep working. It is additionally NAMED
-    // (`--unit=papercusp-task-<id>.scope`) since task-manager-no-escape P-009 — that
+    // (`--unit=papercusp-task-<id>.scope`) when the task-manager flag is ON — that
     // name is the ledger key that makes the subtree addressable, and naming a scope
     // does not change its child-of-us semantics.
     expect(args).toContain('--scope'); // child stays OUR pgid
     expect(args).toContain('--collect');
-    // agentSpawnScopeMemoryMaxG() default, in BYTES — buildTaskScopeArgv emits the
-    // raw integer rather than systemd's `6G` shorthand, so assert the value the cap
-    // actually carries. Spelled as the arithmetic, not a magic 6442450944, so a
-    // change to the default GiB reads as a one-token diff.
-    expect(args).toContain(`--property=MemoryMax=${6 * 1024 ** 3}`);
+    /* The task-manager flag is DEFAULT-OFF, so the path under test here is the
+       UNNAMED WI-1499 scope (`buildIsolatedScopeArgv`), which spells the cap in
+       systemd's `6G` shorthand. The byte-integer spelling belongs to
+       `buildTaskScopeArgv`, i.e. the flag-ON path.
+
+       These two spellings are why this file went red rather than merely stale:
+       when the flag flipped off, the seam stopped confining ALTOGETHER — it did
+       not fall back to the unnamed scope — so the assertion failed on the
+       binary, not on the units. What matters and is asserted either way is that
+       a memory cap IS applied; only its notation tracks which builder ran. */
+    expect(args).toContain('--property=MemoryMax=6G');
     expect(args).toContain('--property=MemorySwapMax=0');
     // The wrapped payload (command + its own args) is appended verbatim at the tail.
     expect(args.slice(-3)).toEqual(['/x/invoke-once', '--role', 'cup']);
@@ -135,12 +141,9 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
   // only signal was three assertions failing in a way that read like a lost feature. Pin
   // BOTH branches, so a future refactor that drops confinement fails loudly and
   // specifically instead of looking like a stale test.
-  it.each([
-    ['the probe has not landed yet (first turn after boot)', null],
-    ['the host cannot make user scopes at all', { ok: false, reason: 'no user bus' }],
-  ] as const)('spawns DIRECT (unconfined but still ledgered) when %s', async (_label, probe) => {
+  it('spawns DIRECT when the host CANNOT make user scopes at all', async () => {
     delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
-    S.probe = probe;
+    S.probe = { ok: false, reason: 'no user bus' };
     spawnMock.mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
     const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
     expect(r.exitCode).toBe(0);
@@ -152,13 +155,37 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     expect(args).toEqual(['--role', 'cup']);
   });
 
+  /* An un-landed probe used to take the same DIRECT branch as a known-unsupported
+     host. That conflates two different things, and for THIS seam it is the unsafe
+     reading: the task manager may skip NAMING a scope while it warms up, but an
+     agent turn must not run with no memory cap merely because a probe has not
+     come back yet — that is precisely the uncapped-child condition WI-1499 exists
+     to prevent (the 2026-07-01 40G OOM crash-loop). Attempting costs nothing,
+     because a genuine launch failure still degrades to DIRECT on the retry below. */
+  it('still scope-confines (unnamed) when the probe has NOT LANDED yet — WI-1499 is not probe-gated', async () => {
+    delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
+    S.probe = null;
+    spawnMock.mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
+    expect(r.exitCode).toBe(0);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [cmd, args] = spawnMock.mock.calls[0] as [string, string[]];
+    expect(cmd).toBe('systemd-run');
+    expect(args).toContain('--property=MemoryMax=6G');
+    // Unnamed: the ledger key is the part the flag/probe gates, not the cap.
+    expect(args.some((a) => a.startsWith('--unit='))).toBe(false);
+    expect(args.slice(-3)).toEqual(['/x/invoke-once', '--role', 'cup']);
+  });
+
   it('honors PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G to size the scope cap', async () => {
     delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
     process.env.PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G = '12';
     spawnMock.mockImplementationOnce(() => fakeSpawn({ code: 0 }));
     await spawnInvokeOnce(process.cwd(), 'mug', [], {});
     const [, args] = spawnMock.mock.calls[0] as [string, string[]];
-    expect(args).toContain(`--property=MemoryMax=${12 * 1024 ** 3}`);
+    // `12G` (not the byte integer) for the same reason as the default-cap
+    // assertion above: default-OFF flag ⇒ the unnamed WI-1499 scope builder.
+    expect(args).toContain('--property=MemoryMax=12G');
   });
 
   it('falls back to a DIRECT spawn once when the scope cannot launch (no user bus) — the turn never fails on infra', async () => {
