@@ -12,6 +12,7 @@ import {
   extractReferencedTables,
   describeReferencedTableColumns,
   buildTenantScopeAdvisory,
+  buildDerivedColumnRedirect,
   clearTenantScopeSchemaCache,
   PgReadQueryError,
 } from './pg-read-query';
@@ -468,5 +469,105 @@ describe('buildTenantScopeAdvisory — corpus-namespaced tables (EI-187496760917
     );
     expect(advisory).toContain('harness_plans');
     expect(advisory).not.toContain('tool_usage_rollup');
+  });
+});
+
+describe('buildDerivedColumnRedirect (EI-18801042715296007 — the derived-verdict dead end)', () => {
+  const NOT_EXIST = (col: string): string => `column "${col}" does not exist`;
+  const PRESENCE_SQL = 'SELECT session_state FROM harness_shared.coord_presence';
+
+  it('redirects the exact query from the filing', () => {
+    const out = buildDerivedColumnRedirect(
+      'SELECT owner_id, last_active_at, intent, session_state FROM harness_shared.coord_presence',
+      NOT_EXIST('session_state'),
+    );
+    expect(out).toBeTruthy();
+    expect(out).toContain('DERIVED, not stored');
+  });
+
+  it('names the surfaces that DO return the verdict', () => {
+    const out = buildDerivedColumnRedirect(PRESENCE_SQL, NOT_EXIST('session_state'));
+    expect(out).toContain('coord:presence');
+    expect(out).toContain('fleet:assignments');
+  });
+
+  // THE POINT OF THE WHOLE FIX: `knownColumns` steers the retry onto
+  // heartbeat_at / last_active_at, which the platform documents as NOT the
+  // liveness verdict. The redirect must name that fallback to rule it OUT.
+  it('explicitly rules out the raw-keepalive fallback the 42703 hint steers to', () => {
+    const out = buildDerivedColumnRedirect(PRESENCE_SQL, NOT_EXIST('session_state'));
+    expect(out).toContain('heartbeat_at');
+    expect(out).toContain('last_active_at');
+    expect(out).toMatch(/do NOT fall back/i);
+  });
+
+  // Without this, the next reader proposes the coord_presence_live VIEW that
+  // would fork the single oracle — the redirect carries its own rationale.
+  it('explains why no view can add the column (the two non-SQL legs)', () => {
+    const out = buildDerivedColumnRedirect(PRESENCE_SQL, NOT_EXIST('session_state'));
+    expect(out).toContain('no view can add it');
+    expect(out).toMatch(/kill\(pid, ?0\)/);
+    expect(out).toContain('psu-pty host registry');
+  });
+
+  it('handles the ALIAS-QUALIFIED spelling PG uses', () => {
+    const out = buildDerivedColumnRedirect(
+      'SELECT p.session_state FROM harness_shared.coord_presence p',
+      'column p.session_state does not exist',
+    );
+    expect(out).toBeTruthy();
+    expect(out).toContain('DERIVED, not stored');
+  });
+
+  it('covers the rest of the oracle-derived family', () => {
+    for (const col of ['wakeable', 'live_turn', 'confirm_liveness']) {
+      const out = buildDerivedColumnRedirect(
+        `SELECT ${col} FROM harness_shared.coord_presence`,
+        NOT_EXIST(col),
+      );
+      expect(out, col).toBeTruthy();
+      expect(out, col).toContain('DERIVED, not stored');
+    }
+  });
+
+  // heartbeat_fresh IS computable in SQL — the redirect exists to stop it being
+  // READ as liveness, so it must not claim a view is impossible for it.
+  it('treats heartbeat_fresh as computable-but-not-the-verdict', () => {
+    const out = buildDerivedColumnRedirect(
+      'SELECT heartbeat_fresh FROM harness_shared.coord_presence',
+      NOT_EXIST('heartbeat_fresh'),
+    );
+    expect(out).toBeTruthy();
+    expect(out).toContain('NOT the liveness verdict');
+    expect(out).not.toContain('no view can add it');
+  });
+
+  it('stays silent for an ordinary typo on the same table', () => {
+    expect(
+      buildDerivedColumnRedirect(
+        'SELECT owner_idd FROM harness_shared.coord_presence',
+        NOT_EXIST('owner_idd'),
+      ),
+    ).toBeNull();
+  });
+
+  // The registry is keyed on (table, column), not column alone — the same word
+  // against an unrelated table must not trigger the liveness lecture.
+  it('stays silent when the column matches but the table does not', () => {
+    expect(
+      buildDerivedColumnRedirect(
+        'SELECT session_state FROM harness_shared.tool_invocations',
+        NOT_EXIST('session_state'),
+      ),
+    ).toBeNull();
+  });
+
+  it('stays silent on a non-undefined-column message', () => {
+    expect(
+      buildDerivedColumnRedirect(
+        PRESENCE_SQL,
+        'relation "harness_shared.coord_presence" does not exist',
+      ),
+    ).toBeNull();
   });
 });

@@ -273,13 +273,16 @@ CC_PROVENANCE_HOOK="${CC_HOOK_DEST_DIR}/userpromptsubmit-provenance.sh"
 # initialize prelude / orient / a claim port already injected). Fail-open,
 # psu-gated, 2.5s wall.
 CC_TURN_MEMORY_HOOK="${CC_HOOK_DEST_DIR}/userpromptsubmit-memory.sh"
-# PreToolUse hook (context-injection-audit-2026-07-28 P-015, D-026): the MID-TURN
-# half of the same delta. turn-start fires once per prompt, so a turn with fifty
-# tool calls got one injection and then silence; this asks per tool dispatch
-# (matcher Bash|Grep|Glob|Read), epoch-deduped through the same ledger under port
-# 'mid-turn' at ~1/10th the budget. Emits additionalContext ONLY — never a
-# permissionDecision, so it grants no permission. Fail-open, psu-gated, 1.2s wall.
-CC_MIDTURN_CONTEXT_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-midturn-context.sh"
+# PostToolBatch hook (context-injection-audit-2026-07-28 P-015, D-026 + D-027):
+# the MID-TURN half of the same delta. turn-start fires once per prompt, so a turn
+# with fifty tool calls got one injection and then silence; this fires once per
+# resolved tool batch, before the next model request, epoch-deduped through the
+# same ledger under port 'mid-turn' at ~1/10th the budget.
+# ⚠ NOT PreToolUse (D-027): that event only injects additionalContext alongside a
+# permissionDecision, and a context hook emitting 'allow' would blanket
+# auto-approve every call it matched. PostToolBatch takes no matcher and carries
+# no permission semantics. Fail-open, psu-gated, 1.5s wall.
+CC_MIDTURN_CONTEXT_HOOK="${CC_HOOK_DEST_DIR}/posttoolbatch-midturn-context.sh"
 # Stop hook (deterministic-context-carry-2026-07-14 P-012): per-turn journal —
 # pings journal:record-turn at each turn end; the server extracts the agent's
 # ⟦journal⟧ line (mechanical first-line fallback, flagged). Fire-and-forget,
@@ -447,9 +450,9 @@ with open(path, 'w') as f:
 PYEOF
 }
 
-# Merge the mid-turn context PreToolUse hook (context-injection-audit-2026-07-28
-# P-015) as its OWN entry, matcher-scoped to the investigation tools — same
-# idempotent drop-ours-then-append shape as merge_turn_memory_hook.
+# Merge the mid-turn context PostToolBatch hook (context-injection-audit-2026-07-28
+# P-015, D-027) as its OWN entry, matcher-less (PostToolBatch takes no matcher) —
+# same idempotent drop-ours-then-append shape as merge_turn_memory_hook.
 #   $1 = settings.json path
 merge_midturn_context_hook() {
   python3 - "$1" "$CC_MIDTURN_CONTEXT_HOOK" "$WORKSPACE_ROOT" <<'PYEOF'
@@ -475,9 +478,9 @@ def drop_ours(entry):
 cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {hook}"
 
 hooks = cfg.setdefault('hooks', {})
-arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
-arr.append({'matcher': 'Bash|Grep|Glob|Read', 'hooks': [{'type': 'command', 'command': cmd}]})
-hooks['PreToolUse'] = arr
+arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolBatch', [])) if e]
+arr.append({'hooks': [{'type': 'command', 'command': cmd}]})
+hooks['PostToolBatch'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, 'w') as f:
@@ -1423,8 +1426,8 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/userpromptsubmit-memory.sh" "$CC_TURN_MEMORY_HOOK"
     chmod 755 "$CC_TURN_MEMORY_HOOK"
   fi
-  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-midturn-context.sh" ]; then
-    cp "${CC_HOOK_SRC_DIR}/pretooluse-midturn-context.sh" "$CC_MIDTURN_CONTEXT_HOOK"
+  if [ -f "${CC_HOOK_SRC_DIR}/posttoolbatch-midturn-context.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/posttoolbatch-midturn-context.sh" "$CC_MIDTURN_CONTEXT_HOOK"
     chmod 755 "$CC_MIDTURN_CONTEXT_HOOK"
   fi
   if [ -f "${CC_HOOK_SRC_DIR}/stop-turn-journal.sh" ]; then

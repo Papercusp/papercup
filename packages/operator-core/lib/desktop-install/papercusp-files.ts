@@ -539,7 +539,7 @@ const CC_HOOK_FILES = [
   // same delta — turn-start fires once per prompt, so a fifty-tool-call turn got
   // one injection and then silence. This asks per tool dispatch, epoch-deduped
   // through the same ledger (port 'mid-turn'), at ~1/10th the budget.
-  'pretooluse-midturn-context.sh',
+  'posttoolbatch-midturn-context.sh',
   // deterministic-context-carry-2026-07-14 P-012: per-turn journal collection —
   // pings journal:record-turn at each Stop; the server extracts the agent's
   // ⟦journal⟧ line (mechanical first-line fallback, flagged).
@@ -1475,17 +1475,17 @@ export function mergeClaudeHookSettings(
     hooks.UserPromptSubmit = replaceOurHookEntries(ev('UserPromptSubmit'), ours('userpromptsubmit-memory.sh'), {
       hooks: cmd('userpromptsubmit-memory.sh'),
     });
-  // merge_mid_turn_context_hook — PreToolUse, matcher scoped to the INVESTIGATION
-  // tools. context-injection-audit-2026-07-28 P-015 (D-026): mid-turn recall, the
-  // boundary turn-start cannot reach. Scoped rather than '*' because these are the
-  // tools whose input carries a recall signal (a command, a pattern, a path) — the
-  // server derives '' for anything else and drops it, so a wider matcher would buy
-  // only round trips. The hook emits additionalContext and NO permissionDecision,
-  // so it never votes on whether the tool call runs (see the script's own header).
-  if (has('pretooluse-midturn-context.sh'))
-    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-midturn-context.sh'), {
-      matcher: 'Bash|Grep|Glob|Read',
-      hooks: cmd('pretooluse-midturn-context.sh'),
+  // merge_mid_turn_context_hook — PostToolBatch, NO matcher (the event does not
+  // support one). context-injection-audit-2026-07-28 P-015, D-026 + D-027:
+  // mid-turn recall, the boundary turn-start structurally cannot reach.
+  // ⚠ This deliberately does NOT ride PreToolUse (D-027): PreToolUse only injects
+  // additionalContext alongside a `permissionDecision`, and a context hook that
+  // emits `allow` becomes a blanket auto-approver for everything it matches.
+  // PostToolBatch is the documented additionalContext channel, carries no
+  // permission semantics, and fires once per batch before the next model request.
+  if (has('posttoolbatch-midturn-context.sh'))
+    hooks.PostToolBatch = replaceOurHookEntries(ev('PostToolBatch'), ours('posttoolbatch-midturn-context.sh'), {
+      hooks: cmd('posttoolbatch-midturn-context.sh'),
     });
   // merge_turn_journal_hook — Stop, no matcher (fires at each turn end).
   // deterministic-context-carry-2026-07-14 P-012: per-turn journal collection.

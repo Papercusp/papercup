@@ -5026,8 +5026,8 @@ function ensureCcTurnStartMemoryHookEnrollment(env) {
  *  a working one unless something checks. This checks. */
 function ensureCcMidTurnContextHookEnrollment(env) {
   ensureCcHookEnrollment(env, {
-    event: 'PreToolUse',
-    hookName: 'pretooluse-midturn-context.sh',
+    event: 'PostToolBatch',
+    hookName: 'posttoolbatch-midturn-context.sh',
     label: 'MID-TURN CONTEXT HOOK',
     degradedNote:
       'THIS SESSION GETS RECALL ONLY AT TURN-START — a long tool-call turn will re-derive facts already in memory, with no injection after the opening prompt',

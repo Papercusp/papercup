@@ -135,7 +135,19 @@ function str(value: unknown): string {
  * nothing rather than embedding a blob of JSON.
  */
 export function deriveQuery(tool: string, input: unknown): string {
-  const io = (input ?? {}) as Record<string, unknown>;
+  // The hook clamps tool_input to a string before sending, so accept either the
+  // structured object (unit tests, future callers) or that clamped JSON text.
+  let io: Record<string, unknown>;
+  if (typeof input === 'string') {
+    try {
+      io = JSON.parse(input) as Record<string, unknown>;
+    } catch {
+      // A clamped/truncated blob is still usable as raw query text.
+      return tool === 'Bash' || tool === 'Grep' || tool === 'Glob' || tool === 'Read' ? input.trim() : '';
+    }
+  } else {
+    io = (input ?? {}) as Record<string, unknown>;
+  }
   switch (tool) {
     case 'Bash':
       // The description is the agent's own words for what it is doing — often a
@@ -152,6 +164,38 @@ export function deriveQuery(tool: string, input: unknown): string {
   }
 }
 
+/** One tool call as the PostToolBatch hook ships it (clamped, see the script). */
+export interface BatchCall {
+  tool?: string;
+  toolInput?: unknown;
+  toolResponse?: unknown;
+}
+
+/**
+ * Fold a resolved batch into ONE recall query.
+ *
+ * Two things make a batch a better signal than a single pre-dispatch call, and
+ * both come from firing AFTER the tools ran (D-027):
+ *   - the RESULTS are visible, so an empty/failed search — the strongest "this
+ *     agent is stuck and about to re-derive something" signal there is — can be
+ *     weighted in rather than guessed at;
+ *   - several calls in one batch describe the agent's actual line of enquiry
+ *     better than any one of them alone.
+ * Later calls come first: the batch's tail is the freshest intent.
+ */
+export function deriveBatchQuery(calls: BatchCall[]): string {
+  const parts: string[] = [];
+  for (const call of [...calls].reverse()) {
+    const q = deriveQuery((call.tool ?? '').trim(), call.toolInput);
+    if (!q) continue;
+    const response = str(call.toolResponse);
+    // An empty-looking result is signal, not noise — say so in the query.
+    const barren = !response || /no matches|not found|no files found|^\s*$/i.test(response);
+    parts.push(barren ? `${q} (no result)` : q);
+  }
+  return parts.join(' · ');
+}
+
 const midTurnContext = defineTool({
   method: 'POST',
   path: '/agent-mcp/mid-turn-context',
@@ -159,6 +203,8 @@ const midTurnContext = defineTool({
   async handler(req) {
     let body: {
       owner?: string;
+      toolCalls?: BatchCall[];
+      // Single-call form, kept for a direct caller / probe. The hook sends a batch.
       tool?: string;
       toolInput?: unknown;
       workspace?: string;
@@ -173,7 +219,11 @@ const midTurnContext = defineTool({
     if (!owner) return Response.json({ ok: false, error: 'owner required' }, { status: 400 });
 
     try {
-      const query = deriveQuery((body.tool ?? '').trim(), body.toolInput).slice(0, QUERY_CLAMP);
+      const query = (
+        Array.isArray(body.toolCalls) && body.toolCalls.length
+          ? deriveBatchQuery(body.toolCalls)
+          : deriveQuery((body.tool ?? '').trim(), body.toolInput)
+      ).slice(0, QUERY_CLAMP);
       // No signal in this tool call — drop before spending anything.
       if (!query) return Response.json({ ok: true, text: '' });
       if (!admitCall(owner, query, Date.now())) return Response.json({ ok: true, text: '' });

@@ -19,6 +19,19 @@
  * ever confirm, never falsify. That is not a check.
  */
 import type { Browser } from "webdriverio";
+// Imported by PATH, not by package name, on purpose: this runner is deliberately
+// outside the npm workspace set (it has its own lockfile so a perf run cannot be
+// broken by a peer's install mid-run), so `@papercusp/gui-readiness` does not
+// resolve here. The module is dependency-free, which is what makes reaching
+// across for it safe.
+import {
+  classifyMountObservation,
+  INITIAL_MOUNT_PROGRESS,
+  type DocumentObservation,
+  type MountClassifierConfig,
+  type MountProgress,
+  type MountVerdict,
+} from "../../../libs/generic/gui-readiness/src/document-mount";
 
 /**
  * How long to wait for real app content.
@@ -301,7 +314,12 @@ export async function waitForAppMount(browser: Browser): Promise<MountEvidence> 
     await browser.waitUntil(
       async () => {
         last = await readDocument(browser);
-        const step = classifyObservation(progress, last, Date.now());
+        const step = classifyMountObservation(
+          progress,
+          toObservation(last),
+          Date.now(),
+          MOUNT_CLASSIFIER_CONFIG,
+        );
         progress = step.state;
         if (step.verdict === "mounted") return true;
         if (step.verdict === "waiting") return false;
@@ -316,8 +334,8 @@ export async function waitForAppMount(browser: Browser): Promise<MountEvidence> 
     throw new Error(await mountTimeoutDiagnosis(browser, last));
   }
 
-  if (terminal === "first-run-terminal") throw new Error(await firstRunDiagnosis(browser, last));
-  if (terminal === "webview-died") throw new Error(webviewDiedDiagnosis(last, progress));
+  if (terminal === "wrongScreen") throw new Error(await firstRunDiagnosis(browser, last));
+  if (terminal === "documentDestroyed") throw new Error(webviewDiedDiagnosis(last, progress));
   return last as unknown as MountEvidence;
 }
 

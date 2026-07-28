@@ -301,6 +301,127 @@ function bareTableName(ref: string): string {
   return i === -1 ? ref : ref.slice(i + 1);
 }
 
+interface DerivedColumnRedirect {
+  /** Bare table the column is reached for on. */
+  table: string;
+  /** Why the column does not exist — and, where it applies, why no view can add it. */
+  why: string;
+  /** The surfaces that DO return the value, all projecting one derivation. */
+  useInstead: string;
+  /**
+   * The plausible-but-WRONG columns an agent reaches for next when it is handed
+   * only `knownColumns`. Naming them is the whole point: this registry exists
+   * because the helpful error was steering people onto a documented-wrong signal.
+   */
+  notThese?: string;
+}
+
+/**
+ * Columns an agent will reach for BY NAME — because every tool surface, doc and
+ * playbook teaches them as the canonical vocabulary — but which are DERIVED at
+ * read time and have no column to select (EI-18801042715296007).
+ *
+ * ⚠ THE FAILURE MODE IS NOT THE ERROR, IT IS THE RECOVERY. A 42703 here is loud
+ * and its `knownColumns` list is genuinely accurate. But on `coord_presence` the
+ * columns that DO exist are `heartbeat_at` / `last_active_at` — precisely the raw
+ * process-keepalive signals the platform documents as NOT the liveness verdict.
+ * So the most helpful thing the error could say ("here are the real columns")
+ * hands the agent the wrong signal, and the natural next query returns a
+ * confident wrong answer instead of an error. A warm-dead session reads
+ * `heartbeatFresh: true` with `sessionState: 'ended'`; from SQL alone those are
+ * indistinguishable, and nothing tells you they are.
+ *
+ * ⚠ AND WHY A VIEW IS NOT THE CHEAP FIX. The obvious repair — expose the verdict
+ * as a `coord_presence_live` view or generated column so the SQL vocabulary
+ * matches the tool vocabulary — CANNOT be done faithfully. `sessionState` is
+ * assembled from six legs (see `agent-tools/coordination/liveness-oracle.ts`)
+ * and two of them are not data in Postgres at all: a `kill(pid, 0)` syscall
+ * against the subject's own host, and the box-local in-process psu-pty host
+ * registry. A SQL re-derivation could only cover the other legs, so it would
+ * disagree with every tool — reintroducing the "same agent, different verdict
+ * per surface" defect that `presence-derivation-unification-2026-07-17` was
+ * built to eliminate, and doing it behind something that LOOKS authoritative
+ * because it sits in SQL next to the real columns. A wrong answer nobody
+ * re-checks is worse than a loud error, which is why this is a redirect and not
+ * a view.
+ *
+ * Keyed `<bare table>.<column>`. Deliberately HARDCODED semantics, like
+ * TENANT_SCOPE_OVERRIDES above — update it when a derivation moves.
+ */
+const DERIVED_COLUMN_REDIRECTS: Record<string, DerivedColumnRedirect> = {
+  'coord_presence.session_state': {
+    table: 'harness_shared.coord_presence',
+    why:
+      'it is DERIVED at read time by one shared oracle, not stored, and no view can add it — ' +
+      'two of the six legs are not in Postgres at all (a kill(pid,0) probe against the ' +
+      "subject's own host, and the box-local psu-pty host registry), so a SQL re-derivation " +
+      'would silently disagree with every tool',
+    useInstead:
+      "coord:presence · fleet:assignments · coord:roster { view:'live' } · fleet:status · " +
+      'fleet:leader-brief (all project the SAME derivation)',
+    notThese:
+      'heartbeat_at / last_active_at — raw process-keepalive freshness, explicitly NOT the ' +
+      "liveness verdict: a warm-dead session reads heartbeatFresh:true with sessionState:'ended', " +
+      'and from SQL alone you cannot tell it from a live one',
+  },
+  'coord_presence.wakeable': {
+    table: 'harness_shared.coord_presence',
+    why: 'it is derived per read from event_awaits + agent_activity, not stored on the presence row',
+    useInstead: "coord:presence · fleet:assignments · coord:roster { view:'live' }",
+  },
+  'coord_presence.live_turn': {
+    table: 'harness_shared.coord_presence',
+    why: 'it is derived per read from event_awaits + agent_activity, not stored on the presence row',
+    useInstead: "coord:presence · fleet:assignments · coord:roster { view:'live' }",
+  },
+  'coord_presence.confirm_liveness': {
+    table: 'harness_shared.coord_presence',
+    why: 'it is a function of the derived sessionState (draining/suspect need a fresh required wake), not a stored flag',
+    useInstead: "coord:presence · fleet:assignments · coord:roster { view:'live' }",
+  },
+  'coord_presence.heartbeat_fresh': {
+    table: 'harness_shared.coord_presence',
+    // Unlike the others this one IS computable in SQL — the redirect exists to
+    // stop you computing it and then reading it as liveness, which is the same
+    // wrong-signal trap one step further along.
+    why:
+      'it is computed from heartbeat_at (freshness within the stale window), not stored — but ' +
+      'note it is a process-keepalive signal, NOT the liveness verdict',
+    useInstead:
+      'sessionState via coord:presence / fleet:assignments if you want the VERDICT; compute ' +
+      'freshness from heartbeat_at only if you genuinely want raw keepalive',
+  },
+};
+
+/**
+ * P-005(c): turn a 42703 that names a DERIVED column into a redirect rather than
+ * a dead end. Returns null unless the failing column is a registered derivation
+ * on a table this query actually references. Best-effort and purely textual — it
+ * never suppresses the underlying error, it rides alongside it.
+ */
+export function buildDerivedColumnRedirect(rawSql: string, errorMessage: string): string | null {
+  // PG spells this two ways: `column "session_state" does not exist` (bare) and
+  // `column p.session_state does not exist` (qualified by alias — unquoted).
+  const m = /column\s+"?(?:([a-z_][a-z0-9_$]*)\.)?([a-z_][a-z0-9_$]*)"?\s+does not exist/i.exec(
+    errorMessage,
+  );
+  const column = m?.[2]?.toLowerCase();
+  if (!column) return null;
+
+  const referenced = extractReferencedTables(rawSql).map(bareTableName);
+  for (const table of referenced) {
+    const hit = DERIVED_COLUMN_REDIRECTS[`${table}.${column}`];
+    if (!hit) continue;
+    return (
+      `⚠ \`${column}\` is DERIVED, not stored: ${hit.table} has no such column because ${hit.why}. ` +
+      (hit.notThese ? `⛔ Do NOT fall back to ${hit.notThese}. ` : '') +
+      `→ Use ${hit.useInstead}. ` +
+      '(agent-tools/coordination/liveness-oracle.ts · EI-18801042715296007)'
+    );
+  }
+  return null;
+}
+
 async function readTenantScopeInfo(
   tables: string[],
   client?: OrgSql,

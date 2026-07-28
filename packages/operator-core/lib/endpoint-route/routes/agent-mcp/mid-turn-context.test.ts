@@ -33,7 +33,7 @@ vi.mock('../../../memory/injection', () => ({
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
 
-import routes, { deriveQuery } from './mid-turn-context';
+import routes, { deriveQuery, deriveBatchQuery } from './mid-turn-context';
 
 const endpoint = routes[0] as unknown as {
   handler: (req: Request) => Promise<Response>;

@@ -18,6 +18,7 @@ import {
   pgReadQuery,
   extractPgErrorInfo,
   buildTenantScopeAdvisory,
+  buildDerivedColumnRedirect,
   describeReferencedTableColumns,
   describeRelation,
   listRelations,
@@ -165,6 +166,14 @@ export default defineTool({
         if (described.length) {
           payload.knownColumns = Object.fromEntries(described.map((d) => [d.table, d.columns]));
         }
+        // EI-18801042715296007: when the missing column is DERIVED (sessionState
+        // and the rest of the liveness family), `knownColumns` alone is actively
+        // harmful — the columns that exist on coord_presence are the raw
+        // keepalive signals the docs warn against, so the most helpful-looking
+        // part of this error steers the retry onto a documented-wrong signal.
+        // The redirect names the real surface AND the fallback to avoid.
+        const redirect = buildDerivedColumnRedirect(sql, info.message);
+        if (redirect) payload.derivedColumn = redirect;
       }
       return {
         isError: true,
