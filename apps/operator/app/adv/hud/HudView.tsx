@@ -455,6 +455,21 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     [planList.data, openPlanSlug],
   );
 
+  /* WorkItemPopupModal is harness-scoped for the SAME reason, and the board's
+     active harness is not a safe stand-in: the Work items tab renders the
+     unattributed ASK cards even under `scope=all` with no harness resolved, so
+     `harnessSlug` is null exactly when those cards are on screen and the popup
+     renders "No harness context for <id>" instead of the item (measured live
+     2026-07-28). The ask carries its own harness — read it from there and fall
+     back to the board's, mirroring `openPlanRow` above. */
+  const openItemHarness = useMemo(() => {
+    if (!openItemId) return null;
+    const hit = asks.find(
+      (a) => workItemIdForCard({ id: `ask:${a.id}`, ref: a.itemRef ?? '' }) === openItemId,
+    );
+    return hit?.harnessSlug ?? null;
+  }, [asks, openItemId]);
+
   const onOpenPlanCard = useCallback(
     (card: HudEntityCard) => void setOpenPlanSlug(card.id),
     [setOpenPlanSlug],
@@ -577,7 +592,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
       />
       <WorkItemPopupModal
         id={openItemId}
-        harnessSlug={harnessSlug}
+        harnessSlug={openItemHarness ?? harnessSlug}
         onSelect={(id) => void setOpenItemId(id)}
         onClose={() => void setOpenItemId(null)}
       />
