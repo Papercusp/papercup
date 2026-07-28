@@ -33,7 +33,7 @@ vi.mock('../../../memory/injection', () => ({
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
 
-import routes, { deriveQuery, deriveBatchQuery } from './mid-turn-context';
+import routes, { deriveQuery, deriveBatchQuery, clampToBudget } from './mid-turn-context';
 
 const endpoint = routes[0] as unknown as {
   handler: (req: Request) => Promise<Response>;
@@ -234,5 +234,51 @@ describe('mid-turn-context — P-018 acceptance: fires EARLY, on the first grep'
     expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
     expect(out.text).toBe('MEM');
     expect(firstCall()).toMatchObject({ queryContext: 'WI-6512 packages' });
+  });
+});
+
+describe('mid-turn-context — the budget is enforced HERE, because injection.ts does not', () => {
+  // THE DEFECT THIS PINS (found by running the P-018 acceptance case against live
+  // retrieval, not by reading the code): buildMemoryContextBlock treats budgetChars
+  // as advisory for the FIRST row. Its admit() is
+  //     if (spent + line.length > budget && lines.length > 0) return false;
+  // so row one is emitted whole at any size — deliberate there (a small-budget
+  // caller should get something rather than null), wrong here. Measured against the
+  // real store, the top-ranked record for the acceptance query is ~3,700 chars
+  // against this endpoint's 350. Since this fires per tool BATCH, an unclamped
+  // endpoint reintroduces exactly the context flood the 350 budget exists to
+  // prevent — and the epoch dedup does NOT save us, because it bounds the repeat
+  // of ONE record, not the size of fifty distinct ones.
+  const OVERSIZED = `## Possibly relevant (mid-turn)\n\n- [project @ papercusp] (id=980ce692) ${'x'.repeat(4000)}`;
+
+  it('clamps a single oversized row that buildMemoryContextBlock emitted whole', async () => {
+    buildMemoryContextBlockMock.mockResolvedValueOnce(OVERSIZED);
+    const out = await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'slow session history' } });
+    // Generously under the raw block, and near the 350 budget rather than 10x it.
+    expect(out.text.length).toBeLessThan(500);
+    expect(OVERSIZED.length).toBeGreaterThan(4000);
+  });
+
+  it('keeps the HANDLE when it clips — scope and id survive, so the teaser is actionable', async () => {
+    buildMemoryContextBlockMock.mockResolvedValueOnce(OVERSIZED);
+    const out = await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'slow session history' } });
+    expect(out.text).toContain('id=980ce692');
+    expect(out.text).toContain('memory:search');
+  });
+
+  it('leaves a block already within budget byte-identical', () => {
+    const small = '## Possibly relevant (mid-turn)\n\n- [project] (id=abc) short and useful';
+    expect(clampToBudget(small)).toBe(small);
+  });
+
+  it('never throws on an empty block', () => {
+    expect(clampToBudget('')).toBe('');
+  });
+
+  it('cuts at a word boundary when one is available, not mid-token', () => {
+    const block = `${'word '.repeat(100)}TAIL`;
+    const out = clampToBudget(block, 120);
+    const head = out.split(' … ')[0]!;
+    expect(head.endsWith('word')).toBe(true);
   });
 });

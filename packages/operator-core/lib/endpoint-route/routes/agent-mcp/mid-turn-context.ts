@@ -8,9 +8,16 @@
  * that submits one prompt and then makes fifty tool calls therefore got ONE
  * injection and then nothing: the agent could spend twenty greps re-deriving a
  * fact that was already in memory, because no boundary after the prompt ever
- * asked. This endpoint is that missing boundary — the PreToolUse hook
- * (pretooluse-midturn-context.sh) calls it before a tool dispatch and injects
- * what comes back as `additionalContext`.
+ * asked. This endpoint is that missing boundary — the PostToolBatch hook
+ * (posttoolbatch-midturn-context.sh) calls it after a batch of tool calls
+ * resolves and injects what comes back as `additionalContext`.
+ *
+ * ⚠ POST-tool, not PRE-tool, and that is D-027 rather than an accident: firing
+ * after the batch makes the tool RESULTS visible, so an empty/failed search — the
+ * strongest "this agent is stuck and about to re-derive something" signal there
+ * is — can be weighted in rather than guessed at. A PreToolUse variant of this
+ * file existed briefly and was deleted; if you find yourself moving it back,
+ * read D-027 first.
  *
  * WHY THIS IS A SIBLING AND NOT NEW MACHINERY. D-026 audited the Phase-7
  * matchers and ruled that their SELECTION logic is sound but their DELIVERY leg
@@ -164,6 +171,43 @@ export function deriveQuery(tool: string, input: unknown): string {
   }
 }
 
+/**
+ * Enforce the mid-turn budget HERE, at the endpoint. This is not belt-and-braces:
+ * `buildMemoryContextBlock` does NOT enforce `budgetChars` for the first row.
+ * Its `admit()` reads
+ *
+ *     if (spent + line.length > budget && lines.length > 0) return false;
+ *
+ * — the `&& lines.length > 0` deliberately lets the FIRST row through whole,
+ * whatever its size, so that a caller with a small budget gets *something* rather
+ * than null. Correct for turn-start (4000 chars, one injection per turn). NOT
+ * correct here: measured against the P-018 acceptance case, the top-ranked record
+ * is ~3,700 chars — over 10x this endpoint's 350 — and this fires per tool BATCH,
+ * so the docstring arithmetic above ("~17k worst case for fifty calls") would have
+ * been wrong by an order of magnitude in exactly the direction the owner warned
+ * about. The epoch dedup bounds the REPEAT of one record, not the size of fifty
+ * distinct ones.
+ *
+ * Fixing it in injection.ts was not an option: that file is the P-041 retrieval
+ * baseline and is gated by D-022, and every other caller depends on the
+ * always-emit-one-row behavior. So the clamp lives at the one call site whose
+ * contract is a TEASER.
+ *
+ * The clamp keeps the head, which is where the value is: the block opens with the
+ * heading, then `- [scope] (id=…) <the memory's first sentence>`. So a clipped
+ * teaser still carries the scope, the id (the handle for `memory:search`), and the
+ * lede — which is the entire intended shape of an interruption cheap enough to
+ * ignore.
+ */
+export function clampToBudget(block: string, budget: number = MID_TURN_BUDGET_CHARS): string {
+  if (!block || block.length <= budget) return block ?? '';
+  const cut = block.slice(0, budget);
+  // Prefer a word boundary, but never sacrifice most of the budget to find one.
+  const lastSpace = cut.lastIndexOf(' ');
+  const head = lastSpace > budget * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return `${head.trimEnd()} … (clipped — memory:search the id above for the rest)`;
+}
+
 /** One tool call as the PostToolBatch hook ships it (clamped, see the script). */
 export interface BatchCall {
   tool?: string;
@@ -239,7 +283,7 @@ const midTurnContext = defineTool({
         import('../../../auth'),
       ]);
       const user = await getSessionUserOrDefault().catch(() => null);
-      const text =
+      const block =
         (await buildMemoryContextBlock({
           userId: user?.id ?? null,
           workspaceId,
@@ -252,7 +296,8 @@ const midTurnContext = defineTool({
           heading: 'Possibly relevant (mid-turn)',
         })) ?? '';
 
-      return Response.json({ ok: true, text });
+      // The budget is advisory inside buildMemoryContextBlock; see clampToBudget.
+      return Response.json({ ok: true, text: clampToBudget(block) });
     } catch {
       return Response.json({ ok: true, text: '' });
     }
