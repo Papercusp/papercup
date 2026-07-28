@@ -30,6 +30,26 @@ export interface DesktopPerfMeasure {
   budget: number | null;
   /** Met its budget (true when budget is null). */
   ok: boolean;
+  /**
+   * This measure is a binary CORRECTNESS INVARIANT, not a tunable perf budget —
+   * so a breach BLOCKS the release gate even though block-mode is not armed for
+   * ordinary budgets (no-http-anywhere-2026-07-28 P-003c).
+   *
+   * WHY THE DISTINCTION IS REAL, not a severity dial. The desktop-perf gate is
+   * deliberately warn-only "until the budgets are trusted", and that caution is
+   * correct FOR BUDGETS: a timing budget is tuned by hand, drifts with machine
+   * load, and produces false reds — blocking on one before it has earned trust
+   * would wedge the fleet on noise. An invariant has none of those properties.
+   * `webview HTTP egress == 0` is not a threshold someone picked; it is exact in
+   * both directions (an IPC-routed request leaves no resource-timing entry at
+   * all, so any entry IS the defect), it has no load sensitivity, and D-005 of
+   * `no-http-anywhere-2026-07-28` rules an escape a loud failure rather than a
+   * degradation. "Warn until trusted" answers a question an invariant never asks.
+   *
+   * Optional by design: every existing measure stays a budget, so no fixture or
+   * producer that predates this field changes meaning (an absent flag is falsy).
+   */
+  invariant?: boolean;
 }
 
 export type DesktopPerfSource = 'admin-suite' | 'wdio';

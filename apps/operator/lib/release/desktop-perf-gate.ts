@@ -95,6 +95,29 @@ export function failingMeasures(run: DesktopPerfRun): DesktopPerfMeasure[] {
 }
 
 /**
+ * The breached INVARIANTS — measures flagged `invariant: true` that did not hold
+ * (no-http-anywhere-2026-07-28 P-003c).
+ *
+ * Separate from {@link failingMeasures} because the two are governed differently:
+ * a budget breach is warn-until-armed, an invariant breach always blocks. See
+ * `DesktopPerfMeasure.invariant` for why that asymmetry is principled rather than
+ * just a louder severity.
+ *
+ * NOTE the deliberate lack of a `budget !== null` filter. An invariant asserts a
+ * property, and its author may or may not express that property as a numeric
+ * budget — reusing the budget-shaped check here would silently ignore any
+ * invariant recorded without one, which is exactly the class of quiet
+ * non-enforcement this gate already fell into once.
+ */
+export function breachedInvariants(run: DesktopPerfRun): DesktopPerfMeasure[] {
+  return run.measures.filter((m) => m.invariant === true && !m.ok);
+}
+
+function fmtInvariant(m: DesktopPerfMeasure): string {
+  return `${m.key} = ${m.value} (invariant: must be ${m.budget ?? 0})`;
+}
+
+/**
  * PURE: map the latest desktop-perf run + policy to a deploy-gate action. No IO.
  *
  * Decision table (action by verdict tier):
