@@ -8,6 +8,7 @@ import { distAtomicWritesPlugin } from './dist-atomic-writes';
 import { distWipeGuardPlugin } from './dist-wipe-guard';
 import { watchHeartbeatPlugin } from './watch-heartbeat';
 import { tanstackLazyRetryPlugin } from './tanstack-lazy-retry';
+import { createDevWatchIgnore } from './dev-watch-ignore';
 
 // Operator SPA — Vite dev server. Takes over :3055 (was `next dev`).
 // The API + internal docs are served by the @hono/node-server host on
@@ -258,6 +259,13 @@ export default defineConfig({
     // Default to manual refresh; opt in with PAPERCUSP_ENABLE_HMR=1 when an
     // engineer explicitly wants hot module replacement for a local UI tweak.
     hmr: enableHmr ? undefined : false,
+    // WI-6539: don't burn inotify watches on build output, served-static docs,
+    // and docs-swap leftovers. A COLD dev server here held 11,959 watches
+    // against a 10,000 per-process budget — 91% of them on those three
+    // categories, only 9% on the actual module graph. This is a startup cost,
+    // not drift: eleven days of uptime added just 3% more. See dev-watch-ignore.ts
+    // for the measurement and why this is a predicate rather than glob strings.
+    watch: { ignored: createDevWatchIgnore({ viteRoot: import.meta.dirname, operatorRoot }) },
     proxy: {
       // PAPERCUSP_API_TARGET points the /api proxy at a different operator —
       // e.g. the staging host (:3170) when an e2e rig must exercise staging-tree
