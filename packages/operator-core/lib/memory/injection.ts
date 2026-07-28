@@ -14,6 +14,12 @@
  * Same shape used by operator-converse today. Designed so other chat
  * routes can adopt the exact same behavior with a 1-line call.
  *
+ * `queryContext` also accepts the structured `RecallQuery`
+ * (`{ userText, agentSignals? }`, P-042/F-J) for callers that have grounded
+ * agent context — a claimed work-item, the tool-call trajectory, the active
+ * file — rather than only a human utterance. A bare string stays correct for
+ * every caller that genuinely has just user text; see ./recall-query.
+ *
  * Best-effort: any failure (mem0 unavailable, PG down, embedder
  * misconfigured, no hits) returns null and the caller's prompt is
  * unaffected. Never throws.
@@ -30,6 +36,7 @@ import {
   stampSurfaced,
 } from './session-epoch-ledger';
 import { hiveScopeKey, hiveSlugFromScope, resolveHiveSlugsForHarnesses } from './hive-scope';
+import { retrievalQueryText, toRecallQuery, type RecallQueryInput } from './recall-query';
 import { memoryTierOf } from './two-tier';
 import {
   MEMORY_INJECT_TIMEOUT_MS,
@@ -86,8 +93,19 @@ export interface MemoryInjectionInput {
    * scope; pass `[]` to suppress the hive pull entirely.
    */
   hiveSlugs?: readonly string[];
-  /** Recent user-turn content concatenated. Empty string returns null. */
-  queryContext: string;
+  /**
+   * What to recall against. A bare string is the recent user-turn content
+   * concatenated — the historical form, still correct for any caller that has
+   * only user text (every chat route). An empty query returns null.
+   *
+   * P-042 (F-J) widened this to the structured `RecallQuery`
+   * (`{ userText, agentSignals? }`) so the human's words and the agent's
+   * grounded context stop being forced through one string. Passing the object
+   * form is behavior-identical TODAY — `agentSignals` is carried but does not
+   * yet reach retrieval (P-043 populates it, P-044 routes it to the lexical
+   * leg), which is what keeps this item revertable on its own.
+   */
+  queryContext: RecallQueryInput;
   /**
    * TOTAL hits admitted across ALL pools (user + harness + hive), not a
    * per-pool limit. F-C (context-injection-audit-2026-07-28 P-033 / D-011)
@@ -333,7 +351,20 @@ async function buildBlockInner(
   input: MemoryInjectionInput,
   mark: (label: string, ms: number) => void,
 ): Promise<string | null> {
-  if (!input.queryContext.trim()) return null;
+  // P-042 (F-J): normalize the accepted forms ONCE, here, so the three readers
+  // below share one query object. `queryText` is what actually goes to the index
+  // — today the user text alone; see retrievalQueryText() for why signals are
+  // carried but not yet issued.
+  //
+  // The emptiness gate deliberately tests the EFFECTIVE retrieval text rather
+  // than `userText` directly: today they are the same string (so this is
+  // bit-identical to the pre-P-042 gate), and after P-044 it keeps asking the
+  // question that actually matters — "is there anything to search with" — instead
+  // of silently skipping a turn that has agent signals but no human utterance,
+  // which is precisely the machine-injected turn Phase 11 exists to fix.
+  const query = toRecallQuery(input.queryContext);
+  const queryText = retrievalQueryText(query);
+  if (!queryText.trim()) return null;
   if (isMemoryDegraded()) return null;
 
   const backend = getMemoryBackend();
@@ -449,7 +480,7 @@ async function buildBlockInner(
     const doSearch = async (): Promise<MemoryEntry[]> =>
       scopes.length === 0
         ? []
-        : backend.search(input.queryContext, {
+        : backend.search(queryText, {
             scope: scopes,
             limit: totalLimit,
             minScore,
@@ -537,11 +568,17 @@ async function buildBlockInner(
           // `search()` scale here: this path has no lexical-fallback branch.
           scoreScale: backend.scoreScale ?? null,
           // P-041 / migration 706: what was ASKED. This is the push path, so
-          // `queryContext` here IS the injected query — for turn-start, the raw
-          // submitted prompt (envelope and all), which is precisely what makes
-          // the origin recoverable for free and the boilerplate rate
-          // measurable. Shape only; the text never leaves this call.
-          query: input.queryContext,
+          // this IS the injected query — for turn-start, the raw submitted
+          // prompt (envelope and all), which is precisely what makes the origin
+          // recoverable for free and the boilerplate rate measurable. Shape
+          // only; the text never leaves this call.
+          //
+          // P-042: record the EFFECTIVE retrieval text, not `userText`. They are
+          // the same string today, so the baseline being gathered right now is
+          // unaffected — but when P-044 adds agent signals to the query, the
+          // instrument follows the fix automatically instead of quietly
+          // continuing to measure the old query and reporting no change.
+          query: queryText,
           sessionId: input.session?.sessionId ?? null,
           pools: {
             user: { entries: userResults, limit: totalLimit, scopes: userScopes },

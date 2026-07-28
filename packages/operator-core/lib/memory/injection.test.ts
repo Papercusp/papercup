@@ -425,6 +425,104 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
   });
 });
 
+/**
+ * context-injection-audit-2026-07-28 P-042 (F-J) — the structured query seam,
+ * asserted END-TO-END through buildMemoryContextBlock.
+ *
+ * recall-query.test.ts pins the helpers in isolation; this pins that injection.ts
+ * actually ROUTES both forms through them. That distinction matters here: the
+ * three readers of `queryContext` (the emptiness gate, the backend search, and
+ * the P-041 telemetry) were separate `input.queryContext` reads before P-042, and
+ * the failure mode of a partial migration is that ONE of them keeps reading the
+ * raw union — which typechecks against `string | RecallQuery` in some positions
+ * and silently stringifies an object into "[object Object]" in others.
+ */
+describe('the injection seam accepts a structured recall query (P-042 / F-J)', () => {
+  const flush = async (): Promise<void> => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+
+  it('issues the SAME index query for a string and its structured equivalent', async () => {
+    const asString = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(asString);
+    await buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: 'why is the recall empty',
+    });
+
+    const asObject = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(asObject);
+    await buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: { userText: 'why is the recall empty' },
+    });
+
+    expect(asObject.search.mock.calls[0]![0]).toBe('why is the recall empty');
+    expect(asObject.search.mock.calls[0]![0]).toBe(asString.search.mock.calls[0]![0]);
+  });
+
+  // The "[object Object]" detector. Without it, a missed normalization at the
+  // search call still passes every existing test — they all assert on OPTIONS and
+  // on returned rows, and this file's fake backend ignores the query entirely.
+  it('never stringifies the object form into the query', async () => {
+    const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(backend);
+    await buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: { userText: 'deploy pipeline' },
+    });
+    expect(backend.search.mock.calls[0]![0]).not.toContain('[object Object]');
+  });
+
+  /**
+   * ⚠ TRIPWIRE — the same one recall-query.test.ts carries, at the level that
+   * actually matters (what the backend is asked). P-044 is what makes signals
+   * reach retrieval; until then this failing means the baseline is at risk.
+   */
+  it('carries agent signals WITHOUT letting them reach the index (P-043/P-044 do that)', async () => {
+    const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(backend);
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: {
+        userText: 'continue',
+        agentSignals: {
+          workItem: { id: 'WI-6635', title: 'Instrument the QUERY', body: 'record query shape' },
+          trajectory: { paths: ['lib/memory/recall-stats.ts'], symbols: ['describeRecallQuery'] },
+          activeFile: 'lib/memory/injection.ts',
+        },
+      },
+    });
+    expect(backend.search.mock.calls[0]![0]).toBe('continue');
+  });
+
+  it('records the EFFECTIVE retrieval text in the P-041 query telemetry', async () => {
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      harnessSlugs: ['papercusp'],
+      queryContext: {
+        userText: 'why is the recall empty',
+        agentSignals: { workItem: { id: 'WI-6635' } },
+      },
+    });
+    await flush();
+    // Not the object, not "[object Object]", and — until P-044 — not the signals.
+    expect(recordRecallStatsMock.mock.calls[0]![1]).toMatchObject({
+      query: 'why is the recall empty',
+    });
+  });
+
+  it('returns null for an empty structured query, exactly as for an empty string', async () => {
+    const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(backend);
+    for (const queryContext of ['', '   ', { userText: '' }, { userText: '   ' }]) {
+      expect(
+        await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext }),
+      ).toBeNull();
+    }
+    // The gate short-circuits before the backend is ever consulted.
+    expect(backend.search).not.toHaveBeenCalled();
+  });
+});
+
 describe('lastUserContext', () => {
   it('returns empty string for no user messages', () => {
     expect(lastUserContext([])).toBe('');
