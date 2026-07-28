@@ -149,4 +149,34 @@ describe('dev:pipeline_position awaitable defers to nextAction (P-005)', () => {
     const out = (await tool.handler({ path: 'apps/operator/app/x.ts' } as never, {} as never)) as Out;
     expect(out.data.awaitable).toMatchObject({ sugar: 'deploy:await' });
   });
+
+  /**
+   * WI-6595 — the case `nextAction` alone could never catch, which cost a live session
+   * ~26 minutes of silence on 2026-07-28.
+   *
+   * A RED gate with a run already in flight has no lever, so `nextAction` is legitimately
+   * null — this tool's own documented "blocked, and WAITING IS CORRECT" verdict. The old
+   * `deployed || nextAction` guard therefore did NOT suppress the hint, and the agent was
+   * told to sleep on `release:deployed`. The gate then went red, so no deploy was ever
+   * attempted and neither `release:deployed` nor `release:deploy-failed` could fire. Worse,
+   * sleeping on an await suppresses the monitor loop's fires, so the advice silenced the
+   * agent's own heartbeat too.
+   *
+   * The verdict must key on WHERE THE CHANGE SITS, not on whether a lever happens to exist.
+   */
+  for (const blockedOn of ['committed', 'pushed', 'gate', 'main'] as const) {
+    it(`SUPPRESSES the deploy-await when blocked at "${blockedOn}" even with NO nextAction`, async () => {
+      vi.mocked(gitPipelinePosition).mockResolvedValue({
+        ...base,
+        positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false },
+        gate: { stalled: false, consecutiveReds: 1, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+        blockedOn,
+        // No lever: a red gate with a run already in flight is a legitimate "just wait".
+        nextAction: null,
+      } as unknown as PipelinePosition);
+
+      const out = (await tool.handler({ path: 'apps/operator/app/x.ts' } as never, {} as never)) as Out;
+      expect(out.data.awaitable).toBeUndefined();
+    });
+  }
 });

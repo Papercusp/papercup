@@ -162,8 +162,27 @@ export default defineTool({
     // will land and carry someone else's code, while the thing that would actually help
     // goes undone. Two contradictory instructions in one payload is worse than one, so the
     // awaitable defers to `nextAction` whenever there IS one.
+    //
+    // ⚠ `nextAction` ALONE IS NOT ENOUGH, and the gap cost a live session ~26 minutes of
+    // silence on 2026-07-28 (WI-6595). The paragraph above names "the gate is red" as a case
+    // this must suppress — but a red gate with a run ALREADY IN FLIGHT has NO lever, so
+    // `nextAction` is correctly null (blockedOn set + nextAction null is this tool's own
+    // documented "waiting is correct" verdict). The guard therefore did not fire, the agent
+    // was told to sleep on `release:deployed`, and the gate then went red: no deploy was ever
+    // attempted, so NEITHER `release:deployed` NOR `release:deploy-failed` could fire (the
+    // latter means an attempted deploy failed, not a gate that went red). Because a session
+    // sleeping on an await has its monitor-loop fires suppressed, that advice also silenced
+    // the agent's own 60s heartbeat — it had to be woken by hand.
+    //
+    // So gate the advice on WHERE THE CHANGE ACTUALLY SITS, not on whether a lever exists.
+    // `blockedOn` is the first pending stage; `release:deployed` is only the event that
+    // decides this change's fate once it has cleared everything before the deploy. Anything
+    // earlier (committed / pushed / gate / main) is decided by a DIFFERENT event, and the
+    // deploy that eventually fires would carry someone else's code.
+    const blockedOn = result.blockedOn;
+    const waitingOnTheDeployItself = blockedOn === 'deployed' || blockedOn === 'serving';
     const awaitable =
-      deployed || result.nextAction
+      deployed || result.nextAction || !waitingOnTheDeployItself
         ? undefined
         : {
             hint: 'Not live yet — instead of re-polling, sleep on the deploy: deploy:await (or events:await the key below), then END YOUR TURN. You are re-invoked when it lands. See events:catalog for all awaitable keys.',

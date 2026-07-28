@@ -130,6 +130,50 @@ const FLEET_PRUNED_PLUGIN_NAMES = new Set(['github', 'cloudflare', 'firecrawl'])
 const FLEET_PRUNED_MCP_SERVERS = new Set(['playwright']);
 
 /**
+ * WI-6603 [owner:Avi 2026-07-28] — Claude Code settings whose STOCK DEFAULTS are
+ * wrong for a papercusp fleet. Baked into every psu session's settings.json so
+ * each session inherits them; measured against claude 2.1.220.
+ *
+ * `includeGitInstructions: false` (CC default true) — the default injects a
+ *   `# Git` block into every agent's Bash tool description, ending "Commit or
+ *   push only when the user asks. If on the default branch, branch first."
+ *   (verified verbatim in a live session's own prompt). That is the OPPOSITE of
+ *   this repo's rule: git-sync owns commit+push, the shared tree stays on
+ *   `staging`, and no agent branches. Also gates the gitStatus system-context
+ *   block — an accepted loss, since `git status` on a tree ~130 agents edit
+ *   concurrently reports every peer's uncommitted work as if it were yours.
+ *
+ * `showThinkingSummaries: true` (CC default false — `settings.showThinkingSummaries
+ *   ?? false`) — with it off, CC sends no `display` on the thinking config and the
+ *   API returns SIGNATURE-ONLY thinking blocks (`thinking: ''`). Measured over a
+ *   7d corpus: 58,362 thinking blocks ingested to ZERO thinking parts, so no agent
+ *   reasoning is recallable via sessions:search (see search/session-ingest.ts and
+ *   plan session-turn-storage-2026-07-28 D-003/D-007). Ingest already accepts
+ *   populated thinking parts with no schema change. NOTE the storage consequence:
+ *   thinking parts were free while empty; populated they compete with the same
+ *   PART_TEXT_CAP budget as text — revisit that cap if the parts table grows.
+ *
+ * `fileCheckpointingEnabled: false` (CC default on — 650 MB / 19,451 files
+ *   observed in ~/.claude/file-history) — /rewind restores files in place, and
+ *   this checkout is edited concurrently by the whole fleet, so a rewind silently
+ *   reverts peers' uncommitted work: the same hazard class as the tree-wide
+ *   `git checkout .` the repo bans outright.
+ *
+ * These are POLICY DEFAULTS, not safety grants, which is why they are deliberately
+ * NOT re-asserted by the session-recover hook's selfHealSettings() the way
+ * permissions.defaultMode and skipDangerousModePermissionPrompt are. Claude's own
+ * settings-save deep-MERGES (updateSettingsForSource merges prior content rather
+ * than replacing it), so a `/effort` or `/model` save cannot drop them mid-session;
+ * an operator who deliberately flips one in-session keeps it until the next launch
+ * re-materializes the dir. Project/local settings still outrank this layer.
+ */
+const PAPERCUSP_SESSION_SETTING_DEFAULTS: Readonly<Record<string, boolean>> = Object.freeze({
+  includeGitInstructions: false,
+  showThinkingSummaries: true,
+  fileCheckpointingEnabled: false,
+});
+
+/**
  * WI-3280 (argv-proof playbook delivery) — file names inside the session
  * config dir. `RECOVER_HOOK` is a SessionStart hook script (registered in the
  * session settings.json by writeSessionSettings); `RECOVER_PLAYBOOK` /
