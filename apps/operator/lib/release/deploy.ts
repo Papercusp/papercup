@@ -490,11 +490,28 @@ export async function executeDeploy(
             }
           } else {
             // PRE-CUTOVER failure: the live :3070 is still the pre-deploy process and
-            // never went down. Tree reverted to prev ⇒ fully back to the pre-deploy
-            // state with ZERO downtime; no live restart needed. THIS is the path that
+            // never went down, so there is nothing to restart. THIS is the path that
             // turns a botched deploy from a crash-loop into a no-op (P-001).
-            deps.log('pre-cutover failure — tree reverted to prev; live :3070 untouched (no restart, no downtime)');
-            rolledBack = true;
+            //
+            // But "the tree is back to prev" is a claim about the CHECKOUT, and the
+            // live process being up is no evidence for it (WI-6648): `rollback-code`
+            // above ran the SAME heuristic runSetup the cutover branch distrusts, so it
+            // can leave prev-code against target-node_modules here too. Verify it rather
+            // than asserting it — the cutover branch's P-002 reasoning applies
+            // identically, only the consequence is deferred: nothing restarts *now*, so
+            // an unbootable tree stays silent (health probes read 200 off the old
+            // process) until the next restart by anyone, long after this deploy reported
+            // `rolled-back`.
+            const rollbackPreflight = await step('rollback-preflight', () => deps.preflight());
+            rolledBack = rollbackPreflight.ok;
+            if (rolledBack) {
+              deps.log('pre-cutover failure — tree reverted to prev; live :3070 untouched (no restart, no downtime)');
+            } else {
+              deps.log(
+                `✖ rollback preflight failed — the reverted checkout will NOT boot (${rollbackPreflight.error ?? 'unknown'}); ` +
+                  `live :3070 is still serving the pre-deploy process, but the NEXT restart of it will fail — manual recovery needed`,
+              );
+            }
           }
         } catch (re) {
           deps.log(`✖ rollback ALSO failed: ${re instanceof Error ? re.message : re}`);

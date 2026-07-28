@@ -9,6 +9,11 @@
  *   2. snapshot:()=>null + staged migrations + a deploy failure ⇒ rolls back
  *      code, SKIPS restoreSnapshot (nothing to restore), and the fail broadcast
  *      signals the DB was NOT restorable (rolledBack reflects only the code revert).
+ *   3. WI-6648: a PRE-CUTOVER failure verifies the reverted tree instead of
+ *      assuming it. `rolledBack` must mean "the rollback is verified good", not
+ *      merely "the rollback steps ran" — on this path nothing restarts, so an
+ *      unbootable prev checkout would otherwise stay silent until some later
+ *      restart, long after the deploy reported `rolled-back`.
  *
  * Mirrors deploy.test.ts's injected-DeployDeps + call-trace pattern, but with the
  * stub closures recording into the SAME `calls` array so overrides show up in the
@@ -150,5 +155,56 @@ describe('executeDeploy — no snapshot taken but migrations staged', () => {
     expect(calls[calls.length - 1]).toBe('drain:release');
     // migrations WERE staged, so the DB may be dirty — yet no restore was possible
     expect(basePlan().migrations.length).toBeGreaterThan(0);
+  });
+});
+
+describe('executeDeploy — PRE-CUTOVER rollback verifies the reverted tree (WI-6648)', () => {
+  // `fail: 'migrate'` reproduces the real 2026-07-28 09:00Z shape: snapshot → swap →
+  // preflight(ok) → migrate FAILS. Both migrateRan and liveCutover stay false, so this
+  // is the pre-cutover branch — the live :3070 never went down and nothing restarts.
+  it('runs rollback-preflight after reverting, and reports rolledBack when prev boots', async () => {
+    const { deps, calls } = makeDeps({ fail: 'migrate' });
+
+    const res = await executeDeploy(cfg, basePlan(), deps);
+
+    expect(res.ok).toBe(false);
+    expect(res.rolledBack).toBe(true);
+    expect(calls).toContain('runSetup:1111'); // tree reverted to prevReleaseSha
+    // the reverted tree is CHECKED, not assumed — this step did not exist before WI-6648
+    expect(res.steps.some((s) => s.name === 'rollback-preflight')).toBe(true);
+    // pre-cutover: the live process never changed, so no restart and no DB restore
+    expect(calls).not.toContain('restart');
+    expect(calls).not.toContain('restoreSnapshot'); // migrate never applied
+    expect(calls).toContain('broadcast:fail');
+    expect(calls[calls.length - 1]).toBe('drain:release');
+  });
+
+  it('reports rolledBack:false when the reverted checkout will NOT boot', async () => {
+    let preflights = 0;
+    const { deps, calls } = makeDeps({ fail: 'migrate' });
+    deps.preflight = () => {
+      preflights++;
+      calls.push('preflight');
+      // 1st call = the pre-cutover boot check on the TARGET; it must pass, or the deploy
+      // never reaches migrate. 2nd = the post-rollback check on PREV — the new one.
+      return Promise.resolve(
+        preflights === 1 ? { ok: true } : { ok: false, error: 'MODULE_NOT_FOUND: @dnd-kit/core' },
+      );
+    };
+
+    const res = await executeDeploy(cfg, basePlan(), deps);
+
+    expect(res.ok).toBe(false);
+    expect(preflights).toBe(2); // target check, then reverted-tree check
+    // THE REGRESSION THIS FILE GUARDS: this was hardcoded `true` before WI-6648, so a
+    // rollback that left an unbootable tree was recorded as a clean 'rolled-back'.
+    expect(res.rolledBack).toBe(false);
+    expect(calls).toContain('runSetup:1111'); // the revert itself still happened
+    expect(calls).not.toContain('restart'); // still pre-cutover: nothing to restart back
+    expect(calls).toContain('broadcast:fail');
+    // The STEP succeeded (preflight resolved); its RESULT is what was not ok. `step()`
+    // records ok:true whenever fn resolves, so step.ok can never carry this verdict —
+    // which is exactly why the branch has to read `rollbackPreflight.ok` itself.
+    expect(res.steps.find((s) => s.name === 'rollback-preflight')?.ok).toBe(true);
   });
 });

@@ -69,6 +69,31 @@ async function refContains(git: GitRunner, repo: string, ref: string, sha: strin
 }
 
 /**
+ * WI-6646: the newest commit touching `relPath` that `ref` ALREADY contains.
+ *
+ * Used to tell the two ways a leg's `false` can arise apart. `targetSha` is "the newest
+ * commit touching this path ANYWHERE", so `ref` not containing it means either (a) this
+ * file has genuinely never landed in `ref`, or (b) it has, repeatedly, and a peer simply
+ * committed to it more recently than the caller. Those demand opposite advice — "wait for
+ * the pipeline" versus "your change may already be there, settle it with a marker" — and
+ * are indistinguishable from the boolean alone.
+ *
+ * Tri-state on purpose, per this module's standing rule that an absence is never a
+ * verdict: `null` = the git read FAILED (unknown), `{ sha: null }` = the read SUCCEEDED
+ * and found no such commit (a measured absence), `{ sha }` = measured presence.
+ */
+async function newestTouchingInRef(
+  git: GitRunner,
+  repo: string,
+  ref: string,
+  relPath: string,
+): Promise<{ sha: string | null } | null> {
+  const out = await git(repo, ['log', '-1', '--pretty=%H', ref, '--', relPath]);
+  if (out === null) return null;
+  return { sha: out === '' ? null : out };
+}
+
+/**
  * EI-18694888339365359: the LOCAL `origin/staging` remote-tracking ref can lag
  * arbitrarily behind the true remote tip — this module deliberately never runs
  * `git fetch` (see the module doc), so it depends on git-sync's own periodic
@@ -431,6 +456,46 @@ export interface PipelinePosition {
    * stage was not reached — do not report "not yet, wait" on it.
    */
   positionsUnknown: string[];
+  /**
+   * WI-6646 — the MARKER verdict for the two legs that lag (`inMain`, `deployed`),
+   * present only when the caller named a `marker`.
+   *
+   * WHY THE LEGS NEED IT AT ALL. With a `path`, `targetSha` is resolved as "the NEWEST
+   * commit touching this path" (`git log -1 -- <path>`), and every leg is then answered
+   * about THAT commit. On a shared file in this tree that commit is routinely a PEER'S,
+   * committed after yours by the whole-tree git-sync sweep — so `inMain: false` means
+   * "the newest commit touching this file has not reached main", NOT "your change has
+   * not reached main". Measured 2026-07-28: 43 of the 54 paths then diverging between
+   * main and staging reported `inMain: false` while a real change to that same file WAS
+   * already in main.
+   *
+   * That is the identical newer-commit trap `changeInCandidate.judgingContainsPath`
+   * carries — but these legs shipped without either of its two mitigations (no
+   * `missingReason` to explain the false, no `marker` to settle it), and they are the
+   * legs the `summary`, `stages[]`, `blockedOn` and `nextAction` are all derived from.
+   *
+   * A DEFINITIVE marker verdict CORRECTS the leg it belongs to, in BOTH directions:
+   * reading the ref's own version of the file is a direct measurement of the question
+   * being asked, so it supersedes the commit-ancestry proxy — the same precedent as the
+   * `ls-remote` correction of a stale local `origin/staging` ref. An UNKNOWN marker read
+   * never corrects anything.
+   */
+  positionsMarker: {
+    marker: string;
+    inMain: MarkerContainment | null;
+    deployed: MarkerContainment | null;
+  } | null;
+  /**
+   * WI-6646 — legs whose `false` is a NEWER-COMMIT ARTIFACT: the ref does not contain
+   * `targetSha`, but it DOES contain an earlier commit touching this same path, so the
+   * file has already landed changes there and this `false` may not be about the caller's
+   * change at all. Hoisted to the result for the same reason as `positionsUnknown` — a
+   * per-leg qualifier a hurried consumer can skip past is how the defect survives.
+   *
+   * Empty is the good case. A named leg means: do not report "not yet, wait" on it —
+   * re-call with `marker` set to a literal string from your own change to settle it.
+   */
+  positionsNewerCommit: string[];
   deployedSha: string | null;
   gate: {
     stalled: boolean;
@@ -1995,6 +2060,13 @@ export async function gitPipelinePosition(
   // qualifier a caller who never inspects each position still cannot miss —
   // modelled directly on `unitsUnknown[]` and `ownerHidden`.
   const positionsUnknown: string[] = [];
+  /** WI-6646 — legs whose false is a newer-commit artifact (see PipelinePosition). */
+  const positionsNewerCommit: string[] = [];
+  /** WI-6646 — per-leg marker verdicts, populated only when a marker was supplied. */
+  const markerLegs: { inMain: MarkerContainment | null; deployed: MarkerContainment | null } = {
+    inMain: null,
+    deployed: null,
+  };
   const readLeg = (name: string, v: boolean | null): boolean => {
     if (v === null) {
       positionsUnknown.push(name);
@@ -2045,6 +2117,81 @@ export async function gitPipelinePosition(
       positions.deployed = deployedSha
         ? readLeg('deployed', await refContains(git, root, deployedSha, targetSha))
         : readLeg('deployed', null);
+
+      /* --------------------------------------------------------------------- *
+       * WI-6646 — the newer-commit correction for the two lagging legs.
+       *
+       * Both legs above answer about `targetSha`, which with a `path` is THE NEWEST
+       * COMMIT TOUCHING THAT PATH — a peer's, whenever a peer touched the file after
+       * you (the norm here: git-sync commits the whole shared tree under one identity).
+       * So a `false` is about that commit, not about the caller's change, and the tool's
+       * headline question is "is MY edit live". Two mitigations, mirroring exactly what
+       * `changeInCandidate` already carries for the identical trap:
+       *
+       *   1. `marker` SETTLES it — read the ref's own version of the file and look for
+       *      the caller's literal string. That is a direct measurement of the question,
+       *      so a definitive verdict CORRECTS the leg in both directions (precedent: the
+       *      `ls-remote` correction of a stale `origin/staging` above). An unknown read
+       *      corrects nothing and is reported as unknown.
+       *   2. Without a marker, EXPLAIN the false rather than leaving it to be misread as
+       *      "not yet, wait": if the ref already contains an EARLIER commit touching this
+       *      path, name the leg in `positionsNewerCommit` and point at the marker lever.
+       * --------------------------------------------------------------------- */
+      if (relPath) {
+        const gitReadForMarker = gitReadForRepo(git, root);
+        const legs: ReadonlyArray<readonly ['inMain' | 'deployed', string | null]> = [
+          ['inMain', 'origin/main'],
+          ['deployed', deployedSha],
+        ];
+        for (const [leg, ref] of legs) {
+          if (!ref) continue;
+          // Only a leg reading FALSE can be a newer-commit artifact; a true leg is
+          // already the answer the caller wants and needs no second opinion.
+          if (positions[leg]) continue;
+          // A leg that is false BY DEGRADATION is already hoisted in positionsUnknown.
+          // Re-labelling it as a newer-commit artifact would replace an honest "unknown"
+          // with a confident wrong story about why.
+          if (positionsUnknown.includes(leg)) continue;
+
+          if (marker) {
+            const verdict = await markerAtCommit(gitReadForMarker, ref, relPath, marker);
+            markerLegs[leg] = verdict;
+            if (verdict.present === true) {
+              positions[leg] = true;
+              notes.push(
+                `${leg}: CORRECTED to true by the marker. The newest commit touching '${relPath}' ` +
+                  `(${targetSha.slice(0, 9)}) is not in ${ref} — but ${ref}'s own version of the file ` +
+                  `contains your marker ${verdict.count}×, so YOUR change IS there. The false was about ` +
+                  `a later commit to the same file, not about your change.`,
+              );
+              continue;
+            }
+            if (verdict.present === false) {
+              notes.push(
+                `${leg}: confirmed NOT present — ${ref}'s version of '${relPath}' does not contain your ` +
+                  `marker${verdict.pathPresent === false ? " (the path does not exist there at all)" : ''}. ` +
+                  `This is a genuine miss, not a newer-commit artifact.`,
+              );
+              continue;
+            }
+            // present === null: unknown. Fall through to the explanation below, which is
+            // still better than a bare false, but never claim the marker settled it.
+          }
+
+          const earlier = await newestTouchingInRef(git, root, ref, relPath);
+          if (earlier === null) continue; // read failed — say nothing rather than guess
+          if (earlier.sha && earlier.sha !== targetSha) {
+            positionsNewerCommit.push(leg);
+            notes.push(
+              `${leg} is FALSE ABOUT A NEWER COMMIT, not necessarily about your change: the newest commit ` +
+                `touching '${relPath}' is ${targetSha.slice(0, 9)}, which ${ref} does not contain — but ${ref} ` +
+                `DOES already contain ${earlier.sha.slice(0, 9)}, an earlier commit to the same file. On a ` +
+                `shared file that later commit is routinely a peer's. SETTLE IT IN ONE CALL: re-call with ` +
+                `\`marker\` set to a distinctive literal string from your own change.`,
+            );
+          }
+        }
+      }
     }
   } else if (!relPath || inp.sha) {
     /**
@@ -2348,6 +2495,8 @@ export async function gitPipelinePosition(
     dirtyUncommitted,
     positions,
     positionsUnknown,
+    positionsMarker: marker ? { marker, inMain: markerLegs.inMain, deployed: markerLegs.deployed } : null,
+    positionsNewerCommit,
     verdictProvenance,
     verdictUnknown,
     deployedSha,
