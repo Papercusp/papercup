@@ -191,6 +191,43 @@ function injectMinLexScore(): number | undefined {
 }
 
 /**
+ * PUSH-path fusion mode (context-injection-audit-2026-07-28 P-032 / F-B, D-010).
+ * THE fix that makes the injected block sized by relevance instead of by K.
+ *
+ * The hybrid default is `floored-union`, where the lexical leg admits hits on
+ * `minLexScore` ALONE — independently of the cosine leg's FP floor — and the
+ * fusion then returns `slice(0, limit)`. So the cosine leg could return ZERO and
+ * the block still came back FULL, refilled by lexical token-overlap: measured at
+ * 97% of turn-start recalls returning exactly the pool-limit sums (D-005), with a
+ * 0.0% zero-hit rate. The limit was acting as a TARGET, not a ceiling.
+ *
+ * Note what was NOT the problem, because it is the natural thing to reach for and
+ * it does not work (D-008): the 0.45 cosine floor was firing correctly the whole
+ * time. Raising it removes cosine hits and the lexical leg simply back-fills the
+ * freed slots — less relevance, same K. The size is decided by ADMISSION, so
+ * admission is what has to change.
+ *
+ * Under `cosine-gated` the candidate set is seeded ONLY from cosine hits
+ * (hybrid-fusion.ts) — lexical-only admission is skipped — so membership is
+ * governed by the cosine floor and the result is naturally 0..K. A real ceiling.
+ * The lexical leg still contributes its RANK to the fused score, so exact-id
+ * matches keep re-ranking cosine hits to the top; what is given up is a
+ * lexical-only hit the cosine leg missed entirely.
+ *
+ * PUSH ONLY — deliberately not set on the HybridBackend construction
+ * (configure.ts), so the PULL path keeps `floored-union`. A human running
+ * memory:search wants recall and can discard a bad hit; auto-injection has no
+ * LLM filter downstream, so it wants precision. Same asymmetry that already
+ * justifies the push path's tighter minLexScore above. Env-tunable for a
+ * one-flip revert if the zero-hit rate overshoots.
+ */
+function injectFusionMode(): 'floored-union' | 'cosine-gated' {
+  return process.env.PAPERCUSP_MEMORY_FUSION_MODE === 'floored-union'
+    ? 'floored-union'
+    : 'cosine-gated';
+}
+
+/**
  * Injected-block character budget (knowledge-packs P-011 / D-008). ~4k tokens
  * by default (≈4 chars/token). Lines are admitted in priority order — user
  * pool → harness pools → hive-organic → hive-pack — and assembly stops at the
@@ -300,6 +337,8 @@ async function buildBlockInner(
   try {
     const minScore = injectMinScore();
     const minLexScore = injectMinLexScore();
+    // F-B (D-010): the limit is a CEILING on this path, not a target.
+    const fusionMode = injectFusionMode();
 
     const tSearch = Date.now();
     let sharedEmbedMs = 0;
@@ -347,7 +386,7 @@ async function buildBlockInner(
       }
 
       const userPull: Promise<MemoryEntry[]> = input.userId
-        ? timed('user', backend.search(input.queryContext, { scope: input.userId, limit: userLimit, minScore, minLexScore }))
+        ? timed('user', backend.search(input.queryContext, { scope: input.userId, limit: userLimit, minScore, minLexScore, fusionMode }))
         : Promise.resolve([]);
 
       const harnessPull: Promise<MemoryEntry[]> = harnessSlugs.length > 0
@@ -356,6 +395,7 @@ async function buildBlockInner(
             limit: PER_HARNESS_LIMIT,
             minScore,
             minLexScore,
+            fusionMode,
             ...(sharedVector ? { vector: sharedVector } : {}),
           }))
         : Promise.resolve([]);
@@ -366,6 +406,7 @@ async function buildBlockInner(
             limit: PER_HARNESS_LIMIT,
             minScore,
             minLexScore,
+            fusionMode,
             ...(sharedVector ? { vector: sharedVector } : {}),
           }))
         : Promise.resolve([]);

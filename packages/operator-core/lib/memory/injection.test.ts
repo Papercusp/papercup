@@ -55,6 +55,91 @@ beforeEach(() => {
 });
 
 /**
+ * context-injection-audit-2026-07-28 P-032 (F-B / D-010) — the CEILING guard.
+ *
+ * The push path must be able to return FEWER than K, including ZERO. It could
+ * not: under the hybrid default `floored-union` the lexical leg admits hits on
+ * minLexScore ALONE, so the cosine leg could return zero and the block still came
+ * back full — 97% of turn-start recalls returned exactly the pool-limit sums with
+ * a 0.0% zero-hit rate (D-005). The fix is the fusion MODE, not any constant:
+ * `cosine-gated` seeds candidates only from cosine hits.
+ *
+ * These tests pin that the push path REQUESTS the gated mode. The mode's actual
+ * short-circuit semantics belong to the hybrid backend and are pinned there
+ * (hybrid-backend.test.ts) — asserting them against this file's fake backend
+ * would only prove the fake ignores the flag, which is exactly the false-green
+ * this comment exists to prevent.
+ */
+describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
+  const optsOf = (b: ReturnType<typeof mockBackend>, i: number) =>
+    b.search.mock.calls[i]![1] as { fusionMode?: string; minScore?: number; limit?: number };
+
+  it('passes fusionMode cosine-gated on EVERY pool (user, harness, hive)', async () => {
+    const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(backend);
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why is the recall empty',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: ['hivey'],
+    });
+    expect(backend.search).toHaveBeenCalledTimes(3);
+    for (let i = 0; i < 3; i++) {
+      expect(optsOf(backend, i).fusionMode, `pool ${i} must be gated`).toBe('cosine-gated');
+    }
+  });
+
+  // The floor is NOT the fix and must not be quietly retuned as if it were: the
+  // saturating hits never came through the cosine leg (D-008), so moving 0.45
+  // changes which cosine hits survive, not how many results come back.
+  it('still passes the 0.45 cosine floor unchanged — the mode is the fix, not the floor', async () => {
+    const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(backend);
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why is the recall empty',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: [],
+    });
+    expect(optsOf(backend, 0).minScore).toBe(0.45);
+  });
+
+  it('returns null when the pools come back empty — a zero-hit turn injects NOTHING', async () => {
+    useBackend(mockBackend([]));
+    const block = await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'a query nothing is relevant to',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: [],
+    });
+    expect(block).toBeNull();
+  });
+
+  it('honours the PAPERCUSP_MEMORY_FUSION_MODE revert switch', async () => {
+    const prev = process.env.PAPERCUSP_MEMORY_FUSION_MODE;
+    process.env.PAPERCUSP_MEMORY_FUSION_MODE = 'floored-union';
+    try {
+      const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+      useBackend(backend);
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+      });
+      expect(optsOf(backend, 0).fusionMode).toBe('floored-union');
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_MEMORY_FUSION_MODE;
+      else process.env.PAPERCUSP_MEMORY_FUSION_MODE = prev;
+    }
+  });
+});
+
+/**
  * context-injection-audit-2026-07-28 P-026 — the WIRING guard.
  *
  * recall-stats.ts can grow the richest per-pool schema in the world and it
@@ -256,10 +341,12 @@ describe('buildMemoryContextBlock', () => {
     // One user pull (limit 6) + one harness pull (per-pool limit 3) —
     // never a `workspace:*` scope. Both pulls carry the inject relevance floor
     // (injectMinScore() 0.45) + the hybrid push lexical bar (injectMinLexScore()
-    // 0.40) — the no-LLM-in-the-loop precision gate (P-031 / D-003).
+    // 0.40) — the no-LLM-in-the-loop precision gate (P-031 / D-003) — and
+    // fusionMode 'cosine-gated', which makes the per-pool limit a CEILING rather
+    // than a target (P-032 / F-B, D-010).
     expect(b.search.mock.calls).toEqual([
-      ['foo', { scope: 'u-123', limit: 6, minScore: 0.45, minLexScore: 0.4 }],
-      ['foo', { scope: ['harness:papercup'], limit: 3, minScore: 0.45, minLexScore: 0.4 }],
+      ['foo', { scope: 'u-123', limit: 6, minScore: 0.45, minLexScore: 0.4, fusionMode: 'cosine-gated' }],
+      ['foo', { scope: ['harness:papercup'], limit: 3, minScore: 0.45, minLexScore: 0.4, fusionMode: 'cosine-gated' }],
     ]);
   });
 
@@ -324,8 +411,8 @@ describe('buildMemoryContextBlock', () => {
     });
     // Second pull = harness pool, third = hive pool resolved from the registry.
     expect(b.search.mock.calls).toEqual([
-      ['testing?', { scope: ['harness:member-a'], limit: 3, minScore: 0.45, minLexScore: 0.4 }],
-      ['testing?', { scope: ['hive:my-hive'], limit: 3, minScore: 0.45, minLexScore: 0.4 }],
+      ['testing?', { scope: ['harness:member-a'], limit: 3, minScore: 0.45, minLexScore: 0.4, fusionMode: 'cosine-gated' }],
+      ['testing?', { scope: ['hive:my-hive'], limit: 3, minScore: 0.45, minLexScore: 0.4, fusionMode: 'cosine-gated' }],
     ]);
     expect(block).toContain('- [feedback @ hive:my-hive] (id=h1) Hive convention: tests ship with the feature');
     expect(block).toContain('- [feedback @ member-a] (id=a1) Harness note: run npm test before pushing');
