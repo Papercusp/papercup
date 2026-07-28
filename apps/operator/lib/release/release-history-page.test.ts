@@ -10,6 +10,7 @@ import {
 } from './release-history-page';
 import { groupItemsByPlan, isUserFacing, type ReleaseRow, type ShippedItem, type ShippedPlan } from './release-registry';
 import { INSTRUCTIONS_MD } from './release-instructions';
+import { DEMO_VIDEO_SRC } from './release-video';
 
 const ANALYTICS: Analytics = { host: 'https://flags.example.com', projectKey: 'phc_test' };
 const GENERATED_AT = new Date('2026-07-13T00:00:00Z');
@@ -108,14 +109,109 @@ describe('the beacon — the leak detector [owner: "collect stats on visits to m
     expect(html).toContain('document.referrer');
   });
 
-  it('NEVER sends the url — the url IS the secret, and an analytics store is not a place to keep it', () => {
+  it('NEVER reads the real url — the url IS the secret, and an analytics store is not a place to keep it', () => {
     const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });
-    // The obvious PostHog property. Sending it would copy the secret path into
-    // dashboards, exports and support tools — the leak detector leaking the secret.
-    expect(html).not.toContain('$current_url');
-    expect(html).not.toContain('window.location');
+    // ── Why this no longer just forbids the token "$current_url" ──────────────
+    // It used to, because the beacon sent no url of any kind. [owner 2026-07-27]
+    // then asked for papercusp.com's tracking here, and PostHog's page/session
+    // reports are keyed on the url family — so the page now DOES send
+    // $current_url/$pathname/path, built from a generation-time page identity
+    // under a literal <redacted> base. The invariant was never "the token must
+    // not appear"; it was "the real path must never be READ". That is what is
+    // asserted now, and it is the stricter statement: these four are the only
+    // ways the browser can hand you the secret path at runtime.
     expect(html).not.toContain('location.href');
     expect(html).not.toContain('location.pathname');
+    expect(html).not.toContain('window.location');
+    expect(html).not.toContain('document.URL');
+  });
+
+  it('sends the url family REDACTED — analytics keeps its page breakdowns, the secret stays out', () => {
+    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });
+    expect(html).toContain(`var PAGE_PATH = "/index.html"`);
+    expect(html).toContain(`'$current_url': location.origin + '/<redacted>' + PAGE_PATH`);
+    expect(html).toContain(`'$pathname': PAGE_PATH`);
+    expect(html).toContain(`path: PAGE_PATH`);
+    // The hostname is NOT the secret — only the path is (D-002) — so $host is
+    // sent as-is and PostHog can still tell the release host from the website.
+    expect(html).toContain(`'$host': location.host`);
+  });
+
+  it('gives a plan page its own redacted identity, so plan pages are distinguishable', () => {
+    const html = renderPlanPageHtml(plan(), {
+      generatedAt: GENERATED_AT,
+      analytics: ANALYTICS,
+      version: '0.0.9',
+    });
+    expect(html).toContain(`var PAGE_PATH = "/plans/a-plan.html"`);
+    expect(html).not.toContain('location.pathname');
+  });
+
+  it('reports a same-origin referrer as $internal, never as the (secret) url it really is', () => {
+    // index -> plan navigation makes document.referrer the secret url. The page's
+    // meta referrer tag should already blank it; this is the second mechanism.
+    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });
+    expect(html).toContain(`if (rh === location.hostname) { ref = '$internal'; refDomain = '$internal'; }`);
+  });
+
+  it('never resolves a relative href into an absolute one — that would rebuild the secret url', () => {
+    // a.href resolves against the document; a.getAttribute('href') does not. On a
+    // page whose every download link is relative, that distinction IS the secret.
+    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });
+    expect(html).toContain(`a2.getAttribute('href')`);
+    expect(html).not.toContain('new URL(href, location');
+  });
+});
+
+describe('PostHog parity with papercusp.com [owner 2026-07-27: "the same sort of posthog tracking"]', () => {
+  const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });
+
+  it('reports into the same project as the site', () => {
+    // POSTHOG_PUBLIC_DEFAULTS already matched the site's host+key before this
+    // change; what differed was only how much each event carried.
+    expect(html).toContain(ANALYTICS.host);
+    expect(html).toContain(ANALYTICS.projectKey);
+  });
+
+  it('counts repeat visits as ONE visitor, the way the site does', () => {
+    expect(html).toContain("localStorage.getItem('pc_aid')");
+    expect(html).toContain("sessionStorage.getItem('pc_aid')"); // privacy-mode fallback
+  });
+
+  it('sends a bare-UUID $session_id — a prefixed one is silently dropped by PostHog', () => {
+    expect(html).toContain("base['$session_id'] = sid");
+    expect(html).toContain('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx');
+    // the site learned this the hard way; a prefix kills duration/bounce/paths
+    expect(html).not.toMatch(/sid\s*=\s*'s-'/);
+  });
+
+  it('carries first/last-touch UTM attribution', () => {
+    for (const k of ['utm_source', 'utm_medium', 'utm_campaign', 'ft_', 'lt_']) {
+      expect(html).toContain(k);
+    }
+  });
+
+  it('derives the reserved browser/os/device props by hand (no posthog-js on the page)', () => {
+    for (const p of ['$browser', '$os', '$device_type', '$screen_width', '$screen_height']) {
+      expect(html).toContain(p);
+    }
+  });
+
+  it('keeps the legacy lowercase props the site\'s admin queries read', () => {
+    for (const p of ['path:', 'referrer:', 'screen:', 'lang:']) expect(html).toContain(p);
+  });
+
+  it('instruments what this page is FOR — downloads, the Discord link, and the demo', () => {
+    for (const ev of [
+      'release_history_viewed',
+      'download_clicked',
+      'discord_clicked',
+      'outbound_link_clicked',
+      'plan_page_opened',
+      'demo_video_played',
+    ]) {
+      expect(html).toContain(ev);
+    }
   });
 
   it('omits the script ENTIRELY when no analytics are configured', () => {
@@ -324,6 +420,55 @@ describe('empty / degenerate states', () => {
   });
 });
 
+describe('the homepage demo video [owner 2026-07-27: "add the same video that is on our homepage to the top"]', () => {
+  const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null });
+
+  it('renders the same cut the homepage plays, with the homepage\'s own attributes', () => {
+    expect(html).toContain(DEMO_VIDEO_SRC);
+    expect(html).toContain('clips.papercusp.com');
+    expect(html).toContain('controls autoplay muted playsinline preload="metadata"');
+    expect(html).toContain('id="demoVid"');
+  });
+
+  it('is at the TOP — above the instructions and the downloads', () => {
+    const video = html.indexOf('<section class="demo">');
+    const instructions = html.indexOf('<h2>Instructions</h2>');
+    const release = html.indexOf('<h2>0.0.9</h2>');
+    expect(video).toBeGreaterThan(-1);
+    expect(video).toBeLessThan(instructions);
+    expect(instructions).toBeLessThan(release);
+  });
+
+  it('inlines the poster, so the frame is never a broken image under the secret path', () => {
+    // The homepage serves the poster relatively (video/poster-d65.jpg), which
+    // would 404 under the release bucket's secret path.
+    expect(html).toContain('poster="data:image/jpeg;base64,');
+    expect(html).not.toContain('poster="video/');
+  });
+
+  it('does NOT inline the 32MB video — it stays on the CDN the homepage uses', () => {
+    // Copying it under the secret path would add 32MB to every publish and give
+    // us a second copy to keep in sync, for no gain.
+    expect(html).not.toContain('data:video/');
+    expect(html).toMatch(/src="https:\/\/clips\.papercusp\.com\/[^"]+\.mp4"/);
+  });
+
+  it('needs no JavaScript to appear — <video> is markup, like everything else here', () => {
+    // analytics:null ⇒ no script on the page at all, and the video still renders.
+    expect(html).not.toContain('<script');
+    expect(html).toContain('<video');
+  });
+
+  it('is carried by the index only — a plan page is a wall of text, not a landing', () => {
+    const planHtml = renderPlanPageHtml(plan(), {
+      generatedAt: GENERATED_AT,
+      analytics: null,
+      version: '0.0.9',
+    });
+    expect(planHtml).not.toContain('<video');
+  });
+});
+
 describe('the Instructions section [owner 2026-07-27]', () => {
   const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null });
 
@@ -408,7 +553,11 @@ describe('plan page', () => {
     expect(html).toContain('Body text.');
     expect(html).toContain('href="../index.html"');
     expect(html).toContain('document.referrer'); // the beacon is on this page too
-    expect(html).not.toContain('$current_url');
+    // The plan page's url family is redacted the same way the index's is — see
+    // "NEVER reads the real url" for why this asserts the redaction rather than
+    // the absence of the property.
+    expect(html).toContain('/<redacted>');
+    expect(html).not.toContain('location.pathname');
   });
 
   // ── The frontmatter leak, found by rendering a REAL plan page and reading it.

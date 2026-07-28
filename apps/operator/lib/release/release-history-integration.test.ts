@@ -232,9 +232,16 @@ describe('release-history end-to-end data flow', () => {
     expect(html).toContain('document.referrer');
     expect(html).toContain('release_history_viewed');
     expect(html).toContain('phc_test123');
-    // But NOT the URL (the secret)
+    // But never the REAL url (the path is the secret). Since [owner 2026-07-27]
+    // asked for papercusp.com's tracking here, the page does now send a
+    // $current_url — built from a generation-time page identity under a literal
+    // <redacted> base, never read from the browser. So the assertion is that the
+    // real path is never READ, plus that what IS sent is the redacted form.
+    // Canonical version of this guard, with the full reasoning:
+    // release-history-page.test.ts → "NEVER reads the real url".
     expect(html).not.toContain('location.href');
-    expect(html).not.toContain('$current_url');
+    expect(html).not.toContain('location.pathname');
+    expect(html).toContain('/<redacted>');
   });
 
   it('omits internal (EI-*) items from page but counts them', () => {

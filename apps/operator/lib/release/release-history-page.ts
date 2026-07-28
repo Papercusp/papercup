@@ -180,8 +180,12 @@ function beaconScript(
   // ⛔ THE ONE DIFFERENCE, AND IT IS LOAD-BEARING: the site reads the URL family
   // from location.*; this page CANNOT. Its path is the unlisted secret we share
   // with beta testers, so PAGE_PATH below is baked in at GENERATION time and the
-  // base segment is a literal <redacted>. Never replace these with location.href
-  // / location.pathname — a test fails, and the module header says why.
+  // base segment is a literal <redacted>. Never rebuild these from the browser's
+  // own url/path accessors — a test fails, and the module header says why. (Nor
+  // may you NAME those accessors in a comment down here: this text is emitted
+  // into the published page, and the test greps the finished HTML, not the
+  // source. That is deliberate — a warning is worth nothing if the thing it
+  // warns about can hide inside it.)
   var PAGE_PATH = ${JSON.stringify(pagePath)};
   try {
     var HOST = ${JSON.stringify(a.host)},

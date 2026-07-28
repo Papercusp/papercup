@@ -34,7 +34,7 @@ const PARAMS_TIMEOUT_MS = 12_000;
  * the ChatAction contract — but the BAR recovers, which is the point: a
  * never-settling `params()` otherwise pins the button aria-busy forever.
  */
-async function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+export async function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
