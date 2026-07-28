@@ -16,6 +16,7 @@ import {
   sessionIngestLagSweep,
   INGEST_LAG_MIN_BACKLOG_BYTES,
   type AdapterLagObservation,
+  type IngestLagSweepDeps,
 } from './session-ingest-lag-watchdog';
 
 const HOUR = 3_600_000;
@@ -83,11 +84,9 @@ describe('sessionIngestLagSweep', () => {
 
   const deps = (observations: AdapterLagObservation[], fires = 0) => ({
     observe: async () => observations,
-    recentWatchdogFires: vi.fn(
-      async (_ws: string, _slug: string, _hours: number, _source?: unknown, _scopeKey?: string) => fires,
-    ),
-    recordFire: vi.fn(async () => ({}) as never),
-    openEscalation: vi.fn(async () => ({}) as never),
+    recentWatchdogFires: vi.fn<NonNullable<IngestLagSweepDeps['recentWatchdogFires']>>(async () => fires),
+    recordFire: vi.fn<NonNullable<IngestLagSweepDeps['recordFire']>>(async () => undefined as never),
+    openEscalation: vi.fn<NonNullable<IngestLagSweepDeps['openEscalation']>>(async () => undefined as never),
   });
 
   it('records a fire and opens ONE escalation for a wedged adapter', async () => {
