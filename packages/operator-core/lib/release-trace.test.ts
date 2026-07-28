@@ -28,6 +28,11 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
     dirtyUncommitted: false,
     positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
     positionsUnknown: [],
+    // WI-6646 made these REQUIRED on PipelinePosition. Both values are semantically
+    // correct here rather than compiler-silencers: this fixture names no `marker`, so
+    // there is no per-leg marker verdict to report, and no leg is a newer-commit artifact.
+    positionsMarker: null,
+    positionsNewerCommit: [],
     // P-007 made this REQUIRED on PipelinePosition, and empty is the semantically
     // correct value rather than a compiler-silencer: these fixtures describe a fully
     // measured pipeline, so no verdict leg is degraded.

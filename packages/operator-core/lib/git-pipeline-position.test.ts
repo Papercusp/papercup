@@ -827,6 +827,11 @@ describe('gitPipelinePosition (P-002)', () => {
       dirtyUncommitted: false,
       positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
       positionsUnknown: [],
+      // WI-6646 made these REQUIRED on PipelinePosition. Both values are semantically
+      // correct here rather than compiler-silencers: this fixture names no `marker`, so
+      // there is no per-leg marker verdict to report, and no leg is a newer-commit artifact.
+      positionsMarker: null,
+      positionsNewerCommit: [],
       verdictUnknown: [],
       deployedSha: 'deployedsha0',
       gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
@@ -1610,6 +1615,11 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       dirtyUncommitted: false,
       positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
       positionsUnknown: [],
+      // WI-6646 made these REQUIRED on PipelinePosition. Both values are semantically
+      // correct here rather than compiler-silencers: this fixture names no `marker`, so
+      // there is no per-leg marker verdict to report, and no leg is a newer-commit artifact.
+      positionsMarker: null,
+      positionsNewerCommit: [],
       verdictUnknown: [],
       deployedSha: 'deployedsha0',
       gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
@@ -1865,6 +1875,11 @@ describe('changeInCandidate (P-004)', () => {
       dirtyUncommitted: false,
       positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
       positionsUnknown: [],
+      // WI-6646 made these REQUIRED on PipelinePosition. Both values are semantically
+      // correct here rather than compiler-silencers: this fixture names no `marker`, so
+      // there is no per-leg marker verdict to report, and no leg is a newer-commit artifact.
+      positionsMarker: null,
+      positionsNewerCommit: [],
       verdictUnknown: [],
       deployedSha: 'deployedsha0',
       gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
