@@ -17,6 +17,7 @@ import {
   resetAgentStateStamps,
   agentStateStampSize,
   setAgentGoalRehydrator,
+  setAgentIntentRehydrator,
 } from './agent-state-stamp';
 
 const OWNER = 'su-8d9a671c';
@@ -332,5 +333,130 @@ describe('durable goal re-hydration (WI-6595)', () => {
     readAgentStateStamp(OWNER);
     await settle();
     expect(readAgentStateStamp(OWNER).goalRef).not.toBe('   not a ref at all   ');
+  });
+});
+
+describe('durable intent re-hydration (WI-6637)', () => {
+  /** Let the fire-and-forget fill run without coupling to a real timer. */
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetAgentStateStamps();
+  });
+
+  it('refills a missing intent from durable state — WITHOUT blocking the call that missed', async () => {
+    setAgentIntentRehydrator(async () => 8355293);
+
+    // Same D-014 contract as the goal half: the read that MISSES still returns
+    // synchronously and still stamps the null it honestly had.
+    expect(readAgentStateStamp(OWNER).intentEventId).toBeNull();
+
+    await settle();
+    expect(readAgentStateStamp(OWNER).intentEventId).toBe(8355293);
+  });
+
+  it('does not query at all when the intent is already known', async () => {
+    const durable = vi.fn(async () => 111);
+    setAgentIntentRehydrator(durable);
+    noteIntentDeclared(OWNER, 999);
+
+    readAgentStateStamp(OWNER);
+    readAgentStateStamp(OWNER);
+    await settle();
+
+    expect(durable).not.toHaveBeenCalled();
+    expect(readAgentStateStamp(OWNER).intentEventId).toBe(999);
+  });
+
+  it('collapses a burst of misses into ONE durable read', async () => {
+    const durable = vi.fn(async () => null);
+    setAgentIntentRehydrator(durable);
+
+    for (let i = 0; i < 50; i++) readAgentStateStamp(OWNER);
+    await settle();
+
+    expect(durable).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a later miss once the backoff lapses — a boot-time null must not stick', async () => {
+    // A restart is exactly when the PG fast path may not be up yet, so the
+    // resolver returns a null meaning "could not read", not "never declared".
+    const nowSpy = vi.spyOn(Date, 'now');
+    const durable = vi.fn(async () => null);
+    setAgentIntentRehydrator(durable);
+
+    nowSpy.mockReturnValue(1_000);
+    readAgentStateStamp(OWNER);
+    await settle();
+    expect(durable).toHaveBeenCalledTimes(1);
+
+    nowSpy.mockReturnValue(30_000);
+    readAgentStateStamp(OWNER);
+    await settle();
+    expect(durable).toHaveBeenCalledTimes(1);
+
+    nowSpy.mockReturnValue(120_000);
+    readAgentStateStamp(OWNER);
+    await settle();
+    expect(durable).toHaveBeenCalledTimes(2);
+  });
+
+  it('NEVER rewinds to a stale id when a real declaration landed while the read was in flight', async () => {
+    // THE regression guard for this item. WI-6637 was filed claiming a late fill
+    // is "safe by construction because intentEventId is already MONOTONIC in
+    // applyPatch" — it is not: `upsert` has no monotonic rule, and the LOCAL path
+    // is deliberately last-write-wins. So the fill has to carry the guard itself,
+    // or a slow durable read silently rewinds the pointer every later call claims
+    // to have been made under.
+    let answer: ((v: number | null) => void) | undefined;
+    setAgentIntentRehydrator(() => new Promise<number | null>((r) => (answer = r)));
+
+    readAgentStateStamp(OWNER); // miss -> starts the durable read
+    // The agent declares a NEW intent while that read is still in flight.
+    noteIntentDeclared(OWNER, 8355293);
+    // ...and the read now answers with the OLDER pointer it saw before that.
+    answer?.(8355000);
+    await settle();
+
+    expect(readAgentStateStamp(OWNER).intentEventId).toBe(8355293);
+  });
+
+  it('a null answer is an honest "never declared" and is not written', async () => {
+    const durable = vi.fn(async () => null);
+    setAgentIntentRehydrator(durable);
+
+    readAgentStateStamp(OWNER);
+    await settle();
+
+    expect(durable).toHaveBeenCalledTimes(1);
+    expect(readAgentStateStamp(OWNER).intentEventId).toBeNull();
+  });
+
+  it('re-hydrating intent does not disturb the goal or the assumption watermark', async () => {
+    // D-011: the three declarations have independent lifetimes, and a refill of
+    // one must not read as a write to the others.
+    setAgentIntentRehydrator(async () => 8355293);
+    setAgentGoalRehydrator(async () => null);
+    noteGoalClaimed(OWNER, 'WI-6637');
+    noteAssumptionAsserted(OWNER, 3368);
+
+    readAgentStateStamp(OWNER);
+    await settle();
+
+    expect(readAgentStateStamp(OWNER)).toEqual({
+      intentEventId: 8355293,
+      assumptionSetId: 3368,
+      goalRef: 'WI-6637',
+    });
+  });
+
+  it('the default rehydrator resolves against the real durable source', async () => {
+    // The seam above is a TEST seam, not an installation point — the production
+    // default must exist with no wiring at all (WI-6594's dead-seam lesson).
+    const mod = await import('./agent-tools/coordination/agent-intent-sources');
+    expect(typeof mod.resolveOwnerIntentEventId).toBe('function');
   });
 });

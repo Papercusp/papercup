@@ -357,6 +357,27 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.positionsNewerCommit).toEqual(expect.arrayContaining(['inMain', 'deployed']));
     });
 
+    it('covers onStaging too, and never committedLocal (which cannot be a newer-commit artifact)', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        // Local HEAD is ahead of every remote — the shape an unpushed peer commit creates.
+        contains: { HEAD: [PEER], 'origin/staging': [], 'origin/main': [], deployedsha0: [] },
+        newestInRef: { 'origin/staging': MINE, 'origin/main': MINE, deployedsha0: MINE },
+      });
+      const res = await gitPipelinePosition(
+        { path: P },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      // All three REF-relative legs share the one `targetSha`, so leaving any of them out
+      // would be a half-fix that leaves the trap armed on that leg.
+      expect(res.positionsNewerCommit.sort()).toEqual(['deployed', 'inMain', 'onStaging']);
+      // committedLocal is structurally immune: `targetSha` is resolved by `git log`
+      // against HEAD, so it is an ancestor of HEAD by construction. Flagging it would be
+      // crying wolf on a leg that cannot exhibit the defect.
+      expect(res.positionsNewerCommit).not.toContain('committedLocal');
+      expect(res.positions.committedLocal).toBe(true);
+    });
+
     it('a MARKER present in the ref CORRECTS the leg to true, in the result and the summary', async () => {
       const git = fakeGit({
         pathCommit: PEER,

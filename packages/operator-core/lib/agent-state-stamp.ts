@@ -90,7 +90,8 @@
  * restarts every worker at once, so the whole ring's map is empty simultaneously
  * and there is no peer left holding the value to relay. The two stamps then
  * recover ASYMMETRICALLY:
- *   · `intentEventId` has NO durable source and is NOT re-hydrated here. An
+ *   · `intentEventId` HAD no durable source and was NOT re-hydrated — WI-6637 gave
+ *     it one; the measurement below is what that fix was built from. An
  *     earlier revision of this note claimed it "self-heals within minutes —
  *     every `coord:orient` / `coord:declare-intent` rewrites it, and agents wake
  *     constantly", and used that to justify fixing only the goal half. ⚠ THAT IS
@@ -103,9 +104,15 @@
  *     occurred in it. A long-running loop session re-declares on bootstrap, not on
  *     every wake, so "agents wake constantly" does not imply they re-declare.
  *     CONSEQUENCE: re-hydrating `goalRef` alone does NOT restore `both stamps on
- *     one row` after a restart, because the OTHER column is null. The divergence
- *     metric stays starved — so this module fixes the goal half of that outage,
- *     not the whole of it.
+ *     one row` for an owner that has not re-declared, because the OTHER column is
+ *     null. `scheduleIntentRehydration` closes that half by pointing at the same
+ *     append-only `coord_event_log` line the live declare path stamps — NOT at
+ *     `coord_presence`, which is mutated in place (see `agent-intent-sources.ts`).
+ *     ⚠ It does NOT follow that the ratchet was ever starved by this: `comparable`
+ *     is computed over WINDOWS, and a window containing any declaring owner is
+ *     judgeable. Measured 09:56Z after a restart, `both_stamps` was 66-68 (not 0)
+ *     and `lint:plane-ratchet` exited 0 with the leg `holding`. The defect is real
+ *     — the gate-red framing this item was filed under was not.
  *   · `goalRef` did NOT recover either, before this fix. `noteGoalClaimed` fires only when work is CLAIMED or
  *     RELEASED, so an agent that claimed WI-X an hour before the deploy and is
  *     still working it never writes the goal again — it stays null for the whole
@@ -137,10 +144,10 @@
  *   · COHERENCE (WI-6594, still open) — the ring diverges between restarts.
  * The re-hydration below happens to address BOTH for `goalRef`, because every
  * worker independently re-derives the same durable value instead of waiting to be
- * told: the ring converges even when replication is not delivering. `intentEventId`
- * has no such durable source and so is still one-worker-only — which is fine for
- * the metric, since `comparable` only needs SOME row carrying both, and the worker
- * holding the intent now also holds the goal.
+ * told: the ring converges even when replication is not delivering. WI-6637 gives
+ * `intentEventId` the same property for the same reason — each worker resolves the
+ * pointer itself rather than waiting for a relay — so the fix below addresses BOTH
+ * defects for BOTH columns.
  *
  * THE FIX: on a read that finds NO goal, schedule a fire-and-forget re-hydration
  * from the DURABLE source — `resolveOwnerGoal`, the same four-leg resolver behind
@@ -266,6 +273,80 @@ export function setAgentGoalRehydrator(fn: AgentGoalRehydrator | null): void {
 }
 
 /**
+ * Owner -> the earliest ms at which another durable INTENT re-hydration may start
+ * (WI-6637). Same deadline-not-boolean design as `goalHydrateAfter`, for the same
+ * two jobs (in-flight guard + retry backoff) — see that map's note.
+ */
+const intentHydrateAfter = new Map<string, number>();
+
+/** Resolves an owner's intent-declaration event id from DURABLE state. */
+export type AgentIntentRehydrator = (ownerId: string) => Promise<number | null>;
+
+/**
+ * The durable read, loaded lazily — dynamic `import()` for both reasons the goal
+ * rehydrator states above: it breaks the cycle back through the coordination tree,
+ * and a default that works with no wiring cannot be left uninstalled.
+ */
+async function defaultIntentRehydrator(ownerId: string): Promise<number | null> {
+  const { resolveOwnerIntentEventId } = await import('./agent-tools/coordination/agent-intent-sources');
+  return resolveOwnerIntentEventId(ownerId);
+}
+
+let rehydrateIntent: AgentIntentRehydrator = defaultIntentRehydrator;
+
+/** Test seam — swap the durable intent read (pass `null` to restore the real one). */
+export function setAgentIntentRehydrator(fn: AgentIntentRehydrator | null): void {
+  rehydrateIntent = fn ?? defaultIntentRehydrator;
+}
+
+/**
+ * Fire-and-forget refill of a missing `intentEventId` from durable state (WI-6637).
+ *
+ * ⚠ THE MONOTONIC GUARD LIVES HERE, NOT IN `upsert` — and that placement is the
+ * load-bearing part. WI-6637 was filed asserting a late fill is "safe by
+ * construction because `intentEventId` is already MONOTONIC in applyPatch". It is
+ * not, in EITHER direction:
+ *   · `upsert` carries no monotonic rule at all — only `applyReplicatedStamp` does;
+ *   · the LOCAL path is deliberately LAST-WRITE-WINS, and tested as such
+ *     ("takes the LATEST intent, including a lower id (unlike the watermark)"),
+ *     because an agent genuinely moves from one intent to another and the local
+ *     process's call order IS the truth.
+ * So monotonicity is the rule for writes whose order is NOT known — replication,
+ * and this fill — never a global one. Guarding at the choke point would have red
+ * that test and broken an intentional contract. This fill is stale-by-nature (an
+ * async read a fresh declaration can overtake), so it applies only when it is
+ * strictly newer than what the map already holds.
+ */
+function scheduleIntentRehydration(ownerId: string): void {
+  const now = Date.now();
+  if (now < (intentHydrateAfter.get(ownerId) ?? 0)) return;
+  // Claimed BEFORE the await — this IS the in-flight guard, as for the goal.
+  intentHydrateAfter.delete(ownerId);
+  intentHydrateAfter.set(ownerId, now + GOAL_HYDRATE_COOLDOWN_MS);
+  if (intentHydrateAfter.size > MAX_OWNERS) {
+    const oldest = intentHydrateAfter.keys().next();
+    if (!oldest.done) intentHydrateAfter.delete(oldest.value);
+  }
+
+  void (async () => {
+    try {
+      const id = await rehydrateIntent(ownerId);
+      if (id == null || !Number.isFinite(id)) return;
+      // Re-read AFTER the await: a real declaration may have landed while this
+      // query was in flight, and that one is authoritative over this stale read.
+      const prev = stamps.get(ownerId)?.intentEventId ?? null;
+      if (prev != null && id <= prev) return;
+      // `replicated: true` for the goal fill's reason: every worker reads the same
+      // durable source and refills itself, so fanning this out would relay a value
+      // the receiver can derive — and would put a stale read into peers' maps.
+      upsert(ownerId, { intentEventId: id }, { replicated: true });
+    } catch {
+      /* best-effort, exactly like the telemetry it feeds */
+    }
+  })();
+}
+
+/**
  * Fire-and-forget refill of a missing `goalRef` from durable state (WI-6595).
  *
  * Returns immediately — the caller is the dispatcher's hot path and D-014 forbids
@@ -374,6 +455,7 @@ function upsert(
       stamps.delete(oldest.value);
       goalWrittenAt.delete(oldest.value);
       goalHydrateAfter.delete(oldest.value);
+      intentHydrateAfter.delete(oldest.value);
     }
   }
 
@@ -471,23 +553,27 @@ export function noteGoalClaimed(ownerId: string, goalRef: string | null): void {
  * `scheduleGoalRehydration`. That stays inside D-014's rule: this function still
  * returns synchronously off a `Map.get` and still stamps whatever it actually had,
  * so the refill can only help the NEXT call and can never delay or fail this one.
+ * A MISSING INTENT schedules the symmetric refill (WI-6637), under the same rule.
  */
 export function readAgentStateStamp(ownerId: string | null | undefined): AgentStateStamp {
   if (!ownerId) return EMPTY_STAMP;
   const stamp = stamps.get(ownerId) ?? EMPTY_STAMP;
   if (stamp.goalRef == null) scheduleGoalRehydration(ownerId);
+  if (stamp.intentEventId == null) scheduleIntentRehydration(ownerId);
   return stamp;
 }
 
 /** Test seam — the module holds process-global state. Clears the installed
- *  replicator AND the goal re-hydrator, so one test's fake publisher or fake
+ *  replicator AND both durable re-hydrators, so one test's fake publisher or fake
  *  durable read cannot leak into the next. */
 export function resetAgentStateStamps(): void {
   stamps.clear();
   goalWrittenAt.clear();
   goalHydrateAfter.clear();
+  intentHydrateAfter.clear();
   publish = null;
   rehydrateGoal = defaultGoalRehydrator;
+  rehydrateIntent = defaultIntentRehydrator;
 }
 
 /** Test/diagnostic seam: how many owners are currently held. */

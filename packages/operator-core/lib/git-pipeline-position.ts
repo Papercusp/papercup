@@ -482,6 +482,7 @@ export interface PipelinePosition {
    */
   positionsMarker: {
     marker: string;
+    onStaging: MarkerContainment | null;
     inMain: MarkerContainment | null;
     deployed: MarkerContainment | null;
   } | null;
@@ -2063,10 +2064,11 @@ export async function gitPipelinePosition(
   /** WI-6646 — legs whose false is a newer-commit artifact (see PipelinePosition). */
   const positionsNewerCommit: string[] = [];
   /** WI-6646 — per-leg marker verdicts, populated only when a marker was supplied. */
-  const markerLegs: { inMain: MarkerContainment | null; deployed: MarkerContainment | null } = {
-    inMain: null,
-    deployed: null,
-  };
+  const markerLegs: {
+    onStaging: MarkerContainment | null;
+    inMain: MarkerContainment | null;
+    deployed: MarkerContainment | null;
+  } = { onStaging: null, inMain: null, deployed: null };
   const readLeg = (name: string, v: boolean | null): boolean => {
     if (v === null) {
       positionsUnknown.push(name);
@@ -2139,7 +2141,12 @@ export async function gitPipelinePosition(
        * --------------------------------------------------------------------- */
       if (relPath) {
         const gitReadForMarker = gitReadForRepo(git, root);
-        const legs: ReadonlyArray<readonly ['inMain' | 'deployed', string | null]> = [
+        // `committedLocal` is deliberately absent and is the ONLY leg that is: `targetSha`
+        // is resolved by `git log` against HEAD, so it is an ancestor of HEAD by
+        // construction and that leg cannot be a newer-commit artifact. The other three
+        // all answer about a ref that can legitimately lag behind the caller's change.
+        const legs: ReadonlyArray<readonly ['onStaging' | 'inMain' | 'deployed', string | null]> = [
+          ['onStaging', 'origin/staging'],
           ['inMain', 'origin/main'],
           ['deployed', deployedSha],
         ];
@@ -2495,7 +2502,9 @@ export async function gitPipelinePosition(
     dirtyUncommitted,
     positions,
     positionsUnknown,
-    positionsMarker: marker ? { marker, inMain: markerLegs.inMain, deployed: markerLegs.deployed } : null,
+    positionsMarker: marker
+      ? { marker, onStaging: markerLegs.onStaging, inMain: markerLegs.inMain, deployed: markerLegs.deployed }
+      : null,
     positionsNewerCommit,
     verdictProvenance,
     verdictUnknown,
