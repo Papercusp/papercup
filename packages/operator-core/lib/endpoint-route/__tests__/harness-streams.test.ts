@@ -8,6 +8,7 @@ import {
   sessionPartEntryKind,
   positionalScanLimit,
   POSITIONAL_SCAN_CEILING,
+  preferHigherFidelityBackfill,
 } from '../routes/harness/streams';
 
 describe('capEntryText (UI-bound thinking entry cap)', () => {
@@ -192,6 +193,49 @@ describe('DB-primary history backfill (session-turn-storage-2026-07-28 P-008/P-0
       expect(sessionPartEntryKind('text', 'assistant')).toBe('text');
       expect(sessionPartEntryKind(null, 'human')).toBe('prompt');
       expect(sessionPartEntryKind(undefined, undefined)).toBe('text');
+    });
+  });
+
+  describe('preferHigherFidelityBackfill (the cutover regression guard)', () => {
+    const at = (iso: string) => ({ kind: 'text' as const, text: 'x', ts: iso });
+    const bf = (isos: string[]) => ({ entries: isos.map(at), anchorIndex: null });
+
+    it('does NOT shorten history for a session that predates the parts store', () => {
+      // Caught live on the first real sweep: a running session had 13 parts
+      // against 85 turns, because parts only accrue from the byte offset the
+      // ingest had reached when P-001 shipped. Preferring parts here is a
+      // fidelity upgrade that reads to the user as data loss.
+      const parts = bf(['2026-07-28T05:00:00Z', '2026-07-28T05:01:00Z']);
+      const turns = bf(['2026-07-27T09:00:00Z', '2026-07-28T05:01:00Z']);
+      expect(preferHigherFidelityBackfill(parts, turns)).toBe(turns);
+    });
+
+    it('prefers parts once they reach as far back as the turns window', () => {
+      const parts = bf(['2026-07-27T09:00:00Z', '2026-07-28T05:00:00Z']);
+      const turns = bf(['2026-07-27T09:00:00Z', '2026-07-28T05:00:00Z']);
+      expect(preferHigherFidelityBackfill(parts, turns)).toBe(parts);
+    });
+
+    it('prefers parts whenever their window is already full', () => {
+      // Nothing can reach further back within `cap`, so fidelity wins outright.
+      const parts = { entries: [at('2026-07-28T05:00:00Z'), at('2026-07-28T05:01:00Z')], anchorIndex: null };
+      const turns = bf(['2020-01-01T00:00:00Z']);
+      expect(preferHigherFidelityBackfill(parts, turns, 2)).toBe(parts);
+    });
+
+    it('falls through cleanly when either side is empty or absent', () => {
+      const turns = bf(['2026-07-28T05:00:00Z']);
+      expect(preferHigherFidelityBackfill(null, turns)).toBe(turns);
+      expect(preferHigherFidelityBackfill({ entries: [], anchorIndex: null }, turns)).toBe(turns);
+      const parts = bf(['2026-07-28T05:00:00Z']);
+      expect(preferHigherFidelityBackfill(parts, null)).toBe(parts);
+      expect(preferHigherFidelityBackfill(null, null)).toBeNull();
+    });
+
+    it('does not let an untimestamped parts window claim to reach further back', () => {
+      const parts = { entries: [{ kind: 'text' as const, text: 'x' }], anchorIndex: null };
+      const turns = bf(['2026-07-27T09:00:00Z']);
+      expect(preferHigherFidelityBackfill(parts, turns)).toBe(turns);
     });
   });
 

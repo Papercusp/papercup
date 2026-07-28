@@ -69,6 +69,7 @@ import { generateChangelog } from './changelog-generate';
 import {
   planPagePath,
   renderHistoryJson,
+  renderHoldingHtml,
   renderIndexHtml,
   renderPlanPageHtml,
   type HydratedRelease,
@@ -690,6 +691,42 @@ export function scanMobileArtifactSources(
   return found;
 }
 
+/**
+ * Where the "the releases page is currently held back" bit lives.
+ *
+ * It is STATE, not an argument, on purpose. If holding were only a flag on the
+ * regenerate command, then the ordinary act of cutting a release — regenerate,
+ * publish — would silently restore the full page while the owner believed it was
+ * still held. The whole point of a hold is that it survives until it is lifted
+ * explicitly, so `--regenerate` READS this and re-renders the holding page.
+ *
+ * It sits in ~/.papercusp/ because that is already where this rail keeps its
+ * operator-local config (release-host.env, r2.env) — this is deployment state
+ * for one box's publish rail, not application data, and putting it in Postgres
+ * would mean a schema migration for a single boolean that only the publish
+ * scripts ever read.
+ */
+export function holdMarkerPath(): string {
+  return path.join(os.homedir(), '.papercusp', 'release-page-held');
+}
+
+/** True when the releases page is currently held back behind the holding page. */
+export function isPageHeld(): boolean {
+  return fs.existsSync(holdMarkerPath());
+}
+
+/** Set/clear the hold. Returns the new state. */
+export function setPageHeld(held: boolean): boolean {
+  const p = holdMarkerPath();
+  if (held) {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, `held since ${new Date().toISOString()}\n`, 'utf8');
+  } else if (fs.existsSync(p)) {
+    fs.rmSync(p);
+  }
+  return held;
+}
+
 /** Regenerate the whole static site from the registry (every release, newest first). */
 export async function generateSite(
   sql: postgres.Sql,
@@ -705,7 +742,26 @@ export async function generateSite(
 
   const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS };
   fs.mkdirSync(path.join(outDir, 'plans'), { recursive: true });
-  fs.writeFileSync(path.join(outDir, 'index.html'), renderIndexHtml(hydratedAll, opts), 'utf8');
+  // ── The hold swaps ONLY index.html. ────────────────────────────────────────
+  // history.json and the plan pages are still written, and the installers on the
+  // host are untouched, so: the in-app Update Center keeps working (it reads
+  // history.json — blanking it would empty every installed app's update
+  // history), direct installer links keep resolving, and restoring the page is
+  // just re-rendering this one file. A hold hides the page; it does not unship a
+  // release.
+  const held = isPageHeld();
+  fs.writeFileSync(
+    path.join(outDir, 'index.html'),
+    held ? renderHoldingHtml(opts) : renderIndexHtml(hydratedAll, opts),
+    'utf8',
+  );
+  if (held) {
+    console.log(
+      '[record-release] ⚠ HOLDING PAGE is active — index.html says "NEXT UPDATE COMING SOON".\n' +
+        '                 history.json, the plan pages and every installer are unchanged.\n' +
+        '                 Restore the real page with: bin/restore-release-page.sh',
+    );
+  }
   // The machine-readable twin of the page — what the in-app Update Center reads.
   // Same registry, same scrub, published to the same host as latest.json.
   fs.writeFileSync(path.join(outDir, 'history.json'), renderHistoryJson(hydratedAll, opts), 'utf8');
@@ -937,6 +993,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.error('   changelog: record-release-cli --version <x.y.z> --generate-changelog [--force-changelog]');
     console.error('              # writes a reviewable draft from the window and STOPS (records nothing)');
     console.error('   or: record-release-cli --regenerate [--out <dir>]   # re-render pages only');
+    console.error('   or: record-release-cli --hold-page                  # swap index.html for "NEXT UPDATE COMING SOON"');
+    console.error('   or: record-release-cli --restore-page               # put the real releases page back');
+    console.error('       (both re-render; publish with papercusp-desktop/bin/publish-release-history.sh)');
     console.error('   or: record-release-cli --scan-mobile --version <x.y.z>   # print mobile src↔name TSV for the uploader');
     return 2;
   }

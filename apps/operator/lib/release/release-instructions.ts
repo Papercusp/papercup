@@ -40,6 +40,16 @@
 export const INSTRUCTIONS_HEADING = 'Instructions';
 
 /**
+ * The beta Discord invite — ONE definition, because two pages now show it.
+ *
+ * The holding page (renderHoldingHtml) keeps this link when everything else on
+ * the page is stripped, so a copy pasted into both places would eventually
+ * diverge and the held page would send testers to a dead invite at exactly the
+ * moment it is their only way to reach a human.
+ */
+export const DISCORD_URL = 'https://discord.gg/HjRQ8g4Nju';
+
+/**
  * The owner's text, lightly copy-edited at the owner's direction [owner
  * 2026-07-27]: typos fixed, every sentence and the voice kept. The one approved
  * structural change is that the all-caps "THE GUI NOT READY YET" line became a
@@ -52,7 +62,7 @@ export const INSTRUCTIONS_HEADING = 'Instructions';
  * doubt, leave the owner's spelling alone.
  */
 export const INSTRUCTIONS_MD = `
-<p>I'm making myself available on <a href="https://discord.gg/HjRQ8g4Nju">this Discord</a> if you have any questions.</p>
+<p>I'm making myself available on <a href="${DISCORD_URL}">this Discord</a> if you have any questions.</p>
 
 <p class="warn">⚠ The GUI is not ready yet. What <em>is</em> ready already is the <strong>psu</strong> utility — not the GUI. After install, run <code>psu</code> from the command line. That is where the magic happens.</p>
 

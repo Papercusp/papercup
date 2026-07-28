@@ -24,7 +24,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { findIdentityLeaks, identityLiterals } from './release-content-scrub';
+import {
+  HOLDING_PAGE_MARKER,
+  PUBLISHED_CONTACT_EMAIL,
+  findIdentityLeaks,
+  identityLiterals,
+} from './release-content-scrub';
 
 export interface SiteLeak {
   file: string;
@@ -52,17 +57,36 @@ function walk(dir: string): string[] {
   return out;
 }
 
+/**
+ * The ONE narrow exception to "no address may ship" — and it is scoped by the
+ * BYTES, not by a caller's promise.
+ *
+ * A file gets the contact-email allowance only if it BOTH is named index.html
+ * AND carries the holding-page marker in its own content. So the allowance
+ * cannot leak onto a plan page, onto history.json, or onto a normal release
+ * index — none of which can carry that marker — and it evaporates by itself the
+ * moment the real site is restored. Every other address in every file, holding
+ * page included, still fails the gate exactly as before.
+ */
+export function allowedEmailsFor(file: string, text: string): readonly string[] {
+  const isHoldingIndex = path.basename(file) === 'index.html' && text.includes(HOLDING_PAGE_MARKER);
+  return isHoldingIndex ? [PUBLISHED_CONTACT_EMAIL] : [];
+}
+
 /** Pure — so the gate's own behaviour is testable without a directory of real pages. */
 export function gateSite(dir: string, literals = identityLiterals()): SiteLeak[] {
   const leaks: SiteLeak[] = [];
   for (const file of walk(dir)) {
     const text = fs.readFileSync(file, 'utf8');
-    for (const hit of findIdentityLeaks(text, literals)) {
+    const allowEmails = allowedEmailsFor(file, text);
+    for (const hit of findIdentityLeaks(text, literals, { allowEmails })) {
       // Show the first occurrence in context. Without this the operator knows a page
       // is dirty but not WHERE, and the tempting next move is to hand-edit the HTML —
       // which the next regenerate silently reverts.
       const lines = text.split('\n');
-      const line = lines.find((l) => findIdentityLeaks(l, literals).some((h) => h.kind === hit.kind));
+      const line = lines.find((l) =>
+        findIdentityLeaks(l, literals, { allowEmails }).some((h) => h.kind === hit.kind),
+      );
       leaks.push({
         file: path.relative(dir, file),
         kind: hit.kind,

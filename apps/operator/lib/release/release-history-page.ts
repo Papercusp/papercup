@@ -56,9 +56,15 @@
 import { marked } from 'marked';
 import type { ReleaseArtifact, ReleaseRow, ShippedItem, ShippedPlan } from './release-registry';
 import { groupItemsByPlan } from './release-registry';
-import { identityLiterals, scrubIdentity, type IdentityLiteral } from './release-content-scrub';
+import {
+  HOLDING_PAGE_MARKER,
+  PUBLISHED_CONTACT_EMAIL,
+  identityLiterals,
+  scrubIdentity,
+  type IdentityLiteral,
+} from './release-content-scrub';
 import { ROBOT_BG_DATA_URI } from './release-bg';
-import { INSTRUCTIONS_HEADING, INSTRUCTIONS_MD } from './release-instructions';
+import { DISCORD_URL, INSTRUCTIONS_HEADING, INSTRUCTIONS_MD } from './release-instructions';
 import { DEMO_VIDEO_LABEL, DEMO_VIDEO_POSTER_DATA_URI, DEMO_VIDEO_SRC } from './release-video';
 
 /** A release row with the display data for its FROZEN id lists looked up. */
@@ -334,6 +340,12 @@ function beaconScript(
           var domain = ''; try { domain = new URL(href).hostname; } catch (e2) {}
           if (/discord\\.(gg|com)/i.test(href)) capture('discord_clicked', { href: href });
           else capture('outbound_link_clicked', { href: href, domain: domain, link_text: text });
+        } else if (/^mailto:/i.test(href)) {
+          // The contact link. NO href and NO link_text on purpose: both contain
+          // the owner's address, and an event property travels to PostHog, where
+          // nothing scrubs it — the page's identity gate only ever sees the HTML.
+          // Without this branch the address would ALSO be misfiled as a download.
+          capture('contact_clicked');
         } else if (/^plans\\//.test(href)) {
           capture('plan_page_opened', { plan: href.replace(/^plans\\//, '').replace(/\\.html$/, '') });
         } else if (href && href.indexOf('#') !== 0) {
@@ -577,7 +589,13 @@ footer { color: var(--muted); font-size: .78rem; margin-top: 3.5rem; text-align:
  * name. So we scrub the FINISHED HTML, once, on the way out. Nothing renders
  * except through here.
  */
-function shell(title: string, body: string, beacon: string, redact: IdentityLiteral[]): string {
+function shell(
+  title: string,
+  body: string,
+  beacon: string,
+  redact: IdentityLiteral[],
+  opts: { headExtra?: string; allowEmails?: readonly string[] } = {},
+): string {
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -587,7 +605,7 @@ function shell(title: string, body: string, beacon: string, redact: IdentityLite
 <!-- Unlisted beta page. Not indexed, not linked from anywhere public. -->
 <meta name="robots" content="noindex, nofollow, noarchive">
 <meta name="referrer" content="no-referrer">
-<title>${escapeHtml(title)}</title>
+${opts.headExtra ? `${opts.headExtra}\n` : ''}<title>${escapeHtml(title)}</title>
 <style>${STYLES}</style>
 </head>
 <body>
@@ -599,7 +617,9 @@ ${beacon}
 </body>
 </html>
 `;
-  return scrubIdentity(html, redact);
+  // allowEmails defaults to EMPTY — every existing caller keeps the old,
+  // scrub-everything behaviour. Only the holding page opts in.
+  return scrubIdentity(html, redact, { allowEmails: opts.allowEmails });
 }
 
 /** High-level platform sections for a release's downloads, in display order
@@ -859,6 +879,57 @@ function renderRelease(rel: HydratedRelease, isCurrent: boolean): string {
   ${changelog}
 ${renderWork(rel)}
 </section>`;
+}
+
+/**
+ * THE HOLDING PAGE — what the beta link serves while the real page is held back
+ * [owner 2026-07-28: "TEMPORARILLY change out releases page to just say 'NEXT
+ * UPDATE COMING SOON' … leave the discord link too and leave teh video"].
+ *
+ * Deliberately NOT a variant of renderIndexHtml. The holding page's whole
+ * purpose is that it shows NOTHING about releases, so building it by hiding
+ * parts of the real page would mean every future edit to the real page has to
+ * remember this mode exists — and the day someone forgets, a held page starts
+ * leaking download tables. A separate function cannot regress that way.
+ *
+ * What it keeps, and why:
+ *   - the video: it is the pitch, and it is the one thing on the page that is
+ *     not release-specific;
+ *   - Discord + a mailto: with the downloads gone, a tester who arrives needs a
+ *     way to reach a human, or the page is a dead end;
+ *   - the beacon: visits and contact clicks must still record while held, or the
+ *     admin panel's Releases tab goes dark exactly when we most want to know
+ *     whether testers are still showing up.
+ *
+ * What it drops: downloads, changelog, instructions, plan links. The installers
+ * themselves stay published and reachable by direct link — this hides the page,
+ * it does not unship a release.
+ */
+export function renderHoldingHtml(opts: PageOptions): string {
+  const body = `<section class="rel holding">
+  <h1>NEXT UPDATE COMING SOON</h1>
+  <p class="sub">The beta downloads are paused while the next build is prepared. This page will be restored when it ships.</p>
+  ${renderVideo()}
+  <p class="sub">Questions, or want to stay in the loop?
+    <a target="_blank" rel="noopener noreferrer" href="${escapeHtml(DISCORD_URL)}">Join the Discord</a>
+    &middot;
+    <a href="mailto:${escapeHtml(PUBLISHED_CONTACT_EMAIL)}">Email us</a>
+  </p>
+</section>`;
+
+  const footer = `<footer>Generated ${formatDate(opts.generatedAt)} &middot; unlisted beta page</footer>`;
+  // The beacon stays on, so `release_history_viewed` keeps flowing to the admin
+  // panel while the page is held. Version is null: no release is on offer here.
+  const beacon = opts.analytics
+    ? beaconScript(opts.analytics, 'index', null, '/index.html')
+    : '';
+  return shell('Papercusp — next update coming soon', `${body}\n${footer}`, beacon, opts.redact ?? identityLiterals(), {
+    // The marker the publish gate keys its email allowance off — see
+    // gate-release-site.ts allowedEmailsFor(). Without it the gate refuses this
+    // page, which is exactly the behaviour we want for every OTHER page.
+    headExtra: HOLDING_PAGE_MARKER,
+    allowEmails: [PUBLISHED_CONTACT_EMAIL],
+  });
 }
 
 /** The whole history — every release, newest first. */

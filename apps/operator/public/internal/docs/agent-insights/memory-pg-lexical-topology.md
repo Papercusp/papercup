@@ -7,7 +7,7 @@ Plan: `memory-pg-lexical-own-injection-2026-07-13`. Owner mandate: the lexical
 leg must be papercusp code over papercusp storage, and ambient injection must
 be papercusp-controlled — no dependency on Claude's file-memory implementation.
 
-## Update 2026-07-28 — hybrid-pg is now the DEFAULT, and the ~/.claude backends are gone
+## Update 2026-07-28 — hybrid-pg is now the DEFAULT, and the \~/.claude backends are gone
 
 `memory-declaude-and-defaults-2026-07-28` finished the job this plan started. Three
 changes to what is written below:
@@ -30,9 +30,9 @@ changes to what is written below:
   exactly that string, so while both wirings answered `'hybrid'` a flip between them
   skipped the reseed and scored against a baseline from the *other* backend.
 * The settings page's stale "Memory index over capacity" banner (which counted
-  ~/.claude topic files and told you to curate them, ~2 weeks after the generator
+  \~/.claude topic files and told you to curate them, \~2 weeks after the generator
   that consumed them was retired) is deleted, along with `claude-hygiene.ts` — the
-  last unconditional ~/.claude read in the operator.
+  last unconditional \~/.claude read in the operator.
 
 `ClaudeFileMemoryBackend` still exists as a lib class: the offline bench constructs
 it directly to reproduce the A/B numbers below. It is unreachable from the product.

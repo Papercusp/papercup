@@ -780,6 +780,46 @@ export function positionalScanLimit(cap: number, anchored: boolean): number {
   return anchored ? POSITIONAL_SCAN_CEILING : Math.max(1, cap);
 }
 
+type Backfill = { entries: AgentTimelineEntry[]; anchorIndex: number | null };
+
+/**
+ * Choose between the FAITHFUL parts backfill and the text-turns backfill.
+ *
+ * Fidelity is not the only axis — REACH matters too, and during the cutover
+ * they point opposite ways. Parts only accrue from the byte offset the ingest
+ * had reached when P-001 shipped, so a session that was already running has a
+ * full turns history and only a short parts tail. Measured live on the first
+ * real sweep: one session had 13 parts against 85 turns. Preferring parts
+ * unconditionally would have QUIETLY SHORTENED that pane's history from 85
+ * entries to 13 — a fidelity upgrade that reads to the user as data loss.
+ *
+ * So: take parts when they reach at least as far back as the turns window
+ * would (or when the parts window is already full, in which case nothing
+ * reaches further within `cap`), and fall back to turns otherwise. The
+ * condition self-heals — once a session has accumulated a full window of
+ * parts, parts always win — so this is a cutover rule, not a permanent
+ * two-store read.
+ *
+ * Pure — exported for tests.
+ */
+export function preferHigherFidelityBackfill(
+  parts: Backfill | null,
+  turns: Backfill | null,
+  cap = 200,
+): Backfill | null {
+  if (!parts || parts.entries.length === 0) return turns;
+  if (!turns || turns.entries.length === 0) return parts;
+  if (parts.entries.length >= cap) return parts;
+  const oldest = (b: Backfill): number => {
+    for (const e of b.entries) {
+      const t = e.ts ? Date.parse(e.ts) : NaN;
+      if (!Number.isNaN(t)) return t;
+    }
+    return Infinity; // no usable timestamps ⇒ cannot claim to reach further back
+  };
+  return oldest(parts) <= oldest(turns) ? parts : turns;
+}
+
 export async function backfillFromSessionTurns(
   key: { sourceKind: 'claude' | 'omp' | 'codex'; sessionId: string },
   opts: { anchorTs?: string | null; cap?: number } = {},
