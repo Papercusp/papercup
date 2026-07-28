@@ -56,20 +56,35 @@ const DEFAULT_TREES = [`${HOME}/papercupai-workspace/`, `${HOME}/.papercusp-work
 // install-standalone-mcp.sh COPIES it out of the repo, so it cannot require a sibling).
 // The hook may be STRICTER than the guard (it is: `sk-…` and `github_pat_…` below have no
 // publish-side equivalent); it must never be laxer.
+// `shared: true` ⇒ this rule mirrors a publish-guard RULE, so its suppression must mirror
+// the guard's too (see findSecret). `shared: false` ⇒ hook-only, stricter than the publish
+// side by design, and free to use the broad PLACEHOLDER exemption so docs and prose that
+// merely cite a key prefix stay writable.
 const PATTERNS = [
-  { name: 'OpenAI/Anthropic-style key (sk-…)', re: /\bsk-[A-Za-z0-9_-]{20,}\b/g },
-  { name: 'GitHub fine-grained PAT (github_pat_…)', re: /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g },
+  { id: 'sk-key', shared: false, name: 'OpenAI/Anthropic-style key (sk-…)', re: /\bsk-[A-Za-z0-9_-]{20,}\b/g },
+  { id: 'github-pat-fine', shared: false, name: 'GitHub fine-grained PAT (github_pat_…)', re: /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g },
   // Classic/app/oauth/server/refresh tokens in ONE rule, mirroring the publish guard's
   // `gh[posru]_[A-Za-z0-9]{36,255}`. The previous split rules pinned the suffix at exactly
   // {36}, so a longer token failed the trailing \b and slipped through entirely.
-  { name: 'GitHub token (ghp_/gho_/ghu_/ghs_/ghr_…)', re: /\bgh[posru]_[A-Za-z0-9]{36,255}\b/g },
+  { id: 'github-token', shared: true, name: 'GitHub token (ghp_/gho_/ghu_/ghs_/ghr_…)', re: /\bgh[posru]_[A-Za-z0-9]{36,255}\b/g },
   // AKIA = long-lived, ASIA = temporary session credentials. ASIA was missing here.
-  { name: 'AWS access key id (AKIA…/ASIA…)', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g },
-  { name: 'Slack token (xox…)', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
-  { name: 'Stripe live secret key (sk_live_/rk_live_…)', re: /\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b/g },
-  { name: 'Google API key (AIza…)', re: /\bAIza[0-9A-Za-z_\-]{35}\b/g },
-  { name: 'PEM private key block', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  { id: 'aws-access-key-id', shared: true, name: 'AWS access key id (AKIA…/ASIA…)', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g },
+  { id: 'slack-token', shared: true, name: 'Slack token (xox…)', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
+  { id: 'stripe-secret-key', shared: true, name: 'Stripe live secret key (sk_live_/rk_live_…)', re: /\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b/g },
+  { id: 'google-api-key', shared: true, name: 'Google API key (AIza…)', re: /\bAIza[0-9A-Za-z_\-]{35}\b/g },
+  { id: 'private-key-pem', shared: true, name: 'PEM private key block', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
 ];
+
+/** The publish guard's ONLY carve-out for a shape match (isDocumentedExample): AWS
+ *  reserves the literal `EXAMPLE` suffix for its non-functional docs keys, and a real
+ *  issued key never ends in it. Shared rules may suppress on THIS and nothing else — the
+ *  broad PLACEHOLDER below is wider than the guard's, and using it on a shared rule is a
+ *  parity hole: a genuine token that merely CONTAINS a placeholder substring (a Slack
+ *  token with `1234567890` in it — caught by secrets-guard-hook-parity.test.ts) would be
+ *  allowed here and then refused forever at publish time, which is this bug exactly. */
+function isDocumentedExample(id, match) {
+  return id === 'aws-access-key-id' && match.endsWith('EXAMPLE');
+}
 
 // Generic rule: a secret-NAMED assignment whose value is long and high-entropy. Kept
 // separate because it alone needs the entropy + placeholder gates (a bare shape match is
@@ -111,6 +126,7 @@ const PLACEHOLDER = /xxx|\.\.\.|<|example|placeholder|your[-_]|redacted|12345678
 main();
 
 async function main() {
+  if (process.argv.includes('--dump-patterns')) return dumpPatterns();
   if (process.argv.includes('--self-test')) return selfTest();
   try {
     const hook = JSON.parse(await readStdin(250));
@@ -151,15 +167,45 @@ function extractContent(tool, input) {
 }
 
 function findSecret(content) {
-  for (const { name, re } of PATTERNS) {
+  for (const { id, shared, name, re } of PATTERNS) {
     re.lastIndex = 0;
     for (const m of content.matchAll(re)) {
-      if (PLACEHOLDER.test(m[0])) continue;
+      // Shared rules mirror the publish guard's suppression exactly; hook-only rules keep
+      // the broader, docs-friendly PLACEHOLDER exemption.
+      if (shared ? isDocumentedExample(id, m[0]) : PLACEHOLDER.test(m[0])) continue;
       const line = content.slice(0, m.index).split('\n').length;
       return { name, masked: m[0].slice(0, 8) + '…(' + m[0].length + ' chars)', line };
     }
   }
+  // Generic secret-named assignment, gated on the VALUE (group 1) exactly as the publish
+  // guard gates it: high entropy AND not an obvious placeholder.
+  SECRET_ASSIGNMENT.lastIndex = 0;
+  for (const m of content.matchAll(SECRET_ASSIGNMENT)) {
+    const value = m[1] ?? '';
+    if (shannonEntropy(value) < SECRET_ASSIGNMENT_MIN_ENTROPY) continue;
+    if (ASSIGNMENT_PLACEHOLDER.test(value)) continue;
+    const line = content.slice(0, m.index).split('\n').length;
+    return {
+      name: 'secret-named assignment with a high-entropy value',
+      masked: value.slice(0, 4) + '…(' + value.length + ' chars)',
+      line,
+    };
+  }
   return null;
+}
+
+/** Emit this hook's rule inventory as JSON, for the cross-scanner parity test
+ *  (secrets-guard-hook-parity.test.ts). Kept as a CLI flag rather than an export
+ *  because this file is COPIED out of the repo by install-standalone-mcp.sh and
+ *  must stay import-free — see the note on PATTERNS. */
+function dumpPatterns() {
+  const payload = {
+    patterns: PATTERNS.map((p) => ({ name: p.name, source: p.re.source, flags: p.re.flags })),
+    secretAssignment: { source: SECRET_ASSIGNMENT.source, flags: SECRET_ASSIGNMENT.flags },
+    minEntropy: SECRET_ASSIGNMENT_MIN_ENTROPY,
+  };
+  process.stdout.write(JSON.stringify(payload) + '\n');
+  process.exit(0);
 }
 
 function deny(filePath, hit) {
@@ -170,7 +216,16 @@ function deny(filePath, hit) {
     `Matched token: ${hit.masked}. The papercusp way: a platform provider key ` +
     `(openai/anthropic/zeroentropy/github_pat) goes to setup:save_key; ANY other secret goes in ` +
     `injected config OUTSIDE the repo — never a tree file. If this file is a legitimate secrets ` +
-    `path, the owner can allowlist it via PAPERCUSP_SECRETS_GUARD_ALLOW.`;
+    `path, the owner can allowlist it via PAPERCUSP_SECRETS_GUARD_ALLOW.\n\n` +
+    `⚠ If these are deliberate FIXTURES (a redaction/detection test, a documented example), do ` +
+    `NOT just retry the write: the same shapes also trip the pot-git PUBLISH guard, which then ` +
+    `refuses every own-head publish FOREVER — its baseline never advances past a refused range, ` +
+    `so the blob is re-scanned and re-refused on every later tick, and editing the file afterwards ` +
+    `does not remove it from history. Freezing the hive publish plane that way has cost hours ` +
+    `more than once. Register the path FIRST, then write: ` +
+    `pot_git:secrets_exemptions { action:'add', path:'<repo-relative path>', reason:'<why these ` +
+    `are fixtures>' } — reachable from an ordinary workspace-scoped session as of WI-6641, no ` +
+    `restart, applies on the next git-sync tick.`;
   try {
     process.stdout.write(
       JSON.stringify({

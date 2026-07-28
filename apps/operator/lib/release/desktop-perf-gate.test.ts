@@ -155,7 +155,9 @@ describe('desktopPerfGatePolicyFromFlags', () => {
 describe('runDesktopPerfGate', () => {
   it('disabled → pass without reading a run', async () => {
     let read = 0;
-    const d = await runDesktopPerfGate({ enabled: false, block: false }, {
+    // maxAgeMs is required since the freshness window landed; this call site was
+    // missed then and had been a standing TS2345 in the apps/operator baseline.
+    const d = await runDesktopPerfGate({ enabled: false, block: false, maxAgeMs: DEFAULT_DESKTOP_PERF_MAX_AGE_MS }, {
       io: { readLatestRun: async () => { read += 1; return run([breach]); } },
     });
     expect(d.action).toBe('pass');

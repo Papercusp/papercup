@@ -63,6 +63,91 @@ describe('coordScopeWorkspace — flag-gated coord partition (drives the cached 
   });
 });
 
+describe('WI-6588 — an UNLOADED flag cache must never scope coord to the retired partition', () => {
+  // The resolver under PgCoordLog is SYNC while the flag read is ASYNC, so there
+  // is a window between module load and the flag resolving. It used to answer
+  // `false` ⇒ `'default'` — the dead pre-cutover partition — which returns zero
+  // rows and reads as "no mail" with `error:null`. Measured on the real shape (a
+  // 300ms PG-backed override store, as flag-bus.ts installs): 4 of 6 reads over
+  // the first 400ms hit the dead partition.
+  //
+  // Each case re-imports the module with `getFlag` under test control, so the
+  // window is held open deterministically instead of raced.
+  const LIVE_WS = 'ws-live-under-test';
+
+  function deferredFlag() {
+    let release!: (v: boolean) => void;
+    const pending = new Promise<boolean>((r) => {
+      release = r;
+    });
+    vi.doMock('@papercusp/flags/server', () => ({
+      getFlag: vi.fn(() => pending),
+      onFlagChange: vi.fn(),
+    }));
+    return { release };
+  }
+
+  beforeEach(() => {
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => LIVE_WS }));
+  });
+
+  afterEach(() => {
+    vi.doUnmock('@papercusp/flags/server');
+    vi.doUnmock('../../workspace-registry');
+    vi.resetModules();
+  });
+
+  it('resolves to the live workspace — not `default` — while the first flag load is still in flight', async () => {
+    const { release } = deferredFlag();
+    vi.resetModules();
+    const mod = await import('./log');
+
+    // The module-load refresh is pending by construction: `getFlag` has not resolved.
+    expect(mod.coordScopeWorkspace()).toBe(LIVE_WS);
+    expect(mod.coordScopeWorkspace()).not.toBe(DEFAULT_COORD_WORKSPACE);
+
+    release(true);
+  });
+
+  it('holds every coordLog read until the flag cache has loaded, so no read is scoped by an assumed value', async () => {
+    const { release } = deferredFlag();
+    vi.resetModules();
+    const mod = await import('./log');
+    const fake = fakeLog();
+    mod.configureCoordLog(fake);
+
+    let settled = false;
+    const read = mod.coordLog.readLines('messages').then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The backend must not have been touched yet — the scope is not yet known.
+    expect(fake.readLines).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+
+    release(true);
+    await read;
+    expect(fake.readLines).toHaveBeenCalledWith('messages', undefined);
+    mod.resetCoordLog();
+  });
+
+  it('falls back to the flag DEFAULT (not the retired partition) when the flag store is unreachable', async () => {
+    vi.doMock('@papercusp/flags/server', () => ({
+      getFlag: vi.fn(async () => {
+        throw new Error('flag store down');
+      }),
+      onFlagChange: vi.fn(),
+    }));
+    vi.resetModules();
+    const mod = await import('./log');
+
+    await mod.refreshCoordPerWorkspace();
+    expect(mod.coordScopeWorkspace()).toBe(LIVE_WS);
+    expect(mod.coordScopeWorkspace()).not.toBe(DEFAULT_COORD_WORKSPACE);
+  });
+});
+
 describe('coordWorkspaceId — backend workspace, else default', () => {
   it('returns the configured backend\'s workspaceId when it exposes one', () => {
     configureCoordLog(fakeLog({ workspaceId: 'ws-42' }));

@@ -30,9 +30,32 @@ import { systemDistinctId } from '../../flag-distinct-id';
 // live corpus numbers that make flipping it OFF a DATA-STRANDING move, not a
 // safe restore). The PgCoordLog resolver must be SYNC, so cache the flag
 // (machine-global) refreshed on an initial read + every flag change — exactly
-// the lexicon/configure.ts pattern. While the cache is unloaded it reads false
-// ⇒ 'default' (the pre-cutover partition — no longer the live one).
-let coordPerWorkspaceOn = false;
+// the lexicon/configure.ts pattern.
+//
+// WI-6588: the unloaded state used to be a hardcoded `false` ⇒ `'default'` —
+// the DEAD pre-cutover partition. That is the OPPOSITE of what the flag
+// actually resolves to: `FLAG_DEFAULTS` is derived as `!DARK_FLAGS.has(key)`
+// and COORD_PER_WORKSPACE is graduated (not dark), so its default is ON. Every
+// coord read landing before the fire-and-forget refresh resolved therefore read
+// a partition with zero rows and reported it as an empty log with `error:null`
+// — indistinguishable from "no mail". Measured: with a 300ms override-store
+// load (the operator installs a PG-backed one in flag-bus.ts, so `getFlag`
+// does real I/O), 4 of 6 sampled reads over the first 400ms resolved to
+// `'default'`. It is a RACE on `getFlag` latency, not a deterministic first
+// call — which is exactly why it corrupted verification: a single-shot probe
+// can pass for the wrong reason.
+//
+// Two independent guards, because they cover different callers:
+//  1. seed the cache from the flag's OWN DEFAULT, so the sync resolver's
+//     unloaded answer matches the resolved one in every deployment that has not
+//     overridden the flag (and a `getFlag` FAILURE falls back there too, rather
+//     than to the dead partition);
+//  2. `coordScopeReady()` — awaited by every `coordLog` method below — so the
+//     async path does not guess at all.
+const COORD_PER_WORKSPACE_DEFAULT = FLAG_DEFAULTS[FLAGS.COORD_PER_WORKSPACE];
+let coordPerWorkspaceOn = COORD_PER_WORKSPACE_DEFAULT;
+let coordFlagLoaded = false;
+let coordFlagFirstLoad: Promise<void> | null = null;
 /**
  * Re-read the COORD_PER_WORKSPACE flag into the sync cache. Fired on an initial
  * read + every flag change (the lexicon/configure.ts pattern). Exported so tests
@@ -44,16 +67,37 @@ export async function refreshCoordPerWorkspace(): Promise<void> {
   try {
     coordPerWorkspaceOn = await getFlag(FLAGS.COORD_PER_WORKSPACE, systemDistinctId());
   } catch {
-    coordPerWorkspaceOn = false;
+    // WI-6588: fall back to the flag's DEFAULT, never to the dead 'default'
+    // partition — an unreachable flag store must not silently re-point coord at
+    // a partition the cutover retired.
+    coordPerWorkspaceOn = COORD_PER_WORKSPACE_DEFAULT;
+  } finally {
+    coordFlagLoaded = true;
   }
 }
-void refreshCoordPerWorkspace();
+/**
+ * Resolves once the flag cache has been loaded at least once (WI-6588).
+ *
+ * Every `coordLog` method awaits this before delegating, so no coord read or
+ * write is ever scoped by a merely-assumed flag value. After the first load it
+ * is a resolved promise — one microtask, no I/O. Exported so a caller doing its
+ * OWN targeted `coord_event_log` query through `coordWorkspaceId()`/`coordSql()`
+ * can take the same guarantee.
+ */
+export function coordScopeReady(): Promise<void> {
+  if (coordFlagLoaded) return Promise.resolve();
+  coordFlagFirstLoad ??= refreshCoordPerWorkspace();
+  return coordFlagFirstLoad;
+}
+void coordScopeReady();
 onFlagChange((key) => {
   if (key === null || key === FLAGS.COORD_PER_WORKSPACE) void refreshCoordPerWorkspace();
 });
 
 /** The coord scope to use NOW (F-C1): the request's active workspace when the
- *  flag is ON, else the legacy shared `default` partition. */
+ *  flag is ON, else the legacy shared `default` partition. Before the flag cache
+ *  has loaded this answers from the flag's DEFAULT rather than assuming OFF
+ *  (WI-6588) — an unloaded cache must not silently name a retired partition. */
 export function coordScopeWorkspace(): string {
   return coordPerWorkspaceOn ? activeWorkspaceId() : DEFAULT_COORD_WORKSPACE;
 }
@@ -90,18 +134,54 @@ export function resetCoordLog(): void {
  * The operator's single CoordEventLog seam. A stable object that delegates to
  * the currently-configured backend, so the channel modules can `import
  * { coordLog }` once while tests swap the implementation underneath.
+ *
+ * Every method awaits {@link coordScopeReady} first (WI-6588). The seam is
+ * async, but the workspace resolver underneath it is SYNC, so without this a
+ * read issued before the flag cache loaded was scoped by an ASSUMED flag value
+ * — and answered from the retired `'default'` partition with `error:null`. One
+ * already-resolved promise per call once loaded; no I/O.
  */
 export const coordLog: CoordEventLog = {
-  appendLine: (surface, writerKey, line) => impl.appendLine(surface, writerKey, line),
-  readLines: (surface, opts) => impl.readLines(surface, opts),
-  putEvent: (surface, msgId, record) => impl.putEvent(surface, msgId, record),
-  putEvents: (surface, records) => impl.putEvents(surface, records),
-  readEvents: (surface) => impl.readEvents(surface),
-  readEventsBounded: (surface, opts) => impl.readEventsBounded(surface, opts),
-  readLinesBounded: (surface, opts) => impl.readLinesBounded(surface, opts),
-  getEvent: (surface, msgId) => impl.getEvent(surface, msgId),
-  readEventsBoundedCursor: (surface, opts) => impl.readEventsBoundedCursor(surface, opts),
-  readLinesBoundedCursor: (surface, opts) => impl.readLinesBoundedCursor(surface, opts),
+  appendLine: async (surface, writerKey, line) => {
+    await coordScopeReady();
+    return impl.appendLine(surface, writerKey, line);
+  },
+  readLines: async (surface, opts) => {
+    await coordScopeReady();
+    return impl.readLines(surface, opts);
+  },
+  putEvent: async (surface, msgId, record) => {
+    await coordScopeReady();
+    return impl.putEvent(surface, msgId, record);
+  },
+  putEvents: async (surface, records) => {
+    await coordScopeReady();
+    return impl.putEvents(surface, records);
+  },
+  readEvents: async (surface) => {
+    await coordScopeReady();
+    return impl.readEvents(surface);
+  },
+  readEventsBounded: async (surface, opts) => {
+    await coordScopeReady();
+    return impl.readEventsBounded(surface, opts);
+  },
+  readLinesBounded: async (surface, opts) => {
+    await coordScopeReady();
+    return impl.readLinesBounded(surface, opts);
+  },
+  getEvent: async (surface, msgId) => {
+    await coordScopeReady();
+    return impl.getEvent(surface, msgId);
+  },
+  readEventsBoundedCursor: async (surface, opts) => {
+    await coordScopeReady();
+    return impl.readEventsBoundedCursor(surface, opts);
+  },
+  readLinesBoundedCursor: async (surface, opts) => {
+    await coordScopeReady();
+    return impl.readLinesBoundedCursor(surface, opts);
+  },
 };
 
 /**
