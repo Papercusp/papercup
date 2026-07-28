@@ -32,6 +32,17 @@ import { listFleetAssignments, groupByAgent, orphanedClaims, stalledClaims } fro
 import { reconcileWakeability } from '../../fleet/assignments';
 import { resolveConcreteWorkspaceId } from '../../../workspace-registry';
 import { resolveAgentIdentity } from '../identity';
+import { shapeCoordPresence } from './presence-shape';
+
+/**
+ * WI-6658/WI-6662: did the CALLER apply an explicit `project`/`states` lens?
+ * Any lensed read carries a top-level `projection` block, and that block is the
+ * signal for the automatic payload-tier shaper to keep its hands off — see the
+ * `shape` note below for why re-shaping those rows would invert the request.
+ */
+function hasCallerLens(data: unknown): boolean {
+  return !!(data as { projection?: unknown } | null | undefined)?.projection;
+}
 
 export default defineTool({
   name: 'coord:roster',
@@ -50,6 +61,27 @@ export default defineTool({
   capability: 'coord:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
+  // WI-6662 (context-trimming-tiers P-022): the AUTOMATIC payload-tier lens,
+  // reusing coord:presence's shaper VERBATIM so two doors onto the same
+  // assemblePresenceSnapshot cannot diverge in what they cost to ask. Before
+  // this, a trimmed session got 130 uncapped ~37-key rows here but 40 projected
+  // ~17-key rows from coord:presence — the same per-surface divergence
+  // presence-derivation-unification-2026-07-17 closed for the VERDICT, showing
+  // up in the PAYLOAD instead.
+  //
+  // Safe for the other lenses by construction: shapeCoordPresence returns `data`
+  // untouched unless `active[]` is an array, and view=claims emits `agents[]`
+  // while view=history emits `data:null`.
+  //
+  // ⚠ An EXPLICIT caller lens BEATS the automatic one. Rows the caller already
+  // projected to { ownerId, sessionState } would be RE-WIDENED by the shaper
+  // into ~17 mostly-null fields — so a trimmed session asking for the cheapest
+  // form would be handed a BIGGER payload than it asked for, which is the exact
+  // inversion of both items' purpose.
+  shape: {
+    standard: (data: unknown) => (hasCallerLens(data) ? data : shapeCoordPresence(data, 'standard')),
+    trimmed: (data: unknown) => (hasCallerLens(data) ? data : shapeCoordPresence(data, 'trimmed')),
+  },
   args: z.object({
     view: z
       .enum(['live', 'members', 'claims', 'history'])
