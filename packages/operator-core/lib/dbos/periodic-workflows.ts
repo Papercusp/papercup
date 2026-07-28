@@ -906,9 +906,18 @@ async function sessionIngestTick(): Promise<void> {
     try {
       const { runSessionIngestOnce } = await import('../search/session-ingest');
       const r = await runSessionIngestOnce();
-      if (!r.skipped && (r.turnsInserted > 0 || r.errors > 0)) {
+      // `parts` is in BOTH the predicate and the line on purpose
+      // (session-turn-storage-2026-07-28 P-001). The faithful-parts writer is
+      // best-effort by contract — a parts failure is swallowed so it can never
+      // cost the recall index — which means a silently-zero parts count is
+      // indistinguishable from a healthy sweep unless the number is printed.
+      // It went unnoticed for a full night exactly this way: bg-host was
+      // running a pre-parts build, wrote 0 parts on every tick, and logged a
+      // perfectly healthy-looking "+N turn(s)" each time.
+      const parts = r.partsInserted ?? 0;
+      if (!r.skipped && (r.turnsInserted > 0 || parts > 0 || r.errors > 0)) {
         console.log(
-          `[session-ingest] +${r.turnsInserted} turn(s) from ${r.filesIngested} file(s) ` +
+          `[session-ingest] +${r.turnsInserted} turn(s) +${parts} part(s) from ${r.filesIngested} file(s) ` +
             `+ ${r.chatsIngested} chat turn(s) (${r.filesScanned} scanned, ${r.errors} error(s), ${r.durationMs}ms)`,
         );
       }

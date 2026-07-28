@@ -399,10 +399,27 @@ export function parseClaudeParts(line: string): ParsedPart[] {
         push('text', typeof part.text === 'string' ? part.text : '');
         break;
       case 'thinking':
-        // Measured near-empty in practice (58k blocks / <0.05 MB over 7 days —
-        // Claude Code writes signature-only thinking records), but stored so
-        // the part ORDER stays faithful and a future build that does emit
-        // reasoning text needs no schema change.
+        // ⚠ In PRACTICE this stores nothing today, and that is deliberate —
+        // do not "fix" it by widening the push() guard without reading D-007.
+        //
+        // Claude Code writes signature-only thinking records: the block is
+        // {type,thinking,signature} with thinking === ''. Verified over the
+        // real 7 d corpus (1,193 files / 6.4 M lines, both roots): 58,362 raw
+        // `"type":"thinking"` blocks in the JSONL, ZERO thinking parts emitted
+        // here — every one is dropped by the empty-text guard in push() above.
+        //
+        // That is the right outcome (an empty `[thinking]` entry is render
+        // noise, and 58k content-free rows/week buy a reader nothing), and it
+        // does NOT disturb ordering: part_idx is assigned over EMITTED parts,
+        // so the parts that do render keep their relative order.
+        //
+        // The call stays because a build that DOES emit reasoning text — an
+        // older transcript in this same corpus carries 1.5k thinking parts
+        // with real prose — then flows through with no schema change.
+        //
+        // An earlier revision of this comment (and D-003) claimed thinking was
+        // "stored so the part ORDER stays faithful". It never was. Corrected
+        // 2026-07-28; see session-turn-storage-2026-07-28 D-007.
         push('thinking', typeof part.thinking === 'string' ? part.thinking : '');
         break;
       case 'tool_use':

@@ -1158,4 +1158,56 @@ describe('SessionChatModal', () => {
       expect(screen.queryByText(FAILED)).toBeNull();
     });
   });
+
+  // WI-6513 / D-004. Live measurement before the fix (modal top=80 bottom=720):
+  // the Grade card sat at top=669 height=131, running to 800 — 80px past the
+  // popup's bottom edge onto the viewport floor.
+  //
+  // jsdom computes no layout, so this CANNOT assert the geometry itself; the
+  // real verdict is a live `cardBottom <= modalBottom` measurement. What it CAN
+  // do is guard the structural precondition that made the overflow possible:
+  // the card + action bar being bare, unbounded flex children. If someone
+  // unwraps them or drops the bound, the overflow returns silently — and this
+  // fails instead.
+  describe('WI-6513 the card + action bar are a bounded footer group', () => {
+    it('wraps them together in a non-growing, height-bounded, internally-scrolling flex item', async () => {
+      mockFetchOnce(200, {
+        sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: '2026-07-17T00:00:00Z' }],
+      });
+      render(<SessionChatModal sessionOwnerId="su-live-1" ownerLabel="su · live-1" onClose={vi.fn()} />);
+
+      const footer = await waitFor(() => screen.getByTestId('session-chat-card-footer'));
+
+      // flex-grow/shrink 0 + an explicit cap: the group can never claim more
+      // than 45% of the popup, and cannot be stretched by its own content.
+      expect(footer.style.flex).toBe('0 0 auto');
+      expect(footer.style.maxHeight).toBe('45%');
+      // Past the cap it scrolls INSIDE the popup rather than overflowing it.
+      expect(footer.style.overflowY).toBe('auto');
+      // Without min-height:0 a flex item refuses to shrink below its content —
+      // which is precisely how the 131px card overflowed 51px of room.
+      expect(footer.style.minHeight).toBe('0px');
+    });
+
+    it('keeps the action bar inside that same bounded group', async () => {
+      mockFetchOnce(200, {
+        sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: '2026-07-17T00:00:00Z' }],
+      });
+      render(<SessionChatModal sessionOwnerId="su-live-1" ownerLabel="su · live-1" onClose={vi.fn()} />);
+
+      const footer = await waitFor(() => screen.getByTestId('session-chat-card-footer'));
+
+      // The action bar is the OBSERVABLE proxy for the group's membership here:
+      // LocalCardHost is mounted as its sibling inside the same wrapper, but
+      // returns null while its card queue is empty (`queue.length === 0`), so
+      // asserting on `.local-card-host` in this state would be vacuous — it is
+      // absent for a reason unrelated to the bound under test.
+      //
+      // What matters structurally is that the bar is a DESCENDANT of the
+      // bounded group rather than a sibling of it: a sibling is unbounded
+      // again, which is exactly the pre-fix shape that overflowed.
+      const bar = screen.getByTestId('chat-action-bar');
+      expect(footer.contains(bar)).toBe(true);
+    });
+  });
 });
