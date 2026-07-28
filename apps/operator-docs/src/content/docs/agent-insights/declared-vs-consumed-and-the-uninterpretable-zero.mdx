@@ -176,6 +176,38 @@ affected-test selection. These five run as `legs.lintPlane` in
   `main` for the entire fleet**. It looks like the natural fifth member of the
   set; it is excluded on purpose and pinned shut by a test.
 
+## Corollary: verify the DENOMINATOR includes the thing you are verifying
+
+The same defect bites the moment you try to check your own work, and it is worth
+its own reflex because the green looks completely ordinary.
+
+**A lint that walks `git ls-files` is structurally blind to a brand-new file.**
+This doc's own first verification run is the example: both corpus lints reported
+
+```
+✓ normative-insight frontmatter valid — 89 normative of 630 agent-insight doc(s).
+```
+
+…while this `.mdx` sat on disk **untracked**. `630` was exactly the pre-existing
+corpus count. The tick meant *"we checked everything except the file you just
+wrote."*
+
+- **Detect it:** compare the reported denominator against
+  `git ls-files | grep -cE '<corpus prefix>'`. If they match exactly and your file
+  is new, it was not scanned. Confirm with `git ls-files --error-unmatch <path>`.
+- **Work around it** — you cannot `git add` here, since git-sync owns commit and
+  push: import the lint's own detectors and run them directly on the path (for
+  this corpus, `findStaleInsightCitations` / `findNormativeViolations` /
+  `isInsightDoc` from `packages/operator-core/lib/content-lint/`), and
+  mutation-test them so you know they bite rather than silently matching nothing.
+- **Then re-run the real lint** once a git-sync tick lands and confirm the
+  denominator **moved** (`630 → 631`). That run is the one that counts.
+
+**The general rule: whenever a check reports a denominator, verify the
+denominator contains your change.** A green over a population that excludes it is
+a vacuous pass — the same one Probe 2 is about, pointed at your own verification
+step.
+
 ## Checklist
 
 When you add a field to a registry, a shared type, or any state plane:
@@ -190,6 +222,8 @@ When you add a field to a registry, a shared type, or any state plane:
 4. **If it counts anything**, give it a third verdict for "no data" and never let
    an empty input render as a clean zero.
 5. **Grep for your own guard's name** before calling it done.
+6. **Check the denominator** of whatever green you are about to trust — including
+   the one you just ran on your own change.
 
 ## See also
 
