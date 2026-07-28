@@ -18,7 +18,45 @@
  * are swallowed (one warn per process).
  */
 import type { Sql } from 'postgres';
-import type { MemoryEntry } from './backend';
+import type { MemoryEntry, ScoreScale } from './backend';
+
+/**
+ * Upper bound of an RRF score at the PRODUCTION fusion defaults
+ * (`(1 + lexWeight) / (k + 1)` = 2/61), i.e. an entry ranked 1st in BOTH legs.
+ * Used only by `classifyLegacyScoreScale` — live rows carry their scale
+ * explicitly and must never be classified by value.
+ */
+export const RRF_SCORE_CEILING = 2 / 61;
+
+/**
+ * Lowest score an admitted COSINE hit can carry: the relevance floor applied on
+ * admission. Observed minimum on the live table is 0.50.
+ */
+const COSINE_ADMISSION_FLOOR = 0.45;
+
+/**
+ * Best-effort scale for a row written BEFORE migration 705 (`score_scale IS
+ * NULL`). A transition aid, deliberately confined to this one function.
+ *
+ * This is an INFERENCE, and the only reason it is defensible is that the live
+ * distribution is almost perfectly bimodal — measured over 45,069 rows / 30d
+ * before it was written: 32,547 at <= 0.032787 (rrf), 12,517 at >= 0.50
+ * (cosine), and just 5 rows (0.011%) anywhere in the 13x-wide gap between. The
+ * separation is structural, not lucky: RRF is bounded above by 2/61 while an
+ * admitted cosine hit is floored at ~0.45.
+ *
+ * It is nonetheless valid ONLY while k=60 / lexWeight=1 hold (raising lexWeight
+ * to 2 lifts the RRF ceiling to 3/61 and starts eating into the gap), which is
+ * exactly why new rows record the scale instead of relying on this. Returns
+ * 'unknown' inside the gap rather than guessing — an unknown row is excluded
+ * from comparisons, which is the safe direction.
+ */
+export function classifyLegacyScoreScale(topScore: number | null | undefined): ScoreScale {
+  if (typeof topScore !== 'number' || !Number.isFinite(topScore)) return 'unknown';
+  if (topScore <= RRF_SCORE_CEILING) return 'rrf';
+  if (topScore >= COSINE_ADMISSION_FLOOR) return 'cosine';
+  return 'unknown';
+}
 
 /**
  * The generic surfaces (`search` pull, `injection` push) plus the per-port
@@ -69,6 +107,16 @@ interface RecallStatsCommon {
   workspaceId?: string | null;
   /** Pot/hive slug this recall ran for. Same dead-column history as workspaceId. */
   potSlug?: string | null;
+  /**
+   * The scale `entries[].score` is on (migration 705 / P-036) — read off the
+   * backend that produced them (`backend.scoreScale`, or `lexicalScoreScale`
+   * when the caller took the embed-free fallback leg).
+   *
+   * Supply it. Omitting it records NULL, which every scale-aware reader treats
+   * as 'unknown' and EXCLUDES from percentiles rather than pooling with a
+   * labelled row — the scores are silently unusable, not merely unlabelled.
+   */
+  scoreScale?: ScoreScale | null;
 }
 
 /**
@@ -152,7 +200,7 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
     const pools = input.pools ? JSON.stringify(poolsPayload(input.pools)) : null;
     await sql`
       INSERT INTO harness_shared.memory_recall_stats
-        (surface, hit_count, top_score, scores, fragment_count, pools, workspace_id, pot_slug)
+        (surface, hit_count, top_score, scores, fragment_count, pools, workspace_id, pot_slug, score_scale)
       VALUES (
         ${input.surface},
         ${entries.length},
@@ -161,7 +209,8 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
         ${countFragmentHits(entries)},
         ${pools}::text::jsonb,
         ${input.workspaceId ?? null},
-        ${input.potSlug ?? null}
+        ${input.potSlug ?? null},
+        ${input.scoreScale ?? null}
       )
     `;
   } catch (err) {
@@ -187,6 +236,26 @@ export function _resetRecallStatsWarnThrottleForTests(): void {
   _suppressedSinceWarn = 0;
 }
 
+/**
+ * SQL for a row's EFFECTIVE score scale: the recorded label when present
+ * (migration 705 onward), else the legacy value-based classification.
+ *
+ * The band logic mirrors `classifyLegacyScoreScale` and the two must agree —
+ * so both read the SAME interpolated constants rather than hardcoding numbers
+ * on either side. The TS function is the readable statement of the rule; this
+ * is its pushed-down twin, kept here so a percentile never has to round-trip
+ * whole rows to classify them.
+ */
+function effectiveScaleSql(sql: Sql) {
+  return sql`CASE
+    WHEN score_scale IS NOT NULL THEN score_scale
+    WHEN top_score IS NULL THEN 'unknown'
+    WHEN top_score <= ${RRF_SCORE_CEILING} THEN 'rrf'
+    WHEN top_score >= ${COSINE_ADMISSION_FLOOR} THEN 'cosine'
+    ELSE 'unknown'
+  END`;
+}
+
 export interface RecallHealth {
   /** Recalls recorded in the trailing 7 days (both surfaces). */
   recalls7d: number;
@@ -194,27 +263,75 @@ export interface RecallHealth {
   zeroHit7d: number;
   /** zeroHit7d / recalls7d (0 when no recalls recorded). */
   zeroHitRate7d: number;
-  /** Median top_score across non-empty recalls, 7d (null when none). */
+  /**
+   * Median top_score across non-empty recalls, 7d (null when none) — computed
+   * over `topScoreScale` ONLY. See that field: this is NOT a percentile over
+   * every recall in the window, and deliberately so.
+   */
   topScoreP50: number | null;
-  /** 90th percentile top_score across non-empty recalls, 7d. */
+  /** 90th percentile top_score, same single-scale population as topScoreP50. */
   topScoreP90: number | null;
+  /**
+   * WHICH scale the two percentiles above are on (P-036) — the dominant scale
+   * in the window, by scored-row count. Null when no scored rows.
+   *
+   * Percentiles are single-scale because a percentile over MIXED scales is not
+   * a weak number, it is a meaningless one: rrf tops out at 0.033 while cosine
+   * starts at 0.50, so a blended median reports the workload MIX (which path
+   * ran more often) rather than retrieval quality, and shifts by 25x when the
+   * mix shifts with retrieval unchanged. Render this next to the number; a
+   * bare score with no scale is exactly the ambiguity D-001 had to retract.
+   */
+  topScoreScale: ScoreScale | null;
+  /** Scored rows behind the percentiles (i.e. rows on `topScoreScale`). */
+  topScoreSamples: number;
+  /** Scored rows in the window per scale — the mix the percentiles exclude. */
+  scaleMix: Record<string, number>;
   /** Entity-fragment results that leaked into recalls, 7d — regression canary. */
   fragmentHits7d: number;
+}
+
+/** Percentile + mix columns shared by the window aggregates below. */
+function scaleAggregate(
+  perScale: Array<Record<string, unknown>>,
+): Pick<RecallHealth, 'topScoreP50' | 'topScoreP90' | 'topScoreScale' | 'topScoreSamples' | 'scaleMix'> {
+  const scaleMix: Record<string, number> = {};
+  for (const s of perScale) scaleMix[String(s.scale)] = Number(s.scored ?? 0);
+  // Dominant = most scored rows. 'unknown' can never be dominant: its rows are
+  // of INDETERMINATE scale, so a percentile over them is the same mixing bug.
+  const ranked = perScale
+    .filter((s) => String(s.scale) !== 'unknown' && Number(s.scored ?? 0) > 0)
+    .sort((a, b) => Number(b.scored ?? 0) - Number(a.scored ?? 0));
+  const top = ranked[0];
+  return {
+    topScoreP50: top?.p50 == null ? null : Number(top.p50),
+    topScoreP90: top?.p90 == null ? null : Number(top.p90),
+    topScoreScale: top ? (String(top.scale) as ScoreScale) : null,
+    topScoreSamples: top ? Number(top.scored ?? 0) : 0,
+    scaleMix,
+  };
 }
 
 /** One-roundtrip trailing-window aggregate for the memory-health card. */
 export async function readRecallHealth(sql: Sql): Promise<RecallHealth> {
   const rows = (await sql`
+    WITH scoped AS (
+      SELECT hit_count, fragment_count, top_score, ${effectiveScaleSql(sql)} AS scale
+        FROM harness_shared.memory_recall_stats
+       WHERE created_at >= now() - interval '7 days'
+    ),
+    per_scale AS (
+      SELECT scale,
+             count(*)::int AS scored,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score) AS p50,
+             percentile_cont(0.9) WITHIN GROUP (ORDER BY top_score) AS p90
+        FROM scoped WHERE top_score IS NOT NULL GROUP BY scale
+    )
     SELECT
-      count(*)::int                                   AS recalls,
-      count(*) FILTER (WHERE hit_count = 0)::int      AS zero_hits,
-      percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score)
-        FILTER (WHERE top_score IS NOT NULL)          AS p50,
-      percentile_cont(0.9) WITHIN GROUP (ORDER BY top_score)
-        FILTER (WHERE top_score IS NOT NULL)          AS p90,
-      coalesce(sum(fragment_count), 0)::int           AS fragment_hits
-    FROM harness_shared.memory_recall_stats
-    WHERE created_at >= now() - interval '7 days'
+      (SELECT count(*) FROM scoped)::int                            AS recalls,
+      (SELECT count(*) FROM scoped WHERE hit_count = 0)::int        AS zero_hits,
+      (SELECT coalesce(sum(fragment_count), 0) FROM scoped)::int    AS fragment_hits,
+      (SELECT coalesce(jsonb_agg(to_jsonb(per_scale)), '[]'::jsonb) FROM per_scale) AS per_scale
   `) as Array<Record<string, unknown>>;
   const r = rows[0] ?? {};
   const recalls = Number(r.recalls ?? 0);
@@ -223,8 +340,7 @@ export async function readRecallHealth(sql: Sql): Promise<RecallHealth> {
     recalls7d: recalls,
     zeroHit7d: zeroHit,
     zeroHitRate7d: recalls > 0 ? zeroHit / recalls : 0,
-    topScoreP50: r.p50 == null ? null : Number(r.p50),
-    topScoreP90: r.p90 == null ? null : Number(r.p90),
+    ...scaleAggregate(Array.isArray(r.per_scale) ? (r.per_scale as Array<Record<string, unknown>>) : []),
     fragmentHits7d: Number(r.fragment_hits ?? 0),
   };
 }
@@ -266,8 +382,14 @@ export interface RecallPoolHealth {
   saturationRate: number;
   /** Median hits contributed by this pool. */
   hitsP50: number | null;
-  /** Median of this pool's OWN top score — not maskable by a sibling pool. */
+  /** Median of this pool's OWN top score — not maskable by a sibling pool.
+   *  Single-scale: see `scoreScale`, which is part of this row's identity. */
   topScoreP50: number | null;
+  /** The scale `topScoreP50` is on (P-036). Part of the GROUP BY key, not a
+   *  decoration: the same surface+pool appears once PER SCALE, because
+   *  medianing a pool's rrf rows together with its cosine rows reports the
+   *  backend mix rather than the pool's retrieval quality. */
+  scoreScale: ScoreScale;
   /** Distinct scope keys this pool was queried under in the window. A pool
    *  whose scope set CHANGED mid-window is the unmigrated-rename signature. */
   scopes: string[];
@@ -306,6 +428,9 @@ export async function readRecallHealthByPool(
         (p.value ->> 'hits')::int               AS hits,
         (p.value ->> 'limit')::int              AS budget,
         (p.value ->> 'top')::double precision   AS top,
+        -- Every pool's `top` came from the same backend call as the row's
+        -- top_score, so the row-level scale governs them all (P-036).
+        ${effectiveScaleSql(sql)}               AS scale,
         p.value -> 'scopes'                     AS scopes
       FROM harness_shared.memory_recall_stats s
       CROSS JOIN LATERAL jsonb_each(s.pools) AS p(key, value)
@@ -316,6 +441,7 @@ export async function readRecallHealthByPool(
     SELECT
       surface,
       pool,
+      scale,
       count(*)::int                                          AS recalls,
       count(*) FILTER (WHERE hits = 0)::int                  AS zero_hits,
       count(*) FILTER (WHERE budget > 0 AND hits >= budget)::int AS saturated,
@@ -328,7 +454,7 @@ export async function readRecallHealthByPool(
       )                                                      AS scope_keys
     FROM exploded
     LEFT JOIN LATERAL jsonb_array_elements_text(scopes) AS sc(scope) ON true
-    GROUP BY surface, pool
+    GROUP BY surface, pool, scale
     ORDER BY count(*) DESC
   `) as Array<Record<string, unknown>>;
   return rows.map((r) => {
@@ -338,6 +464,7 @@ export async function readRecallHealthByPool(
     return {
       surface: String(r.surface ?? 'unknown'),
       pool: String(r.pool ?? 'unknown'),
+      scoreScale: (r.scale ? String(r.scale) : 'unknown') as ScoreScale,
       recalls,
       zeroHit,
       zeroHitRate: recalls > 0 ? zeroHit / recalls : 0,
@@ -351,19 +478,35 @@ export async function readRecallHealthByPool(
 }
 
 export async function readRecallHealthBySurface(sql: Sql): Promise<RecallSurfaceHealth[]> {
+  // Segmenting by surface does NOT segment by scale — measured on the live
+  // table, a single surface carries both scales on the same day (2026-07-28
+  // `search`: 17 rrf-scale rows alongside 94 cosine-scale). So this aggregate
+  // needs the same per-scale split as the global one; grouping by surface alone
+  // would still blend.
   const rows = (await sql`
+    WITH scoped AS (
+      SELECT surface, hit_count, fragment_count, top_score, ${effectiveScaleSql(sql)} AS scale
+        FROM harness_shared.memory_recall_stats
+       WHERE created_at >= now() - interval '7 days'
+    ),
+    per_scale AS (
+      SELECT surface, scale,
+             count(*)::int AS scored,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score) AS p50,
+             percentile_cont(0.9) WITHIN GROUP (ORDER BY top_score) AS p90
+        FROM scoped WHERE top_score IS NOT NULL GROUP BY surface, scale
+    )
     SELECT
-      surface,
-      count(*)::int                                   AS recalls,
-      count(*) FILTER (WHERE hit_count = 0)::int      AS zero_hits,
-      percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score)
-        FILTER (WHERE top_score IS NOT NULL)          AS p50,
-      percentile_cont(0.9) WITHIN GROUP (ORDER BY top_score)
-        FILTER (WHERE top_score IS NOT NULL)          AS p90,
-      coalesce(sum(fragment_count), 0)::int           AS fragment_hits
-    FROM harness_shared.memory_recall_stats
-    WHERE created_at >= now() - interval '7 days'
-    GROUP BY surface
+      s.surface,
+      count(*)::int                                AS recalls,
+      count(*) FILTER (WHERE s.hit_count = 0)::int AS zero_hits,
+      coalesce(sum(s.fragment_count), 0)::int      AS fragment_hits,
+      coalesce(
+        (SELECT jsonb_agg(to_jsonb(p)) FROM per_scale p WHERE p.surface = s.surface),
+        '[]'::jsonb
+      )                                            AS per_scale
+    FROM scoped s
+    GROUP BY s.surface
     ORDER BY count(*) DESC
   `) as Array<Record<string, unknown>>;
   return rows.map((r) => {
@@ -374,8 +517,7 @@ export async function readRecallHealthBySurface(sql: Sql): Promise<RecallSurface
       recalls7d: recalls,
       zeroHit7d: zeroHit,
       zeroHitRate7d: recalls > 0 ? zeroHit / recalls : 0,
-      topScoreP50: r.p50 == null ? null : Number(r.p50),
-      topScoreP90: r.p90 == null ? null : Number(r.p90),
+      ...scaleAggregate(Array.isArray(r.per_scale) ? (r.per_scale as Array<Record<string, unknown>>) : []),
       fragmentHits7d: Number(r.fragment_hits ?? 0),
     };
   });

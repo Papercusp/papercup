@@ -214,6 +214,10 @@ export default defineTool({
     // is stamped degraded + fallback:'lexical' so callers know these are token
     // matches (paraphrase recall is out), never a full-fidelity result.
     let overloadDegradedReason: string | null = null;
+    // Which leg produced `hits` — they carry DIFFERENT score scales (P-036).
+    // Tracked separately from `overloadDegradedReason` because that one is a
+    // wire-envelope concern; this one decides what the telemetry row means.
+    let usedLexicalFallback = false;
     try {
       const avail = await withMemoryToolTimeout(backend.available(), 'memory:search available');
       if (!avail.ok) {
@@ -272,6 +276,7 @@ export default defineTool({
       // filter, feedback rerank, tier shaping) — degraded recall still honors
       // every hygiene/scoping invariant of the healthy path.
       hits = fallbackHits;
+      usedLexicalFallback = true;
       overloadDegradedReason = reason;
     }
 
@@ -328,7 +333,19 @@ export default defineTool({
       try {
         const { getOrgPg } = await import('@papercusp/db-org');
         const { recordRecallStats } = await import('../../memory/recall-stats');
-        await recordRecallStats(getOrgPg().sql, { surface: telemetrySurface, entries: hits });
+        // P-036 / migration 705: which scale these scores are on. The two
+        // branches above return DIFFERENT scales from the SAME backend — the
+        // healthy path is `search()` (rrf under the hybrid backend, cosine
+        // under mem0), the WI-4214 degraded path is `searchLexical()` (raw
+        // token-overlap). Recording the branch's own scale is the whole point:
+        // a fallback recall must not be pooled with a healthy one.
+        await recordRecallStats(getOrgPg().sql, {
+          surface: telemetrySurface,
+          entries: hits,
+          scoreScale: usedLexicalFallback
+            ? (backend.lexicalScoreScale ?? null)
+            : (backend.scoreScale ?? null),
+        });
       } catch { /* swallow — telemetry never fails a recall */ }
     })();
 

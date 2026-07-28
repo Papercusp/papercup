@@ -529,6 +529,13 @@ async function buildBlockInner(
           surface: input.telemetrySurface ?? input.session?.port ?? 'injection',
           workspaceId: input.workspaceId ?? null,
           potSlug: harnessSlugs[0] ?? null,
+          // P-036 / migration 705: stamp the SCALE these scores are on. Taken
+          // from the backend that produced them, never inferred from the value
+          // — the push path's fused RRF tops out at 0.033 while a cosine hit
+          // starts at 0.45, and a reader that cannot tell them apart reports
+          // the workload mix as if it were retrieval quality. Always the
+          // `search()` scale here: this path has no lexical-fallback branch.
+          scoreScale: backend.scoreScale ?? null,
           pools: {
             user: { entries: userResults, limit: totalLimit, scopes: userScopes },
             harness: {

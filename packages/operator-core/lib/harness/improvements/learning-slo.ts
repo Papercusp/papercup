@@ -514,6 +514,12 @@ export interface RecallRateAggregate {
   recentTopScoreP50?: number | null;
   /** Median top_score over the baseline window's non-zero-hit recalls. */
   baselineTopScoreP50?: number | null;
+  /**
+   * P-036: the score SCALE both P50s above were computed on. The two must come
+   * from the SAME scale or the comparison is meaningless — see the collector.
+   * Null/undefined when no scale had usable data in both windows.
+   */
+  topScoreScale?: string | null;
 }
 
 /**
@@ -572,7 +578,8 @@ export function memoryZeroHitSignalsFromAggregate(
         : ` (no usable baseline window — the absolute ${pct(maxRate)} SLO fired)`) +
       (hasScoreData
         ? ` — AND the non-zero recalls' top-score P50 also collapsed: ${recentP50!.toFixed(3)} vs a ` +
-          `${baseP50!.toFixed(3)} baseline (${(recentP50! / Math.max(baseP50!, 0.001)).toFixed(2)}×)`
+          `${baseP50!.toFixed(3)} baseline (${(recentP50! / Math.max(baseP50!, 0.001)).toFixed(2)}×)` +
+          (agg.topScoreScale ? ` [${agg.topScoreScale} scale]` : '')
         : '') +
       `. A spike against the system's own history means index degradation, not "no relevant memory" ` +
       `(the EI-366 class B-10's memory_recall_stats telemetry exists to catch).`,
