@@ -156,6 +156,22 @@ const FIXTURE_FILES: ReadonlySet<string> = new Set([
   // + code review remain as defense, and a real secret does not live in a
   // scanner's source. Do NOT read this as license to exempt other product code.
   'packages/operator-core/lib/sync/pot-git/secrets-guard.ts',
+  // A DIFFERENT subsystem's redactor test — same class, different owner. The
+  // session-parts scrubber (`redactPartSecrets` / `cleanPartText`) can only be
+  // tested with credential-shaped inputs, so its suite embeds them by
+  // construction: AWS's own published example key, plus two 20-char hex
+  // placeholders behind `api_key:` / `API_KEY=` (deliberately NOT reproduced
+  // here, per the convention above — this scanner's source stays clean).
+  // Those are fixtures, not issued credentials.
+  // This wedged own-head publish on 2026-07-28 (head 8c0a625b4291 NOT published,
+  // 2 findings at :130 and :165) — the same self-wedge the entries above
+  // describe, arriving from a subsystem whose authors would never think to look
+  // at this file. The general rule this makes explicit: ANY test of a
+  // redaction/detection function is a fixture file, wherever it lives in the
+  // tree. Prefer the runtime escape hatch (pot_git:secrets_exemptions) when you
+  // have a superuser session — a workspace-scoped session cannot call it, which
+  // is why this static entry exists.
+  'packages/operator-core/lib/search/session-turn-parts.test.ts',
 ]);
 
 /** True if `path` is a designated credential-fixture file exempt from the scan. */
