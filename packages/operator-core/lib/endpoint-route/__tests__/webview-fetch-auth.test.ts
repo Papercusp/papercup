@@ -49,12 +49,9 @@ const UI_ROOTS = ['apps/operator/app', 'apps/operator-vite/src'];
  */
 const BASELINE: ReadonlySet<string> = new Set([
   // ── Admin panes. Sampled live: all 403. ──
-  'apps/operator/app/admin/_components/AdminOps.tsx :: /api/admin/commands',
-  'apps/operator/app/admin/_components/TableAdmin.tsx :: /api/admin/tables',
-  'apps/operator/app/admin/_components/TableAdmin.tsx :: /api/admin/tables/:param',
-  'apps/operator/app/admin/_components/TableAdmin.tsx :: /api/dev/tables/:param',
-  'apps/operator/app/admin/dbos/DbosClient.tsx :: /api/admin/dbos/status',
-  'apps/operator/app/admin/schedules/SchedulesClient.tsx :: /api/admin/schedules/inventory',
+  // Fixed 2026-08-01 (EI-18834967602055309): commands.ts, tables.ts, tables-by-name.ts,
+  // dev/table-schema.ts, dbos-status.ts, schedules-inventory.ts widened to admit
+  // 'unverified-loopback' (+ CSRF guard on the mutating tables-by-name verbs).
   'apps/operator/app/admin/plans/plans-api.ts :: /api/admin/inbox/triage',
   // The two /api/admin/coordination entries were removed 2026-07-27 (WI-6501): the
   // shrink-only check flagged them stale because WI-6486 had already widened that
@@ -69,7 +66,8 @@ const BASELINE: ReadonlySet<string> = new Set([
   'apps/operator/app/admin/testing/_components/MemoryTab.tsx :: /api/admin/testing/test-runs',
   'apps/operator/app/admin/testing/_components/MemoryTab.tsx :: /api/admin/testing/test-runs/:param',
   'apps/operator/app/admin/testing/_components/MemoryTab.tsx :: /api/admin/testing/test-runs/:param/cancel',
-  'apps/operator/app/admin/testing/_components/PackagedBuildTab.tsx :: /api/admin/commands',
+  // PackagedBuildTab.tsx :: /api/admin/commands — fixed alongside AdminOps.tsx's
+  // identical route above (commands.ts widened 2026-08-01, EI-18834967602055309).
   'apps/operator/app/admin/testing/_components/TestRunsTab.tsx :: /api/admin/testing/test-runs',
   'apps/operator/app/admin/testing/_components/TestRunsTab.tsx :: /api/admin/testing/test-runs/:param',
   'apps/operator/app/admin/testing/_components/TestRunsTab.tsx :: /api/admin/testing/test-runs/:param/cancel',
@@ -80,7 +78,8 @@ const BASELINE: ReadonlySet<string> = new Set([
   'apps/operator/app/dev/_components/SqlTab.tsx :: /api/dev/sql',
   'apps/operator/app/dev/_components/StudioTab.tsx :: /api/dev/drizzle-studio',
   'apps/operator/app/dev/_components/TablesTab.tsx :: /api/dev/tables',
-  'apps/operator/app/dev/_components/TablesTab.tsx :: /api/dev/tables/:param',
+  // TablesTab.tsx :: /api/dev/tables/:param — fixed alongside TableAdmin.tsx's
+  // identical route above (dev/table-schema.ts widened 2026-08-01, EI-18834967602055309).
   'apps/operator/app/dev/_components/TablesTab.tsx :: /api/dev/tables/:param/rows',
 
   // ── First-run / onboarding surfaces. /api/provision/state measured 403. These are the

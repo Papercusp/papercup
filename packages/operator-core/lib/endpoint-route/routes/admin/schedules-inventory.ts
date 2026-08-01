@@ -16,7 +16,11 @@ import { collectScheduleInventory, summarizeInventory } from '../../../schedule-
 export default defineTool({
   method: 'GET',
   path: '/admin/schedules/inventory',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — the packaged
+  // desktop app's SchedulesClient pane bare-fetches this route from localhost
+  // with no session cookie, so it only ever resolves 'unverified-loopback'
+  // trust. Read-only (EI-18834967602055309).
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req): Promise<Response> {
     const enabled = await getFlag(FLAGS.SCHEDULE_INVENTORY, 'admin:schedule-inventory').catch(() => true);
     if (!enabled) {

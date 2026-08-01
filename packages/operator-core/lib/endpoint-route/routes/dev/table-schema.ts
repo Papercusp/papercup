@@ -35,7 +35,11 @@ interface ColumnSummary {
 export default defineTool({
   method: 'GET',
   path: '/dev/tables/:exportName',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — the TableAdmin
+  // pane's detail fetch hits this alongside admin/tables/:exportName; without
+  // this the pane's Promise.all still 403s even after admin/tables.ts is fixed
+  // (EI-18834967602055309). Read-only schema introspection.
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(_req, ctx) {
     const { exportName } = ctx.params;
     const table = tableByExportName(exportName);

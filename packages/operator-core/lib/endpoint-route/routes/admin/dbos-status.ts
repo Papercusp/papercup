@@ -14,7 +14,11 @@ import { getOrgPg } from '@papercusp/db-org';
 export default defineTool({
   method: 'GET',
   path: '/admin/dbos/status',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — the packaged
+  // desktop app's DbosClient pane bare-fetches this route from localhost with
+  // no session cookie, so it only ever resolves 'unverified-loopback' trust.
+  // Read-only (EI-18834967602055309).
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req): Promise<Response> {
     const url = new URL(req.url);
     const statusFilter = url.searchParams.get('status');
