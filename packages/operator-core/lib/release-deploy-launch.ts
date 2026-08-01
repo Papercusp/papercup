@@ -20,6 +20,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { createTextCollector } from './child-output.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
@@ -169,7 +170,7 @@ export function readDeployInFlight(deps: ReadDeployInFlightDeps = {}): Promise<D
   const logMtimeMs = readMtime();
 
   return new Promise<DeployInFlight>((resolve) => {
-    let stdout = '';
+    const stdoutOut = createTextCollector();
     let settled = false;
     const done = (props: Record<string, string> | null) => {
       if (settled) return;
@@ -185,9 +186,11 @@ export function readDeployInFlight(deps: ReadDeployInFlightDeps = {}): Promise<D
         '--property=SubState',
         '--property=ExecMainStartTimestamp',
       ]);
-      child.stdout?.on('data', (d: unknown) => (stdout += String(d)));
+      stdoutOut.attach(child.stdout);
       child.on('error', () => done(null));
-      child.on('close', (code: number | null) => done(code === 0 ? parseSystemctlShow(stdout) : null));
+      child.on('close', (code: number | null) =>
+        done(code === 0 ? parseSystemctlShow(stdoutOut.text()) : null),
+      );
     } catch {
       done(null);
     }
@@ -524,9 +527,8 @@ export function launchDetachedDeploy(opts: LaunchDeployOpts, spawnFn: SpawnLike 
 
   return new Promise<LaunchDeployResult>((resolve) => {
     const base: LaunchDeployResult = { launched: false, unit: DEPLOY_UNIT, mode, commit: opts.commit, argv, logPath };
-    let stderr = '';
     const child = spawnFn('systemd-run', argv);
-    child.stderr?.on('data', (d: unknown) => (stderr += String(d)));
+    const stderrOut = createTextCollector(child.stderr);
     child.on('error', (e: unknown) => {
       resolve({ ...base, launched: false, reason: e instanceof Error ? e.message : String(e) });
     });
@@ -538,7 +540,7 @@ export function launchDetachedDeploy(opts: LaunchDeployOpts, spawnFn: SpawnLike 
         resolve({
           ...base,
           launched: false,
-          reason: `systemd-run exited ${code} (a deploy may already be in flight): ${stderr.trim().slice(0, 200)}`,
+          reason: `systemd-run exited ${code} (a deploy may already be in flight): ${stderrOut.text().trim().slice(0, 200)}`,
         });
       }
     });

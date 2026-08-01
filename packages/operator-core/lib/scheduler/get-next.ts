@@ -214,6 +214,15 @@ const FIELD_MAP: Record<string, FieldMap> = {
   // refuses it on the other's (WI-5781, documented on `plan` below).
   // NOT rankable: RANKABLE_ITEM_FIELDS excludes it because severity is TEXT, so a bare
   // `severity desc` would sort nit > minor > major > critical — exactly backwards.
+  // BOTH claim queries compile this same fragment, and the asymmetry is intended rather
+  // than incidental: the issue-family query reads harness_shared.work_items, where the
+  // `_ei` leg resolves; the feature-family query reads harness_features_consolidated,
+  // where severity is structurally absent (work-items.ts maps feature rows `severity:
+  // null`), so the expression yields NULL and a severity-scoped filter simply refuses
+  // every feature row. That is the correct semantic — severity is an issue-family notion,
+  // so a lane scoped to `severity in [critical,major]` SHOULD admit no features — and the
+  // jsonb operators are valid on both relations (both carry a `payload` column, as the
+  // `plan` entry below already relies on), so this is a clean NULL, never an error.
   severity: {
     col: (sql) => sql`COALESCE(payload->'_ei'->>'severity', payload->>'severity')`,
     kind: 'scalar-text',

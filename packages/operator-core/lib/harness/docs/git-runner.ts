@@ -28,6 +28,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { collectChildOutput } from '../../child-output.js';
 import type { GitRunner } from './subject-ref';
 import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 

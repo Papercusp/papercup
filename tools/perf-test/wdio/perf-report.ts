@@ -58,6 +58,23 @@ const MEASURES_PATH = path.join(RESULTS_DIR, "measures.jsonl");
 export { MEASURES_PATH };
 
 /**
+ * The operator this run talks to over plain HTTP — for publishing measures, and
+ * for anything else that needs an origin the RUNNER can reach.
+ *
+ * Defaults to the green operator on :3070; override with `PAPERCUSP_OPERATOR_URL`
+ * (e.g. `http://127.0.0.1:3170`) to target staging — necessary whenever a route is
+ * newer than what :3070's release checkout serves.
+ *
+ * EXPORTED, rather than recomputed per caller, because the second caller is the
+ * egress spec's sensor control, and a control pointed at a DIFFERENT default than
+ * the publisher would fail in a way that reads as a broken sensor rather than a
+ * misconfigured runner. One literal, one place.
+ */
+export function operatorBaseUrl(): string {
+  return (process.env.PAPERCUSP_OPERATOR_URL ?? "http://127.0.0.1:3070").replace(/\/$/, "");
+}
+
+/**
  * Record one measured interaction.
  *
  * CALL THIS BEFORE THE BUDGET ASSERTS, NEVER AFTER. `expect(...)` throws on a

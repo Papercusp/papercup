@@ -733,6 +733,51 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(false);
     });
 
+    // EI-19282566865609166: the RECOVERY orient is the one full-mode call that must fold.
+    // A leader coming back from a compaction has the least context and the most to
+    // misread: `me` is fleet:assignments scoped to SELF, but its summary carries
+    // fleet-shaped field names (agents / orphaned_claims / coverage_collisions) plus
+    // `agentsElided: 0`. Measured live 2026-08-01 — the leader of an ELEVEN-member fleet
+    // read `agents: 1` off a full-mode afterCompaction orient and opened its turn
+    // reporting the fleet dead; leader-brief seconds later showed 11 members, 0 dead,
+    // 5 idle-with-claimable, 2 unanswered directed messages.
+    it('an afterCompaction RECOVERY orient folds the brief for a leader even in FULL mode', async () => {
+      const { call, calls } = fakeCall({ ...CORE, 'fleet:leader-brief': () => LEADER_BRIEF_RESULT });
+      const r = await composeOrient(
+        { afterCompaction: true },
+        call,
+        'leader',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { fleetSlug: 'p2p-git', fleetRole: 'leader' },
+      );
+      expect(r.leaderBrief).toBeDefined();
+      expect(r.leaderBrief).not.toBeNull();
+      expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(true);
+    });
+
+    it('an afterCompaction recovery orient does NOT fold for a non-leader member', async () => {
+      // The recovery widening is scoped to the role that can misread it — it must not
+      // become a blanket extra round-trip on every member's post-compaction wake.
+      const { call, calls } = fakeCall({ ...CORE, 'fleet:leader-brief': () => LEADER_BRIEF_RESULT });
+      const r = await composeOrient(
+        { afterCompaction: true },
+        call,
+        'member',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { fleetSlug: 'p2p-git', fleetRole: 'member' },
+      );
+      expect(r.leaderBrief).toBeUndefined();
+      expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(false);
+    });
+
     it('a failed leaderBrief fold degrades to null, never breaks orientation', async () => {
       const { call } = fakeCall({
         ...CORE,

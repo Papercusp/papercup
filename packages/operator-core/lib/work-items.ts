@@ -4666,6 +4666,24 @@ export async function releaseWorkItem(
       }
     }
   };
+  // P-006 (fleet-leadership-continuity-and-actuation-2026-08-01): release the linked PLAN LANE
+  // together with the work-item, not separately. Holding a work-item is not holding its plan
+  // item, so releasing only this half left the lane still naming the departed holder — the next
+  // claimant then collides with a lane it cannot take (the agent-trap-guards-2026-07-26 P-006
+  // incident, where the collision surfaced only at close time, after a duplicated-work window).
+  //
+  // AWAITED and ordered BEFORE the UPDATE below, deliberately. The two stores cannot share a
+  // transaction (the plan claim routes through a possibly-REMOTE claim authority), so what we
+  // actually control is WHICH half-state a mid-way failure can reach. Lane-first leaves the
+  // RECOVERABLE one — lane free, item still mine, retryable. The reverse leaves the damaging one,
+  // where the item is already back in the pool for a peer to collide on. Fail-soft inside, so a
+  // claims-store hiccup can never wedge a release: this same function carries the voluntary
+  // release tool, the SessionEnd force-release, AND the stale-claim reaper.
+  if (wasClaimed) {
+    await import('./plan-items/release-linked-lane')
+      .then((m) => m.releaseLinkedPlanLane(wi, wi.assignee))
+      .catch(() => null);
+  }
   if (wi.family === 'issue') {
     const updated = await releaseIssue(id, { expectedAssignee: opts.expectedAssignee });
     const released = updated ? issueToWorkItem(updated) : null;

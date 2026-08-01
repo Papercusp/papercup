@@ -688,7 +688,21 @@ export async function composeOrient(
   // non-fleet caller or any failure. Reads `effectiveFleetMembership` (not the raw
   // presence-only `fleetMembership`) so a caught presence/registry drift (above) still
   // gets its leaderBrief instead of silently dropping it a second time.
-  if (monitor && effectiveFleetMembership?.fleetRole === 'leader' && effectiveFleetMembership.fleetSlug) {
+  //
+  // EI-19282566865609166: ALSO fold it on an `afterCompaction` RECOVERY orient, even in
+  // full mode. That is the one moment a leader has the least context and is most likely
+  // to misread the self-scoped `me` block — whose summary carries FLEET-SHAPED field
+  // names (agents / orphaned_claims / coverage_collisions) and `agentsElided: 0` — as the
+  // whole fleet. Measured live 2026-08-01: a leader of an ELEVEN-member fleet ran
+  // `coord:orient { afterCompaction: true }`, read `agents: 1`, and opened its turn
+  // reporting the fleet as dead; `fleet:leader-brief` seconds later showed 11 members,
+  // 0 dead, with 5 idle-with-claimable and 2 unanswered directed messages — none of which
+  // the full-mode payload surfaced. That is the SAME "my whole fleet is gone" misreading
+  // the presence-drift recovery above already defends against, arriving through the one
+  // door that defence does not cover. A recovery orient happens once per compaction, so
+  // the extra fold is negligible against the cost the monitor-only gate is protecting.
+  const foldLeaderBrief = monitor || args.afterCompaction === true;
+  if (foldLeaderBrief && effectiveFleetMembership?.fleetRole === 'leader' && effectiveFleetMembership.fleetSlug) {
     try {
       const brief = await call('fleet:leader-brief', {
         fleet: effectiveFleetMembership.fleetSlug,

@@ -308,6 +308,11 @@ CC_CONTENT_LINT_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-content-lint.mjs"
 # shared git-sync tree file. Was orphaned at repo-root scripts/cc-hooks/ and never
 # wired into any installer — see the script's own header.
 CC_SECRETS_GUARD_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-secrets-guard.mjs"
+# PreToolUse hard-DENY hook (EI-18896033546676518): blocks Edit/MultiEdit on any file
+# that already contains a raw NUL byte — the Edit tool has a confirmed round-trip
+# corruption bug on such files (silently writes a different byte than requested while
+# reporting success). See the script's own header for the full writeup.
+CC_NUL_BYTE_EDIT_GUARD_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-nul-byte-edit-guard.mjs"
 # PreToolUse observational hook (EI-18680056073436345): enrolls the Claude-CLI-native
 # ScheduleWakeup tool into the turn-provenance ledger AT SCHEDULE TIME (hash + a
 # per-row ttl sized to the requested delay), so its eventual delivery classifies
@@ -1061,6 +1066,41 @@ def drop_ours(entry):
 hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
 arr.append({'matcher': 'ScheduleWakeup', 'hooks': [{'type': 'command', 'command': hook}]})
+hooks['PreToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+# merge_nul_byte_edit_guard_hook — PreToolUse, matcher 'Edit|MultiEdit' (EI-18896033546676518):
+# hard DENY on Edit/MultiEdit against a file that already contains a raw NUL byte. Write is
+# deliberately NOT in the matcher — see the script's own header for why.
+merge_nul_byte_edit_guard_hook() {
+  python3 - "$1" "$CC_NUL_BYTE_EDIT_GUARD_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, hook = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {hook, os.path.basename(hook)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
+arr.append({'matcher': 'Edit|MultiEdit', 'hooks': [{'type': 'command', 'command': hook}]})
 hooks['PreToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -45,50 +45,59 @@ describe('P-004 — prior work is distinguishable at every claim-decision surfac
     ).toBe(true);
   });
 
+  const worked = {
+    lastReleasedBy: 'su-A',
+    releasedAtMs: Date.now() - 3_600_000,
+    attempts: 1,
+    priorWorkers: ['su-A', 'su-B'],
+  };
+
   it('the banner ESCALATES when no checkpoint exists — the WI-6096 case exactly', () => {
-    const worked = {
-      lastReleasedBy: 'su-A',
-      lastReleasedAt: Date.now() - 3_600_000,
-      attempts: 1,
-      workedByHistory: ['su-A'],
-    };
     const withCheckpoint = priorWorkWarning({ ...worked, hasCheckpoint: true });
     const without = priorWorkWarning({ ...worked, hasCheckpoint: false });
     expect(withCheckpoint).toBeTruthy();
     expect(without).toBeTruthy();
-    // The checkpoint-less case is the DANGEROUS one (nothing else flags it), so it must not be
-    // the quieter of the two.
+    // Both must name the item as already-worked...
+    expect(withCheckpoint).toContain('PRIOR WORK');
+    expect(without).toContain('PRIOR WORK');
+    // ...but the checkpoint-LESS case is the dangerous one (no other guard flags it: there is no
+    // checkpoint for EI-529 to show, and the row is not terminal for WI-5826 to catch), so it
+    // must not be the quieter of the two.
     expect(without!.length).toBeGreaterThanOrEqual(withCheckpoint!.length);
   });
 
+  it('carries the provenance an agent needs to go READ the prior work', () => {
+    const warn = priorWorkWarning({ ...worked, hasCheckpoint: false })!;
+    expect(warn).toContain('su-A'); // who released it
+    expect(warn).toContain('su-B'); // who else worked it
+    expect(warn).toContain('prior claim attempt'); // that it was attempted
+  });
+
   it('stays SILENT for a genuinely never-started item (the negative control)', () => {
-    expect(
-      priorWorkWarning({
-        lastReleasedBy: null,
-        lastReleasedAt: null,
-        attempts: 0,
-        workedByHistory: [],
-        hasCheckpoint: false,
-      }),
-    ).toBeFalsy();
+    // A never-started row yields a NULL hint from getClaimTimePriorWorkHint — that is where the
+    // silence comes from, so a null hint must never render a banner.
     expect(priorWorkWarning(null)).toBeFalsy();
   });
 
   it('treats a release with no surviving checkpoint as prior work (not as fresh)', () => {
-    const warn = priorWorkWarning({
-      lastReleasedBy: 'su-A',
-      lastReleasedAt: Date.now() - 60_000,
-      attempts: 0,
-      workedByHistory: [],
-      hasCheckpoint: false,
-    });
-    expect(warn).toBeTruthy();
+    // The minimal WI-6096 row: released once, never attempted again, no checkpoint left behind.
+    expect(
+      priorWorkWarning({
+        lastReleasedBy: 'su-A',
+        releasedAtMs: Date.now() - 60_000,
+        attempts: 0,
+        priorWorkers: [],
+        hasCheckpoint: false,
+      }),
+    ).toBeTruthy();
   });
 
   it('parseWorkedByHistory tolerates the shapes the column actually holds', () => {
     expect(parseWorkedByHistory(null)).toEqual([]);
-    expect(parseWorkedByHistory('["su-A","su-B"]')).toEqual(['su-A', 'su-B']);
-    expect(parseWorkedByHistory(['su-A'])).toEqual(['su-A']);
-    expect(parseWorkedByHistory('not json')).toEqual([]);
+    expect(parseWorkedByHistory(['su-A', 'su-B'])).toEqual(['su-A', 'su-B']);
+    // Rows are also written as objects; the reader must accept both spellings.
+    expect(parseWorkedByHistory([{ owner: 'su-A' }, { ownerId: 'su-B' }])).toEqual(['su-A', 'su-B']);
+    expect(parseWorkedByHistory(['  ', 'su-C'])).toEqual(['su-C']);
+    expect(parseWorkedByHistory('not an array')).toEqual([]);
   });
 });

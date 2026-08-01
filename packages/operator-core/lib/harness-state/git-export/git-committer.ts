@@ -22,6 +22,7 @@
  * `makeDebouncedGitCommitter` is the thin debounce + coalesce wrapper for the loop.
  */
 import { spawn } from 'node:child_process';
+import { collectChildOutput } from '../../child-output.js';
 
 export type RunGit = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
 

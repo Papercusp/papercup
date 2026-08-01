@@ -29,6 +29,7 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createTextCollector } from '../../child-output.js';
 import { createServer } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -205,7 +206,7 @@ export function serveUploadPack(
     });
     const killChild = (why: string): void => {
       timedOut = true;
-      stderr += `\nupload-pack ${why} (served ${bytesServed}B)`;
+      stderrOut.append(`\nupload-pack ${why} (served ${bytesServed}B)`);
       // Report HERE, at the moment of the decision, not from the 'close'
       // handler's generic fallback: this names the ceiling that actually fired
       // and does not depend on SIGKILL→'close' being prompt.
@@ -230,8 +231,8 @@ export function serveUploadPack(
     // stream open forever.
     hardTimer = setTimeout(() => killChild(`timed out after ${maxMs}ms (absolute ceiling)`), maxMs);
     hardTimer.unref?.();
-    child.stderr.on('data', (d: Buffer) => {
-      stderrOut.write(d);
+    stderrOut.attach(child.stderr);
+    child.stderr.on('data', () => {
       // upload-pack's counting/compressing phase on a multi-GB repo emits
       // progress here while stdout is still silent — that IS liveness, and
       // treating it as idle is what killed every large cold join.
@@ -304,7 +305,7 @@ export function serveUploadPack(
     // `reportFailure`, so the ordering is ours rather than a pipe side effect.
     child.stdout.pipe(duplex, { end: false });
     child.on('error', (e) => {
-      stderr += String(e);
+      stderrOut.append(String(e));
       reportFailure(`upload-pack spawn failed: ${e instanceof Error ? e.message : String(e)}`);
       // WI-6184: END the duplex here too, not only in the 'close' handler. A
       // spawn failure (`spawn git ENOENT` — live-observed once on the tower
@@ -324,7 +325,9 @@ export function serveUploadPack(
       // A nonzero exit is a real failure the requester must be told about; a
       // timeout already reported its (more specific) reason from killChild.
       if ((code ?? -1) !== 0) {
-        reportFailure(`upload-pack exited ${code ?? -1}: ${stderr.trim().slice(0, 200) || 'no stderr'}`);
+        reportFailure(
+          `upload-pack exited ${code ?? -1}: ${stderrOut.text().trim().slice(0, 200) || 'no stderr'}`,
+        );
       }
       try {
         duplex.end();
@@ -379,7 +382,9 @@ export function fetchOverDuplex(
   opts: FetchOverDuplexOptions = {},
 ): Promise<TransportResult> {
   return new Promise((resolve) => {
-    let stderr = '';
+    // Created before the spawn: several setup failure paths below append a
+    // reason and resolve without ever starting a child.
+    const stderrOut = createTextCollector();
     let settled = false;
     let timedOut = false;
     let tmpDir: string | null = null;
@@ -436,7 +441,7 @@ export function fetchOverDuplex(
     // allows.
     duplex.on('error', (err) => {
       if (settled) return;
-      stderr += `\nduplex error: ${err instanceof Error ? err.message : String(err)}`;
+      stderrOut.append(`\nduplex error: ${err instanceof Error ? err.message : String(err)}`);
       try {
         child?.kill('SIGKILL');
       } catch {
@@ -521,7 +526,7 @@ export function fetchOverDuplex(
       clearTimeout(timer);
       clearTimeout(hardTimer);
       void cleanup();
-      resolve({ code, stderr, timedOut });
+      resolve({ code, stderr: stderrOut.text(), timedOut });
     };
     // BUG FIXED (WI-3490/P-201): this ceiling used to only SET `timedOut` —
     // it never actually killed anything or resolved the promise. So a stall
@@ -543,10 +548,11 @@ export function fetchOverDuplex(
       //                  transport/connection-death problem on this path.
       //   bridge=no    ⇒ we never even got git's ext helper connected locally,
       //                  so the stall is LOCAL setup (mkdtemp/listen/spawn).
-      stderr +=
+      stderrOut.append(
         `\nfetch ${why}` +
-        ` (peer→us ${bytesFromPeer}B, us→peer ${bytesToPeer}B,` +
-        ` bridge=${bridgeConnected ? 'yes' : 'no'}, gitChild=${child ? 'spawned' : 'none'})`;
+          ` (peer→us ${bytesFromPeer}B, us→peer ${bytesToPeer}B,` +
+          ` bridge=${bridgeConnected ? 'yes' : 'no'}, gitChild=${child ? 'spawned' : 'none'})`,
+      );
       try {
         child?.kill('SIGKILL');
       } catch {
@@ -580,7 +586,7 @@ export function fetchOverDuplex(
     // check such a fetch hangs the FULL outer ceiling (live-observed: every
     // G-8 cold-join burned 120s per tick instead of failing fast).
     if (duplex.destroyed) {
-      stderr += '\nduplex already destroyed before fetch began (no live dial path)';
+      stderrOut.append('\nduplex already destroyed before fetch began (no live dial path)');
       finish(-1);
       return;
     }
@@ -706,8 +712,8 @@ export function fetchOverDuplex(
           }
         }, opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS);
         killTimer.unref?.();
-        child.stderr.on('data', (d) => {
-          stderr += String(d);
+        stderrOut.attach(child.stderr);
+        child.stderr.on('data', () => {
           // git's own progress ("Receiving objects", "Resolving deltas") is
           // liveness too: during index-pack the client burns minutes writing to
           // disk with NO network bytes moving, which the byte counters above
@@ -717,7 +723,7 @@ export function fetchOverDuplex(
         });
         child.on('error', (e) => {
           clearTimeout(killTimer);
-          stderr += String(e);
+          stderrOut.append(String(e));
           finish(-1);
         });
         child.on('close', (code) => {
@@ -725,7 +731,7 @@ export function fetchOverDuplex(
           finish(code ?? -1);
         });
       } catch (e) {
-        stderr += e instanceof Error ? e.message : String(e);
+        stderrOut.append(e instanceof Error ? e.message : String(e));
         finish(-1);
       }
     })();

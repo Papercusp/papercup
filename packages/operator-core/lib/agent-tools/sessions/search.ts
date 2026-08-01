@@ -252,6 +252,7 @@ export default defineTool({
                   "0 hits: verbatim mode matches only an exact, contiguous, case-insensitive substring — a paraphrase or multi-word description of what you remember will NOT match even if the content exists. Retry with mode:'hybrid' (meaning-based, the default) to search by concept, or narrow query to the exact short phrase you expect verbatim in the transcript. Do not read this 0 as \"it didn't happen\".",
               }
             : {}),
+          ...(zeroHitCaveat ? { zeroHitCaveat } : {}),
           results: out,
         }),
       }],

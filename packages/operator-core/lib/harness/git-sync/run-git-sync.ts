@@ -34,6 +34,7 @@
  * guard below). See GitSyncStepRunner for the replay-safety contract.
  */
 import { spawn } from 'node:child_process';
+import { collectChildOutput } from '../../child-output.js';
 import { lstat, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
