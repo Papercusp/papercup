@@ -3236,14 +3236,27 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // account still has another off-cooldown egress IP, retry on it (same credential — honors hard
             // pins) instead of opening the whole-account circuit. Falls through to the account-level circuit
             // below only when ALL of the account's IPs are cooled (the 0/1-IP case → byte-identical).
-            coolIp(curEgressKey, IP_TRANSPORT_COOLDOWN_MS);
+            //   ESCALATING (EI-18791887279744938 defect A): a FIXED cooldown here re-admitted a permanently-
+            // dead egress into rotation on a constant cycle FOREVER — a hard-down host got no worse treatment
+            // than a one-off blip, so roughly half of upstream attempts against a 2-entry pool kept re-dialing
+            // it (each burning a full transport timeout, ~12s measured). Mirror ipBare429Streak's doubling
+            // escalation: a genuinely-flapping IP still recovers at the base pace (a real success above clears
+            // the streak), but a hard-down one backs off toward effectively-removed instead.
+            const ipTransportStreak = (ipTransportFailStreak.get(curEgressKey) ?? 0) + 1;
+            ipTransportFailStreak.set(curEgressKey, ipTransportStreak);
+            const ipTransportCoolMs = Math.min(
+              IP_TRANSPORT_COOLDOWN_MS * 2 ** (ipTransportStreak - 1),
+              IP_TRANSPORT_COOLDOWN_MAX_MS,
+            );
+            coolIp(curEgressKey, ipTransportCoolMs);
+            checkEgressProxyHealthAlarm(active); // defect B: this failure may be the LAST reachable proxy entry
             if (
               siblingEgressAvailable(active, Date.now(), curEgressKey) &&
               attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1 &&
               Date.now() < retryDeadlineAt
             ) {
               attempt++;
-              log('warn', `inference-gateway: egress IP ${egDesc(usedEg)} for '${active.accountId}' transport-${stalled ? 'stalled' : 'failed'} — cooled ${Math.round(IP_TRANSPORT_COOLDOWN_MS / 1000)}s; rotating to a sibling IP on the SAME account (egress-ip-pool)`);
+              log('warn', `inference-gateway: egress IP ${egDesc(usedEg)} for '${active.accountId}' transport-${stalled ? 'stalled' : 'failed'} — cooled ${Math.round(ipTransportCoolMs / 1000)}s (streak ${ipTransportStreak}); rotating to a sibling IP on the SAME account (egress-ip-pool)`);
               continue;
             }
             const streak = (egressFailStreak.get(active.accountId) ?? 0) + 1;

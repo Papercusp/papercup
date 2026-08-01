@@ -27,7 +27,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan } from './parser';
+import { parsePlan, type LegacyReason } from './parser';
 import { setDecisionBodyInBody } from './set-decision-body';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -89,7 +89,11 @@ const argsSchema = z.object({
 
 type RatifyDecisionValue =
   | { ok: true; decisionId: string; slug: string; alreadyRatified: boolean }
-  | { ok: false; code: 'not_found' | 'legacy_plan' | 'decision_not_found' };
+  | {
+      ok: false;
+      code: 'not_found' | 'legacy_plan' | 'decision_not_found';
+      reason?: LegacyReason;
+    };
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
