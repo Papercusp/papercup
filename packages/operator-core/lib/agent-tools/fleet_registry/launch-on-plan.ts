@@ -1228,6 +1228,36 @@ export default defineTool({
             } else if (verdict.warning) {
               applyWarning = applyWarning ? `${applyWarning}\n${verdict.warning}` : verdict.warning;
             }
+
+            // WI-6673 — THE DUAL OF THE COLLAPSE GUARD. Above refuses a lane matching TOO
+            // FEW rows (starvation). This warns about the opposite and equally real failure:
+            // a lane matching PLENTY of rows that are not work. On 2026-08-01 a bug-drain
+            // fleet was launched at a lane of 1,252 "claimable" items that was 98.7%
+            // nit-severity auto-filed observations; the true bug backlog was ~285. Nothing
+            // in the launch path objected, because every count was correct — a big number
+            // simply looks like a healthy backlog. WARN, never refuse: a legitimately
+            // low-severity lane (a nit-sweep fleet) is a real thing to want.
+            try {
+              const { aggregateAdmittedComposition } = await import('../../scheduler/get-next');
+              const comp = await aggregateAdmittedComposition(validated.spec.view.filter, {
+                harness,
+                states: validated.spec.states,
+              });
+              if (comp.degenerate) {
+                const pct = Math.round((comp.lowSeverityShare ?? 0) * 100);
+                const burst = comp.peakDay
+                  ? ` ${comp.peakDay.count} of them were filed on a single day (${comp.peakDay.day}), the signature of burst auto-filing rather than discovered work.`
+                  : '';
+                const degenWarning =
+                  `⚠ DEGENERATE LANE: ${pct}% of the ${poolEffect.matched} matched row(s) are nit/minor severity.${burst}` +
+                  ` This lane is very likely an OBSERVATION FIREHOSE, not a backlog — a large count is not a workload.` +
+                  ` Composition: kinds ${JSON.stringify(comp.byKind)}, severities ${JSON.stringify(comp.bySeverity)}.` +
+                  ` If you meant to drain real defects, scope the lane by severity or kind before the members start pulling (WI-6673).`;
+                applyWarning = applyWarning ? `${applyWarning}\n${degenWarning}` : degenWarning;
+              }
+            } catch {
+              /* composition is a diagnostic, never a launch blocker — fail open */
+            }
           }
         } catch (e: any) {
           applyWarning = `${applyWarning ? `${applyWarning}\n` : ''}pool-effect preview failed open (spec applied, collapse guard skipped): ${e?.message ?? e}`;

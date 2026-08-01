@@ -65,6 +65,7 @@
  *     hides destruction — see the gen-gallery.py lesson).
  */
 import { execFile } from 'node:child_process';
+import type { Dirent } from 'node:fs';
 import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { promisify } from 'node:util';
 

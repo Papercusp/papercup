@@ -21,6 +21,7 @@
  */
 
 import * as net from 'node:net';
+import { StringDecoder } from 'node:string_decoder';
 import { resolveSpawnerSocketPath } from './spawner-socket-path';
 
 export interface SpawnerRpcError {
@@ -60,6 +61,15 @@ export class SpawnerIpcClient {
   /** Per-request push-notification callbacks, keyed by request id. */
   private callbacks = new Map<number, { onPid?: (pid: number) => void; onOutputActivity?: () => void }>();
   private buffer = '';
+  /**
+   * Decodes socket chunks across boundaries. The server side got the same
+   * treatment for inbound requests; this is the RESPONSE/notification leg —
+   * a multi-byte UTF-8 character straddling two `data` events would otherwise
+   * decode to replacement chars, and when the damage lands inside a string
+   * value the JSON still parses, so the caller silently accepts a wrong
+   * stdout/stderr or error text with no error raised anywhere.
+   */
+  private decoder = new StringDecoder('utf8');
   private connectPromise: Promise<void> | null = null;
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
@@ -199,7 +209,7 @@ export class SpawnerIpcClient {
    * the per-request push callbacks via `params.requestId`).
    */
   private handleData(chunk: Buffer): void {
-    this.buffer += chunk.toString();
+    this.buffer += this.decoder.write(chunk);
 
     let newlineIndex;
     while ((newlineIndex = this.buffer.indexOf('\n')) !== -1) {
@@ -262,6 +272,11 @@ export class SpawnerIpcClient {
     this.connected = false;
     this.connectPromise = null;
     this.callbacks.clear();
+    // Drop any partial line AND any partial multi-byte sequence held by the
+    // decoder: this client reconnects, and carrying either across a reconnect
+    // would prepend garbage to the first line of the next connection.
+    this.buffer = '';
+    this.decoder = new StringDecoder('utf8');
   }
 }
 

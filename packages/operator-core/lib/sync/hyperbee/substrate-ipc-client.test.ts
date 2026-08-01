@@ -18,6 +18,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SubstrateIpcClient } from './substrate-ipc-client';
@@ -38,9 +39,13 @@ function startEchoServer(socketPath: string, respond = true): Promise<FakeSideca
     conns.add(conn);
     conn.on('close', () => conns.delete(conn));
     if (!respond) return;
+    // Same StringDecoder discipline as the real server: a fake that decodes
+    // per-chunk would corrupt a split multi-byte char itself and could mask
+    // (or fake) the very bug the split-char test below is asserting against.
+    const decoder = new StringDecoder('utf8');
     let buf = '';
     conn.on('data', (chunk) => {
-      buf += chunk.toString();
+      buf += decoder.write(chunk);
       let idx;
       while ((idx = buf.indexOf('\n')) !== -1) {
         const line = buf.slice(0, idx).trim();

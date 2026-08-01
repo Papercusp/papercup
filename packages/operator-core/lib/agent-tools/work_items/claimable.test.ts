@@ -92,6 +92,7 @@ let sampleValue: Record<string, string[]> = EMPTY_SAMPLE;
  * here too.
  */
 const HEALTHY_ADMITTED = {
+  total: 3,
   byKind: { bug: 2, change: 1 },
   bySeverity: { major: 2, minor: 1 },
   lowSeverityShare: 1 / 3,
@@ -270,6 +271,7 @@ describe('work_items:claimable handler', () => {
 
     it('a DEGENERATE pool appends the warning, naming the share, the burst day and the item id', async () => {
       admittedValue = {
+        total: 12_564,
         byKind: { change: 12_564 },
         bySeverity: { nit: 11_584, minor: 980 },
         lowSeverityShare: 0.987,
@@ -286,6 +288,7 @@ describe('work_items:claimable handler', () => {
 
     it('a degenerate pool with no peakDay still warns — the day clause is optional, the warning is not', async () => {
       admittedValue = {
+        total: 900,
         byKind: { change: 900 },
         bySeverity: { nit: 900 },
         lowSeverityShare: 1,

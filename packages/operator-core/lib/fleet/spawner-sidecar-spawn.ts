@@ -16,6 +16,7 @@ import { spawn, ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { StringDecoder } from 'node:string_decoder';
 import { resolveSpawnerSocketPath, SPAWNER_SOCKET_ENV } from './spawner-socket-path';
 import {
   resolveSidecarSpawnPlan,
@@ -178,10 +179,12 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
       reject(new Error('Spawner sidecar startup timeout'));
     }, 10000);
 
-    // Listen for ready handshake
+    // Listen for ready handshake. Decode across chunk boundaries — the
+    // handshake line carries a socket PATH, which can contain non-ASCII.
+    const readyDecoder = new StringDecoder('utf8');
     let stdoutBuffer = '';
     sidecarProcess.stdout?.on('data', (chunk: Buffer) => {
-      stdoutBuffer += chunk.toString();
+      stdoutBuffer += readyDecoder.write(chunk);
       const lines = stdoutBuffer.split('\n');
 
       // Keep the last incomplete line

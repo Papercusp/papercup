@@ -1125,7 +1125,7 @@ const sessionThinkingStream = defineTool({
          * the caller, so the pane shows DB history and then live-follows
          * appended records with neither a gap nor a duplicate.
          */
-        const backfillFromDb = async (): Promise<boolean> => {
+        const backfillFromDb = async (opts: { fileAvailable: boolean }): Promise<boolean> => {
           if (!corpusKey) return false;
           try {
             const [fromParts, fromTurns] = await Promise.all([
@@ -1134,6 +1134,19 @@ const sessionThinkingStream = defineTool({
             ]);
             const backfill = preferHigherFidelityBackfill(fromParts, fromTurns);
             if (!backfill || backfill.entries.length === 0) return false;
+            // REGRESSION GUARD. session_turns is TEXT-ONLY; the JSONL has the
+            // tool calls. So when the file is still on disk, serving turns is a
+            // DOWNGRADE on the very axis this plan exists to improve — and for
+            // every session predating the parts store (no parts, plenty of
+            // turns) that is exactly the branch that fires. The first cut of
+            // P-008 shipped that: it replaced a full file-based timeline with
+            // text-only turns and called it "DB-primary".
+            //
+            // Fidelity order when the file exists is therefore parts > FILE >
+            // turns, not parts > turns. Decline here and let the caller read
+            // the file; turns keep their original WI-4194 job — the fallback
+            // for a session whose file is GONE.
+            if (opts.fileAvailable && backfill !== fromParts) return false;
             sink.event('backfill', backfill.entries);
             if (find) {
               sink.event('anchor', backfill.anchorIndex !== null
@@ -1149,7 +1162,7 @@ const sessionThinkingStream = defineTool({
         };
 
         if (path) {
-          const served = await backfillFromDb();
+          const served = await backfillFromDb({ fileAvailable: true });
           if (served) {
             // Seed the follow cursor at EOF so the live tail resumes cleanly
             // from wherever the DB history ended (D-003).
@@ -1174,7 +1187,9 @@ const sessionThinkingStream = defineTool({
           // same fidelity a live one does — where before it silently dropped to
           // text-only. Best-effort — any failure degrades to the honest
           // empty-backfill terminate below.
-          const recovered = await backfillFromDb();
+          // fileAvailable:false — the transcript is gone, so text-only turns
+          // are the best surviving record and beat an empty pane (WI-4194).
+          const recovered = await backfillFromDb({ fileAvailable: false });
           // WI-3990: no recoverable transcript anywhere (never archived, archive
           // incomplete/pruned AND no session_turns rows) — emit an empty backfill
           // and TERMINATE so the pane shows its honest "no output" / ended state

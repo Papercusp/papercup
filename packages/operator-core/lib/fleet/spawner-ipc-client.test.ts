@@ -15,6 +15,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import { SpawnerIpcClient } from './spawner-ipc-client';
 
 // Short tmpdir socket path (Unix socket paths cap ~108 chars; the scratchpad path
@@ -35,9 +36,13 @@ function socketPath(): string {
  */
 function startServer(sock: string): Promise<net.Server> {
   const server = net.createServer((socket) => {
+    // Same StringDecoder discipline as the real server: a fake that decodes
+    // per-chunk would corrupt a split multi-byte char itself and could mask
+    // (or fake) the very bug the split-char test below is asserting against.
+    const decoder = new StringDecoder('utf8');
     let buffer = '';
     socket.on('data', (chunk) => {
-      buffer += chunk.toString();
+      buffer += decoder.write(chunk);
       let nl: number;
       while ((nl = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, nl).trim();

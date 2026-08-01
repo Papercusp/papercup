@@ -49,6 +49,23 @@ describe('summarizeAdmittedRows — composition of the admitted set (WI-6673)', 
     expect(out.bySeverity).toEqual({ major: 3, critical: 1, nit: 10, minor: 2 + 4 });
   });
 
+  it('reports `total` — the population lowSeverityShare is a share OF', () => {
+    const out = summarizeAdmittedRows([row('bug', 'major', 3), row('change', 'nit', 10), row('task', 'minor', 4)]);
+    expect(out.total).toBe(17);
+    // The denominator travels WITH the share, so a consumer never has to pair it with some
+    // other count it happens to have. Pairing the share with a spec's PRE-floor `matched`
+    // is a real defect this pins shut (it shipped once inside the degenerate-lane warning
+    // itself): both numbers correct, the percentage against the wrong base.
+    expect(out.total).toBe(Object.values(out.byKind).reduce((a, b) => a + b, 0));
+    expect(out.total).toBe(Object.values(out.bySeverity).reduce((a, b) => a + b, 0));
+  });
+
+  it('lowSeverityShare is exactly (nit+minor)/total — the invariant a consumer relies on when quoting it', () => {
+    const out = summarizeAdmittedRows([row('change', 'nit', 30), row('change', 'minor', 15), row('bug', 'major', 5)]);
+    const low = (out.bySeverity.nit ?? 0) + (out.bySeverity.minor ?? 0);
+    expect(out.lowSeverityShare).toBeCloseTo(low / out.total, 10);
+  });
+
   it('lowSeverityShare counts nit+minor only — major/critical/unset never count as low', () => {
     const out = summarizeAdmittedRows([
       row('change', 'nit', 6),
@@ -73,6 +90,7 @@ describe('summarizeAdmittedRows — composition of the admitted set (WI-6673)', 
     expect(out.degenerate).toBe(false);
     expect(out.peakDay).toBeNull();
     expect(out.byKind).toEqual({});
+    expect(out.total).toBe(0);
   });
 
   describe('the degenerate judgement — BOTH large AND lopsided', () => {

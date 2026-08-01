@@ -922,18 +922,15 @@ export default defineTool({
   name: 'fleet:leader-brief',
   profile: 'engineer',
   description:
-    "A leader's ONE-call fleet-health brief: per-member sessionState, `verdict` " +
-    '(booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, ' +
-    'current claims (doing/workItemIds/queuedCount/load), loop state (monitoring|waiting|' +
-    'parked-awaiting-capability)+nextFireAt, stalled flag, unanswered msgs ' +
-    '(count/oldestAgeMs/newest), contextPressure ' +
-    '(ok|high|critical), bench state (parkedOn), benchSuggestion (not-advancing/idle ' +
-    '— check `kind`), `dormant` flag, ' +
-    'unownedCriticals (aged criticals the spec admits) + abandonedUnclaimed ' +
-    '(progress started, then ABANDONED — assignee IS NULL, so CLAIM it; releasing cannot ' +
-    'clear it). Scoped to ONE fleet ' +
-    '(yours by default), not fleet:assignments\' whole roster. ' +
-    'Replaces the manual presence+assignments+inbox scan each monitor wake.',
+    "A leader's ONE-call fleet-health brief, scoped to ONE fleet (yours by default) rather than " +
+    "fleet:assignments' whole roster. Per member: sessionState, `verdict` " +
+    '(booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, claims ' +
+    '(doing/workItemIds/queuedCount/load), loop state (monitoring|waiting|' +
+    'parked-awaiting-capability)+nextFireAt, stalled, unanswered msgs, contextPressure ' +
+    '(ok|high|critical), parkedOn + parkedOnResolved (a composed await is ONE entry carrying its ' +
+    'ROOT deadline + any/all mode — never loose leaves, which read as deadline-less), ' +
+    'benchSuggestion (check `kind`), `dormant`, unownedCriticals + abandonedUnclaimed ' +
+    '(progress started then ABANDONED — assignee IS NULL, so CLAIM it).',
   guidance: {
     when:
       "On a leader's repeating monitor tick: "
@@ -946,9 +943,8 @@ export default defineTool({
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up. `benchSuggestion` set → ' +
       'fleet:bench onto the blocked-on gate; `dormant:true` → wake, never bench. ' +
-      'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (or promote it via ' +
-      'work_items:set_priority so a member does). These items are ALREADY unassigned, so ' +
-      'work_items:release is a NO-OP on them and returns ok:true regardless (WI-6678). ' +
+      'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (already unassigned, so ' +
+      'work_items:release is a no-op returning ok:true — WI-6678). ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },
   capability: 'work_items:read',

@@ -143,7 +143,9 @@ export default defineTool({
     const v = result.value;
     if (!v.ok) {
       const payload: Record<string, unknown> = { error: v.code, slug: args.slug };
-      if (v.code === 'unknown_template') {
+      if (v.code === 'legacy_plan' && v.reason) {
+        payload.reason = v.reason;
+      } else if (v.code === 'unknown_template') {
         payload.template = v.template;
         payload.known = v.known;
         payload.hint =

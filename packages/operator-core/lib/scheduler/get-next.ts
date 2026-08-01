@@ -1163,6 +1163,14 @@ export async function listIssueClaimableRows(
  * caller diligence could characterize the pool.
  */
 export interface IssueClaimAdmittedComposition {
+  /**
+   * Size of the ADMITTED population — the one `lowSeverityShare` is a share OF. Explicit
+   * because a consumer that pairs the share with some other count it happens to have (e.g.
+   * a spec's pre-floor `matched`) reports a percentage of one population against the size
+   * of a larger one. That is precisely the "arithmetically correct, actually wrong" number
+   * this whole structure exists to prevent, so the denominator travels WITH the share.
+   */
+  total: number;
   /** Admitted rows per issue kind (bug/change/task). */
   byKind: Record<string, number>;
   /** Admitted rows per severity; `unset` collects rows carrying none. */
@@ -1215,6 +1223,7 @@ export function summarizeAdmittedRows(rows: readonly AdmittedCompositionRow[]): 
   // reads just because Object.entries ordering shifted.
   const peak = Object.entries(byDay).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
   return {
+    total,
     byKind,
     bySeverity,
     lowSeverityShare,

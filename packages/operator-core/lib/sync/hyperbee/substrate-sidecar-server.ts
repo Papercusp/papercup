@@ -19,6 +19,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as net from 'node:net';
+import { StringDecoder } from 'node:string_decoder';
 import type { Duplex } from 'node:stream';
 import {
   createSubstrateSidecarHost,
@@ -216,9 +217,16 @@ export function runSubstrateSidecarServer(): void {
   registerHandleListener(host);
 
   const server = net.createServer((socket: net.Socket) => {
+    // Decode across socket-chunk boundaries. `chunk.toString()` on a chunk
+    // ending mid-UTF-8-sequence yields replacement chars, which here corrupts
+    // the substrate JSON-RPC REQUEST itself — and when the damage lands inside
+    // a string value the request still parses, so a corrupted key or corrupted
+    // replicated content is applied with no error raised anywhere. One decoder
+    // per socket, so a partial sequence is held until its remaining bytes land.
+    const requestDecoder = new StringDecoder('utf8');
     let buffer = '';
     socket.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString();
+      buffer += requestDecoder.write(chunk);
       let newlineIndex: number;
       while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, newlineIndex).trim();

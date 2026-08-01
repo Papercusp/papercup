@@ -3208,9 +3208,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
           lastEgressOkAt.set(active.accountId, Date.now()); // real traffic proved the route — the proactive prober skips it
           proactiveProbeFailStreak.delete(active.accountId);
           // EI-18791887279744938 (defect A): a real transport success on THIS exact egress IP means it is
-          // no longer hard-down — clear its escalating streak so a LATER isolated blip re-opens at the base
-          // cooldown, not the escalated exile a chronic streak would otherwise inherit.
+          // no longer hard-down — clear its escalating streak (so a LATER isolated blip re-opens at the base
+          // cooldown, not the escalated exile a chronic streak would otherwise inherit) AND its cooldown
+          // itself (a proven-live IP must rejoin rotation now, not sit out the remainder of an escalated
+          // cooldown it just disproved — mirrors the bare-429 success clear a few hundred lines below).
           if (ipTransportFailStreak.has(curEgressKey)) ipTransportFailStreak.delete(curEgressKey);
+          if (ipCooldownUntil.has(curEgressKey)) ipCooldownUntil.delete(curEgressKey);
           checkEgressProxyHealthAlarm(active); // defect B: a recovered IP may clear a standing "all proxies down" alarm
         } catch (e) {
           clearStall();

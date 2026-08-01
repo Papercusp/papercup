@@ -8,6 +8,7 @@
 
 import * as net from 'node:net';
 import { EventEmitter } from 'node:events';
+import { StringDecoder } from 'node:string_decoder';
 import { resolveSubstrateSocketPath } from './substrate-socket-path';
 
 export interface SubstrateRpcError {
@@ -33,6 +34,16 @@ export class SubstrateIpcClient {
   private requestId = 0;
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private buffer = '';
+  /**
+   * Decodes socket chunks across boundaries. A plain per-chunk `toString()`
+   * turns a multi-byte UTF-8 character straddling two `data` events into
+   * replacement chars — on THIS path that corrupts replicated substrate
+   * content or a key, and if the damage lands inside a string value the JSON
+   * still parses, so it surfaces as an unreproducible federation divergence
+   * rather than an error. Recreated whenever the socket is torn down, so a
+   * partial sequence never leaks into the next connection.
+   */
+  private decoder = new StringDecoder('utf8');
   private connectPromise: Promise<void> | null = null;
 
   constructor(socketPath?: string) {
@@ -60,6 +71,7 @@ export class SubstrateIpcClient {
     this.connected = false;
     this.connectPromise = null;
     this.buffer = '';
+    this.decoder = new StringDecoder('utf8');
     for (const [, { reject }] of this.pending) {
       reject(new Error(`Socket error: ${err.message}`));
     }
@@ -194,7 +206,7 @@ export class SubstrateIpcClient {
    * Handle incoming data from the socket.
    */
   private handleData(chunk: Buffer): void {
-    this.buffer += chunk.toString();
+    this.buffer += this.decoder.write(chunk);
 
     // Process complete lines (one JSON-RPC per line)
     let newlineIndex;
@@ -243,6 +255,7 @@ export class SubstrateIpcClient {
     this.connected = false;
     this.connectPromise = null;
     this.buffer = '';
+    this.decoder = new StringDecoder('utf8');
     for (const [, { reject }] of this.pending) {
       reject(new Error('Substrate IPC client closed'));
     }
