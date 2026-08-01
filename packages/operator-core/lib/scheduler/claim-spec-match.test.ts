@@ -179,6 +179,7 @@ describe('WI-5272 hardened p2p/federation/rig fence — false-positive vs real-l
       redundancy: null,
       estCost: null,
       assignee: null,
+      severity: null,
     };
     expect(matchesClaimSpecFilter(preFixSubject, HARDENED_FENCE)).toBe(false);
   });

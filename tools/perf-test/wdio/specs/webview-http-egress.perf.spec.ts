@@ -96,6 +96,12 @@ interface EgressProbe {
    * resource entries and the old proxy read that as a blind sensor (WI-6657).
    */
   controlObserved: boolean;
+  /**
+   * Whether the control request was actually EMITTED. Distinguishes "the sensor
+   * missed a request that was sent" (blind sensor) from "no request was ever
+   * sent" (unproven sensor, runner misconfigured) — see the 4d diagnosis.
+   */
+  controlIssued: boolean;
   controlReason: string | null;
   /** Retained for diagnosis only — NEVER as a control. See above. */
   resourceEntries: number;
@@ -140,6 +146,7 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
             report: () => EgressReport;
             verify?: (o?: { timeoutMs?: number; controlUrl?: string }) => Promise<{
               observed: boolean;
+              issued?: boolean;
               reason?: string;
             }>;
           };
@@ -153,14 +160,17 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
         ? monitor.verify({ timeoutMs: 4000, controlUrl })
         : Promise.resolve({
             observed: false,
+            // Nothing was sent: an absent verify() cannot have issued anything.
+            issued: false,
             reason: "verify() is absent — this build predates the sensor control",
           });
 
-      void proof.then((p: { observed: boolean; reason?: string }) => {
+      void proof.then((p: { observed: boolean; issued?: boolean; reason?: string }) => {
         done({
           report: monitor ? monitor.report() : null,
           monitorPresent: Boolean(monitor),
           controlObserved: Boolean(p.observed),
+          controlIssued: Boolean(p.issued),
           controlReason: p.reason ?? null,
           resourceEntries: performance.getEntriesByType("resource").length,
           appMounted: Boolean(document.querySelector("#root")?.firstElementChild),
@@ -289,12 +299,26 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
     //     the sensor MUST see, and require that it saw it. That is the only
     //     reading that distinguishes "nothing escaped" from "I cannot tell".
     if (!probe.controlObserved) {
+      // Two failures wear this same face and need OPPOSITE fixes, so name which
+      // one happened rather than asserting the more alarming of the two. Saying
+      // "the request was issued and never appeared" when nothing was ever sent
+      // accuses a healthy sensor and sends the reader at the monitor instead of
+      // at the runner's configuration — the exact conflation this spec's own
+      // header forbids, committed by its own diagnosis (2026-08-01).
+      const diagnosis = probe.controlIssued
+        ? `A deliberate control request WAS issued to a URL the sensor must record, and it never ` +
+          `appeared. The sensor is blind: fix the monitor, not this runner.`
+        : `NO control request was ever issued — the proof never left the ground, so this says ` +
+          `NOTHING about whether the sensor works. Fix the runner's control URL (${CONTROL_URL}) ` +
+          `or the operator it points at; do not go looking for a bug in the monitor.`;
       throw new Error(
         `the egress sensor could not prove itself live — this run did NOT observe a clean shell, ` +
           `it observed nothing.\n${sampleContext}` +
+          `  control url:     ${CONTROL_URL}\n` +
+          `  control issued:  ${probe.controlIssued}\n` +
           `  control:         ${probe.controlReason ?? "(no reason given)"}\n\n` +
-          `A deliberate control request was issued to a URL the sensor must record, and it never ` +
-          `appeared. Until that lands, a zero here carries no information: "no egress observed" and ` +
+          `${diagnosis}\n\n` +
+          `Until the control lands, a zero here carries no information: "no egress observed" and ` +
           `"unable to observe egress" look identical and need opposite fixes.`,
       );
     }

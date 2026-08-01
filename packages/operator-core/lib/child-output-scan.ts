@@ -67,28 +67,22 @@ export function scanSource(file: string, src: string): ChunkUnsafeSite[] {
 
   for (let i = 0; i < lines.length; i++) {
     const open = DATA_HANDLER.exec(lines[i]);
-    if (!open) continue;
+    if (open === null) continue;
 
-    // Walk from just after `.on(` to its matching close paren, tracking depth.
+    // Walk from `.on(` to its matching close paren, tracking paren depth.
+    //
+    // ⚠ The accumulation must be tested against the depth AT THE START of the
+    // line, not after the whole line is accounted for. The dominant form is a
+    // ONE-LINE arrow — `.on('data', (d) => (s += String(d)))` — which opens and
+    // closes the handler on the same line, so an end-of-line depth check reads
+    // 0 and skips it. That mistake made this scanner miss ~84% of real sites.
     let depth = 0;
     let started = false;
     for (let j = i; j < Math.min(i + 40, lines.length); j++) {
-      const from = j === i ? open.index : 0;
       const line = lines[j];
+      const insideAtLineStart = started && depth > 0;
 
-      if (j > i || started) {
-        // Accumulations only count once the handler body is open.
-      }
-      for (let k = from; k < line.length; k++) {
-        const ch = line[k];
-        if (ch === '(') {
-          depth++;
-          started = true;
-        } else if (ch === ')') {
-          depth--;
-        }
-      }
-      if (started && j >= i && ACCUMULATE.test(line) && depth > 0 && !seen.has(j)) {
+      if ((j === i || insideAtLineStart) && ACCUMULATE.test(line) && !seen.has(j)) {
         seen.add(j);
         hits.push({
           file,
@@ -96,6 +90,15 @@ export function scanSource(file: string, src: string): ChunkUnsafeSite[] {
           text: line.trim(),
           symbol: enclosingTopLevelSymbol(lines, j),
         });
+      }
+
+      for (let k = j === i ? open.index : 0; k < line.length; k++) {
+        if (line[k] === '(') {
+          depth++;
+          started = true;
+        } else if (line[k] === ')') {
+          depth--;
+        }
       }
       if (started && depth <= 0) break;
     }
