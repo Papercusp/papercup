@@ -269,6 +269,34 @@ const run = defineTool({
     // foreign repo's vitest. The completion-gate side is the global
     // papercusp-test-completion-gate flag (P-006), so a coding hive needs no
     // separate gate wiring here.
+    //
+    // Resolve the HARNESS worktree's branch/commit directly (not the operator's
+    // — resolveGitContext() is pinned+cached to the operator root). Best-effort:
+    // null on any failure.
+    const gitIn = (args: string[]): string | null => {
+      try {
+        return execFileSync('git', args, {
+          cwd: root,
+          encoding: 'utf8',
+          timeout: 2_000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+      } catch {
+        return null;
+      }
+    };
+    const gitSnapshot = (): { commit: string | null; porcelain: string | null } => ({
+      commit: gitIn(['rev-parse', 'HEAD']),
+      porcelain: gitIn(['status', '--porcelain', '--', ...files]),
+    });
+    // EI-18795303393201472: this runs against the SHARED, concurrently-edited
+    // working tree, not an isolated checkout — a peer's edit or a git-sync
+    // commit landing DURING the run means the commit sha sampled afterward can
+    // name a commit whose content never matches what vitest actually executed
+    // (a torn read). Snapshot BEFORE too, so we can tell — computeWorktreeDirty
+    // below flags the row instead of silently misattributing a red to an
+    // innocent sha.
+    const gitBefore = gitSnapshot();
     const started = Date.now();
     const runId = `h-${started}`;
     const jsonOut = join(tmpdir(), `psu-harness-vitest-${started}-${Math.random().toString(36).slice(2)}.json`);
@@ -290,6 +318,8 @@ const run = defineTool({
       output = String(err.stdout ?? '') + String(err.stderr ?? '');
       exitCode = err.status ?? 1;
     }
+    const gitAfter = gitSnapshot();
+    const worktreeDirty = computeWorktreeDirty(gitBefore, gitAfter);
 
     // Best-effort ingestion — D-007 fail-soft: a parse/DB error must NOT change
     // the run result the panel sees. A non-vitest report (no JSON file / no
@@ -304,31 +334,16 @@ const run = defineTool({
       if (jsonText) {
         const rows = parseVitestJsonForHarnessRows(jsonText, root);
         if (rows.length > 0) {
-          // Resolve the HARNESS worktree's branch/commit directly (not the
-          // operator's — resolveGitContext() is pinned+cached to the operator
-          // root). Best-effort: null on any failure.
-          const gitIn = (args: string[]): string | null => {
-            try {
-              return execFileSync('git', args, {
-                cwd: root,
-                encoding: 'utf8',
-                timeout: 2_000,
-                stdio: ['ignore', 'pipe', 'ignore'],
-              }).trim();
-            } catch {
-              return null;
-            }
-          };
-          const branchRaw = gitIn(['rev-parse', '--abbrev-ref', 'HEAD']);
+          const branchRaw = gitAfter.commit ? gitIn(['rev-parse', '--abbrev-ref', 'HEAD']) : null;
           const branch = branchRaw && branchRaw !== 'HEAD' ? branchRaw : null;
-          const commit = gitIn(['rev-parse', 'HEAD']);
           await persistHarnessTestRuns({
             harnessSlug: slug,
             workspaceId: activeWorkspaceId(),
             rows,
             runGroupId: runId,
             branch,
-            commit,
+            commit: gitAfter.commit,
+            worktreeDirty,
           });
         }
       }
