@@ -302,6 +302,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:hive-git-gc': { spend: 'none', why: 'Garbage-collects hive git objects' },
   'system:gc-plan-runs': { spend: 'none', why: 'Prunes finished plan-run rows' },
   'system:gc-dead-loops': { spend: 'none', why: 'Reaps loop rows whose owning session is long gone' },
+  'system:gc-verify-instances': {
+    spend: 'none',
+    why: 'Reaps abandoned verify-tauri-headless work dirs, displays and sidecars — filesystem only',
+  },
   'system:session-dir-gc': { spend: 'none', why: 'Deletes isolation dirs of ended sessions' },
   'system:telemetry-retention': { spend: 'none', why: 'Applies telemetry retention windows' },
   'system:idle-session-reaper': { spend: 'none', why: 'Reaps idle session rows' },

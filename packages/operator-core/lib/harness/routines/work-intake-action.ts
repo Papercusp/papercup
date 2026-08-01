@@ -19,14 +19,10 @@
  * LOUD no-op (never a silent skip, never a fabricated identity) — the tick
  * cannot run meaningfully without knowing who it is.
  *
- * SEEDING: `ensureWorkIntakeRoutine` — NOT YET CALLED FROM ANYWHERE. Exactly
- * like item 3's `ensureSweepOrphanedForeignHarnessesRoutine` before it: a
- * real host identity (which hostRef an owner configured in resource
- * allotments, which github user id/device this host authenticates as) is an
- * OWNER-CONFIGURED value this module has no seam to discover on its own —
- * inventing one would either silently diverge from what an owner sets up in
- * resource-allotments, or worse, silently coincide with it by accident.
- * Tracked as a named follow-up (surfaced on WI-1937/P-406), not guessed here.
+ * SEEDING: `ensureWorkIntakeRoutine` is called at boot by
+ * p2p/ensure-host-routines.ts (WI-5327), which resolves this host's identity
+ * from existing seams. The previous "NOT YET CALLED FROM ANYWHERE" note here
+ * was stale from 2026-07-18 and was corrected under WI-6680.
  */
 import { getOrgPg, upsertRoutine, type RoutineRow } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
@@ -84,7 +80,7 @@ registerSystemAction(WORK_INTAKE_ROUTINE_NAME, async (ctx: SystemActionCtx) => {
     // without knowing who it is — see module doc. Never fabricates one.
     console.log(
       `[p2p-work-intake] NO-OP: routine '${WORK_INTAKE_ROUTINE_NAME}' triggerConfig is missing/malformed host identity ` +
-        `(hostRef/responderGithubUserId/executorDevice/sourceRepoPath/rootPath) — see work-intake-tick.ts module doc.`,
+        `(hostRef/responderGithubUserId/executorDevice/sourceRepoPath/foreignWorkRoot) — see work-intake-tick.ts module doc.`,
     );
     return;
   }

@@ -11,6 +11,7 @@
  * offer-pull-and-execute.test.ts / standing-puller.test.ts / offer-executor.test.ts.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { resolve } from 'node:path';
 import { runWorkIntakeTick, type WorkIntakeHostIdentity } from './work-intake-tick';
 import type { StoredWorkOffer } from './offer-store';
 import type { WorkOffer } from './offer-budget';
@@ -24,7 +25,7 @@ const HOST: WorkIntakeHostIdentity = {
   responderGithubUserId: 5,
   executorDevice: 'dev-host',
   sourceRepoPath: '/src/repo',
-  rootPath: '/root',
+  foreignWorkRoot: '/foreign-work',
 };
 
 const OFFER: WorkOffer = {
@@ -148,6 +149,37 @@ describe('runWorkIntakeTick (P-406/D-004 minimal intake loop)', () => {
     expect(input.authorship.ownerHighWaterEpoch).toBe(4);
     expect(execCtx.hostRef).toBe('host:self');
     expect(execCtx.responderGithubUserId).toBe(5);
+  });
+
+  // WI-6680 regression ×2. `p2p_foreign_workspaces` has a UNIQUE index on
+  // root_path (mig 467), so the host config's foreign-work path must be a BASE
+  // that each offer gets its own subtree under — passing one shared root
+  // through registers offer #1 and refuses every later offer with `conflict`.
+  it('derives a PER-OFFER foreign root under the host base (root_path is UNIQUE — one shared root breaks offer #2)', async () => {
+    const deps = baseDeps([storedOffer({ offerId: 'offer-a' }), storedOffer({ offerId: 'offer-b' })]);
+    const pullAndExecute = vi.fn(async (_input: PullEvaluationInput, _ctx: PullAndExecuteContext) =>
+      ({ outcome: 'skip', decision: { outcome: 'skip', reason: 'no_claim_authority', detail: 'x' } }) satisfies PullAndExecuteResult,
+    );
+    await runWorkIntakeTick('ws-1', 'papercusp', { ...deps, pullAndExecute });
+
+    const roots = pullAndExecute.mock.calls.map(([, ctx]) => ctx.rootPath);
+    expect(roots).toEqual(['/foreign-work/offer-a', '/foreign-work/offer-b']);
+    expect(new Set(roots).size).toBe(roots.length);
+  });
+
+  it('never lets a REMOTE-AUTHORED offerId escape the foreign-work base via path traversal', async () => {
+    const deps = baseDeps([storedOffer({ offerId: '../../../etc/cron.d' })]);
+    const pullAndExecute = vi.fn(async (_input: PullEvaluationInput, _ctx: PullAndExecuteContext) =>
+      ({ outcome: 'skip', decision: { outcome: 'skip', reason: 'no_claim_authority', detail: 'x' } }) satisfies PullAndExecuteResult,
+    );
+    await runWorkIntakeTick('ws-1', 'papercusp', { ...deps, pullAndExecute });
+
+    // The property that matters is CONTAINMENT after normalization, not the
+    // absence of literal dots: '..' is inert once the separators are gone, so
+    // resolve() is what actually proves the escape failed.
+    const root = pullAndExecute.mock.calls[0]![1].rootPath;
+    expect(resolve(root).startsWith(resolve('/foreign-work') + '/')).toBe(true);
+    expect(resolve(root)).not.toBe(resolve('/etc/cron.d'));
   });
 
   it('relays a puller SKIP as a receipted skip, never as an error', async () => {

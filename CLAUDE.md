@@ -464,8 +464,15 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
     every `_ei` field into its own column, so on the VIEW
     `payload->'_ei'->>'severity'` is NULL for **every** row. Measured 2026-08-01:
     0 of 13,711 open rows via that path, 13,711 via the column, and **30 genuine
-    criticals reported as none**. `dev:pg_query` now emits an always-NULL-accessor
-    advisory when a query makes this exact mistake.
+    criticals reported as none**. ⚠ An always-NULL-accessor advisory for
+    `dev:pg_query` is WRITTEN BUT NOT YET LIVE (WI-6674) — verified 2026-08-01
+    19:35Z: absent from origin/staging, `main` and the deployed release, and the
+    live operator still answers this mistake with a silent `0`. **Do not rely on
+    a warning; bind the accessor to the relation yourself.** Flip this sentence to
+    present tense only when `dev:pipeline_position { path:
+    'packages/operator-core/lib/pg-read-query.ts', marker: 'always-NULL accessor' }`
+    reports `deployed: true` — a doc that promises an absent safety net is worse
+    than silence, because it makes the reader *stop checking*.
 
   Prefer `work_items:list{severity}` / `work_items:claimable` over either raw path;
   the view scopes on `scope = 'harness:<slug>'`, not `harness_slug`:

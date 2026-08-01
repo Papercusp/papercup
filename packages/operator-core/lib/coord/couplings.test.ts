@@ -8,6 +8,8 @@ import {
   peerOf,
   resolveCoupledPeers,
   type CouplingEdge,
+  type DerivedCoupling,
+  type DerivedCouplingRelation,
 } from './couplings';
 
 const edge = (a: string, b: string, over: Partial<CouplingEdge> = {}): CouplingEdge => {
@@ -53,14 +55,22 @@ describe('peerOf', () => {
 });
 
 /** A derived coupling, as P-013's derivation hands it to the union (D-078 (a)). */
-const d = (ownerId: string, because = 'same fleet') => ({ ownerId, because });
+// Typed as DerivedCoupling ON PURPOSE, not left to inference: the annotation is
+// what makes a future required field fail HERE, at the fixture, instead of
+// silently passing vitest (which does not typecheck) and reding the fleet gate.
+const d = (
+  ownerId: string,
+  because = 'same fleet',
+  relation: DerivedCouplingRelation = 'same-fleet',
+): DerivedCoupling => ({ ownerId, relation, because });
 
 describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
   it('unions both sources and labels where each peer came from', () => {
-    const peers = resolveCoupledPeers('su-me', [d('su-derived'), d('su-both', 'shared lock')], [
-      edge('su-me', 'su-declared', { reason: 'same file' }),
-      edge('su-me', 'su-both'),
-    ]);
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [d('su-derived'), d('su-both', 'shared lock', 'holds-a-lock-on')],
+      [edge('su-me', 'su-declared', { reason: 'same file' }), edge('su-me', 'su-both')],
+    );
     expect(peers).toEqual([
       {
         ownerId: 'su-both',
@@ -68,9 +78,17 @@ describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
         reason: null,
         declaredBy: 'su-declarer',
         derivedBecause: 'shared lock',
+        derivedRelations: ['holds-a-lock-on'],
       },
+      // A DECLARED-only edge carries no relations: no derivation produced it, and
+      // inventing one would put a computed-looking token on a human's assertion.
       { ownerId: 'su-declared', source: 'declared', reason: 'same file', declaredBy: 'su-declarer' },
-      { ownerId: 'su-derived', source: 'derived', derivedBecause: 'same fleet' },
+      {
+        ownerId: 'su-derived',
+        source: 'derived',
+        derivedBecause: 'same fleet',
+        derivedRelations: ['same-fleet'],
+      },
     ]);
   });
 
@@ -80,11 +98,16 @@ describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
     // useful half of the answer.
     const peers = resolveCoupledPeers(
       'su-me',
-      [d('su-peer', 'same fleet'), d('su-peer', 'recent coord exchange')],
+      [d('su-peer', 'same fleet'), d('su-peer', 'recent coord exchange', 'coord-exchange')],
       [],
     );
     expect(peers).toEqual([
-      { ownerId: 'su-peer', source: 'derived', derivedBecause: 'same fleet; recent coord exchange' },
+      {
+        ownerId: 'su-peer',
+        source: 'derived',
+        derivedBecause: 'same fleet; recent coord exchange',
+        derivedRelations: ['same-fleet', 'coord-exchange'],
+      },
     ]);
   });
 

@@ -84,6 +84,13 @@ export interface EngineerIssueRow {
    * wire (pre-708 history lacks it → dropped on write → NULL).
    */
   authority?: string | null;
+  /**
+   * mig 708 PART 2 / EI-18820653360383242: the trigger-maintained close time
+   * (mig 698) — same treatment as toFeatureValue's sibling field: a plain
+   * carried column, NOT part of the EI-16756 digest below. OPTIONAL on the
+   * wire (pre-708 history lacks it → dropped on write → NULL).
+   */
+  closed_ts?: number | null;
 }
 
 function isString(v: unknown): v is string {

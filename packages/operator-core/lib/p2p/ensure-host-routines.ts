@@ -18,10 +18,20 @@
  *     foreign-git-sync.ts's `Papercusp-Executor-Device` header and
  *     sync/pot-git/sigrefs.ts's identical use of `executorDevicePubkeyBase64`
  *     as `device_pubkey`.
- *   - sourceRepoPath / rootPath / workspaceRoot / canonicalTree ←
- *     projectDirForSlug(installSlug) (operator-notes.ts, backed by
- *     loadHarnessRegistry()) — the SAME resolver canonical git-sync itself
- *     uses for its own repo root (harness/git-sync/git-sync-action.ts).
+ *   - sourceRepoPath / canonicalTree ← projectDirForSlug(installSlug)
+ *     (operator-notes.ts, backed by loadHarnessRegistry()) — the SAME resolver
+ *     canonical git-sync itself uses for its own repo root
+ *     (harness/git-sync/git-sync-action.ts).
+ *   - workspaceRoot ← resolveHostWorkspaceRoot() (p2p/foreign-workspaces.ts) —
+ *     the tree's PARENT, and deliberately the SAME resolver the Q1 invariant
+ *     checks against, so the seeding and checking sides cannot drift apart.
+ *   - foreignWorkRoot ← papercuspPath('p2p','foreign-work') — the sidecar's own
+ *     data dir, which is OUTSIDE every host tree (Q1) and, unlike a registered
+ *     project dir, resolves on a PACKAGED install too.
+ *   ⚠ WI-6680: these are FOUR DISTINCT paths. They were all seeded as the repo
+ *     root, which made every foreign-workspace registration refuse on Q1
+ *     ("foreign root is inside the workspace root") — the routine seeded, then
+ *     could never actually execute anything.
  *   - hostRef ← machineFingerprint() (identity/device-keychain-id.ts) — a
  *     stable, pure, per-machine fingerprint (already half of the device
  *     keychain id). Safe to reuse: p2p/resource-allotments.ts is explicitly
@@ -86,6 +96,8 @@ import { resolveLocalGithubIdentity } from '../identity/resolve-local-github-ide
 import { loadOrGenerateDeviceKeypair } from '../identity/attest';
 import { resolveDeviceKeychainId, machineFingerprint } from '../identity/device-keychain-id';
 import { resolveP2pGrantWorkspace } from './grant-store';
+import { resolveHostWorkspaceRoot } from './foreign-workspaces';
+import { papercuspPath } from '../papercusp-root';
 import { ensureSweepOrphanedForeignHarnessesRoutine } from '../harness/routines/sweep-orphaned-foreign-harnesses-action';
 import { ensureP2pForeignSupervisionRoutine } from '../harness/routines/foreign-supervision-action';
 import { ensureWorkIntakeRoutine } from '../harness/routines/work-intake-action';
@@ -183,9 +195,16 @@ export async function ensureP2pHostRoutinesForWorkspace(
             responderGithubUserId: ident.githubUserId,
             responderDevicePubkey: devicePubkeyBase64,
             executorDevice: devicePubkeyBase64,
+            // WI-6680: these four are FOUR DIFFERENT THINGS and were all seeded
+            // as `repoRoot`. `sourceRepoPath`/`canonicalTree` genuinely ARE the
+            // host tree; `workspaceRoot` is the tree's PARENT (the Q1 measuring
+            // stick) and `foreignWorkRoot` must sit OUTSIDE both — with all four
+            // equal, foreignRootInvariantViolation() refused every single
+            // registration ("foreign root is inside the workspace root"), so the
+            // routine could never do anything even where it did seed.
             sourceRepoPath: repoRoot,
-            rootPath: repoRoot,
-            workspaceRoot: repoRoot,
+            foreignWorkRoot: papercuspPath('p2p', 'foreign-work'),
+            workspaceRoot: resolveHostWorkspaceRoot(),
             canonicalTree: repoRoot,
           },
         },

@@ -21,7 +21,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan } from './parser';
+import { parsePlan, type LegacyReason } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { setFrontmatterScalar } from './transfer-owner';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
@@ -61,7 +61,7 @@ const argsSchema = z.object({
 type SetInitiativeValue =
   | { ok: true; slug: string; from: string | null; to: string | null }
   | { ok: false; code: 'not_found' }
-  | { ok: false; code: 'legacy_plan' };
+  | { ok: false; code: 'legacy_plan'; reason?: LegacyReason };
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -115,8 +115,12 @@ export default defineTool({
           },
           async (current): Promise<{ newBody: string | null; value: SetInitiativeValue }> => {
             if (current === null) return { newBody: null, value: { ok: false, code: 'not_found' } };
-            if (parsePlan(current, { filePath: `${slug}.md` }).isLegacy) {
-              return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+            const parsedForLegacy = parsePlan(current, { filePath: `${slug}.md` });
+            if (parsedForLegacy.isLegacy) {
+              return {
+                newBody: null,
+                value: { ok: false, code: 'legacy_plan', reason: parsedForLegacy.legacyReason ?? undefined },
+              };
             }
             const from = currentInitiative(current);
             let body = setFrontmatterScalar(current, 'initiative', next);
@@ -140,7 +144,12 @@ export default defineTool({
         }
 
         if (!result.value.ok) {
-          return { ok: false as const, slug, error: result.value.code };
+          return {
+            ok: false as const,
+            slug,
+            error: result.value.code,
+            ...('reason' in result.value && result.value.reason ? { reason: result.value.reason } : {}),
+          };
         }
 
         return {

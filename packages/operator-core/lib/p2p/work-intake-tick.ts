@@ -27,24 +27,24 @@
  * fields on `PullEvaluationInput` are inert placeholders for that reason, not
  * a guess at real values.
  *
- * HOST IDENTITY GAP (flagged, not invented): `selfHostRef` /
- * `responderGithubUserId` / `executorDevice` / `sourceRepoPath` / `rootPath`
- * are THIS host's own configuration — grepped exhaustively (2026-07-18):
- * no production caller anywhere in the p2p stack resolves a "who am I"
- * identity today (`runForeignGitSyncTick`'s own `hostGithubUserId` opt
- * defaults to 0/unknown and NO caller supplies it either — the same gap,
- * already shipped that way). Rather than fabricate a hostRef/identity
- * convention here (which would either silently diverge from whatever an
- * owner configures in resource-allotments, or worse, silently match by
- * accident), this module takes them as an EXPLICIT, REQUIRED
- * `WorkIntakeHostIdentity` — resolved by the caller (the system-action
- * wiring in work-intake-action.ts reads it from the routine's
- * `triggerConfig`, matching this codebase's existing per-routine config
- * convention). The routine is therefore built + tested but NOT YET SEEDED
- * anywhere (mirrors WI-1937 item 3's sweep-orphaned-foreign-harnesses
- * precedent — its seeding also has no existing call site) — seeding requires
- * an owner-configured host identity, tracked as a named follow-up, not
- * guessed here.
+ * HOST IDENTITY: `selfHostRef` / `responderGithubUserId` / `executorDevice` /
+ * `sourceRepoPath` / `foreignWorkRoot` are THIS host's own configuration.
+ * This module never fabricates them — it takes them as an EXPLICIT, REQUIRED
+ * `WorkIntakeHostIdentity` resolved by the caller (the system-action wiring in
+ * work-intake-action.ts reads them from the routine's `triggerConfig`,
+ * matching this codebase's per-routine config convention).
+ *
+ * ⚠ The identity gap this doc used to describe as OPEN was CLOSED by WI-5327
+ * (p2p/ensure-host-routines.ts), which resolves the whole set at boot and
+ * seeds the routine. The stale "built + tested but NOT YET SEEDED anywhere /
+ * no production caller resolves a who-am-I identity" text was removed under
+ * WI-6680 — it had been false since 2026-07-18 and led readers (twice, on
+ * record) to conclude the seeding gap was unsolved when it is not.
+ *
+ * What remains genuinely open is narrower and is tracked on WI-6680: on a
+ * PACKAGED install `projectDirForSlug` resolves no registered project dir, so
+ * `sourceRepoPath` (the repo a foreign clone is made FROM) has no answer and
+ * the routine is skipped there. Identity and paths are otherwise resolved.
  */
 import type { Sql } from 'postgres';
 import { join } from 'node:path';

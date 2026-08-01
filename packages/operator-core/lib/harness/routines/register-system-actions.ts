@@ -305,6 +305,7 @@ import './gc-plan-runs-action';
 // INACTIVE loop rows whose owning session has been silent past the retention
 // window (14d default); an armed loop is never touched at any age.
 import './gc-dead-loops-action';
+import './gc-verify-instances-action';
 // `system:precompute-derived-reads` — the cadence behind the derived-read substrate
 // (precompute-derived-sync-reads-2026-07-19, WI-5460). Computes the three expensive
 // derived sync reads (storage.usage 20.0s, plans.lint 13.8s, learning.soakReport

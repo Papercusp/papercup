@@ -316,7 +316,7 @@ async function writeToPg(
        item_kind, feature_order, swarm_affinity, redundancy, payload,
        design_spec_id, design_status, needs_design, discarded_design_work,
        source_plan_slug, source_plan_item_ids, see_also, wave, deprecation_reason, completion_ref,
-       terminal_owner, terminal_completion_ref, terminal_reason, authority,
+       terminal_owner, terminal_completion_ref, terminal_reason, authority, closed_ts,
        author_pubkey, origin, fed_ts, fed_hlc, verified_author_github_user_id)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
@@ -342,7 +342,7 @@ async function writeToPg(
        ${row.see_also ?? []}::text[], ${row.wave ?? null}, ${row.deprecation_reason ?? null},
        ${row.completion_ref == null ? null : JSON.stringify(normalizeJsonbInput(row.completion_ref))}::text::jsonb,
        ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null}, ${row.terminal_reason ?? null},
-       ${row.authority ?? null},
+       ${row.authority ?? null}, ${row.closed_ts ?? null},
        ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc}, ${verifiedAuthorGithubUserId})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       title = EXCLUDED.title,
@@ -396,6 +396,9 @@ async function writeToPg(
       -- mig 708/D-035: same rationale as terminal_reason — the authority axis
       -- must converge like status itself.
       authority = EXCLUDED.authority,
+      -- mig 708 PART 2: honour a federated close time; the BEFORE trigger's own
+      -- COALESCE/freeze logic (mig 698) then decides whether it actually wins.
+      closed_ts = EXCLUDED.closed_ts,
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin,
       fed_ts = EXCLUDED.fed_ts,

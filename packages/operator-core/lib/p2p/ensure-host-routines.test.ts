@@ -39,19 +39,28 @@ vi.mock('../harness/routines/work-intake-action', () => ({
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: {} }),
 }));
+vi.mock('../papercusp-root', () => ({
+  papercuspPath: (...parts: string[]) => ['/fake-papercusp-home', ...parts].join('/'),
+}));
 
 import {
   ensureP2pHostRoutinesForWorkspace,
   ensureP2pHostRoutinesSeededOnce,
   _resetEnsureP2pHostRoutinesForTests,
 } from './ensure-host-routines';
+// NOT mocked — the WI-6680 regression below asserts against the REAL invariant.
+import { foreignRootInvariantViolation } from './foreign-workspaces';
 
 const WORKSPACE_ID = 'ws-1';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('ensureP2pHostRoutinesForWorkspace', () => {
+  const priorWorkspaceRoot = process.env.PAPERCUSP_WORKSPACE_ROOT;
   beforeEach(() => {
+    // The Q1 measuring stick, resolved identically by the seeder and the
+    // invariant checker (resolveHostWorkspaceRoot).
+    process.env.PAPERCUSP_WORKSPACE_ROOT = '/host/trees';
     ensureSweep.mockReset().mockResolvedValue({ id: 'rt_sweep' });
     ensureSupervision.mockReset().mockResolvedValue({ id: 'rt_supervision' });
     ensureWorkIntake.mockReset().mockResolvedValue({ id: 'rt_work_intake' });
@@ -60,6 +69,8 @@ describe('ensureP2pHostRoutinesForWorkspace', () => {
     projectDir.mockReset();
   });
   afterEach(() => {
+    if (priorWorkspaceRoot === undefined) delete process.env.PAPERCUSP_WORKSPACE_ROOT;
+    else process.env.PAPERCUSP_WORKSPACE_ROOT = priorWorkspaceRoot;
     vi.clearAllMocks();
   });
 
@@ -98,13 +109,37 @@ describe('ensureP2pHostRoutinesForWorkspace', () => {
           responderDevicePubkey: 'PUBKEY==',
           executorDevice: 'PUBKEY==',
           sourceRepoPath: '/repo/root',
-          rootPath: '/repo/root',
-          workspaceRoot: '/repo/root',
+          foreignWorkRoot: '/fake-papercusp-home/p2p/foreign-work',
+          workspaceRoot: '/host/trees',
           canonicalTree: '/repo/root',
         },
       },
       expect.anything(),
     );
+  });
+
+  // WI-6680 regression. The pre-fix seeder set sourceRepoPath, rootPath,
+  // workspaceRoot AND canonicalTree all to the repo root — and the old version
+  // of the assertion above froze that in, which is why nothing caught it. With
+  // all four equal, foreignRootInvariantViolation() refuses EVERY registration
+  // ("foreign root is inside the workspace root"), so the routine seeded on dev
+  // hosts and then could never execute a single offer. Assert the real
+  // invariant, not just the literal values, so a future edit that re-collapses
+  // them fails here instead of silently at registration on a live host.
+  it('seeds a foreign-work root that actually SATISFIES the Q1 invariant (never inside the host trees)', async () => {
+    resolveIdentity.mockResolvedValue({ kind: 'ok', githubUserId: 42, githubLogin: 'avi', token: 't' });
+    loadKeypair.mockResolvedValue({ keychainId: '42:fake-machine', pubkeyBase64: 'PUBKEY==' });
+    projectDir.mockResolvedValue('/repo/root');
+
+    await ensureP2pHostRoutinesForWorkspace(WORKSPACE_ID);
+
+    const host = ensureWorkIntake.mock.calls[0]![0].host;
+    expect(
+      foreignRootInvariantViolation(host.foreignWorkRoot, {
+        workspaceRoot: host.workspaceRoot,
+        canonicalTree: host.canonicalTree,
+      }),
+    ).toBeNull();
   });
 
   it('seeds only the identity-free routine when gh is not authenticated (never fabricates)', async () => {

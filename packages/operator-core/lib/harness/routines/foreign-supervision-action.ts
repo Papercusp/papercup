@@ -24,10 +24,12 @@
  * `triggerConfig`, exactly like work-intake-action.ts's `readHostIdentity`;
  * missing/malformed config is a LOUD no-op, never a fabricated identity.
  *
- * SEEDING: `ensureP2pForeignSupervisionRoutine` — NOT YET CALLED FROM
- * ANYWHERE, for the same reason `ensureWorkIntakeRoutine` (P-406) isn't: the
- * real host identity is owner-configured and this module has no seam to
- * discover it. Tracked on WI-5657/P-407, not guessed here.
+ * SEEDING: `ensureP2pForeignSupervisionRoutine` is called at boot by
+ * p2p/ensure-host-routines.ts (WI-5327), which resolves this host's identity
+ * from existing seams — it needs only responderGithubUserId + the device
+ * pubkey, so unlike work-intake it seeds on a packaged install too. The
+ * previous "NOT YET CALLED FROM ANYWHERE" note was stale from 2026-07-18 and
+ * was corrected under WI-6680.
  */
 import { getOrgPg, upsertRoutine, type RoutineRow } from '@papercusp/db-org';
 import type { Sql } from 'postgres';

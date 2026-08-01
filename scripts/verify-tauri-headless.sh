@@ -493,6 +493,19 @@ teardown() {
   # remove it now rather than leaking it into $TMPDIR across repeated runs. Best
   # effort: stop.sh above already SIGTERM'd the postmaster.
   [ -n "$ISOLATED_PG_PID" ] && [ -n "${ISOLATED_PG_DATA_DIR:-}" ] && rm -rf "$ISOLATED_PG_DATA_DIR" 2>/dev/null
+  # WI-6684: apply that SAME argument to the frozen SPA snapshot, which nobody had.
+  # It is the BULK of this work dir (~1GB of module bundle) and is worthless the
+  # moment the run ends — but teardown only ever killed PROCESSES, so every run,
+  # successful or not, leaked its snapshot. By 2026-08-01 that was 288 dirs / 294GiB
+  # with /tmp at 80%, and the owner found it. Note this is NOT the --boot-only-only
+  # leak the first report assumed: the `-- <cmd>` form tears its processes down
+  # perfectly and still leaked every byte of disk.
+  #
+  # The small logs (tauri.log, xvfb.log, openbox.log) deliberately SURVIVE — they are
+  # what a post-mortem reads and they cost kilobytes. `gc-verify-instances` removes
+  # the husk after its TTL, and is also what catches runs that never reach this trap
+  # at all (SIGKILL, or a --boot-only caller that never ran the printed stop script).
+  rm -rf "$WORK/spa" 2>/dev/null
   exit "$ec"
 }
 
