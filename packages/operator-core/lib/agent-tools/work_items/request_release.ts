@@ -24,7 +24,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
-import { getWorkItem, commentWorkItem } from '../../work-items';
+import { commentWorkItem } from '../../work-items';
+import { lookupWorkItem } from './_lookup';
 import { setWorkItemReleaseRequest, readWorkItemReleaseRequest, type ReleaseRequestOnSilence } from '../../work-items-release-request';
 import { holderContextReader, resolveHolderAdvisory } from '../coordination/holder-advisory';
 
@@ -86,8 +87,17 @@ export default defineTool({
     const hint = args.harness ?? c.harnessSlug ?? undefined;
     const hintHarness = hint && hint !== '*' ? hint : undefined;
 
-    const item = await getWorkItem(args.id, hintHarness).catch(() => null);
-    if (!item) return json({ ok: false, id: args.id, error: `work_item '${args.id}' not found` });
+    // WI-6746: absence and unreachability are different answers — see _lookup.ts.
+    const lookup = await lookupWorkItem(args.id, hintHarness);
+    if (lookup.status === 'unreadable') {
+      return json({
+        ok: false,
+        id: args.id,
+        error: `work_item_unreadable — could not read '${args.id}' (${lookup.error}). This is a READ FAILURE, not a missing item: retry.`,
+      });
+    }
+    if (lookup.status === 'missing') return json({ ok: false, id: args.id, error: `work_item '${args.id}' not found` });
+    const item = lookup.item;
 
     const holder = item.assignee?.trim();
     if (!holder) {

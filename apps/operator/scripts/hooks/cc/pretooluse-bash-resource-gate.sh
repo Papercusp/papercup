@@ -104,13 +104,28 @@ def _advisory_class_key(text):
     session with 4 different commands). Hashing the raw text would therefore
     dedup nothing for exactly the advisory that repeats most. So: prefer the
     explicit EI tag when the advisory carries one (25 of the 29 classes do),
-    and otherwise hash the text with backticked spans — the paths, commands and
-    ids that vary per fire — normalised out.
+    and otherwise hash only the advisory's stable LEAD paragraph, with the
+    spans that vary per fire normalised out.
+
+    THE LEAD-PARAGRAPH RULE IS LOAD-BEARING, and was added after the first
+    implementation was observed missing live (2026-08-01, three fires in one
+    session). Every advisory here opens with a fixed self-identifying sentence
+    and then interpolates a per-command body, so hashing the WHOLE text keys on
+    that body:
+      * bash→tool builds a bullet per detected substitution, so the same class
+        hashed differently with one bullet (`sed`) vs two (`sed` + `tail`);
+      * long-foreground-exec interpolates the timeout into its first sentence,
+        so a 300s call and a 400s call were two different classes.
+    Both re-fired in one session — the exact repetition P-020 exists to stop.
+    Cutting at the first blank line, and normalising digit runs as well as
+    backticked spans, makes both stable without needing a tag per class.
     """
     m = re.search(r'EI-\d+', text)
     if m:
         return m.group(0)
-    norm = re.sub(r'`[^`]*`', '`X`', text)
+    lead = re.split(r'\n\s*\n', text.strip(), maxsplit=1)[0]
+    norm = re.sub(r'`[^`]*`', '`X`', lead)
+    norm = re.sub(r'\d+', 'N', norm)
     norm = re.sub(r'\s+', ' ', norm).strip()
     return 'adv-' + hashlib.sha1(norm.encode('utf-8', 'replace')).hexdigest()[:16]
 

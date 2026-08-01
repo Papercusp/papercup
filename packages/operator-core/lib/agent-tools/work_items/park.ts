@@ -20,7 +20,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
-import { getWorkItem, releaseWorkItem } from '../../work-items';
+import { releaseWorkItem } from '../../work-items';
+import { lookupWorkItem } from './_lookup';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
@@ -64,7 +65,32 @@ export default defineTool({
     // harness to the shared wildcard namespace the read side resolves it under.
     const hint = args.harness ?? c.harnessSlug ?? undefined;
     const hintHarness = hint && hint !== '*' ? hint : undefined;
-    const item = await getWorkItem(args.id, hintHarness).catch(() => null);
+    // WI-6746: park's whole purpose is to SAVE state, so a silent loss is the worst
+    // outcome here. When the read fails we do not know the item's own harness, and the
+    // old fallback wrote the checkpoint under the caller's HINT instead — a different
+    // key namespace, which reads back as null forever (the EI-8805 loss mode) while
+    // still reporting ok. Refuse loudly and keep the text in the caller's hands: an
+    // agent that still has its state can retry, one that trusted a false ok cannot.
+    const lookup = await lookupWorkItem(args.id, hintHarness);
+    if (lookup.status === 'unreadable') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              id: args.id,
+              error:
+                `work_item_unreadable — could not read '${args.id}' to resolve its harness (${lookup.error}). ` +
+                'Refusing rather than writing your checkpoint under a possibly-wrong harness key, where it would ' +
+                'read back as null while reporting success. Your checkpoint text was NOT saved — retry (it is a ' +
+                'READ FAILURE, not a missing item).',
+            }),
+          },
+        ],
+      };
+    }
+    const item = lookup.status === 'found' ? lookup.item : null;
     if (!item && !hintHarness) {
       return {
         content: [

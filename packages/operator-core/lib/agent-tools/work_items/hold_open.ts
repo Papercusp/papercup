@@ -29,11 +29,11 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import {
-  getWorkItem,
   setWorkItemClaimHold,
   readWorkItemClaimHoldProvenance,
   looksLikePolicyGate,
 } from '../../work-items';
+import { lookupWorkItem } from './_lookup';
 
 // EI-18672701535825889 / WI-5946: looksLikePolicyGate moved to work-items.ts so
 // work_items:claim's claim-hold guard (claim.ts) shares the SAME predicate instead of a
@@ -88,8 +88,17 @@ export default defineTool({
     const fail = (payload: Record<string, unknown>) => ({
       content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, id: args.id, ...payload }) }],
     });
-    const item = await getWorkItem(args.id, hintHarness).catch(() => null);
-    if (!item) return fail({ error: `work_item '${args.id}' not found` });
+    // WI-6746: an unreadable item must not be reported as an absent one — the caller is
+    // about to place or clear a HOLD, and "not found" sends them to re-file or re-create
+    // rather than retry. Absence and unreachability are different answers.
+    const lookup = await lookupWorkItem(args.id, hintHarness);
+    if (lookup.status === 'unreadable') {
+      return fail({
+        error: `work_item_unreadable — could not read '${args.id}' (${lookup.error}). This is a READ FAILURE, not a missing item: retry rather than re-filing it.`,
+      });
+    }
+    if (lookup.status === 'missing') return fail({ error: `work_item '${args.id}' not found` });
+    const item = lookup.item;
     // EI-18672701535825889: check BOTH claim-hold provenance conventions — a row held ONLY via
     // the durable-park convention (claim_hold_by, no held_open_by) previously slipped through
     // this guard entirely (readWorkItemHeldOpenBy alone returned null ⇒ `prior` falsy ⇒ no

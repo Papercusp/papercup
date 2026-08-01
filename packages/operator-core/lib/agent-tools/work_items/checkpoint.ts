@@ -97,7 +97,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemCheckpointWithPrior, getWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { SUPPORTED_DEP_KINDS } from '../../freshness/resolvers';
-import { getWorkItem, markFeatureProgress, markIssueProgress } from '../../work-items';
+import { markFeatureProgress, markIssueProgress } from '../../work-items';
+import { lookupWorkItem } from './_lookup';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
@@ -259,7 +260,25 @@ export default defineTool({
         // wildcard is not a real harness filter.
         const hint = it.harness ?? args.harness ?? c.harnessSlug ?? undefined;
         const hintHarness = hint && hint !== '*' ? hint : undefined;
-        const item = await getWorkItem(it.id, hintHarness).catch(() => null);
+        // WI-6746: this pre-read IS the ownership guard below — setWorkItemCheckpoint has
+        // no assignee check. Swallowing it to null (the old `.catch(() => null)`) meant a PG
+        // fault skipped `not_holder` entirely and the write landed on whatever item it was
+        // aimed at, overwriting a peer's in-flight state — the exact corruption
+        // EI-18132462898750489 added the guard to stop, and it failed open precisely when
+        // the database was unhealthy. Fail CLOSED: unreadable is not unowned.
+        const lookup = await lookupWorkItem(it.id, hintHarness);
+        if (lookup.status === 'unreadable') {
+          return {
+            ok: false as const,
+            id: it.id,
+            error:
+              `work_item_unreadable — could not read '${it.id}' to verify you hold it (${lookup.error}). ` +
+              "Refusing the checkpoint write rather than risk silently overwriting the real holder's in-flight state. " +
+              'This is a READ FAILURE, not a missing item and not a harness-resolution problem — retry, and if it ' +
+              'persists check database health (dev:pg_health). Your checkpoint text was NOT saved.',
+          };
+        }
+        const item = lookup.status === 'found' ? lookup.item : null;
         if (!item && !hintHarness) {
           return { ok: false as const, id: it.id, error: `could not resolve a harness for work_item '${it.id}' — pass { harness }` };
         }

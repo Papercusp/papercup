@@ -34,6 +34,7 @@ const NO_CONTAINMENT = vi.fn(async () => ({
   unknown: [],
   paths: [],
   excludedCommitsTouchingYourFiles: [],
+  testImplSplitRisk: { detected: false, includedTests: [], missingImpl: [] },
   warning: null,
 }));
 

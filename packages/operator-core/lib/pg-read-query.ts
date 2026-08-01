@@ -641,22 +641,27 @@ export function buildSilentNullPathAdvisory(rawSql: string): string | null {
  *
  *   - `status = 'open'` is LIFECYCLE. It is item-intrinsic and durable — a fact
  *     about the row, storable as a column. Legitimately needed.
- *   - `harness_shared.work_items_claimable` is the CANDIDATE set. It does apply
- *     real floors, but via `work_item_claim_floors(status, taken_by, origin,
- *     title, terminal_owner, terminal_completion_ref, payload, feature_id)` —
- *     item-intrinsic columns ONLY. It structurally cannot see the rest.
- *   - CLAIMABILITY is a property of the triple (item, CALLER, MOMENT): the
- *     caller's assignee decides the reserved-plan-lane floor, `rigAvailable` is
- *     machine-relative, the release cooldown is time-relative, blocked-deps
- *     needs a join, and the caller's claim SPEC filters on top of all of it.
- *     A stored column cannot depend on who is asking, so this can only ever be
- *     COMPUTED — which is exactly what `work_items:claimable` does, wrapping the
- *     same oracle `scheduler:get_next` runs so the two cannot diverge.
+ *   - `harness_shared.work_items_claimable` (migration 654) is the QUERYABLE
+ *     SSOT for the CALLER-INDEPENDENT floors — "claimable by someone". It is the
+ *     right target for raw SQL, and an anti-drift integration test binds it to
+ *     the real claim path so the two cannot silently diverge.
+ *   - `work_items:claimable` answers "claimable by ME, NOW" — the triple
+ *     (item, CALLER, MOMENT).
+ *
+ * Migration 654 omits the per-claim floors from the view DELIBERATELY, and says
+ * why: cross-machine-rig, swarm-affinity, redundancy and release-cooldown
+ * "depend on the CLAIMING caller's capability/spec, not the row, so a generic
+ * 'claimable by someone' predicate cannot bake them in". The view is therefore
+ * neither a clean upper nor lower bound on what YOU can claim: it OVER-admits by
+ * omitting those per-claim floors, and UNDER-admits on the federated-origin leg,
+ * which uses the fail-safe form that "only ever UNDER-admits". Say exactly that
+ * rather than implying a direction — a confidently-wrong bound is the failure
+ * mode this file exists to prevent.
  *
  * Deliberately NOT quoting a fixed overcount multiplier: the ratio moves with
  * the backlog (and differs per harness), and a stale number in an advisory is
- * the same class of confidently-wrong artifact this whole file exists to
- * prevent. Point at the tool that computes the live figure instead.
+ * the same class of confidently-wrong artifact. Point at the queryable SSOT and
+ * the tool instead, both of which compute the live figure.
  *
  * Matched against RAW sql for the same reason as the always-NULL advisory: the
  * interesting token is a string literal (`'open'`), which the stripper erases.
@@ -669,16 +674,18 @@ export function buildClaimabilityAdvisory(rawSql: string): string | null {
   const startsInsideComment = (idx: number): boolean =>
     masked.some(([from, to]) => idx >= from && idx < to && rawSql.slice(from, from + 2) === '--');
 
-  // The candidate VIEW: any read of it is a claimability read by intent, since
-  // the name says so. Flag it regardless of predicates.
+  // The SSOT VIEW. Reading it is CORRECT for raw SQL — this is a scope note, not
+  // a reprimand: it answers "claimable by someone", not "claimable by me now".
   const viewHit = tables.find((t) => bareTableName(t) === 'work_items_claimable');
   if (viewHit) {
     return (
-      `⚠ candidate set, not claimability: ${viewHit} applies only the ITEM-INTRINSIC floors ` +
-      '(work_item_claim_floors sees columns, not the caller) — it cannot apply the reserved-plan-lane, ' +
-      'cross-machine-rig, release-cooldown, blocked-dependency or claim-SPEC floors, all of which depend ' +
-      'on WHO is asking and WHEN. Its count is an upper bound. For the authoritative set + a per-floor ' +
-      '`excludedBreakdown`, use work_items:claimable { harness } (the same oracle scheduler:get_next runs).'
+      `ⓘ caller-independent scope: ${viewHit} is the queryable SSOT for the floors that depend only on ` +
+      'the ROW — the right target for raw SQL. It deliberately omits the PER-CLAIM floors ' +
+      '(cross-machine-rig, swarm-affinity, redundancy, release-cooldown) because those depend on the ' +
+      'claiming caller, so it answers "claimable by someone", not "claimable by ME now". It is neither a ' +
+      'clean upper nor lower bound on your own claimable set: it over-admits by omitting those floors, and ' +
+      'under-admits on the federated-origin leg (fail-safe form). For "what can I claim right now" plus a ' +
+      'per-floor `excludedBreakdown`, use work_items:claimable { harness }.'
     );
   }
 
@@ -704,11 +711,13 @@ export function buildClaimabilityAdvisory(rawSql: string): string | null {
 
   return (
     `⚠ status='open' is LIFECYCLE, not claimability: ${tableHit} — 'open' means "not terminal", and the ` +
-    'real claim path applies ~12 further floors, several of which (reserved-plan-lane, cross-machine-rig, ' +
-    'release-cooldown, blocked-dependency, your claim SPEC) depend on the CALLER and the MOMENT and so ' +
-    'cannot be expressed as a column predicate at all. Counting open rows therefore OVERCOUNTS claimable ' +
-    'work, silently and by a wide margin. Use work_items:claimable { harness } for the authoritative count ' +
-    'plus a per-floor `excludedBreakdown` showing exactly what the difference is made of.'
+    'real claim path ANDs ~12 further floors on top. Counting open rows therefore OVERCOUNTS claimable ' +
+    'work, silently and by a wide margin. Two correct targets, depending on the question: for RAW SQL use ' +
+    'harness_shared.work_items_claimable (migration 654 — the queryable SSOT, bound to the real claim path ' +
+    'by an anti-drift test); for "what can I claim RIGHT NOW" use work_items:claimable { harness }, which ' +
+    'adds the floors that depend on the CALLER and the MOMENT (cross-machine-rig, swarm-affinity, ' +
+    'redundancy, release-cooldown, your claim SPEC) and returns a per-floor `excludedBreakdown`. Those ' +
+    'caller-relative floors are why claimability cannot be a column at all.'
   );
 }
 

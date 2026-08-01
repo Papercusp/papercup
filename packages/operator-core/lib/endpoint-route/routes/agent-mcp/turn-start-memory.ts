@@ -13,9 +13,15 @@
  * surfaced this epoch (initialize prelude, orient recall, a claim port) is
  * never re-paid.
  *
- * Body: { owner, prompt, workspace?, harness? } — the hook passes harness/
- * workspace from its launch env so this endpoint does no session-registry
- * resolution on the hot path.
+ * Body: { owner, prompt, workspace?, harness?, cwd? } — the hook passes
+ * harness/workspace from its launch env so this endpoint does no
+ * session-registry resolution on the hot path. `cwd` (EI-18893248175645463)
+ * is a fallback ONLY: when `harness` is empty (an operator/superuser-scope
+ * session, which legitimately has no single PAPERCUSP_HARNESS_SLUG), the
+ * client's cwd lets detectHarnessSlugSync's env→marker-file→meta-repo chain
+ * still resolve one — the same detection the MCP 'initialize' prelude uses —
+ * instead of unconditionally starving the harness+hive pools for that
+ * session's entire lifetime.
  *
  * CTRL is checked even for a low-signal prompt ("continue") because a mode,
  * loop, carry, or route transition must take effect at the very next boundary.

@@ -667,3 +667,91 @@ describe('buildSilentNullPathAdvisory (WI-6674 — the always-NULL accessor)', (
     ).toBeNull();
   });
 });
+
+describe('buildClaimabilityAdvisory (status=open is the lifecycle axis, not claimability)', () => {
+  // The shape that actually bit, 2026-08-01: an agent counted open issue-family
+  // rows, called the result "the claimable backlog", and was wrong by more than
+  // an order of magnitude. Unlike the two advisories above, the query is not
+  // malformed — it correctly answers a DIFFERENT question, which is why nothing
+  // about the result looks suspicious.
+  const OPEN_COUNT =
+    "SELECT count(*) FROM harness_shared.work_items WHERE item_kind IN ('bug','change','task') AND status = 'open'";
+
+  it('flags the count-open-rows shape', () => {
+    const advisory = buildClaimabilityAdvisory(OPEN_COUNT);
+    expect(advisory).toContain('LIFECYCLE, not claimability');
+    expect(advisory).toContain('work_items');
+  });
+
+  it('is actionable — names the tool that computes the real answer', () => {
+    expect(buildClaimabilityAdvisory(OPEN_COUNT) ?? '').toContain('work_items:claimable');
+  });
+
+  it('explains WHY no column can settle it (caller- and moment-relative floors)', () => {
+    const advisory = buildClaimabilityAdvisory(OPEN_COUNT) ?? '';
+    expect(advisory).toContain('CALLER');
+    expect(advisory).toContain('MOMENT');
+  });
+
+  it('quotes no fixed multiplier — a hardcoded ratio would itself go stale', () => {
+    const advisory = buildClaimabilityAdvisory(OPEN_COUNT) ?? '';
+    expect(advisory).not.toMatch(/\d+\s*x\b/i);
+  });
+
+  it("stays quiet when the query goes through the real floor function — that caller knows the difference", () => {
+    expect(
+      buildClaimabilityAdvisory(
+        "SELECT count(*) FROM harness_shared.work_items WHERE status = 'open' AND " +
+          'cardinality(harness_shared.work_item_claim_floors(status, taken_by, origin, title, ' +
+          'terminal_owner, terminal_completion_ref, payload, feature_id)) = 0',
+      ),
+    ).toBeNull();
+  });
+
+  it('points a raw-SQL reader at the queryable SSOT view, not only at the tool', () => {
+    // Migration 654 exists precisely so a raw dev:pg_query read can AGREE with the
+    // scheduler. An advisory that named only the tool would send raw SQL nowhere.
+    expect(buildClaimabilityAdvisory(OPEN_COUNT) ?? '').toContain('work_items_claimable');
+  });
+
+  it('treats the SSOT view as CORRECT-but-scoped, not as a mistake', () => {
+    const advisory =
+      buildClaimabilityAdvisory('SELECT count(*) FROM harness_shared.work_items_claimable') ?? '';
+    expect(advisory).toContain('caller-independent scope');
+    expect(advisory).toContain('claimable by someone');
+    // Migration 654 omits the per-claim floors DELIBERATELY; the view also
+    // under-admits on the federated-origin leg. Claiming a clean direction
+    // would be exactly the confidently-wrong artifact this advisory prevents.
+    expect(advisory).toContain('neither a clean upper nor lower bound');
+  });
+
+  it("matches status = ANY(ARRAY['open', …]) too, not just the = form", () => {
+    expect(
+      buildClaimabilityAdvisory(
+        "SELECT feature_id FROM harness_shared.work_items WHERE status = ANY(ARRAY['open','wip'])",
+      ),
+    ).toContain('LIFECYCLE, not claimability');
+  });
+
+  it('stays quiet on a work_items read that makes no claimability claim', () => {
+    expect(
+      buildClaimabilityAdvisory(
+        "SELECT title FROM harness_shared.work_items WHERE feature_id = 'EI-123'",
+      ),
+    ).toBeNull();
+  });
+
+  it('stays quiet on an unrelated table', () => {
+    expect(
+      buildClaimabilityAdvisory("SELECT count(*) FROM harness_shared.harness_plans WHERE status = 'open'"),
+    ).toBeNull();
+  });
+
+  it('ignores a status=open written only in a comment', () => {
+    expect(
+      buildClaimabilityAdvisory(
+        "SELECT title FROM harness_shared.work_items -- WHERE status = 'open'\n WHERE feature_id = 'EI-1'",
+      ),
+    ).toBeNull();
+  });
+});

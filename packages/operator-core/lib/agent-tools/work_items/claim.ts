@@ -25,6 +25,7 @@ import {
   getWorkItem,
   readWorkItemClaimHoldProvenance,
 } from '../../work-items';
+import { lookupWorkItem } from './_lookup';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { holderContextReader, resolveHolderAdvisory } from '../coordination/holder-advisory';
 import type { CellReader } from '../../cell-registry';
@@ -186,7 +187,25 @@ async function claimOne(
   // terminal transition (setWorkItemState's held-open guard). Pre-read the item and mirror
   // hold_open's own clear-guard (force + a stricter ownerOverride for a policy-tier reason,
   // EI-18672701535825889) — one shared predicate (assessClaimHoldGuard), never a bypassable gap.
-  const preClaimItem = await getWorkItem(it.id, it.harness).catch(() => null);
+  // WI-6746: this pre-read IS the hold guard — claimWorkItem gates on taken_by + G2/P-010
+  // admission and knows nothing about held_open/claim_hold. So swallowing the read to null
+  // (the old `.catch(() => null)`) did not degrade the guard, it DELETED it: a PG fault
+  // produced a null item, hence a null refusal, hence a completed claim past a hold someone
+  // deliberately placed — un-audited and un-notified, because the provenance read below is
+  // derived from the same null. Fail CLOSED instead: an unreadable item is not an unheld one.
+  const preClaim = await lookupWorkItem(it.id, it.harness);
+  if (preClaim.status === 'unreadable') {
+    return {
+      ok: false,
+      id: it.id,
+      error: 'work_item_unreadable',
+      hint:
+        `${it.id} could not be read, so its claim-hold state is UNKNOWN — the read failed (${preClaim.error}). ` +
+        'Refusing the claim rather than risk bypassing a hold. This is a READ FAILURE, not a missing or unheld item: retry, ' +
+        'and if it persists check database health (dev:pg_health) rather than the item.',
+    };
+  }
+  const preClaimItem = preClaim.status === 'found' ? preClaim.item : null;
   const claimHoldRefusal = preClaimItem
     ? assessClaimHoldGuard(preClaimItem.payload, { force: it.force, ownerOverride: it.ownerOverride })
     : null;

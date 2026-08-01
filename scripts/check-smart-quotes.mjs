@@ -26,7 +26,6 @@
  * Scope: tracked .ts/.tsx. Excludes _retired/, node_modules, dist, and this
  * script. Fast path: a file with no curly-quote byte is never parsed.
  */
-import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -36,6 +35,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // Run via `tsx` (package.json `lint:smart-quotes`) so this .mjs can import the
 // TypeScript module.
 import { findCodePositionCurlyQuotes, curlyLabel, CURLY } from '../packages/operator-core/lib/content-lint/smart-quotes';
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 export { findCodePositionCurlyQuotes, curlyLabel, CURLY };
 
@@ -51,9 +51,11 @@ const isExcluded = (f) =>
   f === 'scripts/check-smart-quotes.mjs';
 
 function main() {
-  const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
-    .split('\n')
-    .filter(Boolean);
+  // WI-6730: enumerate via the shared helper, which recurses into submodules. A
+  // bare `git ls-files` does not — it emits one gitlink entry per submodule — so
+  // this guard never scanned a single .ts/.tsx inside any of the 39 and printed ✓
+  // regardless. `unscanned` is reported below rather than silently dropped.
+  const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
   const offenders = [];
   for (const f of tracked) {
@@ -72,7 +74,7 @@ function main() {
   }
 
   if (offenders.length === 0) {
-    console.log('✓ no curly/smart quotes used as code in .ts/.tsx.');
+    console.log(`✓ no curly/smart quotes used as code in .ts/.tsx.${describeUnscanned(unscanned)}`);
     process.exit(0);
   }
 
