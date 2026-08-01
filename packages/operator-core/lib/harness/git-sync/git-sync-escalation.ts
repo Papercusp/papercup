@@ -17,14 +17,67 @@
  */
 import type { RepoError, ScopedOversized } from './run-git-sync';
 
-/** Consecutive error ticks before the failure escalates (3 ticks ≈ 30 min). */
+/** Consecutive error ticks before the failure escalates (3 ticks ≈ 30 min).
+ *  NOTE the name is historical: this counts ANY failing leg, not just pushes
+ *  (EI-19275994927087666). */
 export const PUSH_FAILURE_ESCALATION_TICKS = 3;
+
+/** Which LEG of a git-sync tick failed (EI-19275994927087666). */
+export type GitSyncFailingLeg = 'commit' | 'push' | 'conflict' | 'unknown';
+
+/**
+ * PURE: classify which leg actually failed, from the error text git-sync recorded.
+ *
+ * EI-19275994927087666: both the escalation broadcast and the /admin/git deploy
+ * panel used to call EVERY git-sync failure a PUSH failure, and say "commits are
+ * NOT reaching origin". That sentence sends a responder at origin / credentials /
+ * the pooler. For 32h it was pointing at a corrupt git object in one abandoned
+ * scratch pot's tree — a COMMIT-leg fault that never touched the network, while
+ * origin/staging was byte-identical to local HEAD.
+ *
+ * `pushMode` is only a fallback inference: a `commit-only:*` member never pushes,
+ * so its failure cannot be a push failure. It is checked LAST on purpose — the
+ * real offender's push_mode was `push`, so push_mode alone would not have caught
+ * it. The recorded error text is the load-bearing signal.
+ */
+export function classifyGitSyncFailingLeg(
+  lastError: string | null,
+  pushMode: string | null,
+): GitSyncFailingLeg {
+  const e = (lastError ?? '').toLowerCase();
+  if (e.includes('conflict')) return 'conflict';
+  if (e.includes('commit failed') || e.includes('commit error')) return 'commit';
+  if (e.includes('push')) return 'push';
+  // No usable error text: a commit-only member still cannot have push-failed.
+  if (pushMode?.startsWith('commit-only')) return 'commit';
+  return 'unknown';
+}
+
+/** The human sentence for a failing leg. Only the 'push' arm may claim anything
+ *  about origin — that claim was the whole misdirection. */
+export function gitSyncLegPhrase(leg: GitSyncFailingLeg | null): string {
+  switch (leg) {
+    case 'push':
+      return 'push failing — commits NOT reaching origin';
+    case 'commit':
+      return 'COMMIT failing — nothing has reached the push stage; origin is unaffected';
+    case 'conflict':
+      return 'merge conflict — needs a resolver';
+    default:
+      return "cause unclassified — read that routine's last_error";
+  }
+}
 
 export interface EscalationInput {
   status: 'nothing' | 'synced' | 'conflict' | 'error';
   /** This tick's consecutive-error count (already bumped/reset for this tick). */
   consecutiveErrorTicks: number;
   errors: RepoError[];
+  /** EI-19275994927087666: this member's push mode (`push` | `commit-only:*`), used
+   *  only as a fallback when the error text alone cannot classify the failing leg.
+   *  OPTIONAL on purpose — an omitted value just degrades to the error-text
+   *  classification, so no existing caller or fixture has to change. */
+  pushMode?: string | null;
   oversized: ScopedOversized[];
   /** `scope:path` keys reported oversized on the PREVIOUS tick (from metadata). */
   prevOversizedKeys: string[];
@@ -54,8 +107,12 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
   const parts: string[] = [];
   if (i.consecutiveErrorTicks === PUSH_FAILURE_ESCALATION_TICKS) {
     const detail = i.errors.map((e) => `${e.scope}: ${e.message.split('\n')[0]}`).join('; ').slice(0, 300);
+    // EI-19275994927087666: say WHICH leg failed. This used to hardcode "push has
+    // FAILED … local commits are NOT reaching origin" for every failure, including
+    // commit-leg faults that never reached the network.
+    const leg = classifyGitSyncFailingLeg(i.errors.map((e) => e.message).join('; ') || null, i.pushMode ?? null);
     parts.push(
-      `⚠ git-sync push has FAILED ${i.consecutiveErrorTicks} consecutive ticks — local commits are NOT reaching origin${detail ? ` (${detail})` : ''}`,
+      `⚠ git-sync has FAILED ${i.consecutiveErrorTicks} consecutive ticks — ${gitSyncLegPhrase(leg)}${detail ? ` (${detail})` : ''}`,
     );
   }
   const newOversized = i.oversized.filter((f) => !i.prevOversizedKeys.includes(oversizedKey(f)));

@@ -6,16 +6,28 @@
  * playbook's hard rules rather than the operator chat persona: tool selection,
  * convention adherence, scope discipline, groundedness, helpfulness.
  *
+ * `judgeAdvisory: true` (EI-133, 1.1.0): the runner now actually ENFORCES the
+ * D-002 comment above — a judge-only error finding (deterministic asserts all
+ * passing) no longer flips a run's status to `failed`. Before this, D-002 was
+ * documentation only: `runScenario` treated any error-severity judge finding
+ * as fatal regardless of the rubric's stated intent, so the D-004 hermetic
+ * stub executor's known groundedness pathologies (a capable SUT detects the
+ * stub env and fabricates/retracts/refuses) were flipping otherwise-clean
+ * runs (all deterministic asserts passing) to `failed` — see EI-133 for the
+ * first real behavioral run (7/9 scenarios `failed`, but S01-S07 all passed
+ * their deterministic asserts).
+ *
  * Mirrors the shape of `rubrics/operator.ts`. Bump the version on any anchor
- * change (it feeds the per-run identity hash).
+ * OR behavioral change (it feeds the per-run identity hash).
  */
 
 import type { JudgeRubric } from '@papercusp/testing-shell/llm';
 
-export const SU_RUBRIC_VERSION = '1.0.0';
+export const SU_RUBRIC_VERSION = '1.1.0';
 
 export const SU_RUBRIC: JudgeRubric = {
   version: SU_RUBRIC_VERSION,
+  judgeAdvisory: true,
   axes: [
     {
       id: 'helpfulness',

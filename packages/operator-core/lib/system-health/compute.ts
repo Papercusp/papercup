@@ -66,6 +66,9 @@ import type {
   MemoryPanelHealth,
 } from './types';
 import { PANEL_LABELS } from './types';
+// EI-19275994927087666: ONE classifier shared by the escalation broadcast and this
+// panel — they told the same lie independently, so they must now agree by construction.
+import { classifyGitSyncFailingLeg, gitSyncLegPhrase } from '../harness/git-sync/git-sync-escalation';
 import { isOperationalEscalation } from '../attention/adapters';
 import {
   queenStatus,
@@ -1105,47 +1108,6 @@ async function collectWatchdog(ctx: HealthCtx): Promise<HealthPanel<WatchdogHeal
       ],
     };
   });
-}
-
-/**
- * PURE (EI-19275994927087666): which LEG of git-sync actually failed.
- *
- * The panel used to call every git-sync crit a PUSH failure. That sentence sends a
- * responder at origin / credentials / the pooler, and for 32h it was pointing at a
- * corrupt git object in one abandoned scratch pot's tree — a COMMIT-leg fault that
- * never reached the network. Classify from the routine's own `last_error`.
- *
- * `pushMode` is only a fallback inference: a `commit-only:*` member never pushes, so
- * its failure cannot be a push failure. It is deliberately checked LAST — the real
- * offender in that incident had push_mode `push`, so push_mode alone would not have
- * saved us; `last_error` is the load-bearing signal.
- */
-export function classifyGitSyncFailingLeg(
-  lastError: string | null,
-  pushMode: string | null,
-): NonNullable<DeployHealth['gitSyncFailingLeg']> {
-  const e = (lastError ?? '').toLowerCase();
-  if (e.includes('conflict')) return 'conflict';
-  if (e.includes('commit failed') || e.includes('commit error')) return 'commit';
-  if (e.includes('push')) return 'push';
-  // No usable error text: a commit-only member still cannot have push-failed.
-  if (pushMode?.startsWith('commit-only')) return 'commit';
-  return 'unknown';
-}
-
-/** EI-19275994927087666: the human sentence for a failing leg. Only the 'push' arm
- *  may say "not reaching origin" — that claim was the whole misdirection. */
-function gitSyncLegPhrase(leg: DeployHealth['gitSyncFailingLeg']): string {
-  switch (leg) {
-    case 'push':
-      return 'push failing — commits NOT reaching origin';
-    case 'commit':
-      return 'COMMIT failing — nothing has reached the push stage; origin is unaffected';
-    case 'conflict':
-      return 'merge conflict — needs a resolver';
-    default:
-      return 'cause unclassified — read that routine\'s last_error';
-  }
 }
 
 async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>> {

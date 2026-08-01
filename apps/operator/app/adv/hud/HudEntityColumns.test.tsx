@@ -185,4 +185,66 @@ describe('HudEntityColumns rendering', () => {
       expect(onOpenCard.mock.calls[0][0]).toMatchObject({ id: 'WI-1', ref: 'WI-1' });
     });
   });
+
+  /* WI-6668 — the resilience property, tested at the board level rather than
+     only on the primitive (RenderBoundary.test.tsx covers that in isolation).
+     WI-6551 shipped precisely because every fixture here was fully populated,
+     so no test had ever rendered a MALFORMED row: `actions` was dropped by the
+     list feed, dereferenced unguarded, and one bad row blanked the entire tab.
+     These deliberately corrupt a row the way a feed actually does. */
+  describe('one malformed card cannot blank the board (WI-6668)', () => {
+    /** The WI-6551 shape exactly: a field the card dereferences is missing,
+     *  because the feed that produced the row does not send it. */
+    function boardWithABadCard() {
+      const board = buildWorkItemBoard(
+        [
+          item({ id: 'WI-GOOD-1', state: 'open' }),
+          item({ id: 'WI-BAD', state: 'open' }),
+          item({ id: 'WI-GOOD-2', state: 'open' }),
+        ],
+        [],
+        { nowMs: NOW },
+      );
+      const col = board.columns.find((c) => c.cards.length > 0);
+      if (!col) throw new Error('fixture built no cards');
+      const bad = col.cards.find((c) => c.id === 'WI-BAD');
+      if (!bad) throw new Error('fixture lost the row it was going to corrupt');
+      // `EntityCard` does `card.badges.slice(...)` — undefined here throws the
+      // same TypeError class the owner saw.
+      (bad as { badges?: unknown }).badges = undefined;
+      return board;
+    }
+
+    it('keeps the sibling cards, the column, and the other columns rendered', () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        renderCols({ board: boardWithABadCard() });
+
+        // The siblings in the SAME column survive — the row degraded, not the list.
+        expect(screen.getByText(/WI-GOOD-1/)).toBeTruthy();
+        expect(screen.getByText(/WI-GOOD-2/)).toBeTruthy();
+        // Every column still renders (the tab is alive).
+        for (const label of ['Needs you', 'Working', 'Blocked', 'Ready', 'Done']) {
+          expect(screen.getByRole('region', { name: label })).toBeTruthy();
+        }
+        // No column-level fallback fired: the ROW boundary contained it.
+        expect(screen.queryByTestId('section-boundary-error')).toBeNull();
+      } finally {
+        err.mockRestore();
+      }
+    });
+
+    it('replaces the bad row with a named placeholder instead of dropping it', () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        renderCols({ board: boardWithABadCard() });
+        // Visible, not silent: a quietly missing row would make the column's
+        // count disagree with the DOM, which is how counts stop being trusted.
+        const placeholder = screen.getByTestId('row-boundary-error');
+        expect(placeholder.textContent).toContain('WI-BAD');
+      } finally {
+        err.mockRestore();
+      }
+    });
+  });
 });

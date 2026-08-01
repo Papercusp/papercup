@@ -9,14 +9,26 @@
  * correctness argument lives.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EventEmitter } from 'node:events';
+import * as childProcess from 'node:child_process';
+
+// ESM module namespaces are frozen (non-configurable), so `vi.spyOn` cannot patch
+// `node:child_process`'s `spawn` export directly — it must be mocked at the module
+// level instead. Only `spawn` is replaced; everything else passes through to the
+// real module via `importOriginal`.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
+
 import '../index';
 import { lookupByMcpName } from '@papercusp/tooldef';
-import buildTypecheck, { resolveProjectPath, suggestProjects } from './typecheck';
+import buildTypecheck, { resolveProjectPath, suggestProjects, runTsc } from './typecheck';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   MCP_TRANSPORT_CAP_MS,
@@ -181,4 +193,90 @@ describe('EI-18776865728050036 — no FOREGROUND subprocess tool may declare a b
       );
     },
   );
+});
+
+/**
+ * EI-18793290418757939 — the fleet drain bug: repeated watchdog signal
+ * `tool "build:typecheck" exceeded timeout of 60s (handler returned but
+ * signal had aborted)`.
+ *
+ * Root cause: the old runTsc() gated promise resolution on the child's own
+ * 'close' event even AFTER firing the internal timeout — it only killed the
+ * child and kept waiting. Under real memory-pressure thrashing on this box
+ * (repeatedly reported by the infra-liveness watchdog as PSI memory
+ * saturation / swap thrashing, the WI-5471 class), a killed process is not
+ * guaranteed to actually close promptly, so the handler's real wall-clock
+ * time could run well past both the outer MCP deadline and the
+ * dispatch-stack's own hard AbortController timeout (60s default) — the
+ * "handler returned but signal had aborted" signature is dispatch-stack's own
+ * message for exactly that: it aborted, and the handler returned anyway,
+ * much later.
+ *
+ * These tests fake the child process (never emitting 'close') to prove the
+ * fix without needing a real wedged subprocess: `runTsc`'s promise must
+ * settle at its OWN timer, not whenever (or whether) the child actually dies.
+ */
+describe('EI-18793290418757939 — runTsc settles at its own timer even when the child never closes', () => {
+  function fakeChild() {
+    const emitter = new EventEmitter();
+    const killCalls: string[] = [];
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    Object.assign(emitter, {
+      stdout,
+      stderr,
+      kill: (signal?: string) => { killCalls.push(signal ?? 'SIGTERM'); return true; },
+    });
+    return { child: emitter as unknown as childProcess.ChildProcess, killCalls };
+  }
+
+  it('resolves promptly with timedOut:true instead of hanging on a child that never emits close', async () => {
+    const { child, killCalls } = fakeChild();
+    const spawnSpy = vi.spyOn(childProcess, 'spawn').mockReturnValue(child);
+    try {
+      const start = Date.now();
+      // Short timeout; the fake child deliberately never emits 'close' or 'error' —
+      // simulating a wedged/D-state process that a SIGKILL cannot promptly reap.
+      const outcome = await runTsc(['--noEmit'], process.cwd(), 40);
+      const elapsedMs = Date.now() - start;
+
+      expect(outcome.timedOut).toBe(true);
+      expect(outcome.code).toBeNull();
+      // The whole regression: settling must not wait on the child's own lifecycle.
+      // Generous vs. the 40ms timer to absorb CI scheduling jitter, but nowhere near
+      // "blocked on a process that never closes".
+      expect(elapsedMs).toBeLessThan(2000);
+      expect(killCalls).toContain('SIGTERM');
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  it('a LATE close/error from the child after settling is a harmless no-op (no double-resolve, no crash)', async () => {
+    const { child } = fakeChild();
+    const spawnSpy = vi.spyOn(childProcess, 'spawn').mockReturnValue(child);
+    try {
+      const outcome = await runTsc(['--noEmit'], process.cwd(), 20);
+      expect(outcome.timedOut).toBe(true);
+      // Fire 'close' well after the promise already settled — must not throw,
+      // must not change the already-returned outcome.
+      expect(() => child.emit('close', 0)).not.toThrow();
+      expect(outcome.timedOut).toBe(true);
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  it('still resolves normally (timedOut:false) when the child closes before the timer fires', async () => {
+    const { child } = fakeChild();
+    const spawnSpy = vi.spyOn(childProcess, 'spawn').mockReturnValue(child);
+    try {
+      queueMicrotask(() => child.emit('close', 0));
+      const outcome = await runTsc(['--noEmit'], process.cwd(), 5000);
+      expect(outcome.timedOut).toBe(false);
+      expect(outcome.code).toBe(0);
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
 });

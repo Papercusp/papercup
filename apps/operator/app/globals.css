@@ -27699,3 +27699,57 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   font-style: italic;
   overflow-wrap: anywhere;
 }
+
+/* ── Render boundaries (WI-6668) ──────────────────────────────────────────────
+   Fallback chrome for RenderBoundary's per-SECTION and per-ITEM boundaries. A
+   caught render crash degrades to one of these instead of unmounting the whole
+   tab. Deliberately in globals.css, not a surface stylesheet: the primitive is
+   app-generic and any list surface can adopt it (see RenderBoundary.tsx). */
+.pc-boundary {
+  margin: 0;
+  border-radius: 6px;
+  color: var(--bad);
+  background: rgb(from var(--bad) r g b / 0.07);
+  border: 1px solid rgb(from var(--bad) r g b / 0.22);
+  overflow-wrap: anywhere;
+}
+
+/* A section lost its content — the notice has room to explain and to offer the
+   retry, because the alternative the user just avoided was a dead tab. */
+.pc-boundary--section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pc-boundary__msg {
+  color: var(--fg-mute);
+  font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.pc-boundary__retry {
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.pc-boundary__retry:hover { border-color: var(--fg-mute); }
+
+/* One ROW is missing from an otherwise-healthy list: stay row-sized so the list
+   keeps its rhythm, and say WHICH row so the count still reconciles. The full
+   message is on the title attribute rather than inline — a stack trace inside a
+   list row would push every sibling off screen. */
+.pc-boundary--row {
+  padding: 6px 8px;
+  font-size: 11px;
+  font-style: italic;
+}

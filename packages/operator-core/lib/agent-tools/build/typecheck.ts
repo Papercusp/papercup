@@ -102,7 +102,7 @@ interface TscOutcome {
   output: string;
 }
 
-function runTsc(args: string[], cwd: string, timeoutMs: number): Promise<TscOutcome> {
+export function runTsc(args: string[], cwd: string, timeoutMs: number): Promise<TscOutcome> {
   return new Promise((resolvePromise) => {
     let output = '';
     let settled = false;
@@ -211,6 +211,16 @@ export default defineTool({
   },
   capability: 'operator:write',
   requirePrincipal: false,
+  // EI-18793290418757939: declare the REAL wall-clock budget instead of inheriting
+  // dispatch-stack's generic 60s default. The handler's own worst case is bounded by
+  // FOREGROUND_TIMEOUT_CEILING_MS (50s) now that runTsc() resolves at its own timer
+  // instead of blocking on the child's 'close' event — this margin covers scheduling
+  // + serialization overhead, not process-kill latency. Keeping this declared (rather
+  // than implicit) means dispatch-stack's AbortController and _mcp-handler's
+  // effectiveMcpDeadlineMs both derive their budget from the SAME number this tool
+  // actually honors, so the three layers can't silently drift apart again the way they
+  // did here (the tool waited past a 60s abort it never knew about).
+  timeoutSec: 58,
   // EI-18803497769946984: the handler shells out to `tsc` and blocks for as long as
   // that takes (observed up to 141s) without ever reading `ctx.tx`. Holding the
   // ambient workspace transaction across that wait trips

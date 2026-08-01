@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decideGitSyncEscalation, oversizedKey, PUSH_FAILURE_ESCALATION_TICKS } from './git-sync-escalation';
+import { classifyGitSyncFailingLeg, decideGitSyncEscalation, oversizedKey, PUSH_FAILURE_ESCALATION_TICKS } from './git-sync-escalation';
 import type { ScopedOversized } from './run-git-sync';
 
 const big: ScopedOversized = { scope: 'superproject', path: 'apps/tui/target/huge.rlib', sizeBytes: 200 * 1048576 };
@@ -100,5 +100,46 @@ describe('decideGitSyncEscalation (EI-18)', () => {
   it('oversizedKey is scope-qualified (same path in two repos = two keys)', () => {
     expect(oversizedKey(big)).toBe('superproject:apps/tui/target/huge.rlib');
     expect(oversizedKey({ ...big, scope: 'libs/sub' })).not.toBe(oversizedKey(big));
+  });
+});
+
+/**
+ * EI-19275994927087666 — both the escalation broadcast and the /admin/git deploy
+ * panel called EVERY git-sync failure a PUSH failure. For 32h the fleet inbox read
+ * "PUSH FAILING … commits NOT reaching origin" while origin/staging was byte-identical
+ * to local HEAD and 18 of 19 routines sat at 0 error ticks. The single offender was an
+ * abandoned scratch pot whose corrupt git object broke the COMMIT leg — it never
+ * reached the network at all.
+ */
+describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
+  it('classifies the REAL incident error as a commit failure, not a push failure', () => {
+    const actual =
+      "superproject: commit failed: error: invalid object 100644 d75c463ae71a1031fc95c9ba48982924e195320b for '.papercusp/blueprint.yaml'";
+    expect(classifyGitSyncFailingLeg(actual, 'push')).toBe('commit');
+  });
+
+  it('does not let push_mode override an explicit commit failure', () => {
+    // The real offender's push_mode was 'push', so push_mode alone could never have
+    // caught this — the recorded error text has to be the load-bearing signal.
+    expect(classifyGitSyncFailingLeg('commit failed: bad object', 'push')).toBe('commit');
+  });
+
+  it('classifies a genuine push failure as push', () => {
+    expect(classifyGitSyncFailingLeg('failed to push some refs to origin', 'push')).toBe('push');
+  });
+
+  it('classifies a conflict as conflict, even though the text also mentions commit', () => {
+    expect(classifyGitSyncFailingLeg('merge conflict in lib/x.ts; commit aborted', 'push')).toBe('conflict');
+  });
+
+  it('infers commit for a commit-only member when the error text is unusable', () => {
+    // A commit-only:* member never pushes, so its failure cannot be a push failure.
+    expect(classifyGitSyncFailingLeg(null, 'commit-only:bridged')).toBe('commit');
+    expect(classifyGitSyncFailingLeg('', 'commit-only:config')).toBe('commit');
+  });
+
+  it('returns unknown rather than guessing "push" when nothing is decidable', () => {
+    expect(classifyGitSyncFailingLeg(null, null)).toBe('unknown');
+    expect(classifyGitSyncFailingLeg('something weird happened', 'push')).toBe('unknown');
   });
 });

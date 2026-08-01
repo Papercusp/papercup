@@ -52,7 +52,17 @@ const RULES: ReadonlyArray<{
   expect: RouteAuth;
   exceptions?: ReadonlyArray<{ method: string; path: string; auth: RouteAuth }>;
 }> = [
-  { prefix: '/dev/', expect: VT },
+  {
+    prefix: '/dev/',
+    expect: VT,
+    exceptions: [
+      // Same EI-338 cookie-less desktop-webview rationale as its /admin/ VTL
+      // siblings: TableAdmin's Promise.all also fetches this alongside
+      // /admin/tables/:exportName, so leaving it VT still 403-blanked the
+      // pane (EI-18834967602055309). Read-only schema introspection.
+      { method: 'GET', path: '/dev/tables/:exportName', auth: VTL },
+    ],
+  },
   { prefix: '/credentials', expect: VTL },
   { prefix: '/publish-credentials', expect: VTL },
   {
@@ -209,6 +219,21 @@ const RULES: ReadonlyArray<{
       // requireAllowedOriginOr403 — see the route's own auth comment in
       // admin/owner-presence-touch.ts.
       { method: 'POST', path: '/admin/owner-presence/touch', auth: VTL },
+      // Same EI-338 cookie-less desktop-webview rationale as the VTL entries
+      // above: AdminOps/TableAdmin/DbosClient/SchedulesClient bare-fetch these
+      // from the packaged desktop app with no session cookie, so they only
+      // ever resolve 'unverified-loopback' — VT silently 403-blanked all four
+      // panes (EI-18834967602055309, measured live 2026-07-27). Read-only,
+      // except tables/:exportName's mutating verbs, which are additionally
+      // CSRF-guarded by requireAllowedOriginOr403 (see the route file).
+      { method: 'GET',    path: '/admin/commands', auth: VTL },
+      { method: 'GET',    path: '/admin/tables', auth: VTL },
+      { method: 'GET',    path: '/admin/tables/:exportName', auth: VTL },
+      { method: 'POST',   path: '/admin/tables/:exportName', auth: VTL },
+      { method: 'PATCH',  path: '/admin/tables/:exportName', auth: VTL },
+      { method: 'DELETE', path: '/admin/tables/:exportName', auth: VTL },
+      { method: 'GET',    path: '/admin/dbos/status', auth: VTL },
+      { method: 'GET',    path: '/admin/schedules/inventory', auth: VTL },
     ],
   },
 ];

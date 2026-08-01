@@ -394,6 +394,13 @@ function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
     // landed with terminal_reason NULL — the resolved-vs-closed nuance lost across
     // the wire, exactly what D-001 forbids. Carry it (column-completeness guard).
     terminal_reason: strOrNull(row.terminal_reason),
+    // mig 708 / EI-18785839681430807: the AUTHORITY axis (mig 677,
+    // agent-protocol-authority-semantics-2026-07-26 P-003) — same completion-
+    // integrity treatment as terminal_owner/terminal_completion_ref/terminal_reason
+    // above (D-035): federated as a plain column AND joins the EI-16756 content
+    // digest in both projections' writeToPg. OPTIONAL on the wire (pre-708 history
+    // lacks it → writeToPg maps absent → NULL).
+    authority: strOrNull(row.authority),
   };
 }
 
@@ -811,6 +818,10 @@ function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
     // wire so an issue federated A→B keeps its resolution kind (mig 640 stamps
     // terminal_reason into the issue wire-shape explicitly).
     terminal_reason: strOrNull(row.terminal_reason),
+    // mig 708 / EI-18785839681430807: same authority-axis carrier as toFeatureValue
+    // above (D-035) — mig 708's capture_work_items_outbox now stamps `authority`
+    // into the issue-family jsonb_build_object explicitly.
+    authority: strOrNull(row.authority),
   };
 }
 

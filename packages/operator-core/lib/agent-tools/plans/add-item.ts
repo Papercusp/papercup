@@ -26,7 +26,7 @@ import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/age
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan, maskFences, IMPORTANCE_LEVELS, type Importance } from './parser';
+import { parsePlan, maskFences, IMPORTANCE_LEVELS, type Importance, type LegacyReason } from './parser';
 import { echoParsedItem } from './item-parse-feedback';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -272,7 +272,7 @@ export function appendItemToBody(
  *  argument, not inferred from a union-returning mutator. */
 type AddItemValue =
   | { ok: true; itemId: string; createdPhase: boolean; slug: string }
-  | { ok: false; code: 'not_found' | 'legacy_plan' };
+  | { ok: false; code: 'not_found' | 'legacy_plan'; reason?: LegacyReason };
 
 /** Append ONE item, returning the self-describing bulk result. PRESERVES the
  *  in-lock allocate → build → append → bump, the revision capture, the plan-event
@@ -304,7 +304,10 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
       }
       const parsed = parsePlan(current, { filePath: it.slug + '.md' });
       if (parsed.isLegacy) {
-        return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+        return {
+          newBody: null,
+          value: { ok: false, code: 'legacy_plan', reason: parsed.legacyReason ?? undefined },
+        };
       }
       const itemId = allocateNextItemId(current);
       const itemLine = buildItemLine(itemId, it.text, it.blockedBy ?? [], it.importance);

@@ -29,6 +29,7 @@
  */
 
 import { memo } from 'react';
+import { RowBoundary, SectionBoundary } from '@/app/_components/RenderBoundary';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { formatAge, type HudBadge } from './hud-board-model';
 import {
@@ -115,7 +116,33 @@ function EntityCard({
   );
 }
 
-const MemoEntityCard = memo(EntityCard);
+/**
+ * WI-6668: the per-ITEM boundary. A card that throws while rendering degrades to
+ * a one-line placeholder; every sibling card, the column, and the tab all
+ * survive. Before this, one malformed row blanked the whole HUD tab.
+ *
+ * The boundary is INSIDE the `memo`, not around it, so this costs nothing per
+ * commit: a card whose props are unchanged re-renders neither the boundary nor
+ * the card (WI-6560 — HUD list commits are already the expensive ones).
+ */
+const MemoEntityCard = memo(function SafeEntityCard(props: {
+  card: HudEntityCard;
+  onOpen?: (card: HudEntityCard) => void;
+}) {
+  return (
+    /* Optional-chained on purpose: the label is computed OUTSIDE the boundary
+       (it is this component's own render), so a null/undefined row would throw
+       here — above the very boundary meant to contain it — and take the column
+       down anyway. The types say it cannot be null; the feed is what actually
+       decides. */
+    <RowBoundary
+      label={props.card?.ref || props.card?.id || 'This item'}
+      scope="hud-card"
+    >
+      <EntityCard {...props} />
+    </RowBoundary>
+  );
+});
 
 export interface HudEntityColumnsProps {
   board: HudEntityBoard;
@@ -230,29 +257,43 @@ export default function HudEntityColumns({
       ) : (
         <div className="hud__cols" style={focusColumn ? { gridTemplateColumns: '1fr' } : undefined}>
           {visibleColumns.map((c) => (
-            <section key={c.id} className={`hud__col hud__col--${c.id}`} aria-label={c.label}>
-              <h3 className="hud__col-h">
-                {c.label}
-                <span className="n">{board.counts[c.id]}</span>
-              </h3>
-              <div className="hud__col-b">
-                {c.cards.length === 0 ? (
-                  <p className="hud__empty">{c.empty}</p>
-                ) : (
-                  <>
-                    {c.cards.map((card) => (
-                      <MemoEntityCard key={card.id} card={card} onOpen={onOpenCard} />
-                    ))}
-                    {/* A truncated column says so. The cap is a render bound;
-                        pretending the column holds 60 items when it holds 400
-                        would make every count on this board suspect. */}
-                    {c.hidden > 0 ? (
-                      <p className="hud__empty hud__more">+{c.hidden} more — narrow with the filter</p>
-                    ) : null}
-                  </>
-                )}
-              </div>
-            </section>
+            /* WI-6668: the per-SECTION boundary. Anything the column's own
+               render touches (its header, its counts, a card the row boundary
+               could not reach) degrades THIS column to a retryable notice and
+               leaves the other columns — and the tab — standing. The fallback
+               keeps the column's classes so the grid geometry does not collapse. */
+            <SectionBoundary
+              key={c.id}
+              label={c.label}
+              scope="hud-column"
+              className={`hud__col hud__col--${c.id}`}
+            >
+              <section className={`hud__col hud__col--${c.id}`} aria-label={c.label}>
+                <h3 className="hud__col-h">
+                  {c.label}
+                  <span className="n">{board.counts[c.id]}</span>
+                </h3>
+                <div className="hud__col-b">
+                  {c.cards.length === 0 ? (
+                    <p className="hud__empty">{c.empty}</p>
+                  ) : (
+                    <>
+                      {c.cards.map((card) => (
+                        <MemoEntityCard key={card.id} card={card} onOpen={onOpenCard} />
+                      ))}
+                      {/* A truncated column says so. The cap is a render bound;
+                          pretending the column holds 60 items when it holds 400
+                          would make every count on this board suspect. */}
+                      {c.hidden > 0 ? (
+                        <p className="hud__empty hud__more">
+                          +{c.hidden} more — narrow with the filter
+                        </p>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              </section>
+            </SectionBoundary>
           ))}
         </div>
       )}

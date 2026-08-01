@@ -263,4 +263,105 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     // announcement rather than leaving a permanent namespace-mirror gap.
     expect((await readSigrefs(mirrorRepo, devB.pubkeyBase64))?.version).toBe(mirroredBefore);
   });
+
+  /**
+   * WI-6418 — THE CONVERGENCE PROPERTY, end to end against real git.
+   *
+   * Everything else about this bug was previously proven only in isolation:
+   * the serve-side admission rule discards nothing (a pure unit test over
+   * `resolveServeAdmission`), and the coalescer opens one session (a pure unit
+   * test over a stub). Neither runs a transfer, so neither can answer the only
+   * question a release actually turns on — DOES THE REPO END UP MIRRORED.
+   *
+   * The failure this guards is not "slow". It is "never finishes at any
+   * throughput": ~12+ staggered git-sync routines drive a fetch for the same
+   * repo roughly every ~15s in aggregate, while a multi-GB cold join needs
+   * ~175s. Each drive used to open its own session, and the serve side then
+   * destroyed (pre-WI-6412) or refused (post-WI-6412) the transfer already in
+   * progress. The ceiling is a PERIOD, not a RATE — which is why the size of
+   * the repo is deliberately NOT what this test varies. Concurrency during a
+   * single in-flight transfer reproduces it at any scale.
+   */
+  it('WI-6418: concurrent drives open ONE session, report no failure, and the repo still converges', async () => {
+    const sha6 = await mintCommit(serverRepo, 'B work 6');
+    await writeNamespaceRef(serverRepo, devB.pubkeyBase64, 'refs/heads/work', sha6);
+    await buildSigrefs(serverRepo, devB.pubkeyBase64, devB.sign, { nowMs: ++now });
+    const ann = await buildRefAnnouncement(serverRepo, devB.pubkeyBase64, devB.sign, { nowMs: now });
+    const mirroredBefore = (await readSigrefs(mirrorRepo, devB.pubkeyBase64))?.version;
+    expect(mirroredBefore).toBeLessThan(ann.version); // the fetch is genuinely needed
+
+    let dials = 0;
+    const countingDial = (): Promise<Socket> => {
+      dials += 1;
+      return dial();
+    };
+
+    // Six drivers racing for the same repo, exactly as the staggered routines do.
+    const drives = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        handleRefAnnouncement(mirrorRepo, ann, {
+          selfDevice: devA.pubkeyBase64,
+          allowedDevices: members(),
+          nowMs: now,
+          openStream: countingDial,
+          timeoutMs: 30_000,
+        }),
+      ),
+    );
+
+    // 1. ONE session. Pre-fix this was 6, and every one of them landed on a
+    //    serve that was already streaming to this same channel.
+    expect(dials).toBe(1);
+    expect(drives.filter((d) => d.action === 'fetched')).toHaveLength(1);
+    expect(drives.filter((d) => d.action === 'already-in-flight')).toHaveLength(5);
+
+    // 2. NOTHING is reported as a failure. This is the half that keeps the
+    //    livelock from re-forming: a collapsed duplicate that surfaced as
+    //    `fetch-failed` would have the driver log a phantom transport error
+    //    against a perfectly healthy stream and re-dial it next tick.
+    expect(drives.some((d) => d.action === 'fetch-failed')).toBe(false);
+
+    // 3. AND IT CONVERGED. The point of the whole exercise — not "one session
+    //    was opened", but "the objects arrived".
+    expect(await readNamespaceRef(mirrorRepo, devB.pubkeyBase64, 'refs/heads/work')).toBe(sha6);
+    expect((await readSigrefs(mirrorRepo, devB.pubkeyBase64))?.version).toBe(ann.version);
+  });
+
+  it('WI-6418: a collapsed duplicate does NOT consume the version fence', async () => {
+    // The coalescer must not cost us an announcement. If a skipped drive
+    // advanced the mirror watermark, the announce it declined to fetch would
+    // never be retried — reintroducing EI-15335's silent permanent namespace
+    // gap through a new door.
+    const sha7 = await mintCommit(serverRepo, 'B work 7');
+    await writeNamespaceRef(serverRepo, devB.pubkeyBase64, 'refs/heads/work', sha7);
+    await buildSigrefs(serverRepo, devB.pubkeyBase64, devB.sign, { nowMs: ++now });
+    const ann = await buildRefAnnouncement(serverRepo, devB.pubkeyBase64, devB.sign, { nowMs: now });
+
+    // Hold one drive open on a dial that never settles, so a SECOND drive is
+    // guaranteed to be the collapsed one, then let the holder time out.
+    const holder = handleRefAnnouncement(mirrorRepo, ann, {
+      allowedDevices: members(),
+      nowMs: now,
+      openStream: () => new Promise<never>(() => {}),
+      timeoutMs: 300,
+    });
+    const collapsed = await handleRefAnnouncement(mirrorRepo, ann, {
+      allowedDevices: members(),
+      nowMs: now,
+      openStream: dial,
+      timeoutMs: 30_000,
+    });
+    expect(collapsed.action).toBe('already-in-flight');
+    await holder;
+
+    // The fence is intact, so a later tick can still mirror this announcement.
+    const retried = await handleRefAnnouncement(mirrorRepo, ann, {
+      allowedDevices: members(),
+      nowMs: now,
+      openStream: dial,
+      timeoutMs: 30_000,
+    });
+    expect(retried.action).toBe('fetched');
+    expect(await readNamespaceRef(mirrorRepo, devB.pubkeyBase64, 'refs/heads/work')).toBe(sha7);
+  });
 });

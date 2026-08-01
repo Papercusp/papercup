@@ -1,0 +1,199 @@
+import { describe, it, expect } from 'vitest';
+import {
+  parseFactRef,
+  parsePlanDecisionRef,
+  parseWorkItemRef,
+  resolvePremiseStamps,
+  failingPremises,
+  type PremiseProbes,
+} from './premise-resolve';
+
+describe('parseFactRef — the three live forms', () => {
+  it('parses the documented owner form with a version pin', () => {
+    expect(parseFactRef('fact:owner:su-123:my-key@v7')).toEqual({
+      scope: 'owner',
+      scopeRef: 'su-123',
+      key: 'my-key',
+      version: 7,
+    });
+  });
+
+  it('parses the scoped form that actually dominates the corpus', () => {
+    expect(parseFactRef('fact:harness:papercusp:pot-git-rule0-confirmed-sound')).toEqual({
+      scope: 'harness',
+      scopeRef: 'papercusp',
+      key: 'pot-git-rule0-confirmed-sound',
+      version: undefined,
+    });
+  });
+
+  it('parses the bare form', () => {
+    expect(parseFactRef('fact:desktop-ipc-rollback-lever-is-dead-in-webview')).toEqual({
+      key: 'desktop-ipc-rollback-lever-is-dead-in-webview',
+      version: undefined,
+    });
+  });
+
+  // REGRESSION: a hand-rolled parse that strips only `owner:` — or that takes
+  // split(':')[2] as the key — reads this real fact as dangling. Keys carry
+  // their own colons (`dead-end:`, `wall:` prefixes), so the key is everything
+  // after the scope PAIR. This exact false negative was produced live while
+  // measuring adoption, and reported 4 of 5 real facts as missing.
+  it('keeps a colon-bearing key intact', () => {
+    expect(
+      parseFactRef('fact:harness:papercusp:dead-end:wi6502-mapper-is-not-the-bottleneck'),
+    ).toEqual({
+      scope: 'harness',
+      scopeRef: 'papercusp',
+      key: 'dead-end:wi6502-mapper-is-not-the-bottleneck',
+      version: undefined,
+    });
+  });
+
+  it('does not mistake a non-scope first segment for a scope', () => {
+    // `desktop` is not a FACT_SCOPE, so this is a bare key, not scope+ref.
+    expect(parseFactRef('fact:desktop:ipc:lever')).toEqual({
+      key: 'desktop:ipc:lever',
+      version: undefined,
+    });
+  });
+
+  it('returns null for a non-fact ref', () => {
+    expect(parseFactRef('msg:abc')).toBeNull();
+  });
+});
+
+describe('parsePlanDecisionRef / parseWorkItemRef', () => {
+  it('splits a plan decision on the LAST hash, since slugs carry dates', () => {
+    expect(parsePlanDecisionRef('hud-tab-public-release-2026-07-28#D-004')).toEqual({
+      slug: 'hud-tab-public-release-2026-07-28',
+      decisionId: 'D-004',
+    });
+  });
+
+  it('rejects a non-decision anchor', () => {
+    expect(parsePlanDecisionRef('some-plan#Now')).toBeNull();
+  });
+
+  it('splits a work-item ref into id and anchor', () => {
+    expect(parseWorkItemRef('WI-6502#completion')).toEqual({ id: 'WI-6502', anchor: 'completion' });
+  });
+});
+
+describe('resolvePremiseStamps', () => {
+  it('flags a completion premise on an OPEN item as broken, not stale', async () => {
+    // The WI-6502 case, observed live: a message declared it rested on a
+    // completion that had never happened. The sender was wrong AT SEND TIME,
+    // which is `broken` — the ground was never there, it did not move.
+    const probes: PremiseProbes = {
+      workItem: async (id) =>
+        id === 'WI-6502' ? { exists: true, state: 'open', terminal: false } : null,
+    };
+    const [stamp] = await resolvePremiseStamps(['WI-6502#completion'], probes);
+    expect(stamp!.status).toBe('broken');
+    expect(stamp!.note).toContain('open');
+    // The ref travels verbatim — verification decorates, never rewrites.
+    expect(stamp!.ref).toBe('WI-6502#completion');
+  });
+
+  it('holds a completion premise on a terminal item', async () => {
+    const probes: PremiseProbes = {
+      workItem: async () => ({ exists: true, state: 'done', terminal: true }),
+    };
+    const [stamp] = await resolvePremiseStamps(['WI-6412#completion'], probes);
+    expect(stamp!.status).toBe('holds');
+  });
+
+  it('reports a dangling work-item citation as unresolvable', async () => {
+    const probes: PremiseProbes = { workItem: async () => ({ exists: false }) };
+    const [stamp] = await resolvePremiseStamps(['WI-9999#completion'], probes);
+    expect(stamp!.status).toBe('unresolvable');
+  });
+
+  it('resolves a plan decision, and distinguishes a missing plan from a missing decision', async () => {
+    const probes: PremiseProbes = {
+      planDecision: async (slug, id) => ({
+        planExists: slug === 'real-plan',
+        decisionExists: slug === 'real-plan' && id === 'D-004',
+      }),
+    };
+    const [ok, noDecision, noPlan] = await resolvePremiseStamps(
+      ['real-plan#D-004', 'real-plan#D-999', 'ghost-plan#D-001'],
+      probes,
+    );
+    expect(ok!.status).toBe('holds');
+    expect(noDecision!.status).toBe('unresolvable');
+    expect(noDecision!.note).toContain('D-999');
+    expect(noPlan!.status).toBe('unresolvable');
+    expect(noPlan!.note).toContain('ghost-plan');
+  });
+
+  // This pair is the measured defect, pinned as behaviour: the version pin is
+  // the ONLY thing that can make a fact premise go stale. 0 of 57 refs in the
+  // corpus carried one, which is precisely why nothing has ever gone stale.
+  it('marks a PINNED premise stale once its version is superseded', async () => {
+    const probes: PremiseProbes = {
+      fact: async () => ({ exists: true, supersededAt: '2026-07-30T00:00:00Z' }),
+    };
+    const [stamp] = await resolvePremiseStamps(['fact:harness:papercusp:some-key@v3'], probes);
+    expect(stamp!.status).toBe('stale');
+    expect(stamp!.note).toContain('superseded');
+  });
+
+  it('cannot detect staleness on an UNPINNED premise, even when superseded', async () => {
+    const probes: PremiseProbes = {
+      fact: async () => ({ exists: true, supersededAt: '2026-07-30T00:00:00Z' }),
+    };
+    const [stamp] = await resolvePremiseStamps(['fact:harness:papercusp:some-key'], probes);
+    expect(stamp!.status).toBe('holds');
+  });
+
+  it('treats docs and unrecognised refs as not-checkable, never as failures', async () => {
+    const [doc, opaque] = await resolvePremiseStamps([
+      '/internal/docs/agent-insights/judging-claimable-work-not-status-open',
+      'dev:pg_query GROUP BY kind over harness_shared.engineer_issues',
+    ]);
+    expect(doc!.status).toBe('not-checkable');
+    expect(opaque!.status).toBe('not-checkable');
+    expect(failingPremises([doc!, opaque!])).toHaveLength(0);
+  });
+
+  it('fail-softs a throwing probe to unknown rather than blocking the send', async () => {
+    const probes: PremiseProbes = {
+      workItem: async () => {
+        throw new Error('store down');
+      },
+    };
+    const [stamp] = await resolvePremiseStamps(['WI-1#completion'], probes);
+    expect(stamp!.status).toBe('unknown');
+  });
+
+  it('yields unknown — not unresolvable — when no probe is supplied', async () => {
+    // Absence of a probe must never read as a false accusation of dangling.
+    const [stamp] = await resolvePremiseStamps(['WI-1#completion'], {});
+    expect(stamp!.status).toBe('unknown');
+  });
+
+  it('de-dupes and caps, preserving first-appearance order', async () => {
+    const probes: PremiseProbes = { workItem: async () => ({ exists: true, terminal: true }) };
+    const stamps = await resolvePremiseStamps(
+      ['WI-2#completion', 'WI-1#completion', 'WI-2#completion'],
+      probes,
+    );
+    expect(stamps.map((s) => s.ref)).toEqual(['WI-2#completion', 'WI-1#completion']);
+  });
+
+  it('surfaces only genuine failures through failingPremises', async () => {
+    const probes: PremiseProbes = {
+      workItem: async (id) =>
+        id === 'WI-6502'
+          ? { exists: true, state: 'open', terminal: false }
+          : { exists: true, terminal: true },
+    };
+    const stamps = await resolvePremiseStamps(
+      ['WI-6502#completion', 'WI-6412#completion', '/internal/docs/x'],
+      probes,
+    );
+    expect(failingPremises(stamps).map((s) => s.ref)).toEqual(['WI-6502#completion']);
+  });
+});

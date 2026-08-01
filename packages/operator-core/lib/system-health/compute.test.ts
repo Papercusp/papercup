@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { classifyGitSyncFailingLeg, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, mergeHealthPanels, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, mergeHealthPanels, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
@@ -788,42 +788,3 @@ describe('mergeHealthPanels — push-on-write merge for the health-tab cache (st
   });
 });
 
-/**
- * EI-19275994927087666 — the deploy panel called EVERY git-sync crit a PUSH failure.
- * For 32h the fleet inbox read "PUSH FAILING … commits NOT reaching origin" while
- * origin/staging was identical to local HEAD and 18 of 19 routines were at 0 error
- * ticks. The single offender was an abandoned scratch pot whose corrupt git object
- * broke the COMMIT leg — it never reached the network at all.
- */
-describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
-  it('classifies the REAL incident error as a commit failure, not a push failure', () => {
-    const actual =
-      "superproject: commit failed: error: invalid object 100644 d75c463ae71a1031fc95c9ba48982924e195320b for '.papercusp/blueprint.yaml'";
-    expect(classifyGitSyncFailingLeg(actual, 'push')).toBe('commit');
-  });
-
-  it('does not let push_mode override an explicit commit failure', () => {
-    // The real offender's push_mode was 'push', so push_mode alone could never have
-    // caught this — last_error has to be the load-bearing signal.
-    expect(classifyGitSyncFailingLeg('commit failed: bad object', 'push')).toBe('commit');
-  });
-
-  it('classifies a genuine push failure as push', () => {
-    expect(classifyGitSyncFailingLeg('failed to push some refs to origin', 'push')).toBe('push');
-  });
-
-  it('classifies a conflict as conflict, even though the text also mentions commit', () => {
-    expect(classifyGitSyncFailingLeg('merge conflict in lib/x.ts; commit aborted', 'push')).toBe('conflict');
-  });
-
-  it('infers commit for a commit-only member when the error text is unusable', () => {
-    // A commit-only:* member never pushes, so its failure cannot be a push failure.
-    expect(classifyGitSyncFailingLeg(null, 'commit-only:bridged')).toBe('commit');
-    expect(classifyGitSyncFailingLeg('', 'commit-only:config')).toBe('commit');
-  });
-
-  it('returns unknown rather than guessing "push" when nothing is decidable', () => {
-    expect(classifyGitSyncFailingLeg(null, null)).toBe('unknown');
-    expect(classifyGitSyncFailingLeg('something weird happened', 'push')).toBe('unknown');
-  });
-});

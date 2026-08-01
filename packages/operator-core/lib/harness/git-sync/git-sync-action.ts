@@ -738,6 +738,20 @@ async function spawnContentFixer(slug: string, workspaceId: string, contentError
     });
 }
 
+/** EI-18775478513129278: the shape of a previously-recorded `bootstrap` metadata
+ *  record, read back when a tick has no fresh `outcome` of its own so the durable
+ *  on-disk-progress fields (namespaceCount/quarantineRefs/phase/shallow/deepenNext)
+ *  can be carried forward instead of clobbered with 0/null. Loosely typed (every
+ *  field optional/unknown-ish) because it comes back from `metadata->'bootstrap'`
+ *  jsonb written by whatever build wrote the prior tick — never assume its shape. */
+interface PriorBootstrapMeta {
+  phase?: string | null;
+  quarantineRefs?: number;
+  shallow?: boolean | null;
+  deepenNext?: number | null;
+  namespaceCount?: number;
+}
+
 /** Merge a partial metadata patch onto the git-sync routine's JSONB.
  *
  *  The `workspace_id` predicate is LOAD-BEARING, not defensive: `install_slug` is NOT
@@ -2157,16 +2171,10 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // "is this cold join progressing?"). Carry those fields forward from the
     // last recorded tick instead of clobbering them; only a tick that actually
     // dialed (a real `outcome`) gets to report a fresh disk read.
-    let priorBootstrap: {
-      phase?: unknown;
-      quarantineRefs?: number;
-      shallow?: boolean | null;
-      deepenNext?: number | null;
-      namespaceCount?: number;
-    } | null = null;
+    let priorBootstrap: PriorBootstrapMeta | null = null;
     if (!outcome) {
       const { sql } = getOrgPg();
-      const priorRows = await sql<{ bootstrap: typeof priorBootstrap }[]>`
+      const priorRows = await sql<{ bootstrap: PriorBootstrapMeta | null }[]>`
         SELECT metadata->'bootstrap' AS bootstrap
           FROM harness_shared.routines
          WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'

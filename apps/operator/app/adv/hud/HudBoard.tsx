@@ -33,6 +33,7 @@ import {
   type HudSession,
 } from './hud-board-model';
 import { HUD_TABS, HUD_TAB_LABEL, type HudTabId } from './hud-entity-board';
+import { RowBoundary, SectionBoundary } from '@/app/_components/RenderBoundary';
 import './hud.css';
 
 const CHIP_TONE_CLASS: Record<HudBadge['tone'], string> = {
@@ -189,7 +190,28 @@ function SessionCard({
   );
 }
 
-const MemoSessionCard = memo(SessionCard);
+/**
+ * WI-6668: the per-ITEM boundary — one malformed session row degrades to a
+ * one-line placeholder instead of blanking the column and, via the /adv tab
+ * boundary, the whole HUD. Same shape (and same reasoning) as the entity
+ * board's SafeEntityCard; see RenderBoundary.tsx.
+ *
+ * Boundary INSIDE the memo so an unchanged row re-renders neither (WI-6560).
+ * The label is optional-chained because computing it happens ABOVE the boundary.
+ */
+const MemoSessionCard = memo(function SafeSessionCard(props: {
+  session: HudSession;
+  onOpen: (ownerId: string) => void;
+}) {
+  return (
+    <RowBoundary
+      label={props.session?.handle || props.session?.ownerId || 'This session'}
+      scope="hud-card"
+    >
+      <SessionCard {...props} />
+    </RowBoundary>
+  );
+});
 
 /* The unattributed-ask card used to live here — a full-width strip above the
    session columns, the coverage gate hud-consolidation-2026-07-26 P-002 put in
@@ -512,21 +534,32 @@ export default function HudBoard({
       ) : (
         <div className="hud__cols" style={focusColumn ? { gridTemplateColumns: '1fr' } : undefined}>
           {visibleColumns.map((c) => (
-            <section key={c.id} className={`hud__col hud__col--${c.id}`} aria-label={c.label}>
-              <h3 className="hud__col-h">
-                {c.label}
-                <span className="n">{c.sessions.length}</span>
-              </h3>
-              <div className="hud__col-b">
-                {c.sessions.length === 0 ? (
-                  <p className="hud__empty">{c.empty}</p>
-                ) : (
-                  c.sessions.map((s) => (
-                    <MemoSessionCard key={s.ownerId} session={s} onOpen={onOpenSession} />
-                  ))
-                )}
-              </div>
-            </section>
+            /* WI-6668: the per-SECTION boundary — one column's throw degrades
+               THAT column to a retryable notice; the other four columns and the
+               tab keep rendering. Classes are carried onto the fallback so the
+               grid does not reflow around a missing column. */
+            <SectionBoundary
+              key={c.id}
+              label={c.label}
+              scope="hud-column"
+              className={`hud__col hud__col--${c.id}`}
+            >
+              <section className={`hud__col hud__col--${c.id}`} aria-label={c.label}>
+                <h3 className="hud__col-h">
+                  {c.label}
+                  <span className="n">{c.sessions.length}</span>
+                </h3>
+                <div className="hud__col-b">
+                  {c.sessions.length === 0 ? (
+                    <p className="hud__empty">{c.empty}</p>
+                  ) : (
+                    c.sessions.map((s) => (
+                      <MemoSessionCard key={s.ownerId} session={s} onOpen={onOpenSession} />
+                    ))
+                  )}
+                </div>
+              </section>
+            </SectionBoundary>
           ))}
         </div>
       )}
