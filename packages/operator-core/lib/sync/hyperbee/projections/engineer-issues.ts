@@ -76,6 +76,14 @@ export interface EngineerIssueRow {
    * OPTIONAL on the wire (pre-638 history lacks it → dropped on write → NULL).
    */
   terminal_reason?: string | null;
+  /**
+   * mig 708 / EI-18785839681430807: the AUTHORITY axis (mig 677,
+   * agent-protocol-authority-semantics-2026-07-26 P-003; D-035). Same
+   * completion-integrity treatment as the terminal_* pair above — federated as
+   * a plain column and joined into the EI-16756 digest below. OPTIONAL on the
+   * wire (pre-708 history lacks it → dropped on write → NULL).
+   */
+  authority?: string | null;
 }
 
 function isString(v: unknown): v is string {

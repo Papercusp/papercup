@@ -443,8 +443,22 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       const decision = decideRefAnnounceReceiveCursor(out.results, [4321], 4321);
       expect(decision.held).toBe(true);
       expect(decision.cursor).toBe(4320);
+      // WI-6277 added `timedOut` + `code` to every fetchFailed row and this
+      // assertion was never updated, so it has been red since (toEqual is exact
+      // — extra keys fail). Asserting them is strictly better than loosening to
+      // objectContaining: the two fields ARE the point of WI-6277, and this
+      // case exercises the discriminator that motivated it. A duplex destroyed
+      // before the fetch began means no git process ever ran, so it must read
+      // `code: -1` and NOT masquerade as a ceiling timeout — the exact
+      // confusion that stranded a replication stall on the P-302 rig.
       expect(decision.fetchFailed).toEqual([
-        { rowId: 4321, device: devG.pubkeyBase64, stderr: expect.any(String) },
+        {
+          rowId: 4321,
+          device: devG.pubkeyBase64,
+          stderr: expect.any(String),
+          timedOut: false,
+          code: -1,
+        },
       ]);
     });
   });

@@ -99,6 +99,48 @@ describe('SectionBoundary', () => {
     expect(failed.getAttribute('role')).toBe('alert');
   });
 
+  /* The geometry guarantee, asserted mechanically rather than by screenshot.
+     `.hud__cols` is a CSS GRID whose direct children are the columns, so if a
+     boundary inserted a wrapper element on the HEALTHY path it would silently
+     re-parent every column and collapse the board. RenderBoundary returns
+     `this.props.children` — no DOM node — and this pins that: adopting the
+     boundary must be a zero-DOM-diff change until something actually throws. */
+  it('adds NO wrapper element while nothing is throwing (grid stays intact)', () => {
+    const { container } = render(
+      <div className="hud__cols">
+        <SectionBoundary label="A" className="hud__col">
+          <section className="hud__col hud__col--a">a</section>
+        </SectionBoundary>
+        <SectionBoundary label="B" className="hud__col">
+          <section className="hud__col hud__col--b">b</section>
+        </SectionBoundary>
+      </div>,
+    );
+    const grid = container.querySelector('.hud__cols')!;
+    expect(grid.children).toHaveLength(2);
+    for (const child of Array.from(grid.children)) {
+      expect(child.tagName).toBe('SECTION');
+      expect(child.className).toContain('hud__col');
+    }
+  });
+
+  it('the FALLBACK is still a direct grid child, so the row does not reflow', () => {
+    const { container } = render(
+      <div className="hud__cols">
+        <SectionBoundary label="A" className="hud__col hud__col--a">
+          <Boom />
+        </SectionBoundary>
+        <SectionBoundary label="B" className="hud__col hud__col--b">
+          <section className="hud__col hud__col--b">b</section>
+        </SectionBoundary>
+      </div>,
+    );
+    const grid = container.querySelector('.hud__cols')!;
+    expect(grid.children).toHaveLength(2);
+    expect(grid.children[0].tagName).toBe('SECTION');
+    expect(grid.children[0].className).toContain('hud__col--a');
+  });
+
   it('recovers on "Try again" once the cause is gone', () => {
     let broken = true;
     function Sometimes() {

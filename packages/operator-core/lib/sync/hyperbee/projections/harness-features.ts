@@ -416,7 +416,7 @@ async function writeToPg(
     -- mig 708 / EI-18785839681430807 (D-035): authority joins the digest for the
     -- SAME reason — two racing completions can converge to an identical
     -- status/taken_by/terminal_owner while carrying a DIFFERENT authority (an
-    -- evidence-backed `committed` vs a racing under-evidenced `proposed`).
+    -- evidence-backed 'committed' vs a racing under-evidenced 'proposed').
     WHERE harness_shared.fed_apply_wins(
             EXCLUDED.fed_hlc, EXCLUDED.fed_ts, EXCLUDED.author_pubkey,
             md5(concat_ws('|', EXCLUDED.item_kind, EXCLUDED.title, EXCLUDED.summary,

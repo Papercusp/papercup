@@ -178,6 +178,25 @@ flag-on path uses — so a “my base edit is missing from the render” check a
 default call fails spuriously. To reproduce the live render programmatically, pass
 <code dir="auto">baseSource: libs/papercusp/packages/harness/blueprints/base/prompts/su.md</code> (what
 <code dir="auto">buildSuLaunchSpec</code> resolves when <code dir="auto">SU_BLUEPRINT_PERSONA</code> is ON).</li>
+<li><strong><code dir="auto">renderSuPlaybook</code> returns an OBJECT — the assembled prompt is <code dir="auto">.text</code>.</strong> The shape is
+<code dir="auto">{ text, baseSource, overlaySource, projectGuideSource }</code>. Reaching for a plausible-but-wrong
+field (<code dir="auto">.markdown</code>, <code dir="auto">.content</code>, <code dir="auto">.prompt</code>) yields <code dir="auto">undefined</code>, and a verification script that
+then greps <code dir="auto">`${base}\n\n${override}`</code> silently checks the string <code dir="auto">"undefined"</code> plus the pot
+override — so every assertion sourced from the BASE or the CLIENT OVERLAY fails while the ones
+satisfied by the override alone pass. That reads exactly like “my base edit didn’t land”
+(EI-19277117902219188, 2026-08-01: 5 of 9 checks false-failed this way, and the tell was
+arithmetic — the “whole prompt” came back SHORTER than the override it supposedly contained).
+Log <code dir="auto">base.length</code> / <code dir="auto">override.length</code> / <code dir="auto">prompt.length</code> before believing a negative result: a
+base render is ~87k chars, so a four-figure or missing base means you read the wrong field, not
+that the edit is missing.</li>
+<li><strong>Layer 4 is a DB row, and nothing syncs the file into it.</strong> <code dir="auto">apps/operator/prompts/pot-instances/&#x3C;pot>.su.md</code>
+is the version-controlled SOURCE ONLY; the live override is <code dir="auto">harness_shared.pot_settings</code>
+(<code dir="auto">setting_key = 'promptOverride.su'</code>, note: <code dir="auto">pot_settings</code>, not the older <code dir="auto">hive_settings</code> name).
+Editing the file alone changes NOTHING for live sessions. Re-seed it — not deploy-gated —
+with a loopback <code dir="auto">POST /api/agent-mcp/pot-override-set</code>
+<code dir="auto">{ potSlug: 'papercusp', kind: 'prompt', name: 'su', value: &#x3C;file contents> }</code>, then CONFIRM the
+row moved (<code dir="auto">SELECT length(value), to_timestamp(updated_at/1000) FROM harness_shared.pot_settings WHERE setting_key = 'promptOverride.su'</code>) — a 200 is the route accepting the write, not proof it
+landed.</li>
 <li><strong>Don’t hand-write into a generated section.</strong> If the fact belongs in AUTO mode / promotion
 model / wire schemas, change the renderer — the next splice overwrites anything you typed
 between the markers.</li>

@@ -89,6 +89,26 @@ now, fire one autonomous spawn carrying a `BLUEPRINT_ID`. A stale `.materialized
   default call fails spuriously. To reproduce the live render programmatically, pass
   `baseSource: libs/papercusp/packages/harness/blueprints/base/prompts/su.md` (what
   `buildSuLaunchSpec` resolves when `SU_BLUEPRINT_PERSONA` is ON).
+* **`renderSuPlaybook` returns an OBJECT — the assembled prompt is `.text`.** The shape is
+  `{ text, baseSource, overlaySource, projectGuideSource }`. Reaching for a plausible-but-wrong
+  field (`.markdown`, `.content`, `.prompt`) yields `undefined`, and a verification script that
+  then greps `` `${base}\n\n${override}` `` silently checks the string `"undefined"` plus the pot
+  override — so every assertion sourced from the BASE or the CLIENT OVERLAY fails while the ones
+  satisfied by the override alone pass. That reads exactly like "my base edit didn't land"
+  (EI-19277117902219188, 2026-08-01: 5 of 9 checks false-failed this way, and the tell was
+  arithmetic — the "whole prompt" came back SHORTER than the override it supposedly contained).
+  Log `base.length` / `override.length` / `prompt.length` before believing a negative result: a
+  base render is \~87k chars, so a four-figure or missing base means you read the wrong field, not
+  that the edit is missing.
+* **Layer 4 is a DB row, and nothing syncs the file into it.** `apps/operator/prompts/pot-instances/<pot>.su.md`
+  is the version-controlled SOURCE ONLY; the live override is `harness_shared.pot_settings`
+  (`setting_key = 'promptOverride.su'`, note: `pot_settings`, not the older `hive_settings` name).
+  Editing the file alone changes NOTHING for live sessions. Re-seed it — not deploy-gated —
+  with a loopback `POST /api/agent-mcp/pot-override-set`
+  `{ potSlug: 'papercusp', kind: 'prompt', name: 'su', value: <file contents> }`, then CONFIRM the
+  row moved (`SELECT length(value), to_timestamp(updated_at/1000) FROM harness_shared.pot_settings
+  WHERE setting_key = 'promptOverride.su'`) — a 200 is the route accepting the write, not proof it
+  landed.
 * **Don't hand-write into a generated section.** If the fact belongs in AUTO mode / promotion
   model / wire schemas, change the renderer — the next splice overwrites anything you typed
   between the markers.
