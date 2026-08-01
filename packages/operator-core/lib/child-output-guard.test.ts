@@ -125,7 +125,12 @@ const FIX_HINT =
   'from packages/operator-core/lib/child-output.ts, then update BASELINE in this file.';
 
 function scanTree(): Map<string, ChunkUnsafeSite[]> {
-  const files = execFileSync('git', ['ls-files', '*.ts', '*.mts', '*.cts'], {
+  // ⚠ `--recurse-submodules` is load-bearing, not a nicety. A plain `git
+  // ls-files` stops at the superproject and cannot see ANY of this repo's 39
+  // submodules — ~1000 TypeScript files that would silently never be scanned,
+  // making a green here mean far less than it appears to (WI-6730 filed exactly
+  // this defect against 26 of the repo's 48 lint guards).
+  const files = execFileSync('git', ['ls-files', '--recurse-submodules', '*.ts', '*.mts', '*.cts'], {
     encoding: 'utf8',
     cwd: REPO_ROOT,
     maxBuffer: 64 * 1024 * 1024,
