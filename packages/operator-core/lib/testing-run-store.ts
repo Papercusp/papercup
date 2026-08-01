@@ -632,6 +632,12 @@ export interface PersistHarnessTestRunsParams {
   commit?: string | null;
   /** test_runs.source — must satisfy the CHECK ('ci'|'local'|'admin-ui'); defaults to 'admin-ui'. */
   source?: 'ci' | 'local' | 'admin-ui';
+  /** EI-18795303393201472: true when the run executed against a working tree that
+   *  wasn't provably stable start-to-finish (see computeWorktreeDirty) — the stamped
+   *  `commit` can't be trusted as the code that actually ran. Defaults to false ONLY
+   *  for callers that never had the hazard (an isolated-checkout run); a caller that
+   *  ran against the shared tree should always pass this explicitly. */
+  worktreeDirty?: boolean;
   /** Test seam: inject a fake sql client. Defaults to getOrgPg().sql. */
   sql?: SqlLike;
 }

@@ -332,7 +332,7 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
         `the egress sensor could not prove itself live — this run did NOT observe a clean shell, ` +
           `it observed nothing.\n${sampleContext}` +
           `  control url:     ${CONTROL_URL}\n` +
-          `  control issued:  ${probe.controlIssued}\n` +
+          `  control issued:  ${probe.controlIssued ?? "(bundle cannot say)"}\n` +
           `  control:         ${probe.controlReason ?? "(no reason given)"}\n\n` +
           `${diagnosis}\n\n` +
           `Until the control lands, a zero here carries no information: "no egress observed" and ` +

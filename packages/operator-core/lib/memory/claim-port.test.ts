@@ -70,6 +70,34 @@ describe('buildClaimRecallBlock', () => {
     });
   });
 
+  // EI-18893248175645463: the 'user' pool was recorded on EVERY claim recall
+  // with an unconditionally empty scope list (buildLaunchMemoryBlock never
+  // received a userId), a guaranteed 100% zero-hit rather than "nothing
+  // relevant". Defaults to sessionId — the SAME claimer identity every real
+  // call site already passes.
+  it('defaults userId to sessionId, so the personal-scope pool is queried', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockResolvedValue(null);
+    await buildClaimRecallBlock({
+      sessionId: 'su-claimer-1',
+      workspaceId: 'ws-9',
+      items: [{ id: 'WI-1', title: 'Wire prelude', harness: 'papercusp' }],
+    });
+    const arg = vi.mocked(buildLaunchMemoryBlock).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(arg.userId).toBe('su-claimer-1');
+  });
+
+  it('an explicit userId overrides the sessionId default', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockResolvedValue(null);
+    await buildClaimRecallBlock({
+      sessionId: 'sid-1',
+      userId: 'distinct-user-id',
+      workspaceId: 'ws-9',
+      items: [{ id: 'WI-1', title: 'Wire prelude', harness: 'papercusp' }],
+    });
+    const arg = vi.mocked(buildLaunchMemoryBlock).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(arg.userId).toBe('distinct-user-id');
+  });
+
   it('un-stamped (no sessionId) still recalls, without a session block', async () => {
     vi.mocked(buildLaunchMemoryBlock).mockResolvedValue('## Claim recall\n\n- x');
     await buildClaimRecallBlock({ items: [{ title: 't', harness: 'h' }] });
