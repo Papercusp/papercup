@@ -85,6 +85,7 @@ import { adoptRefusedRepoKey } from '../../sync/pot-git/adopt-refused-repo-key';
 import { runOwnHeadPublishTick } from '../../sync/pot-git/own-head-publish';
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer, hasPendingQuarantine } from '../../sync/pot-git/bootstrap';
+import { fetchCoalescerKey, withFetchCoalescing } from '../../sync/pot-git/fetch-coalescer';
 import { openHiveGitDuplexToDevice } from '../../sync/pot-git/peer-dial-registry';
 import { Duplex } from 'node:stream';
 // EI-18777176681958978: `potHomeSlug` here is the LOCAL registry handle
@@ -2073,6 +2074,25 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     const dialLog: string[] = [];
     let outcome: Awaited<ReturnType<typeof bootstrapFromPeer>> | null = null;
     let liveAttempts = 0;
+    // WI-6418 (bootstrap half): ONE in-flight ladder per repo, process-wide.
+    //
+    // This is the fetch driver that matters for a cold join, and N staggered
+    // git-sync routines all reach it for the SAME repo. Unguarded, each opens its
+    // own session, and the serve side then refuses (or, pre-WI-6412, supersedes)
+    // the transfer already streaming. A multi-GB pot needs longer than the
+    // aggregate drive interval, so it restarts forever — at ANY throughput. The
+    // ceiling is a PERIOD, not a RATE, which is why throughput work never moved it.
+    //
+    // Keyed on the REPO rather than (repo, device) because that is the unit the
+    // PEER rations: `inFlightServes` in serve-wiring.ts is a process-wide Set whose
+    // cap counts same-repo serves across every connection. It also matches this
+    // loop's own rule below — it breaks on first progress instead of dialing a
+    // second peer, since stacking another fetch ceiling only duplicates work the
+    // next tick resumes anyway. Every candidate here mirrors the same
+    // `+refs/namespaces/*`, so peers are interchangeable; that is exactly why
+    // ref-announce keeps a per-DEVICE key (there each device is a different
+    // namespace on a different remote process) and this leg must not.
+    const ladder = await withFetchCoalescing(fetchCoalescerKey(repoPath, '<bootstrap-ladder>'), async () => {
     for (const peerDevicePubkeyBase64 of candidateDevicePubkeys) {
       if (liveAttempts >= MAX_LIVE_ATTEMPTS) break;
       // EI-15333: skip a peer we already know (within the backoff window)
@@ -2160,6 +2180,21 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // this tick climbed are on disk, so re-dialing a second peer now would
       // only stack another fetch ceiling for work the next tick resumes anyway.
       if (outcome.ok || outcome.progressed) break;
+    }
+    });
+    if (!ladder.ran) {
+      // NOT a failure: a fetch for this repo is already streaming, so this tick
+      // has nothing to add. Returning HERE — before patchRoutineMetadata — is
+      // deliberate: that writer stamps `path: 'dialed'` unconditionally, so
+      // falling through would record a dial that never happened AND overwrite the
+      // durable ladder telemetry (phase/rungs/quarantineRefs) that
+      // EI-18775478513129278 exists to carry forward. Progress stays on disk in
+      // the quarantine refs, which are the resume checkpoint; the next tick
+      // continues from there.
+      console.log(
+        `[git-sync] ${slug}: bootstrap-tick stood down — a fetch for this repo is already in flight`,
+      );
+      return;
     }
     // EI-18775478513129278: `outcome` stays null when this tick never got a
     // live dial at all (every candidate hit backoff or a registry miss) — the

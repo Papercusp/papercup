@@ -63,11 +63,12 @@ export async function readCoupledTopics(
     const peers = resolveCoupledPeers(self, derived, edges);
 
     // `resolveCoupledPeers` returns the union's richer `CoupledPeer`; the topic
-    // derivation only needs (ownerId, why), so it is narrowed here rather than
-    // widening the pure module's input type to a union-specific shape.
+    // derivation only needs the ownerId, and says so in its own signature — so
+    // this narrows rather than fabricating the rest of a `DerivedCoupling`. It
+    // used to pass a synthetic `because` that the derivation never read.
     return await deriveCoupledTopics(
       self,
-      peers.map((p) => ({ ownerId: p.ownerId, because: p.derivedBecause ?? p.reason ?? 'coupled' })),
+      peers.map((p) => ({ ownerId: p.ownerId })),
       coupledTopicSourcesFor(),
       opts,
     );

@@ -553,6 +553,36 @@ export interface PipelinePosition {
     /** WI-282: the green-checkpoint is WEDGED / not firing (visible even at 0 reds). */
     fireStale: boolean;
     fireStaleReason: string | null;
+    /**
+     * EI-18793581783459047: is a green-checkpoint SUITE run active RIGHT NOW — so a
+     * caller about to launch a heavy local suite (test:affected, a multi-file
+     * test:file re-verify) can see it would be CONTENDING with the gate's own suite
+     * for host CPU/memory. Filed after a live incident: an agent re-verifying gate
+     * reds ran `npm run test:file` over 9 files while the gate's own isolation
+     * re-run phase (which exists to tell flake from real break) was starved by the
+     * combined load into a false "still failing" verdict on files that passed
+     * cleanly moments later, unloaded.
+     *
+     * Sourced from the `dev.gitPipeline` background derived-read cache (recomputed
+     * on roughly every routine tick, ttl 90s — see derived-reads/producers.ts),
+     * NEVER a live systemd probe on THIS call — reading it costs one cheap Postgres
+     * SELECT, not a fork, so it is safe to check on every `dev:pipeline_position`
+     * call, including the no-arg / orient-fold form this field exists for.
+     *
+     * `null` means NO CACHED SNAPSHOT YET (cold DB, first routine tick, or the
+     * read itself failed) — treat as UNKNOWN, never as "not active". `{ active:
+     * false }` is the genuine "gate is idle" reading.
+     */
+    checkpointRunInFlight: {
+      active: boolean;
+      /** Best-effort candidate sha the live run is judging (from its log head). */
+      candidate: string | null;
+      startedAtMs: number | null;
+      elapsedSec: number | null;
+      /** How stale this reading is: ms since the cache was last computed. `null`
+       *  when the cache carried no computedAt (should not happen once populated). */
+      asOfAgeMs: number | null;
+    } | null;
   };
   /**
    * EI-7846: provenance for the CURRENT gate/deploy verdict — distinct from the

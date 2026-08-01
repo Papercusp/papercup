@@ -64,6 +64,14 @@
  */
 import type { DerivedCoupling } from './couplings';
 
+/**
+ * All this module needs of a coupling: WHO. It never reads the signal — so it
+ * takes the narrowed shape rather than the full {@link DerivedCoupling}, which
+ * lets a caller holding the union's `CoupledPeer` (declared edges included) pass
+ * peers straight in without inventing a `relation` no derivation produced.
+ */
+type CoupledOwner = Pick<DerivedCoupling, 'ownerId'>;
+
 /** How many coupled peers to NAME in a topic's `because` before summarising. */
 export const COUPLED_TOPIC_PEERS_NAMED = 2;
 
@@ -143,7 +151,7 @@ function becausePhrase(peers: readonly string[], items: readonly string[]): stri
  */
 export function deriveTopicsFromPeerItems(
   selfOwnerId: string,
-  couplings: readonly DerivedCoupling[],
+  couplings: readonly CoupledOwner[],
   peerItems: ReadonlyMap<string, readonly string[]>,
   itemTopics: ReadonlyMap<string, readonly string[]>,
 ): CoupledTopic[] {
@@ -152,7 +160,7 @@ export function deriveTopicsFromPeerItems(
 
   const seenPeer = new Set<string>();
   for (const c of couplings) {
-    const peer = cleanId((c ?? ({} as DerivedCoupling)).ownerId);
+    const peer = cleanId((c ?? ({} as CoupledOwner)).ownerId);
     if (!peer || peer === self || seenPeer.has(peer)) continue;
     seenPeer.add(peer);
 
@@ -204,7 +212,7 @@ export function deriveTopicsFromPeerItems(
  */
 export async function deriveCoupledTopics(
   selfOwnerId: string,
-  couplings: readonly DerivedCoupling[],
+  couplings: readonly CoupledOwner[],
   sources: CoupledTopicSources = {},
   opts: { withFeed?: boolean } = {},
 ): Promise<CoupledTopicFeed[]> {
@@ -212,7 +220,7 @@ export async function deriveCoupledTopics(
   if (!self) return [];
 
   const peers = uniqueSorted(
-    couplings.map((c) => cleanId((c ?? ({} as DerivedCoupling)).ownerId)).filter((id) => id && id !== self),
+    couplings.map((c) => cleanId((c ?? ({} as CoupledOwner)).ownerId)).filter((id) => id && id !== self),
   );
   if (peers.length === 0) return [];
 

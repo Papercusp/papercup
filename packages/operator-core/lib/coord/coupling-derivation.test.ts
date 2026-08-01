@@ -26,7 +26,7 @@ describe('deriveCouplingsFromRoster', () => {
       row({ ownerId: 'su-peer', fleetSlug: 'alpha' }),
       row({ ownerId: 'su-other', fleetSlug: 'beta' }),
     ]);
-    expect(derived).toEqual([{ ownerId: 'su-peer', because: 'same fleet (alpha)' }]);
+    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' }]);
   });
 
   it('does NOT couple two agents that merely both have no fleet', () => {
@@ -47,7 +47,7 @@ describe('deriveCouplingsFromRoster', () => {
       row({ ownerId: 'su-peer', currentFiles: ['b.ts', 'c.ts'] }),
       row({ ownerId: 'su-far', currentFiles: ['z.ts'] }),
     ]);
-    expect(derived).toEqual([{ ownerId: 'su-peer', because: 'both working in b.ts' }]);
+    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'shared-file', because: 'both working in b.ts' }]);
   });
 
   it('bounds how many overlapping files it names and summarises the rest', () => {
@@ -56,7 +56,7 @@ describe('deriveCouplingsFromRoster', () => {
       row({ ownerId: 'su-peer', currentFiles: ['a.ts', 'b.ts', 'c.ts', 'd.ts'] }),
     ]);
     expect(derived).toEqual([
-      { ownerId: 'su-peer', because: 'both working in a.ts, b.ts (+2 more shared files)' },
+      { ownerId: 'su-peer', relation: 'shared-file', because: 'both working in a.ts, b.ts (+2 more shared files)' },
     ]);
   });
 
@@ -66,7 +66,7 @@ describe('deriveCouplingsFromRoster', () => {
       row({ ownerId: 'su-peer', awaitingEventKey: 'fleet:x:gate' }),
       row({ ownerId: 'su-other', awaitingEventKey: 'fleet:y:gate' }),
     ]);
-    expect(derived).toEqual([{ ownerId: 'su-peer', because: 'both awaiting fleet:x:gate' }]);
+    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'awaits', because: 'both awaiting fleet:x:gate' }]);
   });
 
   it('emits EVERY signal a peer trips, in a fixed order', () => {
@@ -126,7 +126,7 @@ describe('deriveCouplingsFromRoster', () => {
       { ownerId: 'su-me', fleetSlug: 'alpha', currentFiles: 'not-an-array' },
       { ownerId: 'su-peer', fleetSlug: 'alpha', currentFiles: [null, 7, 'x.ts'] },
     ]);
-    expect(derived).toEqual([{ ownerId: 'su-peer', because: 'same fleet (alpha)' }]);
+    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' }]);
   });
 
   it('deduplicates a repeated ownerId — first row wins', () => {
@@ -135,7 +135,7 @@ describe('deriveCouplingsFromRoster', () => {
       row({ ownerId: 'su-peer', fleetSlug: 'alpha' }),
       row({ ownerId: 'su-peer', fleetSlug: 'alpha' }),
     ]);
-    expect(derived).toEqual([{ ownerId: 'su-peer', because: 'same fleet (alpha)' }]);
+    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' }]);
   });
 });
 
@@ -232,7 +232,7 @@ describe('deriveCouplingsFromHeldFiles', () => {
       'su-me',
       held({ 'su-me': ['a/x.ts'], 'su-peer': ['a/x.ts', 'b/y.ts'], 'su-other': ['c/z.ts'] }),
     );
-    expect(derived).toEqual([{ ownerId: 'su-peer', because: 'you both hold locks in a/x.ts' }]);
+    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'holds-a-lock-on', because: 'you both hold locks in a/x.ts' }]);
   });
 
   it('bounds how many shared paths it names and counts the rest', () => {
@@ -270,7 +270,7 @@ describe('deriveCouplingsFromPlanBlocking', () => {
       { item: 'P-005', blockedBy: ['P-003'] },
     ]);
     expect(derived).toEqual([
-      { ownerId: 'su-peer', because: 'your P-005 is blocked by P-003, which they hold' },
+      { ownerId: 'su-peer', relation: 'blocks-me', because: 'your P-005 is blocked by P-003, which they hold' },
     ]);
   });
 
@@ -279,7 +279,7 @@ describe('deriveCouplingsFromPlanBlocking', () => {
       { item: 'P-003', blockedBy: ['P-005'] },
     ]);
     expect(derived).toEqual([
-      { ownerId: 'su-peer', because: 'their P-003 is blocked by P-005, which you hold' },
+      { ownerId: 'su-peer', relation: 'blocked-by-me', because: 'their P-003 is blocked by P-005, which you hold' },
     ]);
   });
 
@@ -310,8 +310,8 @@ describe('deriveCouplingsFromPlanBlocking', () => {
 describe('deriveCouplingsFromCoordExchange', () => {
   it('couples each distinct partner once', () => {
     expect(deriveCouplingsFromCoordExchange('su-me', ['su-a', 'su-a', 'su-b'])).toEqual([
-      { ownerId: 'su-a', because: 'recent coord exchange' },
-      { ownerId: 'su-b', because: 'recent coord exchange' },
+      { ownerId: 'su-a', relation: 'coord-exchange', because: 'recent coord exchange' },
+      { ownerId: 'su-b', relation: 'coord-exchange', because: 'recent coord exchange' },
     ]);
   });
 
@@ -362,8 +362,8 @@ describe('deriveCouplings (orchestrator)', () => {
       recentPartners: async () => ['su-peer'],
     });
     expect(derived).toEqual([
-      { ownerId: 'su-peer', because: 'same fleet (alpha)' },
-      { ownerId: 'su-peer', because: 'recent coord exchange' },
+      { ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' },
+      { ownerId: 'su-peer', relation: 'coord-exchange', because: 'recent coord exchange' },
     ]);
   });
 
@@ -382,7 +382,7 @@ describe('deriveCouplings (orchestrator)', () => {
 
   it('works with no sources at all (pure roster derivation)', async () => {
     expect(await deriveCouplings('su-me', rows)).toEqual([
-      { ownerId: 'su-peer', because: 'same fleet (alpha)' },
+      { ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' },
     ]);
   });
 

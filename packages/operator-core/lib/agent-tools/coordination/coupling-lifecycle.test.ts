@@ -57,6 +57,7 @@ const codeOnly = (text: string): string =>
 
 const derivedEdge = (ownerId: string): DerivedCoupling => ({
   ownerId,
+  relation: 'holds-a-lock-on',
   because: 'you both hold locks in packages/operator-core',
 });
 

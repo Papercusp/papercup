@@ -26,7 +26,7 @@ const PEER_B = 'su-peer-b';
 const STRANGER = 'su-stranger';
 
 const coupled = (...ids: string[]): DerivedCoupling[] =>
-  ids.map((ownerId) => ({ ownerId, because: 'same fleet' }));
+  ids.map((ownerId) => ({ ownerId, relation: 'same-fleet' as const, because: 'same fleet' }));
 
 const mapOf = (o: Record<string, readonly string[]>): ReadonlyMap<string, readonly string[]> =>
   new Map(Object.entries(o));

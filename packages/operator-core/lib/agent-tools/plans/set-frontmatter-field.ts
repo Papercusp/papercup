@@ -103,7 +103,7 @@ const argsSchema = z.object({
 type SetFieldValue =
   | { ok: true; slug: string; key: string; from: string | null; to: string | null }
   | { ok: false; code: 'not_found' }
-  | { ok: false; code: 'legacy_plan' };
+  | { ok: false; code: 'legacy_plan'; reason?: LegacyReason };
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],

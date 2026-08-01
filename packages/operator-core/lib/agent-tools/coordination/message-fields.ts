@@ -39,6 +39,9 @@
  */
 
 import { z } from 'zod';
+// TYPE-ONLY, and it must stay that way: `couplings.ts` opens a PG handle at
+// module scope, and this module is imported by every message-shaped surface.
+import type { DerivedCouplingRelation } from '../../coord/couplings';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // premises — what I or someone else ASSERTED (D-041's rename of `restsOn`)
@@ -146,6 +149,47 @@ export interface ForYouBecause {
 }
 
 /**
+ * How ONE asserted relation may be compared against the computed coupling graph
+ * (D-087). Data, not branches, so `participatesInCouplingDivergence` and
+ * `couplingDivergenceVerdict` cannot drift apart.
+ *
+ * `absenceIsInformative` is the half that is easy to get wrong. The computed
+ * graph only contains edges where BOTH agents participate (a SHARED lock, a
+ * SHARED awaited key), while an assertion is one-sided ("YOU hold a lock on X").
+ * So for those relations a computed hit confirms, but a computed miss says
+ * nothing — the recipient may well hold a lock the sender does not. Scoring that
+ * miss as divergence would manufacture disagreement out of the sender simply not
+ * being on the same file.
+ */
+const COUPLING_DIVERGENCE_RULES: Record<
+  ForYouBecauseRelation,
+  { confirmedBy: readonly DerivedCouplingRelation[]; absenceIsInformative: boolean }
+> = {
+  // Genuinely two-sided: the computed signal IS the relation, so a miss is a real
+  // disagreement between what the sender claimed and what the graph shows.
+  'same-fleet': { confirmedBy: ['same-fleet'], absenceIsInformative: true },
+  // Two-sided, but DIRECTION-INSENSITIVE: the graph splits blocked-by into
+  // `blocks-me` / `blocked-by-me` because they mean opposite things to a reader,
+  // while the asserted vocabulary has one token. Comparing against one direction
+  // would score every correctly-asserted other-direction message as divergent.
+  'is-blocked-on': { confirmedBy: ['blocks-me', 'blocked-by-me'], absenceIsInformative: true },
+  // One-sided (see above). `shared-file` is deliberately NOT accepted as
+  // confirmation: a declared working-file is not a lock, and quietly widening the
+  // token to mean "near enough" is how a diff starts agreeing with itself.
+  'holds-a-lock-on': { confirmedBy: ['holds-a-lock-on'], absenceIsInformative: false },
+  awaits: { confirmedBy: ['awaits'], absenceIsInformative: false },
+  // NO COMPUTED COUNTERPART, and this is the one that decides whether the metric
+  // is usable at all: `owns` is 53% of live asserted uses (27/51 measured
+  // 2026-08-01). Ownership is a WORK-ITEM fact, not a coupling edge — the
+  // derivation has no ownership signal and adding one would not be a coupling.
+  // A metric that compared it would report the single most common relation as
+  // permanent disagreement and be discarded as noise.
+  owns: { confirmedBy: [], absenceIsInformative: false },
+  // D-043 ruling 2 — the non-structural escape hatch.
+  other: { confirmedBy: [], absenceIsInformative: false },
+};
+
+/**
  * D-043 ruling 2, the load-bearing half: **`'other'` is excluded from the
  * asserted-vs-computed divergence check BY CONSTRUCTION** — not scored as
  * agreement, not scored as divergence, simply not compared. An `'other'` that
@@ -154,9 +198,42 @@ export interface ForYouBecause {
  *
  * Exported so the P-013 divergence metric cannot forget to apply it: the rule
  * lives here, next to the enum, rather than in whichever consumer remembers.
+ *
+ * ⚠ NECESSARY, NOT SUFFICIENT (D-087). This answers "could this assertion ever
+ * be compared", not "did it agree" — and it now also excludes `owns`, which
+ * D-043 could not have known: the computed vocabulary it would be diffed against
+ * did not exist yet, so nothing revealed that the most common asserted relation
+ * has no counterpart in it. Use {@link couplingDivergenceVerdict} to score.
  */
 export function participatesInCouplingDivergence(f: ForYouBecause): boolean {
-  return f.relation !== 'other';
+  return COUPLING_DIVERGENCE_RULES[f.relation].confirmedBy.length > 0;
+}
+
+/**
+ * THREE-VALUED, deliberately: an assertion the graph cannot speak to is
+ * `'not-comparable'`, never a quiet `'agrees'` and never a `'diverges'`.
+ *
+ * A two-valued diff has to fold "the graph disagrees" together with "the graph
+ * has nothing to say", and the second dominates the first here — most asserted
+ * relations are one-sided or uncomputable. Collapsing them yields a number that
+ * measures the vocabulary mismatch rather than sender accuracy, which is worse
+ * than no metric: it looks like a finding.
+ *
+ * @param computed the derived relations between sender and recipient AT SEND
+ *        TIME (`CoupledPeer.derivedRelations`). It cannot be reconstructed later
+ *        — locks release, awaits fire — so a retrospective pass over the message
+ *        log can only ever score `'not-comparable'`.
+ */
+export type CouplingDivergenceVerdict = 'agrees' | 'diverges' | 'not-comparable';
+
+export function couplingDivergenceVerdict(
+  asserted: ForYouBecause,
+  computed: readonly DerivedCouplingRelation[],
+): CouplingDivergenceVerdict {
+  const rule = COUPLING_DIVERGENCE_RULES[asserted.relation];
+  if (!rule) return 'not-comparable';
+  if (rule.confirmedBy.some((r) => computed.includes(r))) return 'agrees';
+  return rule.absenceIsInformative ? 'diverges' : 'not-comparable';
 }
 
 const forYouBecauseArg = z

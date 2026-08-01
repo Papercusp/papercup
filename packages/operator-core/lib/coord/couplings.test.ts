@@ -91,8 +91,51 @@ describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
   it('a derivation that states no signal still yields a true edge', () => {
     // An unlabelled derivation is still a real coupling — it must not vanish, and
     // must not render as an empty reason.
-    const peers = resolveCoupledPeers('su-me', [{ ownerId: 'su-peer', because: '  ' }], []);
-    expect(peers).toEqual([{ ownerId: 'su-peer', source: 'derived' }]);
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [{ ownerId: 'su-peer', relation: 'same-fleet', because: '  ' }],
+      [],
+    );
+    expect(peers).toEqual([
+      { ownerId: 'su-peer', source: 'derived', derivedRelations: ['same-fleet'] },
+    ]);
+  });
+
+  // D-087. The typed half must survive the union, because the union is where the
+  // per-signal reasons are joined into ONE prose string — the exact point the
+  // discriminant used to be erased, one layer after being introduced.
+  it('carries the TYPED relations through the join, deduped, in emission order', () => {
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [
+        { ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' },
+        { ownerId: 'su-peer', relation: 'holds-a-lock-on', because: 'you both hold locks in x.ts' },
+        { ownerId: 'su-peer', relation: 'holds-a-lock-on', because: 'you both hold locks in y.ts' },
+      ],
+      [],
+    );
+    expect(peers[0]?.derivedRelations).toEqual(['same-fleet', 'holds-a-lock-on']);
+    // Both halves, not one or the other: the prose still accumulates every signal.
+    expect(peers[0]?.derivedBecause).toBe(
+      'same fleet (alpha); you both hold locks in x.ts; you both hold locks in y.ts',
+    );
+  });
+
+  it('drops a relation outside the vocabulary rather than passing it to consumers', () => {
+    // This function is pure and callers hand-build rows, so an unknown token is a
+    // real input. Forwarding it would hand a consumer a value it cannot interpret
+    // — worse than the absence, which every consumer already handles.
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [
+        { ownerId: 'su-peer', relation: 'invented' as never, because: 'a signal from the future' },
+        { ownerId: 'su-peer', relation: 'awaits', because: 'both awaiting g' },
+      ],
+      [],
+    );
+    expect(peers[0]?.derivedRelations).toEqual(['awaits']);
+    // …but its PROSE is kept: a reader can still see the signal fired.
+    expect(peers[0]?.derivedBecause).toBe('a signal from the future; both awaiting g');
   });
 
   it('a suppression beats a DERIVED coupling — the property decouple exists for', () => {
