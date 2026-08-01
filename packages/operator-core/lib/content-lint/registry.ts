@@ -15,6 +15,7 @@ import { findMdxCompileError, autoFixMdxAngles } from './mdx';
 import { findCodePositionCurlyQuotes, curlyLabel } from './smart-quotes';
 import { findShellSyntaxError } from './shell-syntax';
 import { findConflictMarker } from './conflict-markers';
+import { findTsParseError } from './ts-parse';
 
 /** A registered content check. */
 export interface ContentDetector {
@@ -94,6 +95,45 @@ export const smartQuotesDetector: ContentDetector = {
 };
 
 /**
+ * The TypeScript PARSE detector — tracked .ts/.tsx (WI-6683). The GENERAL form of
+ * the hard-parse-failure class `smart-quotes` above catches one narrow instance
+ * of: a curly quote in code position is only one way to stop a file parsing, and
+ * the invariant worth enforcing at this seam is the general one — *a file that
+ * does not parse must not reach the shared tree*.
+ *
+ * Earned by two live instances on 2026-08-01: sibling projection modules were
+ * auto-committed with a backtick inside a SQL comment inside a `sql` template,
+ * which closed the template and left the rest of each module unparseable. Unlike
+ * a type error that is baselined and local, a PARSE error takes down every
+ * consumer of the package — repairing one file moved operator-core's tsc count
+ * 231 → 184, those ~47 being other agents' files that could no longer resolve
+ * through it. A narrow lint for that exact spelling already existed and was green
+ * throughout, because nothing ran it on the path where the damage happens.
+ *
+ * SYNTACTIC ONLY (see ts-parse.ts): a pure `createSourceFile` parse, so it can
+ * never flag a type error, an unresolved import, or a missing dependency. Runs at
+ * ~0.85ms/file with zero false positives over all 10,829 tracked .ts/.tsx files
+ * in this repo. No `autoFix` — like shell-syntax and conflict-markers, a parse
+ * break needs a human/LLM to decide the intended code; the goal here is
+ * quarantine-before-commit, not guessing at someone's unfinished edit.
+ */
+export const tsParseDetector: ContentDetector = {
+  key: 'ts-parse',
+  glob: '**/*.{ts,tsx}',
+  matches: (f) => /\.(ts|tsx)$/.test(f) && !isExcludedPath(f),
+  detect: (file, text) => {
+    const hit = findTsParseError(file, text);
+    if (!hit) return null;
+    const at = hit.line != null ? `line ${hit.line}${hit.col != null ? `:${hit.col}` : ''}` : 'unknown position';
+    return (
+      `TypeScript parse error at ${at} (TS${hit.code}): ${hit.reason} — the file does not PARSE, ` +
+      'so every consumer of this package hard-fails to typecheck, not just this file'
+    );
+  },
+  fixerRole: CONTENT_FIXER_ROLE,
+};
+
+/**
  * The shell syntax detector — tracked `.sh` scripts (EI-13192). A real `bash -n`
  * parse, not a regex heuristic — catches a corrupted/truncated shell script (a
  * concurrent shared-tree edit interleave duplicated ~475 lines of one and
@@ -147,6 +187,11 @@ export const conflictMarkersDetector: ContentDetector = {
 export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
   mdxDetector,
   smartQuotesDetector,
+  // Ordered AFTER smart-quotes deliberately: a curly-quote-as-code file trips both
+  // (it is a parse error), and smart-quotes names the exact offending character —
+  // the more actionable message, recorded first. Both offenders point at the same
+  // file and `excludePaths` dedupes by path, so the file is quarantined once.
+  tsParseDetector,
   shellSyntaxDetector,
   conflictMarkersDetector,
 ];

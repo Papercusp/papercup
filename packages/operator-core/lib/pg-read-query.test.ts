@@ -12,6 +12,7 @@ import {
   extractReferencedTables,
   describeReferencedTableColumns,
   buildTenantScopeAdvisory,
+  buildSilentNullPathAdvisory,
   buildDerivedColumnRedirect,
   clearTenantScopeSchemaCache,
   PgReadQueryError,
@@ -580,6 +581,87 @@ describe('buildDerivedColumnRedirect (EI-18801042715296007 — the derived-verdi
       buildDerivedColumnRedirect(
         PRESENCE_SQL,
         'relation "harness_shared.coord_presence" does not exist',
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('buildSilentNullPathAdvisory (WI-6674 — the always-NULL accessor)', () => {
+  // engineer_issues explodes _ei into real columns and then drops the blob
+  // (`payload - '_ei'`), so payload->'_ei'->>'…' is legal SQL that evaluates to
+  // NULL for every row: the query succeeds and returns a plausible WRONG answer.
+  // Measured 2026-08-01: 0 of 13,711 open rows via the payload path, 13,711 via
+  // the severity column, 30 genuine criticals reported as none.
+  const CRITICAL_AUDIT =
+    "SELECT count(*) FROM harness_shared.engineer_issues WHERE payload->'_ei'->>'severity' = 'critical'";
+
+  it('flags the audit shape that actually bit — a critical count that reads as "none"', () => {
+    const advisory = buildSilentNullPathAdvisory(CRITICAL_AUDIT);
+    expect(advisory).toContain('always-NULL accessor');
+    expect(advisory).toContain('engineer_issues');
+    expect(advisory).toContain('ZERO rows');
+  });
+
+  it('names the columns to use instead, so the advisory is actionable', () => {
+    const advisory = buildSilentNullPathAdvisory(CRITICAL_AUDIT) ?? '';
+    expect(advisory).toContain('severity');
+    expect(advisory).toContain('work_items:claimable');
+  });
+
+  it('fires WITHOUT a WHERE clause — a bare projection is just as wrong', () => {
+    expect(
+      buildSilentNullPathAdvisory(
+        "SELECT payload->'_ei'->>'severity' FROM harness_shared.engineer_issues",
+      ),
+    ).toContain('always-NULL accessor');
+  });
+
+  it('fires inside an aggregate FILTER — the shape that reports 0 instead of returning none', () => {
+    expect(
+      buildSilentNullPathAdvisory(
+        "SELECT count(*) FILTER (WHERE payload->'_ei'->>'severity' IS NOT NULL) FROM harness_shared.engineer_issues",
+      ),
+    ).toContain('always-NULL accessor');
+  });
+
+  it('tolerates spacing and double-quoted keys', () => {
+    expect(
+      buildSilentNullPathAdvisory(
+        'SELECT * FROM harness_shared.engineer_issues WHERE payload -> "_ei" ->> \'severity\' IS NULL',
+      ),
+    ).toContain('always-NULL accessor');
+  });
+
+  it('stays SILENT on the work_items TABLE — there the same path is CORRECT', () => {
+    // The accessor is not wrong in general; it is wrong for one relation. An
+    // advisory that fired on both would train agents to ignore it.
+    expect(
+      buildSilentNullPathAdvisory(
+        "SELECT count(*) FROM harness_shared.work_items WHERE payload->'_ei'->>'severity' = 'critical'",
+      ),
+    ).toBeNull();
+  });
+
+  it('stays SILENT when engineer_issues is read via its real columns', () => {
+    expect(
+      buildSilentNullPathAdvisory(
+        "SELECT severity FROM harness_shared.engineer_issues WHERE state = 'open'",
+      ),
+    ).toBeNull();
+  });
+
+  it('stays SILENT on an unrelated payload path — only the _ei blob is subtracted', () => {
+    expect(
+      buildSilentNullPathAdvisory(
+        "SELECT payload->'paths' FROM harness_shared.engineer_issues WHERE state = 'open'",
+      ),
+    ).toBeNull();
+  });
+
+  it('does not match the path inside a string literal', () => {
+    expect(
+      buildSilentNullPathAdvisory(
+        "SELECT title FROM harness_shared.engineer_issues WHERE title = 'payload->''_ei''->>severity'",
       ),
     ).toBeNull();
   });

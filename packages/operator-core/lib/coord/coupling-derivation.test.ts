@@ -151,6 +151,9 @@ describe('deriveCouplingsFromRoster ∘ resolveCoupledPeers — the union contra
         ownerId: 'su-peer',
         source: 'derived',
         derivedBecause: 'same fleet (alpha); both working in x.ts',
+        // D-087: the typed half survives END-TO-END, derivation through union —
+        // asserted here on the real path, not only on hand-built rows.
+        derivedRelations: ['same-fleet', 'shared-file'],
       },
     ]);
   });

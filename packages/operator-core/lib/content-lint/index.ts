@@ -9,10 +9,12 @@ export { blankFrontmatter, findMdxCompileError, type MdxCompileError } from './m
 export { findCodePositionCurlyQuotes, curlyLabel, CURLY, type CurlyQuoteHit } from './smart-quotes';
 export { findStaleInsightCitations, formatStaleCitations, type StaleCitation } from './insight-citations';
 export { findConflictMarker, CONFLICT_MARKER_ERE, type ConflictMarkerHit } from './conflict-markers';
+export { findTsParseError, type TsParseError } from './ts-parse';
 export {
   type ContentDetector,
   mdxDetector,
   smartQuotesDetector,
+  tsParseDetector,
   shellSyntaxDetector,
   conflictMarkersDetector,
   DEFAULT_CONTENT_DETECTORS,

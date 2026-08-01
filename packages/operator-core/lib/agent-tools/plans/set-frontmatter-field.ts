@@ -27,7 +27,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan } from './parser';
+import { parsePlan, type LegacyReason } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { setFrontmatterScalar } from './transfer-owner';
 import { softText, clampText, LIMITS } from '../limits';
@@ -166,8 +166,12 @@ export default defineTool({
       },
       async (current): Promise<{ newBody: string | null; value: SetFieldValue }> => {
         if (current === null) return { newBody: null, value: { ok: false, code: 'not_found' } };
-        if (parsePlan(current, { filePath: `${args.slug}.md` }).isLegacy) {
-          return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+        const parsedForLegacy = parsePlan(current, { filePath: `${args.slug}.md` });
+        if (parsedForLegacy.isLegacy) {
+          return {
+            newBody: null,
+            value: { ok: false, code: 'legacy_plan', reason: parsedForLegacy.legacyReason ?? undefined },
+          };
         }
         const from = currentFrontmatterField(current, key);
         let body = setFrontmatterScalar(current, key, next);
@@ -192,7 +196,14 @@ export default defineTool({
     }
 
     if (!result.value.ok) {
-      return text({ error: result.value.code, slug: args.slug }, true);
+      return text(
+        {
+          error: result.value.code,
+          slug: args.slug,
+          ...('reason' in result.value && result.value.reason ? { reason: result.value.reason } : {}),
+        },
+        true,
+      );
     }
 
     // Refresh the rail so any frontmatter-derived facet updates immediately.

@@ -47,6 +47,7 @@
  * guessed here.
  */
 import type { Sql } from 'postgres';
+import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { listWorkOffers, type StoredWorkOffer } from './offer-store';
 import { pullAndExecuteOffer, type PullAndExecuteContext, type PullAndExecuteResult } from './offer-pull-and-execute';
@@ -76,6 +77,19 @@ import { FLAGS } from '@papercusp/flags';
  *  `minRuntimeVersion` should be able to require. */
 export const P2P_HOST_RUNTIME_VERSION = '1.0.0';
 
+/**
+ * WI-6680: an offerId is REMOTE-AUTHORED (it arrives on a peer's published
+ * record), so it is never pasted into a filesystem path as-is — a crafted
+ * `../../..` would place the foreign root outside the intended base, and the
+ * Q1 invariant would NOT catch it (Q1 only refuses roots INSIDE the host
+ * trees; it says nothing about an escape to some other part of the disk).
+ * Collapse to a conservative charset and refuse anything left empty.
+ */
+export function foreignRootSegmentForOffer(offerId: string): string | null {
+  const safe = offerId.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '');
+  return safe.length > 0 ? safe.slice(0, 128) : null;
+}
+
 /** THIS host's own configuration — required, never fabricated (see module doc). */
 export interface WorkIntakeHostIdentity {
   /** P-205 metering `host_ref` — must match whatever the allotments admin
@@ -85,10 +99,21 @@ export interface WorkIntakeHostIdentity {
   responderGithubUserId: number;
   responderDevicePubkey?: string | null;
   executorDevice: string;
+  /** The host repo to clone FROM (this host's canonical tree or a bare mirror). */
   sourceRepoPath: string;
-  rootPath: string;
+  /**
+   * WI-6680: the per-host BASE directory for foreign work — NOT one offer's
+   * root. Each offer gets its own `<foreignWorkRoot>/<offerId>` subtree below
+   * (the clone then lands at `<root>/repo`), because `p2p_foreign_workspaces`
+   * has a UNIQUE index on `root_path`: one static root shared by every offer
+   * registers offer #1 and then refuses every later one with `conflict`.
+   * Must sit OUTSIDE `workspaceRoot` and `canonicalTree` (the Q1 invariant).
+   */
+  foreignWorkRoot: string;
   branch?: string;
+  /** Q1 scope: the host tree root foreign work must stay OUTSIDE of. */
   workspaceRoot?: string;
+  /** Q1 scope: the canonical tree foreign work must stay OUTSIDE of. */
   canonicalTree?: string;
 }
 
@@ -296,6 +321,16 @@ async function processOneOffer(
     },
   };
 
+  const rootSegment = foreignRootSegmentForOffer(stored.offerId);
+  if (!rootSegment) {
+    return receiptSkip(
+      ctx,
+      stored,
+      'unsafe_offer_id',
+      `offer id '${stored.offerId}' has no filesystem-safe form — refusing to derive a foreign work root from it.`,
+    );
+  }
+
   const execCtx: PullAndExecuteContext = {
     workspaceId: ctx.workspaceId,
     potSlug: ctx.potHomeSlug,
@@ -304,7 +339,10 @@ async function processOneOffer(
     executorDevice: ctx.host.executorDevice,
     hostRef: ctx.host.hostRef,
     sourceRepoPath: ctx.host.sourceRepoPath,
-    rootPath: ctx.host.rootPath,
+    // WI-6680: one root PER OFFER. `root_path` is UNIQUE in mig 467, so
+    // passing the shared base straight through would register the first offer
+    // and refuse every subsequent one with a `conflict` refusal.
+    rootPath: join(ctx.host.foreignWorkRoot, rootSegment),
     branch: ctx.host.branch,
     workspaceRoot: ctx.host.workspaceRoot,
     canonicalTree: ctx.host.canonicalTree,

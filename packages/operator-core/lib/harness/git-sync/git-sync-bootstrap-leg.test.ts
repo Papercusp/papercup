@@ -1053,4 +1053,72 @@ describe('runBootstrapLeg', () => {
     await runBootstrapLeg(SLUG, WS);
     expect(openHiveGitDuplexToDeviceMock).not.toHaveBeenCalled(); // warm — no dialing needed at all
   });
+
+  // ── WI-6418: ONE in-flight ladder per repo ─────────────────────────────────
+  // ~12 staggered git-sync routines all reach this leg for the SAME repo, so a
+  // fetch drive landed roughly every ~15s in aggregate. Each opened its own
+  // session, and the serve side — whose cap counts same-repo serves across EVERY
+  // connection — then refused (or, pre-WI-6412, superseded) the transfer already
+  // streaming. A multi-GB pot needs ~175s, so it restarted forever at ANY
+  // throughput: the ceiling is a PERIOD, not a RATE, which is why three rounds of
+  // measured throughput work moved it by exactly zero.
+  //
+  // The second tick must STAND DOWN, not queue behind the first: joining would
+  // hand it the first drive's result, which was driven by a different candidate
+  // set, so it would report success for work that never covered its own input.
+  it('WI-6418: a concurrent tick for the same repo stands down instead of opening a second session', async () => {
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    listNamespacesMock.mockResolvedValue([]); // cold — the warm gate must not short-circuit
+    listHiveMembersMock.mockResolvedValue([{ deviceAttestations: [{ device_pubkey: PEER_DEVICE }] }]);
+
+    let sawDial!: () => void;
+    const dialed = new Promise<void>((resolve) => {
+      sawDial = resolve;
+    });
+    openHiveGitDuplexToDeviceMock.mockImplementation(async () => {
+      sawDial();
+      return dialDuplex(false); // live
+    });
+
+    // Hold the first ladder open so the second tick genuinely OVERLAPS it —
+    // without this the first would finish and the guard would never be exercised.
+    let finish!: () => void;
+    const held = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const succeed = bootstrapOutcome({
+      ok: true,
+      namespaces: ['abcd1234'],
+      skippedExisting: [],
+      skippedSelf: null,
+      stderr: '',
+    });
+    bootstrapFromPeerMock.mockImplementationOnce(
+      async (repoPath: string, duplex: FakeDuplex, opts: Record<string, unknown>) => {
+        await held;
+        return succeed(repoPath, duplex, opts);
+      },
+    );
+
+    const first = runBootstrapLeg(SLUG, WS);
+    await dialed; // the first tick is now inside the coalescer, mid-transfer
+
+    await runBootstrapLeg(SLUG, WS); // the concurrent tick — must add nothing
+
+    // The whole point of the fix: ONE session for this repo, not two.
+    expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1);
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
+
+    finish();
+    await first;
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1); // the stood-down tick never ran one
+
+    // And the entry is RELEASED on completion — a leaked key would wedge every
+    // future tick for this repo, which is strictly worse than the bug being fixed.
+    openHiveGitDuplexToDeviceMock.mockClear();
+    bootstrapFromPeerMock.mockClear();
+    bootstrapFromPeerMock.mockImplementationOnce(succeed);
+    await runBootstrapLeg(SLUG, WS);
+    expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1);
+  });
 });

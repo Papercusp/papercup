@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { detectContentOffenders, parseDirtyPaths } from './content-guard';
-import type { ContentDetector } from '../../content-lint/registry';
+import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
 import type { RunGit } from './run-git-sync';
 
 /** A runGit that answers `status --porcelain -z -uall` with the given NUL-joined entries. */
@@ -122,6 +122,63 @@ describe('detectContentOffenders', () => {
       ...base,
       runGit: async () => ({ code: 1, stdout: '', stderr: 'fatal' }),
       readText: async () => 'BROKEN',
+    });
+    expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * WI-6683 — the sweep-level proof, run against the REAL production registry
+ * rather than a fake detector: a file that does not PARSE is quarantined out of
+ * the auto-commit while every healthy file in the same dirty set still commits.
+ *
+ * This is the property that was missing when two unparseable projection modules
+ * were auto-committed to `staging` on 2026-08-01 and hard-failed every other
+ * agent's typecheck. Asserted through the real registry on purpose: a test that
+ * injected its own detector would still pass if the detector were never
+ * REGISTERED, which is precisely the failure mode here (a guard that exists but
+ * runs on no blocking path is not a guard).
+ */
+describe('detectContentOffenders — the real registry quarantines an unparseable .ts (WI-6683)', () => {
+  // Built from single-quoted lines so this test file itself always parses.
+  const BROKEN_TS = [
+    'export const q = sql`',
+    '  select id from things',
+    '  -- filter on the `kind` column',
+    '`;',
+    'export function stillHere() { return 1; }',
+  ].join('\n');
+  const HEALTHY_TS = 'export function fine(): number {\n  return 1;\n}\n';
+
+  const sweep = (files: Record<string, string>) =>
+    detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: statusRunGit(Object.keys(files).map((f) => ` M ${f}`)),
+      readText: async (rel) => files[rel] ?? null,
+    });
+
+  it('excludes ONLY the unparseable file, and reports why', async () => {
+    const offenders = await sweep({
+      'packages/operator-core/lib/broken.ts': BROKEN_TS,
+      'packages/operator-core/lib/healthy.ts': HEALTHY_TS,
+    });
+    // The healthy file is untouched by the guard — it still commits this tick.
+    const excluded = [...new Set(offenders.map((o) => o.file))];
+    expect(excluded).toEqual(['packages/operator-core/lib/broken.ts']);
+
+    const hit = offenders.find((o) => o.detectorKey === 'ts-parse');
+    expect(hit).toBeDefined();
+    expect(hit!.error).toContain('TypeScript parse error');
+    expect(hit!.fixerRole).toBe('content-fixer');
+  });
+
+  it('leaves a dirty set of healthy .ts/.tsx entirely alone (no false quarantine)', async () => {
+    const offenders = await sweep({
+      'packages/operator-core/lib/a.ts': HEALTHY_TS,
+      'apps/operator/components/B.tsx': 'export const B = () => <div>ok</div>;\n',
+      // Parses fine, would fail tsc — must NOT be quarantined (syntactic-only).
+      'packages/operator-core/lib/c.ts': "import { gone } from './nowhere';\nexport const n: number = gone;\n",
     });
     expect(offenders).toEqual([]);
   });

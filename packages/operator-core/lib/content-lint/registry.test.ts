@@ -121,10 +121,13 @@ describe('conflictMarkersDetector', () => {
 });
 
 describe('DEFAULT_CONTENT_DETECTORS', () => {
-  it('ships all four seeded detectors, keyed for the guard + escalation', () => {
+  it('ships all five seeded detectors, keyed for the guard + escalation', () => {
     expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual([
       'mdx',
       'smart-quotes',
+      // WI-6683: ordered after smart-quotes so the more specific curly-quote
+      // message is recorded first for a file that trips both.
+      'ts-parse',
       'shell-syntax',
       'conflict-markers',
     ]);

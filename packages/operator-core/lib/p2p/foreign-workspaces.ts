@@ -103,6 +103,17 @@ function fromRow(r: Row): ForeignWorkspace {
   };
 }
 
+/**
+ * The host tree root the Q1 invariant measures against. Exported (WI-6680) so
+ * the SEEDING side (ensure-host-routines.ts) resolves the workspace root the
+ * exact same way the CHECKING side below does — when the two drifted apart the
+ * seeder wrote a config every registration then refused, and nothing caught it
+ * because each side was self-consistent.
+ */
+export function resolveHostWorkspaceRoot(): string {
+  return process.env.PAPERCUSP_WORKSPACE_ROOT ?? `${process.env.HOME ?? ''}/papercupai-workspace`;
+}
+
 /** Is `child` strictly inside (or equal to) `parent`, path-wise? */
 function isWithin(parent: string, child: string): boolean {
   const p = resolve(parent);
@@ -151,10 +162,7 @@ export async function registerForeignWorkspace(
   },
   sql: OrgSql = getOrgPg().sql,
 ): Promise<RegisterResult> {
-  const workspaceRoot =
-    input.workspaceRoot ??
-    process.env.PAPERCUSP_WORKSPACE_ROOT ??
-    `${process.env.HOME ?? ''}/papercupai-workspace`;
+  const workspaceRoot = input.workspaceRoot ?? resolveHostWorkspaceRoot();
   const canonicalTree = input.canonicalTree ?? process.env.PAPERCUSP_CANONICAL_TREE ?? undefined;
   const violation = foreignRootInvariantViolation(input.rootPath, { workspaceRoot, canonicalTree });
   if (violation) return { ok: false, refusal: { code: 'invariant', detail: violation } };

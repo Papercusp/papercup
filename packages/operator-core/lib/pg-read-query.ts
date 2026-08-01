@@ -471,6 +471,162 @@ async function readTenantScopeInfo(
  * cross-tenant count) and whenever the query already mentions a scope column.
  * Best-effort: any schema-read failure returns null.
  */
+/**
+ * Half-open [from, to) ranges of every string literal and comment in `sql`.
+ *
+ * The sibling of stripSqlLiteralsAndComments for callers that must match on the
+ * literal's CONTENT (a jsonb key) rather than ignore it: same scanning rules,
+ * but it reports WHERE the literals are instead of erasing them.
+ */
+function sqlLiteralAndCommentRanges(sql: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const len = sql.length;
+  let i = 0;
+  while (i < len) {
+    const ch = sql[i];
+    if (ch === '-' && sql[i + 1] === '-') {
+      let j = sql.indexOf('\n', i);
+      if (j === -1) j = len;
+      ranges.push([i, j]);
+      i = j;
+      continue;
+    }
+    if (ch === '/' && sql[i + 1] === '*') {
+      let j = sql.indexOf('*/', i + 2);
+      j = j === -1 ? len : j + 2;
+      ranges.push([i, j]);
+      i = j;
+      continue;
+    }
+    if (ch === "'") {
+      const start = i;
+      i++;
+      while (i < len) {
+        if (sql[i] === "'") {
+          if (sql[i + 1] === "'") {
+            i += 2; // '' — an escaped quote, still inside the literal
+            continue;
+          }
+          i++;
+          break;
+        }
+        i++;
+      }
+      ranges.push([start, i]);
+      continue;
+    }
+    i++;
+  }
+  return ranges;
+}
+
+interface SilentNullPathTrap {
+  /** Bare relation the trap applies to. */
+  relation: string;
+  /** JSON path prefix that is ALWAYS null on this relation, as it appears in SQL. */
+  pathRe: RegExp;
+  /** Human form of the path, for the message. */
+  path: string;
+  /** Why it is always null here. */
+  why: string;
+  /** What to select instead. */
+  useInstead: string;
+}
+
+/**
+ * Accessors that are VALID SQL, run without error, and evaluate to NULL for
+ * EVERY row of a specific relation — so the query returns a well-formed,
+ * plausible, WRONG answer with no signal that it is wrong (WI-6674).
+ *
+ * ⚠ THIS IS THE OPPOSITE FAILURE MODE TO DERIVED_COLUMN_REDIRECTS ABOVE. That
+ * registry improves the RECOVERY from a loud 42703. This one exists because
+ * there is no error at all: `payload->'_ei'->>'severity'` is a legal jsonb
+ * traversal, and a missing key yields NULL rather than raising. A
+ * `WHERE payload->'_ei'->>'severity' = 'critical'` audit over engineer_issues
+ * therefore returns zero rows, which reads exactly like "there are no
+ * criticals" — measured 2026-08-01 as 0 of 13,711 open rows carrying a
+ * severity, against 13,711 via the real column and 30 genuine criticals.
+ *
+ * ⚠ AND WHY THE VIEW IS NOT CHANGED TO MAKE BOTH PATHS WORK. The obvious
+ * repair — stop subtracting `_ei` so `payload->'_ei'` resolves on the view too
+ * — is declined for the same reason the redirect above is not a view. The view
+ * deliberately EXPLODES `_ei` into real columns (severity, source,
+ * found_during, linked_feature_id, created_by, assigned_by, signal_origin) and
+ * then removes the raw nested copy (`payload - '_ei'`), so each value has
+ * exactly ONE representation on the relation. Re-adding the blob would put all
+ * seven fields on the view twice, change the payload shape every existing
+ * reader of the view already sees, and make the wrong accessor silently
+ * CORRECT — which teaches the wrong vocabulary rather than retiring it. The
+ * accessor is not made to work; it is made to announce itself.
+ *
+ * Deliberately HARDCODED semantics, like the two registries above — update it
+ * when a projection moves.
+ */
+const SILENT_NULL_PATH_TRAPS: SilentNullPathTrap[] = [
+  {
+    relation: 'engineer_issues',
+    // payload -> '_ei'  (any spacing, single or double quoted key)
+    pathRe: /payload\s*->\s*['"]_ei['"]/i,
+    path: "payload->'_ei'",
+    why:
+      "this VIEW subtracts the blob (`payload - '_ei'`) after exploding every _ei sub-field " +
+      'into a real COLUMN, so the path resolves to NULL for EVERY row — the query succeeds and ' +
+      'returns a plausible wrong answer instead of an error',
+    useInstead:
+      'the columns on this view directly — severity · source · found_during · ' +
+      'linked_feature_id · created_by · assigned_by · signal_origin ' +
+      "(the payload->'_ei'->>'…' form is correct ONLY against the underlying " +
+      'harness_shared.work_items TABLE, which has no severity column). Or prefer ' +
+      'work_items:list { severity } / work_items:claimable',
+  },
+];
+
+/**
+ * Flag a read whose accessor is always-NULL on the relation it targets.
+ *
+ * Unlike the tenant-scope advisory this does NOT require a WHERE clause: a bare
+ * `SELECT payload->'_ei'->>'severity' … ` projection is just as wrong, and an
+ * aggregate (`count(*) FILTER (WHERE …)`) is the shape that actually bit — it
+ * reports 0 rather than returning none.
+ */
+export function buildSilentNullPathAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.length) return null;
+
+  // ⚠ Deliberately NOT stripSqlLiteralsAndComments here. The jsonb key IS a
+  // string literal (`payload->'_ei'`), so the stripper — correct for the
+  // tenant-scope advisory, which only looks for bare column names — erases the
+  // very token this trap matches on. Instead match the RAW sql and discard any
+  // hit that STARTS inside a literal or comment, which keeps the one
+  // false-positive that matters (the path quoted inside a WHERE title = '…')
+  // out without blinding the check.
+  const masked = sqlLiteralAndCommentRanges(rawSql);
+  const startsInsideLiteral = (idx: number): boolean =>
+    masked.some(([from, to]) => idx >= from && idx < to);
+
+  const parts: string[] = [];
+  for (const trap of SILENT_NULL_PATH_TRAPS) {
+    const hit = tables.find((t) => bareTableName(t) === trap.relation);
+    if (!hit) continue;
+    const scan = new RegExp(trap.pathRe.source, 'gi');
+    let real = false;
+    for (let m = scan.exec(rawSql); m; m = scan.exec(rawSql)) {
+      if (!startsInsideLiteral(m.index)) {
+        real = true;
+        break;
+      }
+    }
+    if (!real) continue;
+    parts.push(
+      `⚠ always-NULL accessor: ${hit} — this query reads \`${trap.path}\`, but ${trap.why}. ` +
+        `Use ${trap.useInstead}. A predicate on this path matches ZERO rows, which reads exactly ` +
+        'like "there are none" (WI-6674).',
+    );
+  }
+
+  return parts.length ? parts.join(' ') : null;
+}
+
 export async function buildTenantScopeAdvisory(
   rawSql: string,
   opts: { client?: OrgSql; workspaceId?: string | null; harnessSlug?: string | null } = {},

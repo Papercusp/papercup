@@ -2181,6 +2181,12 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // only stack another fetch ceiling for work the next tick resumes anyway.
       if (outcome.ok || outcome.progressed) break;
     }
+    // Hand the ladder's verdict back OUT rather than leaning on the closure's
+    // write to `outcome`: TypeScript's control-flow analysis does not track
+    // assignments made inside a nested function, so without this every read below
+    // narrows to `never` and the whole reporting/metadata block stops
+    // typechecking (the same trap that produced the priorBootstrap `never` errors).
+    return outcome;
     });
     if (!ladder.ran) {
       // NOT a failure: a fetch for this repo is already streaming, so this tick
@@ -2196,6 +2202,8 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       );
       return;
     }
+    // Re-anchor the narrowing in THIS scope (see the closure's `return` above).
+    outcome = ladder.result;
     // EI-18775478513129278: `outcome` stays null when this tick never got a
     // live dial at all (every candidate hit backoff or a registry miss) — the
     // "no live dial path" case. `rungs:0`/`ok:false` are HONEST for THIS tick

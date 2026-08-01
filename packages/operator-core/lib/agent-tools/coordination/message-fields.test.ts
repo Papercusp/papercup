@@ -11,6 +11,8 @@ import { describe, it, expect } from 'vitest';
 import {
   classifyPremiseRef,
   participatesInCouplingDivergence,
+  couplingDivergenceVerdict,
+  FOR_YOU_BECAUSE_RELATIONS,
   assertEnvelopeSectionSplit,
   EnvelopeFieldOnSectionError,
   messageSectionSchema,
@@ -21,6 +23,7 @@ import {
   renderAuthoredFieldsSuffix,
   projectAuthoredFields,
 } from './message-fields';
+import { DERIVED_COUPLING_RELATIONS } from '../../coord/couplings';
 
 describe('renderAuthoredFieldsSuffix — making the fields visible', () => {
   it('renders nothing for an ordinary message (no sections stamped)', () => {
@@ -165,8 +168,84 @@ describe('forYouBecause (D-043)', () => {
     // The load-bearing half of D-043: an 'other' that participated in the diff
     // would reintroduce the false-agreement failure the escape hatch prevents.
     expect(participatesInCouplingDivergence({ relation: 'other', note: 'n' })).toBe(false);
-    expect(participatesInCouplingDivergence({ relation: 'owns' })).toBe(true);
     expect(participatesInCouplingDivergence({ relation: 'same-fleet' })).toBe(true);
+  });
+
+  it("EXCLUDES 'owns' too — it has no counterpart in the computed vocabulary", () => {
+    // D-087, extending D-043. Measured 2026-08-01: `owns` is 27 of 51 live
+    // asserted uses. Ownership is a work-item fact, never a coupling edge, so a
+    // metric that compared it would report the MAJORITY relation as permanent
+    // disagreement — a number that measures the vocabulary gap, not the sender.
+    expect(participatesInCouplingDivergence({ relation: 'owns' })).toBe(false);
+    expect(couplingDivergenceVerdict({ relation: 'owns' }, ['same-fleet'])).toBe('not-comparable');
+  });
+});
+
+describe('couplingDivergenceVerdict (D-087) — three-valued, deliberately', () => {
+  it('agrees when the computed graph carries the asserted signal', () => {
+    expect(couplingDivergenceVerdict({ relation: 'same-fleet' }, ['same-fleet'])).toBe('agrees');
+    expect(
+      couplingDivergenceVerdict({ relation: 'holds-a-lock-on', ref: 'x.ts' }, [
+        'coord-exchange',
+        'holds-a-lock-on',
+      ]),
+    ).toBe('agrees');
+  });
+
+  it('scores DIVERGENCE only for the genuinely two-sided relations', () => {
+    // `same-fleet` is symmetric: if the graph does not show it, the sender's
+    // claim really is contradicted, and that is worth counting.
+    expect(couplingDivergenceVerdict({ relation: 'same-fleet' }, [])).toBe('diverges');
+  });
+
+  it('is DIRECTION-INSENSITIVE for is-blocked-on — one asserted token, two computed', () => {
+    // The graph splits the direction because it means opposite things to a
+    // reader; the asserted vocabulary does not. Comparing against one direction
+    // would score every correctly-asserted other-direction message as divergent.
+    for (const dir of ['blocks-me', 'blocked-by-me'] as const) {
+      expect(couplingDivergenceVerdict({ relation: 'is-blocked-on' }, [dir])).toBe('agrees');
+    }
+    expect(couplingDivergenceVerdict({ relation: 'is-blocked-on' }, ['same-fleet'])).toBe(
+      'diverges',
+    );
+  });
+
+  it('a MISS on a one-sided relation is not-comparable, never divergence', () => {
+    // The computed lock signal fires only on OVERLAP with the sender, while the
+    // assertion is about the RECIPIENT alone. A recipient may hold a lock the
+    // sender does not — absence of the edge is silence, not contradiction.
+    expect(couplingDivergenceVerdict({ relation: 'holds-a-lock-on', ref: 'x.ts' }, [])).toBe(
+      'not-comparable',
+    );
+    expect(couplingDivergenceVerdict({ relation: 'awaits' }, ['same-fleet'])).toBe(
+      'not-comparable',
+    );
+  });
+
+  it('does not accept a shared declared FILE as confirmation of a LOCK claim', () => {
+    // Quietly widening the token to "near enough" is how a diff starts agreeing
+    // with itself. A declared working-file is not a lock.
+    expect(couplingDivergenceVerdict({ relation: 'holds-a-lock-on' }, ['shared-file'])).toBe(
+      'not-comparable',
+    );
+  });
+
+  it("never scores 'other' either way", () => {
+    expect(couplingDivergenceVerdict({ relation: 'other', note: 'n' }, ['same-fleet'])).toBe(
+      'not-comparable',
+    );
+  });
+
+  // The rule table is the single source for BOTH exported functions, so this
+  // holds by construction rather than by two definitions being kept in step.
+  it('participatesInCouplingDivergence agrees with the verdict on what is comparable', () => {
+    for (const relation of FOR_YOU_BECAUSE_RELATIONS) {
+      const everyComputed = [...DERIVED_COUPLING_RELATIONS];
+      const comparable = couplingDivergenceVerdict({ relation, note: 'n' }, everyComputed);
+      expect(participatesInCouplingDivergence({ relation, note: 'n' })).toBe(
+        comparable !== 'not-comparable',
+      );
+    }
   });
 });
 

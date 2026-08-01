@@ -111,6 +111,19 @@ export interface HarnessFeatureRow {
    * wire (pre-708 history lacks it → writeToPg maps absent → NULL).
    */
   authority?: string | null;
+  /**
+   * mig 708 PART 2 / EI-18820653360383242: the trigger-maintained close time
+   * (mig 698, `stamp_work_item_closed_ts`) — epoch ms of when the item entered
+   * its CURRENT terminal status. The trigger's own COALESCE logic requires
+   * this to federate (a federated write with no closed_ts stamps the
+   * RECEIVING peer's local now() as the close time). A plain carried column,
+   * NOT part of the EI-16756 digest below (its correctness is already
+   * enforced by the trigger's own terminal->terminal freeze). OPTIONAL on the
+   * wire (pre-708 history lacks it → writeToPg maps absent → NULL, and the
+   * trigger's INSERT branch honours that as "unknown", matching mig 698's own
+   * pre-698 legacy-row semantics).
+   */
+  closed_ts?: number | null;
 }
 
 function isString(v: unknown): v is string { return typeof v === 'string'; }
@@ -175,6 +188,7 @@ export function isHarnessFeatureRow(input: unknown): input is HarnessFeatureRow 
   if (r.terminal_completion_ref !== undefined && !isStringOrNull(r.terminal_completion_ref)) return false;
   if (r.terminal_reason !== undefined && !isStringOrNull(r.terminal_reason)) return false; // P-009/D-001 — optional on the wire
   if (r.authority !== undefined && !isStringOrNull(r.authority)) return false; // mig 708/D-035 — optional on the wire
+  if (r.closed_ts !== undefined && !isNumberOrNull(r.closed_ts)) return false; // mig 708 PART 2 — optional on the wire
   // metadata + tags + payload are JSONB blobs; accept anything (incl. null/missing).
   return true;
 }

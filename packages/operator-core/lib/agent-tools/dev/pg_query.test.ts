@@ -57,6 +57,35 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(payloadOf(guarded as never)).toMatchObject({ rowCount: 1 });
   });
 
+  // WI-6674. NOTE the mock factory spreads importOriginal() before overriding,
+  // so buildSilentNullPathAdvisory here is the REAL implementation — these pin
+  // the handler wiring end-to-end rather than a stub agreeing with itself.
+  const NULL_PATH_SQL =
+    "SELECT count(*) FROM harness_shared.engineer_issues WHERE payload->'_ei'->>'severity' = 'critical'";
+
+  it('attaches the always-NULL-accessor advisory to a successful result', async () => {
+    const res = await pgQueryTool.handler({ sql: NULL_PATH_SQL } as never, {} as never);
+    expect(payloadOf(res as never).advisory).toContain('always-NULL accessor');
+  });
+
+  it('COMPOSES both advisories — neither masks the other', async () => {
+    // A query can be both wrongly-scoped AND wrongly-accessed; reporting only
+    // one would send the agent back for a second round-trip on the same query.
+    advisoryMock.mockResolvedValue('⚠ tenant scope: …');
+    const res = await pgQueryTool.handler({ sql: NULL_PATH_SQL } as never, {} as never);
+    const advisory = String(payloadOf(res as never).advisory);
+    expect(advisory).toContain('always-NULL accessor');
+    expect(advisory).toContain('tenant scope');
+  });
+
+  it('omits the advisory field entirely when neither guard fires', async () => {
+    const res = await pgQueryTool.handler(
+      { sql: 'SELECT severity FROM harness_shared.engineer_issues' } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never)).not.toHaveProperty('advisory');
+  });
+
   it('a 42703 error carries knownColumns for the referenced tables', async () => {
     pgReadQueryMock.mockRejectedValue(
       Object.assign(new Error('column "updated_at" does not exist'), { code: '42703' }),

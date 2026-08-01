@@ -17,6 +17,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import {
   pgReadQuery,
   extractPgErrorInfo,
+  buildSilentNullPathAdvisory,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
   describeReferencedTableColumns,
@@ -128,10 +129,21 @@ export default defineTool({
       // P-005(b): tenant-scope advisory on a filtered read of a multi-tenant
       // table with no workspace_id/harness_slug predicate — the silent
       // wrong-tenant match footgun. Advisory only; never blocks the result.
-      const advisory = await buildTenantScopeAdvisory(sql, {
+      const tenantAdvisory = await buildTenantScopeAdvisory(sql, {
         workspaceId: ctx.workspaceId,
         harnessSlug: ctx.harnessSlug,
       }).catch(() => null);
+      // WI-6674: an accessor that is always-NULL on the relation queried. Not
+      // folded into the tenant advisory because it is a different failure —
+      // that one warns the answer may be from the wrong TENANT, this one warns
+      // the answer is wrong for EVERY row and looks like a clean "none".
+      let nullPathAdvisory: string | null = null;
+      try {
+        nullPathAdvisory = buildSilentNullPathAdvisory(sql);
+      } catch {
+        nullPathAdvisory = null;
+      }
+      const advisory = [nullPathAdvisory, tenantAdvisory].filter(Boolean).join(' ') || null;
       return {
         content: [
           {

@@ -1741,6 +1741,62 @@ export interface PipelinePositionDeps {
    * check dark while looking implemented.
    */
   resolveGateCandidates?: (root: string) => Promise<GateCandidates>;
+  /**
+   * EI-18793581783459047: the cached `dev.gitPipeline` derived-read's `activeRun`
+   * leg + its `computedAt`. Injected by TESTS only — the default reads the real
+   * derived-read cache (D-003: never a live compute/probe from this call; see the
+   * `gate.checkpointRunInFlight` field doc for why a cache read is the right cost
+   * tradeoff here, unlike `resolveGateCandidates` above which DOES fork systemctl).
+   * Returns `null` on any failure or cache-miss — best-effort, never throws.
+   */
+  readCheckpointRunSnapshot?: () => Promise<{
+    activeRun: GitPipelineSnapshot['activeRun'];
+    computedAtMs: number | null;
+  } | null>;
+}
+
+/**
+ * Default checkpoint-run-in-flight read: the CACHED `dev.gitPipeline` derived-read
+ * (recomputed on a routine tick, ttl 90s — derived-reads/producers.ts), never a
+ * live systemd probe from this call (D-003: a reader never computes). Best-effort
+ * in every direction — a registry miss, a stale-flag DB read failure, or the
+ * producer module failing to import all degrade to `null` (UNKNOWN), never a
+ * thrown error on the pipeline-position hot path.
+ */
+const realReadCheckpointRunSnapshot = async (): Promise<{
+  activeRun: GitPipelineSnapshot['activeRun'];
+  computedAtMs: number | null;
+} | null> => {
+  try {
+    const { readDerivedSnapshot } = await import('./derived-reads/registry');
+    await import('./derived-reads/producers'); // side-effect: registers the producer
+    const snap = await readDerivedSnapshot<GitPipelineSnapshot[]>('dev.gitPipeline');
+    const row = snap.payload?.[0];
+    if (!row) return null;
+    return { activeRun: row.activeRun ?? null, computedAtMs: snap.meta.computedAt };
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Pure: shape the cached `dev.gitPipeline` derived-read's `activeRun` + its
+ * staleness into the `gate.checkpointRunInFlight` leg (EI-18793581783459047).
+ * Separated from the cache read so the mapping is unit-testable without a DB.
+ */
+export function mapCheckpointRunInFlight(
+  cached: { activeRun: GitPipelineSnapshot['activeRun']; computedAtMs: number | null } | null,
+  nowMs: number = Date.now(),
+): PipelinePosition['gate']['checkpointRunInFlight'] {
+  if (!cached || !cached.activeRun) return null;
+  const { active, candidate, startedAtMs, elapsedSec } = cached.activeRun;
+  return {
+    active,
+    candidate,
+    startedAtMs,
+    elapsedSec,
+    asOfAgeMs: cached.computedAtMs !== null ? Math.max(0, nowMs - cached.computedAtMs) : null,
+  };
 }
 
 /**
@@ -2300,13 +2356,31 @@ export async function gitPipelinePosition(
   }
 
   const snap = await loadSnapshot();
+  const checkpointRunCached = await (deps.readCheckpointRunSnapshot ?? realReadCheckpointRunSnapshot)();
+  const checkpointRunInFlight = mapCheckpointRunInFlight(checkpointRunCached);
   const gate = {
     stalled: snap.gate.stalled,
     consecutiveReds: snap.gate.consecutiveReds,
     lastGreenAtMs: snap.gate.lastGreenAtMs,
     fireStale: snap.gate.fireStale,
     fireStaleReason: snap.gate.fireStaleReason,
+    checkpointRunInFlight,
   };
+  // EI-18793581783459047: surfaced as a NOTE (not folded into the tight one-line
+  // `summary`, which is already densely tuned) so a caller about to launch a heavy
+  // local suite sees it without this module's terse summary format growing a new
+  // branch for an orthogonal concern (host contention, not "where is my change").
+  if (checkpointRunInFlight?.active) {
+    const since = checkpointRunInFlight.startedAtMs
+      ? `${Math.round((Date.now() - checkpointRunInFlight.startedAtMs) / 60_000)}m ago`
+      : 'an unknown time ago';
+    notes.push(
+      `GATE RUN IN FLIGHT (started ${since}${checkpointRunInFlight.candidate ? `, judging ${checkpointRunInFlight.candidate.slice(0, 12)}` : ''}): ` +
+        `launching a heavy local suite (test:affected, a multi-file test:file re-verify) RIGHT NOW would contend with it for host ` +
+        `CPU/memory and can starve its isolation re-run phase into a false red on code that is actually fine (EI-18793581783459047). ` +
+        `Consider waiting for it to finish, or scoping your own re-verify to just the files you changed.`,
+    );
+  }
 
   // EI-7846: verdict provenance, derived from the snapshot's already-loaded deploy
   // state (ready = the green pin; greenPinAtStagingHead / deployedBehindGreenPin are already

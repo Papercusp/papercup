@@ -450,14 +450,25 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   can silently hit a different tenant's row and look like a stale/diverged
   store when it isn't:
   [raw SQL plan reads need workspace+harness scope](/internal/docs/agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).
-  ⚠ A work-item's **severity** (issue-family only: bug/change/task) is never a
-  top-level `payload`/`metadata` key on `harness_shared.work_items` — a raw
-  `payload ? 'severity'` audit always returns **zero rows**, which reads exactly
-  like "no criticals" even when there are plenty. It lives at
-  `payload->'_ei'->>'severity'` (migration 374's `engineer_issues` compat-view
-  fold); prefer `work_items:list{severity}` / `work_items:claimable`, or query
-  the `engineer_issues` view directly (scopes on `scope = 'harness:<slug>'`, not
-  `harness_slug`):
+  ⚠ A work-item's **severity** (issue-family only: bug/change/task) has **two
+  access paths, one per relation** — and the wrong one for a relation returns
+  NULL for every row *without erroring*, so the query yields a well-formed,
+  plausible, WRONG answer. Bind the accessor to the relation; never carry one
+  across to the other (WI-6674):
+  - **`harness_shared.work_items` (the TABLE)** has **no `severity` column** — it
+    lives at **`payload->'_ei'->>'severity'`** (migration 374's fold). A raw
+    top-level `payload ? 'severity'` audit always returns **zero rows**, which
+    reads exactly like "no criticals" even when there are plenty.
+  - **`harness_shared.engineer_issues` (the VIEW)** exposes **`severity` as a real
+    column** — and deliberately drops the blob (`payload - '_ei'`) after exploding
+    every `_ei` field into its own column, so on the VIEW
+    `payload->'_ei'->>'severity'` is NULL for **every** row. Measured 2026-08-01:
+    0 of 13,711 open rows via that path, 13,711 via the column, and **30 genuine
+    criticals reported as none**. `dev:pg_query` now emits an always-NULL-accessor
+    advisory when a query makes this exact mistake.
+
+  Prefer `work_items:list{severity}` / `work_items:claimable` over either raw path;
+  the view scopes on `scope = 'harness:<slug>'`, not `harness_slug`:
   [work-item severity lives under payload._ei, not top-level](/internal/docs/agent-insights/work-item-severity-lives-under-payload-ei-not-top-level).
   ⚠ For CLAIMABLE issue-family work (bug/change/task), `status='open'` is **NOT**
   claimability — the real claim path applies ~12 unconditional floors, so a raw

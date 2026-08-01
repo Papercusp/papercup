@@ -47,13 +47,19 @@ function readHostIdentity(cfg: Record<string, unknown>): WorkIntakeHostIdentity 
   const responderGithubUserId = cfg.responderGithubUserId;
   const executorDevice = cfg.executorDevice;
   const sourceRepoPath = cfg.sourceRepoPath;
-  const rootPath = cfg.rootPath;
+  // WI-6680: renamed from `rootPath` — this is the per-host BASE for foreign
+  // work, not one offer's root (the tick derives `<base>/<offerId>`). The old
+  // key is deliberately NOT accepted: a config still carrying `rootPath` was
+  // written by the pre-fix seeder and is one that can never register (it set
+  // rootPath === workspaceRoot, which the Q1 invariant always refuses), so
+  // reading it would resurrect the broken config rather than re-seed a good one.
+  const foreignWorkRoot = cfg.foreignWorkRoot;
   if (
     typeof hostRef !== 'string' || !hostRef ||
     typeof responderGithubUserId !== 'number' || !Number.isFinite(responderGithubUserId) ||
     typeof executorDevice !== 'string' || !executorDevice ||
     typeof sourceRepoPath !== 'string' || !sourceRepoPath ||
-    typeof rootPath !== 'string' || !rootPath
+    typeof foreignWorkRoot !== 'string' || !foreignWorkRoot
   ) {
     return null;
   }
@@ -63,7 +69,7 @@ function readHostIdentity(cfg: Record<string, unknown>): WorkIntakeHostIdentity 
     responderDevicePubkey: typeof cfg.responderDevicePubkey === 'string' ? cfg.responderDevicePubkey : null,
     executorDevice,
     sourceRepoPath,
-    rootPath,
+    foreignWorkRoot,
     branch: typeof cfg.branch === 'string' ? cfg.branch : undefined,
     workspaceRoot: typeof cfg.workspaceRoot === 'string' ? cfg.workspaceRoot : undefined,
     canonicalTree: typeof cfg.canonicalTree === 'string' ? cfg.canonicalTree : undefined,

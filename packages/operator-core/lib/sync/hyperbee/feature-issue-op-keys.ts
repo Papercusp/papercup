@@ -401,6 +401,11 @@ function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
     // digest in both projections' writeToPg. OPTIONAL on the wire (pre-708 history
     // lacks it → writeToPg maps absent → NULL).
     authority: strOrNull(row.authority),
+    // mig 708 PART 2 / EI-18820653360383242: the trigger-maintained close time
+    // (mig 698) — its own BEFORE trigger requires this to federate (see mig
+    // 708's header). A PLAIN carried column, NOT part of the digest (see D-035
+    // sibling note in feature-issue-op-keys.ts's authority comment above).
+    closed_ts: numOrNull(row.closed_ts),
   };
 }
 
@@ -822,6 +827,10 @@ function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
     // above (D-035) — mig 708's capture_work_items_outbox now stamps `authority`
     // into the issue-family jsonb_build_object explicitly.
     authority: strOrNull(row.authority),
+    // mig 708 PART 2 / EI-18820653360383242: same closed_ts carrier as
+    // toFeatureValue above — mig 708 now stamps `closed_ts` into the
+    // issue-family jsonb_build_object explicitly too.
+    closed_ts: numOrNull(row.closed_ts),
   };
 }
 
