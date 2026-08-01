@@ -214,6 +214,26 @@ function coldNoteAge(ms: number): string {
  * signal to notice this. Stamping the absolute write-time (mirroring renderLoopCheckpointBlock's
  * EI-13592 fix for warm wakes) gives it the one thing it CAN check: the note's age against its
  * own wall-clock. Absent/non-finite ⇒ omitted (byte-identical to before this fix).
+ *
+ * `lastTurnAtMs` (EI-19294445744419497): the owner's most recent turn-COMPLETION instant
+ * (the loop's `last_turn_at`). Where `updatedAtMs` above lets the successor judge the note's
+ * age — a subjective call, since "older than you would expect" needs a baseline it does not
+ * have — this one answers the objective question the age heuristic only gestures at: did I
+ * do work that this note does not describe? The note is rewritten ONLY by loop:checkpoint,
+ * so a turn completing well after that write is proof of un-checkpointed work, and the note's
+ * "Next action" may already be DONE rather than merely stale.
+ *
+ * Live near-miss (2026-08-01, fire #51): a session wrote its note at 21:04Z, kept working to
+ * 21:42Z, then hit a usage limit and died without re-checkpointing. Ten fires landed in a
+ * session that could not take turns. The cold successor was told to "continue from its Next
+ * action" — an action the dead session had already completed and committed, and which the note
+ * explicitly said needed no re-checking. Only a manual reconciliation caught it. `updatedAtMs`
+ * was present and did NOT prevent this: a 2h age looked plausible enough to explain away.
+ *
+ * This is checkable precisely because the successor is not the one checking: its transcript is
+ * gone, but the completion marker survives server-side and this render runs at compose time.
+ * Absent/non-finite, or within COLD_NOTE_POST_TURN_FLOOR_MS of the note write ⇒ omitted
+ * (byte-identical to before this fix).
  */
 export function renderColdWakeInjection(
   carryNote: string,

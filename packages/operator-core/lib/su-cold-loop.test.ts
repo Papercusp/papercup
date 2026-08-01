@@ -284,4 +284,65 @@ describe('renderColdWakeInjection — the cold-wake injected text (P-002 produce
     expect(out).toContain('[07-21T03:10:00Z]');
     expect(out).not.toContain('fire #');
   });
+
+  // EI-19294445744419497 — the note's AGE is subjective ("older than you would expect"),
+  // but a turn that completed AFTER the note was written is objective proof of work the
+  // note cannot describe, because only loop:checkpoint rewrites it. The failure guarded
+  // here is not a note that is merely stale, but one whose "Next action" is already DONE.
+  describe('un-checkpointed-work detection (lastTurnAtMs)', () => {
+    const noteAt = Date.parse('2026-08-01T21:04:56.000Z');
+
+    it('warns when a turn completed well after the note write, and names the recovery probe', () => {
+      const out = renderColdWakeInjection('note', undefined, 51, noteAt, noteAt + 37 * 60_000);
+      expect(out).toContain('UN-CHECKPOINTED WORK EXISTS');
+      expect(out).toContain('[08-01T21:41:56Z]'); // the turn-completion instant
+      expect(out).toContain('~37m AFTER this note was written');
+      expect(out).toContain('ALREADY BE DONE');
+      // the successor is told how to recover what it actually did
+      expect(out).toContain('sessions:timeline');
+      // and the pre-existing signals still render
+      expect(out).toContain('(fire #51)');
+      expect(out).toContain('last written');
+    });
+
+    it('stays silent for the mechanical same-turn tail (checkpoint, then the turn ends)', () => {
+      // The writing turn necessarily completes AFTER the note; a bare `>` would fire on
+      // every cold wake and train the reader to skip the warning entirely.
+      const base = renderColdWakeInjection('note', undefined, 7, noteAt);
+      expect(renderColdWakeInjection('note', undefined, 7, noteAt, noteAt + 1_000)).toBe(base);
+      expect(renderColdWakeInjection('note', undefined, 7, noteAt, noteAt + 60_000)).toBe(base);
+      // ...and never for a turn that predates the note at all.
+      expect(renderColdWakeInjection('note', undefined, 7, noteAt, noteAt - 60 * 60_000)).toBe(base);
+    });
+
+    it('is byte-identical when lastTurnAtMs is absent, null, zero, negative, or non-finite', () => {
+      const base = renderColdWakeInjection('note', undefined, 7, noteAt);
+      for (const v of [undefined, null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(renderColdWakeInjection('note', undefined, 7, noteAt, v as number | null)).toBe(base);
+      }
+      expect(base).not.toContain('UN-CHECKPOINTED');
+    });
+
+    it('cannot fire without the note write-time, since the verdict is a COMPARISON of the two', () => {
+      const out = renderColdWakeInjection('note', undefined, 7, undefined, Date.now());
+      expect(out).not.toContain('UN-CHECKPOINTED');
+    });
+
+    it('reproduces the 2026-08-01 fire #51 near-miss: note 21:04Z, work to 21:42Z, usage-limit death', () => {
+      // The dead session had already implemented AND committed the note's "Next action";
+      // the note even asserted no re-check was needed. Absent this line the successor is
+      // told only to "continue from its Next action".
+      const out = renderColdWakeInjection(
+        '## Next action\nImplement item 1: widen classifyPremiseRef...',
+        undefined,
+        51,
+        noteAt,
+        Date.parse('2026-08-01T21:42:00.000Z'),
+      );
+      expect(out).toContain('UN-CHECKPOINTED WORK EXISTS');
+      expect(out).toContain('VERIFY IT IS STILL NEEDED');
+      // the note itself is still delivered verbatim — the warning frames it, never replaces it
+      expect(out).toContain('Implement item 1: widen classifyPremiseRef...');
+    });
+  });
 });

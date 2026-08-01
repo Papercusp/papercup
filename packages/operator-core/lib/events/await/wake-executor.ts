@@ -1188,9 +1188,32 @@ async function injectPsuHostWake(
     // EI-18224278118395857: pass the note's write instant so the cold injection stamps its
     // age — the successor's only signal that a late-flushed note may be stale (its transcript
     // is gone). Undefined on the note-only test-seam path ⇒ no stamp, byte-identical.
+    // EI-19294445744419497: the note's write instant only tells the successor how OLD the
+    // note is; this tells it whether the note is INCOMPLETE. A turn that completed after the
+    // write is un-checkpointed work, so the note's "Next action" may already be done — the
+    // near-miss that motivated this had a dead session's finished-and-committed work still
+    // being advertised as the next thing to do. Only meaningful alongside the write instant
+    // (the render compares the two), and strictly best-effort: a cold wake must never be
+    // dropped or delayed for a staleness HINT.
+    let lastTurnAtMs: number | null = null;
+    if (noteUpdatedAtMs != null) {
+      try {
+        const st = await getLoopStatus(d.subscriberId);
+        lastTurnAtMs = st?.lastTurnAt ? new Date(st.lastTurnAt).getTime() : null;
+        if (lastTurnAtMs != null && !Number.isFinite(lastTurnAtMs)) lastTurnAtMs = null;
+      } catch (e) {
+        console.warn('[wake-executor] cold last-turn read failed (staleness hint omitted):', e as Error);
+      }
+    }
     const coldText = tagWakeText(
       d,
-      renderColdWakeInjection(decision.carryNote, extras, coldFireCount, noteUpdatedAtMs ?? undefined),
+      renderColdWakeInjection(
+        decision.carryNote,
+        extras,
+        coldFireCount,
+        noteUpdatedAtMs ?? undefined,
+        lastTurnAtMs ?? undefined,
+      ),
       deps.tagTurn ?? tagTurnForInjection,
     );
     const ok = await injectPsuHost(sock, {

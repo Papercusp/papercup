@@ -432,7 +432,7 @@ export async function executeDeploy(
       // succeeding. Now via the INJECTED deps.emitEvent (WI-2399), not a hard
       // dynamic import — the swallow keeps a bus hiccup from failing a good deploy.
       try {
-        const summary = `deployed ${short(plan.targetSha)} (${plan.commits.length} commit(s), ${migrations!.appliedCount} migration(s))`;
+        const summary = `deployed ${short(plan.targetSha)} (${plan.commits.length} commit(s), ${migrationCount} migration(s))`;
         const payload = { sha: plan.targetSha, commits: plan.commits.length, migrations: plan.migrations };
         // GLOBAL key — wake on the NEXT deploy of any sha (the payload.sha says which).
         await deps.emitEvent({ key: 'release:deployed', summary, payload, source: 'release-gate' });

@@ -175,6 +175,30 @@ describe('executeDeploy — happy path', () => {
     // The tip's own key still fires exactly once (not double-emitted by the batch loop).
     expect(emittedKeys.filter((k) => k === `release:deployed:${plan.targetSha}`)).toHaveLength(1);
   });
+
+  it('EI-18798501894652068: the release:deployed summary\'s migration count matches payload.migrations.length, even when migrate() itself newly-applied 0 (already applied by a prior attempt)', async () => {
+    emittedKeys.length = 0;
+    const captured: Array<{ key: string; summary: string; payload: unknown }> = [];
+    // plan.migrations has 1 staged file (see the module-level `plan` fixture), but this
+    // migrate() run applied 0 NEW rows — e.g. a prior deploy attempt already recorded
+    // them. Before the fix, the summary read appliedCount (0) while the payload still
+    // listed plan.migrations (1 file) — a reader trusting the terse summary concluded
+    // "no schema change" despite the payload (and reality) saying otherwise.
+    const { deps } = makeDeps({
+      migrate: () => Promise.resolve({ appliedCount: 0, totalKnown: 5, applied: [], sqlDir: '/x' }),
+      emitEvent: async (opts) => {
+        captured.push({ key: opts.key, summary: opts.summary, payload: opts.payload });
+      },
+    });
+    await executeDeploy(cfg, plan, deps);
+    const deployed = captured.find((c) => c.key === 'release:deployed');
+    expect(deployed).toBeTruthy();
+    const payloadMigrations = (deployed!.payload as { migrations: string[] }).migrations;
+    expect(payloadMigrations).toHaveLength(plan.migrations.length);
+    const summaryCount = Number(deployed!.summary.match(/(\d+) migration/)?.[1]);
+    expect(summaryCount).toBe(payloadMigrations.length);
+    expect(summaryCount).toBe(plan.migrations.length); // 1, not migrate()'s appliedCount of 0
+  });
 });
 
 // WI-5864: a `restartOnly` plan means the checkout is ALREADY at target (a
