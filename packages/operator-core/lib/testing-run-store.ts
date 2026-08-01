@@ -656,6 +656,7 @@ export async function persistHarnessTestRuns(
   const source = params.source ?? 'admin-ui';
   const branch = params.branch ?? null;
   const commit = params.commit ?? null;
+  const worktreeDirty = params.worktreeDirty ?? false;
   // Captured ONCE for the whole persist call (the run's persist moment), not
   // per-file-row — the lag gauge already windows/averages, and a re-sample per
   // row would be noise without adding signal.
@@ -672,10 +673,10 @@ export async function persistHarnessTestRuns(
         Promise.resolve(
           sql`
             INSERT INTO harness_shared.test_runs
-              (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb)
+              (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty)
             VALUES
               (${row.filePath}, ${'vitest'}, ${row.status}, ${row.durationMs}, ${row.startedAt},
-               ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb})
+               ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty})
           `,
         ),
         new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
