@@ -214,7 +214,21 @@ class FrameDuplex extends Duplex {
   /** WI-6412: wall-clock of the most recent outbound write, i.e. the last moment
    *  this serve made real progress. `0` until the first byte leaves — which is
    *  what lets the admission rule tell "streaming a 4GB pack right now" from
-   *  "spawned, never produced anything, requester is long gone". */
+   *  "spawned, never produced anything, requester is long gone".
+   *
+   *  ⚠ LOAD-BEARING, and silently breakable: this is stamped inside `_write`,
+   *  which node re-enters only AFTER the previous write's callback fires. Since
+   *  `_write` defers that callback until the wire drains (see the backpressure
+   *  note there), a peer that stops reading stalls the callback in
+   *  `drainWaiters` and this clock FREEZES. That freeze is the whole reason
+   *  rule 0 (`resolveServeAdmission`) is safe: a serve whose requester really
+   *  did abandon it stops looking "streaming" on its own, so the refusal lapses
+   *  instead of wedging the repo forever. Re-keying this to bytes QUEUED rather
+   *  than bytes ACCEPTED — e.g. stamping it from the caller, or hoisting it
+   *  above the `sendChunk` call — destroys that property, and no existing test
+   *  fails when it does. Verified 2026-08-01 against protomux: a closed channel
+   *  returns `false` (not `undefined`) from `send`, so the backpressure branch
+   *  is genuinely taken; fact `pot-git-rule0-backpressure-freeze-confirmed-sound`. */
   lastWriteAt = 0;
   constructor(
     /** Returns protomux's `drained` flag — `false` means the wire is backed up
