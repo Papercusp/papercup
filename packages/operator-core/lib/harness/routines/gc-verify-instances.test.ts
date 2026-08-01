@@ -121,7 +121,10 @@ describe('gc-verify-instances — reaping', () => {
     // Reuse-first: teardown is delegated to the script that already encodes
     // EI-11559 / EI-18745117818375852 / EI-18816386093046558.
     expect(stop).toHaveBeenCalledTimes(1);
-    expect(stop.mock.calls[0][0]).toBe(join(dir, 'stop.sh'));
+    // `vi.fn(async () => {})` infers a ZERO-arg signature, so mock.calls is typed `[][]`
+    // and indexing [0][0] is a tuple-out-of-range type error even though the call is made
+    // WITH an argument at runtime. Read the recorded arg through the actual call tuple.
+    expect((stop.mock.calls[0] as unknown as [string] | undefined)?.[0]).toBe(join(dir, 'stop.sh'));
     expect(res.reaped).toBe(1);
     expect(res.bytesFreed).toBeGreaterThanOrEqual(1000);
     expect(existsSync(dir)).toBe(false);

@@ -106,6 +106,24 @@ vi.mock('../../../scheduler/spec-pool-preview', () => ({
   evaluateCollapseGuard: (...args: unknown[]) => evaluateCollapseGuardMock(...args),
 }));
 
+// WI-6673: the DUAL of the collapse guard above — the lane's admitted COMPOSITION, which
+// decides the degenerate-lane warning. Only this one export is overridden (the rest of
+// get-next is spread through) because several live modules in this import graph pull other
+// symbols from it. Default: a healthy lane, so the warning is silent unless a test opts in.
+const HEALTHY_COMPOSITION = {
+  total: 5,
+  byKind: { bug: 5 },
+  bySeverity: { major: 4, critical: 1 },
+  lowSeverityShare: 0,
+  degenerate: false,
+  peakDay: null,
+};
+const aggregateAdmittedCompositionMock = vi.fn(async (..._args: unknown[]) => HEALTHY_COMPOSITION as unknown);
+vi.mock('../../../scheduler/get-next', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  aggregateAdmittedComposition: (...args: unknown[]) => aggregateAdmittedCompositionMock(...args),
+}));
+
 // #3 promotion FAILSAFE seam (fleet-launch-promote-workitems-failsafe): the handler idempotently
 // promotes the plan's items → claimable work-items before opening any terminal. Default: the healthy
 // case (items already promoted upstream by plans:start → skipped>0, promoted:0 → no warning line).
@@ -1457,6 +1475,131 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
     expect(payload.message).toMatch(/matches 5 of 10 claimable row/);
     // No confirm passed → the guard was consulted with confirm:false.
     expect(evaluateCollapseGuardMock.mock.calls[0][0]).toMatchObject({ confirm: false });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// WI-6673 degenerate-lane guard — the DUAL of the collapse guard above.
+//
+// The collapse guard catches a lane matching TOO FEW rows (starvation). This catches the
+// opposite and equally real failure: a lane matching PLENTY of rows that are not work. On
+// 2026-08-01 a bug-drain fleet was launched at 1,252 "claimable" items that were 98.7%
+// nit-severity auto-filed observations; the real bug backlog was ~285. Nothing objected,
+// because every count was correct — a big number simply looks like a healthy backlog.
+//
+// The guard shipped with no tests at all, which is how its thresholds and its wording could
+// rot silently. These pin the three properties that make it worth having: it fires on the
+// degenerate shape, it stays SILENT on a healthy lane (a warning that cries wolf gets
+// ignored precisely when it matters), and it never blocks a launch.
+// ────────────────────────────────────────────────────────────────────────────
+describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-firehose) guard', () => {
+  const DEGENERATE = {
+    total: 1_252,
+    byKind: { change: 1_200, bug: 52 },
+    bySeverity: { nit: 1_180, minor: 56, major: 16 },
+    lowSeverityShare: 0.987,
+    degenerate: true,
+    peakDay: { day: '2026-07-31', count: 940 },
+  };
+
+  beforeEach(() => {
+    spawnConsoleMock.mockReset();
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+    setClaimSpecMock.mockReset();
+    setClaimSpecMock.mockResolvedValue({ ok: true, revision: 1 });
+    previewSpecPoolEffectMock.mockReset();
+    previewSpecPoolEffectMock.mockResolvedValue({ matched: 1_252, pool: 1_400, states: ['open'], harness: 'papercusp' });
+    evaluateCollapseGuardMock.mockReset();
+    evaluateCollapseGuardMock.mockReturnValue({ refuse: false, errors: [] });
+    aggregateAdmittedCompositionMock.mockReset();
+    aggregateAdmittedCompositionMock.mockResolvedValue(HEALTHY_COMPOSITION);
+  });
+
+  const launch = async (args: Record<string, unknown> = {}) =>
+    tool.handler(
+      { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug', 'change'], ...args } as never,
+      {} as never,
+    );
+
+  it('WARNS on a degenerate lane — naming the share, the burst day, and the composition', async () => {
+    aggregateAdmittedCompositionMock.mockResolvedValue(DEGENERATE);
+    const res = await launch();
+    const payload = JSON.parse((res as any).content[0].text);
+    const warning = payload.claimSpecApplied.warning as string;
+
+    expect(warning).toContain('⚠ DEGENERATE LANE');
+    expect(warning).toContain('99%'); // 0.987 rounded
+    expect(warning).toContain('OBSERVATION FIREHOSE');
+    expect(warning).toContain('a large count is not a workload');
+    expect(warning).toContain('2026-07-31'); // the burst day
+    expect(warning).toContain('940');
+    expect(warning).toContain('WI-6673');
+    // The composition is quoted, so the reader can act without a second call.
+    expect(warning).toContain('"nit":1180');
+  });
+
+  it('quotes the share against the ADMITTED total, not the pre-floor matched count', async () => {
+    // The share is computed over rows passing ALL claim floors; `matched` is the filter
+    // match before them (strictly larger). Reporting one against the other is a true
+    // percentage on the wrong base — the very defect class this guard exists to catch,
+    // and it shipped inside the guard's own message once.
+    previewSpecPoolEffectMock.mockResolvedValue({ matched: 3_000, pool: 4_000, states: ['open'], harness: 'papercusp' });
+    aggregateAdmittedCompositionMock.mockResolvedValue(DEGENERATE);
+    const res = await launch();
+    const warning = JSON.parse((res as any).content[0].text).claimSpecApplied.warning as string;
+
+    expect(warning).toContain('99% of the 1252 claimable row(s)');
+    // The pre-floor number is still shown, but explicitly labelled as the other population.
+    expect(warning).toContain('of 3000 matched before claim floors');
+    expect(warning).not.toContain('99% of the 3000');
+  });
+
+  it('is SILENT on a healthy lane — a warning that fires on normal backlogs would be tuned out', async () => {
+    const res = await launch();
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.claimSpecApplied.warning ?? '').not.toContain('DEGENERATE LANE');
+  });
+
+  it('WARNS but never REFUSES — a nit-sweep fleet is a legitimate thing to want', async () => {
+    aggregateAdmittedCompositionMock.mockResolvedValue(DEGENERATE);
+    const res = await launch({ count: 2 });
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    // Members really opened — the launch proceeded despite the warning.
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
+    expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('FAILS OPEN — a composition read that throws never blocks the launch', async () => {
+    aggregateAdmittedCompositionMock.mockRejectedValue(new Error('pg exploded'));
+    const res = await launch();
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    // A diagnostic that becomes a new single point of failure is worse than no diagnostic.
+    expect(payload.claimSpecApplied.warning ?? '').not.toContain('DEGENERATE LANE');
+  });
+
+  it('reads the composition through the SAME spec filter + states the members will pull with', async () => {
+    aggregateAdmittedCompositionMock.mockResolvedValue(DEGENERATE);
+    await launch();
+    // Composition describing a different population than the one the fleet drains would be
+    // a confidently-wrong reassurance — the failure mode, not a milder version of it.
+    expect(aggregateAdmittedCompositionMock).toHaveBeenCalledTimes(1);
+    const [, opts] = aggregateAdmittedCompositionMock.mock.calls[0] as [unknown, { harness: string; states?: readonly string[] }];
+    expect(opts.harness).toBe('papercusp');
+    expect(opts.states).toEqual(expect.arrayContaining(['open']));
+  });
+
+  it('does not run the composition read at all for a pure plan fleet (no claimKinds ⇒ no claim-spec lane to characterize)', async () => {
+    await tool.handler(
+      { name: 'Plan Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    expect(aggregateAdmittedCompositionMock).not.toHaveBeenCalled();
   });
 });
 

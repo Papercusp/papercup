@@ -481,6 +481,46 @@ continuation gate picks, not a law.
 
 ## Engineering discipline
 
+- **A verification must be able to come out DIFFERENTLY if the thing had failed.**
+  This is the whole of it; the two rules below are just its read and write faces.
+  Before believing any check, ask: *what would this have returned if the thing I am
+  checking were false?* If the answer is "the same thing", you have not verified
+  anything. (Earned 2026-08-01, when seven separate defects turned out to be one:
+  a tool returning a **well-formed, plausible result carrying no signal it is
+  wrong** — not a crash, not an error, not an empty. A confident answer to a
+  question the tool did not actually answer. Two of them reached the owner as false
+  statements before anyone noticed.)
+  - **READS — never accept a NULL / zero / empty as a finding.** Cross-check against
+    a DIFFERENT accessor for the same fact and require the two to AGREE. 100%
+    absence is a wrong-path signature, not data: real data is essentially never
+    entirely missing. A severity audit run through the wrong accessor returned
+    `0 of 13,332` and read exactly like "there are no criticals" when there were 25.
+    Same shape: a zero-row count, an all-null column, an empty array, a grep that
+    finds nothing.
+  - **WRITES — verify the DELTA, not the post-state.** A post-state read only
+    verifies a write whose SUCCESS state differs from its NO-OP state. Releasing an
+    already-unassigned item returns `ok:true`, and the post-state (`assignee:null`)
+    is identical to the pre-state — so "I read it back and it looks right" proved
+    nothing and became a false completion claim to the owner. Capture the pre-state,
+    or demand a delta field (`released` / `previousAssignee`). Same shape: a
+    `pipeline_position` marker generic enough to match the OLD version of the file
+    (`"always"` reported `deployed:true`; `"always-NULL accessor"` reported a
+    confirmed miss — same tool, same file, same minute).
+  - **A COUNT IS NOT A CHARACTERIZATION.** Before quoting a backlog/queue size as
+    workload, decompose it by kind + severity and check the filing rate — and make
+    sure you are counting the population your CLAIM is about. `status='open'` is not
+    claimability (it overcounts ~13×, and the claim floors may already have removed
+    most of what you are describing). `work_items:claimable` now returns
+    `admittedBreakdown` for exactly this reason: composition arrives WITH the count.
+  - **Docs are the WEAKEST lever against this class — prefer a mechanical fix.**
+    Proven three ways in one session: `CLAUDE.md` warned about the failure mode and
+    then prescribed a fresh instance of it in the same sentence; an agent wrote
+    itself the correct rule and violated it one tick later; and a doc asserted a
+    guard that was not deployed. Which is why: **gate present-tense capability
+    claims in agent-facing docs on `deployed:true`, never on the edit existing
+    locally** — `CLAUDE.md` is spliced into EVERY su launch context, so a promised
+    but absent safety net is worse than silence: it makes the reader stop checking.
+
 - **LLM inference is MULTI-ACCOUNT — a "limit" is usually a routing bug, not
   real.** Papercusp routes model calls through an inference gateway over a POOL of
   many Anthropic accounts (several Max subs + a funded API key) with a per-account

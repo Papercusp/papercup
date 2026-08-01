@@ -139,7 +139,10 @@ export function parseStopScriptDisplay(stopScript: string): string | null {
 /** Recursive size of a directory, tolerant of races (a file vanishing mid-walk). */
 async function dirBytes(path: string): Promise<number> {
   let total = 0;
-  let entries: Awaited<ReturnType<typeof readdir>>;
+  // Dirent[] explicitly: `Awaited<ReturnType<typeof readdir>>` resolves to the
+  // BUFFER overload (Dirent<NonSharedBuffer>[]), so `e.name` typed as a Buffer and
+  // `.startsWith` did not exist on it.
+  let entries: Dirent[];
   try {
     entries = await readdir(path, { withFileTypes: true });
   } catch {
@@ -185,7 +188,10 @@ export async function gcVerifyInstances(
   let bytesFreed = 0;
   let scanned = 0;
 
-  let entries: Awaited<ReturnType<typeof readdir>>;
+  // Dirent[] explicitly: `Awaited<ReturnType<typeof readdir>>` resolves to the
+  // BUFFER overload (Dirent<NonSharedBuffer>[]), so `e.name` typed as a Buffer and
+  // `.startsWith` did not exist on it.
+  let entries: Dirent[];
   try {
     entries = await readdir(tmpDir, { withFileTypes: true });
   } catch {

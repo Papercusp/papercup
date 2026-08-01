@@ -149,3 +149,57 @@ describe('SubstrateIpcClient — WI-895 (b): reconnect + truthful dial errors', 
     await expect(inflight).rejects.toThrow(/closed/i);
   });
 });
+
+describe('SubstrateIpcClient — multi-byte UTF-8 split across socket chunks (WI-6699)', () => {
+  const cleanups: Array<() => void | Promise<void>> = [];
+  afterEach(async () => {
+    for (const c of cleanups.splice(0)) await c();
+  });
+
+  it('decodes a response whose multi-byte character straddles two socket chunks', async () => {
+    // This is the FEDERATION DATA PLANE, so the silent-corruption mode is
+    // worse here than on the spawner leg: a straddled character inside a
+    // string value still PARSES, which means a corrupted key or corrupted
+    // replicated content is applied with no error raised anywhere — surfacing
+    // later as an unreproducible federation divergence.
+    const payload = 'café 日本語 🎉 key';
+    const sockPath = tmpSocketPath('utf8split');
+
+    const server = net.createServer((conn) => {
+      const decoder = new StringDecoder('utf8');
+      let buf = '';
+      conn.on('data', (chunk: Buffer) => {
+        buf += decoder.write(chunk);
+        let idx: number;
+        while ((idx = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line) continue;
+          const req = JSON.parse(line) as { id: number };
+          const full = Buffer.from(
+            `${JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { value: payload } })}\n`,
+            'utf8',
+          );
+          // Cut BETWEEN the two bytes of the 'é' in 'café'.
+          const eIdx = full.indexOf(Buffer.from('é', 'utf8'));
+          expect(eIdx).toBeGreaterThan(-1);
+          const cut = eIdx + 1;
+          conn.write(full.subarray(0, cut));
+          // A later tick guarantees a genuinely separate 'data' event.
+          setTimeout(() => conn.write(full.subarray(cut)), 20);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(sockPath, () => resolve()));
+
+    const client = new SubstrateIpcClient(sockPath);
+    cleanups.push(() => {
+      client.close();
+      return new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    const res = await client.call<{ value: string }>('sidecar:healthz');
+    expect(res.value).toBe(payload);
+    expect(res.value).not.toContain('�');
+  });
+});

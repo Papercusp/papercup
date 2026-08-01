@@ -142,3 +142,58 @@ describe('SpawnerIpcClient — server→client PUSH (notification) routing', () 
     expect(result).toEqual({ code: 7, stdout: 'out', stderr: '' });
   });
 });
+
+describe('SpawnerIpcClient — multi-byte UTF-8 split across socket chunks (WI-6699)', () => {
+  it('decodes a response whose multi-byte character straddles two socket chunks', async () => {
+    // Regression for the silent-corruption mode. Under a per-chunk
+    // `chunk.toString()` each half decodes independently, so the straddled
+    // character becomes U+FFFD replacement chars. The nasty part is that the
+    // damage lands INSIDE a JSON string value, so the response still PARSES —
+    // the caller silently accepts a wrong value with no error raised anywhere.
+    // Chunk boundaries are set by the kernel, so in production this presents
+    // as a rare, unreproducible wrong result rather than a crash.
+    const payload = 'café 日本語 🎉 branch';
+    const splitSock = socketPath();
+
+    const splitServer = net.createServer((socket) => {
+      const decoder = new StringDecoder('utf8');
+      let buffer = '';
+      socket.on('data', (chunk: Buffer) => {
+        buffer += decoder.write(chunk);
+        let nl: number;
+        while ((nl = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          const req = JSON.parse(line) as { id: number };
+          const full = Buffer.from(
+            `${JSON.stringify({ jsonrpc: '2.0', result: { value: payload }, id: req.id })}\n`,
+            'utf8',
+          );
+          // Cut BETWEEN the two bytes of the 'é' in 'café'.
+          const eIdx = full.indexOf(Buffer.from('é', 'utf8'));
+          expect(eIdx).toBeGreaterThan(-1);
+          const cut = eIdx + 1;
+          socket.write(full.subarray(0, cut));
+          // A later tick guarantees a genuinely separate 'data' event rather
+          // than one coalesced write (which would not exercise the bug).
+          setTimeout(() => socket.write(full.subarray(cut)), 20);
+        }
+      });
+    });
+
+    await new Promise<void>((resolve) => splitServer.listen(splitSock, () => resolve()));
+    const splitClient = new SpawnerIpcClient(splitSock);
+    try {
+      const res = await splitClient.call<{ value: string }>('echo', {}, { timeoutMs: 2000 });
+      expect(res.value).toBe(payload);
+      expect(res.value).not.toContain('�');
+    } finally {
+      splitClient.close();
+      await new Promise<void>((resolve) => splitServer.close(() => resolve()));
+      if (fs.existsSync(splitSock)) {
+        try { fs.unlinkSync(splitSock); } catch { /* removed by server.close */ }
+      }
+    }
+  });
+});

@@ -232,6 +232,25 @@ describe('DB-primary history backfill (session-turn-storage-2026-07-28 P-008/P-0
       expect(preferHigherFidelityBackfill(null, null)).toBeNull();
     });
 
+    it('identity of the winner is what the caller gates on when the FILE is available', () => {
+      // The P-008 regression: session_turns is TEXT-ONLY, so when the JSONL is
+      // still on disk, serving turns is a DOWNGRADE from the file's full
+      // tool-call timeline — and for any session predating the parts store
+      // (no parts, plenty of turns) that is precisely the branch that fires.
+      // The caller therefore checks `backfill !== fromParts` and declines, so
+      // the guarantee this pins is that a turns win is IDENTIFIABLE as such by
+      // reference, not silently indistinguishable from a parts win.
+      const parts = bf(['2026-07-28T05:00:00Z']);
+      const turns = bf(['2026-07-27T09:00:00Z']);
+      const won = preferHigherFidelityBackfill(parts, turns);
+      expect(won).toBe(turns);
+      expect(won).not.toBe(parts);
+
+      // ...and when parts legitimately win, the caller may serve the DB.
+      const wideParts = bf(['2026-07-27T09:00:00Z', '2026-07-28T05:00:00Z']);
+      expect(preferHigherFidelityBackfill(wideParts, turns)).toBe(wideParts);
+    });
+
     it('does not let an untimestamped parts window claim to reach further back', () => {
       const parts = { entries: [{ kind: 'text' as const, text: 'x' }], anchorIndex: null };
       const turns = bf(['2026-07-27T09:00:00Z']);

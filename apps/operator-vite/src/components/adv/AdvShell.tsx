@@ -823,11 +823,23 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
            flex-end baseline so they read as centred against the 34px tabs rather
            than hanging from their bottom edge.
 
-           flex: 0 1 auto + min-width: 0 — on a narrow window the pills yield
-           before the tablist does: the tabs are navigation and must stay
-           reachable, the pills are only a readout. Each pill's own button base
-           sets flex-shrink: 0 (adv-header-pills.css), so they clip as whole pills
-           instead of squashing into unreadable slivers.
+           The narrow-window contract, and why it needs the two overrides below.
+           This strip is NOT the window width — the left sidebar takes most of it
+           (measured live: a 1280px window left the strip 439px). Tabs + More
+           already fill that on their own, which is what the overflow chevrons
+           exist for. Dropping ~420px of pills in beside them therefore overflows
+           by default, and the pills lose their own base rule to boot:
+           .pc-advshell__action sets flex-shrink: 0 (adv-header-pills.css — right
+           for a pill in a roomy bar), so a shrinking wrapper does NOT shrink
+           them; they spill straight out of it and off the window edge. Measured
+           before the fix: the agents pill ran to x=1455 in a 1280px window.
+
+           So: the wrapper shrinks (flex: 0 1 auto + min-width: 0) AND clips
+           (overflow: hidden), and inside it the pills are allowed to shrink and
+           ellipsize. The leading "N agents running" survives; the tail (thinking
+           count, fleet dots) is what degrades — correct, since the head is the
+           number the bar exists to show. Tabs keep their space: they are
+           navigation, the pills are only a readout.
 
            The right-hand margin applies only while the strip is actually
            overflowing: .pc-advshell__tabnav--right is absolutely positioned at
@@ -840,8 +852,18 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
           gap: 6px;
           flex: 0 1 auto;
           min-width: 0;
+          overflow: hidden;
           margin-left: 8px;
           margin-bottom: 6px;
+        }
+        .pc-advshell__header-status .pc-advshell__action {
+          flex-shrink: 1;
+          min-width: 0;
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+          display: inline-block;
+          line-height: 18px;
         }
         .pc-advshell__tabs[data-of-right] .pc-advshell__header-status { margin-right: 26px; }
         .pc-advshell__tablist {

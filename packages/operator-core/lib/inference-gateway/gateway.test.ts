@@ -3043,6 +3043,166 @@ test('egress-ip-pool de-concentration: an account with partly-cooled egress IPs 
   resetGovernorRegistry();
 });
 
+// ───────────────────────────────────────────────────────────────────────────────
+// EI-18791887279744938 — coolIp() readmitted a hard-down egress on a FIXED cycle
+// forever (defect A), and nothing alarmed when every reachable proxy went down
+// (defect B). Split out of WI-6335 (owner-gated proxy restoration stays there);
+// these two defects are in-repo and independently verifiable.
+// ───────────────────────────────────────────────────────────────────────────────
+
+test('[EI-18791887279744938 defect A] repeated transport failures on the SAME egress key ESCALATE the cooldown — not a fixed cycle', async () => {
+  // A permanently-dead proxy (every dial connect-fails) on a single-account, single-entry pool: no
+  // sibling IP to rotate to and no failover account, so each external request makes exactly ONE dial
+  // attempt against the SAME egress key and sheds a retryable 503. Pre-fix, `coolIp()` always cooled that
+  // key for the SAME fixed IP_TRANSPORT_COOLDOWN_MS, so a hard-down host was re-admitted into rotation on
+  // a constant cycle forever. Post-fix, the per-IP streak escalates the cooldown DURATION (doubling, not
+  // just the absolute cooldownUntil ticking forward with wall-clock time) on every consecutive failure.
+  resetGovernorRegistry();
+  const fetchImpl = (async () => {
+    throw new Error('connect ECONNREFUSED 127.0.0.1:9199');
+  }) as unknown as typeof fetch;
+  const acct: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:9199' } };
+  const pool: AccountPool = { active: () => acct, onExhausted: () => null, select: (id) => (id === 'A' ? acct : null) };
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 2000, // generous enough to wait out the (short, pre-circuit-open) inter-request pause
+  });
+  port = await gw.listen(0);
+
+  const durationsMs: number[] = [];
+  for (let i = 0; i < 3; i++) {
+    const before = Date.now();
+    const r = await ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    });
+    assert.equal(r.status, 503, `attempt ${i + 1}: a hard-down proxy sheds a retryable 503`);
+    const stats = (await (await ask('/stats')).json()) as {
+      edgeThrottleByAccount?: Record<string, { cooldownUntil: number }>;
+    };
+    const cooldownUntil = stats.edgeThrottleByAccount?.A?.cooldownUntil ?? 0;
+    assert.ok(cooldownUntil > before, `attempt ${i + 1}: the IP was cooled (cooldownUntil in the future)`);
+    durationsMs.push(cooldownUntil - before);
+  }
+  assert.ok(
+    durationsMs[1] > durationsMs[0] * 1.5,
+    `2nd consecutive failure's cooldown (${durationsMs[1]}ms) must ESCALATE well past the 1st (${durationsMs[0]}ms) — a FIXED cooldown would stay flat regardless of streak`,
+  );
+  assert.ok(
+    durationsMs[2] > durationsMs[1] * 1.5,
+    `3rd consecutive failure's cooldown (${durationsMs[2]}ms) must escalate further past the 2nd (${durationsMs[1]}ms)`,
+  );
+  resetGovernorRegistry();
+}, 20_000);
+
+test('[EI-18791887279744938 defect A] a genuine transport SUCCESS on a cooled egress key resets its escalation streak', async () => {
+  // The flap-tolerance half of the fix: a proxy that fails once then recovers must NOT inherit a stale
+  // escalated cooldown on its NEXT isolated blip — the streak (and the now-disproven cooldown) clear on
+  // the first real transport success, exactly like the existing bare-429 success clear.
+  resetGovernorRegistry();
+  let call = 0;
+  const fetchImpl = (async () => {
+    call += 1;
+    if (call === 1) throw new Error('connect ECONNREFUSED 127.0.0.1:9198');
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const acct: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:9198' } };
+  const pool: AccountPool = { active: () => acct, onExhausted: () => null, select: (id) => (id === 'A' ? acct : null) };
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 2000,
+  });
+  port = await gw.listen(0);
+
+  const r1 = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r1.status, 503, 'first attempt: transport failure sheds a retryable 503');
+
+  const r2 = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r2.status, 200, "the pause from attempt 1 elapsed and this attempt's transport genuinely succeeded");
+
+  const stats = (await (await ask('/stats')).json()) as {
+    edgeThrottleByAccount?: Record<string, { edgeThrottled: boolean; cooldownUntil: number }>;
+  };
+  assert.equal(
+    stats.edgeThrottleByAccount?.A?.edgeThrottled,
+    false,
+    'a proven-live egress IP must not sit out the remainder of a cooldown it just disproved',
+  );
+  resetGovernorRegistry();
+}, 20_000);
+
+test('[EI-18791887279744938 defect B] the zero-reachable-egress-proxy condition raises a health signal (alarm log + /stats)', async () => {
+  // Two accounts, each with exactly ONE (different) proxy egress — both permanently dead. No rotation
+  // between them (onExhausted → null); each request is PINNED so it dials its OWN account's dead proxy.
+  // Pre-fix: `accounts:status` showed only the SYMPTOM (accounts unavailable), and nothing alarmed on the
+  // CAUSE (every proxy down) — the outage was found only because the owner reported user-visible errors.
+  resetGovernorRegistry();
+  const fetchImpl = (async () => {
+    throw new Error('connect ECONNREFUSED');
+  }) as unknown as typeof fetch;
+  const acctA: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:9101' } };
+  const acctB: ActiveAccount = { accountId: 'B', token: async () => 'B-tok', egress: { proxyUrl: 'http://127.0.0.1:9102' } };
+  const pool: AccountPool = {
+    active: () => acctA,
+    onExhausted: () => null,
+    select: (id) => (id === 'A' ? acctA : id === 'B' ? acctB : null),
+    entries: () => [acctA, acctB],
+  };
+  const logs: { level: string; msg: string }[] = [];
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 2000,
+    log: (level, msg) => logs.push({ level, msg }),
+  });
+  port = await gw.listen(0);
+
+  const pin = (id: string) =>
+    ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-account': id },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    });
+
+  await pin('A');
+  const midStats = (await (await ask('/stats')).json()) as {
+    egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean };
+  };
+  assert.equal(midStats.egressProxyHealth?.totalProxyEntries, 2, 'both accounts contribute a proxy entry');
+  assert.equal(midStats.egressProxyHealth?.reachableProxyEntries, 1, 'B is still reachable — only A has failed so far');
+  assert.equal(midStats.egressProxyHealth?.allDown, false, 'not every proxy is down yet');
+  assert.ok(
+    !logs.some((l) => l.msg.includes('EGRESS ALARM')),
+    'no alarm yet — a single dead proxy with a healthy sibling is not the zero-reachable-proxy condition',
+  );
+
+  await pin('B');
+  const finalStats = (await (await ask('/stats')).json()) as {
+    egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean };
+  };
+  assert.equal(finalStats.egressProxyHealth?.reachableProxyEntries, 0, 'both proxy entries are now cooled');
+  assert.equal(finalStats.egressProxyHealth?.allDown, true, '/stats surfaces the zero-reachable-proxy condition');
+  const alarm = logs.find((l) => l.level === 'error' && l.msg.includes('EGRESS ALARM'));
+  assert.ok(alarm, `expected an error-level EGRESS ALARM log once every proxy went down; got:\n${logs.map((l) => `${l.level}: ${l.msg}`).join('\n')}`);
+  resetGovernorRegistry();
+}, 20_000);
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Codex-CLI bridge (ChatGPT subscription) — codex-cli-bridge.ts + proxyOpenAi

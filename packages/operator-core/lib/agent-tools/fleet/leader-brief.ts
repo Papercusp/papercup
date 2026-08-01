@@ -922,11 +922,11 @@ export default defineTool({
   name: 'fleet:leader-brief',
   profile: 'engineer',
   description:
-    "A leader's ONE-call fleet-health brief, scoped to ONE fleet (yours by default) rather than " +
-    "fleet:assignments' whole roster. Per member: sessionState, `verdict` " +
+    "A leader's ONE-call health brief for ONE fleet (yours by default). Per member: " +
+    'sessionState, `verdict` ' +
     '(booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, claims ' +
     '(doing/workItemIds/queuedCount/load), loop state (monitoring|waiting|' +
-    'parked-awaiting-capability)+nextFireAt, stalled, unanswered msgs, contextPressure ' +
+    'parked-awaiting-capability)+nextFireAt, stalled, unanswered, contextPressure ' +
     '(ok|high|critical), parkedOn + parkedOnResolved (a composed await is ONE entry carrying its ' +
     'ROOT deadline + any/all mode — never loose leaves, which read as deadline-less), ' +
     'benchSuggestion (check `kind`), `dormant`, unownedCriticals + abandonedUnclaimed ' +
