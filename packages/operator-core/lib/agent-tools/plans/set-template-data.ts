@@ -24,7 +24,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, type TemplateDataPatch } from './with-plan-lock';
-import { parsePlan } from './parser';
+import { parsePlan, type LegacyReason } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { validateTemplateData } from './template-registry';
 import { softText, clampText, LIMITS } from '../limits';
@@ -32,7 +32,7 @@ import { softText, clampText, LIMITS } from '../limits';
 export type SetTemplateDataValue =
   | { ok: true; slug: string; template: string }
   | { ok: false; code: 'not_found' }
-  | { ok: false; code: 'legacy_plan' }
+  | { ok: false; code: 'legacy_plan'; reason?: LegacyReason }
   | { ok: false; code: 'no_template' }
   | { ok: false; code: 'unknown_template'; template: string; known: string[] }
   | { ok: false; code: 'invalid_data'; template: string; issues: string[] };

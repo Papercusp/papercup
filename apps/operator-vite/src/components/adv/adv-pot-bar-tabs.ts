@@ -12,8 +12,12 @@ import type { AdvTabId } from './AdvShell';
  * set that must be able to change it:
  *
  *   hud        — the cluster's new home (ask #2a); its Work-items board is per-pot
- *                (useResolvedHarnessSlug), and the status pills live here. The
- *                only entry rendered `withStatus`.
+ *                (useResolvedHarnessSlug), and the pot's own status widgets
+ *                (AdvNowRunning · Discord) live here. The only entry rendered
+ *                `withStatus`. NOTE `withStatus` no longer covers the two
+ *                workspace-wide pills (pots running · agents running): those moved
+ *                to AdvShell's tab strip on 2026-08-01, since neither is filtered
+ *                by `?slug=` and gating them on one tab hid a workspace readout.
  *   overview   — the work-item tiles scope to `?slug=` when one is picked.
  *   plans      — the Create dock's plan list resolves a pot the same way.
  *   harnesses  — "Work" IS the per-pot work view.

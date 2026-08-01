@@ -210,7 +210,7 @@ export default defineTool({
     // reached a caller and was read as a claim-path defect. A read failure THROWS here
     // rather than degrading to a partial or zeroed reading: "could not measure" must not
     // masquerade as "measured none" when the answer drives a drain/wind-down call.
-    const { breakdown, rows: claimable, sample: excludedSample } = await readIssueClaimability(
+    const { breakdown, rows: claimable, sample: excludedSample, admitted } = await readIssueClaimability(
       filter,
       { harness, states, assignee, spec },
       { limit, breakdownOnly: args.breakdownOnly, sampleLimit: args.sampleExcluded },
@@ -227,6 +227,11 @@ export default defineTool({
       claimable,
       /** Per-floor stranding counts (INDEPENDENT/overlapping — they do NOT sum). */
       excludedBreakdown: breakdown.excluded,
+      /** WI-6673: what the admitted set is MADE OF — byKind, bySeverity, lowSeverityShare,
+       *  degenerate, peakDay. The counterpart to excludedBreakdown (what was REJECTED).
+       *  Always present, because the failure this prevents is a caller quoting the count
+       *  without having thought to ask what is in it. */
+      admittedBreakdown: admitted,
       /** Only present when `sampleExcluded` was passed: up to that many ids PER FLOOR
        *  (same overlapping-bucket semantics as excludedBreakdown) — which rows, not just
        *  how many. */
@@ -234,7 +239,12 @@ export default defineTool({
       spec: specProvenance,
       states: states ? [...states] : null,
       note:
-        '`claimableCount` is the authoritative claimable total (spec_match AND all ~12 floors — the SAME oracle scheduler:get_next runs). excludedBreakdown buckets OVERLAP, so they do NOT sum to matched−claimable. READ ONLY — nothing was claimed; take one via work_items:claim / scheduler:get_next.',
+        '`claimableCount` is the authoritative claimable total (spec_match AND all ~12 floors — the SAME oracle scheduler:get_next runs). excludedBreakdown buckets OVERLAP, so they do NOT sum to matched−claimable. READ ONLY — nothing was claimed; take one via work_items:claim / scheduler:get_next.' +
+        (admitted.degenerate
+          ? ` ⚠ COMPOSITION WARNING: ${Math.round((admitted.lowSeverityShare ?? 0) * 100)}% of this lane is nit/minor severity` +
+            (admitted.peakDay ? ` and ${admitted.peakDay.count} of it was filed on a single day (${admitted.peakDay.day})` : '') +
+            `. A count this size is NOT a workload — read admittedBreakdown before quoting it as one (WI-6673).`
+          : ''),
     };
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },

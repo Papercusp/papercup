@@ -89,84 +89,129 @@ function comparableRecipients(to: readonly string[], self: string): string[] {
 }
 
 /**
+ * The COMPARABLE claims in a message, in section order — and the reason nothing
+ * else in this module runs when it is empty.
+ *
+ * Exported because it IS the cost gate: a caller can ask "would this message
+ * cost a coupling read?" without performing one.
+ */
+export function comparableClaims(
+  sections: readonly SectionLike[],
+): Array<{ section: number; f: ForYouBecause }> {
+  const claims: Array<{ section: number; f: ForYouBecause }> = [];
+  sections.forEach((s, i) => {
+    const f = s?.forYouBecause;
+    if (f && participatesInCouplingDivergence(f)) claims.push({ section: i, f });
+  });
+  return claims;
+}
+
+/**
+ * The scoring half — PURE over an injected peer→relations map, so it unit-tests
+ * without PG, exactly as `deriveCouplingsFromHeldFiles` and `resolvePremiseStamps`
+ * are pure over their injected sources. The IO lives in the wrapper below.
+ */
+export function scoreCouplingDivergence(
+  claims: readonly { section: number; f: ForYouBecause }[],
+  recipients: readonly string[],
+  byPeer: ReadonlyMap<string, readonly DerivedCouplingRelation[]>,
+): CouplingDivergenceStamp[] {
+  const stamps: CouplingDivergenceStamp[] = [];
+  for (const { section, f } of claims) {
+    for (const recipient of recipients) {
+      if (stamps.length >= COUPLING_DIVERGENCE_STAMPS_MAX) return stamps;
+      // A recipient MISSING from the map and one mapped to an empty array mean
+      // the same thing to the verdict: the graph holds nothing for this pair.
+      // `couplingDivergenceVerdict` already treats absence correctly per
+      // relation (silence for a one-sided claim, divergence for a two-sided
+      // one), so there is deliberately no special case here.
+      const computed = [...(byPeer.get(recipient) ?? [])];
+      stamps.push({
+        section,
+        recipient,
+        asserted: f.relation,
+        verdict: couplingDivergenceVerdict(f, computed),
+        computed,
+      });
+    }
+  }
+  return stamps;
+}
+
+/** The one IO leg, injectable so the wrapper is testable without a database. */
+export type PeerRelationsReader = (
+  selfOwnerId: string,
+  opts: { workspaceId?: string | null; harnessSlug?: string | null },
+) => Promise<ReadonlyMap<string, readonly DerivedCouplingRelation[]>>;
+
+/**
+ * The production read: the SAME union `coord:presence` and the coupled-topic
+ * feed use — never a private notion of "coupled" (D-078 (b) / D-081). A peer the
+ * sender DECOUPLED stays decoupled here too, which is correct rather than
+ * unfortunate: the sender has explicitly said that edge should not surface.
+ */
+export const readPeerRelations: PeerRelationsReader = async (selfOwnerId, opts) => {
+  const ctx = {
+    ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+    ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+  };
+  const resolved = await resolvePresenceScope(ctx, {});
+  const snapshot = await assemblePresenceSnapshot(resolved, {});
+  const rosterOwnerIds = snapshot.active
+    .map((r) => (r as { ownerId?: unknown }).ownerId)
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
+
+  const derived = await deriveCouplings(
+    selfOwnerId,
+    snapshot.active,
+    couplingSourcesFor({
+      selfOwnerId,
+      rosterOwnerIds,
+      ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+      ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+    }),
+  );
+  const edges = await listCouplingsFor(selfOwnerId, opts.workspaceId ?? undefined);
+  const byPeer = new Map<string, readonly DerivedCouplingRelation[]>();
+  for (const p of resolveCoupledPeers(selfOwnerId, derived, edges)) {
+    byPeer.set(p.ownerId, p.derivedRelations ?? []);
+  }
+  return byPeer;
+};
+
+/**
  * Score every comparable (section, recipient) assertion against the live graph.
  *
  * Returns `[]` — never throws, never partially fails a send — when there is
- * nothing comparable, when the sender is unresolvable, or when any leg of the
- * coupling read is unavailable.
+ * nothing comparable, when the sender is unresolvable, or when the coupling read
+ * is unavailable.
  */
-export async function resolveCouplingDivergenceStamps(opts: {
-  selfOwnerId: string;
-  to: readonly string[];
-  sections: readonly SectionLike[];
-  workspaceId?: string | null;
-  harnessSlug?: string | null;
-}): Promise<CouplingDivergenceStamp[]> {
+export async function resolveCouplingDivergenceStamps(
+  opts: {
+    selfOwnerId: string;
+    to: readonly string[];
+    sections: readonly SectionLike[];
+    workspaceId?: string | null;
+    harnessSlug?: string | null;
+  },
+  readRelations: PeerRelationsReader = readPeerRelations,
+): Promise<CouplingDivergenceStamp[]> {
   try {
     const self = (opts.selfOwnerId ?? '').trim();
     if (!self) return [];
 
-    // THE GATE, before any IO: only assertions the table says can be compared.
-    const claims: Array<{ section: number; f: ForYouBecause }> = [];
-    opts.sections.forEach((s, i) => {
-      const f = s?.forYouBecause;
-      if (f && participatesInCouplingDivergence(f)) claims.push({ section: i, f });
-    });
+    // THE GATE, before any IO.
+    const claims = comparableClaims(opts.sections);
     if (claims.length === 0) return [];
 
     const recipients = comparableRecipients(opts.to, self);
     if (recipients.length === 0) return [];
 
-    // The SAME union `coord:presence` and the coupled-topic feed read — never a
-    // private notion of "coupled" (D-078 (b) / D-081). A peer the sender
-    // DECOUPLED stays decoupled here too, which is correct: the sender is
-    // asserting a relation it has explicitly said it does not want surfaced.
-    const ctx = {
-      ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-      ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
-    };
-    const resolved = await resolvePresenceScope(ctx, {});
-    const snapshot = await assemblePresenceSnapshot(resolved, {});
-    const rosterOwnerIds = snapshot.active
-      .map((r) => (r as { ownerId?: unknown }).ownerId)
-      .filter((v): v is string => typeof v === 'string' && v.length > 0);
-
-    const derived = await deriveCouplings(
-      self,
-      snapshot.active,
-      couplingSourcesFor({
-        selfOwnerId: self,
-        rosterOwnerIds,
-        ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
-        ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-      }),
-    );
-    const edges = await listCouplingsFor(self, opts.workspaceId ?? undefined);
-    const peers = resolveCoupledPeers(self, derived, edges);
-
-    const byPeer = new Map<string, DerivedCouplingRelation[]>();
-    for (const p of peers) byPeer.set(p.ownerId, p.derivedRelations ?? []);
-
-    const stamps: CouplingDivergenceStamp[] = [];
-    for (const { section, f } of claims) {
-      for (const recipient of recipients) {
-        if (stamps.length >= COUPLING_DIVERGENCE_STAMPS_MAX) return stamps;
-        // A recipient with NO entry is not the same as one with an empty entry,
-        // but both mean the same thing to the verdict: the graph holds nothing
-        // for this pair. `couplingDivergenceVerdict` already treats absence
-        // correctly per relation (silence for a one-sided claim, divergence for
-        // a two-sided one), so there is no special case to write here.
-        const computed = byPeer.get(recipient) ?? [];
-        stamps.push({
-          section,
-          recipient,
-          asserted: f.relation,
-          verdict: couplingDivergenceVerdict(f, computed),
-          computed,
-        });
-      }
-    }
-    return stamps;
+    const byPeer = await readRelations(self, {
+      workspaceId: opts.workspaceId ?? null,
+      harnessSlug: opts.harnessSlug ?? null,
+    });
+    return scoreCouplingDivergence(claims, recipients, byPeer);
   } catch {
     return [];
   }

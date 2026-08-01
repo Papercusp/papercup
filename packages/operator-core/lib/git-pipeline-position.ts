@@ -569,11 +569,17 @@ export interface PipelinePosition {
      * SELECT, not a fork, so it is safe to check on every `dev:pipeline_position`
      * call, including the no-arg / orient-fold form this field exists for.
      *
-     * `null` means NO CACHED SNAPSHOT YET (cold DB, first routine tick, or the
-     * read itself failed) — treat as UNKNOWN, never as "not active". `{ active:
-     * false }` is the genuine "gate is idle" reading.
+     * `null`/`undefined` means NO CACHED SNAPSHOT YET (cold DB, first routine
+     * tick, or the read itself failed) — treat as UNKNOWN, never as "not
+     * active". `{ active: false }` is the genuine "gate is idle" reading.
+     *
+     * OPTIONAL rather than required (unlike most legs on this interface) so
+     * this addition does not force every existing `PipelinePosition` fixture
+     * across the test suite to grow a new field it has no opinion about — a
+     * caller that omits it gets the same UNKNOWN treatment as an explicit
+     * `null`.
      */
-    checkpointRunInFlight: {
+    checkpointRunInFlight?: {
       active: boolean;
       /** Best-effort candidate sha the live run is judging (from its log head). */
       candidate: string | null;

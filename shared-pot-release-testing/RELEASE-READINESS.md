@@ -159,10 +159,23 @@ logs are from the green run `m1785117063`.
    duplicate its diagnosis.
 3. **Gate coverage gaps (§5).** ~~Two of three~~ **RESOLVED 2026-08-01 for the from-repo pair:**
    both legs were enabled by D-016 and are now **covered and GREEN** on a real gate window
-   (run `20260801-143855`, `from-repo=PASS from-repo-witness=PASS`). Remaining: `membership_churn`
-   — the `--frames=3` flip landed (P-425) but the gate's local-matrix leg is TTL-deferred
-   (`last-matrix-verdict` 2026-07-26 22:00, `MATRIX_TTL_H=144`), so the leg still has **no
-   verdict of its own**. A manual 3-frame run is being used to produce that first verdict.
+   (run `20260801-143855`, `from-repo=PASS from-repo-witness=PASS`). `membership_churn`:
+   **the substantive question is now ANSWERED — it PASSES on a real 3-frame rig.** The manual
+   run landed 2026-08-01 15:14 and is banked at
+   `~/.papercusp/live-fed-gate/triage/scn.membership_churn-151402.log`:
+   `membership_churn OK (roster a=2 b=2 c=2; backfill=hello-world|remote; C→A='hello-world'
+   C→B='hello-world')` — i.e. late-joining frame c converges the roster, backfills, and reaches
+   full mesh in both directions (`content_bidir` passed in the same run). `CPUSET_C` is
+   configured and working (128-core box ⇒ default `104-111`; frames were pinned exclusively).
+   ⚠ **What is still open is the GATE PLUMBING, not the behaviour:** `last-matrix-verdict` still
+   reads 2026-07-27 02:00 UTC, and with `MATRIX_TTL_H=144` that verdict does not expire until
+   2026-08-02 02:00 — so the gate goes on deferring its local-matrix leg to a verdict that
+   *predates the `--frames=3` flip* and therefore never included this scenario. **Do not stamp
+   the marker from the manual run:** that run was `--only=content_bidir,membership_churn`
+   (2 of 18 scenarios), and a full-matrix marker written from a 2-scenario run would assert
+   coverage nobody produced — the exact false-green class D-018 exists to stop. The honest
+   close is a full local-matrix run (or a marker whose scope is per-scenario rather than
+   whole-matrix).
 4. **Code-signing certs (§4).** Owner-supplied input, arriving when it arrives.
 
 Rows 1–3 are agent work. Nothing on this list is waiting on a decision.

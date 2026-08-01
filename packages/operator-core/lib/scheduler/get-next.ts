@@ -1109,7 +1109,13 @@ export async function listIssueClaimableRows(
       COALESCE(item_kind, kind) AS kind,
       title,
       status,
-      (payload->>'severity')    AS severity,
+      -- WI-6673: severity on harness_shared.work_items lives at payload._ei.severity
+      -- (migration 374 fold), NOT top level. The old top-level accessor matched
+      -- 1 of 13,731 open issue-family rows -- so EVERY claimable row came back
+      -- severity:null, including genuine criticals, and a leader reading this tool
+      -- concluded severity was simply not tracked on claimable work. _ei first, with
+      -- the legacy top-level as fallback for stragglers that predate the fold.
+      COALESCE(payload->'_ei'->>'severity', payload->>'severity') AS severity,
       source_plan_slug          AS plan,
       feature_order,
       created_ts
@@ -1139,6 +1145,108 @@ export async function listIssueClaimableRows(
   }));
 }
 
+/**
+ * What the ADMITTED set is MADE OF — the composition of the rows that passed, as opposed
+ * to {@link IssueClaimExclusionBreakdown} which describes only what was REJECTED.
+ *
+ * WHY (WI-6673): a claimable COUNT with no composition is the single most misleading
+ * number this system produces, because it looks like a measurement rather than an
+ * interpretation and therefore resists suspicion. On 2026-08-01 a fleet was launched at a
+ * lane reporting 1,252 claimable; 98.7% of it was nit-severity auto-filed OBSERVATIONS,
+ * and the true bug backlog was ~285. Every count quoted along the way was arithmetically
+ * correct and none of them answered "is this work?". The owner caught it by instinct after
+ * three different correct numbers had been reported.
+ *
+ * This MUST be computed server-side. The obvious caller-side workaround — read the rows
+ * and group them yourself — was impossible: the row projection handed back `severity:null`
+ * for every row (the sibling half of WI-6673, fixed in the same change), so no amount of
+ * caller diligence could characterize the pool.
+ */
+export interface IssueClaimAdmittedComposition {
+  /** Admitted rows per issue kind (bug/change/task). */
+  byKind: Record<string, number>;
+  /** Admitted rows per severity; `unset` collects rows carrying none. */
+  bySeverity: Record<string, number>;
+  /** Fraction of the admitted set that is nit/minor severity, 0..1 (null when empty). */
+  lowSeverityShare: number | null;
+  /**
+   * True when the admitted pool is BOTH large and compositionally degenerate — the
+   * "this lane is an observation firehose, not a backlog" shape. Consumers surface this
+   * instead of making every caller re-derive the same judgement from the raw buckets.
+   */
+  degenerate: boolean;
+  /** Admitted rows created in the busiest single day, and that day — a burst-filing tell. */
+  peakDay: { day: string; count: number } | null;
+}
+
+const DEGENERATE_LOW_SEVERITY_SHARE = 0.8;
+const DEGENERATE_MIN_POOL = 50;
+
+/**
+ * Composition of the ADMITTED set, in the caller's snapshot. Same subquery + same floor
+ * predicate as {@link listIssueClaimableRows}, so it describes exactly the population the
+ * count reports and the queue serves — it cannot drift from either.
+ */
+export async function aggregateAdmittedComposition(
+  filter: FilterNode | undefined,
+  opts: {
+    harness: string;
+    states?: readonly string[];
+    assignee?: string;
+    rigAvailable?: boolean;
+    client?: OrgSql;
+  },
+): Promise<IssueClaimAdmittedComposition> {
+  const sql = opts.client ?? getOrgPg().sql;
+  const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
+  const issueWs = issuesScopeWorkspace();
+  const operatorScopeSlug = `operator:${issueWs}`;
+  const sub = issueClaimCandidateSubquery(sql, {
+    compiled: compileFilter(sql, filter),
+    assignee: opts.assignee ?? '',
+    cooldown: releaseCooldownSec(),
+    harness: opts.harness,
+    states,
+    issueWs,
+    operatorScopeSlug,
+    rigAvailable: opts.rigAvailable,
+  });
+
+  const rows = (await sql`
+    SELECT
+      COALESCE(item_kind, kind)                                              AS kind,
+      COALESCE(payload->'_ei'->>'severity', payload->>'severity', 'unset')   AS severity,
+      to_char(to_timestamp(created_ts / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+      count(*)::int                                                          AS n
+    FROM (${sub}) sub
+    WHERE spec_match AND ${sql.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)}
+    GROUP BY 1, 2, 3
+  `) as Array<{ kind: string; severity: string; day: string | null; n: number }>;
+
+  const byKind: Record<string, number> = {};
+  const bySeverity: Record<string, number> = {};
+  const byDay: Record<string, number> = {};
+  let total = 0;
+  let low = 0;
+  for (const r of rows) {
+    byKind[r.kind] = (byKind[r.kind] ?? 0) + r.n;
+    bySeverity[r.severity] = (bySeverity[r.severity] ?? 0) + r.n;
+    if (r.day) byDay[r.day] = (byDay[r.day] ?? 0) + r.n;
+    if (r.severity === 'nit' || r.severity === 'minor') low += r.n;
+    total += r.n;
+  }
+  const lowSeverityShare = total > 0 ? low / total : null;
+  const peak = Object.entries(byDay).sort((a, b) => b[1] - a[1])[0];
+  return {
+    byKind,
+    bySeverity,
+    lowSeverityShare,
+    degenerate:
+      total >= DEGENERATE_MIN_POOL && lowSeverityShare !== null && lowSeverityShare >= DEGENERATE_LOW_SEVERITY_SHARE,
+    peakDay: peak ? { day: peak[0], count: peak[1] } : null,
+  };
+}
+
 /** The whole claimability reading — counts, survivor rows, and (optionally) the per-floor
  *  excluded sample — as observed at ONE instant. Returned by {@link readIssueClaimability}. */
 export interface IssueClaimabilityReading {
@@ -1147,6 +1255,8 @@ export interface IssueClaimabilityReading {
   rows: IssueClaimableRow[];
   /** Only when `sampleLimit` was passed. */
   sample?: IssueClaimExclusionSample;
+  /** What the admitted set is MADE OF (WI-6673) — always present, same snapshot. */
+  admitted: IssueClaimAdmittedComposition;
 }
 
 /**
@@ -1223,8 +1333,12 @@ export async function readIssueClaimability(
     const sample = readOpts.sampleLimit
       ? await sampleIssueClaimExclusions(filter, { ...shared, client }, readOpts.sampleLimit)
       : undefined;
+    // WI-6673: composition of the ADMITTED set, in the SAME snapshot as the count it
+    // describes. Unconditional — it is not an opt-in extra, because the whole failure
+    // mode is a caller quoting the count WITHOUT having thought to ask for composition.
+    const admitted = await aggregateAdmittedComposition(filter, { ...shared, client });
 
-    return { breakdown, rows, ...(sample ? { sample } : {}) };
+    return { breakdown, rows, admitted, ...(sample ? { sample } : {}) };
   })) as IssueClaimabilityReading;
 }
 

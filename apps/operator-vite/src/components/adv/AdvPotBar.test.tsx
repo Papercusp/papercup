@@ -116,13 +116,17 @@ vi.mock('@/app/harness/ShareHiveDialog', () => ({
   defaultFetchShareMeta: vi.fn(async () => hiveShareMeta),
 }));
 
-// The four status children each have their own suite; stub them so this one is
-// about the cluster, and so "did the pills render at all" is assertable.
+// The status children each have their own suite; stub them so this one is about
+// the cluster, and so "did the widget render at all" is assertable.
 vi.mock('./AdvNowRunning', () => ({
   default: ({ slug }: { slug: string | null }) => (
     <div data-testid="now-running" data-slug={slug ?? ''} />
   ),
 }));
+// The two workspace-wide pills moved to AdvShell's tab strip 2026-08-01, so this
+// row must NOT import them any more. The stubs stay deliberately: they are what
+// makes the negative assertion below real — re-adding either import here would
+// render a stub and red the test, rather than silently restoring the duplicate.
 vi.mock('./HivesRunningPill', () => ({ default: () => <div data-testid="hives-pill" /> }));
 vi.mock('./AgentsRunningPill', () => ({ default: () => <div data-testid="agents-pill" /> }));
 vi.mock('./DiscordBadge', () => ({

@@ -14,8 +14,6 @@ import HiveBeaconToggle from '@/app/adv/harnesses/HiveBeaconToggle';
 import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
 import { useLexicon } from '@/lib/useLexicon';
 import AdvNowRunning from './AdvNowRunning';
-import HivesRunningPill from './HivesRunningPill';
-import AgentsRunningPill from './AgentsRunningPill';
 import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION } from './adv-harness-selection';
 import { buildHarnessSelectOptions, type HarnessProjectLite } from './AdvShell';
@@ -25,8 +23,8 @@ import './adv-pot-bar.css';
 /**
  * AdvPotBar — the POT cluster: `POT` label · selector · sub-pots toggle · New ·
  * Share/Public/Invite · Beacon · Workspaces · Register sub-pots, optionally
- * followed by the status pills (pots running · agents running · the pot's own
- * start/stop + "N plans waiting" bar · Discord).
+ * followed by the pot's own status widgets (start/stop + "N plans waiting" bar ·
+ * Discord).
  *
  * The last three arrived 2026-07-27 from the Work tab, whose HiveHeaderStrip
  * restated this row's identity + Share cluster one line below it and was deleted
@@ -39,8 +37,11 @@ import './adv-pot-bar.css';
  * workspace-scoped (HUD aggregates every session in the workspace, Calendar every
  * pot's schedule), so a global pot picker over them was confusing. That bar is
  * gone. The cluster now renders as the FIRST ROW INSIDE each tab that is genuinely
- * pot-scoped (POT_BAR_TAB_IDS in adv-pot-bar-tabs.ts), with the status pills on
- * HUD — the owner's chosen home for them.
+ * pot-scoped (POT_BAR_TAB_IDS in adv-pot-bar-tabs.ts), with the pot's own status
+ * widgets on HUD. (The two workspace-wide pills that also sat here until
+ * 2026-08-01 moved UP into AdvShell's tab strip for the mirror-image reason: they
+ * are not pot-scoped, so a pot-scoped row was the wrong home and hid them behind
+ * one tab.)
  *
  * It writes exactly the SAME URL axes the shell used to own, so nothing
  * downstream changed: `?slug=` (the pot), `?scope=` (self | expanded | all),
@@ -231,13 +232,21 @@ export default function AdvPotBar({ withStatus = false }: { withStatus?: boolean
         {!allMode && activeSlug && <HarnessWorkspacesButton slug={activeSlug} />}
         {!allMode && activeSlug && <RegisterSubsButton slug={activeSlug} />}
       </div>
-      {/* The status cluster — HUD only (owner ask 2026-07-27). Pots running +
-          workspace-wide agents running + this pot's start/stop and "N plans
-          waiting" nudge + its Discord link. */}
+      {/* The status cluster — HUD only (owner ask 2026-07-27): this pot's
+          start/stop and "N plans waiting" nudge, plus its Discord link.
+
+          The two WORKSPACE-wide pills that used to lead this cluster (pots
+          running · agents running) left for AdvShell's tab strip on 2026-08-01
+          (owner ask: "move these buttons from the HUD tab to the top bar visible
+          when viewing any tabs, to the right of the MORE button"). They read
+          hive.controlState / advRoster.list — neither is filtered by `?slug=` —
+          so a pot bar was never their scope, and living here hid a
+          workspace-wide readout behind a single tab.
+
+          What remains IS pot-scoped, which is why it stayed: both widgets take
+          `singleSlug` and blank themselves under All Pots. */}
       {withStatus && (
         <>
-          <HivesRunningPill />
-          <AgentsRunningPill />
           <AdvNowRunning slug={singleSlug} />
           <DiscordBadge slug={singleSlug} />
         </>
