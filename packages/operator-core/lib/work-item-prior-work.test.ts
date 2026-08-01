@@ -49,6 +49,48 @@ describe('priorWorkWarning', () => {
     expect(w).not.toMatch(/READ THE SOURCE/);
   });
 
+  // WI-6737: the third state. Every caller reads the checkpoint hint under a `.catch(() => null)`,
+  // so before this branch existed a checkpoint-store OUTAGE was indistinguishable from a checkpoint
+  // that was never written — and this function went on to assert the latter in those exact words.
+  // A transport failure rendered as a claim about history is the defect; these pin that it can't
+  // happen again in either direction.
+  describe("hasCheckpoint: 'unknown' (the checkpoint store could not be READ)", () => {
+    it('says the answer is UNKNOWN and never that no checkpoint was written', () => {
+      const w = priorWorkWarning(hint({ lastReleasedBy: 'su-peer', hasCheckpoint: 'unknown' }));
+      expect(w).toMatch(/PRIOR WORK/);
+      expect(w).toMatch(/UNKNOWN/);
+      expect(w).toMatch(/could NOT BE READ/i);
+      // The whole point: the false-branch's categorical claim about history must NOT appear.
+      // This is the assertion that would have caught the original bug.
+      expect(w).not.toMatch(/NO checkpoint was ever written/);
+      expect(w).not.toMatch(/never-started/);
+      expect(w).toContain('su-peer');
+    });
+
+    it('tells the reader NOT to start rebuilding, and to re-read once reachable', () => {
+      const w = priorWorkWarning(hint({ attempts: 2, hasCheckpoint: 'unknown' }));
+      expect(w).toMatch(/Do NOT start rebuilding/i);
+      expect(w).toMatch(/work_items:get/);
+      // the ordinary fact rendering still applies to this branch
+      expect(w).toMatch(/2 prior claim attempts/);
+    });
+
+    it('is DISTINCT from both boolean branches — no two of the three collapse', () => {
+      const base = { lastReleasedBy: 'su-peer' as const };
+      const unknown = priorWorkWarning(hint({ ...base, hasCheckpoint: 'unknown' }));
+      const absent = priorWorkWarning(hint({ ...base, hasCheckpoint: false }));
+      const present = priorWorkWarning(hint({ ...base, hasCheckpoint: true }));
+      expect(new Set([unknown, absent, present]).size).toBe(3);
+    });
+
+    it("treats ONLY the literal 'unknown' as unknown — a truthy value is still a present checkpoint", () => {
+      // Guards the `=== true` / `=== 'unknown'` comparisons against a future refactor that
+      // reintroduces a loose truthiness check and silently re-merges the branches.
+      expect(priorWorkWarning(hint({ hasCheckpoint: true }))).toMatch(/checkpoint exists/);
+      expect(priorWorkWarning(hint({ hasCheckpoint: false }))).toMatch(/NO checkpoint was ever written/);
+    });
+  });
+
   it('reports attempt count and pluralises it', () => {
     expect(priorWorkWarning(hint({ attempts: 1 }))).toMatch(/1 prior claim attempt\b/);
     expect(priorWorkWarning(hint({ attempts: 3 }))).toMatch(/3 prior claim attempts/);

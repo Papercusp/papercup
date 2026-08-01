@@ -16,6 +16,8 @@ import {
   backpressureRetryable,
   retryAfterMs,
   MAX_BACKPRESSURE_RETRIES,
+  handshakeTimeoutRetryable,
+  MAX_HANDSHAKE_TIMEOUT_RETRIES,
   type McpProxyTarget,
 } from './proxy';
 
@@ -481,4 +483,96 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
       expect(upstream.hits()).toBe(1); // opaque → not replayed
     }),
   );
+});
+
+/**
+ * WI-6740 — upstream SILENCE.
+ *
+ * The suite above pins every way upstream can FAIL: refused, socket reset, 429, boot
+ * status. None of them covers upstream going QUIET, and that gap is precisely why the
+ * bug shipped: with no timeout on the forward, a stalled :3070 produced no error, so no
+ * retry path ran, the proxy waited forever, and the CLIENT timed out — permanently
+ * tool-dark for the rest of that session (269 occurrences 2026-07-10 → 2026-08-01).
+ */
+describe('WI-6740: upstream silence — bounded + replayed for the handshake, never for a tools/call', () => {
+  const A_TOOLS_CALL = '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{}}}';
+
+  it('replays a STALLED handshake and returns the eventual 200 (a client would have gone dark)', async () => {
+    let calls = 0;
+    const upstream = track(
+      http.createServer((_req, res) => {
+        calls++;
+        // First forward: accept the connection and then say NOTHING — the exact shape of
+        // the ~10s :3070 stalls. No error is ever emitted, so only a timeout can catch it.
+        if (calls === 1) return;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":"catalog"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+        retryWindowMs: 5_000, retryBackoffMs: 20, handshakeTimeoutMs: 150, log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    // Default body carries no tools/call → 'idempotent', i.e. the initialize/tools/list class.
+    const r = await request(port(proxy));
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"catalog"}');
+    expect(calls).toBe(2); // stalled once, replayed once
+  });
+
+  it('does NOT bound a tools/call — a slow long-running tool still succeeds', async () => {
+    // The anti-regression for the fix itself: build:typecheck legitimately runs ~160s and
+    // capability:bash ~120s on this box, so applying the handshake timeout to a real tool
+    // call would convert working long tools into hard failures.
+    const upstream = track(
+      http.createServer((_req, res) => {
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"result":"slow-but-fine"}');
+        }, 300); // 2× the handshake timeout below
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+        retryWindowMs: 5_000, retryBackoffMs: 20, handshakeTimeoutMs: 150, log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const r = await request(port(proxy), A_TOOLS_CALL);
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"slow-but-fine"}');
+  });
+
+  it('surfaces honestly (502) rather than hanging when the stall outlives the replay budget', async () => {
+    const upstream = track(http.createServer(() => { /* silent forever */ }));
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+        retryWindowMs: 5_000, retryBackoffMs: 10, handshakeTimeoutMs: 60, log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const r = await request(port(proxy));
+    expect(r.status).toBe(502); // bounded: an error the client can act on, not an infinite wait
+  });
+
+  it('handshakeTimeoutRetryable — idempotent only, bounded, in-window (pure)', () => {
+    expect(handshakeTimeoutRetryable('idempotent', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 0, 5_000)).toBe(true);
+    // A batch carrying a tools/call may ALREADY have applied its side effect upstream —
+    // silence tells us nothing about whether it ran, so it must never be replayed.
+    expect(handshakeTimeoutRetryable('opaque', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 0, 5_000)).toBe(false);
+    expect(handshakeTimeoutRetryable('keyed', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 0, 5_000)).toBe(false);
+    expect(handshakeTimeoutRetryable('idempotent', MAX_HANDSHAKE_TIMEOUT_RETRIES, MAX_HANDSHAKE_TIMEOUT_RETRIES, 0, 5_000)).toBe(false);
+    expect(handshakeTimeoutRetryable('idempotent', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 6_000, 5_000)).toBe(false);
+  });
 });

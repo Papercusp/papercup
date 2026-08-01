@@ -520,6 +520,65 @@ describe('coord:send body auto-refs opt-out (coord-authority-hardening P-008)', 
   });
 });
 
+describe('coord:send expectEffect — DELIVERED vs ACTED-ON (P-013)', () => {
+  // Drives the REAL handler, not a hand-built envelope. The whole point of the
+  // feature is that the expectation survives to the persisted envelope, where the
+  // actuation probe later finds it — a unit test of the resolver alone would pass
+  // even if nothing were ever stamped (the P-020 lesson, same plan).
+  it('stamps the declared effect on the envelope extra', async () => {
+    await body({
+      to: ['bee-1'],
+      summary: 'checkpoint WI-42 before you compact',
+      expectEffect: { kind: 'checkpoint', itemId: 'WI-42' },
+    });
+    const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.expectEffect).toEqual({ kind: 'checkpoint', itemId: 'WI-42' });
+  });
+
+  it('carries an explicit harness through to the envelope', async () => {
+    await body({
+      to: ['bee-1'],
+      summary: 'release it',
+      expectEffect: { kind: 'claim-release', itemId: 'WI-42', harness: 'papercusp' },
+    });
+    const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.expectEffect).toEqual({
+      kind: 'claim-release',
+      itemId: 'WI-42',
+      harness: 'papercusp',
+    });
+  });
+
+  it('stamps NOTHING when the sender declares no effect — the default send is byte-identical', async () => {
+    await body({ to: ['bee-1'], summary: 'fyi' });
+    const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.expectEffect).toBeUndefined();
+  });
+
+  it("echoes the expectation as `pending` — it must NEVER report compliance at send time", async () => {
+    const res = (await body({
+      to: ['bee-1'],
+      summary: 'terminal it',
+      expectEffect: { kind: 'terminal', itemId: 'WI-7' },
+    })) as { results: Array<{ expectEffect?: { verdict?: string; note?: string } }> };
+    const echoed = res.results[0]?.expectEffect;
+    expect(echoed?.verdict).toBe('pending');
+    // The honesty rail: the send result is the one place an agent is most likely to
+    // mistake delivery for compliance, so it says so in words.
+    expect(echoed?.note).toMatch(/woken:1 is DELIVERY, not compliance/);
+  });
+
+  it('rejects an unrecognised effect kind rather than stamping an uninterpretable expectation', async () => {
+    await expect(
+      body({
+        to: ['bee-1'],
+        summary: 'do the thing',
+        expectEffect: { kind: 'lock-taken', itemId: 'WI-42' },
+      }),
+    ).rejects.toThrow();
+  });
+});
+
 describe('coord:send zero-recipient audience (EI-6874)', () => {
   it("an EXPLICIT @fleet: selector resolving to ZERO live members → ok:false zero_recipients, NOT a silent ok:true", async () => {
     // The incident: a leader's drain order to @fleet:p2p-dist resolved to 0 members

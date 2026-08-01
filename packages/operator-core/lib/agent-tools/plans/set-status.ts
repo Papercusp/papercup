@@ -73,6 +73,7 @@ const itemSpec = z.object({
   note: NOTE.optional(),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
+  onlyIfNotTerminal: z.boolean().optional(),
 });
 
 const argsSchema = z
@@ -100,6 +101,12 @@ const argsSchema = z
       .describe(
         'Optional — rarely needed: a status flip is already visible in the plan doc. Supply only when the *why* of the flip is non-obvious (e.g. an item moved to `blocked`). Stored on the plan revision (D-009).',
       ),
+    onlyIfNotTerminal: z
+      .boolean()
+      .optional()
+      .describe(
+        'Non-destructive flip: SKIP any item that is already done/dropped instead of moving it off terminal (reported `skipped:"terminal_guard"`, ok:true). For AUTOMATED reflections that must never un-finish shipped work; a human reopening an item deliberately just omits it.',
+      ),
   })
   .refine(
     (a) =>
@@ -115,6 +122,10 @@ interface StatusItem {
   note?: string;
   harness?: string;
   rationale?: string;
+  /** Skip (don't flip) when the item is ALREADY terminal and this flip is non-terminal —
+   *  for automated reflections that must never un-finish shipped work. See the guard
+   *  inside the plan lock. */
+  onlyIfNotTerminal?: boolean;
 }
 
 /** Result payload — explicit so `withPlanLock`'s `T` is fixed by the
@@ -249,6 +260,28 @@ export function truncateInlineNote(note: string | undefined): {
 /** A terminal status — the item is finished; it is held + assigned by no one. */
 export function isTerminalStatus(status: string): boolean {
   return status === 'done' || status === 'dropped';
+}
+
+/**
+ * Should a non-destructive flip be SKIPPED because the item is already finished?
+ *
+ * Pure + exported (same posture as `terminalFlipConflict` below) so the rule is unit-tested
+ * without the PG/lock path. True ⇒ leave the item exactly as it is.
+ *
+ * The invariant: an AUTOMATED reflection must never move a plan item from terminal to
+ * NON-terminal, because the event driving it may carry no information about completion at
+ * all — `work_items:release` is ownership, not doneness. Terminal→terminal (done→dropped)
+ * is a legitimate reclassification and is NOT skipped; a caller that omits the flag (a human
+ * deliberately reopening an item) is unaffected.
+ */
+export function terminalGuardTrips(opts: {
+  onlyIfNotTerminal: boolean | undefined;
+  currentStatus: string | null;
+  nextStatus: string;
+}): boolean {
+  if (!opts.onlyIfNotTerminal) return false;
+  if (opts.currentStatus === null) return false;
+  return isTerminalStatus(opts.currentStatus) && !isTerminalStatus(opts.nextStatus);
 }
 
 /** The minimal claim shape the terminal-flip guard reads (a subset of PlanItemClaim). */
@@ -627,6 +660,31 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       if (!found) {
         return { newBody: null, value: { ok: false, code: 'item_not_found' } };
       }
+      // Non-destructive flip: refuse to move an item OFF a terminal status.
+      // Read INSIDE the lock (like drainedPlan/wipItemText above) so the decision is
+      // race-safe against a concurrent flip rather than a stale pre-lock read.
+      //
+      // Why this exists: an AUTOMATED reflection must never un-finish shipped work.
+      // `work_items:release` is an OWNERSHIP event — it carries no information about
+      // completion — but plan-items/reflect-rules.ts reflected it as a flat
+      // `status:'todo'`, guarded only on the WORK-ITEM's state, never the plan item's.
+      // So releasing a stale non-terminal work-item silently de-completed an already
+      // `done` plan item, which then re-entered the claimable pool (duplicate work) and
+      // dragged every item blocked-by it into a false `blocked`. Observed live on
+      // memory-write-latency-2026-07-26#P-007 (deployed and serving, reverted to `todo`
+      // by the release of WI-6211).
+      //
+      // Only NON-terminal targets are guarded: a terminal→terminal correction
+      // (done→dropped) is a legitimate reclassification and still goes through.
+      if (
+        terminalGuardTrips({
+          onlyIfNotTerminal: it.onlyIfNotTerminal,
+          currentStatus: oldStatus,
+          nextStatus: it.status,
+        })
+      ) {
+        return { newBody: null, value: { ok: false, code: 'terminal_guard', currentStatus: oldStatus } };
+      }
       // Read importance only on a transition INTO needs-human — the sole
       // case the push gate cares about — so routine flips skip the parse.
       const importance: Importance =
@@ -678,6 +736,20 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   }
 
   if (!result.value.ok) {
+    // A tripped terminal guard is a deliberate NO-OP, not a failure: the caller asked
+    // for a non-destructive flip and the item was already finished. Reported ok:true so
+    // an automated reflection does not read as broken (and does not get retried), but
+    // with `skipped` so the no-op is visible rather than silent.
+    if (result.value.code === 'terminal_guard') {
+      return {
+        ok: true,
+        slug: it.slug,
+        itemId: it.itemId,
+        skipped: 'terminal_guard',
+        currentStatus: result.value.currentStatus,
+        reason: `left at \`${result.value.currentStatus}\` — already terminal, and this flip (\`${it.status}\`) would have un-finished it`,
+      };
+    }
     return { ok: false, slug: it.slug, itemId: it.itemId, error: result.value.code };
   }
 
@@ -933,6 +1005,7 @@ export default defineTool({
           note: it.note ?? args.note,
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
+          onlyIfNotTerminal: it.onlyIfNotTerminal ?? args.onlyIfNotTerminal,
         }))
       : args.itemIds?.length
         ? args.itemIds.map((itemId) => ({
@@ -942,6 +1015,7 @@ export default defineTool({
             note: args.note,
             harness: args.harness,
             rationale: args.rationale,
+            onlyIfNotTerminal: args.onlyIfNotTerminal,
           }))
         : [
             {
@@ -951,6 +1025,7 @@ export default defineTool({
               note: args.note,
               harness: args.harness,
               rationale: args.rationale,
+              onlyIfNotTerminal: args.onlyIfNotTerminal,
             },
           ];
     const env = await runBulk(list, (it) => setStatusOne(it, ctx), {

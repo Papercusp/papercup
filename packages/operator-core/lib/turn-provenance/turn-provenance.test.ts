@@ -27,6 +27,7 @@ import {
   payloadSha256,
   readLedgerRows,
   sanitizeSid,
+  stripInjectedChrome,
   tagTurnForInjection,
   type LedgerRow,
 } from './turn-provenance';
@@ -403,5 +404,76 @@ describe('tagTurnForInjection (the injector one-call API)', () => {
     });
     expect(tagged.ledgerWritten).toBe(false);
     expect(tagged.taggedText).toContain('tick');
+  });
+});
+
+describe('stripInjectedChrome (P-048 — retrieve on the turn, not on its scaffolding)', () => {
+  // Shaped like a real loop-fire wake: envelope, delivery preamble, wake banner,
+  // the frozen goal, the mechanics aside, then the carried-checks ledger that
+  // makes these turns ~12KB in practice.
+  const GOAL = 'context-injection-audit-2026-07-28: build P-048 and verify the strip live.';
+  const wake = () =>
+    `⟦turn-origin:loop-fire nonce:${mintNonce()}⟧\n` +
+    '[await-event] coord:inbox-wake:su-abc fired — 🔁 Loop wake (every ~300s after each turn settles). ' +
+    `You are continuing your OWN warm session toward: ${GOAL} ` +
+    "(your loop's wake #55; short form — the full loop contract was delivered on wake 1 and repeats " +
+    'every 10 wakes. ⚠ that goal text is frozen from arm time — verify any concrete claim in it, e.g. ' +
+    'a PID/run-id/leader, against live state before acting; your checkpoint below is the fresher source) ' +
+    '🧪 CARRIED CHECKS — claims + probes: • ✓ some long stale verification ledger '.repeat(40);
+
+  it('keeps the goal and drops the scaffolding', () => {
+    expect(stripInjectedChrome(wake())).toBe(GOAL);
+  });
+
+  it('collapses a ~12KB wake to well under the 1000-char query clamp', () => {
+    const raw = wake();
+    expect(raw.length).toBeGreaterThan(3_000);
+    // The regression this guards: at 1000 the RAW prompt was truncated
+    // mid-chrome, so the task content was never embedded at all — measured at
+    // 70.0% of all turn-start queries (D-033).
+    expect(stripInjectedChrome(raw).length).toBeLessThan(1_000);
+  });
+
+  it('makes two fires of the same goal identical — the nonce no longer forges novelty', () => {
+    // Pre-P-048 the fresh per-turn nonce made every machine query unique BY
+    // CONSTRUCTION, so a duplicate rate could read 0.0% however identical the
+    // real prompts were. Post-strip, identical turns hash identical.
+    expect(payloadSha256(stripInjectedChrome(wake()))).toBe(
+      payloadSha256(stripInjectedChrome(wake())),
+    );
+  });
+
+  it('leaves an owner-typed prompt completely untouched', () => {
+    const typed = 'why is the session history dropdown loading so slowly?';
+    expect(stripInjectedChrome(typed)).toBe(typed);
+  });
+
+  it('strips a bare envelope without eating the content behind it', () => {
+    expect(stripInjectedChrome('⟦turn-origin:wake-pump nonce:a1b2c3d4e5f60718⟧ do the thing')).toBe(
+      'do the thing',
+    );
+  });
+
+  it('strips the cold-wake banner and the injection-door notice', () => {
+    const cold =
+      '❄️ COLD LOOP WAKE (fire #48) — your context was just reset to your carry-note. ' +
+      'Your prior transcript is GONE; the note below IS your continuity — treat it as your working ' +
+      'state and continue from its "Next action". Ship the migration for WI-6674. ' +
+      '[injection-door: wake text exceeded the budget and was truncated; the FULL text is at /tmp/x.md]';
+    expect(stripInjectedChrome(cold)).toBe('Ship the migration for WI-6674.');
+  });
+
+  it('NEVER returns empty for a non-empty prompt, even if it is pure chrome', () => {
+    // The failure this forbids: an over-broad pattern empties the query,
+    // buildMemoryContextBlock returns null on blank input, and memory injection
+    // silently dies for every turn of that shape.
+    const pureChrome =
+      '[await-event] coord:inbox-wake:su-abc fired — 🔁 Loop wake (every ~300s after each turn settles). ';
+    expect(stripInjectedChrome(pureChrome).length).toBeGreaterThan(0);
+  });
+
+  it('returns empty only for genuinely empty input', () => {
+    expect(stripInjectedChrome('')).toBe('');
+    expect(stripInjectedChrome('   \n  ')).toBe('');
   });
 });

@@ -161,8 +161,9 @@ export interface GetNextResult {
  *    work-stealing order); the column is the creation timestamp, so direction passes
  *    through unflipped (earlier ts sorts first under ASC).
  *  - `risk_tier` / `paths` are NOT first-class columns — they live in `payload` jsonb
- *    (`payload->>'risk_tier'`, `payload->'paths'`), so a spec can filter/rank on them
- *    without a schema change.
+ *    (`payload->>'risk_tier'`, `payload->'paths'`), so a spec can filter on them without
+ *    a schema change. `risk_tier` is filter-ONLY: the jsonb accessor yields TEXT, so a
+ *    bare rank on it sorts lexically (EI-19286311763526137 — see its FIELD_MAP entry).
  *  - `plan_item` ⇒ `source_plan_item_ids` (a text[]), the only array item-field.
  */
 /**
@@ -262,6 +263,12 @@ const FIELD_MAP: Record<string, FieldMap> = {
   },
   plan_item: { col: (sql) => sql`source_plan_item_ids`, kind: 'text-array' },
   // Not first-class columns — projected out of payload jsonb (no schema change).
+  // `risk_tier` is FILTER-ONLY (EI-19286311763526137): `payload->>'risk_tier'` is TEXT
+  // however numeric the authored value looks, so a bare `risk_tier` rank sorts lexically
+  // ('10' before '2'; high < low < medium for word-valued tiers) — severity's inversion
+  // trap, which this field was flagged as "the next domino" for. Excluded from
+  // RANKABLE_ITEM_FIELDS; filtering is unchanged and is the only way it has been used
+  // (0 of 292 live specs rank on it, and no work_items row carries the key at all).
   risk_tier: { col: (sql) => sql`(payload->>'risk_tier')`, kind: 'scalar-text' },
   // EI-18654360178824151: same single-source fix as `plan` above — mirrors
   // `staticTagsOfWorkItem()`'s `payload.tags` fallback so a tags-filtered spec agrees
@@ -1422,7 +1429,11 @@ export async function readIssueClaimability(
  * ordering. A bare item field maps through {@link FIELD_MAP}; an `inverted` field
  * (feature_order) flags the caller to flip the direction.
  */
-function compileRankExpr(sql: OrgSql, expr: string, bee: BeeContext): { value: SqlFragment; inverted: boolean } | null {
+function compileRankExpr(
+  sql: OrgSql,
+  expr: string,
+  bee: BeeContext,
+): { value: SqlFragment; inverted: boolean; numeric: boolean } | null {
   const head = expr.includes('(') ? expr.slice(0, expr.indexOf('(')).trim() : expr.trim();
 
   // Live function term: affinity(bee.held_paths, item.paths) — count of item paths that
@@ -1444,6 +1455,8 @@ function compileRankExpr(sql: OrgSql, expr: string, bee: BeeContext): { value: S
          )
       )`,
       inverted: false,
+      // A count() — numerically summable, so it may contribute to a weighted rank.
+      numeric: true,
     };
   }
 
@@ -1456,7 +1469,14 @@ function compileRankExpr(sql: OrgSql, expr: string, bee: BeeContext): { value: S
   // Bare item field.
   const fm = FIELD_MAP[head];
   if (!fm) return null; // unreachable for a validated spec; defensively neutral
-  return { value: fm.col(sql), inverted: fm.inverted ?? false };
+  // `numeric` gates weighted-mode participation ONLY: a weighted rank casts each term to
+  // ::numeric, which on a text/array/jsonb column is a hard PG error that aborts the claim
+  // query (measured: text[] ⇒ "cannot cast type text[] to numeric"; item_kind ⇒ "invalid
+  // input syntax for type numeric: \"feature\""). The validator now rejects that spec shape
+  // up front (claim-spec.ts NUMERIC_ITEM_FIELDS); this flag is the defense-in-depth leg, so
+  // a spec stored BEFORE that rule degrades to a neutral term instead of wedging the lane.
+  // Lexicographic ordering is unaffected — ORDER BY on a text column is well-defined there.
+  return { value: fm.col(sql), inverted: fm.inverted ?? false, numeric: fm.kind === 'scalar-num' };
 }
 
 /**
@@ -1471,13 +1491,16 @@ export function compileRank(sql: OrgSql, spec: ClaimSpec, bee: BeeContext) {
   const terms = spec.rank.terms;
 
   if (spec.rank.mode === 'weighted') {
-    // Σ wᵢ·termᵢ — only terms that compile to a numeric value contribute. An inverted
+    // Σ wᵢ·termᵢ — only terms that compile to a numeric value contribute, which this
+    // now ENFORCES rather than merely asserting: a non-numeric term is dropped here
+    // instead of reaching the `::numeric` cast below, where it would be a hard PG error
+    // that aborts the entire claim query (see compileRankExpr's `numeric`). An inverted
     // field is negated (so "more important" is a LARGER contribution). Sort DESC of the
     // weighted sum = best-first; then the deterministic tiebreaker.
     const contribs = terms
       .map((t) => {
         const compiled = compileRankExpr(sql, t.expr, bee);
-        if (!compiled) return null;
+        if (!compiled || !compiled.numeric) return null;
         const w = Number.isFinite(t.weight) ? (t.weight as number) : 0;
         const signed = compiled.inverted
           ? sql`(-1 * COALESCE((${compiled.value})::numeric, 0))`

@@ -34,6 +34,8 @@ import HudBoard from './HudBoard';
 import {
   buildHudBoard,
   formatAge,
+  hudRenderStabilitySwitch,
+  hudSessionRendersSame,
   reconcileBoardIdentity,
   type HudRosterEntry,
 } from './hud-board-model';
@@ -389,5 +391,73 @@ describe('WI-6560 — HudView hands the board a stable onOpenSession', () => {
     // A plain identifier is not enough: a function declared in the component
     // body without useCallback is also a fresh identity every render.
     expect(src).toMatch(new RegExp(`const\\s+${expr}\\s*=\\s*useCallback`));
+  });
+});
+
+/**
+ * WI-6560 — pins for the `hudRenderStabilitySwitch` measurement seam.
+ *
+ * Two independent obligations, and the second is the one that is easy to skip
+ * and expensive to skip.
+ *
+ * 1. THE SHIP GUARD. The switch must default to `off: false`. Left flipped it
+ *    would silently restore the un-fixed behavior in production while every
+ *    other test in this file still passed — they all exercise the default.
+ *
+ * 2. THE BOUND CHECK. The seam must actually ABLATE. This matters because the
+ *    seam exists to be the control arm of a latency measurement: if flipping it
+ *    were a no-op, the probe would read fixOn ≈ fixOff and the honest-looking
+ *    conclusion would be "the fix does nothing" — a false negative produced by a
+ *    dead instrument rather than by the system under test. This item has already
+ *    been burned twice by instrument artifacts (the retracted native-setter
+ *    measurement, and two "DOES re-render" tests that passed vacuously because
+ *    the helper minted a fresh callback per call), so the instrument gets its
+ *    own bound check, exactly as run54 required a non-zero MutationObserver
+ *    batch count before any of its attributions could be believed.
+ */
+describe('WI-6560 — the measurement seam', () => {
+  afterEach(() => {
+    // Never leak a flipped switch into another test file or another case here.
+    hudRenderStabilitySwitch.off = false;
+  });
+
+  it('defaults to off:false so the fix cannot ship ablated', () => {
+    expect(hudRenderStabilitySwitch.off).toBe(false);
+  });
+
+  it('ablates the comparator: an identical session compares equal only while the seam is closed', () => {
+    const board = buildHudBoard(ROSTER, [], { nowMs: NOW });
+    const session = board.columns.flatMap((c) => c.sessions)[0];
+    expect(session, 'expected at least one session to compare').toBeTruthy();
+
+    expect(hudSessionRendersSame(session, session)).toBe(true);
+    hudRenderStabilitySwitch.off = true;
+    expect(hudSessionRendersSame(session, session)).toBe(false);
+  });
+
+  it('ablates the board reuse: identical input stops returning the previous board', () => {
+    const prev = buildHudBoard(ROSTER, [], { nowMs: NOW });
+    const next = buildHudBoard(ROSTER, [], { nowMs: NOW });
+    expect(prev, 'precondition: a rebuild must allocate a NEW board').not.toBe(next);
+
+    expect(reconcileBoardIdentity(prev, next)).toBe(prev);
+    hudRenderStabilitySwitch.off = true;
+    expect(reconcileBoardIdentity(prev, next)).toBe(next);
+  });
+
+  it('ablates all the way through to real card renders (the arm the probe actually measures)', () => {
+    // The exact inverse of "does NOT re-render ... with unchanged props" above:
+    // same setup, same rerender, opposite expectation. That pairing is what
+    // proves the switch controls precisely the behavior under measurement, and
+    // that the probe's two arms are genuinely different populations.
+    hudRenderStabilitySwitch.off = true;
+    const props = boardProps();
+    const { rerender } = render(<HudBoard {...props} />);
+    const afterFirst = counters.rowRenders;
+    expect(afterFirst).toBe(ROSTER.length);
+
+    rerender(<HudBoard {...props} />);
+
+    expect(counters.rowRenders).toBe(afterFirst + ROSTER.length);
   });
 });

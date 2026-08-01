@@ -1392,12 +1392,26 @@ export async function composeOrient(
  *      fleet:assignments, work_items:list) to rebuild what orient was
  *      supposed to hand over, on the exact turn (post-compaction) an agent
  *      has the least context left to notice the gap.
+ *   2b. `presenceDrift` + `leaderBrief` — fleet-SAFETY critical, and the same
+ *      argument as (2) applied to a LEADER. `me.summary.agents` counts only
+ *      resolved PRESENCE, so a leader whose `leaderBrief` got spilled reads
+ *      `agents: 1` and concludes its whole fleet is dead — the briefing that
+ *      would have said `members: 11, dead: 0` is the thing that got cut.
+ *      EI-19282566865609166 fixed the FOLD (it now folds on monitor OR
+ *      afterCompaction, line ~704) but left the assembled key dead last in
+ *      `resultRest`, so on a trimmed payload tier the door reliably ate it
+ *      anyway — fold-enabled and never-delivered are indistinguishable to the
+ *      reader. Observed live 2026-08-01: two consecutive leader wakes reported
+ *      "my 11-member fleet is gone" from a truncated orient whose spilled tail
+ *      contained `leaderBrief.summary.members: 11, dead: 0`. `presenceDrift`
+ *      was already promoted here (EI-18731216945970087) to make that omission
+ *      LOUD; promoting the briefing itself removes the omission.
  *   3. `ownerDirectives` / `modes` / `instructionPrecedence` / `ideate` /
  *      `captureMiss` / `configIntegrity` / `codexLocks` / `taskToolSchemaPack`
  *      — all re-delivered on subsequent turns via the system prompt +
  *      CTRL:transition (or cheaply re-fetchable), so they are the right
  *      things to spill when the door truncates.
- *   4. The REST of `result` (leaderBrief, memory, planEvents, fleetCatchUp,
+ *   4. The REST of `result` (memory, planEvents, fleetCatchUp,
  *      fleetHealth, announcedGates, paneContext, deepWork, recipes,
  *      pipeline, intentDeclared, fleetDelta, ownerPresent) — genuinely
  *      discretionary supplementary folds, each independently re-fetchable
@@ -1425,8 +1439,19 @@ export function assembleOrientOutput(legs: {
   // below, not also `resultRest` at the bottom — it is a rare, small, safety-
   // critical diagnostic that must survive the result-door's truncation, not get
   // buried behind leaderBrief/memory/planEvents.
-  const { ok, me, claimable, inbox, presenceDrift: _presenceDriftFromResult, ...resultRest } =
-    legs.result as Record<string, unknown>;
+  // `leaderBrief` is destructured OUT here (like presenceDrift above it) so it rides
+  // the prioritized slot below instead of `resultRest`. See priority tier (2b): a
+  // leader that loses this to the result-door reads `me.summary.agents: 1` and
+  // concludes its fleet is dead, which is strictly worse than not folding it at all.
+  const {
+    ok,
+    me,
+    claimable,
+    inbox,
+    presenceDrift: _presenceDriftFromResult,
+    leaderBrief: leaderBriefFromResult,
+    ...resultRest
+  } = legs.result as Record<string, unknown>;
   return {
     ...(legs.self ? { self: legs.self } : {}),
     ...(legs.recovery ? { recovery: legs.recovery } : {}),
@@ -1441,6 +1466,11 @@ export function assembleOrientOutput(legs: {
     // point is to replace a silent leaderBrief omission with something a leader
     // cannot miss.
     ...(legs.presenceDrift ? { presenceDrift: legs.presenceDrift } : {}),
+    // Tier (2b). `!== undefined` rather than a truthiness spread: a FAILED fold is
+    // recorded as an explicit `leaderBrief: null` ("I tried and could not tell you"),
+    // which must stay distinguishable from the key being absent ("not applicable —
+    // you are not a leader"). A truthy check would collapse both to absent.
+    ...(leaderBriefFromResult !== undefined ? { leaderBrief: leaderBriefFromResult } : {}),
     ...(legs.ownerDirectives ? { ownerDirectives: legs.ownerDirectives } : {}),
     ...(legs.modes ? { modes: legs.modes } : {}),
     ...(legs.instructionPrecedence ? { instructionPrecedence: legs.instructionPrecedence } : {}),

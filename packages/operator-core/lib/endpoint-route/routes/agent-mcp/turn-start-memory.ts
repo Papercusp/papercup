@@ -52,7 +52,14 @@ import { defineTool } from '@papercusp/agent-mcp';
  * returns null on a blank queryContext (injection.ts), one layer down.
  */
 
-/** Query clamp — embed the head of a long prompt, not a pasted document. */
+/** Query clamp — embed the head of a long prompt, not a pasted document.
+ *
+ * ⚠ Applied to the CHROME-STRIPPED prompt (P-048), never the raw one. Against
+ * the raw prompt this clamp was the defect rather than the guard: measured over
+ * a live 7-day window (D-033), 70.0% of ALL turn-start queries were truncated
+ * exactly here, 251 of those 254 rows machine-injected — so the clamp was
+ * reliably keeping a wake's opening boilerplate and discarding the task content
+ * behind it. Post-strip a typical wake is ~240 chars and never reaches it. */
 const PROMPT_QUERY_CLAMP = 1_000;
 
 /** D-004 small budget for the mid-epoch delta (chars). */
@@ -102,17 +109,23 @@ const turnStartMemory = defineTool({
       const memoryPromise = (async (): Promise<string> => {
         if (body.memoryEnabled === false) return '';
         try {
-          const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }] = await Promise.all([
-            import('../../../memory/injection'),
-            import('../../../auth'),
-          ]);
+          const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }, { stripInjectedChrome }] =
+            await Promise.all([
+              import('../../../memory/injection'),
+              import('../../../auth'),
+              import('../../../turn-provenance/turn-provenance'),
+            ]);
           const user = await getSessionUserOrDefault().catch(() => null);
+          // Retrieve on what the turn is ABOUT, not on the scaffolding it
+          // arrived in — see PROMPT_QUERY_CLAMP above and D-033. Never empty
+          // for a non-empty prompt, so this cannot silently disable recall.
+          const queryText = stripInjectedChrome(prompt);
           return (
             (await buildMemoryContextBlock({
               userId: user?.id ?? null,
               workspaceId,
               harnessSlugs: harness ? [harness] : [],
-              queryContext: prompt.slice(0, PROMPT_QUERY_CLAMP),
+              queryContext: queryText.slice(0, PROMPT_QUERY_CLAMP),
               session: { sessionId: owner, port: 'turn-start' },
               budgetChars: TURN_START_BUDGET_CHARS,
               heading: 'Relevant memory (turn-start delta)',

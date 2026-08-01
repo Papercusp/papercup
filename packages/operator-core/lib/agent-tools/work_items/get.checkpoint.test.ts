@@ -89,6 +89,21 @@ describe('work_items:get — checkpoint field', () => {
     getWorkItemCheckpointWithMeta.mockRejectedValue(new Error('pg down'));
     const r = await one({ id: 'WI-9' });
     expect(r).toMatchObject({ ok: true, id: 'WI-9', checkpoint: null, checkpointAgeMs: null, checkpointUpdatedAtMs: null });
+    // WI-6737: fail-soft is right, but SILENT fail-soft is not — the degraded null was previously
+    // byte-identical to a successful "never checkpointed" read, so a reader (or a compacted
+    // successor) concluded in-flight state was lost during a mere PG blip. That is the exact
+    // conclusion EI-7252 added this field to prevent, re-created by its own error path.
+    expect(r.checkpointReadFailed).toBe(true);
+  });
+
+  it('does NOT mark checkpointReadFailed when the read succeeded and found nothing (WI-6737)', async () => {
+    // The other half of the distinction, and the one that keeps the flag meaningful: an ordinary
+    // never-checkpointed item must stay unmarked, or the signal degenerates into noise every read.
+    getWorkItem.mockResolvedValue({ id: 'WI-9b', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open' });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
+    const r = await one({ id: 'WI-9b' });
+    expect(r).toMatchObject({ ok: true, checkpoint: null });
+    expect(r.checkpointReadFailed).toBeUndefined();
   });
 
   it('reads the checkpoint for a harness-null item (EI-8805 — no longer skipped)', async () => {

@@ -228,4 +228,32 @@ describe('plan-item-reflect:release', () => {
     expect(fires(rule, evt('work_items:release', stamped('resolved')))).toBe(false);
     expect(fires(rule, evt('work_items:release', stamped('passed')))).toBe(false);
   });
+
+  // RECURRENCE GUARD. The check above only inspects the WORK-ITEM's state, which is all a
+  // pure/sync matcher can see. It cannot protect a plan item that reached `done` by another
+  // path (flipped directly on the plan, or completed by a SIBLING work-item) — and releasing
+  // a still-open work-item then de-completed shipped work, re-pooling it for duplicate pickup
+  // and flipping every dependent to a false `blocked`. Live case:
+  // memory-write-latency-2026-07-26#P-007, reverted to `todo` by the release of WI-6211.
+  //
+  // The protection is `onlyIfNotTerminal` on the rendered flip. Deleting it silently restores
+  // the bug with no other visible symptom, so it is asserted explicitly rather than left to
+  // a toMatchObject that would happily pass without it.
+  it('renders onlyIfNotTerminal so a release can NEVER un-finish an already-done plan item', () => {
+    const rule = ruleById('work_items:release', 'plan-item-reflect:release');
+    const args = renderArgs(rule, evt('work_items:release', stamped('open')));
+    expect(args.status).toBe('todo');
+    expect(args.onlyIfNotTerminal).toBe(true);
+  });
+
+  // A release says "I am no longer holding this" — never "this is unfinished". Any future
+  // reflection driven by an OWNERSHIP event must carry the same guard.
+  it('keeps the guard on every non-terminal work-item state it fires for', () => {
+    const rule = ruleById('work_items:release', 'plan-item-reflect:release');
+    for (const state of ['open', 'wip', 'blocked', 'todo']) {
+      const e = evt('work_items:release', stamped(state));
+      expect(fires(rule, e), `fires for ${state}`).toBe(true);
+      expect(renderArgs(rule, e).onlyIfNotTerminal, `guard present for ${state}`).toBe(true);
+    }
+  });
 });

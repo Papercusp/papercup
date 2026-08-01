@@ -107,6 +107,18 @@ export interface HudEntityCard {
   sinceSec: number | null;
   /** Sort key WITHIN the column: lower sorts first. */
   sortKey: number;
+  /**
+   * WHICH popup a click on this card opens (WI-6742). Set by the Work-items
+   * board on every card it builds — real work items AND the folded asks — so
+   * the handler never has to re-derive a destination by pattern-matching `id`
+   * or `ref`. That re-derivation was the bug: an ask card's `ref` is a KIND
+   * LABEL ("Improvement triage"), so it matched no work-item id and the click
+   * silently did nothing.
+   *
+   * Optional because the Plans board doesn't use it (its card `id` IS the plan
+   * slug, and its own handler reads that directly).
+   */
+  open?: HudAskTarget;
 }
 
 export interface HudEntityBoard {

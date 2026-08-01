@@ -176,6 +176,69 @@ export const TERMINAL_LAUNCH_ONLINE_GRACE_SEC = 60;
  * (id/kind/itemRef/planSlug/harnessSlug) mirror the subset of `AttentionItem`
  * an unattributed card needs to render + be identified without an owning
  * agent to key off of. */
+/**
+ * Where a needs-you ask card LEADS when clicked (WI-6742).
+ *
+ * Narrow + structural on purpose: this file is pure and PG-free (the same
+ * reason `kind` below is a bare string rather than an imported AttentionKind),
+ * so this is NOT `AttentionRef` — {@link askTargetFromRef} maps that union down
+ * to these three cases.
+ *
+ * Note what this is NOT: a producer-side "can this be opened?" verdict. Every
+ * case here IS openable — `ask` means "open the ask itself", not "unopenable".
+ * The renderer still owns the destination map; this only says WHICH of its
+ * destinations a given card belongs to, which is the part the producer alone
+ * can know (it holds the ref).
+ */
+export type HudAskTarget =
+  | { kind: 'work-item'; id: string; harnessSlug: string | null }
+  | { kind: 'plan'; slug: string }
+  | { kind: 'ask' };
+
+/** A work-item id (WI-/EI-/F-), anchored — the shape both the work-item popup
+ *  and `workItems.detail` take. A ref carrying anything else is NOT coerced
+ *  into a work-item target; it falls back to the ask card. */
+const WORK_ITEM_ID_RE = /^(WI|EI|F)-\d+$/i;
+
+/**
+ * Map an `AttentionItem.ref` to the card's destination (WI-6742).
+ *
+ * Structurally typed (`unknown` in) so this file keeps its no-import purity and
+ * so a ref kind we have never seen can never throw — it degrades to the ask
+ * card, which is always openable. That default is deliberate: a mapping we
+ * forget to add shows the ask (a working popup), never a dead button, which is
+ * the exact regression this function exists to end.
+ *
+ * `ref` SURVIVES the sync slimming (ui-read-projection drops only `actions` and
+ * clips `body`), so reading it here costs no extra fetch.
+ */
+export function askTargetFromRef(ref: unknown, harnessSlug: string | null = null): HudAskTarget {
+  if (!ref || typeof ref !== 'object') return { kind: 'ask' };
+  const r = ref as { kind?: unknown; workItemId?: unknown; issueId?: unknown; slug?: unknown };
+  const asWorkItem = (raw: unknown): HudAskTarget =>
+    typeof raw === 'string' && WORK_ITEM_ID_RE.test(raw)
+      ? { kind: 'work-item', id: raw.toUpperCase(), harnessSlug }
+      : { kind: 'ask' };
+
+  switch (typeof r.kind === 'string' ? r.kind : '') {
+    // The owner-gate + curated-signal work-item channels.
+    case 'work-item-needs-human':
+    case 'work-item-blocked':
+      return asWorkItem(r.workItemId);
+    // An improvement's issueId IS a work-item id (EI-…) in the unified ledger.
+    case 'improvement':
+      return asWorkItem(r.issueId);
+    case 'plan-item':
+      return typeof r.slug === 'string' && r.slug ? { kind: 'plan', slug: r.slug } : { kind: 'ask' };
+    // standing-approval · dark-flag-ratification · owner-wall · operator-report
+    // · coord-message/escalation · conversation · scout-grade · smoke-fail ·
+    // blocked-session · decision-owed — no entity popup exists for these, and
+    // the ask card IS the surface that carries their actions.
+    default:
+      return { kind: 'ask' };
+  }
+}
+
 export interface HudAsk {
   ownerAgentId: string | null;
   title: string;
@@ -183,6 +246,18 @@ export interface HudAsk {
   /** The source AttentionItem's own id — stable React key for an unattributed
    *  card (there is no ownerAgentId to key off of). */
   id: string;
+  /**
+   * Where a click on this ask's card goes (WI-6742) — derived from the source
+   * `AttentionItem.ref` via {@link askTargetFromRef}.
+   *
+   * OPTIONAL rather than required so the ~dozen existing HudAsk fixtures across
+   * the HUD suites keep compiling (this app is typechecked by neither
+   * `lint:tsc` — operator-core only — nor vitest, so a required field here goes
+   * stale silently; see the repo guide's note on adding a required field to a
+   * shared interface). Omitted reads as `{ kind: 'ask' }`, which is the correct
+   * behaviour anyway.
+   */
+  target?: HudAskTarget;
   /** AttentionItem['kind'] — not re-typed here (a full string import would
    *  drag the admin/plans module into this pure, PG-free file); rendered as a
    *  human label via HUD_ASK_KIND_LABEL, unknown kinds falling back to the
@@ -964,7 +1039,53 @@ export function buildHudBoard(
  * hud-render-stability.test.tsx, which pins both directions (an age crossing a
  * minute boundary MUST re-render).
  */
+/**
+ * WI-6560 — MEASUREMENT SEAM. A dev-only ablation switch for the two
+ * render-stability fixes in this file (`hudSessionRendersSame` and
+ * `reconcileBoardIdentity`). Product code must never write it.
+ *
+ * WHY THIS EXISTS — it is the thing that unblocks this item, so it is worth
+ * stating rather than rediscovering. WI-6560 stalled twice at the SAME wall,
+ * and the wall was the measurement design, not the hypothesis. On this box the
+ * unchanged control arm measured 46, 76 and 90ms across three boots on
+ * IDENTICAL CSS, so a before/after taken across two boots cannot resolve a
+ * ~5-10ms effect — it is pure drift. The item's own Round 2 wrote the verdict:
+ * only an IN-RUN paired comparison (base and arm interleaved inside one eval,
+ * reporting the median of PAIRED deltas) has the power to resolve anything
+ * here.
+ *
+ * But an in-run comparison needs the thing under test to be switchable at
+ * RUNTIME, and a landed code fix is not — which is precisely why the previous
+ * rounds could only ablate CSS (inline `!important` overrides) and never the
+ * React work that this item actually turned out to be about. This switch closes
+ * that gap: it makes the fix ablatable, so the fix can be measured by the same
+ * paired design that the CSS arms already used.
+ *
+ * When `off` is true, both functions behave as they did BEFORE the fix landed:
+ * the memo comparator always misses (pre-fix, `MemoSessionCard`'s `onOpen` prop
+ * was a fresh inline arrow, so its shallow compare never held) and the board is
+ * rebuilt with entirely fresh identity.
+ *
+ * Cost when unused: one boolean property read per comparison.
+ *
+ * ⚠ It MUST default to `off: false`. A seam left flipped would silently ship the
+ * un-fixed behavior while every unit test still passed, so
+ * hud-render-stability.test.tsx pins the default rather than trusting review.
+ */
+export const hudRenderStabilitySwitch: { off: boolean } = { off: false };
+
+/* The probe drives the app from OUTSIDE the bundle (`tauri-agent-tools eval`),
+   so the switch has to be reachable from the page's global scope — an exported
+   binding alone is unreachable to it. Assigning the object itself (never a copy)
+   keeps the live reference, so a probe writing `.off` is seen by both functions
+   above. Guarded for SSR/test environments that have no `window`. */
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__hudRenderStabilitySwitch =
+    hudRenderStabilitySwitch;
+}
+
 export function hudSessionRendersSame(a: HudSession, b: HudSession): boolean {
+  if (hudRenderStabilitySwitch.off) return false;
   if (a === b) return true;
   const { sinceSec: aSince, sortKey: _aSort, ...aRest } = a;
   const { sinceSec: bSince, sortKey: _bSort, ...bRest } = b;
@@ -1022,6 +1143,9 @@ export function hudSessionRendersSame(a: HudSession, b: HudSession): boolean {
  * extra re-render happens.
  */
 export function reconcileBoardIdentity(prev: HudBoard | null, next: HudBoard): HudBoard {
+  // WI-6560 measurement seam — see `hudRenderStabilitySwitch`. Returning `next`
+  // unchanged is exactly the pre-fix behavior: a freshly allocated board every call.
+  if (hudRenderStabilitySwitch.off) return next;
   if (!prev) return next;
 
   const priorByOwner = new Map<string, HudSession>();

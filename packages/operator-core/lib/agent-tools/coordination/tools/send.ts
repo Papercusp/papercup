@@ -1533,6 +1533,7 @@ export default defineTool({
     allHive: allHiveArg,
     asAuthority: asAuthorityArg,
     report: reportArg,
+    expectEffect: expectEffectArg,
     items: z
       .array(itemSpec)
       .min(1)

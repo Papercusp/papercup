@@ -137,6 +137,86 @@ export function parseEnvelope(text: string): ParsedEnvelope | null {
   return { origin: m[1], nonce: m[2], payload: text.slice((m.index ?? 0) + m[0].length) };
 }
 
+// ─── Injected-turn chrome ───────────────────────────────────────────────────
+
+/**
+ * The fixed scaffolding an injected turn arrives wrapped in — wake preamble,
+ * loop-mechanics parentheticals, the carried-checks ledger, the injection-door
+ * notice. Every entry is emitted by OUR OWN wake/loop builders, so this is a
+ * catalogue of known machine output, not a guess about what text means.
+ *
+ * Ordered head-of-turn first, then the block forms; `stripInjectedChrome`
+ * applies them in sequence, so an earlier pattern may expose a later one.
+ */
+const INJECTED_CHROME_PATTERNS: readonly RegExp[] = [
+  // `[await-event] <event> fired — ` — the delivery preamble.
+  /^\s*\[await-event\][^\n]*?fired\s+—\s+/,
+  // The recurring-wake banner, including its cadence parenthetical.
+  /🔁\s*Loop wake\s*\([^)]*\)\.\s*/,
+  // The hinge that introduces the (frozen) goal text.
+  /You are continuing your OWN warm session toward:\s*/,
+  // The per-fire mechanics aside: wake number, short-form notice, staleness warning.
+  /\(your loop's wake #\d+;[\s\S]*?fresher source\)\s*/,
+  // The cold-wake banner, up to the hand-off sentence.
+  /❄️\s*COLD LOOP WAKE[\s\S]*?continue from its "Next action"\.\s*/,
+  // The full loop contract, re-delivered every tenth wake.
+  /Each wake:\s*1\.[\s\S]*?`loop:status` shows the loop state\.\s*/,
+  // The truncation notice the injection door appends.
+  /\[injection-door:[\s\S]*?\]\s*/g,
+  // The carried-checks ledger — runs to the end of the turn. Deliberately
+  // dropped rather than kept: it is a VERIFICATION record of past claims, so as
+  // a retrieval query it pulls memories about work already finished instead of
+  // the work now being asked for, and it is what makes these turns ~12KB.
+  /🧪\s*CARRIED CHECKS[\s\S]*$/,
+];
+
+/**
+ * Strip the machine scaffolding from an injected turn, leaving the content.
+ *
+ * WHY THIS EXISTS (context-injection-audit-2026-07-28 P-048, measured in D-033):
+ * `turn-start-memory` embedded the submitted prompt RAW, clamped to its first
+ * 1,000 chars. Measured over a live 7-day window, 74.4% of turn-start recalls
+ * are machine-injected and 70.0% of ALL of them were truncated exactly at that
+ * clamp — so for the dominant case the embedded query was the wake's opening
+ * chrome and the agent's actual task content, sitting past char 1,000, was
+ * never embedded at all. Worse, that chrome is fleet-CONSTANT: an identical
+ * ~200-char preamble headed 56.7% of all turn-start queries, pulling them
+ * toward a common centroid and destroying the very discrimination the
+ * embedding exists to provide.
+ *
+ * Measured effect on real wake texts: 11,817 chars → 240, i.e. 2.0% kept, and
+ * what remains is exactly the goal statement — now comfortably inside the
+ * clamp, so nothing is truncated.
+ *
+ * ⚠ NEVER RETURNS EMPTY when given non-empty input. If the patterns consume
+ * everything (an over-broad match, or a turn that genuinely is pure
+ * scaffolding) this falls back to the envelope-stripped payload and finally to
+ * the input. An empty query is not a degraded query — `buildMemoryContextBlock`
+ * returns null on blank input, so an over-match would silently disable memory
+ * injection for the whole class of turns it over-matched, which is a far worse
+ * failure than leaving some chrome in.
+ *
+ * Lives here, beside `parseEnvelope`, on purpose: this module is the ONE place
+ * that knows the shape of an injected turn. A second copy of these patterns in
+ * the retrieval path would silently rot the day a wake format changes — the
+ * same reasoning that put envelope-stripping in `describeRecallQuery` rather
+ * than inline at each call site.
+ */
+export function stripInjectedChrome(text: string): string {
+  const input = text ?? '';
+  if (!input.trim()) return '';
+  const envelope = parseEnvelope(input);
+  const payload = envelope ? envelope.payload : input;
+  let stripped = payload;
+  for (const re of INJECTED_CHROME_PATTERNS) stripped = stripped.replace(re, ' ');
+  // Collapse the whitespace the removals leave behind, so the clamp downstream
+  // spends its budget on content rather than on gaps.
+  stripped = stripped.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  if (stripped) return stripped;
+  const fallback = payload.trim();
+  return fallback || input.trim();
+}
+
 // ─── Hashing ────────────────────────────────────────────────────────────────
 
 /** Normalize before hashing so PTY transit mangling (CRLF↔LF, stray CR from

@@ -172,7 +172,27 @@ registerReactionRule({
   source: 'plan-item-reflect',
 });
 
-/** RELEASE of a non-terminal converted item → the plan item returns to todo (the pool). */
+/**
+ * RELEASE of a non-terminal converted item → the plan item returns to todo (the pool).
+ *
+ * ⚠ `onlyIfNotTerminal` is load-bearing, not defensive decoration. A release is an
+ * OWNERSHIP event: it says "I am no longer holding this", and carries NO information
+ * about whether the work is finished. The `when` below can only see the WORK-ITEM's
+ * state — the rules matcher is pure/sync (see the module header), so it cannot read the
+ * PLAN ITEM's status — and a plan item can reach `done` by paths this work-item knows
+ * nothing about: flipped directly on the plan, or completed by a SIBLING work-item.
+ * (reconcile-linked-work-items.ts documents that same asymmetry in the other direction.)
+ *
+ * Without the guard, releasing a stale non-terminal work-item silently DE-COMPLETED an
+ * already-`done` plan item: it re-entered the claimable pool where an agent could redo
+ * finished work, and every item `blocked-by` it flipped to a false `blocked`. Observed
+ * live on memory-write-latency-2026-07-26#P-007 — code deployed and serving, plan item
+ * reverted to `todo` by the release of its linked WI-6211.
+ *
+ * The guard makes the flip non-destructive: terminal items are left alone and reported
+ * `skipped:'terminal_guard'`. A human deliberately reopening an item is unaffected —
+ * they call plans:set-status without the flag.
+ */
 registerReactionRule({
   id: 'plan-item-reflect:release',
   on: 'work_items:release',
@@ -182,7 +202,7 @@ registerReactionRule({
     return !state || !TERMINAL_STATES.has(state);
   },
   fire: 'plans:set-status',
-  args: (e) => setStatusArgs(e, 'todo', 'released'),
+  args: (e) => ({ ...setStatusArgs(e, 'todo', 'released'), onlyIfNotTerminal: true }),
   onlyOnSuccess: true,
   source: 'plan-item-reflect',
 });

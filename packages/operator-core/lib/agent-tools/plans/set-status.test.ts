@@ -8,6 +8,7 @@ import {
   releaseTerminalGrips,
   releaseTodoClaim,
   terminalFlipConflict,
+  terminalGuardTrips,
   planSyncWorkItemState,
   type HolderInfo,
 } from './set-status';
@@ -406,5 +407,47 @@ describe('flipStatusInBody', () => {
       const out = flipStatusInBody(withNote, 'P-001', 'needs-human');
       expect(out.newBody).toContain('keep me');
     });
+  });
+});
+
+// `onlyIfNotTerminal` — the non-destructive flip an AUTOMATED reflection asks for so it can
+// never un-finish shipped work. The bug this closes: plan-items/reflect-rules.ts reflected
+// `work_items:release` (an OWNERSHIP event, carrying no completion information) as a flat
+// `status:'todo'`, so releasing a still-open work-item de-completed an already-`done` plan
+// item — re-pooling finished work for duplicate pickup and flipping its dependents to a
+// false `blocked`. Live case: memory-write-latency-2026-07-26#P-007 via WI-6211's release.
+describe('terminalGuardTrips — never move a finished item off terminal', () => {
+  it('SKIPS a terminal → non-terminal flip when the caller asked for the guard', () => {
+    for (const currentStatus of ['done', 'dropped']) {
+      for (const nextStatus of ['todo', 'wip', 'blocked', 'needs-human']) {
+        expect(
+          terminalGuardTrips({ onlyIfNotTerminal: true, currentStatus, nextStatus }),
+          `${currentStatus} → ${nextStatus}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('ALLOWS terminal → terminal — a done→dropped reclassification is legitimate', () => {
+    expect(terminalGuardTrips({ onlyIfNotTerminal: true, currentStatus: 'done', nextStatus: 'dropped' })).toBe(false);
+    expect(terminalGuardTrips({ onlyIfNotTerminal: true, currentStatus: 'dropped', nextStatus: 'done' })).toBe(false);
+  });
+
+  it('ALLOWS every flip of an item that is not yet terminal', () => {
+    for (const currentStatus of ['todo', 'wip', 'blocked', 'needs-human']) {
+      expect(terminalGuardTrips({ onlyIfNotTerminal: true, currentStatus, nextStatus: 'todo' })).toBe(false);
+      expect(terminalGuardTrips({ onlyIfNotTerminal: true, currentStatus, nextStatus: 'done' })).toBe(false);
+    }
+  });
+
+  // The guard is OPT-IN: a human deliberately reopening a done item must still be able to.
+  // If this ever inverts, every manual reopen silently becomes a no-op.
+  it('is inert without the flag — a deliberate reopen is untouched', () => {
+    expect(terminalGuardTrips({ onlyIfNotTerminal: undefined, currentStatus: 'done', nextStatus: 'todo' })).toBe(false);
+    expect(terminalGuardTrips({ onlyIfNotTerminal: false, currentStatus: 'done', nextStatus: 'todo' })).toBe(false);
+  });
+
+  it('is inert when the item does not exist yet (no current status to protect)', () => {
+    expect(terminalGuardTrips({ onlyIfNotTerminal: true, currentStatus: null, nextStatus: 'todo' })).toBe(false);
   });
 });

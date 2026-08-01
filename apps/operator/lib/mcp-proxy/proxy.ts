@@ -95,6 +95,10 @@ export interface McpProxyOptions {
   resolveTarget?: () => McpProxyTarget;
   /** Total wall-clock budget to keep retrying a refused upstream (a :3070 restart). */
   retryWindowMs: number;
+  /** WI-6740: per-attempt wait for response headers on the write-free control-plane batch
+   *  (initialize / tools/list / ping). Defaults to HANDSHAKE_UPSTREAM_TIMEOUT_MS; injectable
+   *  so tests can drive a stalling upstream without sleeping 8s. Never applied to a tools/call. */
+  handshakeTimeoutMs?: number;
   /** Delay between retries while the upstream is refusing connections. */
   retryBackoffMs?: number;
   log?: (s: string) => void;
@@ -275,6 +279,58 @@ export function postConnectRetryable(
 }
 
 /**
+ * WI-6740 — upstream SILENCE, the one failure class the retry ladder above did not cover.
+ *
+ * Every branch so far reacts to an upstream ERROR: refused (pre-connect), a socket reset
+ * (post-connect), a 429, a boot-window status. But when :3070 ACCEPTS the connection and
+ * then simply stops responding, nothing fails from the proxy's point of view — so no retry
+ * path is ever entered. `forwardOnce` had no timeout, so the proxy waited indefinitely and
+ * the CLIENT's own (shorter) timeout fired first.
+ *
+ * That is session-fatal, not a blip. An MCP client fetches the tool catalog ONCE, at
+ * connect, so a ~10s stall landing on that handshake costs a MULTI-HOUR agent session its
+ * entire tool plane ("Reconnected … but fetching tools failed: Request timed out", then
+ * zero papercusp tools for the rest of its life). ~/.papercusp/mcp-proxy-watchdog.log
+ * recorded 269 such stalls between 2026-07-10 and 2026-08-01, EVERY one followed by
+ * `recovered (was unreachable 10s)` — which reads as benign self-healing at the watchdog's
+ * layer and is why this went unfixed for three weeks. The severity is invisible to the
+ * layer that observes it.
+ *
+ * Bound ONLY the 'idempotent' class — a batch containing NO tools/call, i.e. exactly the
+ * control-plane handshake (initialize / tools/list / ping / resources / prompts). Those are
+ * cheap catalog reads: one taking >8s is definitionally stalled, and replaying them is
+ * free (no writes). A real tools/call MUST stay unbounded — `build:typecheck` legitimately
+ * runs ~160s and `capability:bash` ~120s on this box, so a blanket upstream timeout would
+ * convert working long tools into hard failures. That asymmetry is the whole design.
+ */
+export const HANDSHAKE_UPSTREAM_TIMEOUT_MS = Number(
+  process.env.PAPERCUSP_MCP_PROXY_HANDSHAKE_TIMEOUT_MS ?? 8_000,
+);
+
+/** Handshake-timeout replays allowed per request (→ up to 3 attempts ≈ 25s worst case,
+ *  comfortably inside a typical ~30s client budget). Deliberately SEPARATE from
+ *  MAX_POST_CONNECT_RETRIES: that bound exists because a socket error may have already
+ *  applied a side effect, which cannot happen for a write-free idempotent batch. */
+export const MAX_HANDSHAKE_TIMEOUT_RETRIES = 2;
+
+/**
+ * Whether an upstream-silence timeout should be replayed (PURE + unit-tested). Only the
+ * write-free 'idempotent' class qualifies: a 'keyed'/'opaque' batch carries a tools/call
+ * whose side effect may already have landed, so it surfaces honestly instead of replaying.
+ */
+export function handshakeTimeoutRetryable(
+  klass: ForwardClass,
+  retriesUsed: number,
+  maxRetries: number,
+  elapsedMs: number,
+  windowMs: number,
+): boolean {
+  if (klass !== 'idempotent') return false;
+  if (retriesUsed >= maxRetries) return false;
+  return elapsedMs < windowMs;
+}
+
+/**
  * Whether an upstream STATUS is transient admission-control backpressure the proxy should
  * ABSORB (retry) rather than forward to the agent. Only 429 (P-010): HTTP defines 429 as
  * "not fulfilled", so a retry never double-applies — safe regardless of ForwardClass, unlike
@@ -319,16 +375,23 @@ interface ForwardOutcome {
   err?: NodeJS.ErrnoException;
   /** Whether the TCP socket connected before the error (gates retry safety). */
   connected: boolean;
+  /** WI-6740: the attempt was abandoned because upstream went SILENT past `timeoutMs`,
+   *  as opposed to actively failing. Distinguished so the caller can apply the
+   *  idempotent-only replay rule instead of the socket-error one. */
+  timedOut?: boolean;
 }
 
 /** One forward attempt. Resolves with the upstream response OR an error + whether the
- *  socket had connected (so the caller can decide retry-safety). Never rejects. */
+ *  socket had connected (so the caller can decide retry-safety). Never rejects.
+ *  `timeoutMs` (WI-6740) bounds how long we wait for RESPONSE HEADERS; 0/undefined =
+ *  unbounded, which is what every real tools/call still uses. */
 function forwardOnce(
   opts: McpProxyOptions,
   method: string,
   reqUrl: string,
   headers: http.IncomingHttpHeaders,
   body: Buffer,
+  timeoutMs?: number,
 ): Promise<ForwardOutcome> {
   return new Promise((resolve) => {
     let target: McpProxyTarget;
@@ -340,9 +403,11 @@ function forwardOnce(
     }
     let connected = false;
     let settled = false;
+    let timer: NodeJS.Timeout | undefined;
     const done = (o: ForwardOutcome): void => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       resolve(o);
     };
     const upstream = http.request(
@@ -372,6 +437,22 @@ function forwardOnce(
       });
     });
     upstream.on('error', (err: NodeJS.ErrnoException) => done({ err, connected }));
+    // WI-6740: bound the wait for RESPONSE HEADERS. Note this is deliberately NOT
+    // `upstream.setTimeout` (socket INACTIVITY): a stalled :3070 can keep the socket alive
+    // while producing nothing, which inactivity never fires on. We want wall-clock silence.
+    // `connected: true` is asserted so this can never be mistaken for a refused upstream
+    // (which would be replayed unconditionally); the caller gates it on the idempotent class.
+    if (timeoutMs && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        const err: NodeJS.ErrnoException = Object.assign(
+          new Error(`upstream silent for ${timeoutMs}ms (no response headers)`),
+          { code: 'ETIMEDOUT' },
+        );
+        upstream.destroy();
+        done({ err, connected: true, timedOut: true });
+      }, timeoutMs);
+      timer.unref?.();
+    }
     if (body.length) upstream.write(body);
     upstream.end();
   });
@@ -435,6 +516,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         let attempts = 0;
         let postConnectRetries = 0;
         let backpressureRetries = 0;
+        let handshakeTimeoutRetries = 0;
         let last: ForwardOutcome | undefined;
         // Retry loop: refused → replay across the window (shouldRetry); post-connect →
         // replay only an idempotent/keyed request, bounded (postConnectRetryable);
@@ -442,7 +524,17 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // eslint-disable-next-line no-constant-condition
         while (true) {
           attempts++;
-          const outcome = await forwardOnce(opts, req.method ?? 'GET', req.url ?? '/', fwd.headers, fwd.body);
+          // WI-6740: bound ONLY the write-free control-plane batch (see
+          // HANDSHAKE_UPSTREAM_TIMEOUT_MS). A tools/call stays unbounded — long tools are
+          // legitimate here and must not be converted into failures.
+          const outcome = await forwardOnce(
+            opts,
+            req.method ?? 'GET',
+            req.url ?? '/',
+            fwd.headers,
+            fwd.body,
+            fwd.klass === 'idempotent' ? (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS) : 0,
+          );
           const elapsed = Date.now() - started;
           if (outcome.ures) {
             const ures = outcome.ures;
@@ -493,6 +585,21 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               continue;
             }
             break;
+          }
+          // WI-6740: upstream went SILENT (not a socket error). Replay the write-free
+          // handshake so a ~10s :3070 stall is a slightly-slower connect instead of a
+          // session that is tool-dark for hours. Checked BEFORE the socket-error branch
+          // so it gets its own (larger) bound rather than consuming MAX_POST_CONNECT_RETRIES.
+          if (
+            outcome.timedOut &&
+            handshakeTimeoutRetryable(
+              fwd.klass, handshakeTimeoutRetries, MAX_HANDSHAKE_TIMEOUT_RETRIES, elapsed, opts.retryWindowMs,
+            )
+          ) {
+            handshakeTimeoutRetries++;
+            record({ kind: 'handshake_timeout_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, handshakeTimeoutRetries, elapsedMs: elapsed });
+            await new Promise((r) => setTimeout(r, backoff));
+            continue;
           }
           // Post-connect failure: replay ONLY an idempotent or server-keyed request, bounded.
           if (postConnectRetryable(fwd.klass, postConnectRetries, MAX_POST_CONNECT_RETRIES, elapsed, opts.retryWindowMs)) {

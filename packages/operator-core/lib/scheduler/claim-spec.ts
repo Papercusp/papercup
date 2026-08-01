@@ -149,6 +149,36 @@ export type FilterOp = (typeof FILTER_OPS)[number];
 export const RANK_FUNCTIONS = ['affinity', 'model_fit', 'tag_weight', 'redundancy_need'] as const;
 export type RankFunction = (typeof RANK_FUNCTIONS)[number];
 
+/**
+ * Item fields whose underlying column is NUMERICALLY orderable — and therefore the
+ * only fields a `weighted` rank may name as a bare term.
+ *
+ * This is not a stylistic list. `weighted` mode compiles Σ wᵢ·termᵢ into ONE sort key,
+ * and get-next.ts's `compileRank` casts every contributing term to `::numeric`. On a
+ * non-numeric column that cast is a hard Postgres ERROR that aborts the entire claim
+ * query — so the failure mode is not a mis-ordering, it is a spec that VALIDATED and
+ * then wedges the lane it was written for. Measured against the live tables 2026-08-01:
+ *
+ *   (source_plan_item_ids)::numeric      ⇒ ERROR: cannot cast type text[] to numeric
+ *   (COALESCE(item_kind,kind))::numeric  ⇒ ERROR: invalid input syntax for type numeric: "feature"
+ *
+ * and the text legs (`assignee`, `plan`, `risk_tier`) are worse still: they cast
+ * cleanly while the column is NULL and start erroring the moment a row carries real
+ * data — green on an empty fixture, red in production, on a schedule nobody chose.
+ *
+ * The exposure is live, not theoretical: 4 specs rank on `plan_item` today. They are
+ * `lexicographic`, so they are fine — but flipping one to `weighted` is a ONE-WORD edit
+ * away from that error, with nothing between the author and the outage. Hence the
+ * validator rejects the combination instead of trusting authors to know the cast rule.
+ *
+ * All four members cast cleanly: `priority` ⇒ feature_order and `redundancy` are
+ * `integer`; `age` ⇒ created_ts and `est_cost` ⇒ expected_cost_cents are `bigint`.
+ * Rank FUNCTIONS are exempt by construction — `affinity` compiles to a `count(*)`, and
+ * the descoped terms (`model_fit`/`tag_weight`/`redundancy_need`) compile to NEUTRAL and
+ * never reach the cast.
+ */
+export const NUMERIC_ITEM_FIELDS = ['priority', 'age', 'est_cost', 'redundancy'] as const;
+
 /** Item fields that may be used as a bare rank term (everything sortable). `id` is
  *  filterable (pin a set) but NOT rankable — ordering by id is meaningless, and an
  *  id-pin is about WHICH items, never their order (use priority/age for that). `title`
@@ -164,10 +194,17 @@ export type RankFunction = (typeof RANK_FUNCTIONS)[number];
  *  typo'd severity rank silently do nothing — the same failure in a quieter costume).
  *  Correct ordinal ranking needs a `severity_rank` FUNCTION term compiling to an explicit
  *  CASE (critical=4…nit=1); until that ships, filtering is the supported lever.
- *  NOTE: `risk_tier` is also text and IS rankable today — it carries this same latent
- *  inversion. Left as-is deliberately (out of scope here), but it is the next domino. */
+ *
+ *  `risk_tier` (EI-19286311763526137) is excluded for EXACTLY severity's reason — it was
+ *  flagged here as "the next domino" when severity landed, and this is that domino. It
+ *  lives in `payload` jsonb, so `payload->>'risk_tier'` is TEXT however numeric the value
+ *  looks, and a bare sort is therefore lexical: '10' orders before '2', and a word-valued
+ *  tier orders high < low < medium. Same silent inversion, same rejection. Verified safe
+ *  to remove 2026-08-01: 0 of 146 bee specs and 0 of 146 cup specs rank on it, and no row
+ *  in `work_items` carries a `risk_tier` key at all — it remains FILTERABLE, which is the
+ *  only way it has ever been used. */
 export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter(
-  (f) => f !== 'id' && f !== 'title' && f !== 'severity',
+  (f) => f !== 'id' && f !== 'title' && f !== 'severity' && f !== 'risk_tier',
 );
 
 export const CURRENT_SPEC_VERSION = '1.0' as const;
@@ -604,6 +641,25 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
     }
     if (spec.rank.mode === 'weighted' && (term.weight == null || !Number.isFinite(term.weight))) {
       errors.push(`rank.terms[${i}]: mode "weighted" requires a finite "weight" on every term`);
+    }
+    // A weighted sum casts EVERY contributing term to `::numeric` (get-next.ts compileRank),
+    // which on a non-numeric column is a hard Postgres error that aborts the whole claim
+    // query — not a mis-sort. Reject at authoring rather than at 3am on the lane that used
+    // it. Functions are exempt (affinity ⇒ count(); the descoped heads ⇒ NEUTRAL, never
+    // cast), and an already-unknown head is left to the single error above. See
+    // NUMERIC_ITEM_FIELDS for the measured cast failures.
+    if (
+      spec.rank.mode === 'weighted' &&
+      knownRankHeads.has(head) &&
+      !(RANK_FUNCTIONS as readonly string[]).includes(head) &&
+      !(NUMERIC_ITEM_FIELDS as readonly string[]).includes(head)
+    ) {
+      errors.push(
+        `rank.terms[${i}]: mode "weighted" requires numerically-orderable terms — "${head}" is not one ` +
+          `(numeric fields: ${NUMERIC_ITEM_FIELDS.join(', ')}). A weighted rank sums its terms, so a ` +
+          `non-numeric column is a cast ERROR that fails the claim query outright. Use mode ` +
+          `"lexicographic" to order by "${head}".`,
+      );
     }
     if (spec.rank.mode === 'lexicographic' && term.weight != null) {
       warnings.push(`rank.terms[${i}]: "weight" is ignored in mode "lexicographic"`);
