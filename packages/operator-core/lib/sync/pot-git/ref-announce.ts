@@ -39,6 +39,7 @@ import type { Duplex } from 'node:stream';
 import { verifyEd25519 } from '../../identity/ed25519';
 import { type RunGit, defaultRunGit, readNamespaceRef } from './storage';
 import { fetchPeerNamespace } from './fetch-transport';
+import { fetchCoalescerKey, withFetchCoalescing } from './fetch-coalescer';
 import {
   SIGREFS_REF,
   type SignedSigrefs,
@@ -280,6 +281,29 @@ export type RefAnnounceHandleResult =
   | { action: 'rejected'; reason: RefAnnounceRejectReason; budgetState: AnnounceBudgetState | null }
   | { action: 'noop'; budgetState: AnnounceBudgetState | null }
   /**
+   * WI-6418: a fetch for this (repo, device) was ALREADY RUNNING, so this drive
+   * was collapsed into it and opened no session of its own.
+   *
+   * This is deliberately NOT `fetch-failed`, and the distinction is the entire
+   * point of the fix. On this fleet ~12+ staggered `git-sync` routines drive a
+   * fetch for the same repo roughly every ~15s in aggregate, while a multi-GB
+   * cold join needs ~175s. Every one of those drives used to open its own
+   * session, and the serve side then destroyed (pre-WI-6412) or refused
+   * (post-WI-6412) the transfer already in progress — so the repo could never
+   * converge at ANY throughput, because the ceiling is a PERIOD, not a RATE.
+   *
+   * Reporting this as a failure would re-arm exactly that storm: the driver
+   * would log a phantom transport error and treat a perfectly healthy
+   * in-progress transfer as a broken one.
+   *
+   * The caller SHOULD still hold its fed-event cursor on this outcome, exactly
+   * as it does for `fetch-failed` — the announcement genuinely has not been
+   * mirrored yet, and advancing past it would re-create the silent, permanent
+   * namespace gap EI-15335 fixed. Holding is correct and always was; it was the
+   * RE-DIAL that holding triggered, not the hold itself, that caused the harm.
+   */
+  | { action: 'already-in-flight'; budgetState: AnnounceBudgetState | null }
+  /**
    * WI-6277: `stderr` ALONE cannot describe this failure, and the gap is not
    * cosmetic — it stranded a live replication stall on the P-302 rig with an
    * operator line that ended in a bare colon.
@@ -441,21 +465,38 @@ export async function handleRefAnnouncement(
     return { action: 'noop', budgetState: acceptance.budgetState };
   }
 
-  const duplex = await openStreamWithinCeiling(opts.openStream, opts.timeoutMs);
-  if (!duplex) {
-    return {
-      action: 'fetch-failed',
-      stderr:
-        `openStream did not resolve within ${opts.timeoutMs ?? DEFAULT_STREAM_OPEN_TIMEOUT_MS}ms ` +
-        `(no duplex was ever produced — see EI-18752434722211671)`,
-      timedOut: true,
-      // No git process ever ran on this branch, so there is no exit status to
-      // report — -1 marks that explicitly rather than implying a clean exit 0.
-      code: -1,
-      budgetState: acceptance.budgetState,
-    };
+  // WI-6418 — coalesce concurrent drives for this (repo, device) into ONE
+  // fetch. The guard wraps BOTH the openStream and the transfer, because it is
+  // opening the second SESSION that does the damage: the serve side sees a
+  // second request for a repo it is already streaming and destroys/refuses the
+  // transfer in progress. Keyed on (repoPath, device) so genuinely different
+  // peers still sync in parallel — only same-peer, same-repo duplicates collapse.
+  const coalesced = await withFetchCoalescing(fetchCoalescerKey(repoPath, device), async () => {
+    const duplex = await openStreamWithinCeiling(opts.openStream, opts.timeoutMs);
+    if (!duplex) {
+      return {
+        action: 'fetch-failed' as const,
+        stderr:
+          `openStream did not resolve within ${opts.timeoutMs ?? DEFAULT_STREAM_OPEN_TIMEOUT_MS}ms ` +
+          `(no duplex was ever produced — see EI-18752434722211671)`,
+        timedOut: true,
+        // No git process ever ran on this branch, so there is no exit status to
+        // report — -1 marks that explicitly rather than implying a clean exit 0.
+        code: -1,
+      };
+    }
+    return fetchPeerNamespace(repoPath, duplex, device, { timeoutMs: opts.timeoutMs });
+  });
+
+  if (!coalesced.ran) {
+    // A fetch for this repo+device is already streaming. Not an error — see the
+    // `already-in-flight` doc on RefAnnounceHandleResult.
+    return { action: 'already-in-flight', budgetState: acceptance.budgetState };
   }
-  const res = await fetchPeerNamespace(repoPath, duplex, device, { timeoutMs: opts.timeoutMs });
+  const res = coalesced.result;
+  if ('action' in res) {
+    return { ...res, budgetState: acceptance.budgetState };
+  }
   if (res.code !== 0) {
     return {
       action: 'fetch-failed',

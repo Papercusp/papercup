@@ -385,6 +385,19 @@ export function decideRefAnnounceReceiveCursor(
     const res = results[i];
     const rowId = rowIds[i];
     if (!res || rowId === undefined) continue;
+    // WI-6418: an `already-in-flight` drive HOLDS the cursor exactly like a
+    // failure — the announcement genuinely has not been mirrored yet, and
+    // advancing past it would re-create the silent permanent namespace gap this
+    // function exists to prevent. But it is NOT added to `fetchFailed`: nothing
+    // went wrong, so it must not be logged as a transport error. That
+    // distinction is the whole fix — the re-read next tick is now cheap and
+    // side-effect-free (the coalescer refuses it without opening a session),
+    // instead of opening a rival session that destroyed the transfer already
+    // in progress.
+    if (res.result.action === 'already-in-flight') {
+      if (oldestFailedRowId === null || rowId < oldestFailedRowId) oldestFailedRowId = rowId;
+      continue;
+    }
     if (res.result.action === 'fetch-failed') {
       // WI-6277: carry the discriminators, not just stderr — a SIGKILLed git
       // (the ceiling path) writes no stderr, so stderr alone renders the one

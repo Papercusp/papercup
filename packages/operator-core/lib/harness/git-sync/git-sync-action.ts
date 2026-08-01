@@ -2147,6 +2147,33 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // only stack another fetch ceiling for work the next tick resumes anyway.
       if (outcome.ok || outcome.progressed) break;
     }
+    // EI-18775478513129278: `outcome` stays null when this tick never got a
+    // live dial at all (every candidate hit backoff or a registry miss) — the
+    // "no live dial path" case. `rungs:0`/`ok:false` are HONEST for THIS tick
+    // (nothing was dialed), but namespaceCount/quarantineRefs/phase/shallow/
+    // deepenNext describe DURABLE ON-DISK ladder progress this tick never
+    // touched — forcing them to 0/null erased the record of every earlier
+    // rung a prior tick had climbed (a release reviewer's only surface for
+    // "is this cold join progressing?"). Carry those fields forward from the
+    // last recorded tick instead of clobbering them; only a tick that actually
+    // dialed (a real `outcome`) gets to report a fresh disk read.
+    let priorBootstrap: {
+      phase?: unknown;
+      quarantineRefs?: number;
+      shallow?: boolean | null;
+      deepenNext?: number | null;
+      namespaceCount?: number;
+    } | null = null;
+    if (!outcome) {
+      const { sql } = getOrgPg();
+      const priorRows = await sql<{ bootstrap: typeof priorBootstrap }[]>`
+        SELECT metadata->'bootstrap' AS bootstrap
+          FROM harness_shared.routines
+         WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
+         LIMIT 1
+      `;
+      priorBootstrap = priorRows[0]?.bootstrap ?? null;
+    }
     await patchRoutineMetadata(slug, workspaceId, {
       bootstrap: {
         at: Date.now(),
@@ -2157,17 +2184,17 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         // WI-6372: see the stub writer above — `ok` is "a fetch completed",
         // `converged` is "we are level with the pot". Never the same question.
         converged: convergence?.converged ?? null,
-        namespaceCount: outcome?.namespaces.length ?? 0,
+        namespaceCount: outcome?.namespaces.length ?? priorBootstrap?.namespaceCount ?? 0,
         skippedExisting: outcome?.skippedExisting.length ?? 0,
         // WI-6189 ladder telemetry — the burn-down a watcher needs to tell a
         // converging cold-join from a stalled one WITHOUT a cross-machine log
         // read: staged refs should only ever grow, and `shallow` flips false
         // on the last rung before the namespaces appear.
-        phase: outcome?.phase ?? null,
+        phase: outcome?.phase ?? priorBootstrap?.phase ?? null,
         rungs: outcome?.steps ?? 0,
-        quarantineRefs: outcome?.quarantineRefs ?? 0,
-        shallow: outcome?.shallow ?? null,
-        deepenNext: outcome?.deepenNext ?? null,
+        quarantineRefs: outcome?.quarantineRefs ?? priorBootstrap?.quarantineRefs ?? 0,
+        shallow: outcome?.shallow ?? priorBootstrap?.shallow ?? null,
+        deepenNext: outcome?.deepenNext ?? priorBootstrap?.deepenNext ?? null,
         // EI-18799556647570956: see the stub writer above — same writer stamp, same
         // rationale (two processes CAN race this leg for one install; the stamp makes
         // a stale-process overwrite self-evident instead of reading as a regression).

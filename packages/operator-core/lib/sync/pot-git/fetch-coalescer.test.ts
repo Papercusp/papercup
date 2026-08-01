@@ -111,16 +111,18 @@ describe('withFetchCoalescing (WI-6418 — one in-flight fetch per repo)', () =>
     const gate = deferred();
     const openSession = vi.fn(() => gate.promise);
 
-    // No await between them — the race the guard has to close.
-    const [a, b] = await Promise.all([
-      withFetchCoalescing(KEY, openSession).catch(() => null),
-      withFetchCoalescing(KEY, openSession),
-    ]).catch(() => [null, null]);
-    void a;
-    void b;
+    // No await BETWEEN the two calls — that gap is the race the guard closes.
+    // Deliberately not `Promise.all`: the first call cannot settle until the
+    // gate opens, so awaiting both before releasing it would deadlock the test
+    // rather than test anything.
+    const first = withFetchCoalescing(KEY, openSession);
+    const second = withFetchCoalescing(KEY, openSession);
 
     expect(openSession).toHaveBeenCalledTimes(1);
+    await expect(second).resolves.toEqual({ ran: false, reason: 'already-in-flight' });
+
     gate.resolve();
+    await first;
   });
 
   it('leaks nothing across a full cycle', async () => {
