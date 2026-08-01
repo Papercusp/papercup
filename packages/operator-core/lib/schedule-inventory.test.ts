@@ -253,10 +253,12 @@ describe('collectScheduleInventory', () => {
  * P-009 reconcile (WI-919): diff the operator-host timer AUDIT against the live registry +
  * the external-process manifest, asserting NO silent gaps. Two invariants, both durable:
  *
- *  1. The no-raw-setInterval guard BASELINE is EMPTY — every operator-host timer goes through
- *     managedSetInterval, so it appears in listManaged() → the inventory's 'managed' source.
- *     A non-empty BASELINE means a host timer is runtime-INVISIBLE (the silent gap P-007/P-008
- *     closed); keeping it empty is the universal-visibility ratchet.
+ *  1. The no-raw-setInterval guard BASELINE holds ONLY the one known-grandfathered site — every
+ *     other operator-host timer goes through managedSetInterval, so it appears in listManaged() →
+ *     the inventory's 'managed' source. A BASELINE entry means a host timer is runtime-INVISIBLE
+ *     (the silent gap P-007/P-008 closed); shrinking it back to empty is the universal-visibility
+ *     ratchet. ⚠ WI-6730: this invariant is only ever as strong as the guard's ENUMERATOR — it read
+ *     as satisfied for two months while a bare `git ls-files` hid all 39 submodules from the scan.
  *  2. Every EXTERNAL_PROCESS_TIMERS source is allow-listed in that guard. This reconciles the two
  *     audits: a timer we LOG as 'external-process' must be one the host guard intentionally
  *     EXCLUDES (a separate process, not a host timer) — so no file is both expected-in-the-managed-
@@ -264,11 +266,23 @@ describe('collectScheduleInventory', () => {
  *     violates the host-setInterval guard. If the manifest and the allowlist drift apart, this fails.
  */
 describe('schedule-inventory ⇄ host-timer guard reconcile (P-009 / WI-919)', () => {
-  it('the no-raw-setInterval BASELINE is empty — no operator-host timer is runtime-invisible', () => {
-    // The shrink-to-empty grandfather set (P-008 complete). A NEW bare setInterval is a hard guard
-    // failure, never a BASELINE addition — that is the whole "every host timer is in schedule:inventory"
-    // ratchet. If this fails, a host timer exists outside managedSetInterval ⇒ a silent inventory gap.
-    expect(BASELINE.size).toBe(0);
+  it('the no-raw-setInterval BASELINE holds only the known-grandfathered site and cannot grow', () => {
+    // The shrink-to-empty grandfather set. A NEW bare setInterval is a hard guard failure, never a
+    // BASELINE addition — that is the whole "every host timer is in schedule:inventory" ratchet.
+    //
+    // WI-6730 (2026-08-01): this asserted `size === 0` and passed — VACUOUSLY. BASELINE is derived
+    // from what the guard can SEE, and the guard enumerated with a bare `git ls-files`, which does
+    // not recurse into submodules. All 39 of them (incl. libs/papercusp) were therefore never
+    // scanned, so "no host timer is runtime-invisible" was a statement about the visible subtree
+    // only — precisely the silent gap this reconcile exists to catch. Switching the guard to the
+    // recursing enumerator did not add a timer; it revealed one that had been invisible since P-007.
+    //
+    // Pinned EXACTLY (not `<= 1`) so the ratchet still bites in both directions: a new offender
+    // cannot be parked here, and migrating this one must update this test rather than silently
+    // loosen it.
+    expect([...BASELINE].sort()).toEqual([
+      'libs/papercusp/packages/locks/src/workspace-listener.ts',
+    ]);
   });
 
   it('every external-process timer source is allow-listed in the host guard (audits agree, no gap)', () => {

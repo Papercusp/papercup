@@ -15,7 +15,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/sessions/search.test.ts
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -25,6 +25,16 @@ vi.mock('./_shared', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   sessionSearchEnabled: vi.fn(async () => true),
   refreshLiveSessionsBeforeRead: vi.fn(async () => ({ attempted: 0, refreshed: 0 })),
+}));
+
+// The verbatim tests below never reach the hybrid branch, but search.ts
+// statically imports both — mock them inertly so the module loads without a
+// live embedder/DB, and let the one hybrid test override the return value.
+const runHybridSearch = vi.fn(async () => ({ results: [], totalHits: 0, embedderAvailable: true }));
+vi.mock('@papercusp/search', () => ({ runHybridSearch: (...a: unknown[]) => runHybridSearch(...(a as [])) }));
+vi.mock('../search/embedder', () => ({
+  buildQueryEmbedder: vi.fn(async () => vi.fn()),
+  interactiveEmbedAcquireBudgetMs: vi.fn(() => 1000),
 }));
 
 const tool = (await import('./search')).default;
@@ -51,11 +61,6 @@ function callTool(args: Record<string, unknown>, tx: unknown) {
 }
 
 describe('sessions:search EI-18877285731929394 — verbatim 0-hit hint', () => {
-  afterEach(() => {
-    vi.doUnmock('@papercusp/search');
-    vi.doUnmock('../search/embedder');
-  });
-
   it('adds a fallback hint when verbatim mode finds nothing (the false-negative trap)', async () => {
     const tx = makeTx([]); // ILIKE query matched no rows
     const res = await callTool({ query: 'a paraphrase that is not a literal quote', mode: 'verbatim', context: 0 }, tx);
@@ -79,18 +84,8 @@ describe('sessions:search EI-18877285731929394 — verbatim 0-hit hint', () => {
   });
 
   it('never adds the verbatim hint in hybrid mode (default), even on 0 hits', async () => {
-    vi.doMock('@papercusp/search', () => ({
-      runHybridSearch: vi.fn(async () => ({ results: [], totalHits: 0, embedderAvailable: true })),
-    }));
-    vi.doMock('../search/embedder', () => ({
-      buildQueryEmbedder: vi.fn(async () => vi.fn()),
-      interactiveEmbedAcquireBudgetMs: vi.fn(() => 1000),
-    }));
-    vi.resetModules();
-    const freshTool = (await import('./search')).default;
-    const res = await (
-      freshTool as unknown as { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> }
-    ).handler({ query: 'anything', context: 0 }, { workspaceId: 'default', tx: makeTx([]) });
+    runHybridSearch.mockResolvedValueOnce({ results: [], totalHits: 0, embedderAvailable: true });
+    const res = await callTool({ query: 'anything', context: 0 }, makeTx([]));
     const parsed = JSON.parse(res.content[0].text) as ParsedResult;
 
     expect(parsed.mode).toBe('hybrid');

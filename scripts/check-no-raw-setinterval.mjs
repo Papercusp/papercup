@@ -34,9 +34,10 @@
  * "fails on a NEW bare setInterval" property is durably verified, not only
  * green-on-clean-tree.
  */
-import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -50,6 +51,7 @@ export const ALLOWLIST_DIRS = [
   'packages/operator-core/lib/deployment/p2p-perf-tier3/', // perf-test CHILD processes
   'packages/operator-core/lib/sync/hyperbee/perf/', // perf-test measurement processes
   'apps/operator/scripts/', // standalone .mjs processes (psu-launcher/pty-host, bghost-watchdog) — separate procs
+  'libs/testing-shell/', // test-shell RUNNER processes (stagehand-runner) — own process per run, no host registry
 ];
 
 /** Permanently-allowed individual files (rare; prefer ALLOWLIST_DIRS). */
@@ -78,14 +80,29 @@ export const ALLOWLIST = new Set([
 ]);
 
 /**
- * EMPTY (P-008 complete, 2026-06-28) — every operator-host bare setInterval has been
+ * Was EMPTY at P-008 (2026-06-28) — every operator-host bare setInterval had been
  * migrated to managedSetInterval (or, for genuine separate-process / browser / generic
  * sites, promoted into ALLOWLIST_DIRS / ALLOWLIST). This grandfather set was seeded with
- * 74 files at P-007 and shrank to empty as the codemod landed. It MUST stay empty: a NEW
- * bare setInterval is a hard guard failure, not a BASELINE addition — that is the whole
- * universal-visibility ratchet. Do NOT add entries here.
+ * 74 files at P-007 and shrank to empty as the codemod landed. It MUST shrink back to
+ * empty: a NEW bare setInterval is a hard guard failure, not a BASELINE addition — that
+ * is the whole universal-visibility ratchet. Do NOT add entries for new code.
+ *
+ * RE-SEEDED WITH ONE PRE-EXISTING SITE (WI-6730, 2026-08-01). "Empty" was only ever true
+ * of the subtree this guard could SEE: it enumerated with a bare `git ls-files`, which
+ * does not recurse into submodules, so all 39 of them — including libs/papercusp — were
+ * never scanned. Switching to the recursing enumerator did not introduce this timer; it
+ * revealed one that had been invisible since P-007. It is grandfathered here, not
+ * allowlisted, because it is a genuine host-side violation that SHOULD be migrated:
+ *
+ *   libs/papercusp/packages/locks/src/workspace-listener.ts — startBackgroundJanitor()'s
+ *   recurring sweep, armed by inWorkspaceTxn on the first mutating locks:* op in a
+ *   non-test process. Migrating it needs a new cross-submodule dependency edge
+ *   (@papercusp/scheduled-registry into libs/papercusp/packages/locks, whose deps are
+ *   currently just @papercusp/file-claim + @papercusp/locks-core) — a deliberate
+ *   architectural change, not a drive-by rewrite, so it is tracked separately rather
+ *   than bundled into the enumerator fix.
  */
-export const BASELINE = new Set([]);
+export const BASELINE = new Set(['libs/papercusp/packages/locks/src/workspace-listener.ts']);
 
 export const isExcluded = (f) =>
   f.startsWith('_retired/') ||
@@ -96,6 +113,10 @@ export const isExcluded = (f) =>
   f.includes('/build/') ||
   f.includes('/storybook-static/') ||
   f.includes('/code-server/') ||
+  // WI-6730: bundled sidecar BUILD OUTPUT (esbuild-minified serve.mjs), not source.
+  // Only became reachable when the enumerator started recursing into submodules
+  // (papercusp-desktop); the sibling guards already carried this exclusion.
+  f.includes('/env-sidecars/') ||
   f.includes('/spa/assets/') ||
   f.includes('/holepunch-spike/') ||
   /\.(test|spec)\.[cm]?tsx?$/.test(f) ||
@@ -118,15 +139,18 @@ export function usesRawSetInterval(text) {
   return /\bsetInterval\s*\(/.test(stripComments(text));
 }
 
-/** Scan the tracked tree for offenders (excludes vendored/tests/.tsx + ALLOWLIST + BASELINE). */
+/**
+ * Scan the tracked tree for offenders (excludes vendored/tests/.tsx + ALLOWLIST + BASELINE).
+ *
+ * WI-6730: enumerates via the shared `listTrackedFiles` helper, which recurses
+ * into submodules. A bare `git ls-files` does NOT — it emits one gitlink entry
+ * per submodule — so this guard previously printed ✓ for all 39 of them,
+ * including libs/papercusp, where an unlisted host timer was sitting. Returns
+ * the coverage report alongside the offenders so `main` can state what it could
+ * not check instead of implying a clean tree.
+ */
 export function findOffenders() {
-  const tracked = execSync('git ls-files', {
-    cwd: ROOT,
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-  })
-    .split('\n')
-    .filter(Boolean);
+  const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
   const offenders = [];
   for (const f of tracked) {
@@ -141,14 +165,17 @@ export function findOffenders() {
     }
     if (usesRawSetInterval(text)) offenders.push(f);
   }
-  return offenders;
+  return { offenders, unscanned };
 }
 
 function main() {
-  const offenders = findOffenders();
+  const { offenders, unscanned } = findOffenders();
   if (offenders.length === 0) {
     const note = BASELINE.size > 0 ? ` (${BASELINE.size} file(s) still in the shrink-to-empty BASELINE — P-008)` : '';
-    console.log(`✓ no NEW bare setInterval() — every operator-host timer goes through managedSetInterval${note}.`);
+    console.log(
+      `✓ no NEW bare setInterval() — every operator-host timer goes through managedSetInterval${note}.` +
+        describeUnscanned(unscanned),
+    );
     process.exit(0);
   }
   console.error('✗ NEW bare setInterval() call(s) outside the scheduled-registry:');

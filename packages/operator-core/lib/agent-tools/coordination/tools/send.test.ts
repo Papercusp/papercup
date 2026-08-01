@@ -70,6 +70,18 @@ vi.mock('../presence-fleet', () => ({ fetchPresenceFleet: vi.fn(async () => new 
 // time. Mocked here so the WIRING is asserted without a PG round-trip — the
 // derivation itself is covered by based-on.test.ts + based-on.integration.test.ts.
 vi.mock('../based-on', () => ({ deriveBasedOn: vi.fn(async () => []) }));
+// P-011 / WI-6731: the premise RESOLVER is stubbed so the WIRING is asserted
+// without a PG round-trip (the resolver + its production probes are covered by
+// premise-resolve.test.ts / premise-probes.test.ts).
+//
+// ⚠ `importOriginal` is load-bearing, not tidiness: send.ts imports
+// PREMISE_STAMPS_FIELD from this same module, and a bare factory would drop it,
+// making the envelope key `undefined` — the partial-mock trap filed as
+// EI-19281789650149592, which is what red this very suite once already.
+vi.mock('../premise-resolve', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../premise-resolve')>()),
+  resolvePremiseStamps: vi.fn(async () => []),
+}));
 
 import { sendMessage, getMessageById } from '../messages';
 import { resolveRecipients, remoteSessionOwnerIds, remoteSessionsByOwnerId } from '../recipient-resolve';
@@ -80,6 +92,8 @@ import { getPresence } from '../presence';
 import { fetchPresenceFleet } from '../presence-fleet';
 import { getFlag } from '@papercusp/flags/server';
 import { deriveBasedOn } from '../based-on';
+import { resolvePremiseStamps } from '../premise-resolve';
+const premiseM = vi.mocked(resolvePremiseStamps);
 const basedOnM = vi.mocked(deriveBasedOn);
 const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
@@ -120,6 +134,8 @@ beforeEach(() => {
   fetchPresenceFleetM.mockResolvedValue(new Map() as never);
   // D-084: nothing traceable read by default, so an ordinary send is unchanged.
   basedOnM.mockResolvedValue([] as never);
+  // WI-6731: no premises resolved by default, so an ordinary send is unchanged.
+  premiseM.mockResolvedValue([] as never);
 });
 
 describe('coord:send handler (bulk keyed-array)', () => {

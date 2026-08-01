@@ -36,6 +36,7 @@ vi.mock('../harness/routines/foreign-supervision-action', () => ({
 }));
 vi.mock('../harness/routines/work-intake-action', () => ({
   ensureWorkIntakeRoutine: (...args: unknown[]) => ensureWorkIntake(...args),
+  ensureWorkIntakeRoutineInactive: (...args: unknown[]) => ensureWorkIntakeInactive(...args),
 }));
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: {} }),
@@ -65,6 +66,7 @@ describe('ensureP2pHostRoutinesForWorkspace', () => {
     ensureSweep.mockReset().mockResolvedValue({ id: 'rt_sweep' });
     ensureSupervision.mockReset().mockResolvedValue({ id: 'rt_supervision' });
     ensureWorkIntake.mockReset().mockResolvedValue({ id: 'rt_work_intake' });
+    ensureWorkIntakeInactive.mockReset().mockResolvedValue({ id: 'rt_work_intake' });
     resolveIdentity.mockReset();
     loadKeypair.mockReset();
     projectDir.mockReset();
@@ -156,7 +158,11 @@ describe('ensureP2pHostRoutinesForWorkspace', () => {
     expect(ensureWorkIntake).not.toHaveBeenCalled();
   });
 
-  it('seeds sweep + supervision but skips work-intake when the repo root is unresolved', async () => {
+  // WI-6680 D3 (option (b)): on a PACKAGED host projectDirForSlug resolves
+  // nothing, so sourceRepoPath has no answer. The routine used to simply never
+  // exist — the whole P-406 executor undriven, invisibly, on every shipped
+  // install. It is now seeded INACTIVE with the identity that DOES resolve.
+  it('seeds work-intake INACTIVE (never active) when the repo root is unresolved', async () => {
     resolveIdentity.mockResolvedValue({ kind: 'ok', githubUserId: 42, githubLogin: 'avi', token: 't' });
     loadKeypair.mockResolvedValue({ keychainId: '42:fake-machine', pubkeyBase64: 'PUBKEY==' });
     projectDir.mockResolvedValue(null);
@@ -165,9 +171,59 @@ describe('ensureP2pHostRoutinesForWorkspace', () => {
 
     expect(result.sweepSeeded).toBe(true);
     expect(result.supervisionSeeded).toBe(true);
+    // Still NOT "seeded" — an inactive placeholder must never be reported as a
+    // running executor, or the drill reads a dead spawn leg as a live one.
     expect(result.workIntakeSeeded).toBe(false);
-    expect(result.skippedReasons.some((r) => r.includes('no registered project dir'))).toBe(true);
+    expect(result.workIntakeSeededInactive).toBe(true);
+    expect(result.skippedReasons.some((r) => r.includes('seeded INACTIVE'))).toBe(true);
+    // The ACTIVE seeder is never reached on this path.
     expect(ensureWorkIntake).not.toHaveBeenCalled();
+    expect(ensureWorkIntakeInactive).toHaveBeenCalledTimes(1);
+
+    const arg = ensureWorkIntakeInactive.mock.calls[0]![0];
+    // Carries the identity a packaged host CAN resolve...
+    expect(arg.host).toMatchObject({
+      hostRef: 'fake-machine',
+      responderGithubUserId: 42,
+      executorDevice: 'PUBKEY==',
+      foreignWorkRoot: '/fake-papercusp-home/p2p/foreign-work',
+      workspaceRoot: '/host/trees',
+    });
+    // ...and never fabricates the two it cannot.
+    expect(arg.host.sourceRepoPath).toBeUndefined();
+    expect(arg.host.canonicalTree).toBeUndefined();
+    // The off state must be self-explaining, naming what would flip it.
+    expect(arg.inactiveReason).toContain('sourceRepoPath');
+    expect(arg.inactiveReason).toContain('containment');
+  });
+
+  it('reports the existing row as untouched when the inactive seeder declines to overwrite', async () => {
+    resolveIdentity.mockResolvedValue({ kind: 'ok', githubUserId: 42, githubLogin: 'avi', token: 't' });
+    loadKeypair.mockResolvedValue({ keychainId: '42:fake-machine', pubkeyBase64: 'PUBKEY==' });
+    projectDir.mockResolvedValue(null);
+    // null = a routine row already exists; the seeder left it alone rather than
+    // re-disabling a routine the owner had activated (see the boot-hook trap in
+    // ensureWorkIntakeRoutineInactive's doc).
+    ensureWorkIntakeInactive.mockResolvedValue(null);
+
+    const result = await ensureP2pHostRoutinesForWorkspace(WORKSPACE_ID);
+
+    expect(result.workIntakeSeeded).toBe(false);
+    expect(result.workIntakeSeededInactive).toBe(false);
+    expect(result.skippedReasons.some((r) => r.includes('left untouched'))).toBe(true);
+  });
+
+  it('cannot seed even an inactive row when the device pubkey is unresolved', async () => {
+    resolveIdentity.mockResolvedValue({ kind: 'ok', githubUserId: 42, githubLogin: 'avi', token: 't' });
+    loadKeypair.mockRejectedValue(new Error('keychain locked'));
+    projectDir.mockResolvedValue(null);
+
+    const result = await ensureP2pHostRoutinesForWorkspace(WORKSPACE_ID);
+
+    expect(result.workIntakeSeeded).toBe(false);
+    expect(result.workIntakeSeededInactive).toBe(false);
+    expect(ensureWorkIntakeInactive).not.toHaveBeenCalled();
+    expect(result.skippedReasons.some((r) => r.includes('cannot seed even an inactive row'))).toBe(true);
   });
 
   it('never throws when an individual ensure*Routine call rejects — records the reason instead', async () => {
@@ -193,6 +249,7 @@ describe('ensureP2pHostRoutinesSeededOnce (WI-5780 regression)', () => {
     ensureSweep.mockReset().mockResolvedValue({ id: 'rt_sweep' });
     ensureSupervision.mockReset().mockResolvedValue({ id: 'rt_supervision' });
     ensureWorkIntake.mockReset().mockResolvedValue({ id: 'rt_work_intake' });
+    ensureWorkIntakeInactive.mockReset().mockResolvedValue({ id: 'rt_work_intake' });
     resolveIdentity.mockReset().mockResolvedValue({ kind: 'ok', githubUserId: 42, githubLogin: 'avi', token: 't' });
     loadKeypair.mockReset().mockResolvedValue({ keychainId: '42:fake-machine', pubkeyBase64: 'PUBKEY==' });
     projectDir.mockReset().mockResolvedValue('/repo/root');

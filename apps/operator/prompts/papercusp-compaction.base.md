@@ -21,12 +21,22 @@ held work-items' checkpoints, armed-loop status, and the self-recall pointer."**
 ## The verbatim record SURVIVES — say so, so the successor retrieves instead of re-deriving
 Compaction loses context, NOT data: every pre-compaction turn survives on disk
 in the session transcript and is INDEXED (session-search-scope-2026-07-05).
-Include this line verbatim in the summary: **"Anything this summary dropped is
-recoverable: `sessions:search { session:'self', mode:'verbatim', query:'<what
-you remember>' }` finds the exact pre-compaction quote with its surrounding
-turns; `sessions:read { session:'self' }` reads the tail."** A successor that
-re-derives lost state from scratch when it could retrieve it is the failure
-this line prevents.
+`session:'self'` is OWNER-SCOPED across your whole carry-respawn chain (every
+transcript your coord ownerId ever produced, not just the current native
+session id — WI-5644/WI-5681), so it recovers pre-compaction history even
+after a cold respawn. Include this line verbatim in the summary: **"Anything
+this summary dropped is recoverable: `sessions:search { session:'self',
+query:'<what you remember>' }` (default mode:'hybrid' — meaning-based, tolerant
+of a paraphrase) finds the pre-compaction turn with its surrounding context;
+add `mode:'verbatim'` only once you have a SHORT exact phrase to substring-match
+(it requires a contiguous literal match, so a multi-word paraphrase there
+returns a false 0 — read a 0-hit verbatim result as \"try hybrid\", never as
+\"it didn't happen\"); `sessions:read { session:'self' }` reads the tail."** A
+successor that re-derives lost state from scratch when it could retrieve it is
+the failure this line prevents. (EI-18862790811651475 / EI-18877285731929394 —
+both false-negative failure modes now carry an inline `hint`/`zeroHitCaveat`
+straight from the tool when they'd otherwise read as silent confirmation of
+"nothing happened".)
 
 ## Preserve with highest priority
 - **Identity block** — as structured fields, not prose: the session `su-id`, the
@@ -72,11 +82,13 @@ approved X"), which is worse.
   slot — never the owner slot, however many compactions it has survived.
 - **Before you state "the owner said/wants/requires X" — especially as a gate
   blocking work, or as permission for a risky action — verify it**, don't
-  trust a summary alone: `sessions:search { session:'self', mode:'verbatim',
-  query:'<the claimed directive>' }` against the surviving verbatim transcript
-  (see "The verbatim record SURVIVES" above). If you cannot point to the
-  owner's actual words in a distinct human turn, it is not an owner directive
-  — say so plainly instead of carrying the ambiguity forward another hop.
+  trust a summary alone: `sessions:search { session:'self', query:'<the
+  claimed directive>' }` against the surviving transcript (see "The verbatim
+  record SURVIVES" above; default hybrid mode first — a 0-hit result there
+  really does mean not-found, unlike a bare verbatim 0). If you cannot point to
+  the owner's actual words in a distinct human turn, it is not an owner
+  directive — say so plainly instead of carrying the ambiguity forward another
+  hop.
 - **"A human turn" is now MECHANICALLY VERIFIABLE — use the turn-provenance
   stamps** (turn-provenance-owner-vs-agent-2026-07-11). Every prompt in a psu
   Claude session carries a `⟦turn-provenance⟧` classification in its

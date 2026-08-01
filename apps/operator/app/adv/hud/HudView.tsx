@@ -482,6 +482,25 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     [setOpenItemId],
   );
 
+  /* WI-6560 — this MUST stay a stable reference, and it is load-bearing in a way
+     that is invisible locally. It is the `onOpen` prop of `MemoSessionCard`
+     (HudBoard.tsx), so a fresh arrow here changes one prop of EVERY session card
+     on EVERY HudView render, and `memo`'s shallow compare then misses on all of
+     them. Both row components carry docblocks explaining that their error
+     boundary sits INSIDE the memo "so an unchanged row re-renders neither" —
+     that saving was inert on the session board for exactly this reason, while
+     the entity board got it right (onOpenItemCard / onOpenPlanCard above are
+     already useCallback'd, which is why MemoEntityCard's memo does hold).
+
+     What this does NOT fix: `board` is rebuilt whenever roster data arrives or
+     the 15s clock ticks, and `buildHudBoard` returns new session objects, so the
+     `session` prop churns on those renders regardless. The win is the large
+     class of renders where session data did NOT change — work-item/plan data
+     arriving, entity-search typing, opening/closing the chat modal, switching
+     tabs — which currently re-render every session card for nothing.
+     hud-render-stability.test.tsx pins this; do not inline it back. */
+  const onOpenSession = useCallback((ownerId: string) => void setOpenOwner(ownerId), [setOpenOwner]);
+
   const entityView =
     tab === 'plans' ? (
       <HudEntityColumns
@@ -538,7 +557,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         onFocusColumn={(id) => void setFocusColumn(id)}
         suOnly={!allAgents}
         onToggleSuOnly={() => void setAllAgents((v) => !v)}
-        onOpenSession={(ownerId) => void setOpenOwner(ownerId)}
+        onOpenSession={onOpenSession}
         loading={roster.loading || searching}
         error={roster.error ? String(roster.error) : searchError}
         sessionQuery={rawSessionQuery}
