@@ -34,7 +34,16 @@
  */
 import { execSync } from 'node:child_process';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+/**
+ * Repo root. NOTE the '../..': this module lives at scripts/lib/, one level
+ * deeper than the scripts/check-*.mjs guards that copy the `new URL('..')`
+ * idiom. Getting this wrong is silent and severe — a cwd of scripts/ makes
+ * `git ls-files` return only the ~33 files under scripts/, and every caller
+ * that relied on the default would report a confident ✓ having scanned almost
+ * nothing. That is the same false-clean failure this module exists to remove,
+ * so it is pinned by a test rather than left to inspection.
+ */
+const ROOT = new URL('../..', import.meta.url).pathname;
 
 /** Run a git command and return trimmed stdout lines (empty array on failure). */
 function gitLines(args, cwd) {

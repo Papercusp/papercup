@@ -641,11 +641,18 @@ export default defineTool({
     // after a dead/quiet session doesn't silently re-implement already-shipped work.
     // Omitted entirely when null (the common case: no prior holder ever checkpointed).
     let checkpointHint: import('../../work-item-checkpoint').ClaimTimeCheckpointHint | null = null;
+    // WI-6737: a FAILED checkpoint read and a successful read that found nothing both leave
+    // `checkpointHint` null. Only the former must stop a claimant from treating the item as
+    // never-checkpointed, so keep the distinction instead of discarding it in the .catch.
+    let checkpointReadFailed = false;
     if (res?.workItem) {
       const wi = res.workItem as { id: string; harness?: string | null };
       checkpointHint = await import('../../work-item-checkpoint')
         .then((m) => m.getClaimTimeCheckpointHint({ harness: wi.harness ?? null, workItemId: wi.id, workspaceId: ident.workspaceId ?? undefined }))
-        .catch(() => null);
+        .catch(() => {
+          checkpointReadFailed = true;
+          return null;
+        });
     }
     // P-001/P-004 (fleet-leadership-continuity-and-actuation-2026-08-01): the prior-work banner,
     // wired here too. P-001 named THREE surfaces — work_items:claim, work_items:get and THIS one —
@@ -667,7 +674,11 @@ export default defineTool({
             workspaceId: ident.workspaceId ?? undefined,
           });
           if (!raw) return null;
-          const priorWork = { ...raw, hasCheckpoint: checkpointHint != null };
+          const priorWork = {
+            ...raw,
+            // WI-6737: never assert absence from a read that never ran.
+            hasCheckpoint: checkpointReadFailed ? ('unknown' as const) : checkpointHint != null,
+          };
           const warning = m.priorWorkWarning(priorWork);
           return warning ? { priorWork, priorWorkWarning: warning } : null;
         })

@@ -258,12 +258,19 @@ async function claimOne(
     //
     // Compares against the POST-claim row, whose assignee is now the claimer, so a lane held by
     // this same agent (the normal, non-diverged case) is correctly silent.
+    // WI-6737: record that the checkpoint read FAILED, rather than letting its `null` be read as
+    // "no checkpoint exists" a few lines below. The hint itself stays fail-soft (`null`) — only
+    // the reason is now recoverable.
+    let checkpointReadFailed = false;
     const [hint, priorRaw, laneCollision] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
         workItemId: it.id,
         workspaceId: identity.workspaceId ?? undefined,
-      }).catch(() => null),
+      }).catch(() => {
+        checkpointReadFailed = true;
+        return null;
+      }),
       getClaimTimePriorWorkHint({
         harness: workItem.harness ?? it.harness ?? null,
         workItemId: it.id,

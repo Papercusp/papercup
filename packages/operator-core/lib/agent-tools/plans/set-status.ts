@@ -135,7 +135,11 @@ type SetStatusValue =
        *  can query it without a second read. Undefined on every other flip. */
       wipItemText?: string;
     }
-  | { ok: false; code: 'not_found' | 'item_not_found' };
+  | { ok: false; code: 'not_found' | 'item_not_found' }
+  /** `onlyIfNotTerminal` tripped: the item is already done/dropped and the caller
+   *  asked for a non-destructive flip. Carries the CURRENT status so the caller can
+   *  report what it left alone. Not an error — see the `terminal_guard` branch below. */
+  | { ok: false; code: 'terminal_guard'; currentStatus: string | null };
 
 /**
  * Extract one item's `importance` from the plan body, glyph-agnostically,

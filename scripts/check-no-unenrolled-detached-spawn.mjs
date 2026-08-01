@@ -28,7 +28,7 @@
  * is a durably verified property rather than green-on-a-clean-tree (the same
  * discipline check-no-raw-agent-spawn.mjs applies to its own bypass predicate).
  */
-import { execSync } from 'node:child_process';
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -113,19 +113,29 @@ export function isUnenrolledDetachedSpawn(relPath, source) {
   return !ALLOWLIST.has(relPath);
 }
 
+/**
+ * WI-6730: enumerate via the shared helper, which recurses into submodules. The
+ * previous `git ls-files "*.ts" "*.tsx"` did not — it emits one gitlink entry per
+ * submodule — so this guard never looked inside any of the 39, including
+ * libs/papercusp (orchestrator/harness spawn paths) and papercusp-desktop. The
+ * extension filter moved from a git pathspec into JS so the helper stays
+ * single-purpose and pathspec semantics can't differ between the two call forms.
+ */
 function trackedFiles() {
-  const out = execSync('git ls-files "*.ts" "*.tsx"', { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-  return out
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .filter((p) => !p.includes('/_retired/') && !p.includes('/node_modules/'))
-    .filter((p) => !/\.(test|spec)\.tsx?$/.test(p));
+  const { files, unscanned } = listTrackedFiles(ROOT);
+  return {
+    files: files
+      .filter((p) => /\.tsx?$/.test(p))
+      .filter((p) => !p.includes('/_retired/') && !p.includes('/node_modules/'))
+      .filter((p) => !/\.(test|spec)\.tsx?$/.test(p)),
+    unscanned,
+  };
 }
 
 function main() {
   const offenders = [];
-  for (const rel of trackedFiles()) {
+  const { files, unscanned } = trackedFiles();
+  for (const rel of files) {
     let source;
     try {
       source = readFileSync(`${ROOT}${rel}`, 'utf8');
@@ -136,7 +146,10 @@ function main() {
   }
 
   if (offenders.length === 0) {
-    console.log(`[no-unenrolled-detached-spawn] OK — ${ALLOWLIST.size} allowlisted site(s), no new ones.`);
+    console.log(
+      `[no-unenrolled-detached-spawn] OK — ${ALLOWLIST.size} allowlisted site(s), no new ones.` +
+        describeUnscanned(unscanned),
+    );
     return;
   }
 
