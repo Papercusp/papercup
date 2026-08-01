@@ -26,6 +26,7 @@ import {
   NO_PLAN_TOKEN,
   SOLO_FLEET_KEY,
   formatAge,
+  hudSessionRendersSame,
   type HudBoard as HudBoardData,
   type HudBadge,
   type HudColumnId,
@@ -199,19 +200,27 @@ function SessionCard({
  * Boundary INSIDE the memo so an unchanged row re-renders neither (WI-6560).
  * The label is optional-chained because computing it happens ABOVE the boundary.
  */
-const MemoSessionCard = memo(function SafeSessionCard(props: {
-  session: HudSession;
-  onOpen: (ownerId: string) => void;
-}) {
-  return (
-    <RowBoundary
-      label={props.session?.handle || props.session?.ownerId || 'This session'}
-      scope="hud-card"
-    >
-      <SessionCard {...props} />
-    </RowBoundary>
-  );
-});
+const MemoSessionCard = memo(
+  function SafeSessionCard(props: { session: HudSession; onOpen: (ownerId: string) => void }) {
+    return (
+      <RowBoundary
+        label={props.session?.handle || props.session?.ownerId || 'This session'}
+        scope="hud-card"
+      >
+        <SessionCard {...props} />
+      </RowBoundary>
+    );
+  },
+  /* WI-6560 — a DISPLAY-aware comparator, not memo's default shallow compare.
+     `buildHudBoard` allocates a new session object on every 15s clock tick
+     because `sinceSec` is raw seconds (720 -> 735), so the default compare
+     missed on every card, every tick, while `formatAge` still printed "12m".
+     `hudSessionRendersSame` compares what this card actually renders — see its
+     docblock for why `sortKey` is excluded and why the rest is compared
+     structurally rather than field-by-field. Unchanged DATA (as opposed to an
+     unchanged render) is collapsed one level up by `reconcileBoardIdentity`. */
+  (prev, next) => prev.onOpen === next.onOpen && hudSessionRendersSame(prev.session, next.session),
+);
 
 /* The unattributed-ask card used to live here — a full-width strip above the
    session columns, the coverage gate hud-consolidation-2026-07-26 P-002 put in

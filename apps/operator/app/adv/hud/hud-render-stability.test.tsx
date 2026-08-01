@@ -31,7 +31,11 @@ import { resolve } from 'node:path';
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 import HudBoard from './HudBoard';
-import { buildHudBoard, type HudRosterEntry } from './hud-board-model';
+import {
+  buildHudBoard,
+  reconcileBoardIdentity,
+  type HudRosterEntry,
+} from './hud-board-model';
 
 const counters = vi.hoisted(() => ({ rowRenders: 0 }));
 
@@ -178,6 +182,115 @@ describe('WI-6560 — session card render stability', () => {
     rerender(<HudBoard {...props} onOpenSession={() => {}} />);
 
     expect(counters.rowRenders).toBe(afterFirst + ROSTER.length);
+  });
+});
+
+/**
+ * The suite above pins the memo and its `onOpen` prop. This one pins the OTHER
+ * half of WI-6560: the `session` prop itself.
+ *
+ * `buildHudBoard` allocates a fresh `HudSession` per agent on every call, and
+ * HudView re-runs it on a 15s clock tick. But `formatAge` renders minutes above
+ * 60s, so for a session older than a minute three of every four ticks produce a
+ * structurally IDENTICAL card from a brand-new object — and the memo misses on
+ * every one. `reconcileBoardIdentity` is what collapses that.
+ *
+ * These sessions are deliberately ~10 minutes old (the shared ROSTER above is
+ * 5s old, where the age genuinely does change every tick and reuse would be
+ * WRONG). Each test asserts its own precondition — that the two builds really
+ * are structurally equal — so a future change to the model that makes a tick
+ * meaningful turns these into loud failures rather than silent false comfort.
+ */
+describe('WI-6560 — board identity survives a clock tick that changes nothing', () => {
+  const OLD_ROSTER: HudRosterEntry[] = [
+    entry({ ownerId: 'su-1111', label: 'su · one', advSessionId: 1, lastActiveAt: iso(600_000) }),
+    entry({ ownerId: 'su-2222', label: 'su · two', advSessionId: 2, lastActiveAt: iso(660_000) }),
+    entry({ ownerId: 'su-3333', label: 'su · three', advSessionId: 3, lastActiveAt: iso(720_000) }),
+  ];
+  const TICK = 15_000;
+  const build = (nowMs: number, roster: HudRosterEntry[] = OLD_ROSTER) =>
+    buildHudBoard(roster, [], { nowMs });
+
+  it('rebuilds an equal-but-not-identical board on a tick (the precondition being fixed)', () => {
+    const a = build(NOW);
+    const b = build(NOW + TICK);
+
+    // Structurally the same...
+    expect(JSON.stringify(b)).toBe(JSON.stringify(a));
+    // ...yet every session is a new object. This is the defect, stated as a test:
+    // without it there is nothing for reconcileBoardIdentity to fix.
+    expect(b.columns[0].sessions[0]).not.toBe(a.columns[0].sessions[0]);
+  });
+
+  it('reuses every session object — and the board itself — when nothing changed', () => {
+    const a = build(NOW);
+    const b = reconcileBoardIdentity(a, build(NOW + TICK));
+
+    expect(b).toBe(a);
+    for (const [i, col] of b.columns.entries()) {
+      for (const [j, s] of col.sessions.entries()) {
+        expect(s).toBe(a.columns[i].sessions[j]);
+      }
+    }
+  });
+
+  it('does NOT re-render any card across a reconciled clock tick (the actual win)', () => {
+    const a = build(NOW);
+    const { rerender } = render(<HudBoard {...boardProps({ board: a })} />);
+    const afterFirst = counters.rowRenders;
+    expect(afterFirst).toBe(OLD_ROSTER.length);
+
+    const b = reconcileBoardIdentity(a, build(NOW + TICK));
+    rerender(<HudBoard {...boardProps({ board: b })} />);
+
+    expect(counters.rowRenders).toBe(afterFirst);
+  });
+
+  it('DOES re-render every card across an UNreconciled tick (proves the test is not vacuous)', () => {
+    // The failure direction, i.e. production before this fix. If this ever goes
+    // green, the assertion above has stopped measuring anything.
+    const a = build(NOW);
+    const { rerender } = render(<HudBoard {...boardProps({ board: a })} />);
+    const afterFirst = counters.rowRenders;
+
+    rerender(<HudBoard {...boardProps({ board: build(NOW + TICK) })} />);
+
+    expect(counters.rowRenders).toBe(afterFirst + OLD_ROSTER.length);
+  });
+
+  it('does NOT reuse a session whose content genuinely changed', () => {
+    // The correctness direction, and the one that matters most: reusing a stale
+    // object would pin the UI to data that has moved on. Only the changed
+    // session may be a new object; its neighbours must still be reused.
+    const a = build(NOW);
+    const changed = OLD_ROSTER.map((e) =>
+      e.ownerId === 'su-2222' ? { ...e, intent: 'now doing something else' } : e,
+    );
+    const b = reconcileBoardIdentity(a, build(NOW + TICK, changed));
+
+    expect(b).not.toBe(a);
+    const flat = (bd: typeof a) => bd.columns.flatMap((c) => c.sessions);
+    const before = new Map(flat(a).map((s) => [s.ownerId, s]));
+    for (const s of flat(b)) {
+      if (s.ownerId === 'su-2222') {
+        expect(s).not.toBe(before.get(s.ownerId));
+        expect(s.intent).toBe('now doing something else');
+      } else {
+        expect(s).toBe(before.get(s.ownerId));
+      }
+    }
+  });
+
+  it('does NOT reuse a session whose rendered age crosses a minute boundary', () => {
+    // 59s -> 74s changes what formatAge prints ("59s" -> "1m"), so this tick is
+    // NOT a no-op and reuse would render a stale age.
+    const young = [entry({ ownerId: 'su-9999', label: 'su · young', lastActiveAt: iso(59_000) })];
+    const a = build(NOW, young);
+    const b = reconcileBoardIdentity(a, build(NOW + TICK, young));
+
+    expect(b.columns.flatMap((c) => c.sessions)[0]).not.toBe(
+      a.columns.flatMap((c) => c.sessions)[0],
+    );
   });
 });
 

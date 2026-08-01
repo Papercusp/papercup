@@ -195,7 +195,16 @@ export function splitFailingSignature(entries: string[]): { failingFiles: string
  *  gate verdict was recorded against (`gate_health.observedCandidate`, a short/12-char sha).
  *  Narrow and cheap (one indexed `commit_sha LIKE` query) — only ever called when the gate
  *  already named something file-shaped, so this never adds IO to a green (or unattributed)
- *  gate. Fail-soft: any error degrades to `[]` (unable to verify), never a throw. */
+ *  gate. Fail-soft: any error degrades to `[]` (unable to verify), never a throw.
+ *
+ *  EI-18795303393201472: excludes `worktree_dirty = true` rows. This function is used as
+ *  FIRST-HAND evidence for a SPECIFIC commit sha (verifyGateVerdict below can clear the
+ *  gate's own named failures when the ledger disagrees) — a row from a run that executed
+ *  against an unstable shared tree can be stamped with a commit sha it never actually ran
+ *  at (a torn read), which would poison exactly this cross-check for an unrelated commit
+ *  that happens to share the stamp. `recentFailingFiles` above is a time-windowed proxy
+ *  ("something failed recently") and deliberately keeps dirty rows — sha precision doesn't
+ *  matter there. */
 export async function ledgerFilesForCandidate(candidateShort: string | null, deps: WhyChainDeps = {}): Promise<string[]> {
   if (!candidateShort || candidateShort.length < 7) return [];
   let sql: SqlLike;
@@ -218,6 +227,7 @@ export async function ledgerFilesForCandidate(candidateShort: string | null, dep
        WHERE commit_sha LIKE ${candidateShort + '%'}
          AND status IN ('fail', 'error')
          AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
+         AND worktree_dirty = false
          AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
          AND (${workspaceFilter}::text IS NULL OR workspace_id = ${workspaceFilter})
        LIMIT 50

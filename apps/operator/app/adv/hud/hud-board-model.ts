@@ -936,27 +936,67 @@ export function buildHudBoard(
 }
 
 /**
+ * WI-6560 — does this session render IDENTICALLY to that one?
+ *
+ * The clock-tick half of the fix. `sinceSec` is stored as RAW SECONDS, so it
+ * changes on every 15s tick for every session — a plain structural comparison
+ * therefore never holds across a tick and `React.memo` misses on every card,
+ * even though `formatAge` prints minutes (or hours, or days) and the rendered
+ * output is unchanged. For a 12-minute-old session the card is byte-identical
+ * while `sinceSec` walks 720 -> 735 -> 750.
+ *
+ * So the comparison the memo needs is "does this RENDER the same", not "is this
+ * the same value". Two fields are treated specially, and only because the card
+ * provably does not render them as-is:
+ *   - `sinceSec` reaches the DOM only through `formatAge`, so it is compared
+ *     through `formatAge`.
+ *   - `sortKey` never reaches the card at all; it orders the column, and the
+ *     column re-orders by React key. Comparing it would defeat the memo on
+ *     every tick for no rendered difference.
+ * Everything else is compared STRUCTURALLY via rest-destructuring, so a field
+ * added to `HudSession` later is compared automatically. That is the
+ * anti-rot property: a hand-listed comparator silently stops covering new
+ * fields and starts rendering stale cards, which is far worse than a missed
+ * memo. If you add a field the card renders, this needs no change; if you add
+ * one it renders through a formatter, extend the special cases above.
+ *
+ * Verified against the card by test, not by reading: see
+ * hud-render-stability.test.tsx, which pins both directions (an age crossing a
+ * minute boundary MUST re-render).
+ */
+export function hudSessionRendersSame(a: HudSession, b: HudSession): boolean {
+  if (a === b) return true;
+  const { sinceSec: aSince, sortKey: _aSort, ...aRest } = a;
+  const { sinceSec: bSince, sortKey: _bSort, ...bRest } = b;
+  return formatAge(aSince) === formatAge(bSince) && deepEqual(aRest, bRest);
+}
+
+/**
  * WI-6560 — reuse the PREVIOUS board's object references wherever the freshly
  * derived value is structurally identical, so `React.memo` downstream can
  * actually bite.
  *
  * WHY THIS IS NEEDED AT ALL. `buildHudBoard` is pure and allocates a new
- * `HudSession` per agent on every call, and it is re-run whenever ANY of its
- * inputs change — including `nowMs`, which the view bumps every 15s. But the
- * clock only changes what a card *renders* at the granularity `formatAge`
- * prints: seconds under a minute, then MINUTES, then HOURS. So for any session
- * older than a minute, three of every four ticks rebuild an object whose
- * rendered output is byte-identical; for an hour-old session it is 239 of every
- * 240. Same story for roster payloads that arrive unchanged. Without this,
- * `MemoSessionCard`'s shallow compare misses on the `session` prop every time
- * and the entire board re-renders for nothing.
+ * `HudSession` per agent on every call, and the view re-runs it whenever ANY
+ * input changes. The expensive case measured on WI-6560 is roster data arriving
+ * at ~0.6/sec whose CONTENT is unchanged: every session object is new, so
+ * `MemoSessionCard`'s shallow compare misses on the `session` prop and the whole
+ * board re-renders for nothing. Reusing the previous object collapses that to
+ * zero renders, and — because reuse propagates up to the board object itself —
+ * also lets the memos ABOVE the board (e.g. `openLabel`) hold.
  *
- * This is deliberately NOT solved by quantising `sinceSec` to display
- * granularity: `sinceSec` also feeds `sortKey` and the threshold comparisons,
- * and rounding it would change classification, not just presentation. Comparing
- * the finished value is both safer and strictly more general — it also collapses
- * the *data*-arrival case (an unchanged roster re-fetched), which quantising
- * would not.
+ * ⚠ SCOPE — this does NOT help the 15s clock tick, and it is worth being precise
+ * about why, because the obvious assumption is wrong. `sinceSec` is stored as
+ * RAW SECONDS, so a tick changes it (720 -> 735) on EVERY session even when
+ * `formatAge` still prints "12m". Structural equality therefore never holds
+ * across a tick and nothing here is reused. The tick is handled at the memo
+ * boundary instead, by `hudSessionRendersSame` above. The two are complementary:
+ * this one collapses unchanged DATA, that one collapses an unchanged RENDER.
+ *
+ * Quantising `sinceSec` to display granularity would merge the two cases, and is
+ * deliberately not done: `sinceSec` also feeds `sortKey` and the threshold
+ * comparisons, so rounding it would change CLASSIFICATION, not just
+ * presentation. Comparing at the point of use is the safer half of that trade.
  *
  * Equality is STRUCTURAL (`deepEqual`), never a hand-listed field comparison.
  * That is the load-bearing choice: a hand-written comparator silently goes stale
