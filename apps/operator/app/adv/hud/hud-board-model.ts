@@ -997,7 +997,16 @@ export function buildHudBoard(
  * un-fixed behavior while every unit test still passed, so
  * hud-render-stability.test.tsx pins the default rather than trusting review.
  */
-export const hudRenderStabilitySwitch: { off: boolean } = { off: false };
+export const hudRenderStabilitySwitch: {
+  off: boolean;
+  /** Times the card comparator ran — i.e. how often the board actually re-rendered. */
+  compares: number;
+  /** Of those, how many card renders it SKIPPED. This is the fix's work, counted. */
+  skips: number;
+  /** Times board reconciliation ran, and how often it handed back the previous board. */
+  reconciles: number;
+  reuses: number;
+} = { off: false, compares: 0, skips: 0, reconciles: 0, reuses: 0 };
 
 /* The probe drives the app from OUTSIDE the bundle (`tauri-agent-tools eval`),
    so the switch has to be reachable from the page's global scope — an exported
@@ -1010,11 +1019,22 @@ if (typeof window !== 'undefined') {
 }
 
 export function hudSessionRendersSame(a: HudSession, b: HudSession): boolean {
+  /* Counted BEFORE the ablation branch, so `compares` measures how often the
+     board re-rendered regardless of which arm is active — that is what makes it
+     a workload bound-check: `compares === 0` means the workload never exercised
+     this path at all, and any latency verdict drawn from it would be a
+     statement about a dead workload rather than about the fix. */
+  hudRenderStabilitySwitch.compares++;
   if (hudRenderStabilitySwitch.off) return false;
-  if (a === b) return true;
+  if (a === b) {
+    hudRenderStabilitySwitch.skips++;
+    return true;
+  }
   const { sinceSec: aSince, sortKey: _aSort, ...aRest } = a;
   const { sinceSec: bSince, sortKey: _bSort, ...bRest } = b;
-  return formatAge(aSince) === formatAge(bSince) && deepEqual(aRest, bRest);
+  const same = formatAge(aSince) === formatAge(bSince) && deepEqual(aRest, bRest);
+  if (same) hudRenderStabilitySwitch.skips++;
+  return same;
 }
 
 /**
@@ -1070,6 +1090,7 @@ export function hudSessionRendersSame(a: HudSession, b: HudSession): boolean {
 export function reconcileBoardIdentity(prev: HudBoard | null, next: HudBoard): HudBoard {
   // WI-6560 measurement seam — see `hudRenderStabilitySwitch`. Returning `next`
   // unchanged is exactly the pre-fix behavior: a freshly allocated board every call.
+  hudRenderStabilitySwitch.reconciles++;
   if (hudRenderStabilitySwitch.off) return next;
   if (!prev) return next;
 
@@ -1121,6 +1142,7 @@ export function reconcileBoardIdentity(prev: HudBoard | null, next: HudBoard): H
     unattributed === prev.unattributed &&
     prev.total === next.total
   ) {
+    hudRenderStabilitySwitch.reuses++;
     return prev;
   }
 

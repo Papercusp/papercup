@@ -543,6 +543,7 @@ describe('release:checkpoint-run', () => {
       unknown: [],
       paths: [],
       excludedCommitsTouchingYourFiles: [],
+      testImplSplitRisk: { detected: false, includedTests: [], missingImpl: [] },
       warning: '⚠ THIS RUN WILL NOT SEE 1 of your file(s). A RED from it is NOT evidence your change failed.',
     });
 
@@ -574,6 +575,7 @@ describe('release:checkpoint-run', () => {
       unknown: [],
       paths: [],
       excludedCommitsTouchingYourFiles: [],
+      testImplSplitRisk: { detected: false, includedTests: [], missingImpl: [] },
       warning: null,
     });
 
@@ -594,6 +596,7 @@ describe('release:checkpoint-run', () => {
       unknown: [],
       paths: [],
       excludedCommitsTouchingYourFiles: [],
+      testImplSplitRisk: { detected: false, includedTests: [], missingImpl: [] },
       warning: null,
     });
 
@@ -629,6 +632,7 @@ describe('release:checkpoint-run', () => {
       unknown: [],
       paths: [],
       excludedCommitsTouchingYourFiles: [],
+      testImplSplitRisk: { detected: false, includedTests: [], missingImpl: [] },
       warning: '⚠ the in-flight run cannot see mine.ts',
     }));
     vi.doMock('../../release-checkpoint-launch', async (orig) => ({

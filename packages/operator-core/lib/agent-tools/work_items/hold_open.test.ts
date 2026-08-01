@@ -61,6 +61,17 @@ describe('work_items:hold_open clear — claim-hold ownership gate', () => {
     expect(setWorkItemClaimHold).toHaveBeenCalledWith('WI-9', false, { harness: 'papercup' });
   });
 
+  it('WI-6746: an unreadable item reports a READ FAILURE, never "not found"', async () => {
+    // A caller placing or clearing a HOLD who is told "not found" re-files or re-creates
+    // the item; one told the read failed retries. Same null, opposite correct action.
+    getWorkItem.mockRejectedValue(new Error('connection terminated unexpectedly'));
+    const out = await call({ id: 'WI-9', clear: true });
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('work_item_unreadable');
+    expect(out.error).not.toMatch(/not found/i);
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+  });
+
   it('refuses to clear a PEER\'s held_open lease without force (pre-existing behavior)', async () => {
     getWorkItem.mockResolvedValue(itemWith({ _claimHold: true, held_open_by: 'peer', held_open_reason: 'reviewing' }));
     const out = await call({ id: 'WI-9', clear: true });

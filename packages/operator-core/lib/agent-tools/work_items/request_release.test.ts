@@ -54,6 +54,19 @@ describe('work_items:request_release', () => {
     expect(setWorkItemReleaseRequest).not.toHaveBeenCalled();
   });
 
+  it('WI-6746: an unreadable item reports a READ FAILURE, never "not found"', async () => {
+    // getWorkItem returns null only for a zero-row result — it never catches, so a PG
+    // fault throws. Rendering that as "not found" tells the caller their item is gone
+    // and sends them to re-file rather than retry.
+    getWorkItem.mockRejectedValue(new Error('connection terminated unexpectedly'));
+    const out = await call({ id: 'WI-9', deadlineSec: 3600, onSilence: 'reclaim', reason: 'orphaned' });
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('work_item_unreadable');
+    expect(out.error).toMatch(/connection terminated/);
+    expect(out.error).not.toMatch(/not found/i);
+    expect(setWorkItemReleaseRequest).not.toHaveBeenCalled();
+  });
+
   it('unclaimed item → not_held (nothing to request)', async () => {
     getWorkItem.mockResolvedValue(itemWith(null));
     const out = await call({ id: 'WI-9', deadlineSec: 3600, onSilence: 'reclaim', reason: 'orphaned' });

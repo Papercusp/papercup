@@ -64,6 +64,14 @@ describe('work_items:decline_release_request', () => {
     expect(out).toMatchObject({ ok: false, error: "work_item 'WI-9' not found" });
   });
 
+  it('WI-6746: an unreadable item reports a READ FAILURE, never "not found"', async () => {
+    getWorkItem.mockRejectedValue(new Error('statement timeout'));
+    const out = await call({ id: 'WI-9' });
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('work_item_unreadable');
+    expect(out.error).not.toMatch(/not found/i);
+  });
+
   it('you are not the current holder → not_holder', async () => {
     getWorkItem.mockResolvedValue(itemWith('someone-else', pendingPayload()));
     const out = await call({ id: 'WI-9' });

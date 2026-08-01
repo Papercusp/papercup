@@ -19,10 +19,12 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { buildMemoryContextBlockMock, consumePendingControlTransitionMock } = vi.hoisted(() => ({
-  buildMemoryContextBlockMock: vi.fn(),
-  consumePendingControlTransitionMock: vi.fn(),
-}));
+const { buildMemoryContextBlockMock, consumePendingControlTransitionMock, detectHarnessSlugSyncMock } =
+  vi.hoisted(() => ({
+    buildMemoryContextBlockMock: vi.fn(),
+    consumePendingControlTransitionMock: vi.fn(),
+    detectHarnessSlugSyncMock: vi.fn(),
+  }));
 
 // Same relative specifiers the source's dynamic imports use (this test is
 // colocated under routes/agent-mcp/).
@@ -34,6 +36,9 @@ vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u
 vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   consumePendingControlTransition: consumePendingControlTransitionMock,
   renderControlTransitionContext: (t: unknown) => `CTRL:${String((t as { kind?: string }).kind)}`,
+}));
+vi.mock('../../../memory/detect-harness-slug', () => ({
+  detectHarnessSlugSync: detectHarnessSlugSyncMock,
 }));
 
 import routes from './turn-start-memory';

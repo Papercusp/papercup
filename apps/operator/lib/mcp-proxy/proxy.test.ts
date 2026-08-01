@@ -152,9 +152,9 @@ function freePort(): Promise<number> {
     });
   });
 }
-function request(p: number, body = '{"jsonrpc":"2.0"}'): Promise<{ status: number; body: string }> {
+function request(p: number, body = '{"jsonrpc":"2.0"}', path = '/api/mcp'): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const r = http.request({ host: '127.0.0.1', port: p, method: 'POST', path: '/api/mcp' }, (res) => {
+    const r = http.request({ host: '127.0.0.1', port: p, method: 'POST', path }, (res) => {
       let b = '';
       res.on('data', (d) => (b += d));
       res.on('end', () => resolve({ status: res.statusCode ?? 0, body: b }));

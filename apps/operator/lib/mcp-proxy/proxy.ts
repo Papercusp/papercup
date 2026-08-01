@@ -458,6 +458,56 @@ function forwardOnce(
   });
 }
 
+/**
+ * EI-19294517824914302 — a CHEAP REPEATING BEAT must not inherit the restart-sized retry
+ * window. This is the single highest-volume failure path on the box, and the cause is a
+ * classifier gap, not a bug in either layer on its own.
+ *
+ * `prepareForward` classifies by MCP BATCH SHAPE: a POST whose JSON body contains no
+ * `tools/call` is 'idempotent' (proxy.ts's `calls.length === 0` branch). That rule was
+ * written for the MCP control-plane handshake — initialize / tools/list / ping — where a
+ * long retry window is exactly right: a client fetches the tool catalog ONCE per session,
+ * so losing that one request costs a multi-hour agent its whole tool plane (WI-6740).
+ *
+ * But a plain REST beat like bootstrap-su/heartbeat is not an MCP batch at all. It has no
+ * `tools/call`, so it falls through the same branch and silently inherits a budget sized to
+ * outlast a full :3070 restart. Its own handler deliberately returns a SOFT 503 —
+ * "the launcher treats any failure as a missed beat, never an error loop"
+ * (routes/agent-mcp/bootstrap-su.ts) — and the proxy, which cannot see that intent, turns
+ * that one shrug into ~30 attempts over 27-42s.
+ *
+ * MEASURED 2026-08-01: 13,330 of 13,754 proxy failures in 90 minutes were this ONE path
+ * (97%), with SUCCESSES recording `attempts:30, elapsedMs:42361`. With ~140 agents beating
+ * every ~60s, transient upstream slowness is multiplied ~30x on the hottest path in the
+ * system, which sustains the slowness that caused it — a textbook metastable retry storm.
+ *
+ * The asymmetry is the whole point, and it mirrors WI-6740's: retry the ONE-SHOT handshake
+ * generously (losing it is session-fatal, replaying is free), but retry a beat that repeats
+ * every ~60s barely at all (the next one is already on its way, and replaying it is what
+ * causes the storm). Fix at the CLASSIFIER — never by making the endpoint lie about its
+ * status code.
+ */
+export const CHEAP_REPEATING_BEAT_PATHS: readonly string[] = [
+  '/api/agent-mcp/console/bootstrap-su/heartbeat',
+  '/api/admin/owner-presence/touch',
+];
+
+/** Retry budget for a cheap repeating beat: one prompt re-attempt, then give up and let the
+ *  NEXT beat carry the liveness signal. Deliberately far below `retryWindowMs`. */
+export const CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS = 2000;
+
+/** True when `url` is a high-frequency liveness beat whose replacement is already scheduled. */
+export function isCheapRepeatingBeat(url: string): boolean {
+  const path = (url.split('?')[0] ?? '').replace(/\/+$/, '');
+  return CHEAP_REPEATING_BEAT_PATHS.includes(path);
+}
+
+/** The retry window this REQUEST gets — the restart-sized default, unless it is a cheap
+ *  repeating beat, which must fail fast rather than amplify (EI-19294517824914302). */
+export function effectiveRetryWindowMs(url: string, windowMs: number): number {
+  return isCheapRepeatingBeat(url) ? Math.min(CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS, windowMs) : windowMs;
+}
+
 /** Build the proxy HTTP server (does NOT listen — caller invokes .listen, or use
  *  startMcpProxy). Exposed for tests (drive it against a stub upstream). */
 export function createMcpProxy(opts: McpProxyOptions): http.Server {
@@ -512,6 +562,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         const absorb429 = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 !== '0';
         const absorbBoot = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT !== '0';
         const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, genKey: randomUUID });
+        // EI-19294517824914302: a cheap repeating beat fails fast instead of burning the
+        // restart-sized window (~30 attempts) and amplifying a transient stall ~30x.
+        const retryWindowMs = effectiveRetryWindowMs(req.url ?? '/', opts.retryWindowMs);
         const started = Date.now();
         let attempts = 0;
         let postConnectRetries = 0;
@@ -551,7 +604,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             const bootAbsorbable = req.method === 'POST' && BOOT_WINDOW_STATUSES.has(status) && absorbBoot;
             if (
               ((isBackpressureStatus(status) && absorb429) || bootAbsorbable) &&
-              backpressureRetryable(backpressureRetries, MAX_BACKPRESSURE_RETRIES, elapsed, opts.retryWindowMs)
+              backpressureRetryable(backpressureRetries, MAX_BACKPRESSURE_RETRIES, elapsed, retryWindowMs)
             ) {
               backpressureRetries++;
               const waitMs = retryAfterMs(ures.headers['retry-after'], backoff, MAX_BACKPRESSURE_WAIT_MS);
@@ -580,7 +633,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           last = outcome;
           if (!outcome.connected) {
             // Refused / pre-connect: the request provably never reached :3070 → always safe to replay.
-            if (shouldRetry(false, elapsed, opts.retryWindowMs)) {
+            if (shouldRetry(false, elapsed, retryWindowMs)) {
               await new Promise((r) => setTimeout(r, backoff));
               continue;
             }
@@ -593,7 +646,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           if (
             outcome.timedOut &&
             handshakeTimeoutRetryable(
-              fwd.klass, handshakeTimeoutRetries, MAX_HANDSHAKE_TIMEOUT_RETRIES, elapsed, opts.retryWindowMs,
+              fwd.klass, handshakeTimeoutRetries, MAX_HANDSHAKE_TIMEOUT_RETRIES, elapsed, retryWindowMs,
             )
           ) {
             handshakeTimeoutRetries++;
@@ -602,7 +655,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             continue;
           }
           // Post-connect failure: replay ONLY an idempotent or server-keyed request, bounded.
-          if (postConnectRetryable(fwd.klass, postConnectRetries, MAX_POST_CONNECT_RETRIES, elapsed, opts.retryWindowMs)) {
+          if (postConnectRetryable(fwd.klass, postConnectRetries, MAX_POST_CONNECT_RETRIES, elapsed, retryWindowMs)) {
             postConnectRetries++;
             record({ kind: 'post_connect_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, elapsedMs: elapsed, detail: String(outcome.err?.message ?? '') });
             await new Promise((r) => setTimeout(r, backoff));
@@ -618,7 +671,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             error: refused ? 'mcp_proxy_upstream_unavailable' : 'mcp_proxy_upstream_error',
             detail: String(last?.err?.message ?? last?.err ?? 'unknown'),
             attempts,
-            windowMs: opts.retryWindowMs,
+            windowMs: retryWindowMs,
             note: refused
               ? ':3070 refused connections for the whole retry window (restart took too long or is down)'
               : fwd.klass === 'opaque'

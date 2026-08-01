@@ -53,6 +53,23 @@ beforeEach(() => {
 });
 
 describe('work_items:park', () => {
+  it('WI-6746: an unreadable item refuses rather than saving under a guessed harness', async () => {
+    // park exists to SAVE state, so the worst outcome is a silent loss. With the read
+    // swallowed, an unresolvable item fell back to the caller's harness HINT — a different
+    // key namespace, which reads back null forever (the EI-8805 loss mode) while still
+    // reporting ok. Refusing keeps the text in the caller's hands, where it can be retried.
+    getWorkItem.mockRejectedValue(new Error('connection terminated unexpectedly'));
+    const ctx = { uiClientId: 'a1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup' };
+    const out = await call({ id: 'WI-7', checkpoint: 'state I cannot afford to lose', reason: 'redirect' }, ctx);
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('work_item_unreadable');
+    expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    // Must not be reported as a harness-resolution problem — passing { harness } cannot
+    // fix an unhealthy database, and following that remedy is what wrote to the wrong key.
+    expect(out.error).not.toMatch(/could not resolve a harness/);
+  });
+
   it('persists the checkpoint under a concrete workspace for an ordinary scoped session', async () => {
     const ctx = { uiClientId: 'a1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup' };
     const out = await call({ id: 'WI-7', checkpoint: 'did x; left y for continuity', reason: 'redirect' }, ctx);
