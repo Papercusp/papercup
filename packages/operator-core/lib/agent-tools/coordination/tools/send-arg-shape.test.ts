@@ -198,4 +198,45 @@ describe('WI-6522 — regression pins that must not be traded away', () => {
       sendTool.args.safeParse({ items: [{ to: ['peer'], summary: 'hi', expects: 'none' }] }).success,
     ).toBe(true);
   });
+
+  // P-013 — expectEffect. The schema is the ONLY place an uninterpretable expectation
+  // can be stopped: once stamped on the envelope it is read back by a probe that must
+  // either produce a verdict or skip the row, and a silently-skipped expectation is
+  // indistinguishable from "the leader never asked".
+  describe('expectEffect (P-013)', () => {
+    const base = { to: ['peer'], summary: 'hi', expects: 'action' as const, body: [{ text: 'x', forYouBecause: { relation: 'other', note: 'y' } }] };
+
+    it('accepts each declared effect kind on the single form', () => {
+      for (const kind of ['checkpoint', 'claim-release', 'terminal']) {
+        expect(sendTool.args.safeParse({ ...base, expectEffect: { kind, itemId: 'WI-1' } }).success).toBe(true);
+      }
+    });
+
+    it('accepts it on an items[] entry too — the two axes must not diverge', () => {
+      expect(
+        sendTool.args.safeParse({
+          items: [{ ...base, expectEffect: { kind: 'checkpoint', itemId: 'WI-1' } }],
+        }).success,
+      ).toBe(true);
+    });
+
+    it('REFUSES an unrecognised kind', () => {
+      expect(sendTool.args.safeParse({ ...base, expectEffect: { kind: 'lock-taken', itemId: 'WI-1' } }).success).toBe(false);
+    });
+
+    it('REFUSES a missing or empty itemId — an effect with no subject is unverifiable', () => {
+      expect(sendTool.args.safeParse({ ...base, expectEffect: { kind: 'checkpoint' } }).success).toBe(false);
+      expect(sendTool.args.safeParse({ ...base, expectEffect: { kind: 'checkpoint', itemId: '' } }).success).toBe(false);
+    });
+
+    it('REFUSES an unknown key (.strict) rather than silently ignoring it', () => {
+      expect(
+        sendTool.args.safeParse({ ...base, expectEffect: { kind: 'checkpoint', itemId: 'WI-1', by: 'soon' } }).success,
+      ).toBe(false);
+    });
+
+    it('stays entirely OPTIONAL — every existing send shape is unaffected', () => {
+      expect(sendTool.args.safeParse({ to: ['peer'], summary: 'hi', expects: 'none' }).success).toBe(true);
+    });
+  });
 });

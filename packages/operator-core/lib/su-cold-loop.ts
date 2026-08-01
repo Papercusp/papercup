@@ -153,6 +153,15 @@ function coldNoteStamp(ms: number): string {
   return `${new Date(ms).toISOString().slice(5, 19)}Z`;
 }
 
+/**
+ * How far a turn-completion must fall AFTER the carry-note write before the cold wake
+ * calls it un-checkpointed work (EI-19294445744419497). Sized to clear the mechanical
+ * "checkpoint, then end the turn" tail (seconds) without needing the gap to be dramatic
+ * — the live near-miss that motivated this had a 37-minute gap, and the cases that
+ * actually burn an agent are minutes-to-hours, never seconds.
+ */
+const COLD_NOTE_POST_TURN_FLOOR_MS = 5 * 60_000;
+
 /** Human-readable elapsed span (mirrors loop-fire.ts's humanAge). Pure. */
 function coldNoteAge(ms: number): string {
   if (ms < 90_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
@@ -211,6 +220,7 @@ export function renderColdWakeInjection(
   extras?: string,
   wakeCount?: number,
   updatedAtMs?: number | null,
+  lastTurnAtMs?: number | null,
 ): string {
   const note = (carryNote ?? '').trim();
   const extraBlock = (extras ?? '').trim();
@@ -223,10 +233,38 @@ export function renderColdWakeInjection(
       'for your most recent work, this note is likely a STALE/superseded snapshot: reconcile against live state (your ' +
       'held work-items via work_items:get, your latest loop:checkpoint) before trusting the note below as your current task.'
     : null;
+  // EI-19294445744419497: the OBJECTIVE staleness signal, as opposed to the subjective
+  // age heuristic above ("older than you would expect" — a judgement the successor has
+  // to make with no baseline, and which was live-dismissed once because 2h merely
+  // *looked* plausible). A turn that COMPLETED after the note was written is proof that
+  // work happened which the note cannot describe, because the note is only rewritten by
+  // loop:checkpoint. That is decidable from data the successor still has: its transcript
+  // is gone, but the turn-completion marker survives server-side (last_turn_at), which
+  // is why the `wakeCount` doc's "relies on tool calls it no longer has" reasoning does
+  // NOT apply here — this check runs at compose time, not in the successor's head.
+  const hasTurn = typeof lastTurnAtMs === 'number' && Number.isFinite(lastTurnAtMs) && lastTurnAtMs > 0;
+  // The turn that WRITES the checkpoint necessarily ends after it, so a bare `>` would
+  // fire on every cold wake and train the reader to skip it. The floor separates that
+  // mechanical same-turn tail from genuine post-note work. Note the semantics deliberately
+  // do NOT require a SUBSEQUENT turn: an agent that checkpointed and then kept working for
+  // another 20 minutes in the SAME turn has also left the note behind, and that is a true
+  // positive worth flagging, not a false one.
+  const postNoteMs = hasTurn && hasStamp ? lastTurnAtMs! - updatedAtMs! : 0;
+  const staleWorkLine =
+    postNoteMs >= COLD_NOTE_POST_TURN_FLOOR_MS
+      ? `⚠⚠ UN-CHECKPOINTED WORK EXISTS: you completed a turn at [${coldNoteStamp(lastTurnAtMs!)}] — ` +
+        `~${coldNoteAge(postNoteMs)} AFTER this note was written. The note is refreshed ONLY by ` +
+        'loop:checkpoint, so it does NOT describe that work, and its "Next action" may ALREADY BE DONE ' +
+        'or have been superseded by it. Before executing that action, VERIFY IT IS STILL NEEDED against ' +
+        'live state — read the code/work-item it names and check whether the thing already exists. ' +
+        'Re-implementing finished work is the specific failure this warns about. Recover what you did with ' +
+        "sessions:timeline { owner:'self', since:'<the note write-time above>' }."
+      : null;
   return [
     `❄️ COLD LOOP WAKE${fireTag} — your context was just reset to your carry-note. Your prior transcript is GONE;`,
     'the note below IS your continuity — treat it as your working state and continue from its "Next action".',
     ...(writeAgeLine ? [writeAgeLine] : []),
+    ...(staleWorkLine ? [staleWorkLine] : []),
     ...(fireTag
       ? [
           'If you can see ANY tool calls or turns from AFTER this fire number in what looks like your own transcript, ' +

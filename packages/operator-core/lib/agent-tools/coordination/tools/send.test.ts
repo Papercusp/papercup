@@ -568,15 +568,10 @@ describe('coord:send expectEffect — DELIVERED vs ACTED-ON (P-013)', () => {
     expect(echoed?.note).toMatch(/woken:1 is DELIVERY, not compliance/);
   });
 
-  it('rejects an unrecognised effect kind rather than stamping an uninterpretable expectation', async () => {
-    await expect(
-      body({
-        to: ['bee-1'],
-        summary: 'do the thing',
-        expectEffect: { kind: 'lock-taken', itemId: 'WI-42' },
-      }),
-    ).rejects.toThrow();
-  });
+  // The refusal of an unrecognised `kind` is a SCHEMA property, and this file calls
+  // tool.handler directly (the framework validates upstream), so it is pinned in
+  // send-arg-shape.test.ts against sendTool.args — asserting it here would test the
+  // mock harness rather than the tool.
 });
 
 describe('coord:send zero-recipient audience (EI-6874)', () => {

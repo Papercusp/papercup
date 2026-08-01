@@ -1584,6 +1584,7 @@ export default defineTool({
             allHive: args.allHive,
             asAuthority: args.asAuthority,
             report: args.report,
+            expectEffect: args.expectEffect,
           },
         ];
     // fleet-scoped-broadcast-default: resolve the sender's fleet ONCE (only when a

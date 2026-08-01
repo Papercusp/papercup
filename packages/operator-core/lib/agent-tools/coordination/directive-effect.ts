@@ -301,7 +301,7 @@ export async function fetchDirectiveActuations(
         FROM harness_shared.work_items wi
        WHERE wi.workspace_id = ${ws}
          AND wi.feature_id = ANY(${ids}::text[])`;
-    byKey = new Map(rows.map((r) => [`${r.harness_slug} ${r.feature_id}`, r]));
+    byKey = new Map(rows.map((r) => [`${r.harness_slug}\x00${r.feature_id}`, r]));
   } catch {
     return specs.map((s) => resolveDirectiveEffect(s, null, s.sentAtMs));
   }
@@ -313,7 +313,7 @@ export async function fetchDirectiveActuations(
 
   return specs.map((s) => {
     const harness = s.harness == null || s.harness === '' || s.harness === '*' ? null : s.harness;
-    const row = (harness ? byKey.get(`${harness} ${s.itemId}`) : undefined) ?? byId.get(s.itemId) ?? null;
+    const row = (harness ? byKey.get(`${harness}\x00${s.itemId}`) : undefined) ?? byId.get(s.itemId) ?? null;
     return resolveDirectiveEffect(s, row, s.sentAtMs);
   });
 }

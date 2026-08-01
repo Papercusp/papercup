@@ -149,8 +149,10 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
       filePath: 'lib/x.test.ts',
       status: 'fail' as const,
       durationMs: 10,
-      startedAt: new Date().toISOString(),
-      finishedAt: new Date().toISOString(),
+      // HarnessTestFileRow types these as Date, not string — vitest never typechecks, so
+      // the ISO-string form passed here read as green locally and only surfaced at tsc.
+      startedAt: new Date(),
+      finishedAt: new Date(),
       outputTail: null,
     },
   ];

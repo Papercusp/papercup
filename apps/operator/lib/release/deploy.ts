@@ -404,9 +404,19 @@ export async function executeDeploy(
           ? ` ⚠️ memory recall canary DEGRADED post-deploy (r@10=${canary.rAt10 ?? '—'}, zeroHitRate=${canary.zeroHitRate ?? '—'}) — report-only, deploy not blocked; investigate before the next scheduled tick.`
           : '';
 
+      // EI-18798501894652068: the human-readable "N migration(s)" count below must
+      // come from the SAME array the payload serialises (`plan.migrations`, the
+      // staged/git-diff list) — never from `migrations.appliedCount`, which counts
+      // only what THIS migrate() invocation newly applied and can legitimately be
+      // LOWER (e.g. 0) when a prior deploy attempt already applied them, even though
+      // this deploy still carries them and a reader deciding whether to run
+      // db:check_drift needs to see that. A summary and a payload disagreeing about
+      // one deploy is worse than either being terse: the summary is what gets read,
+      // so it must never undercount what the payload (correctly) lists.
+      const migrationCount = plan.migrations.length;
       await step('broadcast', () =>
         deps.broadcast(
-          `✅ deployed ${short(plan.targetSha)} (${plan.commits.length} commit(s), ${migrations!.appliedCount} migration(s))${canaryNote ? ' ⚠️ memory canary degraded' : ''}`,
+          `✅ deployed ${short(plan.targetSha)} (${plan.commits.length} commit(s), ${migrationCount} migration(s))${canaryNote ? ' ⚠️ memory canary degraded' : ''}`,
           `Release gate: advanced release checkout ${short(prevReleaseSha)} → ${short(plan.targetSha)}. ` +
             `Staged migrations: ${plan.migrations.join(', ') || 'none'}.${canaryNote}`,
         ),

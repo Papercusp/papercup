@@ -16,6 +16,7 @@ import {
   deriveLoopMonitorState,
   decorateContextPressure,
   decorateUnansweredDirected,
+  decorateDirectiveActuation,
   decorateCoordDeafness,
   filterActiveCoverage,
   COVERAGE_ACTIVE_WINDOW_MS,
@@ -31,6 +32,7 @@ import type { WakeMode } from '../coordination/wake-mode';
 import type { SessionState, WakeabilitySignals } from '../coordination/presence-wakeability';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
 import type { UnansweredDirectedSummary } from '../coordination/unanswered-directed';
+import type { DirectiveActuationSummary } from '../coordination/directive-effect';
 import type { LoopStatus } from '../../harness/routines/loop';
 
 function baseAgent(overrides: Partial<AgentAssignment> = {}): AgentAssignment & {
@@ -667,6 +669,60 @@ describe('decorateUnansweredDirected — P-007 (fleet-reliability-verification-2
   it('empty agent list is a no-op that never calls the fetcher', async () => {
     let called = false;
     await decorateUnansweredDirected([], async () => {
+      called = true;
+      return new Map();
+    });
+    expect(called).toBe(false);
+  });
+});
+
+describe('decorateDirectiveActuation — P-013 (fleet-leadership-continuity-and-actuation)', () => {
+  const summary: DirectiveActuationSummary = {
+    total: 2,
+    satisfied: 1,
+    notYet: 1,
+    unprovable: 0,
+    outstanding: ['✗ NOT ACTED ON — expected `checkpoint` on WI-9: no checkpoint has ever been written for WI-9.'],
+  };
+
+  it('stamps the fetched summary per agent (injected fetcher)', async () => {
+    const agents = [baseAgent({ agentId: 'a1' }), baseAgent({ agentId: 'a2' })];
+    await decorateDirectiveActuation(agents, 'leader-1', async () => new Map([['a1', summary]]));
+    expect((agents[0] as { directives?: DirectiveActuationSummary }).directives).toEqual(summary);
+    expect((agents[1] as { directives?: DirectiveActuationSummary }).directives).toBeUndefined();
+  });
+
+  it('scopes the read to the CALLER as sender — a leader is accountable for its own directives', async () => {
+    let seen: { fromId?: string } | undefined;
+    await decorateDirectiveActuation([baseAgent({ agentId: 'a1' })], 'leader-1', async (_ids, opts) => {
+      seen = opts;
+      return new Map();
+    });
+    expect(seen).toEqual({ fromId: 'leader-1' });
+  });
+
+  it('omits fromId entirely when the caller is unresolved, rather than sending an empty sender', async () => {
+    let seen: { fromId?: string } | undefined;
+    await decorateDirectiveActuation([baseAgent({ agentId: 'a1' })], undefined, async (_ids, opts) => {
+      seen = opts;
+      return new Map();
+    });
+    expect(seen).toEqual({});
+  });
+
+  it('NEVER stamps a zeroed block — no expectations means no field, not "complied with nothing"', async () => {
+    const agents = [baseAgent({ agentId: 'a1' })];
+    await decorateDirectiveActuation(
+      agents,
+      'leader-1',
+      async () => new Map([['a1', { total: 0, satisfied: 0, notYet: 0, unprovable: 0, outstanding: [] }]]),
+    );
+    expect((agents[0] as { directives?: DirectiveActuationSummary }).directives).toBeUndefined();
+  });
+
+  it('empty agent list is a no-op that never calls the fetcher', async () => {
+    let called = false;
+    await decorateDirectiveActuation([], 'leader-1', async () => {
       called = true;
       return new Map();
     });

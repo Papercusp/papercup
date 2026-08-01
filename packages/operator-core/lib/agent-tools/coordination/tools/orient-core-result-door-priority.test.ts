@@ -154,3 +154,84 @@ describe('EI-18689334534773965: coord:orient core result (me/claimable/inbox) su
     expect(kept).not.toContain(ME_MARKER); // the defect EI-18689334534773965 reported
   });
 });
+
+/** A LEADER's fleet briefing is the same class of defect as the core result above,
+ *  and it bit a live leader on 2026-08-01: `me.summary.agents` counts only resolved
+ *  PRESENCE (self, on a monitor tick), so a leader whose `leaderBrief` was spilled
+ *  reads `agents: 1` and concludes the whole fleet is dead. Two consecutive wakes
+ *  reported "my 11-member fleet is gone" while the spilled tail of that very orient
+ *  said `members: 11, dead: 0`.
+ *
+ *  EI-19282566865609166 had already fixed the FOLD (monitor OR afterCompaction) but
+ *  left the assembled key in `resultRest` — dead last — so on a trimmed payload tier
+ *  the door ate it anyway. Fold-enabled and never-delivered are indistinguishable to
+ *  the reader, which is why folding it is not sufficient on its own. */
+describe('leaderBrief survives the result-door for a fleet leader under a large preamble', () => {
+  const LEADER_BRIEF_MARKER = 'LEADER-BRIEF-MEMBERS-CANARY';
+
+  function leaderResult() {
+    return {
+      ok: true,
+      me: ME_MARKER,
+      claimable: [],
+      inbox: { summary: {}, recent: [] },
+      leaderBrief: {
+        ok: true,
+        summary: { fleet: 'f', members: 11, dead: 0, note: LEADER_BRIEF_MARKER },
+      },
+      memory: { hits: ['DISCRETIONARY-TAIL-SHOULD-SPILL'.repeat(200)] },
+    };
+  }
+
+  it('is present in the KEPT text, not only the spill', () => {
+    const out = assembleOrientOutput({
+      self: { ownerId: 'su-test' },
+      result: leaderResult(),
+      ...bigPreamble('preamble'),
+    });
+
+    const doored = doorify(out);
+    expect(doored.content).toHaveLength(2); // truncation DID occur — the door was exercised
+    const kept = (doored.content[0] as { text: string }).text;
+    expect(kept).toContain(LEADER_BRIEF_MARKER);
+  });
+
+  it('regression guard: with leaderBrief left in the result tail (the pre-fix shape), it is lost to the spill', () => {
+    // Proves this suite discriminates the bug rather than passing vacuously.
+    const preamble = bigPreamble('preamble');
+    const preFixOrder = {
+      self: { ownerId: 'su-test' },
+      ok: true,
+      me: ME_MARKER,
+      claimable: [],
+      inbox: { summary: {}, recent: [] },
+      ownerDirectives: preamble.ownerDirectives,
+      instructionPrecedence: preamble.instructionPrecedence,
+      taskToolSchemaPack: preamble.taskToolSchemaPack,
+      // <- pre-fix: leaderBrief rode `resultRest`, spread after every preamble leg.
+      leaderBrief: { ok: true, summary: { members: 11, dead: 0, note: LEADER_BRIEF_MARKER } },
+    };
+
+    const doored = doorify(preFixOrder);
+    const kept = (doored.content[0] as { text: string }).text;
+    expect(kept).not.toContain(LEADER_BRIEF_MARKER);
+  });
+
+  it('a FAILED fold (leaderBrief: null) stays distinguishable from "not a leader" (key absent)', () => {
+    // `null` means "I tried and could not tell you"; absent means "not applicable".
+    // A truthiness spread would collapse both to absent and silently recreate the
+    // exact ambiguity this fix removes.
+    const withNull = assembleOrientOutput({
+      self: { ownerId: 'su-test' },
+      result: { ok: true, me: ME_MARKER, leaderBrief: null },
+    });
+    expect('leaderBrief' in withNull).toBe(true);
+    expect(withNull.leaderBrief).toBeNull();
+
+    const notALeader = assembleOrientOutput({
+      self: { ownerId: 'su-test' },
+      result: { ok: true, me: ME_MARKER },
+    });
+    expect('leaderBrief' in notALeader).toBe(false);
+  });
+});
