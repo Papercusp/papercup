@@ -1214,3 +1214,70 @@ describe('basedOn — the sender’s read trace, derived (never authored)', () =
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
   });
 });
+
+/**
+ * P-011 / WI-6731 — premise stamps reach the envelope.
+ *
+ * `premisesClassified` (the syntactic half) has ridden the envelope since
+ * 2026-07-27 while `resolvePremiseStamps` sat with ZERO production callers —
+ * the "mechanism with no consumer" defect this plan has now found three times.
+ * What is pinned here is therefore the WIRING specifically: that the resolver is
+ * actually invoked from the send path and that its verdict reaches the envelope
+ * the seam persists. Unit-testing the resolver again would not have caught the
+ * thing that was actually wrong for five days.
+ */
+describe('premiseStamps — the resolved half of `premises`, stamped at send', () => {
+  const withPremises = [
+    { text: 'the substance', premises: ['WI-6502#completion', 'plan-x#D-001'] },
+  ];
+
+  it('resolves the cited refs and rides the envelope the send seam persists', async () => {
+    const stamps = [
+      { ref: 'WI-6502#completion', kind: 'work-item-completion', invalidatable: true, status: 'broken' },
+    ];
+    premiseM.mockResolvedValue(stamps as never);
+    await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: withPremises });
+
+    expect(premiseM).toHaveBeenCalledTimes(1);
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.premiseStamps).toEqual(stamps);
+  });
+
+  it('FLATTENS refs across sections into one pass, so a ref cited twice is probed once', async () => {
+    await body({
+      to: ['bee-1'],
+      summary: 'hi',
+      expects: 'action',
+      body: [
+        { text: 'one', premises: ['WI-1#completion'] },
+        { text: 'two', premises: ['WI-1#completion', 'WI-2#completion'] },
+      ],
+    });
+    // De-dup itself belongs to the resolver; what the seam owes is handing it
+    // every ref in ONE call rather than one call per section.
+    expect(premiseM).toHaveBeenCalledTimes(1);
+    expect(premiseM.mock.calls[0]![0]).toEqual(['WI-1#completion', 'WI-1#completion', 'WI-2#completion']);
+  });
+
+  it('does not call the resolver at all when no section cites a premise', async () => {
+    await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: [{ text: 'no premises here' }] });
+    expect(premiseM).not.toHaveBeenCalled();
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).not.toHaveProperty('premiseStamps');
+  });
+
+  it('leaves the envelope BYTE-IDENTICAL when every premise resolves to nothing worth stamping', async () => {
+    premiseM.mockResolvedValue([] as never);
+    await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: withPremises });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).not.toHaveProperty('premiseStamps');
+  });
+
+  it('never fails a send when the resolver blows up — a stamp must not eat a message', async () => {
+    premiseM.mockRejectedValue(new Error('pg is down') as never);
+    const b = await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: withPremises });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).not.toHaveProperty('premiseStamps');
+  });
+});

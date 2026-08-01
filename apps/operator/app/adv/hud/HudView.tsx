@@ -498,7 +498,12 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      class of renders where session data did NOT change — work-item/plan data
      arriving, entity-search typing, opening/closing the chat modal, switching
      tabs — which currently re-render every session card for nothing.
-     hud-render-stability.test.tsx pins this; do not inline it back. */
+
+     Pinned by hud-render-stability.test.tsx: the memo BEHAVIOUR is proven by
+     rendering HudBoard (including the failure direction — a changing onOpen
+     identity re-renders every card), and this call site is held by a structural
+     guard in the same file, because HudView itself has no render harness. Do
+     not inline it back. */
   const onOpenSession = useCallback((ownerId: string) => void setOpenOwner(ownerId), [setOpenOwner]);
 
   const entityView =
