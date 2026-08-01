@@ -42,11 +42,27 @@ vi.mock('node:os', async () => {
 // Safe to mock at module level: the HEADED path never touches console-spawn (it
 // uses terminal-spawn), so the existing suite above is unaffected.
 const { spawnHeadlessMock, buildConsoleEnvelopeMock } = vi.hoisted(() => ({
-  spawnHeadlessMock: vi.fn(async (_opts: unknown) => ({
-    status: 'ok' as const,
-    pid: 5150,
-    terminal: 'headless (log: /tmp/x.log)',
-  })),
+  // The return type is declared (rather than inferred from the happy-path
+  // literal) so the failure test below can `mockResolvedValueOnce` an error
+  // result. Inference would pin `status` to `'ok'` and reject `'error'`.
+  // Deliberately a narrow structural shape, not the real `SpawnConsoleResult`:
+  // that union's `ok` arm also requires `child`/`display`, which this route
+  // never reads, and stubbing them here would assert a coupling that isn't real.
+  spawnHeadlessMock: vi.fn(
+    async (
+      _opts: unknown,
+    ): Promise<{
+      status: 'ok' | 'error';
+      pid?: number | null;
+      terminal?: string;
+      error?: string;
+      code?: number;
+    }> => ({
+      status: 'ok',
+      pid: 5150,
+      terminal: 'headless (log: /tmp/x.log)',
+    }),
+  ),
   buildConsoleEnvelopeMock: vi.fn(async (_opts: unknown) => ({ cwd: '/repo', env: {}, greetingCmd: '' })),
 }));
 vi.mock('../../console-spawn', async (importOriginal) => ({
