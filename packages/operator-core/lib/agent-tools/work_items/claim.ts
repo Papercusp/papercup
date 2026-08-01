@@ -271,7 +271,13 @@ async function claimOne(
       }).catch(() => null),
       planItemClaimCollision(workItem).catch(() => null),
     ]);
-    const priorWork = priorRaw ? { ...priorRaw, hasCheckpoint: hint != null } : null;
+    // WI-6737: `hint` is null for BOTH "no checkpoint exists" and "the checkpoint read threw"
+    // (the .catch above), so it cannot decide `hasCheckpoint` alone — collapsing the failure into
+    // `false` makes priorWorkWarning assert "NO checkpoint was ever written" during an outage.
+    // Re-derive the failure explicitly instead of inferring absence from a swallowed error.
+    const priorWork = priorRaw
+      ? { ...priorRaw, hasCheckpoint: checkpointReadFailed ? ('unknown' as const) : hint != null }
+      : null;
     const priorWorkWarn = priorWorkWarning(priorWork);
     // EI-18654296679612119: a SEPARATE, CONDITIONAL warning — only when the checkpoint text
     // itself cites a background job/task as evidence — rather than growing the EI-529 text

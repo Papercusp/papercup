@@ -158,10 +158,20 @@ export default defineTool({
         // several wakes stale (a compaction summary can claim green while the
         // actual checkpoint write never happened, or vice versa; WI-3578). Mirrors
         // the loop carry-note's getLoopCarryNoteWithMeta shape for the work-item scope.
-        const { checkpoint, updatedAtMs: checkpointUpdatedAtMs } = await getWorkItemCheckpointWithMeta({
+        // WI-6737: the read still fails SOFT (a checkpoint-store blip must never fail the item
+        // read) — but the FAILURE IS NOW RECORDED rather than collapsed into the same `null` a
+        // successful never-checkpointed read produces. Those are different facts: "nothing was
+        // ever written" invites starting fresh, "I could not ask" must not. Conflating them
+        // silently re-created the exact conclusion EI-7252 above added this field to prevent
+        // (a reader wrongly concluding in-flight state was lost) — and worse, fed an emphatic
+        // prose assertion downstream via `hasCheckpoint` (see priorWork below).
+        const checkpointRead = await getWorkItemCheckpointWithMeta({
           harness: workItem.harness,
           workItemId: workItem.id,
-        }).catch(() => ({ checkpoint: null, updatedAtMs: null }));
+        })
+          .then((r) => ({ checkpoint: r.checkpoint, updatedAtMs: r.updatedAtMs, readFailed: false }))
+          .catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true }));
+        const { checkpoint, updatedAtMs: checkpointUpdatedAtMs, readFailed: checkpointReadFailed } = checkpointRead;
         const checkpointAgeMs = checkpointUpdatedAtMs != null ? Math.max(0, Date.now() - checkpointUpdatedAtMs) : null;
         // EI-15184: RELATIVE checkpoint staleness. `checkpointAgeMs` above is
         // ABSOLUTE age ("how old is this snapshot"); it does NOT tell a reader —
@@ -243,7 +253,14 @@ export default defineTool({
           harness: workItem.harness,
           workItemId: workItem.id,
         }).catch(() => null);
-        const priorWork = priorWorkRaw ? { ...priorWorkRaw, hasCheckpoint: (checkpoint ?? '') !== '' } : null;
+        // WI-6737: `'unknown'` when the checkpoint read above FAILED — never `false`, which
+        // priorWorkWarning renders as the categorical "NO checkpoint was ever written".
+        const priorWork = priorWorkRaw
+          ? {
+              ...priorWorkRaw,
+              hasCheckpoint: checkpointReadFailed ? ('unknown' as const) : (checkpoint ?? '') !== '',
+            }
+          : null;
         const priorWorkWarn = priorWorkWarning(priorWork);
         return {
           ok: true as const,
@@ -253,6 +270,9 @@ export default defineTool({
           checkpoint,
           checkpointAgeMs,
           checkpointUpdatedAtMs,
+          // WI-6737: present ONLY on a failed read, so `checkpoint: null` stops being ambiguous
+          // between "never written" and "could not ask". Absent on the ordinary path.
+          ...(checkpointReadFailed ? { checkpointReadFailed: true as const } : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(checkpointFreshness ? { checkpointFreshness } : {}),
           ...(checkpointStale ? { checkpointStale } : {}),

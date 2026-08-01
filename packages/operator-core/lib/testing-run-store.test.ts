@@ -113,3 +113,79 @@ describe('close handler', () => {
     expect(store.getRun(snap.runId)?.status).toBe('cancelled');
   });
 });
+
+describe('computeWorktreeDirty (EI-18795303393201472)', () => {
+  const clean = (commit: string) => ({ commit, porcelain: '' });
+
+  it('same commit, clean porcelain before and after ⇒ not dirty', () => {
+    expect(store.computeWorktreeDirty(clean('abc'), clean('abc'))).toBe(false);
+  });
+
+  it('HEAD moved between snapshots ⇒ dirty (a commit landed mid-run)', () => {
+    expect(store.computeWorktreeDirty(clean('abc'), clean('def'))).toBe(true);
+  });
+
+  it('uncommitted changes to the tested files BEFORE the run ⇒ dirty', () => {
+    expect(store.computeWorktreeDirty({ commit: 'abc', porcelain: ' M file.ts' }, clean('abc'))).toBe(true);
+  });
+
+  it('uncommitted changes to the tested files AFTER the run ⇒ dirty (the torn-read case)', () => {
+    expect(store.computeWorktreeDirty(clean('abc'), { commit: 'abc', porcelain: ' M file.ts' })).toBe(true);
+  });
+
+  it('an unreadable git snapshot (null commit) is treated as dirty, fail-safe', () => {
+    expect(store.computeWorktreeDirty({ commit: null, porcelain: '' }, clean('abc'))).toBe(true);
+    expect(store.computeWorktreeDirty(clean('abc'), { commit: null, porcelain: '' })).toBe(true);
+  });
+
+  it('an unreadable porcelain read (null, git errored) is treated as dirty, fail-safe', () => {
+    expect(store.computeWorktreeDirty({ commit: 'abc', porcelain: null }, clean('abc'))).toBe(true);
+  });
+});
+
+describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
+  const oneRow = () => [
+    {
+      filePath: 'lib/x.test.ts',
+      status: 'fail' as const,
+      durationMs: 10,
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      outputTail: null,
+    },
+  ];
+
+  it('defaults worktree_dirty to false when the caller omits it', async () => {
+    let capturedValues: unknown[] = [];
+    const fakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      capturedValues = values;
+      return Promise.resolve([]);
+    }) as Parameters<Store['persistHarnessTestRuns']>[0]['sql'];
+    await store.persistHarnessTestRuns({
+      harnessSlug: 'papercusp',
+      workspaceId: 'ws',
+      rows: oneRow(),
+      runGroupId: 'g1',
+      sql: fakeSql,
+    });
+    // Last positional value in the INSERT template is worktree_dirty (schema order).
+    expect(capturedValues.at(-1)).toBe(false);
+  });
+
+  it('carries worktree_dirty:true through to the insert when the caller marks the run dirty', async () => {
+    let capturedValues: unknown[] = [];
+    const fakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      capturedValues = values;
+      return Promise.resolve([]);
+    }) as Parameters<Store['persistHarnessTestRuns']>[0]['sql'];
+    await store.persistHarnessTestRuns({
+      harnessSlug: 'papercusp',
+      workspaceId: 'ws',
+      rows: oneRow(),
+      runGroupId: 'g1',
+      worktreeDirty: true,
+      sql: fakeSql,
+    });
+    expect(capturedValues.at(-1)).toBe(true);
+  });
+});

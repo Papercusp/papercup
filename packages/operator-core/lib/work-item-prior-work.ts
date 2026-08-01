@@ -145,7 +145,7 @@ export async function getClaimTimePriorWorkHint(ref: {
       releasedAtMs,
       attempts,
       priorWorkers,
-      hasCheckpoint: ref.hasCheckpoint === true,
+      hasCheckpoint: ref.hasCheckpoint === 'unknown' ? 'unknown' : ref.hasCheckpoint === true,
     };
   } catch {
     return null;
