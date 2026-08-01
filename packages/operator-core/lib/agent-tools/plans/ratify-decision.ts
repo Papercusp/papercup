@@ -144,7 +144,12 @@ export default defineTool({
       async (current): Promise<{ newBody: string | null; value: RatifyDecisionValue }> => {
         if (current === null) return { newBody: null, value: { ok: false, code: 'not_found' } };
         const parsed = parsePlan(current, { filePath: args.slug + '.md' });
-        if (parsed.isLegacy) return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+        if (parsed.isLegacy) {
+          return {
+            newBody: null,
+            value: { ok: false, code: 'legacy_plan', reason: parsed.legacyReason ?? undefined },
+          };
+        }
         if (!parsed.decisions.some((d) => d.id === args.decisionId)) {
           return { newBody: null, value: { ok: false, code: 'decision_not_found' } };
         }
@@ -183,7 +188,15 @@ export default defineTool({
     }
 
     if (!result.value.ok) {
-      return text({ error: result.value.code, slug: args.slug, decisionId: args.decisionId }, true);
+      return text(
+        {
+          error: result.value.code,
+          slug: args.slug,
+          decisionId: args.decisionId,
+          ...(result.value.reason ? { reason: result.value.reason } : {}),
+        },
+        true,
+      );
     }
 
     if (!result.value.alreadyRatified) {

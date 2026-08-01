@@ -43,6 +43,17 @@
  */
 import type { DerivedCoupling } from './couplings';
 
+/**
+ * ⚠ EVERY EMIT SITE BELOW SETS BOTH `relation` AND `because`, FROM THE SAME
+ * BRANCH (D-087). The typed token is not extra bookkeeping bolted on next to the
+ * prose — it is the value the branch already knew and used to be discarded:
+ * every `out.push` here sits inside an `if` that has ALREADY decided which signal
+ * fired, and then threw that decision away into a sentence. The rule for a new
+ * signal: add its token to `DERIVED_COUPLING_RELATIONS`, and never render prose
+ * for a signal that has no token — an untyped signal is invisible to the
+ * divergence check while still looking fine to a human reading `expanded[]`.
+ */
+
 /** How many overlapping files to NAME before summarising the rest. */
 export const DERIVATION_FILES_NAMED = 2;
 
@@ -161,7 +172,7 @@ export function deriveCouplingsFromRoster(
     seen.add(ownerId);
 
     if (myFleet && cleanId(row.fleetSlug) === myFleet) {
-      out.push({ ownerId, because: `same fleet (${myFleet})` });
+      out.push({ ownerId, relation: 'same-fleet', because: `same fleet (${myFleet})` });
     }
 
     if (myFiles.size > 0) {
@@ -169,12 +180,12 @@ export function deriveCouplingsFromRoster(
       for (const f of fileSet(row.currentFiles)) if (myFiles.has(f)) shared.push(f);
       if (shared.length > 0) {
         shared.sort();
-        out.push({ ownerId, because: sharedFilesPhrase(shared) });
+        out.push({ ownerId, relation: 'shared-file', because: sharedFilesPhrase(shared) });
       }
     }
 
     if (myAwait && cleanId(row.awaitingEventKey) === myAwait) {
-      out.push({ ownerId, because: `both awaiting ${myAwait}` });
+      out.push({ ownerId, relation: 'awaits', because: `both awaiting ${myAwait}` });
     }
   }
   return out;
@@ -218,7 +229,7 @@ export function deriveCouplingsFromHeldFiles(
     for (const p of fileSet(paths)) if (mine.has(p)) shared.push(p);
     if (shared.length === 0) continue;
     shared.sort();
-    out.push({ ownerId, because: sharedLocksPhrase(shared) });
+    out.push({ ownerId, relation: 'holds-a-lock-on', because: sharedLocksPhrase(shared) });
   }
   // Map iteration order is insertion order, which the caller controls; sort so the
   // derived string is identical for two readers with the same holds (D-006).
@@ -288,7 +299,11 @@ export function deriveCouplingsFromPlanBlocking(
       if (!deps) continue;
       for (const t of theirItems) {
         if (deps.has(t)) {
-          out.push({ ownerId, because: `your ${mineItem} is blocked by ${t}, which they hold` });
+          out.push({
+            ownerId,
+            relation: 'blocks-me',
+            because: `your ${mineItem} is blocked by ${t}, which they hold`,
+          });
         }
       }
     }
@@ -297,7 +312,11 @@ export function deriveCouplingsFromPlanBlocking(
       if (!deps) continue;
       for (const mineItem of myItems) {
         if (deps.has(mineItem)) {
-          out.push({ ownerId, because: `their ${t} is blocked by ${mineItem}, which you hold` });
+          out.push({
+            ownerId,
+            relation: 'blocked-by-me',
+            because: `their ${t} is blocked by ${mineItem}, which you hold`,
+          });
         }
       }
     }
@@ -330,7 +349,7 @@ export function deriveCouplingsFromCoordExchange(
     const ownerId = cleanId(raw);
     if (!ownerId || ownerId === self || seen.has(ownerId)) continue;
     seen.add(ownerId);
-    out.push({ ownerId, because: 'recent coord exchange' });
+    out.push({ ownerId, relation: 'coord-exchange', because: 'recent coord exchange' });
   }
   out.sort((a, b) => a.ownerId.localeCompare(b.ownerId));
   return out;

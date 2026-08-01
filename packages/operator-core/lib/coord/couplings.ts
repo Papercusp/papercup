@@ -66,6 +66,50 @@ export interface CouplingEdge {
 }
 
 /**
+ * The COMPUTED coupling vocabulary — one token per signal the derivation can
+ * actually emit (D-087).
+ *
+ * ⚠ WHY THIS EXISTS AT ALL. `forYouBecause` (message-fields.ts) is justified on
+ * being "STRUCTURED so it can be diffed against the computed coupling graph (a
+ * prose string cannot be)" — but the computed half WAS a prose string
+ * (`DerivedCoupling.because`), so the two halves of that one comparison were
+ * typed on opposite sides of the same seam and the diff was not buildable. Each
+ * local decision was right: informative prose avoided P-029's contentless-field
+ * error, and a typed asserted enum enabled the diff. The seam between them broke.
+ *
+ * ⚠ THIS IS NOT A COPY OF `FOR_YOU_BECAUSE_RELATIONS`, and must not be collapsed
+ * into one enum. The two vocabularies are deliberately different sizes because
+ * they describe different things — an ASSERTED claim about the recipient
+ * ("you own X") versus an OBSERVED edge between two agents. Three consequences
+ * that a naive equality diff gets wrong, all handled in
+ * `couplingDivergenceVerdict`:
+ *   · `owns` is 53% of live asserted uses and has NO token here — ownership is a
+ *     work-item fact, not a coupling edge;
+ *   · `is-blocked-on` is ONE asserted token but TWO tokens here, because the
+ *     direction means opposite things to the reader;
+ *   · `coord-exchange` / `shared-file` have no asserted counterpart.
+ */
+export const DERIVED_COUPLING_RELATIONS = [
+  /** Both rows carry the same fleet slug. */
+  'same-fleet',
+  /** Declared `current_files` overlap. ⚠ all but dead in practice — see the
+   *  derivation's note; kept because it is correct on the rare row that has it. */
+  'shared-file',
+  /** Overlapping LIVE lock holds — the file signal that actually fires. */
+  'holds-a-lock-on',
+  /** Both awaiting the same event key. */
+  'awaits',
+  /** A peer holds an item that BLOCKS one of mine — who to chase. */
+  'blocks-me',
+  /** One of MY items blocks a peer's — who is waiting on me. */
+  'blocked-by-me',
+  /** Recent DIRECTED coord exchange (broadcasts excluded at the source). */
+  'coord-exchange',
+] as const;
+
+export type DerivedCouplingRelation = (typeof DERIVED_COUPLING_RELATIONS)[number];
+
+/**
  * One DERIVED coupling, as P-013's derivation hands it to the union (D-078 (a)).
  *
  * Carries the SIGNAL, not just the id. A flat `string[]` loses why the edge
@@ -73,9 +117,15 @@ export interface CouplingEdge {
  * `expandedBecause` — and `expandedBecause` is the one field P-013's contract
  * requires to be meaningful. A populated-but-uninformative field is the P-029
  * error D-053 already called out, so the reason travels WITH the id.
+ *
+ * BOTH HALVES ARE REQUIRED, and neither substitutes for the other: `relation` is
+ * what a machine diffs (D-087), `because` is what a reader reads. The derivation
+ * emits them from the same branch so they cannot disagree.
  */
 export interface DerivedCoupling {
   ownerId: string;
+  /** The typed signal — what the divergence check compares. */
+  relation: DerivedCouplingRelation;
   /** The specific signal, e.g. "same fleet" or "you both hold locks in packages/x". */
   because: string;
 }
@@ -93,6 +143,19 @@ export interface CoupledPeer {
    * Distinct from `reason`, which is a HUMAN's stated why on a declared edge.
    */
   derivedBecause?: string;
+  /**
+   * The same signals, TYPED — the machine-readable half of `derivedBecause`
+   * (D-087), deduped and in emission order.
+   *
+   * ⚠ CARRYING THIS THROUGH THE UNION IS THE LOAD-BEARING HALF OF D-087, not a
+   * convenience. Typing `DerivedCoupling.relation` alone would have been useless:
+   * this function joins the derived signals into ONE prose string, so the type
+   * was erased exactly one layer after being introduced and every consumer —
+   * including the divergence check that motivated the type — would still have
+   * had only prose to work with. A discriminant that does not survive to the
+   * consumer is the same defect it was added to fix, one layer down.
+   */
+  derivedRelations?: DerivedCouplingRelation[];
 }
 
 export const COUPLING_REASON_MAX = 500;
@@ -236,6 +299,10 @@ export function resolveCoupledPeers(
   // coord exchange"). Collapsing those to one id would throw away the most
   // useful half of the answer, so signals accumulate per peer.
   const derivedSignals = new Map<string, string[]>();
+  // The TYPED half, accumulated in lockstep (D-087). Kept as a separate map
+  // rather than parsed back out of the joined prose — round-tripping a
+  // discriminant through a rendered string is exactly the erasure this fixes.
+  const derivedRelations = new Map<string, DerivedCouplingRelation[]>();
   for (const d of derived) {
     const peer = (d?.ownerId ?? '').trim();
     if (!peer || peer === id) continue;
@@ -246,6 +313,18 @@ export function resolveCoupledPeers(
     } else {
       derivedSignals.set(peer, why ? [why] : []);
     }
+    // Structural, not typechecked-away: `derived` reaches this pure function from
+    // callers that hand-build rows, so an absent/garbage relation is skipped
+    // rather than propagated as a token no consumer can interpret.
+    const rel = d?.relation;
+    if (rel && DERIVED_COUPLING_RELATIONS.includes(rel)) {
+      const rels = derivedRelations.get(peer);
+      if (rels) {
+        if (!rels.includes(rel)) rels.push(rel);
+      } else {
+        derivedRelations.set(peer, [rel]);
+      }
+    }
   }
   const out: CoupledPeer[] = [];
   const seen = new Set<string>();
@@ -254,7 +333,11 @@ export function resolveCoupledPeers(
     seen.add(peer);
     const d = declared.get(peer);
     const because = signals.join('; ');
-    const derivedWhy = because ? { derivedBecause: because } : {};
+    const rels = derivedRelations.get(peer);
+    const derivedWhy = {
+      ...(because ? { derivedBecause: because } : {}),
+      ...(rels && rels.length > 0 ? { derivedRelations: rels } : {}),
+    };
     out.push(
       d
         ? { ownerId: peer, source: 'both', reason: d.reason, declaredBy: d.declaredBy, ...derivedWhy }

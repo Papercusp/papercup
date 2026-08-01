@@ -2324,6 +2324,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       queued429,
       shed429,
       edgeThrottleByAccount,
+      // EI-18791887279744938 (defect B): pool-wide egress-proxy reachability, computed fresh on every read
+      // (never diverges from what pickEgress actually sees) — the CAUSE `accounts:status`'s "accounts
+      // unavailable" SYMPTOM never showed.
+      egressProxyHealth: computeEgressProxyHealth(active),
       shedAllThrottled,
       bareBurstRotateSuppressed,
       opusToSonnetDowngrades,
