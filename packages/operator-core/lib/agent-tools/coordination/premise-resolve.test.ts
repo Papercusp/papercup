@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseFactRef,
   parsePlanDecisionRef,
+  parsePlanItemRef,
   parseWorkItemRef,
   resolvePremiseStamps,
   failingPremises,
@@ -77,6 +78,31 @@ describe('parsePlanDecisionRef / parseWorkItemRef', () => {
 
   it('splits a work-item ref into id and anchor', () => {
     expect(parseWorkItemRef('WI-6502#completion')).toEqual({ id: 'WI-6502', anchor: 'completion' });
+    expect(parseWorkItemRef('WI-6502#checkpoint')).toEqual({ id: 'WI-6502', anchor: 'checkpoint' });
+  });
+
+  // REGRESSION: the anchor used to be REQUIRED (`if (idx <= 0) return null`),
+  // so a bare id was unparseable. Widening the classifier without this would
+  // have routed every bare id straight to `unknown` — a change that looks like
+  // a fix and resolves nothing.
+  it('parses a bare id, with no anchor and no wi: prefix', () => {
+    expect(parseWorkItemRef('WI-6560')).toEqual({ id: 'WI-6560' });
+    expect(parseWorkItemRef('wi:EI-18834967602055309')).toEqual({ id: 'EI-18834967602055309' });
+  });
+
+  it('refuses a ref that merely contains a hash', () => {
+    // Sound standalone: the id shape is validated here, not assumed from the
+    // caller's classification arm.
+    expect(parseWorkItemRef('some-plan#Now')).toBeNull();
+    expect(parseWorkItemRef('no-http-anywhere-2026-07-28#P-020')).toBeNull();
+  });
+
+  it('splits a plan ITEM on the LAST hash, and rejects a decision anchor', () => {
+    expect(parsePlanItemRef('no-http-anywhere-2026-07-28#P-020')).toEqual({
+      slug: 'no-http-anywhere-2026-07-28',
+      itemId: 'P-020',
+    });
+    expect(parsePlanItemRef('some-plan#D-004')).toBeNull();
   });
 });
 
@@ -108,6 +134,58 @@ describe('resolvePremiseStamps', () => {
     const probes: PremiseProbes = { workItem: async () => ({ exists: false }) };
     const [stamp] = await resolvePremiseStamps(['WI-9999#completion'], probes);
     expect(stamp!.status).toBe('unresolvable');
+  });
+
+  // THE GUARANTEE D-026 correction 2 actually asks for, pinned executably.
+  // Widening classification is only safe while this holds: a container citation
+  // must never acquire the completion assertion its sender did not make.
+  it('NEVER reports a bare work-item citation as broken, however open the item', async () => {
+    const probes: PremiseProbes = {
+      workItem: async () => ({ exists: true, state: 'open', terminal: false }),
+    };
+    const stamps = await resolvePremiseStamps(
+      ['WI-6560', 'wi:EI-18834967602055309', 'WI-6502#checkpoint'],
+      probes,
+    );
+    // The SAME item, same open state, that is `broken` when cited as
+    // `#completion` — the anchor is the whole difference.
+    expect(stamps.map((s) => s.status)).toEqual(['holds', 'holds', 'holds']);
+    expect(failingPremises(stamps)).toHaveLength(0);
+
+    const [asCompletion] = await resolvePremiseStamps(['WI-6560#completion'], probes);
+    expect(asCompletion!.status).toBe('broken');
+  });
+
+  it('catches a MISTYPED bare id — the whole yield of classifying it', async () => {
+    const probes: PremiseProbes = { workItem: async (id) => ({ exists: id === 'WI-6560' }) };
+    const [real, typo] = await resolvePremiseStamps(['WI-6560', 'WI-6650'], probes);
+    expect(real!.status).toBe('holds');
+    expect(typo!.status).toBe('unresolvable');
+    expect(typo!.note).toContain('WI-6650');
+    // Verification decorates, never rewrites (the inherited P-006 contract).
+    expect(typo!.ref).toBe('WI-6650');
+  });
+
+  it('resolves a plan ITEM, distinguishing a missing plan from a missing item', async () => {
+    const probes: PremiseProbes = {
+      planItem: async (slug, id) => ({
+        planExists: slug === 'no-http-anywhere-2026-07-28',
+        itemExists: slug === 'no-http-anywhere-2026-07-28' && id === 'P-020',
+      }),
+    };
+    const [ok, noItem, noPlan] = await resolvePremiseStamps(
+      [
+        'no-http-anywhere-2026-07-28#P-020',
+        'no-http-anywhere-2026-07-28#P-999',
+        'ghost-plan#P-001',
+      ],
+      probes,
+    );
+    expect(ok!.status).toBe('holds');
+    expect(noItem!.status).toBe('unresolvable');
+    expect(noItem!.note).toContain('P-999');
+    expect(noPlan!.status).toBe('unresolvable');
+    expect(noPlan!.note).toContain('ghost-plan');
   });
 
   it('resolves a plan decision, and distinguishes a missing plan from a missing decision', async () => {

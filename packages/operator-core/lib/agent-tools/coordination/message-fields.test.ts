@@ -101,11 +101,43 @@ describe('premise ref classification (D-026)', () => {
     expect(classifyPremiseRef('/internal/docs/agent-insights/reading-pipeline-state').kind).toBe('doc');
   });
 
-  it('cites the WORK-ITEM COMPLETION CLAIM, not the bare item (D-026 correction 2)', () => {
+  it('keeps the COMPLETION CLAIM a distinct kind from the bare item (D-026 correction 2)', () => {
     expect(classifyPremiseRef('WI-6199#completion').kind).toBe('work-item-completion');
-    // A bare item id is not a claim — it degrades to opaque rather than being
-    // silently upgraded into an invalidatable completion assertion.
-    expect(classifyPremiseRef('WI-6199').kind).toBe('opaque');
+    // A bare id is a DIFFERENT claim, not a weaker one: it asserts existence,
+    // never completion. It used to degrade to `opaque` — which honoured D-026
+    // by giving up entirely. Giving it its own kind honours the same rule for
+    // the same reason (no silent upgrade into a completion assertion) while
+    // still catching a mistyped id on the recipient's behalf.
+    expect(classifyPremiseRef('WI-6199').kind).toBe('work-item');
+    expect(classifyPremiseRef('wi:EI-18834967602055309').kind).toBe('work-item');
+    expect(classifyPremiseRef('WI-6502#checkpoint').kind).toBe('work-item');
+  });
+
+  it('classifies a plan ITEM, and only the container plan is left unclassified', () => {
+    expect(classifyPremiseRef('no-http-anywhere-2026-07-28#P-020').kind).toBe('plan-item');
+    // The container itself is not a claim — the D-026 rule that makes a plan
+    // DECISION citable and a plan not.
+    expect(classifyPremiseRef('no-http-anywhere-2026-07-28').kind).toBe('opaque');
+  });
+
+  it('accepts a decision id the parser accepts — the classifier must not be narrower', () => {
+    // REGRESSION: the arm demanded `#D-\d{3,}` while `parsePlanDecisionRef`
+    // accepts `^D-\d+$`, so a two-digit id classified opaque and never reached
+    // the parser that would have handled it. A classifier stricter than its own
+    // parser is a false negative with no compensating benefit.
+    expect(classifyPremiseRef('some-plan#D-90').kind).toBe('plan-decision');
+    expect(classifyPremiseRef('some-plan#D-004').kind).toBe('plan-decision');
+  });
+
+  it('leaves irreducible prose opaque — widening is not a mandate to classify everything', () => {
+    // Both observed live 2026-08-01. There is nothing to resolve here, and
+    // inventing a shape that swallowed them would manufacture verdicts.
+    for (const prose of [
+      'dev:pg_query GROUP BY kind over harness_shared.engineer_issues state=open',
+      'scheduler:set_claim_spec rev3 admissibilityPreview matched=174 previousMatched=1252',
+    ]) {
+      expect(classifyPremiseRef(prose).kind).toBe('opaque');
+    }
   });
 
   it('NEVER excludes an unrecognised ref — it degrades to opaque (the governing rule)', () => {
@@ -130,9 +162,15 @@ describe('premise ref classification (D-026)', () => {
     expect(classifyPremiseRef('freeform').invalidatable).toBe(false);
   });
 
-  it('a prefixed ref never falls through to the plan-decision arm', () => {
+  it('a prefixed ref never falls through to an anchor arm', () => {
     expect(classifyPremiseRef('msg:thread#D-001').kind).toBe('peer-message');
     expect(classifyPremiseRef('owner-turn:ruling#D-002').kind).toBe('owner-directive');
+    // REGRESSION: the `doc` arm used to be tested LAST, so a docs path carrying
+    // a decision-shaped anchor classified `plan-decision` and would then be
+    // probed as a plan that does not exist — a dangling-citation verdict
+    // against a perfectly real doc.
+    expect(classifyPremiseRef('/internal/docs/x#D-001').kind).toBe('doc');
+    expect(classifyPremiseRef('/internal/docs/x#P-001').kind).toBe('doc');
   });
 });
 

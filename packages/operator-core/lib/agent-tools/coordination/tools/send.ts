@@ -37,6 +37,7 @@ import { resolvePremiseStamps, PREMISE_STAMPS_FIELD } from '../premise-resolve';
 // EI-19281789650149592: one static store import here red a 95-test suite.
 import { premiseProbes } from '../premise-probes';
 import { sendMessage, getMessageById } from '../messages';
+import { DIRECTIVE_EFFECT_KINDS, type DirectiveEffectSpec } from '../directive-effect';
 import { parseSlotSelector } from '../slot-selector';
 import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote, type DormantScheduledInfo } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
@@ -163,6 +164,9 @@ interface SendMsg {
    *  stamped on the envelope, and a message to ['human'] renders it as a 📋
    *  card in the owner's Inbox (the coord-message attention item's `report`). */
   report?: unknown;
+  /** P-013: the side effect this directive requires, verified from the ledger
+   *  afterwards rather than from the recipient's reply. Rides the envelope. */
+  expectEffect?: DirectiveEffectSpec;
 }
 
 /** Whether `to` is a DIRECTED send: at least one recipient, ALL concrete (none a
@@ -331,6 +335,26 @@ const noBodyRefsArg = z
     "P-008 body auto-refs OPT-OUT: by default, WI-/EI- ids mentioned in your summary/body auto-hydrate at delivery into a one-line live status+title+checkpoint suffix on the receiver's [coord+N] line (first 3 ids, ~150 chars each — receivers stop re-fetching cited items). Set true when that live status would MISLEAD: the ids are historical/illustrative examples, or you are deliberately quoting stale state.",
   );
 
+/** P-013 (fleet-leadership-continuity): the SIDE EFFECT this directive requires.
+ *  `woken:1` proves a session woke; `expects`/`expectsReply` proves they answered.
+ *  Neither proves the instruction was carried out — and the party who would answer
+ *  is the party whose compliance is in question. Naming the effect here lets it be
+ *  DERIVED afterwards from the ledger that records it (directive-effect.ts), with
+ *  no cooperation from the recipient. Stamped on the envelope; the verdict is
+ *  measured against THIS message's timestamp, so a pre-existing effect can never be
+ *  miscredited to the directive. */
+const expectEffectArg = z
+  .object({
+    kind: z.enum(DIRECTIVE_EFFECT_KINDS),
+    itemId: z.string().min(1),
+    harness: z.string().optional(),
+  })
+  .strict()
+  .optional()
+  .describe(
+    "SAFETY-CRITICAL directives only: name the SIDE EFFECT the instruction requires — { kind:'checkpoint'|'claim-release'|'terminal', itemId } — and it is verified from the ledger afterwards instead of taken on the recipient's word. `woken:1` only proves a session woke. Read the verdict on fleet:leader-brief (`directives`).",
+  );
+
 /** agent-report-cards-2026-07-17 P-001 / D-004: a DELIBERATELY loose shape —
  *  `parseReportBlock` (@papercusp/chat-protocol) is the single canonical
  *  validator (loud `report_invalid` refusal in sendOne), so this zod shape is
@@ -410,6 +434,7 @@ const itemSpec = z.object({
   allHive: allHiveArg,
   asAuthority: asAuthorityArg,
   report: reportArg,
+  expectEffect: expectEffectArg,
   fieldProvenance: fieldProvenanceArg,
 });
 
@@ -614,6 +639,17 @@ async function sendOne(
   // coord-message source stamps it onto the inbox item, which renders it as a
   // 📋 ReportBlockCard in the owner's Inbox detail pane.
   if (reportBlock) extra.report = reportBlock;
+  // P-013: the declared side effect rides the envelope so the ACTUATION probe
+  // (directive-effect.ts, read by fleet:leader-brief) can find it later without a
+  // side table. Deliberately NOT normalized against live state at send time: the
+  // whole point is that the verdict is measured LATER, against this message's ts.
+  if (msg.expectEffect) {
+    extra.expectEffect = {
+      kind: msg.expectEffect.kind,
+      itemId: msg.expectEffect.itemId,
+      ...(msg.expectEffect.harness ? { harness: msg.expectEffect.harness } : {}),
+    };
+  }
   // P-010 (H5b): persist the CONSCIOUS hive-wide claim on the envelope — the
   // durable trace the allhive-broadcast-sweep detector keys on. A plain
   // non-fleeted sender's bare '*' is NOT stamped (routine traffic, live data:
@@ -1156,6 +1192,20 @@ async function sendOne(
     // P-008: await this key to confirm cross-machine delivery+wake (the
     // receiving machine emits it back as a fed event when the row applies).
     ...(wantReceipt ? { receiptEvent: `coord:receipt:${env.msg_id}` } : {}),
+    // P-013: echo the declared effect + the baseline it will be judged against, so
+    // the sender never mistakes `woken:1` for compliance. The verdict is NOT
+    // available now (the effect has not had time to happen) — this names where to
+    // read it, which is the honest answer at send time.
+    ...(msg.expectEffect
+      ? {
+          expectEffect: {
+            ...msg.expectEffect,
+            verifiedFrom: env.ts,
+            verdict: 'pending' as const,
+            note: 'woken:1 is DELIVERY, not compliance. Read the derived verdict on fleet:leader-brief → members[].directives.',
+          },
+        }
+      : {}),
     ...(endTurn ? { endTurn } : {}),
     ...(wake ? { wake } : {}),
     ...(replyWake ? { replyWake } : {}),

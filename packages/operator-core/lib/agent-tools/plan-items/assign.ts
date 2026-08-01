@@ -139,6 +139,10 @@ export default defineTool({
             redundancy: null,
             estCost: null,
             assignee: it.assignee,
+            // WI-6675: plan-item assignment is the feature-family pre-promotion lane —
+            // features carry no severity, so this subject always reports null (matches
+            // work_items/create.ts's feature-family construction).
+            severity: null,
           },
         });
         if (!admission.allowed) {

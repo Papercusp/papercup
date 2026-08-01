@@ -142,11 +142,40 @@ export function parsePlanDecisionRef(ref: string): { slug: string; decisionId: s
   return { slug, decisionId };
 }
 
-/** Split `WI-NNNN#completion` into its two halves. */
-export function parseWorkItemRef(ref: string): { id: string; anchor: string } | null {
-  const idx = ref.indexOf('#');
+/** Split `<plan-slug>#P-NNN` into its two halves. */
+export function parsePlanItemRef(ref: string): { slug: string; itemId: string } | null {
+  const idx = ref.lastIndexOf('#');
   if (idx <= 0) return null;
-  return { id: ref.slice(0, idx), anchor: ref.slice(idx + 1) };
+  const slug = ref.slice(0, idx);
+  const itemId = ref.slice(idx + 1);
+  if (!/^P-\d+$/.test(itemId)) return null;
+  return { slug, itemId };
+}
+
+/**
+ * Parse a work-item ref in any of its live forms:
+ *   `WI-6502#completion` → { id: 'WI-6502', anchor: 'completion' }
+ *   `WI-6502#checkpoint` → { id: 'WI-6502', anchor: 'checkpoint' }
+ *   `WI-6560`            → { id: 'WI-6560' }
+ *   `wi:EI-1883…`        → { id: 'EI-1883…' }
+ *
+ * ⚠ THE ANCHOR IS OPTIONAL, and it did not used to be: the old
+ * `if (idx <= 0) return null` made a BARE id unparseable, which was invisible
+ * only because the classifier never produced one. Widening the classifier
+ * without widening this would have turned every bare id into `unknown` — a
+ * silent no-op wearing the costume of a fix.
+ *
+ * The id shape is VALIDATED here rather than assumed from the caller's arm, so
+ * this is sound standalone: `some-plan#Now` is not a work-item ref and must not
+ * parse into one just because it happens to contain a `#`.
+ */
+export function parseWorkItemRef(ref: string): { id: string; anchor?: string } | null {
+  const trimmed = ref.trim().replace(/^wi:/i, '');
+  const idx = trimmed.indexOf('#');
+  const id = idx < 0 ? trimmed : trimmed.slice(0, idx);
+  if (!/^(?:WI|EI)-\d+$/i.test(id)) return null;
+  const anchor = idx < 0 ? undefined : trimmed.slice(idx + 1);
+  return anchor ? { id, anchor } : { id };
 }
 
 export interface WorkItemProbeResult {
@@ -174,6 +203,10 @@ export interface PremiseProbes {
     slug: string,
     decisionId: string,
   ): Promise<{ planExists: boolean; decisionExists: boolean } | null>;
+  planItem?(
+    slug: string,
+    itemId: string,
+  ): Promise<{ planExists: boolean; itemExists: boolean } | null>;
   fact?(parsed: ParsedFactRef): Promise<FactProbeResult | null>;
   message?(msgId: string): Promise<{ exists: boolean } | null>;
 }
@@ -206,6 +239,32 @@ async function resolveOne(c: ClassifiedPremise, probes: PremiseProbes): Promise<
         return { ...c, status: 'holds' };
       }
 
+      // A work item cited as ITSELF (`WI-6560`, `wi:EI-1883…`, `WI-6502#checkpoint`).
+      //
+      // ⚠ EXISTENCE, AND DELIBERATELY NOTHING MORE — this arm may never return
+      // `broken`, and the reason is D-026 correction 2, not caution. `broken`
+      // means the claim the ref encodes is FALSE; a bare id encodes only "this
+      // item exists", so the sole way it can fail is by not resolving. Reaching
+      // for the item's STATE here (open ⇒ broken) would silently convert a
+      // container citation into the completion assertion the sender pointedly
+      // did not make, and would tell a reader the sender was wrong when they
+      // were not. The `#completion` arm above is where a state check belongs
+      // and the only place it is licensed.
+      //
+      // The anchor is read but NOT verified: `#checkpoint` (9 of the 23 refs
+      // measured live on 2026-08-01) would need a per-anchor probe to say
+      // anything more, and inventing verdicts for anchors we cannot check is
+      // how a decoration becomes a false accusation.
+      case 'work-item': {
+        const parsed = parseWorkItemRef(c.ref);
+        if (!parsed || !probes.workItem) return { ...c, status: 'unknown' };
+        const wi = await probes.workItem(parsed.id);
+        if (!wi) return { ...c, status: 'unknown' };
+        return wi.exists
+          ? { ...c, status: 'holds' }
+          : { ...c, status: 'unresolvable', note: `${parsed.id} does not exist` };
+      }
+
       case 'plan-decision': {
         const parsed = parsePlanDecisionRef(c.ref);
         if (!parsed || !probes.planDecision) return { ...c, status: 'unknown' };
@@ -220,6 +279,24 @@ async function resolveOne(c: ClassifiedPremise, probes: PremiseProbes): Promise<
             status: 'unresolvable',
             note: `${parsed.slug} has no ${parsed.decisionId}`,
           };
+        }
+        return { ...c, status: 'holds' };
+      }
+
+      // `<plan-slug>#P-NNN`. Mirrors the plan-decision arm, and stops short in
+      // the same place: the item's STATUS is not checked, because the ref does
+      // not pin one. Resting on a plan item asserts the item exists, and it is
+      // verified to exactly that.
+      case 'plan-item': {
+        const parsed = parsePlanItemRef(c.ref);
+        if (!parsed || !probes.planItem) return { ...c, status: 'unknown' };
+        const r = await probes.planItem(parsed.slug, parsed.itemId);
+        if (!r) return { ...c, status: 'unknown' };
+        if (!r.planExists) {
+          return { ...c, status: 'unresolvable', note: `no plan '${parsed.slug}'` };
+        }
+        if (!r.itemExists) {
+          return { ...c, status: 'unresolvable', note: `${parsed.slug} has no ${parsed.itemId}` };
         }
         return { ...c, status: 'holds' };
       }

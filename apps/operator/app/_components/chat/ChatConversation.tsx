@@ -435,7 +435,15 @@ type ChatMessageRowProps = {
  * stable at its source (see OperatorChat's module-level `labelForRole`). They are
  * kept as REAL memo deps rather than latest-ref shims: a latest-ref would freeze
  * the row against a genuine change, e.g. a new `rosterEntry` behind
- * `renderAvatar`. `ChatConversation.memo.test.tsx` guards both directions.
+ * `renderAvatar`.
+ *
+ * ⚠ That last sentence used to end "`ChatConversation.memo.test.tsx` guards both
+ * directions" — and it did not: nothing in that file varied `renderAvatar` at
+ * all, so the claim was vacuous for the one prop it named. WI-6547 was filed
+ * against this exact path on the strength of it. The guard now genuinely exists —
+ * see that file's "a late-arriving renderAvatar reaches ALREADY-PAINTED rows"
+ * block, which pins BOTH directions plus a latest-ref control that must stay
+ * frozen. Do not re-word this to cite a test without opening it first.
  */
 const ChatMessageRow = memo(function ChatMessageRow({
   message: m,

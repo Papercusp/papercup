@@ -60,7 +60,9 @@ import type { DerivedCouplingRelation } from '../../coord/couplings';
 export type PremiseRefKind =
   | 'fact' // fact:owner:<id>:<key>@v<N> — conclusion / assumption / convention
   | 'plan-decision' // <plan-slug>#D-NNN — a claim, not the container plan
+  | 'plan-item' // <plan-slug>#P-NNN — the item, not the container plan
   | 'work-item-completion' // WI-NNNN#completion — the CLAIM, not the item
+  | 'work-item' // WI-NNNN / wi:WI-NNNN / WI-NNNN#<other> — EXISTENCE ONLY
   | 'peer-message' // msg:<msg_id>
   | 'owner-directive' // owner-turn:<ref>
   | 'doc' // /internal/docs/... — declarable, not invalidatable
@@ -70,10 +72,26 @@ export type PremiseRefKind =
 const INVALIDATABLE_KINDS: ReadonlySet<PremiseRefKind> = new Set<PremiseRefKind>([
   'fact',
   'plan-decision',
+  'plan-item',
   'work-item-completion',
+  'work-item',
   'peer-message',
   'owner-directive',
 ]);
+
+/**
+ * `WI-6502#completion` — the COMPLETION CLAIM (D-026 correction 2). The only
+ * shape that may ever resolve to `broken`, because it is the only one that
+ * asserts something capable of being false at send time.
+ */
+const WORK_ITEM_COMPLETION_RE = /^(?:wi:)?(?:WI|EI)-\d+#completion$/i;
+
+/**
+ * `WI-6560` · `wi:EI-18834967602055309` · `WI-6502#checkpoint` — a work item
+ * cited as ITSELF. The `wi:` prefix is not invented here: it is the ref form
+ * `isClaimIdentifyingRef` (improvements/checkpoint-harvest.ts) already uses.
+ */
+const WORK_ITEM_RE = /^(?:wi:)?(?:WI|EI)-\d+(?:#[^\s#]+)?$/i;
 
 export interface ClassifiedPremise {
   /** The ref exactly as the sender cited it — never rewritten. */
@@ -87,8 +105,36 @@ export interface ClassifiedPremise {
  * Classify one premise ref by SHAPE. Total function — every string classifies,
  * because D-026 forbids excluding a citation for being unrecognised.
  *
- * Order matters: `owner-turn:` and `msg:` are checked before the generic
- * `<slug>#D-NNN` so a prefixed ref never falls through to the plan-decision arm.
+ * ⚠ WHAT WIDENING THIS IS AND IS NOT FOR (D-090 [owner 2026-08-01] lens).
+ * A wider classifier verifies more citations ON THE RECIPIENT'S BEHALF — its
+ * whole yield is catching a MISTYPED id before the reader chases it. It must
+ * never become a statement about what a sender may assert, or about which
+ * citations are worth more. `opaque` is not a demerit and a checkable ref is
+ * not a better one: per D-090's R2 the vocabulary may not be narrowed toward
+ * the computable, and the same reasoning binds here. Two of the twelve refs
+ * measured live on 2026-08-01 are irreducibly prose ("dev:pg_query GROUP BY
+ * kind over …") and stay `opaque` — that is the design, not a gap to close.
+ *
+ * ⚠ `work-item` IS NOT A WEAKER `work-item-completion` — it is a DIFFERENT
+ * CLAIM, and conflating them would break D-026 correction 2. Citing
+ * `WI-6199#completion` asserts the item COMPLETED; citing `WI-6199` asserts
+ * only that it EXISTS. So the bare form is verified to exactly the extent it
+ * claims (existence ⇒ `holds` / `unresolvable`) and can NEVER resolve to
+ * `broken` — the silent upgrade of a container into an invalidatable
+ * completion assertion is precisely what D-026 forbids, and separating the
+ * kinds is what keeps that impossible rather than merely discouraged.
+ *
+ * Counting the bare form also serves the owner's own convention: plan items
+ * are cross-referenced by their globally-unique work-item id [owner 2026-07-27],
+ * and until now that exact recommended form classified `opaque`.
+ *
+ * Order matters, and now in two ways:
+ *   - PREFIX forms (`fact:`, `owner-turn:`, `msg:`, `/internal/docs/`) are
+ *     tested first, so a prefixed ref never falls through to an ANCHOR arm.
+ *     `/internal/docs/` moved up for that reason: with it last, a docs path
+ *     carrying a `#D-001` anchor classified `plan-decision`.
+ *   - `#completion` is tested before the general work-item shape, so the
+ *     completion CLAIM keeps its own kind.
  */
 export function classifyPremiseRef(ref: string): ClassifiedPremise {
   const trimmed = ref.trim();
@@ -96,9 +142,15 @@ export function classifyPremiseRef(ref: string): ClassifiedPremise {
   if (/^fact:/.test(trimmed)) kind = 'fact';
   else if (/^owner-turn:/.test(trimmed)) kind = 'owner-directive';
   else if (/^msg:/.test(trimmed)) kind = 'peer-message';
-  else if (/^(WI|EI)-\d+#completion$/i.test(trimmed)) kind = 'work-item-completion';
-  else if (/#D-\d{3,}$/.test(trimmed)) kind = 'plan-decision';
   else if (trimmed.startsWith('/internal/docs/')) kind = 'doc';
+  else if (WORK_ITEM_COMPLETION_RE.test(trimmed)) kind = 'work-item-completion';
+  else if (WORK_ITEM_RE.test(trimmed)) kind = 'work-item';
+  // `\d+`, not `\d{3,}`: the old bound was STRICTER than `parsePlanDecisionRef`
+  // (`^D-\d+$`), so a two-digit `#D-90` classified `opaque` and never reached
+  // the parser that would have handled it fine. A classifier narrower than its
+  // own parser is a false negative with no upside.
+  else if (/#D-\d+$/.test(trimmed)) kind = 'plan-decision';
+  else if (/#P-\d+$/.test(trimmed)) kind = 'plan-item';
   return { ref: trimmed, kind, invalidatable: INVALIDATABLE_KINDS.has(kind) };
 }
 

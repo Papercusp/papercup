@@ -152,6 +152,85 @@ describe('ChatConversation — typing does not re-parse message markdown', () =>
  * ChatMessageContent: it is the work the markdown guard above cannot see, so
  * these tests fail on the pre-fix tree even though that suite passes.
  */
+/**
+ * WI-6547: the LATE-ARRIVING `renderAvatar` guard.
+ *
+ * The row memo's whole risk is that it freezes a row against a real change. The
+ * comment above `ChatMessageRow` cites this file as guarding "a new `rosterEntry`
+ * behind `renderAvatar`" — but until now nothing here ever varied `renderAvatar`,
+ * so that claim was vacuous and the direction was untested.
+ *
+ * It matters because the roster is a sync query: `SessionChatModal` first renders
+ * with `rosterEntry === null` (every avatar falls back), and the entry lands a
+ * beat later. If the memo did not see the new `renderAvatar` identity, only rows
+ * mounted AFTER the roster arrived would ever wear the identity chip — which is
+ * exactly the "chip shows on ~1 of 12 rows" symptom WI-6547 was filed for. The
+ * message array is deliberately the SAME REFERENCE across the rerender, so a pass
+ * cannot be explained by message churn re-rendering the rows for free.
+ */
+describe('ChatConversation — a late-arriving renderAvatar reaches ALREADY-PAINTED rows', () => {
+  const ASSISTANT_ROWS = MESSAGES.filter((m) => m.role === 'assistant').length;
+
+  /** Stands in for the identity chip; null models "roster has not landed yet". */
+  const noRoster = () => null;
+  const withRoster = (m: ChatMessage) =>
+    m.role === 'assistant' ? <span data-testid="identity-chip">su-abc12</span> : null;
+
+  it('paints the chip on EVERY assistant row, not just ones mounted after it', () => {
+    const { rerender, queryAllByTestId } = render(
+      <ChatConversation {...props({ renderAvatar: noRoster })} />,
+    );
+    // Sanity: pre-roster there is genuinely no chip, so a count below is a real
+    // transition and not a chip that was present all along.
+    expect(queryAllByTestId('identity-chip')).toHaveLength(0);
+
+    // Same `messages` reference — ONLY renderAvatar's identity changes.
+    rerender(<ChatConversation {...props({ renderAvatar: withRoster })} />);
+
+    expect(queryAllByTestId('identity-chip')).toHaveLength(ASSISTANT_ROWS);
+    expect(ASSISTANT_ROWS).toBeGreaterThan(1); // a 1-row fixture could not detect staleness
+  });
+
+  it('is a REAL guard: a stable-identity renderAvatar (latest-ref) freezes the rows', () => {
+    // The non-vacuity control for the test above, and the reason the comment on
+    // ChatMessageRow forbids latest-ref shims. Here the function IDENTITY never
+    // changes — only the value its closure reads does, exactly as a
+    // `useRef`-backed callback would behave. The row memo therefore (correctly)
+    // skips, and the chip never appears.
+    //
+    // If someone "optimises" ChatMessageRow to stop depending on renderAvatar's
+    // identity, THIS test starts passing trivially while the one above fails —
+    // so the pair, not either alone, is what pins the behaviour.
+    let roster: { id: string } | null = null;
+    const latestRefAvatar = (m: ChatMessage) =>
+      m.role === 'assistant' && roster ? <span data-testid="identity-chip">{roster.id}</span> : null;
+
+    const { rerender, queryAllByTestId } = render(
+      <ChatConversation {...props({ renderAvatar: latestRefAvatar })} />,
+    );
+    expect(queryAllByTestId('identity-chip')).toHaveLength(0);
+
+    roster = { id: 'su-abc12' }; // the roster query resolves…
+    // …and a keystroke re-renders the PARENT, so the rows are re-offered the
+    // same renderAvatar identity. Without an identity change the memo holds.
+    rerender(<ChatConversation {...props({ renderAvatar: latestRefAvatar, inputValue: 'x' })} />);
+
+    expect(queryAllByTestId('identity-chip')).toHaveLength(0);
+  });
+
+  it('drops the chip from every row again when the roster entry goes away', () => {
+    // The opposite direction: a frozen row would keep a stale chip forever.
+    const { rerender, queryAllByTestId } = render(
+      <ChatConversation {...props({ renderAvatar: withRoster })} />,
+    );
+    expect(queryAllByTestId('identity-chip')).toHaveLength(ASSISTANT_ROWS);
+
+    rerender(<ChatConversation {...props({ renderAvatar: noRoster })} />);
+
+    expect(queryAllByTestId('identity-chip')).toHaveLength(0);
+  });
+});
+
 describe('ChatConversation — typing does not re-render message ROWS', () => {
   const MESSAGES_WITH_TOOLS: ChatMessage[] = [
     { role: 'assistant', content: 'first', tools: [{ name: 'coord:orient', input: { a: 1 } }] },

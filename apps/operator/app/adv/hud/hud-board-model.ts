@@ -976,14 +976,20 @@ export function hudSessionRendersSame(a: HudSession, b: HudSession): boolean {
  * derived value is structurally identical, so `React.memo` downstream can
  * actually bite.
  *
- * WHY THIS IS NEEDED AT ALL. `buildHudBoard` is pure and allocates a new
- * `HudSession` per agent on every call, and the view re-runs it whenever ANY
- * input changes. The expensive case measured on WI-6560 is roster data arriving
- * at ~0.6/sec whose CONTENT is unchanged: every session object is new, so
- * `MemoSessionCard`'s shallow compare misses on the `session` prop and the whole
- * board re-renders for nothing. Reusing the previous object collapses that to
- * zero renders, and — because reuse propagates up to the board object itself —
- * also lets the memos ABOVE the board (e.g. `openLabel`) hold.
+ * WHY THIS IS NEEDED AT ALL, stated narrowly — because the obvious claim
+ * ("it stops the cards re-rendering") is NOT what it earns. `hudSessionRendersSame`
+ * already spares the CARDS: it compares rendered content, so an unchanged roster
+ * arriving at the same `nowMs` skips every card render with or without this
+ * function. Confirmed by mutation — disabling this reuse leaves the card-render
+ * test green.
+ *
+ * What this earns is IDENTITY ABOVE THE CARD, which no per-card comparator can
+ * provide: `buildHudBoard` allocates a new board, new column arrays and new
+ * session objects on every call, so everything downstream that memoises on the
+ * BOARD (`openLabel`'s useMemo, and any future consumer of `board`/`columns`)
+ * is invalidated on every roster poll even when nothing changed. Returning the
+ * previous object where the rebuilt one is structurally identical keeps those
+ * memos intact and keeps the reference stable for effect dependencies.
  *
  * ⚠ SCOPE — this does NOT help the 15s clock tick, and it is worth being precise
  * about why, because the obvious assumption is wrong. `sinceSec` is stored as

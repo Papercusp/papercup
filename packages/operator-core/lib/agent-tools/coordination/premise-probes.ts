@@ -124,7 +124,18 @@ export function premiseProbes(scope: PremiseProbeScope = {}): PremiseProbes {
           import('../../work-items'),
           import('../../work-item-dispatch-states'),
         ]);
-        const wi = await getWorkItem(id, harness);
+        // ⚠ CROSS-HARNESS RETRY BEFORE DECLARING NON-EXISTENCE. `getWorkItem`'s
+        // issue-family leg is a global `getIssue`, but its FEATURE-family leg
+        // filters on `harness_slug` — so a feature cited from a peer's harness
+        // misses the scoped lookup and would be stamped `unresolvable`, i.e.
+        // "WI-N does not exist" about an item that plainly does. That is the
+        // false accusation this whole module is built to avoid, and widening
+        // classification to BARE ids (which is how a feature is normally cited)
+        // is exactly what turns it from latent into likely. Dropping the
+        // harness on the retry narrows only to the workspace, which is the same
+        // scope `planDecision`/`planItem` deliberately use.
+        let wi = await getWorkItem(id, harness);
+        if (!wi && harness) wi = await getWorkItem(id);
         if (!wi) return { exists: false };
         // `terminal` is what decides `broken` for a `#completion` anchor, so it
         // must be the SAME terminal-state set the rest of the system dispatches
@@ -157,6 +168,32 @@ export function premiseProbes(scope: PremiseProbeScope = {}): PremiseProbes {
         const r = rows[0];
         if (!r) return null;
         return { planExists: r.plan_exists === true, decisionExists: r.decision_exists === true };
+      } catch {
+        return null;
+      }
+    },
+
+    async planItem(slug: string, itemId: string) {
+      try {
+        const { sql, ws } = await workspaceScopedSql();
+        // Workspace-scoped, not harness-scoped — the same reasoning as
+        // `planDecision` directly above, and for the same reason: narrowing to
+        // the sender's harness would report a real cross-harness citation as
+        // dangling. `plan_items` is keyed (workspace, harness, plan, item).
+        const rows = await sql<{ plan_exists: boolean; item_exists: boolean }[]>`
+          SELECT
+            EXISTS (
+              SELECT 1 FROM harness_shared.harness_plans
+               WHERE workspace_id = ${ws} AND plan_slug = ${slug}
+            ) AS plan_exists,
+            EXISTS (
+              SELECT 1 FROM harness_shared.plan_items
+               WHERE workspace_id = ${ws} AND plan_slug = ${slug}
+                 AND item_id = ${itemId}
+            ) AS item_exists`;
+        const r = rows[0];
+        if (!r) return null;
+        return { planExists: r.plan_exists === true, itemExists: r.item_exists === true };
       } catch {
         return null;
       }
