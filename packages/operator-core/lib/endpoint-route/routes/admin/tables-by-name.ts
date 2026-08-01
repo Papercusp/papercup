@@ -15,6 +15,7 @@ import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 import { getAdminTable } from '../../../admin-tables';
 import { defineTool } from '@papercusp/agent-mcp';
+import { requireAllowedOriginOr403 } from '../../cors';
 
 function pickEditable<T extends Record<string, unknown>>(
   obj: T,
@@ -48,7 +49,8 @@ function resolvePk(table: PgTable): string[] {
 const get = defineTool({
   method: 'GET',
   path: '/admin/tables/:exportName',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — see admin/tables.ts.
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req, ctx) {
     const { exportName } = ctx.params;
     const entry = getAdminTable(exportName);
@@ -70,8 +72,12 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/admin/tables/:exportName',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — see admin/tables.ts.
+  // State-mutating, so also CSRF-gated below (requireAllowedOriginOr403).
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req, ctx) {
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
     const { exportName } = ctx.params;
     const entry = getAdminTable(exportName);
     if (!entry) return Response.json({ error: 'unknown admin table' }, { status: 404 });
@@ -101,8 +107,12 @@ const post = defineTool({
 const patch = defineTool({
   method: 'PATCH',
   path: '/admin/tables/:exportName',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — see admin/tables.ts.
+  // State-mutating, so also CSRF-gated below (requireAllowedOriginOr403).
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req, ctx) {
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
     const { exportName } = ctx.params;
     const entry = getAdminTable(exportName);
     if (!entry) return Response.json({ error: 'unknown admin table' }, { status: 404 });
@@ -139,8 +149,12 @@ const patch = defineTool({
 const del = defineTool({
   method: 'DELETE',
   path: '/admin/tables/:exportName',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — see admin/tables.ts.
+  // State-mutating, so also CSRF-gated below (requireAllowedOriginOr403).
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req, ctx) {
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
     const { exportName } = ctx.params;
     const entry = getAdminTable(exportName);
     if (!entry) return Response.json({ error: 'unknown admin table' }, { status: 404 });

@@ -12,7 +12,11 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'GET',
   path: '/admin/commands',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — the packaged
+  // desktop app's AdminOps/PackagedBuildTab panes bare-fetch this route from
+  // localhost with no session cookie, so it only ever resolves 'unverified-loopback'
+  // trust. Read-only listing; mirrors dogfood-substrate-health.ts (EI-18834967602055309).
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   handler() {
     return Response.json({ commands: listCommands() });
   },

@@ -11,7 +11,11 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'GET',
   path: '/admin/tables',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — the packaged
+  // desktop app's TableAdmin pane bare-fetches this route from localhost with
+  // no session cookie, so it only ever resolves 'unverified-loopback' trust.
+  // Read-only listing of the admin-tables allowlist (EI-18834967602055309).
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   handler() {
     const out = listAdminTables().map((e) => {
       const cfg = getTableConfig(e.table as unknown as PgTable);
