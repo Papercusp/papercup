@@ -578,6 +578,23 @@ describe('EI-17603 — ledgerFilesForCandidate: the commit-scoped ledger read', 
     });
     expect(res).toEqual([]);
   });
+
+  it('EI-18795303393201472: excludes worktree_dirty rows — the query filters worktree_dirty = false', async () => {
+    // A torn-read row from a run against the shared, concurrently-edited tree can be
+    // stamped with a commit sha it never actually ran at. This is first-hand evidence
+    // for an EXACT candidate (verifyGateVerdict below can clear the gate's own named
+    // failures when it disagrees), so a dirty row must never be trusted here — assert
+    // the generated SQL actually carries the filter, not just that the mock's canned
+    // rows come back (a content-blind mock can't catch a dropped WHERE clause).
+    let capturedSql = '';
+    await ledgerFilesForCandidate('deadbee1234', {
+      sql: (async (strings: TemplateStringsArray) => {
+        capturedSql = strings.join('');
+        return [];
+      }) as unknown as WhyChainDeps['sql'],
+    });
+    expect(capturedSql).toContain('worktree_dirty = false');
+  });
 });
 
 describe('EI-17603 — verifyGateVerdict: distrust the gate\'s own record when the ledger contradicts it', () => {

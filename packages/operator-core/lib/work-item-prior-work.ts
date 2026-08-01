@@ -46,8 +46,16 @@ export interface ClaimTimePriorWorkHint {
    * claim.ts already has the EI-529 hint in hand. It is the single most important field here:
    * prior work WITHOUT a checkpoint is the dangerous shape, because nothing else on the row
    * hints that the item has a history.
+   *
+   * WI-6737: `'unknown'` is a THIRD state, not a nicety — it means the checkpoint store could
+   * not be READ (a PG blip / unreachable datastore), as distinct from a read that ran and found
+   * nothing. Every caller here fetches the checkpoint hint under a `.catch(() => null)`, so
+   * before this existed a failed read collapsed into `false` and {@link priorWorkWarning} went
+   * on to assert, in those words, that "NO checkpoint was ever written" — a transport failure
+   * rendered as a confident claim about history, at the one moment the system knew least.
+   * A boolean cannot represent "I could not ask", which is why the type has to carry it.
    */
-  hasCheckpoint: boolean;
+  hasCheckpoint: boolean | 'unknown';
 }
 
 interface PriorWorkRow {
@@ -104,7 +112,7 @@ export async function getClaimTimePriorWorkHint(ref: {
   harness: string | null;
   workItemId: string;
   workspaceId?: string;
-  hasCheckpoint?: boolean;
+  hasCheckpoint?: boolean | 'unknown';
 }): Promise<ClaimTimePriorWorkHint | null> {
   const ws = resolveConcreteWorkspaceId(ref.workspaceId);
   if (!ws || !ref.workItemId) return null;
@@ -171,10 +179,23 @@ export function priorWorkWarning(hint: ClaimTimePriorWorkHint | null): string | 
 
   const detail = facts.length > 0 ? ` (${facts.join('; ')})` : '';
 
-  if (hint.hasCheckpoint) {
+  if (hint.hasCheckpoint === true) {
     return (
       `PRIOR WORK on this item${detail}. A checkpoint exists — read it (above) before starting; ` +
       `this item is NOT fresh work. [P-001]`
+    );
+  }
+  // WI-6737: the checkpoint store could not be read. Say exactly that. The `false` branch below
+  // is a claim about HISTORY ("nothing was ever written") and is only true when the read actually
+  // ran; emitting it on a failed read manufactures certainty out of an outage — and it is the
+  // most dangerous direction to be wrong in, because it tells the reader the row is safe to
+  // rebuild from scratch.
+  if (hint.hasCheckpoint === 'unknown') {
+    return (
+      `⚠ PRIOR WORK on this item${detail}. The checkpoint store could NOT BE READ, so whether a ` +
+      `checkpoint exists is UNKNOWN — this is not the same as there being none, and must not be ` +
+      `treated as such. Do NOT start rebuilding: re-read this item once the datastore is reachable ` +
+      `(work_items:get), and only then judge whether prior work needs redoing. [P-001/WI-6737]`
     );
   }
   return (

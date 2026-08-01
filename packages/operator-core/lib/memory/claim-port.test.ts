@@ -94,8 +94,8 @@ describe('buildClaimRecallBlock', () => {
       workspaceId: 'ws-9',
       items: [{ id: 'WI-1', title: 'Wire prelude', harness: 'papercusp' }],
     });
-    const arg = vi.mocked(buildLaunchMemoryBlock).mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(arg.userId).toBe('distinct-user-id');
+    const arg = vi.mocked(buildLaunchMemoryBlock).mock.calls[0]?.[0];
+    expect(arg?.userId).toBe('distinct-user-id');
   });
 
   it('un-stamped (no sessionId) still recalls, without a session block', async () => {

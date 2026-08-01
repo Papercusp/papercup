@@ -462,6 +462,7 @@ for (const ws of affected) {
 
 if (!tasks.length) {
   outSync(`Affected: ${affected.map((w) => w.name).join(', ')} — but none declare a 'test' script.`);
+  outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 reason=no-test-script');
   process.exit(0);
 }
 
@@ -474,7 +475,10 @@ for (const t of tasks) outSync(`  - ${t.ws.name} :: ${t.script}`);
 // when the rest of the header has already scrolled out of the retained tail.
 outSync(`Full run log: ${RUN_LOG_PATH} (grep this — not just the exit code or a truncated tail — for the real per-suite verdict)`);
 
-if (dry) process.exit(0);
+if (dry) {
+  outSync(`AFFECTED_TESTS_RESULT status=dry-run tasks=${tasks.length} failed=0 quarantinedFailed=0`);
+  process.exit(0);
+}
 
 // AFFECTED_RETRY_FAILED=1 (the green-checkpoint sets it): re-run a FAILED
 // workspace once before counting it. On the shared dev box the gate runs
@@ -730,11 +734,30 @@ try {
 if (quarantinedFailed) {
   errSync(`\n${quarantinedFailed} quarantined task(s) failed (not gating).`);
 }
+// EI-18796017307093897: a caller observed a background `npm run test:affected`
+// job report "completed, exit code 0" while this SAME run's own log said "1
+// non-quarantined task(s) failed" — i.e. the wrapper/notification layer that
+// relayed the exit code disagreed with what this script actually decided.
+// Nothing in this script's own control flow can produce that divergence (the
+// `process.exit(1)` below is inseparable from the failure message that
+// precedes it — see the regression test asserting exactly that), so the most
+// robust fix isn't inside this file's exit-code logic, it's giving every
+// caller a way to verify the TRUE verdict independent of exit-code plumbing
+// elsewhere. Emit one canonical, greppable, machine-parseable line — mirroring
+// `scripts/test-files.mjs`'s `TEST_FILE_RESULT` line — whose `status` token is
+// derived from the exact same `failed`/`quarantinedFailed` counters that
+// decide the exit code below, so an agent, a gate, or a background-task
+// notifier can grep RUN_LOG_PATH for this line instead of trusting a
+// possibly-misreported exit code alone.
+const resultLine = (status) =>
+  `AFFECTED_TESTS_RESULT status=${status} tasks=${tasks.length} failed=${failed} quarantinedFailed=${quarantinedFailed}`;
 if (failed) {
   errSync(`\n${failed} non-quarantined task(s) failed:`);
   for (const name of failedTaskNames) errSync(`  - ${name}`);
+  errSync(resultLine('failed'));
   errSync(`Full run log: ${RUN_LOG_PATH}`);
   process.exit(1);
 }
 outSync('\nAll affected tests passed.');
+outSync(resultLine('passed'));
 outSync(`Full run log: ${RUN_LOG_PATH}`);

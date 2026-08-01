@@ -55,6 +55,7 @@ import {
   decorateMemberVerdicts,
   decorateContextPressure,
   decorateUnansweredDirected,
+  decorateDirectiveActuation,
   decorateCoordDeafness,
   type MemberVerdict,
   type MonitorState,
@@ -64,6 +65,7 @@ import type { SessionState } from '../coordination/presence-wakeability';
 import type { WakeMode } from '../coordination/wake-mode';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
 import type { UnansweredDirectedSummary } from '../coordination/unanswered-directed';
+import type { DirectiveActuationSummary } from '../coordination/directive-effect';
 import {
   readUnownedCriticalsForFleet,
   readOrphanedInFlightForFleet,
@@ -109,6 +111,11 @@ export interface LeaderBriefMember {
   coordHook?: CoordDeafState;
   /** Directed messages to this member with no reply/ack yet — absent when none. */
   unanswered?: UnansweredDirectedSummary;
+  /** P-013: of YOUR directives to this member that named a required side effect
+   *  (`coord:send { expectEffect }`), how many the LEDGER shows were carried out.
+   *  Absent when you sent none — never a zeroed block (see decorateDirectiveActuation).
+   *  Distinct from `unanswered`: that is what they SAID, this is what happened. */
+  directives?: DirectiveActuationSummary;
   /** Active non-inbox-wake events:await keys — a deliberately-benched member.
    *  EI-18732218464905145: a composed (`spec`) registration renders as ONE
    *  `ComposedParkEntry` (its any/all/k-of-n mode + its OWN deadline), never as
@@ -691,6 +698,7 @@ export type DecoratedAgent = AgentAssignment & {
   coordHook?: CoordDeafState | null;
   coordLastReadAgoSec?: number | null;
   unanswered?: UnansweredDirectedSummary;
+  directives?: DirectiveActuationSummary;
   monitorState?: MonitorState | null;
   nextFireAt?: string | null;
   loopMode?: 'work' | 'monitor' | null;
@@ -903,6 +911,7 @@ export function projectMember(
     contextPressure: a.contextPressure ?? null,
     ...(a.coordHook ? { coordHook: a.coordHook } : {}),
     ...(a.unanswered ? { unanswered: a.unanswered } : {}),
+    ...(a.directives ? { directives: a.directives } : {}),
     ...(() => {
       // EI-18732218464905145: prefer the composed-collapsed view when one was
       // resolved; fall back to the raw flat list (unresolved / non-composed /
@@ -1037,6 +1046,9 @@ export default defineTool({
     await decorateMemberVerdicts(grouped).catch(() => {});
     await decorateContextPressure(grouped).catch(() => {});
     await decorateUnansweredDirected(grouped).catch(() => {});
+    // P-013: what the LEDGER says happened, beside what the member said. Scoped to
+    // the caller's own directives — you are accountable for what you instructed.
+    await decorateDirectiveActuation(grouped, ownerId).catch(() => {});
     await decorateCoordDeafness(grouped).catch(() => {});
     // WI-5213: unowned criticals THIS fleet's claim spec would admit — read
     // failures already fail soft to `[]` inside readUnownedCriticalsForFleet.

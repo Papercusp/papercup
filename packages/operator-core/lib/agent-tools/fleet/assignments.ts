@@ -56,6 +56,8 @@ import {
   fetchUnansweredDirected,
   type UnansweredDirectedSummary,
 } from '../coordination/unanswered-directed';
+import { fetchDirectiveActuationSummaries } from '../coordination/directive-effect-read';
+import type { DirectiveActuationSummary } from '../coordination/directive-effect';
 import {
   classifyCoordDeafness,
   coordDeafBudgetMs,
@@ -468,6 +470,49 @@ export async function decorateUnansweredDirected<
   for (const a of agents) {
     const u = unanswered.get(a.agentId);
     if (u) a.unanswered = u;
+  }
+  return agents;
+}
+
+/**
+ * P-013 (fleet-leadership-continuity-and-actuation-2026-08-01): stamp each agent row
+ * with `directives` — of the directives THIS leader sent that named a required side
+ * effect (`coord:send { expectEffect }`), how many were actually CARRIED OUT.
+ *
+ * The sibling of `unanswered`, and deliberately a different question. `unanswered`
+ * asks whether the member SAID something back; this asks whether the ledger shows the
+ * thing happening. For a safety-critical instruction ("checkpoint before you
+ * compact") those diverge exactly when it matters: an agent can answer "will do" and
+ * then be killed before it does, and every existing surface reports that as answered.
+ *
+ * `fromId` scopes to the caller's OWN directives — a leader is accountable for the
+ * instructions it issued, not for every message anyone ever sent that member.
+ *
+ * Injectable fetcher + mutate-in-place + best-effort at the call site, matching
+ * decorateUnansweredDirected/decorateContextPressure exactly.
+ */
+export async function decorateDirectiveActuation<
+  T extends AgentAssignment & { directives?: DirectiveActuationSummary },
+>(
+  agents: T[],
+  fromId: string | undefined,
+  fetchActuations: (
+    ownerIds: string[],
+    opts: { fromId?: string },
+  ) => Promise<Map<string, DirectiveActuationSummary>> = fetchDirectiveActuationSummaries,
+): Promise<T[]> {
+  if (agents.length === 0) return agents;
+  const summaries = await fetchActuations(
+    agents.map((a) => a.agentId),
+    fromId ? { fromId } : {},
+  );
+  for (const a of agents) {
+    const d = summaries.get(a.agentId);
+    // Only stamp a row that HAS expectations. A member nobody sent an
+    // effect-bearing directive to must show no field at all, never a zeroed one —
+    // an all-zero `directives` block reads as "I checked and they complied with
+    // nothing", which is a claim we are not making.
+    if (d && d.total > 0) a.directives = d;
   }
   return agents;
 }
