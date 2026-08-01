@@ -21,7 +21,7 @@ import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/age
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan, maskFences, normalizeDecisionBodyHeadings } from './parser';
+import { parsePlan, maskFences, normalizeDecisionBodyHeadings, type LegacyReason } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { readPlanBySlug } from './source';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -228,7 +228,7 @@ export function appendDecisionToBody(
  *  argument, not inferred from a union-returning mutator. */
 type AddDecisionValue =
   | { ok: true; decisionId: string; slug: string }
-  | { ok: false; code: 'not_found' | 'legacy_plan' };
+  | { ok: false; code: 'not_found' | 'legacy_plan'; reason?: LegacyReason };
 
 /** Append ONE decision, returning the self-describing bulk result. PRESERVES the
  *  in-lock allocate → append → bump, the revision capture, the P-070 usage ledger,

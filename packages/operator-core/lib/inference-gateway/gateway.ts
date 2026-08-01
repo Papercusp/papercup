@@ -931,6 +931,13 @@ export interface GatewayStats {
     string,
     { edgeThrottled: boolean; cooldownUntil: number; cooledIpCount: number; bare429Streak: number }
   >;
+  /** EI-18791887279744938 (defect B): pool-wide egress-PROXY reachability, computed from the SAME
+   *  per-IP cooldown map `pickEgress` reads — this can never diverge from what routing actually sees.
+   *  `allDown` is the detector gap the bug named: "nothing alarmed when every proxy was down" —
+   *  `accounts:status` showed only the SYMPTOM (accounts unavailable), never this CAUSE. `totalProxyEntries
+   *  === 0` (no account configures a proxy) or `proxyEgressDisabled` (the kill-switch is on) both read as
+   *  `allDown:false` — there is no proxy path to be down. Optional for deploy-skew readers. */
+  egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean };
   /** Count of 429s shed at ADMISSION because the WHOLE pool was throttled with a far-off reset — the
    *  fail-fast path (B-GW-1) that frees the slot immediately instead of taking the acquire/retry path. */
   shedAllThrottled: number;

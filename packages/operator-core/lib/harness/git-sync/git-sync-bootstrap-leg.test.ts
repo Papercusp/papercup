@@ -40,6 +40,7 @@ const {
   resolveUsageActorMock,
   saveHarnessRegistryMock,
   unsafeMock,
+  sqlTagMock,
   getBootedHarnessMock,
   bootSingleHarnessMock,
   openHiveGitDuplexToDeviceMock,
@@ -117,6 +118,12 @@ const {
   // happy path uses the actor's devicePubkey and never reaches this `??` arm.
   loadCachedLocalAnnounceIdentityMock: vi.fn(async () => null as { devicePubkeyBase64?: string } | null),
   unsafeMock: vi.fn(async (_text: string, _params: unknown[]) => []),
+  // EI-18775478513129278: the `sql` TEMPLATE-TAG call (distinct from `sql.unsafe`,
+  // used by patchRoutineMetadata) — the "dialed but outcome===null" path reads the
+  // prior `bootstrap` metadata through this before writing, to carry forward
+  // durable on-disk progress instead of clobbering it with 0/null. Default resolves
+  // empty (no prior row), matching every existing test's assumption of a fresh routine.
+  sqlTagMock: vi.fn(async (..._parts: unknown[]) => [] as unknown[]),
 }));
 
 // WI-6364: `saveHarnessRegistry` is reached through adopt-refused-repo-key.ts
@@ -181,7 +188,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   // fail-soft catch, which becomes a console.warn, which vitest-fail-on-console
   // reds this ENTIRE file with — 24 misleading failures naming everything
   // except the mock. Same trap as the storage stub set above.
-  const sql = Object.assign(async (..._parts: unknown[]) => [] as unknown[], { unsafe: unsafeMock });
+  const sql = Object.assign(sqlTagMock, { unsafe: unsafeMock });
   return { ...actual, getOrgPg: () => ({ sql }) };
 });
 
@@ -229,6 +236,8 @@ beforeEach(() => {
   hasPendingQuarantineMock.mockResolvedValue(false);
   resolveUsageActorMock.mockClear();
   unsafeMock.mockClear();
+  sqlTagMock.mockClear();
+  sqlTagMock.mockResolvedValue([]); // default: no prior routine row
   getBootedHarnessMock.mockClear();
   bootSingleHarnessMock.mockClear();
   openHiveGitDuplexToDeviceMock.mockClear();

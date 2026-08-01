@@ -118,6 +118,7 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   if (r.terminal_owner !== undefined && !isStringOrNull(r.terminal_owner)) return false;
   if (r.terminal_completion_ref !== undefined && !isStringOrNull(r.terminal_completion_ref)) return false;
   if (r.terminal_reason !== undefined && !isStringOrNull(r.terminal_reason)) return false; // P-009/D-001 — optional on the wire
+  if (r.authority !== undefined && !isStringOrNull(r.authority)) return false; // mig 708/D-035 — optional on the wire
   // payload is jsonb-opaque — accept anything (incl. undefined → null on write).
   return true;
 }
@@ -281,7 +282,8 @@ async function writeToPg(
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
        taken_by, taken_at, payload, author_pubkey, origin, fed_ts, fed_hlc,
-       created_ts, updated_ts, ts, terminal_owner, terminal_completion_ref, terminal_reason)
+       created_ts, updated_ts, ts, terminal_owner, terminal_completion_ref, terminal_reason,
+       authority)
     VALUES
       (${opts.workspaceId}, ${vSlug}, ${row.issue_id}, ${row.kind}, ${row.title},
        ${row.body}, ${row.state}, ${row.assignee}, ${row.assigned_at},
@@ -290,7 +292,8 @@ async function writeToPg(
                 (extract(epoch FROM now()) * 1000)::bigint),
        (extract(epoch FROM now()) * 1000)::bigint,
        (extract(epoch FROM now()) * 1000)::bigint,
-       ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null}, ${row.terminal_reason ?? null})
+       ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null}, ${row.terminal_reason ?? null},
+       ${row.authority ?? null})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       item_kind     = EXCLUDED.item_kind,
       title         = EXCLUDED.title,
@@ -308,7 +311,10 @@ async function writeToPg(
       terminal_completion_ref = EXCLUDED.terminal_completion_ref,
       -- P-009/D-001 (work-item-status-full-unify): the terminal nuance
       -- (resolved→done / closed→dropped) must converge like status itself.
-      terminal_reason = EXCLUDED.terminal_reason
+      terminal_reason = EXCLUDED.terminal_reason,
+      -- mig 708/D-035: same rationale as terminal_reason — the authority axis
+      -- must converge like status itself.
+      authority = EXCLUDED.authority
     -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,

@@ -232,7 +232,8 @@ describe('EI-18793290418757939 — runTsc settles at its own timer even when the
 
   it('resolves promptly with timedOut:true instead of hanging on a child that never emits close', async () => {
     const { child, killCalls } = fakeChild();
-    const spawnSpy = vi.spyOn(childProcess, 'spawn').mockReturnValue(child);
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockReturnValue(child);
     try {
       const start = Date.now();
       // Short timeout; the fake child deliberately never emits 'close' or 'error' —
@@ -248,13 +249,14 @@ describe('EI-18793290418757939 — runTsc settles at its own timer even when the
       expect(elapsedMs).toBeLessThan(2000);
       expect(killCalls).toContain('SIGTERM');
     } finally {
-      spawnSpy.mockRestore();
+      spawnMock.mockReset();
     }
   });
 
   it('a LATE close/error from the child after settling is a harmless no-op (no double-resolve, no crash)', async () => {
     const { child } = fakeChild();
-    const spawnSpy = vi.spyOn(childProcess, 'spawn').mockReturnValue(child);
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockReturnValue(child);
     try {
       const outcome = await runTsc(['--noEmit'], process.cwd(), 20);
       expect(outcome.timedOut).toBe(true);
@@ -263,20 +265,21 @@ describe('EI-18793290418757939 — runTsc settles at its own timer even when the
       expect(() => child.emit('close', 0)).not.toThrow();
       expect(outcome.timedOut).toBe(true);
     } finally {
-      spawnSpy.mockRestore();
+      spawnMock.mockReset();
     }
   });
 
   it('still resolves normally (timedOut:false) when the child closes before the timer fires', async () => {
     const { child } = fakeChild();
-    const spawnSpy = vi.spyOn(childProcess, 'spawn').mockReturnValue(child);
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockReturnValue(child);
     try {
       queueMicrotask(() => child.emit('close', 0));
       const outcome = await runTsc(['--noEmit'], process.cwd(), 5000);
       expect(outcome.timedOut).toBe(false);
       expect(outcome.code).toBe(0);
     } finally {
-      spawnSpy.mockRestore();
+      spawnMock.mockReset();
     }
   });
 });
