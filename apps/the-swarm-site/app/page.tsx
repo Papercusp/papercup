@@ -3,6 +3,10 @@ import { FeatureShowcase } from './gallery-component';
 const tagline =
   'Welcome to the End. Be part of the new beginning. Create or Join a Hive, start a swarm, and mold the future for whatever comes next.';
 
+/** The featured video, same source as the papercup homepage: an env override with
+ *  the same hardcoded fallback id, so both surfaces stay pointed at one video. */
+const featuredVideoId = process.env.NEXT_PUBLIC_FEATURED_VIDEO_ID ?? 'Zasxh_ubQlM';
+
 const lexicon = [
   ['Hive', 'The top-level project you create or join.'],
   ['Swarm', 'The live set of bees working inside a Hive.'],
@@ -59,6 +63,18 @@ export default function Home() {
               <a href="mailto:founders@theswarm.dev?subject=Join%20The%20Swarm">Request access</a>
               <a href="#hive">Enter the Hive</a>
             </div>
+          </div>
+        </section>
+
+        <section id="film" className="video-band" aria-label="Featured video">
+          <div className="video-frame">
+            <iframe
+              src={`https://www.youtube.com/embed/${featuredVideoId}?rel=0&playsinline=1`}
+              title="The Swarm — featured video"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+              loading="lazy"
+            />
           </div>
         </section>
 
