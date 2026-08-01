@@ -1737,6 +1737,51 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const entries = egressEntries(account);
     return proxyEgressDisabled ? entries.filter((e) => !e.proxyUrl) : entries;
   };
+  /**
+   * EI-18791887279744938 (defect B) — pool-wide egress-PROXY reachability. Deliberately computed from the
+   * SAME `ipCooldownUntil` map `pickEgress` reads, so this can never diverge from what routing actually
+   * sees: a proxy entry counts as reachable iff `pickEgress` would currently be willing to pick it.
+   * `fallback` covers a pool with no `entries()` (a single-account pool — the common test/dev shape).
+   */
+  function computeEgressProxyHealth(
+    fallback: ActiveAccount,
+  ): { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean } {
+    const now = Date.now();
+    let totalProxyEntries = 0;
+    let reachableProxyEntries = 0;
+    for (const account of pool.entries?.() ?? [fallback]) {
+      for (const entry of effectiveEgressEntries(account)) {
+        if (!entry.proxyUrl) continue;
+        totalProxyEntries++;
+        if ((ipCooldownUntil.get(egressCacheKey(account.accountId, entry)) ?? 0) <= now) reachableProxyEntries++;
+      }
+    }
+    return {
+      totalProxyEntries,
+      reachableProxyEntries,
+      // No proxy configured, or the operator kill-switch is on ⇒ there is no proxy PATH to be down.
+      allDown: !proxyEgressDisabled && totalProxyEntries > 0 && reachableProxyEntries === 0,
+    };
+  }
+  // Edge-triggered — fires ONCE on the transition into "every proxy egress entry is currently cooled",
+  // and once on recovery, instead of re-logging on every failed attempt while the outage persists.
+  let egressAllProxiesDownAlarmed = false;
+  function checkEgressProxyHealthAlarm(fallback: ActiveAccount): void {
+    const health = computeEgressProxyHealth(fallback);
+    if (health.allDown && !egressAllProxiesDownAlarmed) {
+      egressAllProxiesDownAlarmed = true;
+      log(
+        'error',
+        `inference-gateway: EGRESS ALARM — all ${health.totalProxyEntries} proxy egress ${health.totalProxyEntries === 1 ? 'entry is' : 'entries are'} currently unreachable (transport-cooled); every proxy-egress account is failing or has failed over to box-direct egress (EI-18791887279744938)`,
+      );
+    } else if (!health.allDown && egressAllProxiesDownAlarmed) {
+      egressAllProxiesDownAlarmed = false;
+      log(
+        'warn',
+        `inference-gateway: egress proxy pool RECOVERED — ${health.reachableProxyEntries}/${health.totalProxyEntries} proxy entries reachable again`,
+      );
+    }
+  }
   /** Does `account` have an egress IP OTHER than `currentKey` that is off cooldown right now? */
   const siblingEgressAvailable = (account: ActiveAccount, now: number, currentKey: string): boolean => {
     const entries = effectiveEgressEntries(account);
@@ -3158,6 +3203,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
           egressFailStreak.delete(active.accountId);
           lastEgressOkAt.set(active.accountId, Date.now()); // real traffic proved the route — the proactive prober skips it
           proactiveProbeFailStreak.delete(active.accountId);
+          // EI-18791887279744938 (defect A): a real transport success on THIS exact egress IP means it is
+          // no longer hard-down — clear its escalating streak so a LATER isolated blip re-opens at the base
+          // cooldown, not the escalated exile a chronic streak would otherwise inherit.
+          if (ipTransportFailStreak.has(curEgressKey)) ipTransportFailStreak.delete(curEgressKey);
+          checkEgressProxyHealthAlarm(active); // defect B: a recovered IP may clear a standing "all proxies down" alarm
         } catch (e) {
           clearStall();
           upstreamErrors++;

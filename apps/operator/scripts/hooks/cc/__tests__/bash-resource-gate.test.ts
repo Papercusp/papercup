@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2410,5 +2410,104 @@ describe('substitution verdict handling', () => {
     );
     expect(undeclared).toContain('format: toon');
     expect(() => JSON.parse(undeclared)).toThrow();
+  });
+});
+
+describe('say-once advisory dedup (context-injection-audit P-020, D-030+D-031) — WI-6671 recurrence guard', () => {
+  // The dedup that gates all 29 advisory classes shipped with no test of its
+  // own, and its first version keyed the seen-set on tempfile.gettempdir():
+  // machine-global, shared by every user/install/run on the box, and never
+  // expired. Two defects followed — state leaked ACROSS hermetic fake $HOMEs
+  // (26 gate failures, held `main`), and a recurring session id could suppress
+  // an advisory ONCE AND FOR ALL on that box, the exact "silently swallow a
+  // safety advisory" failure the dedup's own comment promises not to be.
+  // Both are fixed; this block is what keeps them fixed.
+  //
+  // Vehicle: the long-foreground-exec advisory — soft (allow +
+  // additionalContext), deterministic, and needs no operator round-trip.
+  const SEEN_REL = ['.papercusp', 'advisory-seen'];
+
+  const longFg = (sid: string) => ({
+    tool_name: 'Bash',
+    tool_input: { command: 'npm ci', timeout: 300_000 },
+    session_id: sid,
+  });
+
+  /** True when the gate actually EMITTED the advisory rather than suppressing it. */
+  const fired = (out: { stdout: string }) => {
+    const s = out.stdout.trim();
+    if (!s) return false; // silence = suppressed
+    const ctx = JSON.parse(s).hookSpecificOutput?.additionalContext ?? '';
+    return ctx.includes('run_in_background');
+  };
+
+  // A fresh $HOME per test — the seen-set is per-$HOME, so sharing one would
+  // leak suppression between cases and hide exactly the bug under test.
+  const makeHome = (prefix: string) => {
+    const h = mkdtempSync(join(tmpdir(), prefix));
+    const dir = join(h, '.papercusp');
+    mkdirSync(dir, { recursive: true });
+    // Same su-token files the suite's own fake $HOME carries, so the ONLY
+    // difference between this home and the suite's is the thing under test.
+    writeFileSync(join(dir, 'superuser-token'), 'test-token\n');
+    writeFileSync(join(dir, 'su-agent-id'), 'test-agent\n');
+    return h;
+  };
+
+  let home = '';
+  beforeEach(() => {
+    home = makeHome('gate-sayonce-');
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const run = (sid: string, h = home) => runGate(longFg(sid), { HOME: h, PAPERCUSP_SID: sid });
+
+  it('says it ONCE per session — an identical repeat is suppressed', () => {
+    expect(fired(run('s-once'))).toBe(true);
+    expect(fired(run('s-once'))).toBe(false);
+  });
+
+  it('is per-SESSION, not per-box — a different session still hears it', () => {
+    expect(fired(run('s-a'))).toBe(true);
+    expect(fired(run('s-b'))).toBe(true);
+  });
+
+  it('keys the seen-set under $HOME, never machine-global /tmp', () => {
+    run('s-home');
+    expect(readdirSync(join(home, ...SEEN_REL))).toContain('s-home');
+    // Where the original defect wrote. Nothing may recreate it.
+    expect(existsSync(join(tmpdir(), 'papercusp-advisory-seen', 's-home'))).toBe(false);
+  });
+
+  it('does NOT leak across installs — the same session id under a SECOND $HOME still fires', () => {
+    // THE regression. With a machine-global seen-set the second $HOME was
+    // silently suppressed: that is what broke the hermetic-fake-$HOME contract
+    // the whole hook suite is built on, and what reddened the gate 26x.
+    const other = makeHome('gate-sayonce-alt-');
+    try {
+      expect(fired(run('s-shared'))).toBe(true);
+      expect(fired(run('s-shared', other))).toBe(true);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('re-arms once the seen-set lapses — a recurring session id cannot suppress forever', () => {
+    expect(fired(run('s-ttl'))).toBe(true);
+    expect(fired(run('s-ttl'))).toBe(false);
+    const seen = join(home, ...SEEN_REL, 's-ttl');
+    const stale = Date.now() / 1000 - (24 * 3600 + 60); // just past the 24h TTL
+    utimesSync(seen, stale, stale);
+    expect(fired(run('s-ttl'))).toBe(true);
+  });
+
+  it('fails OPEN — an unusable seen-set emits rather than swallowing the advisory', () => {
+    // A dedup bug must never silently swallow a safety advisory. Block the
+    // directory with a regular file so every seen-set operation raises.
+    writeFileSync(join(home, ...SEEN_REL), 'not a directory\n');
+    expect(fired(run('s-failopen'))).toBe(true);
+    expect(fired(run('s-failopen'))).toBe(true); // still emits, every time
   });
 });

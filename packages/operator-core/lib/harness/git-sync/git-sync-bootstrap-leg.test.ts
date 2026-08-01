@@ -816,6 +816,53 @@ describe('runBootstrapLeg', () => {
     }
   });
 
+  /**
+   * EI-18775478513129278, live-caught on the WI-6299 cold-join drill: a tick that
+   * gets NO live dial at all (every candidate a registry miss, `outcome` stays
+   * null) used to force namespaceCount/quarantineRefs/phase/shallow/deepenNext to
+   * 0/null on the SAME write path exercised above — silently erasing the record
+   * of every rung a PRIOR tick had actually climbed and durably landed on disk,
+   * even though nothing on disk regressed. `rungs:0`/`ok:false` are honest for
+   * THIS tick (nothing was dialed); the durable progress fields must instead
+   * carry forward the last-recorded values.
+   */
+  it('EI-18775478513129278: a no-dial tick carries forward the PRIOR durable progress instead of zeroing it', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+      listHiveMembersMock.mockResolvedValue([{ deviceAttestations: [{ device_pubkey: PEER_DEVICE }] }]);
+      openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(true)); // registry miss — no live dial
+      sqlTagMock.mockResolvedValue([
+        {
+          bootstrap: {
+            phase: 'deepen',
+            namespaceCount: 1,
+            quarantineRefs: 4,
+            shallow: true,
+            deepenNext: 128,
+          },
+        },
+      ]);
+
+      await runBootstrapLeg(SLUG, WS);
+
+      expect(bootstrapFromPeerMock).not.toHaveBeenCalled(); // genuinely no dial this tick
+      const patch = routinePatchBody(routinesPatch().params).bootstrap as Record<string, unknown>;
+      // Honest per-tick facts: nothing was dialed, so nothing climbed THIS tick.
+      expect(patch).toMatchObject({ ok: false, rungs: 0, path: 'dialed' });
+      // Carried forward from the prior tick's durable disk state — NOT zeroed.
+      expect(patch).toMatchObject({
+        namespaceCount: 1,
+        quarantineRefs: 4,
+        phase: 'deepen',
+        shallow: true,
+        deepenNext: 128,
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('gh-free self-fallback: resolveUsageActor null → self identity from the announce-identity cache; self is excluded from candidates', async () => {
     getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
     resolveUsageActorMock.mockResolvedValue(null); // gh unauthenticated / rate-limited

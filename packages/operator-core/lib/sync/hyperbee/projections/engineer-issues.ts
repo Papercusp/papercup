@@ -350,7 +350,13 @@ async function writeToPg(
     -- mig 708 / EI-18785839681430807 (D-035): authority joins the digest for the
     -- SAME reason — two racing completions can converge to an identical
     -- status/taken_by/terminal_owner while carrying a DIFFERENT authority (an
-    -- evidence-backed `committed` vs a racing under-evidenced `proposed`).
+    -- evidence-backed 'committed' vs a racing under-evidenced 'proposed').
+    -- WARNING: SINGLE quotes, never backticks. This comment lives INSIDE a
+    -- tagged sql template literal, so a backtick here CLOSES the template and
+    -- the whole module stops PARSING (TS1005/TS1443) -- a hard compile failure
+    -- for every consumer and a red green-gate for the whole fleet, not a style
+    -- nit. It landed here AND in the sibling projections/harness-features.ts in
+    -- the same edit; run: npm run lint:no-sql-comment-backtick
     WHERE harness_shared.fed_apply_wins(
             EXCLUDED.fed_hlc, EXCLUDED.fed_ts, EXCLUDED.author_pubkey,
             md5(concat_ws('|', EXCLUDED.item_kind, EXCLUDED.title, EXCLUDED.summary,

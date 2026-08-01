@@ -2,11 +2,19 @@
 
 **Question:** can we confidently ship the shared-pot (P2P federated) feature to public production?
 
-**VERDICT — 2026-07-27T06:05Z: NO-GO for unconditional public ship. CONDITIONAL-GO on four named
-rows.** The substrate is release-grade and now has its first EARNED green gate; what is missing is
-end-to-end live proof of the work-distribution lifecycle, live proof of the hive-git plane, two
-gate legs the gate itself skips, and one owner-supplied input. Nothing below is waiting on a
-decision — every open row has a named owner and a concrete flip condition.
+**VERDICT — updated 2026-08-01T19:15Z (originally 2026-07-27T06:05Z): NO-GO for unconditional
+public ship. CONDITIONAL-GO on three named rows** (was four). The substrate is release-grade and
+now has an EARNED green gate that no longer skips legs; what is missing is end-to-end live proof
+of the work-distribution lifecycle, live proof of the hive-git plane, and one owner-supplied
+input. Nothing below is waiting on a decision — every open row has a named owner and a concrete
+flip condition.
+
+> **The gate-coverage condition is CLOSED (2026-08-01).** All three formerly-skipped legs now have
+> real verdicts: `from-repo` and `from-repo-witness` ran and PASSED on gate run `20260801-143855`
+> (`GATE: GREEN — content-matrix=PASS from-repo=PASS from-repo-witness=PASS local-matrix=SKIPPED
+> build=OK`, 2026-08-01T15:01:14Z), and `membership_churn` **executed for the first time in its
+> history and passed** on a 3-frame rig. Details + scope caveats in §5. Closed by su-e02f5c3d
+> under the standing owner instruction to drive the remaining p2p lanes to release-ready.
 
 Signed: su-e3b21216 (leader, fleet `p2p-release`), plan
 `p2p-public-release-remaining-lanes-2026-07-16` P-405 / WI-5139.
@@ -108,7 +116,7 @@ logs are from the green run `m1785117063`.
 | 28 | Gate honesty machinery | 🟢 | P-411 scenario-assert integrity audit (fixed `rig_assert_absent` silently PASSing when the probe never ran — security-relevant, backs the revocation/ban leak check) · P-415 settle-barrier false PASS · P-416 rig single-instance lock before the 3.4GB rebuild · P-417 standing-condition EI dedup (57 duplicates) · P-422 timestamped frame logs · roll-call invariant (`run + skipped == registered`) so OVERALL:PASS can no longer imply full coverage |
 | 29 | Packaging freshness — artifacts carry HEAD migrations | 🟢 | P-401/WI-5063 (kills the WI-3969 class: a bundled `.deb` capped at migration 541 vs repo 559+) + P-412/WI-5769 re-confirming the guard holds |
 | 30 | Apple-Silicon arm64 build parity | 🟢 | P-412/WI-5769 — universal build verified to build and boot; arm64/x86_64 parity confirmed ship-ready. (Signing is row 35, a separate input) |
-| 31 | from-repo outbox drain for joined/created hive harnesses (WI-971 / WI-5628) | 🟢 code, ⏭ gate | P-418/WI-5775 — verified live on the real packaged binary: two `two-instance-hive-from-repo-smoke.sh` runs (plain, and with the gate's exact `WITNESS_PROBE=1`+rekey flags) both OVERALL:PASS incl. the bidirectional post-join assertions. **But the gate still runs with `SKIP_FROMREPO`** — see §5 |
+| 31 | from-repo outbox drain for joined/created hive harnesses (WI-971 / WI-5628) | 🟢 code, 🟢 gate (2026-08-01) | P-418/WI-5775 — verified live on the real packaged binary: two `two-instance-hive-from-repo-smoke.sh` runs (plain, and with the gate's exact `WITNESS_PROBE=1`+rekey flags) both OVERALL:PASS incl. the bidirectional post-join assertions. **The gate now runs this leg for real** (`SKIP_FROMREPO=0`) and it passed on 2026-08-01 — see §5 |
 | 32 | Public docs + known-limitations current | 🟢 | P-403/WI-5065; §10 (from-repo closure) and §11 (WI-5441 waiver) of `federation-public-release-known-limitations.mdx` updated this program |
 | 33 | Federation substrate operational hygiene | 🟢 | P-419 outbox stall self-resolved to 0 undrained steady-state (was 19,973 rows) · P-420 wedged-bootstrap gap identified: `never_connected` is deliberately never-alarming, so the EI-8892 DHT liveness probe is the **only** independent signal — documented, not silently assumed |
 
@@ -130,9 +138,12 @@ logs are from the green run `m1785117063`.
    already be stale.**
 2. **hive-git live legs (row 34).** Owned by `p2p-git-live-activation-2026-07-09`; do not
    duplicate its diagnosis.
-3. **Gate coverage gaps (§5).** The two from-repo legs were **enabled in this same pass** (D-016)
-   — coverage lands on the next real gate window. `membership_churn` still needs `--frames=3`;
-   D-007's own flip condition is now met; the flip is tracked as **P-425**.
+3. **Gate coverage gaps (§5).** ~~Two of three~~ **RESOLVED 2026-08-01 for the from-repo pair:**
+   both legs were enabled by D-016 and are now **covered and GREEN** on a real gate window
+   (run `20260801-143855`, `from-repo=PASS from-repo-witness=PASS`). Remaining: `membership_churn`
+   — the `--frames=3` flip landed (P-425) but the gate's local-matrix leg is TTL-deferred
+   (`last-matrix-verdict` 2026-07-26 22:00, `MATRIX_TTL_H=144`), so the leg still has **no
+   verdict of its own**. A manual 3-frame run is being used to produce that first verdict.
 4. **Code-signing certs (§4).** Owner-supplied input, arriving when it arrives.
 
 Rows 1–3 are agent work. Nothing on this list is waiting on a decision.
@@ -162,9 +173,9 @@ GO/NO-GO prep. Everything else proceeds to ready in the meantime.
 
 | Leg | Why it did not run | Flip condition |
 |---|---|---|
-| `from-repo` | Gate ran with `SKIP_FROMREPO=1`, a standing skip-by-default | ✅ **RESOLVED THIS PASS (D-016)** — default flipped 1→0 in both `bin/live-federation-gate.sh` and the systemd unit; verified live via `systemctl --user show … -p Environment` → `SKIP_FROMREPO=0`. Both reasons for the skip were already closed (see §8.5). **Still not a green row until a gate run actually exercises it** — the next run is TTL-deferred (green is 22h-fresh), so expect coverage on the next real window |
-| `from-repo-witness` | Same | ✅ Same flip. Its own blocker — the AK-ban write-plane drop failure, WI-5783 — is **resolved** (root cause: two concurrent boot/merge passes on the owner's instance, pot/home slug vs the owner's member sub-harness slug) |
-| `membership_churn` (order 35) | Needs a third frame; the gate ran `FRAMES=2`, so it had **never executed** in the gate's history (D-007). Until 2026-07-25 this exclusion was silent; it is now a declared SKIP with a stated reason and is covered by the roll-call invariant | ✅ **RESOLVED THIS PASS (P-425)** — D-007's stated trigger (*"flip `--frames=3` the moment the 2-frame gate is genuinely green"*) was met by the earned first green, so the gate now invokes `local-matrix.sh --frames="${MATRIX_FRAMES:-3}"`. Prerequisites verified before flipping: `nproc`=128 ≥ 24 ⇒ a real dedicated `_def_cpuset_c=104-111` (below 24 cores the script disables pinning entirely), `CN_C=pcusp-rig-c`, `IP_C=10.99.0.13`; `--frames` validates `2\|3`; `bash -n` clean. **Coverage lands on the next local-matrix window** (~6 days: `last-matrix-green` 2026-07-26 22:00, `MATRIX_TTL_H=144`). A first-ever red here is coverage, not a regression |
+| `from-repo` | Gate ran with `SKIP_FROMREPO=1`, a standing skip-by-default | 🟢 **NO LONGER A SKIP — COVERED AND GREEN (2026-08-01)**. D-016 flipped the default 1→0; gate run `20260801-143855` then actually EXERCISED it: `GATE: GREEN — content-matrix=PASS from-repo=PASS from-repo-witness=PASS local-matrix=SKIPPED build=OK` (2026-08-01T15:01:14Z, service journal). `from-repo.out` closes `OVERALL: PASS — create-from-repo → discover → join → BIDIRECTIONAL + continuous hive federation proven end-to-end (sidecar mode)` |
+| `from-repo-witness` | Same | 🟢 **NO LONGER A SKIP — COVERED AND GREEN (2026-08-01)**, same run. `WITNESS OVERALL: PASS` proves on the packaged binary: owner-enforcement (`AK ban (B's op DROPPED on A, EN-4): PASS` + unban teeth PASS), the C-001 re-key cut at device granularity (K1 held the pre-revoke epoch key → K3 `B_DEV new-keys=0, remaining-on-B=1, A-new=1`), and the content-level cut (K4b `B-read=no, A-has=1`). First live green since its blocker WI-5783 was fixed (root cause: two concurrent boot/merge passes on the owner's instance, pot/home slug vs the owner's member sub-harness slug). ⚠ Two `from-repo-witness` REDs fired 2026-07-31 (23:00Z, 00:02Z); their logs are gone from `/tmp` and the run banked no frame `serve.log`, so they remain **unattributed** — "transient" is the likely reading, not a proven one. Treat any recurrence as a real regression: it is no longer an expected red |
+| `membership_churn` (order 35) | Needs a third frame; the gate ran `FRAMES=2`, so it had **never executed** in the gate's history (D-007). Until 2026-07-25 this exclusion was silent; it is now a declared SKIP with a stated reason and is covered by the roll-call invariant | 🟢 **FIRST-EVER EXECUTION — AND IT PASSES (2026-08-01).** The P-425 flip (`--frames="${MATRIX_FRAMES:-3}"`) had landed but the gate's local-matrix leg is TTL-deferred, so the leg still had no verdict of its own. Produced one directly with a 3-frame run on the freshly-repacked gate artifact: `✓ PASS membership_churn — membership_churn OK (roster a=2 b=2 c=2; backfill=hello-world\|remote; C→A='hello-world' C→B='hello-world')` — i.e. 3-node roster convergence, a **non-vacuous** backfill leg, and full mesh from the late-joining frame c. Run: `local-matrix.sh --frames=3 --only=content_bidir,membership_churn`, exclusive cores a=120-127 b=112-119 c=104-111, banked triage stamp `151402`. `content_bidir` was included deliberately — without it `membership_churn` finds no `F-A2B` row and silently downgrades its backfill leg to "verified vacuous". ⚠ **SCOPE: this proves the leg, NOT full-matrix coverage** — the run's own verdict says `all 2 EXECUTED scenarios green, but 16 of 18 registered were SKIPPED: this is NOT full-matrix coverage`, and it did **not** write the gate's `last-matrix-verdict`. The standing 18-scenario verdict still lands on the gate's own next window |
 
 ---
 

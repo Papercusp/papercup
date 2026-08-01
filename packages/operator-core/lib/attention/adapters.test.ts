@@ -487,6 +487,29 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     expect(a.body).toBe('ship it');
   });
 
+  /* WI-6597 — itemRef was hardcoded null here, which made the HUD Work-items
+     board's ask-vs-work-item dedupe inert (its `!a.itemRef ||` disjunct was true
+     for 60/60 live cards, so every needs-human item rendered TWICE in the same
+     column), degraded the card's `ref` to the kind label "Work item", and left a
+     curator `wi:<ref>` drill-in with nothing to match. */
+  it('work-item-needs-human: carries the item id in itemRef, HARNESS-QUALIFIED', () => {
+    const a = workItemNeedsHumanToAttention({
+      workItemId: 'WI-9001',
+      itemKind: 'bug',
+      title: 'connector auth broke',
+      harnessSlug: 'papercusp',
+    });
+    // The curator's own shape (`papercusp#WI-6594`) — a work-item lookup is
+    // harness-scoped, so a bare id is not resolvable on a cross-harness surface.
+    expect(a.itemRef).toBe('papercusp#WI-9001');
+  });
+
+  it('work-item-needs-human: falls back to the bare id when no harness is known', () => {
+    const a = workItemNeedsHumanToAttention({ workItemId: 'EI-42', itemKind: 'bug', title: 't' });
+    // Still populated: a null here is what made the downstream guard inert.
+    expect(a.itemRef).toBe('EI-42');
+  });
+
   it('owner-wall: a Decision; stranded status appends a respawn note to the body', () => {
     const waiting = ownerWallToAttention({
       source: 'loop-carry-note',
