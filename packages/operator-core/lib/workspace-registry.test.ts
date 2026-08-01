@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, readFileSync, writeFileSync, rmSync, mkdtempSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, rmSync, mkdtempSync, mkdirSync, readdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -328,5 +328,71 @@ describe('backgroundWorkspaceIds — which workspaces a background job covers (P
     process.env.PAPERCUSP_SHARED_OPERATOR = '1';
     writeFileSync(join(root, 'registry.json'), JSON.stringify({ workspaces: [] }));
     expect(backgroundWorkspaceIds()).toEqual([DEFAULT_WORKSPACE_ID]);
+  });
+});
+
+/**
+ * WI-6734: a CORRUPT registry must never be reported as an EMPTY one.
+ *
+ * `activeWorkspaceId()` resolves `reg.current ?? reg.workspaces[0]?.id ??
+ * DEFAULT_WORKSPACE_ID`, so "empty" silently scopes every caller to the legacy
+ * `'default'` partition — retired by the COORD_PER_WORKSPACE cutover and dead
+ * since 2026-07-27. Reads made under that scope return zero rows, which the tool
+ * surface renders as an authoritative "does not exist".
+ */
+describe('workspace-registry — a corrupt registry is not an empty one (WI-6734)', () => {
+  const KEY = 'PAPERCUSP_WORKSPACES_ROOT';
+  let prev: string | undefined;
+  let root: string;
+
+  beforeEach(() => {
+    prev = process.env[KEY];
+    root = mkdtempSync(join(tmpdir(), 'ws-registry-corrupt-'));
+    process.env[KEY] = root;
+  });
+
+  afterEach(() => {
+    if (prev === undefined) delete process.env[KEY];
+    else process.env[KEY] = prev;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('THROWS on an unparseable registry instead of silently returning an empty one', () => {
+    writeFileSync(join(root, 'registry.json'), '{"current":"papercusp-workspace","workspa');
+    expect(() => readRegistry()).toThrow(WorkspaceRegistryUnreadableError);
+  });
+
+  it('the throw names the false-NOT-FOUND consequence, so the cause is not re-derived', () => {
+    writeFileSync(join(root, 'registry.json'), 'not json at all');
+    expect(() => readRegistry()).toThrow(/refusing to report it as EMPTY/);
+    expect(() => readRegistry()).toThrow(new RegExp(DEFAULT_WORKSPACE_ID));
+  });
+
+  it('a corrupt registry does NOT silently resolve activeWorkspaceId to the retired default partition', () => {
+    writeFileSync(join(root, 'registry.json'), '{ truncated');
+    delete process.env.PAPERCUSP_WORKSPACE_ID;
+    // The pre-fix behaviour returned DEFAULT_WORKSPACE_ID here — a valid-looking
+    // id pointing at a dead partition, which is the whole defect.
+    expect(() => activeWorkspaceId()).toThrow(WorkspaceRegistryUnreadableError);
+  });
+
+  it('a MISSING registry is still legitimately empty (first run) — not an error', () => {
+    expect(existsSync(join(root, 'registry.json'))).toBe(false);
+    expect(readRegistry()).toEqual({ workspaces: [] });
+  });
+
+  it('writeRegistry is atomic — a reader never observes a torn file, and leaves no tmp behind', () => {
+    const reg = { current: 'papercusp-workspace', workspaces: [{ id: 'papercusp-workspace', name: 'P', createdAt: 1 }] };
+    writeRegistry(reg);
+    expect(readRegistry()).toEqual(reg);
+    // The temp file is renamed, never left as debris beside the registry.
+    expect(readdirSync(root).filter((f) => f.includes('.tmp'))).toEqual([]);
+  });
+
+  it('writeRegistry replaces an existing registry without a truncation window', () => {
+    writeRegistry({ current: 'a', workspaces: [{ id: 'a', name: 'A', createdAt: 1 }] });
+    writeRegistry({ current: 'b', workspaces: [{ id: 'b', name: 'B', createdAt: 2 }] });
+    expect(readRegistry().current).toBe('b');
+    expect(readdirSync(root).filter((f) => f.includes('.tmp'))).toEqual([]);
   });
 });

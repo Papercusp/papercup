@@ -1013,6 +1013,12 @@ import './fleet/leader-brief';
 // catching a bench miss at stage time) instead of a hand-written per-member
 // convention; { list: true } queries who's benched, on what key, staged how.
 import './fleet/bench';
+// fleet:require-checkpoint — leader-initiated FORCED checkpoint that RETURNS
+// whether it landed (fleet-leadership-continuity-and-actuation-2026-08-01 P-012):
+// the answer a leader needs before standing a member down / killing it /
+// advising a compaction, DERIVED from the checkpoint ledger via P-013's
+// expectEffect resolver rather than taken on the member's word.
+import './fleet/require-checkpoint';
 // fleet:place_batch — one-wake BATCH placement (queen-autonomous-execution
 // B-07 / P-001+P-002): ranks task↔bee affinity + fans spawn/warm-inject across
 // the fleet in a single call (the Queen's serial placement loop, collapsed).

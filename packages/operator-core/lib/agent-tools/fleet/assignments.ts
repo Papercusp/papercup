@@ -71,8 +71,10 @@ import { resolveEffectiveStatusForItems } from '../plans/effective-status';
 import { shapeDagFrontier, claimsFromCoverage, type DagFrontierView } from '../../fleet-dag-view';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
 
-/** Coverage levels most-covered → least, for sorting the rollup. */
-const COVERAGE_ORDER = ['complete', 'full', 'partial', 'unclaimed', 'none'];
+/** Coverage levels most-covered → least, for sorting the rollup. Every member of
+ *  CoverageLevel must appear: `indexOf` returns -1 for an unlisted one, which sorts
+ *  it ABOVE 'complete' as if it were the most-covered band (pinned by a test). */
+export const COVERAGE_ORDER = ['complete', 'full', 'partial', 'held-not-live', 'unclaimed', 'none'];
 
 /** A 'complete' coverage entry stays in the DEFAULT rollup only while its newest
  *  linked work-item update is this recent (EI-9015). */

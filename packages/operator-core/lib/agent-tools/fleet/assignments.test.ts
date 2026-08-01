@@ -19,6 +19,7 @@ import {
   decorateDirectiveActuation,
   decorateCoordDeafness,
   filterActiveCoverage,
+  COVERAGE_ORDER,
   COVERAGE_ACTIVE_WINDOW_MS,
   VERDICT_SPEAKING_FRESH_MS,
   VERDICT_STALL_MS,
@@ -27,7 +28,7 @@ import {
 import fleetAssignmentsTool from './assignments';
 import { shapeFleetAssignments } from './assignments-shape';
 import type { AgentAssignment } from '../../fleet/assignments';
-import type { PlanItemCoverage, CoverageLevel } from '../../plan-item-coverage';
+import { COVERAGE_LEVELS, type PlanItemCoverage, type CoverageLevel } from '../../plan-item-coverage';
 import type { WakeMode } from '../coordination/wake-mode';
 import type { SessionState, WakeabilitySignals } from '../coordination/presence-wakeability';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
@@ -763,6 +764,29 @@ describe('shapeFleetAssignments carries unanswered at every tier (P-007 fleet-re
   });
 });
 
+describe('COVERAGE_ORDER', () => {
+  // The rollup sorts by COVERAGE_ORDER.indexOf(level), and indexOf returns -1 for
+  // an unlisted band — which sorts it ABOVE 'complete', i.e. a NEW level silently
+  // renders as the MOST-covered thing on the board. That is the worst possible
+  // default for a level like 'held-not-live' whose whole point is "nobody is live
+  // on this, go take it". Adding a CoverageLevel must therefore also extend this
+  // list; pinning it against COVERAGE_LEVELS makes the omission fail here rather
+  // than as a quietly-mis-sorted leader read.
+  it('covers every CoverageLevel — an unlisted band would sort as most-covered', () => {
+    expect([...COVERAGE_ORDER].sort()).toEqual([...COVERAGE_LEVELS].sort());
+  });
+
+  it('runs most-covered → least', () => {
+    expect(COVERAGE_ORDER.indexOf('complete')).toBeLessThan(COVERAGE_ORDER.indexOf('full'));
+    expect(COVERAGE_ORDER.indexOf('full')).toBeLessThan(COVERAGE_ORDER.indexOf('partial'));
+    // held-not-live is LESS covered than partial (nothing live) but MORE informative
+    // than unclaimed (a holder is on record) — it sits between them.
+    expect(COVERAGE_ORDER.indexOf('partial')).toBeLessThan(COVERAGE_ORDER.indexOf('held-not-live'));
+    expect(COVERAGE_ORDER.indexOf('held-not-live')).toBeLessThan(COVERAGE_ORDER.indexOf('unclaimed'));
+    expect(COVERAGE_ORDER.indexOf('unclaimed')).toBeLessThan(COVERAGE_ORDER.indexOf('none'));
+  });
+});
+
 describe('filterActiveCoverage (EI-9015)', () => {
   const NOW = Date.UTC(2026, 6, 10, 12, 0, 0); // fixed epoch for determinism
   const DAY = 24 * 3600 * 1000;
@@ -812,12 +836,14 @@ describe('filterActiveCoverage (EI-9015)', () => {
       cov('p#P-2', 'partial', staleTs),
       cov('p#P-3', 'unclaimed', staleTs),
       cov('p#P-4', 'unclaimed', null),
+      cov('p#P-5', 'held-not-live', staleTs),
     ];
     expect(refs(filterActiveCoverage(entries, { now: NOW }))).toEqual([
       'p#P-1',
       'p#P-2',
       'p#P-3',
       'p#P-4',
+      'p#P-5',
     ]);
   });
 

@@ -253,6 +253,7 @@ const midTurnContext = defineTool({
       toolInput?: unknown;
       workspace?: string;
       harness?: string;
+      cwd?: string;
     };
     try {
       body = (await req.json()) as typeof body;
@@ -273,7 +274,26 @@ const midTurnContext = defineTool({
       if (!admitCall(owner, query, Date.now())) return Response.json({ ok: true, text: '' });
       pruneRateState(Date.now());
 
-      const harness = (body.harness ?? '').trim();
+      let harness = (body.harness ?? '').trim();
+      // EI-18893248175645463, mid-turn half (P-038). PAPERCUSP_HARNESS_SLUG is
+      // only exported for harness-scoped spawns, so an operator/superuser-scope
+      // session never sends `harness` — and BOTH the harness AND hive pools
+      // (hive resolution fans out FROM harnessSlugs) went empty for that
+      // session's whole lifetime. Measured over 7d before this fix: 44.8% of
+      // mid-turn recalls queried the harness pool with ZERO scopes, and in
+      // exactly those the user pool alone filled all 12 slots — which is what
+      // made this surface read as 100% "saturated" and look like a fusion-ceiling
+      // failure (F-B) when the ceiling was working fine and the other two pools
+      // were simply never asked. Same fallback the turn-start sibling uses, on
+      // the CLIENT's cwd (loopback hook, so its cwd is the session's).
+      if (!harness && typeof body.cwd === 'string' && body.cwd.trim()) {
+        try {
+          const { detectHarnessSlugSync } = await import('../../../memory/detect-harness-slug');
+          harness = detectHarnessSlugSync({ cwd: body.cwd.trim() }).slug ?? '';
+        } catch {
+          /* best-effort — an empty harness just stays a bare-session pull */
+        }
+      }
       const workspace = (body.workspace ?? '').trim();
       const { activeWorkspaceId } = await import('../../../workspace-registry');
       const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();

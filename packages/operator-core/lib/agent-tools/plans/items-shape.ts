@@ -75,7 +75,13 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
       phase: clip(item.phase, c.phase),
       /** Count of live blockers (unresolved P-refs + open issue-blocks). */
       blockers: unresolved + issueBlocks,
-      /** Coverage level ("is anyone working this") — full/partial/none-ish. */
+      /** Coverage level ("is anyone LIVE on this") — complete/full/partial/
+       *  held-not-live/unclaimed/none. It is LIVENESS-aware, so it disagrees with
+       *  the work-item ledger's `assignee` column by design: an assignee outlives
+       *  its holder, `working` does not. `held-not-live` is that exact case —
+       *  a holder is recorded but is dead/stalled/unconfirmable, so the item is
+       *  RECLAIMABLE and the ledger's named assignee is a ghost. Don't read a
+       *  disagreement as one surface lagging the other. */
       working: typeof coverage?.level === "string" ? coverage.level : null,
       /** EI-18679411140143743: linked work is DONE but this item's own status
        *  isn't — a silent burn-down divergence a leader must not miss even in

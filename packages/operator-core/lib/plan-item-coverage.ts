@@ -35,6 +35,17 @@
  * "Actively worked" ≡ activity progressing|alive (claimed by a LIVE holder). A
  * stalled/dead claim is RECLAIMABLE and deliberately does NOT count as covered —
  * the same truth fleet:assignments enforces (agent-activity-liveness-truth).
+ *
+ * COVERAGE IS LIVENESS-AWARE; THE WORK-ITEM LEDGER'S `assignee` IS NOT. That is
+ * the one thing to know before comparing the two surfaces (P-005,
+ * trap-guards-followups-2026-08-01). `harness_shared.work_items.assignee` is a
+ * column that persists after its holder dies; the level below is recomputed from
+ * live activity every read. So `plans:items` reporting nobody on an item that the
+ * ledger says is assigned is CORRECT AND EXPECTED — not a lag, not a missing link,
+ * not a stale cache. The `held-not-live` band exists to say so out loud, because
+ * the previous collapse of that case into `unclaimed`/`none` ("nobody on it" /
+ * "genuinely unworked") actively invited the wrong conclusion — including from an
+ * agent that then went looking for a nonexistent bug in the stamp/link path.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
@@ -80,6 +91,24 @@ function isLiveActivity(a: ItemActivity): boolean {
 }
 
 /**
+ * A claim EXISTS on the item but its holder is not live — `dead` (holder confirmed
+ * gone), `stalled` (no progress in the window), or `reserved` (holder liveness
+ * unknown). The complement of `free` among the non-live activities.
+ *
+ * This is the distinction P-005 (trap-guards-followups-2026-08-01) exists to make
+ * visible. Coverage collapsed all of these into `unclaimed`/`none`, which are
+ * documented as "nobody on it" / "genuinely unworked" — but the work-item ledger
+ * still shows an `assignee`, because an assignee persists past its holder's death.
+ * A reader comparing the two surfaces sees `working:'unclaimed'` next to a named
+ * assignee and concludes one of them is LYING or LAGGING. Neither is: coverage is
+ * liveness-aware and the ledger column is not. Splitting the level out states that
+ * directly, so the reclaimable case is legible instead of inferred.
+ */
+function isHeldButNotLive(a: ItemActivity | null | undefined): boolean {
+  return a != null && a !== 'free' && !isLiveActivity(a);
+}
+
+/**
  * EI-18679411140143743: is a plan item's own status STALE against its linked
  * work-item(s)? True when coverage says every linked work-item is done
  * (`level === 'complete'`) but the plan item's own status is still non-terminal
@@ -115,12 +144,21 @@ export function isCoverageDivergent(effectiveStatus: string, level: CoverageLeve
  *  in the compacted `links[]` a caller reads. */
 export const STAMP_ONLY_REL = 'plan_item_stamp';
 
-export type CoverageLevel =
-  | 'none' // no linked work-item AND no direct claim → genuinely unworked
-  | 'unclaimed' // links exist but every one is open + un-held (filed, nobody on it / stalled / dead)
-  | 'partial' // some linked work is live-held (or a direct claim) but not all open links are
-  | 'full' // every non-terminal linked work-item is live-held (or a bare direct claim)
-  | 'complete'; // ≥1 link and EVERY linked work-item is terminal (the work is done)
+/**
+ * Every coverage band, as a VALUE — so a consumer that must handle all of them
+ * (fleet:assignments' sort order) can be pinned against this list by a test
+ * instead of by a hand-copied literal that silently rots when a band is added.
+ */
+export const COVERAGE_LEVELS = [
+  'none', // no link and no claim of any kind → genuinely unworked, nobody ever took it
+  'unclaimed', // links exist, all open, and NO link/claim has a holder at all (filed, never taken)
+  'held-not-live', // a holder IS recorded (link or direct claim) but none is live → RECLAIMABLE
+  'partial', // some linked work is live-held (or a direct claim) but not all open links are
+  'full', // every non-terminal linked work-item is live-held (or a bare direct claim)
+  'complete', // ≥1 link and EVERY linked work-item is terminal (the work is done)
+] as const;
+
+export type CoverageLevel = (typeof COVERAGE_LEVELS)[number];
 
 export interface CoverageWorkLink {
   /** WI-/EI-/F- id of the linked work-item. */
@@ -161,17 +199,36 @@ export interface PlanItemCoverage {
  * Pure coverage classifier (unit-testable, no I/O). `links` carry each linked
  * work-item's terminal flag + live activity; `directlyClaimed` is whether a LIVE
  * plan-item claim sits on the item. See {@link CoverageLevel} for the bands.
+ *
+ * `directActivity` is the DIRECT plan-item claim's raw activity (null when no
+ * claim row exists at all). It is separate from `directlyClaimed` because that
+ * flag is already narrowed to LIVE holders by the caller — so a dead/stalled
+ * direct claim arrives here as `directlyClaimed:false`, indistinguishable from
+ * "no claim" without this argument. Optional so existing callers keep compiling;
+ * omitting it only costs the held-not-live/none distinction for direct claims.
  */
 export function classifyCoverage(
   links: Pick<CoverageWorkLink, 'terminal' | 'activity'>[],
   directlyClaimed: boolean,
+  directActivity?: ItemActivity | null,
 ): CoverageLevel {
-  if (links.length === 0) return directlyClaimed ? 'full' : 'none';
+  if (links.length === 0) {
+    if (directlyClaimed) return 'full';
+    // A direct claim whose holder died does NOT read as "genuinely unworked": the
+    // claim row survives its holder, and so does the work-item ledger's assignee.
+    return isHeldButNotLive(directActivity) ? 'held-not-live' : 'none';
+  }
   const nonTerminal = links.filter((l) => !l.terminal);
   // Every linked work-item is done → the plan item's work is complete (don't restart).
   if (nonTerminal.length === 0) return 'complete';
   const anyLive = directlyClaimed || nonTerminal.some((l) => isLiveActivity(l.activity));
-  if (!anyLive) return 'unclaimed';
+  if (!anyLive) {
+    // Nothing live — but is that "never taken" or "taken by someone who is gone"?
+    // Both are pickable; only the second explains a non-null ledger assignee.
+    return isHeldButNotLive(directActivity) || nonTerminal.some((l) => isHeldButNotLive(l.activity))
+      ? 'held-not-live'
+      : 'unclaimed';
+  }
   // Fully covered iff every still-open linked work-item is live-held.
   if (nonTerminal.every((l) => isLiveActivity(l.activity))) return 'full';
   return 'partial';
@@ -435,7 +492,7 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
     const links = byRef.get(ref) ?? [];
     const direct = directClaim.get(ref) ?? null;
     const directlyClaimed = Boolean(direct && isLiveActivity(direct.activity));
-    const level = classifyCoverage(links, directlyClaimed);
+    const level = classifyCoverage(links, directlyClaimed, direct?.activity ?? null);
     const workers = new Set<string>();
     for (const l of links) if (l.holder) workers.add(l.holder);
     if (directlyClaimed && direct?.holderId) workers.add(direct.holderId);

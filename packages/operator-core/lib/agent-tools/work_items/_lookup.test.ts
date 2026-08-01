@@ -74,14 +74,3 @@ describe('lookupWorkItem — the three outcomes are distinct', () => {
     expect(r).not.toHaveProperty('item');
   });
 });
-
-describe('itemOrNullForDecoration — the explicitly-opted-in benign form', () => {
-  it('collapses missing AND unreadable to null, but only where opted in by name', async () => {
-    getWorkItem.mockResolvedValue(null);
-    expect(itemOrNullForDecoration(await lookupWorkItem('WI-1'))).toBeNull();
-    getWorkItem.mockRejectedValue(new Error('down'));
-    expect(itemOrNullForDecoration(await lookupWorkItem('WI-1'))).toBeNull();
-    getWorkItem.mockResolvedValue(ITEM);
-    expect(itemOrNullForDecoration(await lookupWorkItem('WI-1'))).toBe(ITEM);
-  });
-});

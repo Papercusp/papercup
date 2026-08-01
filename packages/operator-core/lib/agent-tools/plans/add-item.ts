@@ -336,7 +336,12 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
   }
 
   if (!result.value.ok) {
-    return { ok: false, slug: it.slug, error: result.value.code };
+    return {
+      ok: false,
+      slug: it.slug,
+      error: result.value.code,
+      ...('reason' in result.value && result.value.reason ? { reason: result.value.reason } : {}),
+    };
   }
 
   // `result.value` is narrowed to the ok-variant by the guard above.

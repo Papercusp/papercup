@@ -37,12 +37,52 @@ describe('classifyCoverage', () => {
     expect(classifyCoverage([link(true, 'free')], true)).toBe('complete');
   });
 
-  it('unclaimed — open links but nobody live on them', () => {
+  it('unclaimed — open links that NO ONE has ever held', () => {
     expect(classifyCoverage([link(false, 'free')], false)).toBe('unclaimed');
-    // stalled / dead claims are reclaimable → NOT covered
-    expect(classifyCoverage([link(false, 'stalled')], false)).toBe('unclaimed');
-    expect(classifyCoverage([link(false, 'dead')], false)).toBe('unclaimed');
-    expect(classifyCoverage([link(false, 'reserved')], false)).toBe('unclaimed');
+    expect(classifyCoverage([link(false, 'free'), link(false, 'free')], false)).toBe('unclaimed');
+    // a terminal sibling doesn't make the still-open, never-held link look held
+    expect(classifyCoverage([link(true, 'free'), link(false, 'free')], false)).toBe('unclaimed');
+  });
+
+  // P-005 (trap-guards-followups-2026-08-01). These three used to roll up to
+  // 'unclaimed' — the same band as 'free' — which is documented as "nobody on it".
+  // But dead/stalled/reserved all mean a claim row EXISTS with a holder on it, and
+  // so does the work-item ledger's `assignee`. Collapsing them made plans:items
+  // read `working:'unclaimed'` beside a named assignee, which looks like one of the
+  // two surfaces lagging or lying. It is neither: coverage is liveness-aware and the
+  // ledger column is not (an assignee outlives its holder). Keep them SEPARATE.
+  it('held-not-live — open links whose holder is recorded but not live (RECLAIMABLE)', () => {
+    expect(classifyCoverage([link(false, 'stalled')], false)).toBe('held-not-live');
+    expect(classifyCoverage([link(false, 'dead')], false)).toBe('held-not-live');
+    expect(classifyCoverage([link(false, 'reserved')], false)).toBe('held-not-live');
+    // one never-held link + one dead-held link ⇒ still a recorded holder to explain
+    expect(classifyCoverage([link(false, 'free'), link(false, 'dead')], false)).toBe('held-not-live');
+  });
+
+  it('held-not-live — a DIRECT plan-item claim whose holder died, with no links', () => {
+    // The pre-P-005 gap this closes: `directlyClaimed` is already narrowed to LIVE
+    // holders by the caller, so a dead direct claim arrived as `false` and read as
+    // 'none' — "genuinely unworked" — while a claim row and a holder id sat on it.
+    expect(classifyCoverage([], false, 'dead')).toBe('held-not-live');
+    expect(classifyCoverage([], false, 'stalled')).toBe('held-not-live');
+    expect(classifyCoverage([], false, 'reserved')).toBe('held-not-live');
+    // and a dead direct claim over never-held links is still explained by a holder
+    expect(classifyCoverage([link(false, 'free')], false, 'dead')).toBe('held-not-live');
+  });
+
+  it('none — nothing held it, not even a lapsed claim', () => {
+    expect(classifyCoverage([], false, 'free')).toBe('none');
+    expect(classifyCoverage([], false, null)).toBe('none');
+    expect(classifyCoverage([], false, undefined)).toBe('none');
+  });
+
+  it('a live holder still outranks any lapsed one', () => {
+    // a live direct claim wins over dead links…
+    expect(classifyCoverage([link(false, 'dead')], true)).toBe('partial');
+    // …and a live link wins over a dead direct claim
+    expect(classifyCoverage([link(false, 'progressing')], false, 'dead')).toBe('full');
+    // completion still short-circuits: the work is done, the ghost claim is moot
+    expect(classifyCoverage([link(true, 'free')], false, 'dead')).toBe('complete');
   });
 
   it('full — every still-open linked work-item is live-held', () => {

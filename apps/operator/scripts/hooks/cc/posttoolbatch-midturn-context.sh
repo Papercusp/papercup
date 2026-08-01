@@ -95,6 +95,17 @@ body = json.dumps({
     'toolCalls': digest,
     'workspace': os.environ.get('PAPERCUSP_WORKSPACE') or '',
     'harness': os.environ.get('PAPERCUSP_HARNESS_SLUG') or '',
+    # EI-18893248175645463, mid-turn half (context-injection-audit P-038):
+    # PAPERCUSP_HARNESS_SLUG is only exported for harness-scoped spawns, so an
+    # operator/superuser-scope session never sends one and BOTH the harness and
+    # hive pools go empty for that session's entire lifetime. The turn-start
+    # sibling (userpromptsubmit-memory.sh) was fixed; this surface has the
+    # IDENTICAL defect and was not — measured 2026-08-01 over 7d: 44.8% of
+    # mid-turn recalls queried the harness pool with ZERO scopes, and in exactly
+    # those the user pool alone filled all 12 slots (44.8%, a near-perfect
+    # correlation). cwd lets the server run the same env→marker-file→meta-repo
+    # fallback chain (detect-harness-slug.ts) instead of giving up outright.
+    'cwd': os.getcwd(),
 }).encode('utf-8')
 
 # localhost operator: never via egress http(s)_proxy (502s the local call).

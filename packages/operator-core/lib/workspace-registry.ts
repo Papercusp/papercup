@@ -6,7 +6,7 @@
  * consumer of companyId was removed — audit P-047.)
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -46,18 +46,75 @@ function registryPath(): string {
   return join(workspacesRoot(), 'registry.json');
 }
 
-export function readRegistry(): WorkspaceRegistry {
-  const p = registryPath();
-  if (!existsSync(p)) return { workspaces: [] };
-  try {
-    return JSON.parse(readFileSync(p, 'utf8')) as WorkspaceRegistry;
-  } catch {
-    return { workspaces: [] };
+/**
+ * The registry exists but could not be read or parsed. Distinct from "no
+ * registry yet" ON PURPOSE — see {@link readRegistry}.
+ */
+export class WorkspaceRegistryUnreadableError extends Error {
+  constructor(
+    readonly path: string,
+    readonly cause: unknown,
+  ) {
+    super(
+      `workspace registry at ${path} exists but could not be parsed — refusing to report it as EMPTY, ` +
+        `because an empty registry resolves activeWorkspaceId() to the legacy '${DEFAULT_WORKSPACE_ID}' ` +
+        `partition and every scoped read then answers a confident false NOT-FOUND (WI-6734). ` +
+        `Cause: ${String(cause)}`,
+    );
+    this.name = 'WorkspaceRegistryUnreadableError';
   }
 }
 
+/**
+ * Read the registry.
+ *
+ * ⚠ A CORRUPT REGISTRY IS NOT AN EMPTY ONE — that conflation is a silent
+ * wrong-scope bug, not a tidy default (WI-6734). `activeWorkspaceId()` resolves
+ * `reg.current ?? reg.workspaces[0]?.id ?? DEFAULT_WORKSPACE_ID`, so returning
+ * `{ workspaces: [] }` for an unreadable file silently scopes the caller to the
+ * legacy `'default'` partition — which the COORD_PER_WORKSPACE cutover retired
+ * (measured 2026-08-01: 104 rows, none since 2026-07-27, against 115,179 live
+ * ones in `papercusp-workspace`). Every lookup made under that scope returns
+ * zero rows, and the tool surface renders zero rows as an authoritative
+ * "does not exist" rather than "I could not determine where to look".
+ *
+ * So: a MISSING file is legitimately empty (first run); an UNREADABLE one
+ * throws {@link WorkspaceRegistryUnreadableError}. Failing loudly is the whole
+ * point — any answer we could invent here is a guess wearing a valid-looking
+ * workspace id.
+ *
+ * The retry covers a reader racing a writer on a filesystem where `rename` is
+ * not atomic; `writeRegistry` makes that race impossible on POSIX.
+ */
+export function readRegistry(): WorkspaceRegistry {
+  const p = registryPath();
+  if (!existsSync(p)) return { workspaces: [] };
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return JSON.parse(readFileSync(p, 'utf8')) as WorkspaceRegistry;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw new WorkspaceRegistryUnreadableError(p, lastErr);
+}
+
+/**
+ * Write the registry ATOMICALLY (temp file + `rename`).
+ *
+ * A plain `writeFileSync` truncates-then-writes, so a concurrent reader on this
+ * heavily-parallel fleet can observe a PARTIAL file, fail to parse it, and — before
+ * the guard above — silently resolve to the retired `'default'` partition. `rename`
+ * is atomic on POSIX, so a reader sees either the whole old file or the whole new
+ * one, never a torn one.
+ */
 export function writeRegistry(reg: WorkspaceRegistry): void {
-  writeFileSync(registryPath(), JSON.stringify(reg, null, 2));
+  const p = registryPath();
+  mkdirSync(workspacesRoot(), { recursive: true });
+  const tmp = `${p}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(reg, null, 2));
+  renameSync(tmp, p);
 }
 
 /**

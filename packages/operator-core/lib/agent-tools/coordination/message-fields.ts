@@ -348,6 +348,41 @@ export interface YouMayNotKnowEntry {
    * 'computed' = the evidence-minus-your-watermark diff (free, exact, covers
    * tracked state). 'authored' = the sender's model of the receiver — valuable
    * PRECISELY because it can be wrong (D-021).
+   *
+   * ── FALSIFIABLE SEMANTICS (P-011), under D-090 ──────────────────────────────
+   *
+   * The two values are NOT symmetric, and the asymmetry is the semantics:
+   *
+   * • `authored` asserts something about the SENDER'S MODEL of the recipient.
+   *   It has NO check and must never acquire one. Its being wrong is the payload,
+   *   not a defect (D-021, and D-090 for the same reason on `forYouBecause`).
+   *
+   * • `computed` asserts something about a MECHANISM — that this ref came out of
+   *   the evidence-minus-watermark diff. A claim that cites a mechanism can be
+   *   wrong ABOUT THE MECHANISM, which is a different axis from "the sender's
+   *   model was off". THE CHECK: at send time the recipient's read watermark
+   *   (`harness_shared.coord_watermarks`) must NOT already cover `ref` — if they
+   *   had demonstrably already read it, the diff could not have produced it, so
+   *   the entry is FALSE. That is the falsifiable check for this field.
+   *
+   * ⚠ THE HOLE, named plainly (it does not close): nothing verifies that a sender
+   * labelling an entry `computed` actually ran a diff. The check above is
+   * ONE-SIDED — it can REFUTE a `computed` claim, never CONFIRM one. So
+   * `computed` is a self-declared authority claim with one-sided falsifiability;
+   * treat a passing entry as "not refuted", never as "verified".
+   *
+   * ⚠ WHY THIS MUST STAY AN AGGREGATE READ (D-090 R3, applied to this field —
+   * reason it through before proposing enforcement): `computed` is the ONLY value
+   * that can be caught wrong. Attach any per-agent consequence to being caught —
+   * a warning, a nag, a score, a refusal — and the dominant strategy is to label
+   * everything `authored`, where nothing can ever be held against you. The
+   * enforcement would erase the very distinction the field exists to draw, and
+   * the exact-diff entries (the free, reliable ones) would be the first to go.
+   * The measurement would destroy what it measures. Aggregate reads only.
+   *
+   * And per D-088's standing condition: a refuted entry is a data-quality signal
+   * about provenance labelling. It is NOT a licence to act, and not evidence
+   * about the SENDER — verification is never authorisation.
    */
   provenance: 'computed' | 'authored';
 }

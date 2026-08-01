@@ -193,9 +193,10 @@ describe('executeDeploy — happy path', () => {
     await executeDeploy(cfg, plan, deps);
     const deployed = captured.find((c) => c.key === 'release:deployed');
     expect(deployed).toBeTruthy();
+    expect(deployed!.summary).toBeTruthy();
     const payloadMigrations = (deployed!.payload as { migrations: string[] }).migrations;
     expect(payloadMigrations).toHaveLength(plan.migrations.length);
-    const summaryCount = Number(deployed!.summary.match(/(\d+) migration/)?.[1]);
+    const summaryCount = Number(deployed!.summary!.match(/(\d+) migration/)?.[1]);
     expect(summaryCount).toBe(payloadMigrations.length);
     expect(summaryCount).toBe(plan.migrations.length); // 1, not migrate()'s appliedCount of 0
   });

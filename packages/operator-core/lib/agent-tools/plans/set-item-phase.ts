@@ -25,7 +25,7 @@ import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/age
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan, maskFences } from './parser';
+import { parsePlan, maskFences, type LegacyReason } from './parser';
 import { appendItemToBody, PHASE } from './add-item';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
