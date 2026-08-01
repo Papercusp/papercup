@@ -46,6 +46,16 @@ body = json.dumps({
     'prompt': prompt[:4000],
     'workspace': os.environ.get('PAPERCUSP_WORKSPACE') or '',
     'harness': os.environ.get('PAPERCUSP_HARNESS_SLUG') or '',
+    # EI-18893248175645463: PAPERCUSP_HARNESS_SLUG is only exported for
+    # harness-scoped spawns — an operator/superuser-scope session (common: it
+    # can span multiple harnesses) never has it, so turn-start's harness+hive
+    # memory pools were unconditionally empty for that session's ENTIRE
+    # lifetime (measured: a clean per-session split, 0 mixed, zero
+    # intra-session flakiness — this is the missing-detection case, not a
+    # transient miss). cwd lets the server apply the SAME env→marker-file→
+    # meta-repo fallback chain detect-harness-slug.ts already offers (used by
+    # the MCP 'initialize' prelude) instead of giving up outright.
+    'cwd': os.getcwd(),
     'memoryEnabled': os.environ.get('PAPERCUSP_TURN_START_MEMORY', 'on') != 'off',
 }).encode('utf-8')
 

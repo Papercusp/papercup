@@ -17,6 +17,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import {
   pgReadQuery,
   extractPgErrorInfo,
+  buildClaimabilityAdvisory,
   buildSilentNullPathAdvisory,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
@@ -143,7 +144,18 @@ export default defineTool({
       } catch {
         nullPathAdvisory = null;
       }
-      const advisory = [nullPathAdvisory, tenantAdvisory].filter(Boolean).join(' ') || null;
+      // A read that answers the WRONG QUESTION correctly: status='open' (or the
+      // candidate view) treated as "what can be claimed". Distinct again from
+      // both above — the row set is right for the question asked, and wrong for
+      // the question meant, so nothing about the result looks suspicious.
+      let claimabilityAdvisory: string | null = null;
+      try {
+        claimabilityAdvisory = buildClaimabilityAdvisory(sql);
+      } catch {
+        claimabilityAdvisory = null;
+      }
+      const advisory =
+        [claimabilityAdvisory, nullPathAdvisory, tenantAdvisory].filter(Boolean).join(' ') || null;
       return {
         content: [
           {

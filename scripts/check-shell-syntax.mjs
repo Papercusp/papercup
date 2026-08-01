@@ -18,11 +18,11 @@
  *
  * Scope: tracked `.sh`. Excludes _retired/, node_modules, dist.
  */
-import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findShellSyntaxError } from '../packages/operator-core/lib/content-lint/shell-syntax';
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 export { findShellSyntaxError };
 
@@ -32,9 +32,11 @@ const isExcluded = (f) =>
   f.startsWith('_retired/') || f.includes('/_retired/') || f.includes('/node_modules/') || f.includes('/dist/');
 
 function main() {
-  const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
-    .split('\n')
-    .filter(Boolean);
+  // WI-6730: enumerate via the shared helper, which recurses into submodules. A
+  // bare `git ls-files` does not — it emits one gitlink entry per submodule — so
+  // this guard never parsed a single .sh inside any of the 39, and printed ✓
+  // regardless. `unscanned` is reported below rather than silently dropped.
+  const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
   const offenders = [];
   for (const f of tracked) {
@@ -51,7 +53,7 @@ function main() {
   }
 
   if (offenders.length === 0) {
-    console.log('✓ every tracked .sh script parses cleanly (bash -n).');
+    console.log(`✓ every tracked .sh script parses cleanly (bash -n).${describeUnscanned(unscanned)}`);
     process.exit(0);
   }
 

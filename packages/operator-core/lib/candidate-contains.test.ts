@@ -7,8 +7,10 @@ import {
   excludedCommitsTouchingPath,
   gitReadFromExecSync,
   markerAtCommit,
+  testImplSplitRisk,
   uncommittedPaths,
   type GitRead,
+  type PathContainment,
 } from './candidate-contains';
 
 /**
@@ -579,5 +581,58 @@ describe('submodule paths — the false "uncommitted" verdict (EI-18828378090895
     const git = fakeSuperGit({ pins: { cand: 'e0ebb3c6' }, subTree: { [REL]: FIXED } });
     const [r] = await classifyPathsAgainstCandidate(git, 'cand', [FILE], 'HEAD', { submodules: [] });
     expect(r.inCandidate).toBe(false);
+  });
+});
+
+/**
+ * EI-18796358994458975. The incident this encodes: candidate `2864c150` carried
+ * `sync-resolver/deliberation-harness-fallback.test.ts` (included) while excluding
+ * `sync-resolver/index.ts` (missing, reason `newer-commit`) — a test committed without the
+ * implementation commit that makes it pass, guaranteed red before the suite even starts.
+ */
+describe('testImplSplitRisk (P-004 follow-up, EI-18796358994458975)', () => {
+  const path = (
+    p: string,
+    inCandidate: boolean | null,
+    reason: PathContainment['reason'] = null,
+  ): PathContainment => ({ path: p, inCandidate, reason, unknownReason: null });
+
+  it('detects the exact incident shape: an included test + a newer-commit non-test sibling', () => {
+    const r = testImplSplitRisk([
+      path('packages/operator-core/lib/sync-resolver/deliberation-harness-fallback.test.ts', true),
+      path('packages/operator-core/lib/sync-resolver/index.ts', false, 'newer-commit'),
+      path('packages/operator-core/lib/system-health/tool-efficiency.ts', true),
+    ]);
+    expect(r.detected).toBe(true);
+    expect(r.includedTests).toEqual(['packages/operator-core/lib/sync-resolver/deliberation-harness-fallback.test.ts']);
+    expect(r.missingImpl).toEqual(['packages/operator-core/lib/sync-resolver/index.ts']);
+  });
+
+  it('is silent when the test itself is what is missing — nothing torn, just not committed yet', () => {
+    const r = testImplSplitRisk([
+      path('a.test.ts', false, 'uncommitted'),
+      path('a.ts', true),
+    ]);
+    expect(r.detected).toBe(false);
+    expect(r.includedTests).toEqual([]);
+  });
+
+  it('is silent when the missing non-test file is `uncommitted`, not `newer-commit` (a different lever)', () => {
+    const r = testImplSplitRisk([path('a.test.ts', true), path('a.ts', false, 'uncommitted')]);
+    expect(r.detected).toBe(false);
+    expect(r.missingImpl).toEqual([]);
+  });
+
+  it('is silent when everything declared is included — no risk to report', () => {
+    const r = testImplSplitRisk([path('a.test.ts', true), path('a.ts', true)]);
+    expect(r.detected).toBe(false);
+  });
+
+  it('a missing .test.ts is never counted as the "impl" half of a pair', () => {
+    // Two test files, one included one newer-commit — not the shape this detects (there is
+    // no non-test implementation file in play at all).
+    const r = testImplSplitRisk([path('a.test.ts', true), path('b.test.ts', false, 'newer-commit')]);
+    expect(r.detected).toBe(false);
+    expect(r.missingImpl).toEqual([]);
   });
 });

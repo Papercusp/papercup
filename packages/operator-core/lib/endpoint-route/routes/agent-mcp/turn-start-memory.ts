@@ -78,6 +78,7 @@ const turnStartMemory = defineTool({
       prompt?: string;
       workspace?: string;
       harness?: string;
+      cwd?: string;
       memoryEnabled?: boolean;
     };
     try {
@@ -89,7 +90,28 @@ const turnStartMemory = defineTool({
     const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
     if (!owner) return Response.json({ ok: false, error: 'owner required' }, { status: 400 });
     try {
-      const harness = (body.harness ?? '').trim();
+      let harness = (body.harness ?? '').trim();
+      // EI-18893248175645463: PAPERCUSP_HARNESS_SLUG is only exported for
+      // harness-scoped spawns, so an operator/superuser-scope session (which
+      // legitimately spans multiple harnesses, or is simply launched bare)
+      // never sends `harness` — and BOTH the harness AND hive pools (hive
+      // resolution below fans out FROM harnessSlugs) went unconditionally
+      // empty for that session's entire lifetime, not just an occasional
+      // miss (measured: a clean per-session split, zero intra-session mix).
+      // Fall back to the SAME env → marker-file → meta-repo detection chain
+      // the MCP 'initialize' prelude already offers (detect-harness-slug.ts)
+      // — using the CLIENT's cwd (the hook runs on this box, loopback-only,
+      // so its cwd is the actual session's working directory), never the
+      // operator's own process cwd, which would misattribute a session
+      // working in a sibling harness (e.g. papercusp-public-site).
+      if (!harness && typeof body.cwd === 'string' && body.cwd.trim()) {
+        try {
+          const { detectHarnessSlugSync } = await import('../../../memory/detect-harness-slug');
+          harness = detectHarnessSlugSync({ cwd: body.cwd.trim() }).slug ?? '';
+        } catch {
+          /* detection is best-effort — an empty harness just stays a bare-session pull */
+        }
+      }
       const workspace = (body.workspace ?? '').trim();
       const { activeWorkspaceId } = await import('../../../workspace-registry');
       const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();

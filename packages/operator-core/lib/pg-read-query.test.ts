@@ -13,6 +13,7 @@ import {
   describeReferencedTableColumns,
   buildTenantScopeAdvisory,
   buildSilentNullPathAdvisory,
+  buildClaimabilityAdvisory,
   buildDerivedColumnRedirect,
   clearTenantScopeSchemaCache,
   PgReadQueryError,

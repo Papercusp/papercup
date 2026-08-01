@@ -1018,6 +1018,37 @@ describe('renderContainmentWarning (P-004)', () => {
     // …and it must point at the route that WOULD give an exact answer.
     expect(inferred).toMatch(/pass `paths: \[\.\.\.\]`/);
   });
+
+  /**
+   * EI-18796358994458975: a torn TDD pair (test in, impl newer-commit) is a KNOWN false-red
+   * shape, not just another "wait out the quiet window" miss — it must say so explicitly so
+   * the reader does not spend the ~3h suite re-debugging code that was already correct.
+   */
+  it('names the torn-TDD-pair shape explicitly when splitRisk is detected', () => {
+    const w = renderContainmentWarning(
+      ['a.ts'],
+      [p('a.ts', 'newer-commit')],
+      [],
+      'caller-supplied',
+      { detected: true, includedTests: ['a.test.ts'], missingImpl: ['a.ts'] },
+    );
+    expect(w).toMatch(/KNOWN FALSE-RED SHAPE/);
+    expect(w).toMatch(/torn TDD pair/);
+    expect(w).toMatch(/a\.test\.ts/);
+    expect(w).toMatch(/Do not debug it/);
+  });
+
+  it('says nothing about a torn pair when splitRisk is undetected or omitted', () => {
+    const omitted = renderContainmentWarning(['a.ts'], [p('a.ts', 'newer-commit')], [], 'caller-supplied');
+    expect(omitted).not.toMatch(/KNOWN FALSE-RED SHAPE/);
+
+    const undetected = renderContainmentWarning(['a.ts'], [p('a.ts', 'newer-commit')], [], 'caller-supplied', {
+      detected: false,
+      includedTests: [],
+      missingImpl: [],
+    });
+    expect(undetected).not.toMatch(/KNOWN FALSE-RED SHAPE/);
+  });
 });
 
 describe('checkpointCandidateContainment (P-004)', () => {
@@ -1118,5 +1149,37 @@ describe('checkpointCandidateContainment (P-004)', () => {
     expect(r.unknown).toEqual(['a.ts']);
     expect(r.included).toEqual([]);
     expect(r.warning).toBeNull();
+  });
+
+  /**
+   * EI-18796358994458975, reproduced end-to-end: candidate `2864c150` carried the test
+   * (`deliberation-harness-fallback.test.ts`) but excluded the implementation commit
+   * (`index.ts`, `newer-commit`) — a guaranteed-red candidate before the suite even runs.
+   * `checkpointCandidateContainment` must surface this as `testImplSplitRisk.detected` AND
+   * fold the explicit warning text into `warning`, so a caller who passes both files in
+   * `paths` (as this incident's filer did) gets told the shape at launch time, for free.
+   */
+  it('detects + names the torn-TDD-pair shape from the real incident inputs', async () => {
+    const TEST_FILE = 'packages/operator-core/lib/sync-resolver/deliberation-harness-fallback.test.ts';
+    const IMPL_FILE = 'packages/operator-core/lib/sync-resolver/index.ts';
+    const r = await checkpointCandidateContainment({
+      root: '/repo',
+      candidateSha: 'cand',
+      tipSha: 'tip',
+      paths: [TEST_FILE, IMPL_FILE],
+      execFn: fakeExec({
+        [`rev-parse --verify cand:${TEST_FILE}`]: BLOB_OLD,
+        [`hash-object -- ${TEST_FILE}`]: BLOB_OLD,
+        [`rev-parse --verify cand:${IMPL_FILE}`]: BLOB_OLD,
+        [`hash-object -- ${IMPL_FILE}`]: BLOB_NEW,
+        [`rev-parse --verify HEAD:${IMPL_FILE}`]: BLOB_NEW,
+        [`log --oneline --no-decorate cand..tip -- ${IMPL_FILE}`]: '05422caf my just-landed fix',
+      }),
+    });
+    expect(r.included).toEqual([TEST_FILE]);
+    expect(r.missing).toEqual([IMPL_FILE]);
+    expect(r.testImplSplitRisk).toEqual({ detected: true, includedTests: [TEST_FILE], missingImpl: [IMPL_FILE] });
+    expect(r.warning).toMatch(/KNOWN FALSE-RED SHAPE/);
+    expect(r.warning).toMatch(/torn TDD pair/);
   });
 });

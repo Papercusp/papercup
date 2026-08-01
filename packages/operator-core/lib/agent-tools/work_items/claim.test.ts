@@ -194,6 +194,45 @@ describe('work_items:claim handler (keyed-array)', () => {
   // refuses by default, force clears a plain hold, and a policy-tier reason additionally
   // requires ownerOverride — mirroring work_items:hold_open's own clear-guard exactly.
   describe('claim-hold guard (WI-5946)', () => {
+    // WI-6746: the guard above is derived ENTIRELY from the pre-claim read — claimWorkItem
+    // itself has no hold check (it gates on taken_by + G2/P-010 admission only). While that
+    // read was swallowed with `.catch(() => null)`, a PG fault made preClaimItem null, which
+    // made the refusal null, which SKIPPED the guard and claimed the item — i.e. the guard
+    // vanished exactly when the database was unhealthy. Only a THROWING read distinguishes
+    // the fixed version from the broken one; with a healthy read both behave identically,
+    // which is why this survived in the source.
+    it('FAILS CLOSED when the pre-claim read THROWS — a PG fault must not bypass the hold (WI-6746)', async () => {
+      getM.mockRejectedValue(new Error('connection terminated unexpectedly'));
+      provenanceM.mockReturnValue({
+        heldOpen: { by: 'su-leader', reason: 'still triaging', at: '2026-07-26T00:00:00Z' },
+        parked: null,
+        attributed: true,
+      });
+      const b = await body({ id: 'WI-HELD' });
+      expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-HELD', error: 'work_item_unreadable' });
+      // The refusal must name the read failure — an agent told "not found" would file a
+      // bug against the wrong subsystem (the exact mis-diagnosis WI-6737 was filed on).
+      expect(b.results[0].hint).toMatch(/could not be read|read failed/i);
+      expect(b.results[0].hint).toMatch(/connection terminated/);
+      expect(claimM).not.toHaveBeenCalled();
+    });
+
+    it('an unreadable pre-claim read is NOT reported as a missing item (WI-6746)', async () => {
+      getM.mockRejectedValue(new Error('statement timeout'));
+      const b = await body({ id: 'WI-HELD' });
+      expect(b.results[0].error).not.toMatch(/not found/i);
+    });
+
+    it('a genuine zero-row pre-claim read still proceeds to claimWorkItem (WI-6746 regression)', async () => {
+      // The fail-closed refusal must trigger on `unreadable` ONLY. A real absent item keeps
+      // its old path (claimWorkItem decides), or this fix would break every ordinary claim.
+      getM.mockResolvedValue(null as never);
+      claimM.mockResolvedValue({ id: 'WI-NEW', assignee: 'me' } as never);
+      const b = await body({ id: 'WI-NEW' });
+      expect(claimM).toHaveBeenCalled();
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-NEW' });
+    });
+
     it('refuses a claim-hold-parked item with claim_hold_blocked, and never calls claimWorkItem', async () => {
       getM.mockResolvedValue({ id: 'WI-HELD', payload: { _claimHold: true } } as never);
       provenanceM.mockReturnValue({

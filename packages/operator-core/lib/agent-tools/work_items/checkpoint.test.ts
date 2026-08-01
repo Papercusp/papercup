@@ -399,6 +399,40 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
   });
 
   describe('EI-18132462898750489: ownership guard — no silent overwrite of a peer\'s held item', () => {
+    // WI-6746: this ownership guard is derived ENTIRELY from the pre-write read —
+    // setWorkItemCheckpoint has no assignee check of its own. While that read was
+    // swallowed with `.catch(() => null)`, a PG fault made `item` null, which made the
+    // `item && item.assignee && …` guard fall through, which let the write land on a
+    // peer's item: precisely the corruption this EI added the guard to prevent, plus the
+    // false "my write succeeded, so I must hold this" signal it names as the root cause
+    // of a bogus "currently holding" directive surviving into a compaction summary.
+    it('FAILS CLOSED when the ownership read THROWS — a PG fault must not bypass not_holder (WI-6746)', async () => {
+      getWorkItem.mockRejectedValue(new Error('connection terminated unexpectedly'));
+      const r = await one({ id: 'WI-5557', checkpoint: 'write during a PG blip' }, {
+        ...(baseCtx as Record<string, unknown>),
+        uiClientId: 'su-2e534e59-ceb6-48b5-87b8-3b362f652725',
+      });
+      expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+      expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('work_item_unreadable');
+      expect(r.error).toMatch(/connection terminated/);
+      // Must not masquerade as the harness-resolution error, which sends the agent to
+      // pass { harness } — a remedy that cannot fix an unhealthy database.
+      expect(r.error).not.toMatch(/could not resolve a harness/);
+    });
+
+    it('an unreadable ownership read is refused even when a harness hint WAS supplied (WI-6746)', async () => {
+      // The hint used to mask the failure: with `hintHarness` set, a null item skipped the
+      // "could not resolve a harness" branch and fell straight through to the write.
+      getWorkItem.mockRejectedValue(new Error('statement timeout'));
+      const r = await one({ id: 'WI-5557', harness: 'papercup', checkpoint: 'note' });
+      expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+      expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('work_item_unreadable');
+    });
+
     it('refuses a checkpoint write when the item is assigned to a DIFFERENT agent (not_holder)', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-5557', harness: 'papercup', assignee: 'su-a7d08fd3-ba65-45d3-a07f-a335b9004454' });
       const r = await one({ id: 'WI-5557', checkpoint: 'trying to write on a peer\'s item' }, {

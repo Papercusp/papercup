@@ -627,6 +627,91 @@ export function buildSilentNullPathAdvisory(rawSql: string): string | null {
   return parts.length ? parts.join(' ') : null;
 }
 
+/**
+ * Flag a read that treats `status = 'open'` (or the candidate VIEW) as the
+ * answer to "what can be claimed".
+ *
+ * WHY THIS IS A DIFFERENT TRAP FROM THE TWO ABOVE. The tenant-scope and
+ * always-NULL advisories catch a query that is WRONG. This one catches a query
+ * that is RIGHT about a different question — which is worse, because the result
+ * is well-formed, plausible, and off by an order of magnitude.
+ *
+ * The distinction is structural, not a naming accident, and it is why no column
+ * or view can ever settle it:
+ *
+ *   - `status = 'open'` is LIFECYCLE. It is item-intrinsic and durable — a fact
+ *     about the row, storable as a column. Legitimately needed.
+ *   - `harness_shared.work_items_claimable` is the CANDIDATE set. It does apply
+ *     real floors, but via `work_item_claim_floors(status, taken_by, origin,
+ *     title, terminal_owner, terminal_completion_ref, payload, feature_id)` —
+ *     item-intrinsic columns ONLY. It structurally cannot see the rest.
+ *   - CLAIMABILITY is a property of the triple (item, CALLER, MOMENT): the
+ *     caller's assignee decides the reserved-plan-lane floor, `rigAvailable` is
+ *     machine-relative, the release cooldown is time-relative, blocked-deps
+ *     needs a join, and the caller's claim SPEC filters on top of all of it.
+ *     A stored column cannot depend on who is asking, so this can only ever be
+ *     COMPUTED — which is exactly what `work_items:claimable` does, wrapping the
+ *     same oracle `scheduler:get_next` runs so the two cannot diverge.
+ *
+ * Deliberately NOT quoting a fixed overcount multiplier: the ratio moves with
+ * the backlog (and differs per harness), and a stale number in an advisory is
+ * the same class of confidently-wrong artifact this whole file exists to
+ * prevent. Point at the tool that computes the live figure instead.
+ *
+ * Matched against RAW sql for the same reason as the always-NULL advisory: the
+ * interesting token is a string literal (`'open'`), which the stripper erases.
+ */
+export function buildClaimabilityAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.length) return null;
+
+  const masked = sqlLiteralAndCommentRanges(rawSql);
+  const startsInsideComment = (idx: number): boolean =>
+    masked.some(([from, to]) => idx >= from && idx < to && rawSql.slice(from, from + 2) === '--');
+
+  // The candidate VIEW: any read of it is a claimability read by intent, since
+  // the name says so. Flag it regardless of predicates.
+  const viewHit = tables.find((t) => bareTableName(t) === 'work_items_claimable');
+  if (viewHit) {
+    return (
+      `⚠ candidate set, not claimability: ${viewHit} applies only the ITEM-INTRINSIC floors ` +
+      '(work_item_claim_floors sees columns, not the caller) — it cannot apply the reserved-plan-lane, ' +
+      'cross-machine-rig, release-cooldown, blocked-dependency or claim-SPEC floors, all of which depend ' +
+      'on WHO is asking and WHEN. Its count is an upper bound. For the authoritative set + a per-floor ' +
+      '`excludedBreakdown`, use work_items:claimable { harness } (the same oracle scheduler:get_next runs).'
+    );
+  }
+
+  // The TABLE + a status='open' predicate: the shape that reads as "the backlog".
+  const tableHit = tables.find((t) => bareTableName(t) === 'work_items');
+  if (!tableHit) return null;
+
+  // `status = 'open'`, `status IN ('open', …)`, `status = ANY(ARRAY['open', …])`.
+  const openPredicate = /\bstatus\b\s*(?:=|\bin\b|=\s*any)\s*\(?\s*(?:array\s*\[\s*)?'open'/gi;
+  let hasOpenPredicate = false;
+  for (let m = openPredicate.exec(rawSql); m; m = openPredicate.exec(rawSql)) {
+    if (!startsInsideComment(m.index)) {
+      hasOpenPredicate = true;
+      break;
+    }
+  }
+  if (!hasOpenPredicate) return null;
+
+  // Already going through the real floor function (or the claimable tool's own
+  // SQL)? Then the caller knows the difference — say nothing.
+  const stripped = stripSqlLiteralsAndComments(rawSql);
+  if (/\bwork_item_claim_floors\b/i.test(stripped)) return null;
+
+  return (
+    `⚠ status='open' is LIFECYCLE, not claimability: ${tableHit} — 'open' means "not terminal", and the ` +
+    'real claim path applies ~12 further floors, several of which (reserved-plan-lane, cross-machine-rig, ' +
+    'release-cooldown, blocked-dependency, your claim SPEC) depend on the CALLER and the MOMENT and so ' +
+    'cannot be expressed as a column predicate at all. Counting open rows therefore OVERCOUNTS claimable ' +
+    'work, silently and by a wide margin. Use work_items:claimable { harness } for the authoritative count ' +
+    'plus a per-floor `excludedBreakdown` showing exactly what the difference is made of.'
+  );
+}
+
 export async function buildTenantScopeAdvisory(
   rawSql: string,
   opts: { client?: OrgSql; workspaceId?: string | null; harnessSlug?: string | null } = {},

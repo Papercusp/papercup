@@ -1251,8 +1251,11 @@ describe('SessionChatModal', () => {
     }
 
     it('says the operator is unreachable — not that the launch failed — when the roster query ERRORED', async () => {
+      // Payload present AND an error set, so ONLY the error term of
+      // `rosterUnreadable` can be doing the work here — this isolates that
+      // disjunct from the missing-payload one exercised by the next test.
       H.results['advRoster.list'] = {
-        data: undefined,
+        data: [{ active: [], pending: [], starting: [] }],
         loading: false,
         fetching: false,
         error: new Error('connect ECONNREFUSED 127.0.0.1:20216'),
@@ -1298,7 +1301,7 @@ describe('SessionChatModal', () => {
     // roster is momentarily unreadable.
     it('stays on "starting up" before the grace window expires, even with an unreadable roster', async () => {
       H.results['advRoster.list'] = {
-        data: undefined,
+        data: [],
         loading: false,
         fetching: false,
         error: new Error('connect ECONNREFUSED 127.0.0.1:20216'),

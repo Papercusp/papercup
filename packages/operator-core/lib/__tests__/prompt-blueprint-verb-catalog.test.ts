@@ -141,6 +141,24 @@ interface Hit {
   line: number;
 }
 
+/** The PURE core of the scan: text in, candidate hits out. Split out from the
+ *  file-walking wrapper so the surface-precision contract below can be pinned
+ *  against synthetic fixtures instead of whatever the live corpus happens to
+ *  contain today — a guard that depends on corpus CONTENT silently stops
+ *  guarding the moment the content changes. */
+function scanTextForCallReferences(text: string, file: string): Hit[] {
+  const hits: Hit[] = [];
+  for (const m of text.matchAll(CALL_RE)) {
+    const idx = m.index ?? 0;
+    const before = text.slice(Math.max(0, idx - 24), idx);
+    if (NEGATION_RE.test(before)) continue; // "Do NOT call `X`"
+    const token = m[1] + m[2] + m[3];
+    const line = text.slice(0, idx).split('\n').length;
+    hits.push({ token, file, line });
+  }
+  return hits;
+}
+
 function scanForCallReferences(files: string[]): Hit[] {
   const hits: Hit[] = [];
   for (const f of files) {
@@ -152,14 +170,7 @@ function scanForCallReferences(files: string[]): Hit[] {
     } catch {
       continue;
     }
-    for (const m of text.matchAll(CALL_RE)) {
-      const idx = m.index ?? 0;
-      const before = text.slice(Math.max(0, idx - 24), idx);
-      if (NEGATION_RE.test(before)) continue; // "Do NOT call `X`"
-      const token = m[1] + m[2] + m[3];
-      const line = text.slice(0, idx).split('\n').length;
-      hits.push({ token, file: f, line });
-    }
+    hits.push(...scanTextForCallReferences(text, f));
   }
   return hits;
 }
@@ -189,5 +200,75 @@ describe('prompt/blueprint "call `verb`" references vs the live tool catalog', (
       `hand-listing the token (surface-precise convention, P-005: narrowing the SHAPE beats growing an allowlist).`,
     ];
     expect(unresolved, lines.join('\n')).toEqual([]);
+  });
+
+  /* ------------------------------------------------------------------ *
+   * SURFACE-PRECISION CONTRACT (EI-18742214647740308).
+   *
+   * The two tests above scan the LIVE corpus, so they only assert that the
+   * corpus is clean TODAY. Neither pins WHY the scan is shaped the way it is,
+   * and that rationale currently lives only in this file's header prose.
+   *
+   * The regression this guards against is a plausible-looking "improvement":
+   * widening CALL_RE to match every backtick `group:verb` token, on the
+   * reasoning that the lint should catch ALL references to dead verbs and not
+   * just the ones spelled "call `X`". That change reintroduces the ~130 false
+   * positives the header describes — and, per this plan's leader ruling
+   * agent-trap-guards-2026-07-26#D-003, it reds the build on the CAPABILITY
+   * namespace (`messages:write`, `coord:read`, `plans:read`, `data:read:*`),
+   * which shares the `namespace:verb` spelling with tool verbs but is a
+   * DIFFERENT SURFACE that the tool catalog does not and should not contain.
+   * A lint that noisy gets silenced, after which it guards nothing.
+   *
+   * These fixtures are synthetic on purpose: a guard asserted against live
+   * corpus content stops guarding the moment that content changes.
+   * ------------------------------------------------------------------ */
+  describe('surface-precision contract (D-003: a capability name is not a tool verb)', () => {
+    it('does NOT flag capability names that merely APPEAR — the D-003 collision', () => {
+      // The real shape from blueprints/base/prompts/scanner.md: a capability
+      // tier table reusing tool-shaped strings for a permission namespace.
+      const fixture = [
+        '| capability | tier |',
+        '| --- | --- |',
+        '| `messages:write` | medium |',
+        '| `tasks:read` | low |',
+        '| `coord:read` | low |',
+        '| `data:read:*` | medium |',
+        '',
+        'The kettle role is granted `messages:write` so it can forward a directive.',
+      ].join('\n');
+      expect(scanTextForCallReferences(fixture, 'fixture.md')).toEqual([]);
+    });
+
+    it('does NOT flag a tool verb mentioned without a calling verb — this is what keeps the capability namespace safe', () => {
+      // If someone widens CALL_RE to bare-token matching, THIS is the test that
+      // fails first — before the D-003 capability collision reappears in CI.
+      const fixture = [
+        'Read the `plans:list` result before building.',
+        'The `work_items:get` response carries a checkpoint.',
+        'See `messages:send` in the retirement notes.',
+      ].join('\n');
+      expect(scanTextForCallReferences(fixture, 'fixture.md')).toEqual([]);
+    });
+
+    it('does NOT flag a documented "do NOT call `X`" caution', () => {
+      const fixture = 'Do NOT call `orchestrator.spawn` directly — it is internal.';
+      expect(scanTextForCallReferences(fixture, 'fixture.md')).toEqual([]);
+    });
+
+    it('DOES flag a genuine instruction to call a retired verb, and that verb is absent from the live catalog', () => {
+      // The motivating shape the lint exists for ("step 6: call `messages:send`").
+      // Both halves matter: the scanner must SEE it, and the catalog must not
+      // resolve it — together that is what reds the build.
+      const hits = scanTextForCallReferences('Step 6: call `messages:send` to notify the holder.', 'fixture.md');
+      expect(hits.map((h) => h.token)).toEqual(['messages:send']);
+      expect(catalog.has('messages:send')).toBe(false); // retired in WI-6097
+    });
+
+    it('DOES flag a typo\'d verb — the class P-007 caught live (underscore vs hyphen)', () => {
+      const hits = scanTextForCallReferences('When context fills, call `session:request_compaction`.', 'fixture.md');
+      expect(hits.map((h) => h.token)).toEqual(['session:request_compaction']);
+      expect(catalog.has('session:request_compaction')).toBe(false);
+    });
   });
 });

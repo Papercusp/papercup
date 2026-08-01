@@ -21,6 +21,7 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { normalizeEventKey } from './announce-key';
 import { keyMatchesPattern, payloadMatchesFilter } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
+import { withEffectiveDeadlines } from './effective-deadline';
 import type {
   AwaitPolicy,
   AwaitRow,
@@ -361,7 +362,11 @@ export async function listActiveAwaits(subscriberId: string): Promise<AwaitRow[]
      ORDER BY created_at DESC
      LIMIT 100
   `;
-  return rows.map(mapAwait);
+  // P-016: a composed LEAF carries no expires_ts of its own (the root node owns the
+  // tree's deadline), and a NULL here reads as "waits forever" everywhere else in this
+  // table. Resolve before the dossier/`events:status` renders it. No extra query when
+  // the batch holds no composed awaits.
+  return withEffectiveDeadlines(rows.map(mapAwait), { workspaceId: ws });
 }
 
 /** Active awaits whose key starts with a prefix — source-side reconciliation
@@ -394,13 +399,13 @@ export const INBOX_WAKE_KEY_PREFIX = 'coord:inbox-wake:';
  */
 export async function listParkedAwaitsForSubscribers(
   subscriberIds: readonly string[],
-): Promise<Array<Pick<AwaitRow, 'subscriberId' | 'eventKey' | 'note' | 'expiresTs' | 'createdAt'>>> {
+): Promise<Array<Pick<AwaitRow, 'subscriberId' | 'eventKey' | 'note' | 'expiresTs' | 'createdAt' | 'rootId'>>> {
   const ids = [...new Set(subscriberIds.filter((id) => !!id))];
   if (ids.length === 0) return [];
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
-    SELECT subscriber_id, event_key, note, expires_ts, created_at
+    SELECT subscriber_id, event_key, note, expires_ts, created_at, root_id
       FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws}
        AND subscriber_id = ANY(${ids as string[]}::text[])
@@ -411,13 +416,21 @@ export async function listParkedAwaitsForSubscribers(
      ORDER BY created_at DESC
      LIMIT 500
   `;
-  return rows.map((r: any) => ({
+  const mapped = rows.map((r: any) => ({
     subscriberId: r.subscriber_id,
     eventKey: r.event_key,
     note: r.note ?? null,
     expiresTs: r.expires_ts ? new Date(r.expires_ts).toISOString() : null,
     createdAt: new Date(r.created_at).toISOString(),
+    rootId: r.root_id != null ? Number(r.root_id) : null,
   }));
+  // P-016. This read IS the bench/park verdict behind fleet:assignments' `parkedOn`
+  // and the claim-discipline watch, so both halves of the composed-leaf defect matter
+  // here: a leaf's NULL expires_ts reads as an INDEFINITE park (the false-deadlock
+  // reading), and the SQL filter above cannot see the root's deadline, so a leaf whose
+  // TREE already lapsed survives it and reads as an ACTIVE park. `dropExpired` closes
+  // the second — fixing only the first would trade one wrong verdict for another.
+  return withEffectiveDeadlines(mapped, { workspaceId: ws, dropExpired: true });
 }
 
 /** Active awaits matching an event key — peek without firing (sources may use
