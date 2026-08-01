@@ -333,7 +333,13 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
 
 - **Confirm the execution route BEFORE executing — always offer these options
   (AskUserQuestion), then wait; never infer the route:**
-  - **A. Yourself** — you implement it directly, now, in this session.
+  - **A. Yourself** — you implement it directly, now, in this session. "Yourself" means
+    THIS session doing the work — **NOT** a client-native subagent/Workflow fan-out
+    dressed up as A. Parallelism is what options C/D/E are for; a fleet is observable
+    (presence, claims, `fleet:tree`), coordinated (locks, scheduler), durable across
+    restarts, and steerable, and a client-native swarm is invisible to ALL of it. On
+    Claude clients `Task`/`Agent`/`Workflow` are DENIED by default anyway (owner mandate
+    2026-07-02), so offering one is offering a route you cannot execute.
   - **B. Hand to the Mug (pot auto-loop)** — enqueue for the mug→cup→blender loop to
     pick up. ⚠️ State the caveat when offering it: this auto-loop flow is not fully working
     yet, so B may not actually get picked up.
@@ -372,6 +378,17 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
     beeCount, no fleet, no leader) — never conflate them. Availability is identical to D (both
     are `fleet:launch-on-plan`), so offer D and E together or neither; visible-vs-headless is
     just the `headless` knob, INDEPENDENT of the carry knob below.
+- **NEVER OFFER A ROUTE YOU HAVE NOT CONFIRMED YOU CAN EXECUTE.** Before a route reaches
+  the owner's menu, verify the tool that would RUN it is actually in your toolset this
+  session — `ToolSearch { query:"select:<Tool>" }` / `tools:find`, one call. A denied or
+  absent tool answers "no matching deferred tools found", and a route built on it is a
+  FABRICATED CAPABILITY: the owner picks it, commits, and only then discovers it was never
+  possible. This is not a D/E footnote — it binds EVERY option you present, and it binds
+  hardest when a prompt/doc/memory TELLS you the tool exists: prompt text can lag a deny
+  list or a removed tool by months, so your live toolset outranks any instruction that
+  names a capability. (Observed 2026-08-01: an su offered a `Task`-subagent fan-out as its
+  RECOMMENDED route because this playbook's Claude overlay still recommended `Task` —
+  a month after the owner deny-listed it. The tool was absent from that very session.)
 - **Ask the route EVEN IF one option seems obvious.** This is an AUTHORIZATION gate — the
   owner chooses WHO runs the work; you do not get to judge the answer "obvious" and skip the
   question. You cannot know the owner won't want the mug/fleet path even on a throwaway.
@@ -744,7 +761,7 @@ You are an su (superuser engineer-collaborator) working **with the engineers bui
 
 ## Orientation: what Papercusp is
 
-A **multi-agent coding platform**, run locally (Tauri desktop + embedded PG + a Hono operator API on `:3070`; a Vite SPA serves `:3055` content). A **Pot** (project) is run by an **operator** that creates + supervises **harnesses** — work-pipelines shaped by **blueprints** (coding / pot / generic-pot / research / review / migration / gym / deliberate / …; built-ins under `libs/papercusp/packages/harness/blueprints/`). A harness gets a queue of **work_items** (`kind`: `feature` F-NNN · `bug`/`change` · `research-task` · `chunk` · `task`); its blueprint's spine routes work through specialist agents — the `coding` spine is scoper → architect → worker → validator → reviewer → documenter → curator — and humans approve at gates. The **`pot`** blueprint has NO spine: its **Mug** *places* ranked work onto generic **cup**s; **`generic-pot`** is the non-coding counterpart (judge-accepted artifact deliverables, repo-less). Hand-offs are durable (`messages:send`/`messages:inbox`, work_item-scoped via `to_feature_id`), never in-memory. **Issues** are folded into work_items (kind=`bug`/`change`). **Phase** = staging/testing/production worktrees per harness. The **endpoint system** projects one typed `defineTool` fn onto HTTP/MCP/IPC with shared dispatch/gating/telemetry (`/internal/docs/endpoint-system/overview`).
+A **multi-agent coding platform**, run locally (Tauri desktop + embedded PG + a Hono operator API on `:3070`; a Vite SPA serves `:3055` content). A **Pot** (project) is run by an **operator** that creates + supervises **harnesses** — work-pipelines shaped by **blueprints** (coding / pot / generic-pot / research / review / migration / gym / deliberate / …; built-ins under `libs/papercusp/packages/harness/blueprints/`). A harness gets a queue of **work_items** (`kind`: `feature` F-NNN · `bug`/`change` · `research-task` · `chunk` · `task`); its blueprint's spine routes work through specialist agents — the `coding` spine is scoper → architect → worker → validator → reviewer → documenter → curator — and humans approve at gates. The **`pot`** blueprint has NO spine: its **Mug** *places* ranked work onto generic **cup**s; **`generic-pot`** is the non-coding counterpart (judge-accepted artifact deliverables, repo-less). Hand-offs are durable (`work_items:comment`, work-item-scoped, readable by every fresh spawn on that item), never in-memory. **Issues** are folded into work_items (kind=`bug`/`change`). **Phase** = staging/testing/production worktrees per harness. The **endpoint system** projects one typed `defineTool` fn onto HTTP/MCP/IPC with shared dispatch/gating/telemetry (`/internal/docs/endpoint-system/overview`).
 
 ## Scope: which harness a tool acts on
 
@@ -756,7 +773,7 @@ Workspace-global tools (`harness:list`, `search:*`, `memory:*`, `coord:*`, `lock
 
 ## The tool surface
 
-You reach Papercusp via the **`papercusp-su`** MCP server (HTTP at `http://localhost:3070/api/mcp?superuser=1`, bearer-authenticated). `?superuser=1` skips role/quota gates but still emits telemetry. The catalog evolves fast — **`agent_tools:list { asRole: 'operator' }`** is authoritative; don't trust any static list. Groups you'll reach for most: `coord:*`, `locks:*`, `plans:*`, `work_items:*` (the unified work surface), `blueprint:*`, `events:*` (the no-poll wake primitive), `fleet:*`, `harness:*`, `docs:*`, `search:*`, `memory:*`, `messages:*`, `audit:*`, `cross_harness:*`, `ui:*`, `chat:*`.
+You reach Papercusp via the **`papercusp-su`** MCP server (HTTP at `http://localhost:3070/api/mcp?superuser=1`, bearer-authenticated). `?superuser=1` skips role/quota gates but still emits telemetry. The catalog evolves fast — **`agent_tools:list { asRole: 'operator' }`** is authoritative; don't trust any static list. Groups you'll reach for most: `coord:*`, `locks:*`, `plans:*`, `work_items:*` (the unified work surface), `blueprint:*`, `events:*` (the no-poll wake primitive), `fleet:*`, `harness:*`, `docs:*`, `search:*`, `memory:*`, `audit:*`, `cross_harness:*`, `ui:*`, `chat:*`.
 
 **Your verbs are MCP TOOLS — never curl them.** There is no REST surface for these verbs; load deferred schemas, then call the tool. High-value systems easy to miss:
 - **`design-phase:*`** — the UI design loop (validate/lint an IR spec, the DTCG token + component registry, memos, reviewer verdicts). Reach for it on ANY UI work — check tokens + the component registry before hand-rolling UI.
@@ -826,7 +843,7 @@ When your session is a **Papercusp GUI session chat** (the owner talking to you 
 
 - **Don't open Papercusp in a browser — Tauri only.** Never browse `:3055`/`:3070` (verdict/playwright/chrome/`xdg-open`) or run `apps/operator` standalone — the standalone webapp is RETIRED; a `PreToolUse` hook blocks the navigation. Verify through the Tauri shell per `/internal/docs/testing` + `/internal/docs/testing/agent-e2e`.
 - **Don't call `orchestrator.spawn` directly** — external autonomous spawns bypass scheduling + leak runs. Autonomous work → a feature / the harness UI. Interactive role session → `psu --role <role>`.
-- **Don't raw-SQL schema-canonical tables or hand-roll a feature-state write.** Work-item state flows through `work_items:*` verbs; feature-pipeline state (F-NNN) advances via the pipeline roles + `messages:send` (`to_feature_id`) — there is no `features:update`. Documented verbs emit audit rows + sync invalidation; raw SQL doesn't.
+- **Don't raw-SQL schema-canonical tables or hand-roll a feature-state write.** Work-item state flows through `work_items:*` verbs; feature-pipeline state (F-NNN) advances via the pipeline roles + `work_items:comment` (work-item-scoped hand-off) — there is no `features:update`. Documented verbs emit audit rows + sync invalidation; raw SQL doesn't.
 - **Don't default to polling — push.** IPC on desktop, SSE on web; the endpoint system projects `ctx.emit`/`ctx.progress` over every transport. Polling PG as a message channel is last-resort with a stated justification.
 - **Don't paper over missing context with a default** — a missing slug / feature id / workspace means the request is underspecified; ask one short question.
 
@@ -836,7 +853,7 @@ When your session is a **Papercusp GUI session chat** (the owner talking to you 
 
 **This ask is MANDATORY and is NOT waived by how the user phrased the request.** "implement it", "build it", "do it", "create a plan and then implement it", or any go-ahead tells you they want it BUILT — it does **NOT** mean they chose option (0). Do NOT collapse "implement it" into "I implement it myself". You MUST still present the numbered menu and WAIT for an explicit number (0–4) before you create files, claim items, `plans:launch`, or otherwise begin. The ONLY time you skip the menu is when the user explicitly names a route themselves ("do it yourself" → 0, "hand it to the mug" → 1, "send it to the X fleet" → 2, "spin up a desktop fleet" → 3, "spin up a headless fleet" → 4).
 
-1. **(0) I implement it myself** — claim the items and drive it directly: `plans:launch` (or `coord:orient { planItems }` to claim your lane) → `work_items:claim_next` and execute.
+1. **(0) I implement it myself** — claim the items and drive it directly **in THIS session**: `plans:launch` (or `coord:orient { planItems }` to claim your lane) → `work_items:claim_next` and execute. ⛔ (0) is NOT "I fan out client-native subagents" — `Task`/`Agent`/`Workflow` are DENIED by default on every Claude agent including the human `psu su` collaborator (owner mandate 2026-07-02, `NO_SUBAGENT_TOOLS_DENY`), so they are not in your toolset and offering them promises a route you cannot execute. Parallelism is routes (2)/(3)/(4). And before you put ANY route on the menu, confirm the tool that would run it is actually available to you this session (one `ToolSearch`/`tools:find` call) — never offer a capability you have not verified you have.
 2. **(1) Hand to the Mug for the pot** — file it as work for the pot: `work_items:create`. This wakes the Mug, who triages it and *places* the work onto cups. You step back; the pot owns it.
 3. **(2) Send to an available fleet** — list the fleets that have ≥1 LIVE member ("available" fleets), let the user pick one, and route the plan to it via the fleet tools. **When you do this, YOU become that fleet's leader** (D-002).
 4. **(3) Create a new VISIBLE desktop fleet** — open a fresh fleet as N VISIBLE terminals on the user's desktop: `fleet:launch-on-plan { name, plan, count }` (ensures the fleet, makes you leader, each member auto-joins + auto-starts on the plan — prefer it over hand-rolling `fleet:create` + `capability:terminal`). **You are its leader** from creation.

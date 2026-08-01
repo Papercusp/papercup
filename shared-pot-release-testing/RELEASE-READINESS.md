@@ -97,7 +97,7 @@ logs are from the green run `m1785117063`.
 | 19 | Spawn-request federation, fail-closed | 🟢 | `scn.spawn_request-220032.log` — a→b, signed request, sig-verified remote apply of the new kind, gate-OFF honor hook stayed silent |
 | 20 | Work-item federation to a peer's work queue | 🟢 | `scn.work_item-220032.log` — a→b, `engineer_issues` remote apply `origin='remote'` |
 | 21 | Fleet-directory card publish + verified remote apply | 🟢 | `scn.fleet_directory-220032.log` — owner-signed publish on create, sig-verified remote apply, substrate-attributed card |
-| 22 | **LIVE-2 end-to-end acceptance drill** (offer→pull→spawn→receipts→revocation, every leg observable from the origin, any silent leg = FAIL, on the 2-machine rig) | 🔴 | **BLOCKED — never run.** Plan item P-205 / WI-5135 / spec P-305. Rows 18–21 prove each *federation* leg in isolation on the container rig; this row is the only thing that proves the *lifecycle* end-to-end with revocation reaping an in-flight foreign session. **This is release-blocker #1** |
+| 22 | **LIVE-2 end-to-end acceptance drill** (offer→pull→spawn→receipts→revocation, every leg observable from the origin, any silent leg = FAIL, on the 2-machine rig) | 🔴→🟡 | **RUN 2026-08-01 (P-205/WI-5135) — no longer "never run", but NOT a full pass; read the leg-by-leg, not the headline.** Single-box drill `PASS=12 FAIL=0 SKIP=6` (packaged deb, `bin/work-distribution-drill.sh`) **+** the federated-revocation leg proven cross-node by a NEW registered matrix scenario `bin/lib/scenarios/fed-reap.sh` (order 59), run `m1785612213`: `b: grant\|revoked\|remote → session\|reaped → receipt work-offer:reap`, with the ACTIVE-grant baseline passing first so the reap is *attributable*. Against this row's own bar: **offer ✓** · **pull ~** (X11 activation + the WI-3629 seam ship in the packaged bundle, but no live pull was ever exercised — nothing ticks it) · **spawn ✗ NOT EXERCISED** · **receipts ✓** (offer-threaded, single-box *and* cross-node) · **revocation ✓ local AND ✓ federated**. ⚠ Environment: 2 **container frames** on a **private testnet DHT** — *not* two physical machines, *not* the public DHT (sufficient for this leg because `origin='remote'` keys on hyperbee source-log/device provenance, not a physical boundary — but do not quote it as the 2-machine rig; row 35 still owes that). ⚠ Both proofs used a **SEEDED**, not spawned, foreign session — see the blocker note below. Also landed: **D-018** — this drill's SKIP census was six *hardcoded strings* whose reasons had rotted into falsehood (5 of 6 false; one contradicted the drill's own header), so a clean run would have produced a plausible, quotable, WRONG reading; every reason is now DETECTED at runtime from the artifact under test |
 | 23 | Push-nudge wiring (latency only, never correctness) | 🔴→🟡 | BLOCKED (P-203/WI-5133, behind the same fresh-join class as WI-5863). **Not ship-blocking**: it is a latency optimisation; without it federation still converges on the poll cadence. Recorded as a deliberate ship-without |
 
 ### 2.3 Attestation + trust closure
@@ -131,11 +131,30 @@ logs are from the green run `m1785117063`.
 
 ## 3. Release blockers, in order
 
-1. **LIVE-2 acceptance drill (row 22, P-205).** Never executed. Every constituent federation leg
-   is green in isolation; the lifecycle — including revocation reaping an in-flight foreign
-   session — has no live proof. Unblock: it sits behind the P-202 lane / the WI-5863 fresh-join
-   class, which row 12's fix should now have cleared. **Re-triage P-205's blocker first; it may
-   already be stale.**
+1. **~~LIVE-2 acceptance drill (row 22, P-205)~~ → RE-SCOPED 2026-08-01 to a named bug:
+   `WI-6680` (the packaged host never ticks the executor).** The drill HAS now been executed
+   (row 22): the revocation half of the lifecycle is proven, including **federated** reap
+   across frames — a host withdraws consent and the *other* machine fails closed on its
+   in-flight session and says why in a receipt. What is still unproven is the **spawn** half,
+   and the reason is no longer "nobody has run the exercise" — it is a specific defect the
+   drill surfaced:
+
+   > On a packaged install the `p2p-work-intake` routine **never seeds**, so nothing ever ticks
+   > the offer→pull→spawn chain. Two paths, both live-observed: (a) `projectDirForSlug` returns
+   > null in the sidecar (harness-registry miss); (b) worse — on a first boot `activeWorkspaceId()`
+   > resolves `'default'`, the seeder correctly refuses, and the once-guard **latches**, so
+   > *zero* of the three p2p host routines seed for the process lifetime (this also disables the
+   > row-17 supervision sweep and orphan cleanup). Same class as WI-5780, new manifestation.
+
+   Consequence for GO/NO-GO: the spawn leg is **dead code on every shipped host** until WI-6680
+   lands — which is precisely the state D-004 forbids ("a spawn leg no production path ever ticks
+   is dead code"). This is a bounded, schedulable fix, not an open-ended exercise.
+   ⚠ Do **not** read row 22's revocation green as containment: it proves an *honest* session
+   **winds down** on withdrawal. It does **not** prove a hostile one is stopped — mechanical kill
+   (revocation-reaper deferred #1: cgroup / dedicated OS user after the X13 wind-down) is P-105
+   tier and **UNBUILT**, and D-001 deliberately ships v1 without it, on the user-trust chain alone.
+   Residue also carried from row 22: metering substrate is live but has **no production writer**,
+   and push-nudge stays deferred (row 23).
 2. **hive-git live legs (row 34).** Owned by `p2p-git-live-activation-2026-07-09`; do not
    duplicate its diagnosis.
 3. **Gate coverage gaps (§5).** ~~Two of three~~ **RESOLVED 2026-08-01 for the from-repo pair:**

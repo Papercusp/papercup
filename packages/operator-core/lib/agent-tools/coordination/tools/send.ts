@@ -27,6 +27,10 @@ import { RELAY_PROVENANCE_FIELD, type RelayProvenanceStamp } from '../relay-prov
 import { resolveRelayProvenance } from '../relay-provenance-resolve';
 import { BODY_REFS_OPT_OUT_FIELD, GATE_REFS_FIELD } from '../ref-hydrate';
 import { resolveGateRefStamps } from '../ref-hydrate-resolve';
+import {
+  resolveCouplingDivergenceStamps,
+  COUPLING_DIVERGENCE_FIELD,
+} from '../coupling-divergence-stamp';
 import { sendMessage, getMessageById } from '../messages';
 import { parseSlotSelector } from '../slot-selector';
 import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote, type DormantScheduledInfo } from '../inbox-wake';
@@ -659,6 +663,22 @@ async function sendOne(
   // stays byte-identical on the wire, so the n=1 case costs nothing.
   if (fieldStamp.sections) extra.sections = fieldStamp.sections;
   if (fieldStamp.premisesClassified) extra.premisesClassified = fieldStamp.premisesClassified;
+  // D-089 / WI-6685: score each `forYouBecause` against the coupling graph AS IT
+  // STANDS NOW. This is the only moment the comparison is meaningful — the graph
+  // is live state (locks release, awaits fire), so a later pass over the message
+  // log could only ever answer 'not-comparable'. Gated on the divergence rule
+  // table before any IO, so a message whose relations are all `owns`/`other`
+  // (the majority) costs nothing; fail-soft, like every other stamp here.
+  if (fieldStamp.sections) {
+    const divergence = await resolveCouplingDivergenceStamps({
+      selfOwnerId: identity.ownerId,
+      to: toSend,
+      sections: fieldStamp.sections,
+      workspaceId: identity.workspaceId,
+      harnessSlug,
+    });
+    if (divergence.length) extra[COUPLING_DIVERGENCE_FIELD] = divergence;
+  }
   if (fieldStamp.why) extra.why = fieldStamp.why;
   if (fieldStamp.blocking !== undefined) extra.blocking = fieldStamp.blocking;
   if (fieldStamp.basedOn) extra.basedOn = fieldStamp.basedOn;

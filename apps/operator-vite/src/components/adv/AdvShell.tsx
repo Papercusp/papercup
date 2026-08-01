@@ -36,6 +36,13 @@ import { useShortcutAction } from '@/lib/hotkeys';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { CATEGORICAL } from '@/app/harness/theme';
+import HivesRunningPill from './HivesRunningPill';
+import AgentsRunningPill from './AgentsRunningPill';
+// The pills' own button/popover styles. Portable by design
+// (quick-panel-status-pills-2026-07-13 D-001) precisely so they render correctly
+// wherever they are mounted — here in the tab strip, and in the Quick Panel popup
+// which never mounts this shell.
+import './adv-header-pills.css';
 
 // 'brainstorm' removed 2026-07-13 (quick-panel-saved-prompts P-010): the brainstorm
 // surface lives in the Quick Panel popup's Brainstorm tab now (owner ask). Old

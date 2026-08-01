@@ -126,6 +126,7 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   if (r.terminal_completion_ref !== undefined && !isStringOrNull(r.terminal_completion_ref)) return false;
   if (r.terminal_reason !== undefined && !isStringOrNull(r.terminal_reason)) return false; // P-009/D-001 — optional on the wire
   if (r.authority !== undefined && !isStringOrNull(r.authority)) return false; // mig 708/D-035 — optional on the wire
+  if (r.closed_ts !== undefined && r.closed_ts !== null && !Number.isFinite(r.closed_ts)) return false; // mig 708 PART 2 — optional on the wire
   // payload is jsonb-opaque — accept anything (incl. undefined → null on write).
   return true;
 }
