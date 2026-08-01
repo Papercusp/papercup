@@ -43,8 +43,10 @@ import {
   ALL_PLANS,
   NO_PLAN_TOKEN,
   buildHudBoard,
+  reconcileBoardIdentity,
   HUD_COLUMNS,
   type HudAsk,
+  type HudBoard,
   type HudColumnId,
   type HudRosterEntry,
 } from './hud-board-model';
@@ -313,16 +315,26 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     [entries, searchOwners],
   );
 
-  const board = useMemo(
-    () =>
-      buildHudBoard(searchedEntries, asks, {
-        nowMs,
-        suOnly: !allAgents,
-        fleets: selectedFleets,
-        plans: selectedPlans,
-      }),
-    [searchedEntries, asks, nowMs, allAgents, selectedFleets, selectedPlans],
-  );
+  /* WI-6560 — `buildHudBoard` is pure and allocates fresh session objects every
+     call, and this memo re-runs on every 15s clock tick. `reconcileBoardIdentity`
+     hands back the PREVIOUS object for any session/column/board that is
+     structurally unchanged, which is what lets `MemoSessionCard`'s shallow
+     compare hold across a tick that did not change what any card renders (see
+     the long rationale on the function). Writing the ref during the memo is a
+     pure cache: if React discards this render, the next comparison is still
+     structural, so the output can never be stale — at most one extra render. */
+  const prevBoardRef = useRef<HudBoard | null>(null);
+  const board = useMemo(() => {
+    const built = buildHudBoard(searchedEntries, asks, {
+      nowMs,
+      suOnly: !allAgents,
+      fleets: selectedFleets,
+      plans: selectedPlans,
+    });
+    const reconciled = reconcileBoardIdentity(prevBoardRef.current, built);
+    prevBoardRef.current = reconciled;
+    return reconciled;
+  }, [searchedEntries, asks, nowMs, allAgents, selectedFleets, selectedPlans]);
 
   const onToggleFleet = useCallback(
     (slug: string | null) => {
@@ -492,12 +504,19 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      the entity board got it right (onOpenItemCard / onOpenPlanCard above are
      already useCallback'd, which is why MemoEntityCard's memo does hold).
 
-     What this does NOT fix: `board` is rebuilt whenever roster data arrives or
-     the 15s clock ticks, and `buildHudBoard` returns new session objects, so the
-     `session` prop churns on those renders regardless. The win is the large
-     class of renders where session data did NOT change — work-item/plan data
-     arriving, entity-search typing, opening/closing the chat modal, switching
-     tabs — which currently re-render every session card for nothing.
+     On its own this fixes the large class of renders where session data did NOT
+     change — work-item/plan data arriving, entity-search typing, opening/closing
+     the chat modal, switching tabs — which used to re-render every session card
+     for nothing.
+
+     It did NOT, on its own, fix the two paths WI-6560 actually measured: `board`
+     is also rebuilt whenever roster data arrives or the 15s clock ticks, and
+     `buildHudBoard` allocates new session objects, so the `session` prop churned
+     on those renders regardless. `reconcileBoardIdentity` (at the `board` memo
+     above) closes that second half by handing back the previous object whenever
+     the rebuilt one is structurally identical. Both halves are required: a
+     stable `onOpen` with churning `session` objects, or stable sessions with a
+     fresh `onOpen` arrow, each leaves the memo missing on every card.
 
      Pinned by hud-render-stability.test.tsx: the memo BEHAVIOUR is proven by
      rendering HudBoard (including the failure direction — a changing onOpen

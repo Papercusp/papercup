@@ -19,6 +19,8 @@
  * roster already showed; these are the ones that cost hours.
  */
 
+import { deepEqual } from '@papercusp/rules';
+
 import type { Liveness } from '@papercusp/operator-core/lib/liveness';
 // Mode chip label + hover come from the registry (pure data, zero imports of its
 // own — safe in the SPA bundle) so the five official modes are explained here
@@ -931,4 +933,101 @@ export function buildHudBoard(
     total: sessions.length,
     unattributed: unattributedAsks(asks),
   };
+}
+
+/**
+ * WI-6560 — reuse the PREVIOUS board's object references wherever the freshly
+ * derived value is structurally identical, so `React.memo` downstream can
+ * actually bite.
+ *
+ * WHY THIS IS NEEDED AT ALL. `buildHudBoard` is pure and allocates a new
+ * `HudSession` per agent on every call, and it is re-run whenever ANY of its
+ * inputs change — including `nowMs`, which the view bumps every 15s. But the
+ * clock only changes what a card *renders* at the granularity `formatAge`
+ * prints: seconds under a minute, then MINUTES, then HOURS. So for any session
+ * older than a minute, three of every four ticks rebuild an object whose
+ * rendered output is byte-identical; for an hour-old session it is 239 of every
+ * 240. Same story for roster payloads that arrive unchanged. Without this,
+ * `MemoSessionCard`'s shallow compare misses on the `session` prop every time
+ * and the entire board re-renders for nothing.
+ *
+ * This is deliberately NOT solved by quantising `sinceSec` to display
+ * granularity: `sinceSec` also feeds `sortKey` and the threshold comparisons,
+ * and rounding it would change classification, not just presentation. Comparing
+ * the finished value is both safer and strictly more general — it also collapses
+ * the *data*-arrival case (an unchanged roster re-fetched), which quantising
+ * would not.
+ *
+ * Equality is STRUCTURAL (`deepEqual`), never a hand-listed field comparison.
+ * That is the load-bearing choice: a hand-written comparator silently goes stale
+ * the moment someone adds a field to `HudSession`, and the failure mode is a
+ * card that renders permanently stale data — far worse than a missed memo. A
+ * structural compare cannot rot that way.
+ *
+ * Reuse is applied bottom-up (session → column → board) so that an unchanged
+ * board returns the IDENTICAL object, which lets memos above the board hold too.
+ * A session that is unchanged but has MOVED position still forces a new column
+ * object, because the column's rendered order genuinely differs.
+ *
+ * SAFETY NOTE for the caller: this is a pure cache, so it stays correct even if
+ * a render is discarded (React may run a memo and throw the result away). The
+ * worst case is that `prev` refers to a board that was never committed; the next
+ * comparison is still structural, so the output is never stale — at most one
+ * extra re-render happens.
+ */
+export function reconcileBoardIdentity(prev: HudBoard | null, next: HudBoard): HudBoard {
+  if (!prev) return next;
+
+  const priorByOwner = new Map<string, HudSession>();
+  for (const col of prev.columns) {
+    for (const s of col.sessions) priorByOwner.set(s.ownerId, s);
+  }
+
+  let anyColumnChanged = false;
+  const columns = next.columns.map((col, colIdx) => {
+    const prevCol = prev.columns[colIdx];
+    let columnChanged =
+      !prevCol ||
+      prevCol.id !== col.id ||
+      prevCol.label !== col.label ||
+      prevCol.empty !== col.empty ||
+      prevCol.sessions.length !== col.sessions.length;
+
+    const sessions = col.sessions.map((s, i) => {
+      const prior = priorByOwner.get(s.ownerId);
+      if (prior && deepEqual(prior, s)) {
+        // Unchanged content — but a different slot means the column's order
+        // changed, so the column object itself must not be reused.
+        if (!prevCol || prevCol.sessions[i] !== prior) columnChanged = true;
+        return prior;
+      }
+      columnChanged = true;
+      return s;
+    });
+
+    if (!columnChanged && prevCol) return prevCol;
+    anyColumnChanged = true;
+    return { ...col, sessions };
+  });
+
+  const fleets = deepEqual(prev.fleets, next.fleets) ? prev.fleets : next.fleets;
+  const plans = deepEqual(prev.plans, next.plans) ? prev.plans : next.plans;
+  const counts = deepEqual(prev.counts, next.counts) ? prev.counts : next.counts;
+  const unattributed = deepEqual(prev.unattributed, next.unattributed)
+    ? prev.unattributed
+    : next.unattributed;
+
+  if (
+    !anyColumnChanged &&
+    prev.columns.length === next.columns.length &&
+    fleets === prev.fleets &&
+    plans === prev.plans &&
+    counts === prev.counts &&
+    unattributed === prev.unattributed &&
+    prev.total === next.total
+  ) {
+    return prev;
+  }
+
+  return { columns, fleets, plans, counts, total: next.total, unattributed };
 }

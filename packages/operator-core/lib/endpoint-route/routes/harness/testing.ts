@@ -34,7 +34,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readFileSync, rmSync } from 'node:fs';
 import { defineTool } from '@papercusp/agent-mcp';
-import { parseVitestJsonForHarnessRows, persistHarnessTestRuns } from '../../../testing-run-store';
+import { parseVitestJsonForHarnessRows, persistHarnessTestRuns, computeWorktreeDirty } from '../../../testing-run-store';
 import { resolvePhasedProject, safeRead } from '../../../harness-core';
 import { type ProjectEntry, loadHarnessRegistry, resolveHarnessContentPath } from '../../../harness-registry';
 import { type Phase, phasePhaseLabel, phasePath } from '../../../harness-phases';

@@ -1394,6 +1394,17 @@ export async function readIssueClaimability(
     // WI-6673: composition of the ADMITTED set, in the SAME snapshot as the count it
     // describes. Unconditional — it is not an opt-in extra, because the whole failure
     // mode is a caller quoting the count WITHOUT having thought to ask for composition.
+    //
+    // COST NOTE (measured 2026-08-01): this is a FOURTH serial aggregation in this
+    // transaction, and postgres.js serialises on the single tx connection, so it adds
+    // roughly one more floor-stack pass per call. That is deliberate for `work_items:
+    // claimable`, which EXISTS to be quoted. It is pure waste for
+    // harness/routines/unguarded-halt-rescue-action.ts, which destructures only
+    // `{ breakdown }` and cannot quote a count to anyone — worth folding the composition
+    // into aggregateIssueClaimExclusions' single pass (same snapshot, one query) rather
+    // than making it opt-in, since an opt-out flag would just recreate the original bug.
+    // NOT urgent: `scheduler:get_next` does NOT route through this function, so the
+    // fleet's hot claim path is unaffected by this cost.
     const admitted = await aggregateAdmittedComposition(filter, { ...shared, client });
 
     return { breakdown, rows, admitted, ...(sample ? { sample } : {}) };
