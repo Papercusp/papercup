@@ -999,10 +999,15 @@ export async function openAwaitsByOwner(ownerIds: string[]): Promise<Map<string,
   if (ownerIds.length === 0) return out;
   try {
     const { sql } = getOrgPg();
+    // P-016: read the EFFECTIVE view, not the raw table. A composed leaf's own
+    // expires_ts is NULL by design (the root node owns the tree's deadline), and NULL
+    // here renders as "waits forever" — the exact misreading that turned a healthy
+    // 30-minute park into a reported deadlock.
     const rows = (await sql`
       SELECT DISTINCT ON (subscriber_id)
-             subscriber_id, event_key, note, created_at, expires_ts
-        FROM harness_shared.event_awaits
+             subscriber_id, event_key, note, created_at,
+             effective_expires_ts AS expires_ts
+        FROM harness_shared.event_awaits_effective
        WHERE fired_at IS NULL
          AND cancelled_at IS NULL
          AND superseded_at IS NULL

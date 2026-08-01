@@ -35,9 +35,11 @@ import {
   callerEditsInCandidate,
   excludedCommitsTouchingPath,
   gitReadFromExecSync,
+  testImplSplitRisk,
   uncommittedPaths,
   type MissingReason,
   type PathContainment,
+  type TestImplSplitRisk,
 } from './candidate-contains';
 
 /**
@@ -760,6 +762,10 @@ export interface CheckpointContainment {
    * excluded nothing, or excluded nothing of yours.
    */
   excludedCommitsTouchingYourFiles: { path: string; commits: string[] }[];
+  /** EI-18796358994458975: does the declared path set itself look like a torn TDD pair —
+   *  a `*.test.ts` the candidate carries plus its non-test sibling missing for reason
+   *  `newer-commit`? `detected:false` when nothing in `paths` matches that shape. */
+  testImplSplitRisk: TestImplSplitRisk;
   /** One hard-warning line when `missing` is non-empty; null when everything is in. */
   warning: string | null;
 }
@@ -797,6 +803,8 @@ export async function checkpointCandidateContainment(args: {
     }
   }
 
+  const splitRisk = testImplSplitRisk(verdict.paths);
+
   return {
     candidateSha: args.candidateSha,
     tipSha,
@@ -806,7 +814,10 @@ export async function checkpointCandidateContainment(args: {
     unknown: verdict.unknown,
     paths: verdict.paths,
     excludedCommitsTouchingYourFiles,
-    warning: verdict.missing.length ? renderContainmentWarning(verdict.missing, verdict.paths, excludedCommitsTouchingYourFiles, source) : null,
+    testImplSplitRisk: splitRisk,
+    warning: verdict.missing.length
+      ? renderContainmentWarning(verdict.missing, verdict.paths, excludedCommitsTouchingYourFiles, source, splitRisk)
+      : null,
   };
 }
 
@@ -824,6 +835,7 @@ export function renderContainmentWarning(
   paths: PathContainment[],
   excluded: { path: string; commits: string[] }[],
   source: CheckpointContainment['source'],
+  splitRisk?: TestImplSplitRisk,
 ): string {
   const byReason = (r: MissingReason) => missing.filter((p) => paths.find((x) => x.path === p)?.reason === r);
   const uncommitted = byReason('uncommitted');
@@ -854,6 +866,18 @@ export function renderContainmentWarning(
   if (newer.length) {
     parts.push(
       `COMMITTED BUT NEWER THAN THE CANDIDATE (the quiet-cut stepped the judged commit back): ${list(newer)}. Fix: wait out the quiet window (~4 min) and re-fire, or let the next run pick it up.`,
+    );
+  }
+  // EI-18796358994458975: a torn TDD pair is a KNOWN false-red shape, not a generic
+  // "wait it out" — name it explicitly so the caller does not spend the ~3h suite
+  // re-debugging code that is already correct, only untested-together-with-its-test yet.
+  if (splitRisk?.detected) {
+    parts.push(
+      `🔴 KNOWN FALSE-RED SHAPE (torn TDD pair): the candidate carries your test(s) ${list(
+        splitRisk.includedTests,
+      )} WITHOUT the implementation commit that makes them pass — ${list(
+        splitRisk.missingImpl,
+      )} is/are exactly the file(s) listed above as newer-than-candidate. This run is GUARANTEED red on those tests before it even starts; that red is not evidence anything is broken. Do not debug it — wait out the quiet window and re-fire (or let the next run pick it up).`,
     );
   }
   if (unknownCommit.length) {

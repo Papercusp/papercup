@@ -496,6 +496,44 @@ export async function callerEditsInCandidate(
   };
 }
 
+const TEST_FILE_RE = /\.test\.tsx?$/;
+
+/**
+ * EI-18796358994458975 — a known FALSE-RED SHAPE: among the caller's own declared paths,
+ * the candidate carries a `*.test.ts(x)` byte-identically (`inCandidate: true`) while a
+ * NON-test path is missing for reason `newer-commit` — i.e. the quiet-cut stepped the
+ * judged commit back to a point that has the test but not the implementation commit that
+ * makes it pass. That candidate is red before the suite even starts, and the red is
+ * indistinguishable in the ledger from a genuine regression.
+ *
+ * Deliberately restricted to the caller's OWN declared `paths` (never a repo-wide scan):
+ * this module has no import-graph resolver, and `paths` is already the caller's own
+ * "files my change touches" declaration — exactly the set the 2026-07-27 incident's
+ * containment report proved the shape against (`deliberation-harness-fallback.test.ts`
+ * included, `index.ts` missing/`newer-commit`, same declared change). A caller that
+ * declares its test file alongside its implementation file gets this warning for free;
+ * one that declares only the test file cannot be helped by this heuristic (there is no
+ * signal to detect a split against), which is a scope limit, not a false negative.
+ */
+export interface TestImplSplitRisk {
+  /** True when at least one included test file AND one missing (`newer-commit`) non-test
+   *  file both appear among the caller's declared paths — the shape this module detects. */
+  detected: boolean;
+  /** Declared `*.test.ts(x)` paths the candidate DOES carry. */
+  includedTests: string[];
+  /** Declared non-test paths missing from the candidate for reason `newer-commit` — the
+   *  likely "other half" of a torn TDD commit pair. */
+  missingImpl: string[];
+}
+
+export function testImplSplitRisk(paths: PathContainment[]): TestImplSplitRisk {
+  const includedTests = paths.filter((p) => p.inCandidate === true && TEST_FILE_RE.test(p.path)).map((p) => p.path);
+  const missingImpl = paths
+    .filter((p) => p.inCandidate === false && p.reason === 'newer-commit' && !TEST_FILE_RE.test(p.path))
+    .map((p) => p.path);
+  return { detected: includedTests.length > 0 && missingImpl.length > 0, includedTests, missingImpl };
+}
+
 /**
  * Paths with uncommitted working-tree changes, INCLUDING untracked files.
  *

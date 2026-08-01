@@ -1060,6 +1060,12 @@ describe('SessionChatModal', () => {
     });
 
     it('admits the launch failed once the grace window elapses without the session coming online', async () => {
+      // Seeding a HEALTHY (but empty) roster is load-bearing, not decoration:
+      // "the launch failed" is only a supportable verdict when the roster was
+      // actually readable and the session simply was not in it. With no roster
+      // at all the modal now correctly reports an unreachable operator instead
+      // — see the "unreachable backend vs failed launch" block below.
+      seedRoster([]);
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
         mockFetchOnce(200, { sessions: [] });
@@ -1199,6 +1205,116 @@ describe('SessionChatModal', () => {
       render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
 
       await waitFor(() => expect(screen.getByText(STARTING)).toBeTruthy());
+      expect(screen.queryByText(FAILED)).toBeNull();
+    });
+  });
+
+  // The startup-timeout banner must not invent a diagnosis it cannot support.
+  //
+  // [owner 2026-08-01, verbatim] "in the hud tab I tried launching a new session
+  // and the conversation window came up but I got that error." The launch was
+  // fine — the operator's Postgres discovery file pointed at a dead port, so the
+  // roster could never be read and the session could never register. The banner
+  // nonetheless told the owner "the launch may have failed — try launching it
+  // again", advice that could not work and that blamed their action rather than
+  // the backend. The roster is the ONLY evidence the modal has about coming
+  // online, so when it is unreadable the honest report is "cannot reach the
+  // operator", not a verdict on the launch.
+  describe('startup timeout distinguishes an unreachable backend from a failed launch', () => {
+    const STARTING = /Starting up — waiting for this session to come online/;
+    const FAILED = /This session hasn't come online/;
+    const UNREACHABLE = /Can't reach the operator to check on this session/;
+
+    /** A roster read that came back healthy — the session simply is not in it. */
+    function seedReadableRoster() {
+      H.results['advRoster.list'] = {
+        data: [{ active: [], pending: [], starting: [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    }
+
+    async function renderTimedOutLaunch() {
+      mockFetchOnce(200, { sessions: [] });
+      render(
+        <SessionChatModal
+          sessionOwnerId="su-new-1"
+          onClose={vi.fn()}
+          // Already past the 60s grace window, so the banner is in its
+          // timed-out state without needing fake timers.
+          pendingLaunch={{ ownerId: 'su-new-1', startedAtMs: Date.now() - 61_000 }}
+        />,
+      );
+      await waitFor(() => expect(screen.getByTestId('session-chat-starting-up')).toBeTruthy());
+    }
+
+    it('says the operator is unreachable — not that the launch failed — when the roster query ERRORED', async () => {
+      H.results['advRoster.list'] = {
+        data: undefined,
+        loading: false,
+        fetching: false,
+        error: new Error('connect ECONNREFUSED 127.0.0.1:20216'),
+        invalidate: vi.fn(),
+      };
+      await renderTimedOutLaunch();
+
+      expect(screen.getByText(UNREACHABLE)).toBeTruthy();
+      // The specific regression: the retry advice must be GONE, not merely
+      // accompanied by the new line. Retrying cannot help here.
+      expect(screen.queryByText(FAILED)).toBeNull();
+    });
+
+    it('also says unreachable when the roster returned NO payload at all', async () => {
+      // The outage shape that does not surface as an Error: the query resolves
+      // but carries nothing, so there is still no evidence either way.
+      H.results['advRoster.list'] = {
+        data: [],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+      await renderTimedOutLaunch();
+
+      expect(screen.getByText(UNREACHABLE)).toBeTruthy();
+      expect(screen.queryByText(FAILED)).toBeNull();
+    });
+
+    // NON-VACUITY CONTROL. Identical inputs except the roster READ FINE. A bug
+    // that routed every timeout to the unreachable copy would pass both tests
+    // above while destroying the real did-not-come-online signal WI-6367 added.
+    it('STILL blames the launch when the roster read fine and the session is simply absent', async () => {
+      seedReadableRoster();
+      await renderTimedOutLaunch();
+
+      expect(screen.getByText(FAILED)).toBeTruthy();
+      expect(screen.queryByText(UNREACHABLE)).toBeNull();
+    });
+
+    // The unreachable branch must not leak into the pre-timeout window either:
+    // a launch seconds old is still legitimately "starting up" even if the
+    // roster is momentarily unreadable.
+    it('stays on "starting up" before the grace window expires, even with an unreadable roster', async () => {
+      H.results['advRoster.list'] = {
+        data: undefined,
+        loading: false,
+        fetching: false,
+        error: new Error('connect ECONNREFUSED 127.0.0.1:20216'),
+        invalidate: vi.fn(),
+      };
+      mockFetchOnce(200, { sessions: [] });
+      render(
+        <SessionChatModal
+          sessionOwnerId="su-new-1"
+          onClose={vi.fn()}
+          pendingLaunch={{ ownerId: 'su-new-1', startedAtMs: Date.now() }}
+        />,
+      );
+
+      await waitFor(() => expect(screen.getByText(STARTING)).toBeTruthy());
+      expect(screen.queryByText(UNREACHABLE)).toBeNull();
       expect(screen.queryByText(FAILED)).toBeNull();
     });
   });

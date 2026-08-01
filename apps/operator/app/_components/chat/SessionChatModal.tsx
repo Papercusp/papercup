@@ -659,6 +659,25 @@ export default function SessionChatModal({
   // class of lie as the copy this fixes, just in the hopeful direction. After
   // the grace window we say plainly that it did not come up. One-shot timeout,
   // not an interval — nothing here needs a ticking clock.
+  // ⚠ …but "it did not come up" is only honest if we could SEE the roster.
+  //
+  // [owner 2026-08-01, verbatim] "in the hud tab I tried launching a new
+  // session and the conversation window came up but I got that error." The
+  // launch was fine. `~/.papercusp/embedded-pg.json` pointed at a dead Postgres
+  // port, so every DB-backed read failed, the session could never register, the
+  // grace window expired, and this banner told the owner to relaunch — advice
+  // that could not possibly work, and which pointed them at their own action
+  // instead of the broken backend. (`:3070/api/health` answered 200 in 1.6ms
+  // throughout, so nothing else contradicted the banner either.)
+  //
+  // The roster IS our evidence that a session came online. When we cannot read
+  // it we have no evidence in EITHER direction, so blaming the launch is a
+  // fabricated diagnosis — the same class of lie as the past-tense "gone away"
+  // copy WI-6367 removed, just pointed at the user's action instead of the
+  // session's age. Report the thing we actually observed: we cannot reach the
+  // operator.
+  const rosterUnreadable = actionRoster.error != null || actionRoster.data?.[0] == null;
+
   const [startupTimedOut, setStartupTimedOut] = useState(false);
   useEffect(() => {
     setStartupTimedOut(false);
@@ -774,7 +793,9 @@ export default function SessionChatModal({
           // which it is, in the present tense, instead of the gone-away copy.
           <div style={BANNER_STYLE} data-testid="session-chat-starting-up">
             {startupTimedOut
-              ? "This session hasn't come online. The launch may have failed — try launching it again."
+              ? rosterUnreadable
+                ? "Can't reach the operator to check on this session — this looks like a connection problem, not a failed launch. Relaunching won't help until it's back."
+                : "This session hasn't come online. The launch may have failed — try launching it again."
               : 'Starting up — waiting for this session to come online…'}
           </div>
         ) : !resolved ? (
