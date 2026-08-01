@@ -39,6 +39,19 @@ export interface ClaimRecallInput {
   /** Warm-session epoch-dedup identity (the claimer's ownerId). Optional —
    *  recall still runs without it, just un-stamped (no dedup ledger). */
   sessionId?: string | null;
+  /**
+   * The claimer's personal-scope memory identity (EI-18893248175645463): every
+   * OTHER buildLaunchMemoryBlock caller (compact-reprime, turn-start) threads
+   * this through to inject the claimer's OWN user-scoped memories alongside
+   * harness/hive ones. This port never did, so the 'user' pool was recorded on
+   * EVERY claim recall (unconditionally, per injection.ts) with an EMPTY scope
+   * list — a guaranteed zero-hit, not a "nothing relevant" miss (100% zero-hit
+   * measured over 42/42 claim recalls). Defaults to `sessionId`, which is
+   * already documented above as "the claimer's ownerId" — the SAME identity
+   * every existing call site already passes as `sessionId`, so this default
+   * fixes every caller without touching them. Pass explicitly only when the
+   * claimer's identity differs from the epoch-dedup session id. */
+  userId?: string | null;
   workspaceId?: string | null;
   items: readonly ClaimRecallItem[];
   /** The parent plan's ## Now line (plan-bound claims) — fills a spare query slot. */
