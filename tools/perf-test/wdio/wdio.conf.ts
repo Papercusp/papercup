@@ -18,7 +18,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { readMeasures, resetMeasures } from "./perf-report";
+import { operatorBaseUrl, readMeasures, resetMeasures } from "./perf-report";
 import { SPEC_TIMEOUT_MS } from "./app-mount";
 
 /**
@@ -373,10 +373,8 @@ async function publishMeasures(): Promise<void> {
     return;
   }
 
-  // Default to the green operator on :3070. Override with PAPERCUSP_OPERATOR_URL
-  // (e.g. http://127.0.0.1:3170) to target the staging operator — necessary
-  // whenever the ingest route is newer than what :3070's release checkout serves.
-  const base = (process.env.PAPERCUSP_OPERATOR_URL ?? "http://127.0.0.1:3070").replace(/\/$/, "");
+  // Shared with the egress spec's sensor control — see operatorBaseUrl().
+  const base = operatorBaseUrl();
   const url = `${base}/api/admin/testing/desktop-perf-runs`;
 
   // Best-effort commit correlation so a recorded run is attributable to code.

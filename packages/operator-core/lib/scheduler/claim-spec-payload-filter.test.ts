@@ -63,6 +63,7 @@ function subjectOf(p: {
     redundancy: null,
     estCost: null,
     assignee: null,
+    severity: null,
   };
 }
 

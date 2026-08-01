@@ -130,6 +130,7 @@ function nullPlanSubject(id: string): ClaimSpecSubject {
     redundancy: null,
     estCost: null,
     assignee: null,
+    severity: null,
   };
 }
 

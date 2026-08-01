@@ -1490,6 +1490,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/pretooluse-secrets-guard.mjs" "$CC_SECRETS_GUARD_HOOK"
     chmod 755 "$CC_SECRETS_GUARD_HOOK"
   fi
+  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-nul-byte-edit-guard.mjs" ]; then
+    cp "${CC_HOOK_SRC_DIR}/pretooluse-nul-byte-edit-guard.mjs" "$CC_NUL_BYTE_EDIT_GUARD_HOOK"
+    chmod 755 "$CC_NUL_BYTE_EDIT_GUARD_HOOK"
+  fi
   if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-schedule-wakeup-provenance.mjs" ]; then
     cp "${CC_HOOK_SRC_DIR}/pretooluse-schedule-wakeup-provenance.mjs" "$CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK"
     chmod 755 "$CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK"
@@ -1522,6 +1526,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_GUARD_OPERATOR_DESKTOP_HOOK" ] && merge_guard_operator_desktop_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_CONTENT_LINT_HOOK" ] && merge_content_lint_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_SECRETS_GUARD_HOOK" ] && merge_secrets_guard_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_NUL_BYTE_EDIT_GUARD_HOOK" ] && merge_nul_byte_edit_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK" ] && merge_schedule_wakeup_provenance_hook "$CLAUDE_SETTINGS"
   chmod 600 "$CLAUDE_SETTINGS"
   echo "✓ Merged SU-locks + coord + activity hooks (+ fleet statusline) into $CLAUDE_SETTINGS"

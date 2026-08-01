@@ -90,6 +90,7 @@ const base: ClaimSpecSubject = {
   redundancy: 1,
   estCost: 12,
   assignee: null,
+  severity: 'major',
 };
 
 describe('fleet scope assignment admission (P-016)', () => {

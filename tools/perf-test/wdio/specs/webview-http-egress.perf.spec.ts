@@ -35,7 +35,7 @@
  * WebKitWebDriver. Run: `npm test` from tools/perf-test/wdio.
  */
 import { browser } from "@wdio/globals";
-import { recordInvariant } from "../perf-report";
+import { operatorBaseUrl, recordInvariant } from "../perf-report";
 import { waitForAppMount } from "../app-mount";
 
 /**
@@ -45,6 +45,31 @@ import { waitForAppMount } from "../app-mount";
  */
 const POLL_TICK_MS = 30_000;
 const SAMPLE_WINDOW_MS = POLL_TICK_MS + 6_000;
+
+/**
+ * Where the sensor's positive control is sent — and it MUST come from the runner,
+ * never from the webview's own origin.
+ *
+ * THE BUG THIS FIXES (2026-08-01). `verifyEgressSensor` falls back to
+ * `defaultControlUrl()`, which builds the control from `window.location.origin`
+ * and returns null for any non-http(s) scheme. The packaged shell's origin is
+ * `papercusp://localhost`, so that fallback was ALWAYS null there: every packaged
+ * run reported `controlReason: 'no control URL available'`, `verdict: 'unknown'`,
+ * and failed — the spec could not pass against the one artifact it exists to
+ * audit. It could only go green where the origin was already http(s), i.e. the
+ * dev configuration D-010 rules must never be measured. A self-defeating control:
+ * the more completely the app achieved the invariant, the less the sensor could
+ * prove about it.
+ *
+ * An origin-derived control is unfixable in principle here — "the webview speaks
+ * no HTTP" is the property under test, so its origin can never supply an HTTP
+ * control. The runner's operator origin is reachable by construction, and a 404
+ * from it proves the sensor exactly as well as a 200.
+ *
+ * NOT under `/api/`, and nonce-tagged, so it cannot be mistaken for an escape:
+ * the monitor reports only `/api` paths and excludes the nonce besides.
+ */
+const CONTROL_URL = `${operatorBaseUrl()}/__egress_control__`;
 
 interface EgressEntry {
   path: string;
@@ -107,12 +132,13 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
     //    gap between first paint and the first background refresh.
     await browser.pause(SAMPLE_WINDOW_MS);
 
-    const probe: EgressProbe = await browser.executeAsync((done: (r: EgressProbe) => void) => {
+    const probe: EgressProbe = await browser.executeAsync(
+      (controlUrl: string, done: (r: EgressProbe) => void) => {
       const monitor = (
         window as unknown as {
           __papercusp_egress__?: {
             report: () => EgressReport;
-            verify?: (o?: { timeoutMs?: number }) => Promise<{
+            verify?: (o?: { timeoutMs?: number; controlUrl?: string }) => Promise<{
               observed: boolean;
               reason?: string;
             }>;
@@ -124,7 +150,7 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
       // deliberately emits one HTTP request — allowed here, in a test rig
       // auditing the invariant, and nowhere near the shipped app.
       const proof = monitor?.verify
-        ? monitor.verify({ timeoutMs: 4000 })
+        ? monitor.verify({ timeoutMs: 4000, controlUrl })
         : Promise.resolve({
             observed: false,
             reason: "verify() is absent — this build predates the sensor control",
@@ -148,7 +174,9 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
             null,
         });
       });
-    });
+      },
+      CONTROL_URL,
+    );
 
     // 3. Record BEFORE asserting (P-003c). Every `expect` below throws, and a
     //    measure recorded after a throw is a measure the release gate never sees —

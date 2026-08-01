@@ -137,6 +137,14 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
     redundancy: numberOrNull(payload.redundancy),
     estCost: numberOrNull(payload.est_cost ?? payload.expected_cost_cents),
     assignee: spec.assign_to ?? null,
+    // WI-6675: the severity the item is being created WITH. Create-time admission runs
+    // before the row exists, so it has no `_ei` fold to read — the spec's own field is
+    // the only source, and omitting it would make a severity-scoped fleet silently
+    // refuse every newly-created item (subject.severity === null never matches
+    // `severity in [critical,major]`), i.e. a lane that drains the existing backlog but
+    // goes blind to new arrivals. Feature-family creates carry no severity ⇒ null, which
+    // is the correct non-match for an issue-family-only notion.
+    severity: spec.severity ?? null,
   };
 }
 

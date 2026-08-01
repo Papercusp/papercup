@@ -41,6 +41,7 @@ import {
   RANKABLE_ITEM_FIELDS,
   validateClaimSpec,
   type ClaimSpec,
+  type FilterNode,
 } from './claim-spec';
 import { claimSpecSubjectFromWorkItem, matchesClaimSpecFilter } from './claim-spec-match';
 
@@ -74,8 +75,10 @@ function issueItem(overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'title'>
   } as WorkItem;
 }
 
-/** The filter a real severity-scoped drain lane would author. */
-const SEVERE_ONLY = { field: 'severity', op: 'in', value: ['critical', 'major'] } as const;
+/** The filter a real severity-scoped drain lane would author. Typed as `FilterNode`
+ *  rather than `as const`: a const assertion makes `value` a readonly tuple, which is
+ *  not assignable to the schema's `string[]`. */
+const SEVERE_ONLY: FilterNode = { field: 'severity', op: 'in', value: ['critical', 'major'] };
 
 describe('severity is in the claim-spec FILTER vocabulary (WI-6675)', () => {
   it('is a known item field, and is filterable', () => {
