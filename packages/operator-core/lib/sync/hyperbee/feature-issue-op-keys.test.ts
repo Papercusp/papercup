@@ -210,6 +210,14 @@ describe('outboxRowToLocalWriteOp — features', () => {
       // (passed/resolved→done, deprecated/closed→dropped) federates. NULL here
       // because this fixture's source row predates it → mapper maps absent → null.
       terminal_reason: null,
+      // mig 708 / EI-18785839681430807: the authority axis (mig 677) federates as a
+      // plain carried column. NULL here because this fixture's source row predates
+      // it → mapper maps absent → null.
+      authority: null,
+      // mig 708 PART 2 / EI-18820653360383242: the trigger-maintained close time
+      // (mig 698) federates — mig 708's BEFORE trigger requires it. NULL here for
+      // the same predates-the-column reason.
+      closed_ts: null,
     });
   });
 

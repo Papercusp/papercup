@@ -125,6 +125,7 @@ export async function buildClaimRecallBlock(input: ClaimRecallInput): Promise<st
         buildLaunchMemoryBlock({
           profile,
           workspaceId,
+          userId: input.userId ?? input.sessionId ?? null,
           budgetChars: CLAIM_RECALL_BUDGET_CHARS,
           limit: 4,
           ...(input.sessionId

@@ -41,6 +41,37 @@ import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
  * re-run. NULL means no monitor was running on this process — absence of
  * signal, never a claim the host was calm.
  */
+/**
+ * EI-18795303393201472: a run executed against the SHARED, concurrently-edited
+ * working tree (not an isolated checkout) can have its on-disk content change
+ * mid-run or between the run finishing and the commit sha being sampled — a
+ * torn read. The stamped `commit_sha` then names a commit whose actual content
+ * never matches what vitest executed, which is dangerous specifically because
+ * `ledgerFilesForCandidate` (why-chain.ts) treats `test_runs` rows matched by
+ * `commit_sha` as first-hand evidence for the EXACT candidate under gate
+ * verdict — a torn-read row can misattribute a red to an innocent commit.
+ *
+ * Fail-safe: an unreadable git snapshot (either `commit` is null) is treated
+ * as dirty — absence of proof the tree was stable is not proof it was.
+ */
+export interface WorktreeGitSnapshot {
+  /** `git rev-parse HEAD`, or null if it couldn't be read. */
+  commit: string | null;
+  /** `git status --porcelain -- <tested files>` output, or null if unreadable.
+   *  Empty string means clean; non-empty means the tested files carry
+   *  uncommitted changes at this snapshot. */
+  porcelain: string | null;
+}
+
+export function computeWorktreeDirty(before: WorktreeGitSnapshot, after: WorktreeGitSnapshot): boolean {
+  if (!before.commit || !after.commit) return true;
+  if (before.commit !== after.commit) return true;
+  if (before.porcelain === null || after.porcelain === null) return true;
+  if (before.porcelain.trim().length > 0) return true;
+  if (after.porcelain.trim().length > 0) return true;
+  return false;
+}
+
 function captureSaturationSnapshot(): { loopLagP95Ms: number | null; rssMb: number | null } {
   const lag = currentLoopLag();
   return {

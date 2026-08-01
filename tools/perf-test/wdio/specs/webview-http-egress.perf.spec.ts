@@ -100,8 +100,16 @@ interface EgressProbe {
    * Whether the control request was actually EMITTED. Distinguishes "the sensor
    * missed a request that was sent" (blind sensor) from "no request was ever
    * sent" (unproven sensor, runner misconfigured) — see the 4d diagnosis.
+   *
+   * TRI-STATE, and it must stay that way: `null` means the monitor in the BUNDLE
+   * UNDER TEST predates the `issued` field and simply cannot say. Collapsing that
+   * to `false` would make the diagnosis assert "no control was ever issued"
+   * against any older packaged bundle — reintroducing, one level down, the exact
+   * conflation this field exists to remove. Observed live 2026-08-01: a run with
+   * `controlObserved: true` reported `issued` absent, because the packaged app's
+   * bundled monitor predates this change.
    */
-  controlIssued: boolean;
+  controlIssued: boolean | null;
   controlReason: string | null;
   /** Retained for diagnosis only — NEVER as a control. See above. */
   resourceEntries: number;
@@ -170,7 +178,9 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
           report: monitor ? monitor.report() : null,
           monitorPresent: Boolean(monitor),
           controlObserved: Boolean(p.observed),
-          controlIssued: Boolean(p.issued),
+          // NOT Boolean(): an absent `issued` means "this bundle cannot say",
+          // which is a third answer, not a false. See EgressProbe.controlIssued.
+          controlIssued: typeof p.issued === "boolean" ? p.issued : null,
           controlReason: p.reason ?? null,
           resourceEntries: performance.getEntriesByType("resource").length,
           appMounted: Boolean(document.querySelector("#root")?.firstElementChild),
@@ -305,12 +315,19 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
       // accuses a healthy sensor and sends the reader at the monitor instead of
       // at the runner's configuration — the exact conflation this spec's own
       // header forbids, committed by its own diagnosis (2026-08-01).
-      const diagnosis = probe.controlIssued
-        ? `A deliberate control request WAS issued to a URL the sensor must record, and it never ` +
-          `appeared. The sensor is blind: fix the monitor, not this runner.`
-        : `NO control request was ever issued — the proof never left the ground, so this says ` +
-          `NOTHING about whether the sensor works. Fix the runner's control URL (${CONTROL_URL}) ` +
-          `or the operator it points at; do not go looking for a bug in the monitor.`;
+      const diagnosis =
+        probe.controlIssued === true
+          ? `A deliberate control request WAS issued to a URL the sensor must record, and it never ` +
+            `appeared. The sensor is blind: fix the monitor, not this runner.`
+          : probe.controlIssued === false
+            ? `NO control request was ever issued — the proof never left the ground, so this says ` +
+              `NOTHING about whether the sensor works. Fix the runner's control URL ` +
+              `(${CONTROL_URL}) or the operator it points at; do not go looking for a bug in the ` +
+              `monitor.`
+            : `The bundle under test predates the sensor's \`issued\` flag, so it CANNOT say ` +
+              `whether the control was ever emitted — do not assume either cause from this run. ` +
+              `Rebuild the app bundle to get a decisive answer; meanwhile check by hand that ` +
+              `${CONTROL_URL} is reachable from the runner.`;
       throw new Error(
         `the egress sensor could not prove itself live — this run did NOT observe a clean shell, ` +
           `it observed nothing.\n${sampleContext}` +
