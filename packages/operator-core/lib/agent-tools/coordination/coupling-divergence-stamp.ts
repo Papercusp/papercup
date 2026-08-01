@@ -233,7 +233,25 @@ export async function resolveCouplingDivergenceStamps(
   }
 }
 
-/** The stamps worth a reader's attention: an assertion the graph CONTRADICTS. */
+/**
+ * The stamps worth a reader's attention: an assertion the graph CONTRADICTS.
+ *
+ * ⚠ A DIVERGENCE IS DATA ABOUT THE SENDER'S MODEL, NEVER A FAULT — and this is a
+ * design constraint on every future consumer, not a nicety (D-090
+ * [owner 2026-08-01]). `forYouBecause` exists so agents can hold a theory of mind
+ * for each other; a model that is sometimes wrong is the signal working, exactly
+ * as `youMayNotKnow`'s authored entries are "valuable precisely because they can
+ * be WRONG".
+ *
+ * So do NOT wire this to a warning, a nag, a score an agent is judged on, or a
+ * refusal. The mechanism is obvious once stated: if asserting a checkable
+ * relation can be held against you and asserting an uncheckable one cannot, every
+ * sender learns to assert `owns`/`other` — or to say nothing — and the field
+ * collapses to what the graph already knew. The measurement would have destroyed
+ * the thing it was measuring. Read divergence in AGGREGATE, to learn where
+ * agents' models of each other drift from the shared state; never per-message, at
+ * a sender.
+ */
 export function divergentStamps(
   stamps: readonly CouplingDivergenceStamp[],
 ): CouplingDivergenceStamp[] {

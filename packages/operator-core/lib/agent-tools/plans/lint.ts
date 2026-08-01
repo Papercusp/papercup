@@ -135,7 +135,42 @@ export async function lintParsed(
     warnings: [],
   };
 
-  if (parsed.isLegacy) return report;
+  if (parsed.isLegacy) {
+    // EI-18793956567250851: a legacy plan is otherwise exempt from lint entirely
+    // (§ top-of-file) — but a legacy plan that STILL carries non-terminal items is
+    // a real trap, not merely unstructured: scheduler:get_next happily serves
+    // those items (item parsing runs regardless of frontmatter validity), while
+    // every structured write (plans:add-decision, plans:set-now,
+    // plans:set-frontmatter-field, plans:transfer-owner, plans:set-initiative,
+    // plans:set-template-data, plans:ratify-decision) refuses with `legacy_plan`
+    // — so a decision-gated item served from a legacy plan is UNRESOLVABLE by
+    // construction, and nothing previously flagged it. This is an ERROR (not
+    // exempt-and-silent): CI should catch the NEXT occurrence before an agent
+    // burns a claim on it, the way this one was only caught by a live repro.
+    const nonTerminal = parsed.items.filter(
+      (i) => i.storedStatus !== 'done' && i.storedStatus !== 'dropped',
+    );
+    if (nonTerminal.length > 0) {
+      const ids = nonTerminal.slice(0, 5).map((i) => i.id);
+      const suffix = nonTerminal.length > 5 ? `, … +${nonTerminal.length - 5} more` : '';
+      const reasonMsg =
+        parsed.legacyReason === 'frontmatter_displaced'
+          ? 'a well-formed frontmatter block exists but is displaced (not at file position 0) — see the parse notice for the exact line to move'
+          : `frontmatter is missing/malformed (${parsed.legacyReason ?? 'unknown reason'})`;
+      report.errors.push({
+        level: 'error',
+        code: 'legacy_plan_with_live_items',
+        message:
+          `This plan is LEGACY (${reasonMsg}) but still carries ${nonTerminal.length} non-terminal ` +
+          `item(s) (${ids.join(', ')}${suffix}) — scheduler:get_next serves these, but every structured ` +
+          `write (plans:add-decision, plans:set-now, plans:set-frontmatter-field, plans:transfer-owner, ` +
+          `plans:set-initiative, plans:set-template-data, plans:ratify-decision) refuses with 'legacy_plan', ` +
+          `making them unresolvable by construction (EI-18793956567250851). Repair the frontmatter (see ` +
+          `parse notices) with plans:set-content, or move/drop the item(s).`,
+      });
+    }
+    return report;
+  }
 
   const fmSlug = parsed.frontmatter.slug;
   if (fmSlug && fmSlug !== parsed.slug) {

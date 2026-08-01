@@ -116,6 +116,18 @@ const premisesArg = z
 
 // ─────────────────────────────────────────────────────────────────────────────
 // forYouBecause — the sender's model of why THIS recipient is being told (D-021)
+//
+// ⚠ WHAT THIS FIELD IS FOR, stated first because everything below is machinery
+// and machinery is what gets optimised (D-090 [owner 2026-08-01]): it exists so
+// agents can hold a THEORY OF MIND for each other. The sender says who it thinks
+// the recipient IS to this message — and that model is the payload. The typing,
+// the divergence check and the stamp are ways to LEARN about the model; they are
+// not what makes it valuable, and no measurement result may be used to prune the
+// vocabulary down to what a graph can verify. A sender's model that turns out to
+// be WRONG is a working signal, not a defect — the same reasoning `youMayNotKnow`
+// already states about its authored entries ("valuable precisely because they can
+// be WRONG"). Optimising this field for checkability would leave it saying only
+// what the system already knows.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -178,14 +190,17 @@ const COUPLING_DIVERGENCE_RULES: Record<
   // token to mean "near enough" is how a diff starts agreeing with itself.
   'holds-a-lock-on': { confirmedBy: ['holds-a-lock-on'], absenceIsInformative: false },
   awaits: { confirmedBy: ['awaits'], absenceIsInformative: false },
-  // NO COMPUTED COUNTERPART, and this is the one that decides whether the metric
-  // is usable at all: `owns` is 53% of live asserted uses (27/51 measured
-  // 2026-08-01). Ownership is a WORK-ITEM fact, not a coupling edge — the
-  // derivation has no ownership signal and adding one would not be a coupling.
-  // A metric that compared it would report the single most common relation as
-  // permanent disagreement and be discarded as noise.
+  // NO COMPUTED COUNTERPART — and read that as the field WORKING, not as a hole.
+  // `owns` is 53% of live asserted uses (27/51 measured 2026-08-01): ownership is
+  // a WORK-ITEM fact, not a coupling edge, so the derivation has no ownership
+  // signal and adding one would not be a coupling. That majority is the whole
+  // point (D-090): the most common reason one agent tells another something is a
+  // relation NO graph knows, which is precisely why the sender has to say it.
+  // A metric that compared it would report the most common relation as permanent
+  // disagreement; that is a fact about the metric, never about the relation.
   owns: { confirmedBy: [], absenceIsInformative: false },
-  // D-043 ruling 2 — the non-structural escape hatch.
+  // D-043 ruling 2 — the non-structural escape hatch, and the same reading:
+  // uncomputable is not lesser.
   other: { confirmedBy: [], absenceIsInformative: false },
 };
 
@@ -204,6 +219,16 @@ const COUPLING_DIVERGENCE_RULES: Record<
  * D-043 could not have known: the computed vocabulary it would be diffed against
  * did not exist yet, so nothing revealed that the most common asserted relation
  * has no counterpart in it. Use {@link couplingDivergenceVerdict} to score.
+ *
+ * ⚠⚠ `false` HERE IS NOT A QUALITY JUDGMENT, and misreading it is the one way to
+ * destroy this field (D-090 [owner 2026-08-01]). `forYouBecause` exists so agents
+ * can hold a THEORY OF MIND for each other — the sender's model of why THIS
+ * recipient needs to know. The diff is a way to LEARN about that model, never the
+ * source of its value. So "does not participate in the diff" must never be read
+ * as "carries less", and this predicate must never become a filter on what a
+ * sender may assert. Narrowing the vocabulary to the computable relations would
+ * leave the field able to say only what the graph already knows — which is to say,
+ * nothing worth sending.
  */
 export function participatesInCouplingDivergence(f: ForYouBecause): boolean {
   return COUPLING_DIVERGENCE_RULES[f.relation].confirmedBy.length > 0;
