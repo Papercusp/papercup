@@ -837,6 +837,29 @@ export const DEFAULT_CLAIM_SPEC: ClaimSpec = {
     mode: 'lexicographic',
     terms: [
       { expr: 'affinity(bee.held_paths,item.paths)', dir: 'desc' },
+      // `severity_rank` (EI-19286355119013384) — WHY THIS TERM EXISTS HERE, and why it sits
+      // in exactly this slot. Without it the default ordering IGNORED SEVERITY ENTIRELY on
+      // issue-family rows, because all three of the other terms go inert there:
+      //   affinity ⇒ compiles to NEUTRAL for a bee holding no paths (compileRankExpr returns
+      //              null rather than a bare 0, so it drops out of the ORDER BY);
+      //   priority ⇒ feature_order, which is NULL on every issue-family row;
+      //   age      ⇒ the only survivor, leaving plain oldest-first.
+      // Measured 2026-08-01 on the live open papercusp pool: the first six items served were
+      // minor/null/major/minor/minor/minor while 19 criticals waited behind ~11,757 nits that
+      // merely happened to be older.
+      //
+      // SLOT RATIONALE: after `affinity` so bee path-locality still wins first (a bee already
+      // holding the relevant files is the cheapest one to do the work); before `priority`
+      // because severity_rank is a constant 0 on feature-family rows — where severity is
+      // structurally absent — so it cannot perturb feature ordering, leaving feature_order as
+      // the meaningful term there. Net effect is scoped to issue-family rows, which is the
+      // family that was mis-ordered.
+      //
+      // TRADEOFF, ACCEPTED DELIBERATELY: severity now outranks age, so low-severity work is
+      // served strictly after higher-severity work rather than by arrival order. That is the
+      // intended policy — a nit should not precede a critical because it is older — but it
+      // does mean the nit tail advances only as higher-severity inflow allows.
+      { expr: 'severity_rank', dir: 'desc' },
       { expr: 'priority', dir: 'desc' },
       { expr: 'age', dir: 'asc' },
     ],

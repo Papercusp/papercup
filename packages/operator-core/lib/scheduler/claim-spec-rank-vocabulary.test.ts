@@ -116,6 +116,40 @@ describe('severity_rank is the ORDINAL severity term (EI-19286355119013384)', ()
   });
 });
 
+describe('the DEFAULT spec actually ranks on severity (EI-19286355119013384)', () => {
+  const termExprs = () => DEFAULT_CLAIM_SPEC.rank.terms.map((t) => (t as { expr: string }).expr);
+
+  it('includes severity_rank — without it the default IGNORED severity on issue-family rows', () => {
+    // The regression this guards is silent and total, not partial: the other three terms all
+    // go inert on an issue-family row (affinity is neutral for a pathless bee, priority is
+    // feature_order which is NULL there), so dropping severity_rank collapses the ordering
+    // back to plain oldest-first and criticals queue behind whatever is older.
+    expect(termExprs()).toContain('severity_rank');
+  });
+
+  it('ranks severity DESC — the direction is the whole point', () => {
+    const sev = DEFAULT_CLAIM_SPEC.rank.terms.find((t) => (t as { expr: string }).expr === 'severity_rank');
+    expect((sev as { dir: string }).dir).toBe('desc');
+  });
+
+  it('orders severity AFTER affinity but BEFORE priority/age', () => {
+    // Slot matters, so pin it rather than mere membership: affinity first keeps bee
+    // path-locality winning; placing it before `age` is what makes severity beat arrival
+    // order, which is the entire behavioral change.
+    const exprs = termExprs();
+    const affinity = exprs.findIndex((e) => e.startsWith('affinity'));
+    const severity = exprs.indexOf('severity_rank');
+    const age = exprs.indexOf('age');
+    expect(affinity).toBeGreaterThanOrEqual(0);
+    expect(severity).toBeGreaterThan(affinity);
+    expect(severity).toBeLessThan(age);
+  });
+
+  it('the default spec still validates with the new term', () => {
+    expect(validateClaimSpec(DEFAULT_CLAIM_SPEC).ok).toBe(true);
+  });
+});
+
 describe('weighted rank requires numerically-orderable terms (the ::numeric cast error)', () => {
   it('every NUMERIC_ITEM_FIELDS member is rankable — the allowlist is a subset, not a rival list', () => {
     for (const f of NUMERIC_ITEM_FIELDS) expect(RANKABLE_ITEM_FIELDS).toContain(f);

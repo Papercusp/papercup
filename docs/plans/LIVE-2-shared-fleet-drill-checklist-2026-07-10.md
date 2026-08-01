@@ -170,7 +170,7 @@ ambient default.
   zero FAIL, zero unexplained SKIP.
 - Adversarial legs (step 8) all pass — especially cross-machine FED-REAP, the one property
   the single-box drill cannot exercise.
-- Multi-account legs MA-1..MA-5 all pass (owner-directed 2026-07-10, WI-3965) — especially
+- Multi-account legs MA-1..MA-5 all pass (owner-directed 2026-06-29, WI-3965) — especially
   MA-5 (non-granted-account refusal), the multi-owner analogue of FED-REAP.
 
 **NO-GO** triggers on any of:

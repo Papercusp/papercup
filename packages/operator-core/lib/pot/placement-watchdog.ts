@@ -2293,8 +2293,22 @@ type OpenPlacementItemRow = {
   fail_count: number;
   harness_slug: string | null;
   /** Placement row's own `updated_at` (only moves on a reconcile touch) — optional
-   *  so pre-EI-8437 callers/fixtures that don't select it still type-check. */
+   *  so pre-EI-8437 callers/fixtures that don't select it still type-check.
+   *  EI-18799814531115618: `upsertPlacement` rewrites this on EVERY reconcile
+   *  sweep (~every 2 min), unconditionally — so it is a "last touched" clock,
+   *  NOT a "how long has this been stuck" clock. Only usable for `ageHours`;
+   *  never for `stale` (see recovery_started_at below). */
   updated_at?: string | Date | null;
+  /** EI-18799814531115618 — the real timeline marker for "when did this
+   *  recovery episode begin" (only set once, when a placement first enters
+   *  `recovering`; NOT touched by the reconcile sweep). This is what `stale`
+   *  must be keyed off. Optional so pre-fix callers/fixtures without it still
+   *  type-check (they simply never get flagged stale). */
+  recovery_started_at?: string | Date | null;
+  /** EI-18799814531115618 — fallback staleness clock when recovery_started_at
+   *  is null (e.g. a row escalated straight to cursed/stranded without ever
+   *  recording a recovery start). */
+  placed_at?: string | Date | null;
   source_plan_slug?: string | null;
   source_plan_item_ids?: string[] | null;
 };
@@ -2316,8 +2330,25 @@ export function buildOpenPlacementSummary(
     if (r.status !== 'working') {
       const updatedAtMs = r.updated_at != null ? new Date(r.updated_at).getTime() : NaN;
       const ageHours = Number.isFinite(updatedAtMs) ? Math.max(0, (nowMs - updatedAtMs) / 3_600_000) : undefined;
+      // EI-18799814531115618: `stale` used to key off `ageHours`/updated_at,
+      // which the ~2-min reconcile sweep bumps on every open placement
+      // unconditionally — making `stale` arithmetically unreachable (it could
+      // never accumulate past a few minutes, let alone 24h). Derive it instead
+      // from recovery_started_at (a real "recovery episode began at" marker,
+      // only set once), falling back to placed_at when that's null.
+      const recoveryClockMs =
+        r.recovery_started_at != null
+          ? new Date(r.recovery_started_at).getTime()
+          : r.placed_at != null
+            ? new Date(r.placed_at).getTime()
+            : NaN;
+      const recoveringHours = Number.isFinite(recoveryClockMs)
+        ? Math.max(0, (nowMs - recoveryClockMs) / 3_600_000)
+        : undefined;
       const stale =
-        r.status === 'recovering' && ageHours != null && ageHours * 3_600_000 >= DEFAULT_STALE_RECOVERING_MS;
+        r.status === 'recovering' &&
+        recoveringHours != null &&
+        recoveringHours * 3_600_000 >= DEFAULT_STALE_RECOVERING_MS;
       const planItemId = r.source_plan_item_ids?.[0];
       const planItem = r.source_plan_slug && planItemId ? `${r.source_plan_slug}#${planItemId}` : null;
       summary.items.push({
@@ -2381,6 +2412,7 @@ export async function summarizeOpenPlacements(
       WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
       live_open AS (
         SELECT p.work_item_id, p.status, p.fail_count, p.harness_slug, p.updated_at,
+               p.recovery_started_at, p.placed_at,
                f.source_plan_slug, f.source_plan_item_ids
           FROM harness_shared.pot_placements p
           LEFT JOIN harness_shared.harness_features_consolidated f

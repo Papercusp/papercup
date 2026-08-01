@@ -405,7 +405,10 @@ const youMayNotKnowArg = z
   .describe(
     'PER-SECTION. Information I have that you may lack, as { ref, provenance }. ' +
       "'computed' entries are the evidence-minus-your-watermark diff; 'authored' entries are my " +
-      'model of you and are valuable precisely because they can be WRONG. Not the same field as ' +
+      'model of you and are valuable precisely because they can be WRONG. Label a GUESS `authored`, ' +
+      'never `computed` — `computed` claims the diff produced it and is refutable against the ' +
+      "recipient's read watermark; `authored` is never checked, so guessing costs you nothing. " +
+      'Not the same field as ' +
       '`couldNotDetermine` (D-024) — this one is a gap in YOUR knowledge, that one is a failed attempt of MINE.',
   );
 

@@ -4,6 +4,8 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   readRegistry,
+  writeRegistry,
+  WorkspaceRegistryUnreadableError,
   activeWorkspaceId,
   resolveConcreteWorkspaceId,
   backgroundWorkspaceIds,

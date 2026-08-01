@@ -1,5 +1,5 @@
 /**
- * Recurrence guard for WI-6746 — `getWorkItem(...).catch(() => null)` must not come back.
+ * Recurrence guard for WI-6746 — `getWorkItem(...).catch(...)` must not come back.
  *
  * `getWorkItem` returns null ONLY for a zero-row result; it never catches, so a PG fault
  * throws through it. Swallowing that to null collapses "it is not there" with "I could not
@@ -8,16 +8,21 @@
  * work_items:checkpoint's not_holder guard — neither underlying write re-checks). Use
  * `lookupWorkItem()` from ./_lookup instead, and match on `status`.
  *
- * WHY A GUARD AND NOT A ONE-OFF SWEEP: the six bad sites were found by a scripted scan, not
- * by reading — a hand grep only ever encodes the call forms you happened to think of that
- * day, and one written an hour earlier had already missed them. A committed guard encodes
- * them once and re-checks forever.
+ * WHY A GUARD AND NOT A ONE-OFF SWEEP: the bad sites were found by a scripted scan, not by
+ * reading — a hand grep only encodes the call forms you happened to think of that day, and
+ * one written an hour earlier had already missed them.
  *
- * WHY IT COUNTS OCCURRENCES RATHER THAN ALLOWLISTING FILES (WI-6727's lesson, paid for
- * once already): a FILE-granular allowlist answers "is this file known?", which stays
- * truthfully green while a SECOND, unreviewed seam is added a few lines below the reviewed
- * one. Pinning the expected count per file makes that addition fail here instead of in
- * production.
+ * WHY IT COUNTS OCCURRENCES RATHER THAN ALLOWLISTING FILES (WI-6727's lesson, paid for once
+ * already): a FILE-granular allowlist answers "is this file known?", which stays truthfully
+ * green while a SECOND, unreviewed seam is added a few lines below the reviewed one.
+ *
+ * WHY THE SCANNER IS PAREN-BALANCED AND COMMENT-STRIPPED rather than one regex: the regex
+ * version of this guard was written first and was WRONG in both directions — it matched
+ * this file's own prose describing the bug, and it spanned from a `getWorkItem(...)` across
+ * an unrelated ternary into a `.catch(` belonging to a different expression. It would have
+ * red-flagged three innocent files on its first run. The scanner is therefore itself under
+ * test below ("the scanner detects what it claims to detect"): a guard nobody has proven
+ * can FAIL is not evidence of anything.
  */
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -27,11 +32,9 @@ const LIB_ROOT = join(__dirname, '..', '..');
 
 /**
  * Sites where collapsing "missing" and "unreadable" is genuinely harmless: the value is a
- * DECORATION and nothing downstream asserts on it — no prose claiming the item is absent,
- * no guard deciding whether to proceed. That is the whole triage rule; if a site's null
- * ever starts feeding an assertion, it belongs in the fix, not in here.
- *
- * `count` is the number of swallowed getWorkItem reads expected in that file.
+ * DECORATION or a query NARROWING, and nothing downstream asserts on it — no prose claiming
+ * the item is absent, no guard deciding whether to proceed. That is the whole triage rule.
+ * If a site's null ever starts feeding an assertion, it belongs in the fix, not in here.
  */
 const ALLOWED: { file: string; count: number; why: string }[] = [
   {
@@ -49,6 +52,11 @@ const ALLOWED: { file: string; count: number; why: string }[] = [
     count: 1,
     why: 'placement candidate enrichment — an unreadable item is simply not enriched; placement never concludes it is absent',
   },
+  {
+    file: 'agent-tools/work_items/_assumptions.ts',
+    count: 1,
+    why: 'DELIBERATE fail-open (documented at the site): the harness derive only NARROWS an assumption selector, so a blip degrades to "no harness selector" — the pre-existing behaviour — rather than refusing a close. Nothing asserts absence from it',
+  },
 ];
 
 /** Every .ts file under operator-core/lib, excluding tests. */
@@ -62,25 +70,95 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
   return acc;
 }
 
+/** Blank out comments so prose ABOUT the bug never counts as an instance OF it. */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/\/\/[^\n]*/g, '');
+}
+
+/** Index of the `)` closing the `(` at `openIdx`, or -1. */
+function matchParen(src: string, openIdx: number): number {
+  let depth = 0;
+  for (let i = openIdx; i < src.length; i++) {
+    if (src[i] === '(') depth++;
+    else if (src[i] === ')') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+const READERS = /\b(getWorkItem|getIssue|getFeatureWorkItemOnly)\s*\(/g;
+
 /**
- * A swallowed work-item read: `getWorkItem(...)` (or the family-half readers) whose promise
- * is immediately `.catch(...)`-ed. Deliberately matches ANY catch handler, not just
- * `() => null` — `.catch(() => undefined)` and `.catch(() => ({}))` collapse the same two
- * facts, and the point of a guard is to cover the forms nobody thought to grep for.
+ * Count reads whose OWN promise chain ends in `.catch(` — matching any handler, not just
+ * `() => null`, since `.catch(() => undefined)` collapses the same two facts.
  */
-const SWALLOWED = /\b(getWorkItem|getIssue|getFeatureWorkItemOnly)\s*\([^;]*?\)\s*\.catch\s*\(/gs;
+export function countSwallowedReads(rawSrc: string): number {
+  const src = stripComments(rawSrc);
+  let n = 0;
+  for (const m of src.matchAll(READERS)) {
+    const open = src.indexOf('(', m.index);
+    const close = matchParen(src, open);
+    if (close < 0) continue;
+    let i = close + 1;
+    for (;;) {
+      const link = src.slice(i).match(/^\s*\.\s*(then|finally|catch)\s*\(/);
+      if (!link) break;
+      if (link[1] === 'catch') {
+        n++;
+        break;
+      }
+      const linkOpen = src.indexOf('(', i + link[0].length - 1);
+      const linkClose = matchParen(src, linkOpen);
+      if (linkClose < 0) break;
+      i = linkClose + 1;
+    }
+  }
+  return n;
+}
 
 function swallowedSites(): Map<string, number> {
   const found = new Map<string, number>();
   for (const full of sourceFiles(LIB_ROOT)) {
-    const src = readFileSync(full, 'utf8');
-    const n = (src.match(SWALLOWED) ?? []).length;
+    const n = countSwallowedReads(readFileSync(full, 'utf8'));
     if (n > 0) found.set(full.slice(LIB_ROOT.length + 1), n);
   }
   return found;
 }
 
-describe('WI-6746 — a swallowed getWorkItem read must not render as absence', () => {
+describe('the scanner detects what it claims to detect', () => {
+  it('counts the exact pre-fix shape', () => {
+    expect(countSwallowedReads('const item = await getWorkItem(args.id, hint).catch(() => null);')).toBe(1);
+  });
+
+  it('counts a swallow reached through a .then chain, and any handler shape', () => {
+    expect(countSwallowedReads('await getWorkItem(id).then((wi) => wi?.harness ?? null).catch(() => null);')).toBe(1);
+    expect(countSwallowedReads('await getWorkItem(id).catch(() => undefined);')).toBe(1);
+    expect(countSwallowedReads('await getWorkItem(id).catch((e) => { log(e); return null; });')).toBe(1);
+  });
+
+  it('does NOT count the fixed shape', () => {
+    expect(countSwallowedReads('const l = await lookupWorkItem(args.id, hint);')).toBe(0);
+    expect(countSwallowedReads('const item = await getWorkItem(args.id, hint);')).toBe(0);
+  });
+
+  it('does NOT count prose in comments — the false positive that broke the first version', () => {
+    expect(countSwallowedReads('// getWorkItem(x).catch(() => null) is the bug this file guards')).toBe(0);
+    expect(countSwallowedReads('/**\n * `getWorkItem(...)` ... `.catch(` ...\n */')).toBe(0);
+  });
+
+  it('does NOT span past its own call into an unrelated .catch — the other false positive', () => {
+    const src = 'const a = ids.map((id) => getWorkItem(id, h)).filter(Boolean);\nconst b = other(x).catch(() => null);';
+    expect(countSwallowedReads(src)).toBe(0);
+  });
+
+  it('counts each occurrence separately within one file', () => {
+    expect(countSwallowedReads('getWorkItem(a).catch(() => null); getWorkItem(b).catch(() => null);')).toBe(2);
+  });
+});
+
+describe('WI-6746 — a swallowed work-item read must not render as absence', () => {
   it('no un-allowlisted site swallows a work-item read', () => {
     const found = swallowedSites();
     const allowed = new Map(ALLOWED.map((a) => [a.file, a]));
@@ -100,21 +178,23 @@ describe('WI-6746 — a swallowed getWorkItem read must not render as absence', 
     // Occurrence-granular on purpose: a second, unreviewed swallow added to an
     // already-allowlisted file must fail here rather than inherit its neighbour's exemption.
     const found = swallowedSites();
-    const actual = ALLOWED.map((a) => `${a.file}=${found.get(a.file) ?? 0}`);
-    const expected = ALLOWED.map((a) => `${a.file}=${a.count}`);
-    expect(actual, 'A count mismatch means a swallowed read was ADDED to (or removed from) an allowlisted file — review the new site on its own merits, do not just bump the count.').toEqual(expected);
+    expect(
+      ALLOWED.map((a) => `${a.file}=${found.get(a.file) ?? 0}`),
+      'A count mismatch means a swallowed read was ADDED to (or removed from) an allowlisted file — review the new site on its own merits, do not just bump the count.',
+    ).toEqual(ALLOWED.map((a) => `${a.file}=${a.count}`));
   });
 
   it('the allowlist has no stale entries (a fixed site must be removed from it)', () => {
     const found = swallowedSites();
-    const stale = ALLOWED.filter((a) => !found.has(a.file)).map((a) => a.file);
-    expect(stale, 'These files no longer swallow a work-item read — drop them from ALLOWED so it keeps describing reality.').toEqual([]);
+    expect(
+      ALLOWED.filter((a) => !found.has(a.file)).map((a) => a.file),
+      'These files no longer swallow a work-item read — drop them from ALLOWED so it keeps describing reality.',
+    ).toEqual([]);
   });
 
   it('the fixed surfaces route through lookupWorkItem rather than a bare swallow', () => {
-    // Pins the POSITIVE half: the six sites WI-6746 fixed must still be using the
-    // fail-closed/honest-error path. A regression that reverted them would otherwise only
-    // show up as a re-added offender if it also re-added a `.catch`.
+    // Pins the POSITIVE half: a revert that removed the fail-closed handling would otherwise
+    // only surface here if it also re-added a `.catch`.
     const fixed = [
       'agent-tools/work_items/claim.ts',
       'agent-tools/work_items/checkpoint.ts',
@@ -123,7 +203,9 @@ describe('WI-6746 — a swallowed getWorkItem read must not render as absence', 
       'agent-tools/work_items/request_release.ts',
       'agent-tools/work_items/decline_release_request.ts',
     ];
-    const missing = fixed.filter((f) => !readFileSync(join(LIB_ROOT, f), 'utf8').includes('lookupWorkItem'));
-    expect(missing, 'These surfaces derive a guard or an error message from a work-item read and must use lookupWorkItem().').toEqual([]);
+    expect(
+      fixed.filter((f) => !readFileSync(join(LIB_ROOT, f), 'utf8').includes('lookupWorkItem')),
+      'These surfaces derive a guard or an error message from a work-item read and must use lookupWorkItem().',
+    ).toEqual([]);
   });
 });

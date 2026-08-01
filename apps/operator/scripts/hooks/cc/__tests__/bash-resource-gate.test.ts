@@ -2153,7 +2153,13 @@ describe('substitution pre-filter', () => {
   // never produce an advisory however the pre-filter behaves — admitting them
   // would charge every `ps` call on the box a round-trip to be told nothing.
   // The verdict is read off the pair, never inferred from a filename.
-  it('every atom behind an ENFORCEABLE verdict passes the pre-filter', () => {
+  // Budget: this sweep spawns the REAL bash+python hook once per enforceable
+  // atom (~400 processes, serial), so its wall time scales with box load, not
+  // with the code under test — measured 60.3s at loadavg ~111 (2026-08-01,
+  // EI-19296218202371307), sailing past the 60s default exactly when the
+  // fleet is busiest. 5× the measured worst keeps the guard exhaustive
+  // without making it a load canary.
+  it('every atom behind an ENFORCEABLE verdict passes the pre-filter', { timeout: 300_000 }, () => {
     const enforceable = new Set(
       ALL_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
         (p) => `${p.id}.sample.json`,

@@ -132,7 +132,8 @@ interface PhaseItem {
 
 type SetPhaseValue =
   | { ok: true; itemId: string; fromPhase: string | null; toPhase: string; moved: boolean; createdPhase: boolean }
-  | { ok: false; code: 'not_found' | 'legacy_plan' | 'item_not_found' };
+  | { ok: false; code: 'not_found' | 'item_not_found' }
+  | { ok: false; code: 'legacy_plan'; reason?: LegacyReason };
 
 /** Move one item to a phase, returning the self-describing bulk result. PRESERVES the
  *  no-op-when-already-there + legacy guards, lock, revision, and sync-invalidate. */
@@ -158,7 +159,12 @@ async function setPhaseOne(it: PhaseItem, ctx: UnifiedToolContext): Promise<Bulk
     async (current): Promise<{ newBody: string | null; value: SetPhaseValue }> => {
       if (current === null) return { newBody: null, value: { ok: false, code: 'not_found' } };
       const parsed = parsePlan(current, { filePath: it.slug + '.md' });
-      if (parsed.isLegacy) return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+      if (parsed.isLegacy) {
+        return {
+          newBody: null,
+          value: { ok: false, code: 'legacy_plan', reason: parsed.legacyReason ?? undefined },
+        };
+      }
       const item = parsed.items.find((i) => i.id === it.itemId);
       if (!item) return { newBody: null, value: { ok: false, code: 'item_not_found' } };
 
@@ -195,7 +201,13 @@ async function setPhaseOne(it: PhaseItem, ctx: UnifiedToolContext): Promise<Bulk
     };
   }
   if (!result.value.ok) {
-    return { ok: false, slug: it.slug, itemId: it.itemId, error: result.value.code };
+    return {
+      ok: false,
+      slug: it.slug,
+      itemId: it.itemId,
+      error: result.value.code,
+      ...('reason' in result.value && result.value.reason ? { reason: result.value.reason } : {}),
+    };
   }
 
   // Refresh the per-plan item rail so the item's new phase grouping shows immediately.

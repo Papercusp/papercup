@@ -16,7 +16,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan, maskFences, normalizeDecisionBodyHeadings } from './parser';
+import { parsePlan, maskFences, normalizeDecisionBodyHeadings, type LegacyReason } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 
@@ -79,7 +79,8 @@ const argsSchema = z.object({
 
 type SetDecisionBodyValue =
   | { ok: true; decisionId: string; slug: string; oldBody: string }
-  | { ok: false; code: 'not_found' | 'legacy_plan' | 'decision_not_found' };
+  | { ok: false; code: 'not_found' | 'decision_not_found' }
+  | { ok: false; code: 'legacy_plan'; reason?: LegacyReason };
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -126,7 +127,12 @@ export default defineTool({
       async (current): Promise<{ newBody: string | null; value: SetDecisionBodyValue }> => {
         if (current === null) return { newBody: null, value: { ok: false, code: 'not_found' } };
         const parsed = parsePlan(current, { filePath: args.slug + '.md' });
-        if (parsed.isLegacy) return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+        if (parsed.isLegacy) {
+          return {
+            newBody: null,
+            value: { ok: false, code: 'legacy_plan', reason: parsed.legacyReason ?? undefined },
+          };
+        }
         const decision = parsed.decisions.find((d) => d.id === args.decisionId);
         if (!decision) return { newBody: null, value: { ok: false, code: 'decision_not_found' } };
 
@@ -160,7 +166,15 @@ export default defineTool({
     }
 
     if (!result.value.ok) {
-      return text({ error: result.value.code, slug: args.slug, decisionId: args.decisionId }, true);
+      return text(
+        {
+          error: result.value.code,
+          slug: args.slug,
+          decisionId: args.decisionId,
+          ...('reason' in result.value && result.value.reason ? { reason: result.value.reason } : {}),
+        },
+        true,
+      );
     }
 
     // Refresh the plans rail so a decision-derived view updates immediately.

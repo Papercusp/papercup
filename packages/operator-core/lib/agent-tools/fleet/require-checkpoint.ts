@@ -100,6 +100,22 @@ export interface CheckpointItemOutcome {
 }
 
 /**
+ * PURE: resolve `member` against the roster, accepting a short ownerId PREFIX the way
+ * coord:send's `resolveBestEffortAgainstRoster` does — a leader reading a truncated id
+ * off a brief must not get a wrong answer for it.
+ *
+ * Returns null for BOTH "no match" and "ambiguous prefix". Guessing between two
+ * candidates would answer a safety question about the wrong agent, which is strictly
+ * worse than refusing: the caller is about to destroy state on this verdict.
+ */
+export function resolveMemberGroup<T extends { agentId: string }>(groups: readonly T[], member: string): T | null {
+  const exact = groups.find((g) => g.agentId === member);
+  if (exact) return exact;
+  const prefixed = groups.filter((g) => g.agentId.startsWith(member));
+  return prefixed.length === 1 ? prefixed[0] : null;
+}
+
+/**
  * PURE: classify how the directive landed, from the wake fan's counts plus the idle
  * probe. Split out so the "woken:0 is not death" rule is directly testable and a later
  * edit cannot quietly re-collapse it.
@@ -332,8 +348,24 @@ export default defineTool({
       specs = [{ kind: 'checkpoint', itemId: args.itemId, ...(harnessHint ? { harness: harnessHint } : {}) }];
     } else {
       const rows = await listFleetAssignments({ workspaceId, harness: args.harness, activeOnly: true });
-      const group = groupByAgent(rows).find((g) => g.agentId === args.member);
-      specs = (group?.claims ?? [])
+      const group = resolveMemberGroup(groupByAgent(rows), args.member);
+      // A member we cannot RESOLVE is not a member with nothing to save. Collapsing
+      // those two into "no claims ⇒ safe" would emit the one output this tool must
+      // never produce: a false `itemStateSafe: true` — here caused by nothing worse
+      // than a typo or a short ownerId prefix, and cashed out as a stand-down that
+      // silently discards live work. Refuse instead of reassuring.
+      if (!group) {
+        return json({
+          ok: false,
+          error: 'member_not_found',
+          member: args.member,
+          hint:
+            `No agent matching '${args.member}' holds assignments in this workspace, so whether it has unsaved state ` +
+            'is UNKNOWN — this is NOT a safe verdict. Check the ownerId (coord:presence / fleet:assignments), or pass ' +
+            '{ itemId } explicitly to require a checkpoint on a specific item regardless of the roster.',
+        });
+      }
+      specs = (group.claims ?? [])
         .filter((cl) => cl.type === 'work-item' && cl.active && cl.id)
         .map((cl) => ({
           kind: 'checkpoint' as const,

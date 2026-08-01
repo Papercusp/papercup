@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyDelivery,
+  resolveMemberGroup,
   deliveryEvidence,
   foldItemVerdict,
   summarizeRequireCheckpoint,
@@ -25,6 +26,31 @@ function actuation(verdict: DirectiveEffectVerdict, itemId = 'WI-1', observedAtM
     evidence: `synthetic ${verdict} evidence`,
   };
 }
+
+describe('resolveMemberGroup — an unresolvable member must never read as "nothing to save"', () => {
+  const g = (agentId: string) => ({ agentId });
+
+  it('matches exactly', () => {
+    expect(resolveMemberGroup([g('su-aaa'), g('su-bbb')], 'su-bbb')).toEqual(g('su-bbb'));
+  });
+
+  it('accepts a unique short PREFIX, like coord:send does', () => {
+    expect(resolveMemberGroup([g('su-aaa111'), g('su-bbb222')], 'su-bbb')).toEqual(g('su-bbb222'));
+  });
+
+  it('prefers an EXACT match over a longer prefix sibling', () => {
+    expect(resolveMemberGroup([g('su-aaa'), g('su-aaa111')], 'su-aaa')).toEqual(g('su-aaa'));
+  });
+
+  it('refuses an AMBIGUOUS prefix rather than guessing an agent', () => {
+    // Guessing would answer a safety question about the wrong agent.
+    expect(resolveMemberGroup([g('su-aaa111'), g('su-aaa222')], 'su-aaa')).toBeNull();
+  });
+
+  it('returns null for no match', () => {
+    expect(resolveMemberGroup([g('su-aaa')], 'su-zzz')).toBeNull();
+  });
+});
 
 describe('classifyDelivery — woken:0 is NOT death', () => {
   const base = { woken: 0, staged: 0, idle: [], dormantScheduled: [], degraded: false, member: MEMBER };
