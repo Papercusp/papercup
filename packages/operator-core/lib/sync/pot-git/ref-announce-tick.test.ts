@@ -12,9 +12,13 @@ import { describe, expect, it } from 'vitest';
 import { decideRefAnnounceReceiveCursor, type RefAnnounceReceiveResult } from './ref-announce-tick';
 
 // The cursor decision only reads `result.action` (+ `stderr`/`timedOut`/`code`
-// for a failure). A non-failed stand-in uses `noop` — every non-`fetch-failed`
-// action is treated the same way (advance past), so this avoids constructing a
+// for a failure). A non-failed stand-in uses `noop`, which avoids constructing a
 // full signed `fetched` snapshot.
+//
+// ⚠ There are now THREE dispositions, not two (WI-6418): `fetch-failed` holds
+// the cursor AND is reported; `already-in-flight` holds the cursor and is NOT
+// reported (nothing went wrong); everything else advances past. `noop` is a
+// stand-in for that third group only — do not read it as "all non-failures".
 const failed = (
   device: string,
   stderr = 'no live swarm dial yet',
@@ -36,6 +40,11 @@ const ok = (device: string): RefAnnounceReceiveResult => ({
   device,
   version: 1,
   result: { action: 'noop', budgetState: null },
+});
+const inFlight = (device: string): RefAnnounceReceiveResult => ({
+  device,
+  version: 1,
+  result: { action: 'already-in-flight', budgetState: null },
 });
 
 describe('decideRefAnnounceReceiveCursor (EI-15335)', () => {
@@ -114,5 +123,35 @@ describe('decideRefAnnounceReceiveCursor (EI-15335)', () => {
     expect(d.fetchFailed[0]?.timedOut).toBe(false);
     expect(d.fetchFailed[0]?.code).toBe(128);
     expect(d.fetchFailed[0]?.stderr).toBe('fatal: bad object');
+  });
+
+  /**
+   * WI-6418 — the two halves of `already-in-flight`, which pull in opposite
+   * directions and are why it could not reuse either existing disposition.
+   */
+  it('WI-6418: `already-in-flight` HOLDS the cursor — the announce is not yet mirrored', () => {
+    // Advancing past it would drop the announcement forever and leave a silent,
+    // permanent namespace gap — the exact bug EI-15335 fixed. Holding was never
+    // the problem; the RE-DIAL that holding used to trigger was.
+    const d = decideRefAnnounceReceiveCursor([ok('A'), inFlight('B'), ok('C')], [10, 11, 12], 12);
+    expect(d.cursor).toBe(10);
+    expect(d.held).toBe(true);
+  });
+
+  it('WI-6418: `already-in-flight` is NOT reported as a fetch failure', () => {
+    // Nothing went wrong — a peer drive is mid-transfer. Folding it into
+    // fetchFailed would log a phantom transport error against a perfectly
+    // healthy stream, which is precisely the false signal that made this
+    // livelock read as ordinary noise for days.
+    const d = decideRefAnnounceReceiveCursor([inFlight('B')], [11], 11);
+    expect(d.fetchFailed).toEqual([]);
+    expect(d.held).toBe(true);
+  });
+
+  it('WI-6418: a real failure still outranks an in-flight row for the cursor floor', () => {
+    // Both hold, so the cursor must sit below the OLDEST of either kind.
+    const d = decideRefAnnounceReceiveCursor([inFlight('A'), failed('B')], [10, 11], 11);
+    expect(d.cursor).toBe(9);
+    expect(d.fetchFailed.map((f) => f.device)).toEqual(['B']);
   });
 });

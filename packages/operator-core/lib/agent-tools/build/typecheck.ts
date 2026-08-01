@@ -105,12 +105,33 @@ interface TscOutcome {
 function runTsc(args: string[], cwd: string, timeoutMs: number): Promise<TscOutcome> {
   return new Promise((resolvePromise) => {
     let output = '';
-    let timedOut = false;
+    let settled = false;
+    // EI-18793290418757939: the old version gated promise resolution on the
+    // child's OWN 'close' event even after the timeout fired — it only killed
+    // the child and kept waiting. A killed process is not guaranteed to close
+    // promptly: under real memory-pressure thrashing (the WI-5471 class,
+    // repeatedly observed on this box via the infra-liveness watchdog: "PSI
+    // memory full avg60 ≥ 5 — all tasks stalled on memory reclaim/swap"), a
+    // SIGKILL'd child can sit reaping in D-state for many extra seconds. That
+    // pushed this tool's real wall-clock time past BOTH the outer MCP-transport
+    // deadline (~55s) and the dispatch-stack's own hard AbortController timeout
+    // (60s default — this tool declares no static `timeoutSec`, so it inherits
+    // that default), producing exactly the watchdog signature this bug reports:
+    // "exceeded timeout of 60s (handler returned but signal had aborted)" —
+    // the handler eventually DID return, just long after the abort fired.
+    // Fix: settle the promise the moment OUR OWN timer fires — kill + reap are
+    // best-effort background cleanup from then on, never gating the return.
+    const settle = (outcome: TscOutcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise(outcome);
+    };
     const child = spawn('npx', ['tsc', ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     const timer = setTimeout(() => {
-      timedOut = true;
       try { child.kill('SIGTERM'); } catch { /* already gone */ }
       setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, 5000).unref();
+      settle({ code: null, timedOut: true, output });
     }, timeoutMs);
     // Diagnostics are the payload here (unlike testing:run, where the router's
     // output is only an error-path fallback), so the buffer is generous: a
@@ -119,8 +140,8 @@ function runTsc(args: string[], cwd: string, timeoutMs: number): Promise<TscOutc
     const append = (b: Buffer) => { output = (output + b.toString('utf8')).slice(-8 * 1024 * 1024); };
     child.stdout?.on('data', append);
     child.stderr?.on('data', append);
-    child.on('error', (e) => { clearTimeout(timer); resolvePromise({ code: null, timedOut, output: `${output}\n[spawn-error] ${e.message}` }); });
-    child.on('close', (code) => { clearTimeout(timer); resolvePromise({ code, timedOut, output }); });
+    child.on('error', (e) => { settle({ code: null, timedOut: false, output: `${output}\n[spawn-error] ${e.message}` }); });
+    child.on('close', (code) => { settle({ code, timedOut: false, output }); });
   });
 }
 

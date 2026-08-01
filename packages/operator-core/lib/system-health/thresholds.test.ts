@@ -291,7 +291,8 @@ describe('deployStatus', () => {
     deployedBehindGreenPin: 2, greenPinAtStagingHead: true, deployedAtMs: now - 1000,
     lastCommitAtMs: now - 60_000, errors: [],
     gitSyncStatus: 'synced', gitSyncConsecutiveErrorTicks: 0,
-    gitSyncPushBacklog: null, gitSyncLastSyncedAtMs: now - 60_000, gitSyncOversizedCount: 0, ...o,
+    gitSyncPushBacklog: null, gitSyncLastSyncedAtMs: now - 60_000, gitSyncOversizedCount: 0,
+    gitSyncWorstInstallSlug: null, gitSyncFailingLeg: null, ...o,
   });
   it('unknown when no refs resolved (a box without the release checkout)', () => {
     expect(deployStatus(dp({ deployedShortSha: null, lastCommitAtMs: null }), now)).toBe('unknown');

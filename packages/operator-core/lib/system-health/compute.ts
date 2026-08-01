@@ -1107,6 +1107,47 @@ async function collectWatchdog(ctx: HealthCtx): Promise<HealthPanel<WatchdogHeal
   });
 }
 
+/**
+ * PURE (EI-19275994927087666): which LEG of git-sync actually failed.
+ *
+ * The panel used to call every git-sync crit a PUSH failure. That sentence sends a
+ * responder at origin / credentials / the pooler, and for 32h it was pointing at a
+ * corrupt git object in one abandoned scratch pot's tree — a COMMIT-leg fault that
+ * never reached the network. Classify from the routine's own `last_error`.
+ *
+ * `pushMode` is only a fallback inference: a `commit-only:*` member never pushes, so
+ * its failure cannot be a push failure. It is deliberately checked LAST — the real
+ * offender in that incident had push_mode `push`, so push_mode alone would not have
+ * saved us; `last_error` is the load-bearing signal.
+ */
+export function classifyGitSyncFailingLeg(
+  lastError: string | null,
+  pushMode: string | null,
+): NonNullable<DeployHealth['gitSyncFailingLeg']> {
+  const e = (lastError ?? '').toLowerCase();
+  if (e.includes('conflict')) return 'conflict';
+  if (e.includes('commit failed') || e.includes('commit error')) return 'commit';
+  if (e.includes('push')) return 'push';
+  // No usable error text: a commit-only member still cannot have push-failed.
+  if (pushMode?.startsWith('commit-only')) return 'commit';
+  return 'unknown';
+}
+
+/** EI-19275994927087666: the human sentence for a failing leg. Only the 'push' arm
+ *  may say "not reaching origin" — that claim was the whole misdirection. */
+function gitSyncLegPhrase(leg: DeployHealth['gitSyncFailingLeg']): string {
+  switch (leg) {
+    case 'push':
+      return 'push failing — commits NOT reaching origin';
+    case 'commit':
+      return 'COMMIT failing — nothing has reached the push stage; origin is unaffected';
+    case 'conflict':
+      return 'merge conflict — needs a resolver';
+    default:
+      return 'cause unclassified — read that routine\'s last_error';
+  }
+}
+
 async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>> {
   return panelSafe<DeployHealth>('deploy', async () => {
     const { devDeployState } = await import('../dev-deploy-state');
@@ -1121,6 +1162,8 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
     let gitSyncPushBacklog: number | null = null;
     let gitSyncLastSyncedAtMs: number | null = null;
     let gitSyncOversizedCount = 0;
+    let gitSyncWorstInstallSlug: string | null = null;
+    let gitSyncFailingLeg: DeployHealth['gitSyncFailingLeg'] = null;
     try {
       const { sql } = getOrgPg();
       const rows = await sql<Array<{ install_slug: string; metadata: Record<string, unknown> | null }>>`
@@ -1136,6 +1179,18 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
         if (gitSyncStatus === null || et > gitSyncConsecutiveErrorTicks) {
           gitSyncStatus = (md.last_status as DeployHealth['gitSyncStatus']) ?? 'nothing';
           gitSyncConsecutiveErrorTicks = et;
+          // EI-19275994927087666: carry WHOSE failure won worst-wins and WHICH leg
+          // failed. Guard on et > 0 — the `gitSyncStatus === null` arm above also
+          // fires for the FIRST row even when it is perfectly healthy, so attributing
+          // unconditionally would name an innocent install as the offender.
+          gitSyncWorstInstallSlug = et > 0 ? r.install_slug : null;
+          gitSyncFailingLeg =
+            et > 0
+              ? classifyGitSyncFailingLeg(
+                  typeof md.last_error === 'string' ? md.last_error : null,
+                  typeof md.push_mode === 'string' ? md.push_mode : null,
+                )
+              : null;
         }
         const ls = typeof md.last_synced_at === 'string' ? Date.parse(md.last_synced_at) : NaN;
         if (!Number.isNaN(ls) && (gitSyncLastSyncedAtMs === null || ls > gitSyncLastSyncedAtMs)) gitSyncLastSyncedAtMs = ls;
@@ -1156,13 +1211,20 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
       gitSyncPushBacklog,
       gitSyncLastSyncedAtMs,
       gitSyncOversizedCount,
+      gitSyncWorstInstallSlug,
+      gitSyncFailingLeg,
     };
     const status = deployStatus(data, ctx.now);
-    const pushFailing = status === 'crit'; // deployStatus reds ONLY on git-sync push-failure
+    // EI-19275994927087666: a crit here means SOME git-sync leg is failing on SOME
+    // install — not that a push failed, and not that it was this workspace's primary
+    // pot. The old comment here claimed "deployStatus reds ONLY on git-sync
+    // push-failure", which is false and is what the summary below was built on.
+    const syncFailing = status === 'crit';
     return {
       status,
-      summary: pushFailing
-        ? `git-sync PUSH FAILING ${data.gitSyncConsecutiveErrorTicks} ticks — commits NOT reaching origin`
+      summary: syncFailing
+        ? `git-sync FAILING ${data.gitSyncConsecutiveErrorTicks} ticks on ` +
+          `${data.gitSyncWorstInstallSlug ?? 'an unnamed install'} — ${gitSyncLegPhrase(data.gitSyncFailingLeg)}`
         : status === 'unknown'
         ? 'release refs unreadable on this host'
         : `live ${data.deployedShortSha ?? '?'}, ${data.deployedBehindStaging ?? '?'} behind staging, sync ${agoMin(data.lastCommitAtMs, ctx.now)}`,
@@ -1173,7 +1235,9 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
         m('not-green', data.greenPinBehindStaging ?? '?'),
         m('last sync', agoMin(data.lastCommitAtMs, ctx.now)),
         m('green tip', data.greenPinAtStagingHead === null ? '?' : data.greenPinAtStagingHead ? 'yes' : 'no'),
-        m('git-sync push', pushFailing ? `FAILING ${data.gitSyncConsecutiveErrorTicks}t` : data.gitSyncPushBacklog === 0 ? 'caught up' : (data.gitSyncStatus ?? 'n/a'), pushFailing ? 'crit' : (data.gitSyncOversizedCount > 0 ? 'warn' : undefined)),
+        // Label is 'git-sync', not 'git-sync push' — the metric covers every leg.
+        m('git-sync', syncFailing ? `${data.gitSyncFailingLeg ?? 'error'} FAILING ${data.gitSyncConsecutiveErrorTicks}t` : data.gitSyncPushBacklog === 0 ? 'caught up' : (data.gitSyncStatus ?? 'n/a'), syncFailing ? 'crit' : (data.gitSyncOversizedCount > 0 ? 'warn' : undefined)),
+        m('failing install', data.gitSyncWorstInstallSlug ?? '—'),
       ],
     };
   });

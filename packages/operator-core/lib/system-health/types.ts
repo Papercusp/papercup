@@ -386,9 +386,23 @@ export interface DeployHealth {
   // active `system:git-sync` routine's metadata that git-sync-action.ts persists.
   /** Worst active git-sync routine's last push outcome, or null if none/unreadable. */
   gitSyncStatus: 'synced' | 'conflict' | 'error' | 'nothing' | 'skipped' | null;
-  /** Max consecutive git-sync ticks whose push FAILED across active routines —
-   *  >= 3 means local commits are NOT reaching origin (EI-18 escalation threshold). */
+  /** Max consecutive FAILING git-sync ticks across active routines, whatever the
+   *  failing leg was. EI-19275994927087666: this is NOT a push-failure counter —
+   *  it counts commit failures, conflicts and push failures alike, and reading it
+   *  as "commits are not reaching origin" is what let one abandoned scratch pot's
+   *  corrupt-object COMMIT failure red-alarm the whole fleet for 32h. Use
+   *  `gitSyncFailingLeg` to say WHAT failed and `gitSyncWorstInstallSlug` to say
+   *  WHOSE. >= 3 is the EI-18 escalation threshold. */
   gitSyncConsecutiveErrorTicks: number;
+  /** EI-19275994927087666: which install owns the worst-wins failure above, so a
+   *  responder can tell "the release pipeline is broken" from "someone's dead
+   *  scratch pot is broken". null when nothing is failing. */
+  gitSyncWorstInstallSlug: string | null;
+  /** EI-19275994927087666: which LEG of git-sync failed, classified from the
+   *  routine's own `last_error` (plus `push_mode`, since a `commit-only:*` member
+   *  cannot have a push failure by definition). Never render "push" / "not
+   *  reaching origin" unless this is 'push'. null when nothing is failing. */
+  gitSyncFailingLeg: 'commit' | 'push' | 'conflict' | 'unknown' | null;
   /** Live superproject + submodule commits ahead of upstream. 0 proves a stale
    *  error counter no longer means commits are waiting to reach origin; null means
    *  the live git check was unavailable, so the metadata counter stays authoritative. */
