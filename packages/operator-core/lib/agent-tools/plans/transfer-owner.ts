@@ -180,7 +180,12 @@ export default defineTool({
         }
 
         if (!result.value.ok) {
-          return { ok: false as const, slug, error: result.value.code };
+          return {
+            ok: false as const,
+            slug,
+            error: result.value.code,
+            ...('reason' in result.value && result.value.reason ? { reason: result.value.reason } : {}),
+          };
         }
 
         return {

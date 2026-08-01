@@ -216,17 +216,20 @@ describe('WI-6404 — cat-file --batch through the sidecar fd handoff', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     process.env.PAPERCUSP_POT_GIT_SPAWN_SIDECAR = '1';
     let res;
+    let warnings: string[];
     try {
       res = await defaultRunGitStdin(args, repo, oids);
     } finally {
       rpcOverride = null;
       delete process.env.PAPERCUSP_POT_GIT_SPAWN_SIDECAR;
+      // Snapshot the calls BEFORE restoring — mockRestore() clears the history.
+      warnings = warn.mock.calls.map((c) => String(c[0]));
       warn.mockRestore();
     }
     // A sidecar fault must degrade PERFORMANCE, never correctness.
     expect(res.code).toBe(0);
     expect(res.stdout.equals(expected.stdout)).toBe(true);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('sidecar unreachable (simulated)'));
+    expect(warnings.join('\n')).toContain('sidecar unreachable (simulated)');
   });
 
   it('the stdin leg carries non-ASCII intact too (fd handoff, not a JSON string)', async () => {
