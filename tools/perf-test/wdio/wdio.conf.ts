@@ -299,6 +299,80 @@ function assertInstallationComplete(): void {
 let tauriDriver: ChildProcess | null = null;
 
 /**
+ * Reap the WHOLE driver subtree, not just the process we spawned (EI-18886600444441200).
+ *
+ * WHY THIS IS NOT `tauriDriver.kill()`: driverCommand deliberately wraps the driver
+ * as `xvfb-run -a tauri-driver ...` (WI-6538, so the app inherits a display), so the
+ * pid we hold is the **xvfb-run wrapper shell**. SIGTERMing that shell does not
+ * forward the signal to tauri-driver, does not reap the WebKitWebDriver tauri-driver
+ * spawned, and does not stop the Xvfb that xvfb-run started. Every run therefore
+ * stranded three processes, each holding a display number. It went unnoticed for so
+ * long because the ports are ephemeral per run, so nothing ever collided — the leak
+ * is invisible until you count processes. Measured 2026-08-01 on this box: 20 orphan
+ * Xvfb and 8 orphan tauri-driver/WebKitWebDriver pairs, at load ~43.
+ *
+ * So `onPrepare` spawns DETACHED purely to make the child a process-group leader,
+ * and teardown signals the negative pid (the whole group): SIGTERM, a short grace
+ * period, then SIGKILL for anything still standing. Detached here means "give me a
+ * killable group", the opposite of "let this outlive the run" — the group never
+ * survives the process that made it.
+ *
+ * NOTE the repo rule this respects: never `pkill -f` by name. That has twice killed
+ * the owner's live desktop window and peers' Xvfb instances, and this box always has
+ * other agents' Xvfb/WebKitWebDriver processes running. Group-scoped signals can only
+ * ever reach processes THIS run started.
+ */
+function reapDriverTree(): void {
+  const pid = tauriDriver?.pid;
+  tauriDriver = null;
+  if (!pid) return;
+  // Returns false on ESRCH — "the group is already gone", which is the goal state
+  // here, not an error. Signal 0 sends nothing and is purely a liveness probe.
+  const signalGroup = (sig: NodeJS.Signals | 0): boolean => {
+    try {
+      process.kill(-pid, sig);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!signalGroup("SIGTERM")) return;
+  // Sleep SYNCHRONOUSLY, not via await: this same reaper runs from the `exit`
+  // handler below, where the event loop no longer turns and a promise would never
+  // resolve. Atomics.wait on a throwaway buffer is the standard sync-sleep idiom
+  // (no subprocess, unlike shelling out to `sleep`).
+  const sleepSync = (ms: number): void => {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  };
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    sleepSync(100);
+    if (!signalGroup(0)) return; // whole group exited on the SIGTERM
+  }
+  // Something ignored SIGTERM (xvfb-run's shell is a repeat offender) — escalate.
+  signalGroup("SIGKILL");
+}
+
+/**
+ * A run that DIES does not reach onComplete — and an interrupted run is exactly how
+ * these orphans accumulated (a Ctrl-C, a harness timeout, a spec-worker crash all
+ * skip the normal teardown). Reaping only on the happy path would leave the leak
+ * armed for every unhappy one, so bind the same reaper to process death too.
+ */
+let reaperBound = false;
+function bindDriverReaper(): void {
+  if (reaperBound) return;
+  reaperBound = true;
+  process.on("exit", reapDriverTree);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(sig, () => {
+      reapDriverTree();
+      process.exit(1);
+    });
+  }
+}
+
+/**
  * POST this run's measures to the operator so they land in
  * `harness_shared.desktop_perf_runs` — the table the desktop-perf RELEASE GATE
  * reads (perf-testing-sweep-2026-07-27, WI-6538 / WI-6535).
@@ -521,7 +595,14 @@ export const config: WebdriverIO.Config = {
       "--native-port",
       String(nativePort),
     ]);
-    tauriDriver = spawn(file, argv, { stdio: ["ignore", "inherit", "inherit"] });
+    // detached: makes the child a process-GROUP leader so teardown can reap the
+    // whole xvfb-run -> tauri-driver -> {WebKitWebDriver, Xvfb} tree rather than
+    // just the wrapper shell. See reapDriverTree (EI-18886600444441200).
+    tauriDriver = spawn(file, argv, {
+      stdio: ["ignore", "inherit", "inherit"],
+      detached: true,
+    });
+    bindDriverReaper();
   },
   // Publish BEFORE killing the driver so a publish hang can't leave tauri-driver
   // orphaned; the kill is in a finally for the same reason.
@@ -529,7 +610,7 @@ export const config: WebdriverIO.Config = {
     try {
       await publishMeasures();
     } finally {
-      tauriDriver?.kill();
+      reapDriverTree();
     }
   },
 

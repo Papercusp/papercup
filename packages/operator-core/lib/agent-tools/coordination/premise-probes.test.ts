@@ -84,6 +84,60 @@ describe('the WI-6502 case — a #completion premise on an item that never compl
   });
 });
 
+describe('the OTHER false-accusation guard — a cross-harness item must not read as dangling', () => {
+  // `getWorkItem`'s issue-family leg is global, but its FEATURE-family leg
+  // filters on harness_slug. So a feature cited from a peer's harness misses
+  // the scoped lookup, and without the retry it would be stamped "WI-N does not
+  // exist" about an item that plainly does. Widening classification to BARE ids
+  // (WI-6735) is what made this likely rather than merely possible — a bare id
+  // is the normal way a feature gets cited.
+  it('retries WITHOUT the harness before declaring a work-item non-existent', async () => {
+    getWorkItem.mockImplementation(async (_id: string, harness?: string) =>
+      harness ? null : { state: 'open' },
+    );
+    const probes = premiseProbes({ harnessSlug: 'some-other-harness' });
+    await expect(probes.workItem!('WI-4242')).resolves.toEqual({
+      exists: true,
+      state: 'open',
+      terminal: false,
+    });
+    expect(getWorkItem).toHaveBeenNthCalledWith(1, 'WI-4242', 'some-other-harness');
+    expect(getWorkItem).toHaveBeenNthCalledWith(2, 'WI-4242');
+  });
+
+  it('still reports a genuinely absent item as absent — the retry is not a blanket excuse', async () => {
+    getWorkItem.mockResolvedValue(null);
+    const probes = premiseProbes({ harnessSlug: 'papercusp' });
+    await expect(probes.workItem!('WI-9999')).resolves.toEqual({ exists: false });
+    expect(getWorkItem).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not double-probe when no harness is scoped in the first place', async () => {
+    getWorkItem.mockResolvedValue(null);
+    const probes = premiseProbes();
+    await expect(probes.workItem!('WI-9999')).resolves.toEqual({ exists: false });
+    expect(getWorkItem).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a BARE work-item premise asserts existence — never completion (D-026 correction 2)', () => {
+  it('holds on an OPEN item, where the same item cited #completion is broken', async () => {
+    getWorkItem.mockResolvedValue({ state: 'open' });
+    const probes = premiseProbes();
+    const [bare, completion] = await resolvePremiseStamps(['WI-6560', 'WI-6560#completion'], probes);
+    expect(bare!.status).toBe('holds');
+    expect(completion!.status).toBe('broken');
+  });
+
+  it('catches a mistyped id, which is the entire point of classifying it', async () => {
+    getWorkItem.mockResolvedValue(null);
+    const probes = premiseProbes();
+    const [stamp] = await resolvePremiseStamps(['WI-6650'], probes);
+    expect(stamp!.status).toBe('unresolvable');
+    expect(stamp!.ref).toBe('WI-6650');
+  });
+});
+
 describe('fail-soft — a decorative stamp must never be able to fail the send it decorates', () => {
   it('degrades a throwing store to unknown rather than propagating', async () => {
     getWorkItem.mockRejectedValue(new Error('pg is down'));

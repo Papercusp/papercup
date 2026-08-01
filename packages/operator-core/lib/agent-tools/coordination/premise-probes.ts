@@ -46,12 +46,19 @@
  * Premise probes are nothing like that. Measured over the 30h to 2026-08-01
  * (WI-6731): 21 premise refs total, of which 13 were `invalidatable` — the only
  * ones that reach a probe at all — i.e. ~0.43 probes/hour across the entire
- * fleet. `resolveOne` already short-circuits `!invalidatable` refs before any IO
- * (8 of the 21 were `opaque`), and `resolvePremiseStamps` already de-dupes and
- * caps at `PREMISE_STAMPS_MAX`. Adding a second hand-maintained "is this worth
- * probing" predicate would defend against a load that does not exist, and would
- * be free to drift from the resolver's own rule — the exact failure mode
- * `comparableClaims` exists to avoid by being the same table as the scorer.
+ * fleet. `resolveOne` short-circuits `!invalidatable` refs before any IO, and
+ * `resolvePremiseStamps` already de-dupes and caps at `PREMISE_STAMPS_MAX`.
+ * Adding a second hand-maintained "is this worth probing" predicate would
+ * defend against a load that does not exist, and would be free to drift from
+ * the resolver's own rule — the exact failure mode `comparableClaims` exists to
+ * avoid by being the same table as the scorer.
+ *
+ * RE-MEASURED after WI-6735 widened classification, because that widening is
+ * precisely what could have invalidated the number above and a stale quantity
+ * in a comment is worse than none: same 30h window, 25 refs, of which 17 were
+ * `invalidatable` before and 23 after — ~0.77 probes/hour. The conclusion is
+ * unchanged and the margin is still three orders of magnitude wide; the point
+ * of restating it is that the figure was re-run rather than assumed to survive.
  */
 import type {
   PremiseProbes,

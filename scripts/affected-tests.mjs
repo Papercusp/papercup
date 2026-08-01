@@ -436,6 +436,7 @@ const affected = affectedWorkspaces();
 
 if (!affected.length) {
   outSync('No affected workspaces.');
+  outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 reason=no-affected-workspaces');
   process.exit(0);
 }
 

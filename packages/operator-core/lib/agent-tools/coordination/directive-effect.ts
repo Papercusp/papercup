@@ -307,6 +307,9 @@ export async function fetchDirectiveActuations(
   }
   const byId = new Map<string, DirectiveEffectRow>();
   for (const r of byKey.values()) if (!byId.has(r.feature_id)) byId.set(r.feature_id, r);
+  // (the per-recipient grouped read lives in directive-effect-read.ts — it reads the
+  //  COORD handle for the stamped expectations, this reads the ORG handle for the
+  //  ledger rows; keeping the two handles in one module invites blurring them.)
 
   return specs.map((s) => {
     const harness = s.harness == null || s.harness === '' || s.harness === '*' ? null : s.harness;

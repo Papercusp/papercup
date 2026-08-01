@@ -82,8 +82,8 @@ describe('buildClaimRecallBlock', () => {
       workspaceId: 'ws-9',
       items: [{ id: 'WI-1', title: 'Wire prelude', harness: 'papercusp' }],
     });
-    const arg = vi.mocked(buildLaunchMemoryBlock).mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(arg.userId).toBe('su-claimer-1');
+    const arg = vi.mocked(buildLaunchMemoryBlock).mock.calls[0]?.[0];
+    expect(arg?.userId).toBe('su-claimer-1');
   });
 
   it('an explicit userId overrides the sessionId default', async () => {

@@ -46,7 +46,9 @@ import {
   reconcileBoardIdentity,
   HUD_COLUMNS,
   type HudAsk,
-  type HudBoard,
+  /* Aliased: `HudBoard` is already the default-imported COMPONENT above, and
+     the collision is invisible to vitest (which does not typecheck). */
+  type HudBoard as HudBoardData,
   type HudColumnId,
   type HudRosterEntry,
 } from './hud-board-model';
@@ -323,7 +325,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      the long rationale on the function). Writing the ref during the memo is a
      pure cache: if React discards this render, the next comparison is still
      structural, so the output can never be stale — at most one extra render. */
-  const prevBoardRef = useRef<HudBoard | null>(null);
+  const prevBoardRef = useRef<HudBoardData | null>(null);
   const board = useMemo(() => {
     const built = buildHudBoard(searchedEntries, asks, {
       nowMs,

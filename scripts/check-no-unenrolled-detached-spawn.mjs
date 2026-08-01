@@ -67,7 +67,9 @@ export const ALLOWLIST = new Map([
   ['packages/operator-core/lib/behaviour-suite/runner-node.ts', 'behaviour-suite runner: a bounded test rig whose lifetime is the suite run itself'],
   ['packages/operator-core/lib/harness/routines/p2p-perf-actions.ts', 'p2p perf bench: a bounded advisory run, reaped by the routine that started it'],
   ['packages/operator-core/lib/harness/routines/cargo-test-action.ts', 'cargo test run: bounded by the test command, reaped by the routine that started it'],
+  ['packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts', 'gitnexus reindex: detached ONLY to own a process group so the timeout can kill the whole npx->node->tree-sitter tree (runGitnexusAnalyze.killTree, SIGTERM then SIGKILL) rather than the wrapper. Bounded by timeoutMs; same precedent as cargo-test-action.ts / p2p-perf-actions.ts above'],
   ['libs/papercusp/packages/orchestrator/src/scratch-env.ts', 'scratch env for a throwaway harness; the harness lifecycle owns teardown, not the ledger'],
+  ['tools/perf-test/wdio/wdio.conf.ts', 'wdio perf runner: detached ONLY to get a killable process GROUP so onComplete can reap the xvfb-run -> tauri-driver -> {WebKitWebDriver, Xvfb} tree instead of the wrapper shell (EI-18886600444441200). The group never outlives the run — reaped in onComplete AND on exit/SIGINT/SIGTERM/SIGHUP. Standalone test-runner config: the operator, and therefore the ledger, is not running in this process'],
 
   // ── release/deploy: detached BY DESIGN so it survives the operator restart ─
   ['packages/operator-core/lib/harness/routines/release-actions.ts', 'release cut must survive the operator restart it performs — a ledger row the operator owns cannot outlive it'],
