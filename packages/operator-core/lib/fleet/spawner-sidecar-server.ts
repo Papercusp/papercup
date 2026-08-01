@@ -29,9 +29,11 @@
  * Request  `spawn:cancel`     { requestId } → aborts that request's AbortController.
  */
 import * as fs from 'node:fs';
+import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as net from 'node:net';
-import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
+import { spawn, type StdioOptions } from 'node:child_process';
 import { spawnInvokeOnce, type SpawnInvokeOnceResult } from '../dbos/orchestrator-runner';
 import { installFlagOverrideStore } from '../flag-override-store';
 import { resolveSpawnerSocketPath } from './spawner-socket-path';
@@ -66,15 +68,70 @@ interface ExecParams {
   cwd?: string;
   env?: Record<string, string>;
   timeoutMs?: number;
+  /**
+   * FD HANDOFF, input leg (WI-6404). When set, the child's stdin IS this file:
+   * the sidecar opens it and passes the fd as `stdio[0]`, so the child reads it
+   * directly at kernel level. Absent ⇒ stdin is `'ignore'`, exactly as before.
+   */
+  stdinPath?: string;
+  /**
+   * FD HANDOFF, output leg (WI-6404). When set, the child's stdout is written
+   * STRAIGHT to this file — the bytes never enter this process, never become a
+   * JS string, and never ride the line-delimited JSON channel. Absent ⇒ stdout
+   * is piped and accumulated into `stdout`, exactly as before.
+   *
+   * This exists because the `git cat-file --batch` seam carries multi-MB blob
+   * CONTENTS whose exact byte offsets are load-bearing (frames are
+   * `<oid> SP <type> SP <size> LF <contents> LF`). Sending those over the JSON
+   * line would mean base64 (+33% plus escaping) and a multi-MB `JSON.parse` on
+   * the MAIN THREAD at both ends — plausibly a worse stall than the fork this
+   * whole sidecar exists to remove. With a file, byte fidelity is structural
+   * rather than promised, and the caller reads it with an async `fs.readFile`
+   * (libuv threadpool) instead of a synchronous parse.
+   */
+  stdoutPath?: string;
 }
 
-function execProcess(params: ExecParams): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
+interface ExecResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+  /** Bytes the child wrote to `stdoutPath` (fd-handoff mode only), so the
+   *  caller can cross-check the file it reads back against what git produced. */
+  stdoutBytes?: number;
+}
+
+async function execProcess(params: ExecParams): Promise<ExecResult> {
+  // Open the handoff files BEFORE spawning: a bad path must fail as a normal
+  // non-zero result the caller can fall back from, never as a thrown RPC error.
+  let stdinHandle: fsp.FileHandle | undefined;
+  let stdoutHandle: fsp.FileHandle | undefined;
+  try {
+    if (params.stdinPath) stdinHandle = await fsp.open(params.stdinPath, 'r');
+    if (params.stdoutPath) stdoutHandle = await fsp.open(params.stdoutPath, 'w');
+  } catch (e) {
+    await stdinHandle?.close().catch(() => {});
+    await stdoutHandle?.close().catch(() => {});
+    return { code: -1, stdout: '', stderr: `spawner sidecar could not open a handoff file: ${String(e)}` };
+  }
+
+  const result = await new Promise<ExecResult>((resolve) => {
+    const stdio: StdioOptions = [
+      stdinHandle ? stdinHandle.fd : 'ignore',
+      stdoutHandle ? stdoutHandle.fd : 'pipe',
+      'pipe',
+    ];
     const child = spawn(params.command, params.args ?? [], {
       cwd: params.cwd,
       env: { ...process.env, ...(params.env ?? {}) },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio,
     });
+    // Decode across chunk boundaries: a multi-byte UTF-8 character split
+    // between two `data` events decodes to replacement chars under a plain
+    // `String(chunk)`, silently corrupting output (e.g. a non-ASCII author or
+    // subject in `git log`). StringDecoder holds the partial sequence back.
+    const outDecoder = new StringDecoder('utf8');
+    const errDecoder = new StringDecoder('utf8');
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -82,7 +139,7 @@ function execProcess(params: ExecParams): Promise<{ code: number; stdout: string
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      resolve({ code, stdout, stderr });
+      resolve({ code, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() });
     };
     const timeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : 0;
     const timer =
@@ -95,14 +152,28 @@ function execProcess(params: ExecParams): Promise<{ code: number; stdout: string
           }, timeoutMs)
         : null;
     timer?.unref?.();
-    child.stdout?.on('data', (d) => (stdout += String(d)));
-    child.stderr?.on('data', (d) => (stderr += String(d)));
+    // In fd-handoff mode `child.stdout` is null — git writes to the file itself.
+    child.stdout?.on('data', (d: Buffer) => (stdout += outDecoder.write(d)));
+    child.stderr?.on('data', (d: Buffer) => (stderr += errDecoder.write(d)));
     child.on('error', (e) => {
       stderr += String(e);
       finish(-1);
     });
     child.on('close', (code) => finish(code ?? -1));
   });
+
+  // Size the output BEFORE closing, so the caller can detect a short read.
+  let stdoutBytes: number | undefined;
+  if (stdoutHandle) {
+    try {
+      stdoutBytes = (await stdoutHandle.stat()).size;
+    } catch {
+      /* fstat failure just means no cross-check is offered. */
+    }
+  }
+  await stdinHandle?.close().catch(() => {});
+  await stdoutHandle?.close().catch(() => {});
+  return stdoutBytes === undefined ? result : { ...result, stdoutBytes };
 }
 
 /**
@@ -209,9 +280,15 @@ export function runSpawnerSidecarServer(): void {
       write(rpcError(-32601, 'Method not found', id));
     };
 
+    // Decode across socket-chunk boundaries. `chunk.toString()` on a chunk that
+    // ends mid-UTF-8-sequence yields replacement chars, which here corrupts the
+    // JSON REQUEST itself (parse error, or worse a silently wrong argv/cwd) —
+    // not merely a payload. Any request carrying non-ASCII in args/env/cwd can
+    // trip it, so the control channel gets the same StringDecoder treatment.
+    const requestDecoder = new StringDecoder('utf8');
     let buffer = '';
     socket.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString();
+      buffer += requestDecoder.write(chunk);
       let newlineIndex: number;
       while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, newlineIndex).trim();

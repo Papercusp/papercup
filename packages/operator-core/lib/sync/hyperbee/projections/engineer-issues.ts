@@ -291,7 +291,7 @@ async function writeToPg(
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
        taken_by, taken_at, payload, author_pubkey, origin, fed_ts, fed_hlc,
        created_ts, updated_ts, ts, terminal_owner, terminal_completion_ref, terminal_reason,
-       authority)
+       authority, closed_ts)
     VALUES
       (${opts.workspaceId}, ${vSlug}, ${row.issue_id}, ${row.kind}, ${row.title},
        ${row.body}, ${row.state}, ${row.assignee}, ${row.assigned_at},
@@ -301,7 +301,7 @@ async function writeToPg(
        (extract(epoch FROM now()) * 1000)::bigint,
        (extract(epoch FROM now()) * 1000)::bigint,
        ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null}, ${row.terminal_reason ?? null},
-       ${row.authority ?? null})
+       ${row.authority ?? null}, ${row.closed_ts ?? null})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       item_kind     = EXCLUDED.item_kind,
       title         = EXCLUDED.title,

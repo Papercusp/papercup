@@ -673,6 +673,27 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
               />
             </Popover>
           )}
+          {/* ── Workspace status pills, immediately right of More (owner ask
+              2026-08-01: "move these buttons from the HUD tab to the top bar
+              visible when viewing any tabs, to the right of the MORE button").
+              Both read the WHOLE workspace (hive.controlState / advRoster.list),
+              so gating them behind one tab was a scope mismatch: they lived in
+              AdvPotBar's `withStatus` block, which only HUD passed. The strip is
+              the shell's topmost chrome, so mounting them here is what makes
+              them visible on every tab.
+
+              Only these two moved. AdvNowRunning (this pot's start/stop + "N
+              plans waiting") and DiscordBadge (this pot's link) are genuinely
+              pot-scoped and stay on the HUD pot bar — a pot-scoped control in a
+              bar that outlives the pot selector is the confusion the 2026-07-27
+              split set out to remove.
+
+              Each pill self-hides when it has nothing to say (no local pot / flag
+              off; zero running agents), so this adds no empty chrome. */}
+          <div className="pc-advshell__header-status">
+            <HivesRunningPill />
+            <AgentsRunningPill />
+          </div>
           <button
             type="button"
             className="pc-advshell__tabnav pc-advshell__tabnav--right"
@@ -792,6 +813,37 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
            padding the removed title row used to provide. */
         .pc-advshell__tabs { position: relative; min-width: 0; display: flex; align-items: flex-end; padding: 6px 12px 0; }
         .pc-advshell__tab-label { display: inline; }
+        /* The workspace status pills, sitting immediately right of More (owner ask
+           2026-08-01). NOTE: this whole block is a JS template literal, so it must
+           contain NO backticks — one in a comment ends the literal and the file
+           fails to parse (hit while writing this rule; the same trap reds
+           operator-core when a SQL comment quotes an identifier).
+
+           align-items:center + the bottom margin lift the pills off the strip's
+           flex-end baseline so they read as centred against the 34px tabs rather
+           than hanging from their bottom edge.
+
+           flex: 0 1 auto + min-width: 0 — on a narrow window the pills yield
+           before the tablist does: the tabs are navigation and must stay
+           reachable, the pills are only a readout. Each pill's own button base
+           sets flex-shrink: 0 (adv-header-pills.css), so they clip as whole pills
+           instead of squashing into unreadable slivers.
+
+           The right-hand margin applies only while the strip is actually
+           overflowing: .pc-advshell__tabnav--right is absolutely positioned at
+           right: 12px and is displayed only under [data-of-right] — so without
+           this the chevron would land on top of the last pill exactly when the
+           window is tight enough for them to collide. */
+        .pc-advshell__header-status {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex: 0 1 auto;
+          min-width: 0;
+          margin-left: 8px;
+          margin-bottom: 6px;
+        }
+        .pc-advshell__tabs[data-of-right] .pc-advshell__header-status { margin-right: 26px; }
         .pc-advshell__tablist {
           display: inline-flex;
           align-items: flex-end;

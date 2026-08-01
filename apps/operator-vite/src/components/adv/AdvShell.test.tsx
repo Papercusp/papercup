@@ -131,6 +131,12 @@ vi.mock('@/lib/useLexicon', () => ({
   },
 }));
 
+// The two workspace-wide status pills the strip carries since 2026-08-01. Each
+// has its own suite (and its own sync queries + popovers); stub them so this one
+// stays about WHERE the strip puts them.
+vi.mock('./HivesRunningPill', () => ({ default: () => <div data-testid="hives-pill" /> }));
+vi.mock('./AgentsRunningPill', () => ({ default: () => <div data-testid="agents-pill" /> }));
+
 // Shortcut bus: capture each registered action so tests can trigger it.
 const shortcutHandlers = new Map<string, () => void>();
 vi.mock('@/lib/hotkeys', () => ({
@@ -261,6 +267,31 @@ describe('AdvShell — strip + header', () => {
     // …while e.g. Docs stays behind the More menu.
     expect(screen.queryByRole('tab', { name: 'docs' })).toBeNull();
     expect(screen.getByRole('button', { name: 'More sections' })).toBeTruthy();
+  });
+
+  it('carries the workspace status pills in the strip, immediately right of More (owner ask 2026-08-01)', async () => {
+    await renderShell();
+    const strip = document.querySelector('.pc-advshell__tabs')!;
+    const status = strip.querySelector('.pc-advshell__header-status')!;
+    expect(status).toBeTruthy();
+    // Both pills, mounted by the SHELL — so they show on every tab, not just HUD
+    // (they read hive.controlState / advRoster.list, neither filtered by ?slug=).
+    expect(screen.getByTestId('hives-pill')).toBeTruthy();
+    expect(screen.getByTestId('agents-pill')).toBeTruthy();
+    // …and positioned AFTER the More trigger, which is the owner's chosen spot.
+    // DOCUMENT_POSITION_FOLLOWING asserts the order without pinning the Popover's
+    // internal wrapper markup (which is Radix's to change, not ours).
+    const more = screen.getByRole('button', { name: 'More sections' });
+    expect(more.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('keeps the status pills on a non-HUD tab — the whole point of the move', async () => {
+    // The regression this guards: they used to render from AdvPotBar's
+    // `withStatus`, which only HUD passes, so every other tab lost them.
+    nuqsState.tab = 'docs';
+    await renderShell();
+    expect(screen.getByTestId('hives-pill')).toBeTruthy();
+    expect(screen.getByTestId('agents-pill')).toBeTruthy();
   });
 
   it('keeps only the promoted tabs on the strip under All Pots too', async () => {

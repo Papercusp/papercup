@@ -36,14 +36,23 @@ import {
   type ForYouBecauseRelation,
   type CouplingDivergenceVerdict,
 } from './message-fields';
-import { resolvePresenceScope, assemblePresenceSnapshot } from './presence-snapshot';
-import { couplingSourcesFor } from './coupling-sources';
-import { deriveCouplings } from '../../coord/coupling-derivation';
-import {
-  listCouplingsFor,
-  resolveCoupledPeers,
-  type DerivedCouplingRelation,
-} from '../../coord/couplings';
+import type { DerivedCouplingRelation } from '../../coord/couplings';
+
+// ⚠ EVERY IO DEPENDENCY IS IMPORTED DYNAMICALLY, INSIDE `readPeerRelations` —
+// deliberately, and it is load-bearing twice over.
+//
+//   1. CORRECTNESS. `send.ts` imports this module, and a STATIC import here
+//      would drag the whole presence-snapshot chain (→ presence-wakeability →
+//      presence) into the send path's module graph at load time. That chain has
+//      top-level constant initialisation, so it breaks every suite that
+//      partially mocks `../presence` — with a "No PRESENCE_STALE_MS export is
+//      defined on the mock" error in a test that never mentioned coupling.
+//      Caught exactly that way here; the repo has hit this class before.
+//   2. COST. The gate below means most messages never call this function at
+//      all, so the heavy half should not be paid at import time either.
+//
+// The pure half (`message-fields`, and the `DerivedCouplingRelation` TYPE) stays
+// static: `send.ts` already imports message-fields, so it adds nothing.
 
 /** One asserted relation, scored against the graph as it stood at send. */
 export interface CouplingDivergenceStamp {
@@ -151,6 +160,13 @@ export type PeerRelationsReader = (
  * unfortunate: the sender has explicitly said that edge should not surface.
  */
 export const readPeerRelations: PeerRelationsReader = async (selfOwnerId, opts) => {
+  const [{ resolvePresenceScope, assemblePresenceSnapshot }, { couplingSourcesFor }, { deriveCouplings }, { listCouplingsFor, resolveCoupledPeers }] =
+    await Promise.all([
+      import('./presence-snapshot'),
+      import('./coupling-sources'),
+      import('../../coord/coupling-derivation'),
+      import('../../coord/couplings'),
+    ]);
   const ctx = {
     ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
     ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),

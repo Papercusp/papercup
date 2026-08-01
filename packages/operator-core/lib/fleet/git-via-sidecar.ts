@@ -39,12 +39,31 @@
  * there is ONE implementation both import (repo convention: reuse-first —
  * extend, don't fork).
  */
+import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { isSidecarEnabledFromEnv } from '../process-supervision/sidecar-spawn-shared';
 
 /** The shape every `RunGit` seam in the repo returns. */
 export interface GitRunResult {
   code: number;
   stdout: string;
+  stderr: string;
+}
+
+/**
+ * The shape the STDIN seam returns — `stdout` is a **Buffer**, deliberately.
+ *
+ * `cat-file --batch` frames its output as
+ * `<oid> SP <type> SP <size> LF <contents> LF`, so walking the frames needs
+ * exact BYTE offsets; decoding to a string first shifts every offset on any
+ * non-ASCII content and desynchronises the whole stream. Kept as a SEPARATE
+ * type rather than widening `GitRunResult.stdout` to `string | Buffer`, which
+ * would force every existing caller to narrow for a case it never sees.
+ */
+export interface GitStdinRunResult {
+  code: number;
+  stdout: Buffer;
   stderr: string;
 }
 

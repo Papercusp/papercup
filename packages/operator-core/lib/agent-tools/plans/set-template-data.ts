@@ -52,7 +52,12 @@ export function evaluateSetTemplateData(
 ): { newBody: null; templateData?: TemplateDataPatch; value: SetTemplateDataValue } {
   if (current === null) return { newBody: null, value: { ok: false, code: 'not_found' } };
   const parsed = parsePlan(current, { filePath: `${slug}.md` });
-  if (parsed.isLegacy) return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+  if (parsed.isLegacy) {
+    return {
+      newBody: null,
+      value: { ok: false, code: 'legacy_plan', reason: parsed.legacyReason ?? undefined },
+    };
+  }
 
   const template = parsed.frontmatter.template?.trim();
   if (!template) return { newBody: null, value: { ok: false, code: 'no_template' } };

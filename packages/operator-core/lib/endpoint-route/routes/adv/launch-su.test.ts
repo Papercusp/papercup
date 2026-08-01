@@ -67,7 +67,9 @@ vi.mock('../../../adv-sessions', () => ({
   DISPLAY_TERMINAL_LAUNCH: 'terminal',
   recordAdvSession: vi.fn(async () => 7 as number | null),
 }));
-vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
+// Returns a PROMISE: the route fires it as `void notifySyncInvalidate(...).catch(...)`,
+// so a bare vi.fn() (undefined) throws inside the handler.
+vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
 const CTX: RouteContext = {
   principal: null,
@@ -145,8 +147,9 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     await launch({ harness_slug: 'papercusp', plan_slug: 'some-plan', model: 'sonnet', headless: true });
     const headless = normaliseOwner(headlessOneliner());
 
-    expect(headless).toBe(`${headed} --headless`);
-    expect(headless.split(' ').filter((t) => t === '--headless')).toHaveLength(1);
+    // Every token goes through the REAL shellEscape, so the appended flag is quoted.
+    expect(headless).toBe(`${headed} '--headless'`);
+    expect(headless.match(/--headless/g)).toHaveLength(1);
   });
 
   it('a headless spawn FAILURE is reported as an error — never a silent headed fallback', async () => {

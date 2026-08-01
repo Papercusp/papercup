@@ -225,26 +225,35 @@ describe('AdvPotBar — which tabs get it (owner ask 2026-07-27 #2/#3)', () => {
     }
   });
 
-  it('gives the status pills to HUD ONLY — that is where the owner moved them', () => {
+  it('gives the pot status widgets to HUD ONLY — that is where the owner moved them', () => {
     expect(potBarModeForTab('hud').withStatus).toBe(true);
     for (const id of ['overview', 'plans', 'harnesses', 'learning', 'git'] as const) {
-      expect(potBarModeForTab(id).withStatus, `${id} must not duplicate the pills`).toBe(false);
+      expect(potBarModeForTab(id).withStatus, `${id} must not duplicate the widgets`).toBe(false);
     }
   });
 
-  it('renders the pills (with the active pot) only when withStatus is set', async () => {
+  it('renders the POT-scoped widgets (with the active pot) only when withStatus is set', async () => {
     await renderBar({ withStatus: true });
-    expect(screen.getByTestId('hives-pill')).toBeTruthy();
-    expect(screen.getByTestId('agents-pill')).toBeTruthy();
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('pot-a');
     expect(screen.getByTestId('discord-badge').getAttribute('data-slug')).toBe('pot-a');
 
     cleanup();
     await renderBar();
-    // Selector still there; pills gone.
+    // Selector still there; the pot widgets gone.
     expect(screen.getByLabelText('Select Pot')).toBeTruthy();
-    expect(screen.queryByTestId('hives-pill')).toBeNull();
     expect(screen.queryByTestId('now-running')).toBeNull();
+    expect(screen.queryByTestId('discord-badge')).toBeNull();
+  });
+
+  it('never renders the WORKSPACE-wide pills — they live in the AdvShell top bar', async () => {
+    // Owner ask 2026-08-01: pots-running + agents-running moved to the tab strip
+    // so they show on EVERY tab. Neither reads `?slug=`, so a pot-scoped row was
+    // never their scope. Asserted under withStatus (the strongest case: this is
+    // the one mode that used to render them) so a re-added import cannot slip
+    // back in unnoticed and double-render them on HUD.
+    await renderBar({ withStatus: true });
+    expect(screen.queryByTestId('hives-pill')).toBeNull();
+    expect(screen.queryByTestId('agents-pill')).toBeNull();
   });
 
   it('blanks the single-pot widgets under All Pots', async () => {
