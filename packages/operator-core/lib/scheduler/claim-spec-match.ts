@@ -24,6 +24,8 @@ export interface ClaimSpecSubject {
   redundancy: number | null;
   estCost: number | null;
   assignee: string | null;
+  /** WI-6675: issue-family severity (critical|major|minor|nit), or null when unset. */
+  severity: string | null;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -118,6 +120,22 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
     redundancy: finiteNumber(payload.redundancy),
     estCost: finiteNumber(payload.est_cost ?? payload.expected_cost_cents),
     assignee: item.assignee,
+    // WI-6675 / WI-6674: read the TYPED accessor first. `WorkItem.severity` is already
+    // mapped from the issue relation by work-items.ts (`severity: i.severity`), so taking
+    // it here single-sources this evaluator with the rest of the codebase instead of
+    // re-deriving a payload path — which is precisely the WI-6674 hazard, where severity
+    // has two access paths (the TABLE keeps it at `payload._ei.severity`; the VIEW exposes
+    // a real column and DROPS the `_ei` blob) and using the wrong one for a relation
+    // returns NULL for every row WITHOUT erroring, yielding a well-formed, plausible,
+    // wrong answer. The `_ei`/top-level payload legs below are defense-in-depth for a
+    // subject built from a raw row that never went through that mapping — the same shape
+    // as FIELD_MAP's `COALESCE(item_kind, kind)` in get-next.ts, and deliberately in the
+    // SAME precedence order as the SQL side so the two admission evaluators cannot
+    // disagree about one field (the WI-5781 split-brain class).
+    severity:
+      item.severity ??
+      (typeof record(payload._ei).severity === 'string' ? (record(payload._ei).severity as string) : null) ??
+      (typeof payload.severity === 'string' ? payload.severity : null),
   };
 }
 
@@ -136,6 +154,7 @@ function valueFor(subject: ClaimSpecSubject, field: FilterLeaf['field']): string
     case 'redundancy': return subject.redundancy;
     case 'est_cost': return subject.estCost;
     case 'assignee': return subject.assignee;
+    case 'severity': return subject.severity;
   }
   return null;
 }

@@ -27,6 +27,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { collectChildOutput, createTextCollector } from '../../child-output.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, access, readdir, rm, stat, unlink } from 'node:fs/promises';
@@ -79,27 +80,24 @@ export type RunGit = (
 export const runGitLocal: RunGit = (args, cwd, opts) =>
   new Promise((resolve) => {
     const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
-    let stdout = '';
-    let stderr = '';
+    const out = collectChildOutput(child);
     let settled = false;
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
-      resolve({ code, stdout, stderr });
+      resolve({ code, stdout: out.stdout.text(), stderr: out.stderr.text() });
     };
     const timeoutMs = opts?.timeoutMs ?? 60_000;
     const t = setTimeout(() => {
-      stderr += `\ngit ${args.join(' ')} timed out`;
+      out.stderr.append(`\ngit ${args.join(' ')} timed out`);
       child.kill('SIGTERM');
       setTimeout(() => child.kill('SIGKILL'), 5_000).unref?.();
       setTimeout(() => finish(-1), 10_000).unref?.();
     }, timeoutMs);
     t.unref?.();
-    child.stdout.on('data', (d) => (stdout += String(d)));
-    child.stderr.on('data', (d) => (stderr += String(d)));
     child.on('error', (e) => {
       clearTimeout(t);
-      stderr += String(e);
+      out.stderr.append(String(e));
       finish(-1);
     });
     child.on('close', (code) => {
@@ -199,27 +197,30 @@ export type RunGitStdin = (
 export const runGitStdinLocal: RunGitStdin = (args, cwd, stdin, opts) =>
   new Promise((resolve) => {
     const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
+    // stdout stays RAW BUFFERS here on purpose: this is the `cat-file --batch`
+    // seam, whose frames are `<oid> SP <type> SP <size> LF <contents> LF` — the
+    // byte offsets are load-bearing, so it must never be decoded to text.
+    // Only stderr is human-readable, and only it needs the text collector.
     const chunks: Buffer[] = [];
-    let stderr = '';
+    const errOut = createTextCollector(child.stderr);
     let settled = false;
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
-      resolve({ code, stdout: Buffer.concat(chunks), stderr });
+      resolve({ code, stdout: Buffer.concat(chunks), stderr: errOut.text() });
     };
     const timeoutMs = opts?.timeoutMs ?? 60_000;
     const t = setTimeout(() => {
-      stderr += `\ngit ${args.join(' ')} timed out`;
+      errOut.append(`\ngit ${args.join(' ')} timed out`);
       child.kill('SIGTERM');
       setTimeout(() => child.kill('SIGKILL'), 5_000).unref?.();
       setTimeout(() => finish(-1), 10_000).unref?.();
     }, timeoutMs);
     t.unref?.();
     child.stdout.on('data', (d) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(String(d))));
-    child.stderr.on('data', (d) => (stderr += String(d)));
     child.on('error', (e) => {
       clearTimeout(t);
-      stderr += String(e);
+      errOut.append(String(e));
       finish(-1);
     });
     child.on('close', (code) => {

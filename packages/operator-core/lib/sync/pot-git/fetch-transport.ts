@@ -158,7 +158,9 @@ export function serveUploadPack(
   } = {},
 ): Promise<TransportResult> {
   return new Promise((resolve) => {
-    let stderr = '';
+    // Created before the spawn because the authorization failure path below
+    // appends a reason and resolves without ever starting a child.
+    const stderrOut = createTextCollector();
     let settled = false;
     let timedOut = false;
     let failureReported = false;
@@ -182,13 +184,13 @@ export function serveUploadPack(
       settled = true;
       if (timer) clearTimeout(timer);
       if (hardTimer) clearTimeout(hardTimer);
-      resolve({ code, stderr, timedOut });
+      resolve({ code, stderr: stderrOut.text(), timedOut });
     };
     try {
       if (!opts.allowOutsideRoot) assertServeableRepo(repoPath);
       assertScopeServeAuthorized(repoPath, opts.scopeServeGrant);
     } catch (e) {
-      stderr += e instanceof Error ? e.message : String(e);
+      stderrOut.append(e instanceof Error ? e.message : String(e));
       reportFailure(`serve refused: ${e instanceof Error ? e.message : String(e)}`);
       try {
         duplex.end();
@@ -228,8 +230,8 @@ export function serveUploadPack(
     // stream open forever.
     hardTimer = setTimeout(() => killChild(`timed out after ${maxMs}ms (absolute ceiling)`), maxMs);
     hardTimer.unref?.();
-    child.stderr.on('data', (d) => {
-      stderr += String(d);
+    child.stderr.on('data', (d: Buffer) => {
+      stderrOut.write(d);
       // upload-pack's counting/compressing phase on a multi-GB repo emits
       // progress here while stdout is still silent — that IS liveness, and
       // treating it as idle is what killed every large cold join.

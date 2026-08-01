@@ -647,6 +647,32 @@ export default defineTool({
         .then((m) => m.getClaimTimeCheckpointHint({ harness: wi.harness ?? null, workItemId: wi.id, workspaceId: ident.workspaceId ?? undefined }))
         .catch(() => null);
     }
+    // P-001/P-004 (fleet-leadership-continuity-and-actuation-2026-08-01): the prior-work banner,
+    // wired here too. P-001 named THREE surfaces — work_items:claim, work_items:get and THIS one —
+    // but only the first two got it, which left the biggest hole of the three: get_next is the
+    // primary SELF-PULL surface every fleet member and cup claims through, so an
+    // already-worked-but-checkpoint-less item was still indistinguishable from fresh work on the
+    // path most agents actually take. (P-004's cross-surface test is what surfaced the omission —
+    // it exists precisely because a guard wired into some-but-not-all read surfaces looks done.)
+    // Escalates its wording when NO checkpoint exists, since that is the case no other guard here
+    // can catch. Fail-soft + omitted entirely when null, exactly like the checkpoint hint above.
+    let priorWorkHint: { priorWork: unknown; priorWorkWarning: string } | null = null;
+    if (res?.workItem) {
+      const wi = res.workItem as { id: string; harness?: string | null };
+      priorWorkHint = await import('../../work-item-prior-work')
+        .then(async (m) => {
+          const raw = await m.getClaimTimePriorWorkHint({
+            harness: wi.harness ?? null,
+            workItemId: wi.id,
+            workspaceId: ident.workspaceId ?? undefined,
+          });
+          if (!raw) return null;
+          const priorWork = { ...raw, hasCheckpoint: checkpointHint != null };
+          const warning = m.priorWorkWarning(priorWork);
+          return warning ? { priorWork, priorWorkWarning: warning } : null;
+        })
+        .catch(() => null);
+    }
     // EI-18654296679612119: a SEPARATE, CONDITIONAL warning — only when the checkpoint text
     // itself cites a background job/task as evidence — rather than growing the EI-529
     // checkpointWarning below unconditionally (which would fire on every checkpointed claim,
@@ -789,6 +815,12 @@ export default defineTool({
                         checkpointWarning:
                           'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
                         ...(bgJobWarning.detected ? { checkpointBgJobWarning: bgJobWarning.reason } : {}),
+                      }
+                    : {}),
+                  ...(priorWorkHint
+                    ? {
+                        priorWork: priorWorkHint.priorWork,
+                        priorWorkWarning: priorWorkHint.priorWorkWarning,
                       }
                     : {}),
                   ...(planDecisions

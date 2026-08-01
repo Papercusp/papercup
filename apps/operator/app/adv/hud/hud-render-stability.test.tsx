@@ -26,7 +26,8 @@
  * The render counter is the `RowBoundary` mock: it is the outermost thing
  * `MemoSessionCard` renders, so one call == one card render.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 import HudBoard from './HudBoard';
@@ -165,8 +166,11 @@ describe('WI-6560 — session card render stability', () => {
   it('DOES re-render every session card when onOpenSession identity changes (the regression this pins)', () => {
     // The failure direction. Before the fix HudView passed a fresh arrow on
     // every render, so this is what production actually did — every card, every
-    // time. If someone re-inlines that arrow, the test above goes red and this
-    // one stays green, which localises the fault immediately.
+    // time. Note this test drives HudBoard directly, so it is INSENSITIVE to
+    // HudView re-inlining the arrow; the structural guards at the bottom of
+    // this file are what catch that. Verified by mutation: re-inlining the
+    // arrow in HudView fails those two and leaves these three green, which is
+    // what localises the fault to the call site rather than the memo.
     const props = boardProps();
     const { rerender } = render(<HudBoard {...props} />);
     const afterFirst = counters.rowRenders;
@@ -192,7 +196,23 @@ describe('WI-6560 — session card render stability', () => {
  * enforce, expensive to prove any other way.
  */
 describe('WI-6560 — HudView hands the board a stable onOpenSession', () => {
-  const src = readFileSync(new URL('./HudView.tsx', import.meta.url), 'utf8');
+  /* Resolved from cwd, not `import.meta.url`: under this app's Vite-based
+     vitest config import.meta.url is not a file: URL, so readFileSync on it
+     throws ERR_INVALID_URL_SCHEME at collection time. Both candidates are
+     listed because the file router may run from the app dir or the repo root,
+     and a wrong guess must fail LOUDLY rather than silently skip the guard. */
+  const RELATIVE = 'app/adv/hud/HudView.tsx';
+  const candidates = [
+    resolve(process.cwd(), RELATIVE),
+    resolve(process.cwd(), 'apps/operator', RELATIVE),
+  ];
+  const hudViewPath = candidates.find((p) => existsSync(p));
+  if (!hudViewPath) {
+    throw new Error(
+      `hud-render-stability: could not locate HudView.tsx (cwd=${process.cwd()}, tried ${candidates.join(', ')})`,
+    );
+  }
+  const src = readFileSync(hudViewPath, 'utf8');
 
   it('passes an identifier, never an inline arrow', () => {
     const match = src.match(/onOpenSession=\{([^}]*)\}/);

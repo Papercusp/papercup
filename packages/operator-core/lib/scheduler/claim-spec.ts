@@ -90,6 +90,17 @@ export const ITEM_FIELDS = [
   // (`\bp2p\b`) so "P2P sync fails" still matches but "nonp2p-bug-drain" does not. `glob`
   // remains right for wildcard/prefix/suffix shapes (`lib/p2p/*`, `*.test.ts`).
   'title',
+  // `severity` — WI-6675. The issue-family severity (critical|major|minor|nit), read from
+  // `payload._ei.severity` with a `payload.severity` fallback (the WI-6674 two-path hazard:
+  // the accessor differs by RELATION, and the wrong one returns NULL for every row without
+  // erroring). Filterable so a drain lane can finally say what it most needs to say —
+  // `{ field:'severity', op:'in', value:['critical','major'] }`. Before this, severity was
+  // absent from the vocabulary entirely, so a spec could not scope by it at all and the
+  // DEFAULT spec's rank collapsed to plain oldest-first (affinity is NEUTRAL for a bee
+  // holding no paths; feature_order is NULL on issue-family rows) — serving 19 critical +
+  // 215 major bugs strictly behind ~980 minor/nit changes that merely happened to be older.
+  // NOT rankable — see RANKABLE_ITEM_FIELDS below for why a bare sort on it is a trap.
+  'severity',
 ] as const;
 export type ItemField = (typeof ITEM_FIELDS)[number];
 
@@ -141,8 +152,23 @@ export type RankFunction = (typeof RANK_FUNCTIONS)[number];
 /** Item fields that may be used as a bare rank term (everything sortable). `id` is
  *  filterable (pin a set) but NOT rankable — ordering by id is meaningless, and an
  *  id-pin is about WHICH items, never their order (use priority/age for that). `title`
- *  is the same shape: filterable for keyword exclusion (WI-3268), not a sort key. */
-export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter((f) => f !== 'id' && f !== 'title');
+ *  is the same shape: filterable for keyword exclusion (WI-3268), not a sort key.
+ *
+ *  `severity` (WI-6675) is excluded for a SHARPER reason than "meaningless": a bare sort
+ *  on it is meaningful-looking and WRONG. Severity is stored as TEXT, so `severity desc`
+ *  compiles to a LEXICAL ordering — nit > minor > major > critical — i.e. exactly
+ *  backwards, serving nits first while the spec reads as though it prioritizes criticals.
+ *  A silently-inverted ordering is worse than the capability gap it would close, so the
+ *  bare form is REJECTED at validation rather than accepted-and-neutralized (an unknown
+ *  rank head compiles to NEUTRAL in get-next.ts's compileRankExpr, which would make a
+ *  typo'd severity rank silently do nothing — the same failure in a quieter costume).
+ *  Correct ordinal ranking needs a `severity_rank` FUNCTION term compiling to an explicit
+ *  CASE (critical=4…nit=1); until that ships, filtering is the supported lever.
+ *  NOTE: `risk_tier` is also text and IS rankable today — it carries this same latent
+ *  inversion. Left as-is deliberately (out of scope here), but it is the next domino. */
+export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter(
+  (f) => f !== 'id' && f !== 'title' && f !== 'severity',
+);
 
 export const CURRENT_SPEC_VERSION = '1.0' as const;
 /** Schema versions this validator understands. Bump + branch when the shape changes. */

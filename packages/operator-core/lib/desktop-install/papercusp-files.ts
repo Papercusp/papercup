@@ -568,6 +568,11 @@ const CC_HOOK_FILES = [
   // installer (dead code whose own header claimed it was "the hard backstop").
   // Moved here and wired below.
   'pretooluse-secrets-guard.mjs',
+  // EI-18896033546676518: PreToolUse (matcher "Edit|MultiEdit") hard DENY on any file
+  // that already contains a raw NUL byte — the Edit tool has a confirmed round-trip
+  // corruption bug on such files (silently writes a different byte than requested
+  // while reporting success). See the script's own header for the full writeup.
+  'pretooluse-nul-byte-edit-guard.mjs',
   // EI-18680056073436345: PreToolUse (matcher "ScheduleWakeup") best-effort
   // turn-provenance ENROLLMENT for the Claude-CLI-native ScheduleWakeup tool —
   // observes the SCHEDULING call (which does pass through this hook chain) and
@@ -1528,6 +1533,13 @@ export function mergeClaudeHookSettings(
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-secrets-guard.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('pretooluse-secrets-guard.mjs'),
+    });
+  // merge_nul_byte_edit_guard_hook — PreToolUse, matcher 'Edit|MultiEdit' (EI-18896033546676518).
+  // Write is deliberately NOT in the matcher — see the script header for why.
+  if (has('pretooluse-nul-byte-edit-guard.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-nul-byte-edit-guard.mjs'), {
+      matcher: 'Edit|MultiEdit',
+      hooks: cmd('pretooluse-nul-byte-edit-guard.mjs'),
     });
   // merge_schedule_wakeup_provenance_hook — PreToolUse, matcher 'ScheduleWakeup'
   // (EI-18680056073436345). Observational only (never denies) — see the script.

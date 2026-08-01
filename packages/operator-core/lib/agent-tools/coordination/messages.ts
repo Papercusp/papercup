@@ -665,6 +665,91 @@ export async function getMessageById(msgId: string): Promise<CoordEnvelope | nul
 }
 
 /**
+ * A full coord msg_id looks like `msas1j6h-0000-<32 hex>`. The LEADING SHORT
+ * FORM is what actually circulates: agents cite ids in prose, summaries and
+ * carry-notes constantly ("still waiting on msas1j6h"), and `getMessageById`
+ * matches EXACTLY — so anyone who copied an id out of prose and looked it up
+ * was told, confidently, that a real message did not exist.
+ *
+ * WI-6725: that silent empty is a WRONG ANSWER, not a missing feature — it is
+ * indistinguishable from a true negative. It cost a real commitment on
+ * 2026-08-01: a leader distrusted a carried claim, went to the primitive to
+ * check it, got `found:false` on the short form, and retracted a genuine
+ * unanswered question as fabricated. The failure mode specifically punishes
+ * verify-don't-trust, which is the discipline this fleet is trying to build.
+ *
+ * So resolution is explicit and three-valued — `found` / `not-found` /
+ * `ambiguous` — and a unique PREFIX resolves rather than missing. A caller can
+ * no longer collapse "you gave me a truncated id" into "no such message"
+ * without saying so. Exact match is tried first and always wins, so a full id
+ * keeps its indexed fast path and its existing behavior exactly.
+ */
+const FULL_MSG_ID_SHAPE = /^[^-\s]+-\d+-[0-9a-f]{32}$/i;
+/** Ambiguity is reported with candidates, capped so a 2-char ref can't flood. */
+const REF_CANDIDATE_CAP = 10;
+
+export type MessageRefResolution =
+  | { status: 'found'; msgId: string; message: CoordEnvelope; resolvedFrom: 'exact' | 'prefix' }
+  | { status: 'not-found'; msgId: string; looksTruncated: boolean }
+  | { status: 'ambiguous'; msgId: string; candidates: string[] };
+
+/** Ids whose msg_id starts with `prefix` (bounded). Prefix-only — never a substring match. */
+async function findMessageIdsByPrefix(prefix: string, limit: number): Promise<string[]> {
+  if (coordHasPgFastPath()) {
+    try {
+      const sql = coordSql();
+      // starts_with() rather than LIKE: no escaping of `%`/`_` in the ref.
+      const rows = await sql<{ msg_id: string }[]>`
+        SELECT msg_id
+          FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${coordWorkspaceId()}
+           AND surface = 'messages'
+           AND starts_with(msg_id, ${prefix})
+         ORDER BY msg_id
+         LIMIT ${limit}
+      `;
+      return rows.map((r) => r.msg_id);
+    } catch {
+      // Fall through to the authoritative full-surface read below.
+    }
+  }
+  const lines = await coordLog.readLines('messages');
+  const seen: string[] = [];
+  for (const l of lines) {
+    if (typeof l.msg_id === 'string' && l.msg_id.startsWith(prefix) && !seen.includes(l.msg_id)) {
+      seen.push(l.msg_id);
+      if (seen.length >= limit) break;
+    }
+  }
+  return seen;
+}
+
+/**
+ * Resolve a msg_id REF (a full id, or a unique leading prefix) to its message.
+ * See the WI-6725 note above for why this is three-valued rather than
+ * `CoordEnvelope | null`.
+ */
+export async function resolveMessageRef(ref: string): Promise<MessageRefResolution> {
+  const msgId = (ref ?? '').trim();
+  if (!msgId) return { status: 'not-found', msgId, looksTruncated: false };
+
+  const exact = await getMessageById(msgId);
+  if (exact) return { status: 'found', msgId, message: exact, resolvedFrom: 'exact' };
+
+  // A well-formed full id that missed is a genuine not-found — no prefix scan.
+  if (FULL_MSG_ID_SHAPE.test(msgId)) return { status: 'not-found', msgId, looksTruncated: false };
+
+  const candidates = await findMessageIdsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  if (candidates.length === 0) return { status: 'not-found', msgId, looksTruncated: true };
+  if (candidates.length > 1) {
+    return { status: 'ambiguous', msgId, candidates: candidates.slice(0, REF_CANDIDATE_CAP) };
+  }
+  const resolved = await getMessageById(candidates[0]);
+  if (!resolved) return { status: 'not-found', msgId, looksTruncated: true };
+  return { status: 'found', msgId: candidates[0], message: resolved, resolvedFrom: 'prefix' };
+}
+
+/**
  * Reconstruct a thread rooted at `rootMsgId` by walking the
  * `related_msg_id` chain in both directions. Sorted by ts ascending.
  */

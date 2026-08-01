@@ -26,7 +26,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getMessageById } from '../messages';
+import { resolveMessageRef } from '../messages';
 import { projectAuthoredFields } from '../message-fields';
 import { COORD_ROLES } from '../roles';
 
@@ -45,7 +45,13 @@ export default defineTool({
     msg_id: z.string().min(1).describe('The coord message id to fetch in full (as seen on a coord:inbox/coord:feed entry, or returned by coord:send).'),
   }),
   async handler(args) {
-    const message = await getMessageById(args.msg_id);
+    // WI-6725: resolve, don't exact-match. A truncated id (the form that
+    // circulates in prose) used to return a well-formed EMPTY result that read
+    // exactly like "does not exist" — and a leader retracted a real, unanswered
+    // commitment on that false negative. A unique prefix now RESOLVES; an
+    // ambiguous one says so with candidates; only a genuine miss is found:false.
+    const resolution = await resolveMessageRef(args.msg_id);
+    const message = resolution.status === 'found' ? resolution.message : null;
     // P-033 (e): the authored fields ride `extra` (sections / premisesClassified /
     // why / blocking / fieldProvenance) and the `body` a reader sees is a FLATTENED
     // projection of them — so on this surface, whose whole job is "show me this
@@ -60,6 +66,25 @@ export default defineTool({
             ok: true,
             found: message !== null,
             msg_id: args.msg_id,
+            ...(resolution.status === 'found' && resolution.resolvedFrom === 'prefix'
+              ? {
+                  resolved_msg_id: resolution.msgId,
+                  resolved_from: 'prefix' as const,
+                  detail: `'${args.msg_id}' is a TRUNCATED msg_id — resolved by unique prefix to '${resolution.msgId}'. Cite the full id to look it up directly.`,
+                }
+              : {}),
+            ...(resolution.status === 'ambiguous'
+              ? {
+                  error: 'msg_id_ambiguous' as const,
+                  candidates: resolution.candidates,
+                  detail: `'${args.msg_id}' is a truncated msg_id matching ${resolution.candidates.length}+ messages — supply more of the id, or the full one from coord:inbox.`,
+                }
+              : {}),
+            ...(resolution.status === 'not-found' && resolution.looksTruncated
+              ? {
+                  detail: `No message id starts with '${args.msg_id}'. Note this is NOT a full msg_id (expected '<short>-0000-<32 hex>') — if you copied it out of prose it may have been truncated at the source.`,
+                }
+              : {}),
             message,
             ...(authored ? { authored } : {}),
           }),

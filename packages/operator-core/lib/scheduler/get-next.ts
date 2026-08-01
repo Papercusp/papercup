@@ -199,6 +199,25 @@ const FIELD_MAP: Record<string, FieldMap> = {
   // legacy column instead of never matching), not a behavior change.
   kind: { col: (sql) => sql`COALESCE(item_kind, kind)`, kind: 'scalar-text' },
   age: { col: (sql) => sql`created_ts`, kind: 'scalar-num' },
+  // `severity` — WI-6675. Issue-family severity (critical|major|minor|nit) as a FILTER
+  // field, so a drain lane can scope itself with `severity in ['critical','major']`.
+  // The accessor is `payload->'_ei'->>'severity'` FIRST with a top-level fallback, which
+  // is WI-6674's finding and matches this file's own projection at the claimable query
+  // below: severity has two access paths (the TABLE keeps it under the `_ei` fold from
+  // migration 374; the VIEW explodes `_ei` into real columns and DROPS the blob), and the
+  // wrong path for a relation yields NULL for EVERY row without erroring — a query that
+  // returns a well-formed, plausible, wrong answer. Measured 2026-08-01: 0 of 13,711 open
+  // rows via the top-level path vs 13,711 via the correct one, reporting 30 genuine
+  // criticals as none. The JS evaluator (claim-spec-match.ts) resolves this field in the
+  // SAME precedence order deliberately — the two admission evaluators MUST agree on one
+  // field's logical source or the same spec admits an item on one family's path and
+  // refuses it on the other's (WI-5781, documented on `plan` below).
+  // NOT rankable: RANKABLE_ITEM_FIELDS excludes it because severity is TEXT, so a bare
+  // `severity desc` would sort nit > minor > major > critical — exactly backwards.
+  severity: {
+    col: (sql) => sql`COALESCE(payload->'_ei'->>'severity', payload->>'severity')`,
+    kind: 'scalar-text',
+  },
   est_cost: { col: (sql) => sql`expected_cost_cents`, kind: 'scalar-num' },
   redundancy: { col: (sql) => sql`COALESCE(redundancy, 1)`, kind: 'scalar-num' },
   assignee: { col: (sql) => sql`taken_by`, kind: 'scalar-text' },

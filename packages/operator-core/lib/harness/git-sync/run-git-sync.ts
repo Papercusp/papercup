@@ -144,29 +144,28 @@ const runGitLocalBounded = (
       cwd,
       env: { ...process.env, LC_ALL: 'C', LANG: 'C', PAPERCUSP_GIT_SYNC_PUSH: '1' },
     });
-    let stdout = '';
-    let stderr = '';
+    const out = collectChildOutput(child);
     let settled = false;
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
-      resolve({ code, stdout, stderr });
+      resolve({ code, stdout: out.stdout.text(), stderr: out.stderr.text() });
     };
     // WI-1416 hang guard: SIGTERM first (git traps it and cleans its lock files),
     // SIGKILL after a grace, and a last-resort resolve in case 'close' never fires.
     // All timers unref'd so a pending guard never keeps the process alive.
     const term = setTimeout(() => {
-      stderr += `${stderr ? '\n' : ''}git ${args.join(' ')} timed out after ${timeoutMs}ms — killed by the git-sync hang guard`;
+      out.stderr.append(
+        `${out.stderr.text() ? '\n' : ''}git ${args.join(' ')} timed out after ${timeoutMs}ms — killed by the git-sync hang guard`,
+      );
       child.kill('SIGTERM');
       setTimeout(() => child.kill('SIGKILL'), 10_000).unref?.();
       setTimeout(() => finish(-1), 20_000).unref?.();
     }, timeoutMs);
     term.unref?.();
-    child.stdout.on('data', (d) => (stdout += String(d)));
-    child.stderr.on('data', (d) => (stderr += String(d)));
     child.on('error', (e) => {
       clearTimeout(term);
-      stderr += String(e);
+      out.stderr.append(String(e));
       finish(-1);
     });
     child.on('close', (code) => {

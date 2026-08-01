@@ -51,12 +51,13 @@ const SIDECAR_GIT_TIMEOUT_MS = 120_000;
 export const runGitLocal: GitRunner = (args, cwd) =>
   new Promise((resolve) => {
     const child = spawn('git', args, { cwd });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => (stdout += String(d)));
-    child.stderr.on('data', (d) => (stderr += String(d)));
-    child.on('error', (e) => resolve({ code: -1, stdout, stderr: stderr + String(e) }));
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+    const out = collectChildOutput(child);
+    child.on('error', (e) =>
+      resolve({ code: -1, stdout: out.stdout.text(), stderr: out.stderr.text() + String(e) }),
+    );
+    child.on('close', (code) =>
+      resolve({ code: code ?? -1, stdout: out.stdout.text(), stderr: out.stderr.text() }),
+    );
   });
 
 /** Distinct sidecar-fallback reasons already logged (see {@link runGit}). */
