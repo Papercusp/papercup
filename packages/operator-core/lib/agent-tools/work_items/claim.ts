@@ -35,6 +35,7 @@ import {
   fleetScopeLeaderRemedy,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
+import { getClaimTimePriorWorkHint, priorWorkWarning } from '../../work-item-prior-work';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import {
@@ -238,11 +239,27 @@ async function claimOne(
     // SPECIFIC item to a SPECIFIC agent) — exactly the shape the report's "brief dispatch
     // re-assigns already-completed work" pattern hit. Surface a prior holder's checkpoint
     // (when one exists) so the new assignee starts in verify-mode instead of rebuilding.
-    const hint = await getClaimTimeCheckpointHint({
-      harness: workItem.harness ?? it.harness ?? null,
-      workItemId: it.id,
-      workspaceId: identity.workspaceId ?? undefined,
-    }).catch(() => null);
+    // P-001 (fleet-leadership-continuity-and-actuation-2026-08-01): the THIRD guard in this set.
+    // EI-529 above fires only when a checkpoint exists; terminalClaimWarning only when the row is
+    // finished. An item that is open, unassigned, checkpoint-less AND already worked slips both —
+    // the WI-6096 shape, where a compaction released the claim and lost the checkpoint on a
+    // fully-built, CI-wired feature. Fetched in PARALLEL with the checkpoint hint (independent
+    // reads; no reason to pay two round-trips serially), then told whether a checkpoint exists so
+    // it can escalate its wording when one does not.
+    const [hint, priorRaw] = await Promise.all([
+      getClaimTimeCheckpointHint({
+        harness: workItem.harness ?? it.harness ?? null,
+        workItemId: it.id,
+        workspaceId: identity.workspaceId ?? undefined,
+      }).catch(() => null),
+      getClaimTimePriorWorkHint({
+        harness: workItem.harness ?? it.harness ?? null,
+        workItemId: it.id,
+        workspaceId: identity.workspaceId ?? undefined,
+      }).catch(() => null),
+    ]);
+    const priorWork = priorRaw ? { ...priorRaw, hasCheckpoint: hint != null } : null;
+    const priorWorkWarn = priorWorkWarning(priorWork);
     // EI-18654296679612119: a SEPARATE, CONDITIONAL warning — only when the checkpoint text
     // itself cites a background job/task as evidence — rather than growing the EI-529 text
     // above unconditionally (which would fire on every checkpointed claim, background job or
@@ -259,8 +276,15 @@ async function claimOne(
             'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
           ...(bgJobWarning.detected ? { checkpointBgJobWarning: bgJobWarning.reason } : {}),
           ...(terminalWarning ? { terminalWarning } : {}),
+          ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
         }
-      : { ok: true, id: it.id, workItem, ...(terminalWarning ? { terminalWarning } : {}) };
+      : {
+          ok: true,
+          id: it.id,
+          workItem,
+          ...(terminalWarning ? { terminalWarning } : {}),
+          ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
+        };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.
   const current = await getWorkItem(it.id, it.harness);

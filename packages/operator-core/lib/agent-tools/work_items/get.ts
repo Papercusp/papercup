@@ -16,6 +16,7 @@ import { getWorkItem, getWorkItemDetail } from "../../work-items";
 import { mergeIds, runBulk, bulkContent } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness } from "../../work-item-checkpoint";
+import { getClaimTimePriorWorkHint, priorWorkWarning } from "../../work-item-prior-work";
 import { computeCheckpointStaleness } from "../../checkpoint-staleness";
 import { detectBgJobCheckpointClaim } from "../../checkpoint-bg-job-claim";
 import { getPresence } from "../coordination/presence";
@@ -233,6 +234,17 @@ export default defineTool({
           [{ assignee: workItem.assignee ?? null, state: workItem.state ?? null }],
           reader,
         ).catch(() => [undefined]);
+        // P-001 (fleet-leadership-continuity-and-actuation-2026-08-01): the read-side twin of the
+        // claim-time guard. `checkpoint` above answers "what did the prior holder SAY"; this
+        // answers "was there a prior holder AT ALL" — which is the only question left when the
+        // checkpoint is empty, and the one that distinguishes a worked-then-released item from a
+        // never-started one. Fail-soft: a lookup miss just omits the field.
+        const priorWorkRaw = await getClaimTimePriorWorkHint({
+          harness: workItem.harness,
+          workItemId: workItem.id,
+        }).catch(() => null);
+        const priorWork = priorWorkRaw ? { ...priorWorkRaw, hasCheckpoint: (checkpoint ?? '') !== '' } : null;
+        const priorWorkWarn = priorWorkWarning(priorWork);
         return {
           ok: true as const,
           id,
@@ -241,6 +253,7 @@ export default defineTool({
           checkpoint,
           checkpointAgeMs,
           checkpointUpdatedAtMs,
+          ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(checkpointFreshness ? { checkpointFreshness } : {}),
           ...(checkpointStale ? { checkpointStale } : {}),
           ...(checkpointBgJobWarning ? { checkpointBgJobWarning } : {}),

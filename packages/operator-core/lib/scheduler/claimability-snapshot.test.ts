@@ -96,15 +96,39 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     });
 
     expect(pg.beginCalls).toBe(1);
-    // All three reads landed on the TRANSACTION handle...
-    expect(pg.queries).toHaveLength(3);
+    // All four reads landed on the TRANSACTION handle (counts, rows, sample, and the
+    // WI-6673 admitted-composition read)...
+    expect(pg.queries).toHaveLength(4);
     // ...and NOTHING was issued on a fresh pool checkout outside the snapshot. This is the
-    // regression: three independent checkouts is what let the readings disagree.
+    // regression: independent checkouts is what let the readings disagree.
     expect(pg.poolLog).toEqual([]);
     // The reading is whole — every part present, from the one snapshot.
     expect(out.breakdown).toBeDefined();
     expect(out.rows).toEqual([]);
     expect(out.sample).toBeDefined();
+    expect(out.admitted).toBeDefined();
+  });
+
+  it('WI-6673: the admitted COMPOSITION is read in the same snapshot as the count it describes — never a separate checkout', async () => {
+    const pg = makePool();
+    const out = await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20 });
+    // Composition that came from a DIFFERENT snapshot than the count would let a caller
+    // quote a total and a make-up that never coexisted — the same class of defect WI-5947
+    // fixed for counts-vs-rows.
+    expect(pg.beginCalls).toBe(1);
+    expect(pg.poolLog).toEqual([]);
+    expect(out.admitted).toBeDefined();
+  });
+
+  it('WI-6673: composition is UNCONDITIONAL — present even under breakdownOnly, because the failure is quoting a count without asking what is in it', async () => {
+    const pg = makePool();
+    const out = await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, {
+      limit: 20,
+      breakdownOnly: true,
+    });
+    expect(out.admitted).toBeDefined();
+    expect(out.admitted.degenerate).toBe(false); // empty fake reads ⇒ empty pool
+    expect(out.admitted.lowSeverityShare).toBeNull();
   });
 
   it('sets REPEATABLE READ + READ ONLY before any data statement (PG rejects it after, which would silently leave the reads on READ COMMITTED)', async () => {
@@ -134,15 +158,16 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
       breakdownOnly: true,
     });
     expect(pg.beginCalls).toBe(1);
-    expect(pg.queries).toHaveLength(1);
+    // counts + the unconditional admitted-composition read; the row list is skipped.
+    expect(pg.queries).toHaveLength(2);
     expect(out.rows).toEqual([]);
     expect(out.sample).toBeUndefined();
   });
 
-  it('omitting sampleLimit reads counts + rows only, and omits `sample` entirely (absent, not an empty sample)', async () => {
+  it('omitting sampleLimit reads counts + rows (+ composition) only, and omits `sample` entirely (absent, not an empty sample)', async () => {
     const pg = makePool();
     const out = await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20 });
-    expect(pg.queries).toHaveLength(2);
+    expect(pg.queries).toHaveLength(3);
     expect(out.sample).toBeUndefined();
     expect('sample' in out).toBe(false);
   });

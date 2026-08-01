@@ -1,0 +1,188 @@
+/**
+ * work-item-prior-work — "has anyone worked this item BEFORE me?", answered at claim time.
+ *
+ * P-001 of fleet-leadership-continuity-and-actuation-2026-08-01. Closes the last hole in a
+ * three-guard set that already existed but did not cover the case that actually bit us:
+ *
+ *   - EI-529  (`getClaimTimeCheckpointHint`) warns when a prior holder left a CHECKPOINT.
+ *   - WI-5826 (`terminalClaimWarning`)       warns when the claimed row is already TERMINAL.
+ *   - …neither fires for an item that is OPEN, UNASSIGNED, has NO checkpoint — and has
+ *     nonetheless already been worked. That row is byte-indistinguishable from never-started.
+ *
+ * Observed live 2026-07-26 (fleet push-not-poll): WI-6096 read `state: open`, `assignee: NONE`,
+ * checkpoint empty. Its prior holder had already built the entire feature — a type, a registry
+ * field, inventory plumbing, a checker script, an npm script, AND the CI wiring — then compacted,
+ * which released the claim and left the checkpoint unwritten. The next claimant (the fleet leader)
+ * began implementing it from scratch and avoided rebuilding a finished, CI-wired feature ONLY by
+ * happening to read the source first. The information needed to prevent that was in the row the
+ * whole time: `last_released_by`, `last_released_at`, `attempts`, `worked_by_history`.
+ *
+ * This module is deliberately READ-ONLY presentation of columns we already store — no new state,
+ * no new writes. It is the read-side half of D-001: P-002/P-003 make a checkpoint more LIKELY to
+ * exist, this makes prior work visible even when one does not (a hard kill, an OOM, a crash — the
+ * causes the platform cannot control).
+ *
+ * FAMILY NOTE: only FEATURE-family rows carry release/attempt history. `harness_shared.engineer_issues`
+ * has no `attempts` / `claims` / `last_released_by` / `last_released_at` / `worked_by_history` columns
+ * at all, so an issue-family item simply yields `null` here. That is correct, not a gap to paper over:
+ * there is no history to report. Querying the `work_items` UNION view covers both families in one
+ * round-trip, with issue rows returning NULLs that fall through the no-signal check below.
+ */
+import { getOrgPg } from '@papercusp/db-org';
+import { resolveConcreteWorkspaceId } from './workspace-registry';
+
+/** A claim-time prior-work hint: only present when the row shows the item was ACTUALLY worked before. */
+export interface ClaimTimePriorWorkHint {
+  /** The last agent to release a hold on this item, when recorded. */
+  lastReleasedBy: string | null;
+  /** Epoch ms of that release, when recorded. */
+  releasedAtMs: number | null;
+  /** Prior claim attempts recorded on the row (0 when never claimed). */
+  attempts: number;
+  /** Distinct prior workers parsed out of `worked_by_history`, best-effort. */
+  priorWorkers: string[];
+  /**
+   * Whether a checkpoint ALSO exists. The caller passes this in rather than re-reading it —
+   * claim.ts already has the EI-529 hint in hand. It is the single most important field here:
+   * prior work WITHOUT a checkpoint is the dangerous shape, because nothing else on the row
+   * hints that the item has a history.
+   */
+  hasCheckpoint: boolean;
+}
+
+interface PriorWorkRow {
+  taken_by: string | null;
+  attempts: number | string | null;
+  last_released_by: string | null;
+  last_released_at: string | Date | null;
+  worked_by_history: unknown;
+}
+
+/** Best-effort extraction of agent ids from `worked_by_history`, whose shape has drifted over time
+ *  (array of strings, array of `{ owner|agent|ownerId }` objects, or null). Never throws: a shape we
+ *  do not recognise yields no workers rather than failing the whole hint. */
+export function parseWorkedByHistory(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry === 'string') {
+      const v = entry.trim();
+      if (v) out.push(v);
+      continue;
+    }
+    if (entry && typeof entry === 'object') {
+      const rec = entry as Record<string, unknown>;
+      const v = String(rec.owner ?? rec.ownerId ?? rec.agent ?? rec.by ?? '').trim();
+      if (v) out.push(v);
+    }
+  }
+  return [...new Set(out)];
+}
+
+/** Coerce a possibly-string/possibly-null count column to a non-negative integer. */
+function toCount(v: number | string | null): number {
+  const n = typeof v === 'number' ? v : Number(v ?? 0);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/** Coerce a timestamp column to epoch ms, or null. */
+function toEpochMs(v: string | Date | null): number | null {
+  if (v == null) return null;
+  const ms = v instanceof Date ? v.getTime() : Date.parse(String(v));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Read the prior-work signals for one item. Returns `null` when the row shows NO evidence the item
+ * was ever worked — which is the overwhelmingly common case, so a normal fresh claim's response is
+ * completely unaffected.
+ *
+ * Fails SOFT by design (mirroring {@link getClaimTimeCheckpointHint}): a claim must never fail
+ * because an advisory lookup did. A PG error yields `null`, i.e. "no hint", never a throw.
+ */
+export async function getClaimTimePriorWorkHint(ref: {
+  harness: string | null;
+  workItemId: string;
+  workspaceId?: string;
+  hasCheckpoint?: boolean;
+}): Promise<ClaimTimePriorWorkHint | null> {
+  const ws = resolveConcreteWorkspaceId(ref.workspaceId);
+  if (!ws || !ref.workItemId) return null;
+  try {
+    const { sql } = getOrgPg();
+    const harness = ref.harness == null || ref.harness === '' || ref.harness === '*' ? null : ref.harness;
+    const rows = await sql<PriorWorkRow[]>`
+      SELECT taken_by, attempts, last_released_by, last_released_at, worked_by_history
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${ws}
+         AND feature_id = ${ref.workItemId}
+         AND (${harness}::text IS NULL OR harness_slug = ${harness})
+       LIMIT 1`;
+    const row = rows[0];
+    if (!row) return null;
+
+    const attempts = toCount(row.attempts);
+    const releasedAtMs = toEpochMs(row.last_released_at);
+    const lastReleasedBy = String(row.last_released_by ?? '').trim() || null;
+    const priorWorkers = parseWorkedByHistory(row.worked_by_history);
+
+    // The no-signal check. `taken_by` is deliberately NOT a signal: it means the item is held
+    // RIGHT NOW, which the claim path already reports as a conflict — it says nothing about
+    // whether work happened before. Everything below is strictly historical.
+    if (attempts === 0 && releasedAtMs == null && lastReleasedBy == null && priorWorkers.length === 0) {
+      return null;
+    }
+    return {
+      lastReleasedBy,
+      releasedAtMs,
+      attempts,
+      priorWorkers,
+      hasCheckpoint: ref.hasCheckpoint === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Render the hint as the warning an agent reads at claim time. Pure + exported so the guarantee is
+ * directly testable and a future edit cannot silently weaken it — the same shape WI-5826 chose for
+ * {@link terminalClaimWarning}, and for the same reason.
+ *
+ * The message ESCALATES on `hasCheckpoint: false`. That is the whole point: when a checkpoint
+ * exists, EI-529 already tells the claimant what the prior holder was doing, so this is
+ * supplementary context. When one does NOT exist, this is the only thing standing between the
+ * claimant and rebuilding finished work, so it says so in those words and names the concrete
+ * next action (read the source before building).
+ */
+export function priorWorkWarning(hint: ClaimTimePriorWorkHint | null): string | null {
+  if (!hint) return null;
+
+  const facts: string[] = [];
+  if (hint.lastReleasedBy) {
+    const when = hint.releasedAtMs != null ? ` at ${new Date(hint.releasedAtMs).toISOString()}` : '';
+    facts.push(`last released by ${hint.lastReleasedBy}${when}`);
+  } else if (hint.releasedAtMs != null) {
+    facts.push(`last released at ${new Date(hint.releasedAtMs).toISOString()}`);
+  }
+  if (hint.attempts > 0) facts.push(`${hint.attempts} prior claim attempt${hint.attempts === 1 ? '' : 's'}`);
+  const others = hint.priorWorkers.filter((w) => w !== hint.lastReleasedBy);
+  if (others.length > 0) facts.push(`previously worked by ${others.join(', ')}`);
+
+  const detail = facts.length > 0 ? ` (${facts.join('; ')})` : '';
+
+  if (hint.hasCheckpoint) {
+    return (
+      `PRIOR WORK on this item${detail}. A checkpoint exists — read it (above) before starting; ` +
+      `this item is NOT fresh work. [P-001]`
+    );
+  }
+  return (
+    `⚠ PRIOR WORK on this item${detail}, and NO checkpoint was ever written — so this row is ` +
+    `indistinguishable from never-started even though it has been worked. READ THE SOURCE before ` +
+    `building anything: the prior holder may have already finished it and lost the checkpoint to a ` +
+    `compaction, a crash, or a hard kill. Rebuilding finished work is the failure this warning ` +
+    `exists to prevent (observed live 2026-07-26 on WI-6096, a fully-built CI-wired feature that ` +
+    `read as untouched). [P-001]`
+  );
+}

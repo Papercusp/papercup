@@ -83,14 +83,34 @@ const EMPTY_SAMPLE = {
 /** What the mocked snapshot read reports as its per-floor sample (a test may override). */
 let sampleValue: Record<string, string[]> = EMPTY_SAMPLE;
 
+/**
+ * A HEALTHY admitted composition (WI-6673) — the default, so the composition warning is
+ * off unless a test opts into the degenerate shape. `admitted` is a REQUIRED field of
+ * IssueClaimabilityReading; this fixture went stale when it was added and took all 11
+ * tests in this file down with a `Cannot read properties of undefined` — invisible to tsc
+ * because the mock is cast `as never`. If you add another field to that interface, add it
+ * here too.
+ */
+const HEALTHY_ADMITTED = {
+  byKind: { bug: 2, change: 1 },
+  bySeverity: { major: 2, minor: 1 },
+  lowSeverityShare: 1 / 3,
+  degenerate: false,
+  peakDay: { day: '2026-08-01', count: 3 },
+};
+/** What the mocked snapshot read reports as the admitted composition (a test may override). */
+let admittedValue: Record<string, unknown> = HEALTHY_ADMITTED;
+
 beforeEach(() => {
   vi.clearAllMocks();
   sampleValue = EMPTY_SAMPLE;
+  admittedValue = HEALTHY_ADMITTED;
   // Stands in for the ONE snapshot read: honours breakdownOnly/sampleLimit exactly as the
   // real readIssueClaimability does, so the handler's payload assembly is what's under test.
   readM.mockImplementation((async (_filter: unknown, _opts: unknown, readOpts: { breakdownOnly?: boolean; sampleLimit?: number }) => ({
     breakdown: BREAKDOWN,
     rows: readOpts.breakdownOnly ? [] : ROWS,
+    admitted: admittedValue,
     ...(readOpts.sampleLimit ? { sample: sampleValue } : {}),
   })) as never);
   recM.mockResolvedValue(null as never);
@@ -229,6 +249,62 @@ describe('work_items:claimable handler', () => {
     await run({ harness: 'papercup', states: ['open', 'failing'], limit: 5 });
     expect(readM.mock.calls[0]![1]).toEqual(expect.objectContaining({ states: ['open', 'failing'] }));
     expect(readM.mock.calls[0]![2]).toEqual(expect.objectContaining({ limit: 5 }));
+  });
+
+  describe('WI-6673: admittedBreakdown + the composition warning', () => {
+    it('surfaces admittedBreakdown UNCONDITIONALLY — no opt-in flag, because the failure is quoting a count without asking what is in it', async () => {
+      const out = await run({ harness: 'papercup' });
+      expect(out.admittedBreakdown).toEqual(HEALTHY_ADMITTED);
+    });
+
+    it('is present under breakdownOnly too — the cheap read is exactly where a caller quotes a bare number', async () => {
+      const out = await run({ harness: 'papercup', breakdownOnly: true });
+      expect(out.admittedBreakdown).toEqual(HEALTHY_ADMITTED);
+    });
+
+    it('a HEALTHY pool gets NO composition warning — a warning that cries wolf is ignored when it matters', async () => {
+      const out = await run({ harness: 'papercup' });
+      expect(out.note).not.toMatch(/COMPOSITION WARNING/);
+      expect(out.note).toMatch(/authoritative claimable total/); // the base note still lands
+    });
+
+    it('a DEGENERATE pool appends the warning, naming the share, the burst day and the item id', async () => {
+      admittedValue = {
+        byKind: { change: 12_564 },
+        bySeverity: { nit: 11_584, minor: 980 },
+        lowSeverityShare: 0.987,
+        degenerate: true,
+        peakDay: { day: '2026-07-31', count: 9_312 },
+      };
+      const out = await run({ harness: 'papercup' });
+      expect(out.note).toMatch(/⚠ COMPOSITION WARNING/);
+      expect(out.note).toContain('99% of this lane is nit/minor severity'); // 0.987 → rounded
+      expect(out.note).toContain('9312 of it was filed on a single day (2026-07-31)');
+      expect(out.note).toContain('is NOT a workload');
+      expect(out.note).toContain('WI-6673');
+    });
+
+    it('a degenerate pool with no peakDay still warns — the day clause is optional, the warning is not', async () => {
+      admittedValue = {
+        byKind: { change: 900 },
+        bySeverity: { nit: 900 },
+        lowSeverityShare: 1,
+        degenerate: true,
+        peakDay: null,
+      };
+      const out = await run({ harness: 'papercup' });
+      expect(out.note).toMatch(/⚠ COMPOSITION WARNING/);
+      expect(out.note).toContain('100% of this lane is nit/minor severity');
+      expect(out.note).not.toContain('filed on a single day');
+    });
+
+    it('the warning rides on `note`, where a caller reading the count cannot miss it — not a field they must know to ask for', async () => {
+      admittedValue = { ...HEALTHY_ADMITTED, degenerate: true, lowSeverityShare: 0.91, peakDay: null };
+      const out = await run({ harness: 'papercup', breakdownOnly: true });
+      // Same read that returns claimableCount carries the caveat about claimableCount.
+      expect(out.claimableCount).toBe(3);
+      expect(out.note).toMatch(/COMPOSITION WARNING/);
+    });
   });
 
   it('omitting sampleExcluded skips the sampler entirely and omits excludedSample from the payload', async () => {

@@ -145,3 +145,113 @@ export async function runGitViaSpawnerSidecar(
     { timeoutMs: timeoutMs + 35_000 },
   );
 }
+
+/**
+ * Per-process directory for the fd-handoff files (WI-6404).
+ *
+ * `/dev/shm` first (tmpfs — no disk write for a payload that is read and
+ * unlinked immediately), falling back to `os.tmpdir()` where it is absent or
+ * unwritable. Created 0700 and chmod'ed explicitly, because `mkdir`'s mode is
+ * masked by umask and a pre-existing dir keeps its old mode: these files
+ * briefly hold repo blob CONTENTS, so they must never be world-readable.
+ *
+ * Memoised, and never caches a failure — the same discipline
+ * {@link loadSidecarModules} applies, and for the same reason: one transient
+ * fault must not pin every later call onto the local-spawn fallback.
+ */
+let handoffDirPromise: Promise<string> | null = null;
+
+function handoffDir(): Promise<string> {
+  if (!handoffDirPromise) {
+    handoffDirPromise = (async () => {
+      const bases = ['/dev/shm', os.tmpdir()];
+      let lastErr: unknown;
+      for (const base of bases) {
+        const dir = path.join(base, `papercusp-git-stdin-${process.pid}`);
+        try {
+          await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+          await fsp.chmod(dir, 0o700);
+          return dir;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw new Error(`no writable handoff directory (tried ${bases.join(', ')}): ${String(lastErr)}`);
+    })().catch((e) => {
+      handoffDirPromise = null;
+      throw e;
+    });
+  }
+  return handoffDirPromise;
+}
+
+/** Monotonic suffix so concurrent calls in this process cannot collide. */
+let handoffSeq = 0;
+
+/**
+ * Execute `git <args>` in the spawner sidecar with `stdin` fed to it and the
+ * output returned as raw BYTES — the `cat-file --batch` / `--batch-check`
+ * family (see {@link GitStdinRunResult} for why bytes).
+ *
+ * ## Why an fd handoff rather than the JSON line
+ *
+ * The RPC is line-delimited JSON in both directions, and this seam carries
+ * multi-MB blob CONTENTS. Sending them inline would mean base64 (+33% plus
+ * escaping) and a multi-MB `JSON.parse` on the MAIN THREAD at both ends —
+ * plausibly a bigger stall than the ~165ms fork it removes, which would defeat
+ * the entire point (this exists to stop blocking the event loop, so trading a
+ * fork stall for a parse stall is self-defeating).
+ *
+ * So the JSON line stays CONTROL-ONLY (`stdinPath`/`stdoutPath` out;
+ * `{ code, stderr, stdoutBytes }` back) and the payload travels out-of-band:
+ * git reads and writes real fds at kernel level, and this side picks the
+ * output up with an ASYNC `fs.readFile` on the libuv threadpool. Byte fidelity
+ * is then structural rather than promised.
+ *
+ * Rejects on any sidecar problem — callers fall back to a local spawn, so a
+ * fault here degrades performance, never correctness.
+ */
+export async function runGitStdinViaSpawnerSidecar(
+  args: string[],
+  cwd: string,
+  stdin: string,
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv,
+): Promise<GitStdinRunResult> {
+  const { spawnSpawnerSidecar, getSpawnerIpcClient } = await loadSidecarModules();
+  await spawnSpawnerSidecar();
+  const dir = await handoffDir();
+  const id = `${Date.now().toString(36)}-${(handoffSeq = (handoffSeq + 1) % 0xffffff).toString(36)}`;
+  const stdinPath = path.join(dir, `${id}.in`);
+  const stdoutPath = path.join(dir, `${id}.out`);
+  try {
+    // Pre-create BOTH 0600. The output file especially: if the sidecar created
+    // it, its mode would follow the sidecar's umask, and it transiently holds
+    // blob contents.
+    await fsp.writeFile(stdinPath, stdin, { mode: 0o600 });
+    await fsp.writeFile(stdoutPath, '', { mode: 0o600 });
+    const res = await getSpawnerIpcClient().call<{
+      code: number;
+      stderr?: string;
+      stdoutBytes?: number;
+    }>(
+      'process:exec',
+      { command: 'git', args, cwd, env, timeoutMs, stdinPath, stdoutPath },
+      { timeoutMs: timeoutMs + 35_000 },
+    );
+    const stdout = await fsp.readFile(stdoutPath);
+    // A short read here would silently truncate a `--batch` stream and desync
+    // the frame walk — which is exactly the corruption this design exists to
+    // rule out, so it must fail loudly onto the local fallback, not quietly.
+    if (typeof res.stdoutBytes === 'number' && res.stdoutBytes !== stdout.length) {
+      throw new Error(
+        `spawner sidecar handoff size mismatch: git wrote ${res.stdoutBytes} bytes, read back ${stdout.length}`,
+      );
+    }
+    return { code: res.code, stdout, stderr: res.stderr ?? '' };
+  } finally {
+    // Never leave blob contents lying around, on success or failure.
+    await fsp.rm(stdinPath, { force: true }).catch(() => {});
+    await fsp.rm(stdoutPath, { force: true }).catch(() => {});
+  }
+}

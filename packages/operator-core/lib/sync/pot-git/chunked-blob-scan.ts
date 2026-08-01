@@ -17,7 +17,7 @@
  * Both want the same property: peak resident content is one chunk, not the
  * whole admissible range.
  */
-import { spawn } from 'node:child_process';
+import { defaultRunGitStdin } from './storage';
 import { type SecretFinding, scanForSecrets } from './secrets-guard';
 
 /**
@@ -36,28 +36,6 @@ export interface BlobEntry {
   oid: string;
   path: string;
   bytes: number;
-}
-
-/** As a plain `runGitStdin` but collecting stdout as BYTES. `cat-file --batch`
- *  interleaves headers with raw object content on one stream, so decoding it
- *  as a string would corrupt binary blobs and desynchronise the parser from
- *  the byte-exact sizes git reports. */
-function runGitStdinBuffer(
-  args: string[],
-  cwd: string,
-  stdin: string,
-): Promise<{ code: number; stdout: Buffer; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
-    const chunks: Buffer[] = [];
-    let stderr = '';
-    child.stdout.on('data', (d: Buffer) => chunks.push(d));
-    child.stderr.on('data', (d) => (stderr += String(d)));
-    child.on('error', (e) => resolve({ code: -1, stdout: Buffer.concat(chunks), stderr: stderr + String(e) }));
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout: Buffer.concat(chunks), stderr }));
-    child.stdin.write(stdin);
-    child.stdin.end();
-  });
 }
 
 /**
@@ -102,7 +80,11 @@ export async function readTextBlobs(
   repoPath: string,
 ): Promise<{ files: { path: string; content: string }[]; error: string | null }> {
   const pathByOid = new Map(group.map((b) => [b.oid, b.path] as const));
-  const out = await runGitStdinBuffer(
+  // `defaultRunGitStdin` returns stdout as BYTES, which is what the frame walk
+  // below needs: `cat-file --batch` interleaves headers with raw object content
+  // on one stream, so decoding it as a string would corrupt binary blobs and
+  // desynchronise the parser from the byte-exact sizes git reports.
+  const out = await defaultRunGitStdin(
     ['cat-file', '--batch', '--buffer'],
     repoPath,
     group.map((b) => b.oid).join('\n') + '\n',

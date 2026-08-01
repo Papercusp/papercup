@@ -1179,8 +1179,50 @@ export interface IssueClaimAdmittedComposition {
   peakDay: { day: string; count: number } | null;
 }
 
-const DEGENERATE_LOW_SEVERITY_SHARE = 0.8;
-const DEGENERATE_MIN_POOL = 50;
+export const DEGENERATE_LOW_SEVERITY_SHARE = 0.8;
+export const DEGENERATE_MIN_POOL = 50;
+
+/** One GROUP BY (kind, severity, day) tallied row — the shape {@link summarizeAdmittedRows} folds. */
+export interface AdmittedCompositionRow {
+  kind: string;
+  severity: string;
+  day: string | null;
+  n: number;
+}
+
+/**
+ * The PURE fold behind {@link aggregateAdmittedComposition} — grouped tallies in, composition
+ * verdict out. Extracted (WI-6673) so the two thresholds that decide `degenerate` are
+ * guardable without a database: the SQL above is a plain GROUP BY, but the JUDGEMENT it feeds
+ * is the part that silently rots, and a DB-backed test cannot pin a threshold cheaply enough
+ * to run on every edit. Keep it total and side-effect free.
+ */
+export function summarizeAdmittedRows(rows: readonly AdmittedCompositionRow[]): IssueClaimAdmittedComposition {
+  const byKind: Record<string, number> = {};
+  const bySeverity: Record<string, number> = {};
+  const byDay: Record<string, number> = {};
+  let total = 0;
+  let low = 0;
+  for (const r of rows) {
+    byKind[r.kind] = (byKind[r.kind] ?? 0) + r.n;
+    bySeverity[r.severity] = (bySeverity[r.severity] ?? 0) + r.n;
+    if (r.day) byDay[r.day] = (byDay[r.day] ?? 0) + r.n;
+    if (r.severity === 'nit' || r.severity === 'minor') low += r.n;
+    total += r.n;
+  }
+  const lowSeverityShare = total > 0 ? low / total : null;
+  // Deterministic peak: ties break on the EARLIER day, so the verdict does not flap between
+  // reads just because Object.entries ordering shifted.
+  const peak = Object.entries(byDay).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  return {
+    byKind,
+    bySeverity,
+    lowSeverityShare,
+    degenerate:
+      total >= DEGENERATE_MIN_POOL && lowSeverityShare !== null && lowSeverityShare >= DEGENERATE_LOW_SEVERITY_SHARE,
+    peakDay: peak ? { day: peak[0], count: peak[1] } : null,
+  };
+}
 
 /**
  * Composition of the ADMITTED set, in the caller's snapshot. Same subquery + same floor
@@ -1221,30 +1263,9 @@ export async function aggregateAdmittedComposition(
     FROM (${sub}) sub
     WHERE spec_match AND ${sql.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)}
     GROUP BY 1, 2, 3
-  `) as Array<{ kind: string; severity: string; day: string | null; n: number }>;
+  `) as AdmittedCompositionRow[];
 
-  const byKind: Record<string, number> = {};
-  const bySeverity: Record<string, number> = {};
-  const byDay: Record<string, number> = {};
-  let total = 0;
-  let low = 0;
-  for (const r of rows) {
-    byKind[r.kind] = (byKind[r.kind] ?? 0) + r.n;
-    bySeverity[r.severity] = (bySeverity[r.severity] ?? 0) + r.n;
-    if (r.day) byDay[r.day] = (byDay[r.day] ?? 0) + r.n;
-    if (r.severity === 'nit' || r.severity === 'minor') low += r.n;
-    total += r.n;
-  }
-  const lowSeverityShare = total > 0 ? low / total : null;
-  const peak = Object.entries(byDay).sort((a, b) => b[1] - a[1])[0];
-  return {
-    byKind,
-    bySeverity,
-    lowSeverityShare,
-    degenerate:
-      total >= DEGENERATE_MIN_POOL && lowSeverityShare !== null && lowSeverityShare >= DEGENERATE_LOW_SEVERITY_SHARE,
-    peakDay: peak ? { day: peak[0], count: peak[1] } : null,
-  };
+  return summarizeAdmittedRows(rows);
 }
 
 /** The whole claimability reading — counts, survivor rows, and (optionally) the per-floor

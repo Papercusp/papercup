@@ -30,7 +30,11 @@ import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, access, readdir, rm, stat, unlink } from 'node:fs/promises';
-import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
+import {
+  gitSidecarEnabled,
+  runGitViaSpawnerSidecar,
+  runGitStdinViaSpawnerSidecar,
+} from '../../fleet/git-via-sidecar';
 
 /** Per-call override for {@link defaultRunGit}'s kill-timeout. */
 export interface RunGitOptions {
@@ -184,9 +188,15 @@ export type RunGitStdin = (
   opts?: RunGitOptions,
 ) => Promise<{ code: number; stdout: Buffer; stderr: string }>;
 
-/** Default {@link RunGitStdin} — same bounded/C-locale/never-throw contract as
- *  {@link defaultRunGit}, with the oid set written to stdin. */
-export const defaultRunGitStdin: RunGitStdin = (args, cwd, stdin, opts) =>
+/**
+ * Local (in-process) {@link RunGitStdin} — the fallback behind
+ * {@link defaultRunGitStdin}.
+ *
+ * ⚠ Forking from THIS process is expensive in proportion to its own RSS — see
+ * {@link defaultRunGit}. Prefer `defaultRunGitStdin`. Exported so the fallback
+ * path stays directly testable, mirroring {@link runGitLocal}.
+ */
+export const runGitStdinLocal: RunGitStdin = (args, cwd, stdin, opts) =>
   new Promise((resolve) => {
     const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
     const chunks: Buffer[] = [];
@@ -223,6 +233,44 @@ export const defaultRunGitStdin: RunGitStdin = (args, cwd, stdin, opts) =>
     child.stdin.write(stdin);
     child.stdin.end();
   });
+
+/**
+ * Default {@link RunGitStdin} — same bounded/C-locale/never-throw contract as
+ * {@link defaultRunGit}, with the oid set written to stdin.
+ *
+ * Routes through the SPAWNER SIDECAR when one is enabled, falling back to
+ * {@link runGitStdinLocal} on any sidecar problem. Same reasoning as
+ * {@link defaultRunGit} — see there for the measured fork cost — but this seam
+ * needed a transport of its own (WI-6404): the sidecar RPC is line-delimited
+ * JSON, and `cat-file --batch` carries multi-MB blob CONTENTS whose byte
+ * offsets are load-bearing. So the payload rides an fd handoff instead of the
+ * JSON line; {@link runGitStdinViaSpawnerSidecar} documents the design.
+ *
+ * ## Why this was missed the first time
+ *
+ * {@link RunGit} is `(args, cwd)` and cannot feed stdin, so this is a SEPARATE
+ * type — converting `defaultRunGit` did not touch it, and nothing FAILS when
+ * it is left behind; it just stays slow. A later profile put this exact seam at
+ * the TOP of the host's remaining git spawn attribution (~2.69% of main-thread
+ * samples, via `readScannableBlobs`, `checkPublishGuard` and `readTextBlobs`),
+ * invisible in an earlier window only because the GitHub-egress secrets scan
+ * that drives it is EPISODIC.
+ */
+export const defaultRunGitStdin: RunGitStdin = async (args, cwd, stdin, opts) => {
+  const timeoutMs = opts?.timeoutMs ?? 60_000;
+  if (gitSidecarEnabled('PAPERCUSP_POT_GIT_SPAWN_SIDECAR')) {
+    try {
+      return await runGitStdinViaSpawnerSidecar(args, cwd, stdin, timeoutMs, {
+        ...process.env,
+        LC_ALL: 'C',
+        LANG: 'C',
+      });
+    } catch (e) {
+      warnSidecarFallbackOnce(e);
+    }
+  }
+  return runGitStdinLocal(args, cwd, stdin, opts);
+};
 
 /**
  * Timeout budget for a genuine bulk network transfer (GitHub fetch/push) —

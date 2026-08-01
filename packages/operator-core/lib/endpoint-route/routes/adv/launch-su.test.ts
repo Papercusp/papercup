@@ -21,18 +21,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../../define-route';
 
-const spawnInTerminalMock = vi.fn(async () => ({
+// Both mocks DECLARE their parameter so `.mock.calls[0][0]` is typed — that call
+// argument is the whole assertion surface here (it carries the composed argv).
+const spawnInTerminalMock = vi.fn(async (_opts: { oneliner: string; env: NodeJS.ProcessEnv }) => ({
   ok: true as const,
   terminal: 'xterm',
   pid: 4242 as number | undefined,
   likelyOpened: true,
 }));
-const spawnHeadlessMock = vi.fn(async () => ({
-  status: 'ok' as string,
-  terminal: 'headless (log: /tmp/fleet-logs/x.log)',
-  pid: 5151 as number | undefined,
-  error: '' as string,
-}));
+const spawnHeadlessMock = vi.fn(
+  async (_opts: { envelope: { greetingCmd: string; cwd: string }; label: string; logDir: string }) => ({
+    status: 'ok' as string,
+    terminal: 'headless (log: /tmp/fleet-logs/x.log)',
+    pid: 5151 as number | undefined,
+    error: '' as string,
+  }),
+);
 
 // `shellEscape` stays REAL (importOriginal): the oneliner we assert on is then
 // byte-for-byte the command the spawn helper would have run.
@@ -41,11 +45,11 @@ vi.mock('../../../terminal-spawn', async (importOriginal) => {
   return {
     ...actual,
     isOnPath: () => true,
-    spawnInTerminal: (...a: unknown[]) => spawnInTerminalMock(...(a as [])),
+    spawnInTerminal: (o: any) => spawnInTerminalMock(o),
   };
 });
 vi.mock('../../../console-spawn', () => ({
-  spawnHeadless: (...a: unknown[]) => spawnHeadlessMock(...(a as [])),
+  spawnHeadless: (o: any) => spawnHeadlessMock(o),
 }));
 vi.mock('../../../console-launcher', () => ({
   buildConsoleEnvelope: vi.fn(async () => ({
@@ -95,10 +99,10 @@ async function launch(body: Record<string, unknown>): Promise<{ status: number; 
 
 /** The command line the route would actually execute, from whichever helper ran. */
 function headedOneliner(): string {
-  return (spawnInTerminalMock.mock.calls[0]![0] as any).oneliner as string;
+  return spawnInTerminalMock.mock.calls[0]![0].oneliner;
 }
 function headlessOneliner(): string {
-  return (spawnHeadlessMock.mock.calls[0]![0] as any).envelope.greetingCmd as string;
+  return spawnHeadlessMock.mock.calls[0]![0].envelope.greetingCmd;
 }
 /** `--owner-id=su-<uuid>` is freshly minted per launch, so normalise it to diff two argvs. */
 const normaliseOwner = (s: string): string => s.replace(/--owner-id=su-[0-9a-f-]+/i, '--owner-id=<pinned>');

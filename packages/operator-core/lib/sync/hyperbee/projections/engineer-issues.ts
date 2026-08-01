@@ -322,7 +322,10 @@ async function writeToPg(
       terminal_reason = EXCLUDED.terminal_reason,
       -- mig 708/D-035: same rationale as terminal_reason — the authority axis
       -- must converge like status itself.
-      authority = EXCLUDED.authority
+      authority = EXCLUDED.authority,
+      -- mig 708 PART 2: honour a federated close time; the BEFORE trigger's own
+      -- COALESCE/freeze logic (mig 698) then decides whether it actually wins.
+      closed_ts = EXCLUDED.closed_ts
     -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,

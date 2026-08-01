@@ -929,8 +929,9 @@ export default defineTool({
     '(count/oldestAgeMs/newest), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (not-advancing/idle ' +
     '— check `kind`), `dormant` flag, ' +
-    'unownedCriticals (aged criticals the spec admits) + orphanedInFlight ' +
-    '(released mid-progress, assignee NULL). Scoped to ONE fleet ' +
+    'unownedCriticals (aged criticals the spec admits) + abandonedUnclaimed ' +
+    '(progress started, then ABANDONED — assignee IS NULL, so CLAIM it; releasing cannot ' +
+    'clear it). Scoped to ONE fleet ' +
     '(yours by default), not fleet:assignments\' whole roster. ' +
     'Replaces the manual presence+assignments+inbox scan each monitor wake.',
   guidance: {
@@ -945,7 +946,9 @@ export default defineTool({
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up. `benchSuggestion` set → ' +
       'fleet:bench onto the blocked-on gate; `dormant:true` → wake, never bench. ' +
-      'Nonzero `unownedCriticals`/`orphanedInFlight` → claim it. ' +
+      'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (or promote it via ' +
+      'work_items:set_priority so a member does). These items are ALREADY unassigned, so ' +
+      'work_items:release is a NO-OP on them and returns ok:true regardless (WI-6678). ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },
   capability: 'work_items:read',
@@ -1138,7 +1141,13 @@ export default defineTool({
       // EI-18693470222331709: orphaned in-flight items (filing is not fixing, same
       // as unowned_criticals above) — >0 means near-complete work stranded by a
       // release/reap, the cheapest claimable win on this brief.
-      orphaned_in_flight: orphanedInFlight.length,
+          // WI-6678: renamed from `orphaned_in_flight`. "Orphan" made every leader reach for
+          // work_items:release (the standing "reclaim orphans" monitor instruction says so) —
+          // but this condition REQUIRES assignee IS NULL, so a release cannot possibly clear
+          // it and returns ok:true having done nothing. Observed live: a leader "reclaimed"
+          // two of these and reported it to the owner, changing nothing. The only resolving
+          // action is a member CLAIMING and finishing the item.
+          abandoned_unclaimed: orphanedInFlight.length,
       // EI-18703234178947959: this fleet's own control_state is winding-down (fleet:pause /
       // fleet:wind-down). Emitted EXPLICITLY rather than left implicit, because it is the
       // reason the idle-member alerts above read 0/false: idle members are COMPLYING with
@@ -1218,7 +1227,18 @@ export default defineTool({
         },
         members: markedMembers,
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
-        ...(orphanedInFlight.length > 0 ? { orphanedInFlight } : {}),
+        ...(orphanedInFlight.length > 0
+          ? {
+              abandonedUnclaimed: orphanedInFlight,
+              // WI-6678: carry the RESOLVING ACTION with the finding. The field name alone
+              // could not carry it — and a leader acting on the wrong verb gets ok:true.
+              abandonedUnclaimedAction:
+                `${orphanedInFlight.length} item(s) show progress then abandonment, and are ALREADY unassigned. ` +
+                `work_items:release does NOTHING here (it returns ok:true on the no-op — WI-6678). ` +
+                `Resolve by CLAIMING them, or promote them with work_items:set_priority { priority } so the ` +
+                `queue hands them to a member — the count falls only when one is claimed and finished.`,
+            }
+          : {}),
         ...(strandedFleetAlert ? { strandedFleetAlertReason: strandedFleetAlert.reason } : {}),
         ...(specStarvedAlert ? { specStarvedAlertReason: specStarvedAlert.reason } : {}),
         ...(idleWithClaimableAlert

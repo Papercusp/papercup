@@ -21,11 +21,10 @@
  * or identity refusal yields admit:false with a typed, receipt-ready reason
  * (M21: offerId threads through). Never throws on runtime data.
  */
-import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type RunGit, defaultRunGit } from './storage';
+import { type RunGit, defaultRunGit, defaultRunGitStdin } from './storage';
 import {
   type ForeignAdmissionResult,
   admitForeignMergeHead,
@@ -126,26 +125,6 @@ export interface QuarantineFetchResult {
   /** The P-110 identity verdict (null when refused before identity ran). */
   identity: ForeignAdmissionResult | null;
   errors: string[];
-}
-
-/** git with STDIN — the RunGit seam is (args, cwd) only, and `cat-file
- *  --batch-check` needs oids on stdin (defaultRunGit's exec style, + input). */
-function runGitStdin(
-  args: string[],
-  cwd: string,
-  stdin: string,
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => (stdout += String(d)));
-    child.stderr.on('data', (d) => (stderr += String(d)));
-    child.on('error', (e) => resolve({ code: -1, stdout, stderr: stderr + String(e) }));
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
-    child.stdin.write(stdin);
-    child.stdin.end();
-  });
 }
 
 /** Resolve a repo's objects dir (bare or worktree'd). */
@@ -262,7 +241,7 @@ export async function quarantineFetchAndJudge(
     }
 
     // 4. X4 blob caps via batch-check over the new set.
-    const batch = await runGitStdin(
+    const batch = await defaultRunGitStdin(
       ['cat-file', `--batch-check=%(objectname) %(objecttype) %(objectsize)`, '--buffer'],
       quarantine,
       entries.map((e) => e.oid).join('\n') + '\n',
@@ -270,7 +249,9 @@ export async function quarantineFetchAndJudge(
     if (batch.code !== 0) return refuse('error', `cat-file --batch-check failed: ${batch.stderr.trim()}`);
     const pathByOid = new Map(entries.map((e) => [e.oid, e.path] as const));
     const blobs: BlobEntry[] = [];
-    for (const line of batch.stdout.split('\n')) {
+    // `--batch-check` emits oid/type/size header lines only — no object CONTENT
+    // — so it is pure ASCII and safe to decode. (`--batch` must stay a Buffer.)
+    for (const line of batch.stdout.toString('utf8').split('\n')) {
       const [oid, type, sizeS] = line.trim().split(/\s+/);
       if (!oid || !type) continue;
       const bytes = Number(sizeS ?? 0);

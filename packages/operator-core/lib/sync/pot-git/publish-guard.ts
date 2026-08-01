@@ -24,8 +24,7 @@
  * `RunGit` seam (storage.ts) — unit-integration-tests against a real bare
  * repo, no mocked git.
  */
-import { spawn } from 'node:child_process';
-import { type RunGit, defaultRunGit } from './storage';
+import { type RunGit, defaultRunGit, defaultRunGitStdin } from './storage';
 import { type SecretFinding, describeSecretFindings } from './secrets-guard';
 import { loadSecretsGuardPathExemptions, partitionExemptFindings } from './secrets-guard-exemptions';
 import {
@@ -140,23 +139,6 @@ export interface PublishGuardResult {
   errors: string[];
 }
 
-/** git with STDIN (the RunGit seam is (args, cwd) only; `cat-file
- *  --batch-check` needs oids on stdin — mirrors foreign-mirror-quarantine's
- *  runGitStdin). */
-function runGitStdin(args: string[], cwd: string, stdin: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => (stdout += String(d)));
-    child.stderr.on('data', (d) => (stderr += String(d)));
-    child.on('error', (e) => resolve({ code: -1, stdout, stderr: stderr + String(e) }));
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
-    child.stdin.write(stdin);
-    child.stdin.end();
-  });
-}
-
 /**
  * The chunked-scan machinery lives in ./chunked-blob-scan so that this guard
  * and its untrusted-input sibling (foreign-mirror-quarantine, WI-6258) share
@@ -227,7 +209,7 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
     }
 
     // 2. Blob size caps via batch-check over the new set.
-    const batch = await runGitStdin(
+    const batch = await defaultRunGitStdin(
       ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)', '--buffer'],
       input.repoPath,
       entries.map((e) => e.oid).join('\n') + '\n',
@@ -235,7 +217,10 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
     if (batch.code !== 0) return refuse('error', `cat-file --batch-check failed: ${batch.stderr.trim()}`);
     const pathByOid = new Map(entries.map((e) => [e.oid, e.path] as const));
     const blobs: BlobEntry[] = [];
-    for (const line of batch.stdout.split('\n')) {
+    // `--batch-check` output is the oid/type/size header lines only — no object
+    // CONTENT — so it is pure ASCII and safe to decode. (`--batch`, which does
+    // carry content, must stay a Buffer; see readTextBlobs.)
+    for (const line of batch.stdout.toString('utf8').split('\n')) {
       const [oid, type, sizeS] = line.trim().split(/\s+/);
       if (!oid || !type) continue;
       const bytes = Number(sizeS ?? 0);

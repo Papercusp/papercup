@@ -100,9 +100,13 @@ export default defineTool({
         // identify the holder; a cross-holder force must pass the authority/liveness
         // guard, carry a reason, and leave an audit + notification trail.
         let forced: { holder: string; basis: ForceReleaseBasis; reason: string } | undefined;
+        // WI-6678: the force path already reads the row — reuse that read for the
+        // released/previousAssignee delta below instead of paying a second round-trip.
+        let forcedPrior: string | null | undefined;
         if (force) {
           const current = await getWorkItem(it.id, harness);
           if (!current) return { ok: false as const, id: it.id, error: `work_item '${it.id}' not found` };
+          forcedPrior = current.assignee ?? null;
           const holder = current.assignee?.trim();
           if (holder && holder !== ident.ownerId) {
             const reason = (it.reason ?? args.reason ?? '').trim();
@@ -135,6 +139,19 @@ export default defineTool({
             forced = { holder, basis: verdict.basis as ForceReleaseBasis, reason };
           }
         }
+        // WI-6678: capture the PRE-state so the caller can tell a real release from a
+        // semantic NO-OP. Releasing an ALREADY-UNASSIGNED item is not an error, but it is
+        // also not a release — and it used to return a result byte-identical to a real one.
+        // That is unverifiable by any caller discipline: reading the post-state back shows
+        // `assignee: null`, which is exactly what the pre-state was. Observed live on
+        // 2026-08-01 — a fleet leader "reclaimed" two orphaned_in_flight items (a condition
+        // that requires assignee IS NULL, so release CANNOT clear it), saw ok:true, verified
+        // the post-state, and reported "orphans reclaimed" to the owner having changed
+        // nothing. A mutation that reports success without reporting its DELTA cannot be
+        // checked; the pre-read is the cheap fix.
+        const priorAssignee = forcedPrior !== undefined ? forcedPrior : ((await getWorkItem(it.id, harness))?.assignee ?? null);
+        const wasHeld = typeof priorAssignee === 'string' && priorAssignee.trim() !== '';
+
         // EI-7588: compare-and-release — the UPDATE itself only touches an unclaimed row
         // or one already held by `ident.ownerId` (unless `force`), so a peer's live claim
         // can never be silently cleared. A null return here is either "not found" or "held
@@ -226,8 +243,24 @@ export default defineTool({
         } catch {
           /* best-effort — never fail the release itself over release-request bookkeeping */
         }
+        // WI-6678: the DELTA this call actually produced. `released:false` means the item
+        // was already unassigned — the call succeeded and changed nothing. Gate on THIS,
+        // not on `ok`, whenever you are trying to establish that a claim was cleared.
+        const delta = {
+          released: wasHeld,
+          previousAssignee: wasHeld ? priorAssignee : null,
+          ...(wasHeld
+            ? {}
+            : {
+                noop:
+                  `'${it.id}' was ALREADY unassigned — nothing was released. ok:true here means "the call succeeded", ` +
+                  `not "a claim was cleared". If you are clearing a fleet:leader-brief orphaned_in_flight item, note that ` +
+                  `condition REQUIRES assignee IS NULL, so release can never clear it — only a member CLAIMING and finishing ` +
+                  `the item does (WI-6678).`,
+              }),
+        };
         const claimHold = it.claimHold ?? args.claimHold;
-        if (claimHold === undefined) return { ok: true as const, id: it.id, workItem, forced };
+        if (claimHold === undefined) return { ok: true as const, id: it.id, workItem, forced, ...delta };
         // WI-321 boomerang fix: a release-park is a DURABLE park (claim_hold_* provenance),
         // NOT a held_open_* lease — a lease dies ~2h after the parker's session ends
         // (WI-4531 reaper), so every park placed by an ephemeral agent boomeranged back
@@ -243,6 +276,7 @@ export default defineTool({
           id: it.id,
           workItem,
           forced,
+          ...delta,
           claimHold: held?.applicable ? held.hold : undefined,
         };
       },
