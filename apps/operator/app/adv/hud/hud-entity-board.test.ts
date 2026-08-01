@@ -244,6 +244,63 @@ describe('buildWorkItemBoard', () => {
     expect(board.columns.find((c) => c.id === 'needs-you')!.cards[0].id).toBe('WI-7');
   });
 
+  /* WI-6597 — the case above passed for a YEAR while the live board
+     double-counted, because `WI-7` is a shape no producer emits. These use the
+     strings read off the live app / the real producers, per the warning in
+     work-item-ref.ts. Both live failure modes are pinned separately, because
+     each alone re-breaks the guard. */
+  it('DEDUPES a HARNESS-QUALIFIED itemRef — the shape the curator actually writes', () => {
+    // attention/adapters.ts emits `<harness>#<id>`, never a bare id, so the old
+    // `known.has(a.itemRef)` compared 'papercusp#WI-7' against a set of 'WI-7'
+    // and never matched — the guard was inert even when itemRef WAS populated.
+    const board = buildWorkItemBoard(
+      [item({ id: 'WI-7', state: 'needs-human' })],
+      [
+        ask({
+          id: 'work-item-needs-human:WI-7',
+          kind: 'work-item-needs-human',
+          itemRef: 'papercusp#WI-7',
+        }),
+      ],
+      { nowMs: NOW },
+    );
+    expect(board.counts['needs-you']).toBe(1);
+    expect(board.columns.find((c) => c.id === 'needs-you')!.cards[0].id).toBe('WI-7');
+  });
+
+  it('DEDUPES from the ask ID when itemRef is null — the 60/60 live shape', () => {
+    // Measured on the live board 2026-07-28: every ask had itemRef null, so the
+    // `!a.itemRef ||` disjunct was true and every ask survived. The id already
+    // carries the work item, so the board must not depend on the optional field.
+    const board = buildWorkItemBoard(
+      [item({ id: 'WI-1142', state: 'needs-human' })],
+      [ask({ id: 'work-item-needs-human:WI-1142', kind: 'work-item-needs-human', itemRef: null })],
+      { nowMs: NOW },
+    );
+    expect(board.counts['needs-you']).toBe(1);
+    expect(board.columns.find((c) => c.id === 'needs-you')!.cards[0].id).toBe('WI-1142');
+  });
+
+  it('DEDUPES an owner-wall ask against its work item (composite id, item last)', () => {
+    const board = buildWorkItemBoard(
+      [item({ id: 'WI-4271', state: 'needs-human' })],
+      [ask({ id: 'owner-wall:work-item:WI-4271', kind: 'owner-wall', itemRef: null })],
+      { nowMs: NOW },
+    );
+    expect(board.counts['needs-you']).toBe(1);
+  });
+
+  it('keeps an ask that names NO work item, however composite its id', () => {
+    // `improvement-triage:1234` ends in a number that is not a work-item id —
+    // matching it loosely would silently swallow a real ask.
+    const board = buildWorkItemBoard(
+      [item({ id: 'WI-1', state: 'needs-human' })],
+      [ask({ id: 'improvement-triage:1234', kind: 'work-item-needs-human', itemRef: null })],
+      { nowMs: NOW },
+    );
+    expect(board.counts['needs-you']).toBe(2);
+  });
+
   it('keeps an ask whose itemRef is not among the loaded rows', () => {
     // The rows are a bounded page of ONE harness; an ask can legitimately point
     // outside it. Dropping it would re-open the visibility hole P-002 closed.

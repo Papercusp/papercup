@@ -346,17 +346,22 @@ async function writeToPg(
     -- status (e.g. both 'done') while carrying a different terminal_reason
     -- (resolved vs plain-done), so excluding it would let a racing peer silently
     -- overwrite the correct terminal nuance under the "equal digest ⇒ no-op" tie.
+    --
+    -- mig 708 / EI-18785839681430807 (D-035): authority joins the digest for the
+    -- SAME reason — two racing completions can converge to an identical
+    -- status/taken_by/terminal_owner while carrying a DIFFERENT authority (an
+    -- evidence-backed `committed` vs a racing under-evidenced `proposed`).
     WHERE harness_shared.fed_apply_wins(
             EXCLUDED.fed_hlc, EXCLUDED.fed_ts, EXCLUDED.author_pubkey,
             md5(concat_ws('|', EXCLUDED.item_kind, EXCLUDED.title, EXCLUDED.summary,
                           EXCLUDED.status, EXCLUDED.taken_by, EXCLUDED.payload::text,
                           EXCLUDED.terminal_owner, EXCLUDED.terminal_completion_ref,
-                          EXCLUDED.terminal_reason)),
+                          EXCLUDED.terminal_reason, EXCLUDED.authority)),
             work_items.fed_hlc, work_items.fed_ts, work_items.author_pubkey,
             md5(concat_ws('|', work_items.item_kind, work_items.title, work_items.summary,
                           work_items.status, work_items.taken_by, work_items.payload::text,
                           work_items.terminal_owner, work_items.terminal_completion_ref,
-                          work_items.terminal_reason)))
+                          work_items.terminal_reason, work_items.authority)))
   `;
 }
 

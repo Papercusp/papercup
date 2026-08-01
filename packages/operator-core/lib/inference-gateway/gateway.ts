@@ -1702,9 +1702,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // still fires — but only once ALL of an account's IPs are cooled, so a 0/1-IP account is byte-identical.
   const IP_TRANSPORT_COOLDOWN_MS = EGRESS_CIRCUIT_OPEN_MS; // a transport-failed egress IP rests this long
   const IP_COOLDOWN_MAX_MS = BARE429_CIRCUIT_MAX_MS; // ceiling for the escalating bare-429 per-IP cooldown
+  // EI-18791887279744938 (defect A) — ceiling for the escalating per-IP TRANSPORT-failure cooldown, mirroring
+  // the account-level flapping-backoff cap (EGRESS_CIRCUIT_OPEN_MAX_MS) rather than the (much shorter)
+  // bare-429 ceiling: a transport failure means the proxy is unreachable, not merely edge-throttled, so it
+  // deserves the SAME long-exile ceiling a chronically-flapping account already escalates toward.
+  const IP_TRANSPORT_COOLDOWN_MAX_MS = EGRESS_CIRCUIT_OPEN_MAX_MS;
   const egressCursor = new Map<string, number>(); // per-account round-robin cursor over its egress IPs
   const ipCooldownUntil = new Map<string, number>(); // per-egress-IP key (egressCacheKey) → cooldown-until (epoch ms)
   const ipBare429Streak = new Map<string, number>(); // per-egress-IP consecutive bare-429s → escalating cooldown
+  // EI-18791887279744938 (defect A): the TRANSPORT-failure sibling of ipBare429Streak. Before this, coolIp()
+  // for a transport failure always used the SAME FIXED IP_TRANSPORT_COOLDOWN_MS — so a permanently-dead egress
+  // (not merely flapping) was readmitted into pickEgress rotation on a constant cycle FOREVER, burning a full
+  // transport timeout (~12s measured) on roughly half of all upstream attempts against a 2-entry pool. This
+  // streak lets a hard-down IP's cooldown escalate (doubling, capped) toward effectively-removed, while a
+  // genuinely-flapping one still recovers at the base pace (a real transport success clears the streak).
+  const ipTransportFailStreak = new Map<string, number>();
   const egDesc = (eg?: AccountEgress): string =>
     eg?.proxyUrl ?? (eg?.localAddress ? `src ${eg.localAddress}` : 'default-egress');
   const coolIp = (key: string, ms: number): void => {

@@ -591,13 +591,32 @@ export function askToCard(ask: HudAsk, nowMs: number): HudEntityCard {
  * The Work items board: the harness's own work items, plus the unattributed
  * asks folded into needs-you.
  *
- * DEDUPE is load-bearing. An ask of kind `work-item-needs-human` carries the
- * work item's id in `itemRef`, and that same work item is already in the
- * `workItems.byHarness` rows with `state = 'needs-human'` — so without this
- * the fold would render every such item twice, in the same column, which is
- * precisely the kind of double-count that makes a board untrustworthy. The
- * work item wins: it is the canonical row, and it carries kind/severity/
- * assignee the ask does not.
+ * DEDUPE is load-bearing. An ask of kind `work-item-needs-human` names a work
+ * item that is ALSO in the `workItems.byHarness` rows with
+ * `state = 'needs-human'` — so without this the fold would render every such
+ * item twice, in the same column, which is precisely the kind of double-count
+ * that makes a board untrustworthy. The work item wins: it is the canonical
+ * row, and it carries kind/severity/assignee the ask does not.
+ *
+ * ⚠ WI-6597 — this guard was INERT on the live board, in two independent ways,
+ * and both are why it compares NORMALIZED IDS rather than raw ref strings:
+ *
+ *   1. `ask.itemRef` was null on 60/60 live cards (the attention adapter never
+ *      populated it), so `!a.itemRef` short-circuited true and EVERY ask
+ *      survived. Fixed upstream too, but the board must not depend on that: the
+ *      ask's own `id` already ends in the work-item id
+ *      (`work-item-needs-human:WI-1142`), so read the id from EITHER. A guard
+ *      that only works when an optional upstream field is populated is a guard
+ *      that silently stops working.
+ *   2. Even with `itemRef` set it could not have matched: the curator writes it
+ *      HARNESS-QUALIFIED (`papercusp#WI-1142`) while `known` held bare card ids
+ *      (`WI-1142`), so `known.has(...)` was false for every populated ref too.
+ *
+ * Both collapse into one rule, the same one `workItemIdForCard` follows: a ref
+ * token is a PATH with the id LAST — read the trailing segment via
+ * `trailingWorkItemId`, never compare whole tokens. Hand-written `WI-7`-shaped
+ * fixtures hide this (no producer emits that shape), so the tests use the real
+ * strings — see work-item-ref.ts's warning.
  */
 export function buildWorkItemBoard(
   items: HudWorkItemInput[],
@@ -605,9 +624,14 @@ export function buildWorkItemBoard(
   opts: HudEntityBuildOptions,
 ): HudEntityBoard {
   const itemCards = items.map((i) => toWorkItemCard(i, opts.nowMs));
-  const known = new Set(itemCards.map((c) => c.id));
+  const known = new Set(
+    itemCards.map((c) => trailingWorkItemId(c.id) ?? c.id.toUpperCase()),
+  );
   const askCards = asks
-    .filter((a) => !a.itemRef || !known.has(a.itemRef))
+    .filter((a) => {
+      const id = trailingWorkItemId(a.itemRef) ?? trailingWorkItemId(a.id);
+      return !id || !known.has(id);
+    })
     .map((a) => askToCard(a, opts.nowMs));
   return assemble([...itemCards, ...askCards], ITEM_COLUMN_EMPTY, opts);
 }

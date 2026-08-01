@@ -671,7 +671,21 @@ export function workItemNeedsHumanToAttention(i: WorkItemNeedsHumanInput): Atten
     source: 'harness',
     harnessSlug: i.harnessSlug ?? null,
     planSlug: null, // unattached → the synthetic "Alerts" bucket
-    itemRef: null,
+    /* WI-6597: this WAS null, and it is the identifier every downstream reader
+     * keys on — so the HUD Work-items board's ask-vs-work-item dedupe was inert
+     * (its `!a.itemRef ||` disjunct was true for 60/60 live cards, double-counting
+     * every item that is both a needs-human ROW and an ask), the board's card
+     * `ref` degraded to the kind LABEL "Work item", and a curator `wi:<ref>`
+     * drill-in had nothing to match. The item id is right here in the input;
+     * withholding it bought nothing.
+     *
+     * HARNESS-QUALIFIED (`<harness>#<id>`), matching what the curator emits and
+     * what this module's docblock (see itemRef above) already documents — a
+     * work-item lookup is harness-scoped, so a bare id is not resolvable on a
+     * cross-harness surface. Readers split it with
+     * `apps/operator/lib/work-item-ref.ts` (trailing segment = the id), which
+     * also tolerates a `harness:`-prefixed slug. */
+    itemRef: i.harnessSlug ? `${i.harnessSlug}#${i.workItemId}` : i.workItemId,
     title: clip(i.title),
     body: (i.body ?? '').trim() || i.title,
     status: `needs-human (${i.itemKind})`,

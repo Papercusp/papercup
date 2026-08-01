@@ -257,7 +257,10 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
       }
       const parsed = parsePlan(current, { filePath: it.slug + '.md' });
       if (parsed.isLegacy) {
-        return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
+        return {
+          newBody: null,
+          value: { ok: false, code: 'legacy_plan', reason: parsed.legacyReason ?? undefined },
+        };
       }
       const decisionId = allocateNextDecisionId(current);
       const appended = appendDecisionToBody(current, decisionId, it.title, it.body, todayISO(), it.refs ?? []);
@@ -284,7 +287,12 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
   }
 
   if (!result.value.ok) {
-    return { ok: false, slug: it.slug, error: result.value.code };
+    return {
+      ok: false,
+      slug: it.slug,
+      error: result.value.code,
+      ...(result.value.reason ? { reason: result.value.reason } : {}),
+    };
   }
 
   // `result.value` is narrowed to the ok-variant by the guard above.
