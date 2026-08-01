@@ -28,6 +28,7 @@ import {
   parsePorcelainPaths,
   deriveBlocker,
   mainBufferIsStale,
+  mapCheckpointRunInFlight,
   MAIN_BUFFER_STALL_MS,
   type GitRunner,
   type PipelinePosition,
