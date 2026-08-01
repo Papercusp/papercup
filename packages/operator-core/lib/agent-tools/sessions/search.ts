@@ -169,6 +169,35 @@ export default defineTool({
       ? encodeSessionCursor('sessions:search', offset + pageHits.length, fingerprint, { until: snapshotUntil })
       : undefined;
 
+    // EI-18862790811651475: a 0-hit session:'self' search is CONFIDENCE-BUILDING —
+    // it reads as "I checked and there is nothing", not "the query missed". When
+    // the owner-scope (WI-5644/5681) spans MORE than the one resolved transcript —
+    // i.e. this owner has other indexed session history in scope — say so, so the
+    // caller knows a 0 here is "no match for this query", never "no history at
+    // all". Best-effort only: never fail the search over this extra read.
+    let zeroHitCaveat: string | undefined;
+    if (args.session === 'self' && pageHits.length === 0 && filters?.owners?.length) {
+      try {
+        const [row] = await ctx.tx<Array<{ session_count: string; earliest: string | null }>>`
+          SELECT COUNT(DISTINCT session_id)::text AS session_count,
+                 MIN(COALESCE(ts, ingested_at))::text AS earliest
+            FROM harness_shared.session_turns
+           WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
+             AND owner = ANY(${filters.owners}::text[])
+        `;
+        const sessionCount = row ? Number(row.session_count) : 0;
+        if (sessionCount > 1) {
+          zeroHitCaveat =
+            `0 hits for this query, but session:'self' is owner-scoped across ${sessionCount} indexed ` +
+            `sessions for this owner (earliest ${row?.earliest ?? 'unknown'}) — this is a QUERY-MATCH MISS, ` +
+            "not \"no history\". Retry with mode:'hybrid', a shorter/different query fragment, or " +
+            'sessions:list { owner: \'self\' } to see what is actually in scope before concluding nothing was said.';
+        }
+      } catch {
+        /* best-effort caveat only — never fail the search over it */
+      }
+    }
+
     // Hydrate ±context windows only for this page.
     const out = [];
     for (const h of pageHits) {
@@ -209,6 +238,19 @@ export default defineTool({
           ...(resolvedSelfSession ? { self_session: { source_kind: resolvedSelfSession.sourceKind, session_id: resolvedSelfSession.sessionId } } : {}),
           ...(args.session === 'self' && !resolvedSelfSession
             ? { note: "session:'self' could not be pinned to a live transcript — degraded to an owner-filtered search." }
+            : {}),
+          // EI-18877285731929394: verbatim mode is exact-substring (ILIKE), so a
+          // paraphrased/multi-word "what I remember" query — exactly what the
+          // compaction-recovery doc's own example encourages — silently returns 0
+          // hits even when the content exists, and a 0-hit result reads exactly
+          // like "it never happened" rather than "your query wasn't a literal
+          // quote". Surface the fallback right where the false negative occurs,
+          // not just in prose docs an agent may not re-read mid-recovery.
+          ...(mode === 'verbatim' && out.length === 0
+            ? {
+                hint:
+                  "0 hits: verbatim mode matches only an exact, contiguous, case-insensitive substring — a paraphrase or multi-word description of what you remember will NOT match even if the content exists. Retry with mode:'hybrid' (meaning-based, the default) to search by concept, or narrow query to the exact short phrase you expect verbatim in the transcript. Do not read this 0 as \"it didn't happen\".",
+              }
             : {}),
           results: out,
         }),

@@ -30,7 +30,7 @@ vi.mock('../workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
 
-const { aggregateIssueClaimExclusions } = await import('./get-next');
+const { aggregateIssueClaimExclusions, listIssueClaimableRows } = await import('./get-next');
 
 const H = 'papercup';
 const WS = 'default';
@@ -176,5 +176,61 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
     const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
     expect(out.matchedByFilter).toBe(1);
     expect(out.excluded).toMatchObject({ taken: 1, claimHold: 0, needsHuman: 0 });
+  });
+});
+
+/**
+ * WI-6673 — the claimable ROW projection must read severity from where it actually lives.
+ *
+ * Severity on `harness_shared.work_items` sits at `payload._ei.severity` (the migration-374
+ * fold), NOT top level. The projection used to read the top-level key, which matched 1 of
+ * 13,731 open issue-family rows — so every claimable row came back `severity: null`,
+ * including genuine criticals, and a fleet leader reading the tool concluded severity was
+ * simply not tracked on claimable work.
+ *
+ * This is the shape a unit test cannot catch and a quiescent read cannot either: the query
+ * was VALID, returned the right ROWS in the right ORDER, and reported a well-formed `null`
+ * for a field that had a value. Only a DB-backed assertion that a severity-BEARING row
+ * projects its severity can fail when this regresses — which is why it lives here and not
+ * beside the pure folds in admitted-composition.test.ts.
+ */
+describe('WI-6673 — listIssueClaimableRows projects severity from payload._ei, not top level', () => {
+  it('projects the _ei severity for a row whose severity lives under the migration-374 fold', async () => {
+    await seedIssue('WI-SEV-1', { _ei: { severity: 'critical' } });
+
+    const rows = await listIssueClaimableRows(undefined, { harness: H }, 10);
+    expect(rows).toHaveLength(1);
+    // The assertion that matters: NOT null. A regression here reports a well-formed
+    // `severity: null` for a genuine critical — success-shaped, and wrong.
+    expect(rows[0]).toMatchObject({ id: 'WI-SEV-1', severity: 'critical' });
+  });
+
+  it('still reads a legacy TOP-LEVEL severity for rows that predate the fold', async () => {
+    // The COALESCE fallback: pre-fold stragglers must not regress to null while we fix the
+    // common case.
+    await seedIssue('WI-SEV-2', { severity: 'major' });
+
+    const rows = await listIssueClaimableRows(undefined, { harness: H }, 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: 'WI-SEV-2', severity: 'major' });
+  });
+
+  it('prefers the _ei value when BOTH accessors are present (the fold is authoritative)', async () => {
+    // A row carrying both must not be decided by accessor order changing underneath us.
+    await seedIssue('WI-SEV-3', { severity: 'nit', _ei: { severity: 'critical' } });
+
+    const rows = await listIssueClaimableRows(undefined, { harness: H }, 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: 'WI-SEV-3', severity: 'critical' });
+  });
+
+  it('reports null only when the row genuinely carries no severity anywhere', async () => {
+    // The honest null — pinned so "everything is null" and "this one has none" stay
+    // distinguishable.
+    await seedIssue('WI-SEV-4', { someOtherField: true });
+
+    const rows = await listIssueClaimableRows(undefined, { harness: H }, 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: 'WI-SEV-4', severity: null });
   });
 });
