@@ -86,13 +86,13 @@ describe('work_items:release handler (keyed-array)', () => {
     const b = await body({ id: 'WI-1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { id: 'WI-1' } });
-    expect(releaseM).toHaveBeenCalledWith('WI-1', { harness: undefined, expectedAssignee: 'me' });
+    expect(releaseM).toHaveBeenCalledWith('WI-1', { harness: undefined, expectedAssignee: 'me', onPriorState: expect.any(Function) });
   });
 
   it('releases MANY via ids:[…]', async () => {
     const b = await body({ ids: ['WI-1', 'WI-2'], harness: 'h' });
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
-    expect(releaseM).toHaveBeenCalledWith('WI-2', { harness: 'h', expectedAssignee: 'me' });
+    expect(releaseM).toHaveBeenCalledWith('WI-2', { harness: 'h', expectedAssignee: 'me', onPriorState: expect.any(Function) });
   });
 
   it('a not-found item (null) fails only itself', async () => {
@@ -111,7 +111,7 @@ describe('work_items:release holder guard (EI-7588)', () => {
     releaseM.mockResolvedValue(null as never); // the atomic compare-and-release matched 0 rows
     getM.mockResolvedValue({ id: 'WI-HELD', assignee: 'peer' } as never);
     const b = await body({ id: 'WI-HELD' });
-    expect(releaseM).toHaveBeenCalledWith('WI-HELD', { harness: undefined, expectedAssignee: 'me' });
+    expect(releaseM).toHaveBeenCalledWith('WI-HELD', { harness: undefined, expectedAssignee: 'me', onPriorState: expect.any(Function) });
     expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-HELD', error: 'not_holder', holder: 'peer' });
     expect(b.results[0].hint).toMatch(/Held by peer, not you \(me\)/);
@@ -123,8 +123,16 @@ describe('work_items:release holder guard (EI-7588)', () => {
     );
     getM.mockImplementation(async (id: string) => ({ id, assignee: id === 'WI-2' ? 'peer' : null }) as never);
     const b = await body({ items: [{ id: 'WI-1' }, { id: 'WI-2', force: false }], force: true });
-    expect(releaseM).toHaveBeenNthCalledWith(1, 'WI-1', { harness: undefined, expectedAssignee: undefined });
-    expect(releaseM).toHaveBeenNthCalledWith(2, 'WI-2', { harness: undefined, expectedAssignee: 'me' });
+    expect(releaseM).toHaveBeenNthCalledWith(1, 'WI-1', {
+      harness: undefined,
+      expectedAssignee: undefined,
+      onPriorState: expect.any(Function),
+    });
+    expect(releaseM).toHaveBeenNthCalledWith(2, 'WI-2', {
+      harness: undefined,
+      expectedAssignee: 'me',
+      onPriorState: expect.any(Function),
+    });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'WI-2', error: 'not_holder', holder: 'peer' });
   });
@@ -133,6 +141,62 @@ describe('work_items:release holder guard (EI-7588)', () => {
     const b = await body({ id: 'WI-FREE' });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-FREE' });
     expect(getM).not.toHaveBeenCalled();
+  });
+});
+
+// WI-6678: a mutation must report its DELTA, not just ok:true. Releasing an ALREADY
+// unassigned item is not an error but is also not a release, and it used to return a
+// result byte-identical to a real one — so a caller could verify the post-state, see
+// `assignee: null` (exactly what the pre-state was), and conclude it had cleared a claim
+// it never touched. Observed live 2026-08-01 on fleet:leader-brief orphaned_in_flight.
+describe('work_items:release reports its delta (WI-6678)', () => {
+  /** Drive the pre-state through the SAME seam production uses: releaseWorkItem's own
+   *  row-read hands the holder back via onPriorState. Mocking it this way is what makes
+   *  these tests able to fail if the handler ever goes back to a call-site pre-read. */
+  const releaseWithPrior = (assignee: string | null) =>
+    releaseM.mockImplementation(async (id: string, opts?: Record<string, unknown>) => {
+      (opts?.onPriorState as ((p: { assignee: string | null; wasClaimed: boolean }) => void) | undefined)?.({
+        assignee,
+        wasClaimed: Boolean(assignee),
+      });
+      return { id } as never;
+    });
+
+  it('a REAL release reports released:true + the previous holder, and no noop hint', async () => {
+    releaseWithPrior('me');
+    const b = await body({ id: 'WI-MINE' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-MINE', released: true, previousAssignee: 'me' });
+    expect(b.results[0]).not.toHaveProperty('noop');
+  });
+
+  it('a NO-OP release reports released:false + previousAssignee:null + a noop hint, still ok:true', async () => {
+    releaseWithPrior(null);
+    const b = await body({ id: 'WI-FREE' });
+    // ok:true is deliberately preserved — the call DID succeed; the delta is what
+    // distinguishes it, which is the whole point of the field.
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-FREE', released: false, previousAssignee: null });
+    expect(String((b.results[0] as { noop?: string }).noop)).toMatch(/ALREADY unassigned/i);
+  });
+
+  it('the delta comes from releaseWorkItem\'s own read — the handler never pre-reads the row itself', async () => {
+    // The first cut of this fix called getWorkItem at the call site. That was a redundant
+    // round-trip AND racy: the assignee can change between the call site's read and the
+    // library's, so previousAssignee could describe a state the release never acted on.
+    releaseWithPrior('me');
+    await body({ id: 'WI-MINE' });
+    expect(getM).not.toHaveBeenCalled();
+    expect(releaseM).toHaveBeenCalledWith(
+      'WI-MINE',
+      expect.objectContaining({ onPriorState: expect.any(Function) }),
+    );
+  });
+
+  it('a release that reports NO prior state (row vanished) degrades to released:false, never a false positive', async () => {
+    // onPriorState never fires when the row is not found. The handler must not invent a
+    // release it cannot evidence.
+    releaseM.mockImplementation(async (id: string) => ({ id }) as never);
+    const b = await body({ id: 'WI-GONE' });
+    expect(b.results[0]).toMatchObject({ ok: true, released: false, previousAssignee: null });
   });
 });
 
@@ -170,7 +234,7 @@ describe('work_items:release force guard (WI-4198)', () => {
   it('an authorized cross-holder force releases, reports `forced`, and audits + notifies', async () => {
     getM.mockResolvedValue({ id: 'WI-HELD', assignee: 'peer', lastProgressAt: 'ts' } as never);
     const b = await body({ id: 'WI-HELD', force: true, reason: 'holder session dead 3h; reclaiming for the drain' });
-    expect(releaseM).toHaveBeenCalledWith('WI-HELD', { harness: undefined, expectedAssignee: undefined });
+    expect(releaseM).toHaveBeenCalledWith('WI-HELD', { harness: undefined, expectedAssignee: undefined, onPriorState: expect.any(Function) });
     expect(b.results[0]).toMatchObject({
       ok: true,
       id: 'WI-HELD',
@@ -212,7 +276,7 @@ describe('work_items:release force guard (WI-4198)', () => {
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(assessM).not.toHaveBeenCalled();
     expect(auditM).not.toHaveBeenCalled();
-    expect(releaseM).toHaveBeenCalledWith('WI-FREE', { harness: undefined, expectedAssignee: undefined });
+    expect(releaseM).toHaveBeenCalledWith('WI-FREE', { harness: undefined, expectedAssignee: undefined, onPriorState: expect.any(Function) });
     expect(b.results[0].forced).toBeUndefined();
   });
 
@@ -236,7 +300,7 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
 
   it('claimHold:true releases AND applies a DURABLE park (parkedBy provenance, NOT a held_open lease), surfacing it in the result', async () => {
     const b = await body({ id: 'WI-1', claimHold: true, reason: 'umbrella item' });
-    expect(releaseM).toHaveBeenCalledWith('WI-1', { harness: undefined, expectedAssignee: 'me' });
+    expect(releaseM).toHaveBeenCalledWith('WI-1', { harness: undefined, expectedAssignee: 'me', onPriorState: expect.any(Function) });
     // WI-321 boomerang fix: park provenance goes in claim_hold_* (parkedBy), never held_open_*
     // — a held_open lease dies ~2h after the parker's session ends (WI-4531 reaper), which made
     // every ephemeral agent's park boomerang back into scheduler:get_next.

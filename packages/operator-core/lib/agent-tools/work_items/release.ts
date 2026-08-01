@@ -148,9 +148,15 @@ export default defineTool({
         // that requires assignee IS NULL, so release CANNOT clear it), saw ok:true, verified
         // the post-state, and reported "orphans reclaimed" to the owner having changed
         // nothing. A mutation that reports success without reporting its DELTA cannot be
-        // checked; the pre-read is the cheap fix.
-        const priorAssignee = forcedPrior !== undefined ? forcedPrior : ((await getWorkItem(it.id, harness))?.assignee ?? null);
-        const wasHeld = typeof priorAssignee === 'string' && priorAssignee.trim() !== '';
+        // checked.
+        //
+        // The pre-state comes from releaseWorkItem's OWN row-read (onPriorState), never a
+        // second read here. A call-site pre-read was the first cut of this fix and it was
+        // wrong twice over: it paid a redundant round-trip on every release, and it was
+        // RACY — between the call site's read and the library's, the assignee can change,
+        // so `previousAssignee` could describe a state the release never acted on. A fix
+        // for silent wrong answers must not itself be able to report one.
+        const prior: { assignee: string | null; wasClaimed: boolean } = { assignee: null, wasClaimed: false };
 
         // EI-7588: compare-and-release — the UPDATE itself only touches an unclaimed row
         // or one already held by `ident.ownerId` (unless `force`), so a peer's live claim
@@ -159,7 +165,16 @@ export default defineTool({
         const workItem = await releaseWorkItem(it.id, {
           harness,
           expectedAssignee: force ? undefined : ident.ownerId,
+          onPriorState: (p) => {
+            prior.assignee = p.assignee;
+            prior.wasClaimed = p.wasClaimed;
+          },
         });
+        // The force path read the row a moment earlier for the authority guard; prefer the
+        // library's read (it is the one the UPDATE acted on) and fall back to that read only
+        // if the row vanished before it.
+        const priorAssignee = prior.wasClaimed ? prior.assignee : (forcedPrior ?? prior.assignee);
+        const wasHeld = prior.wasClaimed;
         if (!workItem) {
           const current = await getWorkItem(it.id, harness);
           if (!current) return { ok: false as const, id: it.id, error: `work_item '${it.id}' not found` };

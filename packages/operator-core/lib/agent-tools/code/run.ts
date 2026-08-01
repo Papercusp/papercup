@@ -532,10 +532,32 @@ const ORDERING_HINT =
   'nothing past that line even dispatches. Put durable/continuity writes (work_items:checkpoint, ' +
   'loop:checkpoint, facts:assert) FIRST in a batch so a later call\'s failure can never strand them.';
 
+/**
+ * P-020: the writes that never ran. Rendered from `strandedWrites` (computed at the
+ * orchestrate seam, where the static parse and the dispatch record are both in hand).
+ *
+ * This is the half the existing warnings structurally cannot cover: every other mutation
+ * array is recorded AT DISPATCH, so a call the vm never reached appears in none of them and
+ * the result reads as "nothing was written" — true, and dangerously incomplete when what
+ * went unwritten was the checkpoint the agent believed it had just persisted.
+ */
+function strandedWriteWarning(stranded: readonly string[]): Record<string, string> {
+  if (stranded.length === 0) return {};
+  return {
+    strandedWriteWarning:
+      `${stranded.length} write-effect call(s) in this script NEVER DISPATCHED (${stranded.join(', ')}) — ` +
+      'the script aborted before reaching them, so they are missing from every mutation list above ' +
+      '(those record calls at dispatch). Nothing about them was written. If any was a durable ' +
+      'continuity write (work_items:checkpoint, loop:checkpoint, facts:assert), that state does NOT ' +
+      `exist — re-issue it. ${ORDERING_HINT}`,
+  };
+}
+
 export function buildFailureWarning(
   planned: readonly { tool: string }[],
   rejected: readonly { tool: string }[],
   uncertain: readonly { tool: string }[],
+  stranded: readonly string[] = [],
 ): Record<string, string> {
   const countBy = (ms: readonly { tool: string }[]): Record<string, number> => {
     const by: Record<string, number> = {};
@@ -560,13 +582,18 @@ export function buildFailureWarning(
   // Nothing took effect and nothing is in doubt: say so plainly. This is the case the old
   // warning got backwards, and the case an agent hits most.
   if (landedCount === 0 && uncertain.length === 0) {
-    if (rejected.length === 0) return {};
+    // P-020: `rejected.length === 0` here is the script's most common abort — a READ threw
+    // (an arg typo), so no write ever dispatched. That returned a bare `{}`: no warning at
+    // all, even when the script had ordered writes that were silently skipped. The stranded
+    // report is the only signal in that case, so it must survive this early return.
+    if (rejected.length === 0) return strandedWriteWarning(stranded);
     return {
       warning:
         `${rejected.length} write-effect call(s) were REJECTED before execution (${tally(rejected)}) — ` +
         'the dispatcher refused them (bad args / denied gate), so NOTHING was written. ' +
         'No double-write risk: fix the call and re-run the script. ' +
         ORDERING_HINT,
+      ...strandedWriteWarning(stranded),
     };
   }
 
@@ -593,6 +620,7 @@ export function buildFailureWarning(
       `${parts.join('; ')} — do NOT blindly re-run the whole script; check what actually ` +
       `landed before retrying, to avoid a double-write.${suffix}` +
       (rejected.length > 0 || uncertain.length > 0 ? ` ${ORDERING_HINT}` : ''),
+    ...strandedWriteWarning(stranded),
   };
 }
 
@@ -670,7 +698,9 @@ export function shapeMutationEcho(
     // is right. Now: `landed` = dispatched and did not throw; `rejected` = provably wrote
     // nothing (safe to re-run); `uncertain` = threw mid-flight and MAY have landed — the
     // only set that still earns the loud double-write warning.
-    ...(!result.ok ? buildFailureWarning(plannedMutations, rejected, uncertain) : {}),
+    ...(!result.ok
+      ? buildFailureWarning(plannedMutations, rejected, uncertain, result.strandedWrites ?? [])
+      : {}),
     // EI-7669: a write-effect call can dispatch fine (no throw) yet report its OWN semantic
     // rejection (ok: false in its result body — e.g. work_items:set_state's completion-integrity
     // check). Nothing in `result.ok` / `error` reflects this — the SCRIPT still ran to a normal

@@ -60,7 +60,7 @@ describe('parsePlan — legacyReason (EI-18793956567250851)', () => {
     expect(p.isLegacy).toBe(true);
     expect(p.legacyReason).toBe('frontmatter_displaced');
     expect(p.parseNotices).toHaveLength(1);
-    expect(p.parseNotices[0]).toMatch(/displaced/i);
+    expect(p.parseNotices[0]).toMatch(/well-formed frontmatter block/i);
     expect(p.parseNotices[0]).toMatch(/position 0/i);
   });
 

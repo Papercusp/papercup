@@ -4592,6 +4592,17 @@ export async function releaseWorkItem(
      *  suppressed — see emitClaimReleasedEvent's doc comment. `claim:released:<id>`
      *  (the targeted, id-scoped key) still always fires. */
     announceClaimable?: boolean;
+    /** WI-6678: receive the PRE-release holder, read from the SAME row-read this
+     *  function already performs below. A caller that needs to distinguish a real
+     *  release from a semantic no-op (`ok:true` on an already-unassigned item) must
+     *  NOT re-read the row itself: a call-site pre-read is both a redundant second
+     *  round-trip AND racy — the assignee can change between the caller's read and
+     *  the one here, so the reported `previousAssignee` would describe a state the
+     *  release never acted on. Fires exactly once, before any UPDATE, whenever the
+     *  row exists (including when it is already free, so `wasClaimed:false` is
+     *  observable). Never fires when the row is not found — that is the `null`
+     *  return. Fail-soft: a throwing callback must not break the release. */
+    onPriorState?: (prior: { assignee: string | null; wasClaimed: boolean }) => void;
   } = {},
 ): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
@@ -4599,6 +4610,13 @@ export async function releaseWorkItem(
   // Only a release of an actually-CLAIMED item is a `claim:released` transition —
   // releasing an already-free row is a no-op and must not wake pool-waiters.
   const wasClaimed = Boolean(wi.assignee);
+  if (opts.onPriorState) {
+    try {
+      opts.onPriorState({ assignee: wi.assignee ?? null, wasClaimed });
+    } catch {
+      /* a caller's delta bookkeeping must never fail the release itself */
+    }
+  }
   // EI-6832: this item is about to RETURN to the unclaimed pool — clear any lease a
   // prior claim_next left on it under the WORKITEM_CLAIM_LEASE flag, so it doesn't sit
   // visibly-unclaimed-yet-lease-poisoned for up to the lease TTL (fire-and-forget,
