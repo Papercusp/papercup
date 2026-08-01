@@ -22,21 +22,19 @@
  *   - "answered": a sibling row carrying `related_msg_id = <this msg_id>`
  *     AUTHORED BY the recipient — an explicit ack (kind='ack') or a genuine
  *     reply both satisfy it (mirrors reply-deadline-sweep's own NOT EXISTS
- *     check). A message is "unanswered" only while neither exists. EI-13819:
- *     ALSO satisfied by any OTHER reply-shaped message (one that itself
- *     carries a `related_msg_id`, i.e. is threaded to *something*) the
- *     recipient sent back to the same original sender after the ask — this
- *     fleet's agents overwhelmingly converse in loosely-linked standalone
- *     messages about one topic rather than literally re-threading every
- *     reply onto the exact msg_id that set `expectsReply`, so requiring an
- *     exact match left a real, substantively-answered exchange (the
- *     recipient visibly replying to the SAME correspondent) stuck
- *     "unanswered" forever — see the EI-13819 postmortem below. WI-5345:
- *     ALSO satisfied by ANY directed message (threaded or not) the recipient
- *     sends back to the same original sender after the ask — see the WI-5345
- *     note below (EI-13819's fix still required the reply to carry SOME
- *     related_msg_id, which misses the common case of a fresh, wholly
- *     un-threaded status update).
+ *     check). EI-13819 / WI-5345: ALSO satisfied by an UN-THREADED directed
+ *     message the recipient sent back to the same original sender after the
+ *     ask — this fleet's agents overwhelmingly answer in fresh standalone
+ *     messages rather than re-threading onto the exact msg_id that set
+ *     `expectsReply`, so an exact-match-only rule left real, substantively
+ *     answered exchanges stuck "unanswered" forever (see the EI-13819
+ *     postmortem below). WI-6729 bounds that loose branch, which had grown
+ *     wide enough to silently DROP live obligations: a reply threaded to a
+ *     DIFFERENT message no longer counts (it is evidence the reply is about
+ *     something else), and one loose reply clears at most ONE ask (a sender's
+ *     open asks are ranked newest-first; the k-th needs k loose replies after
+ *     it). See the WI-6729 note below for why the residual error is
+ *     deliberately a false POSITIVE.
  *
  * WI-4537 — what this counter must NOT count. It is wired to PREEMPT an agent's
  * work ("a directed message awaiting YOUR answer OUTRANKS your own work"), so a
@@ -62,10 +60,31 @@
  * ORIGINAL lane-offer msg_id, so the strict exact-thread check left it
  * "unanswered" for good: every leader wake re-read a false "member hasn't
  * answered me" signal long after the member had visibly replied twice. Fixed
- * by ALSO accepting any reply-shaped message (carries its own
- * `related_msg_id`, i.e. is not a bare unthreaded status update) the
- * recipient sent back to the same sender after the ask — see `unanswered`
- * below.
+ * by ALSO accepting a reply the recipient sent back to the same sender after
+ * the ask, without requiring it to be threaded onto the ask — see
+ * `unanswered` below.
+ *
+ * WI-6729 (leader-brief false-ZERO postmortem, 2026-08-01) — the correction to
+ * the above. EI-13819's fix, widened again by WI-5345, ended up accepting ANY
+ * directed message back to the sender, threaded to anything or nothing. So a
+ * single reply to a correspondent cleared EVERY outstanding ask from that
+ * correspondent, on any topic. Observed live: a member sent a design fork it
+ * was blocked on (expectsReply, 19:41Z); the leader replied ~6min later about
+ * an unrelated work-item, threaded to a different message; every surface then
+ * reported `unanswered_directed: 0`, twice, with `unanswered_lookup_failed:
+ * false`. The leader acted on that zero and publicly retracted the commitment
+ * as non-existent — only the member's pushback recovered it.
+ *
+ * Two properties made it critical rather than cosmetic: it is the SAME
+ * primitive behind leader-brief, fleet:assignments AND
+ * coord:inbox{unanswered_only}, so the "independent second check" could not
+ * disagree; and the failure SCALES WITH RESPONSIVENESS — the more promptly a
+ * leader answers a member, the more of that member's other asks it erases.
+ * Note the direction each postmortem pushed: EI-13819/WI-5345 traded away
+ * false positives (a counter stuck at 1 — annoying, visible, self-limiting)
+ * and bought false negatives (a dropped commitment — silent, permanent,
+ * unbounded). For a "what do I still owe?" counter that is the wrong trade,
+ * and `unanswered` below now errs the other way on purpose.
  *
  * Batched: ONE query for the whole roster (mirrors fetchContextPressure /
  * fetchWakeability) — enriching N members costs one read, not N. Bounded to a
@@ -232,41 +251,62 @@ export async function fetchUnansweredDirected(
            )
          )
     ),
-    unanswered AS (
-      SELECT d.* FROM directed d
+    -- (1) An EXACT threaded reply/ack to THIS specific ask, authored by the
+    -- recipient, answers it outright — no pairing, no ambiguity. Evaluated per
+    -- (msg_id, recipient), never msg_id alone: one message fans out to N
+    -- recipients, and recipient A replying must not clear B's obligation.
+    open_asks AS (
+      SELECT d.*,
+             row_number() OVER (
+               PARTITION BY d.recipient, d.from_id ORDER BY d.ts_ms DESC, d.msg_id DESC
+             ) AS ask_rank
+        FROM directed d
        WHERE NOT EXISTS (
          SELECT 1 FROM harness_shared.coord_event_log e2
           WHERE e2.workspace_id = d.workspace_id
             AND e2.surface = 'messages'
             AND e2.body->>'from' = d.recipient
-            AND (
-              -- (1) an EXACT threaded reply/ack to THIS specific ask.
-              e2.body->>'related_msg_id' = d.msg_id
-              -- (2) EI-13819: OR any OTHER reply-shaped message (carries its
-              -- own related_msg_id, i.e. is not a bare unthreaded status
-              -- update) the recipient sent back to the SAME original sender
-              -- strictly after the ask — evidence the recipient is actively
-              -- corresponding with them, even though this fleet's agents
-              -- routinely don't re-thread every reply onto the exact msg_id
-              -- that set expectsReply.
-              -- (3) WI-5345: OR ANY directed message at all (threaded or a
-              -- bare unthreaded status update) the recipient sent back to
-              -- the SAME original sender strictly after the ask. EI-13819's
-              -- fix still required the reply to carry SOME related_msg_id,
-              -- which misses the common case a leader actually hits: a
-              -- fresh, wholly un-threaded "status update" reply addressed
-              -- back to the asker. Scoped tight: still requires (a)
-              -- addressed back to the original sender specifically, (b)
-              -- chronologically after the ask — a fresh unrelated FYI to
-              -- some OTHER recipient, or one predating the ask, still does
-              -- not count.
-              OR (
-                jsonb_typeof(e2.body->'to') = 'array'
-                AND e2.body->'to' @> to_jsonb(ARRAY[d.from_id])
-                AND (e2.body->>'ts')::timestamptz >= to_timestamp(d.ts_ms::double precision / 1000)
-              )
-            )
+            AND e2.body->>'related_msg_id' = d.msg_id
        )
+    ),
+    unanswered AS (
+      -- (2) WI-6729: the LOOSE branch, now NARROWED and PAIRED. An un-threaded
+      -- directed message back to the original sender after the ask still counts
+      -- as a reply (EI-13819 / WI-5345 — this fleet's agents overwhelmingly
+      -- answer in fresh standalone messages rather than re-threading onto the
+      -- exact msg_id that set expectsReply), but two rails stop it silently
+      -- eating real obligations:
+      --
+      --   NARROWED — a reply carrying a related_msg_id that points at some
+      --   OTHER message is positive evidence it is about something ELSE, so it
+      --   is no longer loose evidence for this ask. (A reply threaded to THIS
+      --   ask is already branch (1).) Previously ANY threaded reply to a sender
+      --   cleared EVERY open ask from them, regardless of topic.
+      --
+      --   PAIRED — one reply may clear at most ONE ask. Ranking a sender's open
+      --   asks newest-first, the k-th needs k loose replies after it. A single
+      --   "on another note…" can no longer retire three distinct questions; the
+      --   newest clears and the older ones stay open.
+      --
+      -- The direction of error is deliberate. This can leave open an ask that
+      -- was in substance answered — a cheap, self-correcting extra nudge —
+      -- rather than drop one that was not. The counter drives leader-brief,
+      -- fleet:assignments and coord:inbox{unanswered_only}, where a false ZERO
+      -- is indistinguishable from a true zero and loses the commitment
+      -- silently and permanently. It cannot re-introduce EI-13819's stuck-at-1
+      -- either: continued correspondence always converges (m loose replies
+      -- clear the m newest open asks), so a live exchange never sticks.
+      SELECT o.* FROM open_asks o
+       WHERE (
+         SELECT count(*) FROM harness_shared.coord_event_log e3
+          WHERE e3.workspace_id = o.workspace_id
+            AND e3.surface = 'messages'
+            AND e3.body->>'from' = o.recipient
+            AND NOT (e3.body ? 'related_msg_id')
+            AND jsonb_typeof(e3.body->'to') = 'array'
+            AND e3.body->'to' @> to_jsonb(ARRAY[o.from_id])
+            AND (e3.body->>'ts')::timestamptz >= to_timestamp(o.ts_ms::double precision / 1000)
+       ) < o.ask_rank
     )
     SELECT recipient,
            count(*) AS cnt,

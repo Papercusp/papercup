@@ -36,6 +36,7 @@ import {
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
 import { getClaimTimePriorWorkHint, priorWorkWarning } from '../../work-item-prior-work';
+import { planItemClaimCollision } from '../../scheduler/plan-item-claim-collision';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import {
@@ -246,7 +247,18 @@ async function claimOne(
     // fully-built, CI-wired feature. Fetched in PARALLEL with the checkpoint hint (independent
     // reads; no reason to pay two round-trips serially), then told whether a checkpoint exists so
     // it can escalate its wording when one does not.
-    const [hint, priorRaw] = await Promise.all([
+    // P-007 (same plan): the FOURTH guard, and the one about a PEER rather than the past.
+    // The three above all ask "has this item been worked before?"; this asks "is someone else
+    // holding its plan lane RIGHT NOW?" — the work-item was unassigned and claimable, yet its
+    // linked plan item can be held by a live peer, because the two are separate records with
+    // separate ownership. `work_items:get` has surfaced this since agent-trap-guards-2026-07-26,
+    // but CLAIM — the one call that actually starts the duplicated work — did not, so the drift
+    // was only ever discoverable by an agent who thought to look first. Same detector, same
+    // fail-open contract, wired at the moment the decision is made.
+    //
+    // Compares against the POST-claim row, whose assignee is now the claimer, so a lane held by
+    // this same agent (the normal, non-diverged case) is correctly silent.
+    const [hint, priorRaw, laneCollision] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
         workItemId: it.id,
@@ -257,6 +269,7 @@ async function claimOne(
         workItemId: it.id,
         workspaceId: identity.workspaceId ?? undefined,
       }).catch(() => null),
+      planItemClaimCollision(workItem).catch(() => null),
     ]);
     const priorWork = priorRaw ? { ...priorRaw, hasCheckpoint: hint != null } : null;
     const priorWorkWarn = priorWorkWarning(priorWork);
@@ -277,6 +290,7 @@ async function claimOne(
           ...(bgJobWarning.detected ? { checkpointBgJobWarning: bgJobWarning.reason } : {}),
           ...(terminalWarning ? { terminalWarning } : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
+          ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
         }
       : {
           ok: true,
@@ -284,6 +298,7 @@ async function claimOne(
           workItem,
           ...(terminalWarning ? { terminalWarning } : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
+          ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
         };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.

@@ -122,3 +122,81 @@ export async function ensureWorkIntakeRoutine(
     computeNextFireAt,
   );
 }
+
+/**
+ * The identity a PACKAGED host can actually resolve: everything except the two
+ * repo-path fields. `sourceRepoPath` (the tree a foreign clone is made FROM)
+ * and `canonicalTree` require a registered project dir, which a packaged
+ * sidecar has none of — see WI-6680 and `ensureWorkIntakeRoutineInactive`.
+ */
+export type PartialWorkIntakeHostIdentity = Omit<
+  WorkIntakeHostIdentity,
+  'sourceRepoPath' | 'canonicalTree'
+>;
+
+/**
+ * WI-6680 D3 (option (b), ruled by the P-406 lane owner 2026-08-01) — seed the
+ * work-intake routine INACTIVE on a host that cannot resolve `sourceRepoPath`.
+ *
+ * WHY INACTIVE RATHER THAN ACTIVE: activating this routine means the host
+ * begins accepting and EXECUTING remote-authored work. The containment tier
+ * that would make that safe (the mechanical-kill layer — cgroup / dedicated OS
+ * user) is P-105's and is UNBUILT; D-001 ships v1 without it. Turning remote
+ * execution on at install time is therefore an owner-ratified decision, not
+ * something boot code self-approves. Seeding inactive resolves the null
+ * *visibly* (the row shows up in `schedule:inventory` carrying the reason it is
+ * off) instead of the routine silently never existing.
+ *
+ * WHY THIS IS NOT A PLAIN `upsertRoutine(..., { active: false })`:
+ * `upsertRoutine` does `ON CONFLICT DO UPDATE SET active = EXCLUDED.active,
+ * trigger_config = EXCLUDED.trigger_config` (routines-runtime.ts). This
+ * function is called from a BOOT hook that runs on every start, so an
+ * unconditional inactive upsert would silently re-disable a routine the owner
+ * had deliberately activated AND wipe any `sourceRepoPath` they had supplied in
+ * its config — every reboot. (The seed-INACTIVE precedent,
+ * seed-gate-canary-sweep-routine.ts, is a one-shot CLI script and so never hits
+ * this.) So this seeds ONLY when no row exists yet, and otherwise leaves the
+ * existing row completely untouched.
+ *
+ * Returns the created row, or `null` when a row already existed (untouched).
+ */
+export async function ensureWorkIntakeRoutineInactive(
+  input: {
+    workspaceId: string;
+    installSlug: string;
+    host: PartialWorkIntakeHostIdentity;
+    /** Human-readable reason this routine ships off, and what would flip it on.
+     *  Stored in `triggerConfig.inactiveReason` so the disabled state reads as a
+     *  design decision rather than a broken routine. */
+    inactiveReason: string;
+    cron?: string;
+  },
+  sql: Sql = getOrgPg().sql,
+): Promise<RoutineRow | null> {
+  const existing = await sql<Array<{ one: number }>>`
+    SELECT 1 AS one
+      FROM harness_shared.routines
+     WHERE install_slug = ${input.installSlug}
+       AND name = ${WORK_INTAKE_ROUTINE_NAME}
+     LIMIT 1
+  `;
+  if (existing.length > 0) return null;
+
+  return upsertRoutine(
+    sql,
+    {
+      workspaceId: input.workspaceId,
+      installSlug: input.installSlug,
+      name: WORK_INTAKE_ROUTINE_NAME,
+      triggerKind: 'cron',
+      triggerConfig: {
+        cron: input.cron ?? DEFAULT_WORK_INTAKE_CRON,
+        ...input.host,
+        inactiveReason: input.inactiveReason,
+      },
+      targetRole: WORK_INTAKE_TARGET,
+      active: false,
+    },
+    computeNextFireAt,
+  );
+}

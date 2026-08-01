@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const ensureSweep = vi.fn();
 const ensureSupervision = vi.fn();
 const ensureWorkIntake = vi.fn();
+const ensureWorkIntakeInactive = vi.fn();
 const resolveIdentity = vi.fn();
 const loadKeypair = vi.fn();
 const projectDir = vi.fn();

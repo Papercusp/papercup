@@ -405,7 +405,13 @@ interface CodeRunLogsNotice {
  * the agent-facing `logs` field. Shape that side channel here: keep the script's returned summary
  * untouched, but strip terminal/control noise and bound repetitive or oversized logs.
  */
-export function shapeCodeRunLogs<T extends Record<string, unknown>>(
+// The constraint is `{ logs?: unknown }` — exactly what this function reads — and NOT
+// `Record<string, unknown>`. Since runToolOrchestration moved to @papercusp/tooldef, its
+// return is the declared interface `OrchestrateResult`, and a plain interface has no index
+// signature, so it is not assignable to Record<string, unknown> even though every field is
+// known. Demanding the record here therefore rejected the one caller that matters
+// (shapeMutationEcho's union) with TS2345. Constrain to the shape actually used.
+export function shapeCodeRunLogs<T extends { logs?: unknown }>(
   result: T,
 ): T | (T & { logs: string[]; logsNotice: CodeRunLogsNotice }) {
   const logs = result.logs;

@@ -116,4 +116,59 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
     const map = await fetchUnansweredDirected([MEMBER.ownerId]);
     expect(map.get(MEMBER.ownerId)?.count).toBe(1);
   });
+
+  // ---- WI-6729: the loose branch must not silently EAT a real obligation ----
+
+  it('WI-6729: a reply threaded to a DIFFERENT message does NOT clear an open ask (the live false-zero)', async () => {
+    // The exact production sequence. The member asks a design-fork question it
+    // is blocked on; the leader replies ~6min later about an unrelated
+    // work-item, threaded onto a different message. Before WI-6729 that reply
+    // cleared the fork question and every surface reported 0 owed.
+    const otherTopic = await sendMessage(MEMBER, { to: [LEADER.ownerId], summary: 'FYI: WI-6699 lane widening' });
+    await sendMessage(MEMBER, {
+      to: [LEADER.ownerId],
+      summary: 'D3 design fork on WI-6680 — which option? I am blocked.',
+      expectsReply: true,
+    });
+    await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 're WI-6699: widened, go ahead',
+      related_msg_id: otherTopic.msg_id,
+    });
+
+    const map = await fetchUnansweredDirected([LEADER.ownerId]);
+    expect(map.get(LEADER.ownerId)?.count).toBe(1);
+  });
+
+  it('WI-6729: one un-threaded reply clears only ONE ask — the older ones stay open', async () => {
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'question 1', expectsReply: true });
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'question 2', expectsReply: true });
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'question 3', expectsReply: true });
+    // A single standalone reply cannot retire three distinct questions.
+    await sendMessage(MEMBER, { to: [LEADER.ownerId], summary: 'on question 3: yes' });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)?.count).toBe(2);
+  });
+
+  it('WI-6729: continued correspondence still converges — N replies clear N asks (no EI-13819 stuck-at-1)', async () => {
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'question 1', expectsReply: true });
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'question 2', expectsReply: true });
+    await sendMessage(MEMBER, { to: [LEADER.ownerId], summary: 'answer to 2' });
+    await sendMessage(MEMBER, { to: [LEADER.ownerId], summary: 'and circling back on 1' });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)).toBeUndefined();
+  });
+
+  it('WI-6729: an exact threaded reply still clears its own ask even when older asks stay open', async () => {
+    const q1 = await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'question 1', expectsReply: true });
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'question 2', expectsReply: true });
+    // Threaded squarely onto q1 — q1 clears, q2 remains owed.
+    await sendMessage(MEMBER, { to: [LEADER.ownerId], summary: 'answering q1', related_msg_id: q1.msg_id });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)?.count).toBe(1);
+    expect(map.get(MEMBER.ownerId)?.newest[0]?.summary).toBe('question 2');
+  });
 });

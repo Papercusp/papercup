@@ -2954,3 +2954,111 @@ describe('sweep exposure (P-006)', () => {
     expect(seen.some((a) => a[0] === 'status')).toBe(false);
   });
 });
+
+describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () => {
+  const NOW = 1_800_000_000_000;
+
+  it('null cache (no derived-read snapshot yet) maps to null — UNKNOWN, not "idle"', () => {
+    expect(mapCheckpointRunInFlight(null, NOW)).toBeNull();
+  });
+
+  it('a cached snapshot with no activeRun (registry row present, gate never probed) maps to null', () => {
+    expect(mapCheckpointRunInFlight({ activeRun: null, computedAtMs: NOW - 1000 }, NOW)).toBeNull();
+  });
+
+  it('an active run maps every field through, plus a computed asOfAgeMs', () => {
+    const out = mapCheckpointRunInFlight(
+      {
+        activeRun: { active: true, candidate: 'abcdef1234567890', startedAtMs: NOW - 5 * 60_000, elapsedSec: 300 },
+        computedAtMs: NOW - 4_000,
+      },
+      NOW,
+    );
+    expect(out).toEqual({
+      active: true,
+      candidate: 'abcdef1234567890',
+      startedAtMs: NOW - 5 * 60_000,
+      elapsedSec: 300,
+      asOfAgeMs: 4_000,
+    });
+  });
+
+  it('an idle probe result ({ active: false }) is NOT collapsed to null — it is the genuine "gate is idle" reading', () => {
+    const out = mapCheckpointRunInFlight(
+      { activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null }, computedAtMs: NOW },
+      NOW,
+    );
+    expect(out).toEqual({ active: false, candidate: null, startedAtMs: null, elapsedSec: null, asOfAgeMs: 0 });
+  });
+
+  it('a cache with no computedAt (should not happen once populated) reports asOfAgeMs null rather than a fabricated age', () => {
+    const out = mapCheckpointRunInFlight(
+      { activeRun: { active: true, candidate: 'sha1', startedAtMs: NOW - 1000, elapsedSec: 1 }, computedAtMs: null },
+      NOW,
+    );
+    expect(out?.asOfAgeMs).toBeNull();
+  });
+
+  it('asOfAgeMs never goes negative when the cache read races past `now` (clock skew)', () => {
+    const out = mapCheckpointRunInFlight(
+      { activeRun: { active: true, candidate: 'sha1', startedAtMs: NOW, elapsedSec: 0 }, computedAtMs: NOW + 500 },
+      NOW,
+    );
+    expect(out?.asOfAgeMs).toBe(0);
+  });
+});
+
+describe('gitPipelinePosition wires checkpointRunInFlight into gate + notes (EI-18793581783459047)', () => {
+  it('an active gate run surfaces on gate.checkpointRunInFlight AND as a contention-warning note', async () => {
+    const git = fakeGit({ contains: { HEAD: ['abc1234567'] } });
+    const res = await gitPipelinePosition(
+      { sha: 'abc1234567' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap(),
+        readCheckpointRunSnapshot: async () => ({
+          activeRun: { active: true, candidate: 'deadbeef1234', startedAtMs: Date.now() - 3 * 60_000, elapsedSec: 180 },
+          computedAtMs: Date.now(),
+        }),
+      },
+    );
+    expect(res.gate.checkpointRunInFlight?.active).toBe(true);
+    expect(res.gate.checkpointRunInFlight?.candidate).toBe('deadbeef1234');
+    expect(res.notes.join(' ')).toMatch(/GATE RUN IN FLIGHT/);
+    expect(res.notes.join(' ')).toMatch(/EI-18793581783459047/);
+  });
+
+  it('an idle gate (active:false) reaches gate.checkpointRunInFlight but adds no contention note', async () => {
+    const git = fakeGit({ contains: { HEAD: ['abc1234567'] } });
+    const res = await gitPipelinePosition(
+      { sha: 'abc1234567' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap(),
+        readCheckpointRunSnapshot: async () => ({
+          activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+          computedAtMs: Date.now(),
+        }),
+      },
+    );
+    expect(res.gate.checkpointRunInFlight?.active).toBe(false);
+    expect(res.notes.join(' ')).not.toMatch(/GATE RUN IN FLIGHT/);
+  });
+
+  it('a failed/missing cache read (dep returns null) leaves gate.checkpointRunInFlight null and adds no note', async () => {
+    const git = fakeGit({ contains: { HEAD: ['abc1234567'] } });
+    const res = await gitPipelinePosition(
+      { sha: 'abc1234567' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap(),
+        readCheckpointRunSnapshot: async () => null,
+      },
+    );
+    expect(res.gate.checkpointRunInFlight).toBeNull();
+    expect(res.notes.join(' ')).not.toMatch(/GATE RUN IN FLIGHT/);
+  });
+});

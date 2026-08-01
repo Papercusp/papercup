@@ -100,7 +100,10 @@ import { resolveHostWorkspaceRoot } from './foreign-workspaces';
 import { papercuspPath } from '../papercusp-root';
 import { ensureSweepOrphanedForeignHarnessesRoutine } from '../harness/routines/sweep-orphaned-foreign-harnesses-action';
 import { ensureP2pForeignSupervisionRoutine } from '../harness/routines/foreign-supervision-action';
-import { ensureWorkIntakeRoutine } from '../harness/routines/work-intake-action';
+import {
+  ensureWorkIntakeRoutine,
+  ensureWorkIntakeRoutineInactive,
+} from '../harness/routines/work-intake-action';
 
 export interface EnsureP2pHostRoutinesResult {
   workspaceId: string;
@@ -108,6 +111,14 @@ export interface EnsureP2pHostRoutinesResult {
   sweepSeeded: boolean;
   supervisionSeeded: boolean;
   workIntakeSeeded: boolean;
+  /**
+   * WI-6680 D3: the routine was seeded INACTIVE because this host cannot
+   * resolve `sourceRepoPath` (a packaged install has no registered project
+   * dir). Deliberately SEPARATE from `workIntakeSeeded`, which means "seeded
+   * and running" — reporting an inactive placeholder as seeded would claim the
+   * P-406 executor is driven on hosts where it is not.
+   */
+  workIntakeSeededInactive: boolean;
   /** Human-readable reasons for anything skipped — NEVER a fabricated value,
    *  always a named, resolvable-later gap (see module doc). */
   skippedReasons: string[];
@@ -127,6 +138,7 @@ export async function ensureP2pHostRoutinesForWorkspace(
   let sweepSeeded = false;
   let supervisionSeeded = false;
   let workIntakeSeeded = false;
+  let workIntakeSeededInactive = false;
 
   // 1. No identity needed at all.
   try {
@@ -146,7 +158,15 @@ export async function ensureP2pHostRoutinesForWorkspace(
     skippedReasons.push(
       'p2p-foreign-supervision + p2p-work-intake: gh not authenticated (resolveLocalGithubIdentity) — never fabricated, will resolve once `gh auth login` succeeds on this host.',
     );
-    return { workspaceId, installSlug, sweepSeeded, supervisionSeeded, workIntakeSeeded, skippedReasons };
+    return {
+      workspaceId,
+      installSlug,
+      sweepSeeded,
+      supervisionSeeded,
+      workIntakeSeeded,
+      workIntakeSeededInactive,
+      skippedReasons,
+    };
   }
 
   let devicePubkeyBase64: string | null = null;
@@ -178,9 +198,56 @@ export async function ensureP2pHostRoutinesForWorkspace(
 
   // 3. p2p-work-intake (P-406) — needs the full identity set including repo paths.
   const repoRoot = await projectDirForSlug(installSlug);
-  if (!repoRoot) {
+  if (!repoRoot && devicePubkeyBase64) {
+    // WI-6680 D3 (option (b)): a PACKAGED host resolves no registered project
+    // dir, so `sourceRepoPath` has no answer and this routine used to simply
+    // never exist — the whole P-406 executor was undriven on every shipped
+    // install, invisibly. Seed it INACTIVE instead, carrying the identity that
+    // DOES resolve plus an explicit reason, so the off state is a legible
+    // design decision rather than a silent absence.
+    //
+    // It stays OFF (not merely unconfigured) on purpose: activating it means
+    // this host starts executing remote-authored work, and the containment
+    // tier for that (mechanical kill — cgroup / dedicated OS user, P-105) is
+    // unbuilt, so it is an owner call. See ensureWorkIntakeRoutineInactive.
+    try {
+      const seeded = await ensureWorkIntakeRoutineInactive(
+        {
+          workspaceId,
+          installSlug,
+          host: {
+            hostRef: machineFingerprint(),
+            responderGithubUserId: ident.githubUserId,
+            responderDevicePubkey: devicePubkeyBase64,
+            executorDevice: devicePubkeyBase64,
+            foreignWorkRoot: papercuspPath('p2p', 'foreign-work'),
+            workspaceRoot: resolveHostWorkspaceRoot(),
+          },
+          inactiveReason:
+            `no registered project dir for installSlug '${installSlug}', so sourceRepoPath ` +
+            '(the tree a foreign clone is made FROM) cannot be resolved on a packaged install. ' +
+            'Seeded INACTIVE deliberately: activating this routine makes the host execute ' +
+            'remote-authored work, which needs the P-105 containment tier (mechanical kill: ' +
+            'cgroup / dedicated OS user) that v1 ships without per D-001. To enable: supply a ' +
+            'sourceRepoPath in this routine\'s trigger_config and set active=true — an owner ' +
+            'decision, not an install-time default (WI-6680).',
+        },
+        sql,
+      );
+      workIntakeSeededInactive = seeded !== null;
+      skippedReasons.push(
+        seeded !== null
+          ? `p2p-work-intake: no registered project dir for installSlug '${installSlug}' — seeded INACTIVE with the resolvable identity (see its trigger_config.inactiveReason).`
+          : `p2p-work-intake: no registered project dir for installSlug '${installSlug}' — a routine row already exists, left untouched.`,
+      );
+    } catch (err) {
+      skippedReasons.push(
+        `p2p-work-intake (inactive seed): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  } else if (!repoRoot) {
     skippedReasons.push(
-      `p2p-work-intake: no registered project dir for installSlug '${installSlug}' (harness registry miss).`,
+      `p2p-work-intake: no registered project dir for installSlug '${installSlug}' (harness registry miss), and device pubkey unresolved — cannot seed even an inactive row.`,
     );
   } else if (!devicePubkeyBase64) {
     skippedReasons.push('p2p-work-intake: device pubkey unresolved (see device keypair reason above).');
@@ -216,7 +283,15 @@ export async function ensureP2pHostRoutinesForWorkspace(
     }
   }
 
-  return { workspaceId, installSlug, sweepSeeded, supervisionSeeded, workIntakeSeeded, skippedReasons };
+  return {
+    workspaceId,
+    installSlug,
+    sweepSeeded,
+    supervisionSeeded,
+    workIntakeSeeded,
+    workIntakeSeededInactive,
+    skippedReasons,
+  };
 }
 
 let seededOnce = false;
@@ -260,7 +335,7 @@ export function ensureP2pHostRoutinesSeededOnce(workspaceIds?: string[]): void {
       const result = await ensureP2pHostRoutinesForWorkspace(workspaceId);
       if (result.skippedReasons.length) {
         console.log(
-          `[p2p-host-routines] ${workspaceId}: partial seed (sweep=${result.sweepSeeded} supervision=${result.supervisionSeeded} workIntake=${result.workIntakeSeeded}) — ${result.skippedReasons.join('; ')}`,
+          `[p2p-host-routines] ${workspaceId}: partial seed (sweep=${result.sweepSeeded} supervision=${result.supervisionSeeded} workIntake=${result.workIntakeSeeded}${result.workIntakeSeededInactive ? ' workIntakeInactive=true' : ''}) — ${result.skippedReasons.join('; ')}`,
         );
       } else {
         console.log(

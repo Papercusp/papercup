@@ -31,6 +31,11 @@ import {
   resolveCouplingDivergenceStamps,
   COUPLING_DIVERGENCE_FIELD,
 } from '../coupling-divergence-stamp';
+import { resolvePremiseStamps, PREMISE_STAMPS_FIELD } from '../premise-resolve';
+// The FACTORY only — `premise-probes` holds every store import inside the probe
+// bodies (dynamic), so this adds nothing to the send path's module graph. See
+// EI-19281789650149592: one static store import here red a 95-test suite.
+import { premiseProbes } from '../premise-probes';
 import { sendMessage, getMessageById } from '../messages';
 import { parseSlotSelector } from '../slot-selector';
 import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote, type DormantScheduledInfo } from '../inbox-wake';
@@ -663,6 +668,39 @@ async function sendOne(
   // stays byte-identical on the wire, so the n=1 case costs nothing.
   if (fieldStamp.sections) extra.sections = fieldStamp.sections;
   if (fieldStamp.premisesClassified) extra.premisesClassified = fieldStamp.premisesClassified;
+  // P-011 / WI-6731: RESOLVE the cited premises — the falsifiable half of the
+  // field. `premisesClassified` above only says what SHAPE each ref is; nothing
+  // has ever answered "does it resolve, and is the claim still true?".
+  //
+  // It runs AT SEND for the same reason the coupling diff does: `broken` means
+  // the sender was wrong AT SEND TIME (a `#completion` on an open item), and a
+  // later pass cannot recover that — the item may since have completed, turning
+  // a real error into a clean record. Only this moment can tell `stale` (ground
+  // moved, re-read) from `broken` (ground was never there, correct the sender),
+  // and that distinction is the whole recipient affordance (D-090: justify the
+  // field by what a RECIPIENT can DO with it).
+  //
+  // Refs are flattened across sections and resolved in ONE pass, which is also
+  // what de-dupes a ref cited in two sections down to a single probe; the
+  // resolver caps at PREMISE_STAMPS_MAX and skips every non-invalidatable ref
+  // before any IO. NO extra cost gate: measured 30h load is ~13 probes total
+  // (WI-6731), so a second gate would guard a load that does not exist.
+  const classifiedPremises = fieldStamp.premisesClassified;
+  if (classifiedPremises?.some((s) => s.length > 0)) {
+    try {
+      const stamps = await resolvePremiseStamps(
+        classifiedPremises.flat().map((c) => c.ref),
+        premiseProbes({ harnessSlug, workspaceId: identity.workspaceId }),
+      );
+      // ALL stamps ride, not just the failures. `failingPremises()` is the
+      // READER's filter and stays exported for that; baking it in here would
+      // discard the denominator, and "2 broken" cannot be read without "out of
+      // how many" — the aggregate read D-090 R3 mandates needs both.
+      if (stamps.length) extra[PREMISE_STAMPS_FIELD] = stamps;
+    } catch {
+      /* fail-soft: premise stamping never blocks a send */
+    }
+  }
   // D-089 / WI-6685: score each `forYouBecause` against the coupling graph AS IT
   // STANDS NOW. This is the only moment the comparison is meaningful — the graph
   // is live state (locks release, awaits fire), so a later pass over the message

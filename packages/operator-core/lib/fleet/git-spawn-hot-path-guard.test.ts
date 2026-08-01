@@ -164,7 +164,7 @@ const ALLOWED_RAW_GIT: { file: string; symbol: string; why: string }[] = [
   },
   {
     file: 'sync/pot-git/storage.ts',
-    symbol: 'runGitStdinLocalMUTANT',
+    symbol: 'runGitStdinLocal',
     why: 'the exported local fallback behind defaultRunGitStdin (WI-6404)',
   },
   {

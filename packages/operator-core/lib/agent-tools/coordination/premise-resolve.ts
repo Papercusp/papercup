@@ -67,6 +67,16 @@ export interface PremiseStamp extends ClassifiedPremise {
 export const PREMISE_STAMPS_MAX = 20;
 
 /**
+ * Envelope key the resolved stamps ride under (WI-6731).
+ *
+ * Distinct from `premisesClassified`, which carries the SYNTACTIC half and is
+ * stamped unconditionally: classification says what shape a ref is, this says
+ * whether it actually resolved. Both travel, because a reader that sees only
+ * failures cannot tell "no premises were checkable" from "all of them held".
+ */
+export const PREMISE_STAMPS_FIELD = 'premiseStamps';
+
+/**
  * The fact-ref grammar, in ONE place.
  *
  * Three forms are live in the corpus, and only the first is the documented one:
