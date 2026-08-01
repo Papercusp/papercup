@@ -3,9 +3,13 @@
  *
  * Per agent-plan-tracking-2026-05-20.md §4.5 + §5.
  *
- * **Legacy files are exempt entirely.** Day-one CI MUST pass against
- * the ~33 legacy plans in docs/plans/. Conversion happens via P-304,
- * one plan at a time.
+ * **Legacy files are exempt from the structural checks below.** Day-one CI
+ * MUST pass against the ~33 legacy plans in docs/plans/. Conversion happens
+ * via P-304, one plan at a time. The ONE exception (EI-18793956567250851): a
+ * legacy plan that still carries non-terminal items IS flagged as an error —
+ * scheduler:get_next serves those items regardless of frontmatter validity,
+ * but every structured write refuses `legacy_plan` on them, so the item is
+ * unresolvable by construction unless the plan is repaired.
  *
  * Per-plan checks (when frontmatter present + valid):
  *   - slug matches filename stem
