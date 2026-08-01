@@ -19,7 +19,7 @@ vi.mock('../../work-items', async (importOriginal) => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
 }));
 
-import { lookupWorkItem, itemOrNullForDecoration, type WorkItemLookup } from './_lookup';
+import { lookupWorkItem, type WorkItemLookup } from './_lookup';
 
 const ITEM = { id: 'WI-1', harness: 'papercusp', assignee: null, payload: {} } as never;
 

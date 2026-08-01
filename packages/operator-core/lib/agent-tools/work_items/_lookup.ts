@@ -60,15 +60,3 @@ export async function lookupWorkItem(id: string, harness?: string): Promise<Work
     return { status: 'unreadable', error: describeReadFailure(err) };
   }
 }
-
-/**
- * The item when the read SUCCEEDED, else null — the old `.catch(() => null)` shape,
- * for the enrichment sites where conflating the two really is harmless (an absent
- * decoration costs the reader a hint and nothing asserts on it).
- *
- * Use this ONLY when nothing downstream turns the null into a claim about the
- * item's existence or into a guard decision. If anything does, match on `status`.
- */
-export function itemOrNullForDecoration(lookup: WorkItemLookup): WorkItem | null {
-  return lookup.status === 'found' ? lookup.item : null;
-}

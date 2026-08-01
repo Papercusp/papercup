@@ -178,7 +178,7 @@ describe('executeDeploy — happy path', () => {
 
   it('EI-18798501894652068: the release:deployed summary\'s migration count matches payload.migrations.length, even when migrate() itself newly-applied 0 (already applied by a prior attempt)', async () => {
     emittedKeys.length = 0;
-    const captured: Array<{ key: string; summary: string; payload: unknown }> = [];
+    const captured: Array<{ key: string; summary?: string; payload?: unknown }> = [];
     // plan.migrations has 1 staged file (see the module-level `plan` fixture), but this
     // migrate() run applied 0 NEW rows — e.g. a prior deploy attempt already recorded
     // them. Before the fix, the summary read appliedCount (0) while the payload still

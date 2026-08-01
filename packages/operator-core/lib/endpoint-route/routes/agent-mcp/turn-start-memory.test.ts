@@ -60,6 +60,7 @@ const post = async (body: unknown): Promise<{ ok: boolean; text: string }> => {
 beforeEach(() => {
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM-BLOCK');
   consumePendingControlTransitionMock.mockReset().mockResolvedValue(null);
+  detectHarnessSlugSyncMock.mockReset().mockReturnValue({ slug: null, source: null });
 });
 
 describe('turn-start-memory admission (F-E: no length floor)', () => {
@@ -119,6 +120,48 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     const out = await post({ owner: 'sess-1', prompt: 'a question about storage policy' });
     expect(out.ok).toBe(true);
     expect(out.text).toBe('');
+  });
+
+  // EI-18893248175645463: an operator/superuser-scope session never sends
+  // `harness` (PAPERCUSP_HARNESS_SLUG is only exported for harness-scoped
+  // spawns) — measured live, this starved the harness+hive memory pools for
+  // that session's ENTIRE lifetime, not just an occasional miss. `cwd`
+  // fallback detection closes that gap.
+  describe('cwd fallback (EI-18893248175645463)', () => {
+    it('no harness in body, but cwd resolves one → harnessSlugs carries it', async () => {
+      detectHarnessSlugSyncMock.mockReturnValue({ slug: 'papercusp', source: 'meta-papercup' });
+      await post({ owner: 'sess-1', prompt: 'a real question', cwd: '/home/dev/papercupai-workspace/papercup' });
+      expect(detectHarnessSlugSyncMock).toHaveBeenCalledWith({ cwd: '/home/dev/papercupai-workspace/papercup' });
+      expect(buildMemoryContextBlockMock.mock.calls[0]![0]).toMatchObject({ harnessSlugs: ['papercusp'] });
+    });
+
+    it('an explicit harness in body WINS over cwd detection — never overridden', async () => {
+      await post({ owner: 'sess-1', prompt: 'a real question', harness: 'papercusp-public-site', cwd: '/some/other/dir' });
+      expect(detectHarnessSlugSyncMock).not.toHaveBeenCalled();
+      expect(buildMemoryContextBlockMock.mock.calls[0]![0]).toMatchObject({ harnessSlugs: ['papercusp-public-site'] });
+    });
+
+    it('no harness, no cwd → stays bare (unchanged behavior)', async () => {
+      await post({ owner: 'sess-1', prompt: 'a real question' });
+      expect(detectHarnessSlugSyncMock).not.toHaveBeenCalled();
+      expect(buildMemoryContextBlockMock.mock.calls[0]![0]).toMatchObject({ harnessSlugs: [] });
+    });
+
+    it('no harness, cwd given but detection finds nothing → stays bare, never throws', async () => {
+      detectHarnessSlugSyncMock.mockReturnValue({ slug: null, source: null });
+      const out = await post({ owner: 'sess-1', prompt: 'a real question', cwd: '/tmp/nowhere' });
+      expect(out.ok).toBe(true);
+      expect(buildMemoryContextBlockMock.mock.calls[0]![0]).toMatchObject({ harnessSlugs: [] });
+    });
+
+    it('detection throwing degrades to bare rather than failing the turn', async () => {
+      detectHarnessSlugSyncMock.mockImplementation(() => {
+        throw new Error('fs boom');
+      });
+      const out = await post({ owner: 'sess-1', prompt: 'a real question', cwd: '/tmp/nowhere' });
+      expect(out.ok).toBe(true);
+      expect(buildMemoryContextBlockMock.mock.calls[0]![0]).toMatchObject({ harnessSlugs: [] });
+    });
   });
 
   it('requires an owner', async () => {

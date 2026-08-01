@@ -146,7 +146,24 @@ export type FilterOp = (typeof FILTER_OPS)[number];
  * reference it validate) even though the resolver leaves it neutral until the
  * per-MODEL capability lane ships behind its own flag (D-010).
  */
-export const RANK_FUNCTIONS = ['affinity', 'model_fit', 'tag_weight', 'redundancy_need'] as const;
+export const RANK_FUNCTIONS = [
+  'affinity',
+  'model_fit',
+  'tag_weight',
+  'redundancy_need',
+  // `severity_rank` (EI-19286355119013384) — the ORDINAL severity term, and the supported
+  // way to order by severity. It exists because the bare `severity` field is deliberately
+  // NOT rankable: severity is stored as TEXT, so `severity desc` compiles to a LEXICAL sort
+  // (nit > minor > major > critical — exactly backwards) that reads as though it prioritizes
+  // criticals. Rather than leave that capability gap open, this term compiles to an explicit
+  // CASE (critical=4, major=3, minor=2, nit=1, absent/unrecognized=0), which is a real
+  // integer and therefore both correctly ordered and safe in `weighted` mode.
+  //
+  // Feature-family rows carry no severity (work-items.ts maps them `severity: null`), so the
+  // CASE yields 0 for every one of them — a clean, error-free NULL leg on a relation where
+  // severity is structurally absent, matching how the `severity` FILTER already behaves.
+  'severity_rank',
+] as const;
 export type RankFunction = (typeof RANK_FUNCTIONS)[number];
 
 /**

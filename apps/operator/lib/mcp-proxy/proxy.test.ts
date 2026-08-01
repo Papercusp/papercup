@@ -18,6 +18,9 @@ import {
   MAX_BACKPRESSURE_RETRIES,
   handshakeTimeoutRetryable,
   MAX_HANDSHAKE_TIMEOUT_RETRIES,
+  isCheapRepeatingBeat,
+  effectiveRetryWindowMs,
+  CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS,
   type McpProxyTarget,
 } from './proxy';
 
@@ -575,4 +578,63 @@ describe('WI-6740: upstream silence — bounded + replayed for the handshake, ne
     expect(handshakeTimeoutRetryable('idempotent', MAX_HANDSHAKE_TIMEOUT_RETRIES, MAX_HANDSHAKE_TIMEOUT_RETRIES, 0, 5_000)).toBe(false);
     expect(handshakeTimeoutRetryable('idempotent', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 6_000, 5_000)).toBe(false);
   });
+});
+
+// EI-19294517824914302: a cheap repeating beat must NOT inherit the restart-sized retry
+// window. Measured on the dev box: 13,330 of 13,754 proxy failures in 90 minutes were the
+// bootstrap-su heartbeat alone, with SUCCESSES recording attempts:30 / elapsedMs:42361 —
+// ~30x amplification on the highest-frequency path in the system.
+describe('EI-19294517824914302: cheap repeating beats fail fast instead of amplifying', () => {
+  it('classifies the liveness beats, and only those (pure)', () => {
+    expect(isCheapRepeatingBeat('/api/agent-mcp/console/bootstrap-su/heartbeat')).toBe(true);
+    expect(isCheapRepeatingBeat('/api/admin/owner-presence/touch')).toBe(true);
+    // The MCP control plane keeps the long window — a client fetches the catalog ONCE per
+    // session, so losing that single request is session-fatal (WI-6740). Opposite tradeoff.
+    expect(isCheapRepeatingBeat('/api/mcp')).toBe(false);
+    expect(isCheapRepeatingBeat('/api/agent-mcp/turn-start-memory')).toBe(false);
+  });
+
+  it('tolerates a query string and a trailing slash (pure)', () => {
+    expect(isCheapRepeatingBeat('/api/agent-mcp/console/bootstrap-su/heartbeat?client=abc')).toBe(true);
+    expect(isCheapRepeatingBeat('/api/agent-mcp/console/bootstrap-su/heartbeat/')).toBe(true);
+  });
+
+  it('caps the beat window but never LENGTHENS a window shorter than the cap (pure)', () => {
+    expect(effectiveRetryWindowMs('/api/agent-mcp/console/bootstrap-su/heartbeat', 45_000)).toBe(
+      CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS,
+    );
+    expect(effectiveRetryWindowMs('/api/mcp', 45_000)).toBe(45_000);
+    // A caller configuring a window TIGHTER than the cap must keep its tighter value.
+    expect(effectiveRetryWindowMs('/api/agent-mcp/console/bootstrap-su/heartbeat', 500)).toBe(500);
+  });
+
+  it('end-to-end: gives up on a refused upstream in ~2s instead of burning a 30s window', async () => {
+    // Bind a port, then close it so connections are REFUSED — the exact shape that produced
+    // the observed attempts:30 storm (kind:"upstream_error"/"exhausted_refused").
+    const dead = track(http.createServer(() => {}));
+    await listen(dead);
+    const deadPort = port(dead);
+    await new Promise<void>((r) => dead.close(() => r()));
+
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: '127.0.0.1',
+        targetPort: deadPort,
+        retryWindowMs: 30_000, // restart-sized, as in production
+        retryBackoffMs: 20,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const started = Date.now();
+    const r = await request(port(proxy), '{"ownerId":"su-test"}', '/api/agent-mcp/console/bootstrap-su/heartbeat');
+    const elapsed = Date.now() - started;
+
+    expect(r.status).toBe(503); // still an honest failure — the beat is just not amplified
+    // The whole point: it must abandon the beat rather than retry across the full window.
+    expect(elapsed).toBeLessThan(8_000);
+    expect(JSON.parse(r.body).windowMs).toBe(CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS);
+  }, 20_000);
 });

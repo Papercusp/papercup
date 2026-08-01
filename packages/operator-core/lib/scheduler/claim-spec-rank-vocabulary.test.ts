@@ -35,6 +35,7 @@ import {
   FILTERABLE_ITEM_FIELDS,
   NUMERIC_ITEM_FIELDS,
   RANKABLE_ITEM_FIELDS,
+  RANK_FUNCTIONS,
   validateClaimSpec,
   type ClaimSpec,
 } from './claim-spec';
@@ -71,6 +72,47 @@ describe('risk_tier is filterable but NOT rankable (EI-19286311763526137)', () =
     // numeric-looking tiers sort by digit string, and word tiers sort alphabetically.
     expect(['1', '2', '3', '10'].sort()).toEqual(['1', '10', '2', '3']);
     expect(['high', 'low', 'medium'].sort()).toEqual(['high', 'low', 'medium']);
+  });
+});
+
+describe('severity_rank is the ORDINAL severity term (EI-19286355119013384)', () => {
+  it('is in the rank vocabulary as a FUNCTION, not as a bare field', () => {
+    // The pairing is the whole design: the bare field stays unrankable (lexical = inverted),
+    // and the ordinal function is the supported replacement. Asserting only one half would
+    // let a future edit "fix" the gap by re-admitting the broken bare form.
+    expect(RANK_FUNCTIONS).toContain('severity_rank');
+    expect(RANKABLE_ITEM_FIELDS).not.toContain('severity');
+  });
+
+  it('ACCEPTS `rank: [{ expr: severity_rank }]` — the gap the severity fix deliberately left', () => {
+    expect(validateClaimSpec(specWithRank('lexicographic', [{ expr: 'severity_rank', dir: 'desc' }])).ok).toBe(true);
+  });
+
+  it('ACCEPTS severity_rank in WEIGHTED mode — it compiles to integers, so the ::numeric cast is safe', () => {
+    // This is the property that distinguishes it from the bare `severity` field, whose text
+    // column makes the same weighted spec a hard PG error that aborts the claim query.
+    expect(
+      validateClaimSpec(specWithRank('weighted', [{ expr: 'severity_rank', dir: 'desc', weight: 2 }])).ok,
+    ).toBe(true);
+  });
+
+  it('still REJECTS the bare `severity` field in both modes', () => {
+    expect(validateClaimSpec(specWithRank('lexicographic', [{ expr: 'severity', dir: 'desc' }])).ok).toBe(false);
+    expect(validateClaimSpec(specWithRank('weighted', [{ expr: 'severity', dir: 'desc', weight: 1 }])).ok).toBe(false);
+  });
+
+  it('pins WHY the ordinal is needed: the lexical order it replaces is exactly backwards', () => {
+    // Descending lexical sort of the severity vocabulary puts the LEAST severe first — the
+    // silent inversion `severity_rank` exists to correct. Arithmetic, not assertion.
+    expect(['critical', 'major', 'minor', 'nit'].sort().reverse()).toEqual(['nit', 'minor', 'major', 'critical']);
+    // The ordinal the CASE in get-next.ts assigns, sorted DESC, is the intended priority order.
+    const ordinal: Record<string, number> = { critical: 4, major: 3, minor: 2, nit: 1 };
+    expect(['nit', 'critical', 'minor', 'major'].sort((a, b) => ordinal[b] - ordinal[a])).toEqual([
+      'critical',
+      'major',
+      'minor',
+      'nit',
+    ]);
   });
 });
 
@@ -116,7 +158,12 @@ describe('weighted rank requires numerically-orderable terms (the ::numeric cast
   it('reports an unknown weighted term ONCE, as unknown — not also as non-numeric', () => {
     // Two errors for one typo reads as two problems. The numeric rule defers to the
     // unknown-head error, which is the actionable one.
-    const result = validateClaimSpec(specWithRank('weighted', [{ expr: 'severity_rank', dir: 'desc', weight: 1 }]));
+    // NOTE: this case used to use `severity_rank` as its stand-in for "unknown", which was
+    // fragile — that term was the documented not-yet-shipped future work, so shipping it
+    // (EI-19286355119013384) silently invalidated the test's premise rather than its intent.
+    // Use a term that is fictional by construction, so this guards the error-reporting rule
+    // and nothing else.
+    const result = validateClaimSpec(specWithRank('weighted', [{ expr: 'no_such_rank_term', dir: 'desc', weight: 1 }]));
     expect(result.ok).toBe(false);
     expect(result.errors.filter((e) => e.includes('rank.terms[0]'))).toHaveLength(1);
     expect(result.errors.join(' ')).toContain('unknown rank term');

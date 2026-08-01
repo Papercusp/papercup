@@ -1460,6 +1460,31 @@ function compileRankExpr(
     };
   }
 
+  // Ordinal severity term (EI-19286355119013384) — the supported way to order by severity,
+  // and the reason the bare `severity` field stays out of RANKABLE_ITEM_FIELDS. Severity is
+  // TEXT, so a bare `severity desc` sorts LEXICALLY (nit > minor > major > critical, exactly
+  // backwards); this CASE gives it a real ordinal so `severity_rank desc` means what it reads
+  // as. Uses the SAME accessor precedence as the `severity` filter above (payload._ei first,
+  // then top-level) — the two MUST agree or a spec would rank on one source and filter on
+  // another. An absent/unrecognized severity sorts LAST (0) rather than NULL, so it can never
+  // outrank a real one; on the feature-family relation, where severity is structurally
+  // absent, every row scores 0 — a clean no-op, never an error.
+  if (head === 'severity_rank') {
+    return {
+      value: sql`CASE COALESCE(payload->'_ei'->>'severity', payload->>'severity')
+        WHEN 'critical' THEN 4
+        WHEN 'major' THEN 3
+        WHEN 'minor' THEN 2
+        WHEN 'nit' THEN 1
+        ELSE 0
+      END`,
+      inverted: false,
+      // A CASE over integer literals — casts cleanly to ::numeric, so unlike the bare
+      // `severity` field this is safe to sum in a weighted rank.
+      numeric: true,
+    };
+  }
+
   // Descoped-but-validated function terms (D-010) ⇒ NEUTRAL: kept in the vocabulary so
   // specs referencing them validate, but they don't reorder until their lanes ship.
   if (head === 'model_fit' || head === 'tag_weight' || head === 'redundancy_need') {
