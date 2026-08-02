@@ -13,9 +13,11 @@ import {
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
   INLINE_OUTPUT_CAP,
+  JOB_LOG_END_MARKER_PREFIX,
   MAX_BACKGROUND_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
   __resetBashJobs,
+  formatJobLogEndMarker,
   getJob,
   killJob,
   readJobOutput,
@@ -140,6 +142,69 @@ describe('background jobs', () => {
 
   it('reports unknown ids as undefined', () => {
     expect(getJob('does-not-exist')).toBeUndefined();
+  });
+});
+
+// EI-18764990059061608: a background job's log FILE must be self-describing about
+// completion, because a caller can (and, per the filed bug, did) `cat`/Read it
+// directly instead of calling capability:bash_output — where an empty file mid-run
+// is byte-identical to a completed job that genuinely produced nothing.
+describe('terminal log marker (EI-18764990059061608)', () => {
+  it('formatJobLogEndMarker names status, exit code, and timestamp, and starts with the shared prefix', () => {
+    const line = formatJobLogEndMarker('completed', 0, Date.UTC(2026, 0, 1));
+    expect(line).toContain(JOB_LOG_END_MARKER_PREFIX);
+    expect(line).toContain('status=completed');
+    expect(line).toContain('exit=0');
+    expect(line).toContain('2026-01-01');
+  });
+
+  it('formats a null exit code (spawn error / not yet observed) as the literal "null"', () => {
+    expect(formatJobLogEndMarker('failed', null, Date.now())).toContain('exit=null');
+  });
+
+  it('a background job that produces NO output still leaves the marker in its log file', async () => {
+    const job = startBackground({ command: 'true', cwd: STATE, stateDir: STATE }, 10_000);
+    await waitForStatus(job.id);
+    const final = getJob(job.id)!;
+    expect(final.status).toBe('completed');
+    const logContent = readFileSync(final.logPath, 'utf8');
+    // Without the marker this file would be EMPTY — indistinguishable from a job
+    // that has not finished writing anything yet. This is the exact ambiguity the
+    // filed bug hit.
+    expect(logContent).toContain(JOB_LOG_END_MARKER_PREFIX);
+    expect(logContent).toContain('status=completed');
+    expect(logContent).toContain('exit=0');
+  });
+
+  it('a RUNNING background job has NOT written the marker yet', async () => {
+    const job = startBackground({ command: 'sleep 5', cwd: STATE, stateDir: STATE }, 10_000);
+    expect(job.status).toBe('running');
+    const logContent = readFileSync(job.logPath, 'utf8');
+    expect(logContent).not.toContain(JOB_LOG_END_MARKER_PREFIX);
+    killJob(job);
+  });
+
+  it('a failed background job (spawn error) still gets the marker via the error path', async () => {
+    const job = startBackground({ command: 'exit 7', cwd: STATE, stateDir: STATE }, 10_000);
+    await waitForStatus(job.id);
+    const final = getJob(job.id)!;
+    expect(final.status).toBe('failed');
+    const logContent = readFileSync(final.logPath, 'utf8');
+    expect(logContent).toContain(JOB_LOG_END_MARKER_PREFIX);
+    expect(logContent).toContain('status=failed');
+    expect(logContent).toContain('exit=7');
+  });
+
+  it('a foreground run writes the marker to the log FILE but NOT into the returned `output`', async () => {
+    const r = await runForeground({ command: 'true', cwd: STATE, stateDir: STATE }, never, 10_000);
+    expect(r.status).toBe('completed');
+    // Exact-equality callers elsewhere (e.g. the EI-1617 secrets test) depend on
+    // `output` carrying ONLY the command's own stdout/stderr — the marker must
+    // never leak into it.
+    expect(r.output).not.toContain(JOB_LOG_END_MARKER_PREFIX);
+    const logContent = readFileSync(r.logPath, 'utf8');
+    expect(logContent).toContain(JOB_LOG_END_MARKER_PREFIX);
+    expect(logContent).toContain('status=completed');
   });
 });
 
