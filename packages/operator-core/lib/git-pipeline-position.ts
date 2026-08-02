@@ -36,6 +36,7 @@ import {
   type PathContainment,
 } from './candidate-contains';
 import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
+import { describeRefireBudget } from './release/in-flight-retriage';
 
 const pexec = promisify(execFile);
 

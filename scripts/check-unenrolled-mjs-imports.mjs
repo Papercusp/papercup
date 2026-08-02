@@ -57,36 +57,100 @@ export function enrolledModules(root = ROOT) {
 }
 
 /**
- * True when the import statement covering `line` is type-suppressed.
+ * Scan upwards from `anchor` for a `@ts-ignore` / `@ts-expect-error` directive,
+ * skipping blank lines and the `eslint-disable-next-line
+ * @typescript-eslint/ban-ts-comment` pragma the local convention pairs with it.
  *
- * Walks UP from the matched line to the statement's `import` keyword first —
- * a multi-line `import {\n  a,\n} from './x.mjs'` puts the specifier several
- * lines below the suppression comment, so anchoring on the match line alone
- * would report a false offender. From there it skips blank lines and the
- * `eslint-disable-next-line @typescript-eslint/ban-ts-comment` that the local
- * convention always pairs with `@ts-ignore`.
+ * @param {string[]} lines
+ * @param {number} anchor 0-based index of the line the directive must precede
+ * @returns {boolean}
+ */
+function directiveAbove(lines, anchor) {
+  let checked = 0;
+  for (let i = anchor - 1; i >= 0 && checked < 3; i -= 1) {
+    const text = (lines[i] ?? '').trim();
+    if (text === '') continue;
+    if (/@ts-(?:ignore|expect-error)/.test(text)) return true;
+    if (text.startsWith('// eslint-disable')) continue;
+    checked += 1;
+    if (!text.startsWith('//') && !text.startsWith('*') && !text.startsWith('/*')) break;
+  }
+  return false;
+}
+
+/**
+ * True when the import carrying the specifier on `lineIdx` is type-suppressed.
+ *
+ * Checks TWO anchors, because tsc's directive placement rule differs by import
+ * shape and this repo uses both:
+ *
+ *   - a single-line `import { x } from './y.mjs'` takes the directive above the
+ *     statement;
+ *   - a MULTI-LINE `import {\n  x,\n} from './y.mjs'` lands the diagnostic on
+ *     the `from` line, so the directive must sit immediately above THAT — i.e.
+ *     inside the braces (see the comments in fs-mutex.test.ts /
+ *     test-file-router.test.ts, which spell this out).
+ *
+ * Anchoring only on the statement start walks straight past the second form and
+ * reports three suppressed imports as offenders — measured, and the reason this
+ * takes the union rather than picking one anchor.
  *
  * @param {string[]} lines
  * @param {number} lineIdx 0-based index of the line carrying the specifier
  * @returns {boolean}
  */
 export function isSuppressed(lines, lineIdx) {
-  let start = lineIdx;
+  if (directiveAbove(lines, lineIdx)) return true;
   for (let i = lineIdx; i >= 0 && lineIdx - i <= 10; i -= 1) {
-    if (/\bimport\b/.test(lines[i] ?? '')) {
-      start = i;
-      break;
-    }
+    if (/\bimport\b/.test(lines[i] ?? '')) return directiveAbove(lines, i);
   }
-  let checked = 0;
-  for (let i = start - 1; i >= 0 && checked < 3; i -= 1) {
-    const text = (lines[i] ?? '').trim();
-    if (text === '') continue;
-    if (/@ts-(?:ignore|expect-error)/.test(text)) return true;
-    // The eslint pragma is part of the convention, not a separate statement.
-    if (text.startsWith('// eslint-disable')) continue;
-    checked += 1;
-    if (!text.startsWith('//') && !text.startsWith('*') && !text.startsWith('/*')) break;
+  return false;
+}
+
+/**
+ * Whether the nearest enclosing tsconfig for `file` sets `allowJs`.
+ *
+ * A project with `allowJs: true` (e.g. `libs/papercusp/libs/db`) consumes a
+ * plain `.mjs` happily and never emits TS7016, so flagging an import there
+ * would be a pure false positive. Resolution walks up to the nearest
+ * `tsconfig.json` and follows `extends` so a base-config setting still counts.
+ *
+ * @param {string} file repo-relative path to the importing file
+ * @param {string} [root]
+ * @returns {boolean}
+ */
+export function projectAllowsJs(file, root = ROOT) {
+  let dir = dirname(resolve(root, file));
+  const stop = resolve(root);
+  while (dir.startsWith(stop)) {
+    const cfg = resolve(dir, 'tsconfig.json');
+    if (existsSync(cfg)) return readAllowJs(cfg, 0);
+    if (dir === stop) break;
+    dir = dirname(dir);
+  }
+  return false;
+}
+
+/**
+ * @param {string} cfgPath
+ * @param {number} depth
+ * @returns {boolean}
+ */
+function readAllowJs(cfgPath, depth) {
+  if (depth > 4) return false;
+  let parsed;
+  try {
+    parsed = /** @type {{ compilerOptions?: { allowJs?: boolean }, extends?: string }} */ (
+      JSON.parse(readFileSync(cfgPath, 'utf8').replace(/^\s*\/\/.*$/gm, ''))
+    );
+  } catch {
+    return false;
+  }
+  if (typeof parsed.compilerOptions?.allowJs === 'boolean') return parsed.compilerOptions.allowJs;
+  if (parsed.extends) {
+    const base = resolve(dirname(cfgPath), parsed.extends);
+    const withExt = base.endsWith('.json') ? base : `${base}.json`;
+    if (existsSync(withExt)) return readAllowJs(withExt, depth + 1);
   }
   return false;
 }
@@ -168,6 +232,7 @@ export function scan(root = ROOT) {
       continue;
     }
     if (!text.includes('.mjs')) continue;
+    if (projectAllowsJs(file, root)) continue;
     out.push(...offendersIn(file, text, enrolled, root));
   }
   return out;

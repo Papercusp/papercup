@@ -32,6 +32,7 @@ import {
   launchDetachedCheckpoint,
   REPLACE_STALE_MIN_AGE_SEC,
 } from '../../release-checkpoint-launch';
+import { attributeRetriageToRun, describeRefireBudget, readInFlightRetriage } from '../../release/in-flight-retriage';
 
 export default defineTool({
   name: 'release:checkpoint-run',
@@ -124,8 +125,24 @@ export default defineTool({
       // to land, so "does THAT candidate carry my files?" is exactly as decisive here as on
       // a successful launch, and is the difference between waiting for a useful verdict and
       // waiting for one that cannot mention your change.
+      // EI-19343516395023183: the marker FIRST, because it changes both of the answers below.
+      // This is the tool an agent fires precisely when the gate "looks stuck" — and inside the
+      // re-triage window that firing DISCARDS the rescue and costs a full ~55min suite
+      // (green-checkpoint.ts:2566's own words). The authoritative signal for that window existed
+      // and was already surfaced on dev:pipeline_position, coord:orient and /admin/git — but not
+      // HERE, at the one call site where acting on its absence does damage. On 2026-08-02 that
+      // gap cost three agents a morning of diagnosing reds the refire cleared unaided, and one
+      // near-miss recommendation to fire this very verb into a live rescue.
+      const retriage = attributeRetriageToRun(await readInFlightRetriage(), a);
+      // Only trust it for THIS run: a marker written before this run started belongs to an
+      // earlier one, and reporting it would silence a genuinely new red with a stale rescue.
+      const liveRetriage = retriage && retriage.belongsToRun !== false ? retriage : null;
       const containment = await checkpointCandidateContainment({
-        candidateSha: a.candidate ?? null,
+        // The marker is what the running process published about ITSELF; `a.candidate` is at best
+        // a log read and, on the cron path this branch usually describes, an INFERENCE from the
+        // checkpoint checkout's live HEAD. Prefer the observation — same precedence
+        // `mapCheckpointRunInFlight` already applies for dev:pipeline_position.
+        candidateSha: liveRetriage?.marker.refiringCandidate ?? a.candidate ?? null,
         tipSha: a.current_head ?? null,
         paths: args.paths,
       });
@@ -171,7 +188,50 @@ export default defineTool({
               // Lead with it: the caller's next move differs entirely depending on whether
               // the run it is being told to wait for can even see the change.
               containment_warning: containment.warning,
-              note: a.held_externally
+              /** EI-19343516395023183: the run's OWN published rescue state, or null when no
+               *  refire is in flight (null means "no refire", NOT "unknown"). `candidate` above
+               *  is the checkout/log reading; when this is present its `refiring_candidate` is
+               *  the authoritative answer to "which sha is this run judging". */
+              in_flight_retriage: liveRetriage
+                ? {
+                    from_candidate: liveRetriage.marker.fromCandidate.slice(0, 12),
+                    refiring_candidate: liveRetriage.marker.refiringCandidate.slice(0, 12),
+                    budget: describeRefireBudget(liveRetriage.marker).label,
+                    at_cap: describeRefireBudget(liveRetriage.marker).atCap,
+                    failing_files: liveRetriage.marker.failingFiles,
+                    observed_at_ms: liveRetriage.marker.observedAtMs,
+                    /** false ⇒ the previous rescue SUCCEEDED and these failures are fresh tree
+                     *  churn imported by the newer cut, not the same breakage surviving. */
+                    charged: liveRetriage.marker.charged ?? null,
+                    /** null ⇒ this run's start time was unreadable, so we cannot PROVE the marker
+                     *  is this run's. The stand-down advice holds either way; the attribution does not. */
+                    belongs_to_this_run: liveRetriage.belongsToRun,
+                  }
+                : null,
+              note: liveRetriage
+                ? // Leads the note unconditionally — ahead of every held_externally/replaceStale
+                  // branch below — because it is the only line here that can prevent damage
+                  // rather than merely explain a refusal.
+                  `🚨 AUTO-REFIRE IN FLIGHT — STAND DOWN. This run hit a red at ` +
+                  `${liveRetriage.marker.fromCandidate.slice(0, 12)}, re-tested at tip, and RE-FIRED itself onto ` +
+                  `${liveRetriage.marker.refiringCandidate.slice(0, 12)} (${describeRefireBudget(liveRetriage.marker).label}). ` +
+                  `That is the gate REPAIRING ITSELF, not a wedge. Do NOT fire a manual run and do NOT kill it: ` +
+                  `either discards the rescue and costs a full ~55min suite. ` +
+                  (liveRetriage.marker.failingFiles.length > 0
+                    ? `The ${liveRetriage.marker.failingFiles.length} file(s) it named (${liveRetriage.marker.failingFiles.slice(0, 4).join(', ')}${liveRetriage.marker.failingFiles.length > 4 ? ', …' : ''}) already PASSED at tip — do not go fix them. `
+                    : '') +
+                  `Verify your own change against ${liveRetriage.marker.refiringCandidate.slice(0, 12)}, not ` +
+                  `${liveRetriage.marker.fromCandidate.slice(0, 12)}, which this run has already discarded. ` +
+                  `pid/started_at stay FIXED across a refire, so an advancing candidate under an unchanged ` +
+                  `start time is the healthy signature — not corruption. ` +
+                  (describeRefireBudget(liveRetriage.marker).atCap
+                    ? `⚠ This is the LAST refire: if it comes back red the verdict STICKS and a human lever starts to matter. `
+                    : '') +
+                  (liveRetriage.belongsToRun === null
+                    ? `(Attribution UNCONFIRMED: this run's start time was unreadable, so the marker could not be proven to be this run's — the stand-down still holds, the "this run" claim is unverified.) `
+                    : '') +
+                  `Wait for the verdict: checkpoint:await, then release:trace.`
+                : a.held_externally
                 ? // WI-5685: the shared run-lock (cron + manual serialize on the SAME lock) is held by a
                   // process that is NOT this root's manual unit — almost certainly the hourly cron tick.
                   // force:true would still spawn (this proactive check is the only thing standing in the

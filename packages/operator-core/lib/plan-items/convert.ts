@@ -45,6 +45,7 @@ import {
   getWorkItem,
   linkWorkItem,
   isWorkItemKind,
+  ISSUE_FAMILY_KINDS,
   type WorkItem,
   type WorkItemKind,
 } from '../work-items';
@@ -181,32 +182,43 @@ export async function findConvertedWorkItemByStamp(
   harnessSlug: string,
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
-  // `payload` is jsonb on both tables, but createWorkItem binds it as JSON.stringify(obj)
-  // under a `$::jsonb` cast — which postgres-js stores as a jsonb STRING SCALAR, not an
-  // object (agent-insights/postgres-js-jsonb-binding). So `payload->'plan_item'` is null
-  // unless we first unwrap the scalar. `pj` normalizes BOTH shapes: a string scalar is
-  // re-parsed via `(p #>> '{}')::jsonb`; a real object passes through. The stamp is
-  // identical across families — match plan_slug + item_id (harness is in scope).
-  const pj = (col: string) =>
-    sql`(CASE WHEN jsonb_typeof(${sql.unsafe(col)}) = 'string'
-              THEN (${sql.unsafe(col)} #>> '{}')::jsonb ELSE ${sql.unsafe(col)} END)`;
-  const stampMatch = (col: string) =>
-    sql`${pj(col)}->'plan_item'->>'plan_slug' = ${planSlug}
-    AND ${pj(col)}->'plan_item'->>'item_id' = ${itemId}`;
+  // The stamp is identical across families — match plan_slug + item_id (harness is in
+  // scope). The leading `payload->'plan_item' IS NOT NULL` matches the PARTIAL predicate
+  // of work_items_plan_item_stamp_idx / hfc_plan_item_stamp_idx (migration 725) exactly,
+  // which is what lets the planner index-scan instead of seq-scanning.
+  //
+  // ⚠ Do NOT reintroduce a `CASE WHEN jsonb_typeof(payload) = 'string'` unwrap here. That
+  // mitigation for the postgres-js `::jsonb` binding quirk
+  // (agent-insights/postgres-js-jsonb-binding) is what defeated the index and made THIS
+  // function the single largest live consumer of DB time in the system: 142 calls/min x
+  // 134ms to return one row, ~7.6 hours of DB time per day (WI-6993). The quirk is fixed
+  // at the source — restoreRawJsonbSerializer (EI-18698602043482898) installs a sticky
+  // hybrid serializer correct for both `sql.json(v)` and `${JSON.stringify(v)}::jsonb` —
+  // and migration 725's CHECK constraint makes a non-object payload unstorable.
+  const stampMatch = () =>
+    sql`payload->'plan_item' IS NOT NULL
+    AND payload->'plan_item'->>'plan_slug' = ${planSlug}
+    AND payload->'plan_item'->>'item_id' = ${itemId}`;
   const featureRows = await sql<{ feature_id: string; harness_slug: string }[]>`
     SELECT feature_id, harness_slug
       FROM harness_shared.harness_features_consolidated
-     WHERE harness_slug = ${harnessSlug} AND payload IS NOT NULL AND ${stampMatch('payload')}
+     WHERE harness_slug = ${harnessSlug} AND ${stampMatch()}
      ORDER BY updated_ts DESC NULLS LAST`;
   for (const r of featureRows) {
     const wi = await getWorkItem(r.feature_id, r.harness_slug);
     if (wi) return wi;
   }
+  // Read the UNIFIED base table rather than the engineer_issues view: the view projects
+  // `payload - '_ei'`, an expression no base-table index can serve, so every call through
+  // it seq-scanned. `engineer_issues` is exactly `work_items` filtered to the issue family
+  // with feature_id aliased to issue_id, so this is the same row set, and `updated_at` is
+  // the view's `to_timestamp(updated_ts / 1000)` — ordering on updated_ts is equivalent.
   const issueRows = await sql<{ issue_id: string }[]>`
-    SELECT issue_id
-      FROM harness_shared.engineer_issues
-     WHERE payload IS NOT NULL AND ${stampMatch('payload')}
-     ORDER BY updated_at DESC NULLS LAST`;
+    SELECT feature_id AS issue_id
+      FROM harness_shared.work_items
+     WHERE item_kind = ANY(${[...ISSUE_FAMILY_KINDS]}::text[])
+       AND ${stampMatch()}
+     ORDER BY updated_ts DESC NULLS LAST`;
   for (const r of issueRows) {
     const wi = await getWorkItem(r.issue_id);
     if (wi) return wi;

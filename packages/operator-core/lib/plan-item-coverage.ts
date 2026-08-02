@@ -315,17 +315,6 @@ export function compactCoverage(cov: PlanItemCoverage): CompactCoverage {
   };
 }
 
-/** `payload` binds as a jsonb STRING SCALAR under postgres-js's `::jsonb` cast
- *  (postgres-js-jsonb-binding), not an object, so `payload->'plan_item'` is null
- *  unless that shape is unwrapped first. Mirrors the identical helper in
- *  plan-items/reconcile-linked-work-items.ts (kept local — one tiny SQL
- *  fragment, not worth a cross-module coupling; keep both in sync if the
- *  payload-binding quirk ever changes). */
-function normalizedPayloadExpr(sql: ReturnType<typeof getOrgPg>['sql'], col: string) {
-  return sql`(CASE WHEN jsonb_typeof(${sql.unsafe(col)}) = 'string'
-            THEN (${sql.unsafe(col)} #>> '{}')::jsonb ELSE ${sql.unsafe(col)} END)`;
-}
-
 interface StampCoverageRow {
   work_item_id: string;
   item_kind: string;
@@ -456,15 +445,22 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
   // the coord_links-edge path. Merged below, deduped against any edge-based
   // entry for the same (ref, work-item) pair so a normally-linked item is
   // never double-counted or given a second synthetic link.
-  const npF = normalizedPayloadExpr(sql, 'payload');
+  // The leading `payload->'plan_item' IS NOT NULL` matches the PARTIAL predicate of
+  // work_items_plan_item_stamp_idx (migration 725) exactly — that is what lets the
+  // planner use the index instead of scanning. ⚠ Do NOT reintroduce a
+  // `CASE WHEN jsonb_typeof(payload)='string'` unwrap here: that mitigation for the
+  // postgres-js `::jsonb` binding quirk is precisely what defeated the index and made
+  // the sibling stamp lookup ~7.6 HOURS of DB time per day (WI-6993). The write path
+  // is fixed at the source (restoreRawJsonbSerializer, EI-18698602043482898) and 725's
+  // CHECK constraint makes a non-object payload unstorable.
   const stampRows = await sql<StampCoverageRow[]>`
     SELECT feature_id AS work_item_id, item_kind, status, updated_ts,
-           ${npF}->'plan_item'->>'plan_slug' AS plan_slug,
-           ${npF}->'plan_item'->>'item_id'  AS item_id
+           payload->'plan_item'->>'plan_slug' AS plan_slug,
+           payload->'plan_item'->>'item_id'  AS item_id
       FROM harness_shared.work_items
-     WHERE payload IS NOT NULL
-       AND ${npF}->'plan_item'->>'plan_slug' IS NOT NULL
-       AND ${npF}->'plan_item'->>'item_id'  IS NOT NULL`;
+     WHERE payload->'plan_item' IS NOT NULL
+       AND payload->'plan_item'->>'plan_slug' IS NOT NULL
+       AND payload->'plan_item'->>'item_id'  IS NOT NULL`;
   for (const row of stampRows) {
     const ref = planItemRef(row.plan_slug, row.item_id);
     const arr = byRef.get(ref) ?? [];

@@ -333,6 +333,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:idle-session-reaper': { spend: 'none', why: 'Reaps idle session rows' },
   'system:hetzner-orphan-frame-reaper': { spend: 'none', why: 'Reaps orphaned remote frames' },
   'system:test-webview-reaper': { spend: 'none', why: 'Reaps leaked test webviews' },
+  'system:orphaned-mcp-reaper': { spend: 'none', why: 'Reaps leaked agent-spawned playwright-mcp server processes' },
   'system:bee-transcript-cap': { spend: 'none', why: 'Truncates oversized transcripts' },
   'system:precompute-derived-reads': { spend: 'none', why: 'Refreshes derived read tables' },
   'system:interactive-usage-ingest': { spend: 'none', why: 'Tails local transcripts into usage samples (SQL/FS only)' },

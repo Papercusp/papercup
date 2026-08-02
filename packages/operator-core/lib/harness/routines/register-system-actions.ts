@@ -330,6 +330,15 @@ import './idle-session-reaper-action';
 // reaper deleting real billed VMs is the owner-authority carve-out); seeded
 // INACTIVE (seed-hetzner-orphan-frame-reaper-routine.ts --active --dry-run first).
 import './hetzner-orphan-frame-reaper-action';
+// EI-18691186726153223: the orphaned-mcp-reaper — SIGTERM/SIGKILLs leaked
+// agent-spawned `playwright-mcp` server processes (a long-running session's
+// mcpServers config still listed `playwright`; P-020 already stops NEW fleet
+// sessions from spawning it, this cleans up the already-running population).
+// Only touches processes carrying PAPERCUSP_ADV_SESSION_ID and matching the
+// playwright-mcp package/binary signature specifically. Flag-gated
+// (ORPHANED_MCP_REAPER, DEFAULT ON) + seeded INACTIVE (double-gate — activate
+// via seed-orphaned-mcp-reaper-routine.ts --active --dry-run first).
+import './orphaned-mcp-reaper-action';
 // infra-perf-reliability-audit-round3-2026-06-19 P-013 / WI-345 (F12): the
 // test-webview reaper — DETECTION (toast) + KILL of leaked agent-spawned
 // papercusp-desktop/WebKitWebProcess instances whose adv_session is ENDED.

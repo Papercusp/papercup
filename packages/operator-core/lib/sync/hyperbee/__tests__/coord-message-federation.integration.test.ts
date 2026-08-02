@@ -573,6 +573,18 @@ describe('coord_event_log federation (real PG)', () => {
       // BUDGET bounding ambient traffic, not about the class split (that is covered
       // by federated-wake-rate.test.ts) — so pin the reserve off and assert one thing.
       process.env.PAPERCUSP_FED_WAKE_DIRECTED_RESERVE = '0';
+      // WI-7043's second half: a re-fire is billed for the watchers it ACTUALLY woke
+      // (`recordFederatedWakeSpend(emitted.woken)`), not charged up front — charging
+      // for emits that reach nobody is what starved the directed wakes. The suite's
+      // default mock reports `woken: 0`, so under that mock a re-fire is genuinely
+      // FREE and the budget correctly never binds. To exercise the budget at all this
+      // test must emit a real wake, so make the mock wake one watcher.
+      vi.mocked(emitAwaitedEvent).mockImplementation(async () => ({
+        key: 'k',
+        woken: 1,
+        notified: ['su-watcher'],
+        msgId: null,
+      }));
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const p = proj();
@@ -584,6 +596,14 @@ describe('coord_event_log federation (real PG)', () => {
         ).toHaveLength(1);
       } finally {
         warnSpy.mockRestore();
+        // Restore the suite-wide default (woken: 0) — mockImplementation persists
+        // past this test otherwise, and would silently bill every later re-fire.
+        vi.mocked(emitAwaitedEvent).mockImplementation(async () => ({
+          key: '',
+          woken: 0,
+          notified: [],
+          msgId: null,
+        }));
         delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
         delete process.env.PAPERCUSP_FED_WAKE_DIRECTED_RESERVE;
       }

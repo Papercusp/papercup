@@ -41,6 +41,7 @@ import {
   mergeWorkItemPayload,
   isSettledWorkItemState,
   readWorkItemHeldOpenBy,
+  ISSUE_FAMILY_KINDS,
   SETTLED_WORK_ITEM_STATES,
   type WorkItem,
 } from '../work-items';
@@ -108,18 +109,26 @@ export interface ReconcileLinkedWorkItemsResult {
   skippedAlreadyTerminal: string[];
 }
 
-/** `payload` on both federated tables is jsonb, but createWorkItem binds it as a
- *  JSON-stringified scalar under a `::jsonb` cast (postgres-js-jsonb-binding) —
- *  so `payload->'plan_item'` is null unless the string-scalar shape is first
- *  unwrapped. Mirrors findConvertedWorkItemByStamp's identical normalization. */
-function normalizedPayloadExpr(sql: ReturnType<typeof getOrgPg>['sql'], col: string) {
-  return sql`(CASE WHEN jsonb_typeof(${sql.unsafe(col)}) = 'string'
-            THEN (${sql.unsafe(col)} #>> '{}')::jsonb ELSE ${sql.unsafe(col)} END)`;
-}
-
-function stampMatchFragment(sql: ReturnType<typeof getOrgPg>['sql'], col: string, planSlug: string, itemId: string) {
-  const pj = normalizedPayloadExpr(sql, col);
-  return sql`${pj}->'plan_item'->>'plan_slug' = ${planSlug} AND ${pj}->'plan_item'->>'item_id' = ${itemId}`;
+/** Match the durable `payload.plan_item` stamp (plan_slug + item_id) on either
+ *  federated table.
+ *
+ *  The leading `payload->'plan_item' IS NOT NULL` is load-bearing, not a
+ *  redundant guard: it matches the PARTIAL predicate of
+ *  work_items_plan_item_stamp_idx / hfc_plan_item_stamp_idx (migration 725)
+ *  exactly, which is what permits an index scan rather than a seq scan.
+ *
+ *  ⚠ Do NOT reintroduce a `CASE WHEN jsonb_typeof(payload) = 'string'` unwrap
+ *  here. That mitigation for the postgres-js `::jsonb` binding quirk
+ *  (agent-insights/postgres-js-jsonb-binding) is exactly what defeated the index
+ *  and made this lookup the single largest live consumer of DB time in the
+ *  system — ~7.6 hours per day at 142 calls/min x 134ms to return ONE row
+ *  (WI-6993). It is no longer needed at all: the write path is fixed at the
+ *  source (restoreRawJsonbSerializer, EI-18698602043482898) and migration 725's
+ *  CHECK constraint makes a non-object payload unstorable. */
+function stampMatchFragment(sql: ReturnType<typeof getOrgPg>['sql'], planSlug: string, itemId: string) {
+  return sql`payload->'plan_item' IS NOT NULL
+         AND payload->'plan_item'->>'plan_slug' = ${planSlug}
+         AND payload->'plan_item'->>'item_id' = ${itemId}`;
 }
 
 /**
@@ -160,13 +169,19 @@ async function findAllLinkedWorkItems(planSlug: string, itemId: string): Promise
   const featureRows = await sql<{ feature_id: string; harness_slug: string }[]>`
     SELECT feature_id, harness_slug
       FROM harness_shared.harness_features_consolidated
-     WHERE payload IS NOT NULL AND ${stampMatchFragment(sql, 'payload', planSlug, itemId)}`;
+     WHERE ${stampMatchFragment(sql, planSlug, itemId)}`;
   for (const r of featureRows) add(await getWorkItem(r.feature_id, r.harness_slug));
 
+  // Read the UNIFIED base table rather than the engineer_issues view. The view
+  // projects `payload - '_ei'`, and an index cannot be built on the base table to
+  // serve that derived expression — so going through the view forced a seq scan on
+  // every call. `engineer_issues` is exactly `work_items` filtered to the issue
+  // family with feature_id aliased to issue_id, so this is the same row set.
   const issueRows = await sql<{ issue_id: string }[]>`
-    SELECT issue_id
-      FROM harness_shared.engineer_issues
-     WHERE payload IS NOT NULL AND ${stampMatchFragment(sql, 'payload', planSlug, itemId)}`;
+    SELECT feature_id AS issue_id
+      FROM harness_shared.work_items
+     WHERE item_kind = ANY(${[...ISSUE_FAMILY_KINDS]}::text[])
+       AND ${stampMatchFragment(sql, planSlug, itemId)}`;
   for (const r of issueRows) add(await getWorkItem(r.issue_id));
 
   return [...found.values()];
@@ -668,8 +683,8 @@ export async function reconcileOrphanedPlanItemWorkItems(
   //    consolidated / engineer_issues VIEWS. The issues view projects
   //    `(payload - '_ei')`, which throws `cannot delete from scalar` when the
   //    planner evaluates it over a string-scalar payload during inlining; the base
-  //    table exposes the raw `payload` (the normalized-payload CASE handles either
-  //    jsonb shape). `status` exclusion uses the FULL cross-family SETTLED_WORK_-
+  //    table exposes the raw `payload` (always a jsonb object — migration 725's
+  //    CHECK constraint). `status` exclusion uses the FULL cross-family SETTLED_WORK_-
   //    ITEM_STATES superset (WI-5279: the legacy-only 4-value list here predated
   //    work-item-status-full-unify/2026-07-19 and silently stopped excluding rows
   //    already written with the unified 'done'/'dropped' spelling — live-verified
@@ -680,18 +695,17 @@ export async function reconcileOrphanedPlanItemWorkItems(
   //    exactly like findAllLinkedWorkItems; `harness_slug` is the getPlanRow hint;
   //    the per-item reconciler re-resolves the plan.
   const cands = new Map<string, OrphanCandidate>();
-  const npF = normalizedPayloadExpr(sql, 'payload');
   const key = (planSlug: string, itemId: string) => `${planSlug}\0${itemId}`;
 
   const rows = await sql<{ plan_slug: string; item_id: string; harness_slug: string | null }[]>`
-    SELECT DISTINCT ${npF}->'plan_item'->>'plan_slug' AS plan_slug,
-                    ${npF}->'plan_item'->>'item_id'  AS item_id,
+    SELECT DISTINCT payload->'plan_item'->>'plan_slug' AS plan_slug,
+                    payload->'plan_item'->>'item_id'  AS item_id,
                     harness_slug
       FROM harness_shared.work_items
-     WHERE payload IS NOT NULL
+     WHERE payload->'plan_item' IS NOT NULL
        AND NOT (status = ANY(${SETTLED_WORK_ITEM_STATES}::text[]))
-       AND ${npF}->'plan_item'->>'plan_slug' IS NOT NULL
-       AND ${npF}->'plan_item'->>'item_id' IS NOT NULL
+       AND payload->'plan_item'->>'plan_slug' IS NOT NULL
+       AND payload->'plan_item'->>'item_id' IS NOT NULL
      LIMIT ${cap}`;
   for (const r of rows) {
     const k = key(r.plan_slug, r.item_id);

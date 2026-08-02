@@ -184,6 +184,39 @@ export function describeRefireBudget(marker: Pick<StoredInFlightRetriage, 'refir
   return { label, atCap: maxRefires <= 0 || chargedSpent || ceilingSpent };
 }
 
+/** {@link attributeRetriageToRun}'s verdict about WHOSE refire a marker describes. */
+export interface RetriageAttribution {
+  marker: StoredInFlightRetriage;
+  /**
+   * Does this marker belong to the run currently holding the lock?
+   * `true` — written after that run started, so it is certainly its own.
+   * `false` — written BEFORE it started, so it belongs to an earlier run (the gate's run-lock is a
+   *   singleton, so an earlier writer is a finished or crashed one). Do NOT present it as this
+   *   run's rescue: a marker for an already-superseded red must never silence a genuinely new one.
+   * `null` — the run's start time was unreadable, so attribution is UNCONFIRMED. Warn, but say so;
+   *   the stand-down advice is cheap and correct either way, the attribution claim is not.
+   */
+  belongsToRun: boolean | null;
+}
+
+/**
+ * PURE: decide whether a marker read from `gate_health` describes the run that is in flight RIGHT
+ * NOW, by comparing its write stamp against that run's start.
+ *
+ * Needed because the marker is keyed by HARNESS, not by run: it says "a refire is happening", not
+ * "run #1234 is refiring". {@link IN_FLIGHT_RETRIAGE_MAX_AGE_MS} bounds abandonment at 3h, which is
+ * far too coarse to answer "is the run I am about to interrupt the one that wrote this?".
+ */
+export function attributeRetriageToRun(
+  marker: StoredInFlightRetriage | null,
+  run: { started_at?: string | null } | null | undefined,
+): RetriageAttribution | null {
+  if (!marker) return null;
+  const startedAtMs = run?.started_at ? Date.parse(run.started_at) : NaN;
+  if (!Number.isFinite(startedAtMs)) return { marker, belongsToRun: null };
+  return { marker, belongsToRun: marker.observedAtMs >= startedAtMs };
+}
+
 /**
  * The READ twin of {@link recordInFlightRetriage} — is a stale-candidate auto-refire in flight for
  * this harness's gate RIGHT NOW? Scoped IDENTICALLY to the write (`install_slug` + `target_role`)
