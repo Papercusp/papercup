@@ -13,7 +13,9 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  describeSeatOfferOutcome,
   publishSeatOfferForDelegation,
+  publishSeatOfferForDelegationBestEffort,
   seatOfferId,
   type SeatOfferPublishDeps,
 } from './offer-store-publish';
@@ -304,5 +306,76 @@ describe('publishSeatOfferForDelegation — failure passthrough', () => {
   it('putWorkOffer refusal → error passthrough', async () => {
     const { d } = deps({ putRecord: vi.fn(async () => ({ ok: false as const, error: 'stale version' })) });
     expect(await publishSeatOfferForDelegation(OPTS, d)).toEqual({ ok: false, error: 'stale version' });
+  });
+});
+
+/**
+ * EI-19304844689981989 — the SILENCE regression guard.
+ *
+ * The bug this pins: `publishSeatOfferForDelegationBestEffort` computed a rich
+ * outcome ({ok} | {skipped} | {error}) and then DISCARDED it — `void ...
+ * .catch(() => {})`. Combined with a second empty catch at the resource:delegate
+ * call site, a seat that never federated produced NO signal anywhere: the tool
+ * returned ok:true, the local allotment wrote fine, and the seat simply never
+ * appeared on the fleet owner's board. Diagnosing that cost multiple wakes across
+ * three machines precisely because nothing recorded the outcome.
+ *
+ * These tests do not assert the publish WORKS (covered above) — they assert it
+ * is never again SILENT about not working.
+ */
+describe('EI-19304844689981989: a non-publishing seat offer is never silent', () => {
+  it('a benign skip is REPORTED (the silent-drop case that cost the investigation)', async () => {
+    const log = vi.fn();
+    const { d } = deps({ resolveActor: vi.fn(async () => null) });
+    publishSeatOfferForDelegationBestEffort(OPTS, { ...d, log });
+    await vi.waitFor(() => expect(log).toHaveBeenCalledTimes(1));
+    const line = log.mock.calls[0]![0] as string;
+    expect(line).toContain('NOT PUBLISHED');
+    expect(line).toContain('no_github_identity'); // the actionable reason, not just "failed"
+    expect(line).toContain('fleet:alpha');
+  });
+
+  it('a real publish error is REPORTED with its cause', async () => {
+    const log = vi.fn();
+    const { d } = deps({ putRecord: vi.fn(async () => ({ ok: false as const, error: 'stale version' })) });
+    publishSeatOfferForDelegationBestEffort(OPTS, { ...d, log });
+    await vi.waitFor(() => expect(log).toHaveBeenCalledTimes(1));
+    expect(log.mock.calls[0]![0]).toContain('stale version');
+  });
+
+  it('a THROWN publish is reported rather than swallowed', async () => {
+    const log = vi.fn();
+    const { d } = deps({
+      resolveScope: vi.fn(async () => {
+        throw new Error('keychain locked');
+      }),
+    });
+    publishSeatOfferForDelegationBestEffort(OPTS, { ...d, log });
+    await vi.waitFor(() => expect(log).toHaveBeenCalledTimes(1));
+    expect(log.mock.calls[0]![0]).toContain('keychain locked');
+  });
+
+  it('still never throws at the call site — the delegation write must not depend on this leg', () => {
+    const { d } = deps({
+      resolveScope: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+    });
+    expect(() => publishSeatOfferForDelegationBestEffort(OPTS, { ...d, log: vi.fn() })).not.toThrow();
+  });
+
+  it('distinguishes a real publish from an idempotent no-churn re-publish', () => {
+    expect(describeSeatOfferOutcome(OPTS, { ok: true, stored: {} as never, changed: true }).msg).toContain(
+      'published',
+    );
+    const noChurn = describeSeatOfferOutcome(OPTS, { ok: true, stored: {} as never, changed: false });
+    expect(noChurn.msg).toContain('already current');
+    expect(noChurn.level).toBe('info'); // benign — must not read as a failure
+  });
+
+  it('a skip is level:warn, so it cannot be mistaken for a successful delegation', () => {
+    expect(describeSeatOfferOutcome(OPTS, { ok: false, skipped: 'no_single_shared_hive:many' }).level).toBe(
+      'warn',
+    );
   });
 });

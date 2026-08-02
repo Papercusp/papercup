@@ -17,6 +17,7 @@ import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq, lt as dlt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
 import type { ParsedReport } from './operator-converse-tags';
+import { canonicalToolName } from './operator-mcp-tools';
 
 const oc = generated.operatorConversationsInHarnessShared;
 const ot = generated.operatorTurnsInHarnessShared;

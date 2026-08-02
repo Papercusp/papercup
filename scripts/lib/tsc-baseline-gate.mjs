@@ -453,7 +453,7 @@ export function decidePerFile({
   regressions.sort((a, b) => b.delta - a.delta || a.file.localeCompare(b.file));
   improvements.sort((a, b) => a.delta - b.delta || a.file.localeCompare(b.file));
 
-  const base = { regressions, improvements, total, baselineTotal };
+  const base = { regressions, improvements, total, baselineTotal, unattributedBrokenFiles: unattributedBroken };
 
   if (regressions.length > 0) {
     if (changedFiles) {

@@ -215,7 +215,13 @@ export async function delegateResource(
           ...(input.hive ? { hiveOverride: input.hive } : {}),
         }),
       )
-      .catch(() => {});
+      // EI-19304844689981989: this used to be `.catch(() => {})`. It only ever
+      // catches a failure to LOAD the publish module, but that swallow was the
+      // second of two, so a seat could fail to federate with no signal at all.
+      // Still non-fatal to the local allotment write — just no longer silent.
+      .catch((e: unknown) => {
+        console.warn(`[resource:delegate] seat-offer publish leg unavailable: ${String(e)}`);
+      });
   };
 
   if (input.remove) {

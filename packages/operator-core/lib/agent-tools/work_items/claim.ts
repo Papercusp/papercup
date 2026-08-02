@@ -321,8 +321,14 @@ async function claimOne(
     // WI-6737: record that the checkpoint read FAILED, rather than letting its `null` be read as
     // "no checkpoint exists" a few lines below. The hint itself stays fail-soft (`null`) — only
     // the reason is now recoverable.
+    // P-013: the FIFTH guard, and the only one about the item's FUTURE rather than its past.
+    // The four above ask "has this been worked, or is a peer on it?"; this asks "can this item
+    // even proceed?" — a by-id claim of a dependency-blocked row succeeds by design (D-008) but
+    // the queue will never serve it, and nothing said so. Joins the same parallel batch (an
+    // independent read; no reason to pay a serial round-trip) and is fail-soft for the reason
+    // given on readUnresolvedDepBlockers: saying nothing here asserts nothing.
     let checkpointReadFailed = false;
-    const [hint, priorRaw, laneCollision] = await Promise.all([
+    const [hint, priorRaw, laneCollision, unresolvedBlockers] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
         workItemId: it.id,
@@ -337,7 +343,9 @@ async function claimOne(
         workspaceId: identity.workspaceId ?? undefined,
       }).catch(() => null),
       planItemClaimCollision(workItem).catch(() => null),
+      readUnresolvedDepBlockers(it.id, workItem.harness ?? it.harness ?? undefined).catch(() => null),
     ]);
+    const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     // WI-6737: `hint` is null for BOTH "no checkpoint exists" and "the checkpoint read threw"
     // (the .catch above), so it cannot decide `hasCheckpoint` alone — collapsing the failure into
     // `false` makes priorWorkWarning assert "NO checkpoint was ever written" during an outage.
@@ -370,6 +378,7 @@ async function claimOne(
           id: it.id,
           workItem,
           ...(terminalWarning ? { terminalWarning } : {}),
+          ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
         };

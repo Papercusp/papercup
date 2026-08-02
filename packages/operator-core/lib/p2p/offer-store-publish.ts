@@ -69,6 +69,33 @@ export interface SeatOfferPublishDeps {
   buildSigner?: (githubUserId: number) => Promise<OfferRecordSigner>;
   /** The friendly host label the fleet owner's board shows ("B's machine"). */
   resolveHostLabel?: () => string | null;
+  /** Where the best-effort wrapper REPORTS its outcome (EI-19304844689981989).
+   *  Seam so tests assert the report without capturing console. */
+  log?: (msg: string) => void;
+}
+
+/** One-line, greppable report of a publish outcome. EI-19304844689981989: this
+ *  leg is fire-and-forget, so WITHOUT this line a skip/error is invisible —
+ *  `resource:delegate` returns ok:true and the seat silently never federates.
+ *  Exported for the unit test; `describeSeatOfferOutcome` is pure. */
+export function describeSeatOfferOutcome(
+  opts: Pick<PublishSeatOfferOpts, 'fleetSlug' | 'potSlug' | 'model' | 'effort' | 'removed'>,
+  outcome: SeatOfferPublishOutcome,
+): { level: 'info' | 'warn'; msg: string } {
+  const who = opts.potSlug ? `pot:${opts.potSlug}` : `fleet:${opts.fleetSlug ?? '?'}`;
+  const what = `${who} ${opts.model}:${opts.effort}${opts.removed ? ' (cancel)' : ''}`;
+  if (outcome.ok) {
+    return {
+      level: 'info',
+      msg: `${what} → ${outcome.changed ? 'published' : 'already current (no version churn)'}`,
+    };
+  }
+  if ('skipped' in outcome) {
+    // A skip is BENIGN BY DESIGN but must never be silent — it is exactly the
+    // "delegation succeeded, seat never appeared on the owner's board" case.
+    return { level: 'warn', msg: `${what} → NOT PUBLISHED (skipped: ${outcome.skipped})` };
+  }
+  return { level: 'warn', msg: `${what} → NOT PUBLISHED (error: ${outcome.error})` };
 }
 
 async function defaultBuildSigner(githubUserId: number): Promise<OfferRecordSigner> {
@@ -342,6 +369,21 @@ export async function publishSeatOfferForDelegation(
  * throws, never blocks the delegation write it rides on. Kept here (not inline
  * in the tool) so the tool stays store-pure and the swallow is one audited place.
  */
-export function publishSeatOfferForDelegationBestEffort(opts: PublishSeatOfferOpts): void {
-  void publishSeatOfferForDelegation(opts).catch(() => {});
+export function publishSeatOfferForDelegationBestEffort(
+  opts: PublishSeatOfferOpts,
+  deps: SeatOfferPublishDeps = {},
+): void {
+  const log = deps.log ?? ((m: string) => console.warn(`[seat-offer-publish] ${m}`));
+  void publishSeatOfferForDelegation(opts, deps)
+    .then((outcome) => {
+      // EI-19304844689981989: the outcome used to be DISCARDED here. Never
+      // throws and never blocks the delegation write (contract unchanged) —
+      // it is now merely OBSERVABLE. A seat that fails to federate is a silent
+      // no-show on the fleet owner's board otherwise.
+      const { msg } = describeSeatOfferOutcome(opts, outcome);
+      log(msg);
+    })
+    .catch((e: unknown) => {
+      log(`${opts.fleetSlug ?? opts.potSlug ?? '?'} → publish THREW: ${String(e)}`);
+    });
 }

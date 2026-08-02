@@ -366,7 +366,7 @@ describe('parseExplicitFiles feeding decidePerFile (EI-18731016038876755)', () =
 describe('decidePerFile — per-file attribution + --update-only ratchet + syntax hard-fail', () => {
   const brokenFree: string[] = [];
 
-  it('syntax-broken files hard-fail regardless of counts', () => {
+  it('syntax-broken files hard-fail regardless of counts (unscoped / bare run)', () => {
     const r = decidePerFile({
       currentByFile: { 'a.ts': 1 },
       baselineByFile: { 'a.ts': 500 },
@@ -374,6 +374,44 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
     });
     expect(r.verdict).toBe('fail-syntax');
     expect(r.brokenFiles).toEqual(['lib/broken.ts']);
+  });
+
+  // EI-19321179234197157 — the live failure this pins: `--files=b.ts` hard-failed on a TS1xxx
+  // parse error in `lib/peer-broken.ts`, a file the caller never named and — on this shared
+  // single-worktree box — was simply a peer's in-flight edit. The syntax hard-fail must be scoped
+  // the same way a type-error regression already is: unattributed under `--mine`/`--files`, still
+  // reported (never silently dropped), never gating.
+  it('--files: a syntax-broken file OUTSIDE the named set does NOT gate — reported as unattributedBrokenFiles', () => {
+    const r = decidePerFile({
+      currentByFile: { 'b.ts': 0 },
+      baselineByFile: { 'b.ts': 0 },
+      brokenFiles: ['lib/peer-broken.ts'],
+      changedFiles: new Set(['b.ts']),
+    });
+    expect(r.verdict).not.toBe('fail-syntax');
+    expect(r.unattributedBrokenFiles).toEqual(['lib/peer-broken.ts']);
+  });
+
+  it('--files: a syntax-broken file INSIDE the named set still hard-fails, unconditionally', () => {
+    const r = decidePerFile({
+      currentByFile: { 'b.ts': 0 },
+      baselineByFile: { 'b.ts': 500 },
+      brokenFiles: ['b.ts', 'lib/peer-broken.ts'],
+      changedFiles: new Set(['b.ts']),
+    });
+    expect(r.verdict).toBe('fail-syntax');
+    expect(r.brokenFiles).toEqual(['b.ts']);
+    expect(r.unattributedBrokenFiles).toEqual(['lib/peer-broken.ts']);
+  });
+
+  it('--mine (inferred changedFiles) scopes the syntax hard-fail identically to --files', () => {
+    const r = decidePerFile({
+      currentByFile: { 'b.ts': 0 },
+      baselineByFile: { 'b.ts': 0 },
+      brokenFiles: ['lib/peer-broken.ts'],
+      changedFiles: new Set(['b.ts']),
+    });
+    expect(r.verdict).not.toBe('fail-syntax');
   });
 
   it('every file at its baseline is ok', () => {

@@ -20,7 +20,18 @@ vi.mock('../coordination/identity', () => ({
 // claim.ts (the pre-read guard) and claim-hold-guard.ts's assessClaimHoldGuard (mocked at the
 // SAME module path, so both importers see this one mock) — default "nothing held" so every
 // pre-existing test in this file is unaffected; the claim-hold-specific tests below override it.
-vi.mock('../../work-items', () => ({
+//
+// PARTIAL mock (importOriginal), deliberately — NOT a hand-listed factory. A hand-listed factory
+// returns `undefined` for any export claim.ts imports but the list forgot, and the tool then
+// crashes on it at runtime: runBulk converts the throw into ok:false, so EVERY test in this file
+// fails with "expected ok:false to equal ok:true" — an assertion that names neither the missing
+// export nor the mock. That is exactly what happened here when P-013 added the
+// `readUnresolvedDepBlockers` import (11 of 19 red, all one root cause). claim.checkpoint-hint.ts
+// had already been converted to this form for the same reason after WI-5946; this file was the
+// remaining copy. Spreading the real module means a FUTURE import claim.ts adds resolves to the
+// genuine implementation instead of undefined — only the fns stubbed below are replaced.
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   claimWorkItem: vi.fn(),
   classifyClaimFailure: vi.fn(),
   getWorkItem: vi.fn(),
