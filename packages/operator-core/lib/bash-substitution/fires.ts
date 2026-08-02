@@ -184,15 +184,24 @@ export async function resolveFireCompliance(opts: {
   const abandonedBefore = new Date(now.getTime() - COMPLIANCE_ABANDON_MS);
   const limit = opts.limit ?? 500;
 
-  const pending = (await sql`
-    SELECT id, session_id, tool_name, fired_at
-      FROM harness_shared.bash_tool_substitution_fires
-     WHERE workspace_id = ${opts.workspaceId}
-       AND resolved_at IS NULL
-       AND fired_at < ${settledBefore}
-     ORDER BY fired_at
-     LIMIT ${limit}
-  `) as Array<{ id: string; session_id: string | null; tool_name: string; fired_at: Date }>;
+  let pending: Array<{ id: string; session_id: string | null; tool_name: string; fired_at: Date }>;
+  try {
+    pending = (await sql`
+      SELECT id, session_id, tool_name, fired_at
+        FROM harness_shared.bash_tool_substitution_fires
+       WHERE workspace_id = ${opts.workspaceId}
+         AND resolved_at IS NULL
+         AND fired_at < ${settledBefore}
+       ORDER BY fired_at
+       LIMIT ${limit}
+    `) as typeof pending;
+  } catch (e) {
+    // Schema not migrated yet — quietly a no-op, not an alarm. Any OTHER error
+    // still propagates to the caller, which is the point: swallowing everything
+    // here would hide a genuinely broken resolver behind the same silence.
+    if (isMissingTelemetrySchema(e)) return { examined: 0, measured: 0, noFollowUp: 0 };
+    throw e;
+  }
 
   let measured = 0;
   let noFollowUp = 0;

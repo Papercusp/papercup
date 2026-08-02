@@ -234,4 +234,28 @@ describe('resolveFireCompliance', () => {
     const cutoff = select.values.find((v): v is Date => v instanceof Date)!;
     expect(NOW.getTime() - cutoff.getTime()).toBe(COMPLIANCE_SETTLE_MS);
   });
+  it('is a quiet no-op when the telemetry schema has not been migrated yet', async () => {
+    // Migration 720 needs ACCESS EXCLUSIVE on a table every operator reads on a
+    // 30s cycle, so it lands in a restart window and the code ships first. A
+    // warning per routines tick during that gap would train the reader to ignore
+    // the channel the real failures arrive on.
+    const missing = Object.assign(new Error('relation does not exist'), { code: '42P01' });
+    const sql = (() => {
+      throw missing;
+    }) as never;
+    await expect(
+      resolveFireCompliance({ workspaceId: 'ws', client: sql, now: NOW }),
+    ).resolves.toEqual({ examined: 0, measured: 0, noFollowUp: 0 });
+  });
+
+  it('still propagates a genuine database error rather than reporting zero work', async () => {
+    // The dual of the test above: swallowing everything would hide a broken
+    // resolver behind the same silence as a pending migration.
+    const boom = (() => {
+      throw Object.assign(new Error('connection reset'), { code: '08006' });
+    }) as never;
+    await expect(
+      resolveFireCompliance({ workspaceId: 'ws', client: boom, now: NOW }),
+    ).rejects.toThrow(/connection reset/);
+  });
 });

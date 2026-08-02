@@ -242,20 +242,69 @@ export default defineTool({
       ),
     );
 
-    return json(
-      {
-        ok: launch.ok,
+    if (!launch.ok) {
+      return json(
+        {
+          ok: false,
+          fleet: slug,
+          oldMember: memberOwnerId,
+          invokedAs,
+          changed: changedFields,
+          killed: kill.data,
+          launched: launch.text,
+          verified: false,
+          message: 'old member drained but the replacement launch FAILED — the fleet is down one member; relaunch it (capability:launch-agent) or retry.',
+        },
+        true,
+      );
+    }
+
+    // 3. VERIFY the replacement actually booted. The launcher can only report that it spawned a
+    //    terminal, and that terminal outlives a CLI that dies on its first call — so without this
+    //    step ok:true means "a window opened", which reads as "the member is back" and is how a
+    //    respawn silently leaves a fleet a member down (WI-6936).
+    const verifySec = args.verifySec ?? DEFAULT_VERIFY_SEC;
+    if (verifySec === 0 || !rosterReadable) {
+      return json({
+        ok: true,
         fleet: slug,
         oldMember: memberOwnerId,
         invokedAs,
         changed: changedFields,
         killed: kill.data,
         launched: launch.text,
-        ...(launch.ok
+        verified: false,
+        verification: rosterReadable ? 'skipped' : 'unavailable',
+        message: `Launch REQUESTED but NOT verified${rosterReadable ? ' (verifySec:0)' : ' (the fleet presence roster could not be read)'} — the launcher only knows it spawned a terminal, which survives a CLI that dies before its first turn. Confirm a real agent exists before relying on it: fleet:leader-brief { fleet:'${slug}', include_stale:true } and require a NEW member with loopMode set and a fresh heartbeat.`,
+      });
+    }
+
+    const verify = await awaitReplacementMember({
+      before: rosterBefore,
+      list: () => listFleetPresence(workspaceId, slug),
+      timeoutMs: verifySec * 1000,
+    });
+
+    return json(
+      {
+        ok: verify.verified,
+        fleet: slug,
+        oldMember: memberOwnerId,
+        invokedAs,
+        changed: changedFields,
+        killed: kill.data,
+        launched: launch.text,
+        verified: verify.verified,
+        newMember: verify.newMemberOwnerId,
+        waitedMs: verify.waitedMs,
+        ...(verify.verified
           ? {}
-          : { message: 'old member drained but the replacement launch FAILED — the fleet is down one member; relaunch it (capability:launch-agent) or retry.' }),
+          : {
+              rosterOwnerIds: verify.rosterOwnerIds,
+              message: `The replacement was LAUNCHED but never appeared in the fleet roster within ${verifySec}s — the terminal spawned and the agent CLI did not come up (an exhausted account pool, a bad model/agent spec, or a missing credential all present this way). The fleet is DOWN A MEMBER. Check fleet:capacity before relaunching; a spawn into an exhausted pool dies the same way again.`,
+            }),
       },
-      !launch.ok,
+      !verify.verified,
     );
   },
 });
