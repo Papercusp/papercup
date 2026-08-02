@@ -52,10 +52,11 @@ import {
   buildInjectionArm,
   cleanArm,
   injectionCoverage,
+  lexicalTermSurvival,
   type Arm,
   type ArmPair,
 } from './leg-split-arms';
-import { ALL_ANSWERABLE, compareLegs, type PerQueryRow } from './paired-leg-report';
+import { ALL_ANSWERABLE, classesDisagree, compareLegs, type PerQueryRow } from './paired-leg-report';
 
 const SCOPE = 'bench';
 const LIMIT = 10;
@@ -180,6 +181,17 @@ function renderArm(a: ComparedArm): string {
       `search p50: ${a.baseline.latency.p50.toFixed(0)}ms → ${a.candidate.latency.p50.toFixed(0)}ms`,
   );
   lines.push('');
+  if (classesDisagree(a.comparison)) {
+    // P-045's own hypothesis: an identifier-heavy signal should move
+    // exact-identifier and paraphrase recall in OPPOSITE directions. When it
+    // does, the pooled row is a weighted average of a trade-off and quoting it
+    // as "the" result hides exactly the thing this item was raised to expose.
+    lines.push(
+      `> ⚠ THE CLASSES DISAGREE IN SIGN — \`${ALL_ANSWERABLE}\` is uninterpretable for this arm and must not be ` +
+        `quoted as the result. Read the per-class rows: this is the identifier-vs-paraphrase trade the item predicted.`,
+    );
+    lines.push('');
+  }
   for (const cls of order) {
     const c = a.comparison.byClass[cls];
     if (c) lines.push(`- ${c.statement}`);
@@ -252,6 +264,14 @@ async function main(): Promise<void> {
     log('  running the undiluted ceiling…');
     const ceiling = await run(cleanArm(gold), { fusionMode: 'cosine-gated' });
 
+    // How much of the injected signal survives the lexical tokenizer's cap.
+    // Pure — no search needed — and it is the one way the shipped caps can
+    // fail silently, so it is reported whatever the rank deltas do.
+    const survival = (['ontask', 'offtask'] as const).map((mode) => ({
+      mode,
+      ...lexicalTermSurvival(buildInjectionArm(gold, { mode, corpus: byKey, corpusKeys: keys })),
+    }));
+
     // ── ARM B: lexical signal injection, both bounds, both fusion modes ─────
     for (const fusionMode of ['cosine-gated', 'floored-union'] as const) {
       for (const mode of ['ontask', 'offtask'] as const) {
@@ -291,6 +311,20 @@ async function main(): Promise<void> {
       `FP@5 ${fp5(ceiling)}\n\n` +
       `> A verdict of \`underpowered\` means this class supports NO conclusion in either direction — ` +
       `never "no difference". Class sizes here are 35/40/45.\n\n` +
+      `## Does the injected signal reach the scorer?\n\n` +
+      `\`lexicalQueryText\` appends the agent's terms AFTER the user text and \`lexicalTokens\` keeps the ` +
+      `HEAD of the token list, so a long utterance evicts exactly the identifiers the split exists to add. ` +
+      `Measured with the real tokenizer:\n\n` +
+      `| mode | with signals | all terms heard | none heard | median tokens | max tokens (cap 32) | user text alone at cap |\n` +
+      `| --- | --- | --- | --- | --- | --- | --- |\n` +
+      survival
+        .map(
+          (s) =>
+            `| ${s.mode} | ${s.withSignals}/${gold.length} | ${s.fullySurvived} | ${s.fullyDropped} | ` +
+            `${s.medianTokens} | ${s.maxTokens} | ${s.userTextAtCap} |`,
+        )
+        .join('\n') +
+      `\n\n` +
       arms.map(renderArm).join('\n');
 
     const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..', '..');

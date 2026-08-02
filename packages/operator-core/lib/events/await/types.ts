@@ -141,6 +141,14 @@ export type WakeChannel =
   // both join WAKE_TURN_CHANNELS below. Dormant until a caller wires coldAutoEnabled.
   | 'psu-socket-reset'
   | 'psu-socket-recycle'
+  // WI-6862: the SAME delivery as the two above, except the host never ACKed it — the write
+  // only got the optimistic bare-close fallback, which also covers a host that crashed or was
+  // killed mid-delivery (what a provider usage-limit wall does to a respawn). Booked distinctly
+  // so `loop:status.lastWakeChannel` / event_wake_deliveries stop reporting an unconfirmed
+  // re-exec as a clean success. They still BURN A TURN for floor purposes (below): the write
+  // was accepted, so we must assume the agent may have been re-invoked.
+  | 'psu-socket-reset-unconfirmed'
+  | 'psu-socket-recycle-unconfirmed'
   | 'resume'
   | 'resume-headless'
   // The Hive Queen is never resumed — her ended-session wake fires a FRESH hive
@@ -170,6 +178,11 @@ export const WAKE_TURN_CHANNELS: readonly WakeChannel[] = [
   'psu-socket-inject',
   'psu-socket-reset',
   'psu-socket-recycle',
+  // WI-6862: an UNCONFIRMED reset/recycle must still count as a burned turn. The write was
+  // accepted, so the agent may well have been re-invoked; treating it as no-turn would let the
+  // floor re-wake the subscriber immediately and hammer a host that is very likely wedged.
+  'psu-socket-reset-unconfirmed',
+  'psu-socket-recycle-unconfirmed',
   'resume',
   'resume-headless',
   'hive-fresh-wake',

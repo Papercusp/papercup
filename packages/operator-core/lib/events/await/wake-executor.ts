@@ -98,7 +98,7 @@ import { getLoopStatus } from '../../harness/routines/loop';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
-import type { DeliveryWork, WakeOutcome } from './types';
+import type { DeliveryWork, WakeChannel, WakeOutcome } from './types';
 
 /** Bounded output-tail capture for an observed resume turn (P0a). The CLIs print
  *  API errors (incl. the 429 / usage-limit lines) to STDOUT; the dying turn's error
@@ -1279,12 +1279,17 @@ async function injectPsuHostWake(
       ok = await injectPsuHost(sock, injectMsg);
     }
     if (ok) {
-      const base = decision.mode === 'recycle' ? 'psu-socket-recycle' : 'psu-socket-reset';
-      return {
-        kind: 'delivered',
-        // A re-exec the host never confirmed is reported as such instead of as a clean success.
-        channel: confirmation === 'assumed-close' ? `${base}-unconfirmed` : base,
-      };
+      // A re-exec the host never confirmed is reported as such instead of as a clean success.
+      const unconfirmed = confirmation === 'assumed-close';
+      const channel: WakeChannel =
+        decision.mode === 'recycle'
+          ? unconfirmed
+            ? 'psu-socket-recycle-unconfirmed'
+            : 'psu-socket-recycle'
+          : unconfirmed
+            ? 'psu-socket-reset-unconfirmed'
+            : 'psu-socket-reset';
+      return { kind: 'delivered', channel };
     }
     // Cold inject missed → warm in place rather than drop the wake.
   }

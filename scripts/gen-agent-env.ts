@@ -24,7 +24,8 @@
  * Determinism: every derived list is sorted, so re-running on unchanged config
  * produces byte-identical output (the --check drift guard depends on this).
  */
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,14 +59,69 @@ function sharedCodeRoots(workspaces: string[]): string[] {
   return workspaceRoots(workspaces).filter((r) => r !== APP_ROOT);
 }
 
-/** Every top-level entry under a root — the concrete set an agent picks from (node_modules + dotdirs excluded). */
+/**
+ * Every top-level entry under a root — the concrete set an agent picks from.
+ *
+ * WHY THIS ASKS GIT AND NOT THE FILESYSTEM (WI-7006): this list is baked into a
+ * COMMITTED artifact that `--check` re-derives in CI, so anything it reads must
+ * exist identically on every checkout. A bare `readdirSync` does not qualify —
+ * it also returns build fossils and stray directories that git cannot represent,
+ * and one of those took the entire remote gate down for a week.
+ *
+ * The fossil was `packages/locks/`: a package that moved to
+ * `libs/papercusp/packages/locks` and left behind a directory containing ONLY an
+ * empty `node_modules/`. No package.json, no tracked files, not in `.gitmodules`,
+ * and INVISIBLE to `git status` because its sole content is ignored — so nothing
+ * on any dev box ever flagged it. It made the committed doc say `packages/` — 11
+ * entries; a clean CI clone counted 10, regenerated a different doc, and
+ * `--check` failed. That failure is step 6 of ~65 in test.yml, and the ~55 later
+ * steps carry no `if: always()`, so GitHub SKIPPED the whole affected-test suite
+ * and every gating lint. 0 green CI runs in 100, while `--check` stayed green on
+ * every developer machine.
+ *
+ * `git ls-tree` returns exactly the entries the repository actually contains
+ * (trees AND submodule gitlinks, which a fresh `--recursive` checkout populates),
+ * so the generated list is identical everywhere. The filesystem fallback below is
+ * for a non-git export; it drops any directory whose only content is
+ * ignored/build output, which is the fossil signature above.
+ */
 function entriesUnder(root: string): string[] {
   const dir = join(REPO_ROOT, root);
   if (!existsSync(dir)) return [];
+  try {
+    const out = execFileSync('git', ['ls-tree', '--name-only', 'HEAD', `${root}/`], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const tracked = out
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((p) => p.slice(root.length + 1))
+      .filter((name) => name && !name.includes('/') && name !== 'node_modules' && !name.startsWith('.'))
+      // ls-tree lists blobs too (a root's own README); keep only directories.
+      .filter((name) => existsSync(join(dir, name)) && statSync(join(dir, name)).isDirectory());
+    if (tracked.length > 0) return [...new Set(tracked)].sort();
+  } catch {
+    // Not a git checkout (or git unavailable) — fall through to the filesystem.
+  }
   return readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isDirectory() && e.name !== 'node_modules' && !e.name.startsWith('.'))
+    // A directory holding nothing but ignored/build output is a fossil, not a
+    // package — it cannot exist on a fresh clone, so it must not enter the doc.
+    .filter((e) => hasRepoContent(join(dir, e.name)))
     .map((e) => e.name)
     .sort();
+}
+
+/** True iff `dir` holds anything other than `node_modules` / dotfiles — i.e. real repo content. */
+function hasRepoContent(dir: string): boolean {
+  try {
+    return readdirSync(dir).some((n) => n !== 'node_modules' && !n.startsWith('.'));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -93,16 +149,35 @@ const pcHeavy = existsSync(join(REPO_ROOT, 'scripts', 'pc-heavy.sh'));
 // "use the hoisted root binary" fact with a concrete, TRUE example. A few packages
 // (e.g. those pinning a different vitest major) do ship their own — the doc must not
 // point at one of those, or its example would be a lie. Derived, so it stays true.
+//
+// WI-7006: this used to probe `<pkg>/node_modules/.bin/vitest` — INSTALLED state,
+// which is the same unreproducible-input bug as `entriesUnder` above and would have
+// broken CI the same way the moment npm's hoisting differed between a dev tree and
+// `npm ci --legacy-peer-deps`. Ask the committed manifest instead: a package gets a
+// local vitest precisely because it DECLARES one, and that declaration is in git.
+function declaresVitest(wsRel: string): boolean {
+  const manifest = join(REPO_ROOT, wsRel, 'package.json');
+  if (!existsSync(manifest)) return false;
+  try {
+    const pkg = JSON.parse(readFileSync(manifest, 'utf8')) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    return Boolean(pkg.dependencies?.vitest ?? pkg.devDependencies?.vitest);
+  } catch {
+    return false;
+  }
+}
 const concretePkgWorkspaces = workspaces
   .filter((ws) => ws.startsWith('packages/') && ws !== 'packages/*')
   .map((ws) => ws)
   .sort();
 const sampleWs =
-  concretePkgWorkspaces.find((ws) => !existsSync(join(REPO_ROOT, ws, 'node_modules', '.bin', 'vitest'))) ??
-  // Fall back to scanning packages/* on disk if the workspaces glob is '*'.
+  concretePkgWorkspaces.find((ws) => !declaresVitest(ws)) ??
+  // Fall back to the packages/* listing if the workspaces entry is a glob.
   entriesUnder('packages')
     .map((name) => `packages/${name}`)
-    .find((rel) => !existsSync(join(REPO_ROOT, rel, 'node_modules', '.bin', 'vitest'))) ??
+    .find((rel) => existsSync(join(REPO_ROOT, rel, 'package.json')) && !declaresVitest(rel)) ??
   null;
 
 const lines: string[] = [];
@@ -213,7 +288,28 @@ const out = lines.join('\n') + '\n';
 if (process.argv.includes('--check')) {
   const current = existsSync(OUT) ? readFileSync(OUT, 'utf8') : '';
   if (current !== out) {
+    // PRINT THE DIFF (WI-7006). This check previously emitted only "is stale",
+    // and that silence is most of why a dead CI gate went unnoticed for a week:
+    // the drift was environment-dependent, so it reproduced on NO developer
+    // machine — the only place the difference was ever visible was this exact
+    // line of CI output, and it said nothing. A guard that can fail somewhere
+    // you cannot reproduce MUST show its evidence where it fails.
     process.stderr.write(`✗ AGENT-ENV.md is stale. Run: ${GEN_CMD}\n`);
+    const a = current.split('\n');
+    const b = out.split('\n');
+    const shown: string[] = [];
+    for (let i = 0; i < Math.max(a.length, b.length) && shown.length < 40; i++) {
+      if (a[i] !== b[i]) {
+        if (a[i] !== undefined) shown.push(`  -${i + 1}: ${a[i]}`);
+        if (b[i] !== undefined) shown.push(`  +${i + 1}: ${b[i]}`);
+      }
+    }
+    process.stderr.write(`\n  committed (-) vs regenerated (+):\n${shown.join('\n')}\n`);
+    process.stderr.write(
+      '\n  If the + side names a directory that is not in git (a build fossil, an\n' +
+        '  empty leftover), the DOC is right and the working tree is dirty — delete\n' +
+        '  the stray directory rather than committing it into the contract.\n',
+    );
     process.exit(1);
   }
   process.stdout.write('✓ AGENT-ENV.md is up to date\n');

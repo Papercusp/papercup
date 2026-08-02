@@ -6,6 +6,7 @@ import {
   writeFileSync,
   existsSync,
   statSync,
+  readFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -260,10 +261,66 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
   // then failed the hardcoded counts below — red-pinning the SHARED green gate on
   // a false alarm that never reproduces on a dev box (EI-19313251155452361; the
   // underlying archive-extraction cause is EI-19298378364087215).
+  // WI-7005 / EI-19312284168967759 — the guard above was STILL too weak and the
+  // gate red-pinned again on 2026-08-02 (verdict 08:29:59Z, cand bb054adbccf5,
+  // `subs: 0` vs 6). Two independent holes, both from sampling ONE submodule with
+  // `existsSync` as a proxy for "this tree uses gitlink submodules":
+  //
+  //   1. `existsSync` is TRUE for a DIRECTORY. `classify-tree` only returns
+  //      'submodule' when `.git` is a FILE whose gitdir contains `/.git/modules/`;
+  //      a `.git` DIRECTORY is a nested standalone clone and classifies as
+  //      'standalone'. Measured against the real papercusp-checkpoint tree:
+  //      submodules=0 standalone=6 plain=6 — i.e. exactly the reported `subs: 0`,
+  //      with the guard's sampled path present the whole time.
+  //   2. Extraction is progressive, so sampling ONE path says nothing about the
+  //      other five. libs/papercusp materializing first flips the guard TRUE while
+  //      its siblings are still bare (0/39 at 02:05Z, 38/39 at 02:21Z).
+  //
+  // So the guard now asserts the precondition the assertions below actually
+  // depend on, over EVERY declared libs/* submodule rather than a sample: each
+  // one must present `.git` as a FILE pointing into `/.git/modules/`. Any bare
+  // dir, any nested clone, any partial extraction ⇒ this is not a gitlink
+  // checkout and the layout census does not apply here.
+  //
+  // Deliberately fs-level and NOT expressed via walkHarnessTree: a guard derived
+  // from the very oracle it guards would silently SKIP if someone genuinely broke
+  // submodule classification, converting a real regression into a green run. The
+  // guard checks the ENVIRONMENT; the assertions check the CLASSIFIER.
+  const declaredLibsSubmodules = (() => {
+    const gitmodules = join(papercupRoot, '.gitmodules');
+    if (!existsSync(gitmodules)) return [];
+    // `path = libs/<name>` entries only — nested (libs/generic/*) are not direct
+    // children of libs/ and are not part of this census.
+    return [...readFileSync(gitmodules, 'utf-8').matchAll(/^\s*path\s*=\s*(libs\/[^/\s]+)\s*$/gm)].map(
+      (m) => m[1] as string,
+    );
+  })();
+
+  const isGitlinkSubmodule = (relPath: string): boolean => {
+    const gitPath = join(papercupRoot, relPath, '.git');
+    if (statSync(gitPath, { throwIfNoEntry: false })?.isFile() !== true) return false;
+    return /^gitdir:\s*.*\/\.git\/modules\//m.test(readFileSync(gitPath, 'utf-8'));
+  };
+
+  // A declared submodule is ACCEPTABLE in one of exactly two shapes:
+  //   - its directory is ABSENT entirely   ⇒ de-materialized on purpose. This is
+  //     the retired `libs/zero-harness`, which is still declared in .gitmodules
+  //     but deliberately not checked out (see CLAUDE.md "Zero is retired"). Its
+  //     absence is why the census below is 6, not the 7 .gitmodules declares.
+  //   - it is a gitlink FILE into /.git/modules/  ⇒ properly materialized.
+  // Anything else — a directory present WITHOUT a gitlink (source extracted by
+  // `git archive`, or extraction still in flight), or a `.git` DIRECTORY (a
+  // nested standalone clone) — means this tree is not the shape the census
+  // describes, so skip rather than red-pin the shared gate on a false alarm.
+  const isAcceptableShape = (relPath: string): boolean =>
+    !existsSync(join(papercupRoot, relPath)) || isGitlinkSubmodule(relPath);
+
   const isPapercupCheckout =
     existsSync(join(papercupRoot, '.gitmodules')) &&
     statSync(join(papercupRoot, '.git'), { throwIfNoEntry: false })?.isDirectory() === true &&
-    existsSync(join(papercupRoot, 'libs', 'papercusp', '.git'));
+    declaredLibsSubmodules.length > 0 &&
+    declaredLibsSubmodules.some(isGitlinkSubmodule) &&
+    declaredLibsSubmodules.every(isAcceptableShape);
 
   it.skipIf(!isPapercupCheckout)(
     'matches the libs/ layout: 6 submodules + 6 plain (borrowable submodules regrouped under libs/generic/)',

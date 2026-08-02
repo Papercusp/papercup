@@ -67,7 +67,24 @@ jobs:
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
 
+      # ⚠ EVERY step below carries `if: ${{ !cancelled() }}` ON PURPOSE — do not strip it
+      # when adding a step, and DO add it to any step you add (WI-7006).
+      #
+      # Without it, GitHub skips every later step once one fails, and a SKIPPED gating
+      # lint is indistinguishable from a PASSING one: the job just shows "failure" and a
+      # reader attributes it to whatever failed first. That is not hypothetical. Between
+      # ~2026-07-28 and 2026-08-02 this workflow failed at step 6 — `Doctor`, on a
+      # DOC-STALENESS check — and GitHub silently skipped the affected-test suite and all
+      # ~50 gating lints below. 0 green runs in 100, a week of zero remote coverage, and
+      # an open item filed against a "CI red" for a lint CI had never actually evaluated.
+      #
+      # The three steps ABOVE deliberately have no `if:`: checkout / setup-node / install
+      # are genuine prerequisites, and a failure there makes everything after it garbage.
+      # Everything from here down is independent, so it reports its own verdict. A step
+      # whose input a failed earlier step should have produced (tests vs the PG provision)
+      # now fails LOUDLY instead of vanishing — that is the intended trade.
       - name: Doctor (Docker + node)
+        if: ${{ !cancelled() }}
         run: node scripts/test-doctor.mjs
 
       # Bring the PG service to schema head with the real boot-path migration
@@ -75,17 +92,20 @@ jobs:
       # transitively resolve the default :5432/papercusp URL find the same
       # environment the dev box / green-checkpoint tree provide. ~4s.
       - name: Provision papercusp PG (dev-box parity)
+        if: ${{ !cancelled() }}
         env:
           CI_PG_SUPERUSER_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: node scripts/ci-provision-pg.mjs
 
       - name: Cache testcontainers Docker layer
+        if: ${{ !cancelled() }}
         uses: actions/cache@v4
         with:
           path: ~/.testcontainers
           key: testcontainers-${{ runner.os }}-postgres-16-alpine
 
       - name: Run affected unit + integration suites
+        if: ${{ !cancelled() }}
         env:
           AFFECTED_BASE: origin/${{ github.base_ref || 'main' }}
           CI: 'true'
@@ -114,6 +134,7 @@ jobs:
       # Deliberately NOT wired here:
       #   test:rust   — needs a Rust toolchain this job does not install.
       - name: Desktop tests (papercusp-desktop selftests + build-script guards)
+        if: ${{ !cancelled() }}
         working-directory: papercusp-desktop
         run: |
           npm run test:selftests
@@ -125,12 +146,14 @@ jobs:
       # surface in logs but don't gate. Legacy plans (no frontmatter)
       # are exempt by lintPlan itself. Spec: /internal/docs/spec/plan-format.
       - name: Lint plans
+        if: ${{ !cancelled() }}
         working-directory: apps/operator
         run: npm run lint:plans
 
       # Plans are PG-canonical (plans-pg-canonical-migration-2026-06-03): fail on any
       # filesystem read of plan markdown outside source.ts / the backfill script.
       - name: Lint plans PG-canonical (no FS reads of plan markdown)
+        if: ${{ !cancelled() }}
         working-directory: apps/operator
         run: npm run lint:plans-pg
 
@@ -138,6 +161,7 @@ jobs:
       # .mjs under __tests__/integration/, a *-smoke.ts under scripts/, OR a
       # canonical test that matches no registry glob (invisible in the /adv tab).
       - name: Lint tests (four-framework + tab-coverage guard)
+        if: ${{ !cancelled() }}
         working-directory: apps/operator
         run: npm run lint:tests
 
@@ -145,6 +169,7 @@ jobs:
       # from testing-domains-registry.ts. Fail if it drifted (edit the registry,
       # then `npm run gen:contract`).
       - name: Check testing-domains contract is in sync
+        if: ${{ !cancelled() }}
         run: npm run gen:contract:check
 
       # AGENT-ENV.md is GENERATED from the real repo config (workspaces, the
@@ -153,6 +178,7 @@ jobs:
       # no PG → GATING. Regenerate with `npm run gen:agent-env`; `npm run doctor`
       # asserts the same invariants as runnable checks.
       - name: Check AGENT-ENV contract is in sync
+        if: ${{ !cancelled() }}
         run: npm run gen:agent-env:check
 
       # BORROWABLE.md is GENERATED from scripts/gen-borrowable-catalog.mjs (the
@@ -160,6 +186,7 @@ jobs:
       # code-derived surface is CI-gated so it can't go stale
       # (docs-and-memory-as-projections-2026-06-05 D-002).
       - name: Check BORROWABLE catalog is in sync
+        if: ${{ !cancelled() }}
         run: npm run gen:borrowable:check
 
       # The CLAUDE.md bash→tool routing table is GENERATED from the audited
@@ -170,6 +197,7 @@ jobs:
       # to every agent, since this file is spliced into every agent prompt. Pure
       # fs/module reads, no PG → GATING. Regenerate with `npm run gen:tool-routing`.
       - name: Check CLAUDE.md tool-routing table is in sync
+        if: ${{ !cancelled() }}
         run: npm run gen:tool-routing:check
 
       # Starlight projection pages (starlight-projection-generators-2026-06-05, Brief 29)
@@ -177,6 +205,7 @@ jobs:
       # LOW-CHURN two (blueprint catalog / role registry) are pure fs/code reads of
       # rarely-changing sources → GATING (fail on drift, like BORROWABLE).
       - name: Check generated reference pages are in sync (low-churn, gating)
+        if: ${{ !cancelled() }}
         run: |
           npm run gen:doc-blueprint-catalog:check
           npm run gen:doc-role-registry:check
@@ -209,6 +238,7 @@ jobs:
       # GATING (--strict): a NEW un-classified boolean env gate fails the build —
       # classify it as a FLAG, or add it to ALLOW in scripts/check-env-feature-gates.mjs.
       - name: Env feature-gate lint (gating)
+        if: ${{ !cancelled() }}
         run: npm run lint:env-feature-gates:strict
 
       # Affected-set integrity guard: the gate must not silently run FEWER tests than
@@ -218,6 +248,7 @@ jobs:
       # vitest test: a test only runs when its workspace is affected, so the very bug it
       # guards would disarm it. GATING.
       - name: Lint affected-set gate integrity
+        if: ${{ !cancelled() }}
         run: npm run lint:affected-gate
 
       # Workspace-deps-complete guard (EI-9831): a workspace that imports a local
@@ -226,6 +257,7 @@ jobs:
       # #4, generalized to every local package). GATING on a NEW undeclared edge; a
       # shrink-to-empty BASELINE grandfathers the 60 pre-existing edges found 2026-07-12.
       - name: Lint workspace deps complete
+        if: ${{ !cancelled() }}
         run: npm run lint:workspace-deps-complete
 
       # @restart retirement guard: the shared libs were renamed @restart/* ->
@@ -233,6 +265,7 @@ jobs:
       # the build with a "use @papercusp/<name>" message if any @restart/* import
       # or dep reappears, so a straggler never silently resolves.
       - name: Lint no-restart imports
+        if: ${{ !cancelled() }}
         run: npm run lint:no-restart
 
       # no-raw-setInterval guard (schedule-inventory-and-ephemeral-tier-2026-06-26 P-007):
@@ -241,6 +274,7 @@ jobs:
       # GATING on a NEW bare setInterval() outside the registry; a shrink-to-empty
       # BASELINE grandfathers the pre-codemod sites (emptied by the P-008 codemod).
       - name: Lint no raw setInterval
+        if: ${{ !cancelled() }}
         run: npm run lint:no-raw-setinterval
 
       # no-unenrolled-detached-spawn guard (task-manager-no-escape-2026-07-27 P-016):
@@ -251,6 +285,7 @@ jobs:
       # detached spawns rather than all ~813 spawn sites on purpose: cgroup membership
       # is inherited, so confining ROOTS accounts for their descendants automatically.
       - name: Lint no unenrolled detached spawn
+        if: ${{ !cancelled() }}
         run: npm run lint:no-unenrolled-spawn
 
       # no-raw-installSlug-filter guard (EI-19298972043721870): the READ-PATH analogue
@@ -264,6 +299,7 @@ jobs:
       # than a blind sweep (not every raw filter is a bug — pot/install-scoped tables
       # are correctly read by the literal slug).
       - name: Lint no raw installSlug harness_slug filter
+        if: ${{ !cancelled() }}
         run: npm run lint:no-raw-install-slug
 
       # no-ungated-infinite-animation guard (hud-tab-public-release-2026-07-28 P-010 /
@@ -275,6 +311,7 @@ jobs:
       # 107 of them accumulated unnoticed. GATING on a NEW always-on animation; a
       # shrink-only BASELINE grandfathers the sites still on latent surfaces.
       - name: Lint no ungated infinite animation
+        if: ${{ !cancelled() }}
         run: npm run lint:no-ungated-infinite-animation
 
       # no-bespoke-state-read gate (unified-agent-state-plane-2026-07-27 P-005 / D-010,
@@ -287,6 +324,7 @@ jobs:
       # GATING on a NEW undeclared state read; a shrink-only BASELINE grandfathers
       # the pre-existing ones (emptied by P-020, which retires them onto cells).
       - name: Lint no bespoke state read
+        if: ${{ !cancelled() }}
         run: npm run lint:no-bespoke-state-read
 
       # declared-vs-consumed sweep (agent-state-plane-verification-2026-07-27 P-002,
@@ -298,6 +336,7 @@ jobs:
       # database, which is why it can gate here.
       # REPORTS (exit 0) for a gap with a filed `knownUnbuilt` ref; GATES on a new one.
       - name: Lint declared vs consumed
+        if: ${{ !cancelled() }}
         run: npm run lint:declared-consumed
 
       # timer-classification guard (stop-discarded-dedup-and-audit-server-polling-
@@ -307,6 +346,7 @@ jobs:
       # GATING on a NEW unclassified call site; a shrink-to-empty BASELINE grandfathers
       # the pre-P-011 call sites.
       - name: Lint timer classification
+        if: ${{ !cancelled() }}
         run: npm run lint:timer-classification
 
       # no-wire-compression guard (WI-5988, owner directive 2026-07-26):
@@ -318,6 +358,7 @@ jobs:
       # decompression and at-rest/distribution compression (backups, zstd
       # archives, tarballs) are untouched.
       - name: Lint no wire compression
+        if: ${{ !cancelled() }}
         run: npm run lint:no-wire-compression
 
       # eager promisify(execFile) guard (EI-10161): a module-scope `const x =
@@ -328,6 +369,7 @@ jobs:
       # GATING on a NEW eager module-scope site; a shrink-to-empty BASELINE
       # grandfathers the pre-existing ~60 files pending a remediation pass.
       - name: Lint no eager execFile promisify
+        if: ${{ !cancelled() }}
         run: npm run lint:no-eager-execfile-promisify
 
       # module-scope flags touch guard (WI-6650 / EI-18825928993608425): the same
@@ -339,6 +381,7 @@ jobs:
       # WI-6588 → 2 suites red) before that file was root-fixed. GATING on a NEW
       # site; a shrink-to-empty BASELINE grandfathers the 14 pre-existing ones.
       - name: Lint no module-scope flag subscribe
+        if: ${{ !cancelled() }}
         run: npm run lint:no-module-scope-flag-subscribe
 
       # sql.json guard (EI-607): postgres-js sql.json(object) THROWS on the getOrgPg
@@ -348,6 +391,7 @@ jobs:
       # client). GATING — bind jsonb as ${JSON.stringify(x)}::jsonb (server-side
       # cast → real jsonb object) instead. ALLOW-lists deliberate fresh-pool sites.
       - name: Lint no sql.json on getOrgPg client
+        if: ${{ !cancelled() }}
         run: npm run lint:no-sql-json
 
       # SQL-comment backtick guard (EI-7661): a backtick inside a `--` SQL
@@ -360,6 +404,7 @@ jobs:
       # GATING — flags a `--` comment line with a raw (unescaped) backtick in
       # any file that uses a sql`...` tagged template.
       - name: Lint no backtick in SQL comment
+        if: ${{ !cancelled() }}
         run: npm run lint:no-sql-comment-backtick
 
       # SQL-in-guidance guard (claimable-read-tool-and-sql-encapsulation-audit
@@ -374,6 +419,7 @@ jobs:
       # the line or within 3 lines above. Implementation SQL inside a tool is
       # the encapsulation working and is never flagged.
       - name: Lint SQL-in-guidance is justified
+        if: ${{ !cancelled() }}
         run: npm run lint:sql-guidance-justified
 
       # Raw control-byte guard (EI-7432): a NUL byte in tracked TypeScript made
@@ -381,6 +427,7 @@ jobs:
       # lied about code absence. GATING — scans tracked source files as Buffers
       # and rejects NUL plus C0 controls except tab/newline/carriage return.
       - name: Lint no raw control bytes
+        if: ${{ !cancelled() }}
         run: npm run lint:no-control-bytes
 
       # Box-identity guard (WI-4419): the 0.0.8 cut shipped the owner's home path
@@ -395,6 +442,7 @@ jobs:
       # checkout but the author's. BASELINE IS EMPTY: fix the path, never add an
       # exception to make the build pass.
       - name: Lint no box identity in tracked source
+        if: ${{ !cancelled() }}
         run: npm run lint:no-box-identity
 
       # Sibling rule, same WI-4419 family, different half of the class. The box-identity
@@ -410,6 +458,7 @@ jobs:
       # case-insensitive with no false-positive surface.
       # BASELINE IS EMPTY: strip the name, never allowlist it.
       - name: Lint no named owner provenance tags in tracked source
+        if: ${{ !cancelled() }}
         run: npm run lint:no-owner-name-tags
 
       # Third sibling, same WI-4419 family (WI-4776): the two rules above catch a
@@ -421,6 +470,7 @@ jobs:
       # a no-op on a bare CI box is expected, not a bug (see the script header).
       # BASELINE IS EMPTY: remove the literal, never add an exception.
       - name: Lint no bare build-box identity literals in tracked source
+        if: ${{ !cancelled() }}
         run: npm run lint:no-identity-literals
 
       # Committed conflict-marker guard (EI-1836): a COMMITTED git conflict bracket
@@ -432,6 +482,7 @@ jobs:
       # brackets every git conflict) so it is a loud NAMED failure, not a downstream
       # cryptic build break.
       - name: Lint no committed conflict markers
+        if: ${{ !cancelled() }}
         run: npm run lint:no-conflict-markers
 
       # Self-referential export-shim guard (EI-8850): a "forward-compat alias"
@@ -443,6 +494,7 @@ jobs:
       # only surfaces at restart time. GATING — mechanical, zero-false-positive
       # pattern (a genuine rename alias always has two DIFFERENT identifiers).
       - name: Lint no self-referential export shims
+        if: ${{ !cancelled() }}
         run: npm run lint:no-self-referential-export
 
       # Host-bundle build guard (P-009, 2026-07-12): bundle-host.sh runs at service
@@ -455,6 +507,7 @@ jobs:
       # the DIRECT detector — it runs the real bundle-host.sh (single source of truth for
       # the externals list) against a throwaway outfile. ~10s.
       - name: Lint host bundle builds
+        if: ${{ !cancelled() }}
         run: npm run lint:host-bundle-builds
 
       # Client bundle-budget guard (EI-13213, 2026-07-19): apps/operator-vite
@@ -466,6 +519,7 @@ jobs:
       # itself reports: zero INEFFECTIVE_DYNAMIC_IMPORT warnings, and the eager
       # (pre-first-paint) bundle stays under budget. ~15s.
       - name: Lint client bundle budget
+        if: ${{ !cancelled() }}
         run: npm run lint:bundle-budget
 
       # Smart-quote guard (EI-418, found via EI-412): a curly quote used as a
@@ -475,6 +529,7 @@ jobs:
       # strings/comments/JSX alone) so the whole file never silently fails to
       # transform.
       - name: Lint smart quotes in code
+        if: ${{ !cancelled() }}
         run: npm run lint:smart-quotes
 
       # MDX compile guard (EI-438): a bare `<word>` placeholder in docs prose
@@ -484,6 +539,7 @@ jobs:
       # GATING — compiles every tracked .mdx with the MDX core + remark-gfm
       # (matches starlight), so a non-compiling doc never reaches main.
       - name: Lint MDX compiles
+        if: ${{ !cancelled() }}
         run: npm run lint:mdx
 
       # GitHub user-vs-org identity drift guard (WI-4978): `papercupai` is a
@@ -494,6 +550,7 @@ jobs:
       # 'papercupai' org, 404-ing for every publisher). GATING — regex scan of
       # tracked docs; the canonical explanation lives once in distribution.mdx.
       - name: Lint GitHub identity terminology
+        if: ${{ !cancelled() }}
         run: npm run lint:github-identity-terms
 
       # Shell syntax guard (EI-13192): a concurrent shared-tree edit interleave
@@ -502,6 +559,7 @@ jobs:
       # GATING — a real `bash -n` parse (not a regex) over every tracked .sh, the
       # same detector the git-sync content guard already runs pre-commit.
       - name: Lint shell script syntax
+        if: ${{ !cancelled() }}
         run: npm run lint:shell-syntax
 
       # Mac build-path bash-3.2 portability guard (EI-18093921841116426 / WI-5769):
@@ -513,6 +571,7 @@ jobs:
       # ONLY to the mac build path (many other bin/*.sh legitimately use these
       # builtins on Linux/Windows-cross legs that run a modern bash).
       - name: Lint mac build-path bash-3.2 portability
+        if: ${{ !cancelled() }}
         run: npm run lint:mac-bash-portability
 
       # Assert-integrity guard (WI-5788 / P-411): rig + scenario scripts whose probe
@@ -529,6 +588,7 @@ jobs:
       # superproject finds ZERO scripts here, and a "pass" from scanning nothing would
       # be the exact can-falsely-pass shape this guard exists to catch.
       - name: Lint scenario assert integrity
+        if: ${{ !cancelled() }}
         run: npm run lint:assert-integrity
 
       # Vacuous-negative-assertion guard (EI-18765867705399052): the mirror image of the
@@ -545,6 +605,7 @@ jobs:
       # gate. Replaying the real pre-fix commit through the judge flags that one
       # assertion and only it — pinned in check-vacuous-negative-assertions.test.ts.
       - name: Lint vacuous negative test assertions
+        if: ${{ !cancelled() }}
         run: npm run lint:vacuous-negatives
 
       # Migration forward-compatibility guard (EI-18797473716313783): a migration runs
@@ -571,6 +632,7 @@ jobs:
       # The checker self-tests its own detector against embedded positive/negative
       # fixtures and refuses to report green on an empty scan (D-076 §4 non-vacuity).
       - name: Lint migration forward compatibility
+        if: ${{ !cancelled() }}
         run: npm run lint:migration-forward-compat
 
       # Insight-doc citation guard (WI-1576): an agent-insights doc's `documents:`
@@ -581,6 +643,7 @@ jobs:
       # the harness-docs anchor/drift system uses (subject-ref.ts), so this lint
       # and that system can never disagree on what a doc cites.
       - name: Lint agent-insights doc citations resolve on disk
+        if: ${{ !cancelled() }}
         run: npm run lint:insight-citations
 
       # Normative-insight frontmatter guard (unified-agent-state-plane-2026-07-27
@@ -593,6 +656,7 @@ jobs:
       # entry nothing can act on. GATING, but never forces opt-in — an unmarked
       # explanatory doc is the corpus default and always passes.
       - name: Lint normative agent-insights declare `governs`
+        if: ${{ !cancelled() }}
         run: npm run lint:insight-normative
 
       # Rubric method_ref parity guard (EI-8795): rubrics/<id>/METHOD.md and its served
@@ -603,6 +667,7 @@ jobs:
       # WI-3479). GATING — every METHOD.md must have a byte-identical mdx twin
       # (frontmatter aside).
       - name: Lint rubric method_ref (METHOD.md ⇄ agent-insights mdx) parity
+        if: ${{ !cancelled() }}
         run: npm run lint:rubric-method-ref-parity
 
       # TSC type-error gate (lint-tsc-gating-EI-60): operator-core has a
@@ -611,6 +676,7 @@ jobs:
       # packages/operator-core/.tsc-baseline.json and updated only
       # intentionally (npm run lint:tsc -- --update).
       - name: Lint TSC type errors (gates new errors, allows pre-existing baseline)
+        if: ${{ !cancelled() }}
         run: npm run lint:tsc
 
       # Vite externalized-module guard (EI-7275): a `vite build` warning "Module
@@ -623,6 +689,7 @@ jobs:
       # (apps/operator-vite/.externalized-warnings-baseline.json); a shrink-only
       # ratchet, updated only intentionally (npm run lint:vite-externalized -- --update).
       - name: Lint vite build for new externalized-module warnings
+        if: ${{ !cancelled() }}
         run: npm run lint:vite-externalized
 
       # Vite EAGER externalized-reach guard (WI-4518): the sibling gate above counts
@@ -635,6 +702,7 @@ jobs:
       # Allowlist: browser-polyfilled builtins only (buffer). See
       # scripts/trace-vite-externalized.mjs.
       - name: Lint vite build for EAGER server-module reach (white-page guard)
+        if: ${{ !cancelled() }}
         run: npm run lint:vite-eager
 
       # Drizzle drift: regenerate generated.ts from the live test PG and
