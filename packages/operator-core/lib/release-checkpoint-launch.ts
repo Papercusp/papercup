@@ -26,7 +26,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';

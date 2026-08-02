@@ -2286,6 +2286,90 @@ describe('changeInCandidate (P-004)', () => {
       });
     });
 
+    /**
+     * EI-19325709344484737 — `present` is a SUBSTRING test, so it proves the marker
+     * string is there, never that the CHANGE is. For a marker that is not unique to the
+     * edit (a common identifier already in the file) a candidate cut BEFORE the fix reads
+     * as carrying it, and the surface then emits a confident exoneration plus "Do NOT
+     * re-fire".
+     *
+     * Reproduced from the real 2026-08-02 incident: marker 'backingTables' occurred 14×
+     * in judged candidate 1ee32228 and 16× at tip; the candidate did NOT carry the fix
+     * (`git show <candidate>:<path> | grep harness_shared.operator_turns` → 0 hits) yet
+     * the tool said it did. Believing it would have left main pinned behind a run that
+     * provably could not green.
+     */
+    describe('marker containment — a NON-UNIQUE marker must not exonerate (EI-19325709344484737)', () => {
+      /** judged carries the marker FEWER times than tip ⇒ it lacks part of the change. */
+      const splitGit =
+        (atJudging: string, atNext: string): GitRunner =>
+        async (_repo, args) => {
+          if (args[0] === 'status') return 'M a.ts';
+          if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
+          if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
+          if (args[0] === 'rev-list') return '0';
+          if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
+          if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'judging1:a.ts') return '0'.repeat(40);
+          if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'next1:a.ts') return '1'.repeat(40);
+          if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'HEAD:a.ts') return 'f'.repeat(40);
+          if (args[0] === 'hash-object') return 'f'.repeat(40);
+          if (args[0] === 'ls-tree') return `100644 blob ${'e'.repeat(40)}\ta.ts`;
+          if (args[0] === 'show') return args.some((a) => String(a).startsWith('next1:')) ? atNext : atJudging;
+          return null;
+        };
+
+      const runSplit = (marker: string, atJudging: string, atNext: string) =>
+        gitPipelinePosition(
+          { path: 'a.ts', marker },
+          {
+            git: splitGit(atJudging, atNext),
+            loadDeploy: async () => deploy(),
+            loadSnapshot: async () => snap(),
+            resolveGateCandidates: async () => ({ judgingSha: 'judging1', nextCandidateSha: 'next1' }),
+          },
+        );
+
+      it('does NOT exonerate a candidate carrying FEWER occurrences than tip', async () => {
+        // 2 occurrences judged, 3 at tip — the shape of 14-vs-16.
+        const res = await runSplit(
+          'backingTables',
+          'backingTables x backingTables',
+          'backingTables x backingTables y backingTables',
+        );
+        expect(res.changeInCandidate.markerJudging?.count).toBe(2);
+        expect(res.changeInCandidate.markerNext?.count).toBe(3);
+        // The exoneration and its imperative are the two things that cost the outage.
+        expect(res.changeInCandidate.detail).not.toMatch(/DOES carry your change/);
+        expect(res.changeInCandidate.detail).not.toMatch(/Do NOT re-fire/);
+        // It must say what is actually true, and point at the check that IS definitive.
+        expect(res.changeInCandidate.detail).toMatch(/PART of the change/);
+        expect(res.changeInCandidate.detail).toMatch(/callerEditsInCandidate|release:checkpoint-run/);
+        // …and it must render as a WARNING, never behind the reassuring ✓.
+        expect(res.summary).not.toMatch(/✓ .*carries the marker/);
+      });
+
+      it('an EQUAL count still confirms — this must not fire on the honest case', async () => {
+        const res = await runSplit('MY_FIX_MARKER', 'x MY_FIX_MARKER y', 'x MY_FIX_MARKER y');
+        expect(res.changeInCandidate.detail).toMatch(/DOES carry your change/);
+        expect(res.changeInCandidate.detail).not.toMatch(/PART of the change/);
+      });
+
+      it('a UNIQUE marker present once on both sides confirms with no caveat', async () => {
+        const res = await runSplit('UNIQ_MARK', 'a UNIQ_MARK b', 'a UNIQ_MARK b');
+        expect(res.changeInCandidate.markerJudging?.count).toBe(1);
+        expect(res.changeInCandidate.detail).toMatch(/DOES carry your change/);
+        expect(res.changeInCandidate.detail).not.toMatch(/not unique to your change/);
+      });
+
+      it('a non-unique marker that IS fully present still warns that it cannot discriminate', async () => {
+        const res = await runSplit('common', 'common common', 'common common');
+        expect(res.changeInCandidate.detail).toMatch(/DOES carry your change/);
+        // Equal counts cannot prove absence, but a repeated marker cannot prove presence
+        // of the CHANGE either — say so rather than implying certainty.
+        expect(res.changeInCandidate.detail).toMatch(/not unique to your change/);
+      });
+    });
+
     it('does NOT claim containment across a submodule boundary — the gate judges the PIN', async () => {
       // The superproject stores a gitlink, not submodule content, so a blob comparison
       // there compares nothing. Reporting `true` would be the same absence-reads-as-

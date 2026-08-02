@@ -1079,6 +1079,31 @@ const NO_CHANGE_IN_CANDIDATE: ChangeInCandidate = {
   detail: null,
 };
 
+/**
+ * EI-19325709344484737 — is the marker only PARTIALLY present in `judged`?
+ *
+ * `present` is a substring test, so it answers "does this string appear", not "is my
+ * change here". Those diverge for any marker that is not unique to the edit: a generic
+ * identifier already in the file makes a pre-fix candidate read as carrying the change.
+ *
+ * The counts are already computed on both sides, and a judged count strictly BELOW the
+ * tip count is positive proof the judged tree lacks occurrences the change added. That
+ * is a definitive NEGATIVE (it can only under-claim: a change that adds no new
+ * occurrence of the marker is simply not detected, which is the pre-existing behaviour).
+ *
+ * Returns false whenever either side is unmeasured — never invent a partial verdict from
+ * a missing count.
+ */
+export function markerPartialAgainst(
+  judged: MarkerContainment | null | undefined,
+  tip: MarkerContainment | null | undefined,
+): boolean {
+  if (!judged || !tip) return false;
+  if (judged.present !== true || tip.present !== true) return false;
+  if (typeof judged.count !== 'number' || typeof tip.count !== 'number') return false;
+  return judged.count < tip.count;
+}
+
 /** The two candidate shas the gate machinery can name, resolved together. */
 export interface GateCandidates {
   /** Candidate of the run in flight right now, or null when none is. */
@@ -1134,10 +1159,42 @@ export function evaluateChangeInCandidate(args: {
     const at = sha?.slice(0, 12);
     if (m.present === true) {
       const times = m.count === 1 ? 'once' : `${m.count}×`;
+      /**
+       * EI-19325709344484737: presence is a SUBSTRING test, so it can only ever prove
+       * the marker string is there — never that YOUR CHANGE is. When the marker is a
+       * generic identifier that already occurred in the file, `present` is true for a
+       * candidate cut BEFORE the fix, and the exoneration below is confidently wrong.
+       *
+       * Measured 2026-08-02 on candidate 1ee32228: marker 'backingTables' occurred 14×
+       * in the judged candidate and 16× at tip. The candidate did NOT carry the fix
+       * (`git show <candidate>:<path> | grep harness_shared.operator_turns` → 0 hits),
+       * yet this said "DOES carry your change ... Do NOT re-fire". Believing it would
+       * have left main pinned behind a run that provably could not green.
+       *
+       * The count differential is the cheap discriminator and both numbers are already
+       * computed — a judged count BELOW the tip count is positive proof the judged tree
+       * is missing occurrences the change added. Say so instead of exonerating.
+       */
+      if (which === 'judged' && markerPartialAgainst(m, markerNext)) {
+        return (
+          `The gate's judged candidate (${at}) carries the marker ${times}, but tip has it ` +
+          `${markerNext?.count}× — so the judged tree is MISSING ${(markerNext?.count ?? 0) - m.count} ` +
+          `occurrence(s) your change added. It carries only PART of the change. Treat a RED from ` +
+          `it as UNPROVEN, not as a verdict on your code. Note the marker cannot settle this on ` +
+          `its own: it is a substring test, so a marker that already existed in the file reads as ` +
+          `"present" for a candidate cut before your fix. Settle it by containment instead — ` +
+          `release:checkpoint-run { paths: [...] } reports callerEditsInCandidate.missing — or ` +
+          `re-call with a marker string UNIQUE to your change.`
+        );
+      }
       return which === 'judged'
         ? `The gate's judged candidate (${at}) DOES carry your change — the marker occurs ${times} in its version of this file. ` +
             `That verdict IS a real verdict on your code, so a RED there is about your change, not about a missing one. ` +
-            `Do NOT re-fire to "get a run that includes it" — you already have one.`
+            `Do NOT re-fire to "get a run that includes it" — you already have one.` +
+            (m.count > 1
+              ? ` (Caveat: the marker occurs ${times}, so it is not unique to your change — if it is a common identifier ` +
+                `rather than a string your edit introduced, confirm with release:checkpoint-run { paths: [...] }.)`
+              : '')
         : `A checkpoint fired now would judge ${at}, which DOES carry your change (marker occurs ${times}).`;
     }
     if (m.present === false) {
@@ -1595,8 +1652,16 @@ export function computeStages(
      * count as `notInCandidate`, or the warning and the lever both keep firing on a
      * question that has already been answered.
      */
+    /**
+     * EI-19325709344484737: a PARTIAL marker must not silence the warning or the lever.
+     * When the judged candidate carries fewer occurrences than tip, it demonstrably lacks
+     * part of the change, so treating it as "present" here reproduces the original bug in
+     * the place that actually drives behaviour — `judgedRunCoversChange` feeds the
+     * "nothing to do, a verdict is coming" arm, which is what leaves main pinned.
+     */
     const markerSaysPresent =
-      cic.markerJudging?.present === true || (!cic.judgingSha && cic.markerNext?.present === true);
+      !markerPartialAgainst(cic.markerJudging, cic.markerNext) &&
+      (cic.markerJudging?.present === true || (!cic.judgingSha && cic.markerNext?.present === true));
     const notInCandidate =
       !markerSaysPresent && (cic.judgingContainsPath === false || cic.nextContainsPath === false);
     /** The judged run demonstrably covers this change — by identity OR by marker. */
@@ -2215,11 +2280,19 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
   // caller asked — but it is reassurance, not a warning, and rendering it behind ⚠ would
   // re-create the alarm this fix exists to silence.
   const cicSum = p.changeInCandidate;
-  const markerConfirmed = cicSum.markerJudging?.present === true || (!cicSum.judgingSha && cicSum.markerNext?.present === true);
+  /**
+   * EI-19325709344484737: a PARTIAL marker (judged carries fewer occurrences than tip) is
+   * a WARNING, not reassurance. Rendering it behind ✓ is precisely how a candidate that
+   * lacked the fix read as an all-clear — the ✓ is the glyph a hurried caller stops at.
+   */
+  const markerPartial = markerPartialAgainst(cicSum.markerJudging, cicSum.markerNext);
+  const markerConfirmed =
+    !markerPartial &&
+    (cicSum.markerJudging?.present === true || (!cicSum.judgingSha && cicSum.markerNext?.present === true));
   const markerDenied = cicSum.markerJudging?.present === false || (!cicSum.judgingSha && cicSum.markerNext?.present === false);
   const candidateNote = markerConfirmed
     ? ` ✓ ${cicSum.detail}`
-    : markerDenied || cicSum.judgingContainsPath === false || cicSum.nextContainsPath === false
+    : markerPartial || markerDenied || cicSum.judgingContainsPath === false || cicSum.nextContainsPath === false
       ? ` ⚠ ${cicSum.detail}`
       : '';
   return `${leadClause(p)}${label} @${p.targetShortSha}${subj}: committed ${tick(p.positions.committedLocal)} · staging ${tick(

@@ -67,9 +67,13 @@ describe('workItemBlockingEdge (coord_links → scheduler mirror)', () => {
  * linkWorkItem checked a form, only on the dst, and only for features; linkIssue checked nothing.
  *
  * These tests pin the invariant at the seam, in BOTH directions, because a violation is not
- * cosmetic: a mismatched endpoint is invisible to BOTH blocking floors, so the edge is silently
- * inert — a dependency that looks recorded and gates nothing. Three such rows already exist
- * (offsite-planner-demo#WI-247/248/249: blocked_kind='feature' pointing at item_kind='task').
+ * cosmetic: a form-mismatched endpoint is invisible to BOTH blocking floors, so the edge is
+ * silently inert — a dependency that looks recorded and gates nothing.
+ *
+ * ⚠ SCOPE: this is the ref-FORM half only. It cannot catch an endpoint whose form is correct but
+ * whose TARGET is the other family (live: offsite-planner-demo#WI-247/248/249 declare
+ * blocked_kind='feature' with a properly qualified ref, yet point at item_kind='task' rows) —
+ * that needs a DB read, so it is a separate guard. Do not extend these tests to imply otherwise.
  */
 describe('work_item_deps endpoint ref-form invariant (P-005 / D-009)', () => {
   const issue = { kind: 'issue', ref: 'EI-1' };

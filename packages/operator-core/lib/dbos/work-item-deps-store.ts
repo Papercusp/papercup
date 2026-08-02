@@ -49,12 +49,21 @@ const ISSUE_ENDPOINT_KIND = 'issue';
  * doors funnel here, but only `linkWorkItem` checked a ref form, only on the `dst`, and only in
  * the feature direction — `linkIssue` mirrored straight through with no check at all. That is
  * the same shape as D-007 itself: a rule applied at one door instead of at the shared seam, so
- * the unchecked door drifts. A mismatched edge is not a cosmetic problem — it is INVISIBLE TO
- * BOTH FLOORS (the issue floor looks for the bare ref and misses; the feature floor matches the
- * shape but is only ever evaluated for feature-family rows), i.e. a silently inert dependency.
- * Live proof it already happened: 3 rows with `blocked_kind='feature'` pointing at rows whose
- * real `item_kind` is `task` (offsite-planner-demo#WI-247/248/249). A one-time migration could
- * not have prevented them, because the next bad write recreates them.
+ * the unchecked door drifts. A form-mismatched edge is not cosmetic — it is INVISIBLE TO BOTH
+ * FLOORS (the issue floor looks for the bare ref and misses; the feature floor matches only the
+ * qualified form), i.e. a silently inert dependency that looks recorded and gates nothing. A
+ * one-time migration could not prevent it, because the next bad write recreates it.
+ *
+ * ⚠ WHAT THIS DELIBERATELY DOES **NOT** CATCH — do not read it as more coverage than it has.
+ * This validates the ref's FORM against the declared `kind`. It cannot validate that the endpoint
+ * RESOLVES to a row of that kind, because that needs a database read and this function is pure
+ * (its purity is what lets the invariant be tested exhaustively and applied on every write path
+ * without an await). A row can therefore satisfy this guard and still be inert: 3 such rows exist
+ * live — `offsite-planner-demo#WI-247/248/249` carry `blocked_kind='feature'` with a properly
+ * QUALIFIED ref, but the rows they point at are `item_kind='task'` (issue-family), so the issue
+ * floor never matches them (it keys on the bare id) and the feature floor never evaluates them
+ * (the sidecar triggers are feature-only). That kind↔TARGET-FAMILY check is a separate, DB-backed
+ * guard, tracked separately — this one is its necessary but not sufficient half.
  *
  * Throws rather than returning null: `null` already means "self-edge, skip", and overloading it
  * with "malformed, dropped" would make a caller bug SILENT — the exact failure mode this guards.

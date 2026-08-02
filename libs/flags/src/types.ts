@@ -1824,6 +1824,20 @@ export const FLAGS = {
   // reversible. OFF ⇒ the hook's nudge branch is inert (no reminder ever emitted); the cheap local
   // edit-marker touch is harmless either way. The owner kill-switch for the backstop.
   WORKITEM_VERIFY_NUDGE: "papercusp-workitem-verify-nudge",
+  // DEFAULT ON (WI-6949): the WAKE-SOURCE halt guard — the `loop-halt-guard` cc Stop-hook.
+  // An agent in an autonomy mode (auto/cold-auto/drain) with NO armed engine loop has no wake
+  // source of its own: it runs only while an interactive owner keeps replying, and the moment
+  // they stop, the next turn it ends is its last (a carry-respawn restores CONTEXT, not a TURN).
+  // Observed 2026-08-02: an su went silently inert for ~37min this way. The playbook's own
+  // "end-of-turn test" did not prevent it because that rule is anchored to a CESSATION rather
+  // than an action, and the hazard is created at a transition (owner-present → owner-absent)
+  // that nothing marks — so this hook is the only check that fires at the cessation point.
+  // BLOCKING but hard-bounded: AT MOST ONE bounce per session (a `.done` marker written BEFORE
+  // the decision is printed, verified to hold independently of the recheck rate-limiter), and
+  // fail-CLOSED on every unknown — it must POSITIVELY prove the hazard (autonomy mode present
+  // AND loop.active explicitly not true) or it exits silently. OFF ⇒ the hook never blocks.
+  // The owner kill-switch; NOT in DARK_FLAGS (additive + reversible + bounded).
+  LOOP_HALT_GUARD: "papercusp-loop-halt-guard",
   // DEFAULT ON (infra-perf-reliability-audit-round3-2026-06-19 P-013 / WI-345 F12):
   // the KILL leg of the test-webview reaper — actually SIGTERMs then SIGKILLs
   // papercusp-desktop processes whose PAPERCUSP_ADV_SESSION_ID session is ENDED

@@ -719,11 +719,16 @@ async function buildBlockInner(
           // recoverable for free and the boilerplate rate measurable. Shape
           // only; the text never leaves this call.
           //
-          // P-042: record the EFFECTIVE retrieval text, not `userText`. They are
-          // the same string today, so the baseline being gathered right now is
-          // unaffected — but when P-044 adds agent signals to the query, the
-          // instrument follows the fix automatically instead of quietly
-          // continuing to measure the old query and reporting no change.
+          // P-042: record the EFFECTIVE retrieval text, not `userText`.
+          //
+          // P-044 made those diverge for real, and this records the COSINE
+          // leg's query — deliberately. That is the text whose SHAPE this
+          // instrument was built to judge (it is the one that gets embedded,
+          // and the one whose identifier pollution D-041 measured), so the
+          // mid-turn de-dilution shows up here as a real before/after rather
+          // than being averaged away against a lexical query that still carries
+          // every path. The lexical half is not lost — it is derivable from the
+          // signals, and P-045 measures the legs separately on the bench.
           query: queryText,
           sessionId: input.session?.sessionId ?? null,
           pools: {

@@ -347,7 +347,7 @@ export function classifyLadderEscalations(input: {
  * live in SQL (cheap set math); the per-recipient verdicts live in the
  * classifier above.
  */
-async function findLadderCandidates(
+export async function findLadderCandidates(
   nowMs: number,
   ttlMs: number,
 ): Promise<LadderCandidateRow[]> {
@@ -363,7 +363,21 @@ async function findLadderCandidates(
         e.body->>'summary' AS summary,
         e.body->>'related_msg_id' AS reply_to,
         (e.body->>'auto') = 'true' AS auto,
-        (extract(epoch FROM (e.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms
+        -- Envelope-derived FIRST (unchanged reporting semantics), falling back to
+        -- the row's arrival time. The COALESCE is load-bearing since the window
+        -- moved to the ts COLUMN (EI-19325333358401288): rows with a NULL
+        -- body->>'ts' used to be dropped by the window itself, so ts_ms could
+        -- never be NULL. Now they are correctly in scope -- and a NULL here would
+        -- be actively DANGEROUS rather than merely untidy:
+        --   * Number(r.newest_ts_ms) (classifyLadderEscalations) turns NULL into
+        --     0, i.e. 1970 -- which reads as maximally-stale unread mail and can
+        --     fire a spurious escalation WAKE at a real agent;
+        --   * array_agg(... ORDER BY ts_ms DESC) puts NULLs FIRST in Postgres, so
+        --     newest_from / newest_summary would report the wrong message.
+        COALESCE(
+          (extract(epoch FROM (e.body->>'ts')::timestamptz) * 1000)::bigint,
+          (extract(epoch FROM e.ts) * 1000)::bigint
+        ) AS ts_ms
         FROM harness_shared.coord_event_log e
         CROSS JOIN LATERAL jsonb_array_elements_text(e.body->'to') AS r
        WHERE e.surface = 'messages'
@@ -385,8 +399,35 @@ async function findLadderCandidates(
          AND (e.body->>'auto') IS DISTINCT FROM 'true'
          AND r NOT IN ('*', 'human', '')
          AND r NOT LIKE '@%'
-         AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
-         AND (e.body->>'ts')::timestamptz <= to_timestamp(${newestAllowedMs}::double precision / 1000)
+         -- WINDOW ON THE ts COLUMN, NEVER ON body->>'ts' (EI-19325333358401288).
+         -- coord_event_log_messages_ts_idx is (workspace_id, ts, id) WHERE
+         -- surface='messages', so a predicate over the JSONB EXTRACTION + CAST
+         -- (body->>'ts')::timestamptz cannot use it -- this query was the single
+         -- largest consumer of the whole table (100.6h of DB time across 299,921+
+         -- calls, 863ms mean to return ONE aggregated row). Measured on the live
+         -- box, same 24h window, identical row counts:
+         --   (body->>'ts')::timestamptz -> Parallel Seq Scan, 37,148 buffers,
+         --                                 3 extra workers launched, 107ms
+         --   ts                         -> Index Only Scan,      95 buffers,
+         --                                 0 extra workers,       3.2ms
+         -- i.e. ~391x fewer buffers, and it stops launching 3 parallel workers per
+         -- call on a box that is already the thing we are trying to unsaturate.
+         --
+         -- SAFE, and not merely "close enough" -- the two differ in exactly two
+         -- ways, both measured across all 76,367 live message rows:
+         --   1. 34 rows differ at all; max delta 49.44s, NONE over 60s. The window
+         --      here is a 6h lookback with a 5m TTL edge, so a sub-minute skew
+         --      cannot flip a verdict.
+         --   2. 2 rows have a NULL body->>'ts'. They were silently DROPPED before
+         --      ((NULL)::timestamptz >= x is NULL, not false); ts is NOT NULL so
+         --      they are now correctly considered. That is a fix, not a regression:
+         --      a message with no envelope ts still has a real arrival time. See
+         --      the COALESCE on ts_ms above, which that inclusion made mandatory.
+         -- ts_ms above deliberately KEEPS preferring body->>'ts', so every timestamp
+         -- the classifier reports/renders stays envelope-derived exactly as before.
+         -- Pinned by delivery-ladder-sweep.integration.test.ts.
+         AND e.ts >= to_timestamp(${sinceMs}::double precision / 1000)
+         AND e.ts <= to_timestamp(${newestAllowedMs}::double precision / 1000)
     )
     SELECT workspace_id,
            recipient,
@@ -411,8 +452,12 @@ async function findLadderCandidates(
 }
 
 /** IO: recipients the ladder already woke inside the storm window — the
- *  marker messages ARE the record (see module docstring). */
-async function findStormCappedRecipients(
+ *  marker messages ARE the record (see module docstring).
+ *  Exported (with findLadderCandidates) ONLY so the real SQL is reachable from
+ *  delivery-ladder-sweep.integration.test.ts — the unit suite DI's both away via
+ *  `io`, so before that test the window predicates had no coverage at all, which
+ *  is precisely how the EI-19325333358401288 index-miss survived. */
+export async function findStormCappedRecipients(
   nowMs: number,
   stormMs: number,
 ): Promise<Set<string>> {
@@ -424,7 +469,12 @@ async function findStormCappedRecipients(
       CROSS JOIN LATERAL jsonb_array_elements_text(e.body->'to') AS r
      WHERE e.surface = 'messages'
        AND e.body->>'from' = ${DELIVERY_LADDER_OWNER}
-       AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
+       -- Same index-miss as findLadderCandidates above (EI-19325333358401288) --
+       -- see the long note there for the measurement and the two semantic
+       -- differences. Cheaper per call than that one (the from predicate is
+       -- selective), but it runs on the SAME tick, so leaving it on the JSONB cast
+       -- would keep paying a seq scan of the whole messages surface every sweep.
+       AND e.ts >= to_timestamp(${sinceMs}::double precision / 1000)
   `;
   return new Set(rows.map((r) => r.recipient));
 }
