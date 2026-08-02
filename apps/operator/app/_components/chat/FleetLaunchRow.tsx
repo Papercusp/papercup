@@ -192,6 +192,13 @@ export interface FleetLaunchRowProps {
 export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRowProps) {
   // Selections live in the URL (see the module header). Prefixed keys so they
   // cannot collide with the ~180 params already in use across this app.
+  /**
+   * P-007: whether the launcher is expanded. nuqs, not useState — this is
+   * disclosure open-state, which the repo's own rule puts in the URL (and it
+   * means a half-filled fleet form survives a reload alongside the field
+   * values below, which are already nuqs for the same reason).
+   */
+  const [fleetOpen, setFleetOpen] = useQueryState('fleetOpen', parseAsBoolean.withDefault(false));
   const [fleetName, setFleetName] = useQueryState('fleetName', parseAsString.withDefault(''));
   const [planSlug, setPlanSlug] = useQueryState('fleetPlan', parseAsString);
   const [model, setModel] = useQueryState('fleetModel', parseAsString.withDefault(''));
@@ -314,91 +321,164 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
       data-testid="fleet-launch-row"
       aria-label="Launch a fleet"
     >
-      <span className="pc-fleet-launch-row__label">Fleet</span>
-      {/* Reuses the new-session row's own control classes (hud.css, already
-          imported by SessionChatModal) so the two launchers render as the same
-          control strip rather than as two different-looking forms. */}
-      <div className="pc-new-session-launcher pc-fleet-launch-row__controls">
-        <input
-          className="pc-new-session-launcher__input"
-          type="text"
-          value={fleetName}
-          onChange={(e) => void setFleetName(e.target.value)}
-          placeholder="Fleet name"
-          aria-label="Name for the new fleet"
-          data-testid="fleet-launch-name"
-        />
-        <Combobox
-          triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--plan"
-          value={planSlug ?? PLAN_SELECT_PLACEHOLDER}
-          emptyValue={PLAN_SELECT_PLACEHOLDER}
-          onChange={(value) => void setPlanSlug(value === PLAN_SELECT_PLACEHOLDER ? null : value)}
-          disabled={planList.loading}
-          ariaLabel="Plan the fleet works"
-          placeholder={planList.loading ? 'Loading plans…' : 'Select plan…'}
-          emptyLabel="No plans match"
-          options={planOptions}
-        />
-        <Combobox
-          triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--model"
-          value={model || MODEL_SELECT_DEFAULT}
-          emptyValue={MODEL_SELECT_DEFAULT}
-          onChange={(value) => void setModel(value === MODEL_SELECT_DEFAULT ? '' : value)}
-          ariaLabel="Model for every fleet member"
-          placeholder="Default"
-          emptyLabel="No models match"
-          options={OMP_MODEL_OPTIONS}
-        />
+      {/* ── P-007: the disclosure ──────────────────────────────────────────
+          Collapsed, this is ONE control in the vocabulary's Action shape, with
+          the trailing "…" that means a chooser opens. Expanded, it is the
+          captioned form below.
+
+          WI-6505's requirement survives intact: the row is still rendered
+          OUTSIDE `actionCtx`, so it is still reachable exactly when the
+          session is dead or will not start — a disclosure costs one click,
+          where the actionCtx gate removed the row entirely based on state the
+          user did not choose. The owner confirmed 2026-08-02 that the launcher
+          STAYS in the popup, so this is a form change, not a move. ── */}
+      {!fleetOpen ? (
+        <div className="pc-ctl-band">
+          <button
+            type="button"
+            className="pc-ctl-act"
+            onClick={() => void setFleetOpen(true)}
+            data-testid="fleet-launch-disclosure"
+          >
+            <span className="pc-ctl-act__inner">
+              <span className="pc-ctl-act__icon" aria-hidden="true">
+                ✛
+              </span>
+              <span>Launch a fleet…</span>
+            </span>
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="pc-ctl-band">
+            <span className="pc-ctl-band__label">Fleet</span>
+            <span className="pc-ctl-band__spacer" />
+            <button
+              type="button"
+              className="pc-ctl-act pc-ctl-act--ghost"
+              onClick={() => void setFleetOpen(false)}
+              data-testid="fleet-launch-collapse"
+              aria-label="Hide the fleet launcher"
+            >
+              <span className="pc-ctl-act__inner">Cancel</span>
+            </button>
+          </div>
+          {/* Every control below is a Field: a caption ABOVE a recessed well.
+              The captions are the whole point of this item — until now these
+              seven controls had NO visible names at all, their labels existed
+              only in `ariaLabel`, and that is literally where the owner's
+              complaint text came from ("Plan the fleet works", "Account
+              routing for every fleet member"). Those strings were never meant
+              to be read as UI copy; they were being read as UI copy because
+              nothing else named the controls. */}
+          <div className="pc-new-session-launcher pc-fleet-launch-row__fields">
+        <div className="pc-ctl-field">
+          <span className="pc-ctl-field__cap" id="fleet-cap-name">
+            Fleet name
+          </span>
+          <input
+            className="pc-new-session-launcher__input"
+            type="text"
+            value={fleetName}
+            onChange={(e) => void setFleetName(e.target.value)}
+            placeholder="Names the fleet's durable handle"
+            aria-labelledby="fleet-cap-name"
+            data-testid="fleet-launch-name"
+          />
+        </div>
+        <div className="pc-ctl-field">
+          <span className="pc-ctl-field__cap">Plan — the lane members work</span>
+          <Combobox
+            triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--plan"
+            value={planSlug ?? PLAN_SELECT_PLACEHOLDER}
+            emptyValue={PLAN_SELECT_PLACEHOLDER}
+            onChange={(value) => void setPlanSlug(value === PLAN_SELECT_PLACEHOLDER ? null : value)}
+            disabled={planList.loading}
+            ariaLabel="Plan the fleet works"
+            placeholder={planList.loading ? 'Loading plans…' : 'Select plan…'}
+            emptyLabel="No plans match"
+            options={planOptions}
+          />
+        </div>
+        <div className="pc-ctl-field">
+          <span className="pc-ctl-field__cap">Model — every member</span>
+          <Combobox
+            triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--model"
+            value={model || MODEL_SELECT_DEFAULT}
+            emptyValue={MODEL_SELECT_DEFAULT}
+            onChange={(value) => void setModel(value === MODEL_SELECT_DEFAULT ? '' : value)}
+            ariaLabel="Model for every fleet member"
+            placeholder="Default"
+            emptyLabel="No models match"
+            options={OMP_MODEL_OPTIONS}
+          />
+        </div>
         {/* The owner's fifth option — "default system account or pin to an
             account using the inference gateway" — IS this control: its rows are
             `default` (system/CLI login, gateway skipped), `auto` (gateway-routed
             with failover) and every pool account (a hard gateway pin). One
             control, because psu's --account is one flag with three modes. */}
-        <Combobox
-          triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--account"
-          value={account}
-          emptyValue={ACCOUNT_SELECT_DEFAULT}
-          onChange={(value) => void setAccount(value)}
-          ariaLabel="Account routing for every fleet member"
-          placeholder="Default account"
-          emptyLabel="No accounts match"
-          options={accountOptions}
-        />
-        <Combobox
-          triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--window"
-          value={headless ? HEADLESS_VALUE : HEADED_VALUE}
-          onChange={(value) => void setHeadless(value === HEADLESS_VALUE)}
-          ariaLabel="Headed or headless members"
-          placeholder="Headed"
-          emptyLabel="No modes match"
-          options={WINDOW_MODE_OPTIONS}
-        />
-        <input
-          className="pc-new-session-launcher__input pc-fleet-launch-row__count"
-          type="number"
-          min={1}
-          max={FLEET_MAX_MEMBERS}
-          value={count}
-          // Clamped on COMMIT, not on every keystroke: clamping as you type makes
-          // the field impossible to clear and retype (a "1" you are turning into
-          // "12" snaps back), so the raw value is held and bounded at launch.
-          onChange={(e) => void setCount(Number.parseInt(e.target.value, 10) || 1)}
-          onBlur={() => void setCount(clampMemberCount(count))}
-          aria-label="How many members to launch"
-          title={`How many members (1–${FLEET_MAX_MEMBERS})`}
-          data-testid="fleet-launch-count"
-        />
-        <Button
-          variant="primary"
-          size="sm"
-          className="pc-new-session-launcher__btn"
-          onClick={() => void launch()}
-          disabled={launching}
-          data-testid="fleet-launch-submit"
-        >
-          {launching ? 'Launching…' : '+ Launch fleet'}
-        </Button>
-      </div>
+        <div className="pc-ctl-field">
+          <span className="pc-ctl-field__cap">Account routing</span>
+          <Combobox
+            triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--account"
+            value={account}
+            emptyValue={ACCOUNT_SELECT_DEFAULT}
+            onChange={(value) => void setAccount(value)}
+            ariaLabel="Account routing for every fleet member"
+            placeholder="Default account"
+            emptyLabel="No accounts match"
+            options={accountOptions}
+          />
+        </div>
+        <div className="pc-ctl-field">
+          <span className="pc-ctl-field__cap">Windows</span>
+          <Combobox
+            triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--window"
+            value={headless ? HEADLESS_VALUE : HEADED_VALUE}
+            onChange={(value) => void setHeadless(value === HEADLESS_VALUE)}
+            ariaLabel="Headed or headless members"
+            placeholder="Headed"
+            emptyLabel="No modes match"
+            options={WINDOW_MODE_OPTIONS}
+          />
+        </div>
+        <div className="pc-ctl-field">
+          <span className="pc-ctl-field__cap" id="fleet-cap-count">
+            Members
+          </span>
+          <input
+            className="pc-new-session-launcher__input pc-fleet-launch-row__count"
+            type="number"
+            min={1}
+            max={FLEET_MAX_MEMBERS}
+            value={count}
+            // Clamped on COMMIT, not on every keystroke: clamping as you type makes
+            // the field impossible to clear and retype (a "1" you are turning into
+            // "12" snaps back), so the raw value is held and bounded at launch.
+            onChange={(e) => void setCount(Number.parseInt(e.target.value, 10) || 1)}
+            onBlur={() => void setCount(clampMemberCount(count))}
+            aria-labelledby="fleet-cap-count"
+            title={`How many members (1–${FLEET_MAX_MEMBERS})`}
+            data-testid="fleet-launch-count"
+          />
+        </div>
+          </div>
+          <div className="pc-ctl-band pc-fleet-launch-row__submit">
+            <span className="pc-ctl-band__spacer" />
+            <Button
+              variant="primary"
+              size="sm"
+              className="pc-new-session-launcher__btn"
+              onClick={() => void launch()}
+              disabled={launching}
+              data-testid="fleet-launch-submit"
+            >
+              {launching ? 'Launching…' : '+ Launch fleet'}
+            </Button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

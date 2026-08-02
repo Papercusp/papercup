@@ -173,6 +173,14 @@ export interface PairReplay {
   verdict: ReplayVerdict;
   /** Why the verdict is not `replay-clean`. Empty string when it is. */
   verdictReason: string;
+  /**
+   * Does substituting this pair actually cost less? (P-022, D-057.)
+   *
+   * Reported ALONGSIDE `verdict`, never folded into it: `replay-clean` answers
+   * "is the rewrite right", this answers "is the rewrite worth making", and a row
+   * needs both to earn auto-substitution.
+   */
+  savings: PairSavings;
   cases: ReplayCase[];
   matched: number;
   differed: number;
@@ -488,6 +496,105 @@ export function deriveReplayVerdict(cases: ReplayCase[]): { verdict: ReplayVerdi
   return { verdict: 'replay-clean', reason: '' };
 }
 
+/**
+ * How far from break-even counts as a real change rather than noise.
+ *
+ * 5% either way. A trailing newline, a one-line header, or a plural in a summary
+ * moves a small answer by a few percent, and reporting that as `reduces` would
+ * make the economy verdict fire on formatting.
+ */
+export const SAVINGS_NEUTRAL_BAND = 0.05;
+
+/**
+ * Derive what this pair's substitution actually costs.
+ *
+ * Two rules carry the weight here, and both are the same shape as the rules that
+ * make {@link deriveReplayVerdict} honest — absence of evidence must not read as
+ * evidence of absence:
+ *
+ *  1. ONLY `match` CASES ARE MEASURED. A `differs` case compares the cost of a
+ *     right answer against the cost of a wrong one, which is not an economy
+ *     measurement at all; a cheaper wrong answer is the worst outcome available,
+ *     and admitting it here would let a broken rewrite report a saving. Refused
+ *     and inconclusive cases never produced two texts to weigh.
+ *  2. NO MEASURED CASES YIELDS `unmeasured`, NEVER `neutral`. This is the exact
+ *     error D-057 records, in miniature: "I did not detect a difference" and
+ *     "there is no difference" are different claims, and a harness that answers
+ *     the first with the vocabulary of the second is how an unmeasured assumption
+ *     acquires the authority of a result.
+ *
+ * The aggregate is a RATIO OF TOTALS, not a mean of per-case ratios. The two
+ * disagree whenever case sizes differ, and the mean-of-ratios is the misleading
+ * one: a 10-byte answer that becomes 12 bytes is +20%, and averaging that against
+ * a 10KB answer that becomes 9KB (-10%) reports a net inflation for a pair that
+ * plainly saves ~1KB per use. Context is paid in bytes, so bytes are what is
+ * summed.
+ */
+export function deriveSavings(cases: ReplayCase[]): PairSavings {
+  const measured = cases.filter(
+    (c) => c.verdict === 'match' && typeof c.bashBytes === 'number' && typeof c.toolBytes === 'number',
+  );
+
+  if (measured.length === 0) {
+    return {
+      verdict: 'unmeasured',
+      reason:
+        'no case both matched and carried a byte measurement — economy is unknown for this pair, ' +
+        'which is not the same as unchanged',
+      bashBytes: 0,
+      rewrittenBytes: 0,
+      deltaBytes: 0,
+      ratio: null,
+      measuredCases: 0,
+    };
+  }
+
+  const bashBytes = measured.reduce((sum, c) => sum + (c.bashBytes ?? 0), 0);
+  const rewrittenBytes = measured.reduce((sum, c) => sum + (c.toolBytes ?? 0), 0);
+  const deltaBytes = rewrittenBytes - bashBytes;
+
+  // A zero-byte bash side cannot be divided by. It is a real outcome (a command
+  // that legitimately returns nothing), so it is reported rather than swallowed.
+  if (bashBytes === 0) {
+    return {
+      verdict: rewrittenBytes === 0 ? 'neutral' : 'inflates',
+      reason:
+        rewrittenBytes === 0
+          ? `both sides returned no output across ${measured.length} matched case(s)`
+          : `bash returned no output but the rewrite returned ${rewrittenBytes}B across ${measured.length} matched case(s)`,
+      bashBytes,
+      rewrittenBytes,
+      deltaBytes,
+      ratio: null,
+      measuredCases: measured.length,
+    };
+  }
+
+  const ratio = rewrittenBytes / bashBytes;
+  const pct = Math.round((ratio - 1) * 1000) / 10;
+  const detail =
+    `${measured.length} matched case(s): bash ${bashBytes}B vs rewrite ${rewrittenBytes}B ` +
+    `(${pct >= 0 ? '+' : ''}${pct}%, ratio ${Math.round(ratio * 100) / 100})`;
+
+  if (ratio > 1 + SAVINGS_NEUTRAL_BAND) {
+    return { verdict: 'inflates', reason: `substituting COSTS more — ${detail}`, bashBytes, rewrittenBytes, deltaBytes, ratio, measuredCases: measured.length };
+  }
+  if (ratio < 1 - SAVINGS_NEUTRAL_BAND) {
+    return { verdict: 'reduces', reason: `substituting saves bytes — ${detail}`, bashBytes, rewrittenBytes, deltaBytes, ratio, measuredCases: measured.length };
+  }
+  return {
+    verdict: 'neutral',
+    reason:
+      `same answer, same cost — ${detail}. A correct rewrite that saves nothing is not worth ` +
+      'auto-substituting (D-057)',
+    bashBytes,
+    rewrittenBytes,
+    deltaBytes,
+    ratio,
+    measuredCases: measured.length,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Retargeting + the runner
 // ─────────────────────────────────────────────────────────────────────────────
@@ -570,6 +677,11 @@ export async function replayCase(
     firstDivergentLine: derived.firstDivergentLine,
     bashAnswer: bashAnswer.slice(0, MAX_STORED_ANSWER_LINES),
     toolAnswer: toolAnswer.slice(0, MAX_STORED_ANSWER_LINES),
+    // Measured on the RAW text, and measured for every case that ran — including
+    // ones that differ. `deriveSavings` decides which measurements are admissible;
+    // recording them only for matches here would make that rule impossible to test.
+    bashBytes: Buffer.byteLength(bash.text, 'utf8'),
+    toolBytes: Buffer.byteLength(tool.text, 'utf8'),
   };
 }
 
@@ -613,6 +725,7 @@ export async function replayPair(
     toolName: pair.toolName,
     verdict,
     verdictReason: reason,
+    savings: deriveSavings(cases),
     cases,
     matched: cases.filter((c) => c.verdict === 'match').length,
     differed: cases.filter((c) => c.verdict === 'differs').length,

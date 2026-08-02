@@ -23,11 +23,13 @@ import {
   deriveCaseVerdict,
   deriveReplayVerdict,
   firstDivergence,
+  deriveSavings,
   isReplaySafe,
   normalizeAnswer,
   replayCase,
   replayPair,
   retargetAtom,
+  SAVINGS_NEUTRAL_BAND,
   type ReplayCase,
   type ReplayExecutors,
   type SideResult,
@@ -531,6 +533,19 @@ describe('replayPair', () => {
     expect(result.cases).toHaveLength(3);
   });
 
+  it('reports a savings verdict alongside the correctness verdict', async () => {
+    const corpus = sample(["sed -n '1,5p' /var/log/a.log"]);
+    const result = await replayPair(sedRangeRead, corpus, realExecutors(), options());
+
+    expect(result.verdict).toBe('replay-clean');
+    // The point of the axis: clean does not imply cheap, so the field must be
+    // populated independently and must carry a real measurement.
+    expect(result.savings.measuredCases).toBe(1);
+    expect(result.savings.bashBytes).toBeGreaterThan(0);
+    expect(result.savings.rewrittenBytes).toBeGreaterThan(0);
+    expect(['reduces', 'neutral', 'inflates']).toContain(result.savings.verdict);
+  });
+
   it('every file-read pair declares a rewrite AND an envelope, or is honestly unavailable', () => {
     // The two must travel together: a rewrite with no envelope compares the
     // tool's framing against bash's raw stream and reports a difference that is
@@ -539,5 +554,146 @@ describe('replayPair', () => {
       expect(Boolean(pair.rewrite), pair.id).toBe(Boolean(pair.replayEnvelope));
       if (pair.replayEnvelope) expect(() => assertReplayEnvelope(pair.replayEnvelope!, pair.id)).not.toThrow();
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The economy axis (P-022, D-057)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('deriveSavings — a correct rewrite is not automatically a cheaper one', () => {
+  /** A measured case: matched, with both byte counts present. */
+  const m = (bashBytes: number, toolBytes: number): ReplayCase => ({
+    sourceAtom: 'a',
+    replayedAtom: 'a',
+    verdict: 'match',
+    bashBytes,
+    toolBytes,
+  });
+
+  it('calls a materially larger rewrite an inflation', () => {
+    const s = deriveSavings([m(1000, 3400)]);
+    expect(s.verdict).toBe('inflates');
+    expect(s.deltaBytes).toBe(2400);
+    expect(s.ratio).toBeCloseTo(3.4, 5);
+    expect(s.reason).toContain('COSTS more');
+  });
+
+  it('calls a materially smaller rewrite a saving', () => {
+    const s = deriveSavings([m(1000, 400)]);
+    expect(s.verdict).toBe('reduces');
+    expect(s.deltaBytes).toBe(-600);
+  });
+
+  // THE D-057 CASE, as a test. Pipe-filter pushdown returns a byte-identical
+  // answer, so the correctness harness reports a clean match — and the rewrite is
+  // still worthless. Before this axis existed there was nothing that could say so.
+  it('calls a byte-identical rewrite NEUTRAL, not a success', () => {
+    const s = deriveSavings([m(1739, 1739)]);
+    expect(s.verdict).toBe('neutral');
+    expect(s.deltaBytes).toBe(0);
+    expect(s.reason).toContain('D-057');
+  });
+
+  it('treats movement inside the noise band as neutral, and just outside it as real', () => {
+    const inside = Math.round(1000 * (1 + SAVINGS_NEUTRAL_BAND * 0.5));
+    const outside = Math.round(1000 * (1 + SAVINGS_NEUTRAL_BAND * 2));
+    expect(deriveSavings([m(1000, inside)]).verdict).toBe('neutral');
+    expect(deriveSavings([m(1000, outside)]).verdict).toBe('inflates');
+  });
+
+  // Rule 2 of the doc comment, and the reason the enum has a fourth member.
+  it('reports NO measurement as unmeasured rather than neutral', () => {
+    expect(deriveSavings([]).verdict).toBe('unmeasured');
+    expect(deriveSavings([]).reason).toContain('not the same as unchanged');
+    expect(deriveSavings([]).ratio).toBeNull();
+  });
+
+  // Rule 1: a cheaper WRONG answer is the worst outcome available, so a differing
+  // case must never be able to contribute a saving.
+  it('refuses to measure economy on cases that did not match', () => {
+    const differing: ReplayCase = {
+      sourceAtom: 'a',
+      replayedAtom: 'a',
+      verdict: 'differs',
+      reason: 'line 1',
+      bashBytes: 10_000,
+      toolBytes: 10,
+    };
+    const s = deriveSavings([differing]);
+    expect(s.verdict).toBe('unmeasured');
+    expect(s.measuredCases).toBe(0);
+  });
+
+  it('ignores refused and inconclusive cases, which never produced two texts', () => {
+    const refused: ReplayCase = { sourceAtom: 'a', replayedAtom: 'a', verdict: 'refused', reason: 'unsafe' };
+    const s = deriveSavings([refused, m(1000, 500)]);
+    expect(s.measuredCases).toBe(1);
+    expect(s.verdict).toBe('reduces');
+  });
+
+  it('drops a matched case that carries no byte measurement instead of scoring it as zero', () => {
+    const unmeasured: ReplayCase = { sourceAtom: 'a', replayedAtom: 'a', verdict: 'match' };
+    const s = deriveSavings([unmeasured, m(1000, 2000)]);
+    expect(s.measuredCases).toBe(1);
+    expect(s.bashBytes).toBe(1000);
+    expect(s.verdict).toBe('inflates');
+  });
+
+  // The statistical trap, pinned. A mean of per-case ratios would report
+  // ((12/10) + (9000/10000)) / 2 = 1.05 -> "inflates", for a pair that plainly
+  // saves ~1KB every time it is used. Totals are what context is actually paid in.
+  it('aggregates as a ratio of totals, not a mean of per-case ratios', () => {
+    const s = deriveSavings([m(10, 12), m(10_000, 9_000)]);
+
+    const meanOfRatios = (12 / 10 + 9_000 / 10_000) / 2;
+    expect(meanOfRatios).toBeGreaterThan(1 + SAVINGS_NEUTRAL_BAND); // the wrong method says "inflates"
+
+    expect(s.verdict).toBe('reduces'); // the right method says "reduces"
+    expect(s.deltaBytes).toBe(-998);
+    expect(s.ratio).toBeCloseTo(9_012 / 10_010, 5);
+  });
+
+  it('handles a zero-byte bash side without dividing by it', () => {
+    expect(deriveSavings([m(0, 0)]).verdict).toBe('neutral');
+    expect(deriveSavings([m(0, 0)]).ratio).toBeNull();
+
+    const inflated = deriveSavings([m(0, 250)]);
+    expect(inflated.verdict).toBe('inflates');
+    expect(inflated.ratio).toBeNull();
+    expect(inflated.reason).toContain('bash returned no output');
+  });
+});
+
+describe('mutation — a savings verdict that cannot fail is not a measurement', () => {
+  // Same discipline as the rewrite mutations above: these assert that the
+  // function DISCRIMINATES. A `deriveSavings` hardcoded to any single verdict
+  // passes a surprising number of ordinary assertions, so the suite must pin
+  // every outcome as reachable from real input.
+  const m = (bashBytes: number, toolBytes: number): ReplayCase => ({
+    sourceAtom: 'a',
+    replayedAtom: 'a',
+    verdict: 'match',
+    bashBytes,
+    toolBytes,
+  });
+
+  it('produces all four verdicts from otherwise-identical inputs', () => {
+    const verdicts = [
+      deriveSavings([m(1000, 100)]).verdict,
+      deriveSavings([m(1000, 1000)]).verdict,
+      deriveSavings([m(1000, 9000)]).verdict,
+      deriveSavings([]).verdict,
+    ];
+    expect(verdicts).toEqual(['reduces', 'neutral', 'inflates', 'unmeasured']);
+    expect(new Set(verdicts).size).toBe(4);
+  });
+
+  it('moves the verdict when only the byte counts change', () => {
+    const before = deriveSavings([m(1000, 2000)]);
+    const after = deriveSavings([m(1000, 500)]);
+    expect(before.verdict).not.toBe(after.verdict);
+    expect(Math.sign(before.deltaBytes)).toBe(1);
+    expect(Math.sign(after.deltaBytes)).toBe(-1);
   });
 });

@@ -22,6 +22,15 @@
  * is unrelated to this product's own identity and would be a false positive.
  * What's unambiguous, and the actual bug class observed live, is `papercupai`
  * paired with THIS product's own repo name.
+ *
+ * One further nuance: `papercupai/papercup` (unlike `papercupai/papercusp`,
+ * a repo name that has never existed under ANY owner) is not intrinsically
+ * impossible — GitHub lets any user fork any repo under their own login, so
+ * a *personal fork* legitimately lives at `papercupai/papercup`. A handful of
+ * fork-PR unit tests use exactly that shape as generic fixture data for a
+ * parameterized fork/PR flow (the function under test takes owner/repo as
+ * plain arguments — nothing about the assertion depends on which identity is
+ * "canonical"). Those are allowlisted below rather than treated as drift.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -46,9 +55,27 @@ const EXCLUDED_PATH_SEGMENTS = [
   '/dist-preview/',
   'apps/operator/public/docs/',
   'apps/operator/public/internal/docs/',
+  // bundled/vendored sidecar JS (build output, not hand-edited source)
+  'papercusp-desktop/src-tauri/env-sidecars/',
   // this file's own explanatory comments quote the wrong pattern as an example
   'packages/operator-core/lib/github-identity-drift.test.ts',
 ];
+
+/**
+ * Generic `papercupai/papercup` fork/PR fixtures (see the file-header note
+ * above) — the function under test in each is parameterized over owner/repo,
+ * so the fixture's identity choice carries no product-identity assertion.
+ * Exact-path allowlist, not a pattern, so a NEW file elsewhere still trips
+ * the guard.
+ */
+const ALLOWLISTED_FORK_FIXTURES = new Set([
+  'packages/operator-core/lib/harness/open-fork-pr.test.ts',
+  'packages/operator-core/lib/harness/fork-pr-contrib.test.ts',
+  'packages/operator-core/lib/harness/fork-pr-on-feature-pass.test.ts',
+  'packages/operator-core/lib/harness/feature-pr-producer.test.ts',
+  'packages/operator-core/lib/harness-insights/__tests__/load-all.test.ts',
+  'apps/operator/app/harness/insights/__tests__/ProjectCard.test.tsx',
+]);
 
 const TEXT_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|mdx|md|astro|json|html)$/i;
 

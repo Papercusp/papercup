@@ -75,7 +75,12 @@ import {
 import { getPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
-import { findLiveHost, injectIntoHost } from './psu-pty-discovery';
+import {
+  findLiveHost,
+  injectIntoHost,
+  injectIntoHostWithConfirmation,
+  type InjectConfirmation,
+} from './psu-pty-discovery';
 import {
   decideColdWake,
   readColdLoopMarker,
@@ -974,6 +979,11 @@ export interface ExecuteWakeDeps {
    *  via findPty — the pty lives in the psu process (D-006). */
   findPsuHost?: typeof findLiveHost;
   injectPsuHost?: typeof injectIntoHost;
+  /** WI-6862: the confirmation-carrying transport used for a COLD context-reset, so the delivery
+   *  ledger can distinguish a host ACK from the optimistic bare-close fallback. Defaults to the
+   *  real one — but ONLY when no `injectPsuHost` stub was supplied, since a stub has no
+   *  confirmation channel and must keep today's behavior. */
+  injectPsuHostWithConfirmation?: typeof injectIntoHostWithConfirmation;
   /** queen-brief-cache-assembly B-01/P-012: fire a FRESH hive launch instead of
    *  resuming a hive-operator session. Injected for tests; default fires the
    *  hive blueprint with the wake text as kickoff. */
@@ -1239,17 +1249,41 @@ async function injectPsuHostWake(
       ),
       deps.tagTurn ?? tagTurnForInjection,
     );
-    const ok = await injectPsuHost(sock, {
+    // WI-6862: book what we actually KNOW. injectIntoHost's bare boolean cannot tell a host ACK
+    // from the optimistic bare-close fallback, and that fallback explicitly covers a host that
+    // crashed or was killed mid-delivery after accepting the connection — precisely what a
+    // provider usage-limit wall does to a respawn. So a cold context-reset that never re-execed
+    // was booked status='delivered' and read back to whoever was diagnosing it as a clean
+    // success (observed on WI-6852: a reset booked delivered at 02:58:02.883Z whose respawn hit
+    // the wall at 02:58:07.310Z).
+    //
+    // The confirmation is only available from the REAL transport, so when a caller/test supplied
+    // its own `injectPsuHost` stub we fall through to today's exact behavior rather than
+    // inventing a confirmation we do not have — additive by construction, like the WI-6852
+    // part-(a) watermark.
+    const confirming = deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation);
+    const injectMsg = {
       mode: decision.mode,
       data: coldText,
       fireNumber: coldFireCount,
       routineId,
       ownerId: d.subscriberId,
-    });
+    };
+    let ok: boolean;
+    let confirmation: InjectConfirmation | null = null;
+    if (confirming) {
+      const r = await confirming(sock, injectMsg);
+      ok = r.ok;
+      confirmation = r.confirmation;
+    } else {
+      ok = await injectPsuHost(sock, injectMsg);
+    }
     if (ok) {
+      const base = decision.mode === 'recycle' ? 'psu-socket-recycle' : 'psu-socket-reset';
       return {
         kind: 'delivered',
-        channel: decision.mode === 'recycle' ? 'psu-socket-recycle' : 'psu-socket-reset',
+        // A re-exec the host never confirmed is reported as such instead of as a clean success.
+        channel: confirmation === 'assumed-close' ? `${base}-unconfirmed` : base,
       };
     }
     // Cold inject missed → warm in place rather than drop the wake.

@@ -26,7 +26,11 @@ let dir = '';
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'pcheavy-')); });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-const baseEnv = (extra: Record<string, string> = {}): Record<string, string> => ({
+// Returns ProcessEnv, not Record<string, string>: every `spawn(..., { env: baseEnv(...) })`
+// site in this file failed overload resolution under the narrower type (TS2769, then TS2339
+// "Property 'on' does not exist on type 'never'" on the resulting child) — 6+ errors that
+// vitest never saw, because vitest does not typecheck.
+const baseEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({
   PATH: process.env.PATH ?? '',
   PC_HEAVY_DIR: dir,
   PC_HEAVY_IONICE: '', // skip ionice in tests (nice still applies)
