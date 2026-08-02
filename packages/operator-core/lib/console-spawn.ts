@@ -1294,6 +1294,25 @@ export interface MacConsoleProbes {
 export const MAC_COMMAND_RECEIPT_MS = 2500;
 
 /**
+ * How long spawnHeadless watches a freshly-launched member's log for the
+ * greeting-failure sentinel before calling the launch good.
+ *
+ * Sized off the live failure it exists to catch: psu reaches an auth/entitlement
+ * rejection ~2–4s in (measured on the rig mac 2026-08-02), well past the 1200ms
+ * EARLY_EXIT_PROBE_MS. 6s leaves margin without stalling honor unduly — the
+ * spawns run under Promise.all, so it costs once, not once per member.
+ */
+export const HEADLESS_BOOT_RECEIPT_MS = 6000;
+
+/**
+ * The sentinel `buildConsoleOneliner` prints when the agent command dies. This
+ * is OUR OWN emitted contract (see the `__papercusp_greeting_rc` branch there),
+ * not a third-party log string, which is what makes matching it sound.
+ */
+export const HEADLESS_GREETING_FAILURE_RE =
+  /\[papercusp\] initial terminal command exited with status (\d+)/;
+
+/**
  * macOS spawner — mirrors native_console.rs `spawn_macos_new_window`: write a
  * one-shot, self-deleting `.command` file (chmod 755) and `open -na <term>` it.
  * `open -na` forces a FRESH app instance ⇒ a new window every time (Terminal's
@@ -1517,6 +1536,16 @@ export interface SpawnHeadlessOpts {
    *  attribution is worse than an honest gap. */
   launchedBy?: string;
   fleetSlug?: string | null;
+  /**
+   * EI-19311623077693508: injectable seams for the boot-receipt scan. Tests pass
+   * fakes so a case can emit the greeting-failure sentinel deterministically
+   * instead of sleeping out the real 6s window. Production callers omit it.
+   */
+  bootProbes?: {
+    readLog?: (path: string) => string;
+    sleep?: (ms: number) => Promise<void>;
+    windowMs?: number;
+  };
 }
 
 // EI-9748: headless members are a DETACHED + unref'd child of whichever operator
@@ -1758,6 +1787,48 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
           `${logTail ? ` — log tail: ${logTail}` : ` — see ${logPath}`}`,
         code: 502,
       };
+    }
+
+    // Boot RECEIPT (EI-19311623077693508, the real fix). The two checks above can
+    // only see a member whose PROCESS dies — and this failure class never does:
+    // buildConsoleOneliner runs the agent command, prints our sentinel if it
+    // exited non-zero, then `exec`s a login shell. The child therefore stays
+    // alive FOREVER holding a dead session, so watchEarlyExit is structurally
+    // blind to it and the fail-open branch reported a phantom member.
+    //
+    // Measured on the rig mac 2026-08-02: psu launched, joined the fleet, then
+    // died on "Your organization has disabled Claude subscription access for
+    // Claude Code" ~2-4s in — comfortably past the 1200ms probe. All three
+    // delegated spawns were logged as `honored (1 member(s) opened)` with zero
+    // agent processes alive.
+    //
+    // Scope note: this bounds DETECTION, it does not make it total — a member
+    // that dies after the window still returns ok here. The complete answer is
+    // the asynchronous liveness plane (presence/sessionState), which reaps a
+    // member that stops taking turns. This closes the boot-time case, which is
+    // the one that silently consumed a delegated seat.
+    const readLog = opts.bootProbes?.readLog ?? ((p: string) => {
+      try { return readFileSync(p, 'utf8'); } catch { return ''; }
+    });
+    const bootSleep = opts.bootProbes?.sleep
+      ?? ((ms: number) => new Promise<void>((r) => { setTimeout(r, ms).unref?.(); }));
+    const windowMs = opts.bootProbes?.windowMs ?? HEADLESS_BOOT_RECEIPT_MS;
+    const bootDeadline = Date.now() + windowMs;
+    for (;;) {
+      const failed = HEADLESS_GREETING_FAILURE_RE.exec(readLog(logPath));
+      if (failed) {
+        const tail = readLog(logPath).trim().slice(-800);
+        return {
+          status: 'error',
+          error:
+            `headless member launched but its agent command died at boot (exit ${failed[1]})` +
+            ` — the shell stays open holding a DEAD session, so this never surfaced as a` +
+            ` process exit (EI-19311623077693508)${tail ? ` — log tail: ${tail}` : ` — see ${logPath}`}`,
+          code: 502,
+        };
+      }
+      if (Date.now() >= bootDeadline) break;
+      await bootSleep(250);
     }
 
     return {

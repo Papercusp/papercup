@@ -1007,6 +1007,93 @@ describe('spawnMacConsole verifies `open` — GUI-less mac ghost members (EI-193
   }, 10_000);
 });
 
+describe('spawnHeadless boot receipt — a member that dies AFTER the probe (EI-19311623077693508)', () => {
+  // The live bug, reproduced. On the rig mac all three delegated spawns were
+  // logged `honored (1 member(s) opened)` with zero agent processes: psu joined
+  // the fleet, then died on an auth rejection ~2-4s in. watchEarlyExit cannot
+  // ever catch this — buildConsoleOneliner prints the sentinel and then `exec`s
+  // a login shell, so the CHILD NEVER EXITS. Note every case here keeps the
+  // child alive, which is precisely what made the old code report success.
+  const envelope: ConsoleEnvelope = {
+    cwd: '/tmp',
+    env: {},
+    mcpJsonContents: '',
+    greetingCmd: 'psu --headless',
+    needsSuperuserBootstrap: false,
+    sessionId: 'test-sid',
+  };
+  const AUTH_DEATH =
+    'psu: fleet — joined fleet fed-drill as member.\n' +
+    'Your organization has disabled Claude subscription access for Claude Code\n' +
+    '\n[papercusp] initial terminal command exited with status 1; terminal left open for inspection.\n';
+
+  beforeEach(() => spawnMock.mockReset());
+
+  it('greeting-failure sentinel ⇒ error, even though the process is still alive', async () => {
+    spawnMock.mockImplementation(() => fakeChild(6001)); // never exits — the live shape
+    const r = await spawnHeadless({
+      envelope,
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => false },
+      bootProbes: { readLog: () => AUTH_DEATH, sleep: async () => {}, windowMs: 1000 },
+    });
+    expect(r.status).toBe('error');
+    expect((r as { code: number }).code).toBe(502);
+    expect((r as { error: string }).error).toMatch(/died at boot \(exit 1\)/);
+    // The operator error must carry the member's own words, or the next person
+    // debugging this has to go find the log themselves.
+    expect((r as { error: string }).error).toMatch(/disabled Claude subscription access/);
+  }, 10_000);
+
+  it('sentinel appearing LATE (after the early-exit probe) is still caught', async () => {
+    spawnMock.mockImplementation(() => fakeChild(6002));
+    let reads = 0;
+    const r = await spawnHeadless({
+      envelope,
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => false },
+      bootProbes: {
+        // Clean for the first few polls — exactly the race that produced the phantom.
+        readLog: () => (++reads < 4 ? 'psu: starting…\n' : AUTH_DEATH),
+        sleep: async () => {},
+        windowMs: 5000,
+      },
+    });
+    expect(r.status).toBe('error');
+    expect(reads).toBeGreaterThan(3); // it kept watching past the first look
+  }, 10_000);
+
+  it('a healthy member (no sentinel) ⇒ ok — never manufacture a failure', async () => {
+    spawnMock.mockImplementation(() => fakeChild(6003));
+    const r = await spawnHeadless({
+      envelope,
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => false },
+      bootProbes: {
+        readLog: () => 'psu: fleet — joined fleet fed-drill as member.\npsu: kickoff — seeding first turn\n',
+        sleep: async () => {},
+        windowMs: 1000,
+      },
+    });
+    expect(r.status).toBe('ok');
+    expect((r as { pid: number | null }).pid).toBe(6003);
+  }, 10_000);
+
+  it('sentinel with status 0 is ALSO a dead member (the agent command ended at all)', async () => {
+    spawnMock.mockImplementation(() => fakeChild(6004));
+    const r = await spawnHeadless({
+      envelope,
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => false },
+      bootProbes: {
+        readLog: () => '[papercusp] initial terminal command exited with status 0; terminal left open for inspection.\n',
+        sleep: async () => {},
+        windowMs: 500,
+      },
+    });
+    // status 0 still means the command ended, but not that it FAILED — the
+    // sentinel only fires on non-zero in practice; guard against over-matching.
+    expect(r.status).toBe('error');
+    expect((r as { error: string }).error).toMatch(/exit 0/);
+  }, 10_000);
+});
+
 describe('macHasGuiSession (EI-19311623077693508)', () => {
   it('root-owned /dev/console ⇒ no GUI session', () => {
     expect(macHasGuiSession(() => 0)).toBe(false);
