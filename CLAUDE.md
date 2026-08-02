@@ -334,23 +334,31 @@ carried the fix.
 
 ⚠⚠ **STEP 0 FIRST — establish WHICH sha is actually being judged. Skipping this is the
 expensive mistake, and no amount of care in the steps below can recover from it.** The
-`candidate` field DRIFTS: it is re-read from a moving HEAD, so a single continuous run reports
-different candidates over its lifetime. Observed 2026-08-02: one run with an unchanged
-`started_at` of 07:15:17Z (elapsed climbing 1138 → 2887s, so provably not a new run) reported
-`1ee32228` and later `4a9b218ba0`. Every agent watching read that drift as "the old run
-finished, a new one started carrying our fix." It had not.
+`candidate` field DRIFTS: a single continuous run reports different candidates over its
+lifetime. Observed 2026-08-02: one run with an unchanged `started_at` of 07:15:17Z (elapsed
+climbing 1138 → 2887s, so provably not a new run) reported `1ee32228` and later `4a9b218ba0`.
 
-**The check is one line and needs no tooling — compare commit dates to the run's `started_at`:**
+**That drift is a FEATURE, not corruption.** The gate AUTO-RE-FIRES onto tip *inside the same
+process* — see "A RUN'S JUDGED CANDIDATE CHANGES MID-RUN" below for the mechanism and for the
+`inFlightRetriage` marker, which is **the authoritative answer to "which sha is this run
+judging"**. In the case above the run genuinely had re-candidated onto `4a9b218ba0`, and that
+candidate genuinely did carry the fix.
 
-```bash
-git show -s --format=%cI <reported candidate>   # newer than started_at? -> the field is BOGUS
-git show -s --format=%cI <your fix commit>      # newer than started_at? -> it CANNOT be in the run
-```
+🚫 **Do NOT settle this by comparing commit dates to the run's `started_at`.** This file used to
+prescribe exactly that — `newer than started_at? -> the field is BOGUS`, justified by "a run
+cannot judge a commit that did not exist when it started". **That is WRONG for this gate, and
+the recipe has been removed.** `apps/operator/lib/release/green-checkpoint.ts` recurses into
+`runGreenCheckpoint(..., { candidate: tip, refireAttempts: +1 })` in-process at two sites —
+L2617-2621 (test-file rescue) and L2661-2665 (the lint/typecheck sibling, which is the path a
+`lint:tsc` red takes) — so `pid` and `started_at` stay FIXED while the candidate legitimately
+advances past them. **A candidate newer than `started_at` is the expected signature of a healthy
+re-fire.**
 
-A run cannot judge a commit that did not exist when it started. In the case above,
-`4a9b218ba0` was created 21 min *after* the run began and the fix 9 min after — both provably
-outside it. This costs nothing, requires no marker/blob/ancestry, and catches the error
-instantly in both directions.
+That check was seductive precisely because it looked free ("no marker/blob/ancestry needed"),
+and it fails in the most expensive direction: it fires a false `BOGUS` exactly during the
+re-triage window — i.e. when the gate is rescuing itself — and the reflex that follows a `BOGUS`
+verdict is to fire a manual `release:checkpoint-run`, which discards the rescue and costs a full
+suite. If you carry the old rule in memory from an earlier session, drop it.
 
 ⚠ **Do not try to settle step 0 by reading a checkpoint worktree.** There are at least two and
 their names differ by one letter — `papercup-checkpoint` (HEAD dated 2026-07-02, a month stale)

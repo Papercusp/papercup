@@ -842,6 +842,15 @@ export interface StartDrainOptions {
       | 'drain_orphan_tail'
       | 'drain_row_quarantined',
   ) => void;
+  /** WI-6997 test seam: intercept ALL detector RECOVERIES (default = auto-resolve
+   *  the durable EI via `resolveReplicationStallEi`). The symmetric counterpart to
+   *  `_onStallEpisode` — before WI-6997 only escalation had a seam, which is part of
+   *  why the missing resolve leg went unnoticed: no test could observe a recovery
+   *  that never called anything. Production omits it. */
+  _onStallRecovery?: (
+    detail: string,
+    kind?: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_backlog_aged',
+  ) => void;
 }
 
 export interface OutboxDrainHandle {
@@ -927,6 +936,13 @@ export function startOutboxDrain(
   let lastProgressAt = Date.now();
   let backlogStallEscalated = false;
 
+  // WI-6997: the hung-pass (`drain_stalled`) escalation had NO latch — it fired
+  // per timeout and, unlike the two backlog detectors, had no state saying "we
+  // are currently escalated". That is why it also had no recovery edge to hang a
+  // resolve on. Latch it like the others: set on escalate, cleared on the first
+  // pass that drains a row, and THAT transition is the recovery edge.
+  let drainHangEscalated = false;
+
   // WI-5147 backlog-age/size detector state (progress-INDEPENDENT — see
   // `DRAIN_BACKLOG_AGE_STALL_MS`'s doc-comment). `lastBacklogAgeCheckAt` throttles
   // the probe; `backlogAgeEscalated` edge-triggers ONCE per episode and clears the
@@ -986,6 +1002,58 @@ export function startOutboxDrain(
           logKeyHex,
           kind,
           stalledForMs,
+          detail,
+        }),
+      () => {},
+    );
+  };
+
+  /**
+   * WI-6997: the RECOVERY counterpart of `escalateStall` — the leg this module
+   * never had. `replication-liveness.ts` has always auto-resolved its own three
+   * kinds on recovery (`reportRecovery` -> `resolveReplicationStallEi`), but the
+   * five drain_* kinds filed HERE had no such path: each detector cleared its
+   * in-process latch on recovery and left the durable EI open forever. Measured
+   * 2026-08-02: `terminal_owner = 'system:replication-liveness'` (the auto-resolve
+   * owner) appears on 33 EIs across the three wired kinds and on ZERO drain_* EIs,
+   * while ~102 drain_* EIs were closed BY HAND (one agent closed 51). This is the
+   * EI-4643 class already fixed once for `connected_never_replicated`, left
+   * unfixed in this sibling module.
+   *
+   * EDGE-TRIGGERED ONLY — call this on the escalated->recovered transition, never
+   * on every healthy pass: `resolveReplicationStallEi` no-ops when no EI is open,
+   * but it is a PG round-trip, and the drain's healthy path runs every 5s poll.
+   *
+   * Deliberately NOT wired for `drain_orphan_tail` (a dead prior-era log — the era
+   * stays dead, there is no recovery) or `drain_row_quarantined` (a poison row is
+   * permanently skipped by design). Inventing a recovery edge for those would file
+   * a false all-clear; they remain correctly manual.
+   *
+   * Best-effort, like its escalate twin: never throws back into the drain loop.
+   */
+  const recoverStall = (
+    kind: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_backlog_aged',
+    detail: string,
+    logKeyHex: string = handle.ownLog.keyHex,
+  ): void => {
+    try {
+
+      console.error(
+        `[outbox-drain] recovered (${kind}) harness=${handle.harnessSlug} ${detail}`,
+      );
+    } catch {
+      /* diagnostic-only */
+    }
+    if (opts._onStallRecovery) {
+      opts._onStallRecovery(detail, kind);
+      return;
+    }
+    void import('./replication-stall-ei').then(
+      (m) =>
+        m.resolveReplicationStallEi({
+          harnessSlug: handle.harnessSlug,
+          logKeyHex,
+          kind,
           detail,
         }),
       () => {},

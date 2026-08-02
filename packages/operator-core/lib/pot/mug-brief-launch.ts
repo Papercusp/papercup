@@ -150,7 +150,18 @@ async function gatherInbox(workspaceId: string, installSlug: string, limit = 10)
     const { sql } = getOrgPg();
     const mugOwner = await resolveMugOwner(sql, workspaceId, installSlug);
     if (!mugOwner) return [];
-    const inboxRows = await runWithWorkspace(workspaceId, () => readInbox(mugOwner, {})).catch(() => [] as CoordEnvelope[]);
+    // Bounded read (EI-19323045109346905). Two things make `limit` the exactly
+    // sufficient stopping rule here, and both need stating because this call site
+    // merges a SECOND source below:
+    //  1. count POST-filter — the `!e.category` drop happens below, and ambient
+    //     rows arrive in long runs, so a raw `entries.length >= limit` rule would
+    //     be satisfied by noise and under-fill the tail;
+    //  2. merging `slotRows` afterwards cannot need MORE inbox history, only less:
+    //     the newest `limit` of the merged set can only contain inbox rows that are
+    //     already among the newest `limit` inbox rows.
+    const inboxRows = await runWithWorkspace(workspaceId, () =>
+      readInbox(mugOwner, {}, { enough: (entries) => entries.filter((e) => !e.category).length >= limit }),
+    ).catch(() => [] as CoordEnvelope[]);
     // anyHarnessSlug (WI-682): there is ONE workspace Mug covering all started
     // hives, but senders park `@role:mug` rows under whatever harness context
     // they had — often NULL (a coord:send with no harness scope). A slug-keyed

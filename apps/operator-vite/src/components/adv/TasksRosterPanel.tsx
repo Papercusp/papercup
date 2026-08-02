@@ -77,13 +77,83 @@ export function fmtAge(startedAt: string | null | undefined, nowMs: number): str
   return `${Math.floor(s / 86400)}d`;
 }
 
-/** `node …/foo/bar.ts --flag` → `bar.ts`. Mirrors TasksClient.shortCmd. Pure. */
+/**
+ * `node …/foo/bar.ts --flag` → `bar.ts`.
+ *
+ * The original version skipped INTERPRETER names but not FLAGS, so the first
+ * surviving token was frequently the flag itself. Measured against the live scan
+ * (647 rows, 2026-08-02), 321 of them — just under half — rendered as a bare flag
+ * or shell builtin: `-lc` ×188, `--require` ×65, `-c` ×55, `exec` ×48. Owner-reported
+ * as "why am i seeing so many tasks like this — `-lc` pid 1623888".
+ *
+ * Two things make this harder than dropping tokens that start with `-`:
+ *
+ *  1. Some flags CONSUME the next token (`node --require <loader> real-script.ts`),
+ *     so blindly skipping only the flag promotes the loader shim instead.
+ *  2. `/proc/<pid>/cmdline` is captured TRUNCATED at 300 chars, so for a shell
+ *     wrapper like `bash -lc 'trap … ; exec real-thing'` the actual command is
+ *     genuinely not present in the string. No parser can recover it.
+ *
+ * (2) is why this returns an honest shell shape (`bash -lc`) rather than digging for
+ * something command-like: inventing a confident label from a truncated wrapper is how
+ * the pane would end up asserting something it cannot know. A vague-but-true label is
+ * the right failure mode for a diagnostic surface — the full cmdline is still on the
+ * row's `title` tooltip.
+ *
+ * Pure.
+ */
+const CMD_INTERPRETERS = /^(node|npx|npm|pnpm|yarn|bash|sh|zsh|dash|python3?|tsx|ts-node|env)$/;
+/** Shell builtins/keywords that are never the interesting command. */
+const CMD_SHELL_NOISE = /^(exec|trap|source|cd|set|shopt|export|eval|command|nohup|builtin|unalias|unset|echo|true|false|then|do|fi|done|if|while)$/;
+/** Flags that swallow the FOLLOWING token, which must not be mistaken for the script. */
+const CMD_VALUE_FLAGS = /^(-r|--require|--import|--loader|--experimental-loader|--conditions|-e|--eval|--max-old-space-size)$/;
+/** Looks like a thing you actually run. */
+const CMD_SCRIPT_RE = /\.(mjs|cjs|js|mts|cts|ts|tsx|py|sh)$/;
+
+function cmdBase(tok: string): string {
+  return tok.replace(/^['"]+/, '').replace(/['"]+$/, '').replace(/.*\//, '');
+}
+
 export function shortCmd(cmdline: string | null): string {
   if (!cmdline) return '—';
-  const parts = cmdline.trim().split(/\s+/);
-  const meaningful = parts.find((p) => !/^(node|npx|npm|bash|sh|python3?|tsx)$/.test(p.replace(/.*\//, ''))) ?? parts[0];
-  const base = meaningful.replace(/.*\//, '');
-  return base.length > 0 ? base : cmdline.slice(0, 40);
+  const raw = cmdline.trim();
+  if (raw.length === 0) return '—';
+  const parts = raw.split(/\s+/);
+
+  const argv0 = cmdBase(parts[0] ?? '');
+  const shellFlagIdx = parts.findIndex((p) => /^-[a-z]*c$/.test(p));
+  const isShellWrapper = /^(bash|sh|zsh|dash)$/.test(argv0) && shellFlagIdx > 0;
+
+  // A shell -c/-lc wrapper: the interesting thing is inside the script body. Take the
+  // FIRST script-like token there (what is being sourced/run), never a later one from
+  // the `&&`-chain, and never something under node_modules (a loader shim, not the job).
+  if (isShellWrapper) {
+    const body = parts.slice(shellFlagIdx + 1);
+    const script = body.find((p) => CMD_SCRIPT_RE.test(cmdBase(p)) && !p.includes('node_modules'));
+    if (script) return cmdBase(script);
+    // Truncated or pure-shell body — say what it honestly is.
+    return `${argv0} ${parts[shellFlagIdx]}`;
+  }
+
+  const candidates: string[] = [];
+  for (let i = 1; i <= parts.length - 1; i++) {
+    const tok = parts[i];
+    if (CMD_VALUE_FLAGS.test(tok)) { i++; continue; } // skip the flag AND its value
+    if (tok.startsWith('-')) continue;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue; // FOO=bar env assignment
+    const b = cmdBase(tok);
+    if (b.length === 0) continue;
+    if (CMD_INTERPRETERS.test(b) || CMD_SHELL_NOISE.test(b)) continue;
+    if (tok.includes('node_modules')) continue;
+    candidates.push(tok);
+  }
+
+  const script = candidates.find((p) => CMD_SCRIPT_RE.test(cmdBase(p)));
+  const picked = script ?? candidates[0];
+  if (picked) return cmdBase(picked);
+
+  // Nothing but interpreter + flags (e.g. a bare `node`): the argv0 IS the answer.
+  return argv0.length > 0 ? argv0 : raw.slice(0, 40);
 }
 
 /** Unaccounted cgroup groups, whichever of the two shapes the scan used. Pure. */

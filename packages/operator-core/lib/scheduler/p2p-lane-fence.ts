@@ -75,7 +75,51 @@ export const P2P_LANE_EXCLUSION_TERMS = [
   'dht',
   'udx',
   'relay',
+  // The pot-git transport (WI-6995). `pot-git` IS the p2p git wire in this pot —
+  // fetch/serve/dial planes, repoKey rendezvous, packfile transfer — so a
+  // single-box member can execute none of it. Measured against the live papercusp
+  // backlog on 2026-08-02: 13 open critical/major bugs in a drain fleet's lane that
+  // NONE of the terms above already caught, and every one of them genuine p2p
+  // transport work (WI-5163, WI-5168, WI-5210, WI-6364, WI-6415, EI-18745600910177355,
+  // EI-18802104888674071, EI-18804225902691617, …). This was the single largest
+  // remaining leak, the `replication`-shaped hole one layer down.
+  'pot-git',
+  // The ref-announce leg of that transport. Hyphenated and unambiguous; a bare
+  // `announce` is deliberately NOT a term here — see the anti-terms note below.
+  'ref-announce',
+  // Zero live matches today, folded in because it is unambiguous p2p wire
+  // vocabulary and costs nothing: the cheap half of "make the shared source a true
+  // superset so the next editor has nothing left to hand-type".
+  'duplex',
 ] as const;
+
+/**
+ * ANTI-TERMS — words that LOOK like they belong above and must stay out (WI-6995).
+ *
+ * `word` matching fixed `glob`'s substring false positives (EI-18690730909662985),
+ * but it cannot fix a HOMONYM: a whole-word match on a term this pot also uses for
+ * non-p2p things over-fences the general backlog, which the "does NOT exclude an
+ * unrelated item" test exists to prevent. Each was proposed in good faith on
+ * 2026-08-02 and measured against the live backlog before being rejected:
+ *
+ * - `rig` (17 net-new in-lane hits) — this pot calls MANY things a rig:
+ *   `perf-regression-rig.test.ts` (EI-12796), desktop/rig build health (WI-6212),
+ *   a Windows incident (EI-16182). The module doc above means the FEDERATION rig,
+ *   and those titles already carry `federation`/`vm-federation`, so they are
+ *   already fenced — adding `rig` buys nothing and costs three false exclusions.
+ * - `tower` (10) — "tower" is this BOX. EI-18744086836082840 ("Tower load rising
+ *   unbounded … on 112 cores, heavy-command admission rejecting agents") is about
+ *   as on-lane as a single-box bug gets, and a `tower` term would hide it.
+ * - `announce` (7) — bare, it catches publish-guard's secrets scan (WI-6254) and an
+ *   identity-resolution presence failure (EI-18768167802573425). `ref-announce`
+ *   above covers the p2p sense without the collateral.
+ * - `dial` (5) — every live hit already carries `pot-git`, so it is redundant, and
+ *   "dial" is ordinary enough English to be a homonym risk for no gain.
+ *
+ * A term belongs above only if a whole-word title match implies work a single-box
+ * member CANNOT execute. If it merely CORRELATES with p2p, it belongs here instead.
+ */
+export const P2P_LANE_REJECTED_ANTI_TERMS = ['rig', 'tower', 'announce', 'dial'] as const;
 
 /**
  * Build the `not: { any: [...] } }` FilterNode excluding every

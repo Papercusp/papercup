@@ -113,6 +113,79 @@ describe('pure projections', () => {
     expect(shortCmd(null)).toBe('—');
   });
 
+  /**
+   * Owner-reported 2026-08-02: "why am i seeing so many tasks like this — `-lc` pid
+   * 1623888". The old implementation skipped interpreter NAMES but not FLAGS, so the
+   * first surviving token was the flag. Against the live scan that hit 321 of 647 rows
+   * (`-lc` ×188, `--require` ×65, `-c` ×55, `exec` ×48) — just under half the pane.
+   *
+   * Each case below is a VERBATIM shape from that scan, not an invented one.
+   */
+  describe('shortCmd never renders a bare flag as the command name', () => {
+    it('picks the real script past a value-consuming flag, not the loader shim', () => {
+      // `--require <loader>` swallows its value; skipping only the flag promotes the
+      // shim. The tsx loader also lives under node_modules — it is never the job.
+      // Path prefixes are generic on purpose: the shape (node_modules shim vs real
+      // entry) is what is under test, and a hardcoded home path in shipped source
+      // reds the green-checkpoint identity-lint leg for the whole fleet.
+      const cmd =
+        '/opt/node/bin/node --require ' +
+        '/repo/node_modules/tsx/dist/loader.mjs ' +
+        '/repo/apps/operator/bin/spawner-sidecar.ts';
+      expect(shortCmd(cmd)).toBe('spawner-sidecar.ts');
+    });
+
+    it('sees past a leading node flag that takes no value', () => {
+      const cmd =
+        '/usr/bin/node --experimental-import-meta-resolve --require /x/node_modules/tsx/dist/loader.mjs /srv/real-entry.ts';
+      expect(shortCmd(cmd)).toBe('real-entry.ts');
+    });
+
+    it('skips the `exec` builtin in an npm exec chain', () => {
+      expect(shortCmd('npm exec tsx /a/b/spawner-sidecar.ts')).toBe('spawner-sidecar.ts');
+    });
+
+    it('reaches into a shell -c body for the script being run', () => {
+      expect(shortCmd('sh -c "tsx" /a/b/spawner-sidecar.ts')).toBe('spawner-sidecar.ts');
+      expect(shortCmd('/bin/bash -c source /state/.papercusp/shell-snapshots/snapshot-bash-123.sh 2>/dev/null || true')).toBe(
+        'snapshot-bash-123.sh',
+      );
+    });
+
+    it('falls back to an HONEST shell shape when the body is truncated away', () => {
+      // /proc/<pid>/cmdline is captured truncated at 300 chars, so for these EI-9748
+      // SIGTERM-trap wrappers the real command is genuinely absent from the string.
+      // The correct answer is a vague-but-true label, never a confident wrong one and
+      // never the flag. This was the single largest bad group (188 rows).
+      const truncated = "/usr/bin/bash -lc trap 'echo \"[EI-9748] SIGTERM received at $(date -u +%FT%TZ) — on this host";
+      expect(shortCmd(truncated)).toBe('bash -lc');
+      expect(shortCmd(truncated)).not.toMatch(/^-/);
+    });
+
+    it('never returns a token beginning with a dash, across every observed shape', () => {
+      const observed = [
+        "/usr/bin/bash -lc trap 'echo hi'",
+        '/bin/bash -c source /x/snapshot-bash-1.sh 2>/dev/null || true && shopt -u extglob',
+        '/usr/bin/node --require /x/node_modules/tsx/dist/loader.mjs /y/z.ts',
+        '/usr/bin/node --experimental-import-meta-resolve /y/z.ts',
+        'npm exec tsx /y/z.ts',
+        'sh -c "tsx" /y/z.ts',
+        'node',
+        '/usr/bin/bash -lc',
+      ];
+      for (const c of observed) {
+        const label = shortCmd(c);
+        expect(label.startsWith('-'), `${c} → ${label}`).toBe(false);
+        expect(label.length, `${c} → empty label`).toBeGreaterThan(0);
+      }
+    });
+
+    it('still handles a bare interpreter and an env-prefixed command', () => {
+      expect(shortCmd('node')).toBe('node');
+      expect(shortCmd('/usr/bin/env NODE_ENV=production node /a/server.js')).toBe('server.js');
+    });
+  });
+
   it('unaccountedGroups tolerates the scan reporting a COUNT instead of groups', () => {
     // `unaccounted` is typed `number | groups[]` upstream — reading a number as an
     // array is how a "2 unaccounted" alarm would silently render as none.

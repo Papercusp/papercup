@@ -325,9 +325,13 @@ export default function PotCustomizationPage() {
   const [role, setRole] = useQueryState('role', parseAsString.withDefault('su'));
   const [section, setSection] = useQueryState('section', parseAsString.withDefault('scout'));
 
+  // `hive` is null until one is picked from the URL, so without the gate this
+  // fetches `{potSlug:''}` on every poll — a round-trip whose result the
+  // `rows` memo below then discards anyway (no-http-anywhere-2026-07-28 P-027).
   const { data: overrideData, error } = useSyncQuery<OverrideRow>({
     queryName: 'hive.overrides',
     args: { potSlug: hive ?? '' },
+    enabled: Boolean(hive),
   });
   const rows = useMemo<OverrideRow[]>(() => (hive ? (overrideData ?? []) : []), [overrideData, hive]);
 

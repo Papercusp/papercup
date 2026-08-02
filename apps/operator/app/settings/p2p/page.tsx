@@ -454,9 +454,14 @@ export default function P2pSettingsPage() {
 
   // Peers matrix — the P-001 grant store (mig 463). Args-scoped subscription:
   // the grant-set route re-invalidates with the SAME {potSlug} args.
+  // `hive` is null until the devices read resolves (and stays null for an
+  // identity with no memberships), so without the gate this fetches
+  // `{potSlug:''}` on every poll — a round-trip that can never resolve to a
+  // hive (no-http-anywhere-2026-07-28 P-027).
   const { data: grantsData, error: grantsError } = useSyncQuery<PeerGrant>({
     queryName: 'p2p.grants',
     args: { potSlug: hive ?? '' },
+    enabled: Boolean(hive),
   });
   const grantRows = useMemo<PeerGrant[]>(() => (hive ? (grantsData ?? []) : []), [grantsData, hive]);
   const setGrant = useSyncMutate<GrantSetArgs, { ok: boolean; error?: string }>('p2p.grantSet', p2pGrantSetRest);

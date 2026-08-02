@@ -953,6 +953,38 @@ test('computeOverwatchBrief — pre-folds the overwatch coord inbox, dropping am
   }
 });
 
+test('computeOverwatchBrief — the inbox fold is a BOUNDED read whose stopping rule counts POST-filter entries', async () => {
+  vi.mocked(computeSystemHealth).mockResolvedValue(fakeHealth({ queen: queenData() }));
+  owner.resolveMugOwner.mockResolvedValue('s-queen-x');
+  owner.ownerRows = [{ coord_owner_id: 's-overwatch-1' }];
+  owner.readInbox.mockResolvedValue([{ kind: 'message', from: 'mug', summary: 'hi' }]);
+  try {
+    await computeOverwatchBrief('ws', 'papercup-hive');
+
+    // It must opt into the bounded window (3rd arg) rather than the unbounded
+    // ~20k-row scan — only the newest few entries ever survive the fold.
+    const window = owner.readInbox.mock.calls.at(-1)?.[2] as
+      | { enough: (entries: Array<Record<string, unknown>>) => boolean }
+      | undefined;
+    assert.ok(window?.enough, 'readInbox must receive a CoordWindowSpec');
+
+    const ambient = (n: number) =>
+      Array.from({ length: n }, () => ({ kind: 'notify', category: 'service-health' }));
+    const real = (n: number) => Array.from({ length: n }, () => ({ kind: 'message' }));
+
+    // THE REGRESSION THIS PINS. `enough` is handed every VISIBLE entry, but this
+    // caller then drops every `category` row. A naive `entries.length >= FOLD`
+    // rule is therefore satisfied by a page of pure ambient broadcasts — and
+    // those arrive in long runs — folding ZERO rows into the brief.
+    assert.equal(window!.enough(ambient(500)), false);
+    assert.equal(window!.enough([...ambient(500), ...real(9)]), false); // one short
+    assert.equal(window!.enough([...ambient(500), ...real(10)]), true); // fold satisfied
+  } finally {
+    owner.ownerRows = [];
+    owner.readInbox.mockResolvedValue([]);
+  }
+});
+
 test('computeOverwatchBrief — no resolvable overwatch session ⇒ no inbox folded (fail-soft)', async () => {
   vi.mocked(computeSystemHealth).mockResolvedValue(fakeHealth({ queen: queenData() }));
   owner.resolveMugOwner.mockResolvedValue('s-queen-x');

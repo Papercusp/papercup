@@ -13,7 +13,11 @@ import { describe, it, expect } from 'vitest';
 import type { WorkItem } from '../work-items';
 import type { ClaimSpec } from './claim-spec';
 import { matchesWorkItemClaimSpec } from './claim-spec-match';
-import { buildP2pLaneFence, P2P_LANE_EXCLUSION_TERMS } from './p2p-lane-fence';
+import {
+  buildP2pLaneFence,
+  P2P_LANE_EXCLUSION_TERMS,
+  P2P_LANE_REJECTED_ANTI_TERMS,
+} from './p2p-lane-fence';
 
 function issueItem(overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'title'>): WorkItem {
   return {
@@ -72,6 +76,12 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
     'udx punch-path instrumentation is unmeasurable',
     'hyperbee snapshot read races the hyperdht announce',
     'relay fallback never retries after a failed hole punch',
+    // WI-6995: the pot-git transport leg. Each of these is a REAL open item that
+    // leaked into fleet nonp2p-bug-drain-0801's lane because no term above matched.
+    'pot-git cross-machine repoKey NEVER rendezvouses: each device keys the store by its LOCAL id',
+    'Every failed pot-git fetch leaks its whole partial packfile forever — 21 GB of orphaned tmp_pack_*',
+    'A stuck ref-announce receive fetch reports NOTHING: fetch-failed drops timedOut/code',
+    'half-duplex stream never completes its second leg',
   ];
 
   it.each(fenced)('excludes: %s', (title) => {
@@ -108,8 +118,38 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
         'dht',
         'udx',
         'relay',
+        'pot-git',
+        'ref-announce',
+        'duplex',
       ]),
     );
+  });
+
+  /**
+   * WI-6995 — the OTHER direction of drift. The guard above stops the term list
+   * SHRINKING; nothing stopped it growing into the general backlog. `word` matching
+   * cured `glob`'s substring false positives but not homonyms, and this pot uses
+   * "rig"/"tower"/"announce"/"dial" for plenty of non-p2p things. Each title below
+   * is a REAL open item that a well-meaning widening would have hidden from the very
+   * fleet that needs it.
+   */
+  const mustStayAdmitted: Array<[string, string]> = [
+    ['rig — a perf test rig, not the federation rig', 'perf-regression-rig.test.ts TS2345 PerfRegressionMetrics arg mismatch'],
+    ['rig — a desktop build rig', 'Desktop/rig builds report sha:null at /api/health — nothing asserts a test rig runs a real build'],
+    ['tower — the local box, the most on-lane subject there is', 'Tower load rising unbounded (142→190→240 on 112 cores) — heavy-command admission now rejecting agents'],
+    ['announce — publish-guard, not the p2p announce leg', "publish-guard's G-10 secrets scan is unbounded in memory AND spawns one git per blob"],
+    ['announce — identity resolution, not the wire', 'A transient identity-resolution failure permanently disables presence announce for the whole process'],
+  ];
+
+  it.each(mustStayAdmitted)('does NOT over-fence (%s)', (_why, title) => {
+    const item = issueItem({ id: 'WI-anti', title });
+    expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(true);
+  });
+
+  it('every rejected anti-term is absent from the live term list (WI-6995)', () => {
+    for (const anti of P2P_LANE_REJECTED_ANTI_TERMS) {
+      expect(P2P_LANE_EXCLUSION_TERMS as readonly string[]).not.toContain(anti);
+    }
   });
 
   // The fence is only as good as the `word` op's boundary definition. `\b` (JS) and
