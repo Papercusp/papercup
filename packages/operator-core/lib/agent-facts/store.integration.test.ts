@@ -110,6 +110,13 @@ beforeAll(async () => {
     // cap so a machine eviction stops being indistinguishable from a deliberate
     // retract. Same discipline again: added in the SAME edit as the migration.
     '722-agent-facts-evicted-at.sql',
+    // P-002 (agent-epistemics-2026-08-02): `settled_by` + the `undecidable` kind — the
+    // durable "not decidable from available evidence, stop re-deriving" record, and the
+    // exit condition that says what WOULD settle it. P-006's detector reads both off the
+    // version chain, so this suite cannot exercise it without them.
+    // ⚠ This entry was MISSING until 2026-08-02, which red-pinned the whole file after
+    // migration 730 landed — the exact drift EI-18808675015292160's audit exists to name.
+    '730-agent-facts-undecidable-kind.sql',
   ];
   // EI-18808675015292160: applies the list (EI-6887 strip semantics unchanged)
   // but AUDITS it first against the real sql/ dir — so the "list DRIFTED from the
@@ -1033,3 +1040,82 @@ describe('P-008 (d) assumption resolution (D-079)', () => {
 // real corpus held 0 of 2,217. That is precisely the gap this plan was chartered to
 // find: unit-green, production-unreachable. Do not restore these tests without a
 // producer; they measure the fixture, not the plane.
+
+/**
+ * P-006 / D-001 — the PRODUCER contract the replacement dispute detector rests on.
+ *
+ * Read the note directly above first: the deleted suite failed because it seeded its own
+ * contradictions and then proved the detector paired them, so it passed identically whether
+ * the fleet produced any input or not. This suite deliberately does the opposite — it asserts
+ * nothing about pairing or messaging (that is `facts/contested-key.test.ts`, pure and
+ * fixture-driven by design). It pins only the three STORE behaviours the detector consumes,
+ * each of which is produced by the ordinary `facts:assert` write path with no opt-in:
+ *
+ *   1. a re-assert stamps `supersedesId` (a first assert does not) — the gate that keeps the
+ *      detector free on ~90% of writes, and, if it broke, would silently disable it entirely;
+ *   2. `factVersions` returns the chain CURRENT-FIRST — the assessor reads chain[0] as "the
+ *      version this write replaced", so a reversed order would misreport a settled key;
+ *   3. the chain carries `createdBy`, `kind` and `settledBy` — the only three fields it reads.
+ *
+ * Every one of these is a real property of the plane. If any regresses, the detector goes
+ * quiet rather than wrong, which is the failure mode that took two years to notice last time.
+ */
+describe('P-006 / D-001 — the version-chain producer the dispute detector consumes', () => {
+  const base = { scope: 'owner' as const, scopeRef: 'su-me', createdBy: 'su-alice', workspaceId: WS };
+
+  it('stamps supersedesId on a RE-assert and leaves it null on the first', async () => {
+    const v1 = await assertFact({ ...base, key: 'gate-candidate', body: 'judging 1ee32228' }, db.sql);
+    expect(v1.supersedesId ?? null).toBeNull();
+
+    const v2 = await assertFact(
+      { ...base, createdBy: 'su-bob', key: 'gate-candidate', body: 'judging 4a9b218b' },
+      db.sql,
+    );
+    expect(v2.supersedesId).toBe(v1.id);
+  });
+
+  it('returns the chain CURRENT-FIRST, carrying createdBy / kind / settledBy', async () => {
+    await assertFact({ ...base, key: 'k', body: 'answer A' }, db.sql);
+    await assertFact({ ...base, createdBy: 'su-bob', key: 'k', body: 'answer B' }, db.sql);
+    await assertFact(
+      {
+        ...base,
+        createdBy: 'su-carol',
+        key: 'k',
+        body: 'not determinable from these fields',
+        kind: 'undecidable',
+        settledBy: 'the inFlightRetriage marker in harness_shared.routines',
+      },
+      db.sql,
+    );
+
+    const chain = await factVersions({ scope: 'owner', scopeRef: 'su-me', key: 'k', workspaceId: WS }, db.sql);
+    expect(chain).toHaveLength(3);
+    // chain[0] is the LIVE version — the one a fourth assert would replace.
+    expect(chain[0]).toMatchObject({
+      createdBy: 'su-carol',
+      kind: 'undecidable',
+      settledBy: 'the inFlightRetriage marker in harness_shared.routines',
+    });
+    expect(chain.map((c) => c.createdBy)).toEqual(['su-carol', 'su-bob', 'su-alice']);
+    // Three DISTINCT authors on one key is the shape D-001 measured at ~1 occurrence per 14
+    // days — rare, which is exactly why the detector must not also require them to be
+    // simultaneous, and why the threshold sits at 2 rather than the drafted 3.
+    expect(new Set(chain.map((c) => c.createdBy)).size).toBe(3);
+  });
+
+  it('a settled undecidable is reachable from the chain even after a later answer overwrites it', async () => {
+    // The assessor deliberately only treats chain[0] as the settlement, but the earlier
+    // undecidable must still be READABLE — that history is what makes a later "wait, this was
+    // already declared unknowable" recoverable at all.
+    await assertFact(
+      { ...base, key: 'buried', body: 'cannot tell', kind: 'undecidable', settledBy: 'a primary read' },
+      db.sql,
+    );
+    await assertFact({ ...base, createdBy: 'su-bob', key: 'buried', body: 'it is X' }, db.sql);
+
+    const chain = await factVersions({ scope: 'owner', scopeRef: 'su-me', key: 'buried', workspaceId: WS }, db.sql);
+    expect(chain[0]!.kind).not.toBe('undecidable');
+    expect(chain[1]).toMatchObject({ kind: 'undecidable', settledBy: 'a primary read' });
+  });
+});

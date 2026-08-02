@@ -10,8 +10,11 @@
 
 import { describe, it, expect } from 'vitest';
 import { semanticDocHits, type DocSemanticDeps, type DocSemanticHit } from '../semantic-leg';
+// Import the width — these fixtures are ABOUT the prose column contract, so a
+// width change must move them automatically rather than stranding them here.
+import { PROSE_VECTOR_DIMS } from '../../../search/prose-vector-dims';
 
-const VEC = Array.from({ length: 384 }, () => 0.1);
+const VEC = Array.from({ length: PROSE_VECTOR_DIMS }, () => 0.1);
 
 function hit(slug: string, anchor: string, similarity: number): DocSemanticHit {
   return { slug, anchor, similarity, url: `/docs/${slug}`, title: slug, excerpt: 'x' };
@@ -19,7 +22,7 @@ function hit(slug: string, anchor: string, similarity: number): DocSemanticHit {
 
 function deps(over: Partial<DocSemanticDeps> = {}): DocSemanticDeps {
   return {
-    resolveEmbedder: async () => ({ mode: 'gemma', dims: 384, embed: async () => VEC }),
+    resolveEmbedder: async () => ({ mode: 'gemma', dims: PROSE_VECTOR_DIMS, embed: async () => VEC }),
     querySections: async () => [hit('a', 's1', 0.9), hit('a', 's2', 0.85), hit('b', '', 0.8), hit('c', 's', 0.7)],
     ...over,
   };
@@ -45,20 +48,23 @@ describe('semanticDocHits', () => {
         return [];
       },
     }));
-    expect(got).toEqual([384, 'gemma', 'harness:demo', 15]); // limit × OVERFETCH
+    expect(got).toEqual([PROSE_VECTOR_DIMS, 'gemma', 'harness:demo', 15]); // limit × OVERFETCH
   });
 
   it('returns null when no embedder resolves', async () => {
     expect(await semanticDocHits('q', 'src', 8, deps({ resolveEmbedder: async () => null }))).toBeNull();
   });
 
-  it('returns null on a dims mismatch (harrier@1024 vs vector(384))', async () => {
+  it('returns null on a dims mismatch (harrier@1024 vs the prose column width)', async () => {
     const d = deps({ resolveEmbedder: async () => ({ mode: 'harrier', dims: 1024, embed: async () => VEC }) });
     expect(await semanticDocHits('q', 'src', 8, d)).toBeNull();
   });
 
   it('returns null when the embed output width is wrong', async () => {
-    const d = deps({ resolveEmbedder: async () => ({ mode: 'gemma', dims: 384, embed: async () => [1, 2, 3] }) });
+    // dims DECLARED correctly, output width wrong — so this exercises the SECOND
+    // guard (actual vector width). Declaring a stale width here would trip the
+    // FIRST guard instead and pass for the wrong reason.
+    const d = deps({ resolveEmbedder: async () => ({ mode: 'gemma', dims: PROSE_VECTOR_DIMS, embed: async () => [1, 2, 3] }) });
     expect(await semanticDocHits('q', 'src', 8, d)).toBeNull();
   });
 

@@ -87,7 +87,9 @@ const syncDeltaCodec = createSyncDeltaCodec();
  * RootSyncProvider) dehydrates every SUCCESSFUL query in this app's shared
  * QueryClient. Measured live 2026-07-28: a handful of queries dominate the
  * payload (`plans.attention` ~1002KB, `plans.list` ~800KB, `operatorTurns.page`
- * ~421KB, `operatorTurns.byConversation` ~421KB, `advRoster.list` ~254KB) —
+ * ~421KB, `advRoster.list` ~254KB; a second `operatorTurns.byConversation` ~421KB
+ * was in this measurement and is now GONE — P-025 merged it into operatorTurns.page,
+ * so that whole 421KB is no longer fetched at all, let alone persisted) —
  * together enough to blow the ~5MB localStorage quota (3236KB dehydrated vs the
  * 4MiB `maxBytes` guard, before UTF-16 overhead), so the snapshot never wrote
  * at all and the reload-paints-from-disk benefit was entirely unrealized.
@@ -102,7 +104,6 @@ const PERSIST_EXCLUDE_QUERY_NAMES = [
   'plans.attention',
   'plans.list',
   'operatorTurns.page',
-  'operatorTurns.byConversation',
   'advRoster.list',
 ] as const;
 

@@ -410,11 +410,16 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
   // deliberately. Mapping a name that no resolver serves is dead wiring: every
   // invalidation fired at it is a no-op against a name nothing reads, which is the
   // false-liveness shape (accounts.pool / WI-6796) — it looks wired while pushing
-  // nothing. But WI-6964 is holding the resolver entry alive on purpose for the
-  // moment, DECLARED and WIRED, so its shrink-only ratchet stays green instead of
-  // leaving the gate red while the deletion waits on a very hot lock. An absolute pin
-  // would fight that interim state; this one tolerates it and ARMS ITSELF the instant
-  // the resolver entry goes, which is exactly when re-adding the mapping becomes a bug.
+  // nothing.
+  //
+  // THIS GUARD IS NOW ARMED. It was written to tolerate an interim state in which
+  // WI-6964 deliberately kept the resolver entry alive (declared AND wired) so the
+  // shrink-only ratchet stayed green while the deletion waited. That interim ran ~12h
+  // longer than anyone tracked: D-018 recorded the deletion as DONE on 2026-08-02
+  // while all three sites survived, so during that window this test passed
+  // VACUOUSLY — its `stillRegistered` gate held open by the very entry it exists to
+  // catch. EI-19372323793235963 removed the entry, the mapping and the audit fixture,
+  // so the gate is closed and re-adding either half now fails here.
   it('does not map operatorTurns.byConversation once its resolver entry is gone', () => {
     const stillRegistered = knownQueryNamesV2().includes('operatorTurns.byConversation');
     for (const [table, names] of Object.entries(TABLE_TO_QUERY_NAMES)) {

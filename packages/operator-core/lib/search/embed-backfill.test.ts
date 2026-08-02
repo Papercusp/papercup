@@ -40,6 +40,9 @@ vi.mock('../credentials', () => ({
 }));
 
 import { runBackfillSweep, getLastBackfillResult, backfillTable, TARGETS } from './embed-backfill';
+// Import the width — the sweep writes into the prose columns, so a width change
+// must move this fixture automatically rather than stranding it (384→768).
+import { PROSE_VECTOR_DIMS } from './prose-vector-dims';
 
 function resetSweepState(): void {
   const key = Symbol.for('papercusp.embedBackfillSweepState');

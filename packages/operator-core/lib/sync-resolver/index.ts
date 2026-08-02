@@ -5478,30 +5478,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [await getOrCreateActiveConversation(workspaceId)];
     },
   },
-  'operatorTurns.byConversation': {
-    // WI-6964. listTurnsRecent reads operator_conversations + operator_turns, but only
-    // the latter changes the ROWS this query returns — resolving the conversation does
-    // not alter its turn list, so declaring operator_conversations would push turns on
-    // unrelated conversation-row writes.
-    //
-    // WIRED, not merely declared: the matching entry is in table-to-query-names.ts's
-    // operator_turns array. Both halves are required — a declaration without the wiring
-    // asserts a push-liveness that does not exist (accounts.pool / WI-6796).
-    //
-    // NB su-37bf2 is DELETING this entry under P-025 (no-http-anywhere-2026-07-28 D-016)
-    // — merged into operatorTurns.page, 12 invalidation sites already repointed. Declared
-    // here so the shrink-only ratchet is green NOW rather than leaving the gate red on an
-    // unknown schedule. When the deletion lands it must remove THREE things together:
-    // this entry, its operator_turns array member, and the 'operatorTurns.byConversation'
-    // fixture in sync-read-audit.ts. See WI-6974.
-    backingTables: ['harness_shared.operator_turns'],
-    argsSchema: z.object({ conversationId: z.string().min(1), limit: clampedLimit(500, 200) }),
-    resolve: async (args) => {
-      const { conversationId, limit } = args as { conversationId: string; limit: number };
-      const { listTurnsRecent } = await import('../operator-conversations');
-      return (await listTurnsRecent({ conversationId, limit })).turns;
-    },
-  },
+  // `operatorTurns.byConversation` USED TO LIVE HERE. Removed by
+  // EI-19372323793235963, completing P-025 (no-http-anywhere-2026-07-28 D-016/D-018):
+  // the chat pane's live tail no longer runs its own query — it reads `initialPage
+  // ?.turns` off the existing `operatorTurns.page` hydration, whose args are already
+  // identical, so react-query collapses them to one key and one request. All 12
+  // invalidation sites were repointed to 'operatorTurns.page' at that time.
+  //
+  // D-018 recorded this entry (plus its table-to-query-names member and its
+  // sync-read-audit fixture) as removed on 2026-08-02; in fact only the client half
+  // and the repoint landed, and all three survived ~12h as dead wiring — every
+  // operator_turns write synthesizing an invalidation for a name nothing subscribed
+  // to. Do not re-add: the guard in table-to-query-names.test.ts arms itself the
+  // moment no resolver serves the name, so a re-added mapping now fails loudly.
   'operatorTurns.page': {
     argsSchema: z.object({
       conversationId: z.string().min(1),

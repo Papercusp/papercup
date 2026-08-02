@@ -22,8 +22,11 @@ import {
   digestEmbedClusterEnabled,
   type DigestEmbedClusterDeps,
 } from './digest-embed-cluster-leg';
+import { PROSE_VECTOR_DIMS } from '../search/prose-vector-dims';
 
-const DIM = 384;
+// The prose column width, imported not restated: a width change must move this
+// fixture automatically rather than stranding it (the 384→768 strand).
+const DIM = PROSE_VECTOR_DIMS;
 
 /** A friction candidate — only id + title are read by the leg; cast past the rest. */
 function mk(id: string, title: string): ImprovementCandidate {

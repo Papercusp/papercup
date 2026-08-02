@@ -271,13 +271,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // only the live-tail query leaves a reload hydrated from a stale page.
   // operatorReports.latest (overview-tab-expansion P-004): a new <report> turn
   // refreshes the Overview's Operator-report tile on the same write.
-  // WI-6964: operatorTurns.byConversation added so its declared backing table actually
-  // invalidates it — declaring without wiring is the accounts.pool/WI-6796 false-liveness
-  // defect. NB the query is being deleted under P-025 (D-016, merged into
-  // operatorTurns.page): remove it from THIS array in the same commit as the resolver entry.
+  // operatorTurns.byConversation was a member here until EI-19372323793235963 removed
+  // the resolver entry it mapped to (P-025 / D-016 — the query merged into
+  // operatorTurns.page). Do NOT re-add it: mapping a name no resolver serves is dead
+  // wiring, and table-to-query-names.test.ts now fails on it.
   'harness_shared.operator_turns': [
     'operatorTurns.page',
-    'operatorTurns.byConversation',
     'operatorReports.latest',
   ],
   'harness_shared.operator_prompt_user': ['operatorConfig.byWorkspace'],

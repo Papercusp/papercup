@@ -11,8 +11,9 @@
  *             auto | unset  → key ? openai : local
  *           loadVoicePrefs throwing + key → openai (the catch fallback)
  *
- *   openai → an Embedder that POSTs OpenAI /embeddings with dimensions:384,
- *            throwing `openai_embed_<status>` on a non-2xx;
+ *   openai → an Embedder that POSTs OpenAI /embeddings with
+ *            dimensions:PROSE_VECTOR_DIMS, throwing `openai_embed_<status>` on
+ *            a non-2xx;
  *   local  → a transformers pipeline, or null when the dynamic import fails;
  *   no mode resolved → null (→ engine falls back to BM25-only).
  *
@@ -40,6 +41,10 @@ vi.mock('../../memory/embed-sidecar-wiring', () => ({
 }));
 
 import { buildQueryEmbedder, withAcquireBudget, _clearQueryEmbedCacheForTests } from './embedder';
+// Import the width rather than restating it: this assertion is ABOUT the prose
+// column contract, so a future width change must move it automatically instead
+// of stranding a fixture here (the 384→768 strand this line was fixed for).
+import { PROSE_VECTOR_DIMS } from '../../search/prose-vector-dims';
 import { readCredentials } from '../../credentials';
 import { loadVoicePrefs } from '../../voice-prefs';
 
@@ -63,7 +68,7 @@ afterEach(() => {
 });
 
 describe('buildQueryEmbedder — OpenAI path', () => {
-  it('(a) openai mode + key → an embedder that POSTs OpenAI with dimensions:384, returns the vector', async () => {
+  it('(a) openai mode + key → an embedder that POSTs OpenAI with dimensions:PROSE_VECTOR_DIMS, returns the vector', async () => {
     vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
     vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);
     const fetchMock = vi.fn(async () => ({
@@ -85,7 +90,7 @@ describe('buildQueryEmbedder — OpenAI path', () => {
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk-stored');
     const body = JSON.parse(init.body as string);
-    expect(body.dimensions).toBe(384);
+    expect(body.dimensions).toBe(PROSE_VECTOR_DIMS);
     expect(body.model).toBe('text-embedding-3-small');
     expect(body.input).toBe('auth strategy');
   });

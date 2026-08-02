@@ -12,6 +12,12 @@ import {
   type SemanticDupeDeps,
   type SemanticDupeCandidate,
 } from './semantic-dupe-guard';
+// The happy-path fixtures must emit exactly the prose column width, so import it
+// rather than restating the number — a width change then moves these fixtures
+// automatically instead of stranding them (the 384→768 strand these were fixed
+// for). The MISMATCH cases below stay hardcoded on purpose: 1024 is harrier's
+// real native width, a fact about that model, not about the columns.
+import { PROSE_VECTOR_DIMS } from '../../search/prose-vector-dims';
 
 const cand = (id: string, similarity: number): SemanticDupeCandidate => ({
   id,
@@ -21,7 +27,7 @@ const cand = (id: string, similarity: number): SemanticDupeCandidate => ({
   similarity,
 });
 
-const okDeps = (candidates: SemanticDupeCandidate[], dims = 384): SemanticDupeDeps => ({
+const okDeps = (candidates: SemanticDupeCandidate[], dims = PROSE_VECTOR_DIMS): SemanticDupeDeps => ({
   resolveEmbedder: async () => ({ mode: 'gemma', dims, embed: async () => new Array(dims).fill(0.1) }),
   queryCandidates: async () => candidates,
 });
@@ -52,10 +58,10 @@ describe('classification', () => {
     const deps: SemanticDupeDeps = {
       resolveEmbedder: async () => ({
         mode: 'gemma',
-        dims: 384,
+        dims: PROSE_VECTOR_DIMS,
         embed: async (t: string) => {
           seen.push(t);
-          return new Array(384).fill(0.1);
+          return new Array(PROSE_VECTOR_DIMS).fill(0.1);
         },
       }),
       queryCandidates: async () => [],
@@ -68,14 +74,24 @@ describe('classification', () => {
   it('passes the resolved mode + harness through to the candidate query (space filter)', async () => {
     const calls: Array<{ mode: string; harness?: string }> = [];
     const deps: SemanticDupeDeps = {
-      resolveEmbedder: async () => ({ mode: 'local', dims: 384, embed: async () => new Array(384).fill(0.1) }),
+      // `openai`, not `local`: this asserts the resolved mode is passed through
+      // VERBATIM, so it must use a mode that is (a) prose-eligible and (b) not
+      // the `gemma` default, or it would pass for the wrong reason. `local` was
+      // the original choice and is no longer eligible at all — bge-small is
+      // natively 384 with mrl:'none', so it cannot emit PROSE_VECTOR_DIMS and
+      // now dims-guards off before ever reaching queryCandidates.
+      resolveEmbedder: async () => ({
+        mode: 'openai',
+        dims: PROSE_VECTOR_DIMS,
+        embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.1),
+      }),
       queryCandidates: async (_vec, mode, harness) => {
         calls.push({ mode, harness });
         return [];
       },
     };
     await findSemanticDupes({ title: 't', harness: 'papercusp' }, deps);
-    expect(calls).toEqual([{ mode: 'local', harness: 'papercusp' }]);
+    expect(calls).toEqual([{ mode: 'openai', harness: 'papercusp' }]);
   });
 });
 
@@ -98,7 +114,7 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
     const deps: SemanticDupeDeps = {
       resolveEmbedder: async () => ({
         mode: 'gemma',
-        dims: 384,
+        dims: PROSE_VECTOR_DIMS,
         embed: async () => {
           throw new Error('sidecar down');
         },
@@ -110,7 +126,7 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
 
   it('candidate-query throw (e.g. migration 548 not applied)', async () => {
     const deps: SemanticDupeDeps = {
-      resolveEmbedder: async () => ({ mode: 'gemma', dims: 384, embed: async () => new Array(384).fill(0.1) }),
+      resolveEmbedder: async () => ({ mode: 'gemma', dims: PROSE_VECTOR_DIMS, embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.1) }),
       queryCandidates: async () => {
         throw new Error('column "embedding" does not exist');
       },
@@ -142,7 +158,7 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
       const deps: SemanticDupeDeps = {
         resolveEmbedder: async () => ({
           mode: 'gemma',
-          dims: 384,
+          dims: PROSE_VECTOR_DIMS,
           embed: () => new Promise<number[]>(() => {}), // never settles
         }),
         queryCandidates: async () => [cand('EI-1', 0.99)],
@@ -161,7 +177,7 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
     const deps: SemanticDupeDeps = {
       resolveEmbedder: async () => {
         touched = true;
-        return { mode: 'gemma', dims: 384, embed: async () => new Array(384).fill(0.1) };
+        return { mode: 'gemma', dims: PROSE_VECTOR_DIMS, embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.1) };
       },
       queryCandidates: async () => [cand('EI-1', 0.99)],
     };

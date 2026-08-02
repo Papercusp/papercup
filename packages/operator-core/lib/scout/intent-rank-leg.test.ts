@@ -14,8 +14,11 @@ import {
   resolveIntentSims,
   type IntentRankDeps,
 } from './intent-rank-leg';
+import { PROSE_VECTOR_DIMS } from '../search/prose-vector-dims';
 
-const DIM = 384;
+// The prose column width, imported not restated: a width change must move this
+// fixture automatically rather than stranding it (the 384→768 strand).
+const DIM = PROSE_VECTOR_DIMS;
 
 function makeDeps(opts: {
   planSims?: Record<string, number>;

@@ -66,9 +66,42 @@ function resolveSpec(spec: string, fromFile: string): string | null {
   return null; // other externals: browser-safe or explicitly shimmed elsewhere
 }
 
-const STMT = /(?:^|\n)\s*(?:import|export)\b([\s\S]*?)from\s*['"]([^'"]+)['"]/g;
+// The clause between `import`/`export` and `from` may contain identifiers, braces,
+// commas, `*`, `as` and `type` — but NEVER a `;` or a quote. Bounding the capture to
+// `[^;'"]` is what keeps it from running past the end of its own statement.
+//
+// ⚠ It was `[\s\S]*?` until 2026-08-02, which made a SIDE-EFFECT import (`import
+// './x.css';` — no `from` clause) swallow every line after it until the next `from`,
+// then report THAT statement's specifier. Two ways it lied, both silent:
+//   - the `^\s*type\b` guard below tested the runaway's text (which starts at the CSS
+//     specifier), never the real statement, so a type-only `export type {…} from
+//     '<server module>'` — fully erased by the bundler — was recorded as a RUNTIME edge
+//     and reported as a leak. That false positive red-pinned the fleet gate.
+//   - every statement the runaway jumped OVER lost its edge entirely, so the graph was
+//     also under-walked — real leaks could hide behind a side-effect import.
+const STMT = /(?:^|\n)\s*(?:import|export)\b([^;'"]*?)from\s*['"]([^'"]+)['"]/g;
 const SIDE = /(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g;
 const DYN = /import\(\s*['"]([^'"]+)['"]\s*\)/g;
+
+/**
+ * Runtime edges declared in ONE module's source (type-only erased). Pure, so the
+ * scanner itself is unit-testable — see the 'import-graph scanner' suite below.
+ */
+function specsIn(src: string, allowDynamic: boolean): string[] {
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  // Module-level /g regexes: reset so a call can never inherit a previous one's lastIndex.
+  STMT.lastIndex = 0;
+  SIDE.lastIndex = 0;
+  DYN.lastIndex = 0;
+  while ((m = STMT.exec(src))) {
+    if (/^\s*type\b/.test(m[1])) continue;
+    out.push(m[2]);
+  }
+  while ((m = SIDE.exec(src))) out.push(m[1]);
+  if (allowDynamic) while ((m = DYN.exec(src))) out.push(m[1]);
+  return [...new Set(out)];
+}
 
 /** Runtime edges (type-only erased). Dynamic import()s count only from client files. */
 function edges(file: string): string[] {
@@ -78,15 +111,7 @@ function edges(file: string): string[] {
   } catch {
     return [];
   }
-  const out: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = STMT.exec(src))) {
-    if (/^\s*type\b/.test(m[1])) continue;
-    out.push(m[2]);
-  }
-  while ((m = SIDE.exec(src))) out.push(m[1]);
-  if (isClient(file)) while ((m = DYN.exec(src))) out.push(m[1]);
-  return [...new Set(out)];
+  return specsIn(src, isClient(file));
 }
 
 /** Unshimmed node: builtins a module top-level (non-type) imports. */

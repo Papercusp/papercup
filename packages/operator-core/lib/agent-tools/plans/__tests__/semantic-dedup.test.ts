@@ -17,12 +17,16 @@ import {
   type PlanSemanticDeps,
   type PlanSemanticHit,
 } from '../semantic-dedup';
+// Import the width — these fixtures are ABOUT the prose column contract, so a
+// width change moves them automatically instead of stranding them here (the
+// 384→768 strand they were fixed for).
+import { PROSE_VECTOR_DIMS } from '../../../search/prose-vector-dims';
 
-const VEC = Array.from({ length: 384 }, () => 0.1);
+const VEC = Array.from({ length: PROSE_VECTOR_DIMS }, () => 0.1);
 
 function deps(over: Partial<PlanSemanticDeps> = {}): PlanSemanticDeps {
   return {
-    resolveEmbedder: async () => ({ mode: 'gemma', dims: 384, embed: async () => VEC }),
+    resolveEmbedder: async () => ({ mode: 'gemma', dims: PROSE_VECTOR_DIMS, embed: async () => VEC }),
     querySimilarities: async () => new Map(),
     queryTopPlans: async () => [],
     ...over,

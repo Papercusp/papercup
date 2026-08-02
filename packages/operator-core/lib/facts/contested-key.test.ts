@@ -138,9 +138,18 @@ describe('assessKeyContest — re-deriving a key already settled as UNDECIDABLE'
 
   it('only treats the MOST RECENT version as the settlement', () => {
     // An undecidable buried deeper in the chain was already superseded by a real answer — that
-    // question is closed, and re-warning about it would resurrect a resolved dispute.
-    const chain = [v({ id: 3, createdBy: 'su-bob', kind: 'conclusion' }), v({ id: 1, ...settled })];
-    const out = assessKeyContest({ chain, asserter: 'su-me' });
-    expect(out).toBeNull(); // one other author, and the live version is not undecidable
+    // question is closed, so it must not raise the settled-question alarm. (Same author on both
+    // versions, so the multi-author rule is held out and `settledUndecidable` is the only
+    // dimension under test.)
+    const chain = [v({ id: 3, createdBy: 'su-alice', kind: 'conclusion' }), v({ id: 1, ...settled })];
+    expect(assessKeyContest({ chain, asserter: 'su-me' })).toBeNull();
+
+    // ...and the two rules remain independent: give it a second author and it fires as a plain
+    // contested key, never as a settled one.
+    const twoAuthors = [v({ id: 3, createdBy: 'su-bob', kind: 'conclusion' }), v({ id: 1, ...settled })];
+    const out = assessKeyContest({ chain: twoAuthors, asserter: 'su-me' })!;
+    expect(out.settledUndecidable).toBe(false);
+    expect(out.note).toMatch(/CONTESTED KEY/);
+    expect(out.note).not.toMatch(/RE-DERIVING A SETTLED QUESTION/);
   });
 });
