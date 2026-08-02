@@ -624,6 +624,133 @@ describe('lockAuthorityForHive — routineHostsOnly (EI-18761517980514694 narrow
   });
 });
 
+// ── EI-19330771435294981 / mig 724: requiresRoutine — the per-election capability
+//
+// The describe above pins what `routineHostsOnly` actually does at the git-sync
+// integrator call site: with the cadence bit unpublished it excludes EVERY peer,
+// so integrator arbitration is OFF rather than tightened. `requiresRoutine` is the
+// fix — the node publishes the SET of its ACTIVE routine names and each election
+// asks its own question, so the integrator can require 'git-sync' instead of
+// borrowing a bit about gym-cycle.
+//
+// The load-bearing test is 'RESTORES arbitration': same roster, same election,
+// where routineHostsOnly elected self (nobody) requiresRoutine elects a real peer.
+describe('lockAuthorityForHive — requiresRoutine (EI-19330771435294981)', () => {
+  type Row = {
+    device_pubkey: string;
+    github_user_id: number;
+    machine_label: string;
+    last_seen_ms: number;
+    runs_routines?: boolean | null;
+    active_routines?: readonly string[] | null;
+  };
+  const self = { githubUserId: 3, devicePubkey: 'mmm' };
+  // The real papercusp shape: no cadence routine anywhere (so runs_routines is null
+  // on every row), but both peers DO run git-sync and now publish it.
+  const rows: Row[] = [
+    {
+      device_pubkey: 'aaa', github_user_id: 1, machine_label: 'mac',
+      last_seen_ms: NOW - 1000, runs_routines: null, active_routines: ['git-sync'],
+    },
+    {
+      device_pubkey: 'zzz', github_user_id: 2, machine_label: 'tower',
+      last_seen_ms: NOW - 1000, runs_routines: null, active_routines: ['git-sync', 'gym-cycle'],
+    },
+  ];
+  const hiveDeps = (rs: Row[], over: Partial<LockAuthorityDeps> = {}): LockAuthorityDeps => ({
+    now: () => NOW,
+    staleMs: 90_000,
+    fetchHivePresenceRows: async () => rs,
+    resolveSelf: async () => self,
+    useHrwRendezvous: false,
+    evictionMonitor: null,
+    ...over,
+  });
+
+  it('RESTORES arbitration where routineHostsOnly disabled it — same roster, real peer elected', async () => {
+    // This is the entire point of the plan, as one comparison.
+    const viaCadenceBit = await lockAuthorityForHive('hive', hiveDeps(rows, { routineHostsOnly: true }));
+    expect(viaCadenceBit).toEqual({ isSelf: true, liveCount: 1 }); // every peer excluded — arbitration OFF
+
+    const viaRoutine = await lockAuthorityForHive('hive', hiveDeps(rows, { requiresRoutine: 'git-sync' }));
+    expect(viaRoutine.isSelf).toBe(false);
+    expect(viaRoutine.peer?.machineLabel).toBe('mac'); // argmin over {aaa, zzz, self mmm}
+  });
+
+  it('excludes a peer that does not publish the required routine', async () => {
+    const mixed: Row[] = [
+      { ...rows[0]!, active_routines: ['gym-cycle'] }, // 'aaa' does NOT run git-sync
+      rows[1]!,
+    ];
+    const r = await lockAuthorityForHive('hive', hiveDeps(mixed, { requiresRoutine: 'git-sync' }));
+    expect(r.isSelf).toBe(false);
+    expect(r.peer?.machineLabel).toBe('tower'); // only 'zzz' qualifies
+  });
+
+  it('absent / null / EMPTY active_routines are all "not a candidate"', async () => {
+    // A pre-mig-724 peer sends nothing; a node advertising nothing sends null (the
+    // publisher collapses [] to null). All three must read identically here.
+    for (const absent of [undefined, null, [] as readonly string[]]) {
+      const r = await lockAuthorityForHive(
+        'hive',
+        hiveDeps(rows.map((x) => ({ ...x, active_routines: absent })), { requiresRoutine: 'git-sync' }),
+      );
+      expect(r).toEqual({ isSelf: true, liveCount: 1 }); // fails SAFE: self wins
+    }
+  });
+
+  it('EMPTY capable set fails SAFE on BOTH selectors — argmin and HRW alike', async () => {
+    const inert = rows.map((r) => ({ ...r, active_routines: null }));
+    expect(await lockAuthorityForHive('hive', hiveDeps(inert, { requiresRoutine: 'git-sync' })))
+      .toEqual({ isSelf: true, liveCount: 1 });
+    expect(
+      await lockAuthorityForHive(
+        'hive',
+        hiveDeps(inert, { requiresRoutine: 'git-sync', useHrwRendezvous: true }),
+      ),
+    ).toEqual({ isSelf: true, liveCount: 1 });
+  });
+
+  it('INTERSECTS with eligibleDevices — both are necessary conditions', async () => {
+    // 'aaa' publishes git-sync but is not an eligible device; 'zzz' is eligible but
+    // here publishes nothing. Neither satisfies both ⇒ self.
+    const mixed: Row[] = [rows[0]!, { ...rows[1]!, active_routines: null }];
+    const r = await lockAuthorityForHive(
+      'hive',
+      hiveDeps(mixed, { requiresRoutine: 'git-sync', eligibleDevices: new Set(['zzz', 'mmm']) }),
+    );
+    expect(r).toEqual({ isSelf: true, liveCount: 1 });
+  });
+
+  it('INTERSECTS with routineHostsOnly when a caller opts into both', async () => {
+    // 'zzz' runs git-sync AND publishes the cadence bit; 'aaa' only git-sync.
+    const both: Row[] = [rows[0]!, { ...rows[1]!, runs_routines: true }];
+    const r = await lockAuthorityForHive(
+      'hive',
+      hiveDeps(both, { requiresRoutine: 'git-sync', routineHostsOnly: true }),
+    );
+    expect(r.isSelf).toBe(false);
+    expect(r.peer?.machineLabel).toBe('tower'); // only 'zzz' satisfies both
+  });
+
+  it('is OPT-IN — omitting it leaves candidacy exactly as it was', async () => {
+    const r = await lockAuthorityForHive('hive', hiveDeps(rows));
+    expect(r.isSelf).toBe(false);
+    expect(r.peer?.machineLabel).toBe('mac'); // plain argmin, no narrowing
+  });
+
+  it('matches the routine name EXACTLY — no prefix or substring match', async () => {
+    const r = await lockAuthorityForHive(
+      'hive',
+      hiveDeps(
+        rows.map((x) => ({ ...x, active_routines: ['git-sync-watchdog'] })),
+        { requiresRoutine: 'git-sync' },
+      ),
+    );
+    expect(r).toEqual({ isSelf: true, liveCount: 1 });
+  });
+});
+
 describe('routeToAuthority — routing + fail-open (D-004)', () => {
   it('we are the authority → runs local, via local-authority', async () => {
     const res = await routeToAuthority('h', { local: async () => 'L' }, deps({ self: null, rows: [] }));

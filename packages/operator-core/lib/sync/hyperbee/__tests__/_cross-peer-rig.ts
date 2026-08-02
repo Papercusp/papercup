@@ -73,6 +73,7 @@ export const SHARED_PRESENCE_DDL = `
     fed_ts         bigint,
     fed_hlc        text,
     author_pubkey  text,
+    active_routines text[],
     PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
   )`;
 // The 000-baseline coord_event_log + the migration-150 federation columns/index,

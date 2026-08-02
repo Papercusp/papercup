@@ -30,6 +30,7 @@ import {
   LexicalLegBackend,
   Mem0Backend,
   invalidateMemoryClient,
+  dynamicImport,
   HARRIER_NATIVE_DIMS,
   type EmbedFn,
   type ResolvedEmbedder,
@@ -160,41 +161,12 @@ export function __resetOpenAiEmbedCooldownForTest(): void {
   openAiEmbedHardExhaustedSinceMs = null;
 }
 
-// Dodge bundler static analysis — @huggingface/transformers is an
-// optional, lazily-resolved dependency (only present when local mode is
-// in play).
-const newFunctionImport = new Function(
-  'specifier',
-  'return import(specifier)',
-) as <T>(specifier: string) => Promise<T>;
-
-/**
- * The `new Function` form above is invisible to a bundler, which is the whole
- * point — but a function built that way gets a realm with NO host dynamic-import
- * callback in some embedders, and `import()` inside it then throws
- * `A dynamic import callback was not specified` REGARDLESS of whether the
- * package is installed.
- *
- * That failure is indistinguishable from "not installed" to every caller,
- * because {@link localAvailable} answers with a bare boolean: under Vitest the
- * cascade silently resolved to `disabled` / `harrier_forced_but_transformers_not_installed`
- * on a box where the package imports fine from plain node. So the local-embedder
- * leg could not be exercised by ANY test — a seam that reports "absent" when it
- * means "unreachable from here" cannot be tested and cannot alarm.
- *
- * Falling back to a direct `import()` of the SAME runtime-valued specifier keeps
- * the bundler blind (a variable specifier is not statically analyzable, and
- * `@vite-ignore` silences Vite's warning) while working in a VM realm. Narrowed
- * to that one error so a genuine resolution failure still surfaces unchanged.
- */
-const dynamicImport = async <T>(specifier: string): Promise<T> => {
-  try {
-    return await newFunctionImport<T>(specifier);
-  } catch (err) {
-    if (!/dynamic import callback was not specified/i.test((err as Error)?.message ?? '')) throw err;
-    return (await import(/* @vite-ignore */ specifier)) as T;
-  }
-};
+// The optional-dependency import lives in ONE place now (@papercusp/memory's
+// ./dynamic-import): it stays invisible to bundler static analysis AND works
+// inside a VM realm that has no host dynamic-import callback. Six copies of the
+// bare `new Function('return import(s)')` form used to answer "is it installed?"
+// with a TypeError that a bare catch turned into `false` — see that module's
+// header for what that cost {@link localAvailable} and the mem0 client.
 
 /** Resolve the OpenAI key: operator credentials first, env fallback.
  *  Exported as a seam for the `resolveEmbedder` cascade tests (GAP 4). */

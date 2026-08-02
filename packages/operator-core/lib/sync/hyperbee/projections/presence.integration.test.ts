@@ -64,6 +64,7 @@ beforeAll(async () => {
       schema_version bigint DEFAULT 1 NOT NULL,
       pot_slug text, fed_ts bigint,
       fed_hlc text, author_pubkey text,
+      active_routines text[],
       CONSTRAINT shared_presence_pkey PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
     )`);
   h.sql = rootSql;

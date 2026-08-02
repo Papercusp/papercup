@@ -26,6 +26,10 @@ describe('federated-presence query (real shared_presence)', () => {
         last_seen_at   timestamptz NOT NULL DEFAULT now(),
         runs_routines boolean,
         schema_version bigint NOT NULL DEFAULT 1,
+        fed_ts         bigint,
+        fed_hlc        text,
+        author_pubkey  text,
+        active_routines text[],
         PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
       )`);
     await db.sql`

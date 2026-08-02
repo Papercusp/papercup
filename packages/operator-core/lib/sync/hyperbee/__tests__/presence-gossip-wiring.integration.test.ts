@@ -159,6 +159,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
         -- to be 'gossip presence e2e'" with no hint of a schema mismatch. Keep
         -- this column list in step with projections/presence.ts's INSERT.
         runs_routines boolean,
+        active_routines text[],
         PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label));
     `);
     await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '434-shared-session-presence.sql'), 'utf8')));

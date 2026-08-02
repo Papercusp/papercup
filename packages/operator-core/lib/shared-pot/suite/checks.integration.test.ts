@@ -38,6 +38,11 @@ beforeAll(async () => {
       last_seen_at   timestamptz NOT NULL DEFAULT now(),
       schema_version bigint NOT NULL DEFAULT 1,
       pot_slug       text,
+      fed_ts         bigint,
+      fed_hlc        text,
+      author_pubkey  text,
+      runs_routines  boolean,
+      active_routines text[],
       PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
     )
   `);

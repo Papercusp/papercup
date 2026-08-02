@@ -566,6 +566,13 @@ describe('coord_event_log federation (real PG)', () => {
 
     it('the P-003 author budget bounds fed-event re-fires too (row still applies)', async () => {
       process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '1';
+      // WI-7043 split the budget into `directed` (may reach the cap) and `ambient`
+      // (capped at cap-reserve so it can never starve a directed wake). A fed_event
+      // re-fire is AMBIENT, so at the shipped default reserve a cap of 1 leaves it
+      // an ceiling of 0 and NOTHING re-fires. This test is about the per-author
+      // BUDGET bounding ambient traffic, not about the class split (that is covered
+      // by federated-wake-rate.test.ts) — so pin the reserve off and assert one thing.
+      process.env.PAPERCUSP_FED_WAKE_DIRECTED_RESERVE = '0';
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const p = proj();
@@ -578,6 +585,7 @@ describe('coord_event_log federation (real PG)', () => {
       } finally {
         warnSpy.mockRestore();
         delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
+        delete process.env.PAPERCUSP_FED_WAKE_DIRECTED_RESERVE;
       }
     });
   });
@@ -787,6 +795,11 @@ describe('coord_event_log federation (real PG)', () => {
       // the same per-author federated-wake budget: over budget ⇒ receipt suppressed
       // (the quarantine record itself is unaffected — delivery honesty preserved).
       process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '2';
+      // A courtesy receipt is AMBIENT under WI-7043's two-class budget, so the
+      // shipped default reserve would cut this cap of 2 down to an ambient ceiling
+      // of 1. The property under test is the per-author budget, not the class
+      // split (federated-wake-rate.test.ts owns that) — pin the reserve off.
+      process.env.PAPERCUSP_FED_WAKE_DIRECTED_RESERVE = '0';
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const p = tierProj('observe'); // below message-tier ⇒ every row quarantines
@@ -807,6 +820,7 @@ describe('coord_event_log federation (real PG)', () => {
       } finally {
         warnSpy.mockRestore();
         delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
+        delete process.env.PAPERCUSP_FED_WAKE_DIRECTED_RESERVE;
       }
     });
 
