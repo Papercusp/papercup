@@ -72,6 +72,7 @@ function adv(overrides: Partial<AdvSessionRow> = {}): AdvSessionRow {
     startedAt: iso(NOW - 3_600_000),
     endedAt: null,
     exitCode: null,
+    endedBy: null,
     ...overrides,
   };
 }

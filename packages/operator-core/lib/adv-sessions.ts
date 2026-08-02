@@ -40,10 +40,12 @@ function warnUnlessMissingTable(e: unknown, label: string): void {
  * - `'self'`       — the session's own exit was observed and reported. `ended_at` IS the end time.
  * - `'reaper'`     — idle-session-reaper noticed a process that was already gone.
  * - `'reconciler'` — reconcileDeadTerminalLaunches noticed a dead terminal launch.
+ * - `'cleanup'`    — an administrative close (e.g. a session-port target whose preparation
+ *                    expired). No exit was ever observed because the session never ran.
  *
- * For everything except `'self'`, `ended_at` is the NOTICE time, not the end time.
+ * For everything except `'self'`, `ended_at` is the NOTICE/CLOSE time, not the end time.
  */
-export type AdvSessionEndedBy = 'self' | 'reaper' | 'reconciler';
+export type AdvSessionEndedBy = 'self' | 'reaper' | 'reconciler' | 'cleanup';
 
 export interface AdvSessionRow {
   id: number;

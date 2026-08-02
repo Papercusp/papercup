@@ -45,6 +45,7 @@ function adv(overrides: Partial<AdvSessionRow>): AdvSessionRow {
     startedAt: '2026-06-22T20:00:00.000Z',
     endedAt: null,
     exitCode: null,
+    endedBy: null,
     ...overrides,
   };
 }

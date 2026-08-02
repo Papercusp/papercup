@@ -34,6 +34,7 @@ const row: AdvSessionRow = {
   startedAt: '2026-07-14T00:00:00.000Z',
   endedAt: null,
   exitCode: null,
+  endedBy: null,
 };
 
 const source = (text: string): StableSource => {

@@ -683,3 +683,35 @@ export const HARNESS_ISSUES_CONSOLIDATED_FED_DDL = `
   CREATE TRIGGER capture_hic_upd_trg AFTER UPDATE ON harness_shared.harness_issues_consolidated
     FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
     EXECUTE FUNCTION harness_shared.capture_substrate_outbox('issue_id');`;
+
+/**
+ * The other two relations that store a work-item endpoint as '<harness>#<feature_id>':
+ * `coord_links` (the AUTHORITATIVE store that work_item_deps mirrors) and `coord_threads`
+ * (a work item's comment thread). Only the columns + UNIQUE indexes the endpoint-integrity
+ * detector and migration 734's `repoint_qualified_refs` actually touch.
+ *
+ * The unique indexes are not decoration: re-pointing a ref can collide with a row already
+ * at the target ref, and the two tables resolve that collision in OPPOSITE ways (an edge
+ * duplicate is redundant and dropped; a thread owns posts and is preserved). Without the
+ * indexes a test for that asymmetry cannot fail.
+ */
+export const COORD_REF_HOLDERS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.coord_links (
+    id bigserial PRIMARY KEY,
+    workspace_id text NOT NULL DEFAULT 'default',
+    src_kind text NOT NULL, src_ref text NOT NULL,
+    dst_kind text NOT NULL, dst_ref text NOT NULL,
+    rel text NOT NULL,
+    created_by text, created_at timestamptz NOT NULL DEFAULT now());
+  CREATE UNIQUE INDEX IF NOT EXISTS coord_links_edge_uq ON harness_shared.coord_links
+    (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel);
+  CREATE TABLE IF NOT EXISTS harness_shared.coord_threads (
+    workspace_id text NOT NULL DEFAULT 'default',
+    thread_id text NOT NULL,
+    parent_kind text NOT NULL, parent_ref text NOT NULL,
+    title text, post_count int NOT NULL DEFAULT 0,
+    harness_slug text, origin text NOT NULL DEFAULT 'local',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, thread_id));
+  CREATE UNIQUE INDEX IF NOT EXISTS coord_threads_parent_uq ON harness_shared.coord_threads
+    (workspace_id, parent_kind, parent_ref);`;

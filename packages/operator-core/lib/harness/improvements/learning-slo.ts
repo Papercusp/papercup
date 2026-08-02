@@ -912,17 +912,27 @@ function poolLabel(p: RecallPoolHealth): string {
  * BLENDED surface zero-hit rate so the finding carries its own proof that the
  * surface-level number could not have caught this. A caller with no surface data
  * still gets correct signals, just without the contrast clause.
+ *
+ * `recentPools` (WI-6932) is the SAME per-pool shape computed over a much
+ * shorter, RECENT window (`recallPoolEmptyScopeRecentHours`, default 24h)
+ * instead of the full `recallPoolWindowDays` trailing week — the gate-3
+ * (empty-scope) recency check. Optional and backward-compatible: omitting it
+ * (or passing `[]`) falls all the way back to the pre-WI-6932 flat-window
+ * gate-3 behavior, so every existing caller/test is unaffected.
  */
 export function recallPoolSignalsFromHealth(
   pools: readonly RecallPoolHealth[],
   surfaces: readonly RecallSurfaceHealth[] = [],
   opts: LearningSloOptions = {},
+  recentPools: readonly RecallPoolHealth[] = [],
 ): WatchdogSignal[] {
   const minRecalls = opts.recallPoolMinRecalls ?? LEARNING_SLO_DEFAULTS.recallPoolMinRecalls;
   const maxZero = opts.recallPoolMaxZeroHitRate ?? LEARNING_SLO_DEFAULTS.recallPoolMaxZeroHitRate;
   const maxSat = opts.recallPoolMaxSaturationRate ?? LEARNING_SLO_DEFAULTS.recallPoolMaxSaturationRate;
   const maxEmptyScope = opts.recallPoolMaxEmptyScopeRate ?? LEARNING_SLO_DEFAULTS.recallPoolMaxEmptyScopeRate;
   const windowDays = opts.recallPoolWindowDays ?? LEARNING_SLO_DEFAULTS.recallPoolWindowDays;
+  const recentHours =
+    opts.recallPoolEmptyScopeRecentHours ?? LEARNING_SLO_DEFAULTS.recallPoolEmptyScopeRecentHours;
 
   // Underpowered slices are not evidence. No scale filter — see the module note.
   const eligible = pools.filter((p) => p.recalls >= minRecalls);
@@ -995,15 +1005,49 @@ export function recallPoolSignalsFromHealth(
   // three ships. Crucially it also fires where gate-2 CANNOT: a pool asked
   // unscoped 69% of the time has a 69% zero-hit rate, comfortably under the
   // 0.85 starvation gate, so nothing in this file could see it before.
-  const unscoped = eligible
-    .filter((p) => p.emptyScopeRate >= maxEmptyScope)
+  //
+  // WI-6932: a flat `windowDays` trailing RATE cannot express "this WAS
+  // broken and no longer is" — a pool fixed by a sharp step-function change
+  // keeps breaching the gate for the full window while the pre-fix rows age
+  // out (measured: D-035 landed 02:00Z, empty-scope 0.495→0.000 in 1h and
+  // held at 0.000 for 4h across 4,434 recalls, yet the 7d rate stayed
+  // 0.27–0.37 — a false critical against already-shipped work, refiled every
+  // tick for ~a week). So before trusting the flat-window candidate list,
+  // check `recentPools` (the SAME shape over `recallPoolEmptyScopeRecentHours`,
+  // default 24h): a pool with enough RECENT recalls to trust its own rate
+  // (>= minRecalls) is judged on that recent rate instead — clean recent data
+  // suppresses the finding as likely-already-fixed; still-dirty recent data
+  // still fires, now WITH the trend visible in the body. A pool with too few
+  // recent recalls to trust (quiet pool, or no recentPools passed at all —
+  // the pre-WI-6932 pure-function callers) falls back to the flat-window
+  // verdict unchanged.
+  const recentByKey = new Map<string, RecallPoolHealth>();
+  for (const r of recentPools) {
+    recentByKey.set(`${r.surface} ${r.pool} ${r.scoreScale}`, r);
+  }
+  const emptyScopeCandidates = eligible.filter((p) => p.emptyScopeRate >= maxEmptyScope);
+  let suppressedAsFixed = 0;
+  const unscoped = emptyScopeCandidates
+    .filter((p) => {
+      const recent = recentByKey.get(`${p.surface} ${p.pool} ${p.scoreScale}`);
+      if (!recent || recent.recalls < minRecalls) return true; // no trustworthy recent signal — old behavior
+      if (recent.emptyScopeRate < maxEmptyScope) {
+        suppressedAsFixed += 1;
+        return false; // clean over the recent window — likely already fixed
+      }
+      return true; // still breaching recently too — genuinely still broken
+    })
     .sort((a, b) => b.emptyScopeRate - a.emptyScopeRate || b.recalls - a.recalls);
   if (unscoped.length > 0) {
     const lines = unscoped.slice(0, RECALL_POOL_BODY_SAMPLES).map((p) => {
       const alsoStarved = p.zeroHitRate >= maxZero ? '' : ` — and its ${ratePct(p.zeroHitRate)} zero-hit rate is ` +
         `UNDER the ${ratePct(maxZero)} starvation gate, so gate-2 cannot see this`;
+      const recent = recentByKey.get(`${p.surface} ${p.pool} ${p.scoreScale}`);
+      const trend = recent && recent.recalls >= minRecalls
+        ? ` (still ${ratePct(recent.emptyScopeRate)} over the last ${recentHours}h — not a stale-window artifact)`
+        : '';
       return `  • ${poolLabel(p)}: asked under an EMPTY scope on ${p.emptyScope}/${p.recalls} recalls ` +
-        `(${ratePct(p.emptyScopeRate)})${alsoStarved}.`;
+        `(${ratePct(p.emptyScopeRate)})${trend}${alsoStarved}.`;
     });
     signals.push({
       source: 'memory-recall-pool',
@@ -1014,6 +1058,11 @@ export function recallPoolSignalsFromHealth(
         `${unscoped.length} injection pool(s) with at least ${minRecalls} recalls were asked under an ` +
         `EMPTY scope list on at least ${ratePct(maxEmptyScope)} of the recalls they took part in:\n` +
         lines.join('\n') +
+        (suppressedAsFixed > 0
+          ? `\n\n(${suppressedAsFixed} other pool(s) also breached the ${windowDays}d rate but were suppressed ` +
+            `here — their last ${recentHours}h reads clean, below ${ratePct(maxEmptyScope)}: likely already fixed, ` +
+            `still aging out of the trailing window. WI-6932.)`
+          : '') +
         (unscoped.length > RECALL_POOL_BODY_SAMPLES
           ? `\n  … and ${unscoped.length - RECALL_POOL_BODY_SAMPLES} more.`
           : '') +
@@ -1087,6 +1136,8 @@ export async function collectRecallPoolSignals(
   opts: LearningSloOptions = {},
 ): Promise<WatchdogSignal[]> {
   const days = opts.recallPoolWindowDays ?? LEARNING_SLO_DEFAULTS.recallPoolWindowDays;
+  const recentHours =
+    opts.recallPoolEmptyScopeRecentHours ?? LEARNING_SLO_DEFAULTS.recallPoolEmptyScopeRecentHours;
   const pools = await readRecallHealthByPool(sql, { days });
   if (pools.length === 0) return [];
   // Annotation only — a failure here must not suppress a real starvation
@@ -1097,7 +1148,18 @@ export async function collectRecallPoolSignals(
   } catch {
     surfaces = [];
   }
-  return recallPoolSignalsFromHealth(pools, surfaces, opts);
+  // WI-6932: the gate-3 recency check. Read-only annotation input to the pure
+  // gate below, same posture as `surfaces` above — a failure here must not
+  // suppress OR falsely-clear a real finding, so it degrades to `[]` (which
+  // recallPoolSignalsFromHealth treats as "no recent signal available" and
+  // falls back to the pre-WI-6932 flat-window verdict) rather than throwing.
+  let recentPools: RecallPoolHealth[] = [];
+  try {
+    recentPools = await readRecallHealthByPool(sql, { hours: recentHours });
+  } catch {
+    recentPools = [];
+  }
+  return recallPoolSignalsFromHealth(pools, surfaces, opts, recentPools);
 }
 
 export async function recallPoolCollector(

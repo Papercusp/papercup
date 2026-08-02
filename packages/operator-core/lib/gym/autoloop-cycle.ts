@@ -39,6 +39,7 @@ import { readGymGates } from '../gym-gates';
 import { buildGymOperatorBootSpec, scrubLauncherClaudeSessionEnv } from './boot-spec';
 import { createGymRunnerPorts } from './runner-ports';
 import { buildLoopDeps, type LoopTask } from './loop-deps';
+import { materialisePapercuspSubstrate } from './papercusp-corpus-tasks';
 import { runOptimizationLoop, type LoopResult } from './loop';
 import { makeLoopProposalRecorder, setAutoloop, getAutoloop } from './control-plane';
 import { gatherChampionOutcomeEntries } from './post-acceptance-outcomes';
@@ -293,7 +294,14 @@ export async function runOneAutoloopCycle(
   let operator: ChildProcess | undefined;
   let logFd: number | undefined;
   const scratch = mkdtempSync(join(tmpdir(), 'gym-loop-'));
-  const substrateDir = join(scratch, 'substrate');
+  // ⚠ NOT under `scratch`. The substrate is a `--local` clone of the real repo,
+  // which HARDLINKS the object store instead of copying ~9.9G — and hardlinks
+  // cannot cross filesystems. On this box /tmp is a separate device from the
+  // workspace, so a /tmp dest fails with "Invalid cross-device link". Placed
+  // next to the checkout (outside it, so git-sync never sees it) and torn down
+  // alongside `scratch`.
+  const substrateRoot = mkdtempSync(join(REPO_ROOT, '..', 'gym-substrate-'));
+  const substrateDir = join(substrateRoot, 'substrate');
   const opLogPath = join(tmpdir(), `gym-loop-op-${HEX}.log`);
   let gymUri = '';
   let gymSql: postgres.Sql | undefined;
@@ -364,31 +372,13 @@ export async function runOneAutoloopCycle(
       sourceRepo: REPO_ROOT,
       destDir: substrateDir,
     });
+    // `.papercusp/config.json` + `blueprint.yaml` are NOT written here any more.
+    // They are gitignored in the real repo, so writing them into the substrate's
+    // WORKING TREE would never reach the runner (it clones from the object
+    // store). `materialisePapercuspSubstrate` commits them beneath every task
+    // commit and asserts they landed — see GYM_HARNESS_FILES.
     const tasks: LoopTask[] = materialised.map((m) => m.gymTask);
     log(`substrate: real papercusp @ ${materialised[0]?.descriptor.pinCommit.slice(0, 12)} — ${tasks.length} real tasks`);
-    mkdirSync(join(substrateDir, '.papercusp'), { recursive: true });
-    // Production-fidelity: the REAL chunk-loop worker model with the L1 gate pointed at the
-    // substrate's dependency-free `npm run typecheck`. The substrate is buildable. See ab-run.ts.
-    writeFileSync(join(substrateDir, '.papercusp', 'config.json'), JSON.stringify({ worktrees: { enabled: false }, parallelWorkers: { workingStateCheck: 'npm run typecheck' } }));
-    // Pin the substrate to the LIVE single-worker coding blueprint (`coding-solo`) so the gym
-    // optimizes the CURRENT `worker.md` prompt. WITHOUT this the throwaway harness has NO
-    // blueprint and falls back to the RETIRED `coding-factory` director→…→curator spine
-    // (blueprint-run-action.ts `codingFallback`) — i.e. it would optimize dead legacy code
-    // (retired 2026-06-24). `coding-solo` extends `single-agent` (decider: `worker`), carries the
-    // `gym: collectTrace: git-diff` seam the ab-runner needs, and matches this substrate's stated
-    // "REAL chunk-loop worker model" intent above. The blueprint projection is keyed by
-    // (workspace_id, harness_slug) (project-to-pg.ts), so this fixed `id` never collides across the
-    // per-run gymRunIdentity slugs.
-    writeFileSync(
-      join(substrateDir, '.papercusp', 'blueprint.yaml'),
-      'id: gym-substrate\nextends: coding-solo\nversion: 0.0.1\n',
-    );
-    for (const f of substrateFiles) writeFileSync(join(substrateDir, f.path), f.content);
-    execFileSync('git', ['init', '-q'], { cwd: substrateDir });
-    execFileSync('git', ['-c', 'user.email=gym@local', '-c', 'user.name=gym', 'add', '-A'], { cwd: substrateDir });
-    execFileSync('git', ['-c', 'user.email=gym@local', '-c', 'user.name=gym', 'commit', '-qm', 'seed'], { cwd: substrateDir });
-    const substrateCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: substrateDir, encoding: 'utf8' }).trim();
-    for (const t of tasks) { t.repoUrl = substrateDir; t.repoCommit = substrateCommit; }
 
     // 3. Boot the gym-operator (fake or real agent).
     const harnessCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
@@ -634,6 +624,10 @@ export async function runOneAutoloopCycle(
     }
     if (logFd !== undefined) { try { report.operatorLogTail = maskDsn(readFileSync(opLogPath, 'utf8').split('\n').slice(-20).join('\n')); } catch { /* ignore */ } }
     try { rmSync(scratch, { recursive: true, force: true }); } catch { /* ignore */ }
+    // The substrate lives on the workspace device (see substrateRoot above), so
+    // it is NOT swept by the /tmp cleanup and needs its own teardown — a ~570MB
+    // sparse checkout leaked per cycle otherwise.
+    try { rmSync(substrateRoot, { recursive: true, force: true }); } catch { /* ignore */ }
     try { if (pgContainer) await pgContainer.stop(); } catch { /* ignore */ }
   }
 

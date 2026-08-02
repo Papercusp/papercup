@@ -9,16 +9,35 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildClaimRecallBlock, claimRecallQueryOf, CLAIM_RECALL_BUDGET_CHARS } from './claim-port';
 import { resolveLaunchProfile, buildLaunchMemoryBlock } from './launch-profile';
+import { getSessionUserOrDefault } from '../auth';
 
 vi.mock('./launch-profile', async (importOriginal) => {
   const real = (await importOriginal()) as Record<string, unknown>;
   return { ...real, buildLaunchMemoryBlock: vi.fn(async () => null) };
 });
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
+// WI-6933: the canonical-user resolver is a DB lookup (harness_shared.users) —
+// mocked here the same way every other memory-recall dependency is, so these
+// tests stay unit-scoped and never touch Postgres.
+vi.mock('../auth', () => ({
+  getSessionUserOrDefault: vi.fn(async () => ({
+    id: 'canonical-default-user-id',
+    username: 'default',
+    display_name: 'User',
+    has_password: false,
+  })),
+}));
 
 beforeEach(() => {
   vi.mocked(buildLaunchMemoryBlock).mockReset();
   vi.mocked(buildLaunchMemoryBlock).mockResolvedValue(null);
+  vi.mocked(getSessionUserOrDefault).mockReset();
+  vi.mocked(getSessionUserOrDefault).mockResolvedValue({
+    id: 'canonical-default-user-id',
+    username: 'default',
+    display_name: 'User',
+    has_password: false,
+  });
 });
 
 describe('claimRecallQueryOf', () => {

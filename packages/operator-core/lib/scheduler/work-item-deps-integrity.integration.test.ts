@@ -22,7 +22,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
+import {
+  COORD_REF_HOLDERS_DDL,
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  WORK_ITEM_DEPS_DDL,
+} from '../../test/_work-items-schema';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -41,12 +45,14 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await db.sql.unsafe(COORD_REF_HOLDERS_DDL).simple();
 }, 90_000);
 afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps,
+                        harness_shared.coord_links, harness_shared.coord_threads RESTART IDENTITY`;
 });
 
 /** A FEATURE-family row. Its endpoint form is harness-QUALIFIED (`<harness>#<id>`). */
@@ -71,6 +77,17 @@ const edge = (
   INSERT INTO harness_shared.work_item_deps
     (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
   VALUES (${WS}, ${blockedKind}, ${blockedRef}, ${blockerKind}, ${blockerRef}, 'blocks')`;
+
+/** A coord_links row — the AUTHORITATIVE store that work_item_deps mirrors. */
+const link = (srcKind: string, srcRef: string, dstKind: string, dstRef: string, rel = 'implements') =>
+  db.sql`
+  INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+  VALUES (${WS}, ${srcKind}, ${srcRef}, ${dstKind}, ${dstRef}, ${rel})`;
+
+/** A coord_threads row — a work item's comment thread, parented by a qualified/bare ref. */
+const thread = (threadId: string, parentKind: string, parentRef: string) => db.sql`
+  INSERT INTO harness_shared.coord_threads (workspace_id, thread_id, parent_kind, parent_ref)
+  VALUES (${WS}, ${threadId}, ${parentKind}, ${parentRef})`;
 
 describe('reconcileWorkItemDepEndpoints — the D-017 endpoint-integrity detector', () => {
   it('reports ZERO defects for correctly-written edges of BOTH families', async () => {
@@ -195,9 +212,12 @@ describe('reconcileWorkItemDepEndpoints — the D-017 endpoint-integrity detecto
     });
   });
 
-  it('names the edge_id so a finding is repairable, not merely countable', async () => {
+  it('names the relation + row_id so a finding is repairable, not merely countable', async () => {
     // The audit that found the live rows had to re-derive which rows to fix. A detector that
     // reports only counts recreates that work every time it fires.
+    // The RELATION is half the answer now that three are swept: it decides the repair.
+    // A work_item_deps row is the MIRROR (re-run the writer); a coord_links row is the
+    // AUTHORITATIVE source (re-running the writer just reproduces the bad ref).
     await seedIssue('WI-1');
     await seedIssue('WI-2');
     await edge('feature', `${H}#WI-1`, 'issue', 'WI-2');
@@ -205,7 +225,7 @@ describe('reconcileWorkItemDepEndpoints — the D-017 endpoint-integrity detecto
     const [{ id }] = await db.sql<{ id: string }[]>`
       SELECT id::text AS id FROM harness_shared.work_item_deps LIMIT 1`;
     const res = await reconcileWorkItemDepEndpoints(db.sql);
-    expect(res.mismatched.map((d) => d.edge_id)).toEqual([id]);
+    expect(res.mismatched.map((d) => [d.relation, d.row_id])).toEqual([['work_item_deps', id]]);
   });
 
   it('is not confused by a harness slug containing a "#" — the id is split on the LAST one', async () => {
@@ -219,5 +239,88 @@ describe('reconcileWorkItemDepEndpoints — the D-017 endpoint-integrity detecto
     await edge('feature', 'od#d#F-9', 'feature', `${H}#F-2`);
 
     expect((await reconcileWorkItemDepEndpoints(db.sql)).defects).toBe(0);
+  });
+});
+
+/**
+ * EI-19376392851673381 — the sweep used to read `work_item_deps` ALONE, which is the mirror.
+ * Every test below leaves work_item_deps EMPTY on purpose: under the old detector each one
+ * scored a clean defects=0, which is exactly how 32 stale refs stayed live under a green
+ * verdict. If a future change narrows the sweep back to one relation, these fail.
+ */
+describe('reconcileWorkItemDepEndpoints — coverage of the AUTHORITATIVE ref-holders', () => {
+  it('CATCHES a stale harness qualifier in coord_links, which the mirror never shows', async () => {
+    // The live shape: the item was re-homed to another pot and the ref kept the old slug.
+    // work_item_deps is empty, so this is precisely the defect the old sweep could not see.
+    await seedFeature('F-1');
+    await link('feature', `old-pot#F-1`, 'plan_item', 'p#P-001');
+
+    const res = await reconcileWorkItemDepEndpoints(db.sql);
+    expect(res.dangling).toHaveLength(1);
+    expect(res.dangling[0]).toMatchObject({
+      relation: 'coord_links',
+      side: 'src',
+      ref: 'old-pot#F-1',
+      // The repair-deciding field: the id EXISTS elsewhere ⇒ RE-POINT, never delete.
+      bare_id_found_in: H,
+    });
+  });
+
+  it('CATCHES a stale ref in coord_threads — an orphaned comment thread', async () => {
+    // Since work-item mail was retired (WI-6097), durable work-item direction IS thread
+    // posts, so this silently detaches an item's comments from the item.
+    await seedFeature('F-1');
+    await thread('T-1', 'feature', 'old-pot#F-1');
+
+    const res = await reconcileWorkItemDepEndpoints(db.sql);
+    expect(res.dangling).toHaveLength(1);
+    expect(res.dangling[0]).toMatchObject({
+      relation: 'coord_threads',
+      side: 'parent',
+      // coord_threads has no surrogate id — the row is addressed by thread_id.
+      row_id: 'T-1',
+    });
+  });
+
+  it('distinguishes a stale ref from a wrong qualifier, the two OPPOSITE repairs', async () => {
+    // Same symptom ("resolves to nothing"), different repair: delete vs re-point. Reporting
+    // them identically invites exactly the wrong one.
+    await seedFeature('F-1');
+    await link('feature', 'old-pot#F-1', 'plan_item', 'p#P-001'); // wrong qualifier ⇒ re-point
+    await link('feature', `${H}#F-GONE`, 'plan_item', 'p#P-002'); // exists nowhere  ⇒ delete
+
+    const res = await reconcileWorkItemDepEndpoints(db.sql);
+    const byRef = Object.fromEntries(res.dangling.map((d) => [d.ref, d.bare_id_found_in]));
+    expect(byRef['old-pot#F-1']).toBe(H);
+    expect(byRef[`${H}#F-GONE`]).toBeNull();
+  });
+
+  it('IGNORES plan_item endpoints — they use a different ref grammar', async () => {
+    // coord_links also stores '<planSlug>#P-NNN'. Feeding those to a work-item oracle would
+    // report every plan link in the system as dangling — a detector that cries wolf on its
+    // own healthy rows is worse than no detector.
+    await seedFeature('F-1');
+    await link('plan_item', 'some-plan#P-001', 'plan_item', 'some-plan#P-002', 'relates');
+    await link('topic', 'coord-dx', 'plan_item', 'some-plan#P-003', 'relates');
+
+    expect((await reconcileWorkItemDepEndpoints(db.sql)).defects).toBe(0);
+  });
+
+  it('reports ZERO across all three relations when every ref is correct', async () => {
+    // The control. Without it, the CATCHes above are consistent with a detector that simply
+    // flags everything in the two newly-swept tables.
+    await seedFeature('F-1');
+    await seedIssue('WI-1');
+    await link('feature', `${H}#F-1`, 'plan_item', 'p#P-001');
+    await link('issue', 'WI-1', 'plan_item', 'p#P-002');
+    await thread('T-1', 'feature', `${H}#F-1`);
+    await thread('T-2', 'issue', 'WI-1');
+    await edge('feature', `${H}#F-1`, 'issue', 'WI-1');
+
+    expect(await reconcileWorkItemDepEndpoints(db.sql)).toMatchObject({
+      defects: 0,
+      mismatched: [],
+      dangling: [],
+    });
   });
 });

@@ -62,7 +62,9 @@ export async function cleanupExpiredSessionPorts(input: {
         targetComplete = await updateTarget(row.targetAdvSessionId, input.workspaceId, 'failed', {
           deliveryErrorClass: 'preparation-expired',
         });
-        await endTarget(row.targetAdvSessionId, 1);
+        // 'cleanup', not 'self': nothing observed this session exit — it never ran. The
+        // stamp is the administrative close time, so it cannot answer "when did it end".
+        await endTarget(row.targetAdvSessionId, 1, 'cleanup');
         if (targetComplete) out.targetsFailed += 1;
         else out.errors += 1;
       } catch {

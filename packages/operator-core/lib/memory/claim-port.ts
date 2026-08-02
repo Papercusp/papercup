@@ -26,6 +26,7 @@
 import { resolveLaunchProfile, buildLaunchMemoryBlock } from './launch-profile';
 import { dominantHarness } from './compact-reprime';
 import { activeWorkspaceId } from '../workspace-registry';
+import { getSessionUserOrDefault } from '../auth';
 
 export interface ClaimRecallItem {
   id?: string | null;
@@ -40,17 +41,29 @@ export interface ClaimRecallInput {
    *  recall still runs without it, just un-stamped (no dedup ledger). */
   sessionId?: string | null;
   /**
-   * The claimer's personal-scope memory identity (EI-18893248175645463): every
-   * OTHER buildLaunchMemoryBlock caller (compact-reprime, turn-start) threads
-   * this through to inject the claimer's OWN user-scoped memories alongside
-   * harness/hive ones. This port never did, so the 'user' pool was recorded on
-   * EVERY claim recall (unconditionally, per injection.ts) with an EMPTY scope
-   * list — a guaranteed zero-hit, not a "nothing relevant" miss (100% zero-hit
-   * measured over 42/42 claim recalls). Defaults to `sessionId`, which is
-   * already documented above as "the claimer's ownerId" — the SAME identity
-   * every existing call site already passes as `sessionId`, so this default
-   * fixes every caller without touching them. Pass explicitly only when the
-   * claimer's identity differs from the epoch-dedup session id. */
+   * The claimer's personal-scope memory identity (EI-18893248175645463 /
+   * WI-6933 follow-up).
+   *
+   * ⚠ WI-6933: this is NOT the same identity as `sessionId`. `sessionId` is
+   * the per-AGENT coord ownerId (`su-xxxx…`) used for epoch-dedup; every
+   * `memory:remember` write and every OTHER buildLaunchMemoryBlock caller
+   * (compact-reprime, turn-start) scopes the 'user' pool by the CANONICAL
+   * `harness_shared.users.id` from `getSessionUserOrDefault()` (a single
+   * shared row — 'default' on a single-user install) — a completely
+   * different identity space. The original EI-18893248175645463 fix defaulted
+   * this field to `sessionId` on the mistaken belief that "every existing
+   * call site already passes [ownerId] as sessionId" was the SAME identity
+   * turn-start/compact-reprime use — it isn't, so that fix threaded a
+   * non-empty but PERMANENTLY WRONG scope: measured 2026-08-02 at 1161/1161
+   * (100%) zero-hit on claim/create recalls asked WITH a real (non-empty)
+   * scope, post-fix, because the scope key (an agent's own ownerId) never
+   * matches any memory's actual stored scope (the canonical users.id).
+   *
+   * If left unset, this now resolves the canonical id via
+   * `getSessionUserOrDefault()` — the SAME source turn-start/compact-reprime
+   * already use — rather than falling back to `sessionId`. Pass explicitly
+   * only when the caller has already resolved a DIFFERENT canonical user id
+   * it wants queried instead. */
   userId?: string | null;
   workspaceId?: string | null;
   items: readonly ClaimRecallItem[];
@@ -104,6 +117,24 @@ async function withDeadline<T>(deadlineMs: number, run: () => Promise<T>, onTime
 }
 
 /**
+ * WI-6933: resolve the canonical personal-scope memory identity when the
+ * caller didn't pass one explicitly — the SAME source turn-start /
+ * compact-reprime already use (`getSessionUserOrDefault().id`), never the
+ * caller's `sessionId` (a different identity space — see the `userId` field
+ * doc on `ClaimRecallInput`). Fails soft to `null` (scope simply omitted, the
+ * pre-EI-18893248175645463 posture) — a lookup failure must never fail or
+ * materially delay a claim any more than a recall failure does. */
+async function resolveMemoryUserId(explicit: string | null | undefined): Promise<string | null> {
+  if (explicit) return explicit;
+  try {
+    const user = await getSessionUserOrDefault();
+    return user?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build the claim-time recall block for just-claimed item(s). Returns null on
  * no material, no hits past the admission floors, timeout, or ANY failure.
  */
@@ -121,11 +152,11 @@ export async function buildClaimRecallBlock(input: ClaimRecallInput): Promise<st
     });
     return await withDeadline(
       input.deadlineMs ?? DEFAULT_DEADLINE_MS,
-      () =>
+      async () =>
         buildLaunchMemoryBlock({
           profile,
           workspaceId,
-          userId: input.userId ?? input.sessionId ?? null,
+          userId: await resolveMemoryUserId(input.userId),
           budgetChars: CLAIM_RECALL_BUDGET_CHARS,
           limit: 4,
           ...(input.sessionId

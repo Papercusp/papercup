@@ -261,6 +261,25 @@ export function extractProvisionedRoots(scriptSource: string): string[] {
   return [...roots];
 }
 
+/** Keep only the most specific required path per (file, line, fn) site. */
+function dropNestedDuplicates(sites: RequiredAssetSite[]): RequiredAssetSite[] {
+  const bySite = new Map<string, RequiredAssetSite[]>();
+  for (const s of sites) {
+    const key = `${s.file}:${s.line}:${s.fn}`;
+    const list = bySite.get(key);
+    if (list) list.push(s);
+    else bySite.set(key, [s]);
+  }
+  const out: RequiredAssetSite[] = [];
+  for (const list of bySite.values()) {
+    for (const s of list) {
+      const hasMoreSpecific = list.some((o) => o !== s && o.path.startsWith(s.path + '/'));
+      if (!hasMoreSpecific) out.push(s);
+    }
+  }
+  return out;
+}
+
 export function scanRequiredIgnoredAssets(opts: {
   repoRoot: string;
   /** repo-relative test file paths */

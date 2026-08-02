@@ -47,6 +47,7 @@ function advRow(over: Partial<AdvSessionRow> = {}): AdvSessionRow {
     startedAt: new Date().toISOString(),
     endedAt: null,
     exitCode: null,
+    endedBy: null,
     ...over,
   };
 }

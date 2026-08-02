@@ -11,7 +11,7 @@
  * discrimination gate remains the only admission path (D-006).
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
