@@ -26,6 +26,20 @@ let authMod: typeof import('./auth') | null = null;
 const createdUsernames: string[] = [];
 
 beforeAll(async () => {
+  // EI-19311807188719573 / WI-6915: the unit layer sets PAPERCUSP_FORBID_REAL_PG=1, which
+  // makes buildClient() throw on any real pool. This file DELIBERATELY targets the live
+  // embedded-pg (see the module docstring) — lib/auth.ts is end-to-end SQL with no
+  // separable pure paths — so it takes the documented per-file opt-out from
+  // libs/test-config/src/setup-no-real-pg.ts: delete the var in our own beforeAll, which
+  // runs AFTER that module-level set and therefore wins.
+  //
+  // Why the file's own pgReachable guard could NOT absorb this: the probe below opens a
+  // RAW `pg` Client, which the rail does not guard (it guards buildClient, the shared-pool
+  // choke point). So the probe succeeded, pgReachable stayed true, and the rail then threw
+  // inside lib/auth.ts — 28 hard failures across this file and its siblings, red-pinning
+  // the fleet gate. A reachability probe that does not travel the same path as the code
+  // under test cannot gate that code.
+  delete process.env.PAPERCUSP_FORBID_REAL_PG;
   try {
     const { pgClientFields } = await import('./memory/mem0-connection');
     const fields = await pgClientFields();

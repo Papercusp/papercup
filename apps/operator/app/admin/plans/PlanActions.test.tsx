@@ -142,6 +142,48 @@ describe('PlanActions component', () => {
     expect(cb.onStartStatusChange).toHaveBeenCalledWith('started');
   });
 
+  // plan-structured-inputs-2026-08-01 P-013. The start gate refuses with a 200 body
+  // carrying { error: 'plan_inputs_not_ready' }, NOT an HTTP error — so before this
+  // branch existed the UI reported "Plan started" and flipped to Pause for a plan
+  // that never started. These two pin the halves of that fix.
+  it('surfaces a refused start and does NOT report it as started', async () => {
+    startMock.mockResolvedValueOnce({
+      ok: false,
+      error: 'plan_inputs_not_ready',
+      code: 'missing_required',
+      slug: 'proj',
+      missing: ['harness', 'paths'],
+      issues: [],
+      source: 'input-schema',
+      hint: 'Required inputs not supplied: harness, paths.',
+    } as never);
+    const cb = renderActions({ planStatus: 'ready' });
+    fireEvent.click(screen.getByRole('button', { name: /Start Plan/ }));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    // The missing field NAMES are what the human can act on, so they must appear.
+    expect(String(toastError.mock.calls[0]?.[0])).toContain('harness, paths');
+    expect(cb.onStartStatusChange).not.toHaveBeenCalled();
+    expect(cb.onStartRefused).toHaveBeenCalled();
+  });
+
+  it('falls back to the refusal hint when nothing is merely missing', async () => {
+    startMock.mockResolvedValueOnce({
+      ok: false,
+      error: 'plan_inputs_not_ready',
+      code: 'bad_schema',
+      slug: 'proj',
+      missing: [],
+      issues: [],
+      source: 'input-schema',
+      hint: 'This plan\'s input_schema is not compilable.',
+    } as never);
+    const cb = renderActions({ planStatus: 'ready' });
+    fireEvent.click(screen.getByRole('button', { name: /Start Plan/ }));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(String(toastError.mock.calls[0]?.[0])).toContain('not compilable');
+    expect(cb.onStartStatusChange).not.toHaveBeenCalled();
+  });
+
   it('launches a workbench agent', async () => {
     renderActions();
     fireEvent.click(screen.getByRole('button', { name: 'Launch agent' }));

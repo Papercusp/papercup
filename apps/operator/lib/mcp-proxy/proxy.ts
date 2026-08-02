@@ -38,6 +38,9 @@
  */
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+// The one path this proxy answers itself. Shared with watchdog.mjs so the liveness probe and
+// the route it probes cannot drift apart (WI-6743).
+import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';

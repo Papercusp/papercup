@@ -204,84 +204,89 @@ export async function fetchUnansweredDirected(
   const sql = coordSql();
   const workspaceId = coordWorkspaceId();
   const rows = await sql<UnansweredDirectedRow[]>`
-    -- WI-6853 / P-017 — the LOOSE-REPLY set, materialized ONCE.
+    -- WI-6853 / P-017 + WI-6875 — ONE scan of coord_event_log feeds every correlated lookup
+    -- this statement used to re-scan the table for.
     --
-    -- \`unanswered\` below needs, per open ask, "how many un-threaded replies did this
-    -- recipient send back to that sender after the ask". Expressed as a correlated
-    -- subquery over coord_event_log it was re-evaluated per open_ask row, and because
-    -- PostgreSQL has NO STATISTICS for jsonb expressions it estimated 1 row for a filter
-    -- that actually discards ~75k. Measured on the live workspace: 14 loops x 75,192 rows
-    -- removed = ~1.05M rows examined, 129ms per loop, 76% of the statement's total runtime.
+    -- THE ORIGINAL PATHOLOGY (all three sites shared it): PostgreSQL has NO STATISTICS for
+    -- jsonb expressions, so a filter on \`body->>'from'\` / \`body->>'related_msg_id'\` that
+    -- actually discards ~75k rows is estimated at 1 row. Believing each probe trivial, the
+    -- planner happily re-ran it per candidate row. Measured on the live workspace:
+    --   * the \`unanswered\` loose-reply count — 14 loops x 75,192 rows removed (~1.05M rows
+    --     examined, 129ms/loop), 76% of the statement's total runtime;
+    --   * \`open_asks\`' exact-threaded-reply NOT EXISTS — 75,372 rows, ~148ms;
+    --   * \`directed\`'s WI-4537(c) ACK-PING-PONG EXISTS — 75,422 rows, ~157ms.
     --
-    -- Indexes cannot fix that: two purpose-built partial indexes on (workspace_id,
-    -- (body->>'from'), ts) and on the expectsReply predicate were trialled and the planner
-    -- ignored both, because it already believed the scan returned one row. The estimate is
-    -- the bug, so the fix is to remove the per-row correlation rather than to re-index.
+    -- INDEXES CANNOT FIX THIS, and that is the counter-intuitive part worth recording: two
+    -- purpose-built partial indexes (on (workspace_id, (body->>'from'), ts), and on the
+    -- expectsReply predicate) were built, ANALYZEd and EXPLAINed transactionally, and the
+    -- planner ignored BOTH — it already believed the scans returned one row. When the estimate
+    -- and the actual diverge by ~5 orders of magnitude, the ESTIMATE is the bug, so the fix has
+    -- to remove the per-row correlation rather than add another access path.
     --
-    -- Pre-filtering on \`from = ANY(recipientIds)\` is what makes this cheap — the reply must
-    -- be authored BY one of the recipients we are asking about, which is highly selective —
-    -- and the lookback bounds it further. AS MATERIALIZED is REQUIRED: with a single
-    -- reference PG would inline the CTE and re-scan it per loop, reinstating the exact cost
-    -- being removed.
+    -- THE ROSTER PRE-FILTER is what makes one scan enough, and it is exactly
+    -- equivalence-preserving rather than a heuristic narrowing. Every one of these lookups
+    -- requires the row to be authored by a RECIPIENT we are asking about
+    -- (\`= o.recipient\` / \`= d.recipient\` / \`= r\`), and those are all already constrained by
+    -- \`r = ANY(recipientIds)\`. A row authored by anyone outside the roster could never have
+    -- satisfied any of them, so dropping it cannot change a verdict. Live selectivity:
+    -- 11,093 of 75,357 rows (6.8x); only 1,283 of those carry a related_msg_id (59x).
     --
-    -- DISTINCT on e3.id is a semantic guard, not a tidy-up. The predicate it replaces is
-    -- \`body->'to' @> to_jsonb(ARRAY[o.from_id])\` — a per-MESSAGE containment test, so a
-    -- message whose 'to' array lists the same id twice counts ONCE. Unnesting with LATERAL
-    -- would count it twice and could silently clear an ask that is still open.
+    -- NOT time-bounded, deliberately. The two EXISTS sites are not bounded in the original,
+    -- and a message's 'ts' is SENDER-SUPPLIED in the body — so inferring "a reply must postdate
+    -- its ask" would import an assumption the current semantics do not make. \`loose_replies\`
+    -- below re-applies its own lookback, which the original DOES have.
     --
-    -- Verified equivalent against live data before landing: both EXCEPT directions empty,
-    -- 8/8 recipients, 10/10 total count. 2,545ms -> 985ms on the real workspace.
-    WITH loose_replies AS MATERIALIZED (
-      SELECT DISTINCT e3.id,
-             e3.workspace_id,
-             e3.body->>'from' AS from_id,
-             rt AS to_id,
-             (extract(epoch FROM (e3.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms
-        FROM harness_shared.coord_event_log e3
-        CROSS JOIN LATERAL jsonb_array_elements_text(e3.body->'to') AS rt
-       WHERE e3.workspace_id = ${workspaceId}
-         AND e3.surface = 'messages'
-         AND NOT (e3.body ? 'related_msg_id')
-         AND jsonb_typeof(e3.body->'to') = 'array'
-         AND e3.body->>'from' = ANY(${recipientIds}::text[])
-         AND (e3.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
-    ),
-    -- WI-6875 — the ROSTER-AUTHORED set, materialized ONCE. Serves the two remaining
-    -- correlated scan sites below (the WI-4537(c) ACK-PING-PONG check inside \`directed\`, and
-    -- the exact-threaded-reply NOT EXISTS in \`open_asks\`). Both asked the same question of the
-    -- full 75k-row table once per candidate row: "is there a message authored by THIS recipient
-    -- matching X". Measured on the live workspace: e2 seq-scanned 75,372 rows (~148ms) and e3_1
-    -- seq-scanned 75,422 (~157ms), every call.
+    -- AS MATERIALIZED is REQUIRED on both: with a single reference PG would inline the CTE and
+    -- re-scan per loop, reinstating the exact cost being removed.
     --
-    -- The roster pre-filter is what makes this cheap, and it is EXACTLY equivalence-preserving
-    -- rather than a heuristic narrowing: e3_1 requires 'from' = r and e2 requires
-    -- 'from' = d.recipient, and BOTH r and d.recipient are already constrained by the
-    -- \`r = ANY(recipientIds)\` filter in \`directed\`. So a row authored by someone outside the
-    -- roster could never have satisfied either predicate — dropping it cannot change a verdict.
-    -- Live selectivity: 11,093 of 75,357 rows (6.8x), and only 1,283 of those carry a
-    -- related_msg_id (59x for the e2 branch).
-    --
-    -- NOT time-bounded, deliberately: neither original subquery is, and a reply's 'ts' is
-    -- SENDER-SUPPLIED in the body, so inferring "a reply must postdate its ask" would import an
-    -- assumption the current semantics do not make.
-    --
-    -- NO DISTINCT, deliberately — and note this is the OPPOSITE of loose_replies above, which
-    -- needs it. That set is COUNTED against ask_rank, where a duplicate would over-count and
-    -- could silently clear a still-open ask. These two sites only test EXISTENCE, where
-    -- duplicates cannot change the answer, so deduping would be pure cost.
-    --
-    -- Verified equivalent against live data before landing, at BOTH levels: the open_asks set
-    -- itself (20 = 20 rows, EXCEPT empty both directions) and the end-to-end aggregate
-    -- (9 = 9 recipients, 16 = 16 total). 872ms -> 367ms, mean of 3 paired runs.
-    roster_authored AS MATERIALIZED (
-      SELECT ra.workspace_id,
-             ra.body->>'from'           AS from_id,
-             ra.body->>'msg_id'         AS msg_id,
-             ra.body->>'related_msg_id' AS related_msg_id
+    -- Verified equivalent against live data before landing, at every level: loose_replies
+    -- (1,058 = 1,058 rows), the open_asks set (20 = 20), and the end-to-end aggregate
+    -- (9 = 9 recipients, 16 = 16 total) — EXCEPT empty in BOTH directions each time.
+    -- 2,545ms -> 985ms (P-017) -> 224ms (WI-6875), means of 3 paired runs.
+    WITH roster_authored AS MATERIALIZED (
+      SELECT ra.id,
+             ra.workspace_id,
+             ra.body->>'from'              AS from_id,
+             ra.body->>'msg_id'            AS msg_id,
+             ra.body->>'related_msg_id'    AS related_msg_id,
+             -- carried SEPARATELY from related_msg_id on purpose: \`body ? 'related_msg_id'\`
+             -- and \`body->>'related_msg_id' IS NOT NULL\` disagree when the key is present with
+             -- a JSON null value. Zero such rows today, but loose_replies' predicate is the
+             -- key-presence test, so it must stay the key-presence test.
+             ra.body ? 'related_msg_id'    AS has_related,
+             ra.body->'to'                 AS to_arr,
+             (ra.body->>'ts')::timestamptz AS ts
         FROM harness_shared.coord_event_log ra
        WHERE ra.workspace_id = ${workspaceId}
          AND ra.surface = 'messages'
          AND ra.body->>'from' = ANY(${recipientIds}::text[])
+    ),
+    -- The LOOSE-REPLY set — \`unanswered\` below needs, per open ask, "how many un-threaded
+    -- replies did this recipient send back to that sender after the ask". DERIVED from
+    -- roster_authored rather than scanning the table again (WI-6875): it is a strict subset of
+    -- it, so the second scan was pure duplication — removing it took 344ms -> 224ms and
+    -- 213,798 -> 164,639 buffers.
+    --
+    -- DISTINCT on the message id is a semantic guard, not a tidy-up, and note it is the
+    -- OPPOSITE of what the two EXISTS sites below want. The predicate it replaces is
+    -- \`body->'to' @> to_jsonb(ARRAY[o.from_id])\` — a per-MESSAGE containment test, so a message
+    -- whose 'to' array lists the same id twice counts ONCE. Unnesting with LATERAL would count
+    -- it twice and could silently clear an ask that is still open. The EXISTS sites only test
+    -- existence, where a duplicate cannot change the answer, so they take no DISTINCT.
+    --
+    -- The ts bound stays a TIMESTAMPTZ comparison; comparing the derived bigint ts_ms instead
+    -- would introduce truncation the original does not have.
+    loose_replies AS MATERIALIZED (
+      SELECT DISTINCT ra.id,
+             ra.workspace_id,
+             ra.from_id,
+             rt AS to_id,
+             (extract(epoch FROM ra.ts) * 1000)::bigint AS ts_ms
+        FROM roster_authored ra
+        CROSS JOIN LATERAL jsonb_array_elements_text(ra.to_arr) AS rt
+       WHERE NOT ra.has_related
+         AND jsonb_typeof(ra.to_arr) = 'array'
+         AND ra.ts >= to_timestamp(${sinceMs}::double precision / 1000)
     ),
     directed AS (
       SELECT

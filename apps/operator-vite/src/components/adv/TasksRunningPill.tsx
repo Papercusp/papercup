@@ -30,7 +30,18 @@
  * The panel is lazy: it is the thing that carries the scan, and it must not run
  * for a popover nobody has opened.
  */
-import { lazy, Suspense } from 'react';
+import { Suspense } from 'react';
+// lazyWithRetry, NOT React's bare `lazy` (WI-2902, and re-learned the hard way here).
+// A dynamic import that 404s escalates to the FATAL error boundary, and on this box
+// the dist bundle is rebuilt every few minutes under a live window — every rebuild
+// rotates the chunk hashes and deletes the old ones, so an open view that lazily
+// imports a chunk mid-rebuild gets "Importing a module script failed."
+//
+// That hazard is much worse HERE than it was in the component's old home. As a
+// left-rail tab this panel only mounted when someone opened that tab; as a header
+// pill it mounts on EVERY AdvShell tab, so a single missed chunk fetch takes down
+// the whole shell rather than one pane. Retrying is what turns that into a blip.
+import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
 import { Activity } from 'lucide-react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';

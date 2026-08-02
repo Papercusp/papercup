@@ -1,0 +1,323 @@
+/**
+ * AgentOrders — the session popup's LEFT panel
+ * (session-chat-popup-direction-d-2026-08-02 P-014).
+ *
+ * Every colour/space/radius comes from the operator's DTCG token scale
+ * (design/tokens/base.json via globals.css) — no literal hexes.
+ *
+ * The panel's own visual job: read as INSTRUCTIONS rather than telemetry, so it
+ * cannot be confused with the activity rail on the opposite edge. It does that
+ * with a cooler ground, a verbatim-quote treatment that no other rail uses, and
+ * age chips whose tone is graded by verdict rather than shown as raw timestamps.
+ * State is encoded in FORM as well as colour (a glyph, a rule, a badge), so the
+ * panel survives greyscale and a colour-blind reader — the same rule hud.css
+ * follows for the fleet board.
+ */
+
+.pc-orders {
+  --pc-orders-text: color-mix(in oklab, var(--fg), white 12%);
+  --pc-orders-dim: color-mix(in oklab, var(--fg-dim), white 22%);
+  --pc-orders-mute: color-mix(in oklab, var(--fg-mute), white 26%);
+  --pc-orders-rule: color-mix(in oklab, var(--border), white 18%);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--pc-orders-text);
+  background: var(--bg-popover, #0d1829);
+}
+
+/* ── panel identity strip ─────────────────────────────────────────────────── */
+.pc-orders__tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--pc-orders-rule);
+  background: var(--bg-surface, rgba(255, 255, 255, 0.045));
+}
+.pc-orders__tag-name {
+  font-size: 9px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  font-weight: 660;
+  color: var(--pc-orders-dim);
+}
+.pc-orders__tag-sub {
+  font-size: 10px;
+  color: var(--pc-orders-mute);
+}
+.pc-orders__close {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: var(--pc-orders-mute);
+}
+.pc-orders__close:hover {
+  color: var(--pc-orders-text);
+}
+.pc-orders__close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── sections ─────────────────────────────────────────────────────────────── */
+.pc-orders__sec {
+  padding: 9px 12px;
+  border-top: 1px solid var(--pc-orders-rule);
+}
+.pc-orders__sec:first-of-type {
+  border-top: 0;
+}
+/* Mission is tinted because it is the only section that EXPLAINS the others —
+   the reader should land on it first without having to be told to. */
+.pc-orders__sec--mission {
+  background: color-mix(in srgb, var(--accent), transparent 94%);
+}
+.pc-orders__h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 9.5px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  font-weight: 640;
+  color: var(--pc-orders-dim);
+}
+.pc-orders__n {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: 9.5px;
+  font-weight: 500;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--bg-surface, rgba(255, 255, 255, 0.045));
+  color: var(--pc-orders-text);
+}
+.pc-orders__n--hot {
+  background: var(--status-warn-bg, rgba(251, 191, 36, 0.1));
+  color: var(--warn);
+}
+
+/* ── key/value rows ───────────────────────────────────────────────────────── */
+.pc-orders__kv {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 10.5px;
+}
+.pc-orders__kv .k {
+  flex: none;
+  width: 66px;
+  color: var(--pc-orders-mute);
+}
+.pc-orders__kv .v {
+  min-width: 0;
+  color: var(--pc-orders-text);
+  overflow-wrap: anywhere;
+}
+/* The authority value is the one field a reader scans for, so confirm-first
+   gets a distinct tone from act-and-report rather than reading as plain text. */
+.pc-orders__kv .v[data-authority='confirm-before-execution'] {
+  color: var(--warn);
+}
+.pc-orders__kv .v[data-wake='manual'] {
+  color: var(--warn);
+}
+
+/* ── list rows ────────────────────────────────────────────────────────────── */
+.pc-orders__row {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 2.5px 0;
+  font-size: 10.5px;
+}
+.pc-orders__glyph {
+  flex: none;
+  width: 10px;
+  color: var(--pc-orders-mute);
+  text-align: center;
+}
+.pc-orders__glyph--owner {
+  color: var(--accent);
+}
+.pc-orders__glyph--off {
+  color: var(--pc-orders-mute);
+}
+.pc-orders__glyph--fact {
+  color: var(--accent);
+}
+.pc-orders__glyph--ok {
+  color: var(--good);
+}
+.pc-orders__txt {
+  min-width: 0;
+  flex: 1;
+  color: var(--pc-orders-text);
+  overflow-wrap: anywhere;
+}
+.pc-orders__reason {
+  display: block;
+  color: var(--pc-orders-mute);
+  font-size: 10px;
+  margin-top: 1px;
+}
+.pc-orders__reason--none {
+  font-style: italic;
+}
+.pc-orders__badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 660;
+  background: color-mix(in srgb, var(--accent), transparent 82%);
+  color: var(--accent-strong, var(--accent));
+  vertical-align: 1px;
+}
+.pc-orders__badge--self {
+  background: var(--bg-surface, rgba(255, 255, 255, 0.045));
+  color: var(--pc-orders-mute);
+}
+.pc-orders__badge--warn {
+  background: var(--status-warn-bg, rgba(251, 191, 36, 0.1));
+  color: var(--warn);
+}
+
+/* ── verbatim quotes — owner directives + the carry-note ──────────────────── */
+/* A treatment no other rail uses, because these are the only places in the UI
+   showing someone's exact words rather than a rendered summary. */
+.pc-orders__verbatim {
+  margin: 5px 0 0;
+  padding: 6px 8px;
+  border-left: 2px solid var(--border-strong);
+  border-radius: 0 3px 3px 0;
+  background: rgba(0, 0, 0, 0.24);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--pc-orders-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pc-orders__verbatim--note {
+  border-left-color: var(--accent);
+}
+.pc-orders__cite {
+  display: block;
+  margin-top: 4px;
+  font-style: normal;
+  font-size: 9px;
+  color: var(--pc-orders-mute);
+}
+
+.pc-orders__sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 9px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--pc-orders-mute);
+}
+.pc-orders__note {
+  margin: 4px 0 0;
+  font-size: 10px;
+  color: var(--pc-orders-mute);
+  line-height: 1.45;
+}
+
+/* ── age chips — graded, never a raw timestamp ────────────────────────────── */
+/* Tone is the VERDICT (fresh/aging/stale), computed against the agent's carry
+   mode, because the same age means different things for warm vs cold carry. */
+.pc-orders__age {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  font-size: 9px;
+  padding: 0 5px;
+  border-radius: 999px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.pc-orders__age--fresh {
+  background: color-mix(in srgb, var(--good), transparent 86%);
+  color: var(--good);
+}
+.pc-orders__age--aging {
+  background: var(--status-warn-bg, rgba(251, 191, 36, 0.1));
+  color: var(--warn);
+}
+.pc-orders__age--stale {
+  background: color-mix(in srgb, var(--bad), transparent 84%);
+  color: var(--bad);
+}
+.pc-orders__age--unknown {
+  background: var(--bg-surface, rgba(255, 255, 255, 0.045));
+  color: var(--pc-orders-mute);
+}
+
+/* ── walls ────────────────────────────────────────────────────────────────── */
+.pc-orders__wall {
+  display: block;
+  margin: 6px 0;
+  padding: 5px 0 5px 8px;
+  border-left: 2px solid var(--warn);
+  background: var(--status-warn-bg, rgba(251, 191, 36, 0.06));
+}
+.pc-orders__wall-ask {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--pc-orders-text);
+}
+.pc-orders__wall-meta {
+  display: block;
+  margin-top: 3px;
+  font-size: 9.5px;
+  color: var(--pc-orders-mute);
+}
+
+/* ── the cited-ref drift tell ─────────────────────────────────────────────── */
+.pc-orders__drift {
+  margin-top: 6px;
+  padding: 5px 7px;
+  border-radius: 3px;
+  background: var(--status-warn-bg, rgba(251, 191, 36, 0.1));
+  color: var(--warn);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+/* ── the three-state renderings (plan D-003) ──────────────────────────────── */
+/* "Couldn't read it" must never look like "there is none" — different border,
+   different tone, and it says so in words. */
+.pc-orders__unavailable {
+  padding: 5px 7px;
+  border-radius: 3px;
+  border: 1px dashed color-mix(in srgb, var(--bad), transparent 55%);
+  background: color-mix(in srgb, var(--bad), transparent 92%);
+  color: var(--bad);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.pc-orders__empty {
+  font-size: 10px;
+  font-style: italic;
+  color: var(--pc-orders-mute);
+}

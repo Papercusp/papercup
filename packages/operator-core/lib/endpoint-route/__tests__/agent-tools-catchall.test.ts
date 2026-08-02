@@ -11,7 +11,20 @@
  * streaming tools; 200 + JSON on non-streaming tools; state-shaped
  * streamables; runId + replay headers.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The catch-all's `runScoped` wires the tool handler to a REAL pool via getOrgPg()/withWorkspace
+// (catchall.ts:98). These tests register fake tools that never query the handle, so a unit test
+// must not open one [EI-19311807188719573]. Spread the original so any OTHER db-org export the
+// import graph pulls in keeps working — only the two connection-opening entry points are doubled.
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const sql = Object.assign(async () => [], { unsafe: async () => [] });
+  return {
+    ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+    getOrgPg: () => ({ sql }),
+    withWorkspace: async (_ws: string, fn: (tx: unknown) => Promise<unknown>) => fn(sql),
+  };
+});
 import { z } from 'zod';
 import {
   registerProjectedTool,

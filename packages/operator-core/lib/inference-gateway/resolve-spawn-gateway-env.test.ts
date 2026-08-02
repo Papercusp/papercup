@@ -16,6 +16,15 @@ vi.mock('@papercusp/flags', () => ({
     GATEWAY_PRIORITY_TIERS: 'gateway-priority-tiers',
   },
 }));
+// spawn-env resolves stored config via readOperatorState, which opens a real PG pool
+// [EI-19311807188719573]. `null` = "nothing stored", so the code under test still runs its
+// genuine default/fallback branch rather than a hand-written stored shape.
+vi.mock('../operator-state-pg', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../operator-state-pg')>()),
+  readOperatorState: vi.fn(async () => null),
+  writeOperatorState: vi.fn(async () => {}),
+  updateOperatorState: vi.fn(async () => {}),
+}));
 vi.mock('../deployment/account-pool-store', () => ({ selectSpawnAccount: h.selectSpawnAccount, loadAccountPool: h.loadAccountPool }));
 vi.mock('./credential-store', () => ({ credentialRefSupportsOpenAiBearer: h.supportsBearer }));
 

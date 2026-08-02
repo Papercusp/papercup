@@ -53,6 +53,10 @@ import FleetRoleGlyph from '../FleetRoleGlyph';
 import FleetLaunchRow from './FleetLaunchRow';
 import { LocalCardHost } from './LocalCardHost';
 import AgentDossier from '../../adv/sessions/AgentDossier';
+// P-015: the ORDERS panel — what the agent was TOLD (mission/authority,
+// modes + who set them, owner directives, standing facts, walls, carry brief).
+// Sibling of the dossier, opposite edge; see ORDERS_RAIL_SIDE_STYLE below.
+import AgentOrders from '../../adv/sessions/AgentOrders';
 import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
 // hud-first-nav-and-dossier-2026-07-26 P-004: the footer's liveness dot +
 // its "N locks / M unread" summary-chip counts. Imported from the standalone
@@ -157,6 +161,48 @@ const DOSSIER_RAIL_OVERLAY_STYLE: React.CSSProperties = {
  *  matchMedia + useEffect pattern BrainstormFull.tsx already uses for its own
  *  compact-layout switch. */
 const DOSSIER_NARROW_MEDIA_QUERY = '(max-width: 860px)';
+
+/* ── session-chat-popup-direction-d-2026-08-02 P-015: the ORDERS panel ───────
+   The second panel [owner 2026-08-02: "Two panels: told on the left, did on
+   the right"]. It sits on the LEFT so the three columns read in causal order —
+   what the agent was TOLD → the conversation → what the agent DID.
+
+   It is a SIBLING of the conversation region, exactly like the dossier rail, so
+   P-001's D-002 keeps holding without a second rule: maximize paints the
+   conversation element's subtree, and both panels are outside it. Do NOT move a
+   panel inside that element to make it visible in fullscreen — that silently
+   breaks the scoping invariant and nothing in the tree would catch it. */
+const ORDERS_RAIL_SIDE_STYLE: React.CSSProperties = {
+  flex: '0 0 272px',
+  width: 272,
+  minWidth: 0,
+  minHeight: 0,
+  borderRight: '1px solid var(--border)',
+  overflowY: 'auto',
+};
+
+/* Orders collapses at a WIDER breakpoint than the dossier (860px) on purpose:
+   when space runs out the left panel goes first. It is the more static of the
+   two — orders change when a mode flips or a fact is asserted, activity changes
+   every turn — so losing it costs the reader least. */
+const ORDERS_NARROW_MEDIA_QUERY = '(max-width: 1180px)';
+
+/* Below that breakpoint Orders overlays instead of taking a column — the same
+   trade the dossier already makes. Overlaying rather than simply not rendering
+   matters: a toggle that silently does nothing on a narrow window reads as a
+   broken button, not as a layout decision. */
+const ORDERS_RAIL_OVERLAY_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  bottom: 0,
+  left: 0,
+  width: 'min(300px, 88vw)',
+  background: 'var(--bg-popover, #0d1829)',
+  borderRight: '1px solid var(--border)',
+  boxShadow: '8px 0 24px rgba(0,0,0,0.35)',
+  overflowY: 'auto',
+  zIndex: 5,
+};
 
 function useIsNarrowViewport(query: string): boolean {
   const [isNarrow, setIsNarrow] = useState(false);
@@ -764,6 +810,15 @@ export default function SessionChatModal({
   const [dossierOpen, setDossierOpen] = useQueryState('chatDossier', parseAsBoolean.withDefault(true));
   const isNarrow = useIsNarrowViewport(DOSSIER_NARROW_MEDIA_QUERY);
 
+  /* P-015: the Orders panel's own toggle, nuqs like every other bit of this
+     popup's state. Defaults CLOSED, unlike the dossier: it is the newer and
+     denser of the two, and its fetch is a separate heavier query
+     (`agentOrders.byOwner` runs the carry-brief gather), so it is opt-in rather
+     than something every popup pays for. `ordersEnabled` below is what actually
+     gates that fetch. */
+  const [ordersOpen, setOrdersOpen] = useQueryState('chatOrders', parseAsBoolean.withDefault(false));
+  const isOrdersNarrow = useIsNarrowViewport(ORDERS_NARROW_MEDIA_QUERY);
+
   /* ── P-001 maximize ──────────────────────────────────────────────────────
      Which maximize mode is on, in the URL like every other bit of this
      popup's state (nuqs-by-default) so it is deep-linkable and reachable from
@@ -799,6 +854,13 @@ export default function SessionChatModal({
    *  a deep link arrives before a gesture can grant it) the user gets the
    *  maximized popup rather than nothing happening. */
   const maximized = chatMax != null;
+
+  /* P-015: whether the Orders panel is actually on screen. Maximize excludes it
+     for the same structural reason it excludes the dossier — both are siblings
+     of the conversation region (D-002), and the layout half of that rule lives
+     here. This also GATES THE FETCH: `agentOrders.byOwner` runs the carry-brief
+     gather, so a closed panel must cost nothing. */
+  const ordersVisible = open && ordersOpen && !maximized;
 
   const exitScreen = useCallback(async () => {
     if (typeof document === 'undefined') return;
@@ -948,7 +1010,18 @@ export default function SessionChatModal({
               // side-by-side; on a narrow viewport the rail overlays instead
               // (DOSSIER_RAIL_OVERLAY_STYLE below), so the modal stays at its
               // original width rather than crushing the transcript.
-              width: dossierOpen && !isNarrow ? 'min(1040px, 96vw)' : 'min(720px, 92vw)',
+              // P-015: three columns need ~1240px (272 orders + ~560
+              // conversation + 300 dossier + chrome). The ladder is
+              // both-open → dossier-only → bare, so opening Orders widens the
+              // popup rather than crushing the transcript between two panels.
+              width:
+                ordersVisible && dossierOpen && !isNarrow
+                  ? 'min(1320px, 97vw)'
+                  : ordersVisible
+                    ? 'min(1040px, 96vw)'
+                    : dossierOpen && !isNarrow
+                      ? 'min(1040px, 96vw)'
+                      : 'min(720px, 92vw)',
               height: 'min(80vh, 820px)',
               padding: 0,
               display: 'flex',
@@ -960,6 +1033,27 @@ export default function SessionChatModal({
         style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', position: 'relative' }}
         data-testid="session-chat-modal"
       >
+        {/* ── ORDERS (P-015) — the LEFT panel, and deliberately the FIRST child
+            so the DOM order matches the reading order the layout promises:
+            told → conversation → did. A screen reader and a sighted user get
+            the same causal sequence.
+
+            A SIBLING of the conversation region, never a child: P-001's D-002
+            makes that element's subtree the literal definition of what
+            maximize paints, so this is excluded structurally and there is no
+            hide-list to keep in sync. ── */}
+        {ordersVisible ? (
+          <div
+            data-testid="session-chat-orders-rail"
+            style={isOrdersNarrow ? ORDERS_RAIL_OVERLAY_STYLE : ORDERS_RAIL_SIDE_STYLE}
+          >
+            <AgentOrders
+              ownerId={sessionOwnerId ?? ''}
+              enabled={ordersVisible}
+              onClose={() => void setOrdersOpen(false)}
+            />
+          </div>
+        ) : null}
         <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {/* P-001 / D-002 — THE conversation region. Its DOM boundary is the
             whole definition of what "maximize the conversation" means: this

@@ -20,6 +20,16 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 // below is for a device that was never `insertDevice`'d, so without this
 // mock the principal would (correctly) resolve to null. The mock stands
 // it in as a known, non-revoked device.
+// The catch-all's `runScoped` wires the handler to a REAL pool via getOrgPg()/withWorkspace
+// (catchall.ts:98) — a unit test must not open one [EI-19311807188719573].
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const sql = Object.assign(async () => [], { unsafe: async () => [] });
+  return {
+    ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+    getOrgPg: () => ({ sql }),
+    withWorkspace: async (_ws: string, fn: (tx: unknown) => Promise<unknown>) => fn(sql),
+  };
+});
 vi.mock('../../device-store', async (orig) => ({
   ...(await orig<typeof import('../../device-store')>()),
   isRevoked: async () => false,

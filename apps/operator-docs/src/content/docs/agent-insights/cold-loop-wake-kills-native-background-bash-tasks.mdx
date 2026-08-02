@@ -12,8 +12,12 @@ description: >
   unrecoverable. Correct pattern: never checkpoint across a process-respawn
   boundary on a native task id; foreground it if it fits in the wake, or use
   capability:bash (operator-process-owned, reattachable) if it must outlive one.
+  Sharper variant (EI-19314563321733768): a dead task's completion
+  notification can arrive in the SUCCESSOR session anyway, asserting "exit
+  code 0" success next to a 0-byte output artifact — indistinguishable from a
+  real pass unless you independently check the artifact.
 discovered: 2026-07-18
-tags: [loop, cold-carry, warm-carry, carry-respawn, background-jobs, TaskOutput, run_in_background, EI-16611, su]
+tags: [loop, cold-carry, warm-carry, carry-respawn, background-jobs, TaskOutput, run_in_background, EI-16611, EI-19314563321733768, stale-notification, su]
 status: active
 documents:
   - apps/operator/scripts/psu-pty-host.mjs
@@ -100,7 +104,7 @@ process replacement" is not something papercusp can implement from here. The
 durable fix available to us is this documented pattern, plus the
 `capability:bash` escape hatch for the genuinely-must-survive case.
 
-## Compounding trap: a "wrapper shell" completion notification can precede the real work finishing
+## Compounding trap 1: a "wrapper shell" completion notification can precede the real work finishing
 
 A distinct but related gotcha (WI-5766/WI-5775, 2026-07-25), independent of any
 respawn: the `cmd & echo launched pid $!` backgrounding idiom run via native
@@ -119,3 +123,66 @@ command directly with `run_in_background: true` and let the tool track the
 real process; if you must wrap, treat "task completed" as proof only that the
 wrapper exited and independently confirm the real work via its own pid/log/exit
 marker before trusting or checkpointing a "completed" claim.
+
+## Compounding trap 2: a stale notification for a DEAD (prior-session) task can assert false success (EI-19314563321733768)
+
+A sharper variant of the same root cause, reported 2026-08-02: this doc already
+establishes that `TaskOutput('<id>')` on a successor returns `"No task found
+with ID: ..."` for a native background task whose owning process is gone — that
+was independently reproduced the same day (two ids, both `"No task found"`,
+zero ambiguity). The variant here is worse because it is **not** an obvious
+miss:
+
+> A cold loop wake reset context. The carry-note's "Next action" pointed at a
+> native background id holding a `lint:tsc` result and correctly warned it
+> might be dead. It was — the tracked output file existed but was **0 bytes**.
+> The agent re-ran the typecheck instead of trusting it. Then, ~20 minutes
+> into the NEW session, a task-completion notification for that same dead id
+> arrived anyway: `Background command "..." completed (exit code 0)`. Two more
+> stale notifications, from two other dead prior-session ids, did the same
+> thing in the same session.
+
+So the delivery is not consistent: the same class of dead reference can surface
+either as a clean `TaskOutput` miss (this doc's original report) **or** as a
+notification that actively asserts `exit code 0` success, carrying the
+original human-readable task description, into a session that never started
+that task and has no way to know it's stale. Paired with a 0-byte (or
+otherwise-empty) output artifact, `"exit code 0"` reads exactly like a real
+green result — the successor has no positive signal telling it the claim is
+untrustworthy, only the *absence* of one (the artifact being suspiciously
+empty), which is easy to not think to check when the notification text itself
+sounds authoritative.
+
+**Why this can't be fixed by suppressing or rewriting the notification from
+inside this repo.** The natural-sounding fixes — "don't deliver a
+completion notification for a task whose owning session no longer exists," or
+"tag it as belonging to a prior session" — both require intercepting and
+mutating content the Claude Code **client** injects into the transcript.
+Claude Code's `Notification` hook (the one hook type that fires on this event
+— see `ask-gate-mirror.sh`'s Notification branch for the one other consumer
+of it in this tree) is **observational only**: every existing use of it is a
+side-effect (open/touch a mirror row in `sessions:ingest-gate-event`), and
+none of Claude Code's hook types return a decision that edits or suppresses
+what the model is shown for a `Notification` event the way `PreToolUse` can
+block a tool call. There is nothing to change in this repo's hook layer
+that would stop the notification text itself from asserting success — same
+conclusion as the base report above, for the same reason (CLI-internal
+delivery, not a papercusp surface).
+
+**The durable mitigation is therefore a verification habit, not a
+suppression mechanism:** treat ANY background-task completion notification —
+regardless of what exit code or description it carries — as unverified until
+you independently confirm the artifact. Concretely, before relying on a
+"completed exit code N" notification for gating decisions:
+
+1. **Check whether you (this turn, this session) actually started that task.**
+   If the id/description doesn't match anything you background this session,
+   it is very likely a stale notification for a dead prior session's job —
+   treat its claimed exit code as unverified regardless of what it says.
+2. **Read the output artifact, don't trust the notification text.** A 0-byte
+   or suspiciously-short file next to a claimed "exit code 0" is the tell —
+   real output from a real completed run is virtually never empty.
+3. **Prefer `capability:bash` + `bash_id`** for anything that must survive a
+   wake boundary (per the fix above) — its `capability:bash_output` read
+   distinguishes `stranded_by_operator_restart` / `job_process_gone` from a
+   real result, which a bare notification cannot.

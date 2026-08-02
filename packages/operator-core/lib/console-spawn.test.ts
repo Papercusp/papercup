@@ -911,4 +911,26 @@ describe('spawnMacConsole verifies `open` — GUI-less mac ghost members (EI-193
     expect(r.status).toBe('ok');
     expect((r as { pid: number | null }).pid).toBe(5153);
   }, 10_000);
+
+  // EI-19311623077693508 (second half). THIS is the case the first fix missed,
+  // and the reason a 64/64-green suite shipped a fix that did not fix the bug:
+  // every existing case above emits 'exit', so none of them could see that
+  // watchEarlyExit had no 'error' listener at all. A spawn that FAILS TO START
+  // emits 'error' and — for ENOENT — never emits 'exit', so the probe used to
+  // time out and take the fail-OPEN branch directly above, reporting a window
+  // that was never opened. Note the deliberate absence of an 'exit' emit: adding
+  // one would make this pass against the broken code and prove nothing.
+  it("`open` that never STARTS (spawn 'error', no 'exit') ⇒ error, NOT a fail-open ok", async () => {
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(5154);
+      queueMicrotask(() => child.emit('error', new Error('spawn open ENOENT')));
+      return child;
+    });
+    const r = await spawnConsole({ envelope });
+    expect(r.status).toBe('error');
+    const err = r as { error: string };
+    expect(err.error).toMatch(/ENOENT/);
+    expect(err.error).toMatch(/no window opened/i);
+    // It must resolve on the error, not sit out the full probe window.
+  }, 10_000);
 });

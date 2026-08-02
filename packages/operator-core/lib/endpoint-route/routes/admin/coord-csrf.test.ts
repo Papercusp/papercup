@@ -9,7 +9,19 @@
  * Pass-through is asserted via each handler's own early exit (404
  * unknown_verb / 400 missing_fields) so no downstream coord write fires.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// proxy-host-extras' `runScoped` hands every proxied call a REAL admin pool via getOrgPg()
+// (proxy-host-extras.ts:33). This CSRF test never queries it — a unit test must not open a live
+// pool [EI-19311807188719573].
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const sql = Object.assign(async () => [], { unsafe: async () => [] });
+  return {
+    ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+    getOrgPg: () => ({ sql }),
+    withWorkspace: async (_ws: string, fn: (tx: unknown) => Promise<unknown>) => fn(sql),
+  };
+});
 import coordRoutes from './coord';
 import inboxReplyRoutes from './coord-inbox-reply';
 import coordinationRoutes from './coordination';

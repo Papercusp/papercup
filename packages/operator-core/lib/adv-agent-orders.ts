@@ -32,7 +32,7 @@
  * `unavailable` means ITS read threw — render "unavailable", never the same look
  * as a legitimate empty. `carry.neverWritten` separates the third case.
  */
-import { activeWorkspaceId } from './workspace-context';
+import { activeWorkspaceId } from './workspace-registry';
 import { buildControlAnchorState } from './agent-tools/coordination/control-anchor';
 import { buildInstructionPrecedenceTrace } from './instruction-lint';
 import { buildCarryBrief, detectTerminalCitedRefs } from './carry-brief';
