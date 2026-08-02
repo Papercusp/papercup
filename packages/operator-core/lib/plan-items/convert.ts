@@ -320,7 +320,7 @@ export async function listConvertedPlanItemRefs(workspaceIds?: readonly string[]
   const { sql } = getOrgPg();
   const scopes = workspaceIds?.length
     ? [...new Set(workspaceIds)]
-    : [DEFAULT_COORD_WORKSPACE]; // MUTANT
+    : [...new Set([DEFAULT_COORD_WORKSPACE, coordScopeWorkspace()])];
   const rows = await sql<{ dst_ref: string }[]>`
     SELECT DISTINCT dst_ref
       FROM harness_shared.coord_links

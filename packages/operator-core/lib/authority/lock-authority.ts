@@ -111,6 +111,11 @@ interface LivePeerRow {
    *  {@link LockAuthorityDeps.routineHostsOnly}. Undefined/null = a pre-upgrade
    *  peer, treated as NOT a runner candidate. */
   runs_routines?: boolean | null;
+  /** EI-19330771435294981 — `shared_presence.active_routines` (mig 724): the ACTIVE
+   *  routine NAMES this node runs for this harness. Only read when a caller opts
+   *  into {@link LockAuthorityDeps.requiresRoutine}. Undefined/null/empty = a
+   *  pre-upgrade peer or a node advertising nothing, treated as NOT a candidate. */
+  active_routines?: readonly string[] | null;
 }
 
 /**
@@ -235,6 +240,31 @@ export interface LockAuthorityDeps {
    * non-runner node still contends for.
    */
   routineHostsOnly?: boolean;
+  /**
+   * EI-19330771435294981: restrict candidacy to peers whose published
+   * `active_routines` CONTAINS this routine name — folded through the same
+   * {@link LockAuthorityDeps.eligibleDevices} machinery, INTERSECTED with it (and
+   * with {@link LockAuthorityDeps.routineHostsOnly}) when more than one is given.
+   *
+   * Why this exists rather than reusing `routineHostsOnly`: that flag means "this
+   * node fires the pot's CADENCE loops", a fixed set (gym-cycle / scout-cycle).
+   * WI-6996 pointed the git-sync INTEGRATOR election at it, which asks a different
+   * question — "does this node integrate THIS repo". The mismatch was measured, not
+   * theoretical: on papercusp 2026-08-02 gym-cycle was inactive and scout-cycle did
+   * not exist, so `runs_routines` was NULL on every live presence row, the narrowing
+   * resolved to ∅ and integrator peer arbitration was turned OFF rather than
+   * tightened. It was latent the other way too — arm gym-cycle on a peer holding a
+   * device namespace and it wins the integrator lease on the strength of a bit about
+   * an unrelated loop, reproducing the ~5.5h origin/staging freeze.
+   *
+   * Same safety property as `routineHostsOnly`, for the same reason: eligibility
+   * constrains PEERS only and both selectors re-add SELF unconditionally after the
+   * exclusion filter, so the worst case is every peer excluded ⇒ self wins ⇒ this
+   * node does its own work. It can never make an election go dark.
+   *
+   * OPT-IN. Omit → today's behavior; every existing caller is unchanged.
+   */
+  requiresRoutine?: string;
 }
 
 /**
@@ -255,23 +285,42 @@ function withEligibility(
 }
 
 /**
- * EI-18761517980514694: resolve the effective eligible-device allowlist for a
- * selection — the caller's explicit {@link LockAuthorityDeps.eligibleDevices},
- * narrowed by {@link LockAuthorityDeps.routineHostsOnly} when set.
+ * EI-18761517980514694 / EI-19330771435294981: resolve the effective
+ * eligible-device allowlist for a selection — the caller's explicit
+ * {@link LockAuthorityDeps.eligibleDevices}, narrowed by whichever CAPABILITY
+ * predicates the caller opted into:
  *
- * The routine-host set is derived from the rows ALREADY fetched (`runs_routines`
- * rides the same presence query), so this costs no extra round-trip. When both
- * constraints are present the result is their INTERSECTION: each is a necessary
- * condition, so a peer must satisfy both to stay a candidate.
+ *   • {@link LockAuthorityDeps.routineHostsOnly} — the node fires the pot's
+ *     CADENCE loops (`runs_routines`, mig 682).
+ *   • {@link LockAuthorityDeps.requiresRoutine} — the node publishes that routine
+ *     name in `active_routines` (mig 724), e.g. `'git-sync'` for the integrator.
+ *
+ * Both are derived from the rows ALREADY fetched (each rides the same presence
+ * query), so this costs no extra round-trip. EVERY constraint present is a
+ * NECESSARY condition, so the result is their INTERSECTION — with each other and
+ * with `eligibleDevices` — and a peer must satisfy all of them to stay a candidate.
+ *
+ * No constraint opted into ⇒ `eligibleDevices` passes through untouched, which is
+ * what keeps every existing caller (file locks, steering lease, work-item claims)
+ * on exactly today's behavior.
  */
 function effectiveEligibility(
   rows: LivePeerRow[],
   deps: LockAuthorityDeps,
 ): ReadonlySet<string> | undefined {
-  if (!deps.routineHostsOnly) return deps.eligibleDevices;
+  const required: Array<(r: LivePeerRow) => boolean> = [];
+  if (deps.routineHostsOnly) required.push((r) => r.runs_routines === true);
+  const routine = deps.requiresRoutine;
+  // Absent / null / empty active_routines ⇒ not a candidate: a pre-upgrade peer
+  // and a node advertising nothing are the same verdict, and the publisher
+  // collapses the empty set to null on the wire for exactly that reason.
+  if (routine) required.push((r) => r.active_routines?.includes(routine) === true);
+  if (required.length === 0) return deps.eligibleDevices;
+
   const capable = new Set<string>();
   for (const r of rows) {
-    if (r.device_pubkey && r.runs_routines === true) capable.add(r.device_pubkey);
+    if (!r.device_pubkey) continue;
+    if (required.every((satisfied) => satisfied(r))) capable.add(r.device_pubkey);
   }
   if (!deps.eligibleDevices) return capable;
   const both = new Set<string>();
@@ -325,7 +374,8 @@ export async function queryPresenceRows(
            github_user_id,
            machine_label,
            (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms,
-           runs_routines
+           runs_routines,
+           active_routines
     FROM harness_shared.shared_presence
     WHERE harness_slug = ${harnessSlug}
       ${workspaceFilter}
@@ -337,6 +387,7 @@ export async function queryPresenceRows(
     machine_label: string;
     last_seen_ms: string | number;
     runs_routines: boolean | null;
+    active_routines: string[] | null;
   }>;
   return rows.map((r) => ({
     device_pubkey: r.device_pubkey,
@@ -344,6 +395,7 @@ export async function queryPresenceRows(
     machine_label: r.machine_label,
     last_seen_ms: Number(r.last_seen_ms),
     runs_routines: r.runs_routines ?? null,
+    active_routines: r.active_routines ?? null,
   }));
 }
 
@@ -381,7 +433,8 @@ export async function queryPresenceRowsForHive(
            github_user_id,
            machine_label,
            (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms,
-           runs_routines
+           runs_routines,
+           active_routines
     FROM harness_shared.shared_presence
     WHERE pot_slug = ${potSlug}
       ${workspaceFilter}
@@ -393,6 +446,7 @@ export async function queryPresenceRowsForHive(
     machine_label: string;
     last_seen_ms: string | number;
     runs_routines: boolean | null;
+    active_routines: string[] | null;
   }>;
   return rows.map((r) => ({
     device_pubkey: r.device_pubkey,
@@ -400,6 +454,7 @@ export async function queryPresenceRowsForHive(
     machine_label: r.machine_label,
     last_seen_ms: Number(r.last_seen_ms),
     runs_routines: r.runs_routines ?? null,
+    active_routines: r.active_routines ?? null,
   }));
 }
 
