@@ -38,7 +38,22 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
     // measured pipeline, so no verdict leg is degraded.
     verdictUnknown: [],
     deployedSha: deployed,
-    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    gate: {
+      stalled: false,
+      consecutiveReds: 0,
+      lastGreenAtMs: 1,
+      fireStale: false,
+      fireStaleReason: null,
+      // EI-19325520469216548 made these REQUIRED on PipelinePosition['gate']; false/null is
+      // the semantically correct default here, not a compiler-silencer — this fixture
+      // describes a fully-measured, non-stale verdict.
+      verdictStale: false,
+      verdictStaleReason: null,
+      verdictStaleReasonCode: null,
+      candidateAgeMs: null,
+      commitsBehindTip: null,
+      observedCandidate: null,
+    },
     verdictProvenance: {
       lastGreenSha: green,
       lastGreenShortSha: green.slice(0, 9),

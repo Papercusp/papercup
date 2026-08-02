@@ -165,6 +165,24 @@ export interface CheckpointDeps {
     totalRefires?: number;
     absoluteCeiling?: number;
   }): Promise<void>;
+  /**
+   * EI-19326481022404981: called right alongside `recordInFlightRetriage`, BEFORE the
+   * stale-candidate auto-refire recurses onto `tip` — retires any PENDING
+   * `checkpoint:await { candidateSha }` registration bound to the candidate this run is
+   * about to ABANDON (`fromCandidate`). Without this, a caller that armed a sha-bound
+   * await against the pre-refire candidate has no way to learn the run moved on: this
+   * run's eventual verdict fires keyed to `tip`, not `fromCandidate`, so that await would
+   * otherwise sleep silently to its own timeout — pixel-identical to "still judging" the
+   * whole time (the same hazard `cancelStaleCheckpointAwaits`/WI-4957 already closes for
+   * the sibling `replaceStale` kill-and-relaunch path; this is the SAME-run in-process
+   * re-candidation the marker/`checkpointRunInFlight.fromCandidate` surface reports but
+   * which never actually retired the stale await). Optional / best-effort: existing test
+   * stubs need not provide it; realCheckpointDeps wires it to
+   * release-checkpoint-launch.ts's `cancelStaleCheckpointAwaits`, the same helper the
+   * `replaceStale` path uses, so both cancellation paths can never diverge in which keys
+   * they sweep.
+   */
+  cancelStaleAwaits?(fromCandidate: string): Promise<void>;
   /** Age of the deployed release pin + how far it trails tip, for the staleness alarm.
    *  Optional: absent ⇒ alarm never fires. */
   deployStaleness?(): Promise<{ pinAgeMs: number; commitsBehind: number } | null>;
@@ -3320,6 +3338,10 @@ export async function runGreenCheckpoint(
             absoluteCeiling: refireAbsoluteCeiling(autoRefireCapFromEnv()),
           })
           .catch(() => {});
+        // EI-19326481022404981: this run is about to ABANDON `candidate` for `tip` — retire
+        // any checkpoint:await sha-bound to `candidate` now, or it sleeps to its own timeout
+        // never learning this run moved on.
+        await deps.cancelStaleAwaits?.(candidate).catch(() => {});
         return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
       }
     } else {
@@ -4617,6 +4639,18 @@ export function realCheckpointDeps(
         await write(target, info);
       } catch {
         /* best-effort diagnostic — never let this break the checkpoint run */
+      }
+    },
+    // EI-19326481022404981: real wiring — reuse the SAME helper WI-4957's `replaceStale`
+    // path uses (cancelStaleCheckpointAwaits), so a sha-bound `checkpoint:await` is
+    // retired identically whether its candidate died via an external kill-and-relaunch
+    // or via this run's own in-process re-candidation onto a newer tip.
+    async cancelStaleAwaits(fromCandidate) {
+      try {
+        const { cancelStaleCheckpointAwaits } = await import('@papercusp/operator-core/lib/release-checkpoint-launch');
+        await cancelStaleCheckpointAwaits(cfg.integrationRoot, fromCandidate);
+      } catch {
+        /* best-effort — never let this break the auto-refire it runs ahead of */
       }
     },
     async setupTree(ref) {

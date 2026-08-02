@@ -1070,7 +1070,7 @@ export function buildHudBoard(
     toHudSession(e, byOwner.get(e.ownerId), {
       nowMs,
       thresholds,
-      searchHit: opts.searchHits?.get(e.ownerId) ?? null,
+      searchHit: options.searchHits?.get(e.ownerId) ?? null,
     }),
   );
 

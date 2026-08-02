@@ -17,7 +17,8 @@
  *      The WI-6841 fan-out cannot reach these by construction — its discovery is by OPT-IN, so
  *      a package that never opts in is not "passing", it is unreachable, and nothing anywhere
  *      says so. Reporting them is what turns the ABSENCE of a gate into a finding rather than
- *      silence. 69 as of 2026-08-02; NOT blocking, deliberately (see below).
+ *      silence. 61 as of 2026-08-02 across these three roots; NOT blocking, deliberately (see
+ *      below). The live count is printed on every run — trust THAT over this comment.
  *
  * WHY GATING IS SAFE TO TURN ON HERE, measured before wiring — the prerequisite the orchestrator
  * leg set for itself (green-checkpoint.ts:3929), because a leg that reds the moment it is added
@@ -35,16 +36,16 @@
  *   - The 9th, apps/papercusp-publish, carries 14 committed errors and is EXEMPTED below with
  *     its filed id — printed every run, asserted by a test, so it cannot go quiet.
  *
- * WHY THE INVISIBLE SET IS NOT BLOCKING: 69 directories have never been typechecked by anything.
+ * WHY THE INVISIBLE SET IS NOT BLOCKING: 61 directories have never been typechecked by anything.
  * Making their absence fatal in the same change that first measures it would red-pin the shared
  * green-checkpoint for the entire fleet — inflicting, with its own fix, precisely the failure
  * this work exists to prevent. Blocking is a later, separate, ratcheted step once the real error
- * counts behind those 69 are known. Report first.
+ * counts behind those 61 are known. Report first.
  *
  * Usage:
  *   npm run lint:tsc:workspaces                     # gate the discovered packages
  *   npm run lint:tsc:workspaces -- --list           # discovery only, run nothing (what IS gated?)
- *   npm run lint:tsc:workspaces -- --list-invisible # name all 69 rather than just counting them
+ *   npm run lint:tsc:workspaces -- --list-invisible # name every invisible dir, not just counts
  */
 
 import { existsSync } from 'node:fs';
@@ -98,7 +99,7 @@ export const EXEMPT = {
   },
 };
 
-/** Group the invisible set by top-level root, so the report is readable at 69 entries. */
+/** Group the invisible set by top-level root, so the report stays readable at ~60 entries. */
 export function groupByRoot(entries) {
   const groups = new Map();
   for (const e of entries) {
@@ -166,8 +167,8 @@ export function main({
       `\n  ⓘ REPORT-ONLY — ${invisible.length} director${invisible.length === 1 ? 'y' : 'ies'} have a ` +
         'tsconfig.json but declare NO `typecheck` script, so NO routine gate can reach them.\n' +
         '    This is not a pass and not a failure: they are unreachable by construction. Not blocking\n' +
-        '    (69 packages reddening at once would red-pin the fleet gate — the very failure this\n' +
-        '    guards against). Give one a `typecheck` script and it is gated automatically.',
+        `    (${invisible.length} packages reddening at once would red-pin the fleet gate — the very failure\n` +
+        '    this guards against). Give one a `typecheck` script and it is gated automatically.',
     );
     for (const [root, entries] of [...groupByRoot(invisible)].sort((a, b) => a[0].localeCompare(b[0]))) {
       log(`      ${root}: ${entries.length}`);

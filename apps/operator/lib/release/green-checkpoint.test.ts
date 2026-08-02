@@ -3027,6 +3027,163 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
     });
   });
 
+  // WI-6969: the retry loop's "cheap first cut" — a static/structural assertion (compares
+  // two in-process data structures, no I/O, no timing) reproduces byte-identically on
+  // every attempt, so retrying it can never change the outcome. The observed incident
+  // blamed "ambient host load" for three such assertions and burned a retry cycle on each
+  // before giving up. This short-circuits the retry the moment an attempt's own failure
+  // shape already proves determinism.
+  describe('WI-6969: failure-shape short-circuit (skip a retry that is already proven doomed)', () => {
+    const outWithMatchingCase = [
+      'Affected workspaces (1): @papercusp/operator-core',
+      '',
+      '>>> @papercusp/operator-core :: npm run test',
+      ' ❯ lib/sync-resolver/resolver-backing-table-coverage.test.ts (1 tests | 1 failed) 14095ms',
+      '     × every registry entry either declares backingTables or is in the baseline 14095ms',
+      '>>> @papercusp/operator-core FAILED',
+      '',
+      '1 non-quarantined task(s) failed.',
+    ].join('\n');
+
+    const outWithTimeoutCase = [
+      'Affected workspaces (1): @papercusp/operator-core',
+      '',
+      '>>> @papercusp/operator-core :: npm run test',
+      ' ❯ lib/scout/scheduler-workspace-scope.test.ts (12 tests | 1 failed) 21034ms',
+      '     × schedules within the workspace scope 21034ms',
+      '>>> @papercusp/operator-core FAILED',
+      '',
+      '1 non-quarantined task(s) failed.',
+    ].join('\n');
+
+    it('an attempt matching the ORIGINAL failure exactly (same case, no timing signature) skips the retry entirely', async () => {
+      let calls = 0;
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+        calls++;
+        return {
+          workspace,
+          file,
+          passed: false,
+          durationMs: 14095,
+          failingCases: ['every registry entry either declares backingTables or is in the baseline'],
+          hasTimingSignature: false,
+        };
+      };
+      const logs: string[] = [];
+      const out = await attemptFlakeAbsorption(outWithMatchingCase, isolationRun, (s) => logs.push(s), {
+        // If the short-circuit fails to fire, this would sleep for real — fail loudly
+        // instead of silently passing a slow test.
+        sleep: async () => {
+          throw new Error('should not sleep — the retry must be skipped by the shape short-circuit');
+        },
+      });
+      expect(out.absorbedToGreen).toBe(false);
+      expect(calls).toBe(1); // no retry — abandoned after the first attempt
+      const abandonLine = logs.find((l) => l.includes('abandoning remaining retry budget'));
+      expect(abandonLine).toBeDefined();
+      expect(abandonLine).toContain('IDENTICAL case list');
+      expect(abandonLine).toContain('every registry entry either declares backingTables or is in the baseline');
+      // never reached the load-attribution retry line — the short-circuit fires first
+      expect(logs.some((l) => l.includes('still failing after attempt'))).toBe(false);
+    });
+
+    it('a MATCHING case list but WITH a timing signature does NOT skip the retry (a load-sensitive timeout can reproduce identically)', async () => {
+      let calls = 0;
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+        calls++;
+        return {
+          workspace,
+          file,
+          passed: false,
+          durationMs: 21034,
+          failingCases: ['schedules within the workspace scope'],
+          hasTimingSignature: true, // e.g. output containing "Test timed out in 20000ms"
+        };
+      };
+      const out = await attemptFlakeAbsorption(outWithTimeoutCase, isolationRun, undefined, { sleep: async () => {} });
+      expect(out.absorbedToGreen).toBe(false);
+      expect(calls).toBe(1 + ISOLATION_RETRY_MAX); // retried as before — unchanged behavior
+    });
+
+    it('a DIFFERENT case list does not trigger the short-circuit (unchanged retry behavior)', async () => {
+      let calls = 0;
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+        calls++;
+        return {
+          workspace,
+          file,
+          passed: false,
+          durationMs: 14095,
+          failingCases: ['a wholly different case than the original failure'],
+          hasTimingSignature: false,
+        };
+      };
+      const out = await attemptFlakeAbsorption(outWithMatchingCase, isolationRun, undefined, { sleep: async () => {} });
+      expect(out.absorbedToGreen).toBe(false);
+      expect(calls).toBe(1 + ISOLATION_RETRY_MAX); // retried as before — unchanged behavior
+    });
+
+    it('an attempt with NO failingCases (a hand-built fixture, or a build-break output) never short-circuits', async () => {
+      // Regression guard: every pre-existing test in this file constructs IsolationResult
+      // without failingCases/hasTimingSignature. The short-circuit must stay inert for them.
+      let calls = 0;
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+        calls++;
+        return { workspace, file, passed: false, durationMs: 14095 };
+      };
+      await attemptFlakeAbsorption(outWithMatchingCase, isolationRun, undefined, { sleep: async () => {} });
+      expect(calls).toBe(1 + ISOLATION_RETRY_MAX);
+    });
+  });
+
+  describe('isDeterministicFailureShape / outputHasTimingSignature (WI-6969, pure)', () => {
+    const attempt = (over: Partial<IsolationResult> = {}): IsolationResult => ({
+      workspace: '@p/core',
+      file: 'a.test.ts',
+      passed: false,
+      ...over,
+    });
+
+    it('true: identical non-empty case sets (order-independent), no timing signature', () => {
+      expect(
+        isDeterministicFailureShape({ originalCases: ['a', 'b'], attempt: attempt({ failingCases: ['b', 'a'] }) }),
+      ).toBe(true);
+    });
+
+    it('false: original cases missing or empty (nothing to compare against)', () => {
+      expect(isDeterministicFailureShape({ originalCases: undefined, attempt: attempt({ failingCases: ['a'] }) })).toBe(
+        false,
+      );
+      expect(isDeterministicFailureShape({ originalCases: [], attempt: attempt({ failingCases: ['a'] }) })).toBe(false);
+    });
+
+    it('false: the attempt has no failing cases parsed', () => {
+      expect(isDeterministicFailureShape({ originalCases: ['a'], attempt: attempt() })).toBe(false);
+    });
+
+    it('false: the case sets differ', () => {
+      expect(isDeterministicFailureShape({ originalCases: ['a'], attempt: attempt({ failingCases: ['b'] }) })).toBe(
+        false,
+      );
+    });
+
+    it('false: a timing signature is present even when the case list matches exactly (fail-safe)', () => {
+      expect(
+        isDeterministicFailureShape({
+          originalCases: ['a'],
+          attempt: attempt({ failingCases: ['a'], hasTimingSignature: true }),
+        }),
+      ).toBe(false);
+    });
+
+    it('outputHasTimingSignature detects waitFor / Timed out / Exceeded timeout, case-insensitively', () => {
+      expect(outputHasTimingSignature('something using waitFor(...) internally')).toBe(true);
+      expect(outputHasTimingSignature('Test timed out in 5000ms')).toBe(true);
+      expect(outputHasTimingSignature('Exceeded timeout of 5000ms for a hook')).toBe(true);
+      expect(outputHasTimingSignature('every registry entry is in the baseline')).toBe(false);
+    });
+  });
+
   // WI-6956: the absorber's discriminator ("passes in isolation") IS the defining
   // property of a concurrency-dependent failure class, so for that class it was
   // structurally blind — and the only thing preventing a false green was

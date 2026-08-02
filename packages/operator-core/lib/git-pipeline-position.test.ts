@@ -237,7 +237,23 @@ const snap = (
   deployOver: Partial<DevDeployState> = {},
 ): GitPipelineSnapshot =>
   ({
-    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, ...gate },
+    gate: {
+      stalled: false,
+      consecutiveReds: 0,
+      lastGreenAtMs: 1,
+      fireStale: false,
+      fireStaleReason: null,
+      // EI-19325520469216548: defaults for the fields git-pipeline-stats projects from
+      // evaluateGateVerdictFreshness — a healthy/unmeasured-by-default fixture so existing
+      // cases that don't care about staleness don't have to spell these out.
+      verdictStale: false,
+      verdictStaleReason: null,
+      verdictStaleReasonCode: null,
+      candidateAgeMs: null,
+      commitsBehindTip: null,
+      observedCandidate: null,
+      ...gate,
+    },
     gitSync: { lastStatus },
     deploy: snapDeploy(deployOver),
   } as GitPipelineSnapshot);

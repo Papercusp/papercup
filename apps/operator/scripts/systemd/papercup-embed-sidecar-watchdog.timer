@@ -1,0 +1,11 @@
+# papercup-embed-sidecar-watchdog.timer — WI-4021 (su-efc53, 2026-07-11)
+# See papercup-embed-sidecar-watchdog.service.
+[Unit]
+Description=Run the embed-sidecar liveness probe every 60s
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=60
+
+[Install]
+WantedBy=timers.target

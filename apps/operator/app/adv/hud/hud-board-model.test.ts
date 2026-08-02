@@ -22,6 +22,7 @@ import {
   isInfrastructureAwait,
   isSuSession,
   matchesSessionText,
+  parseHighlight,
   shortHandle,
   TERMINAL_LAUNCH_ONLINE_GRACE_SEC,
   toHudSession,
@@ -920,5 +921,60 @@ describe('matchesSessionText', () => {
     const e = entry({ claims: [{ id: 'WI-7159', planSlug: 'hud-search-2026-08-02' }] });
     expect(matchesSessionText(e, 'WI-7159')).toBe(true);
     expect(matchesSessionText(e, 'wi-7159')).toBe(true);
+  });
+});
+
+/* The excerpt shown on a matched card (owner ask 2026-08-02). The safety
+   property is the point of these: every run becomes a TEXT node, so transcript
+   content can never be rendered as markup no matter what the server sent. */
+describe('parseHighlight', () => {
+  it('splits ts_headline output into marked and unmarked runs', () => {
+    const segs = parseHighlight('the <mark>Harrier</mark> embedder');
+    expect(segs.map((s) => [s.text, s.mark])).toEqual([
+      ['the ', false],
+      ['Harrier', true],
+      [' embedder', false],
+    ]);
+  });
+
+  it('handles several marks, and a string that is entirely one mark', () => {
+    expect(parseHighlight('<mark>a</mark> b <mark>c</mark>').filter((s) => s.mark).map((s) => s.text))
+      .toEqual(['a', 'c']);
+    expect(parseHighlight('<mark>only</mark>')).toEqual([{ text: 'only', mark: true }]);
+  });
+
+  // THE security property. Transcript text routinely contains markup and quoted
+  // HTML; a <script> in an excerpt must arrive as characters to render, never as
+  // a tag. Segments make that structural rather than dependent on the server's
+  // escaper staying correct forever.
+  it('never yields markup — a script tag in the excerpt stays literal text', () => {
+    const segs = parseHighlight('before <script>alert(1)</script> after');
+    const joined = segs.map((s) => s.text).join('');
+    expect(joined).toContain('<script>alert(1)</script>');
+    expect(segs.every((s) => !s.mark)).toBe(true);
+  });
+
+  it('decodes the entities ts_headline escapes, including numeric ones', () => {
+    const segs = parseHighlight('a &amp; b &lt;c&gt; &quot;d&quot; &#39;e&#39; &#x41;');
+    expect(segs.map((s) => s.text).join('')).toBe(`a & b <c> "d" 'e' A`);
+  });
+
+  // Excerpts carry markdown and hard newlines; left alone they shred a clamped
+  // card into ragged fragments. This is a DISPLAY helper, so it condenses.
+  it('condenses newlines and runs of whitespace', () => {
+    const segs = parseHighlight('one\n\n##   two\t\tthree');
+    expect(segs.map((s) => s.text).join('')).toBe('one ## two three');
+  });
+
+  it('drops empty runs rather than emitting blank segments', () => {
+    expect(parseHighlight('<mark>x</mark>')).toHaveLength(1);
+    expect(parseHighlight('')).toEqual([]);
+    expect(parseHighlight('   ')).toEqual([]);
+  });
+
+  it('leaves an unterminated mark as literal text rather than swallowing the rest', () => {
+    const segs = parseHighlight('start <mark>never closed');
+    expect(segs.map((s) => s.text).join('')).toBe('start <mark>never closed');
+    expect(segs.every((s) => !s.mark)).toBe(true);
   });
 });

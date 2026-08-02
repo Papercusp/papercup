@@ -103,10 +103,11 @@ export function discover(dir, depth = 0, relativeTo = dir) {
  *  gate, and no amount of running the fan-out will ever say so. Reporting it is what turns the
  *  ABSENCE of a gate into a finding rather than silence.
  *
- *  Deliberately report-only at this stage. 69 such directories exist as of 2026-08-02, none of
- *  them ever typechecked by anything; making absence blocking in the same change that first
- *  measures it would red-pin the shared gate for the whole fleet — inflicting precisely the
- *  failure the item exists to prevent, with its own fix. */
+ *  Deliberately report-only at this stage. 61 such directories exist as of 2026-08-02 under
+ *  apps/*, packages/* and libs/generic/* — the live count is printed on every run, so trust that
+ *  over this comment. None of them has ever been typechecked by anything; making absence blocking
+ *  in the same change that first measures it would red-pin the shared gate for the whole fleet —
+ *  inflicting precisely the failure the item exists to prevent, with its own fix. */
 export function discoverInvisible(dir, depth = 0, relativeTo = dir) {
   if (depth > MAX_DEPTH) return [];
   const found = [];
