@@ -69,4 +69,20 @@ describe('no-raw-agent-spawn guard predicate (P-008 / P-016)', () => {
     ].join('\n');
     expect(isRawAgentSpawnBypass(comment)).toBe(false);
   });
+
+  it('does NOT flag a comment that puts a "(" after buildInvokeOnce for a parenthetical aside (WI-6666)', () => {
+    // WI-6666: recursing this guard into submodules surfaced this exact shape as a
+    // false positive on the FIRST run — three real files whose prose happens to write
+    // "buildInvokeOnce (via ...)" or "(buildInvokeOnce, EI-...)". The bare `(` heuristic
+    // alone cannot distinguish that from a call; comments must be stripped first.
+    const parentheticalComment = [
+      "// ACTUAL spawned child: buildInvokeOnce (via spawnInvokeOnce's extraEnv)",
+      '/*',
+      ' * routes the agent-spawn fork/exec + buildInvokeOnce (the ~24.5% main-loop CPU',
+      ' * that freezes routinesTick), moved off the hot path.',
+      ' */',
+      "const r = await spawnInvokeOnce(dir, role, extras, env);",
+    ].join('\n');
+    expect(isRawAgentSpawnBypass(parentheticalComment)).toBe(false);
+  });
 });

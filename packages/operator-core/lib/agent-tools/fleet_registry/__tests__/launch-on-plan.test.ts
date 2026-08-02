@@ -1549,7 +1549,11 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     const call = setClaimSpecMock.mock.calls[0][0] as { spec: { view: { filter: unknown } } };
     // Bare plan leaf (no kind narrowing) — keeps members on THIS plan's work-items.
     expect(call.spec.view.filter).toEqual({ field: 'plan', op: '=', value: 'my-plan' });
-    expect(payload.claimSpecApplied).toEqual({ ok: true, revision: 1 });
+    // EI-19276371141300541: a fresh plan-only lane now ALSO gets the write-time pool-effect
+    // preview (it used to be skipped entirely for this path — the exact gap that let a
+    // 10-member fleet launch onto a plan-scoped lane matching a single row with no signal
+    // anywhere in the response).
+    expect(payload.claimSpecApplied).toMatchObject({ ok: true, revision: 1, poolEffect: { matched: 5, pool: 10 } });
   });
 
   it('best-effort: a claim-spec write failure never blocks the launch', async () => {
@@ -1630,6 +1634,47 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
     expect(payload.message).toMatch(/matches 5 of 10 claimable row/);
     // No confirm passed → the guard was consulted with confirm:false.
     expect(evaluateCollapseGuardMock.mock.calls[0][0]).toMatchObject({ confirm: false });
+  });
+
+  // EI-19276371141300541: the guard used to run ONLY on the claimKinds path — a fresh
+  // plan-only lane (buildFleetPlanClaimSpec, no claimKinds) got neither the zero-match
+  // refuse nor a surfaced poolEffect. Live incident: `fleet:launch-on-plan { name, plan:
+  // '<drain-tracking-plan>', count: 10 }` (no claimKinds) reported `claimSpecApplied:
+  // {ok:true}` while the plan-scoped lane matched exactly ONE claimable row for a
+  // 10-member fleet.
+  it('REFUSES a starving PLAN-ONLY fleet (no claimKinds) BEFORE any terminal opens — same guard as claimKinds', async () => {
+    previewSpecPoolEffectMock.mockResolvedValue({ matched: 0, pool: 12, states: ['open'], harness: 'papercusp' });
+    evaluateCollapseGuardMock.mockReturnValue({
+      refuse: true,
+      errors: ['spec matches 0 of 12 claimable row(s) — the starved-fleet shape'],
+    });
+    const res = await tool.handler(
+      { name: 'Starved Plan Fleet', plan: 'my-plan', harness: 'papercusp', count: 10 } as never,
+      {} as never,
+    );
+    expect((res as any).isError).toBe(true);
+    const text = (res as any).content[0].text as string;
+    expect(text).toMatch(/matches 0 of 12 claimable row/);
+    expect(text).toContain('plan=`my-plan`');
+    expect(text).toContain('NO members were opened');
+    expect(text).toContain('confirmClaimCollapse:true');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(setClaimSpecMock).not.toHaveBeenCalled();
+  });
+
+  it('WARNS (never refuses) a PLAN-ONLY fleet whose lane matches fewer rows than requested members — the exact live-incident shape (matched:1, count:10)', async () => {
+    previewSpecPoolEffectMock.mockResolvedValue({ matched: 1, pool: 1719, states: ['open'], harness: 'papercusp' });
+    const res = await tool.handler(
+      { name: 'Nonp2p Bug Drain', plan: 'bug-drain-tracking-plan', harness: 'papercusp', count: 10 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(spawnConsoleMock).toHaveBeenCalled();
+    const warning = payload.claimSpecApplied.warning as string;
+    expect(warning).toContain('matches only 1 of 1719');
+    expect(warning).toContain('10-member fleet');
+    expect(payload.message).toMatch(/may NOT cover all 10 member/);
   });
 });
 

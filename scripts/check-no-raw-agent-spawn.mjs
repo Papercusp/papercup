@@ -52,6 +52,23 @@ export const isExcluded = (f) =>
   !/\.ts$/.test(f);
 
 /**
+ * Strip block (/* *​/, incl. JSDoc) + line (//) comments so a PROSE mention of
+ * `buildInvokeOnce` isn't mistaken for a call.
+ *
+ * WI-6666: recursing this guard into submodules (below) surfaced 3 false-positive
+ * "bypasses" on the FIRST run, all in the superproject (not even a submodule
+ * effect) — doc comments like `buildInvokeOnce (via spawnInvokeOnce's extraEnv)`
+ * or `(buildInvokeOnce, EI-...)` that put a `(` after the word for parenthetical
+ * prose, which is exactly the shape the bare `\(` heuristic below cannot tell
+ * apart from a real call. Comments legitimately discuss `buildInvokeOnce(...)` —
+ * the sibling guard (check-no-raw-setinterval.mjs) already strips comments for
+ * the identical reason; this guard should have from the start.
+ */
+export function stripComments(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+/**
  * The tell of an agent-CLI spawn bypass: a CALL to `buildInvokeOnce(...)` outside
  * the allowlist. Building the invoke-once command is the chokepoint's exclusive
  * right — every other caller must go through `spawnInvokeOnce`. Keying on the
@@ -61,11 +78,12 @@ export const isExcluded = (f) =>
  * spawn.ts` — that the original same-file `&&` rule silently missed; D-013
  * residual 2). The `(` distinguishes a real call from a bare mention in a comment
  * (e.g. "uses buildInvokeOnce + raw spawn"); the file that DEFINES it
- * (`function buildInvokeOnce(`) is allowlisted, so it never reaches here. Pure
- * (text → boolean) so it's unit-testable.
+ * (`function buildInvokeOnce(`) is allowlisted, so it never reaches here. Comments
+ * are stripped first (see `stripComments`) so a parenthetical prose aside can't
+ * masquerade as a call. Pure (text → boolean) so it's unit-testable.
  */
 export function isRawAgentSpawnBypass(text) {
-  return /\bbuildInvokeOnce\s*\(/.test(text);
+  return /\bbuildInvokeOnce\s*\(/.test(stripComments(text));
 }
 
 /**
