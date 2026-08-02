@@ -2068,26 +2068,24 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
   });
 
   /**
-   * The BOUNDARY of the fix above, pinned deliberately rather than left to be
-   * rediscovered as "another false positive".
-   *
-   * A sentence that names a RELATIVE tree path still denies. Tokenizing fixed
-   * the case where prose MANUFACTURED a path that never existed (`wrote
-   * /tmp/x` becoming `<canon>/wrote /tmp/x`) — it does not, and must not, try
-   * to decide whether a genuine `apps/operator/generated.ts` token is a write
-   * target or merely mentioned. That needs parsing which call the literal is
-   * an argument to, which this scan deliberately does not do (see the
-   * "Intentionally coarse" note in _payload_literal_tree_path).
-   *
-   * The asymmetry is the right one: the cost of denying here is one clear
-   * message telling the agent to use Edit/Write; the cost of allowing is an
-   * unlocked tree write, which is the side door the whole guard exists to
-   * close. If this ever needs relaxing, relax it with real argument parsing —
-   * not by widening what counts as "not a path".
+   * UPDATE (EI-18814109122347052): this used to be "the accepted coarseness,
+   * not a bug" — a sentence naming a RELATIVE tree path denied even when the
+   * path was only MENTIONED, never written, because the scan deliberately
+   * did not parse which call a literal was an argument to. That note ended
+   * "If this ever needs relaxing, relax it with real argument parsing — not
+   * by widening what counts as 'not a path'." EI-18814109122347052 is
+   * exactly that: a print() label containing a slash (`postings/comments`)
+   * was denied even though the body's only actual write target was an
+   * unrelated absolute /tmp path. _write_call_arg_spans now scopes the
+   * literal scan to the argument list of a recognized write-shaped/file-
+   * construct call — real (if coarse, balanced-paren) argument parsing,
+   * exactly as prescribed — so a path merely MENTIONED in a print()/log
+   * sentence is no longer a candidate at all, while a path passed to
+   * open(...)/Path(...)/etc. still is (see the masking-control tests below).
    */
-  it('still denies a sentence naming a RELATIVE tree path — the accepted coarseness, not a bug', () => {
+  it('allows a sentence that merely MENTIONS a relative tree path outside any write call (EI-18814109122347052)', () => {
     const command = `python3 -c "open('/tmp/o.txt','w').write('x'); print('wrote apps/operator/generated.ts')"`;
-    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
   });
 
   /**
