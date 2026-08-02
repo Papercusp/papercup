@@ -286,7 +286,7 @@ export default defineTool({
   },
   capability: 'locks:write',
   // EI-9417: + budget for the default lock-timeout retry loop's worst case (5
-  // attempts x MIGRATION_LOCK_TIMEOUT_SQL, plus backoff between them — see
+  // attempts x DEFAULT_LOCK_TIMEOUT_SEC, plus backoff between them — see
   // above). WI-6381: widened to also cover the caller-opted-in long-wait path
   // (CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS attempts x MAX_LOCK_TIMEOUT_SQL_SEC),
   // whichever is larger — a real call almost never approaches this; it is

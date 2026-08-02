@@ -254,7 +254,7 @@ export function buildScopedTsconfig(
           typeRoots: [join(root, 'node_modules', '@types')],
         },
         files: resolvedFiles,
-        include: ['MUTATION-PROOF-SENTINEL'],
+        include: [],
       },
       null,
       2,

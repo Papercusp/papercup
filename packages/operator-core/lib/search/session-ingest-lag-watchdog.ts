@@ -28,7 +28,7 @@
  * thin sweep wired into routinesTick as one durable step, fail-soft
  * throughout, an env `<=0` kill switch, and the shared fires-ledger debounce.
  */
-import { stat } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
 import { recentWatchdogFires, recordFire } from '../pot/watchdog';
 import { openEscalation } from '../agent-tools/coordination/escalations';
@@ -46,8 +46,49 @@ export function ingestLagThresholdSec(): number {
 /** Ignore a backlog smaller than this — a transcript's last line is written
  *  incrementally, so a live session ALWAYS has a few hundred unconsumed bytes
  *  (readNewLines deliberately stops at the last complete line). Without this
- *  floor every busy session would look like a wedge. */
+ *  floor every busy session would look like a wedge.
+ *
+ *  ⚠ APPLIED PER FILE, in observeAdapterLag, BEFORE aggregating
+ *  (EI-19280389878453845). It was originally tested only against the
+ *  per-ADAPTER sum, which defeated it: this floor's whole premise is
+ *  per-file ("a live session ALWAYS has a few hundred unconsumed bytes"), and
+ *  summing enough of those sub-floor tails always crosses it. Measured
+ *  2026-08-01, with claude ingest demonstrably healthy: 20 files behind /
+ *  537 KB summed, but only 2 individually at the floor — so 18 files that this
+ *  constant exists to ignore were being counted, and the adapter was reported
+ *  WEDGED. evaluateIngestLag still re-checks the sum, which is now redundant
+ *  for observeAdapterLag's own output but keeps a hand-built observation
+ *  honest. */
 export const INGEST_LAG_MIN_BACKLOG_BYTES = 64 * 1024;
+
+/** How much of a file's unconsumed remainder to probe when deciding whether it
+ *  contains a complete line. A remainder larger than this is taken as real
+ *  backlog without reading: a single JSONL record above 1 MB is possible but
+ *  vanishingly rare, and erring toward ALERTING on a huge remainder is the
+ *  right direction for a wedge guard. */
+const MAX_TAIL_PROBE_BYTES = 1024 * 1024;
+
+/**
+ * PURE: does a file's unconsumed remainder represent work the adapter could
+ * actually consume?
+ *
+ * Two independent reasons a remainder is NOT consumable work:
+ *   1. it is below the per-file floor — the ordinary partially-written tail;
+ *   2. it contains no complete line at all — `readNewLines` stops at the last
+ *      newline by design, so a remainder with no newline is BY CONSTRUCTION
+ *      unconsumable, and will stay unconsumed forever once the session ends
+ *      mid-line. That is the shape that made the age counter run away: the
+ *      state row stops advancing precisely because there is nothing valid to
+ *      consume, so `now - updated_at` grows without bound and eventually
+ *      crosses any threshold.
+ */
+export function remainderIsConsumableWork(
+  remainderBytes: number,
+  remainderHasCompleteLine: boolean,
+): boolean {
+  if (remainderBytes < INGEST_LAG_MIN_BACKLOG_BYTES) return false;
+  return remainderHasCompleteLine;
+}
 
 /** One adapter's observed state: its most-stale unconsumed file. */
 export interface AdapterLagObservation {
@@ -61,6 +102,12 @@ export interface AdapterLagObservation {
   oldestBacklogAgeMs: number;
   /** The worst offender, for the alert body. */
   worstPath: string | null;
+  /** Files skipped as ordinary partially-written tails (below the per-file
+   *  floor). Optional so hand-built observations in tests stay valid. */
+  ignoredTailFiles?: number;
+  /** Files skipped because their remainder holds no complete line — by
+   *  construction unconsumable, not a wedge. */
+  ignoredIncompleteFiles?: number;
 }
 
 export interface IngestLagVerdict {
@@ -78,10 +125,19 @@ export interface IngestLagVerdict {
 export function evaluateIngestLag(obs: AdapterLagObservation, thresholdMs: number): IngestLagVerdict {
   if (thresholdMs <= 0) return { wedged: false, reason: 'kill switch (thresholdMs <= 0)' };
   if (obs.behindFiles === 0) {
+    // Say what was ignored and why. A bare "fully caught up" while 20 files
+    // sit behind is exactly the kind of verdict nobody can audit, and it is
+    // what made EI-19280389878453845 take a live investigation to unpick.
+    const tails = obs.ignoredTailFiles ?? 0;
+    const incomplete = obs.ignoredIncompleteFiles ?? 0;
+    const ignored = tails + incomplete
+      ? ` Ignored ${tails} sub-floor tail(s) and ${incomplete} file(s) whose remainder holds no ` +
+        `complete line — both are normal steady state, not backlog.`
+      : '';
     return {
       wedged: false,
       reason:
-        `${obs.sourceKind}: fully caught up — no on-disk bytes past the cursor. ` +
+        `${obs.sourceKind}: fully caught up — no consumable bytes past the cursor.${ignored} ` +
         `(An adapter nobody is running looks exactly like this, and that is correct: ` +
         `wall-clock lag is NOT evidence of a wedge — D-005.)`,
     };
@@ -145,6 +201,33 @@ export interface IngestLagSweepDeps {
  * routines tick would be a fleet-visible fs storm for a health check, and a
  * wedge that affects only cold files nobody is appending to is not a wedge.
  */
+/**
+ * Does the unconsumed remainder of `path` contain at least one complete line?
+ *
+ * Bounded: probes at most MAX_TAIL_PROBE_BYTES, and a remainder larger than
+ * that is taken as real backlog without reading. Fail-soft — an unreadable
+ * file is treated as NOT consumable, so an fs error can never manufacture a
+ * wedge alert.
+ */
+async function remainderHasCompleteLine(
+  path: string,
+  byteOffset: number,
+  remainderBytes: number,
+): Promise<boolean> {
+  if (remainderBytes > MAX_TAIL_PROBE_BYTES) return true;
+  let fh: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    fh = await open(path, 'r');
+    const buf = Buffer.allocUnsafe(remainderBytes);
+    const { bytesRead } = await fh.read(buf, 0, remainderBytes, byteOffset);
+    return buf.subarray(0, bytesRead).includes(0x0a); // '\n'
+  } catch {
+    return false;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
+}
+
 async function observeAdapterLag(): Promise<AdapterLagObservation[]> {
   const { sql } = getOrgPg();
   const MAX_FILES_PER_KIND = 250;
@@ -179,6 +262,18 @@ async function observeAdapterLag(): Promise<AdapterLagObservation[]> {
     }
     const behind = size - Number(r.byte_offset);
     if (behind <= 0) continue;
+    // EI-19280389878453845: filter PER FILE before aggregating. Both of these
+    // shapes are normal steady state, and counting them reported a healthy
+    // adapter as WEDGED — the alert-fatigue failure D-005/D-006 exist to
+    // prevent, reintroduced by aggregation.
+    if (behind < INGEST_LAG_MIN_BACKLOG_BYTES) {
+      obs.ignoredTailFiles = (obs.ignoredTailFiles ?? 0) + 1;
+      continue;
+    }
+    if (!(await remainderHasCompleteLine(r.file_path, Number(r.byte_offset), behind))) {
+      obs.ignoredIncompleteFiles = (obs.ignoredIncompleteFiles ?? 0) + 1;
+      continue;
+    }
     const ageMs = Math.max(0, now - Date.parse(r.updated_at));
     obs.behindFiles += 1;
     obs.backlogBytes += behind;
