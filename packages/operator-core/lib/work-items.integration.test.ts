@@ -73,11 +73,11 @@ vi.mock('./promote-issue', async () => {
 // module — mocked here (module-boundary, not a real plan/DB fixture) so the C4 test below
 // exercises observeWorkItem's wiring/shape without standing up harness_plans. The guard
 // function itself is unit-pinned separately in scheduler/plan-item-lane-guard.test.ts.
-const planItemLaneBlockReasonMock = vi.fn(async () => null as unknown);
+const planItemLaneBlockReasonMock = vi.fn(async (..._args: unknown[]) => null as unknown);
 // WI-5343: observeWorkItem's live-claim branch (planItemLiveClaimReason) is the
 // same kind of module-boundary mock, for the same reason — pinned separately in
 // scheduler/plan-item-lane-guard.test.ts.
-const planItemLiveClaimReasonMock = vi.fn(async () => null as unknown);
+const planItemLiveClaimReasonMock = vi.fn(async (..._args: unknown[]) => null as unknown);
 vi.mock('./scheduler/plan-item-lane-guard', () => ({
   planItemLaneBlockReason: (...args: unknown[]) => planItemLaneBlockReasonMock(...args),
   planItemLiveClaimReason: (...args: unknown[]) => planItemLiveClaimReasonMock(...args),

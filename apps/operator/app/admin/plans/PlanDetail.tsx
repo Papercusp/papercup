@@ -941,6 +941,9 @@ function PlanActivityFeed({
         <Drawer.Title asChild>
           <h4 style={{ margin: 0, fontSize: '0.8em', fontWeight: 600 }}>Activity</h4>
         </Drawer.Title>
+        <Drawer.Description className="pc-sr-only">
+          The plan's revision activity feed.
+        </Drawer.Description>
         <Tooltip label="Close"><button
           type="button"
           onClick={onClose}
@@ -1055,6 +1058,9 @@ function FeatureSlideOver({
             <Drawer.Title asChild>
               {featureTitle ? <p style={{ margin: 0, fontWeight: 500, fontSize: '0.9em' }}>{featureTitle}</p> : <p style={{ margin: 0, fontWeight: 500, fontSize: '0.9em' }}>{featureId}</p>}
             </Drawer.Title>
+            <Drawer.Description className="pc-sr-only">
+              Timeline of events for feature {featureId}.
+            </Drawer.Description>
           </div>
           <button
             type="button"
