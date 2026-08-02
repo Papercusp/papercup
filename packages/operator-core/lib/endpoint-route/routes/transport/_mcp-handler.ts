@@ -474,6 +474,20 @@ function isSuperuserGlobalFlagAdmin(toolName: string): boolean {
  */
 export interface BuiltSpawnContext {
   workspaceId: string;
+  /**
+   * WI-6734: set to `'registry-fallback'` ONLY when this ctx's `workspaceId` was
+   * NOT resolved from an explicit param/header/adv-session lookup, but GUESSED
+   * from the box's active-workspace registry (the scoped-superuser-clamp's
+   * untracked-session fallback, `activeWorkspaceId()`). That guess can be wrong
+   * for a multi-workspace box, and every downstream tool call then silently
+   * scopes to the wrong tenant — surfacing as a confident, well-formed
+   * NOT-FOUND/empty result for data that is provably present elsewhere. Absent
+   * (the overwhelmingly common case) means the workspace was actually resolved.
+   * Consumed by `withScopeGuessWarning` to annotate every tool result for the
+   * rest of this session, so a caller reading an unexpected empty/not-found
+   * result is told to suspect scoping before concluding data loss.
+   */
+  workspaceResolution?: 'registry-fallback';
   harnessSlug: string;
   role: AgentRole;
   featureId: string | null;
@@ -644,6 +658,11 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     if (!workspaceId && sidForLookup) {
       workspaceId = (await workspaceForCoordOwner(sidForLookup)) ?? '';
     }
+    // WI-6734: set ONLY by the registry-fallback branch below — a GUESS, not a
+    // verified resolution. Threaded onto the built ctx so the dispatch layer can
+    // warn the caller that an empty/not-found result may reflect wrong-workspace
+    // scoping rather than genuine absence (see withScopeGuessWarning below).
+    let workspaceResolution: 'registry-fallback' | undefined;
     // scoped-superuser-workspace-clamp-2026-06-18 (P-006 / D-004), flag-gated:
     // safe-by-default. When the clamp flag is ON, a superuser session must resolve
     // to a CONCRETE workspace (which the existing effectiveDispatchWorkspace then
@@ -672,6 +691,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
               `fallback missed — scoping to the active workspace '${active}' (registry fallback).`,
           );
           workspaceId = active;
+          workspaceResolution = 'registry-fallback';
         } else {
           return { kind: 'failed', reason: 'scoped_superuser_workspace_unresolved' };
         }
@@ -694,6 +714,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       kind: 'ok',
       ctx: {
         workspaceId: workspaceId || '*',
+        ...(workspaceResolution ? { workspaceResolution } : {}),
         harnessSlug: harnessParam || '*',
         // Canonicalize old-spelling roles here too (see the matching comment on the
         // signed role-scoped branch above) — isSuperuser bypasses the gates so this
@@ -1070,6 +1091,55 @@ async function dispatchWithSynthesizedTx<T>(
     );
   }
   return runWithWorkspaceIfConcrete(spawnCtx.workspaceId, () => run(baseCtx));
+}
+
+/**
+ * WI-6734: annotate a tool result with a scope-guess warning when this call's
+ * workspace was NOT resolved from an explicit param/header/adv-session lookup
+ * but GUESSED from the box's active-workspace registry (see
+ * `BuiltSpawnContext.workspaceResolution`'s doc comment for the full story).
+ *
+ * The bug this exists to prevent: the guess is silently indistinguishable
+ * from a real resolution, so a caller whose data actually lives in a
+ * DIFFERENT workspace gets a confident, well-formed empty/not-found result
+ * from every tool for the rest of the session — with nothing to signal that
+ * the miss is a scoping failure rather than genuine absence. This does not
+ * (and cannot, without per-tool semantics) know whether a given result IS an
+ * empty/not-found — so it annotates every result while the guess is in
+ * effect. That is deliberately broad: the guess itself is rare (it only fires
+ * when the SID→adv-row lookup missed), so the added noise is rare too, and
+ * the alternative (staying silent) is the exact failure mode WI-6734 reports.
+ *
+ * No-op (byte-identical passthrough) whenever `workspaceResolution` is unset —
+ * the overwhelmingly common case — so this changes nothing for a normally-
+ * scoped session.
+ */
+function withScopeGuessWarning<T extends McpCallResult>(result: T, spawnCtx: BuiltSpawnContext): T {
+  if (spawnCtx.workspaceResolution !== 'registry-fallback' || !result || result.isError) return result;
+  const warning =
+    `⚠ SCOPE GUESSED, NOT VERIFIED: this session's workspace could not be resolved from an explicit ` +
+    `param, header, or launch record — it was scoped to '${spawnCtx.workspaceId}' as a REGISTRY-FALLBACK ` +
+    `GUESS (the box's active workspace), which can be wrong on a multi-workspace box. If this result ` +
+    `looks like an unexpected empty/not-found for something you expect to exist, suspect WRONG-WORKSPACE ` +
+    `SCOPING before concluding data is missing — verify independently (dev:pg_query / psql against the ` +
+    `expected workspace) rather than trusting this result at face value.`;
+  const content = Array.isArray(result.content) ? result.content : [];
+  const first = content[0];
+  if (first && 'type' in first && first.type === 'text' && typeof (first as { text?: unknown }).text === 'string') {
+    try {
+      const parsed: unknown = JSON.parse((first as { text: string }).text);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        (parsed as Record<string, unknown>)._scopeGuessWarning = warning;
+        return {
+          ...result,
+          content: [{ type: 'text' as const, text: JSON.stringify(parsed) }, ...content.slice(1)],
+        };
+      }
+    } catch {
+      /* non-JSON text content (or a malformed body) — fall through to _meta */
+    }
+  }
+  return { ...result, _meta: { ...(result._meta ?? {}), scopeGuessWarning: warning } };
 }
 
 /**

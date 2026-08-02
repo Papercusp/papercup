@@ -39,4 +39,5 @@ import { projectPrefixFromTscCommand } from './lib/tsc-baseline-gate.mjs';
 import { partitionFilesByCoverage } from './lib/tsc-baseline-gate.mjs';
 import { suggestTypecheckGate } from './lib/tsc-baseline-gate.mjs';
 import { formatUncoveredFilesBanner } from './lib/tsc-baseline-gate.mjs';
-export { parseTscErrors, syntaxBrokenFiles, countByFile, gitChangedFiles, parseExplicitFiles, decidePerFile, effectiveBaselineByFile, exportedTypeNames, filesReferencingTypeNames, formatAttributionHeadline, formatNewFileGuidance, partitionNewFilesByLiveEdit, diagnosticLinesForFiles, partitionStandingByCommitRecency, formatLandingRaceCaveat, LANDING_RACE_WINDOW_SEC, projectPrefixFromTscCommand, partitionFilesByCoverage, suggestTypecheckGate, formatUncoveredFilesBanner };
+import { coalesceWatermarkFor } from './lib/tsc-baseline-gate.mjs';
+export { parseTscErrors, syntaxBrokenFiles, countByFile, gitChangedFiles, parseExplicitFiles, decidePerFile, effectiveBaselineByFile, exportedTypeNames, filesReferencingTypeNames, formatAttributionHeadline, formatNewFileGuidance, partitionNewFilesByLiveEdit, diagnosticLinesForFiles, partitionStandingByCommitRecency, formatLandingRaceCaveat, LANDING_RACE_WINDOW_SEC, projectPrefixFromTscCommand, partitionFilesByCoverage, suggestTypecheckGate, formatUncoveredFilesBanner, coalesceWatermarkFor };

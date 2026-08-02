@@ -85,6 +85,16 @@ async function load() {
       bridgeReturn(name, args),
   }));
   vi.doMock('./events/engine', () => ({ emitSystemEvent: emitSysEvt }));
+  // This file exercises sync-sse's OWN bridging/replay/cold-bust logic against
+  // the dedicated-connection path (the `postgres` mock above) — hub routing is
+  // covered separately by pg-listen-hub.test.ts/.integration.test.ts and the
+  // "routes onto the shared hub" case below. Force the direct-connection branch
+  // so `hubListen`'s real implementation (which needs a real `.end()`-capable
+  // postgres client) never runs against this file's minimal `postgres` mock.
+  vi.doMock('./pg-listen-hub', () => ({
+    hubListen: vi.fn(async () => () => {}),
+    listenHubEnabled: () => false,
+  }));
   return import('./sync-sse');
 }
 

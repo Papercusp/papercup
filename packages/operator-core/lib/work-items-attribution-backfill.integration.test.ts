@@ -97,7 +97,14 @@ describe('work_items completion-attribution backfill (migration 729)', () => {
       { label: 'work-items-attribution-backfill' },
     );
     await seedAll();
-    await applyBackfill();
+    // PC_SKIP_729=1 runs this file WITHOUT the repair, which is how the guard was
+    // proved to be a guard: 7 fail / 5 pass, and the 5 that still pass are exactly
+    // the negative controls + the authority trap guard, which SHOULD pass vacuously
+    // when no repair ran. (The trap guard was proved separately, by adding
+    // `authority = 'committed'` to 729's Part A UPDATE: 1 failed / 11 passed, the one
+    // failure being that guard.) Skipping can only ever produce failures, never a
+    // green — so a stray env var reds the suite rather than hiding a regression.
+    if (!process.env.PC_SKIP_729) await applyBackfill();
   }, 180_000);
 
   afterAll(async () => {

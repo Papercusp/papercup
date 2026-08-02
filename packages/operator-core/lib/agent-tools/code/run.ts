@@ -53,13 +53,16 @@ export default defineTool({
   guidance: {
     when:
       'MANY tool calls with control flow — loop/branch/filter, fan-out reads, retry-until: ' +
-      'orchestrate them in ONE call. ALSO the sanctioned way to run a TypeScript snippet against ' +
-      'repo internals (call a repo function, query the DB, poke a module): do NOT hand-roll a tsx ' +
-      'script — one outside the repo cannot resolve workspace deps. Pass title+description so the ' +
+      'orchestrate them in ONE call. Pass title+description so the ' +
       'run saves as a reusable RECIPE other agents in your hive can find.',
     notWhen:
-      'A single call; a few independent calls you can emit together in this assistant turn; or a ' +
-      'step that needs YOUR judgment mid-flow (read a result, then decide) — call tools directly.',
+      'A single call; a few independent calls you can emit together in this assistant turn; a ' +
+      'step that needs YOUR judgment mid-flow (read a result, then decide) — call tools directly; ' +
+      'OR calling/importing repo code, modules, or a DB client directly — the sandbox exposes ' +
+      'ONLY tools.ns.verb(args) (no require/process/import — the tool whitelist IS the security ' +
+      'boundary), so `await import(...)` fails with `dynamic_import_unsupported`. For that, use ' +
+      'capability:bash + npx tsx instead (a script outside the repo cannot resolve workspace deps, ' +
+      'so run it from within the repo tree).',
     chaining:
       'script → code:run { dryRun:true } → inspect plannedMutations → code:run. A correct tool ' +
       'name with a WRONG field mapping fails SILENTLY (ok:true, blank rows) — check the tool\'s ' +

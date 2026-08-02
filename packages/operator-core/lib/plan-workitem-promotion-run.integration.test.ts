@@ -837,4 +837,33 @@ describe('P-010: a promoted plan chain GATES the real claim door (end-to-end, no
     await db.sql`UPDATE harness_shared.work_items SET status='resolved' WHERE feature_id='WI-2001'`;
     expect((await wi.claimNextWorkItem({ harness: HARNESS, assignee: 'w1' }))?.id).toBe('WI-2002');
   });
+
+  it('NEGATIVE CONTROL: the PRE-FIX edge shape on an issue-family item gates NOTHING — the item is served while blocked', async () => {
+    // This is the test above run in reverse, and it is what makes that one meaningful. Without
+    // it, "the item was not claimed" is not attributable to the edge's FORM — any edge at all,
+    // or an unrelated floor, could produce the same null. Here the ONLY difference is the
+    // convention the endpoints are written in.
+    //
+    // It also pins the defect itself rather than a proxy for it. This row is exactly what
+    // syncWorkItemDepEdges emitted before D-017 — well-formed per D-009 rule 1, correctly
+    // mirrored, acyclic, and counted by every row-shape check P-009 ran — yet invisible to the
+    // issue floor, which matches `d.blocked_ref = wi.feature_id` (BARE). Measured live
+    // 2026-08-02: 6 such rows in papercusp, 3 on genuinely-open items with non-terminal
+    // blockers, every one advertised claimable while blocked.
+    //
+    // ⚠ If this test ever goes RED, do NOT relax it — a green here means the floor started
+    // honouring the harness-qualified form for issue-family items, which would make the two
+    // conventions silently interchangeable and re-open the whole class.
+    await seedStampedIssue('WI-2001', { itemId: 'P-001', takenBy: 'other-owner', createdTs: 100 });
+    await seedStampedIssue('WI-2002', { itemId: 'P-002', createdTs: 200 });
+
+    await db.sql`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+      VALUES (${WS}, 'feature', ${`${HARNESS}#WI-2002`}, 'feature', ${`${HARNESS}#WI-2001`}, 'blocks')`;
+
+    // The blocker is 'open' (non-terminal) and the edge is present, mirrored and acyclic — yet
+    // the blocked item is handed straight out, because the floor cannot see this ref form.
+    expect((await wi.claimNextWorkItem({ harness: HARNESS, assignee: 'w1' }))?.id).toBe('WI-2002');
+  });
 });

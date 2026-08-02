@@ -425,7 +425,70 @@ export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fata
  *
  * @param {RunTscBaselineGateOptions} options
  */
-export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv, countField, foreignBaselines, }: RunTscBaselineGateOptions): void;
+/**
+ * The freshness watermark this run may safely replay a COALESCED compile from
+ * (epoch seconds), or `null` to opt out of sharing entirely.
+ *
+ * ## Why a watermark makes sharing safe where a tree token could not
+ *
+ * A full compile that STARTED at S read every file as of S. So its diagnostics are a
+ * true answer about file F iff F has not changed since S. The dominant caller here is
+ * an agent that edited F and immediately asked "did I break it?" — for that caller the
+ * only thing that can invalidate a shared result is a change to *its own* files, never
+ * a peer's edit somewhere else in the tree.
+ *
+ * pc-heavy's tree-state token asks the whole-tree question instead, which is sound but
+ * far stricter, and on this repo strictly worse than useless: the token moves ~every 18s
+ * against a ~170s compile, so two callers seconds apart never share a key and every one
+ * of them pays a full compile (measured 2026-08-02; 3-5 byte-identical operator-core
+ * compiles observed running at once, three separate times that day). Passing the
+ * watermark lets pc-heavy drop the token and answer the narrower question exactly.
+ *
+ * ## The two opt-outs, and why each is a correctness requirement
+ *
+ * - **Unscoped run** (no `--files`): a bare `npm run lint:tsc` (CI, green-checkpoint)
+ *   renders a verdict over EVERY file, so its watermark would have to be "no file in the
+ *   project has changed since S" — which is the tree-token question again, and would be
+ *   wrong to approximate with anything narrower. Return null: run fresh, share nothing.
+ * - **`--update`**: the ratchet WRITES `.tsc-baseline.json`, lowering a file's recorded
+ *   count. Ratcheting off a replayed compile would persist a number nobody re-measured
+ *   from this tree state, and a too-low baseline is the failure mode the whole gate
+ *   exists to prevent (EI-487 / WI-4488: an under-report that ratchets in reads as clean
+ *   for days). A run that WRITES the baseline measures it itself.
+ *
+ * ## KNOWN NARROWING — name every file you edited, not just the one you are asking about
+ *
+ * The watermark is computed from the files you NAMED, so the guarantee it buys is exactly
+ * "the shared compile postdates edits to the files this run renders a verdict on". If you
+ * edit G and then ask only about F, a replay may come from a compile that predates the G
+ * edit — and since F imports G, F's reported count could be pre-G. The tree token used to
+ * cover that incidentally (any edit anywhere busted the key), so this is a real narrowing
+ * and not merely a restatement.
+ *
+ * It is accepted rather than closed because every way of closing it re-widens the
+ * watermark to "any uncommitted edit in the tree", which on a checkout ~16 agents are
+ * saving into is `now` on every call — i.e. exactly the churn that made coalescing
+ * impossible in the first place (~1 change/18s vs a ~170s compile). The mitigation is the
+ * instruction the gate already gives everywhere: pass `--files=` listing what you actually
+ * changed. That is also what makes the VERDICT trustworthy here, so the two align.
+ *
+ * @param {{ root: string, files: Set<string> | null, updateFlag: boolean }} args
+ * @returns {number | null} epoch seconds, or null to disable coalescing for this run
+ */
+export function coalesceWatermarkFor({ root, files, updateFlag }: {
+    root: string;
+    files: Set<string> | null;
+    updateFlag: boolean;
+}): number | null;
+export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv, countField, foreignBaselines, }: {
+    root: any;
+    tscCommand: any;
+    baselineFile: any;
+    label: any;
+    argv: any;
+    countField?: string | undefined;
+    foreignBaselines?: never[] | undefined;
+}): void;
 /**
  * How recently a file must have been committed for its red to be treated as possibly still landing.
  *
