@@ -108,13 +108,20 @@ describe('raw-installSlug guard predicate (EI-19298972043721870)', () => {
     //    9 → 7  2026-08-02 WI-6978 — green-stall-watchdog.ts and
     //           release-deploy-staleness-watchdog.ts graduated to ALLOWLIST on the
     //           audited "harness_escalations is not re-homed" relation verdict.
+    //    7 → 5  2026-08-02 WI-6978 — liveness-alarm.ts and overwatch/snapshot.ts
+    //           graduated on the audited "autoloop_state is not re-homed" verdict
+    //           (rows persist under '*', '@singleton', 'oddsmith' and 'papercup'
+    //           un-rewritten — the re-home triggers themselves surviving verbatim).
+    //           ⚠ The remaining 5 will NOT all graduate: harness_plans IS re-homed, so
+    //           3 of them need a real conversion. Expect this number to fall via
+    //           CONVERSIONS from here, not only via ALLOWLIST entries.
     expect(
       BASELINE.size,
       'BASELINE changed size. If you GRADUATED a file (audited its relation and moved it to ' +
         'ALLOWLIST, or converted it to routineStorageSlug), DECREMENT the expected count here ' +
         'in this same edit and add a history line above. If this grew, you added a grandfather ' +
         'instead of fixing a site — do NOT raise the number to make this pass.',
-    ).toBe(7);
+    ).toBe(5);
   });
 });
 

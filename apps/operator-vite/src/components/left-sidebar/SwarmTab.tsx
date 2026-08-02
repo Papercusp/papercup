@@ -294,7 +294,7 @@ export default function SwarmTab({ active }: { active: boolean }) {
     if (g?.declaredPlanSlug) slugs.add(g.declaredPlanSlug);
     for (const c of g?.claims ?? []) if (c.planSlug) slugs.add(c.planSlug);
     if (a.currentPlanSlug) slugs.add(a.currentPlanSlug);
-    const agentPlans = (plans.data.plans ?? [])
+    const agentPlans = (plans.data?.plans ?? [])
       .filter((p) => !p.archived && slugs.has(p.slug) && planTotals(p).total > 0)
       .sort((x, y) => (y.priority ?? 0) - (x.priority ?? 0));
 

@@ -376,6 +376,32 @@ containment question cannot be settled from primary evidence, say so and wait �
 it from these fields. Four agents produced four contradictory conclusions here in ninety minutes,
 each reasoning correctly from the same untrustworthy inputs.
 
+✅ **There IS a second primary source, and it answers step 0 in one command — the RUN'S OWN LOG.**
+The run emits `checkpointing candidate <sha>` (green-checkpoint.ts:2348) *once per candidate*, and
+the in-process auto-refire RE-EMITS it. So the **LAST** match is the sha being judged now, and the
+number of matches is the number of candidates this run has had:
+
+```bash
+grep -o "checkpointing candidate [0-9a-f]*" /tmp/papercup-green-checkpoint-manual-*T*Z.log | tail -1
+```
+
+Measured 2026-08-02 on the live 08:37Z run: `14fb28da` at byte 177, `auto-refiring (attempt 1/2)`,
+then `4961cfb8` at byte 2281 — two candidates, one run, and the second is the real one.
+
+⚠ **Do NOT take the FIRST match, and do not trust `release:checkpoint-run`'s `candidate` over this
+grep.** Until EI-19327704778173646 that field came from a bare `.match()` on the log — the FIRST
+occurrence — so after a refire it reported the sha the run had already DISCARDED, while the reply's
+own prose said "verify your fix against THAT sha." Its `held_externally` sibling fails the opposite
+way: it reads the checkout's live HEAD, so it is CORRECT but silently changes between two reads.
+That opposite-direction pair is why two careful agents could observe contradictory things and both
+be right. The fix reports the LAST candidate and adds `initial_candidate` / `refire_observed`, so a
+candidate that legitimately MOVED now says so instead of looking like corruption.
+
+⚠ Two traps specific to this grep: keep the `*T*Z.log` glob (bare `-manual-*.log` also matches the
+synthetic test logs — EI-19326961954611487), and note these shas are **8-hex** on purpose
+(`candidate.slice(0, 8)`), so the "ignore any sha that is not 40-hex" rule stated below applies to
+the displacement lines, *not* to `checkpointing candidate`.
+
 **Then — and only then — settle containment with ancestry + blob against THAT sha. Step 1
 without step 0 proves the right thing about the wrong object:**
 

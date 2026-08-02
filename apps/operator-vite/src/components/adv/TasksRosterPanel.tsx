@@ -381,7 +381,7 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
             <button
               type="button"
               className="pc-tasks-roster__group-head"
-              aria-expanded={showExempt}
+              aria-expanded={showExempt ?? false}
               onClick={() => void setShowExempt(showExempt ? null : true)}
               data-testid="tasks-exempt-toggle"
             >

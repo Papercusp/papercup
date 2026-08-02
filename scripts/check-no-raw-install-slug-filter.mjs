@@ -100,6 +100,32 @@ export const ALLOWLIST = new Set([
   // under harness_slug='papercusp' — exactly what :185/:265 filter on — not under the
   // platform Pot.
   'packages/operator-core/lib/release-deploy-staleness-watchdog.ts',
+
+  // ── RELATION VERDICT: harness_shared.autoloop_state is NOT re-homed ───────────────
+  // WI-6978, audited 2026-08-02. Covers the single flagged site in each of the two files
+  // below (autoloop_state is the only relation either one filters by raw installSlug).
+  //
+  // The LIVE DATA here is the strongest evidence of any relation audited so far, because
+  // it exhibits the re-homing trigger itself surviving un-rewritten:
+  //   • 57 rows under harness_slug = '*' and 1 under '@singleton' — both members of
+  //     WORKSPACE_GLOBAL_LABELS, i.e. precisely the labels that re-homing collapses to
+  //     the platform Pot. Stored VERBATIM, so no re-home ran.
+  //   • MEMBER slugs survive uncollapsed: 'oddsmith' (1) and 'papercusp-public-site' (4),
+  //     where the re-homed harness_plans instead holds 'oddsmith-hive' /
+  //     'papercusp-public-site-pot' and ZERO rows under the member slug. Same workspace,
+  //     same registry, opposite storage shape — that contrast IS the discriminator.
+  //   • 'papercup' survives (1 row) though canonicalPotSlug() folds exactly that slug to
+  //     the platform Pot, so that second re-homing path is not applied either.
+  // No writer resolves the slug by any of the five paths, and the harness-state table
+  // registry independently classifies autoloop_state "per-install/per-workspace — NOT
+  // slug-shared" (harness-state/table-registry.ts:335), which is the same conclusion
+  // reached from the schema side.
+  //
+  // Both readers additionally derive installSlug through resolvePotHomeSlug(), which
+  // canonicalises an alias but does NOT perform the member→Pot-home collapse — so the
+  // value they filter on is the same raw-shaped slug the writes use.
+  'packages/operator-core/lib/system-health/liveness-alarm.ts',
+  'packages/operator-core/lib/overwatch/snapshot.ts',
 ]);
 
 /**
@@ -124,9 +150,19 @@ export const ALLOWLIST = new Set([
  * FROM/INTO/UPDATE/JOIN:
  *
  *   harness_plans                   plan-run-action (x2) · ready-plan-autostart ·
- *                                   draft-review-watchdog        ← 3 files, audit first
- *   autoloop_state                  liveness-alarm · overwatch/snapshot   ← 2 files
- *   plan_runs                       plan-run-action (x2)
+ *                                   draft-review-watchdog
+ *                                   ⚠ AUDITED — *IS* RE-HOMED (member → Hive home via
+ *                                   potHomeSlugForHarness, resolvePlanScope
+ *                                   agent-tools/plans/source.ts:429; plans are
+ *                                   HIVE-scoped). These 3 need the CONVERSION to
+ *                                   routineStorageSlug, NOT an ALLOWLIST entry.
+ *                                   Live: 21 rows under 'oddsmith-hive', ZERO under the
+ *                                   member slug 'oddsmith'.
+ *   autoloop_state                  ✓ AUDITED — NOT re-homed; both files GRADUATED.
+ *   plan_runs                       plan-run-action (x2)  ← likely NOT re-homed: the
+ *                                   harness-state table registry classes it with
+ *                                   autoloop_state as per-install/per-workspace, NOT
+ *                                   slug-shared. Confirm before relying on it.
  *   scout_routed_ideas              ungraded-filings-watchdog
  *   pr_reviewer_settings            poll-daemon
  *   trusted_authors                 poll-daemon
@@ -160,16 +196,20 @@ export const ALLOWLIST = new Set([
  * member slug 'oddsmith', which is the collapse made visible.
  */
 export const BASELINE = new Set([
-  // GRADUATED to ALLOWLIST 2026-08-02 (WI-6978), both on the audited harness_escalations
-  // verdict recorded above: green-stall-watchdog.ts, then
-  // release-deploy-staleness-watchdog.ts. 9 → 7 files pending audit.
+  // GRADUATED to ALLOWLIST 2026-08-02 (WI-6978): green-stall-watchdog.ts and
+  // release-deploy-staleness-watchdog.ts on the harness_escalations verdict, then
+  // liveness-alarm.ts and overwatch/snapshot.ts on the autoloop_state verdict.
+  // 9 → 5 files pending audit.
+  //
+  // ⚠ THE REMAINING 5 WILL NOT ALL GRADUATE. harness_plans is AUDITED AND *IS* RE-HOMED
+  // (see the relation map above), so plan-run-action.ts, ready-plan-autostart.ts and
+  // draft-review-watchdog.ts need the actual CONVERSION to routineStorageSlug — they do
+  // NOT earn an ALLOWLIST entry. Do not assume a graduation is the expected outcome.
   'packages/operator-core/lib/harness/routines/plan-run-action.ts',
   'packages/operator-core/lib/pr-host/poll-daemon.ts',
-  'packages/operator-core/lib/system-health/liveness-alarm.ts',
   'packages/operator-core/lib/scout/ungraded-filings-watchdog.ts',
   'packages/operator-core/lib/scout/ready-plan-autostart.ts',
   'packages/operator-core/lib/scout/draft-review-watchdog.ts',
-  'packages/operator-core/lib/overwatch/snapshot.ts',
 ]);
 
 export const isExcluded = (f) =>

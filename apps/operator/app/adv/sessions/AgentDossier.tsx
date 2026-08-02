@@ -15,6 +15,22 @@
  * The files list is cross-marked with the agent's own lock state (L = holds a
  * lock on it, W = waiting on it) so "what is this agent touching / contending"
  * reads at a glance.
+ *
+ * RAIL R1 (session-chat-popup-direction-d-2026-08-02 P-008, the owner's own pick
+ * over the authoring agent's B+R2 recommendation) reshaped the layout:
+ *
+ *   - Every section previews at most DOSSIER_ROW_CAP rows, then drills in. The
+ *     rail is a fixed height BY CONSTRUCTION — previously one agent holding 32
+ *     locks made it ~2,000px tall, and it was 2.3 screens even when calm.
+ *   - Sections are ordered by OPERATIONAL URGENCY, not declaration order:
+ *     Health, Waiting on, Locks, Coord, Files, then reference material. "Waiting
+ *     on" is second because it answers "is this thing stuck or just parked?",
+ *     and it is never again buried below a message list.
+ *   - The ten Tier-1/2 reference rows (host, pid, cwd, window, thread, user)
+ *     collapsed into one Reference section previewing three.
+ *   - The drill-in expands IN PLACE to a scrolling sub-list. That is the answer
+ *     to the deck's one open R1 cost ("Open all 32 needs somewhere to go"): no
+ *     separate destination surface, and expanding cannot re-grow the rail.
  */
 
 import { useCallback, useMemo } from 'react';

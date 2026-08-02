@@ -83,7 +83,20 @@ export const DEFAULT_FETCH_TIMEOUT_MS = 120_000;
 export const DEFAULT_FETCH_MAX_MS = 30 * 60_000;
 
 export interface TransportResult {
-  /** git process exit code (0 = success; -1 = spawn/timeout failure). */
+  /**
+   * git process exit code (0 = success).
+   *
+   * ⚠ `-1` is an OVERLOADED sentinel — it does NOT mean "git never ran". THREE
+   * different situations collapse onto it: the spawn itself failing
+   * (`child.on('error')`, the only case where no process existed), the sync
+   * `catch` around the spawn, and — by far the most common in the field — git
+   * running normally and then dying by a SIGNAL, because `child.on('close')`
+   * reports `code === null` for a signalled child and we coalesce that with
+   * `code ?? -1`. A caller that reads -1 as "no git process ran" will print a
+   * self-contradiction the moment `stderr` is non-empty; non-empty stderr is
+   * positive proof git ran. See the label at git-sync-action.ts (ref-announce
+   * receive) for the honest phrasing.
+   */
   code: number;
   /** Captured stderr (diagnostics; never surfaced to a peer). */
   stderr: string;
