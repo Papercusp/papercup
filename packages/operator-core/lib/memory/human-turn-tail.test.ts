@@ -44,6 +44,35 @@ describe('isHumanTurn', () => {
     expect(isHumanTurn(`Base directory for this skill: ${homedir()}/.papercusp/x`)).toBe(false);
   });
 
+  it('rejects every unenveloped machine class the LIVE acceptance run found in real tails', () => {
+    // Each of these reached a composed query during the first live measurement,
+    // because the envelope test alone admitted them: 167 of 430 unenveloped
+    // 'user' rows over 3 days (38.8%) are one of these shapes.
+    const machine = [
+      '<task-notification>\n<task-id>bqg3hc7hu</task-id>\n<status>completed</status>\n</task-notification>',
+      '[Request interrupted by user]',
+      '[Request interrupted by user for tool use]',
+      'Stop hook feedback: This turn ended with what reads as a question to the owner',
+      '⚠ MCP transport auto-heal (mcp-dark-watchdog P-003) reconnected the session',
+      '<system-reminder>\nthe task list is stale\n</system-reminder>',
+    ];
+    for (const t of machine) expect(isHumanTurn(t)).toBe(false);
+  });
+
+  it('keeps the real low-signal human turns that dominate this corpus, typos and all', () => {
+    // 39 + 21 + 5 + 2 live occurrences of these across 3 days. Dropping them
+    // would be the false positive that defeats the whole feature.
+    for (const t of [
+      'continue where you left off',
+      'Continue from where you left off.',
+      'continue wehre you left off',
+      'put yourself on auto mode and continue where you left off',
+      'why is it fucking sllwo',
+    ]) {
+      expect(isHumanTurn(t)).toBe(true);
+    }
+  });
+
   it('accepts a human turn that merely LOOKS structured — a pasted markdown heading', () => {
     // The discriminator is provenance, not formatting. A `# ` heuristic here
     // would silently eat real owner words.

@@ -2636,7 +2636,10 @@ except Exception:
 # So: keep this ONE definition. Adding a wrapper to only one consumer is how
 # this bug is reintroduced, and the divergence is invisible until someone
 # probes the exact right command shape.
-_BENIGN_WRAPPER_ALTS = (
+# NAMED wrappers: each begins with a literal command word, so recognizing one
+# mid-string costs essentially no false positives (prose rarely contains
+# "sudo <heavy>").
+_NAMED_WRAPPER_ALTS = (
     r'sudo(?:\s+(?:-[ugpUrCht]\s+\S+|-[A-Za-z]+|--[\w-]+(?:=\S*)?))*\s+',
     r'env(?:\s+[A-Za-z_]\w*=\S*)*\s+',
     r'nice(?:\s+-n\s*-?\d+)?\s+',
@@ -2644,12 +2647,20 @@ _BENIGN_WRAPPER_ALTS = (
     r'rtk\s+',
     r'time\s+',
     r'timeout(?:\s+(?:-[a-zA-Z]\S*|--[\w-]+(?:=\S*)?))*\s+-?\d+\S*\s+',
-    # A bare `VAR=val ` prefix — the `env VAR=val` spelling minus the `env`.
-    # The shell parses a leading WORD=VALUE as an assignment, never as a command
-    # word, so peeling it can no more hide a command than peeling `env` can.
-    r'[A-Za-z_]\w*=\S*\s+',
 )
-_BENIGN_WRAPPERS = '(?:' + '|'.join(_BENIGN_WRAPPER_ALTS) + ')'
+# A bare `VAR=val ` prefix — the `env VAR=val` spelling minus the `env`. The
+# shell parses a leading WORD=VALUE as an assignment, never as a command word,
+# so peeling it can no more hide a command than peeling `env` can.
+#
+# It is kept SEPARATE from the named set because it is far more general: `\w+=`
+# matches ordinary prose, so at an arbitrary mid-string offset it false-denies
+# `echo "PC_HEAVY=1 vitest is the way"` (measured — this exact string denied
+# during development of this fix). It is therefore honoured only at a REAL
+# command position (start / just after a separator), never as a free-floating
+# mid-string anchor the way the named words are.
+_ASSIGN_PREFIX = r'[A-Za-z_]\w*=\S*\s+'
+_BENIGN_WRAPPERS = '(?:' + '|'.join(_NAMED_WRAPPER_ALTS + (_ASSIGN_PREFIX,)) + ')'
+_NAMED_WRAPPERS = '(?:' + '|'.join(_NAMED_WRAPPER_ALTS) + ')'
 
 
 def _heavy_admission():
@@ -2764,12 +2775,26 @@ def _heavy_admission():
     # executable must be followed by whitespace or end so `vitest.config`,
     # `vitest-guide`, `testing` etc. don't match. Bare `tsx` is intentionally
     # NOT heavy (it runs light one-shot scripts far more often than builds).
-    # The wrapper arm is the SHARED _BENIGN_WRAPPERS set (see its definition
-    # above) rather than a second hand-maintained copy — that copy is what had
-    # drifted (EI-19317242751258158). `{1,4}` mirrors the peel's bounded loop so
-    # stacked wrappers (`nice -n 10 timeout 60 npx vitest`) are recognized at
-    # command position too; `\b` keeps `nice` from matching inside `ionice`.
-    anchor = (r'(?:^|[;&|\n]\s*|(?:\b' + _BENIGN_WRAPPERS + r'){1,4}|\S*/)')
+    # The wrapper arms are built from the SHARED sets defined above rather than
+    # from a second hand-maintained copy — that copy is exactly what had drifted
+    # (EI-19317242751258158: the peel knew `timeout`, this anchor did not).
+    # `{0,4}`/`{1,4}` mirror the peel's bounded loop so STACKED wrappers
+    # (`… && nice -n 10 timeout 60 npx vitest`) are recognized at command
+    # position too; `\b` keeps `nice` from matching inside `ionice`.
+    anchor = (
+        r'(?:'
+        # A real command position — start of string, or just after a separator —
+        # optionally behind stacked benign wrappers. This is the arm that admits
+        # the bare-assignment prefix (`FOO=1 npx tsc`, `… && FOO=1 npx vitest`).
+        r'(?:^|[;&|\n]\s*)(?:' + _BENIGN_WRAPPERS + r'){0,4}'
+        # A NAMED wrapper anywhere, as before this fix. Kept as its own arm so
+        # no coverage is lost relative to the previous anchor; the assignment
+        # prefix is deliberately absent here (see _ASSIGN_PREFIX above).
+        r'|(?:\b' + _NAMED_WRAPPERS + r'){1,4}'
+        # A path-invoked executable: ../../node_modules/.bin/vitest
+        r'|\S*/'
+        r')'
+    )
     heavy_re = re.compile(
         anchor + r'(?:'
         r'(?:npx\s+|pnpm\s+|bunx\s+)?vitest(?=\s|$)'

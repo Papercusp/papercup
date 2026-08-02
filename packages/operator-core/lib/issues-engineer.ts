@@ -928,7 +928,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        -- claim path already excludes a lane:'observation' row; this hoists the SAME
        -- floor into the general list read when the caller opts in (listWorkItems does,
        -- by default, via includeObservations).
-       AND ${filter.excludeObservationLane ? sql`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}
+       AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
      ORDER BY created_at DESC
      LIMIT ${Math.min(filter.limit ?? 100, ISSUES_MAX_LIMIT)}`;
   return rows.map(toIssue);
@@ -978,7 +978,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
              : sql`TRUE`
          }
-         AND ${filter.excludeObservationLane ? sql`COALESCE(ei.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
+         AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
     return rows[0]?.n ?? 0;
   }
   const rows = await sql<{ n: number }[]>`
@@ -1008,7 +1008,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
            : sql`TRUE`
        }
-       AND ${filter.excludeObservationLane ? sql`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
+       AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
   return rows[0]?.n ?? 0;
 }
 
@@ -1069,7 +1069,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
              : sql`TRUE`
          }
-         AND ${filter.excludeObservationLane ? sql`COALESCE(ei.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}
+         AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
        GROUP BY ei.state`
     : await sql<{ state: string | null; n: number }[]>`
       SELECT state, count(*)::int AS n
@@ -1101,7 +1101,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
              ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
              : sql`TRUE`
          }
-         AND ${filter.excludeObservationLane ? sql`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}
+         AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
        GROUP BY state`;
   const out: Record<string, number> = {};
   for (const row of rows) {

@@ -6,8 +6,21 @@ import {
   runEmbedSpaceSelfCheckTick,
   DEFAULT_DISTANCE_ALERT_THRESHOLD,
   type CanaryRow,
+  type EmbedSpaceSelfCheckDeps,
 } from './embed-space-self-check';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
+import type { Sql } from 'postgres';
+
+// `pickCanary` is injected in every case below, so this handle is never dereferenced —
+// it exists only to stop the tick falling back to `getOrgPg().sql`, which opens a real
+// pool against the developer's live DB. That fallback is wrapped in a try/catch that
+// degrades to `{ ok: false, skipped: 'pg_unavailable' }`, so once the no-real-PG rail
+// (EI-19311807188719573) started throwing there, these tests failed on a plain
+// AssertionError with the rail message nowhere in sight — and before the rail they
+// were passing only because they really were reading the live database.
+const SQL_STUB = {} as unknown as Sql;
+const runTick = (deps: EmbedSpaceSelfCheckDeps) =>
+  runEmbedSpaceSelfCheckTick({ sql: SQL_STUB, ...deps });
 
 describe('cosineDistance (pure)', () => {
   it('identical vectors → distance ~0', () => {
@@ -114,7 +127,7 @@ describe('runEmbedSpaceSelfCheckTick', () => {
   it('embedder disabled → skips cleanly, never calls pickCanary/escalate', async () => {
     let pickCalled = false;
     let escalateCalled = false;
-    const result = await runEmbedSpaceSelfCheckTick({
+    const result = await runTick({
       resolveEmbedder: async () => ({ mode: 'disabled' }),
       pickCanary: async () => {
         pickCalled = true;
@@ -130,7 +143,7 @@ describe('runEmbedSpaceSelfCheckTick', () => {
   });
 
   it('embedder resolve throws → fails soft (ok:false, skipped), never throws out', async () => {
-    const result = await runEmbedSpaceSelfCheckTick({
+    const result = await runTick({
       resolveEmbedder: async () => {
         throw new Error('boom');
       },
@@ -140,7 +153,7 @@ describe('runEmbedSpaceSelfCheckTick', () => {
 
   it('no canary row in the active space → skips, no escalate', async () => {
     let escalateCalled = false;
-    const result = await runEmbedSpaceSelfCheckTick({
+    const result = await runTick({
       resolveEmbedder: async () => ({ mode: 'local', dims: 3, embed: async () => [1, 0, 0] }),
       pickCanary: async () => null,
       escalate: async () => {
@@ -152,7 +165,7 @@ describe('runEmbedSpaceSelfCheckTick', () => {
   });
 
   it('embed() throws → fails soft (ok:false, skipped: embed_failed)', async () => {
-    const result = await runEmbedSpaceSelfCheckTick({
+    const result = await runTick({
       resolveEmbedder: async () => ({
         mode: 'local',
         dims: 3,
@@ -170,7 +183,7 @@ describe('runEmbedSpaceSelfCheckTick', () => {
     let escalateCalled = false;
     let resolvedMsgId: string | null = null;
     const openRec = { msg_id: 'esc-1', from: 'system:embed-space-self-check', dedupKind: 'embed-space-desync', subjectSignature: 'embed-space-self-check' } as unknown as EscalationRecord;
-    const result = await runEmbedSpaceSelfCheckTick({
+    const result = await runTick({
       resolveEmbedder: async () => ({ mode: 'local', dims: 3, embed: async () => [1, 0, 0] }),
       pickCanary: async () => mkCanary({ storedVectorText: '[1,0,0]' }),
       escalate: async () => {
@@ -189,7 +202,7 @@ describe('runEmbedSpaceSelfCheckTick', () => {
 
   it('fresh vector far from stored vector → escalates once with advisory severity + dedup meta', async () => {
     let escalateInput: Record<string, unknown> | null = null;
-    const result = await runEmbedSpaceSelfCheckTick({
+    const result = await runTick({
       resolveEmbedder: async () => ({ mode: 'openai', dims: 3, embed: async () => [0, 1, 0] }),
       pickCanary: async () => mkCanary({ storedVectorText: '[1,0,0]' }), // orthogonal → distance 1
       escalate: async (input) => {
@@ -208,7 +221,7 @@ describe('runEmbedSpaceSelfCheckTick', () => {
 
   it('distance exactly at the threshold is healthy (boundary is inclusive, <=)', async () => {
     let escalateCalled = false;
-    const result = await runEmbedSpaceSelfCheckTick({
+    const result = await runTick({
       resolveEmbedder: async () => ({ mode: 'local', dims: 3, embed: async () => [1, 0, 0] }),
       pickCanary: async () => mkCanary({ storedVectorText: '[1,0,0]' }),
       escalate: async () => {

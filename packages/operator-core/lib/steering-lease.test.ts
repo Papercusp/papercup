@@ -18,6 +18,16 @@ afterEach(() => __setSteeringLeaseTestDeps(null));
 
 const WS = 'ws-lease';
 
+// Every case that reaches the ELECTION passes the queen-home read first, and its
+// default (`getQueenHomePubkey`) is a real PG read. `checkSteeringLease` wraps the
+// whole body in a fail-open catch, so once the no-real-PG rail
+// (EI-19311807188719573) started throwing there, these cases silently degraded to
+// `{ holder: true, reason: 'fail-open' }` — an ordinary assertion failure with the
+// rail message nowhere in it, and before the rail they only passed because the read
+// really did hit the developer's database. Stub it to the unset state (`null`), which
+// is what every Hive has today and is exactly the fall-through these cases assume.
+const NO_QUEEN_HOME = { resolveQueenHome: async () => null };
+
 describe('checkSteeringLease — holder resolution over the per-Hive authority', () => {
   it('a harness in NO Hive is always holder (lease does not apply)', async () => {
     const v = await checkSteeringLease(WS, 'lone-harness', {
@@ -31,6 +41,7 @@ describe('checkSteeringLease — holder resolution over the per-Hive authority',
 
   it('the authority Swarm holds the lease (incl. trivially at N=1)', async () => {
     const v = await checkSteeringLease(WS, 'member', {
+      ...NO_QUEEN_HOME,
       resolveHive: async () => 'the-hive',
       hiveAuthority: async () => ({ isSelf: true, liveCount: 1 }),
     });
@@ -42,6 +53,7 @@ describe('checkSteeringLease — holder resolution over the per-Hive authority',
 
   it('a remote authority ⇒ non-holder, labelled by machine (pubkey fallback)', async () => {
     const v = await checkSteeringLease(WS, 'member', {
+      ...NO_QUEEN_HOME,
       resolveHive: async () => 'the-hive',
       hiveAuthority: async () => ({
         isSelf: false,
@@ -54,6 +66,7 @@ describe('checkSteeringLease — holder resolution over the per-Hive authority',
     expect(v.holderLabel).toBe('box-b');
 
     const noLabel = await checkSteeringLease(WS, 'member', {
+      ...NO_QUEEN_HOME,
       resolveHive: async () => 'the-hive',
       hiveAuthority: async () => ({
         isSelf: false,
@@ -73,6 +86,9 @@ describe('checkSteeringLease — holder resolution over the per-Hive authority',
     expect(hiveThrows).toEqual({ holder: true, reason: 'fail-open' });
 
     const electionThrows = await checkSteeringLease(WS, 'member', {
+      // Without this the queen-home read throws FIRST and this case fails open for a
+      // reason it is not testing — it would still pass, for the wrong reason.
+      ...NO_QUEEN_HOME,
       resolveHive: async () => 'the-hive',
       hiveAuthority: async () => {
         throw new Error('presence outage');
@@ -83,6 +99,7 @@ describe('checkSteeringLease — holder resolution over the per-Hive authority',
 
   it('module-level test deps (the work-items gate seam) resolve like call deps', async () => {
     __setSteeringLeaseTestDeps({
+      ...NO_QUEEN_HOME,
       resolveHive: async () => 'injected-hive',
       hiveAuthority: async () => ({ isSelf: false, liveCount: 3 }),
     });

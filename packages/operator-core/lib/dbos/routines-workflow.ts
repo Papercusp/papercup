@@ -842,6 +842,44 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'wall-fact-lapse-sweep' },
   );
 
+  // bash-substitution-reachable-ceiling-2026-08-01 P-003: resolve `complied` on
+  // substitution fires. It CANNOT be computed at fire time — compliance is "did
+  // this session's next tool call use the named tool", and at fire time that call
+  // has not happened — so it is necessarily a deferred sweep rather than a write
+  // on the gate's own path.
+  //
+  // Fail-soft and bounded per tick, like every step here: this is telemetry for a
+  // measurement programme, and a resolver that could stall the routines tick
+  // would be a far worse outcome than a compliance number that lands a minute
+  // late.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { resolveFireCompliance } = await import('../bash-substitution/fires');
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        const out = await resolveFireCompliance({ workspaceId: activeWorkspaceId() });
+        // Logged only when it did something — this runs every tick and a silent
+        // no-op is the normal case.
+        if (out.measured > 0 || out.noFollowUp > 0) {
+          console.info(
+            `[substitution-compliance] examined ${out.examined}, ` +
+              // `noFollowUp` is NOT a non-compliance count: it is sessions that
+              // made no further call at all, recorded with `complied` NULL. Kept
+              // separate in the log for the same reason it is separate in the
+              // schema — collapsing it into `false` would report dead sessions
+              // as defiant agents.
+              `measured ${out.measured}, no-follow-up ${out.noFollowUp}`,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          `[substitution-compliance] resolve failed: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    },
+    { name: 'substitution-compliance-resolve' },
+  );
+
   // unified-agent-state-plane-2026-07-27 P-010: the intent↔action divergence
   // detector (MAST FM-2.6). D-016 puts it in the STRUCTURAL tier and D-047 row
   // 15 records its enforcement as "they run on their own" — so it is a sweep,
