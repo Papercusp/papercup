@@ -15,12 +15,11 @@
  */
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
-import {
-  BASELINE,
-  stripComments,
-  usesRawInstallSlugFilter,
-} from '../../../scripts/check-no-raw-install-slug-filter.mjs';
+// @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only. Kept on
+// ONE line: @ts-ignore suppresses only the FOLLOWING line, and tsc reports an untyped-
+// module error on the `from '...'` specifier, so a multi-line import escapes it.
+// prettier-ignore
+import { BASELINE, stripComments, usesRawInstallSlugFilter } from '../../../scripts/check-no-raw-install-slug-filter.mjs';
 
 describe('raw-installSlug guard predicate (EI-19298972043721870)', () => {
   it('FLAGS a harness_slug filter on the raw installSlug', () => {

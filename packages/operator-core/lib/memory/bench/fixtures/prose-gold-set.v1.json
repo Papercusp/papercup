@@ -9,14 +9,14 @@
     "hard-negative": 12,
     "exact-identifier": 90
   },
-  "note": "Prose-surface gold set (prose-embedding-384-untrained-mrl-fix P-001), D-003 methodology over the prose corpus. lexical-gap targets ONE section, leaving its page-siblings as near-miss distractors. exact-identifier is mined and labelled by construction; opaque numeric ids are excluded as floor artifacts. hard-negative absence is grep-verified at build time. Expected keys bind to prose-corpus.v1.json \u2014 regenerate BOTH together as a new version, never in place.",
+  "note": "Prose-surface gold set (prose-embedding-384-untrained-mrl-fix P-001), D-003 methodology over the prose corpus. lexical-gap targets ONE section, leaving its page-siblings as near-miss distractors. exact-identifier is mined and labelled by construction; opaque numeric ids are excluded as floor artifacts. hard-negative absence is grep-verified at build time. Expected keys bind to prose-corpus.v1.json — regenerate BOTH together as a new version, never in place.",
   "queries": [
     {
       "id": "plg-001",
       "class": "lexical-gap",
       "query": "a privileged connection ignores the per-tenant row filter, so one customer can end up seeing another customer trust entry unless the boundary is added by hand",
       "expected": [
-        "doc:papercusp-engineering#does/not/exist#nope"
+        "doc:papercusp-engineering#agent-insights/admission-subqueries-must-be-workspace-scoped#the-trap"
       ],
       "note": "avoids 'workspace-scoped/RLS/admin handle/subquery/user_trust_list/migration/policy'"
     },
@@ -131,7 +131,7 @@
     {
       "id": "plg-014",
       "class": "lexical-gap",
-      "query": "never raise a complaint about a brand-new file the first moment you notice it \u2014 pause, then look again a few minutes later",
+      "query": "never raise a complaint about a brand-new file the first moment you notice it — pause, then look again a few minutes later",
       "expected": [
         "doc:papercusp-engineering#agent-insights/committed-is-not-settled-git-sync-landing-race#rules-of-thumb"
       ],
@@ -203,7 +203,7 @@
     {
       "id": "plg-022",
       "class": "lexical-gap",
-      "query": "if it really has jammed, do not sit there watching it \u2014 either raise it with a person or push it out by hand yourself",
+      "query": "if it really has jammed, do not sit there watching it — either raise it with a person or push it out by hand yourself",
       "expected": [
         "doc:papercusp-engineering#agent-insights/deploy-pipeline-is-async-self-healing#on-a-genuine-stall-don-t-wait-escalate-or-force-the-deploy"
       ],
@@ -225,7 +225,7 @@
       "expected": [
         "doc:papercusp-engineering#agent-insights/deploy-pipeline-is-async-self-healing#the-deployer-already-exists-as-the-fixer-family"
       ],
-      "note": "avoids 'deployer/fixer family/self-heals/pipeline'; fourth sibling \u2014 maximal same-page competition"
+      "note": "avoids 'deployer/fixer family/self-heals/pipeline'; fourth sibling — maximal same-page competition"
     },
     {
       "id": "psi-001",
@@ -243,7 +243,7 @@
       "expected": [
         "doc:papercusp-engineering#agent-insights/bash-vs-tool-routing#1-the-registry-is-the-single-source-of-truth"
       ],
-      "note": "boot intent over a 23-section page \u2014 heavy sibling competition"
+      "note": "boot intent over a 23-section page — heavy sibling competition"
     },
     {
       "id": "psi-003",
@@ -297,7 +297,7 @@
       "expected": [
         "doc:papercusp-engineering#agent-insights/module-scoped-state-is-per-worker-the-operator-is-a-forked-cluster#the-discrimination-test"
       ],
-      "note": "SAME page as psi-007, DIFFERENT section \u2014 a direct sibling-discrimination pair"
+      "note": "SAME page as psi-007, DIFFERENT section — a direct sibling-discrimination pair"
     },
     {
       "id": "phn-001",

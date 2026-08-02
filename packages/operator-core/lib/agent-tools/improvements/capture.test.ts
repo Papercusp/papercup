@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
-import captureTool from './capture';
+import captureTool, { defaultScorecardConditionKey } from './capture';
 import { coerceCaptureKind, coerceIdeateProvenance } from './capture-coerce';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { noveltyPriorArt } from '../../scout/novelty-precheck';
@@ -152,6 +152,97 @@ describe('improvements:capture — conditionKey threads to watchdogKey (EI-15448
   it('omitting conditionKey on an observation leaves watchdogKey undefined (always re-files, per contract)', async () => {
     await callTool({ title: 'a one-off reading', lane: 'observation' });
     expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ lane: 'observation', watchdogKey: undefined }));
+  });
+
+  // EI-19325151590626958 — a rubric-graded SCORECARD is inherently recurring (it is auto-titled
+  // from its rubricRef, so each emission mints a near-identical row). Measured: 823 + 490 filings,
+  // ~1,162 still open, every one keyless — and keyless items escape dedup, aging AND auto-close.
+  // The one-off contract pinned by the test above is deliberately preserved: the default applies
+  // ONLY when a rubricRef is present.
+  it('a rubric-graded observation DEFAULTS a scorecard conditionKey (rubric + hive)', async () => {
+    await callTool({
+      title: 'pot-coordination-health scorecard',
+      lane: 'observation',
+      observation: {
+        rubricRef: 'pot-coordination-health',
+        sourceHive: 'papercusp',
+        ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: '12/12 lanes advanced' } },
+      },
+    });
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ lane: 'observation', watchdogKey: 'scorecard:pot-coordination-health:papercusp' }),
+    );
+  });
+
+  it('an EXPLICIT conditionKey still wins over the scorecard default', async () => {
+    await callTool({
+      title: 'pot-coordination-health scorecard',
+      lane: 'observation',
+      conditionKey: 'overwatch:my-own-key',
+      observation: {
+        rubricRef: 'pot-coordination-health',
+        sourceHive: 'papercusp',
+        ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: 'n/a' } },
+      },
+    });
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ watchdogKey: 'overwatch:my-own-key' }),
+    );
+  });
+
+  it('DIFFERENT hives get DIFFERENT keys — a per-pot health signal must never overwrite its siblings', async () => {
+    const keyFor = async (sourceHive: string): Promise<unknown> => {
+      vi.clearAllMocks();
+      await callTool({
+        title: 'pot-coordination-health scorecard',
+        lane: 'observation',
+        observation: {
+          rubricRef: 'pot-coordination-health',
+          sourceHive,
+          ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: 'n/a' } },
+        },
+      });
+      return (mockCapture.mock.calls[0]?.[0] as { watchdogKey?: unknown }).watchdogKey;
+    };
+    expect(await keyFor('papercusp')).toBe('scorecard:pot-coordination-health:papercusp');
+    expect(await keyFor('sb-devboard-hive')).toBe('scorecard:pot-coordination-health:sb-devboard-hive');
+  });
+
+  it('a rubricRef with NO resolvable hive stays KEYLESS rather than guessing a collapsing key', async () => {
+    // ctx.harnessSlug is '*'/absent for an unscoped session, so sourceHive cannot be derived.
+    // Keying on rubricRef alone would merge unrelated pots — strictly worse than the flood.
+    await callTool({
+      title: 'pot-coordination-health scorecard',
+      lane: 'observation',
+      observation: {
+        rubricRef: 'pot-coordination-health',
+        ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: 'n/a' } },
+      },
+    });
+    const call = mockCapture.mock.calls[0]?.[0] as { watchdogKey?: unknown };
+    expect(call.watchdogKey).toBeUndefined();
+  });
+});
+
+describe('defaultScorecardConditionKey (EI-19325151590626958) — the pure derivation', () => {
+  it('requires BOTH a rubricRef and a sourceHive', () => {
+    expect(defaultScorecardConditionKey({ rubricRef: 'r', sourceHive: 'h' })).toBe('scorecard:r:h');
+    expect(defaultScorecardConditionKey({ rubricRef: 'r' })).toBeUndefined();
+    expect(defaultScorecardConditionKey({ sourceHive: 'h' })).toBeUndefined();
+    expect(defaultScorecardConditionKey({})).toBeUndefined();
+    expect(defaultScorecardConditionKey(undefined)).toBeUndefined();
+  });
+
+  it('is stable across calls (the whole point — a recurring reading must hash to one row)', () => {
+    const a = defaultScorecardConditionKey({ rubricRef: 'pot-coordination-health', sourceHive: 'papercusp' });
+    const b = defaultScorecardConditionKey({ rubricRef: 'pot-coordination-health', sourceHive: 'papercusp' });
+    expect(a).toBe(b);
+  });
+
+  it('matches the shape the existing scorecard emitters already established', () => {
+    // scorecard-emission-pulse / overwatch-scorecard-backstop use `scorecard-pulse:<hive>` and
+    // `scorecard-backstop:<hive>` — rubric/emitter AND hive, never a bare rubric.
+    expect(defaultScorecardConditionKey({ rubricRef: 'x', sourceHive: 'y' })).toMatch(/^scorecard:[^:]+:[^:]+$/);
   });
 });
 

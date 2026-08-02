@@ -52,6 +52,45 @@ const observationRatingsSchema = z.record(
   }),
 );
 
+/**
+ * EI-19325151590626958 — the DEFAULT conditionKey for a rubric-graded scorecard observation.
+ *
+ * THE FLOOD: a rubric-graded observation is auto-titled from its rubricRef, so every emission
+ * of the same scorecard produces a near-identical row. Measured 2026-08-02 over 45d:
+ * `pot-coordination-health scorecard` 823 filings / 821 still open, `hive-coordination-health
+ * scorecard` 490 / 341 — ~1,162 open rows from one condition, EVERY one with conditionKey NULL.
+ * Keyless items are invisible to dedup, known-open aging AND auto-close (all three key off
+ * payload.watchdogKey — see harness/improvements/keyless-ei-policy), so they only accrete;
+ * improvements:keyless-digest can surface that pile but deliberately closes nothing. This
+ * closes it at the SOURCE instead of triaging it afterwards.
+ *
+ * WHY A DEFAULT RATHER THAN FIXING CALL SITES: the two large populations are not the backstop
+ * emitters (scorecard-emission-pulse / overwatch-scorecard-backstop already pass their own keys,
+ * and correspondingly sit at n=1–4 with no accretion). They are AGENT-filed — any agent grading
+ * a rubric mints a fresh row — so there is no call site to patch.
+ *
+ * THE KEY SHAPE follows the convention those existing emitters already established
+ * (`scorecard-pulse:<hive>`, `scorecard-backstop:<hive>`): rubric AND hive, never rubric alone.
+ * Keying on rubricRef only would collapse DIFFERENT pots' scorecards into a single row — a
+ * worse defect than the flood, because a per-pot health signal would silently overwrite its
+ * siblings. So this returns undefined (keyless, i.e. today's behaviour) unless BOTH are known;
+ * a hive-less filing is left alone rather than guessed at.
+ *
+ * SAFE TO COLLAPSE: dedup updates in place and refreshes to the latest reading, which would
+ * lose history if these rows were the only record — they are not. The authoritative per-reading
+ * series lives in the scorecards store (scorecards:list / scorecards:freshness / rubrics:trend);
+ * the observation lane is an explicitly pre-idea reflection lane feeding Blender's digest.
+ * An explicit conditionKey always wins, so a caller can still opt out or override.
+ */
+export function defaultScorecardConditionKey(
+  observation: { rubricRef?: string; sourceHive?: string } | undefined,
+): string | undefined {
+  const rubricRef = observation?.rubricRef;
+  const sourceHive = observation?.sourceHive;
+  if (!rubricRef || !sourceHive) return undefined;
+  return `scorecard:${rubricRef}:${sourceHive}`;
+}
+
 export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
@@ -171,7 +210,7 @@ export default defineTool({
           .max(160)
           .optional()
           .describe(
-            "EI-15448, lane:'observation' ONLY: a STABLE identity for a RECURRING condition (e.g. an OverwatchBrief anomaly line's `[conditionKey: overwatch:escalation-aging]` — copy it verbatim). A still-OPEN prior observation carrying the SAME conditionKey is updated in place (repeatCount bumped, title/body refreshed to this call's latest reading) instead of minting a fresh row every call — fixes the wake-over-wake status-note flood (7k+ open items from one unresolved condition). Omit for a genuinely novel/one-off reading, which always re-files as before. Ignored outside lane:'observation'.",
+            "EI-15448, lane:'observation' ONLY: a STABLE identity for a RECURRING condition (e.g. an OverwatchBrief anomaly line's `[conditionKey: overwatch:escalation-aging]` — copy it verbatim). A still-OPEN prior observation carrying the SAME conditionKey is updated in place (repeatCount bumped, title/body refreshed to this call's latest reading) instead of minting a fresh row every call — fixes the wake-over-wake status-note flood (7k+ open items from one unresolved condition). Omit for a genuinely novel/one-off reading, which always re-files as before. A rubric-graded scorecard (observation.rubricRef) DEFAULTS to `scorecard:<rubricRef>:<sourceHive>` when you omit this (EI-19325151590626958) — pass it explicitly to override. Ignored outside lane:'observation'.",
           ),
         // EI-12176 compatibility aliases. Older generated guidance advertised these at
         // top level. Declaring + normalising them prevents tools:invoke's permissive
@@ -436,7 +475,10 @@ export default defineTool({
         checkDuplicatesOnly: args.checkDuplicatesOnly,
         origin: args.origin,
         lane: args.lane,
-        watchdogKey: args.lane === 'observation' ? args.conditionKey : undefined,
+        watchdogKey:
+          args.lane === 'observation'
+            ? (args.conditionKey ?? defaultScorecardConditionKey(observation))
+            : undefined,
         payloadExtra:
           observation || hasIdeation
             ? { ...(observation ? { observation } : {}), ...(hasIdeation ? { ideation } : {}) }

@@ -1583,6 +1583,22 @@ describe('classifyRedAgainstTip (stale-candidate re-triage)', () => {
     expect(v).toMatchObject({ classification: 'real-red', autoRefire: false });
   });
 
+  // EI-19324146335802876: the tip re-run is a GROUP run collapsed to one boolean, so a real-red
+  // verdict cannot distinguish "all still fail" from "one still fails". The detail must not
+  // claim the stronger reading — four agents re-triaged five files on 2026-08-02 when four of
+  // them were already green at tip.
+  it('a real-red detail states the group re-run is ALL-OR-NOTHING, not that every file still fails', () => {
+    const v = classifyRedAgainstTip({
+      ...base,
+      failingTests: ['a.test.ts', 'b.test.ts', 'c.test.ts'],
+      tipRetest: { ran: true, pass: false },
+    });
+    expect(v.classification).toBe('real-red');
+    expect(v.detail).toMatch(/did not ALL pass|not "they all still fail"/i);
+    expect(v.detail).toContain('INDIVIDUALLY');
+    expect(v.detail).toContain('3'); // the count is named so the reader knows the group size
+  });
+
   it('calls a red STALE and auto-refires when the failing files pass at tip', () => {
     const v = classifyRedAgainstTip({ ...base, tipRetest: { ran: true, pass: true } });
     expect(v).toMatchObject({ classification: 'stale-candidate', autoRefire: true });

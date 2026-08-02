@@ -10,7 +10,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { featureRef, FEATURE_KIND } from '../issue-blocks-merge';
+import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from '../issue-blocks-merge';
 import { detectDependencyCycle } from '../feature-deps';
 
 /** The polymorphic endpoints accepted by work_item_deps (issue/feature today). */
@@ -27,12 +27,68 @@ export interface WorkItemBlockingEdge {
   dep_type: 'blocks';
 }
 
+/** The issue-family endpoint kind, the counterpart of FEATURE_KIND for this table. */
+const ISSUE_ENDPOINT_KIND = 'issue';
+
+/**
+ * P-005 / D-009 — the kind↔ref-FORM invariant, enforced at the ONE write seam.
+ *
+ * `work_item_deps` endpoints use a ref form determined by their family, and this is
+ * deliberate, not an inconsistency to normalize away (D-009, after measuring all 94 rows /
+ * 188 endpoint-sides: zero violations, the form is a pure function of the `*_kind` column):
+ *
+ *   - `feature` → harness-QUALIFIED `<harness>#<feature_id>`, because a feature's identity is
+ *     (harness_slug, feature_id); a bare `F-NNN` would mis-attribute a block to the same id in
+ *     another project. Gated by `work_item_is_blocked()` + the `work_item_blocked` sidecar.
+ *   - `issue`   → BARE `EI-NNN` / `WI-NNN` (issues:link). Gated by `depsBlockedExclusionSql`,
+ *     which keys on the bare `feature_id` because the `wir_*` sidecar triggers do not track
+ *     issues. Teaching either predicate to match BOTH forms over-gates the feature family —
+ *     that is D-007's retraction, and it is why the two forms must stay distinct.
+ *
+ * WHY A GUARD RATHER THAN A MIGRATION (the P-005 re-scope). Nothing enforced this: both link
+ * doors funnel here, but only `linkWorkItem` checked a ref form, only on the `dst`, and only in
+ * the feature direction — `linkIssue` mirrored straight through with no check at all. That is
+ * the same shape as D-007 itself: a rule applied at one door instead of at the shared seam, so
+ * the unchecked door drifts. A mismatched edge is not a cosmetic problem — it is INVISIBLE TO
+ * BOTH FLOORS (the issue floor looks for the bare ref and misses; the feature floor matches the
+ * shape but is only ever evaluated for feature-family rows), i.e. a silently inert dependency.
+ * Live proof it already happened: 3 rows with `blocked_kind='feature'` pointing at rows whose
+ * real `item_kind` is `task` (offsite-planner-demo#WI-247/248/249). A one-time migration could
+ * not have prevented them, because the next bad write recreates them.
+ *
+ * Throws rather than returning null: `null` already means "self-edge, skip", and overloading it
+ * with "malformed, dropped" would make a caller bug SILENT — the exact failure mode this guards.
+ * Both callers already restrict to issue|feature, so any other kind is left alone rather than
+ * rejected, keeping this a validator of the ratified convention and not a new kind whitelist.
+ */
+export function assertDepEndpointRefForm(endpoint: WorkItemDepEndpoint, role: 'blocked' | 'blocker'): void {
+  const qualified = isQualifiedFeatureRef(endpoint.ref);
+  if (endpoint.kind === FEATURE_KIND && !qualified) {
+    throw new Error(
+      `work_item_deps ${role} endpoint kind='${FEATURE_KIND}' requires a harness-qualified ref ` +
+        `'<harness>#<feature_id>', got '${endpoint.ref}'. A bare ref here is invisible to BOTH ` +
+        `blocking floors, so the edge would be silently inert (D-009 / D-007).`,
+    );
+  }
+  if (endpoint.kind === ISSUE_ENDPOINT_KIND && qualified) {
+    throw new Error(
+      `work_item_deps ${role} endpoint kind='${ISSUE_ENDPOINT_KIND}' requires a BARE ref ` +
+        `(e.g. 'EI-123'), got the harness-qualified '${endpoint.ref}'. The issue floor keys on the ` +
+        `bare feature_id, so a qualified ref here is silently inert (D-009 / D-007).`,
+    );
+  }
+}
+
 /** Pure coord_links (blocker → blocked) to work_item_deps (blocked → blocker) mapping. */
 export function workItemBlockingEdge(
   blocker: WorkItemDepEndpoint,
   blocked: WorkItemDepEndpoint,
 ): WorkItemBlockingEdge | null {
   if (blocker.kind === blocked.kind && blocker.ref === blocked.ref) return null;
+  // AFTER the self-edge check: a self-edge is a legitimate no-op the callers rely on, so it must
+  // stay a quiet `null` even if both its endpoints are malformed.
+  assertDepEndpointRefForm(blocked, 'blocked');
+  assertDepEndpointRefForm(blocker, 'blocker');
   return {
     blocked_kind: blocked.kind,
     blocked_ref: blocked.ref,

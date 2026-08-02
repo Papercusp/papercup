@@ -38,8 +38,8 @@ describe('normalizeTurnTools (WI-4949)', () => {
   });
 
   it('handles multiple tool calls in one turn independently', () => {
-    const out = normalizeTurnTools([{ name: 'chat_ask_choice' }, { name: 'work_items_create' }]);
-    expect(out).toEqual([{ name: 'chat:ask_choice' }, { name: 'work_items:create' }]);
+    const out = normalizeTurnTools([{ name: 'chat_ask_choice' }, { name: 'decision_ledger_list' }]);
+    expect(out).toEqual([{ name: 'chat:ask_choice' }, { name: 'decision_ledger:list' }]);
   });
 
   it('passes through a non-array (null / undefined / object) as null', () => {

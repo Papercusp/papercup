@@ -978,7 +978,20 @@ export function classifyRedAgainstTip(input: {
   return {
     classification: 'real-red',
     autoRefire: false,
-    detail: `failures REPRODUCE at tip ${tip.slice(0, 8)} — genuine red, holding the gate`,
+    // ALL-OR-NOTHING caveat (EI-19324146335802876). `tipRetest` collapses a GROUP re-run of
+    // EVERY named failing file into one boolean, so ONE still-broken file produces this
+    // verdict even when every other file is already fixed at tip. The old wording —
+    // "failures REPRODUCE at tip" flat — reads as "all of them still fail", which is the
+    // strictly stronger claim the re-run cannot support.
+    // Measured 2026-08-02 on candidate 1a9e8a1f: 4 of the 5 named files were already green at
+    // tip, and four agents each independently re-triaged all five. Say it in the DETAIL, not
+    // just the log: `detail` is what lands in the stored verdict a reader acts on, whereas
+    // tipRun.summary's per-workspace breakdown only ever reaches the log line below.
+    detail:
+      `failures REPRODUCE at tip ${tip.slice(0, 8)} — genuine red, holding the gate. ` +
+      `NOTE: the ${failingTests.length} failing file(s) were re-run as a GROUP, so this means ` +
+      `"they did not ALL pass" — NOT "they all still fail". Some may already be fixed; re-run ` +
+      `them INDIVIDUALLY at tip before re-diagnosing all ${failingTests.length}`,
   };
 }
 
