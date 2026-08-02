@@ -343,6 +343,41 @@ function sortedEventEnvelopes(entry: ReadEventsCacheEntry): CoordEnvelope[] {
   return [...entry.byMsgId.values()].sort((a, b) => a.id - b.id).map((v) => v.envelope);
 }
 
+/**
+ * WI-6988: the `kinds` predicate shared by every bounded reader — and the ONE
+ * place that must never emit a single-element `= ANY(...)`.
+ *
+ * All four bounded reads below are `ORDER BY id DESC LIMIT n` over
+ * `coord_event_log_surface_kind_id_idx (workspace_id, surface, (body->>'kind'),
+ * id DESC)`, an index shaped exactly for them. But PostgreSQL cannot treat an
+ * index scan as ORDERED on the trailing columns when a preceding column is
+ * matched by a ScalarArrayOpExpr — and `= ANY(array)` is a SAOP even when the
+ * array holds exactly one value. The planner still PICKS the index (so every
+ * check we have reads "indexed"), then has to materialize EVERY matching row
+ * and top-N heapsort it: the LIMIT stops nothing.
+ *
+ * Measured live, surface='escalations', kinds=['escalation'], LIMIT 500,
+ * identical rows out — `= ANY` : Sort over 9,258 rows, 9,168 buffers, 31.8ms
+ * vs plain `=` : ordered Index Scan that stops at 500, 486 buffers, 2.9ms
+ * (18.9x buffers, 11.2x time). In production this query was 22,034 calls at a
+ * 4,432ms mean = 27.1h of DB time over 23 days.
+ *
+ * So: ONE kind collapses to a scalar equality (the ordered path); MULTIPLE
+ * kinds keep the ANY form, which the planner degrades to a backward scan of
+ * the surface index plus a filter — correct, and cheap exactly when a
+ * multi-kind filter is unselective. Every caller in the tree passes one kind.
+ *
+ * The cost scales with how SELECTIVE the kind is within its surface, which is
+ * why this hid for so long: on `messages` (kind='message' is ~99% of rows) the
+ * fallback scan finds its 500 almost immediately and the defect is nearly
+ * invisible; on `escalations` (~48%) it is already 19x.
+ */
+function kindPredicate(sql: Sql, kinds: readonly string[] | undefined) {
+  if (!kinds || kinds.length === 0) return sql``;
+  if (kinds.length === 1) return sql`AND body->>'kind' = ${kinds[0]}`;
+  return sql`AND body->>'kind' = ANY(${kinds as string[]}::text[])`;
+}
+
 export class PgCoordLog implements CoordEventLog {
   /** Construction-time fallback scope; the per-call resolver (F-C1) overrides it. */
   private readonly fallbackWs: string;
@@ -659,21 +694,13 @@ export class PgCoordLog implements CoordEventLog {
     // coord_event_log_surface_id (workspace_id, surface, id) index.
     const limit = Math.max(1, Math.min(Math.floor(opts.limit) || 1, 1000));
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
-    const rows =
-      kinds && kinds.length
-        ? await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
-            SELECT body, ts, msg_id FROM harness_shared.coord_event_log
-             WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
-               AND body->>'kind' = ANY(${kinds}::text[])
-             ORDER BY id DESC
-             LIMIT ${limit}
-          `
-        : await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
-            SELECT body, ts, msg_id FROM harness_shared.coord_event_log
-             WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
-             ORDER BY id DESC
-             LIMIT ${limit}
-          `;
+    const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
+      SELECT body, ts, msg_id FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+         ${kindPredicate(sql, kinds)}
+       ORDER BY id DESC
+       LIMIT ${limit}
+    `;
     return rows.map((r) => parseBody(r.body, r));
   }
 
@@ -697,7 +724,7 @@ export class PgCoordLog implements CoordEventLog {
     const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
       SELECT body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
-         ${kinds && kinds.length ? sql`AND body->>'kind' = ANY(${kinds}::text[])` : sql``}
+         ${kindPredicate(sql, kinds)}
          ${sinceTs ? sql`AND body->>'ts' > ${sinceTs}` : sql``}
          ${planSlug ? sql`AND body->>'plan_slug' = ${planSlug}` : sql``}
        ORDER BY id DESC

@@ -373,14 +373,18 @@ describe('replay against the real capability:read handler', () => {
   // express the command. The replay asks the other question and gets a different
   // answer. This is the entire justification for P-021 existing.
 
-  it('FINDS: bare `head FILE` reads 2000 lines where head reads 10', async () => {
+  it('REGRESSION: bare `head FILE` reads 10 lines, not 2000', async () => {
+    // The bug this harness was built and immediately caught: the pair defaulted
+    // to capability:read's 2000-line page instead of head's own 10, so the
+    // advisory asked for a 200x over-read. It replayed as `differs` with
+    // bashAnswer 10 lines, toolAnswer 40 (the whole fixture) and the first
+    // divergence at line 11. Fixed by HEAD_DEFAULT_LINES; pinned here so it
+    // cannot come back silently.
     const result = await replayCase(headFileRead, `head ${smallPath}`, realExecutors(), options());
 
-    expect(result.verdict).toBe('differs');
-    expect(result.toolCall?.args.limit).toBe(2000);
-    expect(result.bashAnswer).toHaveLength(10);
-    expect(result.toolAnswer).toHaveLength(40); // the whole fixture, not the first 10
-    expect(result.firstDivergentLine).toBe(11);
+    expect(result.verdict).toBe('match');
+    expect(result.toolCall?.args.limit).toBe(10);
+    expect(result.bashAnswer).toEqual(SMALL_LINES.slice(0, 10));
   });
 
   it('FINDS: `cat` of a file past the page size returns a truncated answer', async () => {

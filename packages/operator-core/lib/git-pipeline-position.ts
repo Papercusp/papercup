@@ -1191,9 +1191,13 @@ export function evaluateChangeInCandidate(args: {
           `occurrence(s) your change added. It carries only PART of the change. Treat a RED from ` +
           `it as UNPROVEN, not as a verdict on your code. Note the marker cannot settle this on ` +
           `its own: it is a substring test, so a marker that already existed in the file reads as ` +
-          `"present" for a candidate cut before your fix. Settle it by containment instead — ` +
-          `release:checkpoint-run { paths: [...] } reports callerEditsInCandidate.missing — or ` +
-          `re-call with a marker string UNIQUE to your change.`
+          `"present" for a candidate cut before your fix. Settle it by ANCESTRY, which is exact ` +
+          `both ways: INTRO=$(git log --format=%H -1 -S'<a string your change ADDED>' -- <path>) ` +
+          `then git merge-base --is-ancestor $INTRO ${at}. Do NOT settle it with ` +
+          `release:checkpoint-run's callerEditsInCandidate: it compares the path's CURRENT ` +
+          `content, so any peer commit to the same file after yours reports it missing even when ` +
+          `your fix is in the candidate (EI-19326775809436764). Or re-call with a marker string ` +
+          `UNIQUE to your change.`
         );
       }
       return which === 'judged'
@@ -1202,7 +1206,8 @@ export function evaluateChangeInCandidate(args: {
             `Do NOT re-fire to "get a run that includes it" — you already have one.` +
             (judgedCount !== null && judgedCount > 1
               ? ` (Caveat: the marker occurs ${times}, so it is not unique to your change — if it is a common identifier ` +
-                `rather than a string your edit introduced, confirm with release:checkpoint-run { paths: [...] }.)`
+                `rather than a string your edit introduced, confirm by ancestry: ` +
+                `git merge-base --is-ancestor $(git log --format=%H -1 -S'<a string your change ADDED>' -- <path>) ${at}.)`
               : '')
         : `A checkpoint fired now would judge ${at}, which DOES carry your change (marker occurs ${times}).`;
     }

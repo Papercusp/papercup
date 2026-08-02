@@ -215,3 +215,118 @@ describe('createEpisodicEscalator config plumbing', () => {
     await pA;
   });
 });
+
+describe('collapseDuplicateOpenEis (WI-6986)', () => {
+  const NOTE = 'duplicate of an identical stable title';
+
+  function collapseDeps(open: CollapsibleOpenEi[], unmutable: string[] = []) {
+    const dropped: Array<{ id: string; note: string }> = [];
+    const deps: DuplicateCollapseDeps = {
+      listOpenByTopic: async () => open,
+      drop: async (id, note) => {
+        if (unmutable.includes(id)) {
+          throw new Error(`work_item '${id}' is remote-authored and cannot be mutated locally`);
+        }
+        dropped.push({ id, note });
+      },
+    };
+    return { deps, dropped };
+  }
+
+  const ei = (id: string, title: string, createdAt: string): CollapsibleOpenEi => ({
+    id,
+    title,
+    createdAt,
+  });
+
+  it('keeps the OLDEST row per title and drops the rest', async () => {
+    const { deps, dropped } = collapseDeps([
+      ei('EI-3', 'A', '2026-07-03T00:00:00Z'),
+      ei('EI-1', 'A', '2026-07-01T00:00:00Z'),
+      ei('EI-2', 'A', '2026-07-02T00:00:00Z'),
+    ]);
+    const r = await collapseDuplicateOpenEis('demo', NOTE, deps);
+    expect(dropped.map((d) => d.id).sort()).toEqual(['EI-2', 'EI-3']);
+    expect(r.collapsedIds.sort()).toEqual(['EI-2', 'EI-3']);
+    expect(r.duplicatedTitles).toBe(1);
+    expect(r.checked).toBe(3);
+    expect(dropped[0].note).toBe(NOTE);
+  });
+
+  it('leaves a title with a single open EI untouched', async () => {
+    const { deps, dropped } = collapseDeps([
+      ei('EI-1', 'A', '2026-07-01T00:00:00Z'),
+      ei('EI-2', 'B', '2026-07-01T00:00:00Z'),
+    ]);
+    const r = await collapseDuplicateOpenEis('demo', NOTE, deps);
+    expect(dropped).toHaveLength(0);
+    expect(r.duplicatedTitles).toBe(0);
+    expect(r.collapsedIds).toEqual([]);
+  });
+
+  it('counts a peer-authored refusal as skippedUnmutable, not an error, and still drops its siblings', async () => {
+    const { deps, dropped } = collapseDeps(
+      [
+        ei('EI-1', 'A', '2026-07-01T00:00:00Z'),
+        ei('EI-2', 'A', '2026-07-02T00:00:00Z'),
+        ei('EI-3', 'A', '2026-07-03T00:00:00Z'),
+      ],
+      ['EI-2'],
+    );
+    const r = await collapseDuplicateOpenEis('demo', NOTE, deps);
+    expect(r.skippedUnmutable).toBe(1);
+    expect(r.collapsedIds).toEqual(['EI-3']); // the refusal did not strand EI-3
+    expect(dropped.map((d) => d.id)).toEqual(['EI-3']);
+  });
+
+  it('is DETERMINISTIC across nodes, so they cannot collectively drop every row', async () => {
+    const rows = [
+      ei('EI-b', 'A', '2026-07-01T00:00:00Z'),
+      ei('EI-a', 'A', '2026-07-01T00:00:00Z'), // identical timestamp — id breaks the tie
+      ei('EI-c', 'A', '2026-07-05T00:00:00Z'),
+    ];
+    // Two nodes observe the SAME replicated set in different orders.
+    const nodeA = collapseDeps([...rows]);
+    const nodeB = collapseDeps([...rows].reverse());
+    await collapseDuplicateOpenEis('demo', NOTE, nodeA.deps);
+    await collapseDuplicateOpenEis('demo', NOTE, nodeB.deps);
+    const keptA = rows.filter((r) => !nodeA.dropped.some((d) => d.id === r.id)).map((r) => r.id);
+    const keptB = rows.filter((r) => !nodeB.dropped.some((d) => d.id === r.id)).map((r) => r.id);
+    expect(keptA).toEqual(['EI-a']);
+    expect(keptB).toEqual(['EI-a']); // same survivor regardless of observation order
+  });
+
+  it('never lets a malformed createdAt win the keeper slot', async () => {
+    const { deps, dropped } = collapseDeps([
+      ei('EI-bad', 'A', 'not-a-date'),
+      ei('EI-good', 'A', '2026-07-09T00:00:00Z'),
+    ]);
+    await collapseDuplicateOpenEis('demo', NOTE, deps);
+    expect(dropped.map((d) => d.id)).toEqual(['EI-bad']); // the parseable row survives
+  });
+
+  it('a listing failure degrades to a no-op instead of throwing', async () => {
+    const deps: DuplicateCollapseDeps = {
+      listOpenByTopic: async () => {
+        throw new Error('PG down');
+      },
+      drop: async () => {},
+    };
+    await expect(collapseDuplicateOpenEis('demo', NOTE, deps)).resolves.toEqual({
+      checked: 0,
+      duplicatedTitles: 0,
+      collapsedIds: [],
+      skippedUnmutable: 0,
+    });
+  });
+
+  it('the VITEST gate returns an empty result without deps', async () => {
+    const r = await collapseDuplicateOpenEis('demo', NOTE);
+    expect(r).toEqual({
+      checked: 0,
+      duplicatedTitles: 0,
+      collapsedIds: [],
+      skippedUnmutable: 0,
+    });
+  });
+});

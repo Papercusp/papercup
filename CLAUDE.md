@@ -335,11 +335,32 @@ carried the fix.
 **Settle it with the ancestry + blob check. That is the only test that is sound both ways:**
 
 ```bash
-C=<candidate sha>; F=<your path>
-git log --oneline -1 -S'<a string your change INTRODUCED>' -- "$F"   # -> the commit that added it
+C=<candidate sha>; F=<your path>; S='<a string your change INTRODUCED>'
+git log --oneline -S"$S" -- "$F" | tail -1     # OLDEST count-changing commit = the INTRODUCING one
 git merge-base --is-ancestor <that commit> $C && echo IN || echo NOT-IN
-git show $C:"$F" | grep -c '<that same string>'                      # blob-level confirmation
+git show $C:"$F" | grep -c "$S"                # blob-level confirmation
 ```
+
+⚠ **`tail -1`, not `-1`.** `-S` lists every commit where the occurrence count changed,
+**newest first**, so `git log -1 -S…` returns the MOST RECENT such commit, not the introducing
+one. They differ whenever you touch a symbol twice — the normal case for work in progress — and
+testing ancestry with the newer commit against a candidate cut between the two reports `NOT-IN`
+while your change is in fact present. That is the exact false negative this recipe exists to
+eliminate, and it sends you off to re-fire a gate that already carries your change.
+
+Verified in this repo 2026-08-02 — `backingTables` in `sync-resolver/index.ts` has **five**
+count-changing commits, and against gate candidate `1ee32228` the two forms disagree:
+
+```
+git log -1      -S backingTables  -> bd5ba29a9b : NOT-IN   <- FALSE NEGATIVE
+git log | tail -1 -S backingTables -> 362398846f : IN      <- correct
+blob truth: backingTables occurs 14x in that candidate     <- it is plainly present
+```
+
+**No string unique to your change?** Use a *semantic discriminator* instead of a token: diff the
+CHANGED ASSERTION TEXT between candidate and HEAD. The OLD text disappearing is as informative
+as the NEW text arriving, and unlike a token count it cannot be satisfied by something that
+pre-existed.
 
 ⚠ **This corrects two claims this section used to make.** Both were wrong, and together they
 pushed the fleet onto the unreliable path — three agents independently hit the resulting
@@ -356,8 +377,12 @@ false verdict inside ten minutes on 2026-08-02 (EI-19325709344484737, EI-1932591
   `false` to a wrong `true` with prose explaining the correct answer away as a newer-commit
   artifact. Measured: marker `operator_turns` (already present 1× in the unmodified file)
   reported a change as on staging, in main AND deployed when it was in none of the three.
-  **Count-1 is the most dangerous shape**, not a high count — count-1 is exactly what a
-  genuine one-line addition looks like, so nothing on the surface looks wrong.
+  **ANY nonzero count is unsafe when the token pre-existed** — a high count is not "obviously
+  wrong enough to catch". Corroborated independently the same morning: `knownQueryNamesV2`
+  stood at 3 in a candidate that provably lacked the fix and 4 at HEAD, and that symbol *looks*
+  specific to the change. **A count DELTA is not presence.** Count-1 is merely the most
+  seductive case, because count-1 is exactly what a genuine one-line addition looks like, so
+  nothing on the surface looks wrong at all.
 
 `marker` is still useful as a *quick* check, but only if the string is one the change
 **INTRODUCED** and that the file never contained before — never a bare identifier, table name,

@@ -882,6 +882,31 @@ async function replicationStallOrphanSweepTick(): Promise<void> {
     } catch (err) {
       console.warn(`[replication-stall-orphan-sweep] run skipped (non-fatal): ${(err as Error).message}`);
     }
+    // WI-6986: same topic, same cadence — collapse DUPLICATE open stall EIs
+    // (several open rows carrying one stable title) down to a single survivor.
+    // Distinct from the orphan sweep above: that retires EIs whose TARGET is
+    // gone, this retires redundant ROWS for a target that may still be live.
+    // Measured 2026-08-02: 88 open replication-liveness EIs covering only 48
+    // distinct conditions — 40 pure duplicates, minted by the cross-machine
+    // file() race that no pre-read can win (see collapseDuplicateOpenEis).
+    try {
+      const { collapseDuplicateOpenEis } = await import('../escalation/episodic-ei');
+      const { REPLICATION_LIVENESS_TOPIC } = await import('../sync/hyperbee/replication-stall-ei');
+      const c = await collapseDuplicateOpenEis(
+        REPLICATION_LIVENESS_TOPIC,
+        'duplicate open EI for an identical stable title — collapsed to the oldest row for this ' +
+          'condition (WI-6986). No signal lost: the condition itself is still represented by the survivor.',
+      );
+      if (c.collapsedIds.length > 0 || c.skippedUnmutable > 0) {
+        console.log(
+          `[episodic-ei-duplicate-collapse] collapsed ${c.collapsedIds.length} duplicate open EI(s) ` +
+            `across ${c.duplicatedTitles} title(s) (checked ${c.checked}` +
+            `${c.skippedUnmutable > 0 ? `, ${c.skippedUnmutable} peer-authored left to their author` : ''})`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[episodic-ei-duplicate-collapse] run skipped (non-fatal): ${(err as Error).message}`);
+    }
   }, { name: 'replication-stall-orphan-sweep' });
 }
 const replicationStallOrphanSweepWorkflow = idempotentRegisterWorkflow('replicationStallOrphanSweep', () =>

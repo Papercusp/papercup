@@ -128,11 +128,30 @@ describe('pairedBootstrapCI', () => {
   });
 
   it('is deterministic across runs and sensitive to the seed', () => {
-    const { a, b } = correlatedArms(60, 0.05);
+    // NOTE: the per-item difference must VARY. With a constant offset every
+    // resample returns the identical delta — a point-mass bootstrap where no
+    // seed can move the interval, which is correct behaviour but tests nothing.
+    const { a } = correlatedArms(60, 0);
+    const b = a.map((x, i) => x + 0.05 + ((i * 13) % 7) / 100);
     expect(pairedBootstrapCI(a, b, { seed: 7 })).toEqual(pairedBootstrapCI(a, b, { seed: 7 }));
     expect(pairedBootstrapCI(a, b, { seed: 7 }).delta.lower).not.toBe(
       pairedBootstrapCI(a, b, { seed: 8 }).delta.lower,
     );
+  });
+
+  /**
+   * The point-mass case the test above sidesteps, asserted directly: when every
+   * pair shifts by exactly the same amount there is no uncertainty about the
+   * delta, and the interval must collapse onto it rather than manufacture width.
+   */
+  it('collapses to a zero-width interval when every pair shifts identically', () => {
+    const { a, b } = correlatedArms(60, 0.05);
+    const r = pairedBootstrapCI(a, b);
+    expect(r.delta.lower).toBeCloseTo(0.05, 10);
+    expect(r.delta.upper).toBeCloseTo(0.05, 10);
+    expect(r.halfWidth).toBeCloseTo(0, 10);
+    expect(r.mde80).toBeCloseTo(0, 10);
+    expect(r.significant).toBe(true);
   });
 
   it('rejects misaligned arms rather than silently comparing a prefix', () => {

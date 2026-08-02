@@ -94,6 +94,22 @@ function readRewrite(
 export const READ_DEFAULT_LIMIT = 2000;
 
 /**
+ * `head`'s own default line count when no `-n` is given: POSIX says 10.
+ *
+ * This constant exists because the P-021 replay harness found it MISSING. Bare
+ * `head FILE` fell back to {@link READ_DEFAULT_LIMIT}, so the advisory told the
+ * agent to read 2000 lines where `head` returns 10 — a 200x over-read, on a pair
+ * whose `equivalent` verdict was entirely honest, because the tool genuinely CAN
+ * express the command. Expressibility was answering a different question, and
+ * only executing both sides could tell them apart.
+ *
+ * `tail` had the same default written correctly a few lines down, which is the
+ * uncomfortable part: the two were never compared because nothing in the
+ * expressibility harness ever put a bash answer next to a tool answer.
+ */
+export const HEAD_DEFAULT_LINES = 10;
+
+/**
  * Tokens that make an operand unresolvable to a literal path: shell variable
  * expansion, command substitution, or a glob. `capability:read` takes a literal
  * string, so an agent would have to resolve these in a shell first — meaning
@@ -412,7 +428,7 @@ export const headFileRead: SubstitutionPair = {
     const shared = checkSingleLiteralFile(parsed);
     if (shared) return shared;
 
-    const limit = parsed.flagArgs.get('-n') ?? String(READ_DEFAULT_LIMIT);
+    const limit = parsed.flagArgs.get('-n') ?? String(HEAD_DEFAULT_LINES);
     return {
       covered: true,
       expression: `capability:read { file_path: "${parsed.operands[0]}", limit: ${limit} }`,
@@ -422,11 +438,11 @@ export const headFileRead: SubstitutionPair = {
   rewrite(atom: string): ReplayToolCall | null {
     return readRewrite(headFileRead, atom, (parsed) => {
       if (parsed.operands[0] === undefined) return null;
-      // Mirrors `cover()`'s default EXACTLY, including where that default is
-      // wrong. The replay harness exists to measure this pair, so a rewrite that
-      // quietly corrected the envelope it is supposed to be the executable form
-      // of would be marking its own homework.
-      const limit = parsed.flagArgs.get('-n') ?? String(READ_DEFAULT_LIMIT);
+      // Mirrors `cover()`'s default exactly — deliberately, so the replay
+      // measures the envelope rather than a corrected copy of it. That is how
+      // the `HEAD_DEFAULT_LINES` bug below was caught: both sides said 2000, the
+      // replay said 10, and the disagreement was the finding.
+      const limit = parsed.flagArgs.get('-n') ?? String(HEAD_DEFAULT_LINES);
       return { file_path: parsed.operands[0], limit: Number(limit) };
     });
   },
