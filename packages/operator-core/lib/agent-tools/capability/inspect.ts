@@ -23,7 +23,8 @@
  * Execution reuses the same bash-jobs runner + exec-sandbox as capability:bash.
  */
 
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, basename, dirname, relative, resolve } from 'node:path';
+import { stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
@@ -104,6 +105,40 @@ export function resolveInspectCommand(args: InspectArgs, baseDir: string): Inspe
   // check === 'test'
   const command = args.package === undefined ? 'npm run test:affected' : `npx vitest run${pathArg ? ` ${pathArg}` : ''}`;
   return { ok: true, command, cwd };
+}
+
+const TSCONFIG_BASENAME = /^tsconfig(\.[\w-]+)?\.json$/;
+
+/**
+ * EI-19332092038566982 / EI-19331889744736428: `child_process.spawn`'s `cwd` must be a real
+ * DIRECTORY — passing it a FILE fails with an opaque `spawn ENOTDIR` (no path, no hint, nothing
+ * an agent can act on). The #1 wrong call shape observed live (6 of 6 sampled watchdog failures,
+ * plus an independently-filed duplicate) is `package: '<dir>/tsconfig.json'` — the tsconfig PATH
+ * where this tool wants its containing directory. `build:typecheck`'s own `project` arg DOES take
+ * the tsconfig path, and its timeout hint carried that convention across by mistake (fixed
+ * separately), so this is a call shape agents genuinely produce, not a hypothetical.
+ *
+ * Auto-correct the common case (a `tsconfig*.json` file) rather than erroring on it — the caller's
+ * intent is unambiguous. Anything else that isn't a directory fails with an ACTIONABLE message
+ * instead of ever reaching spawn. Pure given the caller's own directory-existence probe, so this
+ * stays unit-testable without touching the filesystem.
+ */
+export function resolveTypecheckCwd(
+  cwd: string,
+  cwdIsDirectory: boolean,
+): { ok: true; cwd: string; corrected: boolean } | { ok: false; reason: string; message: string } {
+  if (cwdIsDirectory) return { ok: true, cwd, corrected: false };
+  if (TSCONFIG_BASENAME.test(basename(cwd))) {
+    return { ok: true, cwd: dirname(cwd), corrected: true };
+  }
+  return {
+    ok: false,
+    reason: 'bad_package_not_a_directory',
+    message:
+      `\`package\` must be a directory (the one holding tsconfig.json) — "${cwd}" is not a directory. ` +
+      'Pass the containing directory, e.g. `package: "packages/operator-core"` rather than ' +
+      '`package: "packages/operator-core/tsconfig.json"`.',
+  };
 }
 
 /**
@@ -232,7 +267,25 @@ export default defineTool({
     const baseDir = resolveCapabilityBaseDir(ctx);
     const resolved = resolveInspectCommand(args, baseDir);
     if (!resolved.ok) return err(resolved.reason, resolved.message);
-    const { command, cwd } = resolved;
+    const { command } = resolved;
+    let cwd = resolved.cwd;
+
+    // EI-19332092038566982 / EI-19331889744736428: `cwd` must be a real directory or spawn fails
+    // with an opaque `spawn ENOTDIR`. Validate (and auto-correct the tsconfig-file case) BEFORE
+    // ever reaching spawn, foreground or background.
+    let cwdCorrectionNote = '';
+    let cwdIsDirectory = false;
+    try {
+      cwdIsDirectory = (await stat(cwd)).isDirectory();
+    } catch {
+      cwdIsDirectory = false;
+    }
+    const cwdResolution = resolveTypecheckCwd(cwd, cwdIsDirectory);
+    if (!cwdResolution.ok) return err(cwdResolution.reason, cwdResolution.message);
+    if (cwdResolution.corrected) {
+      cwd = cwdResolution.cwd;
+      cwdCorrectionNote = `⚠ \`package\` named a tsconfig.json file, not its directory — auto-corrected to run in ${relative(baseDir, cwd) || '.'}.\n`;
+    }
 
     // WI-6677: mode-dependent default, same as capability:bash. A detached suite is
     // exactly what run_in_background is FOR here, so it must not inherit the short
@@ -258,7 +311,7 @@ export default defineTool({
               command,
               cwd,
               log_path: job.logPath,
-              advice: `Verification started. Read output: capability:bash_output { bash_id: "${job.id}" }. Stop: capability:bash_kill { bash_id: "${job.id}" }.`,
+              advice: `${cwdCorrectionNote}Verification started. Read output: capability:bash_output { bash_id: "${job.id}" }. Stop: capability:bash_kill { bash_id: "${job.id}" }.`,
             }),
           },
         ],
@@ -287,7 +340,10 @@ export default defineTool({
         `${f.matchedErrors} matching error(s) of ${f.totalErrors} total` +
         (r.truncated ? ` · ⚠ output truncated (${r.totalBytes} bytes) → ${r.logPath}; the filter saw the head only` : '');
       const body = f.matchedLines.length > 0 ? f.matchedLines.join('\n') : '(no tsc errors in the specified paths)';
-      return { content: [{ type: 'text' as const, text: `${summary}${foregroundTimeoutHint(r.status, timeoutMs)}\n${body}` }], isError: false };
+      return {
+        content: [{ type: 'text' as const, text: `${cwdCorrectionNote}${summary}${foregroundTimeoutHint(r.status, timeoutMs)}\n${body}` }],
+        isError: false,
+      };
     }
 
     const header =
@@ -297,7 +353,7 @@ export default defineTool({
       (r.truncated ? ` · output spilled (${r.totalBytes} bytes) → ${r.logPath}` : '');
 
     return {
-      content: [{ type: 'text' as const, text: `${header}${foregroundTimeoutHint(r.status, timeoutMs)}\n${r.output || '(no output)'}` }],
+      content: [{ type: 'text' as const, text: `${cwdCorrectionNote}${header}${foregroundTimeoutHint(r.status, timeoutMs)}\n${r.output || '(no output)'}` }],
       isError: r.status === 'failed' && r.exitCode === null,
     };
   },

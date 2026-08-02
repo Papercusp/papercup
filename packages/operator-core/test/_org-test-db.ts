@@ -53,6 +53,7 @@ import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedde
 // eslint-disable-next-line import/no-relative-packages -- mirror the canonical client's postgres-js options without pulling in drizzle-orm
 import {
   PG_BIGINT_AS_NUMBER_TYPES,
+  PG_TIMESTAMP_NO_TZ_AS_UTC_TYPES,
   restoreRawDateSerializers,
   restoreRawJsonbSerializer,
 } from '../../../libs/papercusp/libs/db/src/raw-serializers';
@@ -106,7 +107,12 @@ const clientOpts = {
   // EI-9265: mirror the canonical client's bigint-as-number parsing so a raw
   // bigserial read (e.g. an `id` PK) comes back as a JS number here exactly
   // like it does through getOrgPg()/getHarnessPg(), not a string.
-  types: PG_BIGINT_AS_NUMBER_TYPES,
+  // EI-19331550321709126: also mirror the OID-1114 (bare `timestamp`)
+  // UTC-forced parser — without it, this fixture would parse a computed
+  // `AT TIME ZONE 'UTC'` expression as server-local, the OPPOSITE of what
+  // production's buildClient() does, and a test against this fixture could
+  // pass while the real path is corrupted (or vice versa).
+  types: { ...PG_BIGINT_AS_NUMBER_TYPES, ...PG_TIMESTAMP_NO_TZ_AS_UTC_TYPES },
 };
 
 /** Apply the same hybrid Date/jsonb serializer restoration `buildClient` (in

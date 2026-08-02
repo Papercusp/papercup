@@ -59,6 +59,7 @@ const CORE = resolve(__dirname, '..');
 const CORPUS = [
   'scheduler/claim-respects-blocking.integration.test.ts',
   'scheduler/dependency-tenant-matrix.integration.test.ts',
+  'scheduler/dependency-family-matrix.integration.test.ts',
   'scheduler/work-item-deps-integrity.integration.test.ts',
   'scheduler/get-next-for-bee-plan-lane-guard.test.ts',
   'scheduler/readiness-reconcile.integration.test.ts',

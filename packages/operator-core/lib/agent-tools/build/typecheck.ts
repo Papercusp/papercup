@@ -619,7 +619,10 @@ export default defineTool({
             `That compiles only those files + their import graph; cost tracks YOUR import graph, not the project (measured: leaf 2.6s, hub 63s), so it fixes this for a leaf file but a hub can still time out. ` +
             `It also does NOT see errors your change caused in files that do not import yours. ` +
             `For the full project-wide answer, run it detached instead: ` +
-            `capability:inspect { check: 'typecheck', package: '${relative(root, resolved) || '.'}', run_in_background: true, onlyPaths: ['<your changed files>'] }, then poll capability:bash_output. ` +
+            // EI-19331889744736428: `capability:inspect`'s `package` is a CWD, so it needs the
+            // DIRECTORY holding tsconfig.json — NOT `resolved` (a tsconfig PATH, this tool's own
+            // `project` convention). Passing the path there fails with an opaque `spawn ENOTDIR`.
+            `capability:inspect { check: 'typecheck', package: '${relative(root, dirname(resolved)) || '.'}', run_in_background: true, onlyPaths: ['<your changed files>'] }, then poll capability:bash_output. ` +
             `Do NOT fall back to a hand-rolled \`npx tsc\`: \`-p .\` checks ZERO files here, and piping a real run through \`head\`/\`grep\` truncates PATH-ORDERED output, so your file can be silently absent and read as clean.`,
           output: outcome.output.slice(-2000),
         },

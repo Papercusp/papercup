@@ -336,6 +336,17 @@ export function buildConsoleOneliner(
   env: Record<string, string>,
   greeting: string,
   appearance: AppearanceOpts,
+  /**
+   * EI-19330040718883562: when set, also `tee -a` the greeting-failure banner
+   * into this path. The visible path has no artifact to poll for the sentinel
+   * (it writes to a terminal, not a log file) — this gives it one, on request,
+   * so `pollConsoleBootReceipt` can catch the same phantom-ok class
+   * spawnHeadless's boot receipt already catches (the greeting dies, but the
+   * one-liner unconditionally `exec`s a login shell afterward, so the process
+   * itself never exits and the early-exit probe is structurally blind to it).
+   * `undefined`/`null` (the default) is byte-identical to the pre-fix banner.
+   */
+  bootReceiptPath?: string | null,
 ): string {
   const envExports: string[] = [];
   // Prepend the writable shim dir (psu/ptool, ~/.papercusp/bin) AND the bundled
@@ -376,10 +387,15 @@ export function buildConsoleOneliner(
   // dodged this same bug). eval-in-a-subshell also means a MALFORMED greeting
   // (unbalanced quote, trailing `#`) errors visibly inside the open window
   // instead of aborting the whole one-liner at parse time.
+  // EI-19330040718883562: pipe the same printf through `tee -a` into the
+  // receipt path when one was supplied, so a poller outside the terminal can
+  // observe the failure — the printf itself is unchanged (the window still
+  // shows it), this just ALSO persists it to disk.
+  const receiptTee = bootReceiptPath ? ` | tee -a ${shellEscape(bootReceiptPath)}` : '';
   const banner =
     `__papercusp_greeting_rc=$?; ` +
     `if [ "$__papercusp_greeting_rc" -ne 0 ]; then ` +
-    `printf '\\n[papercusp] initial terminal command exited with status %s; terminal left open for inspection.\\n' "$__papercusp_greeting_rc"; ` +
+    `printf '\\n[papercusp] initial terminal command exited with status %s; terminal left open for inspection.\\n' "$__papercusp_greeting_rc"${receiptTee}; ` +
     `fi`;
   return `${prelude} ; (eval ${shellEscape(greeting)}); ${banner} ; exec "\${SHELL:-/bin/bash}" -l`;
 }
@@ -918,6 +934,34 @@ export interface SpawnConsoleOpts {
    * the "+" button path. Default false.
    */
   allowDesktopBridge?: boolean;
+  /**
+   * EI-19330040718883562: verify a boot RECEIPT (not just that the terminal
+   * process survived {@link EARLY_EXIT_PROBE_MS}) before reporting ok — closes
+   * the phantom-ok hole EI-19311623077693508 fixed for spawnHeadless but never
+   * applied to the visible path, which `defaultSpawnMembers` tries FIRST. Adds
+   * up to {@link HEADLESS_BOOT_RECEIPT_MS} of latency to the call (paid once
+   * per `Promise.all` batch, not per member — same tradeoff spawnHeadless
+   * already accepts). Default false/omitted: BYTE-IDENTICAL to the pre-fix
+   * behavior — a human-facing launch (the "+" button, resume/fork,
+   * capability:terminal) reports ok the instant the window survives the
+   * early-exit probe, same as before. Opt in only where the caller actually
+   * CONSUMES the ok/error verdict to decide whether a member exists (a
+   * delegated/fleet member spawn) — a UI window the user visually confirms
+   * themselves does not need it and should not pay its latency.
+   */
+  verifyBootReceipt?: boolean;
+  /**
+   * EI-19330040718883562: injectable seams for the boot-receipt poll (only
+   * consulted when `verifyBootReceipt` is set). Tests MUST pass fakes so a
+   * case can emit the sentinel deterministically instead of sleeping out the
+   * real window. Production callers omit it. Mirrors
+   * {@link SpawnHeadlessOpts.bootProbes}.
+   */
+  bootProbes?: {
+    readLog?: (path: string) => string;
+    sleep?: (ms: number) => Promise<void>;
+    windowMs?: number;
+  };
 }
 
 export type SpawnConsoleResult =
@@ -953,6 +997,64 @@ export type SpawnConsoleResult =
       desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | 'caller-override' | null;
     }
   | { status: 'error'; error: string; code: number };
+
+/**
+ * EI-19330040718883562: poll `receiptPath` for the greeting-failure sentinel —
+ * the visible-path sibling of {@link spawnHeadless}'s boot receipt (see
+ * {@link HEADLESS_GREETING_FAILURE_RE}'s doc for why a process-exit probe is
+ * structurally blind to this failure class: `buildConsoleOneliner` `exec`s a
+ * login shell after the greeting no matter what, so a dead agent command never
+ * shows up as a process exit). `receiptPath` is null whenever the caller did
+ * not opt into verification (`SpawnConsoleOpts.verifyBootReceipt`); in that
+ * case this returns immediately with no delay, matching the pre-fix behavior
+ * byte-for-byte. Shared by the Linux and macOS spawn paths so the receipt
+ * format / window / cleanup can't drift between them.
+ */
+async function pollConsoleBootReceipt(
+  receiptPath: string | null,
+  bootProbes: SpawnConsoleOpts['bootProbes'],
+): Promise<{ status: 'error'; error: string; code: number } | null> {
+  if (!receiptPath) return null;
+  const readLog = bootProbes?.readLog ?? ((p: string) => {
+    try {
+      return readFileSync(p, 'utf8');
+    } catch {
+      return '';
+    }
+  });
+  const sleep = bootProbes?.sleep ?? ((ms: number) => new Promise<void>((r) => { setTimeout(r, ms).unref?.(); }));
+  const windowMs = bootProbes?.windowMs ?? HEADLESS_BOOT_RECEIPT_MS;
+  const deadline = Date.now() + windowMs;
+  for (;;) {
+    const failed = HEADLESS_GREETING_FAILURE_RE.exec(readLog(receiptPath));
+    if (failed) {
+      const tail = readLog(receiptPath).trim().slice(-800);
+      try {
+        unlinkSync(receiptPath);
+      } catch {
+        /* best-effort */
+      }
+      return {
+        status: 'error',
+        error:
+          `terminal window opened but its agent command died at boot (exit ${failed[1]})` +
+          ' — the one-liner `exec`s a login shell after the greeting regardless, so the window' +
+          ' stays open holding a DEAD session and this never surfaced as a process exit' +
+          ` (EI-19330040718883562, the visible-path sibling of spawnHeadless's` +
+          ` EI-19311623077693508 boot receipt)${tail ? ` — receipt tail: ${tail}` : ''}`,
+        code: 502,
+      };
+    }
+    if (Date.now() >= deadline) break;
+    await sleep(250);
+  }
+  try {
+    unlinkSync(receiptPath); // healthy launch (or nothing was ever written) — nothing to keep
+  } catch {
+    /* best-effort */
+  }
+  return null;
+}
 
 /**
  * Open a NEW native terminal window running the envelope's one-liner.
@@ -1003,14 +1105,31 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
     }
   }
 
+  // 1.5. EI-19330040718883562: mint a boot-receipt path when the caller opted
+  //      in — a tee target for the SAME sentinel spawnHeadless polls a log for.
+  //      null (the default) flows straight through buildConsoleOneliner to an
+  //      unmodified banner, so an opted-out caller sees zero behavior change.
+  const receiptPath = opts.verifyBootReceipt
+    ? join(
+        tmpdir(),
+        `papercup-console-receipt-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`,
+      )
+    : null;
+
   // 2. Build the one-liner once (appearance/OSC colors + cd + env + sentinel +
   //    greeting + exec login shell). Same shape on every OS.
-  const oneliner = buildConsoleOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
-    mode: opts.appearanceMode ?? 'console',
-    planSlug: opts.planSlug ?? null,
-    label: opts.label ?? null,
-    scheme: opts.scheme ?? null,
-  });
+  const oneliner = buildConsoleOneliner(
+    envelope.cwd,
+    envelope.env,
+    envelope.greetingCmd,
+    {
+      mode: opts.appearanceMode ?? 'console',
+      planSlug: opts.planSlug ?? null,
+      label: opts.label ?? null,
+      scheme: opts.scheme ?? null,
+    },
+    receiptPath,
+  );
 
   // 3. macOS: the operator is USUALLY a child of the desktop .app in the user's
   //    GUI session, so it can open a Terminal window itself — mirroring the Linux
@@ -1022,7 +1141,7 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
   //    verifies that exit rather than assuming success — callers get a real
   //    error and can fall back to spawnHeadless.
   if (process.platform === 'darwin') {
-    return spawnMacConsole(envelope, oneliner, opts.macProbes);
+    return spawnMacConsole(envelope, oneliner, opts.macProbes, receiptPath, opts.bootProbes);
   }
 
   // 4. Windows has no server-side path: the operator runs inside the WSL2 distro,
@@ -1228,6 +1347,13 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
     try {
       unlinkSync(stderrPath); // window survived (fd stays valid for the child on Linux)
     } catch { /* best-effort */ }
+    // EI-19330040718883562: the window surviving EARLY_EXIT_PROBE_MS only rules
+    // out the emulator dying — it says nothing about the AGENT COMMAND inside,
+    // which the one-liner keeps alive-looking forever (it `exec`s a login shell
+    // no matter what). Opt-in only (see SpawnConsoleOpts.verifyBootReceipt) —
+    // a null receiptPath returns immediately with zero added latency.
+    const bootFailure = await pollConsoleBootReceipt(receiptPath, opts.bootProbes);
+    if (bootFailure) return bootFailure;
     // EI-8289: report the DISPLAY the window actually opened on (its own env
     // if it already had one, else whatever we resolved/injected) so a virtual-
     // placement window is disclosed to the caller, never silent.
@@ -1324,6 +1450,9 @@ async function spawnMacConsole(
   envelope: ConsoleEnvelope,
   oneliner: string,
   probes: MacConsoleProbes = {},
+  /** EI-19330040718883562: null unless the caller opted into verifyBootReceipt. */
+  receiptPath: string | null = null,
+  bootProbes: SpawnConsoleOpts['bootProbes'] = undefined,
 ): Promise<SpawnConsoleResult> {
   // Pre-flight (EI-19311623077693508, third and final half): with nobody logged
   // into the GUI a window CANNOT be displayed, no matter what `open` reports. Say
@@ -1456,6 +1585,12 @@ async function spawnMacConsole(
     }
     try { unlinkSync(stderrPath); } catch { /* best-effort */ }
     stderrPath = null;
+    // EI-19330040718883562: the .command self-deleting only proves the login
+    // shell STARTED — same gap as the Linux early-exit probe, see
+    // pollConsoleBootReceipt's doc. Opt-in only; a null receiptPath (the
+    // default) returns immediately with zero added latency.
+    const bootFailure = await pollConsoleBootReceipt(receiptPath, bootProbes);
+    if (bootFailure) return bootFailure;
     // macOS has no X DISPLAY concept — display/desktopEnvResolvedVia are always
     // null here (the EI-8289 disclosure only applies to the Linux X11 path).
     return { status: 'ok', pid: child.pid ?? null, terminal: inv.term, child, display: null, desktopEnvResolvedVia: null };

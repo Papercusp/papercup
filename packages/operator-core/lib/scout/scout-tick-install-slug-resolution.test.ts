@@ -17,7 +17,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const { isWorkspaceCoordinationOnMock } = vi.hoisted(() => ({
-  isWorkspaceCoordinationOnMock: vi.fn<[], Promise<boolean>>(),
+  isWorkspaceCoordinationOnMock: vi.fn<() => Promise<boolean>>(),
 }));
 
 vi.mock('../workspace-brain-scope', async (importOriginal) => {

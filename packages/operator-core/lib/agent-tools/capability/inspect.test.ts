@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   resolveInspectCommand,
+  resolveTypecheckCwd,
   filterTscOutputToPaths,
   clampForegroundTimeoutMs,
   foregroundTimeoutHint,
@@ -88,6 +89,53 @@ describe('resolveInspectCommand — security (no shell injection / traversal)', 
   it('rejects an absolute package or path', () => {
     expect(resolveInspectCommand({ check: 'test', package: '/etc' }, BASE).ok).toBe(false);
     expect(resolveInspectCommand({ check: 'test', package: 'pkg', path: '/etc/passwd' }, BASE).ok).toBe(false);
+  });
+});
+
+/**
+ * EI-19332092038566982 / EI-19331889744736428: `spawn`'s `cwd` must be a real directory. The
+ * #1 wrong call shape observed live (all 6 sampled watchdog failures + an independently-filed
+ * duplicate) was passing a tsconfig.json FILE as `package` — the containing directory is what
+ * this tool actually needs as its cwd.
+ */
+describe('resolveTypecheckCwd (EI-19332092038566982 / EI-19331889744736428)', () => {
+  it('passes a real directory through unchanged', () => {
+    expect(resolveTypecheckCwd('/repo/packages/operator-core', true)).toEqual({
+      ok: true,
+      cwd: '/repo/packages/operator-core',
+      corrected: false,
+    });
+  });
+
+  it('auto-corrects a bare "tsconfig.json" file to its containing directory', () => {
+    expect(resolveTypecheckCwd('/repo/packages/operator-core/tsconfig.json', false)).toEqual({
+      ok: true,
+      cwd: '/repo/packages/operator-core',
+      corrected: true,
+    });
+  });
+
+  it('auto-corrects a named tsconfig variant (e.g. tsconfig.build.json)', () => {
+    expect(resolveTypecheckCwd('/repo/apps/operator/tsconfig.build.json', false)).toEqual({
+      ok: true,
+      cwd: '/repo/apps/operator',
+      corrected: true,
+    });
+  });
+
+  it('refuses a non-directory that is NOT a tsconfig file, with an actionable message', () => {
+    const r = resolveTypecheckCwd('/repo/packages/operator-core/README.md', false);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe('bad_package_not_a_directory');
+      expect(r.message).toMatch(/must be a directory/);
+      expect(r.message).toContain('README.md');
+    }
+  });
+
+  it('refuses a nonexistent path the same way (a stat failure is reported as not-a-directory)', () => {
+    const r = resolveTypecheckCwd('/repo/does/not/exist', false);
+    expect(r.ok).toBe(false);
   });
 });
 
