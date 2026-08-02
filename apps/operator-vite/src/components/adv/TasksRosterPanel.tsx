@@ -27,7 +27,7 @@
  * work. The footer links out for anything actionable.
  */
 import { useMemo } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import type {
   TaskInventory,
@@ -162,6 +162,57 @@ export function unaccountedGroups(live: LiveScan | null): { cgroupPath: string; 
   return Array.isArray(u) ? u : [];
 }
 
+/**
+ * Split the non-owned scan rows into the two populations that must never share a
+ * label (EI-19325095302441792).
+ *
+ * The panel used to render every `owned:false` row as "UNENROLLED — the visible
+ * gap". On this box that was 643 of 655 processes, and the dominant population is
+ * the owner's own terminal windows — the FIRST named entry in the spawn guard's
+ * allowlist. I wrote this component, read its output, and reported a 98% coverage
+ * hole to the owner; it did not exist and had to be retracted. A supervision pane's
+ * whole value is that its numbers can be trusted without re-deriving them, so
+ * manufacturing alarm is exactly as bad as the false calm WI-6844 fixed.
+ *
+ * The classification is NOT made here — it arrives on the row from the scan, which
+ * is the one place the rule set lives. This function only groups. Pure.
+ */
+export function splitUnowned(rows: LiveProcessRow[]): {
+  unaccounted: LiveProcessRow[];
+  exempt: LiveProcessRow[];
+} {
+  const unaccounted: LiveProcessRow[] = [];
+  const exempt: LiveProcessRow[] = [];
+  for (const p of rows) {
+    if (p.owned) continue;
+    // Treat an ABSENT discriminant as unaccounted rather than exempt: a stale
+    // operator that predates the field must not silently downgrade a real escape
+    // into "nothing to see". Over-reporting is the safe direction for an alarm.
+    if (p.scope === 'exempt') exempt.push(p);
+    else unaccounted.push(p);
+  }
+  return { unaccounted, exempt };
+}
+
+/** Count exempt rows by reason, biggest first, for the collapsed summary. Pure. */
+export function exemptByReason(rows: LiveProcessRow[]): { reason: string; count: number }[] {
+  const by = new Map<string, number>();
+  for (const p of rows) {
+    const key = p.exemptReason ?? 'other';
+    by.set(key, (by.get(key) ?? 0) + 1);
+  }
+  return [...by.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+}
+
+/** Human labels for the exempt reasons the scan emits. */
+const EXEMPT_LABEL: Record<string, string> = {
+  'human-terminal': 'terminal windows you opened',
+  'systemd-unit': 'systemd units (journald owns their lifecycle)',
+  other: 'other exempt lifetimes',
+};
+
 /** Group ledger rows by class, stable order, biggest group first. Pure. */
 export function groupByClass(rows: TaskInventoryRow[]): { cls: string; rows: TaskInventoryRow[] }[] {
   const by = new Map<string, TaskInventoryRow[]>();
@@ -178,6 +229,7 @@ export function groupByClass(rows: TaskInventoryRow[]): { cls: string; rows: Tas
 export default function TasksRosterPanel({ active }: { active: boolean }) {
   const [qRaw, setQ] = useQueryState('tasksQ', parseAsString);
   const q = typeof qRaw === 'string' ? qRaw : '';
+  const [showExempt, setShowExempt] = useQueryState('tasksExempt', parseAsBoolean);
 
   // `live: true` walks the cgroup tree — that is the whole point of this panel
   // (it is what makes every process visible), and it is why `active` gates the
@@ -205,7 +257,7 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
     [data?.liveProcesses, needle],
   );
   const groups = useMemo(() => groupByClass(ledger), [ledger]);
-  const unenrolled = useMemo(() => scanned.filter((p: LiveProcessRow) => !p.owned), [scanned]);
+  const { unaccounted, exempt } = useMemo(() => splitUnowned(scanned), [scanned]);
   const orphans = unaccountedGroups(live);
 
   if (!data) {
@@ -217,11 +269,21 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
       {/* Summary before detail. `scan.processes` is the honest process total —
           strictly larger than the ledger count until every seam enrols. */}
       <dl className="pc-tasks-roster__pressure">
-        <div><dt>Enrolled</dt><dd>{data.summary.total}</dd></div>
-        <div><dt>Scanned</dt><dd>{live?.scan?.processes ?? '—'}</dd></div>
+        <div><dt>Enrolled</dt><dd title="Ledger TASKS — a task is one confined subtree">{data.summary.total}</dd></div>
+        <div><dt>Scanned</dt><dd title="Kernel PROCESSES — one task holds many">{live?.scan?.processes ?? '—'}</dd></div>
         <div><dt>Stranded</dt><dd className={live?.stranded ? 'is-warn' : ''}>{live?.stranded ?? '—'}</dd></div>
         <div><dt>Unaccounted</dt><dd className={orphans.length ? 'is-bad' : ''}>{orphans.length || '0'}</dd></div>
       </dl>
+
+      {/* The units note. Enrolled counts TASKS, Scanned counts PROCESSES, and the
+          design is "confine the ROOTS, the kernel accounts for every descendant" —
+          so one task legitimately holds dozens of processes and the two numbers are
+          NOT meant to converge. Nothing said so, which made the wrong ratio tempting
+          to compute; I computed it myself and reported it (EI-19325095302441792). */}
+      <p className="pc-tasks-roster__units" data-testid="tasks-units-note">
+        Enrolled counts <strong>tasks</strong>; Scanned counts <strong>processes</strong>. One task holds many
+        processes — these are different units, not a coverage ratio.
+      </p>
 
       {live?.degraded && (
         <div className="pc-tasks-roster__alarm is-warn" data-testid="tasks-degraded">
@@ -277,17 +339,19 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
           </section>
         ))}
 
-        {/* The gap, shown rather than hidden. These are real Papercusp processes
-            the scan saw that no chokepoint enrolled, so they have a command line
-            and nothing else — no work-item, no budget, no owner. */}
-        {unenrolled.length > 0 && (
+        {/* THE GAP — and only the gap. A process matching our signature, outside
+            our slice, that no allowlisted lifetime explains. On this box that is
+            dominated by `papercup-headless-*.scope` members, which is precisely the
+            P-009 residue: buildHeadlessSpawnCommand falls back to that name when it
+            is handed no taskScope. This is the only group that carries alarm. */}
+        {unaccounted.length > 0 && (
           <section className="pc-tasks-roster__group">
             <header className="pc-tasks-roster__group-head is-bad">
-              <span aria-hidden>○</span> unenrolled
-              <span className="pc-tasks-roster__group-count">({unenrolled.length})</span>
-              <span className="pc-tasks-roster__chip">no ledger row — provenance unknown</span>
+              <span aria-hidden>○</span> unaccounted
+              <span className="pc-tasks-roster__group-count">({unaccounted.length})</span>
+              <span className="pc-tasks-roster__chip">no ledger row, no exempt lifetime — this is the gap</span>
             </header>
-            {unenrolled.map((p: LiveProcessRow) => (
+            {unaccounted.map((p: LiveProcessRow) => (
               <div
                 key={p.pid}
                 className="pc-tasks-roster__row is-orphan"
@@ -303,7 +367,51 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
           </section>
         )}
 
-        {groups.length === 0 && unenrolled.length === 0 && (
+        {/* Out of scope BY DESIGN — neutral context, collapsed. These are not
+            escapees: they are the lifetimes the spawn guard's allowlist names on
+            purpose (a human's terminal window; a systemd unit whose lifecycle
+            systemd owns). Shown because hiding them would make the scan total
+            unexplainable, styled flat because alarm here is a false positive. */}
+        {exempt.length > 0 && (
+          <section className="pc-tasks-roster__group is-muted" data-testid="tasks-exempt">
+            {/* Expansion is nuqs, not useState — panel open-state is user-meaningful
+                and must be visible to `ui:get_state`. It also gates the RENDER: a
+                `<details>` would mount all ~600 rows and merely hide them, paying
+                the layout cost for content nobody asked to see. */}
+            <button
+              type="button"
+              className="pc-tasks-roster__group-head"
+              aria-expanded={showExempt}
+              onClick={() => void setShowExempt(showExempt ? null : true)}
+              data-testid="tasks-exempt-toggle"
+            >
+              <span aria-hidden>{showExempt ? '▾' : '▸'}</span> out of scope by design
+              <span className="pc-tasks-roster__group-count">({exempt.length})</span>
+              <span className="pc-tasks-roster__chip">
+                {exemptByReason(exempt)
+                  .map((r) => `${r.count} ${EXEMPT_LABEL[r.reason] ?? r.reason}`)
+                  .join(' · ')}
+              </span>
+            </button>
+            {showExempt && exempt.map((p: LiveProcessRow) => (
+              <div
+                key={p.pid}
+                className="pc-tasks-roster__row is-muted"
+                data-testid={`task-exempt-${p.pid}`}
+              >
+                <span className="pc-tasks-roster__age">—</span>
+                <span className="pc-tasks-roster__name" title={p.cmdline ?? ''}>{shortCmd(p.cmdline)}</span>
+                <span className="pc-tasks-roster__doing" title={p.cgroupPath}>
+                  {EXEMPT_LABEL[p.exemptReason ?? 'other'] ?? p.exemptReason}
+                </span>
+                <span className="pc-tasks-roster__num">—</span>
+                <span className="pc-tasks-roster__num">—</span>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {groups.length === 0 && unaccounted.length === 0 && exempt.length === 0 && (
           <div className="pc-tasks-roster__empty" data-testid="tasks-roster-empty">
             {needle ? `Nothing matches “${q}”.` : 'Nothing running.'}
           </div>

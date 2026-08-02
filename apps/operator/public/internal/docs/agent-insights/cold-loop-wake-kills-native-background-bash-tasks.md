@@ -112,23 +112,33 @@ miss:
 
 > A cold loop wake reset context. The carry-note's "Next action" pointed at a
 > native background id holding a `lint:tsc` result and correctly warned it
-> might be dead. It was — the tracked output file existed but was **0 bytes**.
-> The agent re-ran the typecheck instead of trusting it. Then, \~20 minutes
-> into the NEW session, a task-completion notification for that same dead id
-> arrived anyway: `Background command "..." completed (exit code 0)`. Two more
-> stale notifications, from two other dead prior-session ids, did the same
-> thing in the same session.
+> might be dead. The agent re-ran the typecheck instead of trusting it. Then,
+> \~20 minutes into the NEW session, a task-completion notification for that
+> same dead id arrived anyway: `Background command "..." completed (exit code 0)`. Two more stale notifications, from two other dead prior-session ids,
+> did the same thing in the same session.
 
 So the delivery is not consistent: the same class of dead reference can surface
 either as a clean `TaskOutput` miss (this doc's original report) **or** as a
 notification that actively asserts `exit code 0` success, carrying the
 original human-readable task description, into a session that never started
-that task and has no way to know it's stale. Paired with a 0-byte (or
-otherwise-empty) output artifact, `"exit code 0"` reads exactly like a real
-green result — the successor has no positive signal telling it the claim is
-untrustworthy, only the *absence* of one (the artifact being suspiciously
-empty), which is easy to not think to check when the notification text itself
-sounds authoritative.
+that task and has no way to know it's stale.
+
+:::caution\[Correction (2026-08-02, WI-6944) — the original report's "0-byte artifact" detail was WRONG, and so was the tell derived from it]
+EI-19314563321733768 originally reported that the notifications arrived next to
+**0-byte** output files, and concluded that an empty artifact is the tell. Both
+halves are false, and the second is dangerous.
+
+Re-reading the three cited artifacts directly: they are **2470, 1249 and 1614
+bytes** — full, rich, correct output. Not one is empty. And **all three end in
+`===TSC_EXIT:1===`** with `❌ 1 NEW file(s) have type errors`. They *failed*,
+and every one of their notifications said `completed (exit code 0)`.
+
+An empty artifact is therefore **not** the signal, and treating it as one is a
+false negative test: it tells you a healthy multi-KB log means the notification
+can be believed, which is precisely how you accept `exit code 0` for a failed
+gate check. The real mechanism is trap 3 below, it has nothing to do with
+session boundaries, and it fires on live jobs too.
+:::
 
 **Why this can't be fixed by suppressing or rewriting the notification from
 inside this repo.** The natural-sounding fixes — "don't deliver a
@@ -156,10 +166,68 @@ you independently confirm the artifact. Concretely, before relying on a
    If the id/description doesn't match anything you background this session,
    it is very likely a stale notification for a dead prior session's job —
    treat its claimed exit code as unverified regardless of what it says.
-2. **Read the output artifact, don't trust the notification text.** A 0-byte
-   or suspiciously-short file next to a claimed "exit code 0" is the tell —
-   real output from a real completed run is virtually never empty.
+2. **Read the VERDICT out of the artifact's content — never the exit code out
+   of the notification.** There is no file-size tell: the three artifacts
+   behind the report above were 1249–2470 bytes of perfectly real output and
+   still sat under a false `exit code 0` (see the correction above, and trap 3
+   below for why). Look for the thing that states the outcome — your `===EXIT:N===`
+   marker, a `❌`, the tool's own summary line — and if the artifact contains no
+   explicit verdict, the run is UNVERIFIED no matter how healthy the log looks.
 3. **Prefer `capability:bash` + `bash_id`** for anything that must survive a
    wake boundary (per the fix above) — its `capability:bash_output` read
    distinguishes `stranded_by_operator_restart` / `job_process_gone` from a
    real result, which a bare notification cannot.
+
+## Compounding trap 3: the notification's exit code is the LAST command's — so your own exit-marker `echo` erases the failure (WI-6944)
+
+This is the mechanism behind trap 2, and it is **not** about session boundaries
+at all. It fires on live jobs, in your current session, every time.
+
+A completion notification reports the exit status of the **whole command line
+you submitted**. In a `;`-chain that is the status of the **last** command. So
+the moment you append anything — an exit marker, a `tee`, a timestamp, a
+`ls -la` to confirm the artifact — the notification stops reporting your
+command and starts reporting the trailing one, which essentially always
+succeeds.
+
+```bash
+$ bash -c 'false; echo "===EXIT:$?==="'
+===EXIT:1===
+# wrapper shell exit code: 0     <-- the failure is gone
+
+$ bash -c 'false'
+# wrapper shell exit code: 1     <-- control
+```
+
+End-to-end through the real notification channel (job `bnmntj9o4`, 2026-08-02):
+command `sleep 2; false; echo "===PROOF_EXIT:$?==="` → artifact contains
+`===PROOF_EXIT:1===` (19 bytes, non-empty, correct) → notification:
+**`completed (exit code 0)`**.
+
+**The irony is the part worth remembering: the `echo "===EXIT:$?==="` marker
+you add precisely so the log carries a trustworthy verdict is the exact thing
+that destroys the notification's exit code.** You reach for it when you care
+most about the answer — a gate check, a typecheck before closing a work-item —
+which is when a false green is most expensive. That is how three failed
+`lint:tsc` runs came to be reported as `exit code 0` above.
+
+### The fix: end the line with `exit "$rc"`
+
+Keep the marker — it is the right instinct, and per rule 2 the artifact's
+verdict is what you should be reading anyway. Just restore the exit code on the
+way out, which costs one clause:
+
+```bash
+cmd > /tmp/out.txt 2>&1; rc=$?; echo "===EXIT:$rc===" >> /tmp/out.txt; exit "$rc"
+```
+
+Now **both** channels are truthful: the artifact states the verdict explicitly,
+and the notification's exit code is `cmd`'s own. Without the trailing
+`exit "$rc"`, a green notification means nothing more than "the last thing on
+my command line succeeded."
+
+:::note\[Pipelines have the same defect, differently]
+`cmd | tee log` exits with `tee`'s status, not `cmd`'s — so a failing `cmd`
+reads as success. `set -o pipefail` fixes that case; it does **not** fix the
+`;`-chain case above, which needs the explicit `exit "$rc"`.
+:::

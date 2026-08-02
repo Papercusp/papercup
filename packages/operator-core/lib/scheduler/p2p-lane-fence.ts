@@ -55,6 +55,18 @@ export const P2P_LANE_EXCLUSION_TERMS = [
   'p2p',
   'shared-hive',
   'federation',
+  // EI-13285: the `word` op matches EXACT words, not stems — 'federation' never
+  // matches the (very common in this pot's titles) inflected form "Federated".
+  // Confirmed 2026-08-02 against the live backlog (`title ~* '\yfederated\y'`,
+  // harness papercusp): every one of ~60 open/closed hits is genuine p2p/hive
+  // federation-lane work (hive-membership federation, mem0 federation, feature/
+  // work-item federation, replication liveness), none a homonym — so this is a
+  // pure widening of the SAME p2p-federation term, not a new homonym risk (unlike
+  // the rejected `rig`/`tower`/`announce`/`dial` anti-terms below). EI-13285
+  // itself ("Federated issue ID collision replaced a newly captured local
+  // improvement with an unrelated remote issue") leaked through this exact gap
+  // into fleet nonp2p-bug-drain-0801's lane.
+  'federated',
   'holepunch',
   'steering lease',
   // Replication subsystem. In this pot "replication" IS the p2p transport surface

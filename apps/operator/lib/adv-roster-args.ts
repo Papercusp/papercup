@@ -30,10 +30,16 @@
 /** Ended-sessions slice size. The resolver's own default; the superset of every consumer's need. */
 export const ADV_ROSTER_ENDED_LIMIT = 50;
 
-export interface AdvRosterArgs {
+/**
+ * A `type`, deliberately not an `interface`: `SyncQueryOptions.args` is
+ * `Record<string, unknown>`, and only a type alias gets TypeScript's implicit
+ * index signature. An interface here compiles clean in isolation and then fails
+ * at every call site with TS2322 — which a SCOPED typecheck can miss.
+ */
+export type AdvRosterArgs = {
   workspaceId: string | null;
   endedLimit: number;
-}
+};
 
 /**
  * Canonical `advRoster.list` args.

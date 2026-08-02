@@ -573,12 +573,29 @@ export function checkpointRunLockDir(logDir: string, integrationRoot: string): s
  *  deleted by the release path keyed on its token — mutating it per-phase would race the
  *  release. Best-effort in every direction; a missing/garbled marker simply degrades to the
  *  age-based decision, never to a crash. */
+/** EI-19328677512071640: capability version for `phase.json`, NOT a schema version.
+ *
+ *  A reader may only RELAX its behavior on `suite` when it can prove the WRITER is new
+ *  enough to distinguish `isolating` from `suite`. Protocol 1 (absent field) folded the
+ *  sensitive isolation re-run INTO `suite`, so treating `suite` as "safe to relax" against a
+ *  protocol-1 writer silently removes exactly the protection this work exists to provide.
+ *
+ *  This is a live hazard, not a theoretical one: the gate runs from the RELEASE checkout,
+ *  which lags `staging` — so a new reader WILL meet an old writer for as long as the release
+ *  is behind. Consumers must therefore treat a missing/older `phaseProtocol` as protocol 1
+ *  and fall back to the conservative whole-run behavior. Bump this only when a NEW phase
+ *  value is introduced that a reader must be able to depend on. */
+export const PHASE_PROTOCOL = 2;
+
 export function writeCheckpointRunPhase(
   lockDir: string,
   phase: 'suite' | 'isolating' | 'delivering',
 ): void {
   try {
-    writeFileSync(path.join(lockDir, 'phase.json'), JSON.stringify({ phase, at: new Date().toISOString() }));
+    writeFileSync(
+      path.join(lockDir, 'phase.json'),
+      JSON.stringify({ phase, at: new Date().toISOString(), phaseProtocol: PHASE_PROTOCOL }),
+    );
   } catch {
     /* best-effort: the phase marker is an optimization for the launch side, never load-bearing here */
   }

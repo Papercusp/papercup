@@ -86,16 +86,25 @@ id arg — the same shape <code dir="auto">scheduler:get_next</code> uses intern
 directly <em>and</em> via <code dir="auto">code:run</code>, back-to-back, same session. <code dir="auto">ownerId</code> / <code dir="auto">fleetSlug</code> /
 <code dir="auto">specId</code>/<code dir="auto">revision</code> were byte-identical both times.</li>
 <li><strong>Code + regression test</strong>: <code dir="auto">code:run</code>’s inner-call rebinding (<code dir="auto">bindInnerDispatch</code>, WI-1411)
-only rebuilds <code dir="auto">ctx</code> when the call’s <em>effective workspace</em> differs from the outer ctx’s (the
-EI-30 per-call <code dir="auto">{ workspace }</code> hop for an unscoped superuser) or the tool is <code dir="auto">crossWorkspace</code>.
-In the common case — no <code dir="auto">workspace</code> arg override, which is exactly this bug’s repro
-(<code dir="auto">{ harness: 'papercusp' }</code>, no <code dir="auto">workspace</code> key) — it dispatches under the <strong>exact same <code dir="auto">ctx</code>
-object reference</strong>, not a rebuilt one:
-<code dir="auto">code/run.test.ts</code> pins this with <code dir="auto">expect(result).toBe(outerCtx)</code> for both a concrete-workspace
-ctx and an unscoped-superuser-with-no-override ctx. <code dir="auto">resolveAgentIdentity</code> (identity.ts) reads
-only plain fields off that same object (<code dir="auto">uiClientId</code>, <code dir="auto">isSuperuser</code>, <code dir="auto">sigVerifiedSpawn</code>,
-<code dir="auto">principal</code>), so <code dir="auto">ownerId</code> cannot differ between the two dispatch paths when no workspace hop
-fires. <code dir="auto">getClaimSpecRecord</code>/<code dir="auto">getNextForBee</code> (claim-spec-store.ts) always query a <strong>fresh</strong>
+only rebuilds the binding (<code dir="auto">tx</code>/<code dir="auto">principal</code>/<code dir="auto">workspaceId</code>) when the call’s <em>effective
+workspace</em> differs from the outer ctx’s (the EI-30 per-call <code dir="auto">{ workspace }</code> hop for an
+unscoped superuser) or the tool is <code dir="auto">crossWorkspace</code>. In the common case — no <code dir="auto">workspace</code> arg
+override, which is exactly this bug’s repro (<code dir="auto">{ harness: 'papercusp' }</code>, no <code dir="auto">workspace</code> key)
+— it dispatches under <code dir="auto">baseCtx = { ...ctx, contextTier: undefined, transportCapExempt: true }</code>
+(EI-18719561823587590 added the always-COPY + transport-cap-exemption; before that it really
+was the same object reference, so if you’re reading this against an older checkout the
+original “exact same object” phrasing was literally true then). <strong>This is a shallow copy, not
+the same object reference</strong> — <code dir="auto">result === outerCtx</code> no longer holds, and <code dir="auto">code/run.test.ts</code>’s
+fast-path case says so explicitly (“deliberately NOT object identity … an identity assertion
+here would pin the allocation rather than the binding it stands for”) and asserts field-level
+equivalence instead (<code dir="auto">result.tx</code>/<code dir="auto">result.principal</code>/<code dir="auto">result.workspaceId</code> <code dir="auto">toBe</code> the outer
+values). What still holds, and is what this doc’s conclusion actually rests on: every
+identity-relevant field (<code dir="auto">uiClientId</code>, <code dir="auto">isSuperuser</code>, <code dir="auto">sigVerifiedSpawn</code>, <code dir="auto">principal</code>) is
+copied onto <code dir="auto">baseCtx</code> UNCHANGED — only <code dir="auto">contextTier</code> and <code dir="auto">transportCapExempt</code> are touched. So
+<code dir="auto">resolveAgentIdentity</code> (identity.ts), which reads only those plain fields, still resolves the
+identical <code dir="auto">ownerId</code> on both dispatch paths when no workspace hop fires; the copy is
+value-identical for identity purposes even though it is not reference-identical.
+<code dir="auto">getClaimSpecRecord</code>/<code dir="auto">getNextForBee</code> (claim-spec-store.ts) always query a <strong>fresh</strong>
 <code dir="auto">getOrgPg().sql</code> connection — no <code dir="auto">ctx.tx</code> read, no cache/memo layer keyed on tool+args — so
 there is no snapshot-staleness or cross-caller-cache mechanism either.</li>
 </ol>
@@ -117,8 +126,10 @@ not an identity fork.</li>
 a <strong>concurrent claim-spec write</strong> (the leader re-steering via <code dir="auto">scheduler:set_claim_spec</code>) landing
 between them — check <code dir="auto">updated_at</code>/<code dir="auto">revision</code> on the two reads; if the later one has a higher
 revision or a fresher <code dir="auto">updatedAt</code>, that is the whole explanation.</li>
-<li><code dir="auto">code:run</code> inner calls only rebind <code dir="auto">ctx</code> (workspace/tx/principal) when the call’s <em>effective
-workspace differs from the outer ctx’s</em> — see <code dir="auto">bindInnerDispatch</code> in
-<code dir="auto">packages/operator-core/lib/agent-tools/code/run.ts</code>. Absent an explicit per-call <code dir="auto">{ workspace }</code> override (or a <code dir="auto">crossWorkspace</code>-flagged tool), the exact same <code dir="auto">ctx</code> — and therefore the exact
-same resolved <code dir="auto">ownerId</code> — is used for every inner call in a batch.</li>
-</ul> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-19T14:01:00.000Z">Jul 19, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/claude5-server-thinking-eats-max-tokens.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Claude-5-family server-side thinking counts against max_tokens — tight-budget JSON calls silently return zero items</span> </span> </a> <a href="/internal/docs/agent-insights/code-run-when-and-why.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">code:run — when to reach for it, worked exemplars, and the measured payoff</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+<li><code dir="auto">code:run</code> inner calls only rebind the <em>binding</em> (workspace/tx/principal) when the call’s
+<em>effective workspace differs from the outer ctx’s</em> — see <code dir="auto">bindInnerDispatch</code> in
+<code dir="auto">packages/operator-core/lib/agent-tools/code/run.ts</code>. Absent an explicit per-call <code dir="auto">{ workspace }</code> override (or a <code dir="auto">crossWorkspace</code>-flagged tool), every inner call gets a fresh shallow copy of
+<code dir="auto">ctx</code> (<code dir="auto">{ ...ctx, contextTier: undefined, transportCapExempt: true }</code>) — not the same object
+reference, but every identity-relevant field on it is untouched, so the resolved <code dir="auto">ownerId</code> is
+the same for every inner call in a batch.</li>
+</ul> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-02T08:57:50.000Z">Aug 2, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/claude5-server-thinking-eats-max-tokens.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Claude-5-family server-side thinking counts against max_tokens — tight-budget JSON calls silently return zero items</span> </span> </a> <a href="/internal/docs/agent-insights/code-run-when-and-why.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">code:run — when to reach for it, worked exemplars, and the measured payoff</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

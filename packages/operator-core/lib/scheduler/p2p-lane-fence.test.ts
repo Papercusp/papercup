@@ -82,6 +82,10 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
     'Every failed pot-git fetch leaks its whole partial packfile forever — 21 GB of orphaned tmp_pack_*',
     'A stuck ref-announce receive fetch reports NOTHING: fetch-failed drops timedOut/code',
     'half-duplex stream never completes its second leg',
+    // EI-13285: 'federation' (whole-word) never matches the inflected form
+    // "Federated" — this is the actual title that leaked into fleet
+    // nonp2p-bug-drain-0801's lane before 'federated' was added as its own term.
+    'Federated issue ID collision replaced a newly captured local improvement with an unrelated remote issue',
   ];
 
   it.each(fenced)('excludes: %s', (title) => {
@@ -102,12 +106,30 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
     expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(true); // admitted, not excluded
   });
 
-  it('P2P_LANE_EXCLUSION_TERMS has not silently shrunk (content regression guard — WI-5265/9 class)', () => {
-    expect(new Set(P2P_LANE_EXCLUSION_TERMS)).toEqual(
-      new Set([
+  /**
+   * WI-6995 — this asserts a SUPERSET, not set equality, and that is deliberate.
+   *
+   * The guard's purpose (and its name) is that the list has not SHRUNK. It used to
+   * assert exact equality, which also failed on every ADDITION — so a peer widening
+   * the fence correctly would red-pin the SHARED green gate unless they happened to
+   * edit this file in the same change. That fired for real on 2026-08-02: a peer
+   * added 'federated' (EI-13285) minutes after this test was last touched, and it
+   * was caught by luck rather than by design.
+   *
+   * Additions are the cheap, common, usually-correct edit and are covered by the
+   * over-fencing tests below, which fail if a new term hides on-lane work. Removals
+   * are the expensive, rare, usually-wrong edit — so pin those and only those.
+   */
+  const BASELINE_TERMS_MUST_REMAIN = [
         'p2p',
         'shared-hive',
         'federation',
+        // EI-13285 — added by a peer concurrently with WI-6995. `word` matches
+        // exact words, not stems, so 'federation' never matched the inflected
+        // "Federated"; measured against the live backlog, every hit is genuine
+        // federation-lane work, so this is a widening of the SAME term rather
+        // than a new homonym risk (contrast the anti-terms below).
+        'federated',
         'holepunch',
         'steering lease',
         'replication',
@@ -118,12 +140,17 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
         'dht',
         'udx',
         'relay',
-        'pot-git',
-        'ref-announce',
-        'duplex',
-      ]),
-    );
-  });
+    'pot-git',
+    'ref-announce',
+    'duplex',
+  ] as const;
+
+  it.each(BASELINE_TERMS_MUST_REMAIN)(
+    'P2P_LANE_EXCLUSION_TERMS still contains %s (content regression guard — WI-5265/9 class)',
+    (term) => {
+      expect(P2P_LANE_EXCLUSION_TERMS as readonly string[]).toContain(term);
+    },
+  );
 
   /**
    * WI-6995 — the OTHER direction of drift. The guard above stops the term list

@@ -19,6 +19,7 @@
 import { listTasks } from './store';
 import { reconcileTick } from './reconcile-tick';
 import { defaultForeignSignature } from './scan';
+import type { ExemptReason, ProcessScope } from './scope-class';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 
 export type TaskInventoryRow = {

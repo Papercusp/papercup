@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { reconcile, summarizeReconcile, scopeUnitOf, type ScannedProcess } from './reconcile';
+import { classifyScope } from './scope-class';
 import type { TaskRow, TaskState } from './types';
 
 const NOW = Date.parse('2026-07-27T12:00:00.000Z');
@@ -26,13 +27,19 @@ function row(over: Partial<TaskRow> & { taskId: string }): TaskRow {
 }
 
 function proc(over: Partial<ScannedProcess> & { pid: number }): ScannedProcess {
-  return {
+  const base = {
     cgroupPath: `${OUR_SLICE}/papercusp-bash-job.slice/pc-aaa111.scope`,
     processIdentity: `linux:boot:${over.pid}`,
     cmdline: 'node something',
     owned: true,
     ...over,
   };
+  // Derive the scope discriminant from the SAME classifier production uses, so a
+  // fixture can never assert a combination the real scan cannot produce. An
+  // explicit `scope`/`exemptReason` in `over` still wins, for the cases that are
+  // deliberately testing a mismatch.
+  const derived = classifyScope(base.cgroupPath, base.owned);
+  return { scope: derived.scope, exemptReason: derived.exemptReason, ...base };
 }
 
 describe('scopeUnitOf', () => {

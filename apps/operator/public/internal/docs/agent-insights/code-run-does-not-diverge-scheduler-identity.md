@@ -21,16 +21,25 @@ Verified live (2026-07-19), two ways:
    directly *and* via `code:run`, back-to-back, same session. `ownerId` / `fleetSlug` /
    `specId`/`revision` were byte-identical both times.
 2. **Code + regression test**: `code:run`'s inner-call rebinding (`bindInnerDispatch`, WI-1411)
-   only rebuilds `ctx` when the call's *effective workspace* differs from the outer ctx's (the
-   EI-30 per-call `{ workspace }` hop for an unscoped superuser) or the tool is `crossWorkspace`.
-   In the common case — no `workspace` arg override, which is exactly this bug's repro
-   (`{ harness: 'papercusp' }`, no `workspace` key) — it dispatches under the **exact same `ctx`
-   object reference**, not a rebuilt one:
-   `code/run.test.ts` pins this with `expect(result).toBe(outerCtx)` for both a concrete-workspace
-   ctx and an unscoped-superuser-with-no-override ctx. `resolveAgentIdentity` (identity.ts) reads
-   only plain fields off that same object (`uiClientId`, `isSuperuser`, `sigVerifiedSpawn`,
-   `principal`), so `ownerId` cannot differ between the two dispatch paths when no workspace hop
-   fires. `getClaimSpecRecord`/`getNextForBee` (claim-spec-store.ts) always query a **fresh**
+   only rebuilds the binding (`tx`/`principal`/`workspaceId`) when the call's *effective
+   workspace* differs from the outer ctx's (the EI-30 per-call `{ workspace }` hop for an
+   unscoped superuser) or the tool is `crossWorkspace`. In the common case — no `workspace` arg
+   override, which is exactly this bug's repro (`{ harness: 'papercusp' }`, no `workspace` key)
+   — it dispatches under `baseCtx = { ...ctx, contextTier: undefined, transportCapExempt: true }`
+   (EI-18719561823587590 added the always-COPY + transport-cap-exemption; before that it really
+   was the same object reference, so if you're reading this against an older checkout the
+   original "exact same object" phrasing was literally true then). **This is a shallow copy, not
+   the same object reference** — `result === outerCtx` no longer holds, and `code/run.test.ts`'s
+   fast-path case says so explicitly ("deliberately NOT object identity ... an identity assertion
+   here would pin the allocation rather than the binding it stands for") and asserts field-level
+   equivalence instead (`result.tx`/`result.principal`/`result.workspaceId` `toBe` the outer
+   values). What still holds, and is what this doc's conclusion actually rests on: every
+   identity-relevant field (`uiClientId`, `isSuperuser`, `sigVerifiedSpawn`, `principal`) is
+   copied onto `baseCtx` UNCHANGED — only `contextTier` and `transportCapExempt` are touched. So
+   `resolveAgentIdentity` (identity.ts), which reads only those plain fields, still resolves the
+   identical `ownerId` on both dispatch paths when no workspace hop fires; the copy is
+   value-identical for identity purposes even though it is not reference-identical.
+   `getClaimSpecRecord`/`getNextForBee` (claim-spec-store.ts) always query a **fresh**
    `getOrgPg().sql` connection — no `ctx.tx` read, no cache/memo layer keyed on tool+args — so
    there is no snapshot-staleness or cross-caller-cache mechanism either.
 
@@ -54,8 +63,10 @@ concurrently written can legitimately observe different states; that is expected
   a **concurrent claim-spec write** (the leader re-steering via `scheduler:set_claim_spec`) landing
   between them — check `updated_at`/`revision` on the two reads; if the later one has a higher
   revision or a fresher `updatedAt`, that is the whole explanation.
-* `code:run` inner calls only rebind `ctx` (workspace/tx/principal) when the call's *effective
-  workspace differs from the outer ctx's* — see `bindInnerDispatch` in
+* `code:run` inner calls only rebind the *binding* (workspace/tx/principal) when the call's
+  *effective workspace differs from the outer ctx's* — see `bindInnerDispatch` in
   `packages/operator-core/lib/agent-tools/code/run.ts`. Absent an explicit per-call `{ workspace
-  }` override (or a `crossWorkspace`-flagged tool), the exact same `ctx` — and therefore the exact
-  same resolved `ownerId` — is used for every inner call in a batch.
+  }` override (or a `crossWorkspace`-flagged tool), every inner call gets a fresh shallow copy of
+  `ctx` (`{ ...ctx, contextTier: undefined, transportCapExempt: true }`) — not the same object
+  reference, but every identity-relevant field on it is untouched, so the resolved `ownerId` is
+  the same for every inner call in a batch.

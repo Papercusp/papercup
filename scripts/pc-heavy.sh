@@ -216,9 +216,56 @@ _gate_reserve_active() {
             | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -1)
     case "$_pid" in ''|*[!0-9]*) continue ;; esac
     # A dead pid means the run crashed and left its lock behind — ignore it.
-    kill -0 "$_pid" 2>/dev/null && return 0
+    if kill -0 "$_pid" 2>/dev/null; then
+      # Remember WHICH lock dir won, so the phase read below looks at the same run.
+      _gate_lockdir="${_owner%/owner.json}"
+      return 0
+    fi
   done
   return 1
+}
+
+# EI-19328677512071640 — phase-aware clamp DEPTH. v1 clamped for a run's whole
+# lifetime; a gate run can be ~2.7h while the window that actually needs the
+# headroom is minutes, so the fleet paid hours of throttle for a short reserve.
+#
+# green-checkpoint publishes `phase.json` beside `owner.json` in the SAME lock dir
+# already globbed above, so this costs one more file read and no new coordination.
+#
+#   isolating  -> /4  the single-concurrency load-flake re-run. Contention here
+#                     corrupts the CLASSIFIER, not just timing. The whole point.
+#   delivering -> /4  NOT a safe phase despite the name: it re-runs every failing
+#                     file at tip (green-checkpoint.ts `deps.runTestsAtRef`) and
+#                     feeds classifyRedAgainstTip, so contention flips a VERDICT
+#                     here exactly as it does in isolation.
+#   suite      -> /2  the long main sweep — the hours. Relaxed, but NOT to zero:
+#                     fleet load during the sweep is itself what MANUFACTURES the
+#                     load-flakes the isolation phase then has to adjudicate.
+#
+# ⚠ The `suite` relaxation is gated on `phaseProtocol >= 2` and that gate is
+# load-bearing, not defensive boilerplate. Protocol 1 (the field absent) folded
+# the isolation re-run INSIDE `suite`, so relaxing `suite` against an OLD writer
+# silently deletes the exact protection this clamp exists to provide. The gate
+# runs from the RELEASE checkout, which LAGS staging — so a new reader genuinely
+# does meet an old writer, and does so for as long as the release is behind.
+#
+# Every unknown — no phase.json, unparseable, unreadable, missing/older protocol,
+# unrecognized phase name — degrades to /4, i.e. exactly v1's behavior. The
+# failure direction is always "throttle more", never "protect less".
+_gate_clamp_divisor() {
+  [ -n "${_gate_lockdir:-}" ] || { echo 4; return; }
+  local _pf="$_gate_lockdir/phase.json"
+  [ -f "$_pf" ] || { echo 4; return; }
+  local _raw _phase _proto
+  _raw=$(head -c 4096 "$_pf" 2>/dev/null | tr -d ' \n') || { echo 4; return; }
+  _proto=$(printf '%s' "$_raw" | sed -n 's/.*"phaseProtocol":\([0-9][0-9]*\).*/\1/p' | head -1)
+  case "$_proto" in ''|*[!0-9]*) echo 4; return ;; esac
+  [ "$_proto" -ge 2 ] || { echo 4; return; }
+  _phase=$(printf '%s' "$_raw" | sed -n 's/.*"phase":"\([a-zA-Z]*\)".*/\1/p' | head -1)
+  case "$_phase" in
+    suite) echo 2 ;;
+    *)     echo 4 ;;
+  esac
 }
 
 # Effective slot count: the steady-state target (fixed or load-adaptive), then
