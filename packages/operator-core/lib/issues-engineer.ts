@@ -409,6 +409,22 @@ export const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source,
   terminal_completion_ref, authority, feature_order, created_at, updated_at, closed_ts`;
 
 /**
+ * ISSUE_COLS with `body` replaced by a NULL of the same type — for the readers that
+ * provably never touch it (see {@link ListIssuesFilter.includeBody}).
+ *
+ * DERIVED, not hand-written, on purpose. EI-10489 closed a real drift bug by locking
+ * ISSUE_COLS to `IssueRowDb` with a compile-time tuple plus a runtime parity test; a
+ * second column list typed out by hand would be a THIRD thing to keep in sync and
+ * would re-open exactly that gap. Substituting one token keeps the single source —
+ * every column added to ISSUE_COLS lands here automatically, in the same position.
+ *
+ * `NULL::text` rather than dropping the column outright so the row shape (and so
+ * `IssueRowDb`, `toIssue`, and every consumer's destructuring) is unchanged: this is
+ * a payload optimization, never a schema variant.
+ */
+export const ISSUE_COLS_BODYLESS = ISSUE_COLS.replace(/(^|,\s*)body(\s*,)/, '$1NULL::text AS body$2');
+
+/**
  * EI-10489: ISSUE_COLS (the runtime SELECT allowlist above) and IssueRowDb (its TS shape)
  * are two independently hand-maintained lists of the SAME 26 columns — nothing tied them
  * together, so a column added to one without the other silently degraded a real field to
@@ -648,6 +664,30 @@ export interface ListIssuesFilter {
   kinds?: readonly IssueStoreKind[];
   topic?: string; // issues tagged with this topic
   /**
+   * P-008 (db-performance-remediation-2026-07-26): omit `body` from the read for a
+   * caller that never reads it. Default TRUE (unchanged behavior) — a reader opts OUT
+   * explicitly, so a new caller can never silently lose a field it depends on.
+   *
+   * WHY IT IS WORTH A FLAG. Measured 2026-08-01 on the real hot statement (the
+   * topic-filtered improvements read, LIMIT 500), EXPLAIN (ANALYZE, SERIALIZE) —
+   * output size is deterministic, wall-clock on this box is not (D-005):
+   *
+   *   all columns            1607 kB   ~87 ms
+   *   body dropped            389 kB   ~75 ms   <- this flag
+   *   payload dropped        1450 kB   ~75 ms
+   *   body + payload dropped  232 kB   ~71 ms
+   *
+   * `body` is 76% of the bytes. That is the whole prize on this read.
+   *
+   * ⚠ DO NOT "improve" this by slicing instead of dropping. `left(body, 400)` was
+   * measured across four runs at ~90 ms — consistently SLOWER than shipping the whole
+   * column (~87 ms) despite emitting 64% fewer bytes, because Postgres must detoast
+   * the entire value to slice it and that CPU exceeds the serialization saved. Same
+   * mechanism D-005 recorded for narrowing a jsonb column server-side; this measures
+   * it for a scalar text column too. Only DROPPING avoids the detoast.
+   */
+  includeBody?: boolean;
+  /**
    * P-008 (db-performance-remediation-2026-07-26): author + recency predicates, so a
    * caller wanting "how many did *I* file since T" can COUNT in Postgres instead of
    * listing rows and filtering in JS. Both orient hints
@@ -842,7 +882,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
   // and passing it back via ANY() shipped ~7K ids out of PG and back on every
   // learning.improvements read — WI-5412.)
   const rows = await sql<IssueRowDb[]>`
-    SELECT ${sql.unsafe(ISSUE_COLS)}
+    SELECT ${sql.unsafe(filter.includeBody === false ? ISSUE_COLS_BODYLESS : ISSUE_COLS)}
       FROM harness_shared.engineer_issues
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND kind = ANY(${kindSet as string[]}::text[])

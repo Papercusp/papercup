@@ -29,6 +29,9 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { scanSource, enclosingTopLevelSymbol, type ChunkUnsafeSite } from './child-output-scan.js';
+// @ts-expect-error — .mjs guard helper, no type declarations (same import shape
+// as tracked-files-helper.test.ts and the other guard tests).
+import { listTrackedFiles } from '../../../scripts/lib/tracked-files.mjs';
 
 const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
   encoding: 'utf8',
@@ -138,19 +141,39 @@ const FIX_HINT =
   'Route it through `collectChildOutput(child)` or `createTextCollector(stream)` ' +
   'from packages/operator-core/lib/child-output.ts, then update BASELINE in this file.';
 
-function scanTree(): Map<string, ChunkUnsafeSite[]> {
-  // ⚠ `--recurse-submodules` is load-bearing, not a nicety. A plain `git
-  // ls-files` stops at the superproject and cannot see ANY of this repo's 39
-  // submodules — ~1000 TypeScript files that would silently never be scanned,
-  // making a green here mean far less than it appears to (WI-6730 filed exactly
-  // this defect against 26 of the repo's 48 lint guards).
-  const files = execFileSync('git', ['ls-files', '--recurse-submodules', '*.ts', '*.mts', '*.cts'], {
-    encoding: 'utf8',
-    cwd: REPO_ROOT,
-    maxBuffer: 64 * 1024 * 1024,
-  })
-    .split('\n')
-    .filter(Boolean)
+/**
+ * EI-19298378364087215 — WHY THIS ENUMERATES VIA THE SHARED HELPER AND REPORTS
+ * COVERAGE, rather than calling `git ls-files --recurse-submodules` itself.
+ *
+ * `--recurse-submodules` is load-bearing, not a nicety: a plain `git ls-files`
+ * stops at the superproject and cannot see ANY of this repo's 39 submodules —
+ * ~1000 TypeScript files that would silently never be scanned (WI-6730 filed
+ * exactly this defect against 26 of the repo's 48 lint guards).
+ *
+ * But `--recurse-submodules` is NOT reliable everywhere, and its failure is
+ * SILENT. The release/checkpoint checkout extracts submodule SOURCE with `git
+ * archive` (setup-release-checkout.sh), deliberately — many submodule pins are
+ * never pushed to origin, so a fresh worktree's `submodule update` fails "not
+ * our ref". Archive-extracted trees have NO `.git`, so they are not submodules
+ * to git: recursion returns superproject-only, exits 0, and simply yields a
+ * SHORTER list. Measured in the checkpoint tree: 20,060 paths recursive vs
+ * 20,098 plain, and ZERO under any submodule, while the files sit on disk.
+ *
+ * That is why coverage travels with the result. A guard that cannot tell "I
+ * scanned this and found nothing" from "I never opened this" will, on the
+ * absence-based ratchet below, instruct the reader to DELETE a guard entry
+ * over a live unsafe site.
+ */
+function scanTree(): { byFile: Map<string, ChunkUnsafeSite[]>; unscanned: string[] } {
+  // The shared enumerator returns the coverage split (declared/scanned/
+  // unscanned) alongside the files, precisely so a caller cannot forget the
+  // coverage question. Filter to TypeScript here rather than re-invoking git.
+  const { files: allFiles, unscanned } = listTrackedFiles(REPO_ROOT) as {
+    files: string[];
+    unscanned: string[];
+  };
+  const files = allFiles
+    .filter((f) => /\.(ts|mts|cts)$/.test(f))
     .filter((f) => !f.includes('node_modules') && !f.includes('_retired'))
     .filter((f) => !SELF_EXCLUDED.has(f));
 
@@ -166,11 +189,15 @@ function scanTree(): Map<string, ChunkUnsafeSite[]> {
     const hits = scanSource(f, src);
     if (hits.length > 0) byFile.set(f, hits);
   }
-  return byFile;
+  return { byFile, unscanned };
 }
 
 describe('chunk-split UTF-8 corruption guard (WI-6728)', () => {
-  const found = scanTree();
+  const { byFile: found, unscanned } = scanTree();
+  /** True for a BASELINE key that lives under a submodule the enumerator could
+   *  not open. For these, "0 sites found" carries NO information. */
+  const wasNotScanned = (file: string): boolean =>
+    unscanned.some((sub) => file.startsWith(`${sub}/`));
 
   it('no NEW file introduces a chunk-unsafe stream accumulator', () => {
     const offenders: string[] = [];

@@ -184,6 +184,21 @@ export interface ReadImprovementOpts {
   /** Restrict to a lifecycle state (default: all states, so rollups + dedup see resolved too). */
   state?: 'open' | 'resolved' | 'closed';
   limit?: number;
+  /**
+   * P-008 (db-performance-remediation-2026-07-26): skip the `body` column for a
+   * consumer that never reads `candidate.body`. Default (omitted) keeps it, so this
+   * is opt-OUT per caller — see {@link ListIssuesFilter.includeBody} for the measured
+   * numbers (body is 76% of this read's bytes) and for why slicing it is SLOWER than
+   * either keeping or dropping it.
+   *
+   * ⚠ Check before flipping a caller: `ImprovementCandidate.body` is `body?: string`,
+   * so a consumer that reads it will NOT fail to compile — it will silently see an
+   * empty body. Real readers today are triage / triage-core / digest / policy /
+   * reversibility / watchdog-key-migration / recurrence-escalation (all doing
+   * `title + body` text matching). Verify the whole downstream path, not just the
+   * immediate caller.
+   */
+  includeBody?: boolean;
   /** (P-010) Restrict to a specific harness scope. Omit for all scopes (papercusp + all harnesses). */
   harnessSlug?: string;
   /**
@@ -403,6 +418,7 @@ async function readByTopic(
     state: opts.state,
     limit: opts.limit ?? 500,
     signalOrigins: origins,
+    ...(opts.includeBody === false ? { includeBody: false } : {}),
     ...(issueIds ? { issueIds } : {}),
   });
 

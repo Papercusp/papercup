@@ -90,7 +90,13 @@ export interface TriageCoreDeps {
   mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
 }
 
-const defaultDeps: TriageCoreDeps = { getIssue, setIssueState, commentIssue, mergeIssuePayload };
+const defaultDeps: TriageCoreDeps = {
+  getIssue,
+  setIssueState,
+  commentIssue,
+  mergeIssuePayload,
+  searchTree: defaultSearchTree,
+};
 
 const TERMINAL_ISSUE_STATES = new Set(['resolved', 'closed']);
 

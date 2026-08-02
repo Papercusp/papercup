@@ -28,7 +28,7 @@
  *   _MAX_RESTARTS_HR, _UNIT, _LOG.
  */
 import { execFile } from 'node:child_process';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -44,7 +44,52 @@ const UNIT = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_UNIT || 'papercup-mcp-prox
  *  identical rationale (EI-2434: journald's stdout-socket capture was itself observed wedged). */
 const LOG_FILE = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_LOG || join(homedir(), '.papercusp', 'mcp-proxy-watchdog.log');
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * SESSION-PLANE probe — EI-19299524366372518 (2026-08-01 incident).
+ *
+ * The /api/health probe above answers "is the event loop alive?". It CANNOT answer
+ * "can a client actually get a tool catalog?", and on 2026-08-01 those diverged for
+ * ~100 minutes: /api/health returned 200 in ~2ms continuously while the MCP session
+ * plane was completely dead. Fleet tool throughput fell 2759 -> 44 calls/30min, 29 su
+ * sessions went dark for a median of 80 minutes, and this watchdog logged nothing but
+ * its routine 10s blips. Every consumer of :9071 cares about the tool catalog; nobody
+ * cares about /api/health. So we probe the thing that matters.
+ *
+ * COST. The probe asks for a SINGLE tool (`?tools=`), so a healthy poll is ~4KB/15s.
+ * The unfiltered catalog is ~980KB / 742 tools and is fetched ONLY as a confirmation
+ * step before acting (see below) — never on the steady-state path. That matters: this
+ * incident involved a resource-starved operator, and a watchdog that adds ~65KB/s plus
+ * a 742-tool assembly every 15s would be pushing the thing it is meant to protect.
+ *
+ * TWO FALSE-POSITIVE TRAPS, both measured on the live endpoint, both guarded:
+ *
+ *  1. UNAUTHENTICATED reads as dead. With a missing/expired bearer the server returns
+ *     HTTP 200 with ZERO tools — its own error text says so explicitly: "this MCP
+ *     session is UNAUTHENTICATED, so it exposes NO tools (this is NOT 'a healthy server
+ *     with zero tools')". A watchdog that restarted services because its own credential
+ *     expired would be strictly worse than the blindness it replaces, so `auth` is a
+ *     PROBE-CONFIG fault: logged loudly, never counted as a service failure.
+ *
+ *  2. A STALE FILTER NAME reads as dead. `?tools=does-not-exist` also returns HTTP 200,
+ *     zero tools, and NO error — indistinguishable from an empty catalog. Renaming
+ *     PROBE_TOOL would otherwise arm a permanent false alarm. Hence `empty` is treated
+ *     as AMBIGUOUS, never as a verdict: it triggers one unfiltered confirmation fetch,
+ *     and a healthy confirmation reports the stale filter as a config warning instead.
+ *
+ * THRESHOLD. Deliberately longer than the reachability path's 45s: the proxy's own
+ * retryWindowMs is 90_000, so it is *designed* to absorb an upstream gap up to 90s
+ * (that is the entire point of the service). Acting sooner would fight the resilience
+ * layer. 120s sits just above it — detection in ~2min against the ~100min this took.
+ * ──────────────────────────────────────────────────────────────────────────── */
+const UPSTREAM_PORT = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_UPSTREAM_PORT) || 3070;
+const HANDSHAKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_HANDSHAKE_TIMEOUT_MS) || 10_000;
+const HANDSHAKE_UNHEALTHY_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_HANDSHAKE_UNHEALTHY_MS) || 120_000;
+/** Any single stable tool name; correctness does NOT depend on it (trap 2 above). */
+const PROBE_TOOL = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_PROBE_TOOL || 'coord:orient';
+const SUPERUSER_TOKEN_FILE = join(homedir(), '.papercusp', 'superuser-token');
+
 let unreachableSince = 0;
+let handshakeFailingSince = 0;
 let lastRestart = 0;
 const restartTimes = []; // epoch ms of recent restarts (rolling 1h window for the circuit breaker)
 
@@ -68,6 +113,101 @@ const log = (m) => {
 export function shouldRestart(unreachableSinceMs, nowMs, thresholdMs = UNREACHABLE_MS) {
   if (!unreachableSinceMs) return false;
   return nowMs - unreachableSinceMs >= thresholdMs;
+}
+
+/**
+ * Pure verdict for one session-plane probe. Split out from the network call so the
+ * exact 2026-08-01 miss is expressible as a unit test: a target that answers
+ * /api/health with 200/2ms but cannot serve a tool catalog MUST be judged unhealthy.
+ *
+ *   'ok'    — a well-formed JSON-RPC result carrying a NON-EMPTY tool catalog. Proves
+ *             the whole path a real client needs: session established, bearer accepted,
+ *             registry assembled, response serialised.
+ *   'auth'  — the credential was rejected. A PROBE-CONFIG fault, never a service fault.
+ *   'empty' — 200 + zero tools + no error. AMBIGUOUS (stale filter vs genuinely empty
+ *             registry); the caller must confirm before treating it as a verdict.
+ *   'dead'  — no response, non-200, unparseable, or a non-auth JSON-RPC error.
+ */
+export function classifyProbeResult({ networkError, status, json } = {}) {
+  if (networkError) return 'dead';
+  if (status !== 200) return 'dead';
+  if (!json || typeof json !== 'object') return 'dead';
+  const err = json.error;
+  if (err) {
+    const text = `${err.code ?? ''} ${err.message ?? ''}`.toLowerCase();
+    // The server reports a bad/expired bearer as a -32603 whose message names the cause.
+    return text.includes('auth') || text.includes('bearer') || text.includes('unauthenticated')
+      ? 'auth'
+      : 'dead';
+  }
+  const tools = json.result?.tools;
+  if (!Array.isArray(tools)) return 'dead';
+  return tools.length > 0 ? 'ok' : 'empty';
+}
+
+/**
+ * Pure remediation decision, given a confirmed-unhealthy proxy probe and a probe of the
+ * upstream taken at the same moment.
+ *
+ * The discrimination is the point. On 2026-08-01 the proxy was fine and :3070 was wedged
+ * — restarting the proxy would have accomplished nothing while burning a slot in the
+ * circuit breaker and making the log lie about what was broken. Only a :3070 restart
+ * cleared it (all 29 dark sessions recovered inside the 7 minutes after it).
+ */
+export function decideHandshakeAction(proxyKind, upstreamKind) {
+  if (proxyKind === 'ok') return 'none';
+  if (proxyKind === 'auth') return 'none'; // our own credential; never a service verdict
+  return upstreamKind === 'ok' ? 'restart-proxy' : 'upstream-wedged';
+}
+
+/** Read the superuser bearer fresh each probe (32 bytes; picks up rotation for free). */
+function readProbeToken() {
+  try {
+    return readFileSync(SUPERUSER_TOKEN_FILE, 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Extract the JSON-RPC payload from either an SSE frame or a plain JSON body. */
+function parseMcpBody(text) {
+  const frame = text.split('\n').find((l) => l.startsWith('data: '));
+  try {
+    return JSON.parse(frame ? frame.slice(6) : text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One session-plane probe against `port`. `full: true` drops the single-tool filter and
+ * asks for the whole catalog — the confirmation path only (see the cost note above).
+ */
+async function probeMcp(port, { full = false } = {}) {
+  const token = readProbeToken();
+  if (!token) return { kind: 'auth', detail: `no superuser token at ${SUPERUSER_TOKEN_FILE}` };
+  const qs = `superuser=1&client=mcp-proxy-watchdog${full ? '' : `&tools=${encodeURIComponent(PROBE_TOOL)}`}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), HANDSHAKE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/mcp?${qs}`, {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    const json = parseMcpBody(await res.text());
+    const kind = classifyProbeResult({ status: res.status, json });
+    return { kind, detail: kind === 'ok' ? `${json.result.tools.length} tools` : (json?.error?.message ?? `HTTP ${res.status}`) };
+  } catch (e) {
+    return { kind: 'dead', detail: e.message };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function restart(reason) {
@@ -112,11 +252,88 @@ async function poll() {
   }
 }
 
+let lastAuthLog = 0;
+let lastUpstreamLog = 0;
+const LOG_THROTTLE_MS = 10 * 60_000;
+
+/**
+ * Session-plane poll — the detector /api/health cannot be (EI-19299524366372518).
+ * Runs alongside the reachability poll rather than replacing it: that one still covers
+ * the EI-9237 frozen-event-loop class, and dropping it would trade one blind spot for
+ * another.
+ */
+async function pollHandshake() {
+  let { kind, detail } = await probeMcp(PORT);
+
+  // 'empty' is ambiguous, never a verdict — confirm against the unfiltered catalog
+  // before believing it (trap 2: a renamed PROBE_TOOL looks exactly like a dead registry).
+  if (kind === 'empty') {
+    const confirm = await probeMcp(PORT, { full: true });
+    if (confirm.kind === 'ok') {
+      log(`PROBE CONFIG: filter tool "${PROBE_TOOL}" matched nothing but the catalog is healthy (${confirm.detail}) — set PAPERCUSP_MCP_PROXY_WATCHDOG_PROBE_TOOL to a live tool name. NOT a service fault.`);
+      kind = 'ok';
+    } else {
+      ({ kind, detail } = confirm);
+      if (kind === 'empty') kind = 'dead'; // confirmed empty registry on a real client path
+    }
+  }
+
+  if (kind === 'ok') {
+    if (handshakeFailingSince) {
+      log(`session plane recovered (was failing ${Math.round((Date.now() - handshakeFailingSince) / 1000)}s)`);
+      handshakeFailingSince = 0;
+    }
+    return;
+  }
+
+  if (kind === 'auth') {
+    const now = Date.now();
+    if (now - lastAuthLog > LOG_THROTTLE_MS) {
+      lastAuthLog = now;
+      log(`PROBE CONFIG: session probe cannot authenticate (${detail}) — this watchdog is BLIND until fixed, but that is OUR credential, not a service fault, so nothing will be restarted.`);
+    }
+    return; // never let our own bad credential restart a healthy service
+  }
+
+  const now = Date.now();
+  if (!handshakeFailingSince) {
+    handshakeFailingSince = now;
+    log(`session plane FAILING (${detail}) — /api/health may still be green; that is the point of this probe`);
+    return;
+  }
+  if (!shouldRestart(handshakeFailingSince, now, HANDSHAKE_UNHEALTHY_MS)) return;
+
+  const secs = Math.round((now - handshakeFailingSince) / 1000);
+  const upstream = await probeMcp(UPSTREAM_PORT);
+  const action = decideHandshakeAction(kind, upstream.kind);
+
+  if (action === 'restart-proxy') {
+    restart(`session plane dead ${secs}s through :${PORT} while upstream :${UPSTREAM_PORT} serves tools — proxy is the culprit (${detail})`);
+    handshakeFailingSince = 0;
+    return;
+  }
+
+  // Upstream is the culprit. Restarting the proxy cannot fix it and would burn a
+  // circuit-breaker slot while the log blamed the wrong service — so we do not.
+  if (now - lastUpstreamLog > LOG_THROTTLE_MS) {
+    lastUpstreamLog = now;
+    log(
+      `CRITICAL: MCP session plane dead ${secs}s and the UPSTREAM operator :${UPSTREAM_PORT} is the culprit (proxy: ${detail}; upstream: ${upstream.detail}). ` +
+        `Restarting ${UNIT} would NOT fix this and is being withheld. This is the 2026-08-01 signature (WI-6739): /api/health stays 200/2ms while every client is dark. ` +
+        `Remediation: restart the operator host serving :${UPSTREAM_PORT}.`,
+    );
+  }
+}
+
 function start() {
   log(
     `up — port ${PORT}, poll ${POLL_MS}ms, unreachable-threshold ${UNREACHABLE_MS}ms, debounce ${DEBOUNCE_MS}ms, cap ${MAX_RESTARTS_PER_HR}/hr, unit ${UNIT}; durable log ${LOG_FILE}`,
   );
+  log(
+    `session-plane probe — tools/list via :${PORT} every ${POLL_MS}ms (filter "${PROBE_TOOL}", timeout ${HANDSHAKE_TIMEOUT_MS}ms), unhealthy after ${HANDSHAKE_UNHEALTHY_MS}ms, upstream :${UPSTREAM_PORT}`,
+  );
   setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
+  setInterval(() => void pollHandshake().catch((e) => log(`handshake poll error: ${e.message}`)), POLL_MS);
 }
 
 // Auto-start when run as the systemd unit (`node watchdog.mjs`). Tests set

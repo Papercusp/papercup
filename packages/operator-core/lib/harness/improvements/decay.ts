@@ -141,7 +141,10 @@ export interface DecaySweepDeps {
 }
 
 const defaultDeps: DecaySweepDeps = {
-  readItems: () => readImprovementItems({}),
+  // P-008: this sweep reads only lifecycle fields (state / updatedAt / payload), never
+  // `candidate.body` — the only `body` here is the WRITE param of commentIssue above.
+  // So it takes the body-less projection: 1607 kB -> 389 kB per 500-row read.
+  readItems: () => readImprovementItems({ includeBody: false }),
   mergeIssuePayload,
   commentIssue,
 };

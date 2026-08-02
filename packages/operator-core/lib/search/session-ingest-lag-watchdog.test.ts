@@ -14,6 +14,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   evaluateIngestLag,
   sessionIngestLagSweep,
+  remainderIsConsumableWork,
   INGEST_LAG_MIN_BACKLOG_BYTES,
   type AdapterLagObservation,
   type IngestLagSweepDeps,
@@ -29,7 +30,54 @@ const obs = (over: Partial<AdapterLagObservation> = {}): AdapterLagObservation =
   ...over,
 });
 
+describe('remainderIsConsumableWork — the PER-FILE admission test (EI-19280389878453845)', () => {
+  // The regression: this floor was only ever tested against the per-ADAPTER
+  // SUM. Its premise is per-file ("a live session ALWAYS has a few hundred
+  // unconsumed bytes"), so summing enough sub-floor tails always crosses it.
+  // Measured with claude ingest demonstrably healthy: 20 files behind /
+  // 537 KB summed, only 2 individually at the floor → reported WEDGED.
+  it('rejects an ordinary partially-written tail', () => {
+    expect(remainderIsConsumableWork(1_024, true)).toBe(false);
+    expect(remainderIsConsumableWork(INGEST_LAG_MIN_BACKLOG_BYTES - 1, true)).toBe(false);
+  });
+
+  it('rejects a remainder with no complete line, however large', () => {
+    // readNewLines stops at the last newline BY DESIGN, so a remainder with no
+    // newline can never be consumed — and because the state row then stops
+    // advancing, its age grows without bound and crosses any threshold. This
+    // is the second half of the false alarm.
+    expect(remainderIsConsumableWork(INGEST_LAG_MIN_BACKLOG_BYTES * 4, false)).toBe(false);
+  });
+
+  it('admits a real backlog — over the floor AND holding a complete line', () => {
+    expect(remainderIsConsumableWork(INGEST_LAG_MIN_BACKLOG_BYTES, true)).toBe(true);
+    expect(remainderIsConsumableWork(5 * 1024 * 1024, true)).toBe(true);
+  });
+
+  it('N sub-floor tails can no longer sum their way into an alert', () => {
+    // The precise shape of the incident: 20 files, none individually real.
+    const files = Array.from({ length: 20 }, () => 27 * 1024); // ~537 KB summed
+    const admitted = files.filter((b) => remainderIsConsumableWork(b, true));
+    expect(admitted).toHaveLength(0);
+    expect(files.reduce((a, b) => a + b, 0)).toBeGreaterThan(INGEST_LAG_MIN_BACKLOG_BYTES);
+  });
+});
+
 describe('evaluateIngestLag', () => {
+  it('reports WHAT it ignored, so a healthy verdict is auditable', () => {
+    const v = evaluateIngestLag(
+      obs({ sourceKind: 'claude', ignoredTailFiles: 18, ignoredIncompleteFiles: 2 }),
+      HOUR,
+    );
+    expect(v.wedged).toBe(false);
+    expect(v.reason).toContain('18 sub-floor tail(s)');
+    expect(v.reason).toContain('2 file(s) whose remainder holds no complete line');
+  });
+
+  it('omits the ignored-files clause entirely when there is nothing to report', () => {
+    expect(evaluateIngestLag(obs({ sourceKind: 'omp' }), HOUR).reason).not.toContain('Ignored');
+  });
+
   it('stays SILENT for a quiet adapter, however stale its clock lag', () => {
     // The 2026-07-28 case: no unconsumed bytes anywhere. The verdict must not
     // consult wall-clock lag at all — there is no input for it to consult.

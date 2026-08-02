@@ -180,7 +180,10 @@ export interface HygieneSweepDeps {
 }
 
 const defaultDeps: HygieneSweepDeps = {
-  readItems: () => readImprovementItems({}),
+  // P-008: same as the decay sweep — hygiene reads lifecycle fields only, never
+  // `candidate.body` (the `body` above is commentIssue's WRITE param), so it takes
+  // the body-less projection. See ListIssuesFilter.includeBody for the measurements.
+  readItems: () => readImprovementItems({ includeBody: false }),
   setIssueState,
   commentIssue,
   mergeIssuePayload,

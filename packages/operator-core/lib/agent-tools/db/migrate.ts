@@ -261,23 +261,20 @@ const holderJson = (h: ResourceHolder) => ({
 export default defineTool({
   name: 'db:migrate',
   description:
-    'Apply a SQL migration file, coordinated. DRY RUN unless confirm:true; with confirm, acquires exclusive(db-schema), drains, then applies. Real apply also requires host-only PAPERCUSP_ALLOW_DB_MIGRATE=1. When withheld, escalate:true raises a coord:escalate carrying the ready-to-run command — the fast path for a cup with no PG access stuck on an urgent migration while the deploy gate is red (EI-13299). Prefer this over a raw psql -f.',
+    'Apply a SQL migration file, coordinated. DRY RUN unless confirm:true; with confirm, acquires exclusive(db-schema), drains, then applies. Real apply also needs host-only PAPERCUSP_ALLOW_DB_MIGRATE=1; when withheld you still get back the exact psql + schema_migrations INSERT to run by hand. Prefer this over a raw psql -f.',
   guidance: {
     when: 'Applying a migration / destructive DDL that could disrupt in-flight queries. Dry-run to see holders; confirm to drain + apply.',
     notWhen: 'Read-only SQL needs no lock. Never apply migrations casually on a shared box.',
     chaining:
       'db:migrate { file } (dry) → review → db:migrate { file, confirm: true }. ' +
-      'EI-6955: `file` is an arbitrary absolute path — pass a migration you JUST wrote in STAGING (don\'t wait ' +
-      'for db:check_drift, which reads the release checkout). Real apply is normally WITHHELD ' +
-      '(PAPERCUSP_ALLOW_DB_MIGRATE is host-only); confirm:true still returns the exact psql + schema_migrations ' +
-      'INSERT command to run by hand. EI-13299: no shell/PG access (a cup) + genuinely urgent + deploy gate red? ' +
-      'Re-call with escalate:true instead — opens a blocker coord:escalate carrying that same ready command for ' +
-      'a human/su to run. Omit escalate for routine attempts (no spam). Emits ctx.progress during drain/apply; a ' +
-      'client-side timeout does NOT stop the server call — verify schema_migrations before retrying, never assume ' +
-      'failure. WI-6381: repeated lock_timeout_retries_exhausted:true against a table that looks otherwise idle? ' +
-      'Check pg_locks/pg_stat_activity for a long-lived NON-operator holder first (the host pg_dump backup is a ' +
-      'known one — it can hold AccessShareLock on any table for several minutes while dumping a large one). If ' +
-      'confirmed, retry with lock_timeout_sec set high enough to outlast it rather than looping the default retry.',
+      'EI-6955: `file` is any absolute path — pass a migration you JUST wrote in STAGING (db:check_drift reads the ' +
+      'release checkout). EI-13299: no shell/PG access (a cup) + urgent + deploy gate red? re-call with ' +
+      'escalate:true to open a blocker coord:escalate carrying that ready-to-run command; omit it for routine ' +
+      'attempts (no spam). Emits ctx.progress during drain/apply; a client-side timeout does NOT stop the server ' +
+      'call — verify schema_migrations before retrying, never assume failure. WI-6381: repeated ' +
+      'lock_timeout_retries_exhausted:true against an otherwise-idle table? check pg_locks/pg_stat_activity for a ' +
+      'long-lived NON-operator holder (the host pg_dump backup can hold AccessShareLock for minutes), then retry ' +
+      'with lock_timeout_sec high enough to outlast it rather than looping the default retry.',
     seeAlso: [
       'db:check_drift (verify schema drift first)',
       'db:next-migration (scaffold a new migration)',

@@ -932,22 +932,24 @@ export default defineTool({
   profile: 'engineer',
   description:
     "A leader's ONE-call health brief for ONE fleet (yours by default). Per member: " +
-    'sessionState, `verdict` ' +
-    '(booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, claims ' +
-    '(doing/workItemIds/queuedCount/load), loop state (monitoring|waiting|' +
-    'parked-awaiting-capability)+nextFireAt, stalled, unanswered, contextPressure ' +
-    '(ok|high|critical), parkedOn + parkedOnResolved (a composed await is ONE entry carrying its ' +
-    'ROOT deadline + any/all mode — never loose leaves, which read as deadline-less), ' +
-    'benchSuggestion (check `kind`), `dormant`, unownedCriticals + abandonedUnclaimed ' +
-    '(progress started then ABANDONED — assignee IS NULL, so CLAIM it).',
+    'sessionState, `verdict` (booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, ' +
+    'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state ' +
+    '(monitoring|waiting|parked-awaiting-capability)+nextFireAt, stalled, unanswered, ' +
+    'contextPressure (ok|high|critical), parkedOn + parkedOnResolved (a composed await is ONE ' +
+    'entry carrying its ROOT deadline + any/all mode, never loose leaves), benchSuggestion ' +
+    '(check `kind`), `dormant`, unownedCriticals + abandonedUnclaimed (started then ABANDONED — ' +
+    'assignee IS NULL, so CLAIM it).',
   guidance: {
     when:
-      "On a leader's repeating monitor tick: "
-      + '"who is actually working / stuck / unanswered / about to compact right now, across MY fleet". '
-      + "Folded automatically into coord:orient { mode:'monitor' } for a resolvable fleet leader.",
+      'AFTER something wakes you: "who is working / stuck / unanswered / about to compact across MY fleet". ' +
+      'How you SEE the fleet, NOT how you watch it — PARK, do not poll: events:await over ' +
+      'fleet:{member-dead,context-critical,claim-released,item-completed}:<slug> (slug LAST) + ' +
+      'work-item:claimable { payload_filter:{plan} }. loop:arm is then a LONG fallback heartbeat ' +
+      "(15m+), never the monitor. Folded into coord:orient { mode:'monitor' }. " +
+      'Spec: agent-insights/leading-a-fleet-without-polling.',
     notWhen:
-      'The Mug/placement-decision read over the WHOLE workspace roster (fleet:assignments), ' +
-      'or full message history for one member (coord:inbox { agent }).',
+      'The Mug/placement read over the WHOLE workspace roster (fleet:assignments), ' +
+      'or one member\'s message history (coord:inbox { agent }).',
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up. `benchSuggestion` set → ' +
