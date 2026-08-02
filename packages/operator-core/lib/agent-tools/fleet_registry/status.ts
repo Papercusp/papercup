@@ -18,6 +18,7 @@ import {
 } from '../../fleet/fleet-roster';
 import { getCompletionIntegrityStats, type CompletionIntegrityStats } from '../../work-items';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import type { AdvSessionEndedBy } from '../../adv-sessions';
 import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 
 /**
@@ -154,7 +155,10 @@ export default defineTool({
     const endedIds = roster
       .filter((m) => ['ended', 'suspect'].includes(m.sessionState ?? ''))
       .map((m) => m.agentId);
-    let resumableByOwner = new Map<string, { sessionId: string | null; endedAt: string | null }>();
+    let resumableByOwner = new Map<
+      string,
+      { sessionId: string | null; endedAt: string | null; endedBy: AdvSessionEndedBy | null }
+    >();
     if (endedIds.length) {
       try {
         const { advSessionsByCoordOwner } = await import('../../adv-sessions');
@@ -163,7 +167,10 @@ export default defineTool({
           endedIds
             .map((id) => [id, advByOwner.get(id)] as const)
             .filter((e): e is [string, NonNullable<(typeof e)[1]>] => !!e[1])
-            .map(([id, row]) => [id, { sessionId: row.sessionId, endedAt: row.endedAt }]),
+            .map(([id, row]) => [
+              id,
+              { sessionId: row.sessionId, endedAt: row.endedAt, endedBy: row.endedBy },
+            ]),
         );
       } catch {
         // Best-effort enrichment — a lookup failure must never fail the status read.
@@ -207,8 +214,20 @@ export default defineTool({
         ...(['ended', 'suspect'].includes(m.sessionState ?? '')
           ? (() => {
               const r = resumableByOwner.get(m.agentId);
+              // P-015: `endedAt` is only an observation when the session reported its OWN
+              // exit. Otherwise a sweeper stamped now() on noticing a process that was
+              // already gone, and a leader reading these as death times sees an artificial
+              // cluster — the WI-7126 misdiagnosis. Say so inline, on the row.
+              const endedAtIsNotice = r != null && r.endedAt != null && r.endedBy !== 'self';
               return {
                 endedAt: r?.endedAt ?? null,
+                endedBy: r?.endedBy ?? null,
+                ...(endedAtIsNotice
+                  ? {
+                      endedAtIsNoticeTime: true,
+                      endedAtCaveat: `endedAt here is when ${r.endedBy ?? 'an unrecorded writer'} NOTICED this session was gone, not when it ended — the true end time is unknown. Read coord_presence.last_active_at for this owner instead. Do not read a cluster of these as a simultaneous event (WI-7126).`,
+                    }
+                  : {}),
                 resumable: !!r?.sessionId,
                 resumableSessionId: r?.sessionId ?? null,
                 ...(r?.sessionId

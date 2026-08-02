@@ -69,6 +69,21 @@ export const CompletionVerificationEvidenceSchema = z.object({
       'A boolean FLAG — did this completion add or change tests? true/false, NOT a description of ' +
         'what was added (put that prose in `testsRun` / `testResult`).',
     ),
+  /**
+   * EI-19319623239777505: the caller's free-text `completion.summary`, carried alongside
+   * the structured fields it sits next to. Before this field existed, `summary` was NEVER
+   * persisted anywhere durable — not on a normal close (work_items:complete never passed
+   * a `completionRef`, deliberately, per P-004 — see complete.ts) and not on a second
+   * (already-terminal) close either (the attestation's `completionRef` fell back to
+   * `opts.completionRef ?? null`, which complete.ts also never populates). The caller's
+   * narrative was echoed back in the tool's RETURN value only, never written to the row —
+   * so a later reader (an audit, a leader brief, a fresh agent picking the item back up)
+   * had no way to recover WHAT was done, only whether it met the `committed` evidence bar.
+   * Deliberately does NOT affect `isSufficientEvidence`/`authorityForCompletion` (both key
+   * only on `verifiedHow` + `testsRun`/`testResult`) — this is purely an additional,
+   * non-authority-bearing carry-through of the prose the caller already wrote.
+   */
+  summary: z.string().min(1).optional(),
 });
 export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificationEvidenceSchema>;
 

@@ -716,6 +716,15 @@ describe('executeWake — the liveness ladder', () => {
     expect(injectPsuHost).toHaveBeenCalledWith('/tmp/x.sock', expect.objectContaining({ mode: 'turn' }));
   });
 
+  it('threads this delivery\'s own id onto the envelope as deliveryId (EI-19311270129974785 — host-side retry dedup)', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    await executeWake(
+      work({ wakeHandle: null, id: 35092 }),
+      deps({ findPsuHost: vi.fn(() => ({ sock: '/tmp/x.sock' })) as never, injectPsuHost: injectPsuHost as never }),
+    );
+    expect(injectPsuHost).toHaveBeenCalledWith('/tmp/x.sock', expect.objectContaining({ deliveryId: '35092' }));
+  });
+
   it('no handle + live socket but inject FAILS → falls through to park (live presence)', async () => {
     const out = await executeWake(
       work({ wakeHandle: null }),

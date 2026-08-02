@@ -684,6 +684,102 @@ describe('recall empty-scope + scale-contradiction (P-037)', () => {
     expect(LEARNING_SLO_DEFAULTS.recallPoolMaxEmptyScopeRate).toBe(0.25);
   });
 
+  // WI-6932: a flat 7d trailing rate cannot express "this WAS broken and no
+  // longer is" — these are the recency-check cases (`recentPools`, the 4th
+  // param). The load-bearing case is the FIRST: a sharp step-function fix
+  // (D-035's live shape) must stop firing well before the pre-fix rows age
+  // out of the 7d window, not merely someday.
+  describe('gate-3 recency check (WI-6932)', () => {
+    it('suppresses a 7d breach entirely when the recent window reads clean (the D-035 shape)', () => {
+      // Live 2026-08-02: 7d rate 0.274/0.369 (mid-turn/turn-start), but 4h
+      // straight at 0.000 post-fix. A 24h recent window with enough recalls
+      // to trust and a clean rate must mean NO signal fires at all.
+      const out = recallPoolSignalsFromHealth(
+        [pool({ recalls: 500, emptyScope: 137, emptyScopeRate: 0.274 })], // 7d: breaches 0.25
+        [],
+        {},
+        [pool({ recalls: 200, emptyScope: 0, emptyScopeRate: 0 })], // 24h: clean
+      );
+      expect(out.map((s) => s.key)).not.toContain('recall-pool-empty-scope');
+    });
+
+    it('still fires, with the trend visible, when the recent window is ALSO still breaching', () => {
+      const out = recallPoolSignalsFromHealth(
+        [pool({ recalls: 500, emptyScope: 344, emptyScopeRate: 0.688 })],
+        [],
+        {},
+        [pool({ recalls: 200, emptyScope: 140, emptyScopeRate: 0.7 })], // 24h: still breaching
+      );
+      const sig = out.find((s) => s.key === 'recall-pool-empty-scope');
+      expect(sig).toBeDefined();
+      expect(sig!.body).toContain('still 70% over the last 24h — not a stale-window artifact');
+    });
+
+    it('falls back to the flat-window verdict when no recentPools are passed (backward-compatible)', () => {
+      // Every pre-WI-6932 caller (including every other test in this file)
+      // omits the 4th param entirely — this must behave EXACTLY as before.
+      const out = recallPoolSignalsFromHealth(
+        [pool({ recalls: 455, zeroHit: 335, zeroHitRate: 0.736, emptyScope: 313, emptyScopeRate: 0.688 })],
+      );
+      expect(out.map((s) => s.key)).toContain('recall-pool-empty-scope');
+    });
+
+    it('falls back to the flat-window verdict when the recent slice is too underpowered to trust', () => {
+      const out = recallPoolSignalsFromHealth(
+        [pool({ recalls: 500, emptyScope: 344, emptyScopeRate: 0.688 })],
+        [],
+        {},
+        // Only 3 recalls in the recent window — below recallPoolMinRecalls
+        // (20) — so its 0% rate is not trustworthy evidence of a real fix.
+        [pool({ recalls: 3, emptyScope: 0, emptyScopeRate: 0 })],
+      );
+      expect(out.map((s) => s.key)).toContain('recall-pool-empty-scope');
+    });
+
+    it('matches recentPools to the flat-window pool by surface+pool+scale, not by array position', () => {
+      const out = recallPoolSignalsFromHealth(
+        [pool({ surface: 'turn-start', pool: 'harness', recalls: 500, emptyScope: 344, emptyScopeRate: 0.688 })],
+        [],
+        {},
+        // A recent row for a DIFFERENT pool must not suppress this one.
+        [pool({ surface: 'turn-start', pool: 'hive', recalls: 200, emptyScope: 0, emptyScopeRate: 0 })],
+      );
+      expect(out.map((s) => s.key)).toContain('recall-pool-empty-scope');
+    });
+
+    it('names how many other pools were suppressed as likely-already-fixed when at least one still fires', () => {
+      const out = recallPoolSignalsFromHealth(
+        [
+          pool({ surface: 'turn-start', pool: 'harness', recalls: 500, emptyScope: 344, emptyScopeRate: 0.688 }),
+          pool({ surface: 'mid-turn', pool: 'harness', recalls: 500, emptyScope: 137, emptyScopeRate: 0.274 }),
+        ],
+        [],
+        {},
+        [
+          pool({ surface: 'turn-start', pool: 'harness', recalls: 200, emptyScope: 140, emptyScopeRate: 0.7 }),
+          pool({ surface: 'mid-turn', pool: 'harness', recalls: 200, emptyScope: 0, emptyScopeRate: 0 }),
+        ],
+      );
+      const sig = out.find((s) => s.key === 'recall-pool-empty-scope');
+      expect(sig).toBeDefined();
+      expect(sig!.body).toContain('1 other pool(s) also breached the 7d rate');
+      expect(sig!.body).toContain('likely already fixed');
+      expect(sig!.body).toContain('WI-6932');
+    });
+
+    it('honours the recallPoolEmptyScopeRecentHours tunable rather than hardcoding 24h', () => {
+      const out = recallPoolSignalsFromHealth(
+        [pool({ recalls: 500, emptyScope: 344, emptyScopeRate: 0.688 })],
+        [],
+        { recallPoolEmptyScopeRecentHours: 6 },
+        [pool({ recalls: 200, emptyScope: 140, emptyScopeRate: 0.7 })],
+      );
+      const sig = out.find((s) => s.key === 'recall-pool-empty-scope');
+      expect(sig!.body).toContain('last 6h');
+      expect(LEARNING_SLO_DEFAULTS.recallPoolEmptyScopeRecentHours).toBe(24);
+    });
+  });
+
   it('flags an rrf row above the rrf ceiling', () => {
     const out = recallScaleSignalsFromContradictions([{
       surface: 'turn-start', declaredScale: 'rrf', rows: 100,

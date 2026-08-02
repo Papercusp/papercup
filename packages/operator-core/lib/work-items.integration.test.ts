@@ -390,6 +390,18 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
           versionId: 42,
           condition: 'live' as const,
           excerpt: 'the gate red is a flake, not a regression',
+          // EI-19298742806956600 / D-019 added these three as REQUIRED on
+          // ResolvedAssumption, which stranded this fixture (the change never
+          // touched this file, and test:affected is type-blind, so it surfaced
+          // only at the gate). Values are kept mutually COHERENT rather than
+          // nulled: "the gate red is a flake" is precisely an unverified premise,
+          // so kind:'assumption' + confidence:'suspected' + isAssumption:true is
+          // what a real resolution of this citation would stamp — and this test
+          // round-trips the record through PG, so an incoherent fixture would
+          // assert that a shape the resolver never produces persists correctly.
+          kind: 'assumption' as const,
+          confidence: 'suspected' as const,
+          isAssumption: true,
         },
       ],
       resolvedAt: '2026-07-27T12:00:00.000Z',

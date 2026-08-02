@@ -539,6 +539,76 @@ export async function diagnoseFleetScopeCooldownMiss(args: {
 }
 
 /**
+ * WI-7151 (EI-19318364531323846): does the spec's TIER-1 (feature-family) view have ANY
+ * candidate rows when the issue-family-only breakdown (`diagnoseFleetScopeIssueFloorMiss`,
+ * backed by `aggregateIssueClaimExclusions`) reports `matchedByFilter === 0`?
+ *
+ * That breakdown is STRUCTURALLY blind to the feature family — it scopes to
+ * `item_kind IN ('bug','change','task')` by design (WI-5561: built for issue-family
+ * kind-scoped drain fleets). A PLAN-scoped spec with no `kind` narrowing (the shape
+ * `fleet:launch-on-plan` authors when `claimKinds` is omitted — `buildFleetPlanClaimSpec`)
+ * admits BOTH families, and every plan-promoted item is feature-family by construction
+ * (D-009: `promotePlanItems` → `createWorkItem` always mints a feature-family row for a
+ * plan item unless the item's own kind is bug/change/task). So a plan whose items are
+ * ALL feature-family makes the issue-family breakdown report a confident `matchedByFilter:
+ * 0` — and `fleetScopedMiss` was, before this fix, certifying that as `reason:
+ * 'spec_matches_nothing'` + `windDown: true`, even while the real TIER-1 pool (the exact
+ * table `getNextWorkItem`'s first claim attempt just queried) had open, unclaimed,
+ * spec-matching rows sitting right there. Live incident 2026-08-02: an opencode-omp-research
+ * fleet member read exactly this false verdict on its first wake and correctly-per-doctrine
+ * stood down, while the plan's 8 claimable items sat untouched (only completed because the
+ * reporting agent broke the documented pull contract and claimed by id instead).
+ *
+ * Uses the SAME floors + filter compiler `getNextWorkItem`'s tier-1 attempt runs
+ * (claimFloorsWhereSql + compileFilter over harness_features_consolidated — the release-
+ * cooldown floor included, via `cooldownAssignee`, so this can't itself be fooled by the
+ * EI-13520 cooldown-livelock shape into over-reporting a candidate the real claim would
+ * also have excluded), so a nonzero count here PROVES the issue-family `matchedByFilter: 0`
+ * cannot be read as "the spec matches nothing" — only "nothing in the issue family". The
+ * caller (scheduler:get_next) retries the claim once on a nonzero count (mirroring the
+ * pre-existing `issueBreakdown.claimable > 0` divergence-recheck) and, on a persistent
+ * miss, threads the count into `fleetScopedMiss` so it reports the honest (non-drain,
+ * non-spec-authoring) verdict instead of a false `spec_matches_nothing`.
+ *
+ * FAILS SOFT, same philosophy as every other diagnosis in this file: any query error
+ * returns null and the caller falls back to the pre-existing (issue-family-only) verdict —
+ * this annotates a miss, it must never be able to turn one into a thrown error.
+ */
+export async function diagnoseFleetScopeFeatureFamilyMatch(args: {
+  scope: FleetScopeContext;
+  harness: string;
+  workspaceId?: string | null;
+  states?: string[];
+  rigAvailable?: boolean;
+}): Promise<number | null> {
+  try {
+    const ws = resolveClaimSpecWorkspace(args.workspaceId);
+    if (!ws) return null;
+    const spec = args.scope.record.spec;
+    if (!spec.view.filter) return null;
+    const { sql } = getOrgPg();
+    const { claimFloorsWhereSql } = await import('../work-items');
+    const { compileFilter } = await import('./get-next');
+    const floors = claimFloorsWhereSql(sql, {
+      harness: args.harness,
+      workspaceId: ws,
+      states: args.states ?? spec.states,
+      cooldownAssignee: args.scope.ownerId,
+      rigAvailable: args.rigAvailable,
+    });
+    const filter = compileFilter(sql, spec.view.filter);
+    const rows = await sql<{ cnt: number }[]>`
+      SELECT count(*)::int AS cnt
+        FROM harness_shared.harness_features_consolidated
+       WHERE ${floors}
+         AND ${filter}`;
+    return rows[0]?.cnt ?? 0;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * WI-5561: the fleet-scoped sibling of `buildMissDiagnosis`'s EI-13965 aggregate floor
  * breakdown. A fleet MEMBER's `scheduler:get_next` miss never ran `aggregateIssueClaimExclusions`
  * at all (only a non-fleet caller did — `buildMissDiagnosis` short-circuits to an empty
