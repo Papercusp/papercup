@@ -177,6 +177,80 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
     expect(rows[0]).toEqual({ status: 'open', terminal_owner: null });
   });
 
+  // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
+  // creation (root cause still under investigation), stranding the TRUE author — the guard
+  // above is correct for a genuinely foreign-authored row, but wrong when the caller IS the
+  // row's own recorded author. selfHealAuthorOriginIfStranded resets the base-table `origin`
+  // back to 'local' (identity-gated: only ever a row whose OWN created_by matches the caller)
+  // BEFORE the write, so it isn't ALSO silently blocked by the trigger's unconditional
+  // `origin='remote'` no-op (migration 655, mirrored in this test schema above).
+  it("a row's own AUTHOR is never stranded by a wrongly-flipped origin: set_state self-heals and the write succeeds", async () => {
+    await seedIssueInWorkspace('WI-self-heal', 'default', { status: 'open' });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET origin = 'remote', payload = '{"_ei":{"created_by":"w1"}}'::jsonb
+       WHERE workspace_id = 'default' AND feature_id = 'WI-self-heal'`;
+
+    const before = await wi.getWorkItem('WI-self-heal', H);
+    expect(before?.origin).toBe('remote');
+    expect(before?.createdBy).toBe('w1');
+
+    // The caller (by:'w1') IS the recorded author — must NOT be refused, unlike the
+    // genuinely-foreign-authored 'WI-remote' case immediately above.
+    const result = await wi.setWorkItemState('WI-self-heal', 'resolved', {
+      harness: H,
+      by: 'w1',
+      completionRef: 'verified elsewhere',
+    });
+    expect(result?.state).toBe('resolved');
+
+    const rows = await db.sql<{ status: string; origin: string; terminal_owner: string | null }[]>`
+      SELECT status, origin, terminal_owner
+        FROM harness_shared.work_items
+       WHERE workspace_id = 'default' AND feature_id = 'WI-self-heal'`;
+    expect(rows[0]).toEqual({ status: 'resolved', origin: 'local', terminal_owner: 'w1' });
+  });
+
+  it('a DIFFERENT caller (not the recorded author) on the SAME wrongly-flipped row is still correctly refused — self-heal never fires for a non-author', async () => {
+    await seedIssueInWorkspace('WI-not-author', 'default', { status: 'open' });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET origin = 'remote', payload = '{"_ei":{"created_by":"w1"}}'::jsonb
+       WHERE workspace_id = 'default' AND feature_id = 'WI-not-author'`;
+
+    // 'w2' did not author this row — the guard must still refuse, exactly as before this fix.
+    await expect(
+      wi.setWorkItemState('WI-not-author', 'resolved', {
+        harness: H,
+        by: 'w2',
+        completionRef: 'verified elsewhere',
+      }),
+    ).rejects.toThrow(/remote-authored.*cannot be mutated locally/);
+
+    const rows = await db.sql<{ status: string; origin: string }[]>`
+      SELECT status, origin
+        FROM harness_shared.work_items
+       WHERE workspace_id = 'default' AND feature_id = 'WI-not-author'`;
+    expect(rows[0]).toEqual({ status: 'open', origin: 'remote' });
+  });
+
+  it('updateWorkItem (field-edit) likewise self-heals for the true author instead of returning remote_origin_not_editable', async () => {
+    await seedIssueInWorkspace('WI-edit-heal', 'default', { status: 'open' });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET origin = 'remote', payload = '{"_ei":{"created_by":"w1"}}'::jsonb
+       WHERE workspace_id = 'default' AND feature_id = 'WI-edit-heal'`;
+
+    const res = await wi.updateWorkItem('WI-edit-heal', { title: 'corrected title' }, 'w1', { harness: H });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.item.title).toBe('corrected title');
+
+    const rows = await db.sql<{ origin: string }[]>`
+      SELECT origin FROM harness_shared.work_items
+       WHERE workspace_id = 'default' AND feature_id = 'WI-edit-heal'`;
+    expect(rows[0]?.origin).toBe('local');
+  });
+
   it('claim_next SERVES an open issue even when the captured claim scope has drifted from getIssue’s re-derived scope (no leaked claim, no false miss)', async () => {
     // Row is in CLAIM_WS — the scope claimNextIssueWorkItem captures (issuesScopeWorkspace mock).
     // getIssue's own re-derivation would be 'default' (drift) and would MISS it → the pre-fix
