@@ -147,6 +147,53 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.claimable).toEqual([{ id: 'WI-9' }]);
   });
 
+  // WI-5343: work_items:list({admissibleOnly:true}) only applies the G2/origin
+  // structural gates, not a claim-hold / assignee / plan-item-block / live-claim
+  // floor — so it used to advertise a row work_items:observe itself would report
+  // available:false for (a claim-hold park, an already-assigned row, an
+  // effectively-blocked or live-claimed linked plan item). Assert the batch
+  // observe now drops such a row from `claimable` instead of surfacing it as a
+  // bare, ungated id.
+  it('WI-5343: drops a row work_items:observe reports available:false for (claim-hold / assignee / plan-item block)', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'work_items:observe': (a: Record<string, unknown>) => ({
+        ok: true,
+        results: (a.ids as string[]).map((id) =>
+          id === 'WI-1'
+            ? { id, ok: true, available: false, gated: true, claimHoldParked: true }
+            : { id, ok: true, available: true },
+        ),
+      }),
+    });
+    const r = await composeOrient({ harness: 'h' }, call, 'me');
+    expect(r.claimable).toEqual([{ id: 'WI-2', state: 'todo' }]);
+    const obs = calls.find((c) => c.name === 'work_items:observe')!;
+    expect(obs.args).toMatchObject({ ids: ['WI-1', 'WI-2'], harness: 'h' });
+  });
+
+  // A monitor tick skips the claimable leg entirely (EI-8300) — it must not pay
+  // the new observe round-trip either.
+  it('WI-5343: a monitor tick never calls work_items:observe (claimable leg skipped entirely)', async () => {
+    const { call, calls } = fakeCall({ ...CORE });
+    await composeOrient({ mode: 'monitor', intent: 'tick' }, call, 'me');
+    expect(calls.some((c) => c.name === 'work_items:observe')).toBe(false);
+  });
+
+  // A failed/erroring observe batch must never break orientation — the claimable
+  // list stays unfiltered (advisory, as documented) rather than throwing.
+  it('WI-5343: fails OPEN — an observe error keeps the unfiltered claimable list', async () => {
+    const { call } = fakeCall({
+      ...CORE,
+      'work_items:observe': () => {
+        throw new Error('boom');
+      },
+    });
+    const r = await composeOrient({}, call, 'me');
+    expect(r.ok).toBe(true);
+    expect(r.claimable).toHaveLength(2);
+  });
+
   it('folds the injected ownerPresent bit verbatim (P-004), and omits the leg when not resolved', async () => {
     const { call } = fakeCall({ ...CORE });
     const present = { present: true, lastSeenAgoMs: 12_000, activeSessions: 1 };
