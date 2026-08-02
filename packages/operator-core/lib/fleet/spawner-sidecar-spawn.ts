@@ -157,6 +157,15 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
       PAPERCUSP_HONO_PORT: '0',
       PORT: '0',
       PAPERCUSP_BACKGROUND_WORKERS: '0',
+      // WI-6132 (P-016, db-performance-remediation): cap the sidecar's org pools.
+      // The sidecar's PG traffic is a handful of spawn-RPC lookups, but without a
+      // cap it opens its OWN admin+app pool at full resource-profile size — and
+      // sidecars dominate the census (measured 2026-08-02: 28 of 39 per-process
+      // org-admin pools on this box were sidecars; 198 connections, 169 idle).
+      // Pinned unconditionally — the parent's own PAPERCUSP_DB_POOL_MAX is sized
+      // for the OPERATOR's concurrency and must not leak into the child;
+      // PAPERCUSP_SIDECAR_DB_POOL_MAX is the deliberate escape hatch.
+      PAPERCUSP_DB_POOL_MAX: process.env.PAPERCUSP_SIDECAR_DB_POOL_MAX ?? '2',
     };
 
     const cmd = plan.cmd;

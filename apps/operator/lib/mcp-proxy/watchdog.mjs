@@ -147,7 +147,11 @@ const PROBE_TOOL = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_PROBE_TOOL || 'coord
  * the whole point is to execute a query, not to prove the registry can be serialised.
  * `facts:list` is a cheap scoped SELECT with no side effects.
  */
-const DB_PROBE_TOOL = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_TOOL || 'facts:list';
+const DEFAULT_DB_PROBE_TOOL = 'facts:list';
+/** Arguments the DEFAULT probe tool needs. Scoped so a healthy poll stays a small SELECT. */
+const DEFAULT_DB_PROBE_ARGS = { scope: 'workspace' };
+const DB_PROBE_TOOL = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_TOOL || DEFAULT_DB_PROBE_TOOL;
+const DB_PROBE_ARGS_RAW = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_ARGS;
 const SUPERUSER_TOKEN_FILE = join(homedir(), '.papercusp', 'superuser-token');
 
 let unreachableSince = 0;
@@ -277,6 +281,36 @@ export function classifyDataPlaneResult({ networkError, status, json } = {}) {
   return json.result ? 'ok' : 'config';
 }
 
+/**
+ * Arguments for the data-plane probe call.
+ *
+ * Fixes a trap in the remedy this watchdog prints at itself. On a 'config' verdict it says
+ * "set PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_TOOL to a live read-only tool" — but the args
+ * used to be hard-coded to `{ scope: 'workspace' }`, which only `facts:list` accepts. So
+ * following that instruction sent the DEFAULT tool's arguments to the NEW tool, which fails
+ * validation, which is another 'config' verdict: the documented fix could not work, and the
+ * watchdog stayed blind while looking configured.
+ *
+ * Rules, in order: an explicit override wins; the default args apply ONLY to the default
+ * tool; any other tool starts empty. A malformed override is reported (`invalid`) rather
+ * than silently falling back to args that belong to a different tool — silently probing with
+ * the wrong arguments is exactly the blindness above, one layer down.
+ */
+export function dataPlaneProbeArgs(tool, rawArgs, defaultTool = DEFAULT_DB_PROBE_TOOL) {
+  if (rawArgs != null && String(rawArgs).trim() !== '') {
+    try {
+      const parsed = JSON.parse(rawArgs);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { args: parsed, invalid: false };
+      }
+    } catch {
+      /* reported as `invalid` below — never silently substituted */
+    }
+    return { args: {}, invalid: true };
+  }
+  return { args: tool === defaultTool ? { ...DEFAULT_DB_PROBE_ARGS } : {}, invalid: false };
+}
+
 export function decideHandshakeAction(proxyKind, upstreamKind) {
   if (proxyKind === 'ok') return 'none';
   if (proxyKind === 'auth') return 'none'; // our own credential; never a service verdict
@@ -356,7 +390,7 @@ async function probeDataPlane(port) {
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/call',
-        params: { name: DB_PROBE_TOOL, arguments: { scope: 'workspace' } },
+        params: { name: DB_PROBE_TOOL, arguments: dataPlaneProbeArgs(DB_PROBE_TOOL, DB_PROBE_ARGS_RAW).args },
       }),
     });
     const json = parseMcpBody(await res.text());
@@ -457,7 +491,7 @@ async function pollDataPlane() {
     const now = Date.now();
     if (now - lastDataConfigLog > LOG_THROTTLE_MS) {
       lastDataConfigLog = now;
-      log(`PROBE CONFIG: data-plane probe tool "${DB_PROBE_TOOL}" did not execute (${detail}) — this watchdog is BLIND to the WI-6739 class until fixed, but it is OUR probe config, not a service fault. Set PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_TOOL to a live read-only tool.`);
+      log(`PROBE CONFIG: data-plane probe tool "${DB_PROBE_TOOL}" did not execute (${detail}) — this watchdog is BLIND to the WI-6739 class until fixed, but it is OUR probe config, not a service fault. Set PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_TOOL to a live read-only tool that queries Postgres, and PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_ARGS (JSON) to whatever arguments THAT tool needs — the default args belong to "${DEFAULT_DB_PROBE_TOOL}" and are not sent to any other tool.`);
     }
     return;
   }
@@ -559,9 +593,17 @@ function start() {
   log(
     `session-plane probe — tools/list via :${PORT} every ${POLL_MS}ms (filter "${PROBE_TOOL}", timeout ${HANDSHAKE_TIMEOUT_MS}ms), unhealthy after ${HANDSHAKE_UNHEALTHY_MS}ms, upstream :${UPSTREAM_PORT}`,
   );
+  const probeArgs = dataPlaneProbeArgs(DB_PROBE_TOOL, DB_PROBE_ARGS_RAW);
   log(
-    `data-plane probe (WI-6739) — tools/call "${DB_PROBE_TOOL}" via :${PORT}, runs whenever the session plane is green, unhealthy after ${HANDSHAKE_UNHEALTHY_MS}ms; catches a DB-dead operator that still serves its tool catalog`,
+    `data-plane probe (WI-6739) — tools/call "${DB_PROBE_TOOL}" args ${JSON.stringify(probeArgs.args)} via :${PORT}, runs whenever the session plane is green, unhealthy after ${HANDSHAKE_UNHEALTHY_MS}ms; catches a DB-dead operator that still serves its tool catalog`,
   );
+  if (probeArgs.invalid) {
+    // Loud at startup rather than once per 10min throttle window: every poll from here on is a
+    // guaranteed 'config' verdict, i.e. this watchdog is BLIND to the WI-6739 class right now.
+    log(
+      `PROBE CONFIG: PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_ARGS is not a JSON object — probing "${DB_PROBE_TOOL}" with NO arguments instead of guessing. Fix it or unset it.`,
+    );
+  }
   setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
   setInterval(() => void pollHandshake().catch((e) => log(`handshake poll error: ${e.message}`)), POLL_MS);
 }

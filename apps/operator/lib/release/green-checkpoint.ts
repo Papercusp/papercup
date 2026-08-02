@@ -2428,9 +2428,10 @@ export async function runGreenCheckpoint(
     {
       const pipeline = pipelineName(cfg.integrationRoot);
       // P-004/D-002: name the pipeline in the banner — symmetric with the green summary
-      // below. The global `green-checkpoint:red` key emitted here fires from every
-      // co-hosted pipeline (30 awaits / 12 agents on record), so a pipeline-blind "not
-      // green — main held" reads as the awaiter's OWN gate being red.
+      // below and with EI-15925's broadcast prefix. The global `green-checkpoint:red` key
+      // emitted here fires from every co-hosted pipeline (30 awaits / 12 agents on
+      // record), so a pipeline-blind "not green — main held" reads as the awaiter's OWN
+      // gate being red — the same false reading as the green case, in the other direction.
       const redSummary = `[${pipeline}] green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
       // WI-4957: carry the FULL failing-test signature + an exact log reference on the
       // event payload itself — a consumer previously had only the de-noised `summary`
@@ -2783,15 +2784,17 @@ export async function runGreenCheckpoint(
   // pipeline-scoped (EI-7646). Fail-soft but LOUD — a broken emit is logged, never swallowed.
   {
     const pipeline = pipelineName(cfg.integrationRoot);
-    // P-004/D-002: the BANNER must name the pipeline, not just the payload. This box
-    // co-hosts ~13 pipelines and the GLOBAL `release:green` key emitted just below fires
-    // from EVERY one of them, so a pipeline-blind summary reads as "MY gate went green"
-    // to whichever awaiter it wakes. Confirmed live: await 42194 (`release:green:*`) woke
-    // a papercusp agent on ODDSMITH's advance of 9a8aa848 at 2026-08-02T03:17:35Z —
-    // papercusp had no green_checkpoint row in that window at all — and the agent
-    // believed it and reported the gate green (EI-19311522275272409). The discriminator
-    // was already on `payload.pipeline`; the summary is what a human/agent actually
-    // reads, so it has to carry it too.
+    // P-004/D-002 — EI-15925 FINISHED ON ITS SIBLING SURFACE. That EI fixed exactly this
+    // class for the `broadcast` deps hook below and judged the event path already covered
+    // because "the event payload already carries `pipeline`". It isn't: an await's SUMMARY
+    // is the wake banner an agent actually reads, and it was pipeline-blind. So the same
+    // confusion recurred on the event path 15 days later, on the same pipeline — await
+    // 42194 (`release:green:*`) woke a papercusp agent on ODDSMITH's advance of 9a8aa848
+    // at 2026-08-02T03:17:35Z (papercusp had no green_checkpoint row in that window at
+    // all) and the agent reported the gate green (EI-19311522275272409). The GLOBAL
+    // `release:green` key emitted just below fires from every one of the ~13 co-hosted
+    // pipelines, so it is the widest carrier, not the glob. Same `[pipeline]` prefix
+    // convention as broadcast, deliberately.
     const greenSummary = `[${pipeline}] ${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
     // WI-4957: runId (this run's identity) rides the payload alongside sha/from/pipeline.
     const payload = { sha: candidate, from: adv.from, pipeline, runId: deps.runId ?? null };

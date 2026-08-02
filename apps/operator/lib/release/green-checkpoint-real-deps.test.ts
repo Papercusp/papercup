@@ -513,8 +513,11 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     expect(calls[3].args).toContain('lib/llm-testing/__tests__/runner-aggregate.test.ts');
     expect(calls[3].args).toContain('lib/scout/scheduler-workspace-scope.test.ts');
     expect(calls[3].args).not.toContain('--no-file-parallelism');
-    expect(calls[3].opts?.env?.VITEST_MAX_FORKS).toBeUndefined();
-    expect(calls[3].opts?.env?.VITEST_MAX_THREADS).toBeUndefined();
+    // It inherits the GATE's own concurrency profile rather than the isolation run's
+    // forced single fork — that is precisely what makes it a co-execution experiment.
+    expect(calls[3].opts?.env?.VITEST_MAX_FORKS).not.toBe('1');
+    expect(calls[3].opts?.env?.VITEST_MAX_THREADS).not.toBe('1');
+    expect(calls[3].opts?.env?.VITEST_MAX_FORKS).toBe(calls[0].opts?.env?.VITEST_MAX_FORKS);
     expect(calls[3].opts?.cwd).toBe(cpTree);
     expect(calls[3].opts?.env?.GREEN_CHECKPOINT).toBe('1');
     // the isolation re-runs are `npm run test --workspace <ws> -- --no-file-parallelism <file>`
@@ -530,6 +533,27 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     }
     expect(calls[1].args).toContain('lib/llm-testing/__tests__/runner-aggregate.test.ts');
     expect(calls[2].args).toContain('lib/scout/scheduler-workspace-scope.test.ts');
+  });
+
+  // WI-6956 real-path recurrence guard: the concurrency-dependent class. Every file
+  // passes ALONE (which is that class's DEFINING property, not evidence of flakiness),
+  // but reproduces the moment they are re-run TOGETHER. Before the confirming pass this
+  // exact shape absorbed to green and fast-forwarded `main` onto a broken tree.
+  it('concurrency defect: files pass in isolation but REPRODUCE co-executed → stays NOT green', async () => {
+    // call 0: red suite. calls 1-2: both files pass ALONE. call 3: the confirming
+    // co-execution re-run FAILS — the failure reproduces when they run together.
+    const { exec, calls } = makeExec([
+      { code: 1, stdout: RED_OUTPUT },
+      { code: 0 },
+      { code: 0 },
+      { code: 1, stdout: RED_OUTPUT },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, 'base-sha');
+
+    expect(r.green).toBe(false); // NOT absorbed — this is a real defect, not box-weather
+    expect(r.flakeSuspects ?? []).toEqual([]);
+    // no post-suite leg runs: absorption never happened, so the suite is still what failed
+    expect(calls).toHaveLength(4);
   });
 
   it('real break: red suite where ONE file still fails in isolation → stays NOT green', async () => {
@@ -625,10 +649,12 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   // a natively-green one — "never ran" must never render as "passed".
   describe('WI-6053: an absorbed-green candidate must still clear every post-suite leg', () => {
     it('red suite → absorbed → FAILING typecheck still comes out RED (the leg runs after absorption)', async () => {
-      // call 0: suite red. calls 1-2: both files pass in isolation → absorbed.
-      // call 3: the typecheck leg — which previously never ran at all — FAILS.
+      // call 0: suite red. calls 1-2: both files pass in isolation. call 3 (WI-6956):
+      // the confirming co-execution re-run PASSES too → genuine weather → absorbed.
+      // call 4: the typecheck leg — which previously never ran at all — FAILS.
       const { exec, calls } = makeExec([
         { code: 1, stdout: RED_OUTPUT },
+        { code: 0 },
         { code: 0 },
         { code: 0 },
         { code: 1, stdout: 'operator-core/lib/broken.ts: TS2322' },
@@ -640,11 +666,11 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
       expect(r.summary).toContain('TYPECHECK FAILED');
       // the leg genuinely EXECUTED post-absorption (not merely assumed), in the
       // candidate tree, with the stripped gate env.
-      expect(calls).toHaveLength(4);
-      expect(calls[3].cmd).toBe('npm');
-      expect(calls[3].args).toEqual(['run', 'lint:tsc']);
-      expect(calls[3].opts?.cwd).toBe(typecheckTree);
-      expect(calls[3].opts?.env?.GREEN_CHECKPOINT).toBe('1');
+      expect(calls).toHaveLength(5);
+      expect(calls[4].cmd).toBe('npm');
+      expect(calls[4].args).toEqual(['run', 'lint:tsc']);
+      expect(calls[4].opts?.cwd).toBe(typecheckTree);
+      expect(calls[4].opts?.env?.GREEN_CHECKPOINT).toBe('1');
       // ...and the SPA build is still skipped behind the failing leg.
     });
 
@@ -658,6 +684,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
         { code: 1, stdout: RED_OUTPUT },
         { code: 0 },
         { code: 0 },
+        { code: 0 }, // WI-6956: confirming co-execution re-run passes → absorbed
         { code: 1, stdout: 'operator-core/lib/broken.ts: TS2322' },
       ]);
       const r = await realCheckpointDeps(cfg, exec).runGreen(typecheckTree, null);
@@ -671,10 +698,12 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     it('red suite → absorbed → all legs PASS → green, with the legs actually run and the flake suspects preserved', async () => {
       // Guards the opposite failure: the fix must not turn every absorbed candidate red,
       // and must not disable flake absorption (it exists for real 8-fork load flakes).
-      // call 0: red suite. 1-2: isolation passes. 3: lint:tsc green.
-      // 4: conflict-marker grep clean (code 1). 5: SPA build green.
+      // call 0: red suite. 1-2: isolation passes. 3 (WI-6956): confirming co-execution
+      // re-run passes → absorbed. 4: lint:tsc green. 5: conflict-marker grep clean
+      // (code 1). 6: SPA build green.
       const { exec, calls } = makeExec([
         { code: 1, stdout: RED_OUTPUT },
+        { code: 0 },
         { code: 0 },
         { code: 0 },
         { code: 0 },
@@ -688,10 +717,10 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
         '@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts',
         '@papercusp/operator-core::lib/scout/scheduler-workspace-scope.test.ts',
       ]);
-      expect(calls).toHaveLength(6);
-      expect(calls[3].args).toEqual(['run', 'lint:tsc']);
-      expect(calls[4].cmd).toBe('git'); // marker grep
-      expect(calls[5].args).toContain('build'); // the SPA build DID run
+      expect(calls).toHaveLength(7);
+      expect(calls[4].args).toEqual(['run', 'lint:tsc']);
+      expect(calls[5].cmd).toBe('git'); // marker grep
+      expect(calls[6].args).toContain('build'); // the SPA build DID run
     });
 
     it('red suite → absorbed → FAILING SPA build still comes out RED', async () => {
@@ -702,6 +731,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
         { code: 1, stdout: RED_OUTPUT },
         { code: 0 },
         { code: 0 },
+        { code: 0 }, // WI-6956: confirming co-execution re-run passes → absorbed
         { code: 1 }, // marker grep clean
         { code: 1, stdout: 'vite: bundle failed' },
       ]);
@@ -710,7 +740,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
       expect(r.green).toBe(false);
       expect(r.failingTests).toContain('@papercusp/operator-vite');
       expect(r.summary).toContain('vite: bundle failed');
-      expect(calls).toHaveLength(5);
+      expect(calls).toHaveLength(6);
     });
 
     it('worker-crash absorption takes the same path: crash absorbed → FAILING typecheck still RED', async () => {

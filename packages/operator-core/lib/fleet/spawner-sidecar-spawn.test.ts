@@ -128,6 +128,43 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     }
   });
 
+  it('WI-6132: caps the child org pools at 2 — the parent PAPERCUSP_DB_POOL_MAX must not leak in', async () => {
+    // Each sidecar otherwise opens its own admin+app pool at full profile size
+    // (or the parent's operator-sized override); measured 2026-08-02, sidecars
+    // were 28 of 39 per-process org-admin pools on the box.
+    process.env.PAPERCUSP_DB_POOL_MAX = '24';
+    try {
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+
+      const [, , opts] = spawnMock.mock.calls[0] as [string, string[], { env?: NodeJS.ProcessEnv }];
+      expect(opts.env?.PAPERCUSP_DB_POOL_MAX).toBe('2');
+    } finally {
+      delete process.env.PAPERCUSP_DB_POOL_MAX;
+    }
+  });
+
+  it('WI-6132: PAPERCUSP_SIDECAR_DB_POOL_MAX is the deliberate escape hatch for the child cap', async () => {
+    process.env.PAPERCUSP_SIDECAR_DB_POOL_MAX = '5';
+    try {
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+
+      const [, , opts] = spawnMock.mock.calls[0] as [string, string[], { env?: NodeJS.ProcessEnv }];
+      expect(opts.env?.PAPERCUSP_DB_POOL_MAX).toBe('5');
+    } finally {
+      delete process.env.PAPERCUSP_SIDECAR_DB_POOL_MAX;
+    }
+  });
+
   // P-006 (plan p2p-parity-parallel-lanes-2026-07-09): the sidecar respawn
   // churn. Root cause — the shared `uncaughtException` shutdown hook fired
   // (and killed a HEALTHY sidecar) on every benign `write EPIPE` a client

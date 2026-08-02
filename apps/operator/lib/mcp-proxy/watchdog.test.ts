@@ -10,6 +10,7 @@ type Watchdog = typeof import('./watchdog.mjs');
 let shouldRestart: Watchdog['shouldRestart'];
 let classifyProbeResult: Watchdog['classifyProbeResult'];
 let classifyDataPlaneResult: Watchdog['classifyDataPlaneResult'];
+let dataPlaneProbeArgs: Watchdog['dataPlaneProbeArgs'];
 let decideHandshakeAction: Watchdog['decideHandshakeAction'];
 let LIVENESS_PROBE_PATH: Watchdog['LIVENESS_PROBE_PATH'];
 let livenessProbeUrl: Watchdog['livenessProbeUrl'];
@@ -19,6 +20,7 @@ beforeAll(async () => {
     shouldRestart,
     classifyProbeResult,
     classifyDataPlaneResult,
+    dataPlaneProbeArgs,
     decideHandshakeAction,
     LIVENESS_PROBE_PATH,
     livenessProbeUrl,
@@ -193,6 +195,178 @@ describe('mcp-proxy watchdog — classifyProbeResult (session plane)', () => {
 
   it('a non-auth JSON-RPC error is dead', () => {
     expect(classifyProbeResult({ status: 200, json: { error: { code: -32000, message: 'boom' } } })).toBe('dead');
+  });
+});
+
+/**
+ * WI-6739 — the DATA plane, the third and last plane.
+ *
+ * The 2026-08-01 outage had three independent planes and only the third was broken:
+ *   /api/health   → 200 in ~2ms, continuously, for the whole ~100 minutes.
+ *   session plane → fine. 9 failed `/api/mcp` requests in the entire peak hour.
+ *   data plane    → dead. 5,542 failed DB-backed bootstrap-su/heartbeat POSTs (HTTP 408),
+ *                   because :3070 was ECONNREFUSING a stale embedded-pg port and never
+ *                   re-resolved it.
+ *
+ * The catalog is served from an in-memory registry and never touches Postgres, so the
+ * session-plane probe stays GREEN throughout — a detector that is green during the incident
+ * it exists to catch is worse than no detector, because it actively reassures. That is what
+ * the first test below pins, and it is the only test here that would have changed the
+ * outcome on the day.
+ *
+ * The rest pin the conservatism that keeps this from crying wolf: OUR misconfiguration
+ * ('config') must never be reported as a service fault ('dead'), because a watchdog that
+ * alarms on its own stale probe config gets muted, and a muted watchdog is the blindness
+ * it replaced.
+ */
+describe('mcp-proxy watchdog — classifyDataPlaneResult (data plane, WI-6739)', () => {
+  /** A tool catalog is served from memory; it proves nothing about the database. */
+  const healthyCatalog = { result: { tools: [{ name: 'coord:orient' }] } };
+
+  it('THE 2026-08-01 MISS: catalog-green + DB-dead — the two classifiers MUST disagree', () => {
+    // Same instant, same operator, two probes. This divergence is the entire reason the
+    // data-plane probe exists: collapse them and ~100 minutes pass with nothing alarming.
+    expect(classifyProbeResult({ status: 200, json: healthyCatalog })).toBe('ok');
+    expect(classifyDataPlaneResult({ status: 408 })).toBe('dead');
+  });
+
+  it('a result that came back is healthy — the query ran', () => {
+    expect(classifyDataPlaneResult({ status: 200, json: { result: { ok: true, count: 25 } } })).toBe(
+      'ok',
+    );
+  });
+
+  it('a timeout is dead — a pool waiting on a dead endpoint never answers', () => {
+    // The live signature: fetch aborts at the probe timeout with "This operation was aborted".
+    expect(classifyDataPlaneResult({ networkError: new Error('This operation was aborted') })).toBe(
+      'dead',
+    );
+  });
+
+  it('408 is dead — that is literally what clients saw on 2026-08-01', () => {
+    expect(classifyDataPlaneResult({ status: 408 })).toBe('dead');
+    expect(classifyDataPlaneResult({ status: 500 })).toBe('dead');
+    expect(classifyDataPlaneResult({ status: 502 })).toBe('dead');
+  });
+
+  it('an unparseable or absent body is dead, never silently ok', () => {
+    expect(classifyDataPlaneResult({ status: 200, json: null })).toBe('dead');
+    expect(classifyDataPlaneResult({ status: 200, json: 'not json' })).toBe('dead');
+    expect(classifyDataPlaneResult()).toBe('dead');
+  });
+
+  it('THE SIGNAL: the tool RAN but could not reach Postgres — connection-shaped errors are dead', () => {
+    // These arrive as a well-formed JSON-RPC error with HTTP 200, so only the message
+    // distinguishes "the database is gone" from "I called the tool wrong".
+    for (const message of [
+      'connect ECONNREFUSED 127.0.0.1:20216', // the exact 2026-08-01 error, 20,144 times
+      'connect ETIMEDOUT 127.0.0.1:5432',
+      'read ECONNRESET',
+      'timeout exceeded when trying to connect',
+      'Connection terminated unexpectedly',
+      'pool is draining and cannot accept work',
+    ]) {
+      expect(classifyDataPlaneResult({ status: 200, json: { error: { code: -32603, message } } })).toBe(
+        'dead',
+      );
+    }
+  });
+
+  it('OUR credential is config, never a service fault', () => {
+    // A watchdog that escalates because its own bearer expired is strictly worse than the
+    // blindness it replaced — the same trap already guarded on the session plane.
+    expect(
+      classifyDataPlaneResult({
+        status: 200,
+        json: { error: { code: -32603, message: 'this MCP session is UNAUTHENTICATED' } },
+      }),
+    ).toBe('config');
+  });
+
+  it('OUR probe args / a renamed probe tool is config, never dead', () => {
+    // The failure mode this guards: someone renames the probe tool, every poll starts
+    // erroring, and a watchdog that called that "dead" would page about a healthy operator.
+    for (const message of [
+      'Tool facts:list not found',
+      'Invalid arguments: scope must be one of workspace|role|owner',
+      'unknown parameter "scope"',
+    ]) {
+      expect(classifyDataPlaneResult({ status: 200, json: { error: { code: -32602, message } } })).toBe(
+        'config',
+      );
+    }
+  });
+
+  it('200 with neither result nor error is config, not dead — an unrecognised shape is our problem', () => {
+    expect(classifyDataPlaneResult({ status: 200, json: {} })).toBe('config');
+  });
+
+  it('a config verdict is never reachable from a transport failure', () => {
+    // Pins the asymmetry that makes the classifier safe: anything that did not come back
+    // is ALWAYS 'dead'. 'config' requires a well-formed answer from a live server.
+    for (const input of [
+      { networkError: new Error('socket hang up') },
+      { status: 408 },
+      { status: 503 },
+    ]) {
+      expect(classifyDataPlaneResult(input)).not.toBe('config');
+    }
+  });
+});
+
+/**
+ * WI-6739 — the probe's ARGUMENTS, and why the printed remedy has to be executable.
+ *
+ * On a 'config' verdict the watchdog tells its reader to point DB_PROBE_TOOL at a live
+ * read-only tool. The args were hard-coded to the DEFAULT tool's (`{ scope: 'workspace' }`),
+ * so obeying that instruction sent one tool's arguments to a different tool, failed
+ * validation, and produced another 'config' verdict — a documented fix that could not work,
+ * leaving the watchdog blind while it looked configured.
+ */
+describe('mcp-proxy watchdog — dataPlaneProbeArgs (WI-6739)', () => {
+  it('sends the default args ONLY to the default tool', () => {
+    expect(dataPlaneProbeArgs('facts:list', undefined)).toEqual({
+      args: { scope: 'workspace' },
+      invalid: false,
+    });
+  });
+
+  it("THE TRAP: an overridden tool does NOT inherit the default tool's arguments", () => {
+    expect(dataPlaneProbeArgs('work_items:list', undefined)).toEqual({ args: {}, invalid: false });
+  });
+
+  it('an explicit JSON override wins for any tool', () => {
+    expect(dataPlaneProbeArgs('work_items:list', '{"state":"open","limit":1}')).toEqual({
+      args: { state: 'open', limit: 1 },
+      invalid: false,
+    });
+    // …including for the default tool, so a cheaper scope can be pinned without a code change.
+    expect(dataPlaneProbeArgs('facts:list', '{"limit":1}')).toEqual({
+      args: { limit: 1 },
+      invalid: false,
+    });
+  });
+
+  it('a malformed override is REPORTED, never silently replaced with another tool’s args', () => {
+    // Silently substituting would reproduce the very bug this function fixes, one layer down.
+    for (const raw of ['{not json', '[]', '"a string"', '42', 'null']) {
+      expect(dataPlaneProbeArgs('work_items:list', raw)).toEqual({ args: {}, invalid: true });
+    }
+  });
+
+  it('blank / whitespace / unset all mean "no override"', () => {
+    for (const raw of [undefined, null, '', '   ']) {
+      expect(dataPlaneProbeArgs('facts:list', raw)).toEqual({
+        args: { scope: 'workspace' },
+        invalid: false,
+      });
+    }
+  });
+
+  it('never hands back the shared default object, so a caller cannot mutate the next probe', () => {
+    const first = dataPlaneProbeArgs('facts:list', undefined).args as Record<string, unknown>;
+    first.scope = 'mutated';
+    expect(dataPlaneProbeArgs('facts:list', undefined).args).toEqual({ scope: 'workspace' });
   });
 });
 

@@ -60,6 +60,17 @@ export function classifyDataPlaneResult(result?: {
   json?: unknown;
 }): DataPlaneKind;
 
+/**
+ * Arguments for the data-plane probe call (WI-6739). `invalid` reports a malformed
+ * PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_ARGS override, which is logged rather than silently
+ * replaced with args belonging to a different tool.
+ */
+export function dataPlaneProbeArgs(
+  tool: string,
+  rawArgs?: string | null,
+  defaultTool?: string,
+): { args: Record<string, unknown>; invalid: boolean };
+
 export function decideHandshakeAction(
   proxyKind: ProbeKind | string,
   upstreamKind: ProbeKind | string,

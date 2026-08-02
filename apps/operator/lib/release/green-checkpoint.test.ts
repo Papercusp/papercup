@@ -2908,3 +2908,61 @@ describe('EI-15925 — the advance broadcast is attributable to its pipeline', (
     vi.doUnmock('@papercusp/operator-core/lib/agent-tools/coordination/messages');
   });
 });
+
+describe('P-004/D-002 — the gate-verdict WAKE BANNER is attributable to its pipeline', () => {
+  // EI-15925 (above) fixed this class for `broadcast` and judged the event path already
+  // covered because the event PAYLOAD carries `pipeline`. It was not: an await's `summary`
+  // is the wake banner an agent actually reads, and it stayed pipeline-blind — so the same
+  // confusion recurred 15 days later on the same pipeline. `release:green:*` await 42194
+  // woke a papercusp agent on ODDSMITH's advance of 9a8aa848 (papercusp had no
+  // green_checkpoint row in that window) and it reported the gate green
+  // (EI-19311522275272409). The GLOBAL key is emitted by every co-hosted pipeline, so it —
+  // not the glob — is the widest carrier; both keys must carry the label.
+  const captureSummaries = (green: boolean): { deps: CheckpointDeps; summaries: Record<string, string> } => {
+    const summaries: Record<string, string> = {};
+    return {
+      summaries,
+      deps: {
+        setupTree: async () => {},
+        runGreen: async () => ({ green, summary: green ? 'all pass' : '3 failed' }),
+        advance: (candidate) => advanceReady(repo, candidate, 'ready'),
+        push: async () => {},
+        broadcast: async () => {},
+        escalate: async () => {},
+        clearEscalation: async () => {},
+        emitEvent: async ({ key, summary }) => {
+          summaries[key] = summary;
+        },
+        log: () => {},
+      },
+    };
+  };
+
+  it('labels the GREEN summary on BOTH the global and the pipeline-scoped key', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, summaries } = captureSummaries(true);
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    const pipeline = pipelineName(repo);
+    const expected = `[${pipeline}] ready advanced to ${c2.slice(0, 8)} (green, deployable)`;
+    expect(summaries['release:green']).toBe(expected);
+    expect(summaries[`release:green:${pipeline}`]).toBe(expected);
+    // The whole point: the banner alone must identify the pipeline, with no payload read.
+    expect(summaries['release:green']).toContain(pipeline);
+  });
+
+  it('labels the RED summary on BOTH keys too — a foreign red must not read as your gate', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, summaries } = captureSummaries(false);
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    const pipeline = pipelineName(repo);
+    const expected = `[${pipeline}] green-checkpoint: ${c2.slice(0, 8)} not green — ready held`;
+    expect(summaries['green-checkpoint:red']).toBe(expected);
+    expect(summaries[`green-checkpoint:red:${pipeline}`]).toBe(expected);
+  });
+});
