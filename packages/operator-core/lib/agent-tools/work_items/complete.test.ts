@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { blankPng, contentPng } from '@papercusp/image-blankness/testing';
-import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 
 const getWorkItem = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
@@ -462,6 +462,61 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.ok).toBe(true);
       expect(r.error).toBeUndefined();
       expect(r.workItem.state).toBe('resolved');
+    });
+  });
+
+  // ── EI-19312103118112942: fleet drain members were measured settling (holding zero
+  // claims) after CLOSING an item, even with hundreds of claimable rows still in their own
+  // spec — completion was treated as the end of the wake instead of its midpoint. Fire an
+  // inline "pull next now" nudge on every real close for a fleet member (PAPERCUSP_FLEET_SLUG
+  // set), gated on nothing else — a fleet drain member closes one item at a time, so this is
+  // cheap and safe even on the rare multi-claim member (scheduler:get_next no-ops there).
+  describe('fleetRepullNudge — inline "pull next" nudge on a fleet member\'s real close (EI-19312103118112942)', () => {
+    const issue = { id: 'WI-1', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+    const prevSlug = process.env.PAPERCUSP_FLEET_SLUG;
+    const prevRole = process.env.PAPERCUSP_FLEET_ROLE;
+    afterEach(() => {
+      if (prevSlug === undefined) delete process.env.PAPERCUSP_FLEET_SLUG;
+      else process.env.PAPERCUSP_FLEET_SLUG = prevSlug;
+      if (prevRole === undefined) delete process.env.PAPERCUSP_FLEET_ROLE;
+      else process.env.PAPERCUSP_FLEET_ROLE = prevRole;
+    });
+
+    it('fires on a terminal close when PAPERCUSP_FLEET_SLUG is set (a fleet member)', async () => {
+      process.env.PAPERCUSP_FLEET_SLUG = 'nonp2p-bug-drain-0801';
+      process.env.PAPERCUSP_FLEET_ROLE = 'member';
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'done', tests: '5 green' } });
+      expect(r.ok).toBe(true);
+      expect(r.fleetRepullNudge).toMatch(/scheduler:get_next/);
+      expect(r.fleetRepullNudge).toMatch(/WI-1/);
+    });
+
+    it('does NOT fire outside a fleet (no PAPERCUSP_FLEET_SLUG)', async () => {
+      delete process.env.PAPERCUSP_FLEET_SLUG;
+      delete process.env.PAPERCUSP_FLEET_ROLE;
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'done', tests: '5 green' } });
+      expect(r.ok).toBe(true);
+      expect(r.fleetRepullNudge).toBeUndefined();
+    });
+
+    it('does NOT fire on a record-only completion (no `state` — nothing closed)', async () => {
+      process.env.PAPERCUSP_FLEET_SLUG = 'nonp2p-bug-drain-0801';
+      getWorkItem.mockResolvedValue(issue);
+      const r = await one({ id: 'WI-1', completion: { summary: 'progress note', tests: 'n/a' } });
+      expect(r.fleetRepullNudge).toBeUndefined();
+    });
+
+    it('does NOT fire when the state write FAILED (item did not actually close)', async () => {
+      process.env.PAPERCUSP_FLEET_SLUG = 'nonp2p-bug-drain-0801';
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockRejectedValue(new Error('held by a peer'));
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'done', tests: '5 green' } });
+      expect(r.ok).toBe(false);
+      expect(r.fleetRepullNudge).toBeUndefined();
     });
   });
 

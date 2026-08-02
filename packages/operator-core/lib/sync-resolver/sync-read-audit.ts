@@ -69,6 +69,19 @@ export const DEFAULT_HARNESS_ARGS: Record<string, unknown> = {
 export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   // ── measurable with specific (non-default) args ──
   'workItems.byHarness': { harnessSlug: 'papercusp', limit: 500 },
+  // plans.items takes NO required args, so it would default to `{}` — but `{}` is
+  // a shape NO consumer ever requests, and measuring it overstates this read by
+  // ~8x. All four live call sites filter SERVER-side: `{needsHuman:true}` (13,150 B),
+  // `{actionable:true}` (188,095 B), `{status:'blocked'}` (66,124 B) and `{slug}`
+  // (~1,644 B). `actionable` is the largest, so it is the honest worst case to
+  // hold to the budget. Measured 2026-08-02 post-WI-7086.
+  //
+  // ⚠ This does NOT mean the unfiltered read is cheap — `{}` really does serve
+  // 1,460,403 B and stays reachable over REST. It is excluded because the audit
+  // asks "what do clients receive", and nothing asks for that shape. If a
+  // consumer ever DOES call plans.items unfiltered, change this fixture back to
+  // `{}` rather than allowlisting the result.
+  'plans.items': { actionable: true },
   'agentRunsConsolidated.bySlug': { harnessSlug: 'papercusp' },
   'agentRunsConsolidated.recent': { harnessSlug: 'papercusp' },
   'featuresConsolidated.byPlanSlug': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },

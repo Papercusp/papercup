@@ -37,7 +37,7 @@ import {
 import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import type { StoredAssumptionDeclaration } from '../../coord-lifecycle/records';
 import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
 import { objectSelector } from '../coordination/audience';
@@ -843,6 +843,21 @@ async function completeOne(
     ? `COMPLETION RECORDED AND ITEM CLOSED, BUT FINISH DID NOT FULLY CONVERGE — ${finish!.errors?.join('; ') ?? 'a finish leg failed'}. Re-call the SAME completion; finish is idempotent and resumes the missing legs.`
     : undefined;
 
+  // EI-19312103118112942: a fleet drain member's confirmed failure mode is treating
+  // *completing* an item as the end of the wake instead of its midpoint — it closes
+  // the item, holds nothing, and settles, even though its own claim spec still has
+  // hundreds of claimable rows (measured: half of a 10-member fleet idle simultaneously
+  // against 436 claimable). Fire this INLINE on every real close for a fleet member —
+  // no extra query needed: `deriveFleetMembership()` is a pure env read
+  // (PAPERCUSP_FLEET_SLUG), and a fleet member always drains one item at a time, so
+  // "just closed" reliably means "likely holds nothing else right now". False positives
+  // (the rare member juggling >1 claim) cost nothing — scheduler:get_next is a cheap,
+  // idempotent no-op when the caller already holds enough work.
+  const fleetRepullNudge =
+    closeLanded && !stateError && !finishFailed && deriveFleetMembership().fleetSlug != null
+      ? `${it.id} is CLOSED. If you hold no other claim right now, do NOT settle — call scheduler:get_next immediately to pull the next unit before ending this turn (EI-19312103118112942: completing is the midpoint of a wake, not the end).`
+      : undefined;
+
   // EI-15982: every LOUD signal (anything the caller must not miss — a hard failure
   // OR a soft "recorded but not closed"/"evidence dropped"/etc warning) is placed
   // BEFORE the bulky echoed data (`workItem`, `completion`, `reflect`, `finish`).
@@ -906,6 +921,7 @@ async function completeOne(
       ? { completionAuthority: stampedAuthority, countsTowardBurnDown: countsTowardBurnDown(stampedAuthority, true) }
       : {}),
     ...(duplicateOfWarning ? { duplicateOfWarning } : {}),
+    ...(fleetRepullNudge ? { fleetRepullNudge } : {}),
     workItem,
     completion,
     reflect,

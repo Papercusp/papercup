@@ -12,6 +12,7 @@ import {
   deriveMemberVerdict,
   decorateMemberVerdicts,
   decorateParkedOn,
+  decorateProductiveToolCalls,
   decorateLoopMonitorStates,
   deriveLoopMonitorState,
   decorateContextPressure,
@@ -487,6 +488,25 @@ describe('decorateMemberVerdicts (EI-8995)', () => {
       async () => ((called += 1), new Map()),
       async () => ((called += 1), 'auto' as WakeMode),
     );
+    expect(out).toEqual([]);
+    expect(called).toBe(0);
+  });
+});
+
+describe('decorateProductiveToolCalls (EI-19307414464301772)', () => {
+  it('stamps productiveToolCallAt from the batch fetch', async () => {
+    const iso = new Date(NOW - 60_000).toISOString();
+    const [stamped, absent] = await decorateProductiveToolCalls(
+      [baseAgent({ agentId: 'su-agent-1' }), baseAgent({ agentId: 'su-agent-2' })],
+      async () => new Map([['su-agent-1', iso]]),
+    );
+    expect(stamped.productiveToolCallAt).toBe(iso);
+    expect(absent.productiveToolCallAt).toBeNull();
+  });
+
+  it('empty input is a no-op (never calls the fetcher)', async () => {
+    let called = 0;
+    const out = await decorateProductiveToolCalls([], async () => ((called += 1), new Map()));
     expect(out).toEqual([]);
     expect(called).toBe(0);
   });

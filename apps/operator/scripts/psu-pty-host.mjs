@@ -2551,6 +2551,31 @@ export function hostThroughPty(o) {
         }
         return { ok: false, reason: 'ownerId-mismatch' };
       }
+      // EI-19311270129974785: a RETRY of a delivery this host already committed to
+      // (the client's own ack-wait timed out, or this host's earlier ack write-back
+      // failed — either looks like a miss to the client, which then retries with the
+      // IDENTICAL delivery id). The original attempt is unstoppably running (or has
+      // already run) the gated pipeline; short-circuit here, before any mode-specific
+      // state mutation (carry-respawn bookkeeping, the coalescer, the gates), so a
+      // late retry never writes a second real duplicate turn. This is only a CHECK —
+      // marking `msg.deliveryId` accepted happens below, ONLY at the points that
+      // return ok:true (coalesced-fold / the accepted-ack), never here: an early
+      // ok:false return past this point (ownerId-mismatch, deferred-carry-respawn-
+      // pending, and — further down — deferred-busy-gate) means NOTHING was
+      // delivered, so that retry must stay eligible, not be pre-emptively deduped.
+      // Absent/empty deliveryId (a one-shot raw/osc/compact/mcp-reconnect call, or a
+      // pre-fix sender) makes this a no-op — unchanged behavior.
+      if (deliveryDedup.isDuplicate(msg.deliveryId)) {
+        try {
+          process.stderr.write(
+            `psu-pty-host: duplicate delivery id ${msg.deliveryId} for ${ownerId} short-circuited ` +
+              `(already accepted, mode:${msg.mode})\n`,
+          );
+        } catch {
+          /* diagnostic only */
+        }
+        return { ok: true, reason: 'duplicate-delivery-id' };
+      }
       // EI-18679681961154136: a carry-respawn re-arm retry is PENDING for this
       // owner (an earlier busy-gate defer, now re-polling for the next idle
       // window — see makeCarryRearmController). An ordinary wake `turn` must
@@ -2608,6 +2633,10 @@ export function hostThroughPty(o) {
         } catch {
           /* diagnostic only */
         }
+        // EI-19311270129974785: this delivery id IS being honored (folded into the
+        // pending waiter's one write) — remember it so a later retry of THIS id
+        // short-circuits instead of folding in a second time / racing a stale fold.
+        if (msg.deliveryId) deliveryDedup.markAccepted(msg.deliveryId);
         return { ok: true, reason: 'coalesced-into-pending-turn' };
       }
       // EI-18679050054551625 (WI-5872 follow-up #2): everything from here down —
@@ -3014,6 +3043,13 @@ export function hostThroughPty(o) {
             carryRearm.endFirstAttempt(msg);
           }
         });
+      // EI-19311270129974785: this is the exact commitment point — the gated
+      // pipeline is already fired (fire-and-forget above) and WILL run to some
+      // conclusion regardless of whether this ack reaches the client. Remember
+      // the delivery id now so any retry the client sends after this point
+      // (ack-wait timeout, or this ack's own write-back failing below) is
+      // recognized and short-circuited instead of double-delivering.
+      if (msg.deliveryId) deliveryDedup.markAccepted(msg.deliveryId);
       return { ok: true, reason: 'accepted' };
       })().catch((err) => ({
         ok: false,

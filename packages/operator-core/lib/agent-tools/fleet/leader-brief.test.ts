@@ -379,6 +379,159 @@ describe('computeDormantAlert (EI-18730414627683753)', () => {
   });
 });
 
+// EI-19307414464301772: a member reading HEALTHY on every existing surface (live,
+// verdict:monitoring, lastToolCallAgeMs fresh, not stalled) while its last 14 tool
+// calls were entirely per-turn housekeeping (coord:glance/activity:report/journal:
+// record-turn/flags:get/sessions:ingest-gate-event), holding zero claims, for ~8h,
+// with 3 directed messages left unanswered the whole time.
+describe('computeSpinningAlert (EI-19307414464301772)', () => {
+  const BUDGET = 30 * 60_000;
+
+  it('flags a member ticking fresh but whose last PRODUCTIVE call is stale past budget', () => {
+    expect(
+      computeSpinningAlert({
+        verdict: 'monitoring',
+        parkedOn: [],
+        lastToolCallAgeMs: 20_000,
+        productiveToolCallAgeMs: BUDGET + 60_000,
+      }),
+    ).toBe(true);
+  });
+
+  it('does NOT flag when there is no productive call on record at all (null) — absence of data is not evidence of spinning', () => {
+    expect(
+      computeSpinningAlert({
+        verdict: 'monitoring',
+        parkedOn: [],
+        lastToolCallAgeMs: 20_000,
+        productiveToolCallAgeMs: null,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT flag a healthy member whose last call was itself productive (fresh productiveToolCallAgeMs)', () => {
+    expect(
+      computeSpinningAlert({
+        verdict: 'monitoring',
+        parkedOn: [],
+        lastToolCallAgeMs: 20_000,
+        productiveToolCallAgeMs: 20_000,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT flag a member that is not visibly ticking (lastToolCallAgeMs stale/absent) — that is stalled/dead territory', () => {
+    expect(
+      computeSpinningAlert({
+        verdict: 'monitoring',
+        parkedOn: [],
+        lastToolCallAgeMs: BUDGET + 60_000,
+        productiveToolCallAgeMs: BUDGET + 60_000,
+      }),
+    ).toBe(false);
+    expect(
+      computeSpinningAlert({
+        verdict: 'monitoring',
+        parkedOn: [],
+        lastToolCallAgeMs: null,
+        productiveToolCallAgeMs: BUDGET + 60_000,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT flag dead/booted/joined — never took a turn yet, or confirmed gone', () => {
+    for (const verdict of ['dead', 'booted', 'joined'] as const) {
+      expect(
+        computeSpinningAlert({
+          verdict,
+          parkedOn: [],
+          lastToolCallAgeMs: 20_000,
+          productiveToolCallAgeMs: BUDGET + 60_000,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it('does NOT flag a member deliberately parked on an event — it is already benched', () => {
+    expect(
+      computeSpinningAlert({
+        verdict: 'monitoring',
+        parkedOn: ['some:event'],
+        lastToolCallAgeMs: 20_000,
+        productiveToolCallAgeMs: BUDGET + 60_000,
+      }),
+    ).toBe(false);
+  });
+
+  it('is suppressed for a paused (winding-down) fleet, matching every sibling alert', () => {
+    expect(
+      computeSpinningAlert(
+        { verdict: 'monitoring', parkedOn: [], lastToolCallAgeMs: 20_000, productiveToolCallAgeMs: BUDGET + 60_000 },
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  it('respects a custom budget', () => {
+    const tight = 5 * 60_000;
+    expect(
+      computeSpinningAlert(
+        { verdict: 'monitoring', parkedOn: [], lastToolCallAgeMs: 60_000, productiveToolCallAgeMs: 6 * 60_000 },
+        false,
+        tight,
+      ),
+    ).toBe(true);
+    expect(
+      computeSpinningAlert(
+        { verdict: 'monitoring', parkedOn: [], lastToolCallAgeMs: 60_000, productiveToolCallAgeMs: 4 * 60_000 },
+        false,
+        tight,
+      ),
+    ).toBe(false);
+  });
+
+  it('does NOT require load===0 — a member spinning WHILE holding a claim is the more dangerous case, not a suppressed one', () => {
+    // Deliberately does not accept load/doing/queued at all — unlike computeDormantAlert
+    // and computeBenchSuggestion's laneless-idle branch, this alert is independent of claim
+    // state by construction (see the doc comment on computeSpinningAlert).
+    expect(
+      computeSpinningAlert({
+        verdict: 'speaking',
+        parkedOn: [],
+        lastToolCallAgeMs: 20_000,
+        productiveToolCallAgeMs: BUDGET + 60_000,
+      }),
+    ).toBe(true);
+  });
+
+  it('projectMember computes productiveToolCallAgeMs from the ISO timestamp, and surfaces `spinning:true` end-to-end', () => {
+    const agent = baseAgent({
+      verdict: 'monitoring',
+      lastToolCallAt: new Date(NOW - 20_000).toISOString(),
+      productiveToolCallAt: new Date(NOW - (BUDGET + 60_000)).toISOString(),
+    });
+    const m = projectMember(agent, NOW);
+    expect(m.productiveToolCallAgeMs).toBe(BUDGET + 60_000);
+    expect(m.spinning).toBe(true);
+  });
+
+  it('projectMember: null productiveToolCallAgeMs when no productive call is on record', () => {
+    const m = projectMember(baseAgent({ productiveToolCallAt: null }), NOW);
+    expect(m.productiveToolCallAgeMs).toBeNull();
+    expect(m.spinning).toBeUndefined();
+  });
+
+  it('projectMember does NOT set `spinning` for a healthy member whose last call was productive', () => {
+    const agent = baseAgent({
+      verdict: 'monitoring',
+      lastToolCallAt: new Date(NOW - 20_000).toISOString(),
+      productiveToolCallAt: new Date(NOW - 20_000).toISOString(),
+    });
+    const m = projectMember(agent, NOW);
+    expect(m.spinning).toBeUndefined();
+  });
+});
+
 // WI-5973: a fleet leader running its monitor loop is SUPPOSED to hold zero
 // claims — that IS the documented leader contract (monitor each wake: burn-down
 // delta, member liveness, completion-integrity audit, reclaim orphans). Before

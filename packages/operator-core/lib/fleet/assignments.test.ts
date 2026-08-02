@@ -24,6 +24,7 @@ import {
   deriveActivity,
   downgradeEndedHolders,
   groupByAgent,
+  HOUSEKEEPING_TOOL_NAMES,
   isReclaimCandidate,
   isResidueCandidate,
   orphanedClaims,
@@ -1002,5 +1003,24 @@ describe('reconcileOrphanedWithVerdicts — the EI-18698865231464142 blind spot'
     }
     // The live holder's claim is untouched and correctly NOT reclaimable.
     expect(orphanedClaims(fixed).some((r) => r.agentId === 'su-live')).toBe(false);
+  });
+});
+
+describe('HOUSEKEEPING_TOOL_NAMES (EI-19307414464301772)', () => {
+  it('carries both colon and underscore spellings of every per-turn housekeeping call', () => {
+    expect([...HOUSEKEEPING_TOOL_NAMES].sort()).toEqual(
+      [
+        'coord:glance',
+        'coord_glance',
+        'activity:report',
+        'activity_report',
+        'journal:record-turn',
+        'journal_record-turn',
+        'flags:get',
+        'flags_get',
+        'sessions:ingest-gate-event',
+        'sessions_ingest-gate-event',
+      ].sort(),
+    );
   });
 });
