@@ -225,3 +225,44 @@ describe('claim_next miss diagnosis — issue-family backlog (EI-6062)', () => {
     expect(diag).toEqual({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0, flagReadError: null });
   });
 });
+
+/**
+ * EI-19370051676057812 — the `states` override must reach the ISSUE legs, not just the feature ones.
+ *
+ * Both issue counts used to hardcode ISSUE_FAMILY_CLAIMABLE_STATES while the feature legs read
+ * `filter.states ?? ['open']`, so a caller's `states` was honored for one family and silently
+ * dropped for the other, blended into one drained/pending/ready verdict with no error. That made
+ * this DIAGNOSTIC disagree with the claim path it exists to explain (claimNextIssueWorkItem and
+ * explainIssueClaimFloors both honor the override), so a state-specific miss was diagnosed against
+ * a pool the claim would never serve.
+ *
+ * This guard is the falsifiable half: an inert `states` argument CANNOT satisfy both legs below,
+ * because they demand opposite answers about the SAME row. Pre-fix the override leg read 0.
+ * The 14 call sites that used to pass a long-retired `states: ['todo']` were only green because
+ * the argument did nothing — they now omit it and exercise the real default pool.
+ */
+describe('diagnoseClaimNextMiss honors an explicit `states` override on the ISSUE legs (EI-19370051676057812)', () => {
+  it('an issue in a NON-default claimable state is counted ONLY when `states` names it', async () => {
+    setFlagOverridesForTest({
+      [FLAGS.SCHEDULER_MAINTAINED_READY]: false,
+      [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
+    });
+    // 'failing' is claimable-eligible (CLAIM_STATES_ALLOWLIST) but is NOT the issue-family
+    // default (ISSUE_FAMILY_CLAIMABLE_STATES === ['open']) — the one shape that can tell an
+    // honored override apart from an ignored one.
+    await seedIssue('EI-failing', { status: 'failing', createdTs: 100 });
+
+    // Default states must NOT see it...
+    const dflt = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
+    expect(dflt.pendingUnclaimed).toBe(0);
+
+    // ...and naming it explicitly MUST. This is the assertion that was unsatisfiable
+    // while the issue legs hardcoded their states.
+    const override = await wi.diagnoseClaimNextMiss({
+      harness: H,
+      assignee: 'w1',
+      states: ['failing'],
+    });
+    expect(override.pendingUnclaimed).toBe(1);
+  });
+});

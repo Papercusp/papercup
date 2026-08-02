@@ -299,6 +299,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run lint:no-raw-setinterval
 
+      # no-proc-path-fixture guard (EI-19369372064589484): a made-up '/proc/…' path
+      # literal HANGS Node's recursive mkdir forever (procfs answers ENOENT, node
+      # reads that as "parent missing", creates /proc → EEXIST, retries, loops —
+      # 44,995 syscalls in 3s). It wedges during vitest COLLECTION, so the run emits
+      # zero output and is indistinguishable from a queued heavy job; it has cost the
+      # fleet twice. Whether it hangs depends on which mkdir consumes the path
+      # (coreutils fails in 5ms), which the author cannot see — so the idiom is
+      # banned outright in favour of testing/unwritable-path.ts.
+      - name: Lint no /proc path fixture
+        if: ${{ !cancelled() }}
+        run: npm run lint:no-proc-path-fixture
+
       # no-raw-blocks-edge guard (work-item-dependency-edges-2026-08-02 P-007 / D-013):
       # the DEPENDENCY-GRAPH analogue of the guard above. A feature→feature `blocks`
       # CYCLE permanently deadlocks the dispatch frontier — every feature in the cycle

@@ -22,7 +22,17 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import {
+  mkdirSync,
+  writeFileSync,
+  appendFileSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  readFileSync,
+  rmSync,
+  existsSync,
+} from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
@@ -3043,6 +3053,43 @@ export async function runGreenCheckpoint(
         historicalFlakeNote = historicalFlakeAnnotations(stats, failingTests);
       } catch (e) {
         deps.log(`historical-flake-lookup skipped (${e instanceof Error ? e.message : e})`);
+      }
+    }
+    // EI-19370028836452003: the per-candidate log is WRITTEN by runGreen (see the
+    // writeFileSync ~line 4550) BEFORE this verdict block runs, so the file named
+    // `...-cand-<X>.log` never contained X's OWN lineage / already-fixed-since /
+    // historical-flake notes — they landed in the NEXT pass's log, or (for a run's last
+    // pass) nowhere at all. Measured 2026-08-02 across three consecutive verdict logs:
+    // cand-41473b10 none, cand-71d7d1d1 none, cand-c8aac927 one line naming 71d7d1d1.
+    //
+    // That absence is not a cosmetic gap: the lineage line is the owner-flagged
+    // "single highest-leverage fix from the nine-detector audit" (EI-18685041726970077,
+    // quoted above), and a triaging agent who greps the verdict log for it and finds
+    // nothing reads that as "no staleness note, so this is a real red" — the exact
+    // false negative the line exists to prevent. It cost a wrong hive-wide broadcast
+    // and a wake of manual git archaeology on the 2026-08-02T18:02Z red.
+    //
+    // Appended (not folded into the original write) so the log path is still announced
+    // as soon as the suite output exists. Defanged for the same reason the body is:
+    // this file is explicitly NOT the verdict channel (EI-18832272104497819), so a note
+    // that echoes GREEN_CHECKPOINT_RESULT_MARKER must not become a second one.
+    // Best-effort, like every other write here — the gate verdict must never depend on
+    // logging.
+    if (logPath) {
+      try {
+        appendFileSync(
+          logPath,
+          defangCapturedResultMarkers(
+            `\n\n[green-checkpoint verdict for candidate ${candidate.slice(0, 8)}]\n` +
+              `candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? 'unset'}` +
+              lineageNote +
+              alreadyFixedNote +
+              historicalFlakeNote +
+              '\n',
+          ),
+        );
+      } catch {
+        /* best-effort — the gate verdict must not depend on logging */
       }
     }
     await deps

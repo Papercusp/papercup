@@ -16,7 +16,7 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
-import { findProcFixtureOffenders, classifyProcSegment, stripComments, KNOWN_PROCFS_ENTRIES, ALLOWLIST } from '../../../scripts/check-no-proc-path-fixture.mjs';
+import { findProcFixtureOffenders, classifyProcSegment, stripComments, KNOWN_PROCFS_ENTRIES, ALLOWLIST, findOffenders } from '../../../scripts/check-no-proc-path-fixture.mjs';
 
 import { UNWRITABLE_PATH_FIXTURE, UNWRITABLE_PATH_ROOT, unwritablePath } from './testing/unwritable-path';
 
@@ -109,6 +109,25 @@ describe('no-proc-path-fixture guard: predicate internals', () => {
     for (const e of ['self', 'version', 'sys', 'net', 'pressure', 'loadavg', 'vmstat', 'uptime', 'cmdline']) {
       expect(KNOWN_PROCFS_ENTRIES.has(e)).toBe(true);
     }
+  });
+});
+
+describe('no-proc-path-fixture guard: the tree stays clean', () => {
+  // The predicate tests above prove the guard CAN catch the trap; this proves it
+  // IS catching it, on the real tree, in the routine local loop. Without this, a
+  // new offender only reds in CI — and this bug's whole signature is that it wedges
+  // a vitest run into a silent, output-free hang that reads as queue contention.
+  // Catching it in test:affected is the difference between a 15ms red and an hour
+  // of someone misdiagnosing a stalled gate. Same posture as the design-primitives
+  // lint, which likewise scans the tree from a vitest test.
+  it('has NO made-up /proc/… literal anywhere in tracked source', () => {
+    const { offenders } = findOffenders() as { offenders: Array<{ file: string; literal: string }> };
+    const rendered = offenders.map((o) => `${o.file} → ${o.literal}`);
+    expect(
+      rendered,
+      "A made-up '/proc/…' path hangs Node's recursive mkdir FOREVER (see testing/unwritable-path.ts). " +
+        "Use UNWRITABLE_PATH_FIXTURE / unwritablePath() from '@papercusp/operator-core/lib/testing/unwritable-path' instead.",
+    ).toEqual([]);
   });
 });
 
