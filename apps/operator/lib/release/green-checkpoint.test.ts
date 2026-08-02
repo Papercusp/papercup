@@ -2916,7 +2916,7 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
       }
     });
 
-    it('a SLOW failing attempt (>= ISOLATION_LOAD_STARVATION_MIN_MS) is logged as consistent with ambient load', async () => {
+    it('a SLOW failing attempt on a SATURATED host is logged as consistent with ambient load', async () => {
       const logs: string[] = [];
       const slowMs = ISOLATION_LOAD_STARVATION_MIN_MS + 5_000;
       const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
@@ -2925,12 +2925,48 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
         passed: false,
         durationMs: slowMs,
       });
-      await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, (s) => logs.push(s), { sleep: async () => {} });
+      await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, (s) => logs.push(s), {
+        sleep: async () => {},
+        // The box really was oversubscribed — 1.5 runnable tasks per core.
+        loadPerCore: () => ISOLATION_LOAD_STARVATION_MIN_LOAD_PER_CORE + 0.5,
+      });
       const attributionLines = logs.filter((l) => l.includes('still failing after attempt'));
       expect(attributionLines.length).toBeGreaterThan(0);
       for (const line of attributionLines) {
         expect(line).toContain(`took ${slowMs}ms`);
         expect(line).toContain('consistent with ambient host load');
+        expect(line).toContain('loadavg/core 1.50'); // the reader can check the claim
+      }
+    });
+
+    // EI-19368177649203822 / EI-19367962245538796 — THE RECURRENCE GUARD. A duration-only
+    // test blamed ambient load for 7 of 7 isolation failures in the 2026-08-02 18:02:14Z
+    // verdict, because `durationMs` wraps the whole vitest spawn (boot + transform + import
+    // = 5-25s) and so ALWAYS clears the 1s bound. That boilerplate read as a gate defect:
+    // two agents filed contradictory bugs from it, and one proposed promoting the prose to a
+    // CLASSIFICATION — which would have absorbed nearly every red into a false green. A slow
+    // failure on an IDLE box must therefore never be attributed to load.
+    it('a SLOW failing attempt on an UNSATURATED host is NOT blamed on ambient load', async () => {
+      const logs: string[] = [];
+      const slowMs = 19_137; // the measured adv-agent-detail.test.ts attempt from that verdict
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: false,
+        durationMs: slowMs,
+      });
+      await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, (s) => logs.push(s), {
+        sleep: async () => {},
+        loadPerCore: () => 0.1, // plenty of free cores — nothing was starving this run
+      });
+      const attributionLines = logs.filter((l) => l.includes('still failing after attempt'));
+      expect(attributionLines.length).toBeGreaterThan(0);
+      for (const line of attributionLines) {
+        expect(line).toContain(`took ${slowMs}ms`);
+        expect(line).toContain('NOT a supported explanation');
+        expect(line).toContain('loadavg/core 0.10');
+        // The precise regression: the old duration-only rule emitted this for exactly this input.
+        expect(line).not.toContain('consistent with ambient host load');
       }
     });
 

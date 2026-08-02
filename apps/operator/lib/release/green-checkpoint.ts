@@ -23,6 +23,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   revParse,
@@ -1743,15 +1744,38 @@ export interface IsolationResult {
 }
 
 /** EI-18669336904251384: the minimum wall-clock time an isolated re-run attempt must have
- *  taken before the retry-loop log may blame "ambient host load" for its failure. A real
- *  process that was genuinely CPU-starved spends real time waiting for a scheduler slot —
- *  it does not fail in single-digit-to-low-double-digit milliseconds. A failure that fast
- *  is a deterministic assertion (a real break, or — as measured on 2026-07-25 — a stale
- *  candidate whose fix already landed at tip), and asserting "ambient host load" for it is
+ *  taken before the retry-loop log may blame "ambient host load" for its failure. A failure
+ *  faster than this never really ran — vitest could not even boot — so it is a deterministic
+ *  break, a stale candidate, or a spawn error, and asserting "ambient host load" for it is
  *  false attribution that teaches the fleet to wait out a red that will never self-heal.
- *  1s is comfortably above vitest's own process/import startup cost (seen at 130ms+ in this
- *  file's own suite) so it never mis-fires on a merely-quick-but-real run. */
+ *
+ *  ⚠ NECESSARY BUT NOWHERE NEAR SUFFICIENT — never use this bound ALONE as the starvation
+ *  test (EI-19368177649203822 / EI-19367962245538796, both filed against the duration-only
+ *  version). Its original rationale — "1s is comfortably above vitest's own process/import
+ *  startup cost (seen at 130ms+ in this file's own suite)" — measured the injected STUB in
+ *  this file's unit tests, not a real `vitest run` spawn. {@link IsolationResult.durationMs}
+ *  is wall-clock around the WHOLE spawn (see the isolation runner), so it carries node boot
+ *  + vite transform + import: measured 2026-08-02 on a PASSING 103-test file, 9.44s total
+ *  for 3.29s of actual tests (transform 6.06s, import 5.76s). Every real re-run therefore
+ *  clears 1s by an order of magnitude, which inverted the guard's intent — in the 18:02:14Z
+ *  verdict it blamed ambient load for 7 of 7 isolation failures, including deterministic
+ *  reds whose source was byte-identical at tip. Two agents read that boilerplate as a gate
+ *  defect and filed contradictory bugs; one proposed promoting the prose to a
+ *  CLASSIFICATION, which would have absorbed nearly every red into a FALSE GREEN. Always
+ *  corroborate with real host load — see {@link ISOLATION_LOAD_STARVATION_MIN_LOAD_PER_CORE}. */
 export const ISOLATION_LOAD_STARVATION_MIN_MS = 1_000;
+
+/** The minimum 1-minute loadavg PER CORE at which an isolated, single-file re-run can
+ *  plausibly have been CPU-starved. Below 1.0 the run queue is shorter than the core count,
+ *  so a LONE vitest process had a free core available and "ambient load starved it" is not a
+ *  supportable claim however long the process took — which is the whole failure this guards
+ *  (a slow spawn is normal; a slow spawn on an idle box is not evidence of starvation).
+ *
+ *  Linux loadavg also counts uninterruptible-I/O waiters, so this is a proxy rather than a
+ *  pure CPU measure. That is deliberate on two counts: the wording it selects says
+ *  "consistent with" rather than asserting causation, and the measured numbers are PRINTED
+ *  in the log line so a reader can judge for themselves instead of trusting the label. */
+export const ISOLATION_LOAD_STARVATION_MIN_LOAD_PER_CORE = 1.0;
 
 export type FlakeVerdict =
   /** every originally-failing file PASSED in isolation ⇒ the red was pure load-flake. */
@@ -2008,6 +2032,11 @@ export async function attemptFlakeAbsorption(
      *  absorb rather than guess. Absence is fail-safe (the gate stays red), never a
      *  silent bypass. */
     concurrentRun?: (input: { workspace: string; files: string[] }) => Promise<ConcurrentRerunResult>;
+    /** Host-load seam — the 1-minute loadavg PER CORE, sampled at the moment an isolation
+     *  attempt failed. Injected for tests (a real reading would make the assertions on the
+     *  attribution wording depend on whatever else is running on the box). Default: real
+     *  `os.loadavg()` over the parallelism actually available to this process. */
+    loadPerCore?: () => number;
   } = {},
 ): Promise<FlakeAbsorptionOutcome> {
   const keep = (note: string): FlakeAbsorptionOutcome => ({ absorbedToGreen: false, flakeSuspects: [], note });
@@ -2019,6 +2048,13 @@ export async function attemptFlakeAbsorption(
   // WI-6956: no default — an absent confirming runner must FAIL SAFE (decline to absorb),
   // never fall back to the isolated-pass-only criterion this exists to replace.
   const concurrentRun = opts.concurrentRun;
+  const loadPerCore =
+    opts.loadPerCore ??
+    (() => {
+      const cores =
+        typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
+      return os.loadavg()[0] / Math.max(1, cores);
+    });
   try {
     // EI-18673560248447615: parsed once up front so every log line below can NAME the
     // cases that failed, instead of sending the reader to the separate full-suite log.
@@ -2065,12 +2101,23 @@ export async function attemptFlakeAbsorption(
         // cause, so a human/agent reading the log doesn't wait out a red that will never
         // self-heal. Retrying is still safe either way — it can only ever ADD an
         // absorption chance, never manufacture a false green.
+        // EI-19368177649203822 / EI-19367962245538796: a LONG duration alone is NOT evidence
+        // of starvation — a real vitest spawn spends 5-25s on boot/transform/import before a
+        // single test runs, so the duration bound below is cleared by every re-run that got
+        // off the ground. Blaming ambient load needs ambient load, so sample it and say what
+        // was actually measured. This selects LOG WORDING ONLY: it must never feed the
+        // absorption verdict (decideFlakeAbsorption), because "the box looked busy" is
+        // exactly the false-green rationalisation WI-6956 exists to refuse.
+        const load = loadPerCore();
+        const loadNote = `loadavg/core ${load.toFixed(2)}`;
         const attribution =
           result.durationMs === undefined
             ? '(ambient host load, not just the checkpoint\'s own concurrency, can starve even an isolated re-run — duration not measured)'
-            : result.durationMs >= ISOLATION_LOAD_STARVATION_MIN_MS
-              ? `(took ${result.durationMs}ms — consistent with ambient host load starving the isolated re-run)`
-              : `(finished in ${result.durationMs}ms — too fast to be load-starved; likely a real break or a stale candidate, NOT ambient load)`;
+            : result.durationMs < ISOLATION_LOAD_STARVATION_MIN_MS
+              ? `(finished in ${result.durationMs}ms — too fast to be load-starved; likely a real break or a stale candidate, NOT ambient load)`
+              : load >= ISOLATION_LOAD_STARVATION_MIN_LOAD_PER_CORE
+                ? `(took ${result.durationMs}ms at ${loadNote} — consistent with ambient host load starving the isolated re-run)`
+                : `(took ${result.durationMs}ms, but the host was NOT saturated at ${loadNote} — a lone re-run had a free core, so ambient load is NOT a supported explanation; likely a real break, a stale candidate, or a genuinely non-deterministic test)`;
         log(
           `isolation: ${f.workspace}::${f.file} still failing after attempt ${attempt} ${attribution}${describeFailingCases(casesByFile.get(f.file))} — retrying (${retryDeadline - now()}ms of retry budget remaining)`,
         );

@@ -624,6 +624,9 @@ import './mode/set';
 import './slash/dispatch';
 // L3 channels — messages + acks + threads (Phase B core)
 import './coordination/tools/send';
+// P-004 (agent-epistemics-2026-08-02): correct a sent message to its ORIGINAL
+// audience and mark the original superseded, instead of a second N-recipient blast.
+import './coordination/tools/supersede';
 // COMPOUND coordinator dispatch (fleet-dispatch-wake-clarity P-002 / D-002): assign a
 // lane + deliver the note + WAKE the target + report pickup, in ONE call — composes
 // coord:presence + plan_items:assign + coord:send (deliver-and-wake). Flags an
