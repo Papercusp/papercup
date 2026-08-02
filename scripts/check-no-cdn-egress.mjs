@@ -56,6 +56,31 @@
  * guard reports removals and tells you to re-run with --update so the floor
  * drops behind you. It never auto-accepts an addition.
  *
+ * ── WHAT THIS GUARD MAY NOT CLAIM (sibling plan D-004) ──────────────────────
+ *
+ * `cdn-egress-fixes-2026-08-02` D-004 settled that "only a RUNTIME
+ * resource-timing read can verify this class — never a bundle grep", and this
+ * script is a bundle grep. That is not a contradiction, but the boundary is
+ * exact and must not be blurred:
+ *
+ *   - EVERY fix in this class works by overriding a URL at runtime (an AMD
+ *     loader path, `options.cdn`, `EXCALIDRAW_ASSET_PATH`). The library's
+ *     default string therefore survives in the bundle whether the fix works or
+ *     not. So a hit here is NOT evidence of egress, and an absence is NOT
+ *     evidence a fix landed. Two of the six findings in that plan (emoji-mart,
+ *     speech-rule-engine) were PROVEN NOT LIVE at runtime while their URLs sat
+ *     in the bundle exactly as they do today.
+ *   - What this scan uniquely provides is DISCOVERY, not a verdict: it is the
+ *     only leg that notices a third-party asset URL nobody has classified yet,
+ *     including in code no test will ever execute. It answers "is there a new
+ *     candidate?", never "is it fetched?".
+ *
+ * Hence the workflow it enforces: a new hit means GO AND ESTABLISH LIVENESS at
+ * runtime (the probe-plan technique in that plan's P-007), then either fix it
+ * or baseline it with the runtime verdict written into `reason`. The baseline's
+ * `status` field records which of those happened, so a later reader can tell a
+ * verified-inert row from one that has simply never been checked.
+ *
  * Usage:
  *   node scripts/check-no-cdn-egress.mjs              # builds fresh, then scans
  *   node scripts/check-no-cdn-egress.mjs --dist DIR   # scan an existing dist
@@ -120,19 +145,27 @@ const URL_RE = /https?:\/\/[a-zA-Z0-9._-]+(?::\d+)?(?:\/[^"'`\s<>()\\]*)?/g;
  * baseline would be pure noise after any code change, and a noisy baseline is
  * one that gets regenerated blindly — which is the same as not having one.
  *
- * Matched NARROWLY on purpose: exactly 8 chars from Vite/Rolldown's base64url
- * alphabet, containing BOTH a digit and an uppercase letter (`By_8IktE`,
- * `CYN-VVQ2`, `K2UTITRG`). A loose `{8,}` rule instead eats real filename
- * words — measured, it rewrote `third-languages.js` to `third-<hash>.js` and
- * collapsed the distinct `el-fresh-test.html` / `el-bare-test.html` fixtures
- * into a single row, which destroys attribution and lets two different files
- * share one baseline key.
+ * Matched NARROWLY on purpose: EXACTLY 8 chars from Vite/Rolldown's base64url
+ * alphabet, carrying a digit or an uppercase letter (`By_8IktE`, `CYN-VVQ2`,
+ * `K2UTITRG`, `CmCJkiVB`). Both bounds were measured, and each errs in its own
+ * direction:
+ *   - a loose `{8,}` rule eats real filename words — it rewrote
+ *     `third-languages.js` to `third-<hash>.js` and collapsed the distinct
+ *     `el-fresh-test.html` / `el-bare-test.html` fixtures into one row,
+ *     destroying attribution and letting two files share a baseline key;
+ *   - requiring a digit AND an uppercase misses `CmCJkiVB` (no digit), which
+ *     leaves a real hash in the key so the NEXT build reports that row as a
+ *     brand-new finding and fails the gate spuriously — the far worse
+ *     direction, because a guard that cries wolf is a guard that gets muted.
+ * Only the LAST segment is stripped: `chunk-K2UTITRG-CmCJkiVB.js` keeps its
+ * upstream `K2UTITRG` (excalidraw's own vendored chunk name, stable across our
+ * builds) and loses only Vite's suffix.
  */
 const VITE_HASH_RE = /-([A-Za-z0-9_-]{8})(\.[a-z]+)$/;
 function normalizePath(relPath) {
   const unix = relPath.replace(/\\/g, '/');
   return unix.replace(VITE_HASH_RE, (whole, hash, ext) =>
-    /\d/.test(hash) && /[A-Z]/.test(hash) ? `-<hash>${ext}` : whole,
+    /[\d]/.test(hash) || /[A-Z]/.test(hash) ? `-<hash>${ext}` : whole,
   );
 }
 
@@ -241,15 +274,25 @@ try {
   }
 
   if (UPDATE) {
+    // Read the prior baseline ONCE, not once per finding.
+    const priorByKey = new Map(loadBaseline().entries.map((e) => [keyOf(e), e]));
     const baseline = {
       $comment:
         'Baseline for scripts/check-no-cdn-egress.mjs (egress-monitor-origin-axis-2026-08-02 P-004). ' +
         'RATCHET, NOT AMNESTY: entries are expected to be removed as fixes land. ' +
-        'Every entry needs a `reason`. Regenerate with: npm run lint:no-cdn-egress:update',
+        'Every entry needs a `reason`; `status` is one of inert | not-live-verified | unresolved. ' +
+        'A bundle hit is a DISCOVERY, never a verdict — establish liveness at runtime before ' +
+        'acting on one (sibling plan cdn-egress-fixes-2026-08-02 D-004). ' +
+        'Regenerate with: npm run lint:no-cdn-egress:update',
       generated: new Date().toISOString().slice(0, 10),
+      // Carry the whole prior row forward, so hand-written classification
+      // (status, notes, links to the item tracking a fix) survives a
+      // regeneration instead of being silently reset to the TODO placeholder.
       entries: findings.map((f) => {
-        const prior = loadBaseline().entries.find((e) => keyOf(e) === keyOf(f));
-        return { file: f.file, url: f.url, reason: prior?.reason ?? 'TODO: classify this occurrence' };
+        const prior = priorByKey.get(keyOf(f));
+        return prior
+          ? { ...prior, file: f.file, url: f.url }
+          : { file: f.file, url: f.url, status: 'unresolved', reason: 'TODO: classify this occurrence' };
       }),
     };
     writeFileSync(BASELINE_PATH, `${JSON.stringify(baseline, null, 2)}\n`);
