@@ -79,15 +79,22 @@ interface InvokeOnceParams {
  * listening so the parent spawnSpawnerSidecar() handshake completes.
  */
 export function runSpawnerSidecarServer(): void {
-  // Runtime flag overrides (EI-8867 / WI-3628). `getFlag()` consults the PG override store
-  // ONLY in a process that installed it. This is a STANDALONE process (dev: `tsx
-  // bin/spawner-sidecar.ts`; packaged: serve.mjs re-exec'd with PAPERCUSP_SPAWNER_SIDECAR_MODE),
-  // and it does not import flag-bus — so without this, every `flags:set` would report success
-  // and be silently INVISIBLE here, with getFlag() falling through to FLAG_DEFAULTS. That is the
-  // exact failure that made the inference gateway ignore a dark flag for hours.
-  // spawnInvokeOnce() (this sidecar's whole job) reads FLEET_CAPABILITY_ONLY + REPLACE_CLAUDE_BASE
-  // via orchestrator-runner. Installed HERE, in the server main, so BOTH entry routes inherit it.
-  // Idempotent + fail-soft: a store fault degrades to defaults exactly as before, never blocks boot.
+  // Runtime flag overrides (EI-8867 / WI-3628, corrected WI-6822). `getFlag()` consults the
+  // PG override store ONLY in a process that installed it. This is a STANDALONE process (dev:
+  // `tsx bin/spawner-sidecar.ts`; packaged: serve.mjs re-exec'd with
+  // PAPERCUSP_SPAWNER_SIDECAR_MODE), and it does not import flag-bus — so without an install
+  // somewhere, every `flags:set` would report success and be silently INVISIBLE here.
+  //
+  // The REAL install now happens at IMPORT TIME, via this file's top-of-file
+  // `import '../flag-override-store-boot-effect'` (textually before the `orchestrator-runner`
+  // import) — NOT here. WI-6822: this call, sitting inside the function body, used to be the
+  // ONLY install and was too late — `orchestrator-runner` transitively imports
+  // `work-item-claim-lease-wiring.ts`, whose own top-level `void refreshClaimLease()` reads a
+  // flag DURING that sibling import's evaluation, before this function is ever invoked. That
+  // silently latched the one-shot "no override store" warning and served FLAG_DEFAULTS on every
+  // boot. This call is kept as a harmless, idempotent defensive re-assert (never blocks boot on
+  // a store fault) — see flag-override-store-boot-effect.ts for the actual fix + full timing
+  // explanation.
   installFlagOverrideStore();
   // WI-6793: LISTEN for peer processes' flags:set writes (cross-process
   // invalidation — see flag-change-listener.ts). Fire-and-forget; bounded

@@ -1026,8 +1026,10 @@ section { padding-top: 74px; scroll-margin-top: 20px; }
         </div>
       </div>
 
-      <p style="margin:16px auto 0;max-width:640px;font-size:12.5px;color:var(--ink-3);text-align:center;font-family:var(--mono)">
-        ↑ the popup &nbsp;·&nbsp; ↓ where “Launch a fleet” goes instead
+      <p style="margin:16px auto 0;max-width:640px;font-size:12.5px;color:var(--mark);text-align:center">
+        <strong>⚠ Superseded [owner 2026-08-02]:</strong> the launcher <strong>stays in the
+        popup</strong>. The board move drawn below was <em>rejected</em> — kept only as the
+        record of what was considered. Build from <a href="#d">Direction D</a>.
       </p>
 
       <div class="op" style="margin-top:12px">
@@ -1118,6 +1120,40 @@ section { padding-top: 74px; scroll-margin-top: 20px; }
           <span class="sep"></span>
           <button type="button" class="v-act"><span class="ic">▣</span>Focus window</button>
           <button type="button" class="v-act ghost"><span class="ic">⋯</span>Session…</button>
+          <span style="flex:1"></span>
+          <button type="button" class="v-act"><span class="ic">✛</span>Launch a fleet…</button>
+        </div>
+      </div>
+
+      <p style="margin:16px auto 0;max-width:660px;font-size:13px;color:var(--ink-2);text-align:center">
+        <strong>Decided 2026-08-02:</strong> the fleet launcher <strong>stays in the popup</strong>.
+        It sits at the far right of the band — visually separated as the only control that
+        doesn't act on this session — and opens the captioned form below.
+      </p>
+
+      <div class="op" style="margin-top:14px;max-width:660px;margin-left:auto;margin-right:auto">
+        <div class="op-title" style="background:var(--op-panel)">
+          <span style="color:var(--op-accent)">✛</span>
+          <span>Launch a fleet</span>
+          <span class="x">✕</span>
+        </div>
+        <div style="padding:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:11px">
+          <div class="v-field"><span class="cap">Fleet name</span>
+            <span class="well empty">Names the fleet's durable handle</span></div>
+          <div class="v-field"><span class="cap">Plan — the lane members work</span>
+            <span class="well empty">Select plan… <span class="car">▾</span></span></div>
+          <div class="v-field"><span class="cap">Model — every member</span>
+            <span class="well">Default <span class="car">▾</span></span></div>
+          <div class="v-field"><span class="cap">Account routing</span>
+            <span class="well">Default — system account <span class="car">▾</span></span></div>
+          <div class="v-field"><span class="cap">Windows</span>
+            <span class="well">Headed — one terminal each <span class="car">▾</span></span></div>
+          <div class="v-field"><span class="cap">Members</span>
+            <span class="well">3</span></div>
+        </div>
+        <div class="band" style="border-top:1px solid var(--op-border);justify-content:flex-end">
+          <button type="button" class="v-act ghost">Cancel</button>
+          <button type="button" class="v-act primary"><span class="ic">✛</span>Launch fleet</button>
         </div>
       </div>
     </div>
@@ -1138,8 +1174,8 @@ section { padding-top: 74px; scroll-margin-top: 20px; }
       <h3>What it needs</h3>
       <ul>
         <li><strong>The <code>ChatAction</code> registry needs a second descriptor shape</strong> — a mode-action carrying its current value plus its options, so <code>PostureActions</code> can render as a pill instead of a button. This is the one real architectural change, and it is B's, inherited.</li>
-        <li><strong>The fleet-launcher move needs your sign-off</strong> — WI-6505 deliberately put it in the popup so it stays reachable when a session is dead. Moving it to the Sessions board arguably serves that better (the board is always reachable), but it overrides a stated decision.</li>
-        <li>Touches all four components plus the Sessions board. ~3–4 days.</li>
+        <li><strong>The fleet launcher stays put</strong> — decided 2026-08-02. WI-6505's placement stands, so D keeps it in the band as <code>✛ Launch a fleet…</code>. What still has to change is the <em>form</em>: today's seven controls carry no visible captions at all, which is what made the original complaint. The disclosure sits outside the <code>actionCtx</code> gate exactly as the row does now, so WI-6505's real reason — reachable when the session is dead or won't start — survives untouched.</li>
+        <li>Touches all four chat components. ~3 days.</li>
       </ul>
     </div>
   </div>
@@ -1847,6 +1883,8 @@ next: confirm fleet-launcher move w/ owner</div>
               <span class="sep"></span>
               <button type="button" class="v-act"><span class="ic">▣</span>Focus</button>
               <button type="button" class="v-act ghost"><span class="ic">⋯</span>Session…</button>
+              <span style="flex:1"></span>
+              <button type="button" class="v-act"><span class="ic">✛</span>Fleet…</button>
             </div>
           </div>
 
@@ -1944,7 +1982,7 @@ next: confirm fleet-launcher move w/ owner</div>
           <tr><td>2</td><td>State moves into the modal header; footer keeps nothing read-only</td><td>SessionChatModal · SessionFooter</td><td class="yes">Low</td></tr>
           <tr><td>3</td><td>Mode-actions render as pills that set their own mode</td><td>chat-actions registry · PostureActions · GradeAction</td><td>Medium — new descriptor shape</td></tr>
           <tr><td>4</td><td>Resume/Fork fold into <code>Session…</code>; Focus stays out</td><td>ChatActionBar · SessionActions</td><td class="yes">Low</td></tr>
-          <tr><td>5</td><td>Fleet launcher moves to the Sessions board <em>(needs your sign-off — overrides WI-6505)</em></td><td>FleetLaunchRow · the board's launch row</td><td>Medium — moves a surface</td></tr>
+          <tr><td>5</td><td>Fleet launcher <strong>stays in the popup</strong> — becomes <code>✛ Launch a fleet…</code> opening a <strong>captioned</strong> form (today's 7 controls have no visible labels at all)</td><td>FleetLaunchRow</td><td class="yes">Low — no surface moves</td></tr>
           <tr><td>6</td><td>Rail: cap every section, reorder by urgency, drill-in links</td><td>AgentDossier · SessionsRosterView.css</td><td class="yes">Low</td></tr>
           <tr><td>7</td><td>Rail: Lane · available-gates · <code>claim</code> gains progressing/stalled · fleet wind-down banner</td><td>adv-agent-detail (new legs) + AgentDossier</td><td>Medium — new reads</td></tr>
           <tr><td>8</td><td><strong>Wake-mode correctness</strong> — show manual/auto in the header; composer says “Staged”, not “Sent”</td><td>SessionChatModal · coord:wake-mode read</td><td class="yes">Low — but it is a <em>bug</em></td></tr>
@@ -1963,15 +2001,21 @@ next: confirm fleet-launcher move w/ owner</div>
     </div>
   </div>
 
-  <div class="callout">
-    <p><strong>One open decision, and it's yours: item 5.</strong> WI-6505 put the
-       fleet launcher in this popup deliberately, so it stays reachable exactly when
-       a session is dead or won't start. D moves it to the Sessions board. I think
-       the board serves that reason <em>better</em> — it's always reachable, and it's
-       where the new-session launcher already lives — but it overrides a stated
-       decision, so I'm not making that call silently. Say the word and it moves;
-       say otherwise and it stays as a <code>Launch a fleet…</code> disclosure in the
-       control band.</p>
+  <div class="callout" style="border-left-color:var(--ok);background:rgba(46,125,91,.08)">
+    <p><strong>Item 5 is decided — the fleet launcher stays in the popup.</strong>
+       [owner 2026-08-02] WI-6505's placement stands and nothing moves to the Sessions
+       board. D now keeps it in the band as <code>✛ Launch a fleet…</code>.</p>
+    <p>That settles <em>where</em>, not <em>how</em>. The row is still the thing that
+       produced complaint ③: seven controls, always open, always empty, and with no
+       visible captions — their names exist only in <code>aria-label</code>, which is
+       why the original message quoted “Plan the fleet works” and “Account routing for
+       every fleet member.” That text appears nowhere on screen. So the captions get
+       fixed regardless of which form wins, and the disclosure keeps WI-6505's actual
+       guarantee intact: it sits outside the <code>actionCtx</code> gate exactly as the
+       row does today, so it is still there when the session is dead, still starting,
+       or failed to resolve.</p>
+    <p><strong>One decision still open: the execution route</strong> — a single session
+       or a fleet.</p>
   </div>
 
   <p style="margin-top:34px;font-size:13px;color:var(--ink-3);border-top:1px solid var(--rule);padding-top:20px">
