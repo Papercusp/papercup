@@ -10,7 +10,7 @@ import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
 import { resolveAgentIdentity } from "../identity";
 import { resolveActorIdentity, actorMailboxKeys } from "../actor-identity";
-import { readInbox, drainAndDeliverUserMailbox } from "../messages";
+import { readInbox, readInboxWindow, drainAndDeliverUserMailbox } from "../messages";
 import { heartbeatPresence, getPresence } from "../presence";
 import { createPresenceBeatThrottle } from "../presence-beat-throttle";
 import { readWatermark, writeWatermark } from "../watermarks";
@@ -377,15 +377,65 @@ export default defineTool({
             owner: identity.ownerId,
             since_ts: args.since_ts ?? null,
             kinds: args.kinds ?? null,
+            // WI-6939: the derive is now WINDOWED, so how much it reads depends on
+            // `limit` and on whether the narrowing filters force the full read.
+            // These MUST be in the key — without them a cached 15-entry window
+            // would be served to a caller asking for 500.
+            limit,
+            bounded: !resolvedFrom && !args.unanswered_only,
+            ambient: !!args.include_ambient,
+            intents: !!args.include_intents,
           },
           tags: ["coord_event_log"],
           softTtlMs: COORD_INBOX_SOFT_TTL_MS,
         },
         () =>
-          readInbox(identity.ownerId, {
-            since_ts: args.since_ts,
-            kinds: args.kinds,
-          }),
+          // WI-6939: the unbounded readInbox matches ~99.8% BROADCAST rows — ~20k
+          // rows / ~10MB transferred per call to return `limit` (15-50) entries.
+          // Measured live: 491,954 calls, 220ms mean, 30.1 CUMULATIVE HOURS of DB
+          // time, each one seq-scanning the table, sorting ~20k rows and launching
+          // 3 extra parallel workers. The same query with a `since_ts` bound costs
+          // 11.6ms — a 20x gap explained entirely by the WINDOW, not the predicate.
+          //
+          // So read a bounded newest-first window, paging backwards only while THIS
+          // tool's own filters have not yet yielded `limit` visible entries. The
+          // stopping rule has to live here rather than inside readInbox because the
+          // genuinely selective filters are this tool's: pushing readInbox's own
+          // options down shrinks the set by 0.08% (broadcasts pass them all), while
+          // a live read here excludes 7,651 ambient rows and coalesces 11,564
+          // repeats out of ~20k. A bare LIMIT would be probable, not sound.
+          //
+          // `from` / `unanswered_only` keep the FULL read: both are rare and far more
+          // selective than the default pipeline, so windowing them would page to
+          // exhaustion in many small queries instead of one large one.
+          //
+          // NOTE: `ambient_excluded` and the resolution scan consequently count over
+          // the window read, not all history — the intended trade, and it matches
+          // what the caller is actually shown (`truncated` reports the boundary).
+          // Resolutions stay correct for the same reason retraction markers do: a
+          // resolution is always NEWER than its alarm, so a newest-first window
+          // containing the alarm also contains the resolution.
+          !resolvedFrom && !args.unanswered_only
+            ? readInboxWindow(
+                identity.ownerId,
+                { since_ts: args.since_ts, kinds: args.kinds },
+                (entries) => {
+                  const afterAmbient = args.include_ambient
+                    ? entries
+                    : entries.filter(
+                        (e) => !isAmbientBroadcast(e as unknown as Record<string, unknown>),
+                      );
+                  const { kept } = excludeIntentDeclares(
+                    afterAmbient as unknown as Array<Record<string, unknown>>,
+                    { includeIntents: args.include_intents, from: resolvedFrom },
+                  ) as unknown as { kept: Array<Record<string, unknown>> };
+                  return coalesceRepeatedBroadcasts(kept).length >= limit;
+                },
+              ).then((r) => r.entries)
+            : readInbox(identity.ownerId, {
+                since_ts: args.since_ts,
+                kinds: args.kinds,
+              }),
       ),
       readWatermark(identity.ownerId).catch(() => emptyWatermark()),
     ]);

@@ -51,8 +51,6 @@ const DEFAULT_DRAIN_SEC = 60;
 // any other psql error (syntax, constraint, …) fails immediately, unretried.
 const DEFAULT_LOCK_TIMEOUT_SEC = 10;
 const LOCK_RETRY_MAX_ATTEMPTS = 5;
-const LOCK_RETRY_BASE_DELAY_MS = 2000;
-const LOCK_RETRY_MAX_DELAY_MS = 30_000;
 // WI-6381: EI-9417's 5×10s retry (worst case ~80s incl. backoff) assumes the
 // blocker is ordinary hot-table CONTENTION — another agent's brief write —
 // which clears in seconds. It cannot ride out a genuinely long-lived

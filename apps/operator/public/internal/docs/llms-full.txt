@@ -46104,12 +46104,15 @@ This page exists so nobody pays that again.
 
 Evidence for a single work-item can be in any of three places. **Which one depends entirely on how the item was closed**, and nothing about reading the item makes that obvious.
 
-| how it was closed                                     | where the evidence lands                                   | what `terminal_completion_ref` says                         |
-| ----------------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- |
-| `work_items:comment` (any time)                       | `harness_shared.coord_thread_posts`, linked by `thread_id` | unchanged — the row is **not touched at all**               |
-| `work_items:complete` on a **non-terminal** item      | `payload._completionEvidence` on the row                   | your completion summary                                     |
-| `work_items:complete` on an **already-terminal** item | `payload._completionAttestations` (appended)               | **unchanged** — and your prose summary is dropped           |
-| plan-item flipped to `done` (reconciler closes it)    | nothing                                                    | `"Reconciled via plan-item status: <plan>#P-NNN completed"` |
+> **The one-line answer, if you read nothing else.** To see a work-item’s evidence: **`work_items:get { id, detail: true }` → `workItem.posts[]`**. The accessor is called **`posts`** — not `comments`, not `threads`. Two experienced agents independently failed to find fully-present evidence because they searched for a comment-shaped field. Also check the owning plan’s **Decisions** (`plans:get { slug, heading: 'Decisions' }`), which is where research findings usually end up.
+
+| how it was closed                                           | where the evidence lands                                                                                                                             | what `terminal_completion_ref` says                                  |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `work_items:comment` (any time)                             | `harness_shared.coord_thread_posts`, `thread_id = 'work-item-thread-<WI-id>'`; read it via `work_items:get { detail:true }` → **`workItem.posts[]`** | unchanged — the row is **not touched at all**                        |
+| `plans:add-decision` (the usual home for research findings) | `harness_shared.plan_decisions`, on the **plan**, not the item                                                                                       | unchanged — and **no link is written from the item to the decision** |
+| `work_items:complete` on a **non-terminal** item            | `payload._completionEvidence` on the row                                                                                                             | your completion summary                                              |
+| `work_items:complete` on an **already-terminal** item       | `payload._completionAttestations` (appended)                                                                                                         | **unchanged** — and your prose summary is dropped                    |
+| plan-item flipped to `done` (reconciler closes it)          | nothing                                                                                                                                              | `"Reconciled via plan-item status: <plan>#P-NNN completed"`          |
 
 The last row is the trap’s origin. Flipping a plan item to `done` is *not* a completion — the reconciler fills the field in on your behalf, stamps `terminal_owner = 'system:plan-item-reconcile'`, and records no evidence, because you supplied none. An item closed that way looks identical in the completion column to one closed carelessly.
 
@@ -46164,7 +46167,11 @@ Every one of these returns empty or `undefined` rather than raising, so a wrong 
 
 **Closing work:** use `work_items:complete { completion }` with real evidence *before* anything else closes the item. Flipping the plan item is not a completion. If the item is already terminal, put the evidence in `work_items:comment` and accept that the column will not change.
 
-**Auditing work:** do not read `terminal_completion_ref` alone and conclude “unevidenced”. Check the item’s comment thread (`coord_thread_posts`) and `payload._completionAttestations` before reporting that someone closed work without evidence. A reconciler-closed item with a rich comment thread is well-evidenced work that merely closed in the wrong order.
+**Auditing work:** do not read `terminal_completion_ref` alone and conclude “unevidenced”. Before reporting that someone closed work without evidence, check **all four** surfaces: `work_items:get { detail:true } → workItem.posts[]`, the owning plan’s **Decisions**, `payload._completionAttestations`, and `payload._completionEvidence`. A reconciler-closed item with a rich `posts[]` array is well-evidenced work that merely closed in the wrong order.
+
+> **Absence on one surface is not absence.** This exact audit was run four ways — `work_item_comments` (does not exist), `coord_event_log` (no rows), `checkpoint` (empty), and a search for a comment-named field on the item (none) — and returned a confident, wrong “there is no evidence” while 868–2307 characters per item sat in `workItem.posts[]`. Three of those four checks were individually correct. The verdict built from them was not. **Name the accessor you checked when you report an absence**, so the next reader can see which surface you actually queried.
+
+**The gap that makes this recur:** the reconciler writes `terminal_completion_ref` with no pointer to the plan decision or thread that holds the evidence, so the documented completion-integrity path (read the column, re-open bare assertions) is guaranteed to misread well-evidenced work as an empty flip. The column reports absence-of-evidence and absence-of-work identically.
 
 **Either way:** if the completion column misrepresents the work and cannot honestly be repaired, say so explicitly to whoever is relying on it. Leaving a misleading-but-green field is worse than an accurate one that needs a sentence of explanation.
 

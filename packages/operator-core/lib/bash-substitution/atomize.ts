@@ -126,6 +126,26 @@ function consumeHeredocBodies(command: string, from: number, pending: PendingHer
 }
 
 /**
+ * The shell operator that separated one atom from the previous one.
+ *
+ * Recorded because `|` is not just another separator: an atom on the RIGHT of a
+ * pipe reads its input from the pipe rather than from an operand, which is the
+ * difference between `head -5 file.ts` (a tool can express it) and `… | head -5`
+ * (no file to read, so the file-read tool provably cannot). The P-004 census
+ * found that distinction accounts for the single largest unclaimed bucket in the
+ * corpus, so it belongs in the shared atomizer rather than in a copy of the
+ * scanner maintained next to whichever consumer needed it first.
+ */
+export type AtomSeparator = '|' | '&&' | '||' | ';' | '\n';
+
+/** One scanner output: the raw (un-normalised) atom text and what preceded it. */
+export interface RawAtom {
+  text: string;
+  /** The separator immediately BEFORE this atom; null for the first. */
+  sepBefore: AtomSeparator | null;
+}
+
+/**
  * Split on `||`, `&&`, `|`, `;` and newline — but only where the shell would:
  * outside quotes, outside a heredoc body, and after continuations are joined.
  *
@@ -133,12 +153,20 @@ function consumeHeredocBodies(command: string, from: number, pending: PendingHer
  * over-joining costs at most a missed advisory, whereas splitting inside a quote
  * fabricates an atom that never existed.
  */
-function splitAtCommandDepth(command: string): string[] {
-  const atoms: string[] = [];
+function splitAtCommandDepthDetailed(command: string): RawAtom[] {
+  const atoms: RawAtom[] = [];
   let buffer = '';
+  let sepBefore: AtomSeparator | null = null;
   let quote: string | null = null;
   let pending: PendingHeredoc[] = [];
   let i = 0;
+
+  /** Close the current atom and record which operator opens the next one. */
+  const cut = (nextSep: AtomSeparator): void => {
+    atoms.push({ text: buffer, sepBefore });
+    buffer = '';
+    sepBefore = nextSep;
+  };
 
   while (i < command.length) {
     const ch = command[i];
@@ -189,26 +217,22 @@ function splitAtCommandDepth(command: string): string[] {
         // terminator, turning two atoms into one.)
         i = consumeHeredocBodies(command, i + 1, pending);
         pending = [];
-        atoms.push(buffer);
-        buffer = '';
+        cut('\n');
         continue;
       }
-      atoms.push(buffer);
-      buffer = '';
+      cut('\n');
       i += 1;
       continue;
     }
 
     if (command.startsWith('||', i) || command.startsWith('&&', i)) {
-      atoms.push(buffer);
-      buffer = '';
+      cut(command.startsWith('||', i) ? '||' : '&&');
       i += 2;
       continue;
     }
 
     if (ch === '|' || ch === ';') {
-      atoms.push(buffer);
-      buffer = '';
+      cut(ch === '|' ? '|' : ';');
       i += 1;
       continue;
     }
@@ -217,8 +241,13 @@ function splitAtCommandDepth(command: string): string[] {
     i += 1;
   }
 
-  atoms.push(buffer);
+  atoms.push({ text: buffer, sepBefore });
   return atoms;
+}
+
+/** The raw split as plain strings — the pre-existing shape, unchanged. */
+function splitAtCommandDepth(command: string): string[] {
+  return splitAtCommandDepthDetailed(command).map((atom) => atom.text);
 }
 
 /**
@@ -295,4 +324,60 @@ export function atomizeIncludingSyntax(command: string): string[] {
   return splitAtCommandDepth(joinLineContinuations(command))
     .map((part) => normalizeAtom(part))
     .filter((part) => part.length > 0);
+}
+
+/** A command atom together with its position in the pipeline that produced it. */
+export interface PipelineAtom {
+  /** The normalised atom — identical to the corresponding {@link atomize} entry. */
+  atom: string;
+  /**
+   * The atom BEFORE normalisation, trimmed only.
+   *
+   * Kept because normalisation deliberately strips the runner prefix (`sudo`,
+   * `timeout`, `env FOO=bar`) so a pattern matches the verb behind it — which
+   * means the normalised atom cannot answer "did this need elevation?". That
+   * question decides substitutability (no tool here elevates), so the census
+   * needs the unstripped text and must not have to re-scan for it.
+   */
+  raw: string;
+  /** The operator immediately before it; null for the first atom of a line. */
+  sepBefore: AtomSeparator | null;
+  /** True when this atom's stdin is a pipe, i.e. it was written `… | atom`. */
+  pipedInto: boolean;
+  /**
+   * The normalised atom immediately upstream in the SAME pipeline, or null when
+   * this atom starts one. Needed because whether a `head -5` is substitutable
+   * depends entirely on what is feeding it.
+   */
+  upstream: string | null;
+}
+
+/**
+ * Like {@link atomize}, but each atom keeps the pipeline context the plain
+ * string form discards.
+ *
+ * Adjacency is computed BEFORE shell-syntax atoms are dropped, so a dropped
+ * `done` cannot silently make two unrelated atoms look like a pipeline. An
+ * upstream that is itself syntax is still reported verbatim rather than skipped
+ * — it is what the agent actually wrote, and inventing a different producer
+ * would be exactly the fabrication {@link atomize} refuses elsewhere.
+ *
+ * @example
+ *   atomizePipeline("cat a.ts | head -5")
+ *   // => [{ atom: 'cat a.ts', pipedInto: false, upstream: null, … },
+ *   //     { atom: 'head -5',  pipedInto: true,  upstream: 'cat a.ts', … }]
+ */
+export function atomizePipeline(command: string): PipelineAtom[] {
+  const parts = splitAtCommandDepthDetailed(joinLineContinuations(command))
+    .map((part) => ({ atom: normalizeAtom(part.text), raw: part.text.trim(), sepBefore: part.sepBefore }));
+
+  return parts
+    .map((part, index) => ({
+      atom: part.atom,
+      raw: part.raw,
+      sepBefore: part.sepBefore,
+      pipedInto: part.sepBefore === '|',
+      upstream: part.sepBefore === '|' ? (parts[index - 1]?.atom ?? null) || null : null,
+    }))
+    .filter((part) => part.atom.length > 0 && !isShellSyntaxAtom(part.atom));
 }

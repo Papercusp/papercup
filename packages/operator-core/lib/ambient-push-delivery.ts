@@ -45,6 +45,7 @@ import {
 import { capInjectionText, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
 import { checkPushVolume, type VolumeReport } from './push-volume-guard';
+import { ambientCursorEnabled } from './session-cursor-io';
 
 /** The rolling budget + novelty window: deliveries within this window count
  *  against the per-class budget and suppress a repeat of the same handle. A
@@ -245,11 +246,28 @@ export async function prepareAmbientPushBlock(input: PrepareAmbientPushBlockInpu
     // door" contract) and the wake's own door downstream. Dynamic import keeps
     // the non-collision path free of the fetch seam; the whole leg is fail-soft
     // — a brief fault ships the block without a brief.
+    //
+    // EI (2026-08-02): this leg was unconditionally reaching the LIVE
+    // peer-surface fetch (resolveLivePeerBrief → real DB-backed stores) for
+    // ANY selected critical collision, in violation of this file's own
+    // documented invariant ("DEFAULT-OFF behind PAPERCUSP_AMBIENT_CURSOR — the
+    // caller gates on the flag before importing this module") — every sibling
+    // ambient leg (session-cursor-io, record-turn, presence) gates its dynamic
+    // import + call on ambientCursorEnabled()/the raw env var; this one did
+    // not. With the flag unset (the default everywhere except a live ambient
+    // drill), that meant any unit test whose selected-push fixture happened to
+    // be a critical collision unmocked-ly hit assertRealPgAllowed's "a UNIT
+    // test tried to open a REAL Postgres connection" guard, which logs via
+    // console.warn and trips vitest-fail-on-console — cascading into ~200
+    // unrelated test failures across the suite and holding the green gate red
+    // for the whole fleet (harness_shared.pipeline_events runs 89880/89723).
     try {
-      const briefTargets = result.selected
-        .filter((p) => p.severity === 'critical' && p.matcherKind === 'collision' && p.handle.kind === 'session')
-        .sort((a, b) => b.score - a.score)
-        .slice(0, MAX_AUTO_INJECT_BRIEFS);
+      const briefTargets = ambientCursorEnabled()
+        ? result.selected
+            .filter((p) => p.severity === 'critical' && p.matcherKind === 'collision' && p.handle.kind === 'session')
+            .sort((a, b) => b.score - a.score)
+            .slice(0, MAX_AUTO_INJECT_BRIEFS)
+        : [];
       if (briefTargets.length > 0) {
         const { resolveLivePeerBrief, renderPeerBrief } = await import('./peer-surface-source');
         for (const push of briefTargets) {

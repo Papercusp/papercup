@@ -486,6 +486,114 @@ export async function readInbox(
   return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
 }
 
+/** Rows fetched per keyset page by {@link readInboxWindow}. Sized so a normal
+ *  read is satisfied by ONE page while transferring ~20x less than the
+ *  unbounded read it replaces. */
+export const INBOX_PAGE_ROWS = 1_000;
+
+/** Safety stop on pages walked by one {@link readInboxWindow} call.
+ *  INBOX_PAGE_ROWS * INBOX_MAX_PAGES is deliberately >= INBOX_FAST_PATH_ROW_CAP,
+ *  so a bounded read can never reach LESS history than the capped full read. */
+export const INBOX_MAX_PAGES = 25;
+
+export interface InboxWindowResult {
+  /** Filtered + retraction-suppressed envelopes, ascending by (ts, msg_id). */
+  entries: CoordEnvelope[];
+  /** True when paging reached the end of this owner's matching history. */
+  exhausted: boolean;
+  /** Raw rows actually transferred across all pages (the cost paid). */
+  rowsScanned: number;
+  /** Pages issued. */
+  pages: number;
+}
+
+/**
+ * Bounded, keyset-paged inbox read — the cheap alternative to `readInbox` for a
+ * caller that only needs the most RECENT slice.
+ *
+ * WHY (WI-6939). `readInbox`'s fast path is one `LIMIT 25000` query, and for a
+ * typical owner it matches ~20.4k rows of which **99.8% are broadcasts** (`to`
+ * containing `'*'`) — the matched set is essentially independent of how much
+ * mail the caller actually has. Measured on the live box: 491,954 calls of the
+ * no-`since_ts` shape, 220ms mean, 18,151 rows/call, **30.1 hours** cumulative
+ * DB time; each call seq-scans the table, sorts ~20k rows and launches 3 extra
+ * parallel workers. The `since_ts` shape of the same query costs 11.6ms — a 20x
+ * gap that is entirely explained by the window, not the predicate.
+ *
+ * WHY THE CALLER SUPPLIES `enough` RATHER THAN A ROW LIMIT. A bare `LIMIT n` is
+ * NOT sound here, and the reason is not the one that looks obvious. Pushing
+ * `filterInbox`'s own options down (excludeOwn/kinds) would shrink the set by
+ * **0.08%** — measured — because broadcasts pass all of them. The genuinely
+ * selective filters live ABOVE this function, in the caller: a live `coord:inbox`
+ * read excludes 7,651 ambient broadcasts and coalesces 11,564 repeats out of
+ * ~20k. So a small `LIMIT` really can return a page that filters down to almost
+ * nothing — via the caller's rules, which this function cannot see. Letting the
+ * caller decide when it has enough is what makes the bound correct instead of
+ * merely probable; it pages backwards until satisfied or history runs out.
+ *
+ * RETRACTION MARKERS STAY CORRECT, for a reason specific to newest-first paging:
+ * a retraction notice is always NEWER than the message it retracts and is
+ * addressed to the same audience, so any newest-first window containing a target
+ * necessarily also contains its notice. Markers are collected over the ACCUMULATED
+ * raw window (every page fetched so far), preserving `collectRetractedIds`'
+ * pre-filter contract. A separate marker query would be both unnecessary and a
+ * new seq scan.
+ *
+ * Falls back to the authoritative `readInbox` on a non-PG seam or any query error.
+ */
+export async function readInboxWindow(
+  ownerId: string,
+  opts: InboxOptions = {},
+  enough: (entries: CoordEnvelope[]) => boolean = () => false,
+): Promise<InboxWindowResult> {
+  if (!coordHasPgFastPath()) {
+    const entries = await readInbox(ownerId, opts);
+    return { entries, exhausted: true, rowsScanned: entries.length, pages: 1 };
+  }
+  const sinceBound = opts.since_ts
+    ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
+    : null;
+  const raw: CoordEnvelope[] = [];
+  const visible = (): CoordEnvelope[] =>
+    suppressRetracted(filterInbox(raw, ownerId, opts), collectRetractedIds(raw));
+  let beforeId: string | number | null = null;
+  let pages = 0;
+  let exhausted = false;
+  try {
+    const sql = coordSql();
+    while (pages < INBOX_MAX_PAGES) {
+      const rows = await sql<{ id: string | number; body: unknown }[]>`
+        SELECT id, body
+          FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${coordWorkspaceId()}
+           AND surface = 'messages'
+           ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
+           ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
+           AND jsonb_typeof(body->'to') = 'array'
+           AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
+         ORDER BY id DESC
+         LIMIT ${INBOX_PAGE_ROWS}
+      `;
+      pages += 1;
+      for (const r of rows) {
+        raw.push((typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
+      }
+      // A short page means we reached the end of this owner's history.
+      if (rows.length < INBOX_PAGE_ROWS) {
+        exhausted = true;
+        break;
+      }
+      beforeId = rows[rows.length - 1]!.id;
+      if (enough(visible())) break;
+    }
+  } catch {
+    // Any query error falls back to the authoritative full read.
+    const entries = await readInbox(ownerId, opts);
+    return { entries, exhausted: true, rowsScanned: entries.length, pages };
+  }
+  return { entries: visible(), exhausted, rowsScanned: raw.length, pages };
+}
+
 /**
  * Deliver any `@user:`-parked messages waiting for a returning member into their
  * live inbox — the offline-member-assign mailbox (shared-hive-collaboration P-016).

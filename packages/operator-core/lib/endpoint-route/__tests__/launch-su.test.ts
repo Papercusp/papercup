@@ -149,10 +149,41 @@ async function callPost(body: unknown): Promise<Response> {
   return resPromise;
 }
 
+/**
+ * Is this spawn call the memoized systemd-scope SUPPORT PROBE, not a real launch?
+ *
+ * `probeScopeSupport` (task-manager/managed-spawn.ts) runs
+ * `systemd-run --user --scope --quiet --collect -- true` ONCE PER PROCESS to decide
+ * whether transient cgroup scopes can be created, and it goes through this same
+ * `node:child_process.spawn` seam. Because the result is memoized at module scope,
+ * WHICH test observes the probe depends entirely on suite ORDER: run this file alone
+ * and some earlier-imported module has usually already resolved the probe, so nothing
+ * is recorded; run it inside the full suite (or any multi-file batch) and the probe can
+ * land in the middle of THIS file, becoming a phantom extra `spawn` call.
+ *
+ * That is a pure order-dependency, not a product regression — it red-pinned the release
+ * gate on 2026-08-02 while every isolated run stayed green, which is the most expensive
+ * shape of flake to diagnose. Filtering the probe out here makes every assertion below
+ * order-independent, and does it once for the file instead of at ~12 call sites.
+ *
+ * Deliberately NARROW: it matches only `systemd-run … -- true` (a payload of literally
+ * `true`), so a genuine terminal launch that happens to be wrapped in systemd-run is
+ * still counted. Widening this to "ignore all systemd-run calls" would silently blind
+ * the file's real "no terminal was opened" assertions.
+ */
+function isScopeSupportProbe(call: readonly unknown[]): boolean {
+  const [cmd, args] = call as [string, string[]];
+  return cmd === 'systemd-run' && Array.isArray(args) && args.slice(-2).join(' ') === '-- true';
+}
+
+/** Every REAL spawn (terminal launches etc.), with infrastructure probes filtered out. */
+function realSpawns(): Array<[string, string[]]> {
+  return spawnMock.mock.calls.filter((c) => !isScopeSupportProbe(c)) as unknown as Array<[string, string[]]>;
+}
+
 /** The bash oneliner is the last arg passed to spawn (`… bash -lc <oneliner>`). */
 function lastOneliner(): string {
-  const call = spawnMock.mock.calls[0] as unknown as [string, string[]];
-  const args = call[1];
+  const args = realSpawns()[0][1];
   return args[args.length - 1];
 }
 
@@ -175,7 +206,7 @@ describe('launch-su', () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.status).toBe('ok');
-    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(realSpawns()).toHaveLength(1);
     const oneliner = lastOneliner();
     expect(oneliner).toContain('--no-picker');
     expect(oneliner).toContain('--agent=claude');
@@ -256,7 +287,7 @@ describe('launch-su', () => {
     expect(json.deferred).toBe(true);
     expect(json.advSessionId).toBe(99);
     // No terminal spawned — the pui pane is the single launcher (D-001).
-    expect(spawnMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
     // The recorded row is a pane-worthy workbench launch carrying the psu argv.
     expect(recordAdvSessionMock).toHaveBeenCalledTimes(1);
     const opts = recordAdvSessionMock.mock.calls[0][0] as {
@@ -287,7 +318,7 @@ describe('launch-su', () => {
     // building the record and never reached the invalidation below. It was a
     // vacuous guard, not a green one (EI-18818702968703959).
     await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' });
-    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(realSpawns()).toHaveLength(1);
     expect(recordAdvSessionMock).toHaveBeenCalledTimes(1);
     // display MUST be 'terminal', never 'workbench' — 'workbench' is D-006's pui
     // pane queue, and a terminal launch already has its own terminal.
@@ -318,19 +349,19 @@ describe('launch-su', () => {
   it('rejects an unknown agent (no spawn)', async () => {
     const res = await callPost({ agent: 'gemini', harness_slug: 'papercup' });
     expect(res.status).toBe(400);
-    expect(spawnMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
   });
 
   it('rejects an unsafe harness slug (no spawn)', async () => {
     const res = await callPost({ agent: 'claude', harness_slug: 'a; rm -rf /' });
     expect(res.status).toBe(400);
-    expect(spawnMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
   });
 
   it('rejects an unsafe plan slug (no spawn)', async () => {
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: '$(whoami)' });
     expect(res.status).toBe(400);
-    expect(spawnMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
   });
 
   // su-context-size-variants (WI-1282): context_size is validated (full|trimmed)
@@ -361,7 +392,7 @@ describe('launch-su', () => {
     const body = await res.json();
     expect(body.status).toBe('error');
     expect(body.error).toContain('context_size');
-    expect(spawnMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
   });
 
   // P-012 (unify-agent-spawn-chokepoint): the psu web launch passes the SAME
@@ -371,7 +402,7 @@ describe('launch-su', () => {
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup' });
     expect(res.status).toBe(200);
     expect(floorMock).toHaveBeenCalledTimes(1);
-    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(realSpawns()).toHaveLength(1);
   });
 
   it('REFUSES with 429 when the floor reports no headroom (no spawn, no defer)', async () => {
@@ -381,7 +412,7 @@ describe('launch-su', () => {
     const body = await res.json();
     expect(body.status).toBe('error');
     expect(body.error).toContain('safety floor');
-    expect(spawnMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
   });
 
   it('floor also gates the deferred (workbench) path — no row recorded over-ceiling', async () => {
@@ -389,7 +420,7 @@ describe('launch-su', () => {
     const res = await callPost({ agent: 'claude', defer_spawn: true });
     expect(res.status).toBe(429);
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
-    expect(spawnMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
     // No row recorded → nothing to pane → no roster wake.
     expect(notifySyncInvalidateMock).not.toHaveBeenCalled();
   });
@@ -428,7 +459,7 @@ describe('launch-su', () => {
       expect(json.status).toBe('ok');
       expect(json.deferred).toBe(true);
       expect(json.warning).toBeUndefined();
-      expect(spawnMock).not.toHaveBeenCalled();
+      expect(realSpawns()).toHaveLength(0);
     });
   });
 
@@ -449,7 +480,7 @@ describe('launch-su', () => {
       expect(json.status).toBe('ok');
       // Routed through spawnHeadless, so the terminal spawner is never reached —
       // this is what makes it windowless rather than merely claiming to be.
-      expect(spawnMock).not.toHaveBeenCalled();
+      expect(realSpawns()).toHaveLength(0);
       expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
       const { envelope } = spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } };
       expect(envelope.greetingCmd).toContain('--headless');

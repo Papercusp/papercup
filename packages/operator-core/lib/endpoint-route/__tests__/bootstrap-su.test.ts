@@ -249,6 +249,20 @@ vi.mock('../../agent-fleets-store', async (orig) => {
   };
 });
 
+// WI-1893's boot-time membership stamp (stampFleetMembershipAtBoot) is the OTHER
+// PG write on the fleet-join path, and it was the one IO edge this otherwise-hermetic
+// file never stubbed — it only became reachable when the stamp was added. It is a
+// no-ghost CORRECTNESS gate: a failure there is turned into a hard 409, and
+// stampFleetMembershipAtBoot swallows the exception into a message string, so an
+// unstubbed real-PG reach surfaced as a bare `expected 'error' to be 'ok'` with the
+// cause nowhere in the failure. Mock the store's write; importActual keeps the pure
+// helper (deriveFleetMembershipEvent) real.
+const appendFleetMembershipIfAbsentMock = vi.fn(async (_input: unknown) => {});
+vi.mock('../../fleet-membership-store', async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  appendFleetMembershipIfAbsent: appendFleetMembershipIfAbsentMock,
+}));
+
 const CTX: RouteContext = {
   principal: null,
   input: undefined,

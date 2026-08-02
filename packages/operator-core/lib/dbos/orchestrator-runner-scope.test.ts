@@ -57,6 +57,13 @@ vi.mock('../harness-invoke-once', () => ({
 }));
 
 import { spawnInvokeOnce } from './orchestrator-runner';
+import { setTaskManagerEnabledForTest } from '../task-manager/enabled';
+
+/** The per-agent-turn cap (`agentSpawnScopeMemoryMaxG`, default 6 GiB) as the two
+ *  builders spell it. `buildIsolatedScopeArgv` uses systemd's `6G` shorthand;
+ *  `buildTaskScopeArgv` (the NAMED task-manager scope) uses the byte integer. */
+const capG = (g: number) => `--property=MemoryMax=${g}G`;
+const capBytes = (g: number) => `--property=MemoryMax=${g * 1024 ** 3}`;
 
 type FakeChild = EventEmitter & { pid: number; stdout: EventEmitter; stderr: EventEmitter; kill: () => void };
 let nextPid = 1000;
@@ -82,12 +89,21 @@ const savedMemEnv = process.env.PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G;
 
 beforeEach(() => {
   S.probe = { ok: true }; // default: a host that CAN make user scopes
+  // PIN the task-manager flag rather than inheriting it. `taskManagerEnabledSync()`
+  // reads a module-level cache that fails open (`cached !== false`), so an unpinned
+  // test silently tracks whatever the ambient default happens to be — and when
+  // TASK_MANAGER graduated to default-ON (WI-6844, 2026-08-02) that flipped this
+  // file from the unnamed WI-1499 builder to the NAMED task-manager one, changing
+  // only the cap's NOTATION and reading as a lost memory cap. Each test below
+  // declares the branch it means to exercise.
+  setTaskManagerEnabledForTest(true); // the shipped default since WI-6844
   H.cmd = { command: '/x/invoke-once', args: ['--role', 'cup'], env: process.env };
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  setTaskManagerEnabledForTest(null);
   spawnMock.mockReset();
   if (savedScopeEnv === undefined) delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
   else process.env.PAPERCUSP_AGENT_SPAWN_SCOPE = savedScopeEnv;
@@ -112,18 +128,18 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     // does not change its child-of-us semantics.
     expect(args).toContain('--scope'); // child stays OUR pgid
     expect(args).toContain('--collect');
-    /* The task-manager flag is DEFAULT-OFF, so the path under test here is the
-       UNNAMED WI-1499 scope (`buildIsolatedScopeArgv`), which spells the cap in
-       systemd's `6G` shorthand. The byte-integer spelling belongs to
-       `buildTaskScopeArgv`, i.e. the flag-ON path.
+    /* Flag ON + a landed probe ⇒ the NAMED task-manager scope (`buildTaskScopeArgv`),
+       which spells the cap as a BYTE INTEGER. The `6G` shorthand belongs to the
+       unnamed WI-1499 builder (`buildIsolatedScopeArgv`), pinned by the flag-OFF and
+       probe-not-landed cases below.
 
-       These two spellings are why this file went red rather than merely stale:
-       when the flag flipped off, the seam stopped confining ALTOGETHER — it did
-       not fall back to the unnamed scope — so the assertion failed on the
-       binary, not on the units. What matters and is asserted either way is that
-       a memory cap IS applied; only its notation tracks which builder ran. */
-    expect(args).toContain('--property=MemoryMax=6G');
+       Both spellings mean the same cap, so assert the branch this test DECLARES
+       (see the pin in beforeEach) rather than whichever the ambient default gives:
+       a notation-only difference must never be readable as a lost memory cap. */
+    expect(args).toContain(capBytes(6));
     expect(args).toContain('--property=MemorySwapMax=0');
+    // Named: the ledger key that makes the subtree addressable.
+    expect(args.some((a) => a.startsWith('--unit='))).toBe(true);
     // The wrapped payload (command + its own args) is appended verbatim at the tail.
     expect(args.slice(-3)).toEqual(['/x/invoke-once', '--role', 'cup']);
     expect(args.join(' ')).toContain('/x/invoke-once --role cup');
@@ -183,9 +199,29 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     spawnMock.mockImplementationOnce(() => fakeSpawn({ code: 0 }));
     await spawnInvokeOnce(process.cwd(), 'mug', [], {});
     const [, args] = spawnMock.mock.calls[0] as [string, string[]];
-    // `12G` (not the byte integer) for the same reason as the default-cap
-    // assertion above: default-OFF flag ⇒ the unnamed WI-1499 scope builder.
-    expect(args).toContain('--property=MemoryMax=12G');
+    // Byte integer, for the same reason as the default-cap assertion above: the
+    // pinned flag-ON path is the NAMED task-manager scope builder.
+    expect(args).toContain(capBytes(12));
+  });
+
+  /* The WI-6499 regression guard, stated as its own case (it used to be tested only
+     by accident, while the flag's default happened to be OFF). Flag-OFF governs the
+     LEDGER and the NAMED unit — it must NOT drop the memory cap, because the
+     pre-task-manager behaviour of this seam was already scope-confined by WI-1499.
+     Flag-OFF silently un-capping every agent turn is the 2026-07-01 40G OOM
+     crash-loop condition returning. */
+  it('still applies the memory cap (unnamed WI-1499 scope) when the task-manager flag is OFF', async () => {
+    delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
+    setTaskManagerEnabledForTest(false);
+    spawnMock.mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
+    expect(r.exitCode).toBe(0);
+    const [cmd, args] = spawnMock.mock.calls[0] as [string, string[]];
+    expect(cmd).toBe('systemd-run'); // still confined, just not ledgered
+    expect(args).toContain(capG(6)); // the unnamed builder's shorthand
+    expect(args).toContain('--property=MemorySwapMax=0');
+    expect(args.some((a) => a.startsWith('--unit='))).toBe(false); // the flag DOES gate naming
+    expect(args.slice(-3)).toEqual(['/x/invoke-once', '--role', 'cup']);
   });
 
   it('falls back to a DIRECT spawn once when the scope cannot launch (no user bus) — the turn never fails on infra', async () => {

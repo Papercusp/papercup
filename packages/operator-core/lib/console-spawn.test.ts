@@ -1027,6 +1027,9 @@ describe('spawnHeadless boot receipt — a member that dies AFTER the probe (EI-
     'Your organization has disabled Claude subscription access for Claude Code\n' +
     '\n[papercusp] initial terminal command exited with status 1; terminal left open for inspection.\n';
 
+  // A real (tiny) sleep: a no-op stub makes the wait loop busy-spin the whole window.
+  const TICK = (_ms: number) => new Promise<void>((r) => { setTimeout(r, 5); });
+
   beforeEach(() => spawnMock.mockReset());
 
   it('greeting-failure sentinel ⇒ error, even though the process is still alive', async () => {
@@ -1034,7 +1037,7 @@ describe('spawnHeadless boot receipt — a member that dies AFTER the probe (EI-
     const r = await spawnHeadless({
       envelope,
       spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => false },
-      bootProbes: { readLog: () => AUTH_DEATH, sleep: async () => {}, windowMs: 1000 },
+      bootProbes: { readLog: () => AUTH_DEATH, sleep: TICK, windowMs: 60 },
     });
     expect(r.status).toBe('error');
     expect((r as { code: number }).code).toBe(502);
@@ -1053,8 +1056,8 @@ describe('spawnHeadless boot receipt — a member that dies AFTER the probe (EI-
       bootProbes: {
         // Clean for the first few polls — exactly the race that produced the phantom.
         readLog: () => (++reads < 4 ? 'psu: starting…\n' : AUTH_DEATH),
-        sleep: async () => {},
-        windowMs: 5000,
+        sleep: TICK,
+        windowMs: 400,
       },
     });
     expect(r.status).toBe('error');
@@ -1068,8 +1071,8 @@ describe('spawnHeadless boot receipt — a member that dies AFTER the probe (EI-
       spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => false },
       bootProbes: {
         readLog: () => 'psu: fleet — joined fleet fed-drill as member.\npsu: kickoff — seeding first turn\n',
-        sleep: async () => {},
-        windowMs: 1000,
+        sleep: TICK,
+        windowMs: 60,
       },
     });
     expect(r.status).toBe('ok');
@@ -1083,12 +1086,14 @@ describe('spawnHeadless boot receipt — a member that dies AFTER the probe (EI-
       spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => false },
       bootProbes: {
         readLog: () => '[papercusp] initial terminal command exited with status 0; terminal left open for inspection.\n',
-        sleep: async () => {},
-        windowMs: 500,
+        sleep: TICK,
+        windowMs: 60,
       },
     });
-    // status 0 still means the command ended, but not that it FAILED — the
-    // sentinel only fires on non-zero in practice; guard against over-matching.
+    // buildConsoleOneliner only prints this on a NON-zero rc, so status 0 should
+    // not occur in practice. If it ever does, the agent command has still ended
+    // and the shell is holding a dead session — which is not a live member
+    // whatever the code was. Fail rather than hand back a phantom.
     expect(r.status).toBe('error');
     expect((r as { error: string }).error).toMatch(/exit 0/);
   }, 10_000);
