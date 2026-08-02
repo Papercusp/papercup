@@ -499,14 +499,23 @@ describe('gitPipelinePosition (P-002)', () => {
         contains: { HEAD: ['abc1234567'], 'origin/staging': ['abc1234567'], 'origin/main': ['abc1234567'] },
       });
 
-    it('is EMPTY when every verdict leg was genuinely measured', async () => {
+    it('carries NEITHER gate.consecutiveReds NOR verdictProvenance.mainFastForwarded when both are genuinely measured', async () => {
       const res = await gitPipelinePosition(
         { path: 'apps/operator/app/x.ts' },
         { git: measuring(), loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
       );
       // A hoist that cries wolf is one agents learn to ignore — the healthy case must
-      // stay silent or the whole mechanism is worse than the bare value it qualifies.
-      expect(res.verdictUnknown).toEqual([]);
+      // stay silent for THESE two legs, or the whole mechanism is worse than the bare
+      // value it qualifies. WI-6485: this fixture never mocks `resolveGateCandidates`,
+      // so it falls through to the REAL resolver, which fails safely to
+      // judgingSha:null in this sandboxed test environment (no real checkout at
+      // `root`) — i.e. this fixture's `changeInCandidate.judgingSha` genuinely IS the
+      // "no checkpoint run is in flight" case, correctly hoisted as not-applicable by
+      // WI-6485's fix below. Assert on the TWO legs this test actually exists to cover
+      // rather than the whole array, so that correct, unrelated hoist does not read as
+      // a false alarm here.
+      expect(res.verdictUnknown.map((v) => v.leg)).not.toContain('gate.consecutiveReds');
+      expect(res.verdictUnknown.map((v) => v.leg)).not.toContain('verdictProvenance.mainFastForwarded');
     });
 
     /**

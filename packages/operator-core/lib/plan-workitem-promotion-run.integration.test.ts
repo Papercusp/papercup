@@ -674,19 +674,31 @@ describe('backfillPromotedDependencyEdges (P-009): already-promoted items gain t
   });
 
   it('D-012: a plan-level CYCLE still refuses the edges (the pre-flight is inherited, not re-implemented)', async () => {
-    await promoteThenDeclare(
-      [
-        { id: 'P-001', status: 'todo', text: 'First' },
-        { id: 'P-002', status: 'todo', text: 'Second' },
-      ],
-      [
-        { id: 'P-001', status: 'todo', text: 'First', blockedBy: ['P-002'] },
-        { id: 'P-002', status: 'todo', text: 'Second', blockedBy: ['P-001'] },
-      ],
-    );
-    const res = await backfill();
-    expect(res).toMatchObject({ edgesWritten: 0, edgesRejectedCyclic: 2, edgeFailures: 0 });
-    expect(await depEdges()).toEqual([]);
+    // The warning is part of the contract, so it is ASSERTED rather than silenced — same
+    // convention as the promotion suite's cycle tests. The spy spans both calls because the
+    // declaring promote sees the cyclic plan too.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await promoteThenDeclare(
+        [
+          { id: 'P-001', status: 'todo', text: 'First' },
+          { id: 'P-002', status: 'todo', text: 'Second' },
+        ],
+        [
+          { id: 'P-001', status: 'todo', text: 'First', blockedBy: ['P-002'] },
+          { id: 'P-002', status: 'todo', text: 'Second', blockedBy: ['P-001'] },
+        ],
+      );
+      const res = await backfill();
+      expect(res).toMatchObject({ edgesWritten: 0, edgesRejectedCyclic: 2, edgeFailures: 0 });
+      expect(await depEdges()).toEqual([]);
+      const text = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(text).toContain('blocked-by CYCLE');
+      expect(text).toContain('P-001');
+      expect(text).toContain('P-002');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('considers only plans with promoted items, and reports nothing for an unpromoted plan', async () => {

@@ -10,7 +10,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   CAPABILITY_SANDBOX_TMPDIR,
+  DEFAULT_BACKGROUND_TIMEOUT_MS,
+  DEFAULT_TIMEOUT_MS,
   INLINE_OUTPUT_CAP,
+  MAX_BACKGROUND_TIMEOUT_MS,
+  MAX_TIMEOUT_MS,
   __resetBashJobs,
   getJob,
   killJob,
@@ -302,4 +306,79 @@ describe('process-group kill — no orphaned descendants (capability-bash-orphan
       killJob(job);
     });
   }, 15_000);
+});
+
+/**
+ * WI-6677 — a BACKGROUND job's deadline is its own, and reaching it is survivable
+ * enough for the job's cleanup to run.
+ *
+ * The bug these guard: `run_in_background` inherited the FOREGROUND default (120s)
+ * and ceiling (600s), so the tool SIGKILLed precisely the long jobs it exists to
+ * host — the exact duration CLAUDE.md tells agents to background at. The SIGKILL
+ * then skipped every `trap`/`finally`, leaking whatever the job was mid-way through
+ * building (a 489MB checkout in one case, a 4.9GB deb extract in another).
+ */
+describe('background job deadlines (WI-6677)', () => {
+  async function waitForEnd(id: string, ms = 20_000): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (getJob(id)?.endedAt != null) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
+  it('a background job is NOT bound by the foreground pair — its default outlives a foreground call and its ceiling can host a real suite', () => {
+    // Stated as an invariant rather than a literal so re-tuning the durations stays
+    // free, while re-pointing background back at the foreground constants (the
+    // regression) fails here instead of silently in production hours later.
+    expect(DEFAULT_BACKGROUND_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TIMEOUT_MS);
+    expect(MAX_BACKGROUND_TIMEOUT_MS).toBeGreaterThan(MAX_TIMEOUT_MS);
+    expect(DEFAULT_BACKGROUND_TIMEOUT_MS).toBeLessThanOrEqual(MAX_BACKGROUND_TIMEOUT_MS);
+    // The green-checkpoint suite in this repo runs ~55 min; a ceiling under that
+    // cannot host the longest job anyone would legitimately background.
+    expect(MAX_BACKGROUND_TIMEOUT_MS).toBeGreaterThan(60 * 60 * 1_000);
+  });
+
+  it('records the effective deadline on the job so the caller can be told it up front', () => {
+    const job = startBackground({ command: 'sleep 60', cwd: STATE, stateDir: STATE }, 45_000);
+    expect(job.timeoutMs).toBe(45_000);
+    expect(job.deadlineAt).toBeGreaterThanOrEqual(job.startedAt + 45_000 - 50);
+    killJob(job);
+  });
+
+  it('clamps to the BACKGROUND ceiling, not the foreground one', () => {
+    const job = startBackground(
+      { command: 'sleep 60', cwd: STATE, stateDir: STATE },
+      MAX_BACKGROUND_TIMEOUT_MS * 10,
+    );
+    expect(job.timeoutMs).toBe(MAX_BACKGROUND_TIMEOUT_MS);
+    killJob(job);
+  });
+
+  it('⭐ hitting the deadline SIGTERMs first, so the job\'s own cleanup trap still runs (it used to SIGKILL and leak)', async () => {
+    const marker = join(STATE, `cleanup-ran-${Date.now()}`);
+    const job = startBackground(
+      {
+        command: `trap 'echo cleaned > ${marker}; exit 143' TERM; echo working; sleep 30`,
+        cwd: STATE,
+        stateDir: STATE,
+      },
+      400,
+    );
+    await waitForEnd(job.id);
+    expect(job.status).toBe('timed_out');
+    // The whole point: a SIGKILLed job cannot leave this behind.
+    expect(existsSync(marker)).toBe(true);
+    expect(readFileSync(marker, 'utf8')).toContain('cleaned');
+  }, 30_000);
+
+  it('⭐ says WHY it died, in the job output — a silent death reads as an OOM or a peer\'s pkill', async () => {
+    const job = startBackground({ command: 'echo working; sleep 30', cwd: STATE, stateDir: STATE }, 400);
+    await waitForEnd(job.id);
+    const out = readJobOutput(job);
+    expect(out).toContain('deadline reached');
+    expect(out).toContain('400ms');
+    // The explanation is on disk too, so it survives loss of the in-memory registry.
+    expect(readFileSync(job.logPath, 'utf8')).toContain('deadline reached');
+  }, 30_000);
 });

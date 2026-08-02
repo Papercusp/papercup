@@ -878,13 +878,38 @@ the poll command, because the fix is one step earlier:
 > **`capability:bash_output { bash_id, filter }`**. The `filter` regex means only
 > matching lines enter your context — no `2>&1 | tail -60`.
 
+⚠ **A background job still has a wall-clock deadline, and reaching it TERMINATES the
+job** — 4h by default, 12h max, `timeout` to raise it. The launch result now names the
+deadline; a job that hits it says so in its own output (`[capability:bash] deadline
+reached: exceeded Nms`) and the log keeps that line, so a deadline death is never
+mistaken for an OOM or a peer's `pkill`. Read the deadline off the launch result rather
+than assuming; for a job that legitimately runs longer than 12h, don't use this tool.
+
+⚠⚠ That deadline **used to be 2 minutes** — the background mode inherited the FOREGROUND
+default, so the remedy this very section prescribes SIGKILLed precisely the jobs it
+recommends it for, unless you happened to also pass `timeout` (WI-6677). Fixed
+2026-08-02: background now has its own default/ceiling, and the deadline sends SIGTERM
+before SIGKILL so the job's `trap`/`finally` cleanup actually runs (the old SIGKILL
+skipped it, stranding a 489MB checkout and a 4.9GB deb extract in two separate
+incidents). **If you are reading a pre-2026-08-02 note that says a backgrounded job
+"died at exactly 120s" or "vanished with no cause", that was this bug — not your
+command.**
+
 **Why the tool and not native `run_in_background`:** not because the tool is
 crash-proof — it is not. Its in-memory job registry is wiped whenever *any* agent
 restarts the operator on this shared box (EI-8855). The difference is
 **recoverability**. `capability:bash` writes the job log to a deterministic
 `stateDir + bash_id` path, so a poll after that still returns the log tail plus a
-**confirmed** cause (`stranded_by_operator_restart` vs `job_process_gone`,
-decided by comparing operator uptime to the log's age — EI-18666279107998059). A
+cause. There are **three** reason codes and they are not interchangeable
+(EI-18666279107998059): `tracking_lost_process_alive` = CONFIRMED running via a
+task-ledger pid re-probe — keep polling, do NOT re-run; `job_process_gone` = CONFIRMED
+ended, the ledger observed a terminal state — safe to re-run; `job_liveness_unknown` =
+only a whole-operator restart was ruled out (the uptime heuristic), liveness genuinely
+UNKNOWN and the job is most often alive but QUEUED behind pc-heavy's slot clamp — check
+`ps` before re-running, or you add load to the queue that is delaying you. ⚠ That
+three-way split is **on staging but not yet deployed** while the gate is red, so the
+live operator can still answer this case with a flat `job_process_gone` for a job `ps`
+shows alive; until it ships, verify with `ps` rather than trusting the code. A
 native background id is bookkeeping inside the CLI child's own memory: after a
 compaction, carry-respawn, or cold-loop wake it is simply a dead reference with
 nothing to recover (EI-16611).

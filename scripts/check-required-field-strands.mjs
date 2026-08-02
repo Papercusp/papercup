@@ -131,8 +131,10 @@ function main() {
     process.exit(0);
   }
 
+  const changedFiles = nameStatus.split('\n').filter(Boolean);
+
   const findings = [];
-  for (const line of nameStatus.split('\n').filter(Boolean)) {
+  for (const line of changedFiles) {
     const [status, ...rest] = line.split('\t');
     const file = rest[rest.length - 1];
     if (!file || status.startsWith('A') || status.startsWith('D')) continue;
@@ -151,7 +153,28 @@ function main() {
   if (json) console.log(JSON.stringify({ base, findings }, null, 2));
 
   if (!findings.length) {
-    if (!json) console.log('✓ no required fields added to exported types in this diff');
+    if (!json) {
+      // "Checked nothing" must never render as "clean" — the same failure class as
+      // `tsc -p .` typechecking zero files and reading as a pass. On THIS tree it is
+      // the common case, not an edge one: git-sync commits the whole tree on a
+      // schedule, so a few minutes after you edit, working-tree == HEAD and the
+      // default `--base HEAD` diff is empty. Measured 2026-08-02 — this printed a
+      // green for a change that HAD added required field `ServeProgress.bytesIn`.
+      if (!changedFiles.length) {
+        console.log(`⚠ NOT CHECKED — nothing differs from '${base}', so ZERO files were examined.`);
+        console.log('  This is NOT a clean bill. On this shared tree it usually means git-sync');
+        console.log('  already committed your edit, not that you changed nothing.\n');
+        console.log('  Re-run against the commit that actually carried your change:');
+        console.log("    C=$(git log -1 --format=%H -S'<a string your change introduced>' -- <file>)");
+        console.log('    node scripts/check-required-field-strands.mjs --base "$C^"\n');
+        console.log('  (Use -G instead of -S when searching by a name you did not introduce.)');
+      } else {
+        console.log(
+          `✓ no required fields added to exported types ` +
+            `(${changedFiles.length} changed file(s) examined vs ${base})`,
+        );
+      }
+    }
     process.exit(0);
   }
 
