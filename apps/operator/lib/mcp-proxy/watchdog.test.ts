@@ -4,9 +4,12 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // we can unit-test the pure decision logic without launching setInterval / hitting the network.
 process.env.PAPERCUSP_WATCHDOG_NO_AUTOSTART = '1';
 
-let shouldRestart: (unreachableSinceMs: number, nowMs: number, thresholdMs?: number) => boolean;
-let classifyProbeResult: (r: { networkError?: unknown; status?: number; json?: unknown }) => string;
-let decideHandshakeAction: (proxyKind: string, upstreamKind: string) => string;
+// Types come from watchdog.d.mts — without it this import is an implicit `any` (TS7016) and
+// every assertion below silently stops type-checking (a misspelled verdict would compile).
+type Watchdog = typeof import('./watchdog.mjs');
+let shouldRestart: Watchdog['shouldRestart'];
+let classifyProbeResult: Watchdog['classifyProbeResult'];
+let decideHandshakeAction: Watchdog['decideHandshakeAction'];
 beforeAll(async () => {
   ({ shouldRestart, classifyProbeResult, decideHandshakeAction } = await import('./watchdog.mjs'));
 });

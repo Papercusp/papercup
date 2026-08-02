@@ -579,6 +579,50 @@ const SILENT_NULL_PATH_TRAPS: SilentNullPathTrap[] = [
       'harness_shared.work_items TABLE, which has no severity column). Or prefer ' +
       'work_items:list { severity } / work_items:claimable',
   },
+  {
+    // `kind` vs `item_kind` on the TABLE. Both columns exist, so there is no
+    // error — but `kind` is effectively dead: measured 2026-08-02 on
+    // harness_shared.work_items, it is non-null on 3 of 28,255 rows (0.01%)
+    // while `item_kind` is non-null on all 28,255. So `WHERE kind='bug'`
+    // returns ~nothing and reads exactly like "there are no bugs".
+    //
+    // Scoped to PREDICATE position on purpose (`kind =`, `kind IN`, `kind IS`)
+    // rather than any mention. A projection or alias — `coalesce(item_kind,'?')
+    // AS kind`, `GROUP BY kind` — is a legitimate and common shape, and this
+    // file's own tenant-scope note is explicit that a false advisory is worse
+    // than none because it teaches the reader to stop trusting advisories. The
+    // predicate is also the shape that actually bit: it silently returns zero.
+    relation: 'work_items',
+    pathRe: /\bkind\s*(?:=|<>|!=|~|\bin\b|\bis\b)/i,
+    path: 'kind',
+    why:
+      'the `kind` column on this TABLE is effectively unused — non-null on 3 of 28,255 rows ' +
+      '(measured 2026-08-02), while `item_kind` is populated on every row. The classifier you ' +
+      'want is item_kind (bug / change / task / feature / chunk)',
+    useInstead:
+      '`item_kind` for the bug/change/task/feature split. Also note that item_kind alone is not ' +
+      "the real-work filter: ~84% of open rows are payload->>'lane' = 'observation' (turn-end " +
+      'notes that by design never enter the queue), so a backlog count needs BOTH ' +
+      "item_kind AND coalesce(payload->>'lane','') <> 'observation'. Or prefer work_items:list / " +
+      'work_items:claimable, whose claimableCount already applies every floor',
+  },
+  {
+    // The lane discriminator lives at the TOP level of payload, never under
+    // `_ei`. Measured 2026-08-02 on harness_shared.work_items: `payload ? 'lane'`
+    // is true for 12,694 rows, `payload->'_ei' ? 'lane'` for ZERO. A backlog
+    // query that reads the _ei form silently classifies every observation as
+    // real work — the exact inversion that makes an 11,970-row observation lane
+    // look like a bug backlog.
+    relation: 'work_items',
+    pathRe: /payload\s*->\s*['"]_ei['"]\s*->>?\s*['"]lane['"]/i,
+    path: "payload->'_ei'->>'lane'",
+    why:
+      "`lane` is stored at the TOP level of payload, not inside the _ei blob — payload ? 'lane' " +
+      "is true for 12,694 rows and payload->'_ei' ? 'lane' for 0 (measured 2026-08-02), so this " +
+      'accessor is NULL for every row and every observation silently counts as real work',
+    useInstead:
+      "`payload->>'lane'` (the `_ei` blob carries severity/source/found_during, not lane)",
+  },
 ];
 
 /**

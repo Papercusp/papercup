@@ -419,6 +419,82 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
   });
 });
 
+describe('db:migrate — caller-widened lock_timeout_sec (WI-6381)', () => {
+  beforeEach(() => {
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const LOCK_TIMEOUT_STDERR = 'ERROR:  canceling statement due to lock timeout';
+
+  it('omitting lock_timeout_sec keeps the EI-9417 default (10s) unchanged', async () => {
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.applied).toBe(true);
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    expect(script).toContain("SET LOCAL lock_timeout = '10s';");
+  });
+
+  it('a caller-supplied lock_timeout_sec widens the per-attempt SQL lock_timeout to that value', async () => {
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler(
+        { file: FILE, confirm: true, lock_timeout_sec: 180 },
+        CTX,
+      ),
+    );
+    expect(out.applied).toBe(true);
+    expect(out.attempts).toBe(1);
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    expect(script).toContain("SET LOCAL lock_timeout = '180s';");
+    expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i'));
+  });
+
+  it('a caller-supplied lock_timeout_sec drops the retry ceiling to 2 attempts instead of the default 5', async () => {
+    vi.useFakeTimers();
+    h.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: LOCK_TIMEOUT_STDERR });
+    const promise = (migrateTool as never as { handler: Function }).handler(
+      { file: FILE, confirm: true, lock_timeout_sec: 180 },
+      CTX,
+    );
+    await vi.advanceTimersByTimeAsync(2000); // backoff after attempt 1
+    const out = parse(await promise);
+    expect(out.ok).toBe(false);
+    expect(out.attempts).toBe(2);
+    expect(out.lock_timeout_retries_exhausted).toBe(true);
+    expect(h.spawnSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('a caller-supplied lock_timeout_sec still succeeds on the first attempt once the long wait rides out the contention', async () => {
+    vi.useFakeTimers();
+    h.spawnSync
+      .mockReturnValueOnce({ status: 1, stdout: '', stderr: LOCK_TIMEOUT_STDERR })
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' });
+    const promise = (migrateTool as never as { handler: Function }).handler(
+      { file: FILE, confirm: true, lock_timeout_sec: 180 },
+      CTX,
+    );
+    await vi.advanceTimersByTimeAsync(2000); // backoff after attempt 1
+    const out = parse(await promise);
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(true);
+    expect(out.attempts).toBe(2);
+    expect(h.spawnSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a lock_timeout_sec above the 300s ceiling at the schema level', () => {
+    const argsSchema = (migrateTool as unknown as { args: { safeParse: (v: unknown) => { success: boolean } } }).args;
+    expect(argsSchema.safeParse({ file: FILE, confirm: true, lock_timeout_sec: 301 }).success).toBe(false);
+    expect(argsSchema.safeParse({ file: FILE, confirm: true, lock_timeout_sec: 300 }).success).toBe(true);
+  });
+
+  it('rejects a non-positive lock_timeout_sec at the schema level', () => {
+    const argsSchema = (migrateTool as unknown as { args: { safeParse: (v: unknown) => { success: boolean } } }).args;
+    expect(argsSchema.safeParse({ file: FILE, confirm: true, lock_timeout_sec: 0 }).success).toBe(false);
+    expect(argsSchema.safeParse({ file: FILE, confirm: true, lock_timeout_sec: -5 }).success).toBe(false);
+  });
+});
+
 describe('db:migrate — false-failure guard on the schema_migrations ledger (WI-6002)', () => {
   beforeEach(() => {
     process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';

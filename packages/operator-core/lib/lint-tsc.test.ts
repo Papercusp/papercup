@@ -26,6 +26,10 @@ import {
   formatAttributionHeadline,
   formatNewFileGuidance,
   partitionNewFilesByLiveEdit,
+  diagnosticLinesForFiles,
+  partitionStandingByCommitRecency,
+  formatLandingRaceCaveat,
+  LANDING_RACE_WINDOW_SEC,
   TSC_COMMAND,
 } from '../../../scripts/lint-tsc.mjs';
 // eslint-disable-next-line import/no-relative-packages
@@ -773,5 +777,123 @@ describe('new files: a peer mid-edit is not the caller’s regression (EI-192782
     ]) {
       expect(formatNewFileGuidance(opts).join('\n')).not.toMatch(/re-run with --files/i);
     }
+  });
+});
+
+describe('new-file reds: the count alone withholds the diagnosis (WI-6767)', () => {
+  // WHY THIS EXISTS. The `fail-new-file` report said `file: 0 → 1 (+1)` and stopped. Recovering the
+  // actual message from that costs a fresh full-project compile (~100s here under contention), so
+  // the WI-6764 filer recorded — verbatim — that they could not capture the TSxxxx because a full
+  // `tsc -p packages/operator-core` blew their shell budget TWICE, and filed a major bug without
+  // ever seeing the error. The next agent then spent ~20 minutes re-deriving it. The line was in a
+  // string the gate already held.
+  const SAMPLE = [
+    "lib/a.ts(10,3): error TS2322: Type '\"memory-recall-scale\"' is not assignable to type 'WatchdogSource'.",
+    'lib/a.ts(11,3): error TS2339: Property x does not exist.',
+    'lib/a.ts(12,3): error TS2339: Property y does not exist.',
+    'lib/a.ts(13,3): error TS2339: Property z does not exist.',
+    'lib/other.ts(1,1): error TS2554: Expected 1 arguments.',
+    'error TS5042: Option project cannot be mixed with source files.',
+  ].join('\n');
+
+  it('quotes the real compiler lines for the requested files only', () => {
+    const got = diagnosticLinesForFiles(SAMPLE, ['lib/a.ts']);
+    expect([...got.keys()]).toEqual(['lib/a.ts']);
+    // The message — not just the code — is what makes a landing race self-evident: it names a type
+    // that lives in a DIFFERENT file.
+    expect(got.get('lib/a.ts')![0]).toContain("not assignable to type 'WatchdogSource'");
+  });
+
+  it('caps the quote per file so one noisy file cannot bury the guidance', () => {
+    expect(diagnosticLinesForFiles(SAMPLE, ['lib/a.ts']).get('lib/a.ts')).toHaveLength(3);
+    expect(diagnosticLinesForFiles(SAMPLE, ['lib/a.ts'], { maxPerFile: 1 }).get('lib/a.ts')).toHaveLength(1);
+  });
+
+  it('asks for nothing → returns nothing, and never attributes a global (unattributed) error', () => {
+    expect(diagnosticLinesForFiles(SAMPLE, []).size).toBe(0);
+    // TS5042 has no file; it must not be smuggled under some file's heading.
+    const all = diagnosticLinesForFiles(SAMPLE, ['lib/a.ts', 'lib/other.ts']);
+    expect([...all.values()].flat().join('\n')).not.toContain('TS5042');
+  });
+
+  it('cannot drift from the counter: every file counted +N can produce its lines', () => {
+    // The anti-drift pin. Both read the same LOCATED_DIAGNOSTIC grammar, so a file that shows a
+    // count in the summary must be quotable — otherwise the report would print "+1" above silence.
+    const counted = Object.keys(countByFile(parseTscErrors(SAMPLE))).filter((f) => f !== '(unattributed)');
+    const quoted = diagnosticLinesForFiles(SAMPLE, counted);
+    for (const file of counted) expect(quoted.get(file)?.length ?? 0).toBeGreaterThan(0);
+  });
+});
+
+describe('new-file reds: COMMITTED does not mean SETTLED (WI-6767)', () => {
+  // WHY THIS EXISTS. EI-19278299775574199 split new-file reds into a peer's UNCOMMITTED live edit
+  // (don't touch) and a COMMITTED standing red (fix it now). That split is right — but it assumes
+  // `committed` implies `settled`, and on this repo it does not: git-sync commits the WHOLE shared
+  // tree on a schedule, so ONE logical multi-file change routinely lands across TWO ticks.
+  //
+  // Measured (WI-6764): commit 133317acd0 @20:25:57 landed a file emitting `source:
+  // 'memory-recall-scale'`; the union accepting that value landed in watchdog.ts at 82a0d03bef
+  // @20:33:46. For 7m49s the committed tree held exactly one real type error belonging to nobody.
+  // An agent ran this gate inside that window, checked `git status` (clean), correctly concluded
+  // "committed ⇒ standing red", and filed a major bug for something that had healed itself ~1
+  // minute earlier. The reasoning was sound; the report had no way to say "wait a moment first".
+  const NOW = 1_800_000_000;
+  const row = (file: string) => ({ file, baseline: 0, current: 1, delta: 1 });
+
+  it('flags a file committed inside the window as a possible landing race', () => {
+    const { recent, settled } = partitionStandingByCommitRecency(
+      [row('fresh.ts')],
+      new Map([['fresh.ts', NOW - 120]]),
+      NOW,
+    );
+    expect(recent.map((r: { file: string }) => r.file)).toEqual(['fresh.ts']);
+    expect(settled).toEqual([]);
+  });
+
+  it('leaves a file committed long ago as a genuine standing red', () => {
+    const { recent, settled } = partitionStandingByCommitRecency(
+      [row('old.ts')],
+      new Map([['old.ts', NOW - LANDING_RACE_WINDOW_SEC - 1]]),
+      NOW,
+    );
+    expect(recent).toEqual([]);
+    expect(settled.map((r: { file: string }) => r.file)).toEqual(['old.ts']);
+  });
+
+  it('treats an UNREADABLE commit time as standing — unknown is never an exoneration', () => {
+    // The safety pin, and the same rule partitionNewFilesByLiveEdit applies. This caveat tells a
+    // reader it is safe to WAIT rather than act, so it must be earned by positive evidence. A git
+    // failure must not manufacture "probably fine, ignore it".
+    const { recent, settled } = partitionStandingByCommitRecency(
+      [row('unknown.ts')],
+      new Map([['unknown.ts', null]]),
+      NOW,
+    );
+    expect(recent).toEqual([]);
+    expect(settled.map((r: { file: string }) => r.file)).toEqual(['unknown.ts']);
+  });
+
+  it('treats a MISSING entry and a future timestamp as standing too', () => {
+    const { recent } = partitionStandingByCommitRecency(
+      [row('absent.ts'), row('skewed.ts')],
+      new Map([['skewed.ts', NOW + 5_000]]), // clock skew must not read as "just landed"
+      NOW,
+    );
+    expect(recent).toEqual([]);
+  });
+
+  it('says nothing at all when no file is recent', () => {
+    expect(formatLandingRaceCaveat({ recentCount: 0 })).toEqual([]);
+  });
+
+  it('tells the reader to re-run before filing, and never to ignore the failure', () => {
+    const text = formatLandingRaceCaveat({ recentCount: 1 }).join('\n');
+    expect(text).toMatch(/landing/i);
+    expect(text).toMatch(/re-run/i);
+    expect(text).toMatch(/before filing/i);
+    // It must not greenwash: the run still failed, and this caveat is a diagnosis aid, not a
+    // permission slip. "Never greenwash this one" is the invariant the whole new-file branch rests
+    // on (EI-18766822535373909).
+    expect(text).not.toMatch(/safe to ignore|you can ignore|not a real error|disregard/i);
   });
 });

@@ -1448,27 +1448,15 @@ export const FLAGS = {
   // (evidence-gated like P-021 — inert until a class passes drills). OFF = kill-switch:
   // every compaction re-primes, today's behavior.
   ENRICHMENT_RETIRE_PROVEN_CLASSES: "papercusp-enrichment-retire-proven-classes",
-  // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED master gate for moving the
-  // QUEEN + SCOUT (+ later OVERWATCH) from per-HIVE to WORKSPACE scope — ONE central brain per
-  // workspace spanning all its hives (P-003 Queen re-key + P-002 Scout re-key both gate on THIS
-  // one flag, so the two halves flip together). DEFAULT OFF (dark): the re-key touches the live
-  // wake/learning loop on a hot path, so it ships reversible behind one flag and flips ON only
-  // after the post-canary verify. OFF ⇒ today's per-hive brains, byte-identical.
-  //
-  // NOW ACTUALLY IN DARK_FLAGS (added 2026-07-12, WI-4240, su-00a91). This was the genuine
-  // EI-7230 bug — the comment always said "dark / KNOWN_DARK_FLAGS" and was RIGHT, but the
-  // flag was never added to the DARK_FLAGS map, so the 2026-06-29 P-011 inversion silently
-  // derived it default-ON (the unverified cutover). Unlike COORD_/ISSUES_PER_WORKSPACE (where
-  // the CODE was right and the comment stale — completed cutovers), here the CODE was wrong:
-  // the re-key has NOT been canary-verified and production was held on the safe per-hive path
-  // ONLY by a hand-placed harness_shared.operator_flag_overrides row (false, papercusp-
-  // workspace). That override was LOAD-BEARING and fragile — delete it, or stand up a fresh
-  // workspace that lacks it, and the unverified cutover silently engaged. Adding the flag here
-  // makes the code default match the comment + the override, so the row is now REDUNDANT rather
-  // than the only thing holding the line. Genuinely reversible: isWorkspaceCoordinationOn()
-  // returns false on any flag-IO error and workspaceBrainScopeKey ships a legacy per-hive
-  // read-fallback, so no state is stranded by keeping it off. Owner flips ON at the verified
-  // cutover.
+  // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED master gate for the QUEEN +
+  // SCOUT + OVERWATCH per-HIVE → per-WORKSPACE brain re-key — ONE central brain per workspace
+  // spanning all its hives (all halves flip together on THIS one flag; keying must stay
+  // consistent across the three brains, D-006). DEFAULT ON — graduated 2026-08-02 at the
+  // owner-attended cutover (WI-605, D-011; build verified complete D-010, flipped live via the
+  // pg override first). OFF = the reversible kill-switch restoring the per-hive brains (that
+  // code path is deliberately retained until the post-graduation cleanup):
+  // isWorkspaceCoordinationOn() fails to false and workspaceBrainScopeKey read-falls-back to
+  // the legacy per-hive keys, so flipping OFF strands no state.
   WORKSPACE_COORDINATION: "papercusp-workspace-coordination",
   // unified-work-item-ledger-2026-06-21 P-003 (D-002): auto-promote a started plan's OPEN
   // items into placeable, UNCLAIMED work-items inside plans:start (the single promotion path;
@@ -2207,14 +2195,6 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.AUTHORITY_RPC_PROTOMUX, { case: 'cutover', reason: 'shared-hive-hardening-2026-06-13 P-001/D-005: routes remote lock-authority RPCs over the per-harness Hyperswarm protomux channel so NAT\'d peers are served. Real-hardware-UNVERIFIED (P-003) — the flip is gated on the two-machine serialization proof. Comment always said "DEFAULT OFF" but was never added here, so P-011 derived it live-ON. wireAuthorityRpcSwarmTransport returns early without a device signer/swarm, so ON is a no-op on a single box; OFF = HTTP-only, byte-identical. Owner/leader flips ON after the two-machine proof.' }],
     [FLAGS.LAZY_SUBSTRATE_BOOT, { case: 'cutover', reason: 'shared-hive-cross-machine-scale-10k-2026-06-29 P-010 (found 2026-07-26, su-709bb): the SAME never-added-to-DARK_FLAGS class as AUTHORITY_RPC_PROTOMUX/AUTHORITY_EVICTION_PROBE directly below, but INVISIBLE to the flag-comment-lint guard until this date — the guard only recognised "DEFAULT OFF", while this entry declares itself in the REVERSED form "OFF (default): boot is byte-identical to today (eager all-harness boot). DARK + STAGED-ON-:3170-FIRST", so it classified as null and was silently SKIPPED (fixed: flag-comment-lint normalization step 5). Its own comment records an owner-ratified D-005/D-006 BINDING execution constraint to stage on :3170 first, precisely because a wrong eviction silently stops a harness syncing → fleet data divergence (the EI-126 102 GB class) — yet it derived live default-ON, so the eviction reaper + outbox keepalive have been running unattended with that blast radius and no staged verify. The live-ON state was an ACCIDENT (a missing entry here), never a decision. OFF ⇒ eager all-harness boot + no reaper — the long-standing, definitively-safe behavior (costs RSS, cannot diverge). NOTE this also gates P-010\'s new activate-on-demand policy (substrate-active-set-policy/-facts), which rides this same flag deliberately rather than adding a second separately-flippable half of one behaviour. Owner/leader flips ON at the attended :3170 staged verify its own D-005/D-006 constraint calls for.' }],
     [FLAGS.AUTHORITY_EVICTION_PROBE, { case: 'cutover', reason: 'shared-hive-hardening-2026-06-13 P-016: wires the φ-accrual + SWIM failure detector into authority selection so a crashed authority is evicted promptly instead of waiting out the 90s staleness window. Rides the same unverified cross-machine RPC seam as AUTHORITY_RPC_PROTOMUX; real-hardware-UNVERIFIED (D-003). Comment always said "DEFAULT OFF (dark)... KNOWN_DARK_FLAGS" but was never added here, so P-011 derived it live-ON. wirePeerEviction installs no monitor when off and single-box/no-transport is a no-op anyway; OFF = staleness-only selection, byte-identical to pre-P-016. Owner/leader flips ON after the two-machine proof.' }],
-    // WI-4240 (2026-07-12, su-00a91): the genuine EI-7230 bug among the WI-4240 residue — the
-    // comment always said "DEFAULT OFF (dark) / KNOWN_DARK_FLAGS" and was CORRECT (the workspace
-    // brain re-key is an UNVERIFIED cutover), but the flag was never added here, so P-011 derived
-    // it live default-ON. Production was held on the safe per-hive path ONLY by a hand-placed
-    // operator_flag_overrides row (false, papercusp-workspace) — load-bearing + fragile. Adding
-    // it makes the code default agree with that override, so the row becomes redundant and a
-    // fresh workspace no longer silently gets the unverified cutover. Watermark 26→27.
-    [FLAGS.WORKSPACE_COORDINATION, { case: 'cutover', reason: 'workspace-scoped-coordination-2026-06-20 (D-007): the SHARED master gate moving the Queen + Scout (+ later Overwatch) from per-HIVE to one-per-WORKSPACE brain. The re-key touches the live wake/learning loop on a hot path and has NOT been canary-verified — its own comment always said "DEFAULT OFF (dark)... flips ON only after the post-canary verify. KNOWN_DARK_FLAGS", but it was never added here, so the 2026-06-29 P-011 inversion silently derived it default-ON. Production was held on the safe per-hive path ONLY by a hand-placed harness_shared.operator_flag_overrides row (false, papercusp-workspace) — load-bearing and fragile (delete the row or spin up a fresh workspace and the unverified cutover silently engages). Reversible: isWorkspaceCoordinationOn() fails to false and workspaceBrainScopeKey read-falls-back to the legacy per-hive slug, so nothing is stranded. OFF ⇒ today\'s per-hive brains, byte-identical. Owner flips ON at the verified cutover.' }],
     [FLAGS.MUG_FULL_AUTONOMY, { case: 'owner-authority', reason: 'WI-4238: the recursive-self-improvement boundary. When ON, (1) the autonomy decider returns `auto` for categorical HARD GATES — authority:\'owner\', protected/locked categories, irreversible actions, above-ceiling, and graduation:* ratification asks — so the Queen widens her own ceilings without pausing; and (2) the self-improvement auto-implement loop lifts the protectedPathPatterns/protectedKeywords TCB bars, making a kind=bug that touches the deploy gate / flags / capability dispatch / migrations / the loop\'s OWN code auto-implement-eligible. The flag\'s own comment has always said "OFF by default — DELIBERATE, NOT the alpha flags-default-on policy" and warned it "removes the last human check on the system widening its own ceilings and editing its own safety machinery" — but it was never added here, so the 2026-06-29 P-011 inversion silently derived it default-ON. OFF ⇒ the documented gated residue is restored VERBATIM (pinned both directions in tests); the decider/loop fail-DARK on a flag-IO error. Owner flips ON only by personally ratifying full autonomy.' }],
     [FLAGS.FLEET_HEADCOUNT_GOVERNOR, { case: 'owner-authority', reason: 'WI-2479: persistent per-fleet headcount auto-top-up can open real agent sessions without an attended launch call. The routine is bounded to a live deficit, uses an atomic retry lease plus the existing launch-window guard, and exponentially backs off failures, but it remains a fleet-autonomy escalation surface. OFF is a pure no-op; owner flips ON only after reviewing the no-storm and no-double-open tests.' }],
     [FLAGS.MEM0_FEDERATION_EGRESS, { case: 'owner-authority', reason: 'mem0-cross-machine-federation-2026-07-10 (F1-1 mirror, D-006 privacy): gates the cross-machine federation of SHAREABLE memories (memory:remember with shareable=true). When ON, capture triggers enqueue shareable=true memories to the peer-log outbox, and receive-side projections apply remote memories to the local store (source-partitioned H6 pattern mirroring agent-facts). OWNER-AUTHORITY: memory federation affects what personal memory data leaves the machine — only the owner ratifies when/how/which memories federate. The privacy gates ride the SAME pot-visibility + member-admission guards as agent-facts (private pots never leak; only admitted members receive). OFF ⇒ shareable flag has no effect — capture stays quiet and egress never happens (byte-identical to today\'s personal-only behavior). Owner flips ON after reviewing privacy implications + confirming the privacy gates are in effect.' }],

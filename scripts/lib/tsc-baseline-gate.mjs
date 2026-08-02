@@ -16,7 +16,7 @@
  * (operator-vite) for the two thin per-project CLIs built on this.
  */
 
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -118,6 +118,15 @@ import { resolve } from 'node:path';
  */
 
 /**
+ * `path/to/file.ts(12,5): error TS2322:` — a diagnostic tsc pinned to a location.
+ *
+ * Shared by `parseTscErrors` (which counts) and `diagnosticLinesForFiles` (which quotes) so the
+ * two can never disagree about what counts as an attributed error: a file that shows `+1` in the
+ * summary must be able to produce the line behind it.
+ */
+const LOCATED_DIAGNOSTIC = /^(.+?)\((\d+),(\d+)\): error (TS\d+):/;
+
+/**
  * Parse tsc output into { file, code } entries (file null when unattributable).
  *
  * @param {string} tscOutput
@@ -126,7 +135,7 @@ import { resolve } from 'node:path';
 export function parseTscErrors(tscOutput) {
   const errors = [];
   for (const line of String(tscOutput).split('\n')) {
-    const m = line.match(/^(.+?)\((\d+),(\d+)\): error (TS\d+):/);
+    const m = line.match(LOCATED_DIAGNOSTIC);
     if (m) {
       errors.push({ file: m[1], code: m[4] });
       continue;
@@ -605,6 +614,161 @@ export function partitionNewFilesByLiveEdit(newFiles) {
 }
 
 /**
+ * The COMPILER LINES behind a new file's `+N` — the WHAT the count alone withholds (WI-6767).
+ *
+ * The gate holds the full tsc output and, until now, reported only `file: 0 → 1 (+1)`. Recovering
+ * the message from that costs a fresh full-project compile, which on this box is ~100s under
+ * contention and is exactly what the two agents who hit this could not afford: the WI-6764 filer
+ * recorded that a full `tsc -p packages/operator-core` blew their shell budget TWICE, so they filed
+ * a major bug without ever seeing the error; the next agent then spent ~20 minutes re-deriving it.
+ * The line was sitting in a string the gate already had.
+ *
+ * It matters far beyond convenience, because the message is frequently the whole diagnosis. The
+ * WI-6764 error read `TS2322: Type '"memory-recall-scale"' is not assignable to type
+ * 'WatchdogSource'` — naming a type in a DIFFERENT file, which is the signature of a multi-file
+ * change still landing (see `formatLandingRaceCaveat`). A bare `+1` cannot suggest that; the
+ * message says it outright.
+ *
+ * Deliberately a separate projection rather than a widening of `parseTscErrors`: that function's
+ * `{file, code}` shape is asserted with strict equality by `lint-tsc.test.ts` and its narrowness is
+ * a documented decision (`packages/operator-core/lib/tsc-diagnostics.ts` explains why the gate
+ * counts rather than carries messages). This is display-only and feeds nothing that decides a
+ * verdict.
+ *
+ * @param {string} tscOutput - Raw compiler output.
+ * @param {Iterable<string>} files - Repo-relative paths to quote lines for.
+ * @param {{maxPerFile?: number}} [opts] - `maxPerFile` bounds the quote so a file with 40 errors
+ *   cannot bury the guidance underneath it (the report stays readable; the count already told you
+ *   the true total).
+ * @returns {Map<string, string[]>} file → its diagnostic lines, in compiler order, capped.
+ */
+export function diagnosticLinesForFiles(tscOutput, files, { maxPerFile = 3 } = {}) {
+  const wanted = new Set(files);
+  /** @type {Map<string, string[]>} */
+  const byFile = new Map();
+  if (wanted.size === 0) return byFile;
+  for (const line of String(tscOutput).split('\n')) {
+    const m = line.match(LOCATED_DIAGNOSTIC);
+    if (m === null || !wanted.has(m[1])) continue;
+    const acc = byFile.get(m[1]) ?? [];
+    if (acc.length < maxPerFile) acc.push(line.trim());
+    byFile.set(m[1], acc);
+  }
+  return byFile;
+}
+
+/**
+ * How recently a file must have been committed for its red to be treated as possibly still landing.
+ *
+ * 20 minutes, sized from the mechanism rather than taste: git-sync commits this tree on a schedule
+ * of a few minutes, and the observed WI-6764 split was 7m49s between the two halves of one logical
+ * change. 20min covers that with margin while staying far below the hours a genuine standing red
+ * survives. It only ever adds a caveat — never removes one — so erring long is the safe direction.
+ */
+export const LANDING_RACE_WINDOW_SEC = 20 * 60;
+
+/**
+ * Last commit time (epoch seconds) per path. Fail-SOFT per file: anything unreadable maps to
+ * `null`, which `partitionStandingByCommitRecency` treats as NOT recent — i.e. the loud, standing
+ * reading. An unreadable git state must never manufacture a "probably fine, ignore it" caveat.
+ *
+ * Uses `execFileSync` (argv, no shell) so a path with a space or a shell metacharacter is passed
+ * verbatim instead of being re-split or interpreted.
+ *
+ * @param {string} root - Repo root to run git in.
+ * @param {Iterable<string>} files
+ * @returns {Map<string, number | null>}
+ */
+export function lastCommitTimes(root, files) {
+  /** @type {Map<string, number | null>} */
+  const times = new Map();
+  for (const file of files) {
+    try {
+      const out = execFileSync('git', ['log', '-1', '--format=%ct', '--', file], {
+        cwd: root,
+        encoding: 'utf-8',
+        maxBuffer: 1024 * 1024,
+      });
+      const parsed = Number.parseInt(out.trim(), 10);
+      times.set(file, Number.isFinite(parsed) ? parsed : null);
+    } catch {
+      times.set(file, null);
+    }
+  }
+  return times;
+}
+
+/**
+ * Split committed new files into ones committed so recently they may be a LANDING RACE, and ones
+ * settled long enough that the red is really standing (WI-6767).
+ *
+ * `null`/missing/future timestamps fall to `settled` — the same "unknown is never an exoneration"
+ * rule `partitionNewFilesByLiveEdit` applies, and for the same reason: this caveat tells a reader
+ * it is safe to wait rather than act, so it must be earned by positive evidence, never by an
+ * absence of evidence.
+ *
+ * @param {PerFileGateEntry[]} standing - The COMMITTED subset (never a peer's live buffer).
+ * @param {Map<string, number | null>} commitTimes
+ * @param {number} nowSec - Current time, epoch seconds (injected so this stays pure/testable).
+ * @param {number} [windowSec]
+ * @returns {{recent: PerFileGateEntry[], settled: PerFileGateEntry[]}}
+ */
+export function partitionStandingByCommitRecency(
+  standing,
+  commitTimes,
+  nowSec,
+  windowSec = LANDING_RACE_WINDOW_SEC,
+) {
+  const recent = [];
+  const settled = [];
+  for (const r of standing) {
+    const t = commitTimes.get(r.file);
+    const age = typeof t === 'number' ? nowSec - t : null;
+    if (age !== null && age >= 0 && age <= windowSec) recent.push(r);
+    else settled.push(r);
+  }
+  return { recent, settled };
+}
+
+/**
+ * The LANDING-RACE caveat — the third population the committed/uncommitted split cannot express.
+ *
+ * EI-19278299775574199 taught this report to separate a peer's UNCOMMITTED live edit ("don't touch
+ * it") from a COMMITTED standing red ("fix it now"). That split is right and stays. But it assumes
+ * `committed` means `settled`, and on this repo it does not: git-sync commits the WHOLE shared tree
+ * on a schedule, so ONE logical multi-file change routinely lands across TWO ticks. Between them
+ * the committed tree holds a half-landed change that typechecks as a genuine error belonging to
+ * nobody.
+ *
+ * Measured, not hypothesised (WI-6764): commit 133317acd0 @20:25:57 landed a file emitting
+ * `source: 'memory-recall-scale'`; the union that accepts that value arrived in watchdog.ts at
+ * 82a0d03bef @20:33:46. For 7m49s the tree carried exactly one real type error. An agent ran this
+ * gate inside that window, checked `git status` (clean), correctly concluded "committed ⇒ standing
+ * red" — and filed a major bug for something that had healed itself ~1 minute earlier. Their
+ * reasoning was sound; the report simply had no way to say "wait a moment first".
+ *
+ * Note what this does NOT do: it never moves the verdict, never suppresses a row, and never
+ * downgrades the exit code. A landing race and a standing red are indistinguishable at this
+ * instant, so the honest report is "still failing — and here is the one cheap check that tells you
+ * which".
+ *
+ * @param {{recentCount: number, windowMin?: number}} opts
+ * @returns {string[]} console lines, already indented; empty when nothing is recent.
+ */
+export function formatLandingRaceCaveat({ recentCount, windowMin = LANDING_RACE_WINDOW_SEC / 60 }) {
+  if (recentCount <= 0) return [];
+  return [
+    `   ⚠ ${recentCount} of them was/were COMMITTED IN THE LAST ${windowMin} MINUTES — this may be a LANDING`,
+    `   RACE rather than a standing red. git-sync commits this whole shared tree on a schedule, so ONE`,
+    `   logical multi-file change routinely lands across TWO ticks; in between, the tree holds a`,
+    `   half-landed change that fails to typecheck and belongs to nobody.`,
+    `   BEFORE FILING A BUG: re-run this check in a few minutes and see if it clears itself.`,
+    `   If the message above names a symbol defined in ANOTHER file, that is the signature — check when`,
+    `   that file landed:  git log -1 --format=%ci -- <the file defining that symbol>`,
+  ];
+}
+
+/**
  * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
  * `main()` every per-project CLI (lint-tsc.mjs, lint-tsc-operator-vite.mjs, …) delegates to.
  *
@@ -771,16 +935,27 @@ export function runTscBaselineGate({
       // need opposite actions stop looking identical: a peer's uncommitted live buffer must not be
       // edited, a committed standing red must be.
       const { liveEdits, standing } = partitionNewFilesByLiveEdit(result.newFiles);
+      // WI-6767 — quote the compiler lines the `+N` stands for. The gate already holds them; the
+      // alternative for the reader is a fresh ~100s full-project compile, which is precisely what
+      // the WI-6764 filer could not afford and so filed a major bug without ever seeing the error.
+      const diagnostics = diagnosticLinesForFiles(
+        tscOutput,
+        result.newFiles.map((r) => r.file),
+      );
+      const emitRow = (r, suffix = '') => {
+        console.error(`${formatRow(r)}${suffix}`);
+        for (const line of diagnostics.get(r.file) ?? []) console.error(`      ${line}`);
+      };
       if (liveEdits.length > 0) {
         console.error(
           `❌ ${result.newFiles.length} NEW file(s) (not in the baseline) have type errors — ` +
             `${liveEdits.length} of them uncommitted (a peer is likely mid-edit; NOT yours):`,
         );
-        for (const r of liveEdits) console.error(`${formatRow(r)}  ← uncommitted, not attributed to you`);
-        for (const r of standing) console.error(formatRow(r));
+        for (const r of liveEdits) emitRow(r, '  ← uncommitted, not attributed to you');
+        for (const r of standing) emitRow(r);
       } else {
         console.error(`❌ ${result.newFiles.length} NEW file(s) (not in the baseline) have type errors:`);
-        for (const r of result.newFiles) console.error(formatRow(r));
+        for (const r of result.newFiles) emitRow(r);
       }
       // EI-18802204276510164 — the remedy is worded per how the changed-set was derived, so a
       // caller who already passed --files is never told to pass --files.
@@ -789,6 +964,20 @@ export function runTscBaselineGate({
         liveEditCount: liveEdits.length,
         standingCount: standing.length,
       })) {
+        console.error(line);
+      }
+      // WI-6767 — the landing-race caveat, computed over the COMMITTED subset only (a peer's live
+      // buffer is already correctly explained above, and git log would say nothing about it).
+      // Costs one `git log -1` per committed new file, and nothing at all when there are none.
+      const { recent } = partitionStandingByCommitRecency(
+        standing,
+        lastCommitTimes(
+          root,
+          standing.map((r) => r.file),
+        ),
+        Math.floor(Date.now() / 1000),
+      );
+      for (const line of formatLandingRaceCaveat({ recentCount: recent.length })) {
         console.error(line);
       }
       process.exit(1);

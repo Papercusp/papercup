@@ -71,6 +71,10 @@ import {
   formatAttributionHeadline,
   formatNewFileGuidance,
   partitionNewFilesByLiveEdit,
+  diagnosticLinesForFiles,
+  partitionStandingByCommitRecency,
+  formatLandingRaceCaveat,
+  LANDING_RACE_WINDOW_SEC,
   runTscBaselineGate,
 } from './lib/tsc-baseline-gate.mjs';
 
@@ -87,6 +91,10 @@ export {
   formatAttributionHeadline,
   formatNewFileGuidance,
   partitionNewFilesByLiveEdit,
+  diagnosticLinesForFiles,
+  partitionStandingByCommitRecency,
+  formatLandingRaceCaveat,
+  LANDING_RACE_WINDOW_SEC,
 };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');

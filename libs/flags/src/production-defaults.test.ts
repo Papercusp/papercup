@@ -262,16 +262,12 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // direction (ON removes the last human check on the system widening its own ceilings),
   // so only this one is darkened. Watermark raised 25→26. Count 25 → 26.
   'papercusp-queen-full-autonomy',
-  // 2026-07-12 (WI-4240) — papercusp-workspace-coordination: BUG-FIX correction, TENTH
-  // instance of the EI-7230 class (own comment always said "DEFAULT OFF (dark) /
-  // KNOWN_DARK_FLAGS", never actually added — see PRE_INVERSION_DEFAULT_OFF discipline).
-  // The genuine dark case among the WI-4240 residue: an UNVERIFIED workspace-brain re-key
-  // cutover that production held OFF only via a hand-placed operator_flag_overrides row.
-  // Adding it makes the code default match that override (row now redundant, not load-
-  // bearing). Watermark raised 26→27. Count 26 → 27. (Its sibling residue INBOX_DURABLE_
-  // ESCALATIONS was RATIFIED ON instead — finished additive work, zero leaks in 2 weeks —
-  // so it is NOT in this set.)
-  'papercusp-workspace-coordination',
+  // 2026-07-12 (WI-4240) — papercusp-workspace-coordination was added here as the TENTH
+  // EI-7230 instance (an UNVERIFIED workspace-brain re-key cutover held OFF by a hand-placed
+  // operator_flag_overrides row); GRADUATED OUT 2026-08-02 (WI-605, workspace-scoped-
+  // coordination-2026-06-20 D-011): owner-attended cutover — flipped ON live via the pg
+  // override, brains verified re-keyed, default graduated. Count 27 → 26 relative to that
+  // era's chain; the per-hive OFF path remains the kill-switch until post-graduation cleanup.
   // 2026-07-12 (WI-4240) — papercusp-authority-rpc-protomux + papercusp-authority-eviction-
   // probe: BUG-FIX correction, 11th + 12th instances of the EI-7230 class. Both comments
   // always said DEFAULT OFF / dark (real-hardware-UNVERIFIED cross-machine cutovers gated on

@@ -935,7 +935,7 @@ export default defineTool({
     'sessionState, `verdict` (booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, ' +
     'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, ' +
     'stalled, unanswered, contextPressure, parkedOn + parkedOnResolved (a composed await is ONE ' +
-    'entry w/ ROOT deadline + any/all mode), benchSuggestion, `dormant`, ' +
+    'entry: ROOT deadline + any/all mode), benchSuggestion, `dormant`, ' +
     'unownedCriticals + abandonedUnclaimed (assignee IS NULL — CLAIM it).',
   guidance: {
     when:
@@ -943,17 +943,16 @@ export default defineTool({
       'How you SEE the fleet, NOT how you watch it — PARK, do not poll: events:await the ' +
       'fleet:*:<slug> transition keys (see events:catalog) + work-item:claimable. ' +
       "loop:arm is then a LONG fallback heartbeat (15m+), never the monitor. Folded into " +
-      "coord:orient { mode:'monitor' }. Ready-to-paste spec: " +
-      'agent-insights/leading-a-fleet-without-polling.',
+      "coord:orient { mode:'monitor' }. Spec: agent-insights/leading-a-fleet-without-polling.",
     notWhen:
       'The Mug/placement read over the WHOLE roster (fleet:assignments), ' +
-      "or one member's message history (coord:inbox { agent }).",
+      "or a member's message history (coord:inbox { agent }).",
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up. `benchSuggestion` set → ' +
       'fleet:bench onto the blocked-on gate; `dormant:true` → wake, never bench. ' +
       'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (already unassigned, so ' +
-      'work_items:release is a no-op returning ok:true — WI-6678). ' +
+      'work_items:release is a no-op (ok:true) — WI-6678). ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },
   capability: 'work_items:read',
