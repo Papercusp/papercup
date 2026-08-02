@@ -110,6 +110,15 @@ export async function recordInFlightRetriage(target: GateVerdictTarget, info: In
  * Returns `null` for anything not trustworthy right now — missing, malformed (an old blob / a
  * shape this reader doesn't recognize), or older than {@link IN_FLIGHT_RETRIAGE_MAX_AGE_MS} (an
  * abandoned marker from a crashed run). Unit-testable without PG.
+ *
+ * ⚠ EI-19343516395023183: this returns an EXPLICIT object literal, so a field added to
+ * {@link InFlightRetriageInfo} is silently DROPPED here unless it is also carried below — which is
+ * exactly what happened to `charged`/`totalRefires`/`absoluteCeiling`. They were persisted by both
+ * publish sites in green-checkpoint.ts from the day EI-19343532231631821 added them and reached no
+ * reader at all, so every consumer kept rendering the CHARGED counter alone ("attempt 0/2" for a
+ * run five successful rescues deep) and testing `refireAttempt >= maxRefires` for "budget spent" —
+ * a test that cannot see the absolute ceiling, i.e. that reports budget remaining when there is
+ * none. Add a field to the interface ⇒ add it here, and to {@link describeRefireBudget}.
  */
 export function parseInFlightRetriage(raw: unknown, nowMs: number = Date.now()): StoredInFlightRetriage | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -124,5 +133,90 @@ export function parseInFlightRetriage(raw: unknown, nowMs: number = Date.now()):
   }
   if (nowMs - observedAtMs > IN_FLIGHT_RETRIAGE_MAX_AGE_MS) return null; // abandoned — see doc above.
   const failingFiles = Array.isArray(r.failingFiles) ? r.failingFiles.filter((f): f is string => typeof f === 'string') : [];
-  return { fromCandidate, refiringCandidate, refireAttempt, maxRefires, failingFiles, observedAtMs };
+  return {
+    fromCandidate,
+    refiringCandidate,
+    refireAttempt,
+    maxRefires,
+    failingFiles,
+    observedAtMs,
+    // Optional by construction: a marker written before EI-19343532231631821 carries none of these,
+    // and `describeRefireBudget` degrades to the charged-only reading for exactly that case.
+    ...(typeof r.charged === 'boolean' ? { charged: r.charged } : {}),
+    ...(typeof r.totalRefires === 'number' ? { totalRefires: r.totalRefires } : {}),
+    ...(typeof r.absoluteCeiling === 'number' ? { absoluteCeiling: r.absoluteCeiling } : {}),
+  };
+}
+
+/** What {@link describeRefireBudget} tells a reader about how much rescue budget a live refire has. */
+export interface RefireBudget {
+  /** Human-readable, naming EVERY bound that is known — never the charged counter alone. */
+  label: string;
+  /**
+   * No further refire is possible: the NEXT red STICKS and a human lever starts to matter.
+   * True when EITHER bound is exhausted, which is the whole point — a run whose rescues all
+   * SUCCEED holds `refireAttempt` at 0 forever while `totalRefires` climbs to the ceiling, so
+   * `refireAttempt >= maxRefires` alone reports budget remaining when there is none.
+   */
+  atCap: boolean;
+}
+
+/**
+ * PURE: state a live refire's remaining budget in the producer's own vocabulary
+ * (green-checkpoint.ts's `refireBlockedBy`: `charged-budget` | `absolute-ceiling` | `cap-disabled`).
+ *
+ * Both counters bound the recursion and they advance differently — `refireAttempt` only on a FAILED
+ * rescue (`charged`), `totalRefires` on every refire. Reading either alone is wrong in a direction
+ * that matters, so this is the ONE place a reader turns the marker into words; `gate-verdict-freshness`
+ * and `git-pipeline-position` both call it rather than re-deriving, so their two notes cannot drift
+ * apart the way they had by 2026-08-02.
+ */
+export function describeRefireBudget(marker: Pick<StoredInFlightRetriage, 'refireAttempt' | 'maxRefires' | 'totalRefires' | 'absoluteCeiling'>): RefireBudget {
+  const { refireAttempt, maxRefires } = marker;
+  const total = typeof marker.totalRefires === 'number' ? marker.totalRefires : null;
+  const ceiling = typeof marker.absoluteCeiling === 'number' ? marker.absoluteCeiling : null;
+  const chargedSpent = maxRefires > 0 && refireAttempt >= maxRefires;
+  const ceilingSpent = total != null && ceiling != null && ceiling > 0 && total >= ceiling;
+  const label =
+    total != null && ceiling != null
+      ? `refire ${total}/${ceiling} performed, charged budget ${refireAttempt}/${maxRefires} spent`
+      : `attempt ${refireAttempt}/${maxRefires}`;
+  return { label, atCap: maxRefires <= 0 || chargedSpent || ceilingSpent };
+}
+
+/**
+ * The READ twin of {@link recordInFlightRetriage} — is a stale-candidate auto-refire in flight for
+ * this harness's gate RIGHT NOW? Scoped IDENTICALLY to the write (`install_slug` + `target_role`)
+ * and parsed through {@link parseInFlightRetriage}, so a reader can never disagree with the writer
+ * about where the marker lives or when it is trustworthy.
+ *
+ * Exists because the highest-harm reader is not a dashboard — it is `release:checkpoint-run`, which
+ * an agent fires precisely when the gate "looks stuck", and firing into the re-triage window
+ * DISCARDS the rescue and costs a full suite (green-checkpoint.ts's own words). That tool had no
+ * cheap way to ask; `readGitPipelineStats` computes the whole pipeline snapshot to get here.
+ *
+ * Best-effort: any failure answers `null` (= "no refire in flight", the pre-existing behaviour),
+ * never an exception into a caller whose real job is launching the gate.
+ */
+export async function readInFlightRetriage(installSlug?: string): Promise<StoredInFlightRetriage | null> {
+  try {
+    let slug = installSlug ?? null;
+    if (!slug) {
+      const { operatorHomeHarnessSlug } = await import('../harness/operator-home-harness');
+      slug = operatorHomeHarnessSlug() ?? null;
+    }
+    if (!slug) return null;
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = (await sql.unsafe(
+      `SELECT metadata->'gate_health'->'inFlightRetriage' AS marker
+         FROM harness_shared.routines
+        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+        LIMIT 1`,
+      [slug],
+    )) as Array<{ marker: unknown }>;
+    return parseInFlightRetriage(rows[0]?.marker);
+  } catch {
+    return null;
+  }
 }

@@ -673,10 +673,19 @@ export interface PipelinePosition {
       /** WI-7035: the candidate this refire MOVED OFF (marker `fromCandidate`). A red you are
        *  still reasoning about may belong to this sha, which the run has already discarded. */
       fromCandidate?: string | null;
-      /** WI-7035: how much rescue budget is left — `refireAttempt` of `maxRefires` used. At the
-       *  cap the next red STICKS, which is the point at which a human lever starts to matter. */
+      /** WI-7035: the CHARGED rescue budget — `refireAttempt` of `maxRefires` used.
+       *  ⚠ EI-19343516395023183: this is NOT "how many refires have happened", and on its own it
+       *  is NOT "how much budget is left". Since EI-19343532231631821 it advances ONLY on a refire
+       *  whose failures overlap the set already being rescued (a FAILED rescue), so a run five
+       *  successful rescues deep still reads 0 — read `totalRefires`/`absoluteCeiling` alongside
+       *  it, or `describeRefireBudget()` (release/in-flight-retriage.ts), which reports both. */
       refireAttempt?: number;
       maxRefires?: number;
+      /** EI-19343516395023183: refires PERFORMED this run, charged or not — the counter that
+       *  actually climbs on the healthy path, bounded by `absoluteCeiling` (= maxRefires × 3).
+       *  Absent on a marker written before EI-19343532231631821 (⇒ unknown, not zero). */
+      totalRefires?: number;
+      absoluteCeiling?: number;
       startedAtMs: number | null;
       elapsedSec: number | null;
       /** How stale this reading is: ms since the cache was last computed. `null`
@@ -2060,7 +2069,18 @@ export function mapCheckpointRunInFlight(
    * re-triage window" rule unenforceable from the very tool agents are pointed at. Measured live
    * 2026-08-02: marker said `refireAttempt 1/2`, this leg emitted neither field.
    */
-  retriage?: { fromCandidate: string; refiringCandidate: string; refireAttempt: number; maxRefires: number } | null,
+  retriage?: {
+    fromCandidate: string;
+    refiringCandidate: string;
+    refireAttempt: number;
+    maxRefires: number;
+    /** EI-19343516395023183: the OTHER bound. `refireAttempt` advances only on a FAILED rescue, so
+     *  a run whose rescues all succeed holds it at 0 while this climbs to `absoluteCeiling` — read
+     *  either alone and you report budget remaining when there is none. Optional: a marker written
+     *  before EI-19343532231631821 has neither. */
+    totalRefires?: number;
+    absoluteCeiling?: number;
+  } | null,
 ): PipelinePosition['gate']['checkpointRunInFlight'] {
   if (!cached || !cached.activeRun) return null;
   const { active, candidate, startedAtMs, elapsedSec } = cached.activeRun;
@@ -2084,6 +2104,11 @@ export function mapCheckpointRunInFlight(
           fromCandidate: marker.fromCandidate,
           refireAttempt: marker.refireAttempt,
           maxRefires: marker.maxRefires,
+          // EI-19343516395023183: emitted only when the marker carries them, so the pre-
+          // EI-19343532231631821 shape is unchanged and a caller can tell "0 refires" from
+          // "this run predates the counter" instead of reading an invented 0.
+          ...(typeof marker.totalRefires === 'number' ? { totalRefires: marker.totalRefires } : {}),
+          ...(typeof marker.absoluteCeiling === 'number' ? { absoluteCeiling: marker.absoluteCeiling } : {}),
           // A refire IS a re-candidation, so this stays true on the cron path too — where the
           // log-derived flag below can never fire.
           refireObserved: true as const,
@@ -2723,18 +2748,31 @@ export async function gitPipelinePosition(
     // path the hourly gate actually takes, and the path on which several agents spent 2026-08-02
     // reasoning about a candidate the run had already discarded.
     if (checkpointRunInFlight.inRetriageWindow) {
+      // EI-19343516395023183: budget wording comes from the ONE shared helper, not a local
+      // comparison. The local one tested `refireAttempt >= maxRefires` — the CHARGED counter,
+      // which since EI-19343532231631821 does not advance on a SUCCESSFUL rescue. So a run at
+      // `totalRefires 5/6` (one red away from the absolute ceiling, where the next red really
+      // does stick) read as `attempt 0/2` with no warning at all: budget reported as remaining
+      // in exactly the case there is almost none.
+      const budget =
+        checkpointRunInFlight.refireAttempt != null && checkpointRunInFlight.maxRefires != null
+          ? describeRefireBudget({
+              refireAttempt: checkpointRunInFlight.refireAttempt,
+              maxRefires: checkpointRunInFlight.maxRefires,
+              totalRefires: checkpointRunInFlight.totalRefires,
+              absoluteCeiling: checkpointRunInFlight.absoluteCeiling,
+            })
+          : null;
       notes.push(
         `GATE IS MID-RESCUE — do NOT fire a manual release:checkpoint-run. This run hit a red, ` +
           `re-tested at tip, and AUTO-REFIRED onto ${(checkpointRunInFlight.candidate ?? '?').slice(0, 12)} ` +
-          `(attempt ${checkpointRunInFlight.refireAttempt}/${checkpointRunInFlight.maxRefires}), abandoning ` +
+          `(${budget?.label ?? 'refire budget unknown'}), abandoning ` +
           `${(checkpointRunInFlight.fromCandidate ?? '?').slice(0, 12)}. Firing a manual run now DISCARDS that ` +
           `rescue and costs a full suite. Two consequences worth reading twice: (1) a red you are still ` +
           `diagnosing may belong to the ABANDONED candidate, so re-check it against the one above before ` +
           `spending anything on it; (2) pid/started_at stay FIXED across a refire, so an advancing candidate ` +
           `under an unchanged start time is the healthy signature — not corruption.` +
-          (checkpointRunInFlight.refireAttempt != null &&
-          checkpointRunInFlight.maxRefires != null &&
-          checkpointRunInFlight.refireAttempt >= checkpointRunInFlight.maxRefires
+          (budget?.atCap
             ? ` ⚠ This is the LAST refire — at the cap the next red STICKS and a human lever starts to matter.`
             : ''),
       );

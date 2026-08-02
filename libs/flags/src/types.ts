@@ -2118,6 +2118,20 @@ export const FLAGS = {
   // order. So the honest risk of ON is a slower search, not a broken one — and
   // the latency ceiling is bounded separately by RERANK_MAX_CANDIDATES.
   LOCAL_RERANK: "papercusp-local-rerank",
+  // DEFAULT ON (EI-18691186726153223): the KILL leg of the orphaned-mcp-reaper —
+  // SIGTERM then SIGKILL leaked `playwright-mcp` server processes (npm-exec / sh
+  // / node launch chain) that a long-running agent session spawned once at boot
+  // (via a since-P-020-pruned mcpServers config) and never used — measured 168
+  // live, 9+ days old, on the shared dev host. Only ever touches a process that
+  // (a) matches the playwright-mcp package/binary signature specifically (never
+  // the bare `playwright` CLI the committed E2E suite runs), (b) carries
+  // PAPERCUSP_ADV_SESSION_ID in its environment (agent-spawned, never a user's
+  // own non-papercusp use), and (c) has been alive past the age floor (default
+  // 30 min). The routine is SEEDED INACTIVE — the double-gate means this flag
+  // being ON has no effect until an operator activates the routine
+  // (seed-orphaned-mcp-reaper-routine.ts --active, recommended --dry-run
+  // first). OFF ⇒ the routine tick logs what it would kill and kills nothing.
+  ORPHANED_MCP_REAPER: "papercusp-orphaned-mcp-reaper",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

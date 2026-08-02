@@ -62,7 +62,7 @@
  * A verdict you cannot distinguish from a STALE verdict is not a verdict.
  */
 
-import type { StoredInFlightRetriage } from './in-flight-retriage';
+import { describeRefireBudget, type StoredInFlightRetriage } from './in-flight-retriage';
 
 /** One green-checkpoint fire interval. The routine is hourly; the 1.5× slack below keeps a fire
  *  that lands a little late from reading as a starved writer. */
@@ -150,10 +150,16 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
     return {
       stale: true,
       reason:
-        `a stale-candidate auto-refire for this exact red is IN FLIGHT right now (attempt ` +
-        `${inFlightRetriage.refireAttempt}/${inFlightRetriage.maxRefires}, re-verifying tip ` +
+        `a stale-candidate auto-refire for this exact red is IN FLIGHT right now ` +
+        `(${describeRefireBudget(inFlightRetriage).label}, re-verifying tip ` +
         `${short(inFlightRetriage.refiringCandidate)}) — do NOT go fix the test(s) it names; a fresh ` +
-        `verdict is imminent`,
+        `verdict is imminent` +
+        // EI-19343516395023183: at the cap the imminent verdict is the FINAL one, so "wait, it will
+        // sort itself out" stops being true here. Saying so is the difference between waiting
+        // correctly and waiting through the one red that was always going to stick.
+        (describeRefireBudget(inFlightRetriage).atCap
+          ? ` ⚠ this is the LAST refire — if it comes back red the verdict STICKS, so be ready to act on it`
+          : ''),
       reasonCode: 'refire-in-flight',
     };
   }
