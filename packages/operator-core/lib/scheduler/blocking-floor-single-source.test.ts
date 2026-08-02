@@ -57,6 +57,14 @@ const BLOCKING_PREDICATE_ALLOWLIST: ReadonlyMap<string, string> = new Map([
     'The edge STORE — writes and lists edges (setFeatureBlockedBy et al). Not a claim floor: ' +
       'it never decides claimability, so it cannot drift away from one.',
   ],
+  [
+    'scheduler/work-item-deps-integrity.ts',
+    'The endpoint-integrity DETECTOR (D-017 step 2) — enumerates EVERY blocks edge, both ' +
+      'sides, to find kind/form/resolution defects. Not a claim floor: it reports edges, ' +
+      'never decides claimability, so it cannot drift away from one. Its predicate is an ' +
+      'enumeration filter; the shared floor helpers are exclusion fragments and cannot ' +
+      'express it.',
+  ],
 ]);
 
 /** Files whose `lane`/DDL text mentions the table but which are fixtures, not live readers. */

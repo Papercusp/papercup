@@ -489,4 +489,60 @@ describe('WI-7110: the fleet row’s container layout has exactly one owner', ()
       expect(containerRuleBodies(css).join('\n')).not.toMatch(/flex-direction:\s*row/);
     }
   });
+
+  /* ── [owner 2026-08-02] "make it more compact you should be able to fit all
+        the things on 1 or 2 lines."
+
+     The row rendered FIVE lines for seven controls: a caption band, a
+     six-cell grid whose cells each stacked a caption above its control, and a
+     submit band. Each of the three tests below pins one of the three changes
+     that removed a line, because any one of them silently regressing puts the
+     line back and nothing else would notice. ── */
+  describe('compaction — the launcher is one strip, not stacked bands', () => {
+    it('renders NO band elements — the caption and the submit joined the strip', () => {
+      const { container } = renderRow(<FleetLaunchRow />);
+      // .pc-ctl-band is the band shape. The launcher used to contain two of
+      // them (caption, submit); a compact strip contains none.
+      expect(container.querySelectorAll('.pc-ctl-band').length).toBe(0);
+    });
+
+    it('puts the submit INSIDE the field strip, so it shares a line instead of owning one', () => {
+      const { container } = renderRow(<FleetLaunchRow />);
+      const strip = container.querySelector('.pc-fleet-launch-row__fields');
+      const submit = screen.getByTestId('fleet-launch-submit');
+      expect(strip).toBeTruthy();
+      expect(strip!.contains(submit)).toBe(true);
+    });
+
+    it('lays every field caption BESIDE its control, not above it', () => {
+      const { container } = renderRow(<FleetLaunchRow />);
+      const fields = container.querySelectorAll('.pc-ctl-field');
+      expect(fields.length).toBeGreaterThan(0);
+      // Every field carries the inline modifier. A field that loses it goes
+      // back to the stacked shape and re-adds a line to the strip.
+      for (const f of fields) {
+        expect(f.classList.contains('pc-ctl-field--inline')).toBe(true);
+      }
+    });
+
+    it('the strip WRAPS rather than overflowing — "1 or 2 lines", never a clipped control', () => {
+      const rule = chatControlsCss
+        .split('}')
+        .find((b) => b.includes('.pc-fleet-launch-row__fields'));
+      expect(rule).toMatch(/flex-wrap:\s*wrap/);
+    });
+
+    it('keeps every control NAMED despite the shorter visible captions (P-007 does not regress)', () => {
+      renderRow(<FleetLaunchRow />);
+      // The visible caption shortened to "Name"; the ACCESSIBLE name must still
+      // be the full phrase, or a screen-reader user gets "Name" with no context
+      // — which is the very complaint P-007 was filed for, re-created.
+      expect(screen.getByLabelText('Fleet name')).toBeTruthy();
+      expect(screen.getByLabelText('Plan the fleet works')).toBeTruthy();
+      expect(screen.getByLabelText('Model for every fleet member')).toBeTruthy();
+      expect(screen.getByLabelText('Account routing for every fleet member')).toBeTruthy();
+      expect(screen.getByLabelText('Headed or headless members')).toBeTruthy();
+      expect(screen.getByLabelText('Members')).toBeTruthy();
+    });
+  });
 });

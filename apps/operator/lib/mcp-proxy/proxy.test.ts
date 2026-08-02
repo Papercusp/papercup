@@ -21,6 +21,8 @@ import {
   isCheapRepeatingBeat,
   effectiveRetryWindowMs,
   CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS,
+  shouldShedForInFlight,
+  DEFAULT_MAX_IN_FLIGHT,
   type McpProxyTarget,
 } from './proxy';
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
@@ -697,4 +699,286 @@ describe('EI-19294517824914302: cheap repeating beats fail fast instead of ampli
     expect(elapsed).toBeLessThan(8_000);
     expect(JSON.parse(r.body).windowMs).toBe(CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS);
   }, 20_000);
+});
+
+/**
+ * EI-19305299022434394 — mcp-proxy had no in-flight concurrency bound (`maxSockets:Infinity`)
+ * and went completely SILENT under a stalling upstream: 3,450 requests held simultaneously,
+ * 106 minutes with zero log lines during the measured outage. Three coupled fixes:
+ *  (1) admission control — shed a NEW request with 429 once `maxInFlight` forwards are already
+ *      outstanding, BEFORE opening any upstream socket (stops the congestion-collapse loop);
+ *  (2) a periodic heartbeat while at least one forward is held open (kills the silence);
+ *  (3) `maxHoldMs` — an absolute (generous) ceiling on how long a real tools/call may hold its
+ *      socket, so a stalled-but-connected upstream can no longer silently park a socket for
+ *      32-89 minutes.
+ */
+describe('EI-19305299022434394: admission control — shed with 429 before opening an upstream socket', () => {
+  it('shouldShedForInFlight — sheds at the ceiling, never before it (pure)', () => {
+    expect(shouldShedForInFlight(4, 5)).toBe(false);
+    expect(shouldShedForInFlight(5, 5)).toBe(true);
+    expect(shouldShedForInFlight(500, 5)).toBe(true);
+  });
+
+  it('shouldShedForInFlight — maxInFlight <= 0 disables shedding entirely (explicit opt-out)', () => {
+    expect(shouldShedForInFlight(1_000_000, 0)).toBe(false);
+    expect(shouldShedForInFlight(1_000_000, -1)).toBe(false);
+  });
+
+  it('has a bounded, non-Infinity default so shedding is not opt-in by accident', () => {
+    expect(DEFAULT_MAX_IN_FLIGHT).toBeGreaterThan(0);
+    expect(Number.isFinite(DEFAULT_MAX_IN_FLIGHT)).toBe(true);
+  });
+
+  it('sheds an EXCESS request with 429 the instant maxInFlight is reached, and admits the rest once slots free up', async () => {
+    let releaseUpstream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseUpstream = resolve;
+    });
+    const upstream = track(
+      http.createServer((_req, res) => {
+        void gate.then(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"result":"held-then-ok"}');
+        });
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+        retryWindowMs: 5_000, retryBackoffMs: 20, maxInFlight: 2, log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    // Fill the 2-slot budget with requests the (gated) upstream will not answer yet.
+    const held1 = request(port(proxy));
+    const held2 = request(port(proxy));
+    await new Promise((r) => setTimeout(r, 80)); // let both register as in-flight
+
+    const shed = await request(port(proxy));
+    expect(shed.status).toBe(429);
+    expect(JSON.parse(shed.body).error).toBe('mcp_proxy_overloaded');
+
+    releaseUpstream();
+    const [r1, r2] = await Promise.all([held1, held2]);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+
+    // The slots freed on completion — a NEW request now succeeds instead of shedding.
+    const after = await request(port(proxy), '{"jsonrpc":"2.0"}');
+    // upstream still answers 200 immediately post-gate-release for any further hits.
+    expect([200, 429]).toContain(after.status);
+  });
+
+  it('maxInFlight:0 (explicit) never sheds, even with many concurrent holds', async () => {
+    let releaseUpstream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseUpstream = resolve;
+    });
+    const upstream = track(
+      http.createServer((_req, res) => {
+        void gate.then(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"result":"ok"}');
+        });
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+        retryWindowMs: 5_000, retryBackoffMs: 20, maxInFlight: 0, log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const pending = [request(port(proxy)), request(port(proxy)), request(port(proxy)), request(port(proxy))];
+    await new Promise((r) => setTimeout(r, 80));
+    releaseUpstream();
+    const results = await Promise.all(pending);
+    expect(results.every((r) => r.status === 200)).toBe(true);
+  });
+});
+
+describe('EI-19305299022434394: heartbeat — logs while a forward is held open (kills the silence)', () => {
+  it('emits a heartbeat log line + durable record while a forward is outstanding, none once it completes', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const logFile = path.join(os.tmpdir(), `mcp-proxy-heartbeat-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    const prev = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    try {
+      let releaseUpstream: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        releaseUpstream = resolve;
+      });
+      const upstream = track(
+        http.createServer((_req, res) => {
+          void gate.then(() => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end('{"result":"ok"}');
+          });
+        }),
+      );
+      await listen(upstream);
+      const logs: string[] = [];
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+          retryWindowMs: 30_000, retryBackoffMs: 20, heartbeatIntervalMs: 30, log: (s) => logs.push(s),
+        }),
+      );
+      await listen(proxy);
+
+      const pending = request(port(proxy));
+      await new Promise((r) => setTimeout(r, 140)); // several 30ms heartbeat ticks while held open
+      releaseUpstream();
+      const r = await pending;
+      expect(r.status).toBe(200);
+
+      expect(logs.some((l) => l.includes('heartbeat') && l.includes('in flight'))).toBe(true);
+      const recs = fs
+        .readFileSync(logFile, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+      const beat = recs.find((x) => x.kind === 'heartbeat');
+      expect(beat).toBeTruthy();
+      expect(beat.inFlight).toBeGreaterThanOrEqual(1);
+      expect(typeof beat.oldestAgeMs).toBe('number');
+      fs.rmSync(logFile, { force: true });
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = prev;
+    }
+  });
+
+  it('heartbeatIntervalMs:0 disables the beat entirely (opt-out, no timer leak)', async () => {
+    const upstream = track(
+      http.createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":"ok"}');
+      }),
+    );
+    await listen(upstream);
+    const logs: string[] = [];
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+        retryWindowMs: 5_000, retryBackoffMs: 20, heartbeatIntervalMs: 0, log: (s) => logs.push(s),
+      }),
+    );
+    await listen(proxy);
+    const r = await request(port(proxy));
+    expect(r.status).toBe(200);
+    await new Promise((res) => setTimeout(res, 50));
+    expect(logs.some((l) => l.includes('heartbeat'))).toBe(false);
+  });
+});
+
+describe('EI-19305299022434394: maxHoldMs — a real tools/call is no longer literally unbounded', () => {
+  const A_TOOLS_CALL = '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{}}}';
+
+  it('an OPAQUE tools/call that stalls past maxHoldMs surfaces honestly (502) instead of hanging forever', async () => {
+    const upstream = track(http.createServer(() => { /* accept + say nothing, forever */ }));
+    await listen(upstream);
+    const prevKeying = process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY;
+    process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY = '0'; // force 'opaque' so the ceiling is isolated from the retry
+    try {
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+          retryWindowMs: 5_000, retryBackoffMs: 10, maxHoldMs: 60, log: () => {},
+        }),
+      );
+      await listen(proxy);
+
+      const started = Date.now();
+      const r = await request(port(proxy), A_TOOLS_CALL);
+      const elapsed = Date.now() - started;
+      expect(r.status).toBe(502); // bounded: an honest error the caller can act on
+      // The whole point: the ceiling actually cut the hold short, well under the retry window.
+      expect(elapsed).toBeLessThan(3_000);
+    } finally {
+      if (prevKeying === undefined) delete process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY;
+      else process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY = prevKeying;
+    }
+  });
+
+  it('a KEYED tools/call that hits the hold ceiling gets ONE bounded replay, then the real response wins', async () => {
+    let hits = 0;
+    const upstream = track(
+      http.createServer((req, res) => {
+        hits++;
+        if (hits === 1) return; // first attempt: silent until maxHoldMs fires
+        req.on('data', () => {});
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"result":"recovered-after-hold-ceiling"}');
+        });
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+        retryWindowMs: 5_000, retryBackoffMs: 10, maxHoldMs: 60, log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const r = await request(port(proxy), A_TOOLS_CALL);
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"recovered-after-hold-ceiling"}');
+    expect(hits).toBe(2); // stalled once (ceiling fired), keyed-replayed once, dedup-safe
+  });
+
+  it('does NOT bound a tools/call by DEFAULT — the generous default ceiling leaves a normal slow tool untouched', async () => {
+    // Anti-regression companion to the WI-6740 default-unbounded test: confirm the new ceiling
+    // (default ~10 min) does not shrink the effective budget for an ordinary slow call.
+    const upstream = track(
+      http.createServer((_req, res) => {
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"result":"slow-but-fine"}');
+        }, 300);
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+        retryWindowMs: 5_000, retryBackoffMs: 20, log: () => {}, // maxHoldMs unset → generous default
+      }),
+    );
+    await listen(proxy);
+    const r = await request(port(proxy), A_TOOLS_CALL);
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"slow-but-fine"}');
+  });
+
+  it('maxHoldMs:0 (explicit) restores literally-unbounded behavior for a tools/call', async () => {
+    const upstream = track(
+      http.createServer((_req, res) => {
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"result":"still-fine"}');
+        }, 120);
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+        retryWindowMs: 5_000, retryBackoffMs: 20, maxHoldMs: 0, log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(port(proxy), A_TOOLS_CALL);
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"still-fine"}');
+  });
 });

@@ -22,7 +22,7 @@
  *
  * Deliberately THIN: it is fleet:assignments' existing decoration pipeline
  * (reconcileWakeability → decorateParkedOn → decorateLoopMonitorStates →
- * decorateMemberVerdicts →
+ * decorateMemberVerdicts → decorateProductiveToolCalls →
  * decorateContextPressure → decorateUnansweredDirected — all reused verbatim,
  * reuse-first, no forked logic) filtered to ONE fleet's members and reshaped
  * into a leader-lean per-member row (ages in ms, not raw timestamps; claims
@@ -53,6 +53,7 @@ import {
   decorateParkedOn,
   decorateLoopMonitorStates,
   decorateMemberVerdicts,
+  decorateProductiveToolCalls,
   decorateContextPressure,
   decorateUnansweredDirected,
   decorateDirectiveActuation,
@@ -69,6 +70,7 @@ import type { DirectiveActuationSummary } from '../coordination/directive-effect
 import {
   readUnownedCriticalsForFleet,
   readOrphanedInFlightForFleet,
+  partitionUnownedCriticalsByOrigin,
   type UnownedCriticalCandidate,
   type OrphanedInFlightCandidate,
 } from '../../harness/improvements/unowned-critical-escalation';
@@ -143,6 +145,18 @@ export interface LeaderBriefMember {
    *  `benchSuggestion` (a laneless-idle member with a healthy armed loop is NOT dormant —
    *  it will re-cycle on its own next tick). See computeDormantAlert. */
   dormant?: true;
+  /** ms since the member's last PRODUCTIVE (non-housekeeping) tool call; null = no
+   *  productive call on record at all (still booting, or genuinely never done any work).
+   *  See HOUSEKEEPING_TOOL_NAMES + computeSpinningAlert. */
+  productiveToolCallAgeMs: number | null;
+  /** EI-19307414464301772: this member is alive and visibly taking turns
+   *  (`lastToolCallAgeMs` fresh — every OTHER liveness surface reads this as healthy)
+   *  but its last PRODUCTIVE tool call is stale well past budget — it is burning turns
+   *  on nothing but the per-turn housekeeping set. Distinct from `stalled` (housekeeping
+   *  calls keep that clock reset) and from `benchSuggestion`'s laneless-idle branch (a
+   *  healthy drain member cycling scheduler:get_next is laneless-idle but not spinning —
+   *  get_next is productive). See computeSpinningAlert. */
+  spinning?: true;
   isSelf?: true;
 }
 
@@ -424,6 +438,67 @@ export function computeDormantAlert(
 }
 
 /**
+ * How long a member's last PRODUCTIVE (non-housekeeping) tool call may lag behind its
+ * last call OF ANY KIND before it counts as SPINNING. Generous by design — a healthy
+ * loop's cadence is ~60s and legitimate thinking gaps between edits are common; 30 min
+ * catches the failure mode this targets (the reported incident ran unnoticed for ~8h)
+ * without tripping on normal pacing.
+ */
+export const SPINNING_BUDGET_MS = 30 * 60_000;
+
+/**
+ * EI-19307414464301772: the SPINNING alert. Observed live 2026-08-02 on fleet
+ * nonp2p-bug-drain-0801: a member read `sessionState=live, verdict=monitoring,
+ * lastToolCallAgeMs≈20s, stalled=false` — HEALTHY on every existing surface — while
+ * its last 14 tool calls were entirely `coord:glance`/`activity:report`/
+ * `journal:record-turn`/`flags:get`/`sessions:ingest-gate-event`, holding zero claims,
+ * for ~8h, with 3 directed messages unanswered that whole time.
+ *
+ * `lastToolCallAtByOwner` (any tool call) is guaranteed fresh for an agent whose turns
+ * are firing at all, so it structurally cannot see this. This alert instead compares it
+ * against `lastProductiveToolCallAtByOwner` (see HOUSEKEEPING_TOOL_NAMES): a member alive
+ * and visibly ticking (`lastToolCallAgeMs` within budget) whose last PRODUCTIVE call is
+ * stale well past the same budget is spinning.
+ *
+ * Distinct from `stalled` — that requires NO tool call at all for 15 min
+ * (VERDICT_STALL_MS), and housekeeping calls keep that clock reset even while nothing
+ * productive happens, which is exactly why `stalled` missed the incident above. Also
+ * distinct from `benchSuggestion`'s laneless-idle branch, which fires on zero claims
+ * ALONE regardless of whether the member's calls are productive — a healthy drain
+ * member cycling `scheduler:get_next` between claims is laneless-idle but NOT spinning
+ * (`get_next` is a productive, agent-chosen call). Deliberately independent of
+ * `load`/claims in the other direction too: a member holding a claim while spinning on
+ * housekeeping is the MORE dangerous case (the claim looks alive to every other
+ * surface while nothing advances it), not a lesser one, so this does not gate on
+ * `load === 0` the way `computeDormantAlert` does.
+ *
+ * `productiveToolCallAgeMs: null` (no productive call on record at all) NEVER fires
+ * this — a freshly-booted or newly-claiming member legitimately has no productive
+ * history yet, and asserting "spinning" from an absence would be exactly the kind of
+ * false-positive-from-missing-data this file's other alerts (`claimableCount: null`,
+ * `laneGating: null`) are built to avoid. PURE: exported for direct unit-testing.
+ */
+export function computeSpinningAlert(
+  a: Pick<DecoratedAgent, 'parkedOn'> & {
+    verdict?: MemberVerdict | null;
+    lastToolCallAgeMs?: number | null;
+    productiveToolCallAgeMs?: number | null;
+  },
+  fleetPaused?: boolean | null,
+  budgetMs: number = SPINNING_BUDGET_MS,
+): boolean {
+  if (fleetPaused) return false;
+  if ((a.parkedOn?.length ?? 0) > 0) return false;
+  if (a.verdict == null) return false;
+  if (a.verdict === 'dead' || a.verdict === 'booted' || a.verdict === 'joined') return false;
+  const lastAge = a.lastToolCallAgeMs;
+  if (lastAge == null || lastAge > budgetMs) return false;
+  const prodAge = a.productiveToolCallAgeMs;
+  if (prodAge == null) return false;
+  return prodAge > budgetMs;
+}
+
+/**
  * EI-15055 (fleet-members-parked-stall-2026-07-17): the ZERO-WIP-WITH-SUPPLY alert.
  * `parked` was a plain count with no severity — a leader reading `parked:7` next to
  * `unowned_criticals:8` had to notice the juxtaposition itself, and the live incident
@@ -689,6 +764,8 @@ export type DecoratedAgent = AgentAssignment & {
   verdict?: MemberVerdict;
   wakeMode?: WakeMode;
   lastToolCallAt?: string | null;
+  /** EI-19307414464301772: last tool call excluding HOUSEKEEPING_TOOL_NAMES. */
+  productiveToolCallAt?: string | null;
   parkedOn?: string[];
   /** EI-18732218464905145: the leader-legible collapse of `parkedOn` — set by
    *  `decorateComposedParkedOn` when a raw key is a `composed-root:<id>` sentinel.
@@ -891,6 +968,9 @@ export function projectMember(
   fleetPaused?: boolean | null,
 ): LeaderBriefMember {
   const lastMs = a.lastToolCallAt ? Date.parse(a.lastToolCallAt) : NaN;
+  const prodMs = a.productiveToolCallAt ? Date.parse(a.productiveToolCallAt) : NaN;
+  const lastToolCallAgeMs = Number.isFinite(lastMs) ? Math.max(0, nowMs - lastMs) : null;
+  const productiveToolCallAgeMs = Number.isFinite(prodMs) ? Math.max(0, nowMs - prodMs) : null;
   return {
     agentId: a.agentId,
     label: a.label,
@@ -901,7 +981,8 @@ export function projectMember(
     monitorState: a.monitorState ?? null,
     nextFireAt: a.nextFireAt ?? null,
     loopMode: a.loopMode ?? null,
-    lastToolCallAgeMs: Number.isFinite(lastMs) ? Math.max(0, nowMs - lastMs) : null,
+    lastToolCallAgeMs,
+    productiveToolCallAgeMs,
     doing: a.doing,
     workItemIds: a.claims
       .filter((claim) => claim.type === 'work-item' && claim.id)
@@ -925,6 +1006,12 @@ export function projectMember(
       return suggestion ? { benchSuggestion: suggestion } : {};
     })(),
     ...(computeDormantAlert(a, fleetPaused) ? { dormant: true } : {}),
+    ...(computeSpinningAlert(
+      { ...a, lastToolCallAgeMs, productiveToolCallAgeMs },
+      fleetPaused,
+    )
+      ? { spinning: true }
+      : {}),
   };
 }
 
@@ -936,8 +1023,12 @@ export default defineTool({
     'sessionState, `verdict` (booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, ' +
     'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, ' +
     'stalled, unanswered, contextPressure, parkedOn + parkedOnResolved (a composed await is ONE ' +
-    'entry: ROOT deadline + any/all mode), benchSuggestion, `dormant`, ' +
-    'unownedCriticals + abandonedUnclaimed (assignee IS NULL — CLAIM it).',
+    'entry: ROOT deadline + any/all mode), benchSuggestion, `dormant`, `spinning` ' +
+    '(productiveToolCallAgeMs stale despite fresh lastToolCallAgeMs — taking turns on nothing ' +
+    'but housekeeping calls), ' +
+    'unownedCriticals (LOCAL-origin only, actionable here) + unownedCriticalsFederated ' +
+    '(remote-origin — visible but this node can neither claim nor close them) + ' +
+    'abandonedUnclaimed (assignee IS NULL — CLAIM it).',
   guidance: {
     when:
       'AFTER a wake: "who is working / stuck / unanswered / about to compact across MY fleet". ' +
@@ -952,8 +1043,12 @@ export default defineTool({
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up. `benchSuggestion` set → ' +
       'fleet:bench onto the blocked-on gate; `dormant:true` → wake, never bench. ' +
+      '`spinning:true` → coord:send { wake: "required" } and investigate; it is taking turns ' +
+      'but doing nothing productive, so waiting out a tick will not fix it. ' +
       'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (already unassigned, so ' +
-      'work_items:release is a no-op (ok:true) — WI-6678). ' +
+      'work_items:release is a no-op (ok:true) — WI-6678). Nonzero `unownedCriticalsFederated` ' +
+      'is NOT actionable here (WI-6846) — remote-origin, this node can neither claim nor close ' +
+      'it; only the authoring peer (or federation delivering its resolution) clears it. ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },
   capability: 'work_items:read',
@@ -1044,6 +1139,9 @@ export default defineTool({
     await decorateComposedParkedOn(grouped).catch(() => {});
     await decorateLoopMonitorStates(grouped).catch(() => {});
     await decorateMemberVerdicts(grouped).catch(() => {});
+    // EI-19307414464301772: the productive-only sibling of lastToolCallAt, feeding
+    // computeSpinningAlert below — best-effort, never blocks the rest of the brief.
+    await decorateProductiveToolCalls(grouped).catch(() => {});
     await decorateContextPressure(grouped).catch(() => {});
     await decorateUnansweredDirected(grouped).catch(() => {});
     // P-013: what the LEDGER says happened, beside what the member said. Scoped to
@@ -1052,12 +1150,21 @@ export default defineTool({
     await decorateCoordDeafness(grouped).catch(() => {});
     // WI-5213: unowned criticals THIS fleet's claim spec would admit — read
     // failures already fail soft to `[]` inside readUnownedCriticalsForFleet.
-    const unownedCriticals: UnownedCriticalCandidate[] = await readUnownedCriticalsForFleet({
+    const unownedCriticalsAll: UnownedCriticalCandidate[] = await readUnownedCriticalsForFleet({
       fleet,
       harness: args.harness,
       workspaceId,
       ageHours: args.unowned_critical_age_hours,
     });
+    // WI-6846: a majority-remote-origin backlog reads as urgent unowned work a
+    // leader is expected to act on, when in fact `origin:'remote'` rows are
+    // structurally un-actionable here (cannot claim — the claimable pre-filter
+    // already excludes them; cannot close — work_items:set_state refuses remote-
+    // authored mutation locally). Partition so `unownedCriticals` stays a
+    // trustworthy "CLAIM these" signal, and surface the remote-origin count
+    // separately rather than dropping it.
+    const { actionable: unownedCriticals, federatedUnresolvable: unownedCriticalsFederated } =
+      partitionUnownedCriticalsByOrigin(unownedCriticalsAll);
     // EI-18693470222331709: items released mid-flight (progress recorded, now
     // unassigned) — read failures already fail soft to `[]`.
     const orphanedInFlight: OrphanedInFlightCandidate[] = await readOrphanedInFlightForFleet({
@@ -1135,6 +1242,12 @@ export default defineTool({
       // loop-armed member (will re-cycle on its own) from one that will never wake again.
       // >0 here means the leader must wake these members NOW; waiting out a tick does nothing.
       dormant: members.filter((m) => m.dormant === true).length,
+      // EI-19307414464301772: members alive and visibly taking turns whose calls are
+      // entirely per-turn housekeeping (coord:glance/activity:report/journal:record-turn/
+      // flags:get/sessions:ingest-gate-event) for well past budget — every OTHER surface
+      // here (stalled, dead) reads these as healthy. >0 means wake it explicitly and
+      // investigate; do not assume the loop will self-correct.
+      spinning: members.filter((m) => m.spinning === true).length,
       // The live authoritative claimable total behind the two fields above (the same
       // number work_items:claimable reports). null ⇒ could not be read on this brief —
       // NOT zero, and never to be read as a drained lane.
@@ -1144,8 +1257,14 @@ export default defineTool({
       degraded_roster_legs: rosterResult.degradedLegs,
       // WI-5213: unowned criticals (filing is not fixing) THIS fleet's claim
       // spec would admit — >0 here means an escalation the leader should act
-      // on (reclaim/reassign/nudge), not weather to wait out.
+      // on (reclaim/reassign/nudge), not weather to wait out. WI-6846: this is
+      // now LOCAL-origin only (actionable here) — see unowned_criticals_federated.
       unowned_criticals: unownedCriticals.length,
+      // WI-6846: origin:'remote' rows from the SAME spec-admitted set above —
+      // this node can neither claim nor close them (see unownedCriticalsFederated
+      // in the payload for the recovery-state list + note). Nonzero here is
+      // explicitly NOT an escalation for THIS leader to act on.
+      unowned_criticals_federated: unownedCriticalsFederated.length,
       // EI-18693470222331709: orphaned in-flight items (filing is not fixing, same
       // as unowned_criticals above) — >0 means near-complete work stranded by a
       // release/reap, the cheapest claimable win on this brief.
@@ -1260,6 +1379,20 @@ export default defineTool({
         },
         members: markedMembers,
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
+        ...(unownedCriticalsFederated.length > 0
+          ? {
+              unownedCriticalsFederated,
+              // WI-6846: carry the non-actionability with the finding, same discipline as
+              // abandonedUnclaimedAction below — a bare count invites a leader to try to
+              // claim/close these and hit a refusal for every one.
+              unownedCriticalsFederatedNote:
+                `${unownedCriticalsFederated.length} unowned critical(s) this fleet's spec would admit are ` +
+                `origin:'remote' — authored on a DIFFERENT node. This node can neither claim them ` +
+                `(already excluded from self-select) nor close them (work_items:set_state refuses to ` +
+                `mutate a remote-authored row locally). Only the authoring peer resolving it, or ` +
+                `federation delivering that resolution, clears one. Not this leader's escalation to act on.`,
+            }
+          : {}),
         ...(orphanedInFlight.length > 0
           ? {
               abandonedUnclaimed: orphanedInFlight,

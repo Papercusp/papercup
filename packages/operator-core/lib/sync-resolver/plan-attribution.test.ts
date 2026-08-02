@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Sql } from 'postgres';
-import { enrichPlanListRows, enrichPlanDetail } from './plan-attribution';
+import { enrichPlanListRows, enrichPlanItemsRows, enrichPlanDetail } from './plan-attribution';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /**
@@ -70,6 +70,59 @@ describe('enrichPlanListRows', () => {
   it('returns the input untouched for an empty list', async () => {
     const sql = fakeSql({});
     expect(await enrichPlanListRows([], { sql })).toEqual([]);
+  });
+});
+
+describe('enrichPlanItemsRows', () => {
+  it('attaches item.lastEditedBy; ABSENT (not null) when unresolved (WI-7086)', async () => {
+    const sql = fakeSql({
+      parts: [
+        { plan_slug: 'a', part_key: 'item:P-001', author: 'pk-real-device' },
+        { plan_slug: 'a', part_key: 'item:P-002', author: 'local' }, // sentinel — dropped
+      ],
+    });
+    const rows = (await enrichPlanItemsRows(
+      [
+        { plan: 'a', item: { id: 'P-001' } },
+        { plan: 'a', item: { id: 'P-002' } }, // sentinel author
+        { plan: 'a', item: { id: 'P-003' } }, // no part row at all
+      ],
+      { sql, workspaceId: 'default' },
+    )) as Array<{ item: Record<string, unknown> }>;
+
+    expect(rows[0].item.lastEditedBy).toMatchObject({ kind: 'agent', verified: false });
+    // ⚠ THE POINT OF THIS TEST. This enrichment runs AFTER the UI projection's
+    // null-omission, so an unconditional `lastEditedBy: null` lands behind it and
+    // silently re-inflates the payload — 2,542 of 3,327 rows on the live read.
+    // `toBeNull()` here would pass just as happily on the broken version; only
+    // asserting KEY ABSENCE distinguishes them.
+    expect('lastEditedBy' in rows[1].item).toBe(false);
+    expect('lastEditedBy' in rows[2].item).toBe(false);
+  });
+
+  it('strips an inbound lastEditedBy:null rather than passing it through', async () => {
+    const sql = fakeSql({
+      parts: [{ plan_slug: 'a', part_key: 'item:P-001', author: 'pk-real-device' }],
+    });
+    const rows = (await enrichPlanItemsRows(
+      [
+        { plan: 'a', item: { id: 'P-001', lastEditedBy: null } },
+        { plan: 'a', item: { id: 'P-009', lastEditedBy: null } },
+      ],
+      { sql, workspaceId: 'default' },
+    )) as Array<{ item: Record<string, unknown> }>;
+
+    expect(rows[0].item.lastEditedBy).toMatchObject({ kind: 'agent' });
+    expect('lastEditedBy' in rows[1].item).toBe(false);
+  });
+
+  it('returns rows untouched when no author resolves at all', async () => {
+    const sql = fakeSql({});
+    const input = [{ plan: 'a', item: { id: 'P-001' } }];
+    const rows = (await enrichPlanItemsRows(input, { sql, workspaceId: 'default' })) as Array<{
+      item: Record<string, unknown>;
+    }>;
+    expect('lastEditedBy' in rows[0].item).toBe(false);
   });
 });
 

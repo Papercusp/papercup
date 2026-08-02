@@ -713,6 +713,67 @@ export async function lastToolCallAtByOwner(coordOwnerIds: string[]): Promise<Ma
 }
 
 /**
+ * EI-19307414464301772: tool names emitted PER-TURN by the harness itself — a
+ * PostToolUse hook fold (`activity:report`), a status-line refresh
+ * (`coord:glance`), a Stop-hook journal write (`journal:record-turn`), a
+ * per-call flag check (`flags:get`), an ask-gate mirror
+ * (`sessions:ingest-gate-event`) — rather than chosen by the agent. Every
+ * turn fires at least one of these regardless of what the agent is actually
+ * doing, so `lastToolCallAtByOwner` above is guaranteed fresh for any agent
+ * whose turns are firing at all and cannot, by itself, distinguish a member
+ * doing real work from one spinning on nothing but this set. Both colon and
+ * underscore spellings appear in `tool_invocations` depending on the
+ * transport that recorded them (same convention as
+ * `inbox-read-freshness.ts`'s `COORD_READ_TOOL_NAMES`).
+ */
+export const HOUSEKEEPING_TOOL_NAMES = [
+  'coord:glance',
+  'coord_glance',
+  'activity:report',
+  'activity_report',
+  'journal:record-turn',
+  'journal_record-turn',
+  'flags:get',
+  'flags_get',
+  'sessions:ingest-gate-event',
+  'sessions_ingest-gate-event',
+] as const;
+
+/**
+ * EI-19307414464301772: the PRODUCTIVE-only sibling of `lastToolCallAtByOwner`
+ * — same batched top-1-per-owner shape (one bounded read for a whole fleet),
+ * excluding `HOUSEKEEPING_TOOL_NAMES`. A member whose recent activity is
+ * entirely housekeeping has no entry here (or a much older one than
+ * `lastToolCallAtByOwner` reports) even though it reads as freshly active on
+ * every existing liveness surface — the gap between the two maps IS the
+ * "taking turns, doing nothing" signal `fleet:leader-brief`'s spinning alert
+ * is built on (see `computeSpinningAlert`). Fail-soft: any error returns an
+ * empty map, exactly like its sibling.
+ */
+export async function lastProductiveToolCallAtByOwner(coordOwnerIds: string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(coordOwnerIds.filter((id) => !!id && !id.startsWith('fed:')))];
+  if (ids.length === 0) return new Map();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ coord_owner_id: string; invoked_at: string | Date }[]>`
+      SELECT DISTINCT ON (coord_owner_id) coord_owner_id, invoked_at
+        FROM harness_shared.tool_invocations
+       WHERE coord_owner_id = ANY(${ids}::text[])
+         AND tool_name != ALL(${[...HOUSEKEEPING_TOOL_NAMES]}::text[])
+       ORDER BY coord_owner_id, invoked_at DESC
+    `;
+    const out = new Map<string, string>();
+    for (const r of rows) {
+      const iso = toIso(r.invoked_at);
+      if (iso) out.set(r.coord_owner_id, iso);
+    }
+    return out;
+  } catch {
+    return new Map();
+  }
+}
+
+/**
  * EI-18763117665515043: does this work-item claim's LINKED plan item — resolved
  * via the SAME two-mechanism stamp `planItemLaneBlockReason` already uses for the
  * pre-claim self-select gate (payload.plan_item back-pointer, or the

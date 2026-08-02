@@ -1163,7 +1163,13 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
              : sql`TRUE`
          }
-      GROUP BY kind`;
+      -- GROUP BY 1 (the ORDINAL), never 'GROUP BY kind'. 'kind' is BOTH a real
+      -- column on engineer_issues AND this SELECT's output alias, and Postgres
+      -- resolves a bare name in GROUP BY to the COLUMN, not the alias. So
+      -- 'GROUP BY kind' silently grouped by ei.kind, leaving the payload
+      -- expression ungrouped — a hard 500 on every call:
+      --   column "ei.payload" must appear in the GROUP BY clause
+      GROUP BY 1`;
     const result: Record<string, number> = {};
     for (const row of rows) {
       const k = row.kind || 'other';
@@ -1197,7 +1203,10 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
            : sql`TRUE`
        }
-    GROUP BY kind`;
+    -- GROUP BY 1 (the ORDINAL) — same reason as the topic-joined branch above:
+    -- 'kind' is both a real column and this SELECT's alias, and the bare name
+    -- binds to the column, which leaves 'payload' ungrouped and 500s.
+    GROUP BY 1`;
   const result: Record<string, number> = {};
   for (const row of rows) {
     const k = row.kind || 'other';

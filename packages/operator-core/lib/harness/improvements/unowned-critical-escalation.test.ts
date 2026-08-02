@@ -9,6 +9,7 @@ import {
   unownedCriticalsMatchingFleetSpec,
   unownedInFlightOrphans,
   unownedInFlightOrphansMatchingFleetSpec,
+  partitionUnownedCriticalsByOrigin,
 } from './unowned-critical-escalation';
 import type { ClaimSpec } from '../../scheduler/claim-spec';
 import type { WorkItem } from '../../work-items';

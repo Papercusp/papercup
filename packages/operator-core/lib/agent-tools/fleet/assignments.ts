@@ -24,6 +24,7 @@ import { deriveVerdict } from '../coordination/liveness-oracle';
 import { recordedLiveOwnerIds } from '../../adv-sessions';
 import {
   groupByAgent,
+  lastProductiveToolCallAtByOwner,
   lastToolCallAtByOwner,
   listFleetAssignments,
   isReclaimCandidate,
@@ -375,6 +376,32 @@ export async function decorateMemberVerdicts<
       nowMs,
     );
     a.wakeMode = resolveWakeModeFrom(overrides.get(a.agentId) ?? null, defaultMode);
+  }
+  return agents;
+}
+
+/**
+ * EI-19307414464301772: stamp each agent row with `productiveToolCallAt` — the
+ * last tool call that was NOT one of the per-turn housekeeping calls (see
+ * `HOUSEKEEPING_TOOL_NAMES`). Companion to `decorateMemberVerdicts`'
+ * `lastToolCallAt`, kept as its OWN decoration step (not folded into
+ * `decorateMemberVerdicts`) so a caller that has no use for the spinning
+ * signal pays for one fewer batched read — mirrors `decorateParkedOn`/
+ * `decorateContextPressure`/etc. sitting beside `decorateMemberVerdicts`
+ * rather than inside it. Exported with an injectable fetcher so it
+ * unit-tests without PG (the `decorateMemberVerdicts` pattern). Mutates in
+ * place; best-effort at the call site.
+ */
+export async function decorateProductiveToolCalls<
+  T extends AgentAssignment & { productiveToolCallAt?: string | null },
+>(
+  agents: T[],
+  fetchProductiveCalls: (ownerIds: string[]) => Promise<Map<string, string>> = lastProductiveToolCallAtByOwner,
+): Promise<T[]> {
+  if (agents.length === 0) return agents;
+  const calls = await fetchProductiveCalls(agents.map((a) => a.agentId));
+  for (const a of agents) {
+    a.productiveToolCallAt = calls.get(a.agentId) ?? null;
   }
   return agents;
 }

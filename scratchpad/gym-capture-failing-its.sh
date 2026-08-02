@@ -14,6 +14,7 @@ set -uo pipefail
 SRC=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 BASE=$(dirname "$SRC")/.gym-probe
 DEST=$BASE/substrate
+WORK=$BASE/work   # fresh per-candidate clone of DEST
 IN=$BASE/results.jsonl
 OUT=$BASE/failing-its.jsonl
 : > "$OUT"
@@ -35,11 +36,36 @@ for LINE in "${LINES[@]}"; do
   T=$(echo "$LINE"  | grep -o '"testPath":"[^"]*"' | sed 's/.*://;s/"//g')
   P=$(echo "$LINE"  | grep -o '"parent":"[^"]*"'   | sed 's/.*://;s/"//g')
 
-  git -C "$DEST" checkout -q "$PIN" -- "$F" 2>/dev/null
-  git -C "$DEST" checkout -q "$P"   -- "$F" 2>/dev/null || continue
+  # A FRESH substrate per candidate. Restoring files in a shared one was not
+  # enough — measured: after a restore-all pass, the very first candidate still
+  # reported PASSED-when-reverted, i.e. the shared world stayed contaminated in a
+  # way that is invisible to `git status`. Chasing that further is a rabbit hole;
+  # eliminating shared state is a one-line design change.
+  #
+  # It is affordable precisely because of D-006's measurement: a --local clone
+  # hardlinks the object store (0.2s) and node_modules is symlinked, never
+  # installed — a few seconds per candidate against a ~20s test run.
+  rm -rf "$WORK"
+  git clone --quiet --local --no-checkout "$DEST" "$WORK"
+  git -C "$WORK" sparse-checkout init --cone
+  git -C "$WORK" sparse-checkout set packages libs apps scripts tools docs design-tokens
+  git -C "$WORK" checkout --detach -q "$PIN"
+  ( cd "$SRC" && find . -name node_modules -type d -prune -not -path './.git/*' | sed 's|^\./||' ) \
+    | while read -r d; do mkdir -p "$WORK/$(dirname "$d")"; [ -e "$WORK/$d" ] || ln -s "$SRC/$d" "$WORK/$d"; done
+  DEST_RUN=$WORK
+  git -C "$DEST_RUN" checkout -q "$P" -- "$F" 2>/dev/null || continue
 
-  RAW=$( cd "$DEST" && npm run test:file -- "$T" 2>&1 </dev/null )
-  git -C "$DEST" checkout -q "$PIN" -- "$F"
+  # The rewind must actually CHANGE the file. If parent and pin agree on this
+  # path, the "task" is a no-op the agent has already solved — and its test would
+  # pass, recording a truthful-looking 0. Measured: this is exactly how a dirty
+  # substrate produced "[0 failing]" for a candidate that fails 5 of 13.
+  if git -C "$DEST_RUN" diff --cached --quiet "$PIN" -- "$F"; then
+    echo "[UNMEASURED] $F — rewind is a NO-OP against the pin"
+    printf '{"implPath":"%s","testPath":"%s","failingCount":-1,"failing":[],"why":"rewind-noop"}\n' "$F" "$T" >> "$OUT"
+    continue
+  fi
+
+  RAW=$( cd "$DEST_RUN" && npm run test:file -- "$T" 2>&1 </dev/null )
 
   # A run that produced no verdict line at all did not measure anything — say so
   # rather than recording it as "0 failing", which is indistinguishable from a
@@ -60,6 +86,16 @@ for LINE in "${LINES[@]}"; do
     | sed -E 's/.* > //' | sed 's/[[:space:]]*$//' | sort -u)
 
   N=$(printf '%s' "$FAILING" | grep -c . )
+
+  # Every candidate here was ADMITTED, i.e. the probe proved it FAILS when
+  # reverted. A reverted run that passes therefore contradicts the probe and
+  # means the environment is wrong, not that the task has zero requirements.
+  # Recording it as 0 would silently drop a real task; say so instead.
+  if [ "${N:-0}" -eq 0 ]; then
+    echo "[CONTRADICTION] $F — admitted candidate PASSED when reverted; environment suspect"
+    printf '{"implPath":"%s","testPath":"%s","failingCount":-1,"failing":[],"why":"passed-when-reverted"}\n' "$F" "$T" >> "$OUT"
+    continue
+  fi
   # JSON-escape each title and emit one array (node, not python — guaranteed here).
   ARR=$(printf '%s\n' "$FAILING" | grep . | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.stringify(s.split("\n").filter(Boolean))))' 2>/dev/null || echo '[]')
   [ -z "$ARR" ] && ARR='[]'

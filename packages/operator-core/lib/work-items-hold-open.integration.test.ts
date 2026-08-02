@@ -106,6 +106,27 @@ describe('agent-operability P-003 — one dead-owner sweep', () => {
     expect(await holdOf('WI-DEAD-1')).toEqual({ by: null, claimHold: null });
     expect(await holdOf('WI-DEAD-2')).toEqual({ by: null, claimHold: null });
   });
+
+  it('WI-6774: NEVER lifts a POLICY-TIER hold via dead-owner liveness sweep, even for a fully dead owner', async () => {
+    // The exact incident this closes: a policy-tier fence on a live-money item, holder's loop
+    // long dead — must survive the sweep. Only the audited, ownerOverride-gated
+    // work_items:hold_open clear may remove it.
+    await seedHeld('WI-POLICY-1', 'su-dead-policy', 8 * 60, {
+      reason: 'policy-tier: daily-loss gate, D-042 — do not auto-lift',
+    });
+    await sql`
+      INSERT INTO harness_shared.routines
+        (id, workspace_id, name, active, reschedule_interval_sec, target_owner_id, updated_at)
+      VALUES ('loop-policy', ${WS}, 'loop-policy', true, 60, 'su-dead-policy', now() - interval '3 hours')`;
+
+    const result = await sweepDeadOwnerControlState(sql, { ownerGraceMs: 1, holdOpenGraceMs: 1 });
+
+    // The dead loop is still terminated (liveness cleanup of the OWNER'S loop is unrelated to
+    // the hold's policy-tier status) — only the hold survives.
+    expect(result.loopsTerminated).toBe(1);
+    expect(result.holdsLifted).toBe(0);
+    expect(await holdOf('WI-POLICY-1')).toEqual({ by: 'su-dead-policy', claimHold: 'true' });
+  });
 });
 
 /** Seed a work-item HELD OPEN by `holder`, stamped `heldAgoMin` ago — exactly the shape
@@ -114,7 +135,7 @@ async function seedHeld(
   featureId: string,
   holder: string,
   heldAgoMin: number,
-  opts: { status?: string; itemKind?: string; heldAtRaw?: string | null } = {},
+  opts: { status?: string; itemKind?: string; heldAtRaw?: string | null; reason?: string } = {},
 ): Promise<void> {
   const heldAt =
     opts.heldAtRaw !== undefined
@@ -123,7 +144,7 @@ async function seedHeld(
   const payload = {
     _claimHold: true,
     held_open_by: holder,
-    held_open_reason: 'gating it',
+    held_open_reason: opts.reason ?? 'gating it',
     ...(heldAt === null ? {} : { held_open_at: heldAt }),
   };
   await sql`
@@ -167,6 +188,20 @@ describe('WI-4531 — a hold-open must not outlive its holder', () => {
     // claim_next/scheduler self-select reads _claimHold. Clearing one and leaving the other
     // would fix half the bug.
     expect(await holdOf('WI-4445')).toEqual({ by: null, claimHold: null });
+  });
+
+  it('WI-6774: NEVER lifts a POLICY-TIER hold via the liveness reaper, even for a fully dead holder', async () => {
+    // Same shape as the WI-4445 case above (holder entirely gone, hold way past grace) — the
+    // ONLY difference is the reason names a policy-tier gate. That alone must be enough to
+    // survive this sweep; only work_items:hold_open's ownerOverride-gated clear may lift it.
+    await seedHeld('WI-POLICY-2', 'su-dead-policy-2', 8 * 60, {
+      reason: 'triageDecision:"gate" — owner sign-off required before clearing',
+    });
+
+    const { expired } = await reclaimStaleHoldOpens(sql);
+
+    expect(expired).toEqual([]);
+    expect(await holdOf('WI-POLICY-2')).toEqual({ by: 'su-dead-policy-2', claimHold: 'true' });
   });
 
   it('NEVER lifts a LIVE holder\'s hold, however old it is (the leader gate stays a gate)', async () => {
