@@ -3754,6 +3754,12 @@ interface PostSuiteLegs {
   typecheck: LegOutcome;
   typecheckPapercuspLibs: LegOutcome;
   lintMigrations: LegOutcome;
+  /** WI-6842: expand/contract discipline on destructive migration DDL (a migration
+   *  applies to the SHARED DB immediately; the release checkout lags by a full
+   *  commit->green-checkpoint->deploy cycle) — the class that broke facts:assert
+   *  fleet-wide for ~3h (EI-18797473716313783). Gated here only once the tree's own
+   *  offenders were resolved; see check-migration-forward-compat.mjs's header. */
+  lintMigrationForwardCompat: LegOutcome;
   lintIdentity: LegOutcome;
   lintDesignPrimitives: LegOutcome;
   lintNoControlBytes: LegOutcome;
@@ -3775,6 +3781,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     typecheck: skipped,
     typecheckPapercuspLibs: skipped,
     lintMigrations: skipped,
+    lintMigrationForwardCompat: skipped,
     lintIdentity: skipped,
     lintDesignPrimitives: skipped,
     lintNoControlBytes: skipped,
@@ -3933,6 +3940,36 @@ export async function runPostSuiteLegs(
         '\n\n=== MIGRATION LINT FAILED (npm run lint:migrations) — committed migration-file discipline / unreserved migration number ===\n' +
           migrations.stdout +
           migrations.stderr,
+      );
+    }
+  }
+
+  // WI-6842: gated ONLY now that the tree's own offenders (695/696/707/713/723/730) carry
+  // FORWARD-COMPAT acknowledgments and the checker reports green locally — wiring this in
+  // while red would have red-pinned the fleet gate for everyone (the exact ordering the
+  // filing bug called out). Same skip/fail shape as lint:migrations immediately above.
+  const lintMigrationForwardCompatCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:migration-forward-compat');
+  if (haltedBy) {
+    legs.lintMigrationForwardCompat = { status: 'skipped', skipReason: haltedBy };
+  } else if (lintMigrationForwardCompatCheck === 'unreadable') {
+    legs.lintMigrationForwardCompat = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:migration-forward-compat)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:migration-forward-compat ===\n`,
+    );
+  } else if (lintMigrationForwardCompatCheck === 'absent') {
+    legs.lintMigrationForwardCompat = { status: 'skipped', skipReason: 'candidate provides no lint:migration-forward-compat script' };
+  } else {
+    const forwardCompat = await exec('npm', ['run', 'lint:migration-forward-compat'], { cwd: treeDir, env, allowNonZero: true });
+    legs.lintMigrationForwardCompat = { status: forwardCompat.code === 0 ? 'passed' : 'failed' };
+    if (forwardCompat.code !== 0) {
+      haltedBy = 'lint:migration-forward-compat failed';
+      failingSignatures.push('lint:migration-forward-compat');
+      outputs.push(
+        '\n\n=== MIGRATION FORWARD-COMPAT LINT FAILED (npm run lint:migration-forward-compat) — destructive DDL with no FORWARD-COMPAT acknowledgment (EI-18797473716313783 class) ===\n' +
+          forwardCompat.stdout +
+          forwardCompat.stderr,
       );
     }
   }
@@ -4228,6 +4265,7 @@ export async function runPostSuiteLegs(
     legs.typecheck,
     legs.typecheckPapercuspLibs,
     legs.lintMigrations,
+    legs.lintMigrationForwardCompat,
     legs.lintIdentity,
     legs.lintDesignPrimitives,
     legs.lintNoControlBytes,

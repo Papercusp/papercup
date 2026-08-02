@@ -106,6 +106,7 @@ const ITEM_DROP = [
   'rawLine',
   'unresolvedBlockers',
   'storedStatus',
+  'needsHuman',
   'phase',
   'blockedBy',
   'decisionRefs',

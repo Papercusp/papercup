@@ -204,6 +204,60 @@ describe('unownedInFlightOrphans (pure, EI-18693470222331709)', () => {
   });
 });
 
+// WI-6846: a leader-brief reading unownedCriticals cannot act on origin:'remote'
+// rows from this node (cannot claim — already excluded from self-select; cannot
+// close — work_items:set_state refuses remote-authored mutation locally). These
+// pin the field carrying that provenance through, and the partition that
+// separates what a leader can actually act on from what it cannot.
+describe('unownedAgedCriticals carries origin (WI-6846)', () => {
+  it('reports origin:\'local\' for a locally-authored item', () => {
+    const out = unownedAgedCriticals([item({ origin: 'local' })], { nowMs: NOW });
+    expect(out[0]!.origin).toBe('local');
+  });
+
+  it('reports origin:\'remote\' for a remote-authored item', () => {
+    const out = unownedAgedCriticals([item({ origin: 'remote' })], { nowMs: NOW });
+    expect(out[0]!.origin).toBe('remote');
+  });
+
+  it('defaults a null/unset origin to \'local\' — never silently drops it from the actionable bucket', () => {
+    const out = unownedAgedCriticals([item({ origin: null })], { nowMs: NOW });
+    expect(out[0]!.origin).toBe('local');
+  });
+});
+
+describe('partitionUnownedCriticalsByOrigin (WI-6846)', () => {
+  it('splits local-origin into actionable and remote-origin into federatedUnresolvable', () => {
+    const candidates = unownedAgedCriticals(
+      [
+        item({ id: 'WI-local-1', origin: 'local' }),
+        item({ id: 'WI-remote-1', origin: 'remote' }),
+        item({ id: 'WI-remote-2', origin: 'remote' }),
+      ],
+      { nowMs: NOW },
+    );
+    const { actionable, federatedUnresolvable } = partitionUnownedCriticalsByOrigin(candidates);
+    expect(actionable.map((c) => c.id)).toEqual(['WI-local-1']);
+    expect(federatedUnresolvable.map((c) => c.id)).toEqual(['WI-remote-1', 'WI-remote-2']);
+  });
+
+  it('an all-remote backlog partitions to zero actionable — the exact WI-6846 repro (26 of 43 remote)', () => {
+    const candidates = unownedAgedCriticals(
+      [item({ id: 'EI-a', origin: 'remote' }), item({ id: 'EI-b', origin: 'remote' })],
+      { nowMs: NOW },
+    );
+    const { actionable, federatedUnresolvable } = partitionUnownedCriticalsByOrigin(candidates);
+    expect(actionable).toHaveLength(0);
+    expect(federatedUnresolvable).toHaveLength(2);
+  });
+
+  it('an empty list partitions to two empty buckets', () => {
+    const { actionable, federatedUnresolvable } = partitionUnownedCriticalsByOrigin([]);
+    expect(actionable).toEqual([]);
+    expect(federatedUnresolvable).toEqual([]);
+  });
+});
+
 describe('unownedInFlightOrphansMatchingFleetSpec (routing, EI-18693470222331709)', () => {
   const defaultSpec: ClaimSpec = {
     specVersion: '1.0',

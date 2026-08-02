@@ -25,6 +25,9 @@ describe('projectPlansReadForUi — plans:items', () => {
           item: {
             id: 'P-001',
             storedStatus: 'todo',
+            // false, not null — so only ITEM_DROP can remove it and the
+            // assertion below cannot be satisfied by the null-omit instead.
+            needsHuman: false,
             effectiveStatus: 'todo',
             importance: 'high',
             phase: 'Phase 1',
@@ -69,6 +72,7 @@ describe('projectPlansReadForUi — plans:items', () => {
     // arg. Together with the nested-null omit this is the bulk of the saving.
     expect(row).not.toHaveProperty('archived');
     expect(item).not.toHaveProperty('storedStatus');
+    expect(item).not.toHaveProperty('needsHuman');
     expect(item).not.toHaveProperty('phase');
     expect(item).not.toHaveProperty('blockedBy');
     expect(item).not.toHaveProperty('decisionRefs');
