@@ -172,7 +172,7 @@ describe('routines:list', () => {
           paused: { reason: 'Paused via the Agents pane', by: 'loopback', at: '2026-07-28T03:40:00.297Z' },
         },
       ],
-    }) as { routines: Array<Record<string, unknown>> };
+    }, { args: {} } as never) as { routines: Array<Record<string, unknown>> };
     expect(trimmed.routines[0].paused).toMatchObject({ reason: 'Paused via the Agents pane' });
   });
 

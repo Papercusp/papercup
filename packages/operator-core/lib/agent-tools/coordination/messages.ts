@@ -905,6 +905,14 @@ export async function readOutbox(
   // readLines, since coordSql() would otherwise read getOrgPg() and miss the
   // swapped store. Any query error falls through to the authoritative read.
   if (coordHasPgFastPath()) {
+    // EI-19323045109346905: a caller that only needs the newest slice pages a
+    // bounded window instead of pulling the whole sender history. DELEGATES to
+    // readOutboxWindow rather than inlining the pager, mirroring readInbox above
+    // — same "one seam, one mock" property (this stays the function every caller
+    // imports and every test mocks), and the two cannot drift because there is
+    // only one implementation. A caller that also needs the BOUNDARY
+    // (`exhausted`) calls readOutboxWindow directly; this shape discards it.
+    if (window) return (await readOutboxWindow(ownerId, opts, window.enough)).entries;
     try {
       const sql = coordSql();
       // Only pad a FINITE, positive cutoff — new Date(NaN).toISOString() throws.
@@ -912,33 +920,6 @@ export async function readOutbox(
         Number.isFinite(sinceMs) && sinceMs > 0
           ? new Date(sinceMs - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
           : null;
-
-      // EI-19323045109346905: a caller that only needs the newest slice pages a
-      // bounded window instead of pulling the whole sender history. Unlike the
-      // inbox this is NOT the dominant cost — the outbox predicate (`from =
-      // owner`) is already selective, where the inbox's matched ~99.8%
-      // broadcasts — so this exists for the one call site whose read-to-use
-      // ratio is genuinely bad (sidebar.cupMail, which wants tail(50)), not as
-      // the recommended default. `since_ts` callers stay on the single-shot
-      // read: it is one bounded query already.
-      if (window) {
-        const visible = (raw: CoordEnvelope[]): CoordEnvelope[] =>
-          filterOutbox(raw, ownerId, sinceMs);
-        const paged = await pageCoordEventLogDesc({
-          sinceBound,
-          match: (s) => s`AND body->>'from' = ${ownerId}`,
-          satisfied: (raw) => window.enough(visible(raw)),
-        });
-        warnOnPageBudgetExhausted(
-          'readOutbox',
-          ownerId,
-          opts.since_ts,
-          paged.exhausted,
-          paged.pages,
-          paged.raw.length,
-        );
-        return visible(paged.raw);
-      }
 
       const rows = await sql<{ body: unknown }[]>`
         SELECT body
@@ -967,6 +948,75 @@ export async function readOutbox(
   }
   const lines = await coordLog.readLines('messages');
   return filterOutbox(lines, ownerId, sinceMs);
+}
+
+/**
+ * Bounded, keyset-paged OUTBOX read — the sender-side twin of
+ * {@link readInboxWindow}, and the form that reports the WINDOW BOUNDARY.
+ *
+ * WHY A SEPARATE EXPORT (EI-19340198432470691). `readOutbox(…, window)` already
+ * pages, but its return type is `CoordEnvelope[]`, so it throws away
+ * `exhausted`/`rowsScanned`/`pages`. A caller that reports a COUNT to someone
+ * else needs `exhausted`: it is the only thing that distinguishes "this owner
+ * has sent 48 messages" from "48 is merely where we stopped looking". Without
+ * it a bounded count is not a smaller truth, it is a plausible falsehood — the
+ * same silent-shortfall shape as the row cap (EI-19314819320465915). The array
+ * form stays for callers that only want entries.
+ *
+ * The `enough` rule is POST-FILTER (evaluated on VISIBLE envelopes), and paging
+ * is newest-first, so an early stop returns the NEWEST slice — which is what
+ * every `tail(n)` caller wants. `filterOutbox` re-sorts ascending regardless.
+ *
+ * Note the asymmetry with the inbox: `from = owner` is already selective in
+ * SQL, so this bounds a read-to-use RATIO (pulling a prolific sender's whole
+ * history to render a tail) rather than the inbox's ~99.8%-broadcast scan.
+ *
+ * Falls back to the authoritative `readOutbox` on a non-PG seam or query error;
+ * both fallbacks report `exhausted: true` because that read IS the full one.
+ */
+export async function readOutboxWindow(
+  ownerId: string,
+  opts: { since_ts?: string } = {},
+  enough: (entries: CoordEnvelope[]) => boolean = () => false,
+): Promise<CoordWindowResult> {
+  if (!coordHasPgFastPath()) {
+    const entries = await readOutbox(ownerId, opts);
+    return { entries, exhausted: true, rowsScanned: entries.length, pages: 1 };
+  }
+  const sinceMs = opts.since_ts ? new Date(opts.since_ts).getTime() : 0;
+  // Only pad a FINITE, positive cutoff — new Date(NaN).toISOString() throws.
+  const sinceBound =
+    Number.isFinite(sinceMs) && sinceMs > 0
+      ? new Date(sinceMs - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
+      : null;
+  const visible = (raw: CoordEnvelope[]): CoordEnvelope[] => filterOutbox(raw, ownerId, sinceMs);
+  let pages = 0;
+  try {
+    const paged = await pageCoordEventLogDesc({
+      sinceBound,
+      match: (s) => s`AND body->>'from' = ${ownerId}`,
+      satisfied: (raw) => enough(visible(raw)),
+    });
+    pages = paged.pages;
+    warnOnPageBudgetExhausted(
+      'readOutboxWindow',
+      ownerId,
+      opts.since_ts,
+      paged.exhausted,
+      paged.pages,
+      paged.raw.length,
+    );
+    return {
+      entries: visible(paged.raw),
+      exhausted: paged.exhausted,
+      rowsScanned: paged.raw.length,
+      pages: paged.pages,
+    };
+  } catch {
+    // Any query error falls back to the authoritative full read.
+    const entries = await readOutbox(ownerId, opts);
+    return { entries, exhausted: true, rowsScanned: entries.length, pages };
+  }
 }
 
 /**
