@@ -20,16 +20,23 @@
  * a directive sitting immediately above the `} from '...'` line — and that is
  * precisely where tsc REQUIRES it for a multi-line import. It reported three
  * correctly-suppressed imports as offenders.
+ *
+ * THIS FILE'S OWN IMPORT OF THE GUARD SCRIPT BELOW MUST STAY SINGLE-LINE, for the
+ * same reason: `directiveAbove()` (the detector this file tests) only scans 3
+ * non-blank comment lines above an anchor before giving up, so any explanatory
+ * prose inserted BETWEEN the `@ts-ignore` and the import statement pushes the
+ * directive out of that window — the detector would then flag this very file
+ * (caught live 2026-08-02 fixing EI-18817201237512691's unrelated red: a first
+ * attempt added a 3-line explanation between the directive and the import and
+ * broke this file's own suppression). Keep any explanation up here in the
+ * docstring, never between the directive and the import it suppresses.
  */
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only. TS7016
-// attaches to the specifier line, which for a multi-line import is the `from` line, not
-// the `import {` line — so this must be a single-line import for the directive to land
-// on the line it actually suppresses (the exact multi-line-anchoring bug this file guards).
+// @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
 import { BASELINE, baselineKey, isSuppressed, offendersIn, scan, findMjsSpecifiers } from '../../../../scripts/check-unenrolled-mjs-imports.mjs';
 
 type Offender = { file: string; line: number; spec: string; target: string };
