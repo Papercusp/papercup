@@ -169,8 +169,16 @@ export async function changedFilesInSubmodule(
     : await Promise.all([submodulePins(repo, from), submodulePins(repo, to)]);
   const fromPin = pinsFrom.get(submodulePath);
   const toPin = pinsTo.get(submodulePath);
-  if (!fromPin || !toPin || fromPin === toPin) return [];
-  const files = await changedFiles(join(repo, submodulePath), fromPin, toPin);
+  // Gone at `to` — its files do not exist at tip, so nothing there can be a failing
+  // test that a reader could re-verify. Unchanged pin — genuinely nothing changed.
+  if (!toPin || fromPin === toPin) return [];
+  const submoduleRepo = join(repo, submodulePath);
+  // ADDED in range (no pin at `from`): every file in it is new, so every file changed.
+  // Skipping this case would put a failing test in a newly-vendored submodule right back
+  // in the blind spot — reported as "not modified in range", i.e. presumptively a real red.
+  const files = fromPin
+    ? await changedFiles(submoduleRepo, fromPin, toPin)
+    : (await git(submoduleRepo, ['ls-tree', '-r', '--name-only', toPin])).split('\n').filter(Boolean);
   // Paths here are relative to the SUBMODULE root (e.g. `libs/papercusp/`), so a
   // migration reads as `libs/db/sql/...` from inside it — re-prefix with the mount
   // path for a consistent, superproject-relative result callers can compare directly.
@@ -239,12 +247,9 @@ export async function changedFilesRecursive(
   let moved: string[];
   try {
     const [pinsFrom, pinsTo] = await Promise.all([submodulePins(repo, from), submodulePins(repo, to)]);
-    moved = [...pinsTo]
-      .filter(([path, sha]) => {
-        const before = pinsFrom.get(path);
-        return before !== undefined && before !== sha;
-      })
-      .map(([path]) => path);
+    // A submodule ADDED in range (absent from pinsFrom) counts as moved: all of its
+    // files are new in this range. Only an UNCHANGED pin is skipped.
+    moved = [...pinsTo].filter(([path, sha]) => pinsFrom.get(path) !== sha).map(([path]) => path);
     if (moved.length === 0) return { files, unexpandedSubmodules: [] };
 
     const expanded: string[] = [];

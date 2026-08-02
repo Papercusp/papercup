@@ -218,11 +218,11 @@ describe('diff helpers', () => {
 // agents to re-diagnose 6 already-correct embedder tests. `changedFiles` alone can never
 // see inside a gitlink, and this repo has 39 submodules.
 describe('changedFilesRecursive — gitlink expansion', () => {
-  /** Build a submodule at `mount`, pin it, change a file inside it, re-pin. */
-  async function bumpSubmodule(
-    mount: string,
-    innerFile: string,
-  ): Promise<{ before: string; after: string; subRepo: string }> {
+  /** Stand up a real repo at `mount` and pin the superproject's gitlink to it.
+   *  (A plain local repo at the mount path — git-ops's helpers are `git -C <path>`
+   *  wrappers, so no `git submodule` registration is needed, matching the fixture
+   *  style already used by the migrationsBetween tests above.) */
+  async function createSubmodule(mount: string): Promise<string> {
     const subRepo = join(repo, mount);
     mkdirSync(subRepo, { recursive: true });
     await git(subRepo, ['init', '-q', '-b', 'main']);
@@ -232,19 +232,33 @@ describe('changedFilesRecursive — gitlink expansion', () => {
     writeFileSync(join(subRepo, 'README.md'), 'sub');
     await git(subRepo, ['add', '-A']);
     await git(subRepo, ['commit', '--no-verify', '-q', '-m', 'sub-init']);
-    const pin1 = await revParse(subRepo, 'HEAD');
-    await git(repo, ['update-index', '--add', '--cacheinfo', `160000,${pin1},${mount}`]);
+    const pin = await revParse(subRepo, 'HEAD');
+    await git(repo, ['update-index', '--add', '--cacheinfo', `160000,${pin},${mount}`]);
     await git(repo, ['commit', '--no-verify', '-q', '-m', `pin ${mount}`]);
-    const before = await revParse(repo, 'HEAD');
+    return subRepo;
+  }
 
+  /** Change a file inside an already-pinned submodule and re-pin the superproject. */
+  async function bumpPin(mount: string, innerFile: string): Promise<void> {
+    const subRepo = join(repo, mount);
     const full = join(subRepo, innerFile);
     mkdirSync(join(full, '..'), { recursive: true });
     writeFileSync(full, 'expect(dims).toHaveLength(768);');
     await git(subRepo, ['add', '-A']);
     await git(subRepo, ['commit', '--no-verify', '-q', '-m', 'fix the test']);
-    const pin2 = await revParse(subRepo, 'HEAD');
-    await git(repo, ['update-index', '--add', '--cacheinfo', `160000,${pin2},${mount}`]);
+    const pin = await revParse(subRepo, 'HEAD');
+    await git(repo, ['update-index', '--add', '--cacheinfo', `160000,${pin},${mount}`]);
     await git(repo, ['commit', '--no-verify', '-q', '-m', `bump ${mount}`]);
+  }
+
+  /** create + pin, then bump — the common single-submodule case. */
+  async function bumpSubmodule(
+    mount: string,
+    innerFile: string,
+  ): Promise<{ before: string; after: string; subRepo: string }> {
+    const subRepo = await createSubmodule(mount);
+    const before = await revParse(repo, 'HEAD');
+    await bumpPin(mount, innerFile);
     const after = await revParse(repo, 'HEAD');
     return { before, after, subRepo };
   }

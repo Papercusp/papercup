@@ -168,6 +168,13 @@ apps/operator/public/vditor/
 # cdn.jsdelivr.net, AND what stops the app running 0.55.1 while we install
 # 0.56.0; ~24MB, regenerated on every fresh install, never committed.
 apps/operator/public/monaco/
+# Derived excalidraw runtime asset mirror (cdn-egress-fixes-2026-08-02 P-004) —
+# copied out of node_modules by apps/operator's postinstall + operator-vite's
+# prebuild (scripts/setup-excalidraw-runtime.sh). ~18MB, 14MB of it fonts.
+# NOTE: excalidraw ALWAYS appends its esm.sh fallback to the candidate list, so
+# an incomplete mirror here does not 404 — it silently resumes fetching from the
+# internet. Never trim it; verify at runtime.
+apps/operator/public/excalidraw/
 # Stale duplicate docs backup trees under the served internal docs.
 apps/operator/public/internal/docs.old.*/
 

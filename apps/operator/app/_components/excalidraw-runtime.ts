@@ -36,8 +36,10 @@
 export const EXCALIDRAW_ASSET_PATH = '/excalidraw/';
 
 declare global {
-  // eslint-disable-next-line no-var
-  var EXCALIDRAW_ASSET_PATH: string | string[] | undefined;
+  interface Window {
+    /** Excalidraw's own asset-base hook — a string base or a list of candidates. */
+    EXCALIDRAW_ASSET_PATH?: string | string[];
+  }
 }
 
 if (typeof window !== 'undefined') {

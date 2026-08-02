@@ -4,6 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from '@/lib/router-compat/dynamic';
 import { toast } from 'sonner';
 import '@excalidraw/excalidraw/index.css';
+// Points excalidraw's asset resolver at our local mirror. Without it the canvas
+// pulls ~14MB of fonts from esm.sh (cdn-egress-fixes-2026-08-02 P-004).
+import '@/app/_components/excalidraw-runtime';
 import { useSyncQuery } from '@papercusp/sync';
 
 type BrainstormRow = { harnessSlug: string; phase: string; content: string; canvas: unknown; mindmap: unknown; updatedAt: number };
