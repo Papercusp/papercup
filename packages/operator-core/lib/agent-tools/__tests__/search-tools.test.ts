@@ -40,6 +40,20 @@ afterEach(() => {
   vi.doUnmock('./rerank');
 });
 
+// rerankProseHits is stubbed identity-passthrough throughout this file (its own
+// fail-safe behavior is covered in rerank.test.ts); rerankCandidateCount is
+// delegated to the REAL implementation via importOriginal so this mock can
+// never drift from RERANK_OVERFETCH/RERANK_MAX_CANDIDATES — a hand-picked
+// stub would silently stop covering the over-fetch sizing fulltext.ts/
+// semantic.ts actually send to the search engine.
+const mockRerank = async (importOriginal: () => Promise<typeof import('../search/rerank')>) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    rerankProseHits: async (_: unknown, r: unknown[]) => r,
+  };
+};
+
 // ─── search:fulltext ──────────────────────────────────────────────────────────
 
 // The search runners are mocked; type them to their (sources, opts) call shape so the
@@ -54,10 +68,10 @@ type HybridMock = (
 ) => Promise<{ results: unknown[]; totalHits: number; embedderAvailable?: boolean }>;
 
 describe('search:fulltext', () => {
-  it('calls runFullTextSearch with query + workspaceId + limit', async () => {
+  it('calls runFullTextSearch with query + workspaceId + the over-fetched (rerankCandidateCount) limit', async () => {
     const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [MOCK_HIT], totalHits: 1 }));
     vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
-    vi.doMock('../search/rerank', () => ({ rerankProseHits: async (_: unknown, r: unknown[]) => r }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
     await tool.handler({ query: 'authentication', limit: 3 }, MAKE_CTX());
@@ -65,7 +79,11 @@ describe('search:fulltext', () => {
     expect(runFullTextSearch).toHaveBeenCalledTimes(1);
     const [, opts] = runFullTextSearch.mock.calls[0];
     expect(opts.query).toBe('authentication');
-    expect(opts.limit).toBe(3);
+    // rerankCandidateCount(3) = max(3, min(3*RERANK_OVERFETCH, RERANK_MAX_CANDIDATES)) = 12.
+    // The engine is asked to retrieve the over-fetched Stage B pool, not the raw
+    // requested page — rerankProseHits (mocked passthrough here) slices back to
+    // `limit` in the handler's own output.
+    expect(opts.limit).toBe(12);
     expect(opts.workspaceId).toBe('ws_test');
   });
 
@@ -73,9 +91,7 @@ describe('search:fulltext', () => {
     vi.doMock('@papercusp/search', () => ({
       runFullTextSearch: vi.fn(async () => ({ results: [MOCK_HIT], totalHits: 1 })),
     }));
-    vi.doMock('../search/rerank', () => ({
-      rerankProseHits: async (_: unknown, r: unknown[]) => r,
-    }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
     const result = (await tool.handler({ query: 'auth' }, MAKE_CTX())) as any;
@@ -87,9 +103,7 @@ describe('search:fulltext', () => {
   it('expands scope=all to all four named scopes', async () => {
     const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [], totalHits: 0 }));
     vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
-    vi.doMock('../search/rerank', () => ({
-      rerankProseHits: async (_: unknown, r: unknown[]) => r,
-    }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
     // Pass 'all' scope — should expand to all four named scopes (sources filtered by name).
@@ -103,9 +117,7 @@ describe('search:fulltext', () => {
   it('filters to only the requested scope', async () => {
     const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [], totalHits: 0 }));
     vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
-    vi.doMock('../search/rerank', () => ({
-      rerankProseHits: async (_: unknown, r: unknown[]) => r,
-    }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
     await tool.handler({ query: 'cost', scope: ['escalations'] }, MAKE_CTX());
@@ -117,9 +129,7 @@ describe('search:fulltext', () => {
   it('passes harness_slug as scopeFilter', async () => {
     const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [], totalHits: 0 }));
     vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
-    vi.doMock('../search/rerank', () => ({
-      rerankProseHits: async (_: unknown, r: unknown[]) => r,
-    }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
     await tool.handler({ query: 'anything', harness_slug: 'org' }, MAKE_CTX());
@@ -137,7 +147,7 @@ describe('search:fulltext', () => {
     vi.doMock('@papercusp/search', () => ({
       runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
     }));
-    vi.doMock('../search/rerank', () => ({ rerankProseHits: async (_: unknown, r: unknown[]) => r }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
     const result = (await tool.handler({ query: 'claimHold by-id bypass' }, MAKE_CTX())) as any;
@@ -149,7 +159,7 @@ describe('search:fulltext', () => {
     vi.doMock('@papercusp/search', () => ({
       runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
     }));
-    vi.doMock('../search/rerank', () => ({ rerankProseHits: async (_: unknown, r: unknown[]) => r }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
     const result = (await tool.handler({ query: 'cost', scope: ['escalations'] }, MAKE_CTX())) as any;
@@ -161,7 +171,7 @@ describe('search:fulltext', () => {
     vi.doMock('@papercusp/search', () => ({
       runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
     }));
-    vi.doMock('../search/rerank', () => ({ rerankProseHits: async (_: unknown, r: unknown[]) => r }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
     const result = (await tool.handler({ query: 'claimHold by-id bypass', scope: ['work_item'] }, MAKE_CTX())) as any;
@@ -173,7 +183,7 @@ describe('search:fulltext', () => {
     vi.doMock('@papercusp/search', () => ({
       runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
     }));
-    vi.doMock('../search/rerank', () => ({ rerankProseHits: async (_: unknown, r: unknown[]) => r }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
     const result = (await tool.handler({ query: 'cost', scope: ['all'] }, MAKE_CTX())) as any;
@@ -192,9 +202,7 @@ describe('search:semantic', () => {
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
       interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));
-    vi.doMock('../search/rerank', () => ({
-      rerankProseHits: async (_: unknown, r: unknown[]) => r,
-    }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/semantic');
     await tool.handler({ query: 'auth strategy', mode: 'hybrid', limit: 4 }, MAKE_CTX());
@@ -214,9 +222,7 @@ describe('search:semantic', () => {
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
       interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));
-    vi.doMock('../search/rerank', () => ({
-      rerankProseHits: async (_: unknown, r: unknown[]) => r,
-    }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/semantic');
     await tool.handler({ query: 'test' }, MAKE_CTX());
@@ -233,9 +239,7 @@ describe('search:semantic', () => {
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
       interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));
-    vi.doMock('../search/rerank', () => ({
-      rerankProseHits: async (_: unknown, r: unknown[]) => r,
-    }));
+    vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/semantic');
     const result = (await tool.handler({ query: 'test' }, MAKE_CTX())) as any;

@@ -96,9 +96,11 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     });
 
     expect(pg.beginCalls).toBe(1);
-    // All four reads landed on the TRANSACTION handle (counts, rows, sample, and the
-    // WI-6673 admitted-composition read)...
-    expect(pg.queries).toHaveLength(4);
+    // EI-18802055183255275: the candidate set (spec filter + all claim floors) is
+    // materialized ONCE (the CREATE TEMP TABLE), then the four reads (counts, rows,
+    // sample, and the WI-6673 admitted-composition read) each scan that materialized
+    // snapshot instead of recomputing it from scratch...
+    expect(pg.queries).toHaveLength(5);
     // ...and NOTHING was issued on a fresh pool checkout outside the snapshot. This is the
     // regression: independent checkouts is what let the readings disagree.
     expect(pg.poolLog).toEqual([]);
@@ -137,7 +139,8 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
 
     expect(pg.txLog[0]).toBe('EXEC:SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');
     expect(pg.txLog[1]).toMatch(/^EXEC:SET LOCAL statement_timeout = \d+$/);
-    // Nothing may execute ahead of the isolation preamble.
+    // Nothing may execute ahead of the isolation preamble — including the CREATE TEMP
+    // TABLE materialization, which is itself the first QUERY (data statement).
     const firstQueryAt = pg.txLog.findIndex((l) => l.startsWith('QUERY:'));
     expect(firstQueryAt).toBeGreaterThan(1);
   });
@@ -158,8 +161,9 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
       breakdownOnly: true,
     });
     expect(pg.beginCalls).toBe(1);
-    // counts + the unconditional admitted-composition read; the row list is skipped.
-    expect(pg.queries).toHaveLength(2);
+    // the materialization + counts + the unconditional admitted-composition read; the row
+    // list is skipped.
+    expect(pg.queries).toHaveLength(3);
     expect(out.rows).toEqual([]);
     expect(out.sample).toBeUndefined();
   });
@@ -167,13 +171,16 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
   it('omitting sampleLimit reads counts + rows (+ composition) only, and omits `sample` entirely (absent, not an empty sample)', async () => {
     const pg = makePool();
     const out = await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20 });
-    expect(pg.queries).toHaveLength(3);
+    // materialization + counts + rows + composition.
+    expect(pg.queries).toHaveLength(4);
     expect(out.sample).toBeUndefined();
     expect('sample' in out).toBe(false);
   });
 
   it('a failed read THROWS — it never degrades to a partial or zeroed reading (a synthesised 0 is indistinguishable from a genuinely drained lane)', async () => {
-    const pg = makePool({ failAtQuery: 2 }); // the row list fails, after the counts succeeded
+    // query 1 = the CREATE TEMP TABLE materialization, query 2 = the counts (both succeed);
+    // query 3 = the row list — the one that now fails.
+    const pg = makePool({ failAtQuery: 3 }); // the row list fails, after materialize+counts succeeded
     await expect(
       readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20, sampleLimit: 5 }),
     ).rejects.toThrow(/snapshot read failed/);

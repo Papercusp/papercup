@@ -2380,47 +2380,110 @@ def _looks_like_path_candidate(cand):
     return bool(_PATH_CANDIDATE_RE.search(cand))
 
 
+# EI-18814109122347052 — SIXTH in the not-a-path-resolved-as-one family, and
+# the first to be fixed by narrowing WHERE the scan looks rather than what a
+# candidate token is allowed to look like. Every predecessor (paired quotes,
+# whitespace tokenizing, quote-char + path-shape exclusion) still scanned
+# every quoted literal in the WHOLE inline-code body, regardless of what call
+# (if any) it was an argument to. A print() label is a literal like any
+# other: `print("postings/comments pulled:", len(texts), ...)` contains a
+# `/`, carries no quote character inside it, and so cleared every prior
+# filter — even though the body's only write target was a wholly unrelated
+# `open('/tmp/hiring-blob.txt', 'w')` a line away.
+#
+# The fix: only scan literals that are ARGUMENTS TO a write-shaped/file-
+# construct call (open(...), Path(...), write_text(...)/write_bytes(...),
+# writeFileSync(...), etc. — the same call forms _WRITE_INDICATOR_RE /
+# _FILE_OBJECT_RE already recognize as file-I/O shaped). A literal sitting
+# anywhere else in the body — a print() label, a docstring, an error
+# message, a bare variable assignment — is no longer a candidate at all, so
+# it needs no path-shape/quote-char test to be excluded. This is still LITERAL
+# PATHS ONLY (balanced-paren matching from a call site's `(`, not a real
+# parse of the interpreted language) — same discipline as the rest of this
+# guard, just scoped to the argument list instead of the whole payload.
+_WRITE_CALL_SITE_RE = re.compile(
+    r'\bopen\s*\('
+    r'|\bwrite_(?:text|bytes)\s*\('
+    r'|\.save\s*\('
+    r'|(?:pickle|json|yaml)\.dump\s*\('
+    r'|shutil\.(?:copy|move)\s*\('
+    r'|os\.(?:rename|remove|replace)\s*\('
+    r'|unlink\s*\('
+    r'|Path\s*\('
+    r'|fdopen\s*\('
+    r'|NamedTemporaryFile\s*\('
+    r'|writeFileSync\s*\('
+    r'|appendFileSync\s*\('
+    r'|createWriteStream\s*\('
+)
+
+
+def _write_call_arg_spans(body):
+    # The parenthesized argument list of each recognized write/file-construct
+    # call, found by balanced-paren matching from the call site's `(` —
+    # rather than a regex capture, since arguments can themselves contain
+    # nested parens (`open(os.path.join(a, b), 'w')`). Skips a call whose
+    # parens never balance (truncated body, unterminated construct) — there
+    # is nothing safe to scan past a call site like that.
+    spans = []
+    for _m in _WRITE_CALL_SITE_RE.finditer(body):
+        _start = _m.end() - 1  # index of the call's opening '('
+        _depth = 0
+        _i = _start
+        _n = len(body)
+        while _i < _n:
+            _ch = body[_i]
+            if _ch == '(':
+                _depth += 1
+            elif _ch == ')':
+                _depth -= 1
+                if _depth == 0:
+                    spans.append(body[_start:_i + 1])
+                    break
+            _i += 1
+    return spans
+
+
 def _payload_literal_tree_path(body, canon, cwd):
-    # Every quoted token inside `body` that looks path-like (contains `/` or
-    # a dotted extension) and carries no shell/interpreter expansion syntax
-    # ($, `, {, }) — resolved the same literal-only way as
-    # _resolve_write_target. Intentionally coarse: no attempt to parse which
-    # call the literal is an argument TO — an interpreter invocation with
-    # inline code is unusual enough on its own that a literal tree path
-    # anywhere in that code is signal, per the guard's own honest-limit note.
-    for _m in _QUOTED_LITERAL_RE.finditer(body):
-        raw = _m.group(1) if _m.group(1) is not None else _m.group(2)
-        if any(ch in raw for ch in ('$', '`', '{', '}')):
-            continue
-        # EI-18800669297694465: test each WHITESPACE-SEPARATED TOKEN of the
-        # literal, never the literal as a whole.
-        #
-        # A path candidate cannot contain whitespace — not as a general truth
-        # about filesystems, but as a true one about the only targets this
-        # guard gates: no tracked path in this repo has a space
-        # (`git ls-files | grep -c ' '` -> 0), and `canon` is that repo. So
-        # tokenizing cannot lose an in-tree hit, while testing the whole
-        # literal actively manufactures false ones.
-        #
-        # It did. `print("wrote /tmp/x.mts")` is ONE literal containing a `/`
-        # and a `.`, so it passed both filters; it does not START with `/`, so
-        # it was treated as RELATIVE and joined onto the cwd, yielding
-        # `<canon>/wrote /tmp/x.mts` — "inside the tree". A script whose every
-        # real target was absolute under /tmp was denied, and the refusal
-        # quoted the SENTENCE back as the offending path. Returning the token
-        # fixes the message half too: the agent is shown a path, not prose.
-        #
-        # Fourth in this family (EI-18683619680591304, -18692070370140239,
-        # -18700825865251498): each was something that is not a path being
-        # resolved as one. The through-line is that this scan is deliberately
-        # coarse, so every widening of what counts as a "path" must be paid
-        # for by a matching narrowing of what counts as a candidate.
-        for cand in raw.split():
-            if not _looks_like_path_candidate(cand):
+    # Every quoted token inside a write-call argument span (see
+    # _write_call_arg_spans above — EI-18814109122347052) that looks
+    # path-like (contains `/` or a dotted extension) and carries no
+    # shell/interpreter expansion syntax ($, `, {, }) — resolved the same
+    # literal-only way as _resolve_write_target.
+    for _span in _write_call_arg_spans(body):
+        for _m in _QUOTED_LITERAL_RE.finditer(_span):
+            raw = _m.group(1) if _m.group(1) is not None else _m.group(2)
+            if any(ch in raw for ch in ('$', '`', '{', '}')):
                 continue
-            resolved = _resolve_write_target(cand, cwd)
-            if resolved and (resolved == canon or resolved.startswith(canon + os.sep)):
-                return cand
+            # EI-18800669297694465: test each WHITESPACE-SEPARATED TOKEN of
+            # the literal, never the literal as a whole.
+            #
+            # A path candidate cannot contain whitespace — not as a general
+            # truth about filesystems, but as a true one about the only
+            # targets this guard gates: no tracked path in this repo has a
+            # space (`git ls-files | grep -c ' '` -> 0), and `canon` is that
+            # repo. So tokenizing cannot lose an in-tree hit, while testing
+            # the whole literal actively manufactures false ones.
+            #
+            # It did. `open("wrote /tmp/x.mts", 'w')` is ONE literal
+            # containing a `/` and a `.`, so it passed both filters; it does
+            # not START with `/`, so it was treated as RELATIVE and joined
+            # onto the cwd, yielding `<canon>/wrote /tmp/x.mts` — "inside the
+            # tree". Returning the token fixes the message half too: the
+            # agent is shown a path, not prose.
+            #
+            # Fourth in this family (EI-18683619680591304, -18692070370140239,
+            # -18700825865251498): each was something that is not a path
+            # being resolved as one. The through-line is that this scan is
+            # deliberately coarse, so every widening of what counts as a
+            # "path" must be paid for by a matching narrowing of what counts
+            # as a candidate.
+            for cand in raw.split():
+                if not _looks_like_path_candidate(cand):
+                    continue
+                resolved = _resolve_write_target(cand, cwd)
+                if resolved and (resolved == canon or resolved.startswith(canon + os.sep)):
+                    return cand
     return None
 
 

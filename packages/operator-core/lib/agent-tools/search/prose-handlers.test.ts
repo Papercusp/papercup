@@ -68,12 +68,20 @@ vi.mock('./sources', () => ({
   ],
 }));
 
-// rerank is identity-passthrough (sliced) — its own fail-safe behavior is
-// covered in rerank.test.ts; here it must not reorder/drop so we can assert
-// the handler's field mapping on a stable list.
-vi.mock('./rerank', () => ({
-  rerankProseHits: vi.fn(async (_q: string, hits: unknown[], limit: number) => hits.slice(0, limit)),
-}));
+// rerankProseHits is identity-passthrough (sliced) — its own fail-safe
+// behavior is covered in rerank.test.ts; here it must not reorder/drop so we
+// can assert the handler's field mapping on a stable list. rerankCandidateCount
+// is delegated to the REAL implementation (via importOriginal) rather than
+// stubbed, so this mock can never drift from RERANK_OVERFETCH/RERANK_MAX_CANDIDATES
+// — a hand-picked stub would silently stop covering the over-fetch sizing the
+// handler actually sends to the engine.
+vi.mock('./rerank', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./rerank')>();
+  return {
+    ...actual,
+    rerankProseHits: vi.fn(async (_q: string, hits: unknown[], limit: number) => hits.slice(0, limit)),
+  };
+});
 
 // embedder: scripted per-test (null = no embedder available).
 const buildQueryEmbedder = vi.fn(async () => null as unknown);
@@ -173,16 +181,21 @@ describe('search:fulltext — scope normalization', () => {
 });
 
 describe('search:fulltext — limit + workspaceId defaulting', () => {
-  it('defaults limit to 5 when omitted', async () => {
+  it('defaults limit to 5 when omitted — over-fetched to the Stage B rerank pool size, not the raw page size', async () => {
     const tool = (await import('./fulltext')).default;
     await tool.handler({ query: 'x' } as never, CTX() as never);
-    expect(ftCalls[0].ctx.limit).toBe(5);
+    // rerankCandidateCount(5) = max(5, min(5*RERANK_OVERFETCH, RERANK_MAX_CANDIDATES)) = 20.
+    // The engine is asked to retrieve the over-fetched pool; rerankProseHits (mocked
+    // above as identity-passthrough) slices the RETURNED page back to `limit` in the
+    // handler's own output, so callers still see 5 results — only the retrieval size differs.
+    expect(ftCalls[0].ctx.limit).toBe(20);
   });
 
-  it('passes the explicit limit through', async () => {
+  it('passes the over-fetched (rerankCandidateCount) limit through, not the raw requested limit', async () => {
     const tool = (await import('./fulltext')).default;
     await tool.handler({ query: 'x', limit: 12 } as never, CTX() as never);
-    expect(ftCalls[0].ctx.limit).toBe(12);
+    // rerankCandidateCount(12) = max(12, min(12*4, 24)) = 24.
+    expect(ftCalls[0].ctx.limit).toBe(24);
   });
 
   it('falls back to empty-string workspaceId when ctx.workspaceId is unset', async () => {
