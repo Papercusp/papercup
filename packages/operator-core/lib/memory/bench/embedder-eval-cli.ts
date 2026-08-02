@@ -7,7 +7,12 @@
  *     [--corpus memory|prose] \
  *     [--sidecar http://127.0.0.1:PORT] [--ollama http://127.0.0.1:11434] \
  *     [--dims 384] [--out <path.json>] \
- *     [--baseline <leg>] [--compare-with <prior-run.json>]
+ *     [--baseline <leg>] [--compare-with <prior-run.json>] [--limit <N>]
+ *
+ * `--limit N` is a SMOKE pass over the first N docs — use it to prove a newly
+ * added leg loads/pools/sizes correctly before paying for a full corpus. Its
+ * scores are meaningless by construction and the report is stamped so
+ * `--compare-with` refuses it; see the flag's note in `main`.
  *
  * An MRL WIDTH SWEEP is written `--legs gemma@768,gemma@512,gemma@384,gemma@256`:
  * siblings of one family cost ONE forward pass at the widest width, with the
@@ -471,9 +476,41 @@ async function main(): Promise<void> {
     console.error(`unknown --corpus '${corpusChoice}' (expected 'memory' or 'prose')`);
     process.exit(1);
   }
-  const corpus = corpusChoice === 'prose' ? loadProseCorpusFixture() : loadCorpusFixture();
+  const fullCorpus = corpusChoice === 'prose' ? loadProseCorpusFixture() : loadCorpusFixture();
   const gold = corpusChoice === 'prose' ? loadProseGoldSetFixture() : loadGoldSetFixture();
-  const corpusVersion = corpusChoice === 'prose' ? PROSE_CORPUS_FIXTURE_VERSION : CORPUS_FIXTURE_VERSION;
+  const baseCorpusVersion = corpusChoice === 'prose' ? PROSE_CORPUS_FIXTURE_VERSION : CORPUS_FIXTURE_VERSION;
+
+  // `--limit N` — a SMOKE pass over the first N docs, for checking that a
+  // newly added leg loads, pools and emits the width it claims BEFORE paying
+  // for a full corpus (a 2029-doc pass is ~11-25 min per model). Adding an
+  // embedder is the moment its pooling/prompt wiring is most likely wrong, and
+  // discovering that 20 minutes in is the expensive way to learn it.
+  //
+  // ⚠ THE SCORES FROM A LIMITED RUN ARE MEANINGLESS. Most gold-set answers
+  // live outside the truncated corpus, so recall collapses for reasons that
+  // have nothing to do with the embedder. The danger is not the bad number —
+  // it is that the bad number is INDISTINGUISHABLE from a real one once it is
+  // sitting in a report file. So the run stamps a POISONED corpus version,
+  // which makes the existing fixture-mismatch guard refuse to fold it into any
+  // comparison, in either direction, without needing a second guard that could
+  // itself drift.
+  const limitArg = argValue('--limit');
+  const limit = limitArg === undefined ? undefined : Number(limitArg);
+  if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
+    console.error(`--limit must be a positive integer, got '${limitArg}'`);
+    process.exit(1);
+  }
+  const corpus = limit === undefined ? fullCorpus : fullCorpus.slice(0, limit);
+  const corpusVersion = limit === undefined ? baseCorpusVersion : `${baseCorpusVersion}+SMOKE-limit${limit}`;
+  if (limit !== undefined) {
+    console.log(
+      `\n⚠ SMOKE RUN — corpus truncated to ${corpus.length}/${fullCorpus.length} docs.\n` +
+        `  Retrieval scores below are NOT valid: the gold set's answers mostly lie outside this subset.\n` +
+        `  Use this ONLY to check a leg loads, pools, and emits its claimed width.\n` +
+        `  The report is stamped corpusVersion='${corpusVersion}', so --compare-with will refuse it.\n`,
+    );
+  }
+
   const corpusKeys = corpus.map((e) => e.key);
   const corpusTexts = corpus.map((e) => e.text);
   const queryTexts = gold.queries.map((q) => q.query);

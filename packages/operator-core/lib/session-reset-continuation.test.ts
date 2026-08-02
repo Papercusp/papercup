@@ -22,24 +22,31 @@ describe('CONTEXT_RESET_WAKE_CHANNELS (WI-6756 continuation guard)', () => {
   // reset/recycle variant that joins it and forgets THIS list reds here instead of
   // silently stranding the guard in production.
   it('covers EVERY reset/recycle-shaped wake channel — a new variant cannot silently strand the guard', () => {
-    const resetShaped = WAKE_TURN_CHANNELS.filter((c) => /^psu-socket-(reset|recycle)/.test(c));
-    expect([...resetShaped].sort()).toEqual([...CONTEXT_RESET_WAKE_CHANNELS].sort());
+    const resetShaped: string[] = WAKE_TURN_CHANNELS.filter((c) => /^psu-socket-(reset|recycle)/.test(c));
+    expect(resetShaped.length).toBeGreaterThan(0); // the filter must not be silently matching nothing
+    expect(resetShaped.sort()).toEqual([...CONTEXT_RESET_WAKE_CHANNELS].sort());
   });
+
+  // Widened to `readonly string[]` on purpose: the const's element type is the
+  // 4-literal union, so a `toContain('psu-socket-inject')` on the narrow type is a
+  // COMPILE error — and the excluded-channel control below is exactly the assertion
+  // worth making. Comparing as strings is also what the SQL `= ANY()` does.
+  const channels: readonly string[] = CONTEXT_RESET_WAKE_CHANNELS;
 
   it('includes the WI-6862 -unconfirmed variants: a host that sends no ack still performed the reset', () => {
     // The common case, not an edge case — any host running pre-WI-5872 code never
     // acks, so its perfectly-good reset books the unconfirmed channel. Excluding
     // these is what reverts WI-6756 for the majority of cold wakes.
-    expect(CONTEXT_RESET_WAKE_CHANNELS).toContain('psu-socket-reset-unconfirmed');
-    expect(CONTEXT_RESET_WAKE_CHANNELS).toContain('psu-socket-recycle-unconfirmed');
+    expect(channels).toContain('psu-socket-reset-unconfirmed');
+    expect(channels).toContain('psu-socket-recycle-unconfirmed');
   });
 
   // The control for the assertion above: the set must not have widened into
   // "any wake channel", which would make the first two tests pass vacuously and
   // would exempt a genuine death near a WARM inject from ever releasing.
   it('CONTROL: warm and non-turn channels are still EXCLUDED — a SessionEnd near a warm inject is a real death', () => {
-    for (const warm of ['psu-socket-inject', 'pty-inject', 'resume', 'inbox', 'coalesced'] as const) {
-      expect(CONTEXT_RESET_WAKE_CHANNELS).not.toContain(warm);
+    for (const warm of ['psu-socket-inject', 'pty-inject', 'resume', 'inbox', 'coalesced']) {
+      expect(channels).not.toContain(warm);
     }
   });
 

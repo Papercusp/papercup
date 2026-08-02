@@ -383,8 +383,29 @@ without step 0 proves the right thing about the wrong object:**
 C=<the candidate you confirmed in step 0>; F=<your path>; S='<a string your change INTRODUCED>'
 git log --oneline -S"$S" -- "$F" | tail -1     # OLDEST count-changing commit = the INTRODUCING one
 git merge-base --is-ancestor <that commit> $C && echo IN || echo NOT-IN
-git show $C:"$F" | grep -c "$S"                # blob-level confirmation
+[ "$(git rev-parse $C:"$F")" = "$(git rev-parse HEAD:"$F")" ] \
+  && echo BLOB-IDENTICAL || echo INCONCLUSIVE   # blob-level confirmation
 ```
+
+⚠ **The blob line compares IDENTITY, not a count — and this is a correction, not a
+style preference.** It used to read `git show $C:"$F" | grep -c "$S"`, which is the
+very check this file warns about forty lines below ("**A count DELTA is not
+presence**"). A count is satisfied by any pre-existing occurrence of `$S`, so it
+returns a confident nonzero for a candidate that does not contain your change; that
+produced repeated retracted verdicts on 2026-08-02. Comparing blob SHAs cannot be
+fooled that way, and needs no unique string at all.
+
+**It is asymmetric — read it in one direction only:**
+
+- **`BLOB-IDENTICAL` → definitive YES.** The candidate's version of that file *is*
+  byte-for-byte yours. Nothing further to check; stop here.
+- **`INCONCLUSIVE` → NOT "absent".** It means only that the file differs somehow —
+  and on a file the fleet is editing, a peer's later commit makes it differ almost
+  always. Fall back to the ancestry form above (`git log -S… | tail -1` +
+  `--is-ancestor`), which isolates *your* introducing commit.
+
+Treating `INCONCLUSIVE` as "my change is missing" would re-create the `marker` bug
+with the sign flipped, and send you to re-fire a gate that already carries your work.
 
 ⚠ **`tail -1`, not `-1`.** `-S` lists every commit where the occurrence count changed,
 **newest first**, so `git log -1 -S…` returns the MOST RECENT such commit, not the introducing

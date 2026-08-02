@@ -1597,6 +1597,25 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
         changed: outcome.changed,
         branch: outcome.branch,
         sha: outcome.headSha,
+        // WI-7009: `sha` above is the worktree head JUDGED this tick — NOT what
+        // became servable. WI-5738 made this publish INCREMENTAL: it drains the
+        // range and CAS-writes `publishedSha` (the guard's furthest safe sha),
+        // which can trail the head by hundreds of commits while the remainder
+        // drains over following ticks. Recording only `sha` beside
+        // `changed: true` reads on every health surface as "the head is
+        // published", and that is precisely how a canonical-staging freeze hid
+        // for ~6h on 2026-08-02: the namespace head sat ~114 commits back, so
+        // the integrator could only announce shas that were ANCESTORS of the
+        // already-accepted watermark; the bridge rejected each one
+        // non-fast-forward — a TERMINAL reason, which skips-and-continues and
+        // logs NOTHING — and `last_status` stayed 'synced' throughout. Every
+        // field needed to see it was already computed here and then dropped
+        // (`oversizedCommit`'s own doc-comment says it is named "so the health
+        // layer can raise it" — the health layer was never given it).
+        publishedSha: outcome.publishedSha ?? null,
+        drained: outcome.drained ?? false,
+        blockedAtCommit: outcome.blockedAtCommit ?? null,
+        oversizedCommit: outcome.oversizedCommit ?? null,
         refused: outcome.refused?.refusalCode ?? null,
         // WI-5591: count of findings suppressed by a runtime path exemption
         // this tick — a health check reading `refused` alone would otherwise

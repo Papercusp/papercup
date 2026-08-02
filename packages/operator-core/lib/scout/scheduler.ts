@@ -38,6 +38,10 @@ import {
   isCapacityError,
   type CapacityFallbackEvent,
 } from './capacity-errors';
+// Type-only: `@papercusp/coordination/core` is the pure envelope contract, so this
+// import is erased at compile time and keeps this module's core free of the
+// coord/PG runtime edge that readQueenFeedback lazy-imports (cf. operator-hindsight.ts).
+import type { CoordEnvelope } from '@papercusp/coordination/core';
 import type { ScoutPoolSnapshot } from './capacity-probe';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
@@ -853,13 +857,41 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
       const { runWithWorkspace } = await import('../workspace-als');
       const scoutOwner = scoutCoordOwnerId(harnessSlug);
       const gather = async (): Promise<QueenFeedbackItem[]> => {
-        const [inbox, acked] = await Promise.all([readInbox(scoutOwner, {}), readAckedMsgIds(scoutOwner)]);
+        // Bounded read (EI-19323045109346905) — replaces an unbounded ~20k-row scan
+        // when only MAX_QUEEN_FEEDBACK_PER_TICK rows are ever used.
+        //
+        // The stopping rule here is the POST-FILTER count, NOT the raw count its
+        // sibling call sites use, and the discriminator is the ORDER of slice vs
+        // filter: this caller FILTERS first and slices only at the end, so a raw
+        // count would stop on a page whose rows all get dropped and hand back
+        // nothing while real feedback sat one page deeper.
+        //
+        // `acked` is therefore awaited BEFORE the windowed read rather than
+        // alongside it: the stopping rule depends on it. That costs one
+        // round-trip of parallelism and buys correctness — the ack set only ever
+        // grows, so a rule blind to it would, once most matching messages are
+        // acked, stop early on every tick and silently starve the Queen→Scout
+        // channel (the failure would look like "the Queen stopped sending").
+        //
+        // ONE predicate feeds both the stopping rule and the final filter so the
+        // two cannot drift; if they diverged, the window would stop counting the
+        // very rows the caller keeps.
+        const acked = await readAckedMsgIds(scoutOwner);
+        const isFeedback = (e: CoordEnvelope): boolean =>
+          e.kind !== 'ack' && // never treat an ack as feedback
+          !e.category && // drop ambient (service-health / governor), like coord:inbox
+          Array.isArray(e.to) &&
+          e.to.includes(scoutOwner) && // DIRECTED, not a '*' broadcast
+          typeof e.plan_slug === 'string' &&
+          (e.plan_slug as string).length > 0 && // plan-keyed
+          !acked.has(e.msg_id); // not yet consumed
+        const inbox = await readInbox(
+          scoutOwner,
+          {},
+          { enough: (entries) => entries.filter(isFeedback).length >= MAX_QUEEN_FEEDBACK_PER_TICK },
+        );
         return inbox
-          .filter((e) => e.kind !== 'ack') // never treat an ack as feedback
-          .filter((e) => !e.category) // drop ambient (service-health / governor), like coord:inbox
-          .filter((e) => Array.isArray(e.to) && e.to.includes(scoutOwner)) // DIRECTED, not a '*' broadcast
-          .filter((e) => typeof e.plan_slug === 'string' && (e.plan_slug as string).length > 0) // plan-keyed
-          .filter((e) => !acked.has(e.msg_id)) // not yet consumed
+          .filter(isFeedback)
           .map(
             (e): QueenFeedbackItem => ({
               planSlug: e.plan_slug as string,

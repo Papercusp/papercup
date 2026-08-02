@@ -62,10 +62,29 @@ export function strandedJobLookup(
  * The check is simple and needs no extra I/O: THIS operator process's own
  * `process.uptime()` tells us exactly when it started. If it started AFTER the
  * job's log file was created, the operator must have restarted at some point
- * after the job began running — a restart is CONFIRMED. If this process has been
- * running continuously since before the job started, a restart is IMPOSSIBLE
- * (this very process would not exist to answer the call), so the job's own
- * process must have died independently.
+ * after the job began running — a restart is CONFIRMED.
+ *
+ * The other branch is the one that keeps getting mis-stated, so state it
+ * precisely: if this process has been running continuously since before the job
+ * started, a restart is IMPOSSIBLE (this very process would not exist to answer
+ * the call). That rules out ONE cause. It says NOTHING about whether the job's
+ * own process is still running — and on this box the overwhelmingly common
+ * explanation is a job QUEUED behind pc-heavy's slot clamp, alive and simply not
+ * producing output yet. Hence `job_liveness_unknown`, not `job_process_gone`:
+ * the token names what this check can establish, which is the absence of one
+ * cause, not the presence of a death.
+ *
+ * That distinction is not cosmetic — the two states have OPPOSITE correct
+ * responses (keep waiting vs re-run), and re-running a queued heavy job adds
+ * load to the very queue whose depth caused the missing output. Reported four
+ * times independently (EI-19304682667917795, EI-19310882583645327,
+ * EI-19327967209159644, EI-19332191089874223) before the code was corrected:
+ * EI-18666279107998059 fixed the advice PROSE to hedge correctly but left the
+ * `reason` field — the one callers branch on — asserting the confirmed-dead
+ * token. Prose that contradicts its own status code loses to the status code.
+ *
+ * `job_process_gone` now has exactly one emitter: the ledger-confirmed terminal
+ * state above, which really did observe an exit.
  */
 export function diagnoseStrandedCause(opts: {
   jobBirthtimeMs: number;
@@ -73,11 +92,11 @@ export function diagnoseStrandedCause(opts: {
   processUptimeMs?: number;
   /** Defaults to `Date.now()` — injectable for deterministic tests. */
   now?: number;
-}): 'stranded_by_operator_restart' | 'job_process_gone' {
+}): 'stranded_by_operator_restart' | 'job_liveness_unknown' {
   const now = opts.now ?? Date.now();
   const processUptimeMs = opts.processUptimeMs ?? process.uptime() * 1000;
   const processStartedAtMs = now - processUptimeMs;
-  return processStartedAtMs > opts.jobBirthtimeMs ? 'stranded_by_operator_restart' : 'job_process_gone';
+  return processStartedAtMs > opts.jobBirthtimeMs ? 'stranded_by_operator_restart' : 'job_liveness_unknown';
 }
 
 /**
@@ -184,7 +203,7 @@ export default defineTool({
   guidance: {
     when: 'Poll a background job started by capability:bash. Call repeatedly to drain output as it runs; the final call after status leaves "running" gives the tail + exit code.',
     notWhen:
-      'For a foreground command — its output is in the capability:bash result directly. Note: a miss with a log tail means the job\'s in-memory tracking is gone while its log survived. `reason: "tracking_lost_process_alive"` means the process is CONFIRMED still running (via the durable task ledger) — do NOT re-run, keep polling. `"job_process_gone"` with the ledger cited in `advice` means it is CONFIRMED dead — safe to re-run. Any other wording (uptime-only fallback, no ledger row) is the best available INFERENCE, not a confirmed verdict — verify yourself (e.g. `ps`) before re-running to avoid doubling load on a shared box.',
+      'For a foreground command — its output is in the capability:bash result directly. A miss WITH a log tail means the job\'s in-memory tracking is gone while its log survived; three DISTINCT reason codes say what is known, never conflate them. `"tracking_lost_process_alive"` = CONFIRMED running (task-ledger pid re-probe) — do NOT re-run, keep polling. `"job_process_gone"` = CONFIRMED ended (the ledger observed a terminal state) — safe to re-run. `"job_liveness_unknown"` = only a whole-operator restart was ruled out; liveness is UNKNOWN and the job is most often alive but QUEUED behind pc-heavy\'s slot clamp — check `ps` for your command before re-running, or you add load to the very queue that is delaying it.',
     chaining: 'capability:bash { run_in_background:true } → capability:bash_output { bash_id } (repeat) → capability:bash_kill to stop early.',
     seeAlso: [
       'capability:bash (start the command)',

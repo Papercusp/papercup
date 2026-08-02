@@ -88,7 +88,17 @@ describe('raw-installSlug guard predicate (EI-19298972043721870)', () => {
     // Not a style assertion. The guard exists because the failure is silent, so the
     // one way it can rot is by growing the grandfather set instead of fixing sites.
     // 9 files / 18 sites were pre-existing when the guard landed.
-    expect(BASELINE.size).toBeLessThanOrEqual(9);
+    //
+    // ⚠ THIS CEILING MUST BE DECREMENTED ON EVERY GRADUATION — never raised. A ceiling
+    // pinned at the ORIGINAL size stops ratcheting the moment the first file graduates:
+    // it keeps passing while the set grows back toward it, so the assertion reads as a
+    // live guard while silently admitting the exact regression it names. (It sat at 9
+    // after the set had already reached 7, i.e. with two graduations' worth of slack.)
+    // Tighten it in the same edit that removes a BASELINE entry.
+    //
+    // WI-6978 audit: 9 → 7 (green-stall-watchdog.ts, release-deploy-staleness-watchdog.ts
+    // both graduated to ALLOWLIST on the audited harness_escalations relation verdict).
+    expect(BASELINE.size).toBeLessThanOrEqual(7);
   });
 });
 
