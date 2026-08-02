@@ -56,13 +56,9 @@ export default defineTool({
       'orchestrate them in ONE call. Pass title+description so the ' +
       'run saves as a reusable RECIPE other agents in your hive can find.',
     notWhen:
-      'A single call; a few independent calls you can emit together in this assistant turn; a ' +
-      'step that needs YOUR judgment mid-flow (read a result, then decide) — call tools directly; ' +
-      'OR calling/importing repo code, modules, or a DB client directly — the sandbox exposes ' +
-      'ONLY tools.ns.verb(args) (no require/process/import — the tool whitelist IS the security ' +
-      'boundary), so `await import(...)` fails with `dynamic_import_unsupported`. For that, use ' +
-      'capability:bash + npx tsx instead (a script outside the repo cannot resolve workspace deps, ' +
-      'so run it from within the repo tree).',
+      'A single call; a few independent calls in one turn; a step needing YOUR judgment mid-flow ' +
+      '— call tools directly. OR importing repo modules/a DB client directly: only ' +
+      'tools.ns.verb(args) is exposed (no require/process/import) — use capability:bash + npx tsx.',
     chaining:
       'script → code:run { dryRun:true } → inspect plannedMutations → code:run. A correct tool ' +
       'name with a WRONG field mapping fails SILENTLY (ok:true, blank rows) — check the tool\'s ' +

@@ -49,6 +49,7 @@ afterEach(() => {
   vi.doUnmock('./sync-resolver/table-to-query-names');
   vi.doUnmock('./cache/instance');
   vi.doUnmock('./events/engine');
+  vi.doUnmock('./pg-listen-hub');
 });
 
 async function load() {
@@ -290,6 +291,47 @@ describe('boot wiring: hono-host.ts eagerly starts the invalidation LISTEN (EI-6
     const nextBoundary = src.indexOf('\nfunction ', fnStart + 1);
     const body = nextBoundary > -1 ? src.slice(fnStart, nextBoundary) : src.slice(fnStart);
     expect(body).toContain('ensureInvalidationListener()');
+  });
+});
+
+describe('sync-sse LISTEN routes onto the shared listen-hub when enabled (EI-19285171982840672)', () => {
+  it('calls hubListen with the sync_invalidate channel instead of opening its own connection, and preserves the cold-bust onListen hook through it', async () => {
+    const hubListenMock = vi.fn(
+      async (_channel: string, _cb: (raw: string) => void, onListen?: () => void) => {
+        onListen?.(); // simulate the hub's initial connect
+        return () => {}; // unsubscribe
+      },
+    );
+    vi.doMock('./pg-listen-hub', () => ({
+      hubListen: hubListenMock,
+      listenHubEnabled: () => true,
+    }));
+    // Re-do the rest of load()'s mocks (duplicated rather than reusing `load()`
+    // so this one test can override just the hub mock above).
+    vi.doMock('postgres', () => ({
+      default: () => {
+        throw new Error('should not open a direct connection when the hub is enabled');
+      },
+    }));
+    vi.doMock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgres://test' }));
+    vi.doMock('@papercusp/db-org', () => ({
+      getOrgPg: () => ({ sql: notifySql }),
+      longLivedPoolConnectionOptions: (_label: string) => ({ onnotice: () => {}, connection: {} }),
+    }));
+    const cache = { clearL1: vi.fn() };
+    vi.doMock('./cache/instance', () => ({ getOperatorCache: () => cache }));
+    vi.doMock('./sync-resolver/table-to-query-names', () => ({
+      queryNamesForTriggerEvent: (name: string, args?: Record<string, unknown>) => bridgeReturn(name, args),
+    }));
+    vi.doMock('./events/engine', () => ({ emitSystemEvent: emitSysEvt }));
+
+    const { subscribe } = await import('./sync-sse');
+    await subscribe(vi.fn());
+
+    expect(hubListenMock).toHaveBeenCalledTimes(1);
+    expect(hubListenMock.mock.calls[0][0]).toBe('sync_invalidate');
+    // The onListen we passed through fired (simulated above) — cold-bust ran.
+    expect(cache.clearL1).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -4,6 +4,9 @@
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useCallback, useState } from 'react';
 import dynamic from '@/lib/router-compat/dynamic';
+// Points the Monaco AMD loader at our local mirror. Without it Monaco fetches
+// ~4MB from jsdelivr on first mount (cdn-egress-fixes-2026-08-02 P-001).
+import '@/app/_components/monaco-runtime';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { Select } from '@/app/harness/Select';
 import { VirtualGrid, type ColumnDef } from '@papercusp/grid-core';

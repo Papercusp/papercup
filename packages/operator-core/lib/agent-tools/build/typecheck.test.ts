@@ -549,20 +549,33 @@ describe('projectDeclaresTypes — the gate that keeps the repair from being des
     expect(projectDeclaresTypes(join(root, 'suffixless-child.json'))).toBe(true);
   });
 
-  it('is FALSE for a tsconfig whose paths contain the "@/*" alias — the case that defeated the first implementation', () => {
+  it('is FALSE for a tsconfig whose paths contain "@/*" AND a later "**/*" glob — the case that defeated the first implementation', () => {
     // REGRESSION GUARD, not a hypothetical. The first version stripped JSONC comments
     // UNCONDITIONALLY, and the block-comment regex treated the `/*` inside `"@/*"` as the
-    // start of a comment and ate the rest of `paths`. That made apps/operator's perfectly
-    // VALID JSON unparseable; since this function fails open, every project then reported
-    // "declares types", the repair silently never ran, and every surface still looked right.
+    // START of a comment. It then ran to the first `*/` it could find — which is the `*/`
+    // inside an `"**/*.ts"` include glob — and ate everything between: all of `paths`, and
+    // whatever else lay in the gap. That made apps/operator's perfectly VALID JSON
+    // unparseable; since this function fails open, every project then reported "declares
+    // types", the repair silently never ran, and every surface still looked right.
     // Hence: JSON.parse FIRST, strip only as a fallback.
-    write('alias.json', {
+    //
+    // ⚠ BOTH HALVES ARE LOAD-BEARING. A fixture with only the `@/*` alias PASSES against
+    // the broken implementation too — the regex needs a closing `*/` to consume anything,
+    // so an unpaired opener strips nothing and the JSON survives. Verified 2026-08-02
+    // against the original code: alias-only => parses (test vacuous); alias + `**/*.ts`
+    // => throws (test bites). Do not "simplify" this fixture down to the alias.
+    const fixture = {
       compilerOptions: {
         strict: true,
         baseUrl: '.',
-        paths: { '@/*': ['./*'], '~/*': ['./src/*'] },
+        paths: { '@/*': ['./*'], '@papercusp/operator-core/*': ['../../packages/operator-core/*'] },
       },
-    });
+      include: ['**/*.ts', '**/*.tsx'],
+    };
+    const raw = JSON.stringify(fixture, null, 2);
+    // Assert the fixture is still ADVERSARIAL, so a later edit cannot quietly defang it.
+    expect(/\/\*[\s\S]*?\*\//.test(raw), 'fixture no longer contains a /* … */ pair — it would pass against the BROKEN implementation too').toBe(true);
+    write('alias.json', raw);
     expect(projectDeclaresTypes(join(root, 'alias.json'))).toBe(false);
   });
 
@@ -614,7 +627,13 @@ describe('buildScopedTsconfig — the types gate, end to end', () => {
     writeFileSync(file, 'export const a = 1;\n');
     writeFileSync(
       join(root, 'tsconfig.undeclared.json'),
-      JSON.stringify({ compilerOptions: { strict: true, paths: { '@/*': ['./*'] } } }),
+      // Shaped like the real apps/operator: a `@/*` alias AND a `**/*.ts` glob, i.e. a
+      // `/* … */` pair. See the projectDeclaresTypes alias test for why both halves matter
+      // — with only the alias this fixture passes against the broken implementation too.
+      JSON.stringify({
+        compilerOptions: { strict: true, paths: { '@/*': ['./*'] } },
+        include: ['**/*.ts'],
+      }),
     );
     writeFileSync(
       join(root, 'tsconfig.declared.json'),

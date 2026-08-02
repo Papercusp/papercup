@@ -2119,12 +2119,15 @@ const handler = createMcpHandler(
                       (err instanceof Error ? err.message : String(err)),
                   );
                 }
-                return stored as {
-                  content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
-                  isError?: boolean;
-                  _meta?: Record<string, unknown>;
-                  structuredContent?: unknown;
-                };
+                return withScopeGuessWarning(
+                  stored as {
+                    content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
+                    isError?: boolean;
+                    _meta?: Record<string, unknown>;
+                    structuredContent?: unknown;
+                  },
+                  dispatchSpawnCtx,
+                );
               }
             } catch (err) {
 
@@ -2473,7 +2476,7 @@ const handler = createMcpHandler(
             // re-blocking the response we just raced to send.
             if (!raced.deadlineFired) await persist;
           }
-          return dispatched;
+          return withScopeGuessWarning(dispatched, dispatchSpawnCtx);
         }
 
         // Legacy bearer-only fallback (no spawn ctx supplied).

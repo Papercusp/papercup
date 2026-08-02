@@ -88,17 +88,25 @@ const KEEP = new Set<string>(CODE_RECIPE_UI_FIELDS);
  * `r.authorRole ? …` and `r.promotedTool ? …`, all truthiness tests that treat
  * absent and null identically.
  */
-export function projectCodeRecipeRow(row: unknown): unknown {
-  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+function projectObject(row: object): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(row as Record<string, unknown>)) {
+  for (const [k, v] of Object.entries(row)) {
     if (!KEEP.has(k) || v === null) continue;
     out[k] = v;
   }
   return out;
 }
 
-/** Project a whole `codeRecipes` result set. */
-export function projectCodeRecipeRows(rows: readonly unknown[]): unknown[] {
-  return rows.map(projectCodeRecipeRow);
+export function projectCodeRecipeRow(row: unknown): unknown {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  return projectObject(row);
+}
+
+/**
+ * Project a whole `codeRecipes` result set. Returns `Record<string, unknown>[]`
+ * (not `unknown[]`) so the result stays assignable to `attachListMeta`, which
+ * stamps `_meta` onto row[0] and therefore requires objects.
+ */
+export function projectCodeRecipeRows(rows: readonly object[]): Record<string, unknown>[] {
+  return rows.map(projectObject);
 }

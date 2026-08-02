@@ -46,6 +46,8 @@ import {
   watchdogOptionsFromPayload,
   type WatchdogKeyDup,
   type WatchdogSignal,
+  type GitEditCheck,
+  type GitAncestryCheck,
   type WatchdogCollector,
   type WatchdogTickRecord,
   type RecentTick,
@@ -2573,6 +2575,167 @@ describe('watchdogOptionsFromPayload — routine-tunable bars (audit P-012)', ()
   it('null/undefined payload → empty options', () => {
     expect(watchdogOptionsFromPayload(null)).toEqual({});
     expect(watchdogOptionsFromPayload(undefined)).toEqual({});
+  });
+});
+
+// ── EI-19363804802198172: the COMMIT dimension the wall-clock window flattens ──
+describe('red-test commit context (EI-19363804802198172)', () => {
+  const rows = (extra: Partial<Parameters<typeof redTestSignalsFromRows>[0][number]> = {}) => [
+    {
+      file_path: 'a.test.ts',
+      framework: 'vitest',
+      fails: 5,
+      sample: 'boom',
+      earliest_fail_at: '2026-08-02T17:38:34Z',
+      latest_fail_at: '2026-08-02T18:00:05Z',
+      ...extra,
+    },
+  ];
+
+  it('renders the per-commit failure breakdown instead of a bare count', () => {
+    const s = redTestSignalsFromRows(
+      rows({ fail_shas: ['c8aac92703', 'c8aac92703', '1aa133bb11', 'c8aac92703', 'c8aac92703'] }),
+      6,
+    )[0];
+    expect(s.body).toContain('Failures span 2 commits: c8aac92703 ×4, 1aa133bb11 ×1');
+    expect(s.redTest?.failShas).toEqual(['c8aac92703', '1aa133bb11']);
+  });
+
+  it('says so explicitly when every failure is on ONE commit (a different situation entirely)', () => {
+    const s = redTestSignalsFromRows(rows({ fail_shas: ['abc123', 'abc123'] }), 6)[0];
+    expect(s.body).toContain('Failures all on ONE commit: abc123 ×2');
+    expect(s.body).not.toContain('span');
+  });
+
+  it('surfaces the last PASS (sha + time) — the line that bounds the regression window', () => {
+    const s = redTestSignalsFromRows(
+      rows({ fail_shas: ['c8aac92703'], last_pass_sha: 'd384a993f3', last_pass_at: '2026-08-02T17:51:24Z' }),
+      6,
+    )[0];
+    expect(s.body).toContain('Last PASS in window: 2026-08-02T17:51:24.000Z (d384a993f3)');
+    expect(s.redTest?.lastPassSha).toBe('d384a993f3');
+  });
+
+  it('states plainly when the test never passed in the window (absence is evidence too)', () => {
+    expect(redTestSignalsFromRows(rows({ fail_shas: ['abc123'] }), 6)[0].body).toContain(
+      'Last PASS in window: none',
+    );
+  });
+
+  it('degrades to the previous body when the aggregate carried no sha data at all', () => {
+    const s = redTestSignalsFromRows(rows(), 6)[0];
+    expect(s.body).toContain('failed 5× in the last 6h');
+    expect(s.body).not.toContain('Failures');
+    expect(s.redTest?.failShas).toEqual([]);
+  });
+
+  it('merges the commit dimension across the canonical + checkpoint trees', () => {
+    const s = redTestSignalsFromRows(
+      [
+        { file_path: 'a.test.ts', framework: 'vitest', fails: 2, sample: 'boom', fail_shas: ['sha1', 'sha1'], last_pass_at: '2026-08-02T10:00:00Z', last_pass_sha: 'old' },
+        { file_path: 'papercupai-workspace/papercup-checkpoint/a.test.ts', framework: 'vitest', fails: 1, sample: null, fail_shas: ['sha2'], last_pass_at: '2026-08-02T12:00:00Z', last_pass_sha: 'newer' },
+      ],
+      6,
+    );
+    expect(s).toHaveLength(1);
+    expect(s[0].redTest?.failShas).toEqual(['sha1', 'sha2']);
+    expect(s[0].redTest?.lastPassSha).toBe('newer'); // newest pass across trees wins
+  });
+});
+
+describe('red-test supersession by a passing DESCENDANT (EI-19363804802198172)', () => {
+  const sig = (redTest: NonNullable<WatchdogSignal['redTest']>): WatchdogSignal => ({
+    source: 'red-test',
+    key: 'a.test.ts',
+    title: 'Test failing repeatedly: a.test.ts',
+    body: 'boom',
+    severity: 'major',
+    paths: ['a.test.ts'],
+    earliestAt: '2026-08-02T17:38:34.000Z',
+    latestAt: '2026-08-02T18:00:05.000Z',
+    redTest,
+  });
+  /** ancestry oracle: `parent` is an ancestor of everything in its list. */
+  const ancestry = (map: Record<string, string[]>): GitAncestryCheck =>
+    async (a, b) => (map[a] ?? []).includes(b);
+  const keepAll: GitEditCheck = async () => false;
+
+  it('drops the signal when EVERY failing sha is an ancestor of a sha that has since passed', async () => {
+    const kept = await debounceRedTestSignals(
+      [sig({ failShas: ['c8aac92703', '1aa133bb11'], lastPassSha: 'd384a993f3' })],
+      keepAll,
+      undefined,
+      undefined,
+      undefined,
+      ancestry({ c8aac92703: ['d384a993f3'], '1aa133bb11': ['d384a993f3'] }),
+    );
+    expect(kept).toEqual([]);
+  });
+
+  it('KEEPS the signal when even one failing sha is NOT superseded (partial ≠ moot)', async () => {
+    const kept = await debounceRedTestSignals(
+      [sig({ failShas: ['old', 'newer-than-the-pass'], lastPassSha: 'p' })],
+      keepAll,
+      undefined,
+      undefined,
+      undefined,
+      ancestry({ old: ['p'] }), // 'newer-than-the-pass' is not an ancestor of the pass
+    );
+    expect(kept).toHaveLength(1);
+  });
+
+  it('KEEPS a genuine per-commit flake: the same sha both passed and failed', async () => {
+    const kept = await debounceRedTestSignals(
+      [sig({ failShas: ['abc'], lastPassSha: 'abc' })],
+      keepAll,
+      undefined,
+      undefined,
+      undefined,
+      ancestry({ abc: ['abc'] }),
+    );
+    expect(kept).toHaveLength(1);
+  });
+
+  it('this is ANCESTRY, not wall-clock: a fail timestamped AFTER the pass is still superseded', async () => {
+    // The live case (pc-heavy.test.ts, EI-19365113150061623): the fix landed at
+    // 17:42:57Z, a runner re-tested the STALE pre-fix sha at 18:00, and the pass on
+    // the descendant sha was recorded at 17:51 — EARLIER than the failure. A
+    // "last pass newer than last fail" rule reads that as still-red; ancestry does not.
+    const kept = await debounceRedTestSignals(
+      [
+        {
+          ...sig({ failShas: ['c8aac92703'], lastPassSha: 'd384a993f3', lastPassAt: '2026-08-02T17:51:24.000Z' }),
+          latestAt: '2026-08-02T18:00:05.000Z', // failure is NEWER than the pass
+        },
+      ],
+      keepAll,
+      undefined,
+      undefined,
+      undefined,
+      ancestry({ c8aac92703: ['d384a993f3'] }),
+    );
+    expect(kept).toEqual([]);
+  });
+
+  it('fails OPEN — a throwing ancestry check never suppresses a real signal', async () => {
+    const kept = await debounceRedTestSignals(
+      [sig({ failShas: ['a'], lastPassSha: 'p' })],
+      keepAll,
+      undefined,
+      undefined,
+      undefined,
+      async () => { throw new Error('git exploded'); },
+    );
+    expect(kept).toHaveLength(1);
+  });
+
+  it('is inert when no ancestry check is wired, and when there is no passing sha', async () => {
+    const noCheck = await debounceRedTestSignals([sig({ failShas: ['a'], lastPassSha: 'p' })], keepAll);
+    expect(noCheck).toHaveLength(1);
+    const noPass = await debounceRedTestSignals(
+      [sig({ failShas: ['a'] })], keepAll, undefined, undefined, undefined, ancestry({ a: ['p'] }),
+    );
+    expect(noPass).toHaveLength(1);
   });
 });
 

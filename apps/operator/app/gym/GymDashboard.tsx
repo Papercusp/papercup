@@ -21,6 +21,9 @@ import {
 import { diffLines } from 'diff';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useLexicon } from '@/lib/useLexicon';
+// Points the Monaco AMD loader at our local mirror. Without it Monaco fetches
+// ~4MB from jsdelivr on first mount (cdn-egress-fixes-2026-08-02 P-001).
+import '@/app/_components/monaco-runtime';
 // The compare table is lifted to a shared eval-viz component (P-021 / BRIEF 10),
 // reused on the Evaluation surface; the gym renders the same one here.
 import { Compare } from '../eval-viz';

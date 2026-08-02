@@ -1568,38 +1568,27 @@ export default defineTool({
         ? rawCtxHarness
         : undefined;
 
+    // EI-19295149246007753: the single-form message used to be built from a HAND-LISTED
+    // ~30-field object literal, independent of `itemSpec` (the items[] axis's own field
+    // list). The two lists could silently DIVERGE: a field added to itemSpec (and mirrored
+    // onto the top-level object schema, so it validates fine) rode automatically into the
+    // items[] axis via `{ ...it }` but was never copied here unless someone remembered to
+    // also add it to this literal — and there was no error, just a field that validated,
+    // was accepted (ok:true), and then silently vanished before sendOne ever saw it.
+    //
+    // Fixed structurally rather than by re-auditing the list: `itemSpec.shape` IS the
+    // canonical field set for one message (it's what the generated tool schema advertises
+    // for `items`), so the single form is derived by copying each of those same-named keys
+    // off `args` instead of re-declaring them. A new field added to itemSpec (and therefore
+    // to the top-level schema, which mirrors it field-for-field — see the object literal a
+    // few lines up) now reaches sendOne on BOTH axes from one declaration; there is no
+    // second list left to forget.
     const list: SendMsg[] = args.items?.length
       ? args.items.map((it) => ({ ...it }))
       : [
-          {
-            to: args.to as string[],
-            summary: args.summary as string,
-            body: args.body,
-            blocking: args.blocking,
-            why: args.why,
-            fieldProvenance: args.fieldProvenance,
-            files: args.files,
-            plan_slug: args.plan_slug,
-            related_msg_id: args.related_msg_id,
-            // Non-null assertion is safe: the preprocess above refuses a single-form
-            // call whose `expects` is undefined, so this branch is unreachable without it.
-            expects: args.expects as ExpectsKind,
-            relayOf: args.relayOf,
-            relayQuote: args.relayQuote,
-            gateRefs: args.gateRefs,
-            noBodyRefs: args.noBodyRefs,
-            wake: args.wake,
-            wakeOnReply: args.wakeOnReply,
-            replyDeadlineSec: args.replyDeadlineSec,
-            endTurn: args.endTurn,
-            backstop: args.backstop,
-            scope: args.scope,
-            hive: args.hive,
-            allHive: args.allHive,
-            asAuthority: args.asAuthority,
-            report: args.report,
-            expectEffect: args.expectEffect,
-          },
+          Object.fromEntries(
+            Object.keys(itemSpec.shape).map((key) => [key, (args as Record<string, unknown>)[key]]),
+          ) as unknown as SendMsg,
         ];
     // fleet-scoped-broadcast-default: resolve the sender's fleet ONCE (only when a
     // message actually broadcasts) so a fleeted agent's bare ['*'] is scoped to

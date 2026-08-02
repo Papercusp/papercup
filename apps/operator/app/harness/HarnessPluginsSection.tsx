@@ -23,6 +23,9 @@ import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 import MonacoEditor from '@monaco-editor/react';
+// Points the Monaco AMD loader at our local mirror. Without it Monaco fetches
+// ~4MB from jsdelivr on first mount (cdn-egress-fixes-2026-08-02 P-001).
+import '@/app/_components/monaco-runtime';
 import { makeAjvResolver } from '@/lib/forms';
 import { Button } from './Button';
 import { useWorkspaceId } from '@/lib/use-workspace-id';

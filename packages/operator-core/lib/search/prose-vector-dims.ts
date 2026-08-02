@@ -69,18 +69,27 @@ export const PROSE_ELIGIBLE_MODES = ['gemma', 'openai'] as const satisfies reado
 export type ProseEligibleMode = (typeof PROSE_ELIGIBLE_MODES)[number];
 
 /**
- * Every column the width contract applies to — the list a width migration must
- * ALTER, and the list `prose-vector-dims.integration.test.ts` checks the live
- * schema against so a NEW surface cannot quietly adopt a stale width.
+ * Every BASE TABLE column the width contract applies to — the list a width
+ * migration must ALTER, and the list `prose-vector-dims.integration.test.ts`
+ * checks the live schema against so a NEW surface cannot quietly adopt a stale
+ * width.
  *
  * ⚠ ENUMERATED FROM THE DATABASE (`pg_attribute.atttypmod` over every
  * `harness_shared` vector column), NOT from the migrations. Building it by
- * grepping migration files produced a list of FIVE and silently missed SEVEN —
- * `code_recipes`, `harness_features`, `harness_features_consolidated`,
- * `harness_brainstorm`, `harness_decisions`, `harness_escalations`,
- * `datatype_registry`. Migrating 5 of 12 would have left seven surfaces at
- * vector(384) under 768-emitting code, where every write fails inside a
- * background sweep. Re-derive this list the same way if you extend it.
+ * grepping migration files produced a list of FIVE and silently missed the
+ * rest — `code_recipes`, `harness_brainstorm`, `harness_decisions`,
+ * `harness_escalations`, `datatype_registry`. Migrating a subset leaves the
+ * missed surfaces at the old width under new-width-emitting code, where every
+ * write fails inside a background sweep nobody is watching.
+ *
+ * ⚠⚠ RE-DERIVE IT WITH `relkind = 'r'`. The first version of this list was
+ * enumerated from `pg_attribute` WITHOUT filtering `relkind`, which mixes VIEWS
+ * in among the TABLES: `harness_features` and `harness_features_consolidated`
+ * are relkind='v' and were listed here as if a migration should ALTER them.
+ * `ALTER TABLE ... ALTER COLUMN` against a view fails outright
+ * (EI-19364746461986832). A view's column simply REPORTS its base column's
+ * type, so views need no migration of their own — see
+ * `PROSE_VECTOR_DEPENDENT_VIEWS` below.
  *
  * `memory_vec_*` are deliberately NOT here: they are per-mode spaces with their
  * own widths (local stays 384, harrier 1024), so they are not governed by the
@@ -97,9 +106,30 @@ export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string
   { table: 'harness_shared.harness_brainstorm', column: 'content_embedding' },
   { table: 'harness_shared.harness_decisions', column: 'body_embedding' },
   { table: 'harness_shared.code_recipes', column: 'embedding' },
-  { table: 'harness_shared.harness_features', column: 'embedding' },
-  { table: 'harness_shared.harness_features_consolidated', column: 'embedding' },
   { table: 'harness_shared.datatype_registry', column: 'embedding' },
+];
+
+/**
+ * VIEWS that expose a prose vector column. They are NOT migration targets —
+ * they inherit their width from the base column — but they DO block the ALTER
+ * and must be dropped and recreated around it, and they are worth asserting
+ * against the live schema because a view left behind at the old width is the
+ * visible symptom of a half-applied width migration.
+ *
+ * ⚠ THIS LIST IS NOT EXHAUSTIVE AT RUNTIME, BY DESIGN. `harness_features` is
+ * re-created in EVERY per-harness schema (`harness_papercusp`,
+ * `harness_oddsmith`, one per contract-test pot, ...), so the true dependent set
+ * grows with every pot created — 37 in the live DB when 727 was written, 244 in
+ * a full schema clone. That is why migration 727 DISCOVERS the closure with a
+ * recursive `pg_depend`/`pg_rewrite` walk instead of naming views literally, and
+ * why any future width migration must do the same. These are only the
+ * `harness_shared` ones, listed so the integration test has a fixed set to
+ * assert on.
+ */
+export const PROSE_VECTOR_DEPENDENT_VIEWS: ReadonlyArray<{ view: string; column: string }> = [
+  { view: 'harness_shared.harness_features', column: 'embedding' },
+  { view: 'harness_shared.harness_features_consolidated', column: 'embedding' },
+  { view: 'harness_shared.work_items_claimable', column: 'embedding' },
 ];
 
 /**

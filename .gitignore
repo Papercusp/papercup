@@ -161,6 +161,13 @@ apps/operator/public/vad.worklet.bundle.min.js
 # cold markdown render fetching ~4.9MB from unpkg.com; ~23MB, regenerated on
 # every fresh install, never committed.
 apps/operator/public/vditor/
+# Derived monaco-editor runtime asset mirror (cdn-egress-fixes-2026-08-02 P-001)
+# — copied out of node_modules by apps/operator's postinstall + operator-vite's
+# prebuild (scripts/setup-monaco-runtime.sh). Serving these locally is what stops
+# every first Monaco mount fetching ~4MB (~11MB with the TS worker) from
+# cdn.jsdelivr.net, AND what stops the app running 0.55.1 while we install
+# 0.56.0; ~24MB, regenerated on every fresh install, never committed.
+apps/operator/public/monaco/
 # Stale duplicate docs backup trees under the served internal docs.
 apps/operator/public/internal/docs.old.*/
 
