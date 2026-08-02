@@ -364,9 +364,7 @@ export function looksLikeResidualClosure(text: string): boolean {
  */
 export async function listConvertedPlanItemRefs(workspaceIds?: readonly string[]): Promise<Set<string>> {
   const { sql } = getOrgPg();
-  const scopes = workspaceIds?.length
-    ? [...new Set(workspaceIds)]
-    : [...new Set([DEFAULT_COORD_WORKSPACE, coordScopeWorkspace()])];
+  const scopes = implementsLinkScopes(workspaceIds);
   const rows = await sql<{ dst_ref: string }[]>`
     SELECT DISTINCT dst_ref
       FROM harness_shared.coord_links

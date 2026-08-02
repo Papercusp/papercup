@@ -4,8 +4,12 @@
  * whole work-items/liveness stack; the focused reads are what need a real DB.)
  *
  * Behaviors a fake-sql unit test can't prove:
- *  - listConvertedPlanItemRefs: DISTINCT dst_ref over the `implements`→plan_item
- *    coord_links edges, workspace-scoped (the Queue's converted-item filter).
+ *  - listConvertedPlanItemRefs / findImplementingWorkItem / findCoverageWorkItems:
+ *    the implements/relates coord_links plane is split by FAMILY across two
+ *    workspaces (EI-19346291419606670) — each must UNION both tenants, not pin
+ *    DEFAULT_COORD_WORKSPACE alone. Every "TENANT-COMPLETE" test below writes the
+ *    two families to DIFFERENT workspaces, which a fake-sql/single-tenant fixture
+ *    cannot do (it would satisfy whichever tenant the reader picked either way).
  *  - findImplementingWorkItem: edge lookup newest-first + the issue vs
  *    `<harness>#<id>` feature-ref src parsing.
  *  - findConvertedWorkItemByStamp: the `payload.plan_item` stamp match that must
@@ -44,7 +48,7 @@ vi.mock('../agent-tools/coordination/log', () => ({ coordScopeWorkspace: () => c
 vi.mock('./liveness', () => ({ claimPlanItem: vi.fn() }));
 vi.mock('./compile-brief', () => ({ compilePlanItemBrief: vi.fn(), decisionsForItem: vi.fn() }));
 
-const { findImplementingWorkItem, findConvertedWorkItemByStamp, listConvertedPlanItemRefs, IMPLEMENTS_REL } =
+const { findImplementingWorkItem, findCoverageWorkItems, findConvertedWorkItemByStamp, listConvertedPlanItemRefs, IMPLEMENTS_REL } =
   await import('./convert');
 
 const WS = DEFAULT_COORD_WORKSPACE;
@@ -155,6 +159,67 @@ describe('findImplementingWorkItem (PG)', () => {
 
   it('returns null when no edge exists', async () => {
     expect(await findImplementingWorkItem('nope', 'I-9')).toBeNull();
+  });
+
+  /**
+   * EI-19346291419606670: this reader used to hardcode DEFAULT_COORD_WORKSPACE alone
+   * (the same bug listConvertedPlanItemRefs was fixed for above) — a single-tenant
+   * read is blind to whichever family lives in the other workspace. Same
+   * different-workspaces-per-family fixture as the listConvertedPlanItemRefs
+   * TENANT-COMPLETE test above; a fixture on ONE workspace cannot see this class.
+   */
+  it('is TENANT-COMPLETE: finds a feature-family edge under DEFAULT_COORD_WORKSPACE even when coordScopeWorkspace() differs', async () => {
+    cs.scope = 'papercusp-workspace';
+    await edge({ plan: 'p1', item: 'I-1', srcKind: 'feature', srcRef: 'web#F-1', ws: DEFAULT_COORD_WORKSPACE });
+    expect(await findImplementingWorkItem('p1', 'I-1')).toMatchObject({ id: 'F-1', harness: 'web' });
+  });
+
+  it('is TENANT-COMPLETE: finds an issue-family edge under the real per-workspace tenant', async () => {
+    cs.scope = 'papercusp-workspace';
+    await edge({ plan: 'p2', item: 'I-2', srcKind: 'issue', srcRef: 'EI-8', ws: 'papercusp-workspace' });
+    expect(await findImplementingWorkItem('p2', 'I-2')).toMatchObject({ id: 'EI-8' });
+  });
+
+  it('an explicit workspace list still pins the read (the test-only escape hatch)', async () => {
+    cs.scope = 'papercusp-workspace';
+    await edge({ plan: 'p3', item: 'I-3', srcKind: 'issue', srcRef: 'EI-9', ws: 'papercusp-workspace' });
+    expect(await findImplementingWorkItem('p3', 'I-3', [DEFAULT_COORD_WORKSPACE])).toBeNull();
+  });
+});
+
+describe('findCoverageWorkItems (PG)', () => {
+  it('resolves `relates` edges to their work items, newest-first', async () => {
+    await edge({ plan: 'p1', item: 'I-1', srcRef: 'EI-1', rel: 'relates', createdAt: '2026-01-01T00:00:00Z' });
+    await edge({ plan: 'p1', item: 'I-1', srcRef: 'EI-2', rel: 'relates', createdAt: '2026-06-01T00:00:00Z' });
+    expect((await findCoverageWorkItems('p1', 'I-1')).map((wi) => wi.id)).toEqual(['EI-2', 'EI-1']);
+  });
+
+  it('excludes `implements` edges — only `relates` counts as coverage', async () => {
+    await edge({ plan: 'p1', item: 'I-1', srcRef: 'EI-1', rel: IMPLEMENTS_REL });
+    expect(await findCoverageWorkItems('p1', 'I-1')).toEqual([]);
+  });
+
+  it('returns [] when no coverage edge exists', async () => {
+    expect(await findCoverageWorkItems('nope', 'I-9')).toEqual([]);
+  });
+
+  /**
+   * EI-19346291419606670 — THE bug this work-item exists for: findCoverageWorkItems backs
+   * the residual-coverage guard (a plan item must not close as `done` while a linked
+   * coverage work-item is still open). Hardcoding DEFAULT_COORD_WORKSPACE alone made the
+   * guard see only the 'default'-tenant slice of `relates` edges (measured 2026-08-02: 64
+   * of 357, ~18%) — a coverage work-item living in the real per-workspace tenant was
+   * invisible, so the guard FAILED OPEN and the plan item could close while real tracked
+   * work remained open. This fixture pins the two families to DIFFERENT workspaces, which
+   * a single-tenant fixture (every other pre-existing test in this describe) cannot do.
+   */
+  it('is TENANT-COMPLETE: unions both workspaces the relates-coverage plane is split across', async () => {
+    cs.scope = 'papercusp-workspace';
+    await edge({ plan: 'pf', item: 'I-1', srcKind: 'feature', srcRef: 'web#F-1', rel: 'relates', ws: DEFAULT_COORD_WORKSPACE });
+    await edge({ plan: 'pf', item: 'I-1', srcKind: 'issue', srcRef: 'EI-1', rel: 'relates', ws: 'papercusp-workspace' });
+    // Pinning to either tenant alone returns exactly one of these — the bug.
+    const items = await findCoverageWorkItems('pf', 'I-1');
+    expect(items.map((wi) => wi.id).sort()).toEqual(['EI-1', 'F-1'].sort());
   });
 });
 
