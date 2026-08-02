@@ -1209,6 +1209,72 @@ describe('fleet:launch-on-plan handler — EI-8289 display disclosure', () => {
   });
 });
 
+// WI-4752: repro'd live 2026-07-13 — a canary-first visible fleet launch reported
+// opened:[{terminal:'gnome-terminal', pid:...}] + ok:true while BOTH launch PIDs had
+// already exited (a stale DBUS_SESSION_BUS_ADDRESS ⇒ ServiceUnknown ⇒ StartServiceByName
+// timeout). The underlying primitive fix (session-bus resolution + the early-exit probe,
+// console-spawn.ts/console-spawn-desktop-env.test.ts) already covers spawnConsole itself;
+// this pins the FLEET-TOOL-LEVEL contract the bug report actually named — every
+// non-'ok' spawnConsole result must land in `failed[]`, never be counted as `opened`.
+describe('fleet:launch-on-plan handler — spawn failures surface failed[], never a false opened receipt (WI-4752)', () => {
+  beforeEach(async () => {
+    spawnConsoleMock.mockReset();
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+    const { releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    (releaseFleetLaunchSlot as ReturnType<typeof vi.fn>).mockReset();
+    (releaseFleetLaunchSlot as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+  });
+
+  it('every member spawn failing (the stale D-Bus / gnome-terminal early-exit shape) reports opened:[] + one failed[] entry per member — never a false opened receipt', async () => {
+    spawnConsoleMock.mockReturnValue({
+      status: 'error',
+      error:
+        'gnome-terminal died killed by SIGSEGV within 1200ms — no window opened: stale specified server ' +
+        'org.freedesktop.DBus ServiceUnknown (:1.113), fallback StartServiceByName org.gnome.Terminal timed out',
+      code: 502,
+    });
+    const res = await tool.handler(
+      { name: 'DBus Fail Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.opened).toEqual([]);
+    expect(payload.failed).toHaveLength(2);
+    expect(payload.failed[0].error).toMatch(/ServiceUnknown/);
+    expect(payload.failed[0].code).toBe(502);
+  });
+
+  it('releases the fleet-launch idempotency slot when EVERY spawn failed, so an immediate legitimate retry is not suppressed', async () => {
+    spawnConsoleMock.mockReturnValue({ status: 'error', error: 'no window opened', code: 502 });
+    const { releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    await tool.handler(
+      { name: 'DBus Fail Fleet 2', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    expect(releaseFleetLaunchSlot as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+  });
+
+  it('a PARTIAL failure (2 of 3 spawns fail) reports the survivor in opened[] and both failures in failed[] — no phantom members counted', async () => {
+    let call = 0;
+    spawnConsoleMock.mockImplementation(() => {
+      call += 1;
+      if (call === 2) return { status: 'ok', terminal: 'term-2', pid: 222 };
+      return { status: 'error', error: `spawn ${call} failed: no window opened`, code: 502 };
+    });
+    const res = await tool.handler(
+      { name: 'Partial DBus Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.opened).toHaveLength(1);
+    expect(payload.opened[0].terminal).toBe('term-2');
+    expect(payload.failed).toHaveLength(2);
+  });
+});
+
 describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03 leader doom-loop)', () => {
   beforeEach(async () => {
     spawnConsoleMock.mockReset();

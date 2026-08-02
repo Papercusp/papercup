@@ -13,7 +13,7 @@
  *    never a thrown HTTP error, so it must be discriminated structurally.
  */
 import { describe, it, expect } from 'vitest';
-import { isPlanStartRefusal, unwrapPlanInputs } from './plans-api';
+import { isPlanStartRefusal, unwrapPlanInputs, writeError } from './plans-api';
 
 const ROW = {
   ok: true,
@@ -52,6 +52,63 @@ describe('unwrapPlanInputs', () => {
   it('does not throw on a malformed body', () => {
     expect(unwrapPlanInputs(null)).toEqual({ ok: false, error: 'malformed_response' });
     expect(unwrapPlanInputs('nope')).toEqual({ ok: false, error: 'malformed_response' });
+  });
+});
+
+describe('writeError — the bulk envelope must be read before top-level ok (WI-6941)', () => {
+  // `runBulk` hardcodes the envelope's top-level `ok` to TRUE, so a reader that
+  // checks `ok` first calls every failed write a success. These four are the exact
+  // shapes captured from :3170 on 2026-08-02.
+  it('reports a per-item failure even though top-level ok is true', () => {
+    expect(
+      writeError({
+        ok: true,
+        results: [{ ok: false, slug: 'p', itemId: 'P-999', error: 'item_not_found' }],
+        counts: { ok: 0, failed: 1 },
+      }),
+    ).toBe('item_not_found');
+  });
+
+  it('surfaces the holder on a per-item claim/lock conflict', () => {
+    // The most damaging case: a live peer holds the item, and this used to render as
+    // a successful status flip that closed the popover.
+    expect(
+      writeError({
+        ok: true,
+        results: [{ ok: false, error: 'claim_conflict', itemId: 'P-001' }],
+        counts: { ok: 0, failed: 1 },
+      }),
+    ).toBe('claim_conflict');
+    expect(
+      writeError({
+        ok: true,
+        results: [{ ok: false, error: 'busy', busy: [{ owner_label: 'shellX', intent: 'editing' }] }],
+        counts: { ok: 0, failed: 1 },
+      }),
+    ).toBe('busy: held by shellX (editing)');
+  });
+
+  it('returns null for a genuinely successful bulk write', () => {
+    expect(
+      writeError({ ok: true, results: [{ ok: true, itemId: 'P-001' }], counts: { ok: 1, failed: 0 } }),
+    ).toBeNull();
+  });
+
+  it('treats an empty result set as a failure, not a success', () => {
+    expect(writeError({ ok: true, results: [], counts: { ok: 0, failed: 0 } })).toBe(
+      'write affected nothing',
+    );
+  });
+
+  it('still handles the FLAT (non-bulk) shapes unchanged', () => {
+    expect(writeError({ ok: true })).toBeNull();
+    expect(writeError({ error: 'busy', busy: [{ owner_label: 'shellX', intent: 'editing' }] })).toBe(
+      'busy: held by shellX (editing)',
+    );
+    expect(writeError({ error: 'busy', busy: [{}] })).toBe('busy: held by another agent');
+    expect(writeError({ error: 'nope' })).toBe('nope');
+    expect(writeError(null)).toBe('unexpected response shape');
+    expect(writeError({})).toBe('unexpected response shape');
   });
 });
 

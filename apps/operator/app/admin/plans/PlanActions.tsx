@@ -43,6 +43,7 @@ import {
   startPlan,
   pausePlan,
   isPlanStartRefusal,
+  writeError,
   type PlanStartRefusal,
   type PlanDecision,
   type PlanItem,
@@ -1100,26 +1101,12 @@ function DialogFooter({
 }
 
 /**
- * Pure: map a write-API result into an inline error string, or null when the
- * write succeeded. The lock-conflict (`busy`) path surfaces the holder's
- * identity + intent. Exported for tests.
+ * Re-exported from plans-api so the existing `import { writeError } from
+ * './PlanActions'` call sites and tests keep working. The implementation moved
+ * there (WI-6941) because PlanStatusPopover had grown its OWN copy carrying the
+ * same bug, and one reader of a wire shape should have one definition.
  */
-export function writeError(r: WriteResult<unknown>): string | null {
-  if (!r || typeof r !== 'object') return 'unexpected response shape';
-  const o = r as Record<string, unknown>;
-  if (o.ok === true) return null;
-  if (typeof o.error === 'string') {
-    // The lock-conflict path carries the holder's identity — surface
-    // it inline so the user knows who/what to wait for.
-    if (o.error === 'busy' && Array.isArray(o.busy) && o.busy.length > 0) {
-      const b = o.busy[0] as { owner_label?: string; intent?: string };
-      const who = b.owner_label ?? 'another agent';
-      return b.intent ? `busy: held by ${who} (${b.intent})` : `busy: held by ${who}`;
-    }
-    return o.error;
-  }
-  return 'unexpected response shape';
-}
+export { writeError };
 
 /** Pure: parse a free-text list of P-/D- refs (whitespace/comma separated), keeping only well-formed ids. Exported for tests. */
 export function parseRefList(raw: string): string[] {

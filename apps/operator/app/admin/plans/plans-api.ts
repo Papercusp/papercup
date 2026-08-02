@@ -1133,6 +1133,57 @@ export type WriteResult<TPayload = unknown> =
   | ({ ok: true; filePath?: string } & TPayload)
   | { error: string; busy?: Array<{ owner_label?: string; intent?: string }>; [k: string]: unknown };
 
+/** Render one failure (flat result OR a bulk `results[i]`) as a human string. */
+function describeWriteFailure(o: Record<string, unknown>): string {
+  const error = typeof o.error === 'string' ? o.error : null;
+  if (!error) return 'unexpected response shape';
+  // The lock-conflict path carries the holder's identity — surface it inline so
+  // the user knows who/what to wait for.
+  if (error === 'busy' && Array.isArray(o.busy) && o.busy.length > 0) {
+    const b = (o.busy[0] ?? {}) as { owner_label?: string; intent?: string };
+    const who = b.owner_label ?? 'another agent';
+    return b.intent ? `busy: held by ${who} (${b.intent})` : `busy: held by ${who}`;
+  }
+  return error;
+}
+
+/**
+ * Did a plans write fail, and if so why? Returns null on success.
+ *
+ * ⚠ THE BULK ENVELOPE IS CHECKED FIRST, AND THAT ORDER IS THE WHOLE POINT (WI-6941).
+ * Most plans:* tools are bulk, and `runBulk` hardcodes the envelope's **top-level
+ * `ok` to `true`** — per-item success lives in `results[i].ok`. The admin route
+ * unwraps that envelope only for `get`, so a wrapped failure reaches here looking
+ * exactly like a success. Reading `o.ok` first (as this function did until
+ * 2026-08-02) therefore reported EVERY failed bulk write as succeeded: a
+ * `claim_conflict` on an item a live peer holds rendered as a completed status flip,
+ * and the popover closed. Verified live on :3170:
+ *
+ *   set-status { item: 'P-999' }
+ *     → { ok: true, results: [{ ok: false, error: 'item_not_found' }], counts: { failed: 1 } }
+ *
+ * If you are tempted to hoist the `ok` check back to the top for readability: that is
+ * the bug.
+ */
+export function writeError(r: WriteResult<unknown> | unknown): string | null {
+  if (!r || typeof r !== 'object') return 'unexpected response shape';
+  const o = r as Record<string, unknown>;
+
+  if (Array.isArray(o.results)) {
+    const failed = o.results.find(
+      (x) => x && typeof x === 'object' && (x as { ok?: unknown }).ok === false,
+    );
+    if (failed) return describeWriteFailure(failed as Record<string, unknown>);
+    // An empty result set means nothing was written — reporting that as success is
+    // the same silent-failure shape this function exists to catch.
+    if (o.results.length === 0) return 'write affected nothing';
+    return null;
+  }
+
+  if (o.ok === true) return null;
+  return describeWriteFailure(o);
+}
+
 export interface SetStatusArgs {
   slug: string;
   itemId: string;

@@ -19,22 +19,13 @@
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { setItemStatus, type WriteResult } from './plans-api';
+// WI-6941: this file used to carry its own copy of writeError, which checked the
+// top-level `ok` first and so reported every FAILED bulk write as a success — the
+// worst instance being a `claim_conflict` (a live peer holds the item) rendering as
+// a completed status flip. One wire shape, one reader.
+import { setItemStatus, writeError } from './plans-api';
 
 export type PlanStatus = 'todo' | 'wip' | 'blocked' | 'needs-human' | 'done' | 'dropped';
-
-function writeError(r: WriteResult<unknown>): string | null {
-  if ('ok' in r && r.ok) return null;
-  if ('error' in r) {
-    if (r.error === 'busy' && Array.isArray(r.busy) && r.busy.length > 0) {
-      const b = r.busy[0]!;
-      const who = b.owner_label ? `held by ${b.owner_label}` : 'held by another shell';
-      return b.intent ? `busy: ${who} (${b.intent})` : `busy: ${who}`;
-    }
-    return r.error;
-  }
-  return 'unexpected response shape';
-}
 
 const STATUS_ORDER: PlanStatus[] = [
   'todo',

@@ -18,7 +18,13 @@ const setItemStatusMock = vi.fn(async () => {
   if (setStatusThrows) throw new Error('netfail');
   return setStatusResult;
 });
-vi.mock('./plans-api', () => ({ setItemStatus: (a: unknown) => setItemStatusMock(a as never) }));
+// Only the network call is stubbed. `writeError` comes through REAL (WI-6941): it is
+// the thing under test on the error paths below, and a stubbed copy would happily
+// keep passing while the shipped one called a failed write a success.
+vi.mock('./plans-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./plans-api')>()),
+  setItemStatus: (a: unknown) => setItemStatusMock(a as never),
+}));
 
 import PlanStatusPopover, { resolveItemId, type PendingStatusFlip } from './PlanStatusPopover';
 

@@ -3409,9 +3409,17 @@ export function isClaimHoldParked(payload: unknown): boolean {
  * idles, rather than the "pending-but-gated, don't idle" verdict a held-but-real item gets.
  */
 export function observationLaneExclusionSql(sql: OrgSql) {
-  // COALESCE so a NULL-payload row reads NULL ->> 'lane' = NULL, and
-  // `NULL IS DISTINCT FROM 'observation'` = TRUE ⇒ the row is INCLUDED (never excluded).
-  return sql`COALESCE(wi.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'`;
+  // WI-6934: filters the STORED generated column, not the payload jsonb. Any `payload ->>`
+  // here forced the whole payload datum to be fetched and decompressed for every candidate
+  // row (payload/_search are large and out-of-line — TOAST is 131MB against a 56MB heap),
+  // to read one short string. `lane` is `payload ->> 'lane'` materialised by migration 721.
+  //
+  // NULL-safety is UNCHANGED and now structural: the column is NULL both when payload is
+  // NULL and when the key is absent, and `NULL IS DISTINCT FROM 'observation'` = TRUE ⇒ the
+  // row is INCLUDED (never excluded) — the same semantics the old COALESCE spelled out.
+  // Verified equivalent on live data before the switch: 0 disagreements, and the NULL-payload
+  // population matched exactly both ways (2,468 rows).
+  return sql`wi.lane IS DISTINCT FROM 'observation'`;
 }
 
 /**
