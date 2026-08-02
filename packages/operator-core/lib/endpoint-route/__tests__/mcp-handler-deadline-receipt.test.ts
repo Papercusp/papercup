@@ -35,7 +35,7 @@
  * instance avoids that entirely.
  */
 import { createRequire } from 'node:module';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 
 const h = vi.hoisted(() => {
@@ -257,6 +257,17 @@ beforeEach(() => {
   h.invocations.length = 0;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns();
+});
+
+// The 'slow' probe's whole point is to keep running — and its background
+// persist landing — AFTER a test's own assertions finish. Left undrained,
+// that pending timer fires during the NEXT test and leaks a storeMcpResult
+// call into ITS freshly-reset h.replayStores (observed: a later test's poll
+// picked up an earlier test's residual entry by array index). Draining here,
+// past every real timer this file arms (deadline + slow-tool completion),
+// guarantees each test starts with no async work still in flight.
+afterEach(async () => {
+  await sleep(SLOW_TOOL_MS + 100);
 });
 
 describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6914)', () => {

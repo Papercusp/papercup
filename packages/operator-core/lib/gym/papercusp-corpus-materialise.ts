@@ -62,8 +62,10 @@ export async function materialiseTaskCommit(
   desc: PapercuspTaskDescriptor,
   substrateDir: string,
   runGit: RunGit,
+  /** Tree the task starts from; defaults to the oracle pin. See buildTaskCommitPlan. */
+  baseCommit?: string,
 ): Promise<{ taskCommit: string; branchName: string }> {
-  const plan = buildTaskCommitPlan(desc, substrateDir);
+  const plan = buildTaskCommitPlan(desc, substrateDir, baseCommit);
 
   await runGit(plan.readTree);
   const entry = await runGit(plan.readRewoundEntry);
@@ -94,6 +96,8 @@ export async function materialisePapercuspCorpus(
   admitted: readonly PapercuspTaskDescriptor[],
   substrateDir: string,
   runGit: RunGit,
+  /** Tree every task starts from; defaults to the oracle pin. See buildTaskCommitPlan. */
+  baseCommit?: string,
 ): Promise<MaterialisedTask[]> {
   const out: MaterialisedTask[] = [];
   const seen = new Set<string>();
@@ -103,7 +107,7 @@ export async function materialisePapercuspCorpus(
     }
     seen.add(desc.taskId);
 
-    const { taskCommit, branchName } = await materialiseTaskCommit(desc, substrateDir, runGit);
+    const { taskCommit, branchName } = await materialiseTaskCommit(desc, substrateDir, runGit, baseCommit);
     out.push({
       descriptor: desc,
       taskCommit,

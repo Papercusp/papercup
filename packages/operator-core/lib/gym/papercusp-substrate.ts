@@ -241,8 +241,31 @@ const TASK_COMMIT_ENV: Readonly<Record<string, string>> = Object.freeze({
 /** Branch namespace for generated task commits — never collides with real refs. */
 export const TASK_BRANCH_PREFIX = 'refs/heads/gym-task/';
 
-export function buildTaskCommitPlan(desc: PapercuspTaskDescriptor, substrateDir: string): TaskCommitPlan {
+export function buildTaskCommitPlan(
+  desc: PapercuspTaskDescriptor,
+  substrateDir: string,
+  /**
+   * The commit whose TREE the task starts from. Defaults to `desc.pinCommit`.
+   *
+   * It is a separate knob because the gym must inject `.papercusp/config.json`
+   * and `.papercusp/blueprint.yaml` into the task world, and those two files are
+   * GITIGNORED in the real repo — so they are absent from `pinCommit`'s tree.
+   * The runner clones from the OBJECT STORE and never sees a working tree, so
+   * writing them into the substrate checkout does not reach it: without a base
+   * commit that actually carries them, the throwaway harness boots with NO
+   * blueprint and silently falls back to the RETIRED `coding-factory` spine —
+   * i.e. the gym would optimize dead legacy code while still reporting
+   * corpus:'real'. Same class of defect as D-007, one file deeper.
+   *
+   * `pinCommit` remains the ORACLE pin (what the tests and the reference
+   * solution come from); this is only where the task's tree is rooted.
+   */
+  baseCommit: string = desc.pinCommit,
+): TaskCommitPlan {
   assertDescriptorPins(desc);
+  if (!isPinnedCommit(baseCommit)) {
+    throw new Error(`papercusp task ${desc.taskId}: baseCommit must be a pinned hex SHA, got: ${JSON.stringify(baseCommit)}`);
+  }
   const branchName = `${TASK_BRANCH_PREFIX}${desc.taskId}`;
   const indexFile = `${substrateDir}/.git/gym-task-index-${desc.taskId}`;
   const idxEnv = { ...TASK_COMMIT_ENV, GIT_INDEX_FILE: indexFile };
@@ -251,7 +274,7 @@ export function buildTaskCommitPlan(desc: PapercuspTaskDescriptor, substrateDir:
   return {
     branchName,
     indexFile,
-    readTree: { argv: git('read-tree', desc.pinCommit), env: idxEnv },
+    readTree: { argv: git('read-tree', baseCommit), env: idxEnv },
     // `ls-tree` carries the FILE MODE as well as the blob sha, and feeding its
     // output straight back to `update-index --index-info` means the mode is
     // never parsed — so an executable-bit change can't be silently dropped.
@@ -267,7 +290,7 @@ export function buildTaskCommitPlan(desc: PapercuspTaskDescriptor, substrateDir:
     },
     writeTree: { argv: git('write-tree'), env: idxEnv },
     commitTree: (treeSha: string) => ({
-      argv: git('commit-tree', treeSha, '-p', desc.pinCommit, '-m', `gym task ${desc.taskId}: rewind ${desc.implPath} to ${desc.revertToCommit.slice(0, 12)}`),
+      argv: git('commit-tree', treeSha, '-p', baseCommit, '-m', `gym task ${desc.taskId}: rewind ${desc.implPath} to ${desc.revertToCommit.slice(0, 12)}`),
       env: TASK_COMMIT_ENV,
     }),
     setBranch: (commitSha: string) => ({ argv: git('update-ref', branchName, commitSha) }),

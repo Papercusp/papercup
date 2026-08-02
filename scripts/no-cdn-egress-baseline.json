@@ -17,8 +17,8 @@
     {
       "file": "assets/dist-<hash>.js",
       "url": "https://cdn.jsdelivr.net/npm/@alexanderolsen/libsamplerate-js@2.1.2/dist/libsamplerate.worklet.js",
-      "status": "unresolved",
-      "reason": "libsamplerate-js loads its AudioWorklet processor from jsdelivr by default. On the voice/audio path, so it would fire the first time a user resamples audio. NOT among the six findings in cdn-egress-fixes-2026-08-02 — this scan is how it was discovered, which is P-004's whole point. Liveness not yet established at runtime. Tracked: WI-7116."
+      "status": "not-live-verified",
+      "reason": "libsamplerate-js's default AudioWorklet source, from @elevenlabs/client's addLibsamplerateModule(). PROVEN NOT LIVE by full reachability trace (WI-7116, not a bundle grep — that is precisely what D-004 forbids treating as a verdict): addLibsamplerateModule is only ever called from the SDK's setupInputOutput(), which short-circuits to the LiveKit-native connection.input/output for a WebRTCConnection and only constructs the MediaDeviceInput/Output (the sole callers of addLibsamplerateModule) for a WebSocketConnection. Both of our two live Conversation.startSession() call sites (packages/operator-core/lib/voice-engines/elevenlabs-conv.ts, apps/operator/app/el-min/page.tsx) hardcode connectionType:'webrtc' — no runtime fallback exists between the two connection types once resolved, so the fetch cannot fire under any input. Guarded going forward by apps/operator/app/_components/elevenlabs-libsamplerate-cdn.test.ts (asserts every live call site stays pinned, and pins the SDK's own dispatch shape so a future @elevenlabs/client bump that changes it fails loudly here). No fix applied: mirroring the worklet to wire a libsampleratePath override would be dead-code busywork for an unreachable path — if a future call site legitimately needs connectionType:'websocket', wire libsampleratePath/workletPaths (AudioWorkletConfig) at the same time; the guard test will fail first and point here."
     },
     {
       "file": "assets/dist-<hash>.js",

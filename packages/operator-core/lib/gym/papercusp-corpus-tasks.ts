@@ -88,8 +88,46 @@ export interface MaterialiseSubstrateInput {
 
 export interface MaterialisedSubstrate {
   pinCommit: string;
+  /** The commit carrying `.papercusp/*`, which every task commit is rooted at. */
+  baseCommit: string;
   tasks: MaterialisedTask[];
 }
+
+/**
+ * The gym's harness config, injected into the task world.
+ *
+ * These live HERE rather than at each call site because they must end up in a
+ * COMMIT, not merely in the substrate's working tree — the runner clones from
+ * the object store and never sees a working tree. Written to the checkout and
+ * left uncommitted (as the toy-substrate code did, where `git add -A` happened
+ * to sweep them up) they would silently vanish, the throwaway harness would
+ * boot with NO blueprint, and `blueprint-run-action.ts`'s `codingFallback`
+ * would route the gym onto the RETIRED `coding-factory` director→…→curator
+ * spine — optimizing dead legacy code while still reporting corpus:'real'.
+ */
+export const GYM_HARNESS_FILES: ReadonlyArray<{ path: string; content: string }> = Object.freeze([
+  {
+    path: '.papercusp/config.json',
+    // `workingStateCheck` is the L1 gate the worker chunk-loop runs per chunk.
+    // Carried over verbatim from the toy substrate so this change swaps the
+    // CORPUS and nothing else — but note it now costs what a real repo-wide
+    // typecheck costs (~150s here) rather than the toy repo's instant one. A
+    // misconfigured command degrades to "commit without the L1 gate" with a
+    // warning (worker-chunk-loop.ts), so this is a cost knob, not a correctness
+    // one; scoping it per-task is tracked separately.
+    content: JSON.stringify({ worktrees: { enabled: false }, parallelWorkers: { workingStateCheck: 'npm run typecheck' } }),
+  },
+  {
+    // Pin the substrate to the LIVE single-worker coding blueprint so the gym
+    // optimizes the CURRENT `worker.md` prompt. `coding-solo` extends
+    // `single-agent` (decider: `worker`) and carries the `gym: collectTrace:
+    // git-diff` seam the ab-runner needs. The projection is keyed by
+    // (workspace_id, harness_slug), so this fixed id never collides across the
+    // per-run gymRunIdentity slugs.
+    path: '.papercusp/blueprint.yaml',
+    content: 'id: gym-substrate\nextends: coding-solo\nversion: 0.0.1\n',
+  },
+]);
 
 /**
  * Clone the real repo at the corpus pin, symlink dependencies, and build one

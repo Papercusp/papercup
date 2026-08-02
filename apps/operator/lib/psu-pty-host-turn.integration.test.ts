@@ -412,7 +412,13 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
       const ok2 = await injectIntoHost(sock, { mode: 'turn', data: 'same-text', deliveryId: 'distinct-2' });
       expect(ok2).toBe(true);
 
-      await sleep(500);
+      // Poll (not a flat sleep) for the SECOND echo — injection 2 may itself queue
+      // behind injection 1's OWN submit-verify resubmit cycle on the injectMutex
+      // (this generic echo child never produces whatever confirmation submitVerify
+      // is looking for, so BOTH deliveries retry the CR up to SUBMIT_VERIFY_MAX_RESUBMITS
+      // times before the mutex frees), so a short fixed sleep undercounts.
+      const sawTwo = await waitForOutput(() => String((captured().match(/ECHO:same-text/g) ?? []).length), '2', 4000);
+      expect(sawTwo).toBe(true);
       const echoCount = (captured().match(/ECHO:same-text/g) ?? []).length;
       expect(echoCount).toBe(2); // a genuinely distinct delivery id is NOT deduped
 

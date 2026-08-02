@@ -109,7 +109,12 @@ describe('backup:snapshot_list', () => {
     const result = (await tool.handler({ limit: 10 }, MAKE_CTX())) as any;
 
     expect(wb.list).toHaveBeenCalledWith(10);
-    const data = JSON.parse(result.content[0].text);
+    // Shape-agnostic read: backup:snapshot_list returns the canonical `{ data }`
+    // ToolResponse since the {data}-migration batch that paid off the
+    // tool-data-shape-ratchet. Accept either shape (the established precedent —
+    // see accounts/*.test.ts, plans/arm-schedule.test.ts) so this assertion
+    // cannot red the shared gate again if the tool's wire shape moves.
+    const data = result.data ?? JSON.parse(result.content[0].text);
     expect(data.snapshots).toHaveLength(2);
     expect(data.snapshots[0].id).toBe('s1');
   });
