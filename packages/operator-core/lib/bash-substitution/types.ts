@@ -155,6 +155,36 @@ export interface SubstitutionPair {
   holdAtObserve?: string;
   /** Model of what the tool can express. See the warning above. */
   cover(atom: string): CoverageResult;
+  /**
+   * OPTIONAL (P-021) — the EXECUTABLE form of what `cover()` describes, and the
+   * thing the P-021 replay harness actually runs. Return `null` for an atom this
+   * pair matches but cannot rewrite exactly.
+   *
+   * OPTIONAL is a decision, not laziness, in both directions:
+   *
+   *  - Making it required would strand all eleven pair modules at once — the
+   *    `lint:required-field-strands` class the repo guide warns about, in the file
+   *    that would trigger it most widely.
+   *  - More importantly, ABSENT must be a meaningful state. A pair with no
+   *    `rewrite` cannot be replayed, so it can never reach `replay-clean`, so
+   *    P-022 can never auto-substitute it. That is the correct default: a pair
+   *    earns automatic rewriting by demonstrating one, and silence means no.
+   *
+   * A rewrite is NOT authorization to auto-substitute. It is the input to the
+   * replay that decides whether auto-substitution is safe, and a pair may
+   * perfectly well declare one and then be found to differ.
+   */
+  rewrite?(atom: string): ReplayToolCall | null;
+  /**
+   * OPTIONAL (P-021) — how to strip THIS tool's framing when diffing answers.
+   *
+   * Declared per pair rather than inferred, because inferring it means guessing
+   * which lines are framing and which are content, and a wrong guess deletes the
+   * evidence. Omitting it compares the tool's raw output, which is honest: a pair
+   * whose tool returns no framing needs none, and one that does will simply report
+   * `differs` until an envelope is written.
+   */
+  replayEnvelope?: AnswerEnvelope;
 }
 
 /** The prefix an `intentLabel` must carry to be allowed a {@link SubstitutionPair.policyTier}. */
@@ -183,6 +213,40 @@ export function assertPolicyTier(pair: SubstitutionPair): SubstitutionTier {
     );
   }
   return pair.policyTier;
+}
+
+/**
+ * An EXECUTABLE tool call — what a `rewrite()` produces (P-021).
+ *
+ * Deliberately not `CoverageResult.expression`, which is a DISPLAY string
+ * (`capability:read { file_path: "x", limit: 40 } // paged at 2000 lines`) written
+ * to be read inside a hook advisory. Parsing that back into arguments would make a
+ * hand-formatted, comment-bearing, occasionally-concatenated string the input to
+ * the machinery that decides whether a rewrite is safe to perform automatically.
+ * The two are kept separate so the advisory can stay readable and the rewrite can
+ * stay exact.
+ */
+export interface ReplayToolCall {
+  toolName: string;
+  args: Record<string, unknown>;
+}
+
+/**
+ * How to strip a tool's FRAMING to reach the answer underneath (P-021).
+ *
+ * Every field is optional and every field is a strip — there is no operation here
+ * that can reorder, merge, or rewrite content, and that is the design rather than
+ * an omission. See `replay.ts` for why the set is closed, and
+ * `assertReplayEnvelope` for the two rules the harness enforces on the patterns
+ * themselves (anchored prefixes, no stateful flags).
+ */
+export interface AnswerEnvelope {
+  /** Drop leading lines while they match — the tool's header. */
+  stripLeadingLines?: RegExp;
+  /** Drop a trailing block — the tool's footer/pagination notice. Anchor it with `$`. */
+  stripTrailing?: RegExp;
+  /** Drop a per-line prefix — the tool's line numbers. MUST be anchored at `^`. */
+  stripLinePrefix?: RegExp;
 }
 
 /** A sampled command the tool could not express, with the reason why. */

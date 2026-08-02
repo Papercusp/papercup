@@ -108,8 +108,14 @@ describe('computeDeathRearmMs (P1a — 429-aware re-arm)', () => {
   it('floors at the interval when retry-after is shorter', () => {
     expect(computeDeathRearmMs(rateDeath({ retryAfterMs: 5_000 }), INTERVAL_MS)).toBe(INTERVAL_MS);
   });
-  it('caps a very long retry-after at 1h', () => {
-    expect(computeDeathRearmMs(rateDeath({ retryAfterMs: 9_999_999_999 }), INTERVAL_MS)).toBe(3_600_000);
+  // WI-6852: the ceiling is 6h, not 1h. At 1h it BOUND on every real provider wall (measured:
+  // 13 of 15 lifecycle-death re-arms landed on exactly 60m, so each under-waited and re-fired
+  // into a still-active wall) instead of acting as the sanity rail against a bogus parse.
+  it('caps an absurd retry-after at the 6h sanity ceiling', () => {
+    expect(computeDeathRearmMs(rateDeath({ retryAfterMs: 9_999_999_999 }), INTERVAL_MS)).toBe(6 * 3_600_000);
+  });
+  it('no longer clips a realistic multi-hour wall (the 1h cap used to)', () => {
+    expect(computeDeathRearmMs(rateDeath({ retryAfterMs: 3 * 3_600_000 }), INTERVAL_MS)).toBe(3 * 3_600_000);
   });
   it('uses resetAt - now when there is no retry-after', () => {
     const now = 1_000_000;

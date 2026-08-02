@@ -19,7 +19,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../test/_work-items-schema';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  USER_TRUST_LIST_DDL,
+  WORK_ITEM_DEPS_DDL,
+} from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
 const COORD_EVENT_LOG_DDL = `
@@ -97,6 +101,9 @@ beforeAll(async () => {
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  // P-006: promotion now writes blocks-edges, so both stores must exist — coord_links (the
+  // authoritative writer, created by ensureCoordCapabilityTables) AND its work_item_deps mirror.
+  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
@@ -112,7 +119,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log, harness_shared.contributors RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log, harness_shared.contributors, harness_shared.work_item_deps RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   h.flagOn = true;
   h.plans.clear();
@@ -125,6 +132,25 @@ const features = () =>
     SELECT feature_id, title, source_plan_slug, taken_by, status
       FROM harness_shared.harness_features_consolidated
      WHERE item_kind = 'feature' ORDER BY feature_id`;
+
+/**
+ * The blocks-edges promotion wrote, as bare `{ blocked, blocker }` work-item ids. Refs are
+ * stored harness-QUALIFIED (D-009 rule 1: the feature family's form, and the only form a
+ * feature-family floor can see) — stripping the prefix here keeps the assertions readable
+ * while still failing loudly if the qualification is ever dropped, since a bare stored ref
+ * would not carry the prefix to strip and would not match a feature_id either.
+ */
+const depEdges = async () => {
+  const rows = await db.sql<{ blocked_ref: string; blocker_ref: string }[]>`
+    SELECT blocked_ref, blocker_ref
+      FROM harness_shared.work_item_deps
+     WHERE dep_type = 'blocks' ORDER BY blocked_ref, blocker_ref`;
+  const strip = (ref: string) => {
+    expect(ref.startsWith(`${HARNESS}#`)).toBe(true);
+    return ref.slice(HARNESS.length + 1);
+  };
+  return rows.map((r) => ({ blocked: strip(r.blocked_ref), blocker: strip(r.blocker_ref) }));
+};
 
 const base = { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, createdBy: 'su-test' };
 
@@ -229,6 +255,116 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(res.promoted).toBe(1);
     const rows = await features();
     expect(rows[0]!.status).toBe('blocked');
+  });
+
+  it('P-006: an item blocked by a LATER-declared item still gets its edge (the forward reference a single pass drops)', async () => {
+    // P-001 is declared FIRST but blocked by P-002 below it, so at the moment P-001 is minted
+    // its blocker has no work-item id yet. This is the case the two-pass split exists for: a
+    // one-pass translation can only see blockers already minted, and would silently drop this.
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Blocked by the one below', blockedBy: ['P-002'] },
+        { id: 'P-002', status: 'todo', text: 'The prerequisite' },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res.promoted).toBe(2);
+    expect(res).toMatchObject({ edgesWritten: 1, edgeFailures: 0, blockersUnresolved: 0 });
+
+    const rows = await features();
+    const blocked = rows.find((r) => r.title === 'Blocked by the one below')!.feature_id;
+    const blocker = rows.find((r) => r.title === 'The prerequisite')!.feature_id;
+    expect(await depEdges()).toEqual([{ blocked, blocker }]);
+  });
+
+  it('P-006/D-010: the edge lands in coord_links (authoritative) too, not only the work_item_deps mirror', async () => {
+    // The regression this pins: writing straight to work_item_deps reads back correctly today
+    // (the P-004 cutover flipped READS there) so it looks right — but syncFeatureBlockEdges
+    // rebuilds that table's edges for a blocked ref FROM coord_links, so a mirror-only edge is
+    // erased by the next unrelated blocker sync. Asserting the authoritative row is what makes
+    // "written through the wrong seam" a test failure instead of a silent time bomb.
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent', blockedBy: ['P-001'] },
+      ],
+    });
+    expect((await run.promotePlanItems(base)).edgesWritten).toBe(1);
+
+    const rows = await features();
+    const blocked = rows.find((r) => r.title === 'Dependent')!.feature_id;
+    const blocker = rows.find((r) => r.title === 'Prereq')!.feature_id;
+    const links = await db.sql<{ src_ref: string; dst_ref: string }[]>`
+      SELECT src_ref, dst_ref FROM harness_shared.coord_links WHERE rel = 'blocks'`;
+    // coord_links stores blocker → blocked; work_item_deps stores blocked → blocker.
+    expect(links).toEqual([{ src_ref: `${HARNESS}#${blocker}`, dst_ref: `${HARNESS}#${blocked}` }]);
+    expect(await depEdges()).toEqual([{ blocked, blocker }]);
+  });
+
+  it('P-006: a blocker promoted by an EARLIER run is still resolved (incremental promotion keeps its edges)', async () => {
+    // Only newly-open items are minted each run, so the in-run map alone cannot see a blocker
+    // that was promoted before — the stamp lookup is what stops an item added to an already
+    // started plan from losing exactly the edges pointing back at that plan's existing work.
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Promoted first' }] });
+    expect((await run.promotePlanItems(base)).promoted).toBe(1);
+    expect(await depEdges()).toEqual([]);
+
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'wip', text: 'Promoted first' },
+        { id: 'P-002', status: 'todo', text: 'Added later', blockedBy: ['P-001'] },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res).toMatchObject({ promoted: 1, edgesWritten: 1, blockersUnresolved: 0 });
+
+    const rows = await features();
+    const blocked = rows.find((r) => r.title === 'Added later')!.feature_id;
+    const blocker = rows.find((r) => r.title === 'Promoted first')!.feature_id;
+    expect(await depEdges()).toEqual([{ blocked, blocker }]);
+  });
+
+  it('P-006: a DONE blocker writes NO edge and is not counted unresolved (it is satisfied, not missing)', async () => {
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'done', text: 'Already finished' },
+        { id: 'P-002', status: 'todo', text: 'Was blocked by a finished item', blockedBy: ['P-001'] },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res).toMatchObject({ promoted: 1, edgesWritten: 0, blockersUnresolved: 0 });
+    expect(await depEdges()).toEqual([]);
+  });
+
+  it('P-006: an OPEN blocker that resolves to no work-item is COUNTED, never silently dropped', async () => {
+    // A dangling blockedBy ref. The failure mode this plan exists to kill is an edge that
+    // quietly is not there, so the anomaly has to surface in the result, not just a log line.
+    h.plans.set(PLAN, {
+      items: [{ id: 'P-001', status: 'todo', text: 'Points at a ghost', blockedBy: ['P-404'] }],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res).toMatchObject({ promoted: 1, edgesWritten: 0, blockersUnresolved: 1, edgeFailures: 0 });
+    expect(await depEdges()).toEqual([]);
+  });
+
+  it('P-006: one item with TWO blockers writes both edges (edgesWritten counts EDGES, not items)', async () => {
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Prereq A' },
+        { id: 'P-002', status: 'todo', text: 'Prereq B' },
+        { id: 'P-003', status: 'todo', text: 'Needs both', blockedBy: ['P-001', 'P-002'] },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res).toMatchObject({ promoted: 3, edgesWritten: 2, edgeFailures: 0 });
+
+    const rows = await features();
+    const blocked = rows.find((r) => r.title === 'Needs both')!.feature_id;
+    const edges = await depEdges();
+    expect(edges.map((e) => e.blocked)).toEqual([blocked, blocked]);
+    expect(edges.map((e) => e.blocker).sort()).toEqual(
+      [rows.find((r) => r.title === 'Prereq A')!.feature_id, rows.find((r) => r.title === 'Prereq B')!.feature_id].sort(),
+    );
   });
 
   it('is a NO-OP when the flag is OFF (flagOff:true, nothing minted)', async () => {

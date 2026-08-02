@@ -89,6 +89,11 @@ import '../../adv/hud/hud.css';
 // rides along the same way hud.css/plans.css already do for their own reused
 // pieces.
 import '../../adv/sessions/SessionsRosterView.css';
+// P-003: the control VOCABULARY (pc-ctl-*) — the five shapes that make a label,
+// a button and a mode tell themselves apart. Loaded here because this modal is
+// the surface Direction D restyles; see chat-controls.css's own header for the
+// grammar and the two repo rails (letter-spacing:0, no flex on a <button>).
+import './chat-controls.css';
 
 /** The roster payload shape (advRoster.list). Inlined, never imported from the
  *  server module — same rationale as HudView.tsx's identical inline type
@@ -499,12 +504,6 @@ function SessionStateHeader({
   // contradiction: two truthful numbers about different things, presented as if
   // they described the same pane. D-003 forbids clamping or hiding the count, so
   // the fix is to NAME what it counts rather than shrink it.
-  const detailChipLabel = [
-    locksCount > 0 ? `${locksCount} lock${locksCount === 1 ? '' : 's'}` : null,
-    unreadCount > 0 ? `${unreadCount} coord unread` : null,
-  ]
-    .filter(Boolean)
-    .join(' ');
   const detailChipTitle =
     unreadCount > 0
       ? `${unreadCount} unread coord message${unreadCount === 1 ? '' : 's'} addressed to this agent — a separate list from the conversation shown here. Opens the agent detail panel.`
@@ -605,7 +604,6 @@ function LiveSessionChat({
   onSend,
   sending,
   sendError,
-  onOpenDetail,
 }: {
   streamUrl: string;
   /** The su agent this session belongs to — resolves its roster entry for the
@@ -615,8 +613,6 @@ function LiveSessionChat({
   onSend: (text: string) => void;
   sending: boolean;
   sendError: string | null;
-  /** P-004: forwarded to SessionFooter's summary chip — see its own doc. */
-  onOpenDetail?: (section: 'locks' | 'coord') => void;
 }) {
   const { events, status, thinking } = useAgentThinkingStream('', '', '', streamUrl);
 
@@ -706,7 +702,11 @@ function LiveSessionChat({
       agentName={agentName}
       renderAvatar={renderAvatar}
       paneIcon={paneIcon}
-      footer={rosterEntry ? <SessionFooter entry={rosterEntry} onOpenDetail={onOpenDetail} /> : null}
+      // P-004: no footer. Everything it held was READ-ONLY state, and Direction
+      // D's spatial rule is that description sits ABOVE the transcript and
+      // operation below it — so those facts now render as the status band at
+      // the top of the conversation region (SessionStateHeader), and the space
+      // under the composer belongs entirely to controls.
       // chat-ref-pills-2026-07-26 P-008: scopes this session's WI-/EI-/F- ref
       // pills (live hydration + the popup destination) to the harness the
       // roster attributes this agent's spawned run to — the SAME roster
@@ -1308,6 +1308,14 @@ export default function SessionChatModal({
             ) : null}
           </div>
         ) : null}
+        {/* ── P-004: Direction D's STATUS BAND. Above the transcript, because
+            C's spatial rule is that description sits above and operation below;
+            inside the conversation region, because these facts are what the
+            transcript means — a maximized conversation that no longer says
+            whether the agent is alive has lost the more useful half. ── */}
+        {actionRosterEntry ? (
+          <SessionStateHeader entry={actionRosterEntry} onOpenDetail={scrollToDossierSection} />
+        ) : null}
         {pendingEscalations.length > 0 ? (
           <div
             style={{ flex: '0 0 auto', maxHeight: '45%', overflowY: 'auto', borderBottom: '1px solid var(--border)' }}
@@ -1360,7 +1368,6 @@ export default function SessionChatModal({
             onSend={handleSend}
             sending={sending}
             sendError={sendError}
-            onOpenDetail={scrollToDossierSection}
           />
         ) : null}
         {/* P-002: say what ACTUALLY happened. "Staged" is the case this fixes —

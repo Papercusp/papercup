@@ -375,8 +375,16 @@ a different agent working an unrelated resolver change in the same file. On a ho
 this reason is near-permanently true and says nothing about you. `absent` is the honest miss;
 `uncommitted` is not.
 
-When a run is in flight, trust its own log line (`checkpointing candidate <sha>` in
-`/tmp/papercup-green-checkpoint-manual-*.log`) over `judgingSha`, which can lag it.
+When a run is in flight, its own log line (`checkpointing candidate <sha>`) can be fresher
+than `judgingSha`, which lags — but ⚠ **do not glob `/tmp/papercup-green-checkpoint-manual-*.log`
+and take the newest.** Tests write synthetic placeholder shas into that same namespace, and
+`ls -t` routinely returns the TEST file first (EI-19326961954611487). Observed 2026-08-02:
+the newest match was `…-manual-ryte5.log`, containing only
+`was judging 11111111 … superseded by 222222222222` — which reads as a real replaceStale
+displacement and is not. Real run logs are `…-manual-<unit>-<ISO>.log`, so match
+**`/tmp/papercup-green-checkpoint-manual-*T*Z.log`** and ignore any line whose sha is not
+40-hex. When the log and `judgingSha` disagree, prefer whichever you can corroborate with
+the ancestry+blob check above — not the log by default.
 
 ## Server-side edits and the two-port model — no hot-reload
 

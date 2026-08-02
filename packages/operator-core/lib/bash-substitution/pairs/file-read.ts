@@ -34,7 +34,57 @@
  *  • One `file_path` per call; `-c`/byte windows have no expression.
  */
 
-import type { CoverageResult, SubstitutionPair } from '../types';
+import type { AnswerEnvelope, CoverageResult, ReplayToolCall, SubstitutionPair } from '../types';
+
+/**
+ * How to strip `capability:read`'s framing to reach the file content (P-021).
+ *
+ * Every pattern here is copied from the tool's own handler rather than guessed,
+ * because a normalizer that strips slightly the wrong thing is how an output-diff
+ * harness reports a clean sweep it did not earn:
+ *
+ *  • header  — `${abs} (${n} lines[, showing a–b])`, emitted once at the top.
+ *  • prefix  — `${String(n).padStart(6)}\t`, one per line.
+ *  • footer  — `\n\n… [${k} more lines — re-read with offset=${x}]`, when paged.
+ *
+ * The header pattern carries a `(?!\s*\d+\t)` guard, which is the whole reason it
+ * is written out rather than approximated. Header stripping runs BEFORE prefix
+ * stripping, so at that moment every content line still wears its line number —
+ * and a real file line reading `foo (3 lines)` would otherwise match the header
+ * pattern and be deleted as framing. The guard says "framing has no line number",
+ * which is exactly what distinguishes the two.
+ *
+ * NOT stripped, deliberately: the `(empty)` body the tool emits for an empty
+ * slice. It is framing, but no pattern can distinguish it from a file whose
+ * content is the literal text `(empty)`, and inventing one to make a case pass
+ * would be the normalizer deciding the verdict. An empty-file replay therefore
+ * reports `differs`, which is the honest answer — the two sides genuinely return
+ * different bytes there.
+ */
+const CAPABILITY_READ_ENVELOPE: AnswerEnvelope = {
+  stripLeadingLines: /^(?!\s*\d+\t).*\(\d+ lines(?:, showing \d+–\d+)?\)$/,
+  stripLinePrefix: /^\s*\d+\t/,
+  stripTrailing: /\n\n… \[\d+ more lines — re-read with offset=\d+\]$/,
+};
+
+/**
+ * Build a `capability:read` rewrite from an already-scored atom.
+ *
+ * Every pair's `rewrite` funnels through here and starts by calling its own
+ * `cover()`: a rewrite must never produce a call for an atom the envelope
+ * rejected, and re-deriving that judgement independently would let the two drift
+ * until the harness replays commands the registry says are not covered.
+ */
+function readRewrite(
+  pair: Pick<SubstitutionPair, 'cover'>,
+  atom: string,
+  args: (parsed: ParsedAtom) => Record<string, unknown> | null,
+): ReplayToolCall | null {
+  if (!pair.cover(atom).covered) return null;
+  const built = args(parseAtom(atom));
+  if (!built) return null;
+  return { toolName: 'capability:read', args: built };
+}
 
 /**
  * `capability:read`'s default page size, mirrored from the tool definition.
@@ -271,6 +321,18 @@ export const sedRangeRead: SubstitutionPair = {
       expression: `capability:read { file_path: "${files[0]}", offset: ${start}, limit: ${end - start + 1} }`,
     };
   },
+  replayEnvelope: CAPABILITY_READ_ENVELOPE,
+  rewrite(atom: string): ReplayToolCall | null {
+    return readRewrite(sedRangeRead, atom, (parsed) => {
+      const range = parsed.operands.find((op) => /^\s*\d+\s*,\s*\d+\s*p\s*$/.test(op));
+      const files = parsed.operands.filter((op) => op !== range);
+      const match = /(\d+)\s*,\s*(\d+)/.exec(range ?? '');
+      if (!match || files[0] === undefined) return null;
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      return { file_path: files[0], offset: start, limit: end - start + 1 };
+    });
+  },
 };
 
 /**
@@ -318,6 +380,12 @@ export const catFileRead: SubstitutionPair = {
         ` // paged at ${READ_DEFAULT_LIMIT} lines; re-read with offset for more`,
     };
   },
+  replayEnvelope: CAPABILITY_READ_ENVELOPE,
+  rewrite(atom: string): ReplayToolCall | null {
+    return readRewrite(catFileRead, atom, (parsed) =>
+      parsed.operands[0] === undefined ? null : { file_path: parsed.operands[0] },
+    );
+  },
 };
 
 /**
@@ -349,6 +417,18 @@ export const headFileRead: SubstitutionPair = {
       covered: true,
       expression: `capability:read { file_path: "${parsed.operands[0]}", limit: ${limit} }`,
     };
+  },
+  replayEnvelope: CAPABILITY_READ_ENVELOPE,
+  rewrite(atom: string): ReplayToolCall | null {
+    return readRewrite(headFileRead, atom, (parsed) => {
+      if (parsed.operands[0] === undefined) return null;
+      // Mirrors `cover()`'s default EXACTLY, including where that default is
+      // wrong. The replay harness exists to measure this pair, so a rewrite that
+      // quietly corrected the envelope it is supposed to be the executable form
+      // of would be marking its own homework.
+      const limit = parsed.flagArgs.get('-n') ?? String(READ_DEFAULT_LIMIT);
+      return { file_path: parsed.operands[0], limit: Number(limit) };
+    });
   },
 };
 
@@ -398,6 +478,14 @@ export const tailFileRead: SubstitutionPair = {
       covered: true,
       expression: `capability:read { file_path: "${parsed.operands[0]}", tail: ${tail} }`,
     };
+  },
+  replayEnvelope: CAPABILITY_READ_ENVELOPE,
+  rewrite(atom: string): ReplayToolCall | null {
+    return readRewrite(tailFileRead, atom, (parsed) => {
+      if (parsed.operands[0] === undefined) return null;
+      const tail = parsed.flagArgs.get('-n') ?? '10';
+      return { file_path: parsed.operands[0], tail: Number(tail) };
+    });
   },
 };
 

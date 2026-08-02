@@ -529,39 +529,6 @@ export interface CoordWindowResult {
 }
 
 /**
- * READ_INBOX_WINDOW_DOC — moved to `readInboxWindow` below.
- *
- * WHY (WI-6939). `readInbox`'s fast path is one `LIMIT 25000` query, and for a
- * typical owner it matches ~20.4k rows of which **99.8% are broadcasts** (`to`
- * containing `'*'`) — the matched set is essentially independent of how much
- * mail the caller actually has. Measured on the live box: 491,954 calls of the
- * no-`since_ts` shape, 220ms mean, 18,151 rows/call, **30.1 hours** cumulative
- * DB time; each call seq-scans the table, sorts ~20k rows and launches 3 extra
- * parallel workers. The `since_ts` shape of the same query costs 11.6ms — a 20x
- * gap that is entirely explained by the window, not the predicate.
- *
- * WHY THE CALLER SUPPLIES `enough` RATHER THAN A ROW LIMIT. A bare `LIMIT n` is
- * NOT sound here, and the reason is not the one that looks obvious. Pushing
- * `filterInbox`'s own options down (excludeOwn/kinds) would shrink the set by
- * **0.08%** — measured — because broadcasts pass all of them. The genuinely
- * selective filters live ABOVE this function, in the caller: a live `coord:inbox`
- * read excludes 7,651 ambient broadcasts and coalesces 11,564 repeats out of
- * ~20k. So a small `LIMIT` really can return a page that filters down to almost
- * nothing — via the caller's rules, which this function cannot see. Letting the
- * caller decide when it has enough is what makes the bound correct instead of
- * merely probable; it pages backwards until satisfied or history runs out.
- *
- * RETRACTION MARKERS STAY CORRECT, for a reason specific to newest-first paging:
- * a retraction notice is always NEWER than the message it retracts and is
- * addressed to the same audience, so any newest-first window containing a target
- * necessarily also contains its notice. Markers are collected over the ACCUMULATED
- * raw window (every page fetched so far), preserving `collectRetractedIds`'
- * pre-filter contract. A separate marker query would be both unnecessary and a
- * new seq scan.
- *
- * Falls back to the authoritative `readInbox` on a non-PG seam or any query error.
- */
-/**
  * The keyset pager both windowed reads share — newest-first over
  * `coord_event_log`, stopping when the caller is satisfied or history runs out.
  *
@@ -653,6 +620,40 @@ function warnOnPageBudgetExhausted(
   );
 }
 
+/**
+ * Bounded, keyset-paged inbox read — the cheap alternative to `readInbox` for a
+ * caller that only needs the most RECENT slice.
+ *
+ * WHY (WI-6939). `readInbox`'s fast path is one `LIMIT 25000` query, and for a
+ * typical owner it matches ~20.4k rows of which **99.8% are broadcasts** (`to`
+ * containing `'*'`) — the matched set is essentially independent of how much
+ * mail the caller actually has. Measured on the live box: 491,954 calls of the
+ * no-`since_ts` shape, 220ms mean, 18,151 rows/call, **30.1 hours** cumulative
+ * DB time; each call seq-scans the table, sorts ~20k rows and launches 3 extra
+ * parallel workers. The `since_ts` shape of the same query costs 11.6ms — a 20x
+ * gap that is entirely explained by the window, not the predicate.
+ *
+ * WHY THE CALLER SUPPLIES `enough` RATHER THAN A ROW LIMIT. A bare `LIMIT n` is
+ * NOT sound here, and the reason is not the one that looks obvious. Pushing
+ * `filterInbox`'s own options down (excludeOwn/kinds) would shrink the set by
+ * **0.08%** — measured — because broadcasts pass all of them. The genuinely
+ * selective filters live ABOVE this function, in the caller: a live `coord:inbox`
+ * read excludes 7,651 ambient broadcasts and coalesces 11,564 repeats out of
+ * ~20k. So a small `LIMIT` really can return a page that filters down to almost
+ * nothing — via the caller's rules, which this function cannot see. Letting the
+ * caller decide when it has enough is what makes the bound correct instead of
+ * merely probable; it pages backwards until satisfied or history runs out.
+ *
+ * RETRACTION MARKERS STAY CORRECT, for a reason specific to newest-first paging:
+ * a retraction notice is always NEWER than the message it retracts and is
+ * addressed to the same audience, so any newest-first window containing a target
+ * necessarily also contains its notice. Markers are collected over the ACCUMULATED
+ * raw window (every page fetched so far), preserving `collectRetractedIds`'
+ * pre-filter contract. A separate marker query would be both unnecessary and a
+ * new seq scan.
+ *
+ * Falls back to the authoritative `readInbox` on a non-PG seam or any query error.
+ */
 export async function readInboxWindow(
   ownerId: string,
   opts: InboxOptions = {},

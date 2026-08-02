@@ -13,6 +13,26 @@
  *    variance — the methodologically correct interval for "mean over tasks of
  *    per-task pass@1" (cf. "AI Agents That Matter", arXiv 2407.01502). It is
  *    DETERMINISTIC: seed the PRNG so a re-run reproduces the same interval.
+ *
+ * PAIRED designs get their own two, because using the unpaired forms on paired
+ * data is a real and costly mistake — it discards the pairing and can hide an
+ * effect several times larger than it can see:
+ *
+ *  - `pairedBootstrapCI` — resamples PAIRS (indices), not the two samples
+ *    independently, so the shared per-item difficulty cancels. When the two
+ *    arms correlate at rho, the sd of the difference is σ√(2(1-rho)) rather
+ *    than σ√2 — at rho=0.95 that is a ~4.5x tighter interval than treating
+ *    the arms as independent.
+ *  - `mcnemarExact` — the paired test for BINARY outcomes, which reads only
+ *    the discordant pairs (the items where the two arms disagree). Items both
+ *    arms get right, or both get wrong, carry no evidence about which is
+ *    better and are correctly ignored.
+ *
+ * Both report what an underpowered null actually means: `halfWidth` (what this
+ * sample resolved) and `mde80` (the effect it would have caught 80% of the
+ * time). A null without one of those beside it is indistinguishable from
+ * evidence of equivalence, which is the most common way a benchmark reaches a
+ * confidently wrong conclusion.
  */
 
 export interface Interval {

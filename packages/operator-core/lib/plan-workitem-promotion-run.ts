@@ -7,6 +7,14 @@
  * started+eligible plan never sits at zero work-items and the Queen has work to
  * place (D-002: plans:start is the single promotion path; the Queen just calls it).
  *
+ * TWO-PASS (work-item-dependency-edges-2026-08-02 P-006): mint every item, then translate
+ * each one's plan-level `blockedBy` into real `blocks` edges. Before this, promotion carried
+ * the plan's NODES but not its GRAPH — `blockedBy` was read only to pick a starting lane
+ * (EI-14024), so the dependency structure the plan described existed nowhere the scheduler
+ * could query. The pass split is load-bearing: a plan-item id only becomes a work-item id at
+ * mint time, so a single pass silently drops every forward reference. See
+ * `writePromotedDependencyEdges` for which writer to use — D-010, and it is not the obvious one.
+ *
  * Coherent with convert-at-pickup (plan-items/convert.ts): promotion reuses the
  * SAME idempotency truth (the `implements` coord_links edge via
  * listConvertedPlanItemRefs) and stamps the SAME payload.plan_item + writes the

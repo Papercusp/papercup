@@ -3,8 +3,15 @@
  *
  *   npx tsx packages/operator-core/lib/memory/bench/embedder-eval-cli.ts \
  *     [--legs gemma,local,openai,harrier,harrier384,sidecar[:model],ollama:<model>] \
+ *     [--corpus memory|prose] \
  *     [--sidecar http://127.0.0.1:PORT] [--ollama http://127.0.0.1:11434] \
  *     [--dims 384] [--out <path.json>]
+ *
+ * An MRL WIDTH SWEEP is written `--legs gemma@768,gemma@512,gemma@384,gemma@256`:
+ * siblings of one family cost ONE forward pass at the widest width, with the
+ * narrower widths derived by re-truncation. Beyond the 4x saving, this is what
+ * makes the sweep a clean paired comparison — every width sees the identical
+ * forward pass, so a delta between widths cannot be inference variance.
  *
  * Scores embedders head-to-head on the FROZEN gold-set fixture (corpus.v1 +
  * gold-set.v1) — same corpus, same queries, same metrics; the ONLY variable is
@@ -47,6 +54,8 @@ import {
   gemmaPrompt,
   harrierPrompt,
   mrlTruncate,
+  isTrainedDim,
+  EMBEDDER_DIM_SPECS,
   GEMMA_TARGET_DIMS,
 } from '@papercusp/memory';
 import { buildOpenAiEmbedder, resolveOpenAiKey } from '../configure';
@@ -137,15 +146,59 @@ function ollamaLeg(url: string, model: string): Leg {
   return { name: `ollama:${model}`, doc: call('document'), query: call('query') };
 }
 
+/** `gemma@512` — an MRL width of an in-process family (P-002's sweep shape). */
+const MRL_LEG = /^(gemma|harrier)@(\d+)$/;
+
+/**
+ * Widest requested width per MRL family. Every member of a family embeds at
+ * THIS width; narrower members are derived by re-truncation in `main`.
+ */
+function mrlFamilyWidths(names: string[]): Map<string, number> {
+  const widest = new Map<string, number>();
+  for (const n of names) {
+    const m = MRL_LEG.exec(n);
+    if (!m) continue;
+    const [, family, dims] = m;
+    widest.set(family, Math.max(widest.get(family) ?? 0, Number(dims)));
+  }
+  return widest;
+}
+
 async function buildLegs(
   names: string[],
   sidecarUrl?: string,
   ollamaUrl = 'http://127.0.0.1:11434',
 ): Promise<Array<Leg | { name: string; error: string }>> {
   const out: Array<Leg | { name: string; error: string }> = [];
+  const familyWidths = mrlFamilyWidths(names);
   for (const name of names) {
     try {
-      if (name === 'gemma') {
+      const mrl = MRL_LEG.exec(name);
+      if (mrl) {
+        const family = mrl[1] as 'gemma' | 'harrier';
+        const dims = Number(mrl[2]);
+        const native = EMBEDDER_DIM_SPECS[family].nativeDims;
+        // Asking for more dims than the model HAS is not a wider embedding —
+        // mrlTruncate would silently hand back the native vector and the leg
+        // would be scored under a label claiming a width it never had.
+        if (dims > native) {
+          out.push({ name, error: `dims ${dims} exceeds ${family} native ${native}` });
+          continue;
+        }
+        const at = familyWidths.get(family) ?? dims;
+        out.push({
+          name,
+          doc:
+            family === 'gemma'
+              ? buildGemmaEmbedder({ kind: 'document', dims: at })
+              : buildHarrierEmbedder({ kind: 'document', dims: at }),
+          query:
+            family === 'gemma'
+              ? buildGemmaEmbedder({ kind: 'query', dims: at })
+              : buildHarrierEmbedder({ kind: 'query', dims: at }),
+          mrl: { family, dims },
+        });
+      } else if (name === 'gemma') {
         out.push({
           name,
           doc: buildGemmaEmbedder({ kind: 'document' }),
@@ -333,28 +386,76 @@ async function main(): Promise<void> {
   );
 
   const results: Record<string, unknown> = {};
-  for (const leg of await buildLegs(legNames, sidecarUrl, ollamaUrl)) {
+
+  const record = (name: string, docVecs: number[][], queryVecs: number[][], meta: Record<string, unknown>): void => {
+    const scored = scoreLeg(corpusKeys, docVecs, gold.queries, queryVecs);
+    results[name] = { dims: docVecs[0]?.length ?? 0, ...meta, ...scored };
+    const a = scored.byClass.ALL_ANSWERABLE;
+    console.log(
+      `   ${name}: R@1=${a.recall_at_1} R@3=${a.recall_at_3} R@5=${a.recall_at_5} MRR=${a.mrr_at_10} ` +
+        `rejection-margin=${scored.rejection.margin}`,
+    );
+  };
+
+  // Partition: MRL siblings share one forward pass, everything else is its own.
+  const built = await buildLegs(legNames, sidecarUrl, ollamaUrl);
+  const families = new Map<string, Leg[]>();
+  const standalone: Leg[] = [];
+  for (const leg of built) {
     if ('error' in leg) {
       console.log(`\n== ${leg.name}: BLOCKED (${leg.error})`);
       results[leg.name] = { blocked: leg.error };
-      continue;
+    } else if (leg.mrl) {
+      const members = families.get(leg.mrl.family) ?? [];
+      members.push(leg);
+      families.set(leg.mrl.family, members);
+    } else {
+      standalone.push(leg);
     }
+  }
+
+  for (const [family, members] of families) {
+    members.sort((a, b) => b.mrl!.dims - a.mrl!.dims);
+    const base = members[0];
+    const baseDims = base.mrl!.dims;
+    const widths = members.map((m) => m.mrl!.dims);
+    console.log(`\n== ${family} MRL family ${widths.join('/')}: ONE pass at ${baseDims}, narrower widths derived ==`);
+    try {
+      const doc = await embedAll(base.doc, corpusTexts, `${family}@${baseDims}/doc`);
+      const query = await embedAll(base.query, queryTexts, `${family}@${baseDims}/query`);
+      for (const m of members) {
+        const d = m.mrl!.dims;
+        record(
+          m.name,
+          d === baseDims ? doc.vecs : doc.vecs.map((v) => mrlTruncate(v, d)),
+          d === baseDims ? query.vecs : query.vecs.map((v) => mrlTruncate(v, d)),
+          {
+            // Whether the model was actually TRAINED at this width — read from
+            // the declared spec, never restated here (D-001).
+            trainedDim: isTrainedDim(EMBEDDER_DIM_SPECS[family as 'gemma' | 'harrier'], d),
+            sharedPass: `${family}@${baseDims}`,
+            derived: d !== baseDims,
+            docSeconds: +doc.seconds.toFixed(1),
+            querySeconds: +query.seconds.toFixed(1),
+          },
+        );
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.log(`   ${family} family FAILED mid-embed: ${msg.slice(0, 200)}`);
+      for (const m of members) results[m.name] = { blocked: `embed_failed: ${msg.slice(0, 200)}` };
+    }
+  }
+
+  for (const leg of standalone) {
     console.log(`\n== ${leg.name}: embedding ==`);
     try {
       const doc = await embedAll(leg.doc, corpusTexts, `${leg.name}/doc`);
       const query = await embedAll(leg.query, queryTexts, `${leg.name}/query`);
-      const scored = scoreLeg(corpusKeys, doc.vecs, gold.queries, query.vecs);
-      results[leg.name] = {
-        dims: doc.vecs[0]?.length ?? 0,
+      record(leg.name, doc.vecs, query.vecs, {
         docSeconds: +doc.seconds.toFixed(1),
         querySeconds: +query.seconds.toFixed(1),
-        ...scored,
-      };
-      const a = scored.byClass.ALL_ANSWERABLE;
-      console.log(
-        `   ${leg.name}: R@1=${a.recall_at_1} R@3=${a.recall_at_3} R@5=${a.recall_at_5} MRR=${a.mrr_at_10} ` +
-          `rejection-margin=${scored.rejection.margin}`,
-      );
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.log(`   ${leg.name} FAILED mid-embed: ${msg.slice(0, 200)}`);
