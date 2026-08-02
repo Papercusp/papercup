@@ -2025,7 +2025,7 @@ const post = defineTool({
           protocolVersion: sessionPortContext.row.protocolVersion,
         });
       } catch (error) {
-        await markAdvSessionEnded(sessionId, 1).catch(() => undefined);
+        await markAdvSessionEnded(sessionId, 1, 'self').catch(() => undefined);
         return jsonRes({
           status: 'error',
           error: `session-port target claim raced or failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -2249,7 +2249,7 @@ const sessionEnded = defineTool({
       return jsonRes({ error: 'advSessionId required' }, 400);
     }
     try {
-      await markAdvSessionEnded(advSessionId, exitCode);
+      await markAdvSessionEnded(advSessionId, exitCode, 'self');
       return jsonRes({ ok: true });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);

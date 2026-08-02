@@ -40,13 +40,26 @@ import type { Sql } from 'postgres';
 const ISSUE_ENDPOINT_KIND = 'issue';
 const FEATURE_ENDPOINT_KIND = 'feature';
 
-/** Which side of the edge an endpoint sits on. */
-export type DepEndpointSide = 'blocked' | 'blocker';
+/**
+ * Which relation the endpoint lives in. `work_item_deps` is the MIRROR; `coord_links` is
+ * the AUTHORITATIVE store it is derived from, and `coord_threads` holds the third family
+ * of qualified refs (a work-item's comment thread). Watching only the mirror is how 32
+ * stale refs stayed live under a green verdict — see the header.
+ */
+export type DepEndpointRelation = 'work_item_deps' | 'coord_links' | 'coord_threads';
+
+/** Which side of the edge an endpoint sits on (per relation). */
+export type DepEndpointSide = 'blocked' | 'blocker' | 'src' | 'dst' | 'parent';
 
 /** One offending endpoint, identified precisely enough to repair it. */
 export interface DepEndpointDefect {
-  /** work_item_deps.id — the row to repair. */
-  edge_id: string;
+  /** Which relation this row lives in — the repair differs per relation, so it is not cosmetic. */
+  relation: DepEndpointRelation;
+  /**
+   * The row to repair: `id` for work_item_deps / coord_links, `thread_id` for coord_threads
+   * (which is keyed by (workspace_id, thread_id) and has no surrogate id).
+   */
+  row_id: string;
   workspace_id: string;
   side: DepEndpointSide;
   /** The `*_kind` the row DECLARES. */
@@ -122,15 +135,39 @@ export async function reconcileWorkItemDepEndpoints(
     }>
   >`
     WITH endpoints AS (
-      -- Both sides, flattened. The blocked side is where D-017's live rows were wrong, but
-      -- the blocker side carries the identical invariant and is checked the same way.
-      SELECT id, workspace_id, 'blocked'::text AS side, blocked_kind AS declared_kind, blocked_ref AS ref
+      -- Every relation that stores a work-item endpoint, flattened. The blocked side is
+      -- where D-017's live rows were wrong, but every other side carries the identical
+      -- invariant and is checked the same way.
+      SELECT id::text AS row_id, workspace_id, 'work_item_deps'::text AS relation,
+             'blocked'::text AS side, blocked_kind AS declared_kind, blocked_ref AS ref
         FROM harness_shared.work_item_deps
        WHERE dep_type = 'blocks'
       UNION ALL
-      SELECT id, workspace_id, 'blocker'::text, blocker_kind, blocker_ref
+      SELECT id::text, workspace_id, 'work_item_deps', 'blocker', blocker_kind, blocker_ref
         FROM harness_shared.work_item_deps
        WHERE dep_type = 'blocks'
+      -- coord_links is the AUTHORITATIVE store; work_item_deps above is its mirror. Both
+      -- sides are filtered to the two work-item families ON PURPOSE: coord_links also
+      -- carries plan_item / topic endpoints, whose refs use a DIFFERENT grammar
+      -- ('<planSlug>#P-NNN'), and feeding those to a work-item oracle would report every
+      -- one of them as dangling. The work_item_deps arms above are deliberately NOT
+      -- kind-filtered, so this widening cannot narrow what that table already reported.
+      UNION ALL
+      SELECT id::text, workspace_id, 'coord_links', 'src', src_kind, src_ref
+        FROM harness_shared.coord_links
+       WHERE src_kind IN (${ISSUE_ENDPOINT_KIND}, ${FEATURE_ENDPOINT_KIND})
+      UNION ALL
+      SELECT id::text, workspace_id, 'coord_links', 'dst', dst_kind, dst_ref
+        FROM harness_shared.coord_links
+       WHERE dst_kind IN (${ISSUE_ENDPOINT_KIND}, ${FEATURE_ENDPOINT_KIND})
+      -- coord_threads holds a work item's comment thread. Since the work-item mail surface
+      -- was retired (WI-6097) durable work-item-scoped direction IS thread posts, so a
+      -- stale parent_ref orphans comments from the item they belong to. Keyed by
+      -- (workspace_id, thread_id) with no surrogate id, hence thread_id as the row id.
+      UNION ALL
+      SELECT thread_id, workspace_id, 'coord_threads', 'parent', parent_kind, parent_ref
+        FROM harness_shared.coord_threads
+       WHERE parent_kind IN (${ISSUE_ENDPOINT_KIND}, ${FEATURE_ENDPOINT_KIND})
     ),
     split AS (
       -- D-009 rule 1: a feature ref is '<harness>#<id>', an issue ref is bare. Split on the
@@ -174,7 +211,7 @@ export async function reconcileWorkItemDepEndpoints(
     )
     SELECT
       CASE WHEN j.expected_kind IS NULL THEN 'dangling' ELSE 'mismatched' END AS defect,
-      j.id::text AS edge_id, j.workspace_id, j.side, j.declared_kind, j.ref, j.expected_kind,
+      j.row_id, j.relation, j.workspace_id, j.side, j.declared_kind, j.ref, j.expected_kind,
       -- Only computed for a dangling endpoint (the correlated scan is pointless otherwise,
       -- and this keeps the common all-clean case a single pass over the edges).
       CASE WHEN j.expected_kind IS NULL THEN (

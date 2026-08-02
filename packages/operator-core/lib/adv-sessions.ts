@@ -295,7 +295,7 @@ export async function listPendingWorkbenchLaunches(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             display, launch_argv, launched_at, started_at, ended_at, exit_code
+             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by
         FROM harness_shared.adv_sessions
        WHERE display = 'workbench'
          AND launched_at IS NULL
@@ -476,7 +476,7 @@ export async function listStartingTerminalLaunches(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             display, launch_argv, launched_at, started_at, ended_at, exit_code
+             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by
         FROM harness_shared.adv_sessions
        WHERE display = ${DISPLAY_TERMINAL_LAUNCH}
          AND (ended_at IS NULL OR session_id IS NULL)
@@ -834,7 +834,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
@@ -889,7 +889,7 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
         FROM harness_shared.adv_sessions a
        WHERE agent IS NOT NULL
          AND cwd IS NOT NULL
@@ -946,7 +946,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
@@ -973,7 +973,7 @@ export async function getAdvSessionInWorkspace(id: number, workspaceId: string):
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             started_at, ended_at, exit_code,
+             started_at, ended_at, exit_code, ended_by,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
@@ -1044,7 +1044,7 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id IS NOT NULL
        ORDER BY started_at DESC
@@ -1097,7 +1097,7 @@ export async function listRecordedLiveSessions(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT DISTINCT ON (coord_owner_id)
              id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NULL
          AND coord_owner_id IS NOT NULL
@@ -1262,7 +1262,7 @@ export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promis
     const { sql } = getOrgPg();
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${coordOwnerId}
        ORDER BY started_at DESC
@@ -1297,7 +1297,7 @@ export async function latestLiveAdvSessionByLabel(
     const cutoffIso = new Date(Date.now() - RECORDED_LIVE_MAX_AGE_MS).toISOString();
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
         FROM harness_shared.adv_sessions
        WHERE label = ${label}
          AND workspace_id = ${workspaceId}
@@ -1363,7 +1363,7 @@ export async function listEndedAdvSessions(
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NOT NULL
          -- Match the transcript handles understood by endedSessionStreamUrl:
@@ -1540,7 +1540,7 @@ export async function advSessionsByTranscriptHandles(
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
         FROM harness_shared.adv_sessions
        WHERE (${sessionIds}::text[] IS NOT NULL AND session_id = ANY(${sessionIds}::text[]))
           OR (${ompThreadIds}::text[] IS NOT NULL AND omp_thread_id = ANY(${ompThreadIds}::text[]))

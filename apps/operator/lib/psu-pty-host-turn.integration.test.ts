@@ -389,6 +389,14 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
       const ok1 = await injectIntoHost(sock, { mode: 'turn', data: 'same-text', deliveryId: 'distinct-1' });
       expect(ok1).toBe(true);
       expect(await waitForOutput(captured, 'ECHO:same-text')).toBe(true);
+      // Let the first delivery's OWN pipeline fully settle (submit-verify, mutex
+      // release, turnCoalescer.claim()) before firing the second — otherwise the
+      // pre-existing P-001a same-TEXT coalescer (an earlier, unrelated mechanism —
+      // see makeTurnCoalescer) can fold the second write into the first's still-
+      // open waiter slot purely because the text matches, which is not what this
+      // test is isolating (it wants to prove the ID-based dedup does NOT suppress
+      // a genuinely distinct delivery id, not exercise the text coalescer).
+      await sleep(300);
 
       const ok2 = await injectIntoHost(sock, { mode: 'turn', data: 'same-text', deliveryId: 'distinct-2' });
       expect(ok2).toBe(true);

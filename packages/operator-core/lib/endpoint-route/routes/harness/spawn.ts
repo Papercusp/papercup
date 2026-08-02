@@ -673,7 +673,7 @@ const invoke = defineTool({
     // `claude --resume` (wake-executor checks pid liveness, then resumes).
     if (advSessionRowId != null) {
       try {
-        await markAdvSessionEnded(advSessionRowId, r.exitCode ?? null);
+        await markAdvSessionEnded(advSessionRowId, r.exitCode ?? null, 'self');
       } catch (e) {
         console.warn(`[invoke] failed to mark adv session ${advSessionRowId} as ended:`, e);
       }

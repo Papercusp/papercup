@@ -34,7 +34,7 @@ function attachExitWatcher(child: ChildProcess, sessionPromise: Promise<number |
   child.on('exit', (code) => {
     sessionPromise
       .then((id) => {
-        if (id != null) void markAdvSessionEnded(id, code);
+        if (id != null) void markAdvSessionEnded(id, code, 'self');
       })
       .catch(() => { /* best-effort */ });
   });

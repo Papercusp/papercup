@@ -15,6 +15,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { z } from 'zod';
 import { askUserLocal } from '@/lib/chat-cards/ask-user-local';
+import { Tooltip } from '@/app/harness/Tooltip';
 // Import the BARREL, not `chat-actions/registry` directly: the barrel's
 // side-effect imports (`import './SessionActions'` etc.) are what REGISTER the
 // concrete actions. Importing the registry module alone gets you a working
@@ -281,25 +282,28 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
       {groupActions(actions).map(({ group, actions: groupItems }) => (
         <div className="chat-action-bar-group" key={group || '_'} data-group={group || undefined}>
           {groupItems.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              className="chat-action-bar-button pc-ctl-act"
-              data-testid={`chat-action-${action.id}`}
-              onClick={() => void invoke(action)}
-              disabled={runningId !== null}
-              aria-busy={runningId === action.id}
-              /* The FULL label stays the accessible name and the tooltip even
-                 when the button renders the short one, so compaction costs
-                 pixels and nothing else. */
-              aria-label={action.label}
-              title={action.label}
-            >
-              <span className="pc-ctl-act__inner">
-                {action.icon ? <span className="pc-ctl-act__icon">{action.icon}</span> : null}
-                <span>{action.shortLabel ?? action.label}</span>
-              </span>
-            </button>
+            /* The FULL label stays the accessible name AND the tooltip even when
+               the button renders the short one, so compaction costs pixels and
+               nothing else. The tooltip is the shared Radix primitive, not a bare
+               `title=` — that attribute is invisible to keyboard and touch users
+               and is rejected by the design-primitive lint (WI-6143). Trigger
+               asChild keeps the DOM element identical. */
+            <Tooltip key={action.id} label={action.label}>
+              <button
+                type="button"
+                className="chat-action-bar-button pc-ctl-act"
+                data-testid={`chat-action-${action.id}`}
+                onClick={() => void invoke(action)}
+                disabled={runningId !== null}
+                aria-busy={runningId === action.id}
+                aria-label={action.label}
+              >
+                <span className="pc-ctl-act__inner">
+                  {action.icon ? <span className="pc-ctl-act__icon">{action.icon}</span> : null}
+                  <span>{action.shortLabel ?? action.label}</span>
+                </span>
+              </button>
+            </Tooltip>
           ))}
         </div>
       ))}
