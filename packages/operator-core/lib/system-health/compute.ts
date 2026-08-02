@@ -1482,10 +1482,12 @@ async function collectObservations(ctx: HealthCtx): Promise<HealthPanel<Observat
 
 async function collectImprovements(ctx: HealthCtx): Promise<HealthPanel<ImprovementsHealth>> {
   return panelSafe<ImprovementsHealth>('improvements', async () => {
-    const { readImprovementItems } = await import('../harness/improvements/read-items');
     const { buildDigest } = await import('../harness/improvements/digest');
     const { readOwnerFullAutonomyGrant } = await import('../harness/improvements/full-autonomy-grant');
-    const items = await readImprovementItems({ state: 'open', limit: 1000 });
+    // P-008: the SHARED per-tick read (see HealthCtx.openImprovements) — collectWorkFeed's
+    // auto-eligible-stuck rollup needs the identical rows. Only the buildDigest OPTIONS
+    // differ between the two (ownerFullAutonomy here), so the rows are shared, not the digest.
+    const items = await ctx.openImprovements();
     // The OWNER FULL-AUTONOMY grant (Phase 2): keep the auto/human rollup counts honest —
     // when the grant is on, protected-surface bugs move into the auto lane.
     const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ctx.ws);
@@ -2427,7 +2429,10 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
     }
   }
 
-  const ctx: HealthCtx = { ws, now, potSlug, started, openPlacements, gatewayEnabled, gatewayReachable, overwatchAlive };
+  const ctx: HealthCtx = {
+    ws, now, potSlug, started, openPlacements, gatewayEnabled, gatewayReachable, overwatchAlive,
+    openImprovements: makeOpenImprovementsReader(),
+  };
 
   const [
     queen, bees, workItems, workFeed, tokens, watchdog, deploy,
@@ -2673,6 +2678,9 @@ export async function refreshHealthPanel(
     // exist only for the OTHER ~17 collectors this single-panel refresh
     // deliberately skips (the whole point is avoiding their cost).
     const ctx: HealthCtx = {
+      // P-008: its own memo, so a single-panel refresh pays exactly one improvements
+      // read — and never shares rows across two refreshes that are minutes apart.
+      openImprovements: makeOpenImprovementsReader(),
       ws, now, potSlug: null, started: false, openPlacements: null,
       gatewayEnabled: false, gatewayReachable: null, overwatchAlive: null,
     };
