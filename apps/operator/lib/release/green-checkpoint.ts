@@ -817,6 +817,50 @@ export interface GateLineage {
   failingFilesChangedInRange: string[];
 }
 
+/**
+ * Intersect the vitest-reported failing entries with git's changed paths — ACROSS
+ * THE TWO PATH SHAPES THEY ARE REPORTED IN. Pure + exported so the shape skew is
+ * unit-testable without a repo.
+ *
+ * EI-19324432490048782 / EI-19324146335802876: this was `failingTests.filter((f) =>
+ * changedSet.has(f))` — an exact-equality test between two vocabularies that can
+ * never be equal for any file inside a workspace:
+ *
+ *   failing (vitest, WORKSPACE-relative)  `lib/sync-resolver/sync-read-audit.test.ts`
+ *   changed (git, REPO-relative)          `packages/operator-core/lib/sync-resolver/sync-read-audit.test.ts`
+ *
+ * so the intersection was EMPTY BY CONSTRUCTION on every real gate run, silently
+ * disabling the one signal that tells an agent "this red may already be fixed
+ * downstream — re-verify at tip before re-diagnosing from scratch". Measured on run
+ * 634baf61 (candidate 1a9e8a1f): reported `[]` while 2 of the 5 failing files had in
+ * fact changed in the range, and 4 of the 5 were already green at tip. Several agents
+ * each re-triaged the same already-fixed files.
+ *
+ * Why it survived its test: the only fixture was `src/failing.test.ts` — a file at the
+ * repo ROOT, the single position where the two shapes coincide.
+ *
+ * Matching is therefore by SUFFIX on a path boundary, and returns the REPO-relative
+ * path (what a reader can actually act on). Entries that are not paths at all are
+ * skipped: `extractFailingTests` also emits bare workspace NAMES (`@papercusp/web`).
+ *
+ * A suffix match is deliberately tolerant: two workspaces sharing a relative path
+ * (`lib/index.test.ts`) could over-name a file. That is the right error direction —
+ * this value is diagnostic only (it never gates, and never feeds `classifyRedAgainstTip`,
+ * which decides real-red/stale from a real re-run at tip), and its note already tells
+ * the reader to verify. Silence was the expensive failure; a spare candidate is cheap.
+ */
+export function matchFailingFilesToChanged(failing: string[], changed: string[]): string[] {
+  const out = new Set<string>();
+  for (const f of failing) {
+    // `@papercusp/web` is a workspace name, not a path — never a changed FILE.
+    if (!f || f.startsWith('@')) continue;
+    for (const c of changed) {
+      if (c === f || c.endsWith(`/${f}`)) out.add(c);
+    }
+  }
+  return [...out];
+}
+
 /** Pure formatter — the ONE line the verdict leads with. Kept separate from the
  *  git reads so the exact wording is unit-testable without a repo. */
 export function formatGateLineageLine(lineage: GateLineage): string {
@@ -850,12 +894,13 @@ export async function computeGateLineage(
       commitsBetween(repo, candidate, tip),
       failingTests.length > 0 ? changedFiles(repo, candidate, tip) : Promise.resolve<string[]>([]),
     ]);
-    const changedSet = new Set(changed);
     return {
       candidate,
       tip,
       commitsBehind: commits.length,
-      failingFilesChangedInRange: failingTests.filter((f) => changedSet.has(f)),
+      // Shape-tolerant: vitest reports workspace-relative, git reports repo-relative.
+      // See matchFailingFilesToChanged (EI-19324432490048782).
+      failingFilesChangedInRange: matchFailingFilesToChanged(failingTests, changed),
     };
   } catch {
     return null;

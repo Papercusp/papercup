@@ -80,6 +80,22 @@ describe('applyResultDoor', () => {
     expect(spill.endsWith(original)).toBe(true);
   });
 
+  it('every truncation footer teaches `projection` — the knob that would have avoided the spill (P-020)', () => {
+    // The projection stage is a DISPATCH-level reserved arg, so it is in no
+    // tool's inputSchema and an agent can only learn it exists from a moment
+    // like this one. If this assertion is ever deleted, the feature silently
+    // becomes unreachable — which is the failure this test exists to prevent.
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 3) }] },
+      { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const pointer = (doored.content[doored.content.length - 1] as { text: string }).text;
+    expect(pointer).toContain('projection:');
+    expect(pointer).toContain('pick');
+    expect(pointer).toContain('head');
+    expect(pointer.endsWith(']')).toBe(true); // the footer stays a single well-formed bracket
+  });
+
   it('non-text items pass through intact; text budget is consumed in order', () => {
     const img = { type: 'image', data: 'aaaa', mimeType: 'image/png' };
     const doored = applyResultDoor(

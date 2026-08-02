@@ -483,6 +483,11 @@ interface LoopRow {
    *  'lifecycle' via (see classifyLoopLifecycleTurn). null when no such turn is indexed yet
    *  (session_turns ingest lag) — never treated as a death, only ever as "nothing to check". */
   last_assistant_text_after_fire: string | null;
+  /** WI-6852: newest session_turns ts indexed for this owner (any speaker) — the ingest
+   *  WATERMARK. Disambiguates the field above: a null text with a watermark BEHIND the quiet
+   *  instant is an ingest lag, not evidence the turn ended cleanly. null when the owner has no
+   *  indexed turns at all. */
+  turns_ingest_watermark: Date | string | null;
 }
 
 /**
@@ -559,6 +564,34 @@ function completionSignal(
   //    after the fire then went quiet. last_active_at is the genuine-activity ts (NOT keepalive).
   const la = tsMs(row.presence_last_active_at);
   if (la != null && la > lastFiredMs && nowMs - la >= FALLBACK_QUIET_MS) {
+    // WI-6852 — DEFER while the death evidence is merely UNINGESTED rather than absent.
+    //
+    // Reaching this fallback already means BOTH stronger signals missed (no lifecycle 'ended',
+    // no turn-journal row), so the turn ended abnormally often enough that the caller
+    // reclassifies it as a death from `last_assistant_text_after_fire`. But that text arrives
+    // via the session_turns ingest, which lags MINUTES, while quiescence is declared after just
+    // FALLBACK_QUIET_MS (60s). The settle therefore wins the race, the reclassification finds
+    // nothing, and the loop re-arms at the BARE interval — firing straight back into whatever
+    // killed it (a provider usage wall). The correct reset-aware re-arm then lands on the NEXT
+    // cycle, after the damage. Live: last beat 02:42:47.965 -> re-arm +900s -> fire 02:58:02,
+    // while the +3600s reclassification only landed 02:59:31.
+    //
+    // So a null text is only trustworthy once the ingest has actually REACHED the quiet instant.
+    // While the watermark is behind `la`, return null: the loop stays parked and a later pass
+    // settles it once the evidence is readable. This cannot wedge — the layer-3 stuck-park
+    // backstop still re-arms off last_fired_at + interval at its >=30min floor, so the worst
+    // case is settling ~30min late instead of firing blind into a live wall.
+    //
+    // NARROW BY DESIGN: a null WATERMARK (owner has no indexed turns at all — never ingested,
+    // not merely behind) falls THROUGH to today's behavior. Deferring needs positive evidence
+    // the ingest is lagging; without it we would silently downgrade an unmeasured population
+    // from the 60s fallback to the 30min backstop.
+    if (row.last_assistant_text_after_fire == null) {
+      const ingestWatermark = tsMs(row.turns_ingest_watermark);
+      if (ingestWatermark != null && ingestWatermark < la) {
+        return null;
+      }
+    }
     return { completedAt: la, via: 'presence-quiescence' };
   }
   return null;
@@ -660,7 +693,16 @@ export async function reconcileLoopRoutines(
                AND st.speaker = 'assistant'
                AND st.ts > r.last_fired_at
              ORDER BY st.ts DESC, st.turn_idx DESC
-             LIMIT 1) AS last_assistant_text_after_fire
+             LIMIT 1) AS last_assistant_text_after_fire,
+           -- WI-6852: the session_turns INGEST WATERMARK for this owner — the newest turn ts
+           -- indexed so far, any speaker. Answers the question the text lookup above cannot:
+           -- is a NULL last_assistant_text_after_fire a REAL absence, or merely a turn that
+           -- has not been ingested yet? Index-backed (session_turns_owner_ts_idx on (owner, ts)),
+           -- same correlated single-row cost class as the lookup above. Deliberately NOT
+           -- speaker-filtered: this is "how far has the ingest got", not "what did it say".
+           (SELECT max(st2.ts)
+              FROM harness_shared.session_turns st2
+             WHERE st2.owner = r.target_owner_id) AS turns_ingest_watermark
       FROM harness_shared.routines r
      WHERE r.active = TRUE
        AND r.reschedule_interval_sec IS NOT NULL

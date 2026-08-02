@@ -503,4 +503,12 @@ export type PerFileGateResult = {
     baselineTotal: number;
     newBaselineByFile?: Record<string, number> | undefined;
     brokenFiles?: string[] | undefined;
+    /**
+     * - TS1xxx-broken files OUTSIDE the caller's
+     * `changedFiles` set (EI-19321179234197157). Never gates the verdict — reported so the caller
+     * knows tsc's counts for other files may be under/over-reported while these stay broken — but a
+     * parse error in a file the caller did not name must not fail a `--mine`/`--files`-scoped run,
+     * mirroring how an unattributed TYPE-error regression is `peerDrift`, not a gate failure.
+     */
+    unattributedBrokenFiles?: string[] | undefined;
 };

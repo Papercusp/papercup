@@ -52,6 +52,7 @@ import {
   pipelineName,
   formatGateLineageLine,
   computeGateLineage,
+  matchFailingFilesToChanged,
   type GateLineage,
   type CheckpointDeps,
   type CheckpointExec,
@@ -777,6 +778,48 @@ describe('runGreenCheckpoint', () => {
       expect(lineage!.tip).toBe(tip);
       expect(lineage!.commitsBehind).toBe(3); // c3, c4, c5
       expect(lineage!.failingFilesChangedInRange).toEqual(['src/failing.test.ts']);
+    });
+
+    // EI-19324432490048782 / EI-19324146335802876. The test ABOVE passes a failing file at
+    // the repo ROOT (`src/failing.test.ts`) — the one position where vitest's
+    // workspace-relative vocabulary and git's repo-relative vocabulary coincide. Every real
+    // failing file lives INSIDE a workspace, where they cannot coincide, so the old
+    // exact-equality intersection was empty on every real gate run while this suite stayed
+    // green. These cases pin the real shape.
+    it('computeGateLineage: matches a workspace-relative failing file against a repo-relative change (the shape that was empty by construction)', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const candidate = await commit('a', '2', 'c2 — the candidate');
+      await commit('packages/operator-core/lib/sync-resolver/sync-read-audit.test.ts', 'fixed', 'c3');
+      const tip = await commit('other.ts', 'y', 'c4');
+      // Exactly what the gate passes: vitest's workspace-relative path, plus the bare
+      // workspace NAMES extractFailingTests also emits (never paths, must not match).
+      const lineage = await computeGateLineage(repo, 'main', candidate, [
+        '@papercusp/operator-core',
+        'lib/sync-resolver/sync-read-audit.test.ts',
+      ]);
+      expect(lineage).not.toBeNull();
+      expect(lineage!.tip).toBe(tip);
+      // The REPO-relative path is what the reader can act on.
+      expect(lineage!.failingFilesChangedInRange).toEqual([
+        'packages/operator-core/lib/sync-resolver/sync-read-audit.test.ts',
+      ]);
+    });
+
+    it('matchFailingFilesToChanged: skips workspace names, needs a path boundary, dedupes', () => {
+      // A workspace name is not a file, even though it contains a slash.
+      expect(matchFailingFilesToChanged(['@papercusp/web'], ['apps/web'])).toEqual([]);
+      // Suffix must land on a path boundary — `audit.test.ts` must not match `read-audit.test.ts`.
+      expect(matchFailingFilesToChanged(['audit.test.ts'], ['packages/x/lib/read-audit.test.ts'])).toEqual([]);
+      // Unchanged failing file ⇒ no match (the presumptively-real-red signal must survive).
+      expect(matchFailingFilesToChanged(['lib/a.test.ts'], ['packages/x/lib/b.test.ts'])).toEqual([]);
+      // Two failing entries resolving to one changed file are reported once.
+      expect(
+        matchFailingFilesToChanged(
+          ['lib/a.test.ts', 'packages/x/lib/a.test.ts'],
+          ['packages/x/lib/a.test.ts'],
+        ),
+      ).toEqual(['packages/x/lib/a.test.ts']);
     });
 
     it('computeGateLineage: candidate IS the tip', async () => {

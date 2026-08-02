@@ -1,0 +1,1077 @@
+{
+  "version": "v1",
+  "corpusVersion": "v1",
+  "frozenAt": "2026-08-02T07:23:15.734Z",
+  "count": 120,
+  "classes": {
+    "lexical-gap": 10,
+    "session-start-intent": 8,
+    "hard-negative": 12,
+    "exact-identifier": 90
+  },
+  "note": "Prose-surface gold set (prose-embedding-384-untrained-mrl-fix P-001), D-003 methodology over the prose corpus. lexical-gap targets ONE section, leaving its page-siblings as near-miss distractors. exact-identifier is mined and labelled by construction; opaque numeric ids are excluded as floor artifacts. hard-negative absence is grep-verified at build time. Expected keys bind to prose-corpus.v1.json — regenerate BOTH together as a new version, never in place.",
+  "queries": [
+    {
+      "id": "plg-001",
+      "class": "lexical-gap",
+      "query": "a privileged connection ignores the per-tenant row filter, so one customer can end up seeing another customer trust entry unless the boundary is added by hand",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/admission-subqueries-must-be-workspace-scoped#the-trap"
+      ],
+      "note": "avoids 'workspace-scoped/RLS/admin handle/subquery/user_trust_list/migration/policy'"
+    },
+    {
+      "id": "plg-002",
+      "class": "lexical-gap",
+      "query": "you cannot see the cross-tenant leak with a single-tenant fixture; the second tenant has to exist in the setup before the bug shows up at all",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/admission-subqueries-must-be-workspace-scoped#prove-it-with-a-test-not-by-reading"
+      ],
+      "note": "avoids 'workspace/test/read/prove/RLS'; probes the prove-with-a-test section vs its siblings"
+    },
+    {
+      "id": "plg-003",
+      "class": "lexical-gap",
+      "query": "background helper processes keep dying part-way through their job and we assumed the service bouncing was to blame, but the model provider was stalling them out instead",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/auto-implement-orphans-are-gateway-deaths-not-restarts#tl-dr"
+      ],
+      "note": "avoids 'auto-implement/orphan/gateway/restart/dispatch/host-restart'"
+    },
+    {
+      "id": "plg-004",
+      "class": "lexical-gap",
+      "query": "stop tightening the shutdown deadline or rewriting the graceful-exit path, because the teardown is already quick and is not what is going wrong",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/auto-implement-orphans-are-gateway-deaths-not-restarts#don-t"
+      ],
+      "note": "avoids 'TimeoutStopUSec/SIGTERM/DBOS/drain/orphan'; a DIRECTIVE section vs its explanatory siblings"
+    },
+    {
+      "id": "plg-005",
+      "class": "lexical-gap",
+      "query": "we shipped the change and bounced the main server, but other long-lived programs carried on running their own stale copy of that file",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/behavior-cutover-must-enumerate-every-process-that-loads-the-module#tl-dr-for-the-next-agent"
+      ],
+      "note": "avoids 'cutover/enumerate/module/deploy/:3070/process'"
+    },
+    {
+      "id": "plg-006",
+      "class": "lexical-gap",
+      "query": "the machines report a healthy link to each other and yet nothing actually replicates, because the queue pump was never started on the already-running path",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/boot-wire-drain-ordering#symptom"
+      ],
+      "note": "avoids 'peer_connected/federation/outbox/wire/drain/boot'"
+    },
+    {
+      "id": "plg-007",
+      "class": "lexical-gap",
+      "query": "each piece was demonstrated working on its own, but nobody exercised the join between them, so the defect lived exactly in the untested handoff",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/boot-wire-drain-ordering#why-the-tests-didn-t-catch-it-the-blind-spot-to-avoid-repeating"
+      ],
+      "note": "avoids 'seam/test/blind spot/isolation'; sibling-discrimination probe within the same page"
+    },
+    {
+      "id": "plg-008",
+      "class": "lexical-gap",
+      "query": "once you save more than a few hundred notes the rolled-up listing quietly stops covering all of them, so lookups look healthy while silently missing entries",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/claude-file-memory-index-cap#the-three-layer-trap"
+      ],
+      "note": "avoids 'MEMORY.md/projection/cap/stale/topic files/index'"
+    },
+    {
+      "id": "plg-009",
+      "class": "lexical-gap",
+      "query": "do not build anything that assumes the on-disk note store keeps scaling, because past a few hundred records it is no longer visible at startup",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/claude-file-memory-index-cap#what-to-do-with-this"
+      ],
+      "note": "avoids 'file store/cap/boot/design'; DIRECTIVE section vs the mechanism section on the same page"
+    },
+    {
+      "id": "plg-010",
+      "class": "lexical-gap",
+      "query": "the automatic lifecycle pings only reach the agents who opted into that area, instead of going out to everybody",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/coord-emit-subscription-scoping#gotchas"
+      ],
+      "note": "avoids 'coord/emit/subscription-scoped/broadcast/audience'"
+    },
+    {
+      "id": "psi-001",
+      "class": "session-start-intent",
+      "query": "I need to add a database migration without colliding with another agent picking the same number",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/migration-number-collisions-and-reservation-dx#how-to-allocate-a-number-now-the-supported-path"
+      ],
+      "note": "boot intent: the supported allocation path, not the post-mortem sections on the same page"
+    },
+    {
+      "id": "psi-002",
+      "class": "session-start-intent",
+      "query": "figure out whether I should be running a shell command or calling a tool for this read",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/bash-vs-tool-routing#1-the-registry-is-the-single-source-of-truth"
+      ],
+      "note": "boot intent over a 23-section page — heavy sibling competition"
+    },
+    {
+      "id": "psi-003",
+      "class": "session-start-intent",
+      "query": "ToolSearch will not resolve a tool name I copied out of the docs, find me the workaround",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/toolsearch-cannot-select-colon-form-tool-names#the-fix-the-escape-hatch-already-exists-it-was-just-undocumented"
+      ],
+      "note": "boot intent aimed at the FIX section rather than the root-cause section"
+    },
+    {
+      "id": "psi-004",
+      "class": "session-start-intent",
+      "query": "my database connections are erroring right after connecting and I need a way to turn it off without shipping code",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/pgbouncer-rejects-statement-timeout-startup-param#immediate-kill-switch-no-deploy"
+      ],
+      "note": "boot intent selecting the kill-switch section over symptom/root-cause siblings"
+    },
+    {
+      "id": "psi-005",
+      "class": "session-start-intent",
+      "query": "work out what a headless agent is actually allowed to do and whether the blocklist really holds",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/claude-code-headless-permissions#honest-limits-the-deny-list-alone-is-not-a-sandbox"
+      ],
+      "note": "boot intent over an 8-section page with several near-identical update sections"
+    },
+    {
+      "id": "psi-006",
+      "class": "session-start-intent",
+      "query": "a URL parameter is arriving as the wrong type and my toggle reads false when it should be true",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/nuqs-tanstack-search-coercion-and-clobber#1-tanstack-coerces-dock-1-to-the-number-1-1-is-false"
+      ],
+      "note": "boot intent describing the symptom in user terms, not the library names"
+    },
+    {
+      "id": "psi-007",
+      "class": "session-start-intent",
+      "query": "some in-memory value seems to differ depending on which process handled the request",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/module-scoped-state-is-per-worker-the-operator-is-a-forked-cluster#the-one-line-version"
+      ],
+      "note": "boot intent over a 10-section page; targets the summary section"
+    },
+    {
+      "id": "psi-008",
+      "class": "session-start-intent",
+      "query": "how do I tell whether this state is really shared or is per-process before I trust it",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/module-scoped-state-is-per-worker-the-operator-is-a-forked-cluster#the-discrimination-test"
+      ],
+      "note": "SAME page as psi-007, DIFFERENT section — a direct sibling-discrimination pair"
+    },
+    {
+      "id": "phn-001",
+      "class": "hard-negative",
+      "query": "how long should sourdough starter proof before baking",
+      "expected": [],
+      "note": "grep-verified absent (anchors: sourdough, proof before, baking)"
+    },
+    {
+      "id": "phn-002",
+      "class": "hard-negative",
+      "query": "diagnosing a failing turbocharger on a diesel engine",
+      "expected": [],
+      "note": "grep-verified absent (anchors: turbocharger, diesel)"
+    },
+    {
+      "id": "phn-003",
+      "class": "hard-negative",
+      "query": "best knitting stitch for a wool scarf",
+      "expected": [],
+      "note": "grep-verified absent (anchors: knitting, wool scarf)"
+    },
+    {
+      "id": "phn-004",
+      "class": "hard-negative",
+      "query": "calculating a Hohmann transfer orbit between two planets",
+      "expected": [],
+      "note": "grep-verified absent (anchors: hohmann, transfer orbit)"
+    },
+    {
+      "id": "phn-005",
+      "class": "hard-negative",
+      "query": "symptoms and treatment of feline hyperthyroidism",
+      "expected": [],
+      "note": "grep-verified absent (anchors: feline, hyperthyroid)"
+    },
+    {
+      "id": "phn-006",
+      "class": "hard-negative",
+      "query": "how to prune apple trees in early spring",
+      "expected": [],
+      "note": "grep-verified absent (anchors: prune apple, apple tree)"
+    },
+    {
+      "id": "phn-007",
+      "class": "hard-negative",
+      "query": "rules for castling in chess and when it is illegal",
+      "expected": [],
+      "note": "grep-verified absent (anchors: castling, chess)"
+    },
+    {
+      "id": "phn-008",
+      "class": "hard-negative",
+      "query": "tuning a guitar to drop D by ear",
+      "expected": [],
+      "note": "grep-verified absent (anchors: guitar, fretboard)"
+    },
+    {
+      "id": "phn-009",
+      "class": "hard-negative",
+      "query": "mortgage amortization schedule with biweekly payments",
+      "expected": [],
+      "note": "grep-verified absent (anchors: mortgage, amortization)"
+    },
+    {
+      "id": "phn-010",
+      "class": "hard-negative",
+      "query": "identifying edible mushrooms in temperate woodland",
+      "expected": [],
+      "note": "grep-verified absent (anchors: mushroom, woodland)"
+    },
+    {
+      "id": "phn-011",
+      "class": "hard-negative",
+      "query": "training plan for a first marathon in sixteen weeks",
+      "expected": [],
+      "note": "grep-verified absent (anchors: marathon, training plan)"
+    },
+    {
+      "id": "phn-012",
+      "class": "hard-negative",
+      "query": "how tides are affected by the lunar cycle",
+      "expected": [],
+      "note": "grep-verified absent (anchors: tides, lunar)"
+    },
+    {
+      "id": "pei-001",
+      "class": "exact-identifier",
+      "query": "ab-runner-real.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/gym-cycle-inprocess-llm-bypasses-gateway#the-trap"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/gym-cycle-inprocess-llm); label correct by construction"
+    },
+    {
+      "id": "pei-002",
+      "class": "exact-identifier",
+      "query": "ab-verdict.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#test-gym-apiary-framework-2026-06-09"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp test-gym-apiary-framework-2026); label correct by construction"
+    },
+    {
+      "id": "pei-003",
+      "class": "exact-identifier",
+      "query": "acceptanceApproved",
+      "expected": [
+        "doc:papercusp-engineering#harness/hooks#hooks-that-fire-today"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering harness/hooks); label correct by construction"
+    },
+    {
+      "id": "pei-004",
+      "class": "exact-identifier",
+      "query": "account-failover.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#multi-account-routing-verification-2026-06-15"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp multi-account-routing-verifica); label correct by construction"
+    },
+    {
+      "id": "pei-005",
+      "class": "exact-identifier",
+      "query": "accountProviderForInteractiveBackend",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/omp-gateway-routing-via-models-yml#account-pinning"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/omp-gateway-routing-via); label correct by construction"
+    },
+    {
+      "id": "pei-006",
+      "class": "exact-identifier",
+      "query": "ackCoordMessage",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/inbox-cards#the-split-that-actually-works"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/inbox-cards); label correct by construction"
+    },
+    {
+      "id": "pei-007",
+      "class": "exact-identifier",
+      "query": "acknowledgeRedTests",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#deploy-trigger-and-gate-unblock-2026-06-21"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp deploy-trigger-and-gate-unbloc); label correct by construction"
+    },
+    {
+      "id": "pei-008",
+      "class": "exact-identifier",
+      "query": "actions-block.ts",
+      "expected": [
+        "doc:papercusp-engineering#implementation/multi-harness-spawning#6-estimates",
+        "doc:papercusp-engineering#implementation/multi-harness-spawning#action-execution",
+        "doc:papercusp-engineering#implementation/multi-harness-spawning#step-4-retarget-callers-0-5d"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering implementation/multi-harness-spawning); label correct by construction"
+    },
+    {
+      "id": "pei-009",
+      "class": "exact-identifier",
+      "query": "activeWorkspaceId",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#per-window-workspace-context-2026-05-31"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp per-window-workspace-context-2); label correct by construction"
+    },
+    {
+      "id": "pei-010",
+      "class": "exact-identifier",
+      "query": "additiveOverrideWarning",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/pot-instance-overrides-must-be-additive#the-guard"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/pot-instance-overrides-); label correct by construction"
+    },
+    {
+      "id": "pei-011",
+      "class": "exact-identifier",
+      "query": "admin-test-suites.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#papercup-test-suite-green-2026-06-02"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp papercup-test-suite-green-2026); label correct by construction"
+    },
+    {
+      "id": "pei-012",
+      "class": "exact-identifier",
+      "query": "adminPoolStatementTimeoutMs",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/pgbouncer-rejects-statement-timeout-startup-param#immediate-kill-switch-no-deploy",
+        "doc:papercusp-engineering#agent-insights/pgbouncer-rejects-statement-timeout-startup-param#root-cause"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/pgbouncer-rejects-state); label correct by construction"
+    },
+    {
+      "id": "pei-013",
+      "class": "exact-identifier",
+      "query": "admissionStarved",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/pot-survey-empty-frontier-is-not-a-read-bug#how-to-apply"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/pot-survey-empty-fronti); label correct by construction"
+    },
+    {
+      "id": "pei-014",
+      "class": "exact-identifier",
+      "query": "adoptSharedHiveIdentity",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/papercusp-shared-pot-per-owner#the-two-bootstrap-hook-points-bootstrap-papercusp-pot-ts"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/papercusp-shared-pot-pe); label correct by construction"
+    },
+    {
+      "id": "pei-015",
+      "class": "exact-identifier",
+      "query": "adv-roster.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/mug-overwatch-dock-panes-tail-session-claude#2-the-roster-sessionid-comes-from-the-adv-row-not-spawned-agents",
+        "doc:papercusp-engineering#agent-insights/mug-overwatch-dock-panes-tail-session-claude#shipping-it"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/mug-overwatch-dock-pane); label correct by construction"
+    },
+    {
+      "id": "pei-016",
+      "class": "exact-identifier",
+      "query": "adv_sessions.launch_argv",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#presence-coord-unification-2026-07-01"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp presence-coord-unification-202); label correct by construction"
+    },
+    {
+      "id": "pei-017",
+      "class": "exact-identifier",
+      "query": "adv_sessions.session_id",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#loop-wake-rate-limit-robustness-2026-06-23"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp loop-wake-rate-limit-robustnes); label correct by construction"
+    },
+    {
+      "id": "pei-018",
+      "class": "exact-identifier",
+      "query": "advertise.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#token-efficient-agent-io-2026-06-06"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp token-efficient-agent-io-2026-); label correct by construction"
+    },
+    {
+      "id": "pei-019",
+      "class": "exact-identifier",
+      "query": "affected-tests.mjs",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/generalizing-a-lib-host-seam-pattern#going-forward-start-generic-first-the-lint"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/generalizing-a-lib-host); label correct by construction"
+    },
+    {
+      "id": "pei-020",
+      "class": "exact-identifier",
+      "query": "agent-config.ts",
+      "expected": [
+        "doc:papercusp-engineering#system/lifecycle#caveats-what-s-currently-in-flux"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering system/lifecycle); label correct by construction"
+    },
+    {
+      "id": "pei-021",
+      "class": "exact-identifier",
+      "query": "agent-fleets-store.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#named-su-agent-fleets-2026-06-29"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp named-su-agent-fleets-2026-06-); label correct by construction"
+    },
+    {
+      "id": "pei-022",
+      "class": "exact-identifier",
+      "query": "agent-state-stamp-cluster.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/module-scoped-state-is-per-worker-the-operator-is-a-forked-cluster#related"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/module-scoped-state-is-); label correct by construction"
+    },
+    {
+      "id": "pei-023",
+      "class": "exact-identifier",
+      "query": "agent-usage-telemetry.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/token-audit-p013-source-population-shift#the-three-sources-what-the-buckets-mean"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/token-audit-p013-source); label correct by construction"
+    },
+    {
+      "id": "pei-024",
+      "class": "exact-identifier",
+      "query": "agentRunsConsolidated",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#adv-harness-tab-migration-2026-05-30"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp adv-harness-tab-migration-2026); label correct by construction"
+    },
+    {
+      "id": "pei-025",
+      "class": "exact-identifier",
+      "query": "agent_facts.audience_scope",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/federation-public-release-known-limitations#7-data-completeness-is-table-grain-guarded-and-column-grain-guarded-resolved-2026-07-09"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/federation-public-relea); label correct by construction"
+    },
+    {
+      "id": "pei-026",
+      "class": "exact-identifier",
+      "query": "allocateNextSchemeName",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#fleet-color-schemes-2026-06-30"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp fleet-color-schemes-2026-06-30); label correct by construction"
+    },
+    {
+      "id": "pei-027",
+      "class": "exact-identifier",
+      "query": "allowDesktopBridge",
+      "expected": [
+        "turn:claude#57fe6faf-f966-455d-af00-3c59cea17ca2#33"
+      ],
+      "note": "mined: occurs in exactly one cluster (claude 57fe6faf-f966-455d-af00-3c59cea17ca2); label correct by construction"
+    },
+    {
+      "id": "pei-028",
+      "class": "exact-identifier",
+      "query": "allowExternalComposesWith",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#app-templates-2026-07-04"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp app-templates-2026-07-04); label correct by construction"
+    },
+    {
+      "id": "pei-029",
+      "class": "exact-identifier",
+      "query": "allowSubagents",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/claude-code-headless-permissions#update-2026-07-01-task-agent-the-fleet-s-own-deny-list-was-a-silent-no-op"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/claude-code-headless-pe); label correct by construction"
+    },
+    {
+      "id": "pei-030",
+      "class": "exact-identifier",
+      "query": "appendHostEvent",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/behavior-cutover-must-enumerate-every-process-that-loads-the-module#related-the-psu-pty-host-side-already-screams-on-a-stale-sender"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/behavior-cutover-must-e); label correct by construction"
+    },
+    {
+      "id": "pei-031",
+      "class": "exact-identifier",
+      "query": "applyHyperbeeOpToPg",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/substrate-write-side-stack#the-7-layer-stack"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/substrate-write-side-st); label correct by construction"
+    },
+    {
+      "id": "pei-032",
+      "class": "exact-identifier",
+      "query": "applyInterWaveEdges",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#queen-wave-dispatch-2026-06-13"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp queen-wave-dispatch-2026-06-13); label correct by construction"
+    },
+    {
+      "id": "pei-033",
+      "class": "exact-identifier",
+      "query": "applyNuqsToSearch",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/nuqs-tanstack-search-coercion-and-clobber#2-the-stock-nuqs-adapters-tanstack-router-clobbers-double-encodes"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/nuqs-tanstack-search-co); label correct by construction"
+    },
+    {
+      "id": "pei-034",
+      "class": "exact-identifier",
+      "query": "applyPayloadTier",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#agent-managed-compaction-2026-07-01"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp agent-managed-compaction-2026-); label correct by construction"
+    },
+    {
+      "id": "pei-035",
+      "class": "exact-identifier",
+      "query": "applyPendingMigrations",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/migration-number-collisions-and-reservation-dx#what-a-dup-number-actually-breaks-today-verify-before-you-assume-silent-dark"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/migration-number-collis); label correct by construction"
+    },
+    {
+      "id": "pei-036",
+      "class": "exact-identifier",
+      "query": "applyPendingMigrationsAtBoot",
+      "expected": [
+        "doc:papercusp-engineering#endpoint-system/operations#migrations-on-the-system-pg"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering endpoint-system/operations); label correct by construction"
+    },
+    {
+      "id": "pei-037",
+      "class": "exact-identifier",
+      "query": "applyPsuHostAuthority",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#presence-derivation-unification-2026-07-17"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp presence-derivation-unificatio); label correct by construction"
+    },
+    {
+      "id": "pei-038",
+      "class": "exact-identifier",
+      "query": "applyRevocationRefresh",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/substrate-revocation-model#built-since-this-doc-was-first-written-2026-07-03-update"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/substrate-revocation-mo); label correct by construction"
+    },
+    {
+      "id": "pei-039",
+      "class": "exact-identifier",
+      "query": "applySemanticDelta",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/tool-delta-base-presence-contract#semantic-deltas-lane-e-added-updated-removed-rows"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/tool-delta-base-presenc); label correct by construction"
+    },
+    {
+      "id": "pei-040",
+      "class": "exact-identifier",
+      "query": "armHiveCrossHiveDrainRoutine",
+      "expected": [
+        "turn:claude#86bc7677-9c99-41d0-a965-23c512e97272#4"
+      ],
+      "note": "mined: occurs in exactly one cluster (claude 86bc7677-9c99-41d0-a965-23c512e97272); label correct by construction"
+    },
+    {
+      "id": "pei-041",
+      "class": "exact-identifier",
+      "query": "ask-knowledge-tier.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#coordination-layer-test-hardening-2026-06-22"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp coordination-layer-test-harden); label correct by construction"
+    },
+    {
+      "id": "pei-042",
+      "class": "exact-identifier",
+      "query": "ask_choice.test",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/operator-core-lint-tsc-count-gate#the-trap-vitest-is-green-lint-tsc-is-red"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/operator-core-lint-tsc-); label correct by construction"
+    },
+    {
+      "id": "pei-043",
+      "class": "exact-identifier",
+      "query": "assemblePresenceSnapshot",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#presence-derive-from-session-log-2026-06-22"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp presence-derive-from-session-l); label correct by construction"
+    },
+    {
+      "id": "pei-044",
+      "class": "exact-identifier",
+      "query": "assert-bundle-markers.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/stale-bundle-fabricates-diagnostic-confirmation#the-guard"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/stale-bundle-fabricates); label correct by construction"
+    },
+    {
+      "id": "pei-045",
+      "class": "exact-identifier",
+      "query": "assertPolicyTier",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/bash-vs-tool-routing#the-one-authorized-way-past-observe"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/bash-vs-tool-routing); label correct by construction"
+    },
+    {
+      "id": "pei-046",
+      "class": "exact-identifier",
+      "query": "assignments.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#state-not-chat-fleet-state-2026-06-05"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp state-not-chat-fleet-state-202); label correct by construction"
+    },
+    {
+      "id": "pei-047",
+      "class": "exact-identifier",
+      "query": "attention-notify.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/attention-push-delivery#",
+        "doc:papercusp-engineering#agent-insights/attention-push-delivery#one-helper-two-channels-event-driven"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/attention-push-delivery); label correct by construction"
+    },
+    {
+      "id": "pei-048",
+      "class": "exact-identifier",
+      "query": "audience-host.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/coord-emit-subscription-scoping#how-it-works-audience-selectors-expanded-at-send-time",
+        "doc:papercusp-engineering#agent-insights/coord-emit-subscription-scoping#kill-switch-papercusp-coord-emit-scope"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/coord-emit-subscription); label correct by construction"
+    },
+    {
+      "id": "pei-049",
+      "class": "exact-identifier",
+      "query": "authoritativeWriter",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/reflexive-datatypes-and-tools#tiers-d-002-d-008"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/reflexive-datatypes-and); label correct by construction"
+    },
+    {
+      "id": "pei-050",
+      "class": "exact-identifier",
+      "query": "auto-approve.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#papercusp-dogfood-phase7-pr-lifecycle-2026-05-24"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp papercusp-dogfood-phase7-pr-li); label correct by construction"
+    },
+    {
+      "id": "pei-051",
+      "class": "exact-identifier",
+      "query": "autoloop-chronic-failure.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/driving-the-autonomous-pot-loop#failure-signal-decoding-don-t-chase-the-wrong-ghost"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/driving-the-autonomous-); label correct by construction"
+    },
+    {
+      "id": "pei-052",
+      "class": "exact-identifier",
+      "query": "autoloop-cycle.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/scout-cycle-inprocess-llm-bypasses-gateway#fix"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/scout-cycle-inprocess-l); label correct by construction"
+    },
+    {
+      "id": "pei-053",
+      "class": "exact-identifier",
+      "query": "automaticBackfill",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/dbos-durable-execution-gotchas#5-a-scheduled-function-must-also-be-registered-as-a-workflow"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/dbos-durable-execution-); label correct by construction"
+    },
+    {
+      "id": "pei-054",
+      "class": "exact-identifier",
+      "query": "autonomy.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#su-autonomy-envelope-2026-07-03"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp su-autonomy-envelope-2026-07-0); label correct by construction"
+    },
+    {
+      "id": "pei-055",
+      "class": "exact-identifier",
+      "query": "availableBackends",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#memory-declaude-and-defaults-2026-07-28"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp memory-declaude-and-defaults-2); label correct by construction"
+    },
+    {
+      "id": "pei-056",
+      "class": "exact-identifier",
+      "query": "backend-config.ts",
+      "expected": [
+        "doc:papercusp-engineering#desktop/local-inference-hardware-support-matrix#extending-the-matrix"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering desktop/local-inference-hardware-suppo); label correct by construction"
+    },
+    {
+      "id": "pei-057",
+      "class": "exact-identifier",
+      "query": "backfill-plugin-configs.mjs",
+      "expected": [
+        "doc:papercusp-engineering#system/credentials-encryption#recovery-lost-the-key"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering system/credentials-encryption); label correct by construction"
+    },
+    {
+      "id": "pei-058",
+      "class": "exact-identifier",
+      "query": "backfillFillLedger",
+      "expected": [
+        "plan:papercusp-workspace#oddsmith-hive#oddsmith-public-launch-and-real-money-arming-2026-07-26"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace oddsmith-hive oddsmith-public-launch-and); label correct by construction"
+    },
+    {
+      "id": "pei-059",
+      "class": "exact-identifier",
+      "query": "backfillGrantsFromEnabledPluginsAndLegacyFile",
+      "expected": [
+        "doc:papercusp-engineering#implementation/plugin-marketplace-state-2026-05-11#test-coverage"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering implementation/plugin-marketplace-stat); label correct by construction"
+    },
+    {
+      "id": "pei-060",
+      "class": "exact-identifier",
+      "query": "backfillResolutions",
+      "expected": [
+        "plan:papercusp-workspace#oddsmith-hive#oddsmith-evidence-loop-2026-07-01"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace oddsmith-hive oddsmith-evidence-loop-202); label correct by construction"
+    },
+    {
+      "id": "pei-061",
+      "class": "exact-identifier",
+      "query": "backgroundWorkers",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#spawner-sidecar-offload-2026-06-30"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp spawner-sidecar-offload-2026-0); label correct by construction"
+    },
+    {
+      "id": "pei-062",
+      "class": "exact-identifier",
+      "query": "backtest-asof.ts",
+      "expected": [
+        "plan:papercusp-workspace#oddsmith-hive#oddsmith-gpt-analyst-liveness-honest-cost-2026-07-02"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace oddsmith-hive oddsmith-gpt-analyst-liven); label correct by construction"
+    },
+    {
+      "id": "pei-063",
+      "class": "exact-identifier",
+      "query": "bare-mirror.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#papercusp-dogfood-phase10-hyperdrive-peer-mirror-2026-05-24"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp papercusp-dogfood-phase10-hype); label correct by construction"
+    },
+    {
+      "id": "pei-064",
+      "class": "exact-identifier",
+      "query": "base-url.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#comb-retire-per-harness-sharing-2026-06-11"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp comb-retire-per-harness-sharin); label correct by construction"
+    },
+    {
+      "id": "pei-065",
+      "class": "exact-identifier",
+      "query": "baselineSchemaDsn",
+      "expected": [
+        "turn:claude#9fdd8d4a-ab7f-4571-ac1c-2ad0d17ae98f#23"
+      ],
+      "note": "mined: occurs in exactly one cluster (claude 9fdd8d4a-ab7f-4571-ac1c-2ad0d17ae98f); label correct by construction"
+    },
+    {
+      "id": "pei-066",
+      "class": "exact-identifier",
+      "query": "beekeeper-gen0-runner.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/autoloop-release-readiness-grading-runbook#cup-execution-health-cup-keeper-runs"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/autoloop-release-readin); label correct by construction"
+    },
+    {
+      "id": "pei-067",
+      "class": "exact-identifier",
+      "query": "bench-bootstrap.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/swarm-claim-dispatch-e2e-harness#gotcha-1-the-bench-frame-is-pg-less-use-the-in-memory-store-via-the-seam"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/swarm-claim-dispatch-e2); label correct by construction"
+    },
+    {
+      "id": "pei-068",
+      "class": "exact-identifier",
+      "query": "bindEngineTick",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/harness-provided-dispatched-ops#engine-trading-tick-live-loop-local-dbos-p-009-d-005"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/harness-provided-dispat); label correct by construction"
+    },
+    {
+      "id": "pei-069",
+      "class": "exact-identifier",
+      "query": "binding-service.ts",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/types-first-from-design-memo#the-pattern"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/types-first-from-design); label correct by construction"
+    },
+    {
+      "id": "pei-070",
+      "class": "exact-identifier",
+      "query": "bindingPublished",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#non-collaborator-join-fork-pr-2026-06-02"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp non-collaborator-join-fork-pr-); label correct by construction"
+    },
+    {
+      "id": "pei-071",
+      "class": "exact-identifier",
+      "query": "blueprint-aliases.ts",
+      "expected": [
+        "doc:papercusp-engineering#harness/decisions/curator#when-the-curator-fires"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering harness/decisions/curator); label correct by construction"
+    },
+    {
+      "id": "pei-072",
+      "class": "exact-identifier",
+      "query": "bootHarnessSubstrate",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/boot-wire-drain-ordering#why-the-tests-didn-t-catch-it-the-blind-spot-to-avoid-repeating"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/boot-wire-drain-orderin); label correct by construction"
+    },
+    {
+      "id": "pei-073",
+      "class": "exact-identifier",
+      "query": "branch-action-stream-steps.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#structured-streams-not-terminals-2026-06-05"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp structured-streams-not-termina); label correct by construction"
+    },
+    {
+      "id": "pei-074",
+      "class": "exact-identifier",
+      "query": "branch-actions.ts",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#sse-typed-events-HANDOFF"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp sse-typed-events-HANDOFF); label correct by construction"
+    },
+    {
+      "id": "pei-075",
+      "class": "exact-identifier",
+      "query": "branchIsolation",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#deprecate-harness-config-json-2026-06-06"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp deprecate-harness-config-json-); label correct by construction"
+    },
+    {
+      "id": "pei-076",
+      "class": "exact-identifier",
+      "query": "breakerThreshold",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/cursed-item-respec-verify-data-model#what"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/cursed-item-respec-veri); label correct by construction"
+    },
+    {
+      "id": "pei-077",
+      "class": "exact-identifier",
+      "query": "buildCapacityReport",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#queen-capacity-aware-dispatch-2026-06-22"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp queen-capacity-aware-dispatch-); label correct by construction"
+    },
+    {
+      "id": "pei-078",
+      "class": "exact-identifier",
+      "query": "buildCrossVenueArbFromEnv",
+      "expected": [
+        "plan:papercusp-workspace#oddsmith-hive#bet-pattern-mispricing-discovery-2026-06-30"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace oddsmith-hive bet-pattern-mispricing-dis); label correct by construction"
+    },
+    {
+      "id": "pei-079",
+      "class": "exact-identifier",
+      "query": "buildDocsMcpConfig",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#agentic-docs-qa-2026-07-06"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp agentic-docs-qa-2026-07-06); label correct by construction"
+    },
+    {
+      "id": "pei-080",
+      "class": "exact-identifier",
+      "query": "buildEngineerIssuesProjection",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/test-ddl-drift-silenced-by-best-effort-drain#root-cause-a-swallowed-insert-throw"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/test-ddl-drift-silenced); label correct by construction"
+    },
+    {
+      "id": "pei-081",
+      "class": "exact-identifier",
+      "query": "buildEngineerOmpLaunchCommand",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#agent-launch-unification-2026-05-30"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp agent-launch-unification-2026-); label correct by construction"
+    },
+    {
+      "id": "pei-082",
+      "class": "exact-identifier",
+      "query": "buildFairnessAudit",
+      "expected": [
+        "doc:papercusp-engineering#benchmarks/frontier-swe#fairness-binding"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering benchmarks/frontier-swe); label correct by construction"
+    },
+    {
+      "id": "pei-083",
+      "class": "exact-identifier",
+      "query": "buildFeaturePromptFile",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#plans-newbutton-and-subharness-scope-2026-05-25"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp plans-newbutton-and-subharness); label correct by construction"
+    },
+    {
+      "id": "pei-084",
+      "class": "exact-identifier",
+      "query": "buildHiveDirectoryRows",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#production-test-readiness-2026-07-06"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp production-test-readiness-2026); label correct by construction"
+    },
+    {
+      "id": "pei-085",
+      "class": "exact-identifier",
+      "query": "buildInstallSpec",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/wsl-inbox-conpty-pty-hang#the-fix-set-landed-2026-06-12"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/wsl-inbox-conpty-pty-ha); label correct by construction"
+    },
+    {
+      "id": "pei-086",
+      "class": "exact-identifier",
+      "query": "buildLoopWakePrompt",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#su-cold-auto-mode-2026-07-03"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp su-cold-auto-mode-2026-07-03); label correct by construction"
+    },
+    {
+      "id": "pei-087",
+      "class": "exact-identifier",
+      "query": "buildMcpPrelude",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#memory-delivery-unification-2026-07-12"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp memory-delivery-unification-20); label correct by construction"
+    },
+    {
+      "id": "pei-088",
+      "class": "exact-identifier",
+      "query": "buildNegativeResultFact",
+      "expected": [
+        "turn:claude#2466e0f9-b2cd-4330-8700-fa7905f722ef#27"
+      ],
+      "note": "mined: occurs in exactly one cluster (claude 2466e0f9-b2cd-4330-8700-fa7905f722ef); label correct by construction"
+    },
+    {
+      "id": "pei-089",
+      "class": "exact-identifier",
+      "query": "buildPackCatalogView",
+      "expected": [
+        "plan:papercusp-workspace#papercusp#tool-distribution-granularity-2026-06-05"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-workspace papercusp tool-distribution-granularity-); label correct by construction"
+    },
+    {
+      "id": "pei-090",
+      "class": "exact-identifier",
+      "query": "buildPlacementWarnings",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/place-batch-spawned-not-running-manual-wake#the-fix-workaround"
+      ],
+      "note": "mined: occurs in exactly one cluster (papercusp-engineering agent-insights/place-batch-spawned-not); label correct by construction"
+    }
+  ]
+}

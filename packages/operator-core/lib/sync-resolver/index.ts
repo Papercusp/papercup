@@ -5406,15 +5406,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
   'operatorTurns.byConversation': {
-    // WI-6964: deliberately left UNDECLARED. Its correct declaration is
-    // ['harness_shared.operator_turns'], but the second guard below then requires a
-    // matching entry in table-to-query-names.ts, and declaring without wiring is the
-    // false-liveness bug (WI-6796). su-37bf2 is DELETING this entry under P-025
-    // (no-http-anywhere-2026-07-28 D-016) — merged into operatorTurns.page, 12
-    // invalidation sites already repointed — so that deletion, not a declaration, is
-    // what satisfies the shrink-only ratchet here. If the merge is ever reconsidered,
-    // declare the table above AND add this query name to the operator_turns array in
-    // table-to-query-names.ts in the same change. See WI-6974.
+    // WI-6964. listTurnsRecent reads operator_conversations + operator_turns, but only
+    // the latter changes the ROWS this query returns — resolving the conversation does
+    // not alter its turn list, so declaring operator_conversations would push turns on
+    // unrelated conversation-row writes.
+    //
+    // WIRED, not merely declared: the matching entry is in table-to-query-names.ts's
+    // operator_turns array. Both halves are required — a declaration without the wiring
+    // asserts a push-liveness that does not exist (accounts.pool / WI-6796).
+    //
+    // NB su-37bf2 is DELETING this entry under P-025 (no-http-anywhere-2026-07-28 D-016)
+    // — merged into operatorTurns.page, 12 invalidation sites already repointed. Declared
+    // here so the shrink-only ratchet is green NOW rather than leaving the gate red on an
+    // unknown schedule. When the deletion lands it must remove THREE things together:
+    // this entry, its operator_turns array member, and the 'operatorTurns.byConversation'
+    // fixture in sync-read-audit.ts. See WI-6974.
+    backingTables: ['harness_shared.operator_turns'],
     argsSchema: z.object({ conversationId: z.string().min(1), limit: clampedLimit(500, 200) }),
     resolve: async (args) => {
       const { conversationId, limit } = args as { conversationId: string; limit: number };

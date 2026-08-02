@@ -29,6 +29,7 @@ import { coordLog, coordWorkspaceId } from './log';
 import {
   readInbox,
   readInboxWindow,
+  readOutbox,
   INBOX_FAST_PATH_ROW_CAP,
   INBOX_PAGE_ROWS,
   INBOX_MAX_PAGES,
@@ -366,5 +367,106 @@ describe('readInbox recipient-pushdown (P-003 / D-005 SQL path)', () => {
       expect(got.rowsScanned).toBe(10);
       expect(ids(got.entries)).toEqual(ids(await readInbox('alice')));
     });
+  });
+});
+
+/**
+ * EI-19323045109346905 — the OUTBOX half of the same bounded-window mechanism,
+ * riding the extracted `pageCoordEventLogDesc` pager rather than a second copy
+ * of the keyset loop.
+ *
+ * The economics differ from the inbox and that is worth stating, because it is
+ * the reason this is a smaller change and not a second 30-hour win: the outbox
+ * predicate (`body->>'from' = owner`) is genuinely SELECTIVE, where the inbox
+ * predicate matched ~99.8% broadcast rows that had nothing to do with the
+ * caller. So the bound here fixes a read-to-use RATIO (the `sidebar.cupMail`
+ * resolver pulled a sender's entire history to render `tail(50)`), not a
+ * whole-table scan.
+ *
+ * The property that actually has to hold is therefore equivalence, not speed:
+ * a windowed read must render EXACTLY what the unbounded read rendered.
+ */
+describe('readOutbox — bounded keyset-paged window (EI-19323045109346905)', () => {
+  const TOTAL = INBOX_PAGE_ROWS * 2 + 500; // spans 3 pages
+  const SENDER = 'bulk-sender';
+  /** The resolver's actual stopping rule + slice (sync-resolver `sidebar.cupMail`). */
+  const TAIL = 50;
+  const tail = <T>(arr: T[]): T[] => (arr.length > TAIL ? arr.slice(arr.length - TAIL) : arr);
+
+  async function seedSent(count: number = TOTAL): Promise<void> {
+    await fx.admin`
+      INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, ts, workspace_id)
+      SELECT 'messages',
+             'ob-' || n,
+             jsonb_build_object(
+               'msg_id', 'ob-' || n,
+               'kind',   'message',
+               'from',   ${SENDER}::text,
+               'to',     jsonb_build_array('someone-else'),
+               'summary','bulk',
+               'ts',     to_char(TIMESTAMP '2026-01-01 00:00:00' + (n * interval '1 second'),
+                                 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+             ),
+             TIMESTAMP '2026-01-01 00:00:00' + (n * interval '1 second'),
+             ${coordWorkspaceId()}
+        FROM generate_series(1, ${count}) AS n
+    `;
+  }
+
+  it('is UNCHANGED when no window is passed — the param is purely opt-in', async () => {
+    await seedSent();
+    expect((await readOutbox(SENDER, {})).length).toBe(TOTAL);
+  });
+
+  it('STOPS at the first page when the caller is satisfied, keeping the NEWEST rows', async () => {
+    await seedSent();
+    const got = await readOutbox(SENDER, {}, { enough: (e) => e.length >= TAIL });
+
+    // One page, not the 2,500 rows that exist.
+    expect(got.length).toBe(INBOX_PAGE_ROWS);
+    const seen = new Set(ids(got));
+    expect(seen.has(`ob-${TOTAL}`)).toBe(true); // newest kept
+    expect(seen.has('ob-1')).toBe(false); // oldest not fetched
+  });
+
+  it('renders the IDENTICAL tail(50) the unbounded read did — the resolver-equivalence property', async () => {
+    // This is the test that licenses the change: sidebar.cupMail slices tail(50)
+    // off whatever it gets, so the bound is only safe if that slice is untouched.
+    await seedSent();
+    const windowed = await readOutbox(SENDER, {}, { enough: (e) => e.length >= TAIL });
+    const authoritative = await readOutbox(SENDER, {});
+    expect(ids(tail(windowed))).toEqual(ids(tail(authoritative)));
+  });
+
+  it('PAGES to exhaustion when never satisfied, matching the unbounded read exactly', async () => {
+    await seedSent();
+    const windowed = await readOutbox(SENDER, {}, { enough: () => false });
+    expect(ids(windowed)).toEqual(ids(await readOutbox(SENDER, {})));
+  });
+
+  it('pages on when FEWER than the tail exist, rather than returning a short read', async () => {
+    // `enough` never goes true here; the stop must come from history exhaustion.
+    await seedSent(10);
+    const got = await readOutbox(SENDER, {}, { enough: (e) => e.length >= TAIL });
+    expect(got.length).toBe(10);
+    expect(ids(got)).toEqual(ids(await readOutbox(SENDER, {})));
+  });
+
+  it('returns ASCENDING by ts even though the window pages DESC', async () => {
+    // The trap the fast-path cap comment already calls out on this function: the
+    // SQL order picks which ROWS are fetched, never the presentation order. The
+    // windowed path must go through `filterOutbox`'s re-sort like the capped one.
+    await seedSent(10);
+    const got = await readOutbox(SENDER, {}, { enough: (e) => e.length >= 5 });
+    const tsList = got.map((e) => e.ts);
+    expect(tsList).toEqual([...tsList].sort());
+  });
+
+  it('does not leak another sender’s rows into the window', async () => {
+    await seedSent(10);
+    await seed({ msg_id: 'other-1', ts: '2026-06-01T00:00:00.000Z', from: 'someone-else', to: ['*'] });
+    const got = await readOutbox(SENDER, {}, { enough: () => false });
+    expect(ids(got)).not.toContain('other-1');
+    expect(got.every((e) => e.from === SENDER)).toBe(true);
   });
 });

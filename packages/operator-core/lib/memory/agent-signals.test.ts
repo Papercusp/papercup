@@ -21,14 +21,45 @@ import {
   pgAgentSignalsSource,
   relativizeRepoPath,
   resolveAgentSignals,
+  resolveRepoRootSync,
   MAX_PATHS,
   MAX_IDS,
   MAX_BODY_CHARS,
   type RawInvocation,
   type AgentSignalsSource,
 } from './agent-signals';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const REPO = '/home/agent/papercusp';
+
+describe('resolveRepoRootSync (P-044 — the plumbing that makes paths survive)', () => {
+  it('finds the root of THIS repo from a nested directory', () => {
+    // Not a formality: `relativizeRepoPath` drops any path it cannot make
+    // repo-relative, and Read/Edit/Write all REQUIRE an absolute file_path — so
+    // with no root resolved, `trajectory.paths` comes back empty in production
+    // while every unit test (which passes relative fixtures) still passes.
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const root = resolveRepoRootSync(here);
+    expect(root).toBeTruthy();
+    expect(fs.existsSync(path.join(root!, '.git'))).toBe(true);
+    // ...and it is genuinely a PREFIX of where we started, which is the only
+    // property relativizeRepoPath actually uses.
+    expect(here.startsWith(root!)).toBe(true);
+  });
+
+  it('returns undefined for a relative or empty cwd rather than guessing', () => {
+    expect(resolveRepoRootSync(undefined)).toBeUndefined();
+    expect(resolveRepoRootSync('')).toBeUndefined();
+    expect(resolveRepoRootSync('   ')).toBeUndefined();
+    expect(resolveRepoRootSync('relative/path')).toBeUndefined();
+  });
+
+  it('returns undefined when no .git exists above the path — a miss, never a throw', () => {
+    expect(resolveRepoRootSync('/proc/self/nonexistent-dir')).toBeUndefined();
+  });
+});
 
 /** An `activity:report` row wrapping a real client-side call. */
 const report = (tool: string, input: unknown): RawInvocation => ({

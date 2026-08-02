@@ -19,12 +19,17 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { buildMemoryContextBlockMock, consumePendingControlTransitionMock, detectHarnessSlugSyncMock } =
-  vi.hoisted(() => ({
-    buildMemoryContextBlockMock: vi.fn(),
-    consumePendingControlTransitionMock: vi.fn(),
-    detectHarnessSlugSyncMock: vi.fn(),
-  }));
+const {
+  buildMemoryContextBlockMock,
+  consumePendingControlTransitionMock,
+  detectHarnessSlugSyncMock,
+  resolveAgentSignalsMock,
+} = vi.hoisted(() => ({
+  buildMemoryContextBlockMock: vi.fn(),
+  consumePendingControlTransitionMock: vi.fn(),
+  detectHarnessSlugSyncMock: vi.fn(),
+  resolveAgentSignalsMock: vi.fn(),
+}));
 
 // Same relative specifiers the source's dynamic imports use (this test is
 // colocated under routes/agent-mcp/).
@@ -40,6 +45,12 @@ vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
 vi.mock('../../../memory/detect-harness-slug', () => ({
   detectHarnessSlugSync: detectHarnessSlugSyncMock,
 }));
+vi.mock('../../../memory/agent-signals', () => ({
+  resolveAgentSignals: resolveAgentSignalsMock,
+  pgAgentSignalsSource: () => ({}),
+  resolveRepoRootSync: () => '/repo',
+}));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 
 import routes from './turn-start-memory';
 
@@ -61,6 +72,7 @@ beforeEach(() => {
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM-BLOCK');
   consumePendingControlTransitionMock.mockReset().mockResolvedValue(null);
   detectHarnessSlugSyncMock.mockReset().mockReturnValue({ slug: null, source: null });
+  resolveAgentSignalsMock.mockReset().mockResolvedValue(undefined);
 });
 
 describe('turn-start-memory admission (F-E: no length floor)', () => {
@@ -74,7 +86,10 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
     expect(out.text).toContain('MEM-BLOCK');
     expect(buildMemoryContextBlockMock.mock.calls[0]![0]).toMatchObject({
-      queryContext: prompt,
+      // P-044: the structured form. `userText` is the COSINE leg's query and is
+      // still the human's words alone — deliberately, since identifiers were
+      // measured diluting that vector (D-041).
+      queryContext: { userText: prompt },
       harnessSlugs: ['papercusp'],
       session: { sessionId: 'sess-1', port: 'turn-start' },
     });
@@ -102,8 +117,10 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
 
   it('clamps a very long prompt to the query head rather than embedding a pasted document', async () => {
     await post({ owner: 'sess-1', prompt: 'x'.repeat(5_000) });
-    const { queryContext } = buildMemoryContextBlockMock.mock.calls[0]![0] as { queryContext: string };
-    expect(queryContext).toHaveLength(1_000);
+    const { queryContext } = buildMemoryContextBlockMock.mock.calls[0]![0] as {
+      queryContext: { userText: string };
+    };
+    expect(queryContext.userText).toHaveLength(1_000);
   });
 
   it('CTRL is delivered even for a prompt carrying no recall signal at all', async () => {
@@ -172,5 +189,45 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
       }),
     );
     expect(res.status).toBe(400);
+  });
+});
+
+describe('agent signals reach the query (context-injection-audit-2026-07-28 P-044 / F-L)', () => {
+  const signals = {
+    workItem: { id: 'WI-6512' },
+    trajectory: { paths: ['apps/operator-vite/src/components/HistoryDropdown.tsx'] },
+  };
+
+  it('carries resolved signals into queryContext — the wiring, not just the composition', async () => {
+    // Without this the resolver is built, tested and NEVER CALLED in production:
+    // `recall-query`'s unit tests would still pass and the feature would be dead
+    // code. This asserts the endpoint actually asks for signals and passes them on.
+    resolveAgentSignalsMock.mockResolvedValue(signals);
+    await post({ owner: 'sess-1', prompt: 'why is session history slow', cwd: '/repo' });
+    expect(resolveAgentSignalsMock).toHaveBeenCalledTimes(1);
+    expect(buildMemoryContextBlockMock.mock.calls[0]![0]).toMatchObject({
+      queryContext: { userText: 'why is session history slow', agentSignals: signals },
+    });
+  });
+
+  it('omits agentSignals entirely when none resolve — not an empty object', async () => {
+    // `lexicalQueryText` returns undefined for absent signals, which is what
+    // keeps the no-signals turn byte-identical to pre-P-044. An empty object
+    // would be indistinguishable at the seam but is a different claim.
+    resolveAgentSignalsMock.mockResolvedValue(undefined);
+    await post({ owner: 'sess-1', prompt: 'why is session history slow' });
+    const { queryContext } = buildMemoryContextBlockMock.mock.calls[0]![0] as {
+      queryContext: Record<string, unknown>;
+    };
+    expect(queryContext).not.toHaveProperty('agentSignals');
+  });
+
+  it('a THROWING resolver degrades to no signals rather than failing the turn', async () => {
+    resolveAgentSignalsMock.mockRejectedValue(new Error('pg down'));
+    const out = await post({ owner: 'sess-1', prompt: 'why is session history slow' });
+    expect(out.text).toContain('MEM-BLOCK');
+    expect(buildMemoryContextBlockMock.mock.calls[0]![0]).toMatchObject({
+      queryContext: { userText: 'why is session history slow' },
+    });
   });
 });

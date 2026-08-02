@@ -188,8 +188,13 @@ describe('mid-turn-context — the cost properties', () => {
 
   it('clamps a very long command rather than embedding a pasted heredoc', async () => {
     await post({ owner: owner(), tool: 'Bash', toolInput: { command: 'x'.repeat(5_000) } });
-    const { queryContext } = firstCall() as { queryContext: string };
-    expect(queryContext).toHaveLength(1_000);
+    // The clamp applies to the DERIVED text, before the P-044 per-leg split, so
+    // both halves inherit it — neither leg can be handed a pasted heredoc.
+    const { queryContext } = firstCall() as {
+      queryContext: { userText: string; lexicalText: string };
+    };
+    expect(queryContext.userText).toHaveLength(1_000);
+    expect(queryContext.lexicalText).toHaveLength(1_000);
   });
 });
 
@@ -238,7 +243,14 @@ describe('mid-turn-context — P-018 acceptance: fires EARLY, on the first grep'
     });
     expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
     expect(out.text).toBe('MEM');
-    expect(firstCall()).toMatchObject({ queryContext: 'WI-6512 packages' });
+    // P-044: the derived signal is still `WI-6512 packages`, but it is now
+    // issued as two per-leg queries. `packages` is a bare directory with no
+    // slash, so nothing is strippable here and both halves are the whole text —
+    // the id, which is what this acceptance case is actually about, reaches
+    // BOTH legs exactly as before.
+    expect(firstCall()).toMatchObject({
+      queryContext: { userText: 'WI-6512 packages', lexicalText: 'WI-6512 packages' },
+    });
   });
 });
 

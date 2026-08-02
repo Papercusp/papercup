@@ -97,6 +97,26 @@ function detectInnerTruncationMarkers(text: string): string[] {
   return [...found];
 }
 
+/**
+ * P-020 / D-041 discoverability. The projection stage is a DISPATCH-level
+ * reserved arg, so it appears in no tool's inputSchema — which means no agent
+ * would ever learn it exists, and a built-but-unreachable feature is dead code
+ * however green its tests. Injecting the schema into all ~550 tools would blow
+ * the P-011 prompt-weight budget for a knob most calls never use.
+ *
+ * A truncated result is the one moment the answer is both relevant and earned:
+ * the caller has just been handed less than they asked for and is about to go
+ * page a spill file. Teaching `projection` HERE costs zero standing context and
+ * arrives exactly when it is actionable — the same "advise at the decision
+ * point" shape as the code:run batch nudge.
+ */
+const PROJECTION_HINT =
+  ` ⓘ To get only what you need in ONE call instead of paging this spill, re-call with a ` +
+  `caller-specified projection: \`projection: { pipe: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }\` ` +
+  `for text, or \`projection: { pick: ["results[].id","results[].state"] }\` for a JSON body. ` +
+  `Operators: grep (fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count — ` +
+  `applied in order, to any tool's result.`;
+
 function isTextItem(it: unknown): it is { type: 'text'; text: string } {
   return (
     !!it &&
@@ -248,6 +268,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           `still looks cut short after paging, re-call ${opts.toolName} with a wider per-field ` +
           `limit/budget argument or payloadTier:'full'.)]`,
     });
+    // Appended to whichever footer variant fired — every truncation is a chance
+    // to teach the one knob that would have prevented it (see PROJECTION_HINT).
+    const lastItem = doored[doored.length - 1] as { type: 'text'; text: string };
+    lastItem.text = `${lastItem.text.slice(0, -1)}${PROJECTION_HINT}]`;
     return { ...result, content: doored };
   } catch {
     return result; // fail-soft: never let the door break a good result
