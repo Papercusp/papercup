@@ -22,6 +22,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
+import type { ImprovementCandidate } from '../harness/improvements/policy';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { probeHttpReachable } from '../escalating-http-probe';
@@ -229,6 +230,39 @@ interface HealthCtx {
    *  (#15) AND `crossMonitor.overwatchAlive` (D-004) — computed once, no drift.
    *  null = not-in-play (flag off / not started) or uncomputable (never a false dark). */
   overwatchAlive: boolean | null;
+  /**
+   * The ONE open-improvements read per tick (P-008, db-performance-remediation-2026-07-26).
+   *
+   * `collectWorkFeed` (auto-eligible-stuck) and `collectImprovements` each need the same
+   * `readImprovementItems({ state: 'open', limit: 1000 })`, and they run CONCURRENTLY in
+   * the same `Promise.all` — so without this the tick issues that read TWICE. Measured
+   * 2026-08-01 it is the single most expensive statement in the tick: ~160 ms/call at
+   * ~997 rows/call, and the duplicate alone accounted for ~0.12 DB-cores continuously
+   * fleet-wide. Memoised on the ctx (which is per-tick by construction), so one tick pays
+   * exactly one read and a single-panel `refreshHealthPanel` — which builds its own ctx —
+   * still pays exactly one.
+   *
+   * The PROMISE is memoised, not the value: the two collectors start concurrently, so a
+   * value-memo would still let both fire before either resolved.
+   */
+  openImprovements: () => Promise<ImprovementCandidate[]>;
+}
+
+/**
+ * Build the per-tick memo backing {@link HealthCtx.openImprovements}. Deliberately
+ * memoises the promise INCLUDING a rejection: both callers issue the identical query in
+ * the same tick, so a failure would hit both anyway, and each keeps its own fail-soft
+ * handling (collectWorkFeed leaves 0s, collectImprovements degrades via panelSafe).
+ */
+function makeOpenImprovementsReader(): () => Promise<ImprovementCandidate[]> {
+  let inFlight: Promise<ImprovementCandidate[]> | undefined;
+  return () => {
+    inFlight ??= (async () => {
+      const { readImprovementItems } = await import('../harness/improvements/read-items');
+      return readImprovementItems({ state: 'open', limit: 1000 });
+    })();
+    return inFlight;
+  };
 }
 
 /** Run a collector, degrading its own failure to an `unknown` (greyed) panel —
@@ -902,9 +936,10 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     let autoEligibleStuck = 0;
     let keylessHumanReviewBacklog = 0;
     try {
-      const { readImprovementItems } = await import('../harness/improvements/read-items');
       const { buildDigest } = await import('../harness/improvements/digest');
-      const items = await readImprovementItems({ state: 'open', limit: 1000 });
+      // P-008: the SHARED per-tick read (see HealthCtx.openImprovements) — collectImprovements
+      // needs the identical rows, and this tick must not pay for them twice.
+      const items = await ctx.openImprovements();
       // P-001/P-003: this panel reads only digest.autoEligible (a scalar rollup) —
       // it never touches likelyDuplicates, so skip the O(n²) near-dup pass the
       // health tick was paying for and discarding outright (D-001).

@@ -29,6 +29,11 @@ const row = (id: string, over: Partial<AccountStatusRow> = {}): AccountStatusRow
   edgeThrottleBare429Streak: 0,
   rate: { pausedUntil: 0, penaltyCount: 0, lastPenaltyAt: 0, windowStartedAt: 0 } as AccountStatusRow['rate'],
   liveBuckets: [],
+  // Required on AccountStatusRow (EI-18809949582687481's freshness field). These fixture rows
+  // carry a real measured verdict (usageWalled + a usageResetAt), so 'fresh' is the coherent
+  // default; stall-waker-loop.ts does not branch on it, so this is semantically neutral here.
+  // Override via `over` if a test needs to exercise stale/never-observed readings.
+  readingStatus: 'fresh',
   ...over,
 });
 

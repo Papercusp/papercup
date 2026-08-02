@@ -29,6 +29,7 @@
  */
 import { execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { MCP_PROXY_RETRY_WINDOW_MS, PSU_CLIENT_HEADROOM_MS } from './budgets.mjs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -76,14 +77,21 @@ const LOG_FILE = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_LOG || join(homedir(),
  *     as AMBIGUOUS, never as a verdict: it triggers one unfiltered confirmation fetch,
  *     and a healthy confirmation reports the stale filter as a config warning instead.
  *
- * THRESHOLD. Deliberately longer than the reachability path's 45s: the proxy's own
- * retryWindowMs is 90_000, so it is *designed* to absorb an upstream gap up to 90s
- * (that is the entire point of the service). Acting sooner would fight the resilience
- * layer. 120s sits just above it — detection in ~2min against the ~100min this took.
+ * THRESHOLD. Deliberately longer than the reachability path's 45s: the proxy is *designed*
+ * to absorb an upstream gap up to its own retry window (that is the entire point of the
+ * service), so acting sooner would fight the resilience layer. Default = window + headroom
+ * (120s today) — detection in ~2min against the ~100min this incident actually took.
+ *
+ * DERIVED, not hard-coded (WI-6738). A literal here would be the same latent bug this
+ * watchdog's sibling fix just removed: raise PAPERCUSP_MCP_PROXY_RETRY_MS and a frozen 120s
+ * would start alarming DURING legitimate absorption. Sharing budgets.mjs means the whole
+ * system's "how long may the proxy legitimately take?" answer moves in one place.
  * ──────────────────────────────────────────────────────────────────────────── */
 const UPSTREAM_PORT = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_UPSTREAM_PORT) || 3070;
 const HANDSHAKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_HANDSHAKE_TIMEOUT_MS) || 10_000;
-const HANDSHAKE_UNHEALTHY_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_HANDSHAKE_UNHEALTHY_MS) || 120_000;
+const HANDSHAKE_UNHEALTHY_MS =
+  Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_HANDSHAKE_UNHEALTHY_MS) ||
+  MCP_PROXY_RETRY_WINDOW_MS + PSU_CLIENT_HEADROOM_MS;
 /** Any single stable tool name; correctness does NOT depend on it (trap 2 above). */
 const PROBE_TOOL = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_PROBE_TOOL || 'coord:orient';
 const SUPERUSER_TOKEN_FILE = join(homedir(), '.papercusp', 'superuser-token');

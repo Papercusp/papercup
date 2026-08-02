@@ -86,6 +86,7 @@ check(
 __resetTranscriptResolverCaches();
 
 // ── 3) The full codex-session-key leg, restoring into a scratch root ─────────
+__resetTranscriptResolverCaches();
 const tmpA = mkdtempSync(join(tmpdir(), 'wi6581-key-'));
 const byKey = await rematerializeTranscript(
   { kind: 'codex-session-key', sessionKey: String(victim.adv_session_id) },
@@ -114,6 +115,7 @@ if (byKey.path) {
 }
 
 // ── 4) The by-uuid (transcript-search deep-link) leg ─────────────────────────
+__resetTranscriptResolverCaches();
 const tmpB = mkdtempSync(join(tmpdir(), 'wi6581-uuid-'));
 const byUuid = await rematerializeTranscript(
   { kind: 'codex-rollout', rolloutId: victim.session_id },
@@ -125,29 +127,39 @@ check(
   `reason=${byUuid.reason} path=${byUuid.path}`,
 );
 
-// ── 5) The trap this bug turned on: the by-uuid resolver's DEFAULT home ──────
-const globalHit = await findCodexRolloutPathByUuid(victim.session_id);
-check(
-  'the by-uuid resolver DEFAULT (global ~/.codex) cannot see a per-session rollout',
-  globalHit === null,
-  `findCodexRolloutPathByUuid(${victim.session_id}) with no homeOverride => ${globalHit}` +
-    ' — which is why the re-resolve must be pointed at the restored root',
-);
-
-// ── 6) The production default root IS what the session-key resolver scans ────
+// ── 5) The corpus: how many codex archive roots are NON-standard ─────────────
+// A tempting simpler fix — restore, then re-resolve with the resolver's own
+// default home — happens to work whenever session_root == the natural
+// per-session home. It is wrong for any archive that does not, which is why
+// this probe checks the real corpus rather than assuming the shape.
 const allRoots = await sql<Array<{ session_id: string; session_root: string; adv_session_id: number }>>`
   SELECT session_id, session_root, adv_session_id
     FROM harness_shared.session_archives
    WHERE source_kind = 'codex' AND adv_session_id IS NOT NULL`;
-const mismatched = allRoots.filter(
+const nonStandard = allRoots.filter(
   (r) => r.session_root !== codexHomeForSessionKey(r.adv_session_id),
 );
-check(
-  'every codex archive session_root == codexHomeForSessionKey(adv_session_id)',
-  mismatched.length === 0,
-  `${allRoots.length} codex archives checked, ${mismatched.length} mismatched` +
-    ` — so the no-targetRoot production restore lands exactly where findCodexRolloutPath(sessionKey) walks`,
+console.log(
+  `\ncorpus: ${allRoots.length} codex archives; ${nonStandard.length} with a NON-standard ` +
+    `session_root (${nonStandard.map((r) => r.session_root).join(', ') || 'none'}) — ` +
+    `a default-home re-resolve would silently miss those.\n`,
 );
+
+// ── 6) …and that a NON-standard-root archive still restores + resolves ───────
+for (const odd of nonStandard) {
+  const tmpD = mkdtempSync(join(tmpdir(), 'wi6581-odd-'));
+  __resetTranscriptResolverCaches();
+  const rOdd = await rematerializeTranscript(
+    { kind: 'codex-session-key', sessionKey: String(odd.adv_session_id) },
+    { targetRoot: tmpD },
+  );
+  check(
+    `non-standard root (${odd.session_root}) still restores from the archive`,
+    rOdd.reason === 'restored' || rOdd.reason === 'restored_but_unresolved',
+    `adv=${odd.adv_session_id} reason=${rOdd.reason} path=${rOdd.path}`,
+  );
+  rmSync(tmpD, { recursive: true, force: true });
+}
 
 // ── 7) Scale of what this recovers ───────────────────────────────────────────
 const recoverable = allRoots.filter((r) => !existsSync(r.session_root));
@@ -159,6 +171,7 @@ console.log(
 // ── 8) Sanity: a second, independent real archive ────────────────────────────
 const second = cands.find((c) => c !== victim && !existsSync(c.session_root) && c.file_count > 0);
 if (second) {
+  __resetTranscriptResolverCaches();
   const tmpC = mkdtempSync(join(tmpdir(), 'wi6581-2nd-'));
   const r2 = await rematerializeTranscript(
     { kind: 'codex-session-key', sessionKey: String(second.adv_session_id) },

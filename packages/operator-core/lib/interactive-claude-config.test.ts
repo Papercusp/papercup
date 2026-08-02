@@ -1096,7 +1096,15 @@ describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config di
     ],
     [
       'endpoint-route/routes/harness/streams.ts',
-      'read-only transcript follow for the UI: restores a file to TAIL it, never launches an agent.',
+      'read-only transcript follow for the UI: restores a file to TAIL it, never launches an agent. ' +
+        '(WI-6581 moved the actual call into session-transcript-remat.ts — streams.ts now only ' +
+        'names it in prose, so it no longer matches the call-shape filter below either way.)',
+    ],
+    [
+      'session-transcript-remat.ts',
+      'WI-6581: the carved-out keying layer behind streams.ts\'s read-only follow. Same exemption, ' +
+        'same reason — it restores a transcript to RESOLVE AND TAIL a path, and returns that path ' +
+        'to an SSE reader. No human ever launches into the root it restores to.',
     ],
     [
       'adv-agent-detail.ts',
@@ -1157,8 +1165,16 @@ describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config di
     // wake-executor's exemption rests on it targeting a bee's OWN config dir.
     const wake = readFileSync(join(LIB, 'events/await/wake-executor.ts'), 'utf8');
     expect(wake).toMatch(/rematerializeSession\(\{ sourceKind: 'claude', sessionId: sid, targetRoot: cfgDir \}\)/);
-    // streams.ts's rests on it only ever resolving a path to read.
+    // streams.ts's rests on it only ever taking a path to READ — WI-6581 moved
+    // the restore itself into session-transcript-remat, so the shape to pin is
+    // "the route consumes a resolved path and nothing else".
     const streams = readFileSync(join(LIB, 'endpoint-route/routes/harness/streams.ts'), 'utf8');
-    expect(streams).toMatch(/if \(r\.ok\) path = await source\.resolve\(\)/);
+    expect(streams).toMatch(/const r = await rematerializeTranscript\(rematKey\);\s*\n\s*if \(r\.path\) path = r\.path;/);
+    // session-transcript-remat's rests on the same thing one layer down: it
+    // restores in order to RESOLVE a path, and hands that path back. If it ever
+    // grows a launch/spawn leg, the exemption above stops being true.
+    const remat = readFileSync(join(LIB, 'session-transcript-remat.ts'), 'utf8');
+    expect(remat).toMatch(/export async function rematerializeTranscript/);
+    expect(remat).not.toMatch(/\b(spawn|execFile|console-launcher|writeInteractiveClaudeConfig)\b/);
   });
 });

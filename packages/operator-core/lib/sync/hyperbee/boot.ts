@@ -147,6 +147,59 @@ import { registerRateLimiter, unregisterRateLimiter } from './rate-limiter-regis
 import { makeRateLimitedApply } from './rate-limit-admission';
 import { makePolicyEnforcedApply } from './policy-admission';
 
+/**
+ * Memoises a dynamic `import()` so a call site that runs per-op / per-announce /
+ * per-merge-pass (as opposed to once at process boot) pays the tsx ESM-loader
+ * synchronous loader-thread round-trip (`makeSyncRequest` — WI-6402, 11.84% of
+ * the bg-host main thread in profile) only ONCE per process, not once per call.
+ *
+ * A failed load is explicitly NOT cached — the promise is reset to `null` on
+ * rejection so a transient import failure cannot permanently pin every later
+ * call onto a degraded/fallback path. Same discipline as
+ * `packages/operator-core/lib/fleet/git-via-sidecar.ts:loadSidecarModules`,
+ * generalised so this file's dozen-plus per-call dynamic-import sites don't
+ * each hand-roll the same module-scoped promise.
+ *
+ * The `load` thunk is not invoked until the FIRST call to the returned
+ * function — this module-scope `const` does not eagerly import anything at
+ * module-evaluation time, so it preserves the deliberate runtime-import
+ * cycle-avoidance some call sites rely on (e.g. `./boot-all`, which imports
+ * this module back).
+ */
+function memoizeDynamicImport<T>(load: () => Promise<T>): () => Promise<T> {
+  let cached: Promise<T> | null = null;
+  return () => {
+    if (!cached) {
+      cached = load().catch((e: unknown) => {
+        cached = null;
+        throw e;
+      });
+    }
+    return cached;
+  };
+}
+
+// Modules dynamically `import()`ed from per-call/per-tick hot paths below
+// (merge passes, per-announce admission, per-op identity resolution) —
+// memoised once per process instead of re-resolved on every invocation.
+const loadHiveFederationModule = memoizeDynamicImport(() => import('../../hive-federation'));
+const loadFederatedPotScopeModule = memoizeDynamicImport(() => import('../../federated-pot-scope'));
+const loadHiveMembershipStoreModule = memoizeDynamicImport(() => import('../../hive-membership-store'));
+const loadHarnessRegistryModule = memoizeDynamicImport(() => import('../../harness-registry'));
+const loadHiveMemberIdentitySetModule = memoizeDynamicImport(() => import('./hive-member-identity-set'));
+const loadHiveIdentityModule = memoizeDynamicImport(() => import('../../hive-identity'));
+const loadReplicationStallEiModule = memoizeDynamicImport(() => import('./replication-stall-ei'));
+const loadHiveMembershipAdmissionModule = memoizeDynamicImport(
+  () => import('../../hive-membership-admission'),
+);
+const loadPotCanonicalSlugReconcileModule = memoizeDynamicImport(
+  () => import('../../pot-canonical-slug-reconcile'),
+);
+// `./boot-all` imports THIS module back — a static import would cycle, so this
+// stays a runtime import; memoising only caches the RESULT after the first
+// (still-lazy, still-runtime) call, it does not change when the import fires.
+const loadBootAllModule = memoizeDynamicImport(() => import('./boot-all'));
+
 /** Short human label for a dropped peer, for the boot-history message field.
  *  Truncates the (long) Noise key to its first 8 hex chars. */
 function peerLabel(keyHex?: string, ip?: string): string {
@@ -964,7 +1017,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (opts.joinerPotHomeSlugOverride) {
         resolved = (await opts.joinerPotHomeSlugOverride(opts.workspaceId, opts.harnessSlug)) ?? undefined;
       } else {
-        const { joinerPotHomeSlug } = await import('../../hive-federation');
+        const { joinerPotHomeSlug } = await loadHiveFederationModule();
         // WI-1378 (federation roster-empty, no-restart path): read the registry FRESH
         // (bypass the 2s operator-state cache). This resolve runs on the in-place rekey
         // inside the substrate SIDECAR process (SUBSTRATE_SIDECAR) — a DIFFERENT process
@@ -1002,12 +1055,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // because failing to IMPROVE the binding must never break a working Pot.
       if (resolved) {
         try {
-          const { potHomeSlugForHarness } = await import('../../hive-federation');
+          const { potHomeSlugForHarness } = await loadHiveFederationModule();
           const localHome = await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug, {
             fresh: true,
           });
           if (localHome && localHome !== resolved) {
-            const { reconcilePotCanonicalSlug } = await import('../../pot-canonical-slug-reconcile');
+            const { reconcilePotCanonicalSlug } = await loadPotCanonicalSlugReconcileModule();
             await reconcilePotCanonicalSlug(opts.workspaceId, localHome);
           }
         } catch {
@@ -1108,7 +1161,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     try {
       const resolve =
         opts.potHomeSlugForHarnessOverride ??
-        (await import('../../hive-federation')).potHomeSlugForHarness;
+        (await loadHiveFederationModule()).potHomeSlugForHarness;
       return (await resolve(opts.workspaceId, opts.harnessSlug)) ?? undefined;
     } catch {
       return undefined; // fail-open: today's behavior (no cross-member apply on the owner)
@@ -1150,7 +1203,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     resolvedPotHomeSlug && resolvedPotHomeSlug !== opts.harnessSlug
       ? await (async () => {
           try {
-            const { loadHarnessRegistry } = await import('../../harness-registry');
+            const { loadHarnessRegistry } = await loadHarnessRegistryModule();
             const reg = await loadHarnessRegistry(opts.workspaceId);
             const homeEntry = reg.projects.find((p) => p.slug === resolvedPotHomeSlug);
             // A joined (remote_hive) home is owned by hiveHomeProjectionSlug's own
@@ -1169,7 +1222,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // cycle). The returned closure runs per-op at APPLY time, long after boot: the
         // home may boot after this member and still be excluded from then on; for a
         // JOINED hive the home slug is never locally booted → null → no exclusion.
-        const { getBootedHarness } = await import('./boot-all');
+        const { getBootedHarness } = await loadBootAllModule();
         return () =>
           getBootedHarness(opts.workspaceId, memberHomeRebindSlug)?.ownLog.keyHex ?? null;
       })()
@@ -1429,7 +1482,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // The read-admission decider is unchanged. Best-effort / fail-open: a hive
       // lookup failure leaves the harness-scope set intact.
       try {
-        const { potHomeSlugForHarness } = await import('../../hive-federation');
+        const { potHomeSlugForHarness } = await loadHiveFederationModule();
         const hiveHome = await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
         if (hiveHome) {
           // EI-18777176681958978: `potHomeSlugForHarness` returns the LOCAL handle, but the
@@ -1437,7 +1490,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // handle on a joiner seeded an EMPTY revoked set — i.e. THIS seed, whose whole job
           // is refusing an already-revoked peer on first contact, refused nobody. Resolve
           // the federated scope first (a no-op on an owner).
-          const { loadRevokedHivePubkeysForLocalPot } = await import('../../federated-pot-scope');
+          const { loadRevokedHivePubkeysForLocalPot } = await loadFederatedPotScopeModule();
           for (const pk of await loadRevokedHivePubkeysForLocalPot(opts.workspaceId, hiveHome)) {
             base.add(pk);
           }
@@ -2132,7 +2185,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       void (async () => {
         let alreadyChronic = false;
         try {
-          const m = await import('./replication-stall-ei');
+          const m = await loadReplicationStallEiModule();
           alreadyChronic = await m.hasOpenReplicationStallEi({
             harnessSlug: opts.harnessSlug,
             logKeyHex,
@@ -2499,7 +2552,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // runs under the merge gate, so this must NOT block it.
           void (async () => {
             try {
-              const { admitAnnouncedPeerAsOwner } = await import('../../hive-membership-admission');
+              const { admitAnnouncedPeerAsOwner } = await loadHiveMembershipAdmissionModule();
               const res = await admitAnnouncedPeerAsOwner(
                 {
                   workspaceId: opts.workspaceId,
@@ -3232,7 +3285,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const loadHiveMembers: (potHomeSlug: string) => Promise<string[]> =
     opts.loadHiveMembersOverride ??
     (async (potHomeSlug) => {
-      const { resolveHiveMemberDeviceSet } = await import('./hive-member-identity-set');
+      const { resolveHiveMemberDeviceSet } = await loadHiveMemberIdentitySetModule();
       const set = await resolveHiveMemberDeviceSet(opts.workspaceId, potHomeSlug).catch(
         () => new Set<string>(),
       );
@@ -3247,7 +3300,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const ownerDeviceForHive: (hivePubkey: string) => Promise<string | null> =
     opts.ownerDeviceForHiveOverride ??
     (async (hivePubkey) => {
-      const { loadHiveOwnerDevicePubkey } = await import('../../hive-membership-store');
+      const { loadHiveOwnerDevicePubkey } = await loadHiveMembershipStoreModule();
       return loadHiveOwnerDevicePubkey(opts.workspaceId, hivePubkey).catch(() => null);
     });
 
@@ -3265,7 +3318,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     opts.ownerDeviceForTopicOverride ??
     (async (topicHex) => {
       const want = topicHex.toLowerCase();
-      const { loadHiveOwnerDeviceBindings } = await import('../../hive-membership-store');
+      const { loadHiveOwnerDeviceBindings } = await loadHiveMembershipStoreModule();
       const bindings = await loadHiveOwnerDeviceBindings(opts.workspaceId).catch(() => []);
       for (const b of bindings) {
         let derived: string;
@@ -3346,7 +3399,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   async function resolveSameHiveMember(frame: SignedAnnounce): Promise<AdmissionResult | null> {
     const originSlug = frame.harness_slug ?? null;
     if (!(originSlug != null && originSlug !== slug)) return null;
-    const { potHomeSlugForHarness } = await import('../../hive-federation');
+    const { potHomeSlugForHarness } = await loadHiveFederationModule();
     const myHiveHome =
       hiveHomeProjectionSlug ??
       (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
@@ -3384,7 +3437,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // admit joiners as if it were the owner.
     const isOwner =
       !isKnownMember &&
-      (await import('../../hive-identity')
+      (await loadHiveIdentityModule()
         .then((m) => m.isCanonicalHiveOwner(opts.workspaceId, myHiveHome))
         .catch(() => false));
     const decision = classifySameHiveMember({
@@ -3468,7 +3521,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (ownerDevice && frame.device_pubkey === ownerDevice) return true;
     // Member admission (below) needs the resolved hive-home slug — resolve it AFTER the
     // binding-only owner-bootstrap above, so a home=<none> joiner still bootstrap-admits the owner.
-    const { potHomeSlugForHarness } = await import('../../hive-federation');
+    const { potHomeSlugForHarness } = await loadHiveFederationModule();
     const myHiveHome =
       hiveHomeProjectionSlug ??
       (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
@@ -3978,7 +4031,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     binding: SwarmBinding,
   ): Promise<LocalAnnounceIdentity | null> {
     if (binding.kind !== 'hive') return null;
-    const { potHomeSlugForHarness } = await import('../../hive-federation');
+    const { potHomeSlugForHarness } = await loadHiveFederationModule();
     const potHomeSlug =
       hiveHomeProjectionSlug ??
       (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
@@ -3986,7 +4039,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // EI-18777176681958978: `hiveHomeProjectionSlug` is already the federated scope, but the
     // `potHomeSlugForHarness` FALLBACK is the local handle — resolve either way (idempotent
     // on an already-federated scope) so this identity resolve can't read an empty roster.
-    const { listHiveMembersForLocalPot } = await import('../../federated-pot-scope');
+    const { listHiveMembersForLocalPot } = await loadFederatedPotScopeModule();
     const members = await listHiveMembersForLocalPot(opts.workspaceId, potHomeSlug).catch(
       () => [],
     );
@@ -4205,7 +4258,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         for (let attempt = 0; attempt < 3 && hiveGitHomeSlug == null; attempt++) {
           if (attempt > 0) await new Promise((r) => setTimeout(r, attempt === 1 ? 1_000 : 4_000));
           try {
-            const { potHomeSlugForHarness } = await import('../../hive-federation');
+            const { potHomeSlugForHarness } = await loadHiveFederationModule();
             hiveGitHomeSlug =
               (await potHomeSlugForHarness(
                 opts.workspaceId,

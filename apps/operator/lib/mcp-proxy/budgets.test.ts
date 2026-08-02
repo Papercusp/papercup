@@ -58,6 +58,16 @@ describe('mcp-proxy budgets — derivePsuTimeoutMs', () => {
     expect(B.psuTimeoutInvertsProxyBudget(5_000, 90_000)).toBe(true);
   });
 
+  it('the watchdog threshold derives from the same window, so it cannot alarm during legitimate absorption', () => {
+    // The mcp-proxy watchdog concludes "session plane dead" after window + headroom. If that
+    // were a frozen literal, raising the proxy's retry window would make the watchdog start
+    // firing WHILE the proxy is still legitimately absorbing an upstream restart — the same
+    // independently-chosen-number bug, one layer up. Derived, it tracks automatically.
+    const derived = B.derivePsuTimeoutMs({ retryWindowMs: 180_000, headroomMs: B.PSU_CLIENT_HEADROOM_MS });
+    expect(derived).toBeGreaterThan(180_000);
+    expect(B.psuTimeoutInvertsProxyBudget(derived, 180_000)).toBe(false);
+  });
+
   it('ignores a non-positive or unparseable override rather than disabling the timeout', () => {
     // A `PAPERCUSP_PSU_TIMEOUT_MS=0` must not mean "wait forever" — that reintroduces the
     // original hang-with-no-output this timeout exists to prevent.
