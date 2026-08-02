@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { sweepStalledLoops, type StalledLoopsSweepDeps } from './stalled-loops-guard';
 import { turnsStalledFloorMs, type LoopStatus } from './loop';
 
@@ -164,6 +164,17 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
   describe('second-source veto on lastRealTurnAt (EI-19362678179163398)', () => {
     const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 
+    // The veto deliberately warns: a non-zero veto count is the live tell that
+    // `last_turn_at` is under-reporting again, and it must reach the operator log rather
+    // than vanish. Captured (not silenced) so the tests assert it actually fires.
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
     it('REFUSES to disarm a turnsStalled owner that produced a real turn inside the floor', async () => {
       const sql = fakeSql([{ id: 'rt_live', target_owner_id: 'su-live' }]);
       const getStatuses = vi.fn(async () =>
@@ -192,6 +203,8 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       expect(autoPause).not.toHaveBeenCalled();
       // Nothing was disarmed, so there is no fleet-wide event to announce.
       expect(broadcast).not.toHaveBeenCalled();
+      // The refusal must be visible in the operator log, not silent.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('VETO su-live'));
     });
 
     it('still disarms a comatose host — an ancient real turn must NOT engage the veto', async () => {
@@ -217,6 +230,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       expect(res.paused).toBe(1);
       expect(res.vetoedByRecentTurn).toEqual([]);
       expect(autoPause).toHaveBeenCalledWith(sql, 'rt_dead', expect.stringContaining('WI-6639'));
+      expect(warn).not.toHaveBeenCalled();
     });
 
     it('a MISSING lastRealTurnAt never engages the veto (liveness is never inferred from absent data)', async () => {

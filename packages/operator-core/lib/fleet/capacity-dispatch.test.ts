@@ -588,6 +588,75 @@ test('EI-18791793869559327 — degraded suppressed during the fresh-gateway rest
   assert.equal(r.factor, 1);
 });
 
+test('EI-19281217347369076 — a majority-BLIND pool caveats poolExhausted instead of reporting quota-shaped confidence', () => {
+  // The real incident this pins: accounts:probe-capacity returned 'no-reading'/'fetch failed' for 4/4
+  // accounts (all 3 squid egress proxies down, every account collapsed onto one throttled bare-box IP).
+  // fleet:capacity nonetheless rendered a confident "pool EXHAUSTED" with a quota-shaped resetInSec,
+  // steering the reader toward passively waiting for a reset that a broken network path can never
+  // produce. The blind majority must caveat the reading BEFORE the confident verdict.
+  const hr = {
+    reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
+    resetInSec: 12400,
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+  };
+  const accountAvailability = { provider: 'claude', total: 4, available: 0, usable: 0, blindCount: 4 };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.equal(r.poolExhausted, true, 'usable<=0 with spare gateway slots still trips the technical flag');
+  assert.equal(r.blind, true, '4/4 (100% >= 50%) carry an unresolved probe failure');
+  assert.equal(r.blindAccounts, 4);
+  assert.equal(r.resetInSec, 12400, 'the raw figure is preserved, never destroyed');
+  assert.equal(r.resetInSecActionable, false, 'but flagged non-actionable — a probe failure is network-shaped, not quota-shaped');
+  assert.match(r.advice, /BLIND READING/);
+  assert.match(r.advice, /4\/4 claude account/);
+  assert.match(r.advice, /accounts:test-egress/);
+  assert.match(r.advice, /Do NOT wait on resetInSec/);
+  // The blind caveat leads; the existing EXHAUSTED verdict still follows it (composes, doesn't replace).
+  assert.match(r.advice, /BLIND READING[\s\S]*EXHAUSTED/);
+});
+
+test('EI-19281217347369076 — a MINORITY blind (<50%) does NOT trip the caveat; poolExhausted reads with its normal confidence', () => {
+  const hr = {
+    reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+  };
+  const accountAvailability = { provider: 'claude', total: 5, available: 1, usable: 0, blindCount: 2 };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.equal(r.blind, false, '2/5 (40%) is below the 50% majority threshold');
+  assert.equal(r.blindAccounts, 2, 'still reported for visibility even when not majority');
+  assert.equal(r.resetInSecActionable, true);
+  assert.doesNotMatch(r.advice, /BLIND READING/);
+});
+
+test('EI-19281217347369076 — no blindCount supplied ⇒ unchanged (fail-safe-omit, byte-identical to before this field existed)', () => {
+  const hr = {
+    reachable: true, utilization: 0.97, paused: true, queueDepth: 2, inFlight: 1,
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+  };
+  const accountAvailability = { provider: 'claude', total: 5, available: 1, usable: 0 }; // no blindCount
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.equal(r.blind, false);
+  assert.equal(r.blindAccounts, null);
+  assert.equal(r.resetInSecActionable, true);
+  assert.doesNotMatch(r.advice, /BLIND READING/);
+});
+
+test('EI-19281217347369076 — no accountAvailability cross-check at all ⇒ blind:false, resetInSecActionable:true, byte-identical advice', () => {
+  const hr = { reachable: true, utilization: 0.1, queueDepth: 0 };
+  const r = buildCapacityReport(hr, { clampArmed: false });
+  assert.equal(r.blind, false);
+  assert.equal(r.blindAccounts, null);
+  assert.equal(r.resetInSecActionable, true);
+  assert.equal(r.advice, 'abundant → place broadly up to your ceiling');
+});
+
+test('EI-19281217347369076 — gateway unreachable ⇒ blind:false, resetInSecActionable:true (fail-safe early return)', () => {
+  const r = buildCapacityReport({ reachable: false }, { clampArmed: false, accountAvailability: { provider: 'claude', total: 3, available: 0, usable: 0, blindCount: 3 } });
+  assert.equal(r.reachable, false);
+  assert.equal(r.blind, false);
+  assert.equal(r.blindAccounts, 3, 'still surfaced even on the unreachable early return');
+  assert.equal(r.resetInSecActionable, true);
+});
+
 test('the floor never manufactures slots — a 0-slot pool stays 0 even when paused', () => {
   const d = computeCapacityHeadroom(0, { reachable: true, paused: true });
   assert.equal(d.headroom, 0, 'no raw headroom → no spawns; the floor lets work flow, it does not invent slots');

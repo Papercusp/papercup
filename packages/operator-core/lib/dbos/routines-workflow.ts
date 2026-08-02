@@ -977,6 +977,47 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'autoloop-chronic-failure-sweep' },
   );
 
+  // EI-19281872822982156: the CHRONIC sweep above is entirely error-streak-driven —
+  // a role that stops firing while its OWN error bookkeeping still reads 'ok' (0
+  // consecutive_errors) is never a candidate, no matter how long it sits dead (Kettle
+  // sat 7 days past its last fire this way, invisible to both this and the dead-routine
+  // check). Independent kill switch (PAPERCUSP_AUTOLOOP_SILENT_STOP_MS), independent
+  // 24h debounce ledger — see autoloop-chronic-failure.ts's doc comment above
+  // autoloopSilentStopSweep for why this is a SEPARATE sweep rather than folded into
+  // the one above.
+  await DBOS.runStep(
+    async () => {
+      const { autoloopSilentStopSweep } = await import('../harness/routines/autoloop-chronic-failure');
+      const results = await autoloopSilentStopSweep();
+      for (const r of results) {
+        if (r.outcome === 'debounced') continue;
+        console.warn(`[autoloop-silent-stop] ${r.outcome}: ${r.role}@${r.harnessSlug} — ${r.reason.slice(0, 160)}`);
+      }
+    },
+    { name: 'autoloop-silent-stop-sweep' },
+  );
+
+  // EI-19281872822982156 (defect 2): the learning-loop health CLASSIFIER
+  // (blueprint/learning-loop-health.ts) has correctly flagged an always-on
+  // singleton (scout/change-ledger/iq-battery) paused via the Agents pane as
+  // `should-be-on-but-dark`, and a wedged active loop as `stale`, since
+  // relight-self-learning-edges-2026-06-14 P-030 — but nothing periodically CALLS
+  // it and acts on a bad verdict; it was pull-only (`improvements:learning_loops`,
+  // the Learning tab). The Scout/Blender leg sat paused this way for 5 days with a
+  // correct, unread verdict the whole time. Same watchdog-sweep house pattern,
+  // its own 24h debounce ledger (source 'learning-loop-health').
+  await DBOS.runStep(
+    async () => {
+      const { learningLoopHealthSweep } = await import('../harness/routines/learning-loop-health-sweep');
+      const results = await learningLoopHealthSweep();
+      for (const r of results) {
+        if (r.outcome === 'debounced') continue;
+        console.warn(`[learning-loop-health] ${r.outcome}: ${r.blueprintId} (${r.status}) — ${r.reason.slice(0, 160)}`);
+      }
+    },
+    { name: 'learning-loop-health-sweep' },
+  );
+
   // scheduled-recurring-plans-2026-06-16 (Phase 5) — the scheduled-plan RUN completion +
   // governance sweep. A `system:plan-run` fire mints a plan_runs row at status='running' +
   // work_items; nothing settled the run when those finished, and the cost-cap / failure-streak

@@ -50,6 +50,7 @@ import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { listTrackedFiles, describeUnscanned } from './lib/tracked-files.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -294,8 +295,13 @@ function main() {
   if (process.argv.includes('--self-test')) return selfTest();
 
   let files;
+  let unscanned = [];
   if (all) {
-    files = git('ls-files');
+    // WI-6666: SCAN_ROOTS explicitly names `libs/papercusp/`, but plain `git ls-files`
+    // (this branch, historically) STOPS AT THE SUPERPROJECT BOUNDARY — libs/papercusp
+    // is a submodule, so that root matched ZERO files no matter what it contained.
+    // `listTrackedFiles` recurses into submodules so `--all` can finally see it.
+    ({ files, unscanned } = listTrackedFiles(ROOT));
   } else {
     const baseArg = process.argv.indexOf('--base');
     const base = baseArg >= 0 ? process.argv[baseArg + 1] : (process.env.AFFECTED_BASE || 'origin/main');
@@ -320,7 +326,10 @@ function main() {
 
   const scope = all ? 'the app tree' : 'this change';
   if (candidates.length === 0) {
-    console.log(`✓ explicit-presence: no zero-value-defaulted parse/deserialize-boundary reads in ${scope} — convention intact.`);
+    console.log(
+      `✓ explicit-presence: no zero-value-defaulted parse/deserialize-boundary reads in ${scope} — convention intact.` +
+        (all ? describeUnscanned(unscanned) : ''),
+    );
     process.exit(0);
   }
 

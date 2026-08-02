@@ -1022,6 +1022,23 @@ npm run test:affected:integration      # also runs *.integration.test.ts
 npm run lint:tsc -- --files=<the files you edited>   # TYPES — vitest does not typecheck
 ```
 
+⚠ **`test:affected` runs the suites of the WORKSPACES your changed paths map into —
+so "green" can mean "nothing ran". To see what your change actually selects, ask:**
+
+```bash
+node scripts/affected-tests.mjs --changed-paths scripts/lint-tsc.mjs,libs/flags/src/types.ts --print-affected
+```
+
+A git-based probe cannot answer that question on this tree: git-sync sweeps the WHOLE
+tree, so no real commit is ever scoped to just your paths, and `changedFiles()` also
+folds in every peer's uncommitted edits. `--changed-paths` derives the set from an
+explicit path list and exits before running anything. Reach for it whenever a suite you
+expected to run didn't, or before trusting a fast green on an unusual path. A path that
+belongs to no workspace selects **nothing** — root `scripts/**` did exactly that until
+EI-19346163916263067 routed it to `@papercusp/operator-core` (measured: 7 of 106
+scripts-touching commits in 600 ran none of the ~56 suites that cover them, and one ran
+zero tests at all while reporting `status=passed`).
+
 ⚠ **`test:affected` is TYPE-BLIND — a green run does NOT mean your change compiles.**
 Vitest transforms via esbuild/swc, and neither `scripts/affected-tests.mjs` nor
 `lint:affected-gate` invokes `tsc` at all. So a type-only regression is invisible to

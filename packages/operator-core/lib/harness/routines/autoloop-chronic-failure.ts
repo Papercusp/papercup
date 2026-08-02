@@ -435,6 +435,174 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
  * own fresh log line via claimWatchdogFire's normal window semantics, it does not
  * stay silenced forever from one earlier claim.
  */
+/**
+ * EI-19281872822982156: the CHRONIC sweep above is entirely ERROR-STREAK-DRIVEN
+ * (`WHERE consecutive_errors >= threshold`) — a role that stops firing while
+ * reporting `last_status:'ok'` and `consecutive_errors:0` is NEVER a candidate,
+ * no matter how long it sits dead. Measured live: `autoloop_state` role='kettle'
+ * harness='papercusp' sat 7 DAYS past its last fire with 0 errors — invisible to
+ * this module's own frozen-watermark guard (`isStaleWatermark`/`staleSkipped`
+ * above), because that guard only ever runs on rows that already breached the
+ * error threshold. `autoloop:status` confirmed the fire-GATE itself was healthy
+ * (nothing was blocking a fire); nothing was calling it — a cadence/liveness
+ * gap, not a broken circuit.
+ *
+ * This is the SIBLING sweep that closes it: independent of `consecutive_errors`,
+ * any row (fixed system role, not a loop:arm owner loop, not a drill row, not
+ * already explicitly paused — `routine_active === false` is the STALE-PAUSED-
+ * ROUTINES alarm's job, `system-health/compute.ts`'s `computeStalePausedRoutines`,
+ * not this one) whose `last_fired_at` is older than `silentStopThresholdMs()`
+ * warrants its own escalation. Deliberately EXCLUDES any row already at/over the
+ * chronic-error threshold — those are the CHRONIC sweep's job (including its
+ * own frozen-watermark suppression, EI-6765), so a row that is BOTH erroring
+ * and long-frozen is never double-escalated under a second name here.
+ */
+export function silentStopThresholdMs(): number {
+  const n = Number(process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS ?? 24 * 60 * 60 * 1000);
+  return Number.isFinite(n) ? n : 24 * 60 * 60 * 1000;
+}
+
+function lastFiredAtMs(row: Pick<AutoloopStateRow, 'last_fired_at'>): number {
+  const raw = row.last_fired_at;
+  if (raw == null) return 0;
+  const t = raw instanceof Date ? raw.getTime() : new Date(raw).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** PURE: which rows have SILENTLY STOPPED — stale beyond `silentStopMs`,
+ *  EXCLUDING (a) anything at/over `threshold` (the chronic sweep's own scope,
+ *  including rows it deliberately suppresses as a frozen watermark — never
+ *  re-escalate the SAME row under a second mechanism); (b) a Red Queen drill
+ *  row; (c) a loop:arm owner loop (owner-witnessed, its own dead-owner
+ *  escalation); (d) an already explicitly-paused routine (`routine_active:
+ *  false` — the stale-paused-routines alarm's job, not this one). `null`/absent
+ *  `last_fired_at` never matches (nothing to measure a silence FROM), and
+ *  `routine_active: null` (no matching routines row — a fixed system role with
+ *  no `loop:arm`-materialized row) is NOT excluded — fail-open, matching every
+ *  other predicate in this module. Sorted most-overdue (oldest last-fire) first. */
+export function selectSilentlyStoppedRoles(
+  rows: readonly AutoloopStateRow[],
+  threshold: number,
+  opts?: { now?: number; silentStopMs?: number },
+): AutoloopStateRow[] {
+  const silentStopMs = opts?.silentStopMs ?? silentStopThresholdMs();
+  if (silentStopMs <= 0) return [];
+  const now = opts?.now ?? Date.now();
+  return rows
+    .filter(
+      (r) =>
+        r.consecutive_errors < threshold &&
+        !isRedQueenDrillRow(r) &&
+        !isLoopArmOwnerLoop(r) &&
+        r.routine_active !== false &&
+        isStaleWatermark(r, now, silentStopMs),
+    )
+    .sort((a, b) => lastFiredAtMs(a) - lastFiredAtMs(b));
+}
+
+export interface SilentStopResult {
+  harnessSlug: string;
+  role: string;
+  outcome: 'escalated' | 'debounced' | 'error';
+  reason: string;
+  /** Same B-07↔B-04 seam the chronic sweep uses (WI-4632) — see its doc for the
+   *  fail-soft contract (an unwired waker / unresolvable pot-home never blocks
+   *  or un-escalates the already-filed observation). */
+  overwatchWaked?: boolean;
+}
+
+/**
+ * The sweep. Independent kill switch (`PAPERCUSP_AUTOLOOP_SILENT_STOP_MS <= 0`
+ * disables it without touching `autoloopChronicFailureSweep`'s own threshold).
+ * Fail-soft by contract; debounced 24h per (harness, role) via the SAME
+ * `hive_watchdog_fires` ledger the chronic sweep uses, under a DISTINCT
+ * `source` tag ('autoloop-silent-stop') so the two debounce windows can never
+ * collide or mask each other.
+ */
+export async function autoloopSilentStopSweep(): Promise<SilentStopResult[]> {
+  const results: SilentStopResult[] = [];
+  const silentStopMs = silentStopThresholdMs();
+  if (silentStopMs <= 0) return results;
+  try {
+    const { sql } = getOrgPg();
+    const workspaceId = activeWorkspaceId();
+    const now = Date.now();
+    const threshold = chronicErrorThreshold();
+    const allRows = await sql<AutoloopStateRow[]>`
+      SELECT s.harness_slug, s.role, s.consecutive_errors, s.last_status, s.last_fired_at,
+             r.active AS routine_active, r.target_owner_id AS routine_target_owner_id
+        FROM harness_shared.autoloop_state s
+   LEFT JOIN harness_shared.routines r
+          ON r.name = s.role AND r.workspace_id = s.workspace_id
+       WHERE s.last_fired_at IS NOT NULL
+         AND s.last_fired_at < now() - make_interval(secs => ${Math.floor(silentStopMs / 1000)})`;
+    const silent = selectSilentlyStoppedRoles(allRows, threshold, { now, silentStopMs });
+    for (const s of silent) {
+      try {
+        const source = 'autoloop-silent-stop' as const;
+        const installSlug = `${s.harness_slug}::${s.role}`;
+        const alreadyFired = (await recentWatchdogFires(workspaceId, installSlug, 24, source)) > 0;
+        if (alreadyFired) {
+          results.push({ harnessSlug: s.harness_slug, role: s.role, outcome: 'debounced', reason: 'escalated within 24h' });
+          continue;
+        }
+        const ageHours = Math.round((now - lastFiredAtMs(s)) / 3_600_000);
+        const reason =
+          `${s.role}@${s.harness_slug}: no fire in ${ageHours}h despite consecutive_errors=${s.consecutive_errors} ` +
+          `(last_status: ${(s.last_status ?? '').slice(0, 160)}) — a cleanly-stopped role, invisible to the ` +
+          `error-streak-driven chronic-failure sweep (EI-19281872822982156).`;
+        // EI-6777-style single-flight: atomically re-check + claim the debounce slot
+        // right before the one-time escalation side effect (mirrors the chronic sweep).
+        const claimedFire = await claimWatchdogFire({ workspaceId, installSlug, source, windowHours: 24, reason, wakeAt: null });
+        if (!claimedFire) {
+          results.push({ harnessSlug: s.harness_slug, role: s.role, outcome: 'debounced', reason: 'escalated within 24h (raced)' });
+          continue;
+        }
+        const { captureImprovement } = await import('../improvements/capture-core');
+        await captureImprovement({
+          title: `SILENTLY STOPPED autoloop role: ${s.role}@${s.harness_slug} — no fire in ${ageHours}h, ${s.consecutive_errors} errors`,
+          kind: 'bug',
+          severity: 'major',
+          body:
+            `${reason}\n\nThis role's fire-clock stopped advancing while its own error bookkeeping looked healthy — ` +
+            `an error-streak-driven watchdog can never see this class of failure. Check whether the routine driving ` +
+            `it is still scheduled (routines:list), whether its process/executor is alive, and whether it was ` +
+            `silently unscheduled/orphaned (a rename, a migration, a one-time misfire).`,
+          scope: `harness:${s.harness_slug}`,
+          foundDuring: 'autoloop-silent-stop sweep (routines tick)',
+        });
+        let overwatchWaked = false;
+        try {
+          const { requestOverwatchWake } = await import('../../overwatch/wake-bridge');
+          const { resolvePotHomeSlug } = await import('../../pot/wake');
+          const wakeHarness = resolvePotHomeSlug(s.harness_slug, undefined);
+          if (wakeHarness) {
+            const wake = await requestOverwatchWake({
+              reason: `SILENTLY STOPPED autoloop role: ${s.role}@${s.harness_slug} — no fire in ${ageHours}h (observation filed; read its last_status verbatim first)`,
+              harness: wakeHarness,
+              workspaceId,
+            });
+            overwatchWaked = wake.wired === true && !wake.error;
+          }
+        } catch (e) {
+          console.warn(`[autoloop-silent-stop] overwatch wake failed (observation still filed): ${e instanceof Error ? e.message : e}`);
+        }
+        results.push({ harnessSlug: s.harness_slug, role: s.role, outcome: 'escalated', reason, overwatchWaked });
+      } catch (e) {
+        results.push({
+          harnessSlug: s.harness_slug,
+          role: s.role,
+          outcome: 'error',
+          reason: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  } catch (e) {
+    console.warn(`[autoloop-silent-stop] sweep failed: ${e instanceof Error ? e.message : e}`);
+  }
+  return results;
+}
+
 export async function shouldLogChronicOutcome(
   r: Pick<ChronicFailureResult, 'harnessSlug' | 'role' | 'outcome'>,
   opts: { workspaceId?: string; windowHours?: number } = {},

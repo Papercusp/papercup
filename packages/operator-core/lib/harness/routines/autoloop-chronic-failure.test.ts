@@ -29,6 +29,9 @@ import {
   isRedQueenDrillRow,
   autoloopChronicFailureSweep,
   shouldLogChronicOutcome,
+  silentStopThresholdMs,
+  selectSilentlyStoppedRoles,
+  autoloopSilentStopSweep,
   type AutoloopStateRow,
 } from './autoloop-chronic-failure';
 import { SANDBOX_HARNESS_SLUG } from '../../red-queen/types';
@@ -703,6 +706,90 @@ describe('isRedQueenDrillRow (EI-12429)', () => {
     // the role, not the harness, is the drill worker — but a real harness never carries it, and
     // the guard keys on the harness anyway, so a stray same-named role in a real harness is fine.
     expect(isRedQueenDrillRow({ harness_slug: 'some-real-harness' })).toBe(false);
+  });
+});
+
+describe('silentStopThresholdMs', () => {
+  it('defaults to 24 hours', () => {
+    const prev = process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS;
+    delete process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS;
+    expect(silentStopThresholdMs()).toBe(24 * HOUR_MS);
+    if (prev !== undefined) process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS = prev;
+  });
+
+  it('is env-overridable', () => {
+    const prev = process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS;
+    process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS = '90000';
+    expect(silentStopThresholdMs()).toBe(90000);
+    if (prev !== undefined) process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS = prev;
+    else delete process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS;
+  });
+});
+
+describe('selectSilentlyStoppedRoles (EI-19281872822982156)', () => {
+  function row(over: Partial<AutoloopStateRow>): AutoloopStateRow {
+    return {
+      harness_slug: 'papercusp',
+      role: 'kettle',
+      consecutive_errors: 0,
+      last_status: 'ok',
+      routine_active: null,
+      last_fired_at: new Date(NOW - 7 * 24 * HOUR_MS).toISOString(), // 7d stale, like the reported kettle incident
+      ...over,
+    };
+  }
+
+  it('the motivating case: 0 errors + 7d silent → caught, invisible to consecutive_errors alone', () => {
+    const rows = [row({})];
+    expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS }).map((r) => r.role)).toEqual(['kettle']);
+  });
+
+  it('a row that fired recently is never caught, regardless of error count', () => {
+    const rows = [row({ last_fired_at: new Date(NOW - 1 * HOUR_MS).toISOString() })];
+    expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS })).toEqual([]);
+  });
+
+  it('a row at/over the chronic threshold is EXCLUDED — that is the chronic sweep\'s own scope, never double-escalated here', () => {
+    const rows = [row({ consecutive_errors: 9 })];
+    expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS })).toEqual([]);
+  });
+
+  it('a Red Queen drill row is excluded', () => {
+    const rows = [row({ harness_slug: SANDBOX_HARNESS_SLUG })];
+    expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS })).toEqual([]);
+  });
+
+  it('a loop:arm owner loop is excluded', () => {
+    const rows = [row({ role: 'loop-su-deadbeef-0000-0000-0000-000000000000', routine_target_owner_id: 'su-deadbeef' })];
+    expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS })).toEqual([]);
+  });
+
+  it('an already explicitly-paused routine (routine_active:false) is excluded — that alarm is stale-paused-routines\' job', () => {
+    const rows = [row({ routine_active: false })];
+    expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS })).toEqual([]);
+  });
+
+  it('routine_active: null (no matching routines row — a fixed system role) is NOT excluded — fail-open', () => {
+    const rows = [row({ routine_active: null })];
+    expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS }).map((r) => r.role)).toEqual(['kettle']);
+  });
+
+  it('null last_fired_at never matches (nothing to measure a silence from)', () => {
+    const rows = [row({ last_fired_at: null })];
+    expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS })).toEqual([]);
+  });
+
+  it('silentStopMs <= 0 disables entirely', () => {
+    expect(selectSilentlyStoppedRoles([row({})], 6, { now: NOW, silentStopMs: 0 })).toEqual([]);
+  });
+
+  it('sorts most-overdue (oldest last-fire) first', () => {
+    const rows = [
+      row({ role: 'a', last_fired_at: new Date(NOW - 25 * HOUR_MS).toISOString() }),
+      row({ role: 'b', last_fired_at: new Date(NOW - 200 * HOUR_MS).toISOString() }),
+      row({ role: 'c', last_fired_at: new Date(NOW - 30 * HOUR_MS).toISOString() }),
+    ];
+    expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS }).map((r) => r.role)).toEqual(['b', 'c', 'a']);
   });
 });
 

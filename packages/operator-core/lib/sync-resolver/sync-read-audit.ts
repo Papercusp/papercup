@@ -164,6 +164,12 @@ export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
       'The unscoped plan list (934 rows) behind the plans rail, the Create-tab picker, the Mug/Swarm steering trees and the ADV overview tiles. nextAction is already clipped to a 280-char tooltip preview (P-005); WI-7045/D-025 then removed the null-valued keys, measured 827,320 -> 701,767 B (-125,553 B, -15.2%) live against :3070, all 7,155 nulls gone with 0 non-null values lost. Over the 250KB budget and honestly so: the residual is row COUNT x light rendered fields, and the feed is unscoped by design (the rail offers every plan in the workspace). The next real cuts are, in order: the nested identity avatarUrl (null on all 1,436 occurrences, ~26 KB, needs its own audit of the shared AuthorIdentity type), then windowing the list itself.',
     reviewBy: '2026-09-01',
   },
+  'plans.byHive': {
+    maxBytes: 720_000,
+    reason:
+      "The hive rollup of plans.list — same rows, same read, so the same ceiling as plans.list. WI-7083 found it was serving the hive's plan set once PER MEMBER: the harness_slugs fan-out deduped on the REQUESTED slug, but plans are HIVE-scoped so every member collapses onto the same home, and the downstream `${harnessSlug}:${slug}` row-dedupe key cannot see across batches. Measured 1,249,750 -> 682,955 B (-566,795 B, -45.4%) live, 1,820 -> 910 rows, lossless (0 rows and 0 keys lost; the surviving value diffs were live edits to two plans, reproduced as drift). That duplication was also what BLOCKED the rows-delta config here, since `slug` had only 910 distinct values across 1,820 rows; with it fixed the resource keys on `slug` and a warm poll costs 225 B instead of 683 KB. Still over the 250KB budget and honestly so: the residual is row COUNT x light rendered fields, inherited wholesale from plans.list, and shrinks when plans.list does — next up there is the nested identity avatarUrl (null on all 1,404 occurrences here).",
+    reviewBy: '2026-09-01',
+  },
   'workItems.byHarness': {
     maxBytes: 300_000,
     reason:

@@ -175,6 +175,42 @@ export async function loadOrGenerateDeviceKeypair(
   return { keychainId, pubkeyBase64 };
 }
 
+/**
+ * READ-ONLY sibling of {@link loadOrGenerateDeviceKeypair}: this machine's
+ * device pubkey for `keychainId`, or `null` when there isn't one to read.
+ *
+ * Exists because "which device am I?" is asked on READ paths too (p2p:trace's
+ * spawn-outcome reconciliation asks it to tell a local honor from a remote one),
+ * and `loadOrGenerateDeviceKeypair` is the wrong tool there twice over:
+ *
+ *  1. it MINTS a keypair on a miss — a read surface must never create a device
+ *     identity as a side effect of being queried; and
+ *  2. it THROWS on `io_error` (correctly, for the authoring path — WI-2018's
+ *     split-device-identity class means a write must never proceed on a guess).
+ *
+ * Here both cases mean the same thing and neither is fatal: we cannot establish
+ * our own device identity, so any caller comparing against it must fall back to
+ * "unknown" rather than to a wrong answer. Returning `null` rather than throwing
+ * keeps that fail-closed — see `memberEvidenceAvailableForHonor`, which reads a
+ * null self-pubkey as "no member evidence", producing `indeterminate` instead of
+ * a confident false verdict.
+ *
+ * A `decryption_failed` row is deliberately NOT regenerated here (that decision
+ * belongs to the authoring path, which warns loudly when it makes it) — it is
+ * simply unreadable, so: `null`.
+ */
+export async function loadDeviceKeypairPubkey(keychainId: string): Promise<string | null> {
+  try {
+    const loaded = await keychainLoad(keychainId);
+    if (loaded.kind !== 'ok') return null;
+    return pubkeyBase64FromDer(loaded.value);
+  } catch {
+    // A malformed stored DER (pubkeyBase64FromDer throwing) is the same answer as
+    // an unreadable one: we do not know our device pubkey.
+    return null;
+  }
+}
+
 // ─── gist creation ────────────────────────────────────────────────────────────
 
 export interface CreateAttestationGistInput {
