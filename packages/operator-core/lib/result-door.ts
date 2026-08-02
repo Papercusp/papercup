@@ -327,7 +327,34 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // to teach the one knob that would have prevented it (see PROJECTION_HINT).
     const lastItem = doored[doored.length - 1] as { type: 'text'; text: string };
     lastItem.text = `${lastItem.text.slice(0, -1)}${PROJECTION_HINT}]`;
-    return { ...result, content: doored };
+    // P-009 (plan agent-context-firewall-and-output-spill-2026-08-02): until now
+    // the door announced its OWN cut ONLY in the prose footer above, so a reader
+    // had to string-match an English sentence to learn its data was truncated —
+    // one refactor away from silently trusting a truncated result. That is the
+    // highest-frequency truncation path on the box (68,649 spills in 24h,
+    // measured 2026-08-02), and it was the only one with no machine-readable
+    // signal: payload-tier already stamps `_meta.payloadProjection`
+    // (serialize-result.ts:241), which is exactly what this door branches on at
+    // :181. Stamp the symmetric marker for the door's own truncation, ALONGSIDE
+    // the prose (never instead of it — the footer is what teaches the fix).
+    const resultDoorMeta = {
+      truncated: true,
+      spillPath: fsPath,
+      spillUri: uri,
+      originalChars: totalChars,
+      doorTokens,
+      /** True when `data` was ALREADY a lossy upstream projection before this
+       *  door saw it — i.e. paging the spill cannot recover what was omitted. */
+      upstreamProjected: Boolean(upstreamProjection),
+      /** Field-level cutoffs the TOOL itself applied; the spill cannot recover
+       *  these either (EI-18745696571494110). Empty when none were detected. */
+      innerTruncationMarkers,
+    };
+    return {
+      ...result,
+      _meta: { ...(result._meta ?? {}), resultDoor: resultDoorMeta },
+      content: doored,
+    };
   } catch {
     return result; // fail-soft: never let the door break a good result
   }

@@ -245,8 +245,15 @@ describe('dev:pipeline_position routes to the state plane (P-002)', () => {
     expect(p.some((x) => x.tool === 'state:subscribe')).toBe(true);
   });
 
+  /**
+   * The three pre-existing pointers are BARE STRINGS, so normalizeEntry puts the whole
+   * sentence (prose and all) in `tool` — match on prefix, not equality. Adding the state
+   * plane must not drop them.
+   */
   it('keeps the pre-existing activation/deploy pointers', () => {
     const tools = ptrs({ blockedOn: 'deployed' }).map((x) => x.tool);
-    expect(tools).toEqual(expect.arrayContaining(['dev:restart', 'dev:build_status', 'release:deploy']));
+    for (const name of ['dev:restart', 'dev:build_status', 'release:deploy']) {
+      expect(tools.some((t) => t.startsWith(name))).toBe(true);
+    }
   });
 });

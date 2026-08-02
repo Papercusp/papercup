@@ -498,7 +498,7 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.positions.inMain).toBe(false);
       expect(res.positionsMarker?.inMain?.present).toBe(true);
       expect(res.positionsMarker?.inMain?.count).toBe(2);
-      expect(res.notes.join('\n')).toMatch(/not unique to your change/);
+      expect(res.notes.join('\n')).toMatch(/NOT unique to your change/);
       // Unsettled by the marker → still falls through to the newer-commit
       // explanation, same as if no marker had been supplied at all.
       expect(res.positionsNewerCommit).toContain('inMain');
@@ -2402,6 +2402,15 @@ describe('changeInCandidate (P-004)', () => {
       const git: GitRunner = async (_repo, args) => {
         if (args[0] === 'config') return null;
         if (args[0] === 'status') return 'M a.ts';
+        // EI-19326775809436764's refineUnattributedUncommitted probes with a
+        // REF-SCOPED `log -1 --pretty=%H <ref> -- <path>` (args[3] is the ref,
+        // not '--') — a different shape from the bare candidate-resolution form
+        // below (args[3] IS '--'). This fixture predates that refinement; without
+        // this branch the blanket handler below satisfies its precondition by
+        // accident and silently downgrades this test's genuine 'uncommitted' case
+        // to 'insufficient-data' (EI-19381... discovered while working
+        // EI-19325915429897280 in this same file).
+        if (args[0] === 'log' && args.includes('--pretty=%H') && args[3] !== '--') return null;
         if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
         if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
         if (args[0] === 'rev-list') return '0';
