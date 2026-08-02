@@ -461,6 +461,34 @@ git log --oneline    -S backingTables -- "$F" | tail -1 -> 362398846f : IN   <- 
 blob truth: backingTables occurs 14x in that candidate                       <- plainly present
 ```
 
+⚠⚠ **`-S` is blind to a change that REWRITES a line without changing occurrence counts — use
+`-G` whenever you are searching by a NAME you did not introduce.** `-S` lists commits where the
+COUNT of the string changed. A commit that swaps a keyword, retypes a declaration, flips an
+operator, or edits a value leaves the count identical, so `-S` cannot see it at all — and
+`--is-ancestor` then answers correctly about the WRONG commit, which is worse than answering
+nothing. `-G` matches any diff line touching the pattern and does see it.
+
+The recipe above is still right *on its own terms*: `S='<a string your change INTRODUCED>'` is
+genuinely new, so its count genuinely changes. The trap is the entry path — you reach for this
+recipe precisely when a peer hands you a root cause as an IDENTIFIER ("the bug is
+`AdvRosterArgs`"), and an identifier is a pre-existing token, not an introduced string.
+
+Verified in this repo 2026-08-02 on `apps/operator/lib/adv-roster-args.ts`. The gate-red fix
+`66908db5bf` changed `-export interface AdvRosterArgs {` → `+export type AdvRosterArgs = {`,
+leaving the count at 1:
+
+```
+git log --oneline -S'AdvRosterArgs' -- "$F"   -> afba95d487              <- MISSES the fix
+git log --oneline -G'AdvRosterArgs' -- "$F"   -> 66908db5bf afba95d487   <- correct
+```
+
+Cost when it fired: an agent used `-S`, concluded a peer's correct root-cause attribution could
+not be corroborated, and broadcast that doubt hive-wide before retracting it (WI-7030).
+**Rule of thumb: searching by a name you did NOT introduce → `-G`; by a string you DID introduce
+→ `-S`. When in doubt run both — they disagree only in the cases that matter.** Note that the
+BLOB-IDENTITY check above is immune to both this and the `tail -1` trap, which is why it is the
+primary and log archaeology is the fallback.
+
 **No string unique to your change?** Use a *semantic discriminator* instead of a token: diff the
 CHANGED ASSERTION TEXT between candidate and HEAD. The OLD text disappearing is as informative
 as the NEW text arriving, and unlike a token count it cannot be satisfied by something that

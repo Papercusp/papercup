@@ -157,6 +157,59 @@ describe('classifyDelegatedSpawnOutcome (EI-19333624101736074)', () => {
     expect(r.detail).toContain('accept-delegated-seats');
   });
 
+  it('REMOTE honor with no receipt ⇒ indeterminate, NOT no-response — absence of member evidence proves nothing', () => {
+    // Measured 2026-08-02: the Win rig member joined fed-drill at 08:11:25Z and
+    // the tower has no coord_presence row (reaped) and no fleet_membership_events
+    // row (the registry is machine-local). Only p2p_receipts crosses. So "no
+    // members" carries zero information for a remote honor.
+    const r = classifyDelegatedSpawnOutcome({
+      request: request(),
+      receipts: [],
+      members: [],
+      nowMs: NOW_AFTER,
+      memberEvidenceAvailable: false,
+    });
+    expect(r.verdict).toBe('indeterminate');
+    expect(r.actionable).toBe(true);
+    expect(r.detail).toContain('INDISTINGUISHABLE');
+    expect(r.detail).toContain('gap in the protocol, not a finding about this request');
+    // must NOT claim nobody honored it
+    expect(r.detail).not.toContain('nobody honored');
+  });
+
+  it('a remote honor still yields a definite verdict when a refusal receipt DID cross', () => {
+    const r = classifyDelegatedSpawnOutcome({
+      request: request(),
+      receipts: [{ kind: 'refusal', code: 'seats_exhausted', tsMs: REQUESTED_AT + 500 }],
+      members: [],
+      nowMs: NOW_AFTER,
+      memberEvidenceAvailable: false,
+    });
+    expect(r.verdict).toBe('refused');
+  });
+
+  it('a remote honor INSIDE the window is still pending, not indeterminate', () => {
+    const r = classifyDelegatedSpawnOutcome({
+      request: request(),
+      receipts: [],
+      members: [],
+      nowMs: NOW_INSIDE,
+      memberEvidenceAvailable: false,
+    });
+    expect(r.verdict).toBe('pending');
+  });
+
+  it('LOCAL honor keeps the definite no-response verdict (member evidence is real there)', () => {
+    const r = classifyDelegatedSpawnOutcome({
+      request: request(),
+      receipts: [],
+      members: [],
+      nowMs: NOW_AFTER,
+      memberEvidenceAvailable: true,
+    });
+    expect(r.verdict).toBe('no-response');
+  });
+
   it('a member that appeared BEFORE the request cannot have come from it', () => {
     const r = classifyDelegatedSpawnOutcome({
       request: request(),

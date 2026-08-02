@@ -135,4 +135,4 @@ First real cross-machine run (1785661381, tower `main-server-Precision-7865-Towe
   `shared_session_presence` carry fresh tower rows, ~10s old) but publishes **nothing of its own**,
   so the tower's roster holds no Mac row and target discovery fails before the bridge is ever
   exercised. Note `fed_assert_presence_gossip` asserts only the **tower->Mac** direction, so its
-  green never covered this. Tracked separately.
+  green never covered this. Tracked as **WI-7029**.

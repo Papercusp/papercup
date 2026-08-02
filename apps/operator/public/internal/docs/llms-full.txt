@@ -10528,6 +10528,23 @@ It then verifies two things separately, because they fail for unrelated reasons:
 
 Exit `2` means the artifacts uploaded fine but the hostname does not resolve — the R2 bucket has not been bound to the custom domain yet. That is one-time Cloudflare setup, not a broken upload.
 
+### Never paste raw upload output into a status update — mask the prefix first
+
+[Section titled “Never paste raw upload output into a status update — mask the prefix first”](#never-paste-raw-upload-output-into-a-status-update--mask-the-prefix-first)
+
+`upload-release.sh` and `upload-mobile-release.sh` self-mask their own preview lines (`s3://<bucket>/<secret>/`, `<host>/<secret>`), including under `DRY_RUN=1`, so their *own* stdout is already safe to paste (fixed EI-15305, 2026-07-18 — an earlier build of the DRY\_RUN preview leaked the raw prefix on one line while masking it on the next).
+
+But if you are quoting `$KEY_PREFIX`, `$PAPERCUSP_UPDATE_BASE_URL`, or any ad-hoc `aws s3` / `s3api` command’s own output by hand (not the scripts’ own preview lines) before it goes into a transcript, a coord message, or PG — mask it yourself first. **There is no `KEY_PREFIX=` line in `~/.papercusp/release-host.env`** — that file holds only `PAPERCUSP_RELEASE_HOST` and `PAPERCUSP_UPDATE_BASE_URL`; every script *derives* `KEY_PREFIX` at runtime by stripping the scheme+host off `PAPERCUSP_UPDATE_BASE_URL`. A masking wrapper that does `grep '^KEY_PREFIX=' ~/.papercusp/release-host.env` matches nothing, silently no-ops, and passes the secret straight through — a masking rail that silently no-ops is worse than none, because it produces false confidence (“I piped it through the mask”) while doing nothing. Derive it the same way the scripts do instead:
+
+```bash
+source ~/.papercusp/release-host.env
+KP="$(sed -E 's#^https?://[^/]+/?##; s#/$##' <<<"$PAPERCUSP_UPDATE_BASE_URL")"
+# then substitute it out of anything you're about to paste, e.g.:
+your-command-here 2>&1 | sed "s#${KP}#<secret>#g"
+```
+
+The `<secret>` path segment is **permanent** (it cannot be rotated without stranding every existing install — see the two invariants at the top of this doc), so containment, not rotation, is the only remedy if it leaks. If you ever see the raw value land in a transcript, PG, coord, or mem0, treat it as a live incident, not a typo to quietly fix.
+
 ## Re-publishing ONE platform onto an existing cut (incremental)
 
 [Section titled “Re-publishing ONE platform onto an existing cut (incremental)”](#re-publishing-one-platform-onto-an-existing-cut-incremental)
@@ -10894,6 +10911,164 @@ Nothing crashed. The operator booted, served its UI, took turns — but the fede
 [Section titled “The general lesson”](#the-general-lesson)
 
 Any “extract/cache once, reuse forever” provisioning step is a **latent staleness trap** the moment the thing it provisions can be updated independently of a shared, versioned dependency (here: the shared DB schema). Stamp what you extract with the identity of its source, and re-provision when the source changes — and add a boot-time assertion that the running code is not **behind** a shared migrated resource, because that failure mode is silent by construction.
+
+# Diagnosing a green-checkpoint red — the 'wrong object' pattern
+
+> On 2026-08-02 five agents produced at least five publicly-retracted findings in one morning while chasing gate reds. Every one had the same shape: a signal that was TRUE, about a different object than the agent assumed. This is the runbook that would have prevented them — how to read the primary artifact (the checkpoint log almost nobody opens), how to tell an assertion from a timeout in one command, how to decide whether a red is stale WITHOUT re-running anything or stealing gate CPU, and the two-check rule before believing any 'green'. Includes the await-glob trap, where another project's green satisfies your await and reads as your gate passing.
+
+## The pattern
+
+[Section titled “The pattern”](#the-pattern)
+
+The expensive failure when diagnosing a gate red is **not bad data**. Every number below was accurate. Each was accurate *about something other than what the agent concluded*:
+
+| the signal                               | what it was actually true about          | what it was read as             |
+| ---------------------------------------- | ---------------------------------------- | ------------------------------- |
+| `grep -c "$MARKER"` returned 3           | a token that already existed in the file | ”my change is in the candidate” |
+| `git diff HEAD` showed `-8 / +1`         | a peer’s *committed* edit being reverted | ”someone botched a revert”      |
+| `release:green` event, `satisfied: true` | pipeline `oddsmith`, a different repo    | ”our gate passed”               |
+| the guard is clean, zero offenders       | the **working tree**, already fixed      | ”the gate’s red was a phantom”  |
+| `PAPERCUSP_INTEGRATION_ROOT=…/papercusp` | where the gate integrates *from*         | ”where vitest runs”             |
+
+Two of these were reached **independently by different agents**, which is the tell that they are structural rather than careless. The discipline that prevents all five is one sentence:
+
+> **Before believing a signal, name the object it measures.** Then check that this is the object your question is about.
+
+The corollary is that the *more* a finding looks like it explains everything, the more likely it is measuring the wrong thing — a genuine regression rarely produces a perfectly clean story on the first read.
+
+## The primary artifact almost nobody opens
+
+[Section titled “The primary artifact almost nobody opens”](#the-primary-artifact-almost-nobody-opens)
+
+Each gate pass writes a full-suite log:
+
+```plaintext
+~/.papercusp/checkpoint-logs/<ts>-base-<sha>-cand-<sha>.log
+```
+
+It settles most disputes outright, because it contains three things no summary field does: the **literal thrown error**, the **per-test durations**, and the **actual run root**.
+
+Note it is written *once, at the end of each pass* — so for a still-running gate it describes a **completed** pass, never the live one. See the repo guide’s step-0 warning about candidate drift before quoting it as current.
+
+### Is it an assertion or a timeout? One command.
+
+[Section titled “Is it an assertion or a timeout? One command.”](#is-it-an-assertion-or-a-timeout-one-command)
+
+```bash
+grep -c 'Test timed out' <log>     # 0  -> NOT a timeout, however slow the file looked
+```
+
+A thrown assertion renders its message into the log (`Error: Found 19 link(s) …`); a timeout never reaches the `throw`, so it cannot produce an offender list. If you can see the rendered detail, the test ran to completion and failed on its merits.
+
+This single check would have prevented two independent false “it timed out” diagnoses on 2026-08-02, one of which led to a code change being applied, reverted, and then restored by a third agent who read the revert as an anomaly.
+
+### The file’s wall-clock is not the test’s duration
+
+[Section titled “The file’s wall-clock is not the test’s duration”](#the-files-wall-clock-is-not-the-tests-duration)
+
+The gate’s isolation line reports how long it spent on the **file**:
+
+```plaintext
+isolation: … still failing after attempt 1 (took 11725ms — consistent with ambient host load …)
+```
+
+The suite output reports what the **test** took:
+
+```plaintext
+❯ lib/github-identity-drift.test.ts (2 tests | 1 failed) 2322ms
+   × no source file links to papercupai as if it owned the product repo 2284ms
+```
+
+`11725ms` includes vitest boot, transform and collection. Only the inner number is measured against `testTimeout` (default **5000 ms**). Comparing the outer number to the default is what manufactured the timeout theory — twice.
+
+### Where the tests actually ran
+
+[Section titled “Where the tests actually ran”](#where-the-tests-actually-ran)
+
+```bash
+grep 'RUN v' <log>
+# RUN v4.1.8 <workspace>/papercusp-checkpoint/packages/operator-core
+```
+
+The suite executes in the **`papercusp-checkpoint` worktree**, not in `PAPERCUSP_INTEGRATION_ROOT`. Reading that env var off the launching process in `ps` and inferring the run root from it is wrong, and it is wrong in a way that changes conclusions: a guard that scans working-tree files is scanning *that* worktree, not the shared fleet tree every agent is editing. (This doc’s author filed a major bug on exactly that wrong premise, then downgraded it.)
+
+## Deciding whether a red is stale — run an experiment, not the suite
+
+[Section titled “Deciding whether a red is stale — run an experiment, not the suite”](#deciding-whether-a-red-is-stale--run-an-experiment-not-the-suite)
+
+The instinct on a red is to re-run the failing test. Resist it:
+
+* while the gate is judging, `pc-heavy` clamps heavy slots to 1 to protect the gate’s own isolation re-run, so your local run gets starved (observed: `exit 124` at 200 s);
+* a passing local run tells you about **tip**, which was never the question — the question is about the **candidate**.
+
+Instead, hold the tree fixed and vary only the thing you suspect. For a guard whose verdict depends on constants in its own source:
+
+```bash
+git show <candidate>:<path/to/guard.test.ts> > /tmp/guard-cand.ts
+git show <tip>:<path/to/guard.test.ts>       > /tmp/guard-tip.ts
+# then run the guard's logic against ONE unchanged working tree, once per constants file
+```
+
+Real result from 2026-08-02:
+
+```plaintext
+CANDIDATE 14fb28da   excludes=5  allowlist=0   -> 8 offenders   RED
+TIP       4961cfb8   excludes=7  allowlist=6   -> 0 offenders   GREEN
+```
+
+Same tree both runs, so the difference is *causally* the test version — not a correlation. The gate’s own re-triage independently agreed minutes later (`stale-candidate — the red is stale (candidate predates the fix)`), and the 8 predicted files matched the 8 in the real error exactly.
+
+Caution
+
+**Strip `//` comments before parsing string literals out of source.** The first run of that experiment reported the tip constants as *still failing* — a bug in the harness, not the guard: the comment `these files' own explanatory comments` contains an apostrophe, which broke quote-pairing and silently dropped two entries from the extracted array. It failed **toward alarm**, which is the direction that costs a night.
+
+## Never await a gate key with a globbed pipeline segment
+
+[Section titled “Never await a gate key with a globbed pipeline segment”](#never-await-a-gate-key-with-a-globbed-pipeline-segment)
+
+```js
+// WRONG on this box — the pipeline is a key SEGMENT, and * globs across projects
+events:await { event: 'release:green:*' }
+
+
+// RIGHT
+events:await { event: 'release:green:papercusp' }
+// or keep the glob and add a payload_filter on `pipeline`
+```
+
+Observed: an await on `release:green:*` fired `satisfied: true` carrying `{"pipeline":"oddsmith","sha":"a9488fbb…"}` — a different project on the same host, with a sha that is **not an object in this repository** — while the papercusp gate was still mid-run.
+
+This is dangerous rather than merely noisy. It arrives as `satisfied: true` on a family literally named `release:green`, carrying an authoritative-looking sha, precisely when you are primed for good news after a long red — and the documented next step after green is to **ship**. The natural follow-on is deploying a candidate that never passed.
+
+### The two-check rule for any green claim
+
+[Section titled “The two-check rule for any green claim”](#the-two-check-rule-for-any-green-claim)
+
+Applies to your own await, a peer’s message, and a tool field alike:
+
+1. `payload.pipeline == 'papercusp'` — not merely that *a* green event arrived.
+2. **`git rev-parse main` has moved.** The gate only fast-forwards `main` on a real pass, so this is the one fact a foreign event or a mistaken peer cannot fake.
+
+Check 2 is cheap, decisive, and independent of how the claim reached you. Use it.
+
+And separately: a passing affected-tests suite is **not** a green gate — lint, perf, desktop, delta and the `main` fast-forward all still have to clear.
+
+## When a peer’s diagnosis conflicts with yours
+
+[Section titled “When a peer’s diagnosis conflicts with yours”](#when-a-peers-diagnosis-conflicts-with-yours)
+
+Go to the primary artifact, not to a re-run and not to argument. On 2026-08-02 the checkpoint log settled three separate disputes in a single read, and every retraction that followed was made by the person holding the weaker evidence — in both directions, including this doc’s author. Two habits made that cheap rather than adversarial:
+
+* **State what you checked, not just what you concluded.** “0 matches against the guard’s actual pattern, despite 40 bare tokens in the file” is auditable; “my fixture is clean” is not.
+* **Report the negative result about your own work.** The fastest way to shorten one of these is for the obvious suspect to rule themselves out *with evidence*, publicly, before being asked.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* The repo guide’s gate section (`CLAUDE.md`) — step 0 (which sha is being judged), candidate drift mid-run, `inFlightRetriage`, and the blob-identity containment recipe.
+* `EI-19332682533219755` — the await-glob cross-match, filed with three suggested fixes.
+* `EI-19331631573087955` — the identity guard reading working-tree files rather than the judged candidate’s blobs.
 
 # Dispatch flags (crossWorkspace, etc.) are read off the PROJECTED def, not the source def
 
@@ -27359,54 +27534,88 @@ One usability note in the same area: OMP surfaces a lost cache to the *user*. `d
 
 ***
 
+### O9 · Cap universality — two layers, not one, and the premise of the gap was wrong
+
+[Section titled “O9 · Cap universality — two layers, not one, and the premise of the gap was wrong”](#o9--cap-universality--two-layers-not-one-and-the-premise-of-the-gap-was-wrong)
+
+The original report recorded OMP’s caps as *“wired per tool rather than at a single choke point”* and filed the universality question as an open gap. The exhaustive audit closes it, and the answer corrects the cell: **OMP has both a per-executor streaming cap and a universal choke-point cap, and the report saw only the first.** They sit at different boundaries and are not alternatives.
+
+**Layer 1 — streaming, per-executor by necessity.** `OutputSink` (`session/streaming-output.ts:728`) caps bytes *as they arrive from a live subprocess*. It is imported by exactly four execution sites — `exec/bash-executor.ts:10`, `eval/executor-base.ts:3`, `eval/js/executor.ts:1`, `tools/bash-interactive.ts:18` (plus `tools/eval.ts:12`). This layer is not incompletely applied; it is applied to precisely the set of tools that own a subprocess, because it is the only set for which a streaming cap is meaningful. Reading this set as “the cap coverage” is what produced the wrong cell.
+
+**Layer 2 — the context boundary, universal.** `spillLargeResultToArtifact` (`tools/output-meta.ts:650`) runs inside `wrappedExecute` (`:770-798`), which is installed by `wrapToolWithMetaNotice` (`:805`). Every registration path in the codebase wraps:
+
+| path                     | site                                                                                                                                    |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| built-in tools           | `tools/index.ts:595` — `createTools` maps **every** `BUILTIN_TOOLS` entry; `:634`, `:640` catch the two late-added xdev transport tools |
+| vibe (ephemeral) tools   | `session/agent-session.ts:7195`, via `#wrapRuntimeTool` `:7171`                                                                         |
+| MCP tools                | `agent-session.ts:7786`                                                                                                                 |
+| RPC-host tools           | `agent-session.ts:7837`                                                                                                                 |
+| SDK goal/write, CLI read | `sdk.ts:2377`, `:2412`; `cli/read-cli.ts:37`                                                                                            |
+
+Extension tools compose *outside* it — `ExtensionToolWrapper` wraps the already-wrapped tool (`:7173`, `:7788`, `:7839`) — so the cap still runs. There is no bypass: the saved original, `kUnwrappedExecute`, is referenced only within `output-meta.ts` (`:603`, `:770`, `:777`, `:806`, `:813`), as an idempotence guard and the wrapper’s own call. The source states the intent plainly at `:679-680`: *“The spill wraps arbitrary tools (built-in, MCP, extension, RPC-host).”*
+
+Defaults: spill above **50 KB**, keeping **20 KB head + 20 KB tail** (middle elision) or 500 tail lines — `config/settings-schema.ts:679`, `:703`, `:723`, `:765`.
+
+So the coverage fraction is **every registered tool**, with three exemptions — two of which are sound, and two genuine holes (one exemption, one scope limit):
+
+**Exemption 1 — `read`, by name (`:657`). Not a hole.** `read` implements a richer line-oriented cap of its own (`DEFAULT_MAX_BYTES` 50 KB, `DEFAULT_MAX_LINES` 3000, `truncateHead`, `truncateLine` — `read.ts:47-53`; `MAX_SUMMARY_BYTES` 2 MB, `MAX_SUMMARY_LINES` 20 000 — `:154-155`) which a byte-tail spill would corrupt.
+
+**Exemption 2 — a tool that already saved its own artifact (`:662`). Structurally unreachable by untrusted tools,** which is the interesting part. The skip keys on `result.details?.meta?.truncation?.artifactId`, so in principle a tool could self-exempt from the universal cap. A *remote* MCP server cannot: the bridge builds `details` from a fixed field list with no `meta` key and no spread of server-supplied data (`mcp/tool-bridge.ts:212-234`). The trust boundary strips the field, so only in-process tools that genuinely spilled — bash/eval via `OutputSink` — can take the exemption.
+
+**Hole 1 — no `SessionManager`, no cap at all (`:656`).** `sessionManager` is optional on `CustomToolContext` (`sdk.ts:542`), and the guard is a bare `if (!sessionManager) return result;`. An SDK or headless embedding without one therefore gets **no context cap whatsoever**, not a degraded one. That is inconsistent with how the *same function* handles a failed artifact save thirty lines later (`:684-692`): it catches, logs, and still truncates, under an explicit comment that *“a save failure must never … re-expose the full (possibly context-blowing) output”*. The storage-**failure** path degrades correctly to truncate-without-recovery; the storage-**absent** path does not degrade at all. Same risk, same function, two different answers.
+
+**Hole 2 — the universal cap is text-only.** `spillLargeResultToArtifact` measures only blocks where `block.type === "text"` (`:666-671`) and passes every non-text block through untouched (`:710-714`). Image blocks are emitted by `browser` (`tools/browser/run-output.ts:24`, `tab-worker.ts:1581`, `:1617`), `fetch` (`:1153`), `eval` (`:608-621`), `inspect_image` (`:223`) and `read` (`:1210`, `:1276`). They are governed only by a separate per-tool `MAX_IMAGE_INPUT_BYTES` of **20 MB** (`utils/image-loading.ts:7`) — a decode-safety limit, not a context budget. OMP does have an image-specific reduction path, but it is at the *compaction* layer (`dropImages()`, O4), not at the tool boundary.
+
+***
+
 ## Side-by-side, every cell cited or struck
 
 [Section titled “Side-by-side, every cell cited or struck”](#side-by-side-every-cell-cited-or-struck)
 
 No “us” column, by design.
 
-| mechanism                                   | opencode 1.4.0                                                                                                  | OMP 17.0.7                                                                                                                                                                                                                                                                                           | confidence    |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| **Line cap on tool output**                 | 2000 — `tool/truncate.ts:17`                                                                                    | 3000 — `session/streaming-output.ts:10`                                                                                                                                                                                                                                                              | High          |
-| **Byte cap on tool output**                 | 50 KB — `truncate.ts:18`                                                                                        | 50 KB — `streaming-output.ts:11`                                                                                                                                                                                                                                                                     | High          |
-| **Per-line/column cap**                     | only within tools: `read.ts:17` (2000 ch), `grep.ts:130-132`                                                    | global at the sink: `DEFAULT_MAX_COLUMN = 512` — `streaming-output.ts:12`, applied `:870-873`                                                                                                                                                                                                        | High          |
-| **Cap combination**                         | AND — both must pass — `truncate.ts:70`                                                                         | per-dimension, tracked separately in `TruncationMeta` — `output-meta.ts:26-28`                                                                                                                                                                                                                       | High          |
-| **Truncation directions**                   | head, tail — `truncate.ts:27`                                                                                   | head, tail, **middle** — `output-meta.ts:28`, `:19`                                                                                                                                                                                                                                                  | High          |
-| **Applied universally?**                    | **Yes** — every tool result via `tool/tool.ts:86`; opt-out at `:83-85`                                          | Per-sink (`OutputSink`), wired per tool — `bash.ts:20`, `eval.ts:12`                                                                                                                                                                                                                                 | High / Medium |
-| **Full output spilled to disk**             | **Yes** — `truncate.ts:104-107`                                                                                 | **Yes** — `session/artifacts.ts:101-119`                                                                                                                                                                                                                                                             | High          |
-| **Spill identifier**                        | monotonic `ToolID` as filename — `truncate.ts:104`                                                              | sequential int per session, `<id>.<tool>.log` — `artifacts.ts:104`                                                                                                                                                                                                                                   | High          |
-| **Spill addressed as**                      | a filesystem path in the hint text — `truncate.ts:110-111`                                                      | a URL scheme `artifact://<id>` — `sdk.ts:1577`, `streaming-output.ts:631`                                                                                                                                                                                                                            | High          |
-| **Sub-range fetch of a spill**              | not as a spill feature; generic `Read` offset/limit — `truncate.ts:111`                                         | **yes, selector grammar** `artifact://5:1-50`, `artifact://3:raw:-100`, `artifact://5:conflicts:1-1` — `path-utils.ts:376`, `:401`, `read.ts:822`                                                                                                                                                    | High          |
-| **Spill ID space across subagents**         | per-session dirs, no shared id space found                                                                      | **shared parent+subagent id space** — `artifacts.ts:34-36`, `session-manager.ts:1347-1349`                                                                                                                                                                                                           | High          |
-| **Spill expiry**                            | **7 days**, hourly sweep — `truncate.ts:15`, `:51-61`, `:123-131`                                               | **none** — `artifacts.ts` has no retention path (153 lines, full surface read)                                                                                                                                                                                                                       | High          |
-| **Spill written when**                      | after the fact, on overflow — `truncate.ts:106-107`                                                             | **streaming, raw/pre-cap** — `streaming-output.ts:877-880`                                                                                                                                                                                                                                           | High          |
-| **Model told the caps**                     | yes — bash description interpolates them, `bash.ts:469-470`                                                     | via `LimitsMeta` in the output envelope — `output-meta.ts:68`                                                                                                                                                                                                                                        | High / Medium |
-| **Overflow trigger**                        | absolute tokens vs `model.limit.input - reserved`, `reserved = min(20k, maxOutput)` — `overflow.ts:6`, `:16-21` | budget-reserve vs context window — `agent-session.ts:13673-13683`                                                                                                                                                                                                                                    | High / Medium |
-| **Cache tokens count toward window**        | **yes** — `overflow.ts:14`                                                                                      | **yes** — `totalTokens \|\| input+output+cacheRead+cacheWrite`, *minus* provider-side orchestration tokens (billable, but never replay into the prefix) — `pi-agent-core/src/compaction/compaction.ts:215-222`                                                                                       | High          |
-| **Compaction**                              | dedicated `"compaction"` agent, plugin-replaceable prompt — `compaction.ts:179`, `:183-185`, `:219`             | three modes: `soft`, `remote`, **`snapcompact`** — `compact-modes.ts:47-65`                                                                                                                                                                                                                          | High          |
-| **Compaction without an LLM call**          | none found                                                                                                      | **`snapcompact`** — bitmap images read back by vision — `compact-modes.ts:58-63`                                                                                                                                                                                                                     | High          |
-| **Evict tool results without summarizing**  | **prune** — `compaction.ts:35-37`, `:93-139`                                                                    | **shake(“elide”)** — `agent-session.ts:10833-10882`                                                                                                                                                                                                                                                  | High          |
-| **…protection band**                        | newest 40k tokens of tool output + last 2 user turns — `compaction.ts:36`, `:111`                               | **`protectTokens: 16_000`** on the auto path (`0` on manual `/shake`) — `pi-agent-core/src/compaction/shake.ts:46-59`                                                                                                                                                                                | High          |
-| **…hysteresis**                             | only fires if >20k tokens would be freed — `compaction.ts:35`, `:130`                                           | **`minSavings: 4_000`** on the auto path (`0` on manual `/shake`) — `shake.ts:46-59`                                                                                                                                                                                                                 | High          |
-| **…cache-aware history mutation**           | none found                                                                                                      | **yes** — prune refuses to mutate any entry whose message-suffix exceeds the warm-cache window (`8_000`), because editing inside the sent prefix re-writes the whole suffix at `cacheWrite` price — `pi-agent-core/src/compaction/pruning.ts:44-51`, `:349-357`, threshold at `agent-session.ts:792` | Medium / High |
-| **…what the model sees after**              | `"[Old tool result content cleared]"` — `message-v2.ts:718`                                                     | `"[shaken ~N tokens — recover: artifact://<id> (region N)]"` — `agent-session.ts:10886`                                                                                                                                                                                                              | High          |
-| **…recoverable by the model?**              | **No** in-context pointer (the spilled copy may exist for ≤7d, unlinked)                                        | **Yes**, by design — the placeholder carries the recovery URL                                                                                                                                                                                                                                        | High          |
-| **Image/attachment dropping**               | attachments dropped with pruned parts — `message-v2.ts:719`; `stripMedia` option                                | `dropImages()` / `/shake images` — `agent-session.ts:10834-10836`                                                                                                                                                                                                                                    | High          |
-| **Tiered reduction ladder**                 | none found — prune and compact are separate paths                                                               | **yes** — `#rescueCompactionDeadEnd`, elide → dropImages, recoverable first — `agent-session.ts:13685-13760`                                                                                                                                                                                         | Medium / High |
-| **Subagent context firewall**               | `task` — child session, only last text part returns — `task.ts:65`, `:136-144`                                  | `task` subsystem (`src/task/`, 25 files); result template `prompts/tools/task-summary.md`                                                                                                                                                                                                            | High          |
-| **…parent-visible result**                  | `task_id` + `<task_result>` + last text part, then capped by M1 — `task.ts:138-144`                             | `<task-result>` + `<meta lines size/>` + `<preview full-output="agent://id">` — `task-summary.md:1-14`                                                                                                                                                                                               | High          |
-| **…parent told the discarded size**         | **no**                                                                                                          | **yes** — `<meta lines size />`, `task-summary.md:2`                                                                                                                                                                                                                                                 | High          |
-| **…subagent result itself spilled**         | no (truncated by M1, spilled as any tool output)                                                                | **yes**, `agent://<id>` — `task-summary.md:7`                                                                                                                                                                                                                                                        | High          |
-| **…recursion depth**                        | 1 by default — `task` denied in child — `task.ts:78-86`, `:130`                                                 | **2** by default — `settings.get("task.maxRecursionDepth") ?? 2`, `task/structured-subagent.ts:211`, gated by `canSpawnAtDepth` `:212`                                                                                                                                                               | High          |
-| **…resumable**                              | yes, `task_id` — `task.ts:29-34`, `:60-62`                                                                      | yes, `hub send` / `agent://<id>` / `history://<id>` — `task-async-contract.md`                                                                                                                                                                                                                       | High          |
-| **…subagent output caps**                   | inherits 2000 lines / 50 KB (M1)                                                                                | `MAX_OUTPUT_BYTES=500_000`, `MAX_OUTPUT_LINES=5000`, env-overridable — `task/types.ts:53`, `:56`                                                                                                                                                                                                     | High          |
-| **…async / no-poll contract**               | synchronous `await SessionPrompt.prompt` — `task.ts:120`                                                        | explicit push contract, \~5 min job-id memory — `task-async-contract.md`                                                                                                                                                                                                                             | High          |
-| **…“done” ≠ verified warning**              | none found                                                                                                      | **explicit** — *“`completed` means the subagent yielded successfully, not that claimed artifacts were verified”*                                                                                                                                                                                     | High          |
-| **Prompt-mandated firewall use**            | yes but **Anthropic-prompt-only** for the hard form — `anthropic.txt:86`; soft form in 3 prompts                | not located in the prompts read                                                                                                                                                                                                                                                                      | High / Low    |
-| **Prompt caching**                          | ≤4 breakpoints, first 2 system + last 2 messages — `transform.ts:192-215`                                       | **≤4 too**, but budgeted not positional: counts breakpoints already present (tools+system+messages), then last system block, then walks *back* from the message tail — `pi-ai/src/providers/anthropic.ts:3001-3047`, `:3128-3147`                                                                    | High          |
-| **…cache TTL**                              | not read                                                                                                        | **1h by default** for OAuth *and* API keys where supported, because “agent sessions routinely idle past 5 minutes waiting on background jobs” — `anthropic.ts:440-462`; longest-TTL-first ordering enforced at `:3049-3061`                                                                          | — / High      |
-| **External CLI worker fan-out**             | none found                                                                                                      | `vibe_spawn/send/wait/kill/list` — `tools/vibe.ts:50`                                                                                                                                                                                                                                                | Medium / High |
-| **”Code mode” / script-batched tool calls** | **STRUCK — does not exist at v1.4.0**                                                                           | not searched                                                                                                                                                                                                                                                                                         | High / —      |
+| mechanism                                   | opencode 1.4.0                                                                                                  | OMP 17.0.7                                                                                                                                                                                                                                                                                                 | confidence    |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| **Line cap on tool output**                 | 2000 — `tool/truncate.ts:17`                                                                                    | 3000 — `session/streaming-output.ts:10`                                                                                                                                                                                                                                                                    | High          |
+| **Byte cap on tool output**                 | 50 KB — `truncate.ts:18`                                                                                        | 50 KB — `streaming-output.ts:11`                                                                                                                                                                                                                                                                           | High          |
+| **Per-line/column cap**                     | only within tools: `read.ts:17` (2000 ch), `grep.ts:130-132`                                                    | global at the sink: `DEFAULT_MAX_COLUMN = 512` — `streaming-output.ts:12`, applied `:870-873`                                                                                                                                                                                                              | High          |
+| **Cap combination**                         | AND — both must pass — `truncate.ts:70`                                                                         | per-dimension, tracked separately in `TruncationMeta` — `output-meta.ts:26-28`                                                                                                                                                                                                                             | High          |
+| **Truncation directions**                   | head, tail — `truncate.ts:27`                                                                                   | head, tail, **middle** — `output-meta.ts:28`, `:19`                                                                                                                                                                                                                                                        | High          |
+| **Applied universally?**                    | **Yes** — every tool result via `tool/tool.ts:86`; opt-out at `:83-85`                                          | **Yes, at the registration boundary** — `wrapToolWithMetaNotice` → `spillLargeResultToArtifact`, `output-meta.ts:783`, `:650`; every registration path wraps (built-in `tools/index.ts:595`, MCP `agent-session.ts:7786`, RPC-host `:7837`, vibe `:7195`). Text blocks only; three exemptions — see **O9** | High          |
+| **Full output spilled to disk**             | **Yes** — `truncate.ts:104-107`                                                                                 | **Yes** — `session/artifacts.ts:101-119`                                                                                                                                                                                                                                                                   | High          |
+| **Spill identifier**                        | monotonic `ToolID` as filename — `truncate.ts:104`                                                              | sequential int per session, `<id>.<tool>.log` — `artifacts.ts:104`                                                                                                                                                                                                                                         | High          |
+| **Spill addressed as**                      | a filesystem path in the hint text — `truncate.ts:110-111`                                                      | a URL scheme `artifact://<id>` — `sdk.ts:1577`, `streaming-output.ts:631`                                                                                                                                                                                                                                  | High          |
+| **Sub-range fetch of a spill**              | not as a spill feature; generic `Read` offset/limit — `truncate.ts:111`                                         | **yes, selector grammar** `artifact://5:1-50`, `artifact://3:raw:-100`, `artifact://5:conflicts:1-1` — `path-utils.ts:376`, `:401`, `read.ts:822`                                                                                                                                                          | High          |
+| **Spill ID space across subagents**         | per-session dirs, no shared id space found                                                                      | **shared parent+subagent id space** — `artifacts.ts:34-36`, `session-manager.ts:1347-1349`                                                                                                                                                                                                                 | High          |
+| **Spill expiry**                            | **7 days**, hourly sweep — `truncate.ts:15`, `:51-61`, `:123-131`                                               | **none** — `artifacts.ts` has no retention path (153 lines, full surface read)                                                                                                                                                                                                                             | High          |
+| **Spill written when**                      | after the fact, on overflow — `truncate.ts:106-107`                                                             | **streaming, raw/pre-cap** — `streaming-output.ts:877-880`                                                                                                                                                                                                                                                 | High          |
+| **Model told the caps**                     | yes — bash description interpolates them, `bash.ts:469-470`                                                     | via `LimitsMeta` in the output envelope — `output-meta.ts:68`                                                                                                                                                                                                                                              | High / Medium |
+| **Overflow trigger**                        | absolute tokens vs `model.limit.input - reserved`, `reserved = min(20k, maxOutput)` — `overflow.ts:6`, `:16-21` | budget-reserve vs context window — `agent-session.ts:13673-13683`                                                                                                                                                                                                                                          | High / Medium |
+| **Cache tokens count toward window**        | **yes** — `overflow.ts:14`                                                                                      | **yes** — `totalTokens \|\| input+output+cacheRead+cacheWrite`, *minus* provider-side orchestration tokens (billable, but never replay into the prefix) — `pi-agent-core/src/compaction/compaction.ts:215-222`                                                                                             | High          |
+| **Compaction**                              | dedicated `"compaction"` agent, plugin-replaceable prompt — `compaction.ts:179`, `:183-185`, `:219`             | three modes: `soft`, `remote`, **`snapcompact`** — `compact-modes.ts:47-65`                                                                                                                                                                                                                                | High          |
+| **Compaction without an LLM call**          | none found                                                                                                      | **`snapcompact`** — bitmap images read back by vision — `compact-modes.ts:58-63`                                                                                                                                                                                                                           | High          |
+| **Evict tool results without summarizing**  | **prune** — `compaction.ts:35-37`, `:93-139`                                                                    | **shake(“elide”)** — `agent-session.ts:10833-10882`                                                                                                                                                                                                                                                        | High          |
+| **…protection band**                        | newest 40k tokens of tool output + last 2 user turns — `compaction.ts:36`, `:111`                               | **`protectTokens: 16_000`** on the auto path (`0` on manual `/shake`) — `pi-agent-core/src/compaction/shake.ts:46-59`                                                                                                                                                                                      | High          |
+| **…hysteresis**                             | only fires if >20k tokens would be freed — `compaction.ts:35`, `:130`                                           | **`minSavings: 4_000`** on the auto path (`0` on manual `/shake`) — `shake.ts:46-59`                                                                                                                                                                                                                       | High          |
+| **…cache-aware history mutation**           | none found                                                                                                      | **yes** — prune refuses to mutate any entry whose message-suffix exceeds the warm-cache window (`8_000`), because editing inside the sent prefix re-writes the whole suffix at `cacheWrite` price — `pi-agent-core/src/compaction/pruning.ts:44-51`, `:349-357`, threshold at `agent-session.ts:792`       | Medium / High |
+| **…what the model sees after**              | `"[Old tool result content cleared]"` — `message-v2.ts:718`                                                     | `"[shaken ~N tokens — recover: artifact://<id> (region N)]"` — `agent-session.ts:10886`                                                                                                                                                                                                                    | High          |
+| **…recoverable by the model?**              | **No** in-context pointer (the spilled copy may exist for ≤7d, unlinked)                                        | **Yes**, by design — the placeholder carries the recovery URL                                                                                                                                                                                                                                              | High          |
+| **Image/attachment dropping**               | attachments dropped with pruned parts — `message-v2.ts:719`; `stripMedia` option                                | `dropImages()` / `/shake images` — `agent-session.ts:10834-10836`                                                                                                                                                                                                                                          | High          |
+| **Tiered reduction ladder**                 | none found — prune and compact are separate paths                                                               | **yes** — `#rescueCompactionDeadEnd`, elide → dropImages, recoverable first — `agent-session.ts:13685-13760`                                                                                                                                                                                               | Medium / High |
+| **Subagent context firewall**               | `task` — child session, only last text part returns — `task.ts:65`, `:136-144`                                  | `task` subsystem (`src/task/`, 25 files); result template `prompts/tools/task-summary.md`                                                                                                                                                                                                                  | High          |
+| **…parent-visible result**                  | `task_id` + `<task_result>` + last text part, then capped by M1 — `task.ts:138-144`                             | `<task-result>` + `<meta lines size/>` + `<preview full-output="agent://id">` — `task-summary.md:1-14`                                                                                                                                                                                                     | High          |
+| **…parent told the discarded size**         | **no**                                                                                                          | **yes** — `<meta lines size />`, `task-summary.md:2`                                                                                                                                                                                                                                                       | High          |
+| **…subagent result itself spilled**         | no (truncated by M1, spilled as any tool output)                                                                | **yes**, `agent://<id>` — `task-summary.md:7`                                                                                                                                                                                                                                                              | High          |
+| **…recursion depth**                        | 1 by default — `task` denied in child — `task.ts:78-86`, `:130`                                                 | **2** by default — `settings.get("task.maxRecursionDepth") ?? 2`, `task/structured-subagent.ts:211`, gated by `canSpawnAtDepth` `:212`                                                                                                                                                                     | High          |
+| **…resumable**                              | yes, `task_id` — `task.ts:29-34`, `:60-62`                                                                      | yes, `hub send` / `agent://<id>` / `history://<id>` — `task-async-contract.md`                                                                                                                                                                                                                             | High          |
+| **…subagent output caps**                   | inherits 2000 lines / 50 KB (M1)                                                                                | `MAX_OUTPUT_BYTES=500_000`, `MAX_OUTPUT_LINES=5000`, env-overridable — `task/types.ts:53`, `:56`                                                                                                                                                                                                           | High          |
+| **…async / no-poll contract**               | synchronous `await SessionPrompt.prompt` — `task.ts:120`                                                        | explicit push contract, \~5 min job-id memory — `task-async-contract.md`                                                                                                                                                                                                                                   | High          |
+| **…“done” ≠ verified warning**              | none found                                                                                                      | **explicit** — *“`completed` means the subagent yielded successfully, not that claimed artifacts were verified”*                                                                                                                                                                                           | High          |
+| **Prompt-mandated firewall use**            | yes but **Anthropic-prompt-only** for the hard form — `anthropic.txt:86`; soft form in 3 prompts                | not located in the prompts read                                                                                                                                                                                                                                                                            | High / Low    |
+| **Prompt caching**                          | ≤4 breakpoints, first 2 system + last 2 messages — `transform.ts:192-215`                                       | **≤4 too**, but budgeted not positional: counts breakpoints already present (tools+system+messages), then last system block, then walks *back* from the message tail — `pi-ai/src/providers/anthropic.ts:3001-3047`, `:3128-3147`                                                                          | High          |
+| **…cache TTL**                              | not read                                                                                                        | **1h by default** for OAuth *and* API keys where supported, because “agent sessions routinely idle past 5 minutes waiting on background jobs” — `anthropic.ts:440-462`; longest-TTL-first ordering enforced at `:3049-3061`                                                                                | — / High      |
+| **External CLI worker fan-out**             | none found                                                                                                      | `vibe_spawn/send/wait/kill/list` — `tools/vibe.ts:50`                                                                                                                                                                                                                                                      | Medium / High |
+| **”Code mode” / script-batched tool calls** | **STRUCK — does not exist at v1.4.0**                                                                           | not searched                                                                                                                                                                                                                                                                                               | High / —      |
 
 ***
 
@@ -27419,11 +27628,12 @@ Recording these explicitly, because an honest gap is worth more than a plausible
 * **Wall-clock cost of an opencode subagent spawn.** Not measurable by reading; would need a run.
 * **Whether opencode rolls child-session cost into the parent’s displayed totals.** Cost is computed per assistant message (`session/index.ts:296-302`) and children are separate session rows; no aggregation path was located, but the search was not exhaustive.
 * **`code-mode.ts` in opencode’s other 18 packages.** Absent from `packages/opencode/src` and no file in the tree matches `*code-mode*`; a full-repo content search for the concept under another name was not run.
-* **Whether OMP applies its caps as universally as opencode’s `tool.ts:86` does.** `OutputSink` is wired per tool (`bash.ts`, `eval.ts`, …) rather than at a single choke point, but no exhaustive audit of every tool was performed.
 
-### ✓ Five of the original nine closed after publication — all five to one cause
+All three survivors need a **run** or a full-repo content search — none is answerable by reading the packages already cited. Every gap that a read could close has been closed.
 
-[Section titled “✓ Five of the original nine closed after publication — all five to one cause”](#-five-of-the-original-nine-closed-after-publication--all-five-to-one-cause)
+### ✓ Six of the original nine closed after publication — five of them to one cause
+
+[Section titled “✓ Six of the original nine closed after publication — five of them to one cause”](#-six-of-the-original-nine-closed-after-publication--five-of-them-to-one-cause)
 
 The five that closed were all OMP gaps, and every one of them read as *“OMP does not appear to do this”* for the same wrong reason: **OMP is not one package.** The original read searched `@oh-my-pi/pi-coding-agent`, which is only the CLI shell. The mechanisms live one and two layers down, and each ships its own `src/`:
 
@@ -27444,8 +27654,15 @@ What closed, and where it actually lived:
 | Subagent recursion depth | **2** by default — `task/structured-subagent.ts:211` (not `spawn-policy.ts`)                                                                                                    | `pi-coding-agent` |
 | Prompt-caching strategy  | 4-breakpoint *budget*, 1h default retention, TTL-ordering normalized — see **O8**                                                                                               | `pi-ai`           |
 | Cache tokens vs overflow | **yes**, they count — minus provider-side orchestration tokens — `compaction.ts:215-222`                                                                                        | `pi-agent-core`   |
+| Cap universality         | **universal at the registration boundary** — `wrapToolWithMetaNotice`, `output-meta.ts:805`; see **O9**                                                                         | `pi-coding-agent` |
 
-Two of these did not merely fill a blank — they **corrected cells that were already filled wrongly**. OMP’s shake hysteresis and protection band were recorded as *none found* and *config-driven*; both exist and are cited above. The report had read only the aggressive path that the manual `/shake` command uses, where both thresholds are deliberately zero, and generalised from it. The auto path — the one that actually runs unattended — has real guards.
+**Three** of these did not merely fill a blank — they **corrected cells that were already filled wrongly**, and the three share a shape worth naming.
+
+Two were the shake cells. OMP’s hysteresis and protection band were recorded as *none found* and *config-driven*; both exist and are cited above. The report had read only the aggressive path that the manual `/shake` command uses, where both thresholds are deliberately zero, and generalised from it. The auto path — the one that actually runs unattended — has real guards.
+
+The third was cap universality (**O9**), and it is the same error in a different dress. The report found `OutputSink` wired into `bash.ts` and `eval.ts`, correctly observed that this is per-tool, and concluded OMP has no single choke point. It does — one layer up, at tool *registration* rather than tool *execution*, wrapping every built-in, MCP, RPC-host and extension tool alike. Both mistakes are the same one: **finding one mechanism and treating it as the whole answer, when it was one layer of a layered design.** The package-boundary lesson below is the coarse version of this; the layer-boundary version is subtler, because everything you read is true — the per-tool wiring really is per-tool. It just was not the only thing there.
+
+The practical form of the rule: when a mechanism looks *surprisingly* incomplete in a codebase that is otherwise careful, the likely explanation is a second mechanism you have not found yet, not an oversight by the authors.
 
 ## What would change these findings
 

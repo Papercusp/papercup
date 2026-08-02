@@ -132,6 +132,58 @@ export function hasAssumptionDeclaration(v: unknown): boolean {
   return Array.isArray(v) && v.length > 0 && v.every((k) => typeof k === 'string' && k.trim().length > 0);
 }
 
+/** The refusal for a declaration that names the sentinel ALONGSIDE real keys. */
+export const ASSUMPTIONS_CONTRADICTION_MESSAGE =
+  `assumptions names both the literal "${NO_ASSUMPTIONS}" and real fact key(s). Those are contradictory ` +
+  'claims: "none" asserts this close rests on NOTHING you recorded, while a key asserts it rests on that ' +
+  'fact. Pass EITHER the keys alone, OR the bare literal assumptions: "none".';
+
+/**
+ * EI-19339908198998425 — normalize `["none"]` (the sentinel in a CONTAINER) to the
+ * bare sentinel.
+ *
+ * ── WHY ACCEPT IT RATHER THAN REFUSE ────────────────────────────────────────
+ *
+ * This is the exact mirror of EI-18812234312014879, which sits in the header of
+ * `assumptionsArg` above: there, a caller with one key passed a bare string where
+ * an ARRAY was wanted. Here a caller passes an ARRAY where the bare LITERAL was
+ * wanted. That one was fixed with a better message rather than by accepting the
+ * shape, and the asymmetry is deliberate, not an inconsistency:
+ *
+ *   • a bare `"my-key"` is genuinely AMBIGUOUS — it is a plausible real key, so
+ *     silently reinterpreting it would be guessing at intent.
+ *   • `["none"]` is NOT ambiguous. `'none'` is a reserved literal of THIS schema,
+ *     so an array whose only entry is that literal has exactly one possible
+ *     meaning, and a fact genuinely keyed "none" is not a thing that should exist.
+ *
+ * D-016's rationale is that the field must carry a CONSCIOUS choice — "a default
+ * is how a field dies". A caller who types `["none"]` has made that choice; they
+ * have fumbled the container, not abstained. Refusing them enforces punctuation,
+ * not intent.
+ *
+ * ⚠ THE FAILURE THIS REMOVES IS WORSE THAN A WASTED ROUND-TRIP. The old refusal
+ * came from {@link danglingAssumptionsMessage}, whose remediation reads "...or
+ * pass \"none\" if this close rests on nothing you recorded" — which is a
+ * description of what the caller just passed. Its two most likely readings are
+ * "re-send the identical call", or "assert a fact keyed `none` to satisfy the
+ * resolver". The second is the laundering that D-050/D-079 gate exists to prevent:
+ * the guard's own error text was steering callers into polluting the ledger to get
+ * past it. (Observed live 2026-08-02 closing EI-19332542096444388: the completion
+ * was recorded while the state write was refused, leaving the item done-in-content
+ * but still `open` and claimable — the window where the auto-loop re-places work
+ * on finished items.)
+ *
+ * The sentinel MIXED with real keys stays a hard refusal — that one is a genuine
+ * contradiction about what the close rests on, not a container fumble.
+ */
+export function normalizeAssumptionDeclaration(declared: AssumptionDeclaration): AssumptionDeclaration {
+  if (!Array.isArray(declared)) return declared;
+  const sentinels = declared.filter((k) => typeof k === 'string' && k.trim() === NO_ASSUMPTIONS);
+  if (sentinels.length === 0) return declared;
+  if (sentinels.length === declared.length) return NO_ASSUMPTIONS;
+  throw new InvalidInputError(ASSUMPTIONS_CONTRADICTION_MESSAGE);
+}
+
 /**
  * P-008 (d) / D-079 — RESOLVE a declaration against the facts ledger and return
  * what to persist. Throws {@link InvalidInputError} when any entry dangles.
@@ -157,7 +209,12 @@ export async function resolveDeclaredAssumptions(args: {
   harnessSlug?: string | null;
 }): Promise<StoredAssumptionDeclaration> {
   const resolvedAt = new Date().toISOString();
-  if (args.declared === NO_ASSUMPTIONS) return { declared: NO_ASSUMPTIONS, resolvedAt };
+  // EI-19339908198998425: `["none"]` means the sentinel, not a fact key named
+  // "none". Normalized HERE, at the shared entry point, so `complete` and
+  // `set_state` cannot diverge on it — the same reason the harness derive below
+  // lives here rather than at the two known call sites.
+  const declared = normalizeAssumptionDeclaration(args.declared);
+  if (declared === NO_ASSUMPTIONS) return { declared: NO_ASSUMPTIONS, resolvedAt };
 
   // EI-18806393166489384: derive the harness scope from the work-item when the
   // caller did not name it, so a fact asserted at `scope:'harness'` for THIS
@@ -192,7 +249,7 @@ export async function resolveDeclaredAssumptions(args: {
   // Only a GENUINE absence refuses. `resolveAssumptions` fails open to
   // `unresolved` when the ledger could not be read, so a PG blip never turns into
   // a fleet-wide block on closing work — see isDanglingCondition.
-  const resolved = await resolveAssumptions(args.declared, selectors);
+  const resolved = await resolveAssumptions(declared, selectors);
   const dangling = resolved.filter((r) => isDanglingCondition(r.condition));
   if (dangling.length > 0) {
     throw new InvalidInputError(danglingAssumptionsMessage(dangling, selectors));

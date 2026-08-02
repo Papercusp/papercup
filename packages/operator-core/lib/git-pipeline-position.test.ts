@@ -3224,6 +3224,39 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
     });
   });
 
+  /**
+   * EI-19327704778173646 / WI-7024. This mapper destructures an EXACT field set, so a new
+   * leg is silently DROPPED unless threaded explicitly — which is why refire state never
+   * reached dev:pipeline_position, the very tool CLAUDE.md points agents at for "is my
+   * change live". A caller that cannot see the run re-candidated reads the moving
+   * `candidate` as a corrupt field.
+   */
+  it('carries refire provenance through to the tool-facing shape', () => {
+    const out = mapCheckpointRunInFlight(
+      {
+        activeRun: {
+          active: true,
+          candidate: '4961cfb8',
+          initialCandidate: '14fb28da',
+          refireObserved: true,
+          startedAtMs: NOW - 45 * 60_000,
+          elapsedSec: 2700,
+        },
+        computedAtMs: NOW - 1_000,
+      },
+      NOW,
+    );
+    expect(out).toEqual({
+      active: true,
+      candidate: '4961cfb8',
+      initialCandidate: '14fb28da',
+      refireObserved: true,
+      startedAtMs: NOW - 45 * 60_000,
+      elapsedSec: 2700,
+      asOfAgeMs: 1_000,
+    });
+  });
+
   it('an idle probe result ({ active: false }) is NOT collapsed to null — it is the genuine "gate is idle" reading', () => {
     const out = mapCheckpointRunInFlight(
       { activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null }, computedAtMs: NOW },

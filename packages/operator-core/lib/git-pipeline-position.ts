@@ -629,8 +629,27 @@ export interface PipelinePosition {
      */
     checkpointRunInFlight?: {
       active: boolean;
-      /** Best-effort candidate sha the live run is judging (from its log head). */
+      /** Best-effort candidate sha the live run is judging.
+       *
+       * EI-19327704778173646 — this used to say "from its log head", which was the bug: a
+       * head-read takes the FIRST `checkpointing candidate` line, and a run that auto-refired
+       * has emitted a later one, so the reported sha was the ABANDONED candidate. It now
+       * reports the run's CURRENT candidate.
+       *
+       * Consequence for readers: this value CAN legitimately change between two reads of the
+       * SAME run (green-checkpoint recurses in-process onto tip and re-pins its checkout while
+       * pid/started_at stay fixed), and a candidate newer than `startedAtMs` is the expected
+       * signature of a healthy auto-refire — NOT corruption, and NOT a reason to fire a manual
+       * run (that discards the in-flight rescue and costs a full suite). When it has moved,
+       * `initialCandidate`/`refireObserved` below say so explicitly instead of leaving you to
+       * infer it from two reads. */
       candidate: string | null;
+      /** EI-19327704778173646: the candidate this run STARTED on, present only once it has
+       *  re-candidated. Provenance only — never verify a fix against this sha. */
+      initialCandidate?: string | null;
+      /** EI-19327704778173646: true when the run demonstrably re-candidated mid-flight.
+       *  Absent/false is NOT proof no refire happened, only that none was visible. */
+      refireObserved?: boolean;
       startedAtMs: number | null;
       elapsedSec: number | null;
       /** How stale this reading is: ms since the cache was last computed. `null`
@@ -2003,9 +2022,15 @@ export function mapCheckpointRunInFlight(
 ): PipelinePosition['gate']['checkpointRunInFlight'] {
   if (!cached || !cached.activeRun) return null;
   const { active, candidate, startedAtMs, elapsedSec } = cached.activeRun;
+  // EI-19327704778173646: carry the refire provenance through. This destructure is
+  // exact-field, so a new leg is DROPPED unless it is threaded explicitly — which is why
+  // the marker never reached a caller before. Emitted only on an actual refire, so the
+  // common (no-refire) shape is unchanged.
+  const refireObserved = cached.activeRun.refireObserved === true;
   return {
     active,
     candidate,
+    ...(refireObserved ? { initialCandidate: cached.activeRun.initialCandidate ?? null, refireObserved: true } : {}),
     startedAtMs,
     elapsedSec,
     asOfAgeMs: cached.computedAtMs !== null ? Math.max(0, nowMs - cached.computedAtMs) : null,

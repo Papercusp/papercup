@@ -216,8 +216,24 @@ export interface GitPipelineSnapshot {
    *  every other snapshot read. */
   activeRun: {
     active: boolean;
-    /** Short/full sha the live run is judging (from its log head) — null if unreadable. */
+    /** Short/full sha the live run is judging — null if unreadable.
+     *
+     * EI-19327704778173646: this is the run's CURRENT candidate (the LAST
+     * `checkpointing candidate` line in its log), not the one it started on. A single run
+     * can legitimately re-candidate mid-flight: on a stale red, green-checkpoint recurses
+     * in-process onto tip and re-pins its checkout, while pid/started_at stay fixed. So
+     * this value CAN change between two reads of the same run, and a candidate newer than
+     * `startedAtMs` is the expected signature of a healthy auto-refire — never read it as
+     * corruption, and never fire a manual run over it (that discards the in-flight rescue
+     * and costs a full suite). When it has moved, `initialCandidate`/`refireObserved` below
+     * say so explicitly. */
     candidate: string | null;
+    /** EI-19327704778173646: the candidate this run STARTED on, present only when it has
+     *  since re-candidated. Provenance — never verify a fix against this sha. */
+    initialCandidate?: string | null;
+    /** EI-19327704778173646: true when the run demonstrably re-candidated mid-flight. A
+     *  `false`/absent is NOT proof no refire happened, only that none was visible. */
+    refireObserved?: boolean;
     startedAtMs: number | null;
     elapsedSec: number | null;
   } | null;
@@ -331,6 +347,10 @@ export interface GitPipelineSnapshotOpts {
 export function mapActiveRun(r: {
   active: boolean;
   candidate?: string | null;
+  // EI-19327704778173646: refire provenance from the probe, carried through so a caller
+  // can tell a candidate that legitimately MOVED from a field that looks unstable.
+  initial_candidate?: string | null;
+  refire_observed?: boolean;
   started_at?: string | null;
   elapsed_sec?: number | null;
 }): NonNullable<GitPipelineSnapshot['activeRun']> {
@@ -338,6 +358,8 @@ export function mapActiveRun(r: {
   return {
     active: r.active,
     candidate: r.candidate ?? null,
+    // Emitted ONLY on an actual refire, so the common reply shape is unchanged.
+    ...(r.refire_observed ? { initialCandidate: r.initial_candidate ?? null, refireObserved: true } : {}),
     startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null,
     elapsedSec: r.elapsed_sec ?? null,
   };

@@ -150,6 +150,14 @@ export function classifyDelegatedSpawnOutcome(args: {
    *  one. >0 ⇒ a member cannot be uniquely credited to this request. */
   concurrentRequests?: number;
   bootDeathLifetimeMs?: number;
+  /**
+   * Whether THIS host can see member evidence (presence / fleet-membership) for
+   * the honoring host. True for a LOCAL honor (same machine — the rows are
+   * local). FALSE for a remote honor: the fleet registry is machine-local and
+   * presence rows are reaped, so their absence proves NOTHING. Defaults to true
+   * to keep the local path unchanged; the remote caller must opt out explicitly.
+   */
+  memberEvidenceAvailable?: boolean;
 }): DelegatedSpawnOutcome {
   const { request, receipts, members, nowMs } = args;
   const bootMs = args.bootDeathLifetimeMs ?? BOOT_DEATH_LIFETIME_MS;
@@ -187,6 +195,24 @@ export function classifyDelegatedSpawnOutcome(args: {
     }));
 
   if (candidates.length === 0) {
+    // A remote honor leaves NO member trace on this host, so "no members" is not
+    // evidence of anything. Say so instead of manufacturing a verdict from an
+    // absence we already know to be uninformative.
+    if (args.memberEvidenceAvailable === false && !withinWindow) {
+      return {
+        verdict: 'indeterminate',
+        detail:
+          `the ${Math.round(windowMs / 60_000)}-min honor window elapsed with no refusal receipt, and this host holds ` +
+          'NO member evidence for a remote honor (the fleet registry is machine-local and presence rows are reaped) — ' +
+          'so honored-and-died, honored-and-finished, and never-honored are INDISTINGUISHABLE from here. This is a ' +
+          'gap in the protocol, not a finding about this request: the honoring host emits a receipt only on refusal. ' +
+          'Resolve it by reading the member log ON the honoring host, or land the honored-path success receipt.',
+        attribution: 'none',
+        members: [],
+        shortfall: request.count,
+        actionable: true,
+      };
+    }
     return withinWindow
       ? {
           verdict: 'pending',

@@ -119,6 +119,37 @@ Exit `2` means the artifacts uploaded fine but the hostname does not resolve —
 R2 bucket has not been bound to the custom domain yet. That is one-time Cloudflare
 setup, not a broken upload.
 
+### Never paste raw upload output into a status update — mask the prefix first
+
+`upload-release.sh` and `upload-mobile-release.sh` self-mask their own preview lines
+(`s3://<bucket>/<secret>/`, `<host>/<secret>`), including under `DRY_RUN=1`, so their
+*own* stdout is already safe to paste (fixed EI-15305, 2026-07-18 — an earlier build
+of the DRY\_RUN preview leaked the raw prefix on one line while masking it on the next).
+
+But if you are quoting `$KEY_PREFIX`, `$PAPERCUSP_UPDATE_BASE_URL`, or any ad-hoc `aws
+s3` / `s3api` command's own output by hand (not the scripts' own preview lines) before
+it goes into a transcript, a coord message, or PG — mask it yourself first. **There is
+no `KEY_PREFIX=` line in `~/.papercusp/release-host.env`** — that file holds only
+`PAPERCUSP_RELEASE_HOST` and `PAPERCUSP_UPDATE_BASE_URL`; every script *derives*
+`KEY_PREFIX` at runtime by stripping the scheme+host off `PAPERCUSP_UPDATE_BASE_URL`.
+A masking wrapper that does `grep '^KEY_PREFIX=' ~/.papercusp/release-host.env` matches
+nothing, silently no-ops, and passes the secret straight through — a masking rail that
+silently no-ops is worse than none, because it produces false confidence ("I piped it
+through the mask") while doing nothing. Derive it the same way the scripts do instead:
+
+```bash
+source ~/.papercusp/release-host.env
+KP="$(sed -E 's#^https?://[^/]+/?##; s#/$##' <<<"$PAPERCUSP_UPDATE_BASE_URL")"
+# then substitute it out of anything you're about to paste, e.g.:
+your-command-here 2>&1 | sed "s#${KP}#<secret>#g"
+```
+
+The `<secret>` path segment is **permanent** (it cannot be rotated without stranding
+every existing install — see the two invariants at the top of this doc), so
+containment, not rotation, is the only remedy if it leaks. If you ever see the raw
+value land in a transcript, PG, coord, or mem0, treat it as a live incident, not a
+typo to quietly fix.
+
 ## Re-publishing ONE platform onto an existing cut (incremental)
 
 You do **not** rebuild or re-upload the whole cut to add a single platform late (the

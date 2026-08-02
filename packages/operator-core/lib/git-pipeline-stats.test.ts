@@ -126,4 +126,35 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
   it('nulls an unparseable systemd timestamp instead of NaN', () => {
     expect(mapActiveRun({ active: true, started_at: 'not-a-date' }).startedAtMs).toBeNull();
   });
+
+  /**
+   * EI-19327704778173646 / WI-7024. A single green-checkpoint run can re-candidate
+   * mid-flight (in-process auto-refire onto tip), so `candidate` can legitimately differ
+   * between two reads of the SAME run while pid/started_at never move. Without the
+   * provenance below that reads as a corrupt/unstable field — which is exactly how several
+   * agents misdiagnosed it on 2026-08-02.
+   */
+  it('carries refire provenance through when the run re-candidated mid-flight', () => {
+    const m = mapActiveRun({
+      active: true,
+      candidate: '4961cfb8',
+      initial_candidate: '14fb28da',
+      refire_observed: true,
+      started_at: '2026-08-02T08:37:45.565Z',
+      elapsed_sec: 3400,
+    });
+    // The CURRENT candidate, not the abandoned one.
+    expect(m.candidate).toBe('4961cfb8');
+    expect(m.initialCandidate).toBe('14fb28da');
+    expect(m.refireObserved).toBe(true);
+    // startedAtMs deliberately stays the OUTER frame's — a candidate newer than it is the
+    // healthy refire signature, not evidence the field is bogus.
+    expect(m.startedAtMs).toBe(Date.parse('2026-08-02T08:37:45.565Z'));
+  });
+
+  it('omits refire provenance entirely when no refire was observed (shape unchanged)', () => {
+    const m = mapActiveRun({ active: true, candidate: 'abc12345', elapsed_sec: 10 });
+    expect(Object.prototype.hasOwnProperty.call(m, 'refireObserved')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(m, 'initialCandidate')).toBe(false);
+  });
 });

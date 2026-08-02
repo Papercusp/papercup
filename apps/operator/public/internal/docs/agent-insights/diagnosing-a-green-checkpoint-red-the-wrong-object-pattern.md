@@ -1,0 +1,184 @@
+# Diagnosing a green-checkpoint red — the 'wrong object' pattern
+URL: /internal/docs/agent-insights/diagnosing-a-green-checkpoint-red-the-wrong-object-pattern
+
+On 2026-08-02 five agents produced at least five publicly-retracted findings in one morning while chasing gate reds. Every one had the same shape: a signal that was TRUE, about a different object than the agent assumed. This is the runbook that would have prevented them — how to read the primary artifact (the checkpoint log almost nobody opens), how to tell an assertion from a timeout in one command, how to decide whether a red is stale WITHOUT re-running anything or stealing gate CPU, and the two-check rule before believing any 'green'. Includes the await-glob trap, where another project's green satisfies your await and reads as your gate passing.
+
+import { Aside } from '@astrojs/starlight/components';
+
+## The pattern
+
+The expensive failure when diagnosing a gate red is **not bad data**. Every number below
+was accurate. Each was accurate *about something other than what the agent concluded*:
+
+| the signal                               | what it was actually true about          | what it was read as             |
+| ---------------------------------------- | ---------------------------------------- | ------------------------------- |
+| `grep -c "$MARKER"` returned 3           | a token that already existed in the file | "my change is in the candidate" |
+| `git diff HEAD` showed `-8 / +1`         | a peer's *committed* edit being reverted | "someone botched a revert"      |
+| `release:green` event, `satisfied: true` | pipeline `oddsmith`, a different repo    | "our gate passed"               |
+| the guard is clean, zero offenders       | the **working tree**, already fixed      | "the gate's red was a phantom"  |
+| `PAPERCUSP_INTEGRATION_ROOT=…/papercusp` | where the gate integrates *from*         | "where vitest runs"             |
+
+Two of these were reached **independently by different agents**, which is the tell that
+they are structural rather than careless. The discipline that prevents all five is one
+sentence:
+
+> **Before believing a signal, name the object it measures.** Then check that this is the
+> object your question is about.
+
+The corollary is that the *more* a finding looks like it explains everything, the more
+likely it is measuring the wrong thing — a genuine regression rarely produces a perfectly
+clean story on the first read.
+
+## The primary artifact almost nobody opens
+
+Each gate pass writes a full-suite log:
+
+```
+~/.papercusp/checkpoint-logs/<ts>-base-<sha>-cand-<sha>.log
+```
+
+It settles most disputes outright, because it contains three things no summary field does:
+the **literal thrown error**, the **per-test durations**, and the **actual run root**.
+
+Note it is written *once, at the end of each pass* — so for a still-running gate it
+describes a **completed** pass, never the live one. See the repo guide's step-0 warning
+about candidate drift before quoting it as current.
+
+### Is it an assertion or a timeout? One command.
+
+```bash
+grep -c 'Test timed out' <log>     # 0  -> NOT a timeout, however slow the file looked
+```
+
+A thrown assertion renders its message into the log (`Error: Found 19 link(s) …`); a
+timeout never reaches the `throw`, so it cannot produce an offender list. If you can see
+the rendered detail, the test ran to completion and failed on its merits.
+
+This single check would have prevented two independent false "it timed out" diagnoses on
+2026-08-02, one of which led to a code change being applied, reverted, and then restored
+by a third agent who read the revert as an anomaly.
+
+### The file's wall-clock is not the test's duration
+
+The gate's isolation line reports how long it spent on the **file**:
+
+```
+isolation: … still failing after attempt 1 (took 11725ms — consistent with ambient host load …)
+```
+
+The suite output reports what the **test** took:
+
+```
+❯ lib/github-identity-drift.test.ts (2 tests | 1 failed) 2322ms
+   × no source file links to papercupai as if it owned the product repo 2284ms
+```
+
+`11725ms` includes vitest boot, transform and collection. Only the inner number is measured
+against `testTimeout` (default **5000 ms**). Comparing the outer number to the default is
+what manufactured the timeout theory — twice.
+
+### Where the tests actually ran
+
+```bash
+grep 'RUN v' <log>
+# RUN v4.1.8 <workspace>/papercusp-checkpoint/packages/operator-core
+```
+
+The suite executes in the **`papercusp-checkpoint` worktree**, not in
+`PAPERCUSP_INTEGRATION_ROOT`. Reading that env var off the launching process in `ps` and
+inferring the run root from it is wrong, and it is wrong in a way that changes conclusions:
+a guard that scans working-tree files is scanning *that* worktree, not the shared fleet
+tree every agent is editing. (This doc's author filed a major bug on exactly that wrong
+premise, then downgraded it.)
+
+## Deciding whether a red is stale — run an experiment, not the suite
+
+The instinct on a red is to re-run the failing test. Resist it:
+
+* while the gate is judging, `pc-heavy` clamps heavy slots to 1 to protect the gate's own
+  isolation re-run, so your local run gets starved (observed: `exit 124` at 200 s);
+* a passing local run tells you about **tip**, which was never the question — the question
+  is about the **candidate**.
+
+Instead, hold the tree fixed and vary only the thing you suspect. For a guard whose verdict
+depends on constants in its own source:
+
+```bash
+git show <candidate>:<path/to/guard.test.ts> > /tmp/guard-cand.ts
+git show <tip>:<path/to/guard.test.ts>       > /tmp/guard-tip.ts
+# then run the guard's logic against ONE unchanged working tree, once per constants file
+```
+
+Real result from 2026-08-02:
+
+```
+CANDIDATE 14fb28da   excludes=5  allowlist=0   -> 8 offenders   RED
+TIP       4961cfb8   excludes=7  allowlist=6   -> 0 offenders   GREEN
+```
+
+Same tree both runs, so the difference is *causally* the test version — not a correlation.
+The gate's own re-triage independently agreed minutes later (`stale-candidate — the red is
+stale (candidate predates the fix)`), and the 8 predicted files matched the 8 in the real
+error exactly.
+
+**Strip `//` comments before parsing string literals out of source.** The first run of that
+experiment reported the tip constants as *still failing* — a bug in the harness, not the
+guard: the comment `these files' own explanatory comments` contains an apostrophe, which
+broke quote-pairing and silently dropped two entries from the extracted array. It failed
+**toward alarm**, which is the direction that costs a night.
+
+## Never await a gate key with a globbed pipeline segment
+
+```js
+// WRONG on this box — the pipeline is a key SEGMENT, and * globs across projects
+events:await { event: 'release:green:*' }
+
+// RIGHT
+events:await { event: 'release:green:papercusp' }
+// or keep the glob and add a payload_filter on `pipeline`
+```
+
+Observed: an await on `release:green:*` fired `satisfied: true` carrying
+`{"pipeline":"oddsmith","sha":"a9488fbb…"}` — a different project on the same host, with a
+sha that is **not an object in this repository** — while the papercusp gate was still
+mid-run.
+
+This is dangerous rather than merely noisy. It arrives as `satisfied: true` on a family
+literally named `release:green`, carrying an authoritative-looking sha, precisely when you
+are primed for good news after a long red — and the documented next step after green is to
+**ship**. The natural follow-on is deploying a candidate that never passed.
+
+### The two-check rule for any green claim
+
+Applies to your own await, a peer's message, and a tool field alike:
+
+1. `payload.pipeline == 'papercusp'` — not merely that *a* green event arrived.
+2. **`git rev-parse main` has moved.** The gate only fast-forwards `main` on a real pass,
+   so this is the one fact a foreign event or a mistaken peer cannot fake.
+
+Check 2 is cheap, decisive, and independent of how the claim reached you. Use it.
+
+And separately: a passing affected-tests suite is **not** a green gate — lint, perf,
+desktop, delta and the `main` fast-forward all still have to clear.
+
+## When a peer's diagnosis conflicts with yours
+
+Go to the primary artifact, not to a re-run and not to argument. On 2026-08-02 the
+checkpoint log settled three separate disputes in a single read, and every retraction that
+followed was made by the person holding the weaker evidence — in both directions, including
+this doc's author. Two habits made that cheap rather than adversarial:
+
+* **State what you checked, not just what you concluded.** "0 matches against the guard's
+  actual pattern, despite 40 bare tokens in the file" is auditable; "my fixture is clean"
+  is not.
+* **Report the negative result about your own work.** The fastest way to shorten one of
+  these is for the obvious suspect to rule themselves out *with evidence*, publicly, before
+  being asked.
+
+## See also
+
+* The repo guide's gate section (`CLAUDE.md`) — step 0 (which sha is being judged),
+  candidate drift mid-run, `inFlightRetriage`, and the blob-identity containment recipe.
+* `EI-19332682533219755` — the await-glob cross-match, filed with three suggested fixes.
+* `EI-19331631573087955` — the identity guard reading working-tree files rather than the
+  judged candidate's blobs.
