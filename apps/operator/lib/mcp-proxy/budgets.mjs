@@ -51,6 +51,18 @@ function envMs(name) {
 export const MCP_PROXY_RETRY_WINDOW_MS = envMs('PAPERCUSP_MCP_PROXY_RETRY_MS') ?? 90_000;
 
 /**
+ * The one path the proxy answers ITSELF, before any upstream forwarding.
+ *
+ * It lives here — in the module BOTH the proxy and its watchdog already import — so the two
+ * cannot drift apart. That is the whole point: while the retry window above is holding a real
+ * request through a :3070 restart, this is the ONLY path that can still answer, so it is the
+ * only sound liveness probe for the proxy's event loop. The watchdog used to poll `/api/health`
+ * instead, which the proxy forwards, so every deploy looked like a proxy outage — 272 false
+ * `unreachable` incidents, and a genuine wedge rendered indistinguishable from them (WI-6743).
+ */
+export const MCP_PROXY_LOCAL_HEALTH_PATH = '/__mcp_proxy_health';
+
+/**
  * Margin added on top of the proxy's window for a client's own overhead — connection setup,
  * the upstream's response time once it IS back, and the fact that the measured worst case
  * (91981ms) already sits a whisker under the 90s nominal window.

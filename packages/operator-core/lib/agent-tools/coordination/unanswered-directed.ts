@@ -246,6 +246,43 @@ export async function fetchUnansweredDirected(
          AND e3.body->>'from' = ANY(${recipientIds}::text[])
          AND (e3.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
     ),
+    -- WI-6875 — the ROSTER-AUTHORED set, materialized ONCE. Serves the two remaining
+    -- correlated scan sites below (the WI-4537(c) ACK-PING-PONG check inside \`directed\`, and
+    -- the exact-threaded-reply NOT EXISTS in \`open_asks\`). Both asked the same question of the
+    -- full 75k-row table once per candidate row: "is there a message authored by THIS recipient
+    -- matching X". Measured on the live workspace: e2 seq-scanned 75,372 rows (~148ms) and e3_1
+    -- seq-scanned 75,422 (~157ms), every call.
+    --
+    -- The roster pre-filter is what makes this cheap, and it is EXACTLY equivalence-preserving
+    -- rather than a heuristic narrowing: e3_1 requires 'from' = r and e2 requires
+    -- 'from' = d.recipient, and BOTH r and d.recipient are already constrained by the
+    -- \`r = ANY(recipientIds)\` filter in \`directed\`. So a row authored by someone outside the
+    -- roster could never have satisfied either predicate — dropping it cannot change a verdict.
+    -- Live selectivity: 11,093 of 75,357 rows (6.8x), and only 1,283 of those carry a
+    -- related_msg_id (59x for the e2 branch).
+    --
+    -- NOT time-bounded, deliberately: neither original subquery is, and a reply's 'ts' is
+    -- SENDER-SUPPLIED in the body, so inferring "a reply must postdate its ask" would import an
+    -- assumption the current semantics do not make.
+    --
+    -- NO DISTINCT, deliberately — and note this is the OPPOSITE of loose_replies above, which
+    -- needs it. That set is COUNTED against ask_rank, where a duplicate would over-count and
+    -- could silently clear a still-open ask. These two sites only test EXISTENCE, where
+    -- duplicates cannot change the answer, so deduping would be pure cost.
+    --
+    -- Verified equivalent against live data before landing, at BOTH levels: the open_asks set
+    -- itself (20 = 20 rows, EXCEPT empty both directions) and the end-to-end aggregate
+    -- (9 = 9 recipients, 16 = 16 total). 872ms -> 367ms, mean of 3 paired runs.
+    roster_authored AS MATERIALIZED (
+      SELECT ra.workspace_id,
+             ra.body->>'from'           AS from_id,
+             ra.body->>'msg_id'         AS msg_id,
+             ra.body->>'related_msg_id' AS related_msg_id
+        FROM harness_shared.coord_event_log ra
+       WHERE ra.workspace_id = ${workspaceId}
+         AND ra.surface = 'messages'
+         AND ra.body->>'from' = ANY(${recipientIds}::text[])
+    ),
     directed AS (
       SELECT
         e.workspace_id,
@@ -282,14 +319,16 @@ export async function fetchUnansweredDirected(
          -- ack the peer would then owe…). 184 of 2791 unanswered rows fleet-wide were exactly
          -- this: peers' "done ✓" / "Ack — confirmed" replies, logged forever as mail the asker
          -- still owes an answer to.
+         -- WI-6875: reads the pre-materialized \`roster_authored\` above instead of re-scanning
+         -- coord_event_log (75,422 rows, ~157ms) per candidate row. Predicate set unchanged:
+         -- same author, same msg_id match, same absence of a time bound.
          AND NOT (
            e.body ? 'related_msg_id'
            AND EXISTS (
-             SELECT 1 FROM harness_shared.coord_event_log e3
-              WHERE e3.workspace_id = e.workspace_id
-                AND e3.surface = 'messages'
-                AND e3.body->>'msg_id' = e.body->>'related_msg_id'
-                AND e3.body->>'from' = r
+             SELECT 1 FROM roster_authored ra
+              WHERE ra.workspace_id = e.workspace_id
+                AND ra.msg_id = e.body->>'related_msg_id'
+                AND ra.from_id = r
            )
          )
     ),
@@ -303,12 +342,16 @@ export async function fetchUnansweredDirected(
                PARTITION BY d.recipient, d.from_id ORDER BY d.ts_ms DESC, d.msg_id DESC
              ) AS ask_rank
         FROM directed d
+       -- WI-6875: reads the pre-materialized \`roster_authored\` above instead of re-scanning
+       -- coord_event_log (75,372 rows, ~148ms) per candidate row. Comparing
+       -- \`ra.related_msg_id = d.msg_id\` naturally excludes rows carrying no related_msg_id,
+       -- since NULL never equals anything — matching the original's implicit requirement that
+       -- the key be present.
        WHERE NOT EXISTS (
-         SELECT 1 FROM harness_shared.coord_event_log e2
-          WHERE e2.workspace_id = d.workspace_id
-            AND e2.surface = 'messages'
-            AND e2.body->>'from' = d.recipient
-            AND e2.body->>'related_msg_id' = d.msg_id
+         SELECT 1 FROM roster_authored ra
+          WHERE ra.workspace_id = d.workspace_id
+            AND ra.from_id = d.recipient
+            AND ra.related_msg_id = d.msg_id
        )
     ),
     unanswered AS (

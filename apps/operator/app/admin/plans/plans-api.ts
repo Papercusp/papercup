@@ -1489,8 +1489,109 @@ export function demotePlanToDraft(slug: string, harnessSlug?: string) {
   return setPlanStatusVerb(slug, 'draft', { harnessSlug });
 }
 
+/* ── Plan inputs (plan-structured-inputs-2026-08-01 P-013) ─────────── */
+
+/**
+ * A start door's refusal when a parameterized plan is missing its arguments.
+ *
+ * ⚠ This arrives as a **200 with an `ok: false` body**, not an HTTP error: the tool
+ * returns a plain result object, and the admin route's `unwrap` passes any 200
+ * through verbatim. So `startPlan` RESOLVES on a refusal — a caller that only
+ * try/catches will report a success that never happened, which is exactly the bug
+ * P-013 fixes at the one call site. Discriminate on `error`, never on a throw.
+ */
+export interface PlanStartRefusal {
+  ok: false;
+  error: 'plan_inputs_not_ready';
+  code: 'missing_required' | 'invalid_data' | 'bad_schema' | 'unknown_template' | 'schema_conflict';
+  slug: string;
+  /** Declared-required fields that were not supplied. */
+  missing: string[];
+  /** Schema-violation detail, when the failure is malformed rather than absent. */
+  issues: string[];
+  source: string;
+  template?: string;
+  /** One-line and actionable — safe to surface verbatim. */
+  hint: string;
+}
+
+export interface PlanStartOk {
+  slug: string;
+  harnessSlug: string;
+  status: string;
+}
+
+export function isPlanStartRefusal(r: unknown): r is PlanStartRefusal {
+  return (
+    !!r && typeof r === 'object' && (r as { error?: unknown }).error === 'plan_inputs_not_ready'
+  );
+}
+
+/**
+ * The whole input contract of a plan plus the verdict a start door would give —
+ * one call, because `required`/`missing`/`ready` are computed server-side by the
+ * gate's own oracle. Re-deriving readiness in the client would be a second
+ * implementation of a rule the client does not own.
+ */
+export interface PlanInputSchemaInfo {
+  ok: true;
+  slug: string;
+  source: 'input-schema' | 'template' | 'none';
+  inputSchema: JsonSchemaObject | null;
+  template: string | null;
+  required: string[];
+  missing: string[];
+  values: Record<string, unknown> | null;
+  ready: boolean;
+  code?: PlanStartRefusal['code'];
+  issues?: string[];
+  hint?: string;
+  version?: number;
+}
+
+/** The (deliberately small) slice of JSON Schema the input form renders. */
+export interface JsonSchemaProperty {
+  type?: string | string[];
+  title?: string;
+  description?: string;
+  enum?: unknown[];
+  default?: unknown;
+  items?: { type?: string | string[]; enum?: unknown[] };
+  minimum?: number;
+  maximum?: number;
+}
+
+export interface JsonSchemaObject {
+  type?: string;
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
+  [k: string]: unknown;
+}
+
+export function fetchPlanInputs(slug: string, harnessSlug?: string | null, signal?: AbortSignal) {
+  return getJson<PlanInputSchemaInfo | { ok: false; slug: string; error: string }>(
+    'get-input-schema',
+    { slug, ...(harnessSlug ? { harness: harnessSlug } : {}) },
+    signal,
+  );
+}
+
+/** Supply a plan's input values. Partial data is accepted by design (D-004) —
+ *  completeness is the start gate's business, not the writer's. */
+export function savePlanInputs(
+  slug: string,
+  data: Record<string, unknown>,
+  harnessSlug?: string | null,
+) {
+  return postJson<WriteResult<{ slug: string; version?: number }>>('set-template-data', {
+    slug,
+    data,
+    ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
+  });
+}
+
 export function startPlan(slug: string, harnessSlug?: string | null) {
-  return postJson<{ slug: string; harnessSlug: string; status: string }>('start', {
+  return postJson<PlanStartOk | PlanStartRefusal>('start', {
     slug,
     ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
   });

@@ -23,6 +23,7 @@ import {
   CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS,
   type McpProxyTarget,
 } from './proxy';
+import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
 
 describe('shouldRetry — refused-only + in-window (no double-execution)', () => {
   it('retries when NOT connected and within the window', () => {
@@ -166,6 +167,65 @@ function request(p: number, body = '{"jsonrpc":"2.0"}', path = '/api/mcp'): Prom
     r.end(body);
   });
 }
+
+function get(p: number, path: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ host: '127.0.0.1', port: p, method: 'GET', path }, (res) => {
+      let b = '';
+      res.on('data', (d) => (b += d));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: b }));
+    });
+    r.on('error', reject);
+    r.end();
+  });
+}
+
+/**
+ * WI-6743 regression. The watchdog's liveness probe used to poll `/api/health`, which this
+ * proxy FORWARDS. That is unanswerable precisely when retry-on-refused is doing its job, so
+ * every :3070 deploy restart was recorded as a proxy outage: 272 false `unreachable` incidents
+ * between 2026-07-10 and 2026-08-02, which also buried the genuine-wedge signal the watchdog
+ * exists to raise (a real wedge produced a byte-identical log line).
+ *
+ * The invariant: while the upstream is down and the proxy is holding a forwarded request, the
+ * proxy-local health path must STILL answer — that is what makes it a sound liveness probe.
+ */
+describe('createMcpProxy — proxy-local health path stays truthful during an upstream outage (WI-6743)', () => {
+  it('answers the local health path while the upstream is dead', async () => {
+    const dead = await freePort(); // nothing listening => ECONNREFUSED on every forward
+    const proxy = track(
+      createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: dead, retryWindowMs: 5_000, retryBackoffMs: 20, log: () => {} }),
+    );
+    await listen(proxy);
+
+    const started = Date.now();
+    const res = await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH);
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body).ok).toBe(true);
+    // Must return immediately — NOT after the retry window. This is the whole point.
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  it('THE BUG: a FORWARDED path cannot answer during the same outage', async () => {
+    // Demonstrates why polling `/api/health` (forwarded) made the watchdog lie. The old probe
+    // aborted at 5s and logged `unreachable`; here we shorten the window so the hold is visible
+    // without the test waiting on it.
+    const dead = await freePort();
+    const proxy = track(
+      createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: dead, retryWindowMs: 700, retryBackoffMs: 20, log: () => {} }),
+    );
+    await listen(proxy);
+
+    const started = Date.now();
+    const res = await request(port(proxy), '{"jsonrpc":"2.0"}', '/api/mcp');
+    const elapsed = Date.now() - started;
+
+    expect(res.status).toBe(503); // held for the whole window, then gave up
+    expect(elapsed).toBeGreaterThanOrEqual(600);
+  });
+});
 
 describe('createMcpProxy — forwarding + restart recovery', () => {
   it('passes a request through to the upstream and returns its response', async () => {

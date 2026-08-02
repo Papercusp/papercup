@@ -11,9 +11,48 @@ let shouldRestart: Watchdog['shouldRestart'];
 let classifyProbeResult: Watchdog['classifyProbeResult'];
 let classifyDataPlaneResult: Watchdog['classifyDataPlaneResult'];
 let decideHandshakeAction: Watchdog['decideHandshakeAction'];
+let LIVENESS_PROBE_PATH: Watchdog['LIVENESS_PROBE_PATH'];
+let livenessProbeUrl: Watchdog['livenessProbeUrl'];
 beforeAll(async () => {
-  ({ shouldRestart, classifyProbeResult, classifyDataPlaneResult, decideHandshakeAction } =
-    await import('./watchdog.mjs'));
+  ({
+    shouldRestart,
+    classifyProbeResult,
+    classifyDataPlaneResult,
+    decideHandshakeAction,
+    LIVENESS_PROBE_PATH,
+    livenessProbeUrl,
+  } = await import('./watchdog.mjs'));
+});
+
+/**
+ * WI-6743 — the liveness probe must not traverse the upstream.
+ *
+ * Polling a FORWARDED path (`/api/health`) made this watchdog report the proxy as unreachable
+ * every time :3070 restarted, because retry-on-refused deliberately withholds a response for up
+ * to the retry window so a deploy is invisible to MCP clients. Result: 272 false `unreachable`
+ * incidents, and a real wedge became indistinguishable from a routine deploy.
+ *
+ * The end-to-end proof (the proxy still answers this path with a dead upstream) lives in
+ * proxy.test.ts. These pin the two ways the fix can silently rot: the path drifting away from
+ * the route the proxy actually serves, and the probe quietly reacquiring an upstream dependency.
+ */
+describe('mcp-proxy watchdog — liveness probe target (WI-6743)', () => {
+  it('is the SAME constant the proxy serves, not a copied literal', async () => {
+    const { MCP_PROXY_LOCAL_HEALTH_PATH } = await import('./budgets.mjs');
+    // Both sides import this from budgets.mjs, so they cannot drift. If someone re-inlines a
+    // literal on either side, this fails.
+    expect(LIVENESS_PROBE_PATH).toBe(MCP_PROXY_LOCAL_HEALTH_PATH);
+  });
+
+  it('is proxy-local — never an upstream-forwarded path', () => {
+    // `/api/*` is exactly what the proxy forwards; polling any of it reintroduces the bug.
+    expect(LIVENESS_PROBE_PATH.startsWith('/api/')).toBe(false);
+    expect(LIVENESS_PROBE_PATH).not.toBe('/api/health');
+  });
+
+  it('builds a loopback URL against the watchdog port', () => {
+    expect(livenessProbeUrl(9071)).toBe(`http://127.0.0.1:9071${LIVENESS_PROBE_PATH}`);
+  });
 });
 
 /**

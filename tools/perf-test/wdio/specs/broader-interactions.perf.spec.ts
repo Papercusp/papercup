@@ -8,12 +8,20 @@
  * confound EI-18128922194224210), against the interaction's budget.
  *
  * Covered here (the cleanly driver-triggerable ones):
- *   - command-palette-open : ?palette=true → the lazy cmdk chunk mounts.
- *   - harness-dock-open     : /adv dock mount → dockview API bind (hydration);
- *                             emitted once on mount, so we read the latest.
- *
- * (conversation-thread-load needs a specific chat fixture to open; it is
- * exercised by the in-app suite's read-latest check + its component-wiring test.)
+ *   - command-palette-open     : ?palette=true → the lazy cmdk chunk mounts.
+ *   - harness-dock-open        : /adv dock mount → dockview API bind (hydration);
+ *                                emitted once on mount, so we read the latest.
+ *   - conversation-thread-load : /adv Harnesses dock (WI-6543 P-022 fixture path,
+ *                                2026-08-02) → click a work-item row → the Detail
+ *                                pane's "Chat" button (`wi-detail-chat`, EI-290)
+ *                                creates a REAL agent_chats row and the dock drain
+ *                                mounts <ChatPanel>, which fires
+ *                                beginInteraction/endInteraction(conversationThreadLoad)
+ *                                (ChatPanel.tsx:168/171) when the transcript first
+ *                                renders. No pre-seeded fixture id needed — the
+ *                                harness's OWN live work items supply the row, the
+ *                                same "click a real row" pattern plan-popup-open
+ *                                uses.
  *
  * inbox-list-settle was RETIRED (EI-18854256403211741 / WI-6543, 2026-08-02):
  * it drove the op-chat sidebar Inbox face, which was retired 2026-07-26
@@ -38,6 +46,7 @@ import { waitForAppMount } from "../app-mount";
 
 const COMMAND_PALETTE_OPEN_BUDGET_MS = 400;
 const HARNESS_DOCK_OPEN_BUDGET_MS = 1500;
+const CONVERSATION_THREAD_LOAD_BUDGET_MS = 1500;
 
 /**
  * Wait for the main thread to go QUIET before measuring an interaction.

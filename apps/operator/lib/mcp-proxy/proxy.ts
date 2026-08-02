@@ -529,7 +529,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   };
 
   return http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/__mcp_proxy_health') {
+    if (req.method === 'GET' && req.url === MCP_PROXY_LOCAL_HEALTH_PATH) {
       let target: McpProxyTarget | null = null;
       try {
         target = resolveTarget(opts);

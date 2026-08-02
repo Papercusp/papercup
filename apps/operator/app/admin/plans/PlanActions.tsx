@@ -42,6 +42,8 @@ import {
   promoteToHarness,
   startPlan,
   pausePlan,
+  isPlanStartRefusal,
+  type PlanStartRefusal,
   type PlanDecision,
   type PlanItem,
   type PlanStatus,
@@ -70,6 +72,10 @@ interface Props {
   startStatus?: PlanStartStatus;
   /** Called after a successful start/pause so the caller can refresh the list. */
   onStartStatusChange?: (newStatus: PlanStartStatus) => void;
+  /** Fired when the start gate REFUSED (P-013) — the plan did not start. Lets the
+   *  caller open the inputs panel on the very fields the refusal names, instead of
+   *  leaving the human with a toast and no way to act on it. */
+  onStartRefused?: (refusal: PlanStartRefusal) => void;
   /** Fired after approve/demote (a plan-level status flip) so the caller can
    *  refresh the rail + bucket-tab counts — the plan changes bucket. */
   onPlanStatusChange?: () => void;
@@ -98,6 +104,7 @@ export default function PlanActions({
   planStatus,
   startStatus,
   onStartStatusChange,
+  onStartRefused,
   onPlanStatusChange,
   onOptimisticStatus,
   onChanged,
@@ -175,7 +182,22 @@ export default function PlanActions({
         toast.success(`Plan paused — orchestrator will finish in-flight work then stop.`);
         onStartStatusChange?.('paused');
       } else {
-        await startPlan(slug, harnessSlug);
+        const r = await startPlan(slug, harnessSlug);
+        // The start gate refuses with a 200 body, not an HTTP error (see
+        // isPlanStartRefusal) — so without this branch a plan that never started
+        // reported "Plan started" and the button flipped to Pause. The refusal's
+        // `hint` is written to be surfaced verbatim; `missing` is the actionable part,
+        // so it leads.
+        if (isPlanStartRefusal(r)) {
+          const what = r.missing.length
+            ? `Missing required input${r.missing.length > 1 ? 's' : ''}: ${r.missing.join(', ')}`
+            : r.issues.length
+              ? r.issues.join('; ')
+              : r.hint;
+          toast.error(`Can't start — ${what}`, { duration: 12000 });
+          onStartRefused?.(r);
+          return;
+        }
         toast.success(`Plan started — orchestrator will pick up features from this plan.`);
         onStartStatusChange?.('started');
       }

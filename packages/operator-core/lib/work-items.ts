@@ -4064,18 +4064,24 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${filter.excludeRedundant ? sql`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : sql`TRUE`}
          AND NOT EXISTS (
              SELECT 1 FROM harness_shared.work_item_deps d
+              -- d.workspace_id is the COORDINATION workspace the edge table is keyed in
+              -- (every edge is written there); the BLOCKER legs below scope to the blocked
+              -- item's OWN workspace (wi.workspace_id) — migration 719. The issue leg used
+              -- to hardcode 'default', where 147 of 28,049 issues live, so it never matched
+              -- and every issue-family blocking edge was inert (EI-19313459163394127).
               WHERE d.workspace_id = 'default'
                 AND d.dep_type = 'blocks'
                 AND d.blocked_ref = wi.feature_id
                 AND (
                   EXISTS (
                     SELECT 1 FROM harness_shared.harness_features_consolidated bf
-                     WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+                     WHERE bf.workspace_id = wi.workspace_id
+                       AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
                        AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
                   )
                   OR EXISTS (
                     SELECT 1 FROM harness_shared.engineer_issues bi
-                     WHERE bi.workspace_id = 'default'
+                     WHERE bi.workspace_id = wi.workspace_id
                        AND bi.issue_id = d.blocker_ref
                        AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
                   )
@@ -4443,18 +4449,24 @@ export async function claimNextIssueWorkItem(
           -- is the secondary feature-miss path, so the inline read (not the indexed sidecar) is fine.
           AND NOT EXISTS (
               SELECT 1 FROM harness_shared.work_item_deps d
+               -- d.workspace_id is the COORDINATION workspace the edge table is keyed in;
+               -- the BLOCKER legs scope to the blocked item's OWN workspace (wi.workspace_id)
+               -- — migration 719 / EI-19313459163394127. Before that the issue leg was pinned
+               -- to 'default' and never matched, so this floor — the one this very comment
+               -- block promises "ALWAYS uses the INLINE predicate" — passed everything.
                WHERE d.workspace_id = 'default'
                  AND d.dep_type = 'blocks'
                  AND d.blocked_ref = wi.feature_id
                  AND (
                    EXISTS (
                      SELECT 1 FROM harness_shared.harness_features_consolidated bf
-                      WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+                      WHERE bf.workspace_id = wi.workspace_id
+                        AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
                         AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
                    )
                    OR EXISTS (
                      SELECT 1 FROM harness_shared.engineer_issues bi
-                      WHERE bi.workspace_id = 'default'
+                      WHERE bi.workspace_id = wi.workspace_id
                         AND bi.issue_id = d.blocker_ref
                         AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
                    )

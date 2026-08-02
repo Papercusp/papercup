@@ -50,7 +50,7 @@
  */
 import { execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
-import { MCP_PROXY_RETRY_WINDOW_MS, PSU_CLIENT_HEADROOM_MS } from './budgets.mjs';
+import { MCP_PROXY_LOCAL_HEALTH_PATH, MCP_PROXY_RETRY_WINDOW_MS, PSU_CLIENT_HEADROOM_MS } from './budgets.mjs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -62,7 +62,7 @@ const POLL_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_POLL_MS) || 15_0
  * so it stays truthful while retry-on-refused is holding a real request. Any upstream-forwarded
  * path (`/api/health`, `/api/mcp`, …) is WRONG here and reintroduces WI-6743's false alarms.
  */
-export const LIVENESS_PROBE_PATH = '/__mcp_proxy_health';
+export const LIVENESS_PROBE_PATH = MCP_PROXY_LOCAL_HEALTH_PATH;
 
 /** Exported so the "must not traverse the upstream" invariant is unit-testable. */
 export function livenessProbeUrl(port = PORT) {

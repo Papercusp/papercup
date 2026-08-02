@@ -25,6 +25,15 @@ export type DataPlaneKind = 'ok' | 'config' | 'dead';
 /** Remediation chosen from a proxy probe plus a same-moment upstream probe. */
 export type HandshakeAction = 'none' | 'restart-proxy' | 'upstream-wedged';
 
+/**
+ * The liveness path (WI-6743) — re-exported from budgets.mjs, which proxy.ts also imports, so
+ * the probe and the route it probes cannot drift apart. MUST be proxy-local: a forwarded path
+ * cannot answer while retry-on-refused holds a request through a :3070 restart.
+ */
+export const LIVENESS_PROBE_PATH: string;
+
+export function livenessProbeUrl(port?: number): string;
+
 export function shouldRestart(
   unreachableSinceMs: number,
   nowMs: number,

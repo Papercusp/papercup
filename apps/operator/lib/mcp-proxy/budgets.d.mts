@@ -9,6 +9,9 @@
 /** Proxy's retry-on-refused window. Env: PAPERCUSP_MCP_PROXY_RETRY_MS (default 90_000). */
 export const MCP_PROXY_RETRY_WINDOW_MS: number;
 
+/** The path the proxy answers itself, before any upstream forwarding (WI-6743). */
+export const MCP_PROXY_LOCAL_HEALTH_PATH: string;
+
 /** Client-side margin added on top of the proxy window (default 30_000). */
 export const PSU_CLIENT_HEADROOM_MS: number;
 

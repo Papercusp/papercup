@@ -33,6 +33,7 @@ import PlanJumpToItem from './PlanJumpToItem';
 import LockBanner from './LockBanner';
 import LintBanner from './LintBanner';
 import PlanActions from './PlanActions';
+import PlanInputsPanel from './PlanInputsPanel';
 import AssignDialog from './AssignDialog';
 import RevisionsPanel from './RevisionsPanel';
 import RevisionDiffModal from './RevisionDiffModal';
@@ -78,6 +79,9 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
   const archived = data?.archived ?? false;
   const { data: lock } = usePlanLock(data ? slug : null, archived);
   const [writeTick, setWriteTick] = useState(0);
+  // Bumped to force the inputs panel to re-read its verdict — after it saves, and
+  // after a start the gate refused.
+  const [inputsRefresh, setInputsRefresh] = useState(0);
   const { data: lintReport } = usePlanLint(data ? slug : null, writeTick);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const editorScopeRef = useRef<HTMLDivElement>(null);
@@ -366,6 +370,7 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
           planStatus={planStatus}
           startStatus={startStatus}
           onStartStatusChange={onStartStatusChange}
+          onStartRefused={() => setInputsRefresh((n) => n + 1)}
           onPlanStatusChange={onPlanStatusChange}
           onOptimisticStatus={onOptimisticStatus}
           onChanged={onChanged}
@@ -378,6 +383,17 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
                 ? `Locked by ${lock?.owner_label ?? lock?.owner}`
                 : undefined
           }
+        />
+      ) : null}
+      {!data.legacy ? (
+        // P-013: renders only for a plan that declares inputs, so it is invisible on
+        // the great majority of plans. A refused start bumps `refreshToken`, which
+        // re-reads the verdict — the human lands on the fields the gate named.
+        <PlanInputsPanel
+          slug={data.slug}
+          harnessSlug={harnessSlug ?? data.harness ?? null}
+          refreshToken={inputsRefresh}
+          onSaved={() => setInputsRefresh((n) => n + 1)}
         />
       ) : null}
       {editing ? (

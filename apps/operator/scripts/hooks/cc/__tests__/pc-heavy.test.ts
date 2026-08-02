@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync, execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -463,5 +463,80 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       expect(second.status).toBe(3);
       expect(second.stderr).toContain('coalesced:');
     });
+  });
+});
+
+describe('pc-heavy.sh — load-adaptive slot count (EI-19313096203661357)', () => {
+  // A PATH-shimmed `nproc` pins the core count so the formula asserts the same
+  // numbers on any host; PC_HEAVY_LOAD1_OVERRIDE pins load1 (same convention as
+  // the admission gate in pretooluse-bash-resource-gate.sh).
+  const fakeNprocPath = (cores: number): string => {
+    const bin = join(dir, 'fakebin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'nproc'), `#!/usr/bin/env bash\necho ${cores}\n`, { mode: 0o755 });
+    return `${bin}:${process.env.PATH ?? ''}`;
+  };
+  const slotsLine = (stderr: string) =>
+    stderr.split('\n').find((l) => l.includes('[pc-heavy] slots=')) ?? '';
+  const probe = (cores: number, extra: Record<string, string>) =>
+    runSync(['true'], { PC_HEAVY_DEBUG: '1', PC_HEAVY_COALESCE: '0', PATH: fakeNprocPath(cores), ...extra });
+
+  it('saturated box (load1 >= cores) stays at the floor — exactly the pre-adaptive count', () => {
+    const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '128' });
+    expect(r.status).toBe(0);
+    expect(slotsLine(r.stderr)).toContain('slots=4 fixed=0 cores=128 floor=4 ceil=16');
+    const over = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '300' });
+    expect(slotsLine(over.stderr)).toContain('slots=4');
+  });
+
+  it('widens by one slot per 16 cores of load1 headroom (the filed 128-core/load-76 case → 7, not 4)', () => {
+    expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '76' }).stderr)).toContain('slots=7');
+    expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' }).stderr)).toContain('slots=12');
+  });
+
+  it('caps at cores/8, which never drops below the max(2, cores/32) floor on small boxes', () => {
+    const r = probe(16, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+    expect(slotsLine(r.stderr)).toContain('slots=2 fixed=0 cores=16 floor=2 ceil=2');
+  });
+
+  it('an explicit PC_HEAVY_SLOTS is FIXED — load adaptation never overrides the operator', () => {
+    const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0', PC_HEAVY_SLOTS: '3' });
+    expect(slotsLine(r.stderr)).toContain('slots=3 fixed=1');
+  });
+
+  it('non-numeric load fails conservative, to the floor', () => {
+    const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: 'banana' });
+    expect(slotsLine(r.stderr)).toContain('slots=4');
+  });
+
+  it('the computed (not env) slot count actually gates admission', async () => {
+    // 64 fake cores at load 64 → computed floor of 2. Three 0.4s sleepers must
+    // never overlap more than 2 at a time — same interval-sweep as the cap test.
+    const jobs = 3;
+    const path = fakeNprocPath(64);
+    await Promise.all(
+      Array.from({ length: jobs }, (_, i) =>
+        new Promise<void>((res) => {
+          const f = join(dir, `adaptive.${i}.out`);
+          const p = spawn(
+            'bash',
+            [PC_HEAVY, 'bash', '-c', `s=$(date +%s%3N); sleep 0.4; e=$(date +%s%3N); echo "$s $e" > "${f}"`],
+            { env: baseEnv({ PC_HEAVY_LOAD1_OVERRIDE: '64', PC_HEAVY_COALESCE: '0', PATH: path }), cwd: dir },
+          );
+          p.on('exit', () => res());
+        }),
+      ),
+    );
+    const intervals = Array.from({ length: jobs }, (_, i) => {
+      const [s, e] = readFileSync(join(dir, `adaptive.${i}.out`), 'utf8').trim().split(/\s+/).map(Number);
+      return { s, e };
+    });
+    const evts: Array<[number, number]> = [];
+    for (const { s, e } of intervals) { evts.push([s, 1]); evts.push([e, -1]); }
+    evts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let cur = 0;
+    let max = 0;
+    for (const [, d] of evts) { cur += d; max = Math.max(max, cur); }
+    expect(max).toBe(2);
   });
 });

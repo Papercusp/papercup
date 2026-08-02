@@ -23,7 +23,15 @@ const MEMBERS = [
   { deviceAttestations: [{ device_pubkey: 'A_DEV' }] },
   { deviceAttestations: [{ device_pubkey: 'B_DEV' }] },
 ] as unknown as Awaited<ReturnType<typeof listHiveMembers>>;
-const deps = () => ({ loadMembers: async () => MEMBERS, now: () => 1000 });
+// `loadRevoked` MUST be stubbed: the apply branch consults the revocation set (EI-1895), and
+// the module's default is the real `loadRevokedHivePubkeysForLocalPot`, which opens a live PG
+// pool. Leaving it unset made this a unit test reading the developer's database — the exact
+// hazard the forbid-real-PG rail catches [EI-19311807188719573].
+const deps = (revoked: string[] = []) => ({
+  loadMembers: async () => MEMBERS,
+  now: () => 1000,
+  loadRevoked: async () => new Set(revoked),
+});
 
 describe('WI-259 P-002 — membership-aware content guard', () => {
   beforeEach(() => _clearHiveMemberDeviceSetCacheForTest());
@@ -37,6 +45,13 @@ describe('WI-259 P-002 — membership-aware content guard', () => {
 
   it('cross-member op authored by a CURRENT member → applies', async () => {
     expect(await shouldApplyMemberContentOp('member-a', HIVE_OPTS, 'A_DEV', deps())).toBe(true);
+  });
+
+  it('cross-member op authored by a REVOKED member → HARD-drops, never defers (EI-1895)', async () => {
+    // A revoked device still appears in the member set (listHiveMembers does not filter it), so
+    // this branch is the only thing stopping a revoked peer's write from applying.
+    expect(await shouldApplyMemberContentOp('member-a', HIVE_OPTS, 'A_DEV', deps(['A_DEV']))).toBe(false);
+    expect(await decideMemberContentOp('member-a', HIVE_OPTS, 'A_DEV', deps(['A_DEV']))).toBe('drop');
   });
 
   it('cross-member op authored by a NON-member → drops', async () => {
