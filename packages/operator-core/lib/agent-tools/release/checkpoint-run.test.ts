@@ -876,35 +876,45 @@ describe('release-fixer.md prompt banners stay in sync with this file', () => {
  * leaving the caller to transcribe the field.
  */
 describe('release:checkpoint-run routes to the state plane (P-002)', () => {
-  const ptrs = (text: string) =>
-    resolveSeeAlso(tool.guidance?.seeAlso, { content: [{ type: 'text' as const, text }] } as never, {}, {});
+  // Same per-test dynamic import every other test here uses (vi.resetModules/doMock).
+  const load = async () => {
+    const { default: tool } = await import('./checkpoint-run');
+    const { resolveSeeAlso } = await import('@papercusp/agent-mcp');
+    const ptrs = (text: string) =>
+      resolveSeeAlso(tool.guidance?.seeAlso, { content: [{ type: 'text' as const, text }] } as never, {}, {});
+    const cells = (text: string) =>
+      ptrs(text)
+        .filter((p) => p.tool.startsWith('state:'))
+        .map((p) => `${p.tool} ${p.selector ?? ''}`);
+    return { ptrs, cells };
+  };
 
-  const cells = (text: string) =>
-    ptrs(text)
-      .filter((p) => p.tool.startsWith('state:'))
-      .map((p) => `${p.tool} ${p.selector ?? ''}`);
-
-  it('points at the candidate cell + the verdict subscription when a run is already in flight', () => {
+  it('points at the candidate cell + the verdict subscription when a run is already in flight', async () => {
+    const { cells } = await load();
     const p = cells(JSON.stringify({ ok: false, already_running: true, candidate: 'abc123' }));
     expect(p.some((s) => s.startsWith('state:read') && s.includes('gate.greenCheckpoint.candidate'))).toBe(true);
     expect(p.some((s) => s.startsWith('state:subscribe') && s.includes('gate.greenCheckpoint.verdict'))).toBe(true);
   });
 
-  it('does the same when THIS call launched the run', () => {
+  it('does the same when THIS call launched the run', async () => {
+    const { cells } = await load();
     expect(cells(JSON.stringify({ ok: true, launched: true }))).toHaveLength(2);
   });
 
   /** No verdict coming ⇒ no re-read advice; the pointer must not become unconditional noise. */
-  it('stays silent when nothing was launched and nothing is running', () => {
+  it('stays silent when nothing was launched and nothing is running', async () => {
+    const { cells } = await load();
     expect(cells(JSON.stringify({ ok: false, launched: false, reason: 'migrations-pending' }))).toHaveLength(0);
   });
 
   /** The silent-no-op trap: a JSON-only gate never fires on a TOON-rendered envelope. */
-  it('still fires when the envelope is TOON, not JSON', () => {
+  it('still fires when the envelope is TOON, not JSON', async () => {
+    const { cells } = await load();
     expect(cells('already_running: true\ncandidate: abc123')).toHaveLength(2);
   });
 
-  it('keeps the pre-existing deploy/config pointers', () => {
+  it('keeps the pre-existing deploy/config pointers', async () => {
+    const { ptrs } = await load();
     const tools = ptrs(JSON.stringify({ launched: true })).map((x) => x.tool);
     for (const name of ['release:deploy', 'release:checkpoint-config']) {
       expect(tools.some((t) => t.startsWith(name))).toBe(true);

@@ -170,6 +170,12 @@ export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
       'Bounded feature list. P-007 dropped the heavy per-row summary at the sync boundary (detail on demand); the residual ~466KB is 1181 rows × ~11 light rendered fields. Row count, not per-row waste.',
     reviewBy: '2026-09-01',
   },
+  'featuresConsolidated.byHive': {
+    maxBytes: 450_000,
+    reason:
+      "Cross-member feature rollup behind HiveContentPanel (1,605 rows on papercusp). WI-5412 slimmed the sibling .bySlug and MISSED this one, and the resolver comment wrongly claimed the two projections mirrored each other exactly — so byHive kept the heavy per-row `summary` that .bySlug had already moved behind featuresConsolidated.detail under the P-006 list/detail split. Measured live: `summary` alone was 831,678 B = 56.58% of a 1,469,953 B payload and NO consumer had ever read it. WI-7087 cut the projection to the FIVE columns HiveContentPanel's own HiveFeatureRow declares, dropping summary + attempts/claims/tags/needsHumanReview/sourcePlanSlug/workingUsers: 1,469,953 -> 424,897 B (-1,045,056 B, -71.1%), LOSSLESS (1,605 rows both sides, 0 read-set value diffs, 0 non-null values lost, latest-first ordering preserved). Over the 250KB budget and honestly so: the residual is row COUNT x four light rendered fields, of which `title` alone is 272,224 B, and the rollup is unscoped by design (the panel browses every member's features). Budget ratcheted to 450,000 so the win cannot silently drift back. The next real cut is windowing the list, not fewer bytes per row. No rows-delta config: feature ids are PER-HARNESS, so `featureId` is unique here only because this hive currently has one contributing member — a genuine multi-member hive can repeat it, and the composite (harnessSlug, featureId) is not expressible as a single itemKeyField.",
+    reviewBy: '2026-09-01',
+  },
   'plans.attention': {
     maxBytes: 950_000,
     reason:

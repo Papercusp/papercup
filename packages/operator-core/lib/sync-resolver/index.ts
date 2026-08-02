@@ -2595,22 +2595,32 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // including `embedding` (a 384-dim pgvector) and `_search` (tsvector). Measured
       // on papercusp: 14,688 rows ≈ 10.2MB parsed into the webview per HiveContentPanel
       // load, of which the embedding alone was 6.1MB and _search 0.95MB — search-index
-      // internals NO component renders. This mirrors `.bySlug`'s projection EXACTLY
-      // (same HarnessFeature-shaped consumers), so behavior is unchanged: row count is
-      // preserved, only the unrendered heavy columns leave the wire.
+      // internals NO component renders.
+      //
+      // WI-7087 cut it again, to the FIVE columns its sole consumer declares. The
+      // comment here used to claim this "mirrors `.bySlug`'s projection EXACTLY (same
+      // HarnessFeature-shaped consumers)"; that was FALSE in the one way that mattered
+      // — `.bySlug` had already dropped the heavy per-row `summary` under the P-006
+      // list/detail split (detail on demand via `featuresConsolidated.detail`) and this
+      // one kept it. Measured live: `summary` alone was 831,678 B = 56.58% of a
+      // 1,469,953 B payload, and no consumer had ever read it.
+      //
+      // The remaining six (attempts/claims/tags/needsHumanReview/sourcePlanSlug/
+      // workingUsers) went with it: `.byHive` has exactly ONE consumer, and it declares
+      // its own 5-field `HiveFeatureRow` (HiveContentPanel.tsx) that names none of them.
+      // So this deliberately no longer mirrors `.bySlug` — that sibling keeps its 11
+      // columns for its OWN wider consumer set. The wire here matches the one consumer's
+      // declared row type, pinned BOTH ways (kept + dropped) by the byHive projection
+      // test in sync-resolver/index.test.ts.
+      //
+      // `updatedTs` is kept because the consumer's type + fixtures declare it, though it
+      // is currently only ORDERED BY server-side (rows arrive latest-first).
       return (await db
         .select({
           harnessSlug: t.harnessSlug,
           featureId: t.featureId,
           title: t.title,
-          summary: t.summary,
           status: t.status,
-          attempts: t.attempts,
-          claims: t.claims,
-          tags: t.tags,
-          needsHumanReview: t.needsHumanReview,
-          sourcePlanSlug: t.sourcePlanSlug,
-          workingUsers: t.workingUsers,
           updatedTs: t.updatedTs,
         })
         .from(t)

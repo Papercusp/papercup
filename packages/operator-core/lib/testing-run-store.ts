@@ -330,6 +330,17 @@ export function listRuns(limit = 50): RunSnapshot[] {
 // scaffolding and NO backfill. This is the run-route INGESTION half; the
 // completion-gate half is the global papercusp-test-completion-gate flag (P-006),
 // so coding-hive instantiation needs no separate gate wiring.
+//
+// ⚠ That "stamped with harness_slug + workspace_id" claim is true ONLY for rows ingested
+// through THIS route. It does NOT hold for the table as a whole: the separate CI/dogfood-admin-ui
+// vitest reporter (libs/test-config/src/admin-test-runs-reporter.ts) writes to the SAME
+// harness_shared.test_runs table but derives both columns from env vars that gate/CI runs never
+// set, so every row from that writer has workspace_id/harness_slug NULL. A reader of the comment
+// above alone would reasonably (and wrongly) conclude the whole table is scoped — that is exactly
+// what produced the tenant-scope advisory bug in EI-19324633485547042: applying a
+// workspace_id/harness_slug predicate to gate-triage rows silently excludes every one of them and
+// reads as a clean "no failures". For CI/gate-population reads, scope by source/commit_sha
+// instead (see buildTestRunsAdvisory in pg-read-query.ts).
 
 /** One per-file row distilled from a vitest JSON report. */
 export interface HarnessTestFileRow {

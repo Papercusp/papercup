@@ -816,6 +816,101 @@ describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-198
   );
 });
 
+describe('RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003)', () => {
+  // THE RECURRENCE GUARD for the staleness bug. mintRecycleArgs used to copy every
+  // non-resume flag through verbatim, so `--system-prompt-file <predecessor render>`
+  // survived every respawn and a session's base persona stayed pinned to launch #1
+  // forever. Measured 2026-08-02: 27 of 53 live claude sessions were running a render
+  // up to 14 days old, i.e. every prompt fix of that fortnight reached half the fleet.
+  //
+  // This drives the REAL hostThroughPty against the REAL mintRecycleArgs, so it covers
+  // BOTH halves of the seam that has to stay wired: the host must CALL the refresh and
+  // hand its result to the mint, and the mint must SWAP the flag. A unit test on either
+  // half alone would still pass if the other half were quietly removed — which is
+  // exactly how this bug would come back.
+  //
+  // Proven to fail against pre-fix behaviour: pre-fix there was no refreshPersonaFile
+  // option at all, so nothing ever swapped the flag and the first expectation below
+  // ("boots on the REFRESHED render") fails. The second case pins the other direction —
+  // with no refresh available the inherited path MUST be kept, because that fail-soft is
+  // what stops an operator hiccup from costing a live session its respawn.
+  const childCode =
+    "const i=process.argv.indexOf('--system-prompt-file');" +
+    "process.stdout.write('BOOT:'+process.pid+' SPF:'+(i>=0?process.argv[i+1]:'NONE')+'\\n');" +
+    "process.stdin.setEncoding('utf8');let b='';" +
+    "process.stdin.on('data',d=>{b+=d;let i2;while((i2=b.indexOf('\\n'))>=0){const line=b.slice(0,i2);b=b.slice(i2+1);" +
+    "if(line==='QUIT'){process.exit(0);}}});" +
+    'setTimeout(()=>process.exit(0),15000);';
+
+  /** `refreshed` = what the operator's persona-refresh hands back: a path, or null
+   *  when the refresh failed / was unavailable. */
+  async function driveRespawn(refreshed: string | null) {
+    const { mintRecycleArgs } = await import('../scripts/psu-launcher.mjs');
+    const ownerId = `su-persona-refresh-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const stale = `/tmp/launch-context/session-STALE-${process.pid}.md`;
+    const refreshPersonaFile = async () => ({ promptFile: refreshed });
+    const { captured, io } = fakeIo();
+
+    let exitCode: number | null = null;
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode, '--system-prompt-file', stale],
+      cwd: '/tmp',
+      // PAPERCUSP_AGENT=claude so the REAL mint synthesizes a --session-id for this
+      // resume-shaped argv instead of no-op'ing (the 2026-07-18 mint gap).
+      env: { ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude', TERM: 'xterm-256color' },
+      ownerId,
+      io,
+      bridgeTty: false,
+      mintRecycleArgs,
+      refreshPersonaFile,
+      onExit: (c: number) => { exitCode = c; },
+    });
+
+    await sleep(600);
+    // First boot always runs the launch argv verbatim — the inherited render.
+    expect(captured()).toContain(`SPF:${stale}`);
+
+    await controlInject(sock, 'recycle', '');
+    await sleep(2500); // kill + respawn + boot
+
+    const spfs = [...captured().matchAll(/SPF:(\S+)/g)].map((m) => m[1]);
+    await rawInject(sock, 'QUIT\n');
+    await done;
+    expect(exitCode).toBe(0);
+    return { spfs, stale };
+  }
+
+  it(
+    'boots the successor on the REFRESHED render, not the predecessor\'s',
+    async () => {
+      const fresh = `/tmp/launch-context/session-refresh-FRESH-${process.pid}.md`;
+      const { spfs, stale } = await driveRespawn(fresh);
+      expect(spfs).toHaveLength(2);
+      expect(spfs[0]).toBe(stale);
+      // The whole point: the successor must NOT be running the file its predecessor
+      // ran. This is the assertion that goes red if the seam is ever unwired.
+      expect(spfs[1]).toBe(fresh);
+      expect(spfs[1]).not.toBe(stale);
+    },
+    30_000,
+  );
+
+  it(
+    'KEEPS the inherited render when the refresh yields nothing (fail-soft, = pre-fix behaviour)',
+    async () => {
+      // A refresh that failed or was unavailable must never cost the session its
+      // respawn — a stale prompt beats a dead session. This also pins that the swap is
+      // CONDITIONAL, so a future change cannot start rewriting argv unconditionally.
+      const { spfs, stale } = await driveRespawn(null);
+      expect(spfs).toHaveLength(2);
+      expect(spfs.every((s) => s === stale)).toBe(true);
+    },
+    30_000,
+  );
+});
+
 describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (WI-1941)', () => {
   it(
     'RETRIES past a fresh child that stays busy beyond one busy-cap, injecting the carry once it settles',

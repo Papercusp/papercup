@@ -539,6 +539,67 @@ describe('buildTenantScopeAdvisory — corpus-namespaced tables (WI-6847)', () =
   });
 });
 
+// EI-19324633485547042: the ORIGINAL instance this item reports. harness_shared.test_runs is
+// unlike the corpus-namespaced tables above — its workspace_id/harness_slug columns genuinely
+// hold real values for SOME rows (the per-hive Tests-tab ingestion path) — but every CI/gate row
+// (the population that matters for red-gate triage) has both NULL by construction, so the
+// generic heuristic's own "already scoped" signal is BACKWARDS here: a workspace_id/harness_slug
+// predicate silently EXCLUDES every CI/gate row and reads as a clean, confidence-inspiring empty
+// "no failures" result. These guard the recurrence this bug report exists to prevent — without
+// them, buildTestRunsAdvisory had zero test coverage despite being the fix for the reported bug.
+describe('buildTenantScopeAdvisory — test_runs gate-triage trap (EI-19324633485547042)', () => {
+  beforeEach(() => clearTenantScopeSchemaCache());
+
+  it('fires for a filtered test_runs query with no source/commit_sha predicate', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.test_runs WHERE status = 'fail'",
+      { client: sql },
+    );
+    expect(advisory).toContain('harness_shared.test_runs');
+    expect(advisory).toContain('source/commit_sha');
+    expect(advisory).toContain("'pass'/'fail'/'skip'");
+    expect(calls).toHaveLength(0); // purely textual — never reads the schema cache
+  });
+
+  it('still fires even when workspace_id/harness_slug ARE present — their presence is the trap, not the fix', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.test_runs WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).not.toBeNull();
+    expect(advisory).toContain('silently EXCLUDES every CI/gate row');
+  });
+
+  it('is silent once `source` is mentioned', async () => {
+    const { sql } = stubClient([]);
+    expect(
+      await buildTenantScopeAdvisory(
+        "SELECT * FROM harness_shared.test_runs WHERE source = 'ci' AND status = 'fail'",
+        { client: sql },
+      ),
+    ).toBeNull();
+  });
+
+  it('is silent once `commit_sha` is mentioned', async () => {
+    const { sql } = stubClient([]);
+    expect(
+      await buildTenantScopeAdvisory(
+        "SELECT * FROM harness_shared.test_runs WHERE commit_sha = 'abc123'",
+        { client: sql },
+      ),
+    ).toBeNull();
+  });
+
+  it('is silent for an unfiltered query (no WHERE at all)', async () => {
+    const { sql } = stubClient([]);
+    expect(
+      await buildTenantScopeAdvisory('SELECT count(*) FROM harness_shared.test_runs', { client: sql }),
+    ).toBeNull();
+  });
+});
+
 describe('buildDerivedColumnRedirect (EI-18801042715296007 — the derived-verdict dead end)', () => {
   const NOT_EXIST = (col: string): string => `column "${col}" does not exist`;
   const PRESENCE_SQL = 'SELECT session_state FROM harness_shared.coord_presence';

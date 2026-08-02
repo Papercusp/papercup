@@ -1202,6 +1202,81 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
     const { knownQueryNamesV2: k } = await import('./index');
     expect(k()).toContain('featuresConsolidated.byHive');
   });
+
+  /**
+   * WI-7087: pins the projection to the FIVE columns HiveContentPanel's own
+   * `HiveFeatureRow` declares. Both halves are asserted, because they fail in
+   * opposite directions: a column coming BACK is a silent re-inflation (`summary`
+   * alone was 831,678 B = 56.58% of the live payload and nothing ever read it),
+   * and a column going AWAY is a silent render break.
+   *
+   * Deliberately NOT the same set as `.bySlug` — that sibling keeps 11 columns for
+   * a wider consumer set. The old resolver comment claimed the two mirrored each
+   * other exactly, which is how `summary` survived `.bySlug` dropping it.
+   */
+  it('projects exactly HiveContentPanel\'s five declared columns — no summary, no bare select', async () => {
+    const captured: { cols: string[] } = { cols: [] };
+    vi.doMock('../harness-registry', () => ({
+      hiveMemberHarnessScopes: vi.fn(() => ['hive-home']),
+      loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'hive-home', harness_kind: 'hive' }] })),
+    }));
+    vi.doMock('@papercusp/db-org', () => ({
+      getOrgPg: () => ({
+        db: {
+          select: (cols: Record<string, unknown>) => {
+            captured.cols = Object.keys(cols ?? {});
+            return { from: () => ({ where: () => ({ orderBy: () => [] }) }) };
+          },
+        },
+      }),
+      generated: {
+        harnessFeaturesConsolidatedInHarnessShared: {
+          ...FAKE_COLS,
+          featureId: 'c_fid',
+          title: 'c_title',
+          status: 'c_status',
+          summary: 'c_summary',
+          attempts: 'c_attempts',
+          claims: 'c_claims',
+          tags: 'c_tags',
+          needsHumanReview: 'c_nhr',
+          sourcePlanSlug: 'c_sps',
+          workingUsers: 'c_wu',
+        },
+      },
+    }));
+    vi.doMock('drizzle-orm', async () => ({
+      ...(await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm')),
+      inArray: (_col: unknown, values: string[]) => ({ __inArray: values }),
+    }));
+
+    const { resolveNamedQueryV2: r } = await import('./index');
+    await r('featuresConsolidated.byHive', { potHomeSlug: 'hive-home' });
+
+    // KEPT — exactly HiveFeatureRow (HiveContentPanel.tsx).
+    expect(new Set(captured.cols)).toEqual(
+      new Set(['harnessSlug', 'featureId', 'title', 'status', 'updatedTs']),
+    );
+    // DROPPED — named individually so a regression says WHICH column came back.
+    for (const gone of [
+      'summary',
+      'attempts',
+      'claims',
+      'tags',
+      'needsHumanReview',
+      'sourcePlanSlug',
+      'workingUsers',
+    ]) {
+      expect(captured.cols, `${gone} must not be on the byHive wire`).not.toContain(gone);
+    }
+    // A bare `.select()` (the WI-5412 defect this read regressed into once already)
+    // passes undefined — that must never read as "no columns captured, fine".
+    expect(captured.cols.length).toBe(5);
+
+    vi.doUnmock('../harness-registry');
+    vi.doUnmock('@papercusp/db-org');
+    vi.doUnmock('drizzle-orm');
+  });
 });
 
 describe('resolveNamedQueryV2 — plans.byHive (WI-259 P-006 cross-member plan rollup, D-010)', () => {
