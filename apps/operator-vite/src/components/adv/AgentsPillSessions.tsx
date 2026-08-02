@@ -38,6 +38,7 @@ import {
   activityLiveness,
   activityLivenessTitle,
   agentGlyph,
+  canFocusWindow,
   canForkSession,
   displayName,
   fmtCompactAge,
@@ -216,6 +217,11 @@ interface InspectTarget {
   /** WI-4009 / 2026-07-11: whether the source can be FORKED (claude-only) —
    *  gates the Fork button, independent of active/inactive. */
   resumeCanFork?: boolean;
+  /** WI-6816: the OS terminal-window handles for a still-RUNNING matched
+   *  session — present ⇒ the inspector shows its "⤢ Focus window" button.
+   *  undefined ⇒ no button (an ended session, or a live one with neither
+   *  handle). See searchResultFocusTarget below. */
+  focusTarget?: { advSessionId?: number | null; windowId?: string | null; pid?: number | null };
 }
 
 /** WI-3882: the Fork/Resume target for a matched search result — an ACTIVE
@@ -238,6 +244,39 @@ export function searchResultResumeTarget(
   }
   const sessionId = result.session ? resumableSessionId(result.session) : null;
   return sessionId ? { sessionId, live: false, canFork: result.session ? canForkSession(result.session) : false } : null;
+}
+
+/**
+ * WI-6816: the "Focus window" target for a matched search result — the OS
+ * terminal-window handles of the ACTIVE (still-running) agent behind the match,
+ * or null when there is nothing to raise.
+ *
+ * Owner-reported 2026-08-02: "in the agents running dropdown when viewing a
+ * session there used to be a 'focus window' option if it was focusable, but I
+ * don't see that anymore". The button was never deleted — it lives in
+ * AgentInspectorModal and renders only when a caller passes `focusTarget`. The
+ * ROSTER call site (AgentsRunningPill.tsx) has passed it since 2026-07-01; this
+ * SEARCH-results view landed 2026-07-09 and never carried it forward, so
+ * reaching a live session through the search box silently lost the affordance.
+ * This helper is the search-side twin of searchResultResumeTarget above.
+ *
+ * Only `result.active` is consulted, deliberately: an INACTIVE result's session
+ * has ENDED, so its window is gone and offering focus would be a dead button
+ * (the same reason the ended-sessions list below passes no focusTarget either).
+ * Gated on the ONE exported canFocusWindow predicate the roster path uses, so
+ * the two surfaces cannot drift on what "focusable" means — notably that an
+ * `advSessionId` alone is enough (the /adv/sessions/focus endpoint resolves the
+ * window from the adv row / its `[adv:<id>]` title fragment), which is what
+ * carries essentially every live session here: measured 2026-08-02, 86 of 135
+ * roster entries had an advSessionId and ZERO had a pre-resolved windowId.
+ * Pure — exported for tests.
+ */
+export function searchResultFocusTarget(
+  result: Pick<SearchSessionResult, 'active'>,
+): { advSessionId: number | null; windowId: string | null; pid: number | null } | null {
+  const a = result.active;
+  if (!a || !canFocusWindow(a)) return null;
+  return { advSessionId: a.advSessionId ?? null, windowId: a.windowId ?? null, pid: a.pid ?? null };
 }
 
 /** One matched session row + its excerpt hits. Shared by the active (fleet-
@@ -280,6 +319,8 @@ function SearchResultRow({
       resumeSessionId: resumeTarget?.sessionId ?? null,
       resumeLive: resumeTarget?.live ?? false,
       resumeCanFork: resumeTarget?.canFork ?? false,
+      // WI-6816 — null ⇒ the modal shows no Focus button (never a dead one).
+      focusTarget: searchResultFocusTarget(result) ?? undefined,
     });
   };
   const top = result.hits[0];
@@ -690,6 +731,10 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
           resumeTarget={inspecting.resumeSessionId
             ? { sessionId: inspecting.resumeSessionId, live: Boolean(inspecting.resumeLive), canFork: Boolean(inspecting.resumeCanFork) }
             : undefined}
+          // WI-6816: restores the "⤢ Focus window" button when the match is a
+          // still-running, focusable agent — parity with the roster call site
+          // (AgentsRunningPill.tsx). undefined for an ended session ⇒ no button.
+          focusTarget={inspecting.focusTarget}
           open
           onClose={() => setInspecting(null)}
         />

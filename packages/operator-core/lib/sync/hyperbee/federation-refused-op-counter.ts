@@ -27,8 +27,25 @@ import type { OrgSql } from '../../work-items';
 /** Why a federated content op was refused. Bounded, low-cardinality by design.
  *  'demux-mismatch' (WI-3734/WI-5136): a hive-home-grained op whose row slug matches
  *  NEITHER the applying scope's bound slug — previously an invisible silent drop in
- *  the projection's own `harness_slug` guard. */
-export type RefusedOpReason = 'malformed' | 'not-federatable' | 'rate-capped' | 'demux-mismatch';
+ *  the projection's own `harness_slug` guard.
+ *  'home-log-excluded' (EI-19304844689981989): a hive-home-grained op skipped by
+ *  WI-3734's HOME-LOG EXCLUSION because its receiver-stamped `sourceLogKeyHex`
+ *  matched the locally-booted home's own log. Unlike the others this is an
+ *  EXPECTED, by-design skip in the healthy case (the home fold already landed
+ *  those rows via CDC capture) — it is counted purely for OBSERVABILITY, not as a
+ *  garbage signal, so do not read a nonzero count here as misbehaviour on its own.
+ *  It exists because this was the last fully-silent drop point in the apply guard:
+ *  its sibling demux branch bumps a counter while this one returned bare, which
+ *  made "the peer published and drained, yet the row never applied" undiagnosable
+ *  from the receiver side. Compare the count against the source's expected own-op
+ *  volume; an op you believe came from a DIFFERENT machine landing in this bucket
+ *  is the pathological case. */
+export type RefusedOpReason =
+  | 'malformed'
+  | 'not-federatable'
+  | 'rate-capped'
+  | 'demux-mismatch'
+  | 'home-log-excluded';
 
 export interface BumpRefusedOpArgs {
   /** The receiving operator's workspace partition. */

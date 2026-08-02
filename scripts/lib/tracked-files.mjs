@@ -111,7 +111,22 @@ export function coverageOf(files, cwd = ROOT) {
     if (files.some((f) => f.startsWith(`${path}/`))) scanned.push(path);
     else unscanned.push(path);
   }
-  return { declared, scanned, unscanned };
+  // The two gaps are NOT equally serious, and a caller that needs to ACT (rather than
+  // just report) has to tell them apart:
+  //
+  //   unscannedPresent — content is on disk but git could not enumerate it. The scan
+  //                      is missing real, existing files. THIS is the one that makes a
+  //                      ✓ a lie and an absence-proof unsound.
+  //   unscannedAbsent  — nothing is checked out. Contributes no files anywhere, so it
+  //                      does not shrink the scan relative to what actually exists.
+  //
+  // Conflating them makes any "coverage is incomplete" alarm cry wolf: this repo
+  // permanently carries one absent submodule (libs/zero-harness, retired and
+  // deliberately uninitialized), so an alarm keyed on `unscanned` fires on every run
+  // in a perfectly healthy tree and is trained away. Key alarms on unscannedPresent.
+  const unscannedPresent = unscanned.filter((p) => hasContentOnDisk(p, cwd));
+  const unscannedAbsent = unscanned.filter((p) => !unscannedPresent.includes(p));
+  return { declared, scanned, unscanned, unscannedPresent, unscannedAbsent };
 }
 
 /** Does this submodule directory hold content on disk, whatever git can see? */
@@ -159,7 +174,9 @@ export function describeUnscanned(unscannedOrScan, cwd = ROOT) {
   const declared = isScan ? unscannedOrScan.declared : declaredSubmodules(cwd);
   const total = declared?.length ?? unscanned.length;
 
-  const present = unscanned.filter((p) => hasContentOnDisk(p, cwd));
+  const present = isScan && unscannedOrScan.unscannedPresent
+    ? unscannedOrScan.unscannedPresent
+    : unscanned.filter((p) => hasContentOnDisk(p, cwd));
   const absent = unscanned.filter((p) => !present.includes(p));
 
   // Cap the name list: in a release-shaped tree EVERY submodule lands in one

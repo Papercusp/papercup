@@ -864,6 +864,23 @@ export function issueClaimCandidateSubquery(
   `;
 }
 
+/**
+ * EI-18802055183255275: the FROM-source for every one of the claimability reads below.
+ * By default this re-derives {@link issueClaimCandidateSubquery} inline (unchanged
+ * behavior for a standalone caller). When `precomputedTable` is set (readIssueClaimability's
+ * shared-snapshot path), it instead points at an ALREADY-MATERIALIZED temp table — so the
+ * (expensive: ~60-predicate spec filter × 13 floor predicates, over the whole issue-family
+ * population) candidate computation runs ONCE per call to readIssueClaimability instead of
+ * once per sibling read (previously 2-4x redundant full scans SERIALIZED in one transaction,
+ * which is what made a wide `any`-filter spec like `p2p-release` (63 predicates) exceed the
+ * per-statement timeout on `work_items:claimable` — see the bug this fixes for the measured
+ * costs). `sub` is unused when precomputed; callers still build it (harmless — postgres-js
+ * fragment construction has no DB round-trip) so the call sites below stay uniform.
+ */
+function candidateFromSource(sql: OrgSql, sub: SqlFragment, precomputedTable?: string): SqlFragment {
+  return precomputedTable ? sql`(SELECT * FROM ${sql.unsafe(precomputedTable)})` : sql`(${sub})`;
+}
+
 export async function aggregateIssueClaimExclusions(
   filter: FilterNode | undefined,
   opts: {
@@ -874,6 +891,10 @@ export async function aggregateIssueClaimExclusions(
     /** Run on this handle instead of a fresh pool checkout — pass the `tx` from
      *  {@link readIssueClaimability} to share ONE snapshot with the sibling reads. */
     client?: OrgSql;
+    /** EI-18802055183255275: read from this already-materialized temp table (built once by
+     *  {@link readIssueClaimability}) instead of recomputing the candidate subquery. Internal —
+     *  only readIssueClaimability passes this; a standalone caller omits it unchanged. */
+    precomputedTable?: string;
   },
 ): Promise<IssueClaimExclusionBreakdown> {
   const sql = opts.client ?? getOrgPg().sql;
@@ -913,7 +934,7 @@ export async function aggregateIssueClaimExclusions(
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_no_blocker)::int      AS blocked_dep,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_cooldown)::int        AS cooldown,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_origin)::int          AS remote_origin
-    FROM (${sub}) sub
+    FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} sub
   `) as Array<{
     matched: number;
     claimable: number;
@@ -1001,6 +1022,8 @@ export async function sampleIssueClaimExclusions(
     /** Run on this handle instead of a fresh pool checkout — pass the `tx` from
      *  {@link readIssueClaimability} to share ONE snapshot with the sibling reads. */
     client?: OrgSql;
+    /** EI-18802055183255275: see {@link aggregateIssueClaimExclusions}'s same-named opt. */
+    precomputedTable?: string;
   },
   sampleLimit: number,
 ): Promise<IssueClaimExclusionSample> {
@@ -1036,7 +1059,7 @@ export async function sampleIssueClaimExclusions(
   `;
 
   const rows = (await sql`
-    WITH sub AS (${sub})
+    WITH sub AS ${candidateFromSource(sql, sub, opts.precomputedTable)}
     SELECT
       ${sampleOf('NOT ok_untaken', '')}        AS taken,
       ${sampleOf('NOT ok_claim_hold')}          AS claim_hold,
@@ -1135,6 +1158,8 @@ export async function listIssueClaimableRows(
     /** Run on this handle instead of a fresh pool checkout — pass the `tx` from
      *  {@link readIssueClaimability} to share ONE snapshot with the sibling reads. */
     client?: OrgSql;
+    /** EI-18802055183255275: see {@link aggregateIssueClaimExclusions}'s same-named opt. */
+    precomputedTable?: string;
   },
   limit: number,
 ): Promise<IssueClaimableRow[]> {
@@ -1177,7 +1202,7 @@ export async function listIssueClaimableRows(
       source_plan_slug          AS plan,
       feature_order,
       created_ts
-    FROM (${sub}) sub
+    FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} sub
     WHERE spec_match AND ${sql.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)}
     ORDER BY ${order}
     LIMIT ${cap}

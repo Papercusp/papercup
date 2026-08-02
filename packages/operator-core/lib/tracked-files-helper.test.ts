@@ -20,12 +20,11 @@ import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error — .mjs guard helper, no type declarations (same import shape
 // as the other guard tests, e.g. dbos/no-raw-setinterval-guard.test.ts).
-import {
-  coverageOf,
-  declaredSubmodules,
-  describeUnscanned,
-  listTrackedFiles,
-} from '../../../scripts/lib/tracked-files.mjs';
+// ⚠ Keep this import on ONE line: `@ts-expect-error` suppresses only the line
+// immediately following it, so wrapping it across lines makes the directive
+// "unused" AND leaves the module specifier line unsuppressed — two errors, not zero.
+// eslint-disable-next-line prettier/prettier
+import { coverageOf, declaredSubmodules, describeUnscanned, listTrackedFiles } from '../../../scripts/lib/tracked-files.mjs';
 
 describe('tracked-files helper (WI-6730)', () => {
   const scan = listTrackedFiles() as {
@@ -142,6 +141,32 @@ describe('tracked-files helper (WI-6730)', () => {
     const empty = coverageOf([]) as { scanned: string[]; unscanned: string[] };
     expect(empty.scanned).toEqual([]);
     expect(empty.unscanned.length).toBeGreaterThan(30);
+  });
+
+  it('splits unscanned into present-on-disk vs absent, so an alarm can key on the serious one', () => {
+    // WI-6776. The two gaps are not equally serious and a caller that ACTS on coverage
+    // must tell them apart. `unscannedPresent` means git failed to read files that are
+    // really there (release-shaped checkout / linked worktree) — the scan is missing real
+    // content. `unscannedAbsent` means nothing is checked out, which contributes no files
+    // anywhere and so does not shrink the scan relative to reality.
+    //
+    // This matters because this repo PERMANENTLY carries one absent submodule
+    // (libs/zero-harness, retired and deliberately uninitialized). An alarm keyed on
+    // `unscanned` therefore fires on every run in a totally healthy tree, gets trained
+    // away, and is worth nothing on the day the tree really is broken. check-vacuous-
+    // negative-assertions keys its "corpus was INCOMPLETE" warning on unscannedPresent
+    // for exactly this reason.
+    const cov = coverageOf([]) as {
+      unscanned: string[];
+      unscannedPresent: string[];
+      unscannedAbsent: string[];
+    };
+    // Exhaustive + disjoint: nothing may fall through the split.
+    expect(new Set([...cov.unscannedPresent, ...cov.unscannedAbsent])).toEqual(new Set(cov.unscanned));
+    expect(cov.unscannedPresent.filter((p) => cov.unscannedAbsent.includes(p))).toEqual([]);
+    // Non-vacuity: with NO files supplied, every checked-out submodule must land in
+    // `present` — an always-empty `present` would silence the alarm this exists to raise.
+    expect(cov.unscannedPresent.length).toBeGreaterThan(30);
   });
 });
 

@@ -1028,7 +1028,32 @@ export const hudRenderStabilitySwitch: {
   /** Times board reconciliation ran, and how often it handed back the previous board. */
   reconciles: number;
   reuses: number;
-} = { off: false, compares: 0, skips: 0, reconciles: 0, reuses: 0 };
+  /**
+   * WI-6755 — renders React ACTUALLY performed on a session card, counted in the
+   * card's own body.
+   *
+   * `compares` above cannot stand in for this, and the difference is the whole
+   * reason this counter exists. A memo comparator only runs when React is
+   * deciding whether to re-render an ALREADY-MOUNTED element; it is not called
+   * on a mount, and it is not called at all when the element is being removed.
+   * `HudBoard` swaps the entire sessions subtree out for `entityView` on a tab
+   * switch, so a switch that unmounts (or remounts) 132 cards moves `compares`
+   * by ZERO — which reads exactly like "no card work happened" while every card
+   * is in fact being torn down or built. `cardRenders`/`cardMounts` are the only
+   * counters that can tell those two states apart.
+   */
+  cardRenders: number;
+  /** Of those, first-ever renders of that card instance — i.e. mounts. */
+  cardMounts: number;
+} = {
+  off: false,
+  compares: 0,
+  skips: 0,
+  reconciles: 0,
+  reuses: 0,
+  cardRenders: 0,
+  cardMounts: 0,
+};
 
 /* The probe drives the app from OUTSIDE the bundle (`tauri-agent-tools eval`),
    so the switch has to be reachable from the page's global scope — an exported

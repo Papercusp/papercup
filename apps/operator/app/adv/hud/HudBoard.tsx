@@ -16,7 +16,7 @@
  * nothing more.
  */
 
-import { memo, useMemo, type ReactNode } from 'react';
+import { memo, useMemo, useRef, type ReactNode } from 'react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { Combobox, type ComboboxOption } from '@/app/harness/Combobox';
 import FleetRoleGlyph from '@/app/_components/FleetRoleGlyph';
@@ -26,6 +26,7 @@ import {
   NO_PLAN_TOKEN,
   SOLO_FLEET_KEY,
   formatAge,
+  hudRenderStabilitySwitch,
   hudSessionRendersSame,
   type HudBoard as HudBoardData,
   type HudBadge,
@@ -202,6 +203,19 @@ function SessionCard({
  */
 const MemoSessionCard = memo(
   function SafeSessionCard(props: { session: HudSession; onOpen: (ownerId: string) => void }) {
+    /* WI-6755 — count the render React actually performed, and whether it was
+       this instance's first. Counted at the TOP of the body, before any branch,
+       so it is a workload bound-check and not a claim about an arm: a tab switch
+       that reports `cardRenders === 0` genuinely did no card work, whereas the
+       memo comparator's `compares === 0` is also what a full unmount looks like.
+       See `hudRenderStabilitySwitch.cardRenders` for why they cannot substitute
+       for one another. Cost is two integer increments per card render. */
+    hudRenderStabilitySwitch.cardRenders++;
+    const mounted = useRef(false);
+    if (!mounted.current) {
+      mounted.current = true;
+      hudRenderStabilitySwitch.cardMounts++;
+    }
     return (
       <RowBoundary
         label={props.session?.handle || props.session?.ownerId || 'This session'}

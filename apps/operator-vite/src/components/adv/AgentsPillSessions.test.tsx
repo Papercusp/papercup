@@ -17,6 +17,7 @@ import {
   headlineToSafeHtml,
   searchFailureMessage,
   searchHitStreamUrl,
+  searchResultFocusTarget,
   searchResultResumeTarget,
   InactiveSessionsSection,
   SessionSearchResults,
@@ -27,7 +28,16 @@ import type { RosterAgent } from './AgentsRunningPill';
 
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ active: [] }] }) }));
 vi.mock('@/app/coord/presence-ui', () => ({ LivenessDot: () => null }));
-vi.mock('@/app/harness/AgentInspectorModal', () => ({ default: () => null }));
+// Records the props the inspector was opened with, so the WI-6816 wiring test
+// below can assert what the SEARCH results actually hand it (renders nothing,
+// exactly as before — every other test in this file is unaffected).
+const inspectorProps = vi.hoisted(() => ({ last: null as Record<string, unknown> | null }));
+vi.mock('@/app/harness/AgentInspectorModal', () => ({
+  default: (props: Record<string, unknown>) => {
+    inspectorProps.last = props;
+    return null;
+  },
+}));
 vi.mock('@/app/harness/AgentThinkingStream', () => ({ ThinkingDot: () => null }));
 // SessionSearchResults (WI-4734 tests below) AND InactiveSessionsSection's
 // expand toggle (WI-3881) are URL-backed via nuqs; the suite runs without a
@@ -176,6 +186,32 @@ describe('searchResultResumeTarget (pure — Fork/Resume-button wiring, WI-3882;
   });
   it('neither active nor session → null', () => {
     expect(searchResultResumeTarget({ active: null, session: null })).toBeNull();
+  });
+});
+
+describe('searchResultFocusTarget (pure — "Focus window" button wiring, WI-6816)', () => {
+  // Owner-reported 2026-08-02: opening a session from the agents-pill SEARCH
+  // results lost the "⤢ Focus window" button the ROSTER path has shown since
+  // 2026-07-01 — this search view (2026-07-09) never threaded `focusTarget`
+  // through to AgentInspectorModal. These lock the restored wiring.
+  it('active result with an advSessionId ONLY → focusable (the real-world case: 86/135 live agents had an advSessionId and ZERO a windowId)', () => {
+    expect(
+      searchResultFocusTarget({ active: rosterAgent({ advSessionId: 14232, windowId: null, pid: 1624051 }) }),
+    ).toEqual({ advSessionId: 14232, windowId: null, pid: 1624051 });
+  });
+  it('active result with a windowId ONLY → focusable', () => {
+    expect(
+      searchResultFocusTarget({ active: rosterAgent({ advSessionId: null, windowId: '0x1234', pid: null }) }),
+    ).toEqual({ advSessionId: null, windowId: '0x1234', pid: null });
+  });
+  it('active result with a pid but NEITHER handle → null (every gnome-terminal shares one server pid, so a pid cannot be matched back to a window)', () => {
+    expect(searchResultFocusTarget({ active: rosterAgent({ advSessionId: null, windowId: null, pid: 3711110 }) })).toBeNull();
+  });
+  it('missing handles entirely → null, never a dead button', () => {
+    expect(searchResultFocusTarget({ active: rosterAgent({}) })).toBeNull();
+  });
+  it('INACTIVE result → null even when the ended row has an adv id: the window is gone, so focus would be dead', () => {
+    expect(searchResultFocusTarget({ active: null })).toBeNull();
   });
 });
 

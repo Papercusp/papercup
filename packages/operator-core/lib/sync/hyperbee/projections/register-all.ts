@@ -306,7 +306,23 @@ function withHiveHomeApplyGuard<Row>(
     ...p,
     writeToPg: async (row, provenance) => {
       const homeLog = guard.resolveHomeLogKeyHex?.() ?? null;
-      if (homeLog && provenance?.sourceLogKeyHex === homeLog) return; // home fold owns home-log ops
+      if (homeLog && provenance?.sourceLogKeyHex === homeLog) {
+        // home fold owns home-log ops. EI-19304844689981989: count it — this was
+        // the last fully-silent drop in the guard (its demux sibling below always
+        // bumped a counter), which made a "published + drained, never applied"
+        // federation gap undiagnosable from the receiver side.
+        await bumpFederationRefusedOp(
+          {
+            workspaceId: guard.workspaceId,
+            harnessSlug: guard.boundSlug,
+            sourceHive: provenance?.sourceLogKeyHex ?? provenance?.authorPubkey,
+            tableTag: p.tableTag,
+            reason: 'home-log-excluded',
+          },
+          guard.sql,
+        );
+        return;
+      }
       const slug = rowSlug(row);
       if (slug !== undefined && slug !== guard.boundSlug) {
         await bumpFederationRefusedOp(
@@ -324,7 +340,21 @@ function withHiveHomeApplyGuard<Row>(
     },
     deleteFromPg: async (key, delTs, delHlc, provenance) => {
       const homeLog = guard.resolveHomeLogKeyHex?.() ?? null;
-      if (homeLog && provenance?.sourceLogKeyHex === homeLog) return; // home fold owns home-log ops
+      if (homeLog && provenance?.sourceLogKeyHex === homeLog) {
+        // home fold owns home-log ops — counted for the same reason as the write
+        // path above (EI-19304844689981989).
+        await bumpFederationRefusedOp(
+          {
+            workspaceId: guard.workspaceId,
+            harnessSlug: guard.boundSlug,
+            sourceHive: provenance?.sourceLogKeyHex ?? provenance?.authorPubkey,
+            tableTag: p.tableTag,
+            reason: 'home-log-excluded',
+          },
+          guard.sql,
+        );
+        return;
+      }
       return p.deleteFromPg(key, delTs, delHlc, provenance);
     },
   };

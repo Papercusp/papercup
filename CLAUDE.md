@@ -696,9 +696,21 @@ instantly, in files your change never touched and `test:affected` never selects 
 a stale fixture in a file whose tsc baseline ALREADY tolerates errors is invisible to
 the ratchet too, so it stays silently broken rather than loudly red. This bit three
 separate changes on 2026-07-26 alone (`AgentFact.confidence`,
-`OwnerSteering.createWakeSuppressPlans`, `PipelinePosition.submodulePin`). After such
-a change, grep the field's type name across the tree and check every construction
-site — the baseline will not do it for you.
+`OwnerSteering.createWakeSuppressPlans`, `PipelinePosition.submodulePin`), and
+`IssueClaimExclusionBreakdown.excluded.remoteOrigin` on 2026-08-02 (27 errors across 2
+committed files, caught ~10 min before the gate run that would have red-pinned on them).
+
+**Don't do that by hand — `npm run lint:required-field-strands`** (WI-6814) AST-diffs your
+change against `HEAD` and names every exported type that gained a required field, nested
+paths included (the 2026-08-02 case lived one level down, inside `excluded: {}`, where a
+top-level scan reports nothing and reads exactly like "no trap here"). It also catches a
+field TIGHTENED from optional to required, which strands sites just as hard. It is
+ADVISORY by design — adding a required field is usually correct, so the mere addition is
+never a failure; `--typecheck` runs `lint:tsc` and exits non-zero only on real stranded
+sites. Finding the sites was never the hard part — `tsc` already does that perfectly; the
+gap this closes is *knowing to run it*. ⚠ Do NOT "fix" the errors by making the new field
+optional: that silently reintroduces whatever under-reporting the required field was added
+to prevent (exactly the WI-6409 claim-floor bug).
 
 Schema/migration edits (`libs/papercusp/libs/db/**`) → `npm run
 test:all:integration` (the dependency graph won't catch them). Don't run

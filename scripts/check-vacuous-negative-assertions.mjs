@@ -507,16 +507,21 @@ function main(argv) {
       `  if the guard is obsolete. If the absence is deliberate, annotate the line with\n` +
       `  "// ${PRAGMA} <reason>". See EI-18765867705399052.`,
   );
-  if (coverageNote) {
-    // WI-6776: a finding here means "this literal exists nowhere emittable". If the
-    // corpus never opened a subtree, that premise is unproven and these may be
-    // artefacts of the gap rather than real dead guards — fix coverage FIRST.
+  // WI-6776: a finding here means "this literal exists nowhere emittable". If the corpus
+  // never opened a subtree whose files ARE on disk, that premise is unproven and these may
+  // be artefacts of the gap rather than real dead guards — fix coverage FIRST.
+  //
+  // Keyed on `unscannedPresent`, NOT on any gap: this repo permanently carries one absent
+  // submodule (libs/zero-harness, retired and deliberately uninitialized), so warning on
+  // `unscanned` would fire on every red in a healthy tree and be trained away — the alarm
+  // has to be silent when the tree is fine or it is worth nothing when it is not.
+  if (cov.unscannedPresent.length > 0) {
     console.error(
       `\n  ⚠ READ THIS BEFORE ACTING ON THE FINDINGS — the corpus was INCOMPLETE:` +
         `${coverageNote}\n` +
         `  Every verdict above rests on "the literal appears in no tracked non-test file", which\n` +
-        `  an incomplete corpus cannot establish. Re-run where the enumeration is whole before\n` +
-        `  editing any assertion.`,
+        `  an incomplete corpus cannot establish while ${cov.unscannedPresent.length} submodule(s) with files ON DISK\n` +
+        `  went unread. Re-run where the enumeration is whole before editing any assertion.`,
     );
   }
   return 1;
