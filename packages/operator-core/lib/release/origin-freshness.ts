@@ -50,8 +50,8 @@
  * and logs nothing — while `last_status` stayed 'synced'. Nothing refused, so signal 3 read
  * 0 too. Three green signals, ~6h of the fleet's work reaching nobody and no off-box backup.
  *
- * `drained` is the leg's own answer to "is there backlog left?" and it was already being
- * computed and then discarded on every tick. A detector that ignores an explicit self-report
+ * `backlogRemains` is the leg's own answer to "is there backlog left?" and it was already
+ * being computed and then discarded on every tick. A detector that ignores an explicit self-report
  * in favour of inference is the detector failure — the same lesson signal 3 was added for,
  * re-learned one stage upstream. Signal 4 therefore bypasses the `ahead <= 0` early return
  * for exactly the reason signal 3 does: a backlog is true regardless of how any

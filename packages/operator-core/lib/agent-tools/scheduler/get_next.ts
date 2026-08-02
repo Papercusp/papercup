@@ -741,17 +741,38 @@ export default defineTool({
     // omitted entirely when null (no plan_item, unresolved slug, or zero decisions —
     // the common case for most plans).
     let planDecisions: import('../../plan-decisions-claim-port').ClaimTimePlanDecisionsBrief | null = null;
+    // false-premise-in-prescriptive-artifacts-2026-08-02 P-001: the SAME seam, for
+    // the item's own load-bearing premises. planDecisions surfaces what OTHERS ruled;
+    // this surfaces what THIS item's text assumes — and an unverified absence premise
+    // is the measured way a claimant builds something that already exists.
+    let premises: import('../../premises-claim-port').ClaimTimePremisesBrief | null = null;
     if (res?.workItem) {
-      const wi = res.workItem as { payload?: unknown; harness?: string | null };
-      planDecisions = await import('../../plan-decisions-claim-port')
-        .then((m) =>
-          m.getClaimTimePlanDecisions({
-            workItem: { payload: wi.payload },
-            harness: wi.harness ?? args.harness,
-            workspaceId: ident.workspaceId,
-          }),
-        )
-        .catch(() => null);
+      const wi = res.workItem as {
+        payload?: unknown;
+        harness?: string | null;
+        title?: string | null;
+        summary?: string | null;
+      };
+      [planDecisions, premises] = await Promise.all([
+        import('../../plan-decisions-claim-port')
+          .then((m) =>
+            m.getClaimTimePlanDecisions({
+              workItem: { payload: wi.payload },
+              harness: wi.harness ?? args.harness,
+              workspaceId: ident.workspaceId,
+            }),
+          )
+          .catch(() => null),
+        import('../../premises-claim-port')
+          .then((m) =>
+            m.getClaimTimePremises({
+              workItem: { payload: wi.payload, title: wi.title, summary: wi.summary },
+              harness: wi.harness ?? args.harness,
+              workspaceId: ident.workspaceId,
+            }),
+          )
+          .catch(() => null),
+      ]);
     }
     // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
     // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
@@ -884,6 +905,9 @@ export default defineTool({
                         planDecisionsNote:
                           `${planDecisions.decisions.length} governing decision(s) recorded on plan '${planDecisions.planSlug}' — read before acting; a ruling other lanes must follow lives here, not only in coord (plans:get { slug:'${planDecisions.planSlug}', heading:'Decisions' } for full bodies).`,
                       }
+                    : {}),
+                  ...(premises
+                    ? { premises: premises.rendered, premisesNote: premises.note }
                     : {}),
                 }
               : invalidHarnessKnownSlugs

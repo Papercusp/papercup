@@ -214,3 +214,69 @@ describe('WI-1378/WI-1383: cross-process opStateCache staleness — the no-resta
     expect(await joinerPotHomeSlug('ws', 'member-a', { fresh: true })).toBe('the-hive');
   });
 });
+
+/**
+ * WI-7032 — the SAME-process, SAME-workspace staleness variant of WI-1378/WI-1383
+ * above, but caused by a DIFFERENT mechanism: not a genuinely separate OS process,
+ * but two coexisting JS instances of `operator-state-pg.ts` loaded through two
+ * different specifier paths in ONE process (the tsx-direct dual-module-load trap
+ * already documented + fixed for orchestrator-workflow.ts's InjectedPipelineHooks,
+ * WI-3830/WI-4015). Before this fix, `opStateCache` was a plain module-level `Map` —
+ * each loaded instance got its OWN Map, so a registration write's
+ * `invalidateOperatorStateCache` call on instance A never reached instance B's warm
+ * cache, and a `resolveProject` running on instance B could see NULL for a harness
+ * that had just committed successfully on instance A (reproduced live as
+ * "resolveProject NULL — unknown harness slug=gymbaseline…" for freshly-registered
+ * gym throwaway harnesses).
+ *
+ * The fix stores the cache Map on `globalThis` (Symbol.for-keyed, the same
+ * hot-reload-safe-singleton idiom `pipelineHooks()` uses) so every module instance
+ * in the process shares ONE cache regardless of which specifier space it loaded
+ * through. `vi.resetModules()` + a fresh dynamic `import()` simulates the
+ * dual-instance load: a genuinely distinct module instantiation, same process.
+ */
+describe('WI-7032: dual-module-load opStateCache staleness (tsx-direct trap)', () => {
+  it('a cache entry warmed by one module instance is visible to a freshly re-imported second instance (globalThis-shared)', async () => {
+    store.set('harness_registry:ws', { projects: [{ slug: 'warmed-by-a' }] });
+    // Instance A: the top-level static import already bound at file load.
+    const warmed = await readOperatorState<{ projects: Array<{ slug: string }> }>('harness_registry');
+    expect(warmed?.projects[0]?.slug).toBe('warmed-by-a');
+    expect(counters.selects).toBe(1);
+
+    // Instance B: force Vitest to hand back a DISTINCT module instantiation for the
+    // same file path — mirrors two specifier-spaces resolving the same source file
+    // to two live instances under tsx-direct.
+    vi.resetModules();
+    const instanceB = await import('./operator-state-pg');
+    expect(instanceB.readOperatorState).not.toBe(readOperatorState); // genuinely a different instance
+
+    // With the OLD plain-module-Map cache this would have missed (instance B's own
+    // empty Map) and re-SELECTed. With the globalThis-backed cache it hits instance
+    // A's already-warmed entry — no 2nd SELECT.
+    const seenByB = await instanceB.readOperatorState<{ projects: Array<{ slug: string }> }>('harness_registry');
+    expect(seenByB?.projects[0]?.slug).toBe('warmed-by-a');
+    expect(counters.selects, 'served from the globalThis-shared cache — no 2nd SELECT').toBe(1);
+  });
+
+  it('a write+invalidate on one module instance is honored by a freshly re-imported second instance (no stale read)', async () => {
+    store.set('harness_registry:ws', { projects: [{ slug: 'pre-write' }] });
+    await readOperatorState('harness_registry'); // instance A warms the cache (select #1)
+
+    vi.resetModules();
+    const instanceB = await import('./operator-state-pg');
+
+    // Instance B writes a fresh value — its invalidate() must reach the SAME
+    // globalThis-backed cache instance A's warm entry lives in.
+    await instanceB.writeOperatorState('harness_registry', { projects: [{ slug: 'written-by-b' }] });
+
+    // Instance A's next default (cached) read must see the write, not its own stale
+    // pre-write cache entry — this is exactly the "resolveProject NULL" shape: a
+    // registration commits on one module instance, a resolve on another must see it.
+    const afterWrite = await readOperatorState<{ projects: Array<{ slug: string }> }>('harness_registry');
+    expect(
+      afterWrite?.projects[0]?.slug,
+      'instance A must see instance B\'s committed write immediately, not a stale cached miss',
+    ).toBe('written-by-b');
+    expect(counters.selects, 'select #1 (warm) + select #2 (post-invalidate re-read)').toBe(2);
+  });
+});

@@ -953,6 +953,27 @@ export interface GitSyncLegs {
    * pushed" is healthy and `git-sync:run` can never change it.
    */
   pushMode: string | null;
+  /**
+   * EI-19341723994516667: the p2p own-head-publish leg's self-report, from the SAME
+   * git-sync routine row (`metadata.own_head_publish`) — the mechanism that actually
+   * advances origin on a commit-only (bridged) member. See `origin-freshness.ts` for
+   * the full model; this is the same signal, read for the `pushed` stage's message
+   * rather than the standalone watchdog.
+   *
+   * Optional/nullable throughout: pre-WI-5738 routine rows never wrote this key, and
+   * a NON-bridged (legacy, pushing) member never will — absence must read as
+   * "unmeasured", never as "healthy" or "faulted".
+   */
+  ownHeadPublish?: {
+    /** A refusal CODE (e.g. 'secrets', 'total-over-cap'), or null when not refusing. */
+    refused: string | null;
+    /** true = admitted but still not caught up (WI-6996); false = fully drained; null = unknown. */
+    backlogRemains: boolean | null;
+    /** What actually became servable (the last publish CAS-wrote). */
+    publishedSha: string | null;
+    /** The worktree head this leg judged on its last tick. */
+    sha: string | null;
+  } | null;
 }
 
 /**

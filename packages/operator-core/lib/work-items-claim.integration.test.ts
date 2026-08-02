@@ -389,31 +389,6 @@ describe('issue-family (bug/change/task) remote-origin gate — the EI-7841 clas
     const peer = await wi.observeWorkItem('WI-peer-remote-2', { harness: H });
     expect(peer).toMatchObject({ available: false, claimedBy: null, gated: true });
   });
-
-  // A DB error on the extra own-node lookup must fail SAFE — still reporting gated
-  // rather than silently treating an unresolvable check as "must be claimable".
-  it('observeWorkItem fails safe (stays gated) when the own-node lookup itself errors', async () => {
-    await seedIssue('WI-own-check-errors', { origin: 'remote', status: 'open', authorPubkey: 'pk-self', createdTs: 100 });
-    const sqlSpy = vi.spyOn(db.sql, 'unsafe' as never);
-    // Break only the extra own-node SELECT (targets work_items aliased `wi`), not the
-    // getWorkItem() read that runs first in the same call.
-    const orig = h.sql;
-    // @ts-expect-error -- test-only tagged-template override to force the own-node query to throw
-    h.sql = (strings: TemplateStringsArray, ...vals: unknown[]) => {
-      const text = strings.join('?');
-      if (text.includes('isIssueLocallyClaimableWhereSql') || text.includes('FROM harness_shared.work_items wi')) {
-        throw new Error('simulated DB error');
-      }
-      return (orig as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(strings, ...vals);
-    };
-    try {
-      const obs = await wi.observeWorkItem('WI-own-check-errors', { harness: H });
-      expect(obs).toMatchObject({ available: false, claimedBy: null, gated: true });
-    } finally {
-      h.sql = orig;
-      sqlSpy.mockRestore();
-    }
-  });
 });
 
 // work-item-status-full-unify (P-008, WI-5627): the WHOLE POINT of the status

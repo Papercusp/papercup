@@ -7,12 +7,22 @@
  * agent who thinks to go look. A member who never re-reads the plan's
  * Decisions section before acting on a claimed item gets none of that benefit.
  * This port closes the gap the OTHER way: attach a compact brief of the
- * claimed item's plan's CURRENT decisions to the claim result itself
- * (scheduler:get_next / work_items:claim / work_items:claim_next), so seeing
+ * claimed item's plan's CURRENT decisions to the claim result itself, so seeing
  * the governing rulings costs zero extra round-trips — mirroring the existing
  * claim-time checkpoint hint (./work-item-checkpoint) and memory recall port
  * (./memory/claim-port), which attach at exactly the same seam for the same
  * reason.
+ *
+ * ⚠ WIRED AT `scheduler:get_next` ONLY. This header used to claim
+ * "(scheduler:get_next / work_items:claim / work_items:claim_next)" — that was
+ * FALSE AS BUILT and stayed false long enough to mislead a plan written against
+ * it (false-premise-in-prescriptive-artifacts-2026-08-02 P-001, whose item text
+ * asserted both surfaces inline the decisions brief). `work_items:claim` carries
+ * the checkpoint / prior-work / lane-collision hints and `claim_next` carries the
+ * memory recall port, but NEITHER calls this one, so a by-id claim of a
+ * plan-bound item sees no governing decisions at all. The gap is filed
+ * separately; do not read the sibling-hint list at those call sites as evidence
+ * this one is among them.
  *
  * Fail-soft by contract, like those two ports: a lookup miss, an unresolved
  * plan slug, or a parse error degrades to `null` — this is decoration on a

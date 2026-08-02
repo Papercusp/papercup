@@ -1599,8 +1599,22 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
       console.warn(`[git-sync] ${slug}: own-head publish reported errors: ${outcome.errors.join('; ').slice(0, 500)}`);
     }
     if (outcome.changed) {
+      // EI-19341838904344665: `outcome.headSha` is the worktree head JUDGED this
+      // tick — current by construction, every tick — NOT what became servable.
+      // WI-5738 made this publish INCREMENTAL: it CAS-writes `outcome.publishedSha`,
+      // which can trail the head by hundreds of commits. Logging headSha here
+      // asserted a sha was published when it was not — the false, authoritative-
+      // looking line that produced two OPPOSITE wrong diagnoses from two separate
+      // agents during the 2026-08-02 freeze (one read it as "the ref is stuck", the
+      // other as "the producer is healthy"). Report what actually became servable,
+      // and say plainly when backlog remains (see EI-19341709637436070 for why the
+      // field is named `backlogRemains`, not `drained`).
+      const published = outcome.publishedSha?.slice(0, 12) ?? 'nothing';
       console.log(
-        `[git-sync] ${slug}: own-head published ${outcome.branch}@${outcome.headSha?.slice(0, 12)} into own namespace`,
+        `[git-sync] ${slug}: own-head published ${outcome.branch}@${published} into own namespace` +
+          (outcome.backlogRemains
+            ? ` (BACKLOG REMAINS; worktree head ${outcome.headSha?.slice(0, 12)})`
+            : ''),
       );
     }
     await patchRoutineMetadata(slug, workspaceId, {

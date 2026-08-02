@@ -298,10 +298,12 @@ export function formatStaleRenderAlert(opts: {
   const { drift } = opts;
   const parts: string[] = [];
   if (drift.deniedRecommendations.length) {
+    const many = drift.deniedRecommendations.length > 1;
     parts.push(
       `it RECOMMENDS ${drift.deniedRecommendations.map((t) => `\`${t}\``).join(', ')}, which ` +
-        `${drift.deniedRecommendations.length === 1 ? 'is' : 'are'} DENIED to you — the tool is not in ` +
-        `your toolset, so offering a route built on it promises the owner something you cannot execute`,
+        `${many ? 'are' : 'is'} DENIED to you — ${many ? 'those tools are' : 'that tool is'} not in ` +
+        `your toolset, so offering a route built on ${many ? 'them' : 'it'} promises the owner ` +
+        `something you cannot execute`,
     );
   }
   if (drift.retiredRouteMechanisms.length) {

@@ -170,8 +170,15 @@
  * The pairing had to INVERT — a dark surface carrying LIGHT text, which is both
  * calmer and far more legible. Measured for the values below:
  *
- *   fill  #223c52  (22% accent)  oklab L 0.345 — 39% less luminous than before
- *   text  ~#bee9fd on that fill   8.66:1  (was 4.05:1) — AAA, not just AA
+ *   fill  #30526c  (35% accent)  — 44% less luminous than the raw accent
+ *   text  #c1eafe on that fill    6.46:1  (was 4.05:1) — clears AA with margin
+ *   amber #574f3a / #fdd37d       5.72:1  — 49% less luminous
+ *
+ * Why 35% and not lower: these caps also have to stay VISIBLE as bars. The
+ * section caps sit on a card that is itself a 3.5% white veil over the ground
+ * (#152030), and below ~25% the plate stops separating from it — at 22% it
+ * measures 1.35:1, i.e. the bar the owner explicitly called GOOD would
+ * dissolve. 35% keeps that separation at ~2.0:1.
  *
  * (The text is DERIVED from the theme accent, not pinned to a sky-blue
  * primitive — under `frost` it resolves to the value measured above, and under
@@ -203,10 +210,17 @@
 
   /* The LABEL PLATE behind a zone's name. A broad filled area rather than a
      hairline, so the same luminance that makes the stroke legible makes this
-     shout — which is what the owner was reacting to. 22% measures oklab L 0.345
-     (39% less luminous than the old 58% plate) while carrying light text at
-     8.66:1. */
-  --pc-zone-fill: color-mix(in oklab, var(--accent-strong) 22%, var(--bg-popover));
+     shout — which is what the owner was reacting to.
+
+     35%, matching the SECTION caps in AgentOrders.css / SessionsRosterView.css
+     (see the measured curve there). One strength for every filled cap in the
+     popup on purpose: the zone caps and the section caps are visible in the
+     same glance, and two different "calmed" strengths read as one of them
+     being a mistake. Held at 35% rather than lower because the section caps
+     sit on a card ground where anything below ~25% stops separating — and a
+     zone cap that is calmer than the section caps inside it inverts the
+     hierarchy. */
+  --pc-zone-fill: color-mix(in oklab, var(--accent-strong) 35%, var(--bg-popover));
 
   /* Text ON that plate. NOT --accent-ink: that token means "dark ink for a
      BRIGHT accent fill", and this plate is deliberately no longer bright — dark
@@ -225,13 +239,15 @@
   /* The amber/attention variant of the plate. Mixing amber toward this navy
      ground desaturates it into olive, so the amber identity is carried by the
      TEXT and the stroke rather than by the plate's own hue. */
-  --pc-zone-fill-warn: color-mix(in oklab, var(--warn) 22%, var(--bg-popover));
-  /* `--warn` itself, not a lighter amber ramp step: --amber-200 does NOT exist
-     in _brand-primitives.css (only --amber-400 does), and an undefined var()
-     computes to unset — an INVISIBLE label rather than a loud failure, which is
-     the exact trap this file warns about a few lines up. --warn measures 6.85:1
-     on the warn plate. */
-  --pc-zone-label-warn: var(--warn);
+  --pc-zone-fill-warn: color-mix(in oklab, var(--warn) 35%, var(--bg-popover));
+  /* Lifted toward white rather than left as raw `--warn`: on the 35% amber
+     plate --warn itself measures 4.87:1 — over the AA line but with almost no
+     margin, and these caps are 9px uppercase. At white 30% it is 5.72:1.
+     NOT --amber-200: that token does NOT exist in _brand-primitives.css (only
+     --amber-400 does), and an undefined var() computes to unset — an INVISIBLE
+     label rather than a loud failure, the exact trap this file warns about a
+     few lines up. */
+  --pc-zone-label-warn: color-mix(in oklab, var(--warn), white 30%);
 }
 
 /** The two vertical zones' own boundary. In CSS rather than in the rails'

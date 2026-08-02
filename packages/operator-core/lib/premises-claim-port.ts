@@ -158,6 +158,30 @@ const ABSENCE_PATTERNS: ReadonlyArray<{ re: RegExp; subject: (m: RegExpMatchArra
   { re: /\b(?:we|it|they) (?:currently )?(?:lacks?|ha(?:s|ve) no) ([^.;\n]{3,120})/gi, subject: (m) => m[1] },
 ];
 
+/**
+ * Deictic subjects. "…and IT does not exist" is a genuine, load-bearing absence
+ * premise in the corpus (WI-7187 prescribes building the very guard it says is
+ * absent), so dropping it would be a false negative on a real case. But its
+ * subject is a pronoun, and a `recheck` that told a claimant to search the repo
+ * for the literal string "it" would be worse than useless — it would look like a
+ * named search term while naming nothing.
+ *
+ * So the premise still fires, and the re-check asks the reader to NAME the
+ * referent first. D-001 (c) requires naming the real answer where one is
+ * knowable; where it genuinely is not, say so rather than fabricate one.
+ */
+const DEICTIC = new Set(['it', 'this', 'that', 'they', 'these', 'those', 'one', 'there', 'he', 'she']);
+
+/** The concrete probe attached to a derived premise. */
+function recheckFor(subject: string): string {
+  const scopeRule =
+    'across the WHOLE repo (not the one file that suggested it), then state the scope you searched — ' +
+    'an absence found in one module is not an absence.';
+  return DEICTIC.has(subject.toLowerCase())
+    ? `NAME what this sentence claims is absent (the subject is a pronoun here), then search for it ${scopeRule}`
+    : `Search for "${subject.slice(0, 80)}" ${scopeRule}`;
+}
+
 /** The sentence containing an offset — the unit a human reads as "the claim". */
 function sentenceAt(text: string, index: number): string {
   const start = Math.max(
@@ -203,7 +227,7 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
         // D-001 (c): name the SCOPE requirement, not just "verify this". Scope of
         // inference — a real search over too narrow a scope — is the measured
         // failure mode, so a recheck that omits its scope reproduces the bug.
-        recheck: `Search for "${subj.slice(0, 80)}" across the WHOLE repo (not the one file that suggested it), then state the scope you searched — an absence found in one module is not an absence.`,
+        recheck: recheckFor(subj),
       });
       if (out.length >= MAX_PREMISES) return out;
     }

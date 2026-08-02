@@ -303,7 +303,12 @@ export const TARGETS: BackfillTarget[] = [
 const MAX_ROWS_PER_TARGET_PER_SWEEP = BATCH_SIZE * 4;
 
 /** Exported for unit tests (the WI-2905 per-sweep cap); production callers go
- *  through runBackfillSweep and never pass maxRows explicitly.
+ *  through runBackfillSweep, which supplies this from its own
+ *  `maxRowsPerTarget` option — the fairness cap by default, or a bulk-refill
+ *  ceiling when a width/model change has dropped every stored vector. Do not
+ *  call this directly from production code just to raise the cap: going through
+ *  the sweep is what applies the embedder-eligibility guard, the column probes
+ *  and the overlap guard.
  *
  *  `mode` is the embedder that `embed` was built from. When the target carries a
  *  `<embedCol>_mode` column (migration 530), rows whose recorded space differs from
@@ -445,7 +450,44 @@ export function getLastBackfillResult(): BackfillStats[] | null {
  * Returns per-table stats. Safe to call repeatedly — the second call
  * exits immediately if a sweep is already in flight.
  */
-export async function runBackfillSweep(): Promise<BackfillStats[] | { skipped: string }> {
+/**
+ * Options for a NON-ROUTINE sweep. The periodic scheduler always calls
+ * `runBackfillSweep()` with no arguments and therefore keeps the WI-2905
+ * fairness cap — nothing about the routine path changes.
+ *
+ * `maxRowsPerTarget` exists for BULK REFILL after a width/model change, which is
+ * a fundamentally different job from the steady-state trickle. A migration that
+ * changes the prose vector width necessarily drops every stored vector (pgvector
+ * cannot cast between widths), so ~500k rows must be re-embedded ONCE, as fast as
+ * the embedder allows — whereas the fairness cap is tuned to dribble a backlog out
+ * over days without letting one table monopolize the shared budget. Applying the
+ * routine cap to a refill makes it cap-bound at 2-5 DAYS for session_turns alone
+ * (~413k rows at 4 batches/sweep on a 5-min cadence — EI-19375205903428632), with
+ * semantic search degraded to lexical-only for the whole window.
+ *
+ * This is deliberately an OPTION on the existing sweep rather than a separate
+ * bulk-refill driver: a standalone driver would have to re-implement embedder
+ * resolution, the org pool, the vector-extension probe, the per-target column
+ * probes, `spaceAware` detection and the per-target error isolation — i.e. fork
+ * the whole sweep. Threading one number inherits all of it, including the
+ * `__sweepState.running` guard that keeps a refill from overlapping the periodic
+ * sweep, and the rotation that keeps progress fair across targets when a refill
+ * is run as repeated passes.
+ */
+export interface BackfillSweepOptions {
+  /**
+   * Per-target row ceiling for THIS sweep. Defaults to the WI-2905 fairness cap.
+   * The daily token budget still applies and is still shared, so this raises the
+   * per-sweep ceiling — it does not buy extra budget. Safe for a LOCAL embedder
+   * space (gemma on the :3384 sidecar), which costs wall time but no API tokens.
+   */
+  maxRowsPerTarget?: number;
+}
+
+export async function runBackfillSweep(
+  opts: BackfillSweepOptions = {},
+): Promise<BackfillStats[] | { skipped: string }> {
+  const maxRowsPerTarget = opts.maxRowsPerTarget ?? MAX_ROWS_PER_TARGET_PER_SWEEP;
   if (__sweepState.running) return { skipped: 'already_running' };
   __sweepState.running = true;
   try {
@@ -519,7 +561,7 @@ export async function runBackfillSweep(): Promise<BackfillStats[] | { skipped: s
         const spaceAware = cols.has(modeColOf(target));
         byTable.set(
           target.table,
-          await backfillTable(sql, target, embed, MAX_ROWS_PER_TARGET_PER_SWEEP, mode, spaceAware),
+          await backfillTable(sql, target, embed, maxRowsPerTarget, mode, spaceAware),
         );
       } catch (err) {
         byTable.set(target.table, {

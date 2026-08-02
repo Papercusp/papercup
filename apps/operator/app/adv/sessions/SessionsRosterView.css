@@ -665,23 +665,35 @@
      same popup must not calm down differently, or the asymmetry reads as one
      of them being broken.
 
-     INVERTED, not merely dimmed: dark ink on a dimmed plate measures 4.05:1
-     (below the 4.5:1 AA floor), so dimming alone trades loud for illegible.
-     A 22% plate (oklab L 0.345, 39% less luminous) carries sky-200 at 8.66:1.
+     INVERTED, not merely dimmed — see the measured curve in AgentOrders.css.
+     The short version: holding the dark ink, the plate is AA-legal only down
+     to 71% (-21% luminance, which does not read as "less bright"), and 55-70%
+     is a dead zone where no ink reaches 4.5:1. A dark plate with light text is
+     the only pairing that gets a real reduction AND stays legible:
+
+       blue   #30526c  -44% luminance   label #c1eafe  6.46:1   AA
+       amber  #574f3a  -49% luminance   label #fdd37d  5.72:1   AA
+
+     35% rather than lower because the cap sits on a card that is itself a 3.5%
+     white veil over the ground (#152030); below ~25% the plate stops
+     separating from that card and the bar dissolves.
 
      File-local because the css-tokens lint only resolves a component token
      inside its DEFINING file — chat-controls.css's `--pc-zone-fill` named here
      would compute to unset, i.e. an invisible cap rather than a loud fail. */
-  --pc-dossier-cap-fill: color-mix(in oklab, var(--accent-strong) 22%, var(--bg-popover));
+  --pc-dossier-cap-fill: color-mix(in oklab, var(--accent-strong) 35%, var(--bg-popover));
   /* Derived from the theme's accent (see AgentOrders.css) — a pinned sky-blue
      is off-palette under the `black` and `honeycomb` themes. */
   --pc-dossier-cap-label: color-mix(in oklab, var(--accent-strong), white 50%);
-  --pc-dossier-cap-fill-warn: color-mix(in oklab, var(--warn) 22%, var(--bg-popover));
-  /* `--warn` itself: `--amber-200` does not exist in _brand-primitives.css. */
-  --pc-dossier-cap-label-warn: var(--warn);
-  /* Badges/notes ride ON the cap, so their veil flips with the plate — a black
-     veil read only against the old BRIGHT fill. */
-  --pc-dossier-cap-veil: color-mix(in oklab, transparent, white 12%);
+  --pc-dossier-cap-fill-warn: color-mix(in oklab, var(--warn) 35%, var(--bg-popover));
+  /* Lifted toward white: raw --warn on the amber plate is 4.87:1 — over the
+     AA line but with no margin for 9px uppercase text. (`--amber-200` does not
+     exist in _brand-primitives.css; an undefined var() computes to unset.) */
+  --pc-dossier-cap-label-warn: color-mix(in oklab, var(--warn), white 30%);
+  /* Badges/notes ride ON the cap. The veil stays BLACK: measured, a white veil
+     lightens the chip toward its own light label and pushes the amber badge to
+     4.14:1 (sub-AA); black holds both at 8.1:1 / 7.2:1. */
+  --pc-dossier-cap-veil: rgb(0 0 0 / 0.2);
   padding: 0 0 12px;
   gap: 6px;
 }

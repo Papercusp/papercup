@@ -328,7 +328,7 @@ async function claimOne(
     // independent read; no reason to pay a serial round-trip) and is fail-soft for the reason
     // given on readUnresolvedDepBlockers: saying nothing here asserts nothing.
     let checkpointReadFailed = false;
-    const [hint, priorRaw, laneCollision, unresolvedBlockers] = await Promise.all([
+    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
         workItemId: it.id,
@@ -344,6 +344,19 @@ async function claimOne(
       }).catch(() => null),
       planItemClaimCollision(workItem).catch(() => null),
       readUnresolvedDepBlockers(it.id, workItem.harness ?? it.harness ?? undefined).catch(() => null),
+      // false-premise-in-prescriptive-artifacts-2026-08-02 P-001: the item's own
+      // load-bearing premises, surfaced at the moment before the cost is paid.
+      // Joins this same parallel batch (an independent read) and is fail-soft for
+      // the reason every sibling hint here is: saying nothing asserts nothing.
+      import('../../premises-claim-port')
+        .then((m) =>
+          m.getClaimTimePremises({
+            workItem: { payload: workItem.payload, title: workItem.title, summary: workItem.summary },
+            harness: workItem.harness ?? it.harness ?? null,
+            workspaceId: identity.workspaceId ?? undefined,
+          }),
+        )
+        .catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     // WI-6737: `hint` is null for BOTH "no checkpoint exists" and "the checkpoint read threw"
@@ -373,6 +386,7 @@ async function claimOne(
           ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
+          ...(premises ? { premises: premises.rendered, premisesNote: premises.note } : {}),
         }
       : {
           ok: true,
@@ -382,6 +396,7 @@ async function claimOne(
           ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
+          ...(premises ? { premises: premises.rendered, premisesNote: premises.note } : {}),
         };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.

@@ -378,6 +378,43 @@ describe('parseExplicitFiles feeding decidePerFile (EI-18731016038876755)', () =
     expect(r.newFiles!.map((x: { file: string }) => x.file)).toEqual(['peer-brand-new.ts']);
   });
 
+  // EI-19340930095511759 — `ok-peer-drift`'s report of an unscoped NEW file used to be missing
+  // the LANDING-RACE caveat its `fail-new-file` sibling already had (WI-6767). This pins the exact
+  // pipeline `runTscBaselineGate` now runs over `ok-peer-drift`'s `newFiles`: a "COMMITTED" file
+  // that landed inside LANDING_RACE_WINDOW_SEC must still surface the "wait a moment, verify
+  // before filing" caveat — a reader who trusted a bare "COMMITTED: a standing red" here is exactly
+  // who ends up re-fixing a peer's already-in-flight (or just-landed) rename, the collision the
+  // filed bug reported.
+  it('ok-peer-drift: a NEW COMMITTED file landed inside the window still surfaces the landing-race caveat', () => {
+    const r = decidePerFile({ ...newFileOutsideSet, attributionDeclared: true });
+    expect(r.verdict).toBe('ok-peer-drift');
+    const { standing } = partitionNewFilesByLiveEdit(r.newFiles!);
+    expect(standing.map((x: { file: string }) => x.file)).toEqual(['peer-brand-new.ts']);
+    const NOW = 1_800_000_000;
+    const { recent } = partitionStandingByCommitRecency(
+      standing,
+      new Map([['peer-brand-new.ts', NOW - 60]]), // landed 60s ago — well inside the window
+      NOW,
+    );
+    expect(recent.map((x: { file: string }) => x.file)).toEqual(['peer-brand-new.ts']);
+    const caveat = formatLandingRaceCaveat({ recentCount: recent.length }).join('\n');
+    expect(caveat).toMatch(/landing/i);
+    expect(caveat).toMatch(/re-run/i);
+  });
+
+  it('ok-peer-drift: a NEW COMMITTED file settled long ago prints no landing-race caveat', () => {
+    const r = decidePerFile({ ...newFileOutsideSet, attributionDeclared: true });
+    const { standing } = partitionNewFilesByLiveEdit(r.newFiles!);
+    const NOW = 1_800_000_000;
+    const { recent } = partitionStandingByCommitRecency(
+      standing,
+      new Map([['peer-brand-new.ts', NOW - LANDING_RACE_WINDOW_SEC - 1]]),
+      NOW,
+    );
+    expect(recent).toEqual([]);
+    expect(formatLandingRaceCaveat({ recentCount: recent.length })).toEqual([]);
+  });
+
   it('--files (DECLARED): a new file that IS in the named set still gates — scoping never excuses your own', () => {
     const r = decidePerFile({
       currentByFile: { 'brand-new.ts': 1 },

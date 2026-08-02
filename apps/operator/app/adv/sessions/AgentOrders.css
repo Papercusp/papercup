@@ -39,34 +39,51 @@
      too bright"]. They are also what the eye lands on first, so making
      them shout costs more than any other element here.
 
-     Same treatment, and the same measured numbers, as the zone caps in
-     chat-controls.css: INVERT the pairing rather than merely dimming it — a
-     22% plate over the popover ground carrying LIGHT text, instead of a bright
-     plate carrying dark ink. Dimming alone would have made these ILLEGIBLE:
-     dark ink on the dimmed plate measures 4.05:1, under the 4.5:1 AA floor.
-     At 22% the plate is oklab L 0.345 (39% less luminous) and carries sky-200
-     at 8.66:1 — quieter AND legible, not a trade of one for the other.
+     "Less bright" could NOT be done by dimming alone, and the measurement says
+     why. Holding the dark ink and darkening the plate, contrast falls with it:
+     the blue is AA-legal only down to 71% (-21% luminance) and the amber to
+     65%. A -21% change does not read as "less bright" — but going further
+     makes the cap ILLEGIBLE, and there is a genuine DEAD ZONE at 55-70% where
+     NO ink choice reaches 4.5:1. So the pairing has to INVERT: a darker plate
+     carrying LIGHT text is the only way to get a real reduction and stay
+     legible. Measured (oklab -> WCAG, self-tested against white/black = 21.00,
+     #767676/#fff = 4.54, and sRGB alpha compositing checked against
+     50% white on black = #808080):
+
+       blue   #30526c  -44% luminance   label #c1eafe  6.46:1   AA
+       amber  #574f3a  -49% luminance   label #fdd37d  5.72:1   AA
+
+     35%, not lower: the cap sits on a card that is itself a 3.5% white veil
+     over the popover ground (#152030), and below ~25% the plate stops
+     separating from that card — at 22% it measures 1.35:1 and the bar the
+     owner called GOOD would effectively dissolve. 35% keeps it at ~2.0:1,
+     i.e. still unmistakably a filled bar, just no longer a shouting one.
 
      Restated as file-local tokens because the css-tokens lint only resolves a
      component-local token inside the file that DEFINES it, so naming
      chat-controls.css's `--pc-zone-fill` here would fail the lint (and, worse,
      compute to unset — an invisible cap rather than a loud failure). */
-  --pc-orders-cap-fill: color-mix(in oklab, var(--accent-strong) 22%, var(--bg-popover));
+  --pc-orders-cap-fill: color-mix(in oklab, var(--accent-strong) 35%, var(--bg-popover));
   /* Derived from the theme's accent, not pinned to a sky-blue primitive: four
      themes ship, and `black` (monochrome, --accent-strong #ffffff) and
      `honeycomb` (honey) would both read as off-palette with a fixed blue.
-     Under `frost` this resolves to ~#bee9fd, so the 8.66:1 above still holds. */
+     Under `frost` this resolves to #c1eafe — the value measured above. */
   --pc-orders-cap-label: color-mix(in oklab, var(--accent-strong), white 50%);
-  --pc-orders-cap-fill-warn: color-mix(in oklab, var(--warn) 22%, var(--bg-popover));
-  /* `--warn` itself, not a lighter amber step: `--amber-200` does NOT exist in
-     _brand-primitives.css (only --amber-400 does) and an undefined var()
-     computes to unset — an invisible label. --warn measures 6.85:1 here. */
-  --pc-orders-cap-label-warn: var(--warn);
-  /* Badges ride ON the cap. A BLACK veil (the old rgba(0,0,0,0.2)) was legible
-     only because the plate behind it was bright; on the dark plate it is
-     near-invisible, so the veil flips to white with the plate. */
-  --pc-orders-cap-veil: color-mix(in oklab, transparent, white 12%);
-  --pc-orders-cap-veil-hot: color-mix(in oklab, transparent, white 18%);
+  --pc-orders-cap-fill-warn: color-mix(in oklab, var(--warn) 35%, var(--bg-popover));
+  /* Lifted toward white rather than left as raw `--warn`: on the 35% amber
+     plate --warn itself measures 4.87:1 — over the line but with almost no
+     margin, and this is 9px uppercase text. At white 30% it is 5.72:1.
+     NOT `--amber-200`: that token does not exist in _brand-primitives.css
+     (only --amber-400 does) and an undefined var() computes to unset — an
+     INVISIBLE label rather than a loud failure. */
+  --pc-orders-cap-label-warn: color-mix(in oklab, var(--warn), white 30%);
+  /* Badges ride ON the cap. The veil stays BLACK — measured, against my own
+     first instinct: with the plate now dark and the label light, a WHITE veil
+     lightens the chip toward its own text and pushed the amber badge to
+     4.14:1 (sub-AA). A black veil moves the other way and holds both at
+     8.1:1 / 7.2:1, so the original value was already correct. */
+  --pc-orders-cap-veil: rgb(0 0 0 / 0.2);
+  --pc-orders-cap-veil-hot: rgb(0 0 0 / 0.28);
   display: flex;
   flex-direction: column;
   height: 100%;

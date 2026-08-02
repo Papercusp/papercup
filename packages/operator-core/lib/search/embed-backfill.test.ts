@@ -43,6 +43,10 @@ import { runBackfillSweep, getLastBackfillResult, backfillTable, TARGETS } from 
 // Import the width — the sweep writes into the prose columns, so a width change
 // must move this fixture automatically rather than stranding it (384→768).
 import { PROSE_VECTOR_DIMS } from './prose-vector-dims';
+// The default per-target cap is derived from the resource profile's batch size,
+// so the WI-7111 test asserts against the real value rather than a literal that
+// would silently stop testing anything if the profile changed.
+import { getResourceProfile } from '../resource-profile';
 
 function resetSweepState(): void {
   const key = Symbol.for('papercusp.embedBackfillSweepState');
@@ -177,6 +181,46 @@ describe('runBackfillSweep (P-010)', () => {
     // And the RESULT order stays canonical regardless of sweep order.
     const last = getLastBackfillResult()!;
     expect(last[0]!.table).toBe('harness_shared.harness_escalations');
+  });
+
+  /**
+   * WI-7111 — `maxRowsPerTarget` threads to the per-target ceiling so a BULK
+   * REFILL is not cap-bound at the WI-2905 fairness cap.
+   *
+   * Why this needs pinning: a prose width change (migration 727: 384→768) drops
+   * every stored vector, because pgvector cannot cast between widths. Refilling
+   * ~500k rows through the fairness cap takes 2-5 DAYS for session_turns alone
+   * (EI-19375205903428632), with semantic search lexical-only throughout. The
+   * regression this guards is silent — a refill that "works" but at trickle
+   * speed looks identical to a working sweep, and is only distinguishable by
+   * the LIMIT the batch pull asks for.
+   */
+  it('threads maxRowsPerTarget to the batch LIMIT, leaving the default cap intact (WI-7111)', async () => {
+    // Reach the first target's batch pull, then end the loop immediately: the
+    // LIMIT of that first pull is the whole observable.
+    const reachFirstBatchPull = () => [
+      [{ extname: 'vector' }],              // pg_extension probe
+      [{ column_name: 'body_embedding' }],  // target 1 column probe (no mode col → spaceAware false)
+      [],                                   // batch pull → empty, per-target loop ends
+      ...TARGETS.slice(1).map(() => []),    // remaining targets: column missing → skipped
+    ];
+    const firstBatchLimit = () =>
+      unsafeCalls.find((c) => c.q.includes('LIMIT $1'))!.params![0];
+
+    // Explicit bulk ceiling, deliberately below BATCH_SIZE so it is the binding
+    // constraint (the pull asks for min(BATCH_SIZE, remaining)).
+    unsafeResults = reachFirstBatchPull();
+    await runBackfillSweep({ maxRowsPerTarget: 3 });
+    expect(firstBatchLimit()).toBe(3);
+
+    // Default is unchanged: the routine scheduler calls this with no arguments
+    // and must still get the WI-2905 fairness cap, whose first pull is a full
+    // BATCH_SIZE (cap = BATCH_SIZE * 4, so min(BATCH_SIZE, cap) === BATCH_SIZE).
+    unsafeCalls.length = 0;
+    resetSweepState();
+    unsafeResults = reachFirstBatchPull();
+    await runBackfillSweep();
+    expect(firstBatchLimit()).toBe(getResourceProfile().embedBatchSize);
   });
 });
 
