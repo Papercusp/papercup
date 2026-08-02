@@ -106,9 +106,9 @@ import RubricDetailPanel from "@/app/_components/RubricDetailPanel";
 import ObservationsPanel from "@/app/adv/create/ObservationsPanel";
 import {
   beginInteraction,
-  endInteraction,
   PERF_INTERACTIONS,
 } from "@/app/_components/perf/perf-marks";
+import { useInteractionSettle } from "@/app/_components/perf/use-interaction-settle";
 import {
   LearningComparisonBars,
   LearningDisclosure,
@@ -879,6 +879,7 @@ export default function LearningTab() {
             >
               <LearningViewContent
                 view={mountedView}
+                active={mountedView === view}
                 hive={hive}
                 hiveReady={hiveReady}
                 rubricId={rubricId}
@@ -898,6 +899,7 @@ export default function LearningTab() {
 
 function LearningViewContent({
   view,
+  active,
   hive,
   hiveReady,
   rubricId,
@@ -905,6 +907,11 @@ function LearningViewContent({
   onStatus,
 }: {
   view: LView;
+  /** True when THIS pane is the selected view. Panes are kept mounted while
+   *  warm (see `warmViews`) and only `hidden` flips, so a pane can be mounted
+   *  and inactive — which is why the perf settle points need this to fire on a
+   *  revisit that does not remount (EI-19383745196363732). */
+  active: boolean;
   hive: string;
   hiveReady: boolean;
   rubricId: string | null;
@@ -919,10 +926,10 @@ function LearningViewContent({
     return <SignalsPanel onStatus={reportViewStatus} />;
   }
   if (view === "observations") {
-    return <ObservationsPanel onStatus={reportViewStatus} />;
+    return <ObservationsPanel onStatus={reportViewStatus} active={active} />;
   }
   if (view === "pipeline") {
-    return <AnalyzePanel onStatus={reportViewStatus} />;
+    return <AnalyzePanel onStatus={reportViewStatus} active={active} />;
   }
   if (view === "rubrics") {
     return (
@@ -952,7 +959,14 @@ function LearningViewContent({
     return <GymView hive={hive} hiveReady={hiveReady} onStatus={reportViewStatus} />;
   }
   if (view === "improvements") {
-    return <ImprovementsView hive={hive} hiveReady={hiveReady} onStatus={reportViewStatus} />;
+    return (
+      <ImprovementsView
+        hive={hive}
+        hiveReady={hiveReady}
+        onStatus={reportViewStatus}
+        active={active}
+      />
+    );
   }
   if (view === "benchmark") {
     return <ApiaryView onStatus={reportViewStatus} />;
@@ -987,7 +1001,14 @@ function LearningViewContent({
       />
     );
   }
-  return <LearningsView hive={hive} hiveReady={hiveReady} onStatus={reportViewStatus} />;
+  return (
+    <LearningsView
+      hive={hive}
+      hiveReady={hiveReady}
+      onStatus={reportViewStatus}
+      active={active}
+    />
+  );
 }
 
 // ─── Release-readiness strip (learning-tab-alignment-2026-07-13 P-001) ───────
@@ -1207,10 +1228,13 @@ function ImprovementsView({
   hive,
   hiveReady,
   onStatus,
+  active = true,
 }: {
   hive: string;
   hiveReady: boolean;
   onStatus?: (status: LearningViewStatus) => void;
+  /** True when this pane is the SELECTED view — see useInteractionSettle. */
+  active?: boolean;
 }) {
   const t = useLexicon();
   const RAIL_META = railMeta(t);
@@ -1263,13 +1287,18 @@ function ImprovementsView({
   // is disabled (loading false, data undefined, no error), so `settled` stays
   // false and the interaction correctly spans the lens resolution the user is
   // actually waiting through.
+  //
+  // Gated on `active` as well: this pane is kept MOUNTED when the user switches
+  // away (warmViews below), so on a revisit `improvementsSettled` is already
+  // true and never changes — an effect keyed on it alone would never re-run and
+  // the switch would measure nothing (EI-19383745196363732).
   const improvementsSettled =
     !sync.loading && (sync.data !== undefined || Boolean(sync.error));
-  useEffect(() => {
-    if (improvementsSettled) {
-      endInteraction(PERF_INTERACTIONS.learningViewSwitch);
-    }
-  }, [improvementsSettled]);
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    improvementsSettled,
+    active,
+  );
   // The idea half of the same population (absorbed from the retired Ideas
   // view): lens, rail, grounding trace, grade and outcome, plus the cycle
   // engine's own instruments. Same hive lens, same readiness gate.
@@ -4902,10 +4931,13 @@ function LearningsView({
   hive,
   hiveReady,
   onStatus,
+  active = true,
 }: {
   hive: string;
   hiveReady: boolean;
   onStatus?: (status: LearningViewStatus) => void;
+  /** True when this pane is the SELECTED view — see useInteractionSettle. */
+  active?: boolean;
 }) {
   const t = useLexicon();
   const [selectedLearning, setSelectedLearning] = useQueryState(
@@ -4934,13 +4966,18 @@ function LearningsView({
   // read only, settles on a fault as well as success. learning.hive measured
   // 230,147B on the live operator, the second-heaviest read on this tab, so
   // leaving it unmeasured left the payload-cost question unanswerable for it.
+  //
+  // Gated on `active` as well: this pane is kept MOUNTED when the user switches
+  // away (warmViews), so on a revisit `learningsSettled` is already true and
+  // never changes — an effect keyed on it alone would never re-run and the
+  // switch would measure nothing (EI-19383745196363732).
   const learningsSettled =
     !sync.loading && (sync.data !== undefined || Boolean(sync.error));
-  useEffect(() => {
-    if (learningsSettled) {
-      endInteraction(PERF_INTERACTIONS.learningViewSwitch);
-    }
-  }, [learningsSettled]);
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    learningsSettled,
+    active,
+  );
   // The rest of what the colony keeps (WI-5412, owner ask: lens weights,
   // rubric changes, insight docs, and recipes are retained learning too) +
   // the banked-this-week strip counts. One slim read; every leg degrades

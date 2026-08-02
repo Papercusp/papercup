@@ -396,6 +396,20 @@ SHARED_SPA_DIST="$SHARED_SPA_DIST"
 if [ -z "\$SPA_DIST" ] || [ ! -f "\$SPA_DIST/.frozen-at" ]; then
   exit 0  # no snapshot was frozen this run (operator-vite wasn't built at boot) — nothing to check
 fi
+# EI-19382195051346372: the frozen heartbeat builtAtMs is a second, independent
+# signal from the plain mtime diff below — it survives a rebuild that happens
+# to touch no file the \`find -newer\` walk would catch (e.g. only index.html
+# regenerated) and gives a concrete "rebuilt at <time>" instead of just "some
+# file changed".
+SPA_HB="\${VITE_WATCH_HEARTBEAT:-\${VITE_WATCH_LOCK:-/tmp/papercup-operator-vite-watch.lock}.heartbeat}"
+if [ -f "\$SPA_DIST/.frozen-heartbeat-built-at-ms" ] && [ -f "\$SPA_HB" ]; then
+  FROZEN_HB_MS="\$(cat "\$SPA_DIST/.frozen-heartbeat-built-at-ms" 2>/dev/null)"
+  CUR_HB_MS="\$(sed -n 's/.*"builtAtMs": *\([0-9]*\).*/\1/p' "\$SPA_HB" 2>/dev/null | head -1)"
+  if [ -n "\$FROZEN_HB_MS" ] && [ -n "\$CUR_HB_MS" ] && [ "\$CUR_HB_MS" -gt "\$FROZEN_HB_MS" ] 2>/dev/null; then
+    CUR_HB_AT="\$(sed -n 's/.*"builtAt": *"\([^"]*\)".*/\1/p' "\$SPA_HB" 2>/dev/null | head -1)"
+    echo "[check-freshness] the shared watcher has rebuilt at least once since this snapshot's freeze (latest shared build: \${CUR_HB_AT:-unknown})." >&2
+  fi
+fi
 CHANGED="\$(find "\$SHARED_SPA_DIST" -newer "\$SPA_DIST/.frozen-at" -type f 2>/dev/null | head -5)"
 if [ -n "\$CHANGED" ]; then
   {
@@ -580,6 +594,45 @@ fi
 SHARED_SPA_DIST="${PAPERCUSP_SHARED_SPA_DIST:-$REPO_DIR/apps/operator-vite/dist}"
 SPA_DIST=""
 if [ -f "$SHARED_SPA_DIST/index.html" ]; then
+  # EI-19382195051346372: wait for QUIESCENCE before freezing. The shared
+  # `vite build --watch` rewrites $SHARED_SPA_DIST/assets every ~3min and
+  # RETAINS old hashed chunks (emptyOutDir:false), so a freeze racing a
+  # rebuild can copy a MIX of old+new chunks — a snapshot with no single
+  # consistent build behind it. From inside the webview that is
+  # indistinguishable from a live regression (a fatal error card naming an
+  # identifier that exists nowhere in current source), and it cost ~25min of
+  # bundle archaeology once already before the freeze was even suspected.
+  # Poll the newest mtime under assets/; require it unchanged for
+  # QUIESCE_STABLE_SEC before trusting it's a complete build, bounded by
+  # QUIESCE_MAX_WAIT_SEC so a wedged watcher (EI-5202) can never hang the boot
+  # — warn and freeze anyway on timeout rather than blocking indefinitely.
+  QUIESCE_STABLE_SEC="${PAPERCUSP_SPA_QUIESCE_STABLE_SEC:-20}"
+  QUIESCE_MAX_WAIT_SEC="${PAPERCUSP_SPA_QUIESCE_MAX_WAIT_SEC:-90}"
+  QUIESCE_POLL_SEC=2
+  if [ -d "$SHARED_SPA_DIST/assets" ]; then
+    quiesce_started=$(date +%s)
+    last_newest=""
+    stable_since=$(date +%s)
+    while :; do
+      now=$(date +%s)
+      newest=$(find "$SHARED_SPA_DIST/assets" -type f -newermt "@0" -printf '%T@\n' 2>/dev/null | sort -rn | head -1)
+      if [ "$newest" != "$last_newest" ]; then
+        last_newest="$newest"
+        stable_since=$now
+      fi
+      elapsed_stable=$((now - stable_since))
+      elapsed_total=$((now - quiesce_started))
+      if [ "$elapsed_stable" -ge "$QUIESCE_STABLE_SEC" ]; then
+        [ "$elapsed_total" -gt "$QUIESCE_POLL_SEC" ] && log "shared SPA dist quiesced after ${elapsed_total}s (stable ${elapsed_stable}s) — freezing now."
+        break
+      fi
+      if [ "$elapsed_total" -ge "$QUIESCE_MAX_WAIT_SEC" ]; then
+        log "WARNING: shared SPA dist did NOT quiesce within ${QUIESCE_MAX_WAIT_SEC}s (still changing every <${QUIESCE_STABLE_SEC}s) — freezing anyway. The watcher may be mid-rebuild-storm or genuinely wedged (EI-5202); a fatal error naming an identifier absent from current source is the tell that this snapshot straddled a rebuild — re-run check-freshness.sh or just restart the instance."
+        break
+      fi
+      sleep "$QUIESCE_POLL_SEC"
+    done
+  fi
   SPA_DIST="$WORK/spa"
   mkdir -p "$SPA_DIST"
   # Copy the whole tree, then re-copy index.html LAST so the frozen index matches
@@ -600,6 +653,14 @@ if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   SPA_HB="${VITE_WATCH_HEARTBEAT:-${VITE_WATCH_LOCK:-/tmp/papercup-operator-vite-watch.lock}.heartbeat}"
   SPA_SHA=""
   [ -f "$SPA_HB" ] && SPA_SHA="$(sed -n 's/.*"gitSha": *"\([0-9a-f]*\)".*/\1/p' "$SPA_HB" 2>/dev/null | head -1)"
+  # EI-19382195051346372: record the heartbeat's builtAtMs at freeze time (not
+  # just the gitSha) so check-freshness.sh can tell "the shared watcher has
+  # rebuilt at least once since your freeze" apart from "the sha is unchanged
+  # but the timestamp looks stale" — a strictly-newer builtAtMs on the SAME sha
+  # still means at least one rebuild happened (e.g. a no-op watch retrigger).
+  SPA_HB_BUILT_AT_MS=""
+  [ -f "$SPA_HB" ] && SPA_HB_BUILT_AT_MS="$(sed -n 's/.*"builtAtMs": *\([0-9]*\).*/\1/p' "$SPA_HB" 2>/dev/null | head -1)"
+  [ -n "$SPA_HB_BUILT_AT_MS" ] && echo "$SPA_HB_BUILT_AT_MS" > "$SPA_DIST/.frozen-heartbeat-built-at-ms" 2>/dev/null
   log "SPA snapshot frozen at $SPA_DIST${SPA_SHA:+ (shared build ${SPA_SHA:0:12})} — IMMUTABLE for this run; restart to pick up a newer build."
   log "  → edited source AFTER this boot? run: bash \"$WORK/check-freshness.sh\" (\$VERIFY_TAURI_FRESHNESS_CHECK) BEFORE trusting a re-check — it warns loudly if the shared bundle drifted (EI-17134)."
   log "  → waiting for a REBUILD (not just checking one)? do NOT stat one specific hashed asset (e.g. dist/assets/adv-D5qbAjO8.js) — a rebuild emits a NEW content-hash filename, so the file you're watching is orphaned and its mtime is frozen forever; the poll hangs indefinitely (EI-18812301452864060). Compare the newest matching file instead: \`ls -t dist/assets/adv-*.js | head -1\`, or just use check-freshness.sh above."

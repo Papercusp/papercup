@@ -24,6 +24,7 @@ import {
   computeStages,
   evaluateServing,
   evaluateChangeInCandidate,
+  evaluateReleaseContentDrift,
   evaluateSweepExposure,
   parsePorcelainPaths,
   deriveBlocker,
@@ -1959,6 +1960,46 @@ describe('evaluateServing: process truth, never a git inference', () => {
   });
 });
 
+/**
+ * EI-19327418148563597: `evaluateReleaseContentDrift` is the pure comparison behind
+ * the "LIVE CODE DIFFERS FROM SOURCE" note — while the gate is red, `:3070`'s release
+ * checkout can lag the staging tree by hours, so profiling the live box for a hot path
+ * can measure code that is not what the working tree holds. Pure byte identity, and
+ * fail-soft toward UNKNOWN (never a false "match") when either read failed.
+ */
+describe('evaluateReleaseContentDrift (EI-19327418148563597)', () => {
+  it('reports differs:true when the release checkout has a DIFFERENT copy of the file', () => {
+    const res = evaluateReleaseContentDrift({
+      workingBytes: Buffer.from('const fixed = true;'),
+      releaseBytes: Buffer.from('const fixed = false;'),
+    });
+    expect(res.differs).toBe(true);
+  });
+
+  it('reports differs:false when the release checkout is byte-identical', () => {
+    const res = evaluateReleaseContentDrift({
+      workingBytes: Buffer.from('same bytes'),
+      releaseBytes: Buffer.from('same bytes'),
+    });
+    expect(res.differs).toBe(false);
+  });
+
+  it('reports differs:null (never a false match) when the WORKING read failed', () => {
+    const res = evaluateReleaseContentDrift({ workingBytes: null, releaseBytes: Buffer.from('x') });
+    expect(res.differs).toBeNull();
+  });
+
+  it('reports differs:null (never a false match) when the RELEASE read failed', () => {
+    const res = evaluateReleaseContentDrift({ workingBytes: Buffer.from('x'), releaseBytes: null });
+    expect(res.differs).toBeNull();
+  });
+
+  it('reports differs:null when BOTH reads failed', () => {
+    const res = evaluateReleaseContentDrift({ workingBytes: null, releaseBytes: null });
+    expect(res.differs).toBeNull();
+  });
+});
+
 describe('the serving STAGE and summary never claim "live" off a git fact', () => {
   type StageInput = Parameters<typeof computeStages>[0];
   const stage = (stages: StageState[], name: StageName): StageState => {
@@ -2653,6 +2694,102 @@ describe('changeInCandidate (P-004)', () => {
       expect(res.changeInCandidate.nextContainsPath).toBeNull();
       expect(res.summary).not.toMatch(/⚠ The gate run/);
     });
+  });
+});
+
+/**
+ * EI-19327418148563597 — full-entry-point wiring for the "LIVE CODE DIFFERS FROM
+ * SOURCE" note: while the gate is red, `:3070`'s release checkout can lag the staging
+ * tree by hours (not the usual ~15 minutes), long enough that profiling the live box
+ * measures pre-fix code while the fix already sits, verified, in the tree open in
+ * front of the caller. The check only applies to a RELEASE-PIPELINE path (the release
+ * checkout is irrelevant to a working-tree tsx host like bg-host/gateway/embed-sidecar,
+ * which never reads it), and only when a release root is actually known.
+ */
+describe('gitPipelinePosition: release-content-drift note (EI-19327418148563597)', () => {
+  // Same fixture evaluateServing's tests use — a path classified as a RELEASE-PIPELINE
+  // consumer (served by :3070 off the release checkout), as opposed to bgHostRuntime.
+  const releasePath = 'packages/operator-core/lib/x.ts';
+
+  const minimalGit: GitRunner = async (_repo, args) => {
+    if (args[0] === 'status') return '';
+    if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
+    if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
+    if (args[0] === 'rev-list') return '0';
+    return null;
+  };
+
+  it('warns when the release checkout serves DIFFERENT bytes than the working tree', async () => {
+    const res = await gitPipelinePosition(
+      { path: releasePath },
+      {
+        git: minimalGit,
+        loadDeploy: async () => deploy({ releaseRoot: '/release' }),
+        loadSnapshot: async () => snap(),
+        readFileBytes: async (absPath: string) =>
+          absPath.startsWith('/release') ? Buffer.from('old, pre-fix code') : Buffer.from('new, fixed code'),
+      },
+    );
+    expect(res.notes.join(' ')).toMatch(/LIVE CODE DIFFERS FROM SOURCE/);
+    expect(res.notes.join(' ')).toContain(releasePath);
+    expect(res.notes.join(' ')).toContain('/release');
+  });
+
+  it('stays silent when the release checkout is byte-identical to the working tree', async () => {
+    const res = await gitPipelinePosition(
+      { path: releasePath },
+      {
+        git: minimalGit,
+        loadDeploy: async () => deploy({ releaseRoot: '/release' }),
+        loadSnapshot: async () => snap(),
+        readFileBytes: async () => Buffer.from('same code everywhere'),
+      },
+    );
+    expect(res.notes.join(' ')).not.toMatch(/LIVE CODE DIFFERS FROM SOURCE/);
+  });
+
+  it('stays silent (never a false alarm) when either read failed', async () => {
+    const res = await gitPipelinePosition(
+      { path: releasePath },
+      {
+        git: minimalGit,
+        loadDeploy: async () => deploy({ releaseRoot: '/release' }),
+        loadSnapshot: async () => snap(),
+        readFileBytes: async () => null,
+      },
+    );
+    expect(res.notes.join(' ')).not.toMatch(/LIVE CODE DIFFERS FROM SOURCE/);
+  });
+
+  it('does NOT run the check for a working-tree host — the release checkout is irrelevant to it', async () => {
+    // bg-host tsx-loads the working tree directly; it never reads `papercup-release`,
+    // so a byte mismatch there says nothing about what bg-host is running.
+    const bgPath = 'packages/operator-core/lib/inference-gateway/admission.ts';
+    expect(classifyRuntimeOwner(bgPath)?.releasePipelineApplies).toBe(false);
+    const readFileBytes = vi.fn(async (absPath: string) =>
+      absPath.startsWith('/release') ? Buffer.from('a') : Buffer.from('b'),
+    );
+    const res = await gitPipelinePosition(
+      { path: bgPath },
+      {
+        git: minimalGit,
+        loadDeploy: async () => deploy({ releaseRoot: '/release' }),
+        loadSnapshot: async () => snap(),
+        readFileBytes,
+      },
+    );
+    expect(res.notes.join(' ')).not.toMatch(/LIVE CODE DIFFERS FROM SOURCE/);
+    expect(readFileBytes).not.toHaveBeenCalled();
+  });
+
+  it('does NOT run the check when no release root is known (default deploy() fixture)', async () => {
+    const readFileBytes = vi.fn(async () => Buffer.from('irrelevant'));
+    const res = await gitPipelinePosition(
+      { path: releasePath },
+      { git: minimalGit, loadDeploy: async () => deploy(), loadSnapshot: async () => snap(), readFileBytes },
+    );
+    expect(res.notes.join(' ')).not.toMatch(/LIVE CODE DIFFERS FROM SOURCE/);
+    expect(readFileBytes).not.toHaveBeenCalled();
   });
 });
 

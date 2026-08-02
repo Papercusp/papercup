@@ -782,7 +782,11 @@ export function programSuccessReadScopes(opts: BuildProgramSuccessOptions = {}):
  */
 export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions = {}): Promise<ProgramSuccessReport> {
   const limit = opts.limit ?? DEFAULT_LEDGER_LIMIT;
-  const scopes = programSuccessReadScopes({ ...opts, limit });
+  // EI-19329929546171597: resolve the WRITER's actual current install_slug before reading —
+  // see resolveScoutTickInstallSlug's doc comment for why this can no longer be the hardcoded
+  // SCOUT_TICK_INSTALL_SLUG constant now that WORKSPACE_COORDINATION has graduated default-ON.
+  const resolvedTickInstallSlug = await resolveScoutTickInstallSlug(opts.workspaceId);
+  const scopes = programSuccessReadScopes({ ...opts, limit, resolvedTickInstallSlug });
   const [cadence, suIdeate, cadenceByCodeHash] = await Promise.all([
     buildQualityReportInputs<CreativeLens>(scopes.cadence),
     buildQualityReportInputs<SuIdeationLens>(scopes.suIdeate),
@@ -795,7 +799,9 @@ export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions
         const { readNewestScoutCodeHash, readScoutTicksByCodeHash } = await import('./tick-ledger');
         const readOpts = {
           ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-          installSlug: SCOUT_TICK_INSTALL_SLUG,
+          // EI-19329929546171597: read under the WRITER's actual current install_slug (see
+          // resolveScoutTickInstallSlug), not the hardcoded legacy constant.
+          installSlug: resolvedTickInstallSlug,
           // WI-5451: intersect the code-hash union with the CALLER'S EXPLICIT window floor
           // — `opts.sinceMs`, never `scopes.tickSinceMs` (which is always populated, even
           // on the plain rolling-default path, and would silently re-impose a time box on
@@ -879,7 +885,9 @@ export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions
       ...report.window,
       tickWindowMs: scopes.tickWindowMs,
       tickSinceMs: scopes.tickSinceMs,
-      tickInstallSlug: SCOUT_TICK_INSTALL_SLUG,
+      // EI-19329929546171597: report what was ACTUALLY queried, not the legacy constant —
+      // this is the field a future partition-mismatch diagnosis would read first.
+      tickInstallSlug: resolvedTickInstallSlug,
     },
   };
 }

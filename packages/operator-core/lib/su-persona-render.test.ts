@@ -65,9 +65,25 @@ describe('applySuPromptOverlays — the one canonical overlay order', () => {
     expect(promptText).toContain('## Effective instruction precedence');
   });
 
-  it('is deterministic — the same inputs render byte-identical text', async () => {
-    // The P-003 recurrence guard rests on this: "a respawn's render equals a fresh
-    // render" is only checkable while the assembly has no hidden per-call variance.
+  it('renders byte-identical text for one runtime — no per-call variance (WI-7185)', async () => {
+    // This is the property P-003 rests on: "a respawn's render equals a fresh render"
+    // is only checkable if the assembly has NO hidden per-call variance.
+    //
+    // It did, briefly, and it cost the fleet a gate. `buildInstructionPrecedenceTrace`
+    // falls back to `new Date()` when the runtime carries no `observedAt`
+    // (instruction-lint.ts:337), so two renders differed whenever they straddled a
+    // millisecond boundary. The first version of this test asserted exact equality
+    // against that and red-pinned the green-checkpoint on 2026-08-02, with a diff whose
+    // entire content was `…32.967Z` vs `…32.968Z` — then PASSED on the gate's isolation
+    // re-run, which is the worst shape of flake: intermittent, and indistinguishable
+    // from an infra wobble.
+    //
+    // The fix was at the source, not here: buildSuInstructionRuntime now stamps
+    // `observedAt` ONCE at runtime construction, which is also the more truthful
+    // reading of a field describing when the runtime was observed. So exact equality
+    // is asserted DELIBERATELY — it is what pins that stamp in place. If someone drops
+    // it and restores the per-render fallback, this test must fail rather than quietly
+    // normalize the timestamp away and let the flake back onto the gate.
     const args = {
       basePromptText: '# BASE\n',
       agent: 'claude',
@@ -78,6 +94,7 @@ describe('applySuPromptOverlays — the one canonical overlay order', () => {
     const a = await applySuPromptOverlays({ ...args });
     const b = await applySuPromptOverlays({ ...args });
     expect(a.promptText).toBe(b.promptText);
+    expect(runtime.observedAt).toBeTruthy(); // the stamp this relies on
   });
 
   it('lints the FINAL text, not the base playbook', async () => {

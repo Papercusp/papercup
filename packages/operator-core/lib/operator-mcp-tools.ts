@@ -111,6 +111,21 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__search:fulltext',
   'mcp__agentmcp__search:semantic',
 
+  // Pipeline state, read-only (state-plane-adoption-2026-08-02 P-004 / D-006). ONE
+  // door onto the registered cells — today all five are release-pipeline cells
+  // (gate.greenCheckpoint.verdict/.candidate, git.mainBehindStaging,
+  // git.pipelinePosition, deploy.3070.sha). "Is the promotion pipeline stalled / why is
+  // nothing shipping" is a governance question this brain repeatedly needs and had NO
+  // way to answer: the surface carries no dev:*/release:* tools at all. state:read is
+  // the cheap unified answer — read-only, audience-filtered per reader, and it projects
+  // an existing resolver rather than deriving anything second.
+  //
+  // `state:subscribe` is deliberately NOT added. It arms a durable watch + WAKE, and
+  // this surface carries no await/watch/wake tool of any kind (pending_events:list is a
+  // read) — so a subscription taken here has no consumer. Add it only alongside a real
+  // wake path.
+  'mcp__agentmcp__state:read',
+
   // Storage usage (read) — answer "what's using disk / what's safe to trim".
   // The destructive storage:prune is owner-driven via Settings → Storage, not the
   // brain surface.

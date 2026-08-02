@@ -156,13 +156,41 @@ describe("LearningTab source contract", () => {
     expect(lastLayout).toBeGreaterThan(lastPassive);
   });
 
+  /** Matches the settle call for a given `settled` variable, tolerant of a
+   *  prettier reflow. Pins the `active` argument too: without it the settle is
+   *  blind to a warm revisit (see below). */
+  const settleCall = (settledVar: string) =>
+    new RegExp(
+      `useInteractionSettle\\(\\s*PERF_INTERACTIONS\\.learningViewSwitch,\\s*${settledVar},\\s*active,?\\s*\\)`,
+    );
+
   it("settles the improvements view — the default AND heaviest view", () => {
     // learning.improvements is 320,607B on the live operator and `improvements`
     // is the tab's default landing view, so a missing settle point here meant
     // the instrument could not measure the view the owner most plausibly hit.
     expect(source).toContain("improvementsSettled");
-    expect(source).toContain(
-      "endInteraction(PERF_INTERACTIONS.learningViewSwitch)",
-    );
+    expect(source).toMatch(settleCall("improvementsSettled"));
+  });
+
+  it("settles the learnings view", () => {
+    expect(source).toContain("learningsSettled");
+    expect(source).toMatch(settleCall("learningsSettled"));
+  });
+
+  it("tells each pane whether it is the SELECTED view", () => {
+    // EI-19383745196363732 — the WARM half of the same instrument bug.
+    //
+    // Panes are kept mounted while warm (`warmViews`: the current pane plus the
+    // two most recent) and only `hidden` flips, so a normal back-and-forth
+    // never remounts. A settle effect keyed on `settled` alone therefore never
+    // re-runs on a revisit and the switch measures NOTHING — the silent-zero
+    // failure mode, where the budget check passes by measuring zero on the path
+    // a real user takes most.
+    //
+    // The panels gate on `active` (pinned by settleCall above), but that only
+    // works if this component actually tells them. This assertion is the one
+    // place that covers the wiring: a panel-level test renders the panel
+    // directly and so cannot catch its removal here.
+    expect(source).toMatch(/active=\{mountedView === view\}/);
   });
 });

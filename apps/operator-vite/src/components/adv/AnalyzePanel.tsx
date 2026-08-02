@@ -28,10 +28,8 @@ import type {
   AnalyzeCycleSummary,
 } from "@papercusp/operator-core/lib/sync-resolver/learning-analyze-read";
 import { CardStack } from "@papercusp/card-stack";
-import {
-  endInteraction,
-  PERF_INTERACTIONS,
-} from "@/app/_components/perf/perf-marks";
+import { PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
+import { useInteractionSettle } from "@/app/_components/perf/use-interaction-settle";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { CATEGORICAL } from "@/app/harness/theme";
 import { useLexicon } from "@/lib/useLexicon";
@@ -67,8 +65,13 @@ function cycleSummary(c: AnalyzeCycleSummary): string {
 
 export function AnalyzePanel({
   onStatus,
+  active = true,
 }: {
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+  /** True when this pane is the SELECTED learning view. LearningTab keeps warm
+   *  panes mounted and only flips `hidden`, so the settle point needs this to
+   *  fire on a revisit that does not remount (EI-19383745196363732). */
+  active?: boolean;
 } = {}) {
   const t = useLexicon();
   const sync = useSyncQuery<AnalyzeSnapshot>({
@@ -107,10 +110,13 @@ export function AnalyzePanel({
   //
   // endInteraction is measure-once and no-ops without a matching begin, so this
   // is inert on a first mount or any render that did not follow a view switch.
+  //
+  // Gated on `active` as well as `settled`: this pane is kept MOUNTED when the
+  // user switches away (LearningTab's warmViews), so on a revisit `settled` is
+  // already true and never changes — an effect keyed on it alone would never
+  // re-run and the switch would measure nothing (EI-19383745196363732).
   const settled = !sync.loading && (snap !== undefined || Boolean(fault));
-  useEffect(() => {
-    if (settled) endInteraction(PERF_INTERACTIONS.learningViewSwitch);
-  }, [settled]);
+  useInteractionSettle(PERF_INTERACTIONS.learningViewSwitch, settled, active);
 
   return (
     <section

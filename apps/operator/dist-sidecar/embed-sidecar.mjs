@@ -5190,10 +5190,23 @@ init_esm();
 
 // ../../libs/generic/memory/src/mem0-client.ts
 init_config();
-var dynamicImport = new Function(
-  "specifier",
-  "return import(specifier)"
-);
+
+// ../../libs/generic/memory/src/dynamic-import.ts
+var newFunctionImport = new Function("specifier", "return import(specifier)");
+var NO_IMPORT_CALLBACK = /dynamic import callback was not specified/i;
+async function dynamicImport(specifier) {
+  try {
+    return await newFunctionImport(specifier);
+  } catch (err) {
+    if (!NO_IMPORT_CALLBACK.test(err?.message ?? "")) throw err;
+    return await import(
+      /* @vite-ignore */
+      specifier
+    );
+  }
+}
+
+// ../../libs/generic/memory/src/mem0-client.ts
 var _clientTtlMs = 60 * 60 * 1e3;
 
 // ../../libs/generic/memory/src/vec-write.ts
@@ -5292,26 +5305,40 @@ async function embedViaWorker(text, opts = {}) {
     });
   });
 }
+function getWorkerState() {
+  return {
+    alive: _worker !== null,
+    disabled: _workerDisabled,
+    pendingCount: _pending.size
+  };
+}
+var _lastFallbackWarnAt = 0;
+var FALLBACK_WARN_COOLDOWN_MS = 3e4;
+function warnEmbedFallback(model, err) {
+  const now = Date.now();
+  if (now - _lastFallbackWarnAt < FALLBACK_WARN_COOLDOWN_MS) return;
+  _lastFallbackWarnAt = now;
+  if (process.env.NODE_ENV !== "test") {
+    console.warn(
+      `[embed] ${model} worker path failed \u2014 falling back to inline (main-thread, blocks the event loop) for this call: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
 var LOCAL_EMBEDDER_MODEL = "Xenova/bge-small-en-v1.5";
 var TRANSFORMERS_PACKAGE = "@huggingface/transformers";
 var ORT_SESSION_OPTIONS = { intraOpNumThreads: 4, interOpNumThreads: 1 };
-var dynamicImport2 = new Function(
-  "specifier",
-  "return import(specifier)"
-);
 async function buildLocalEmbedder() {
   let pipelinePromise = null;
-  let workerDisabled = false;
   return async (text) => {
-    if (!workerDisabled) {
+    if (!getWorkerState().disabled) {
       try {
         return await embedViaWorker(text);
-      } catch {
-        workerDisabled = true;
+      } catch (err) {
+        warnEmbedFallback("local", err);
       }
     }
     if (!pipelinePromise) {
-      const transformers = await dynamicImport2(TRANSFORMERS_PACKAGE);
+      const transformers = await dynamicImport(TRANSFORMERS_PACKAGE);
       pipelinePromise = transformers.pipeline("feature-extraction", LOCAL_EMBEDDER_MODEL, {
         session_options: ORT_SESSION_OPTIONS
       });
@@ -5322,10 +5349,143 @@ async function buildLocalEmbedder() {
   };
 }
 
+// ../../libs/generic/memory/src/embedder-dims.ts
+var EMBEDDER_DIM_SPECS = {
+  /**
+   * BGE-small is natively 384 — no truncation happens at all, which is why
+   * this mode never had the bug.
+   */
+  local: {
+    model: "Xenova/bge-small-en-v1.5",
+    nativeDims: 384,
+    mrl: "none",
+    trainedDims: [384],
+    targetDims: 384
+  },
+  /**
+   * OpenAI text-embedding-3-small. Reduction is first-class here: the
+   * `dimensions` API parameter applies the trained MRL and renormalizes
+   * server-side, so any width is SUPPORTED, not a hand-rolled prefix.
+   * This is the contrast case that keeps the guard honest — it must not
+   * flag every non-native width, only untrained ones.
+   *
+   * 768 (was 384) tracks the prose column width so this mode stays
+   * PROSE-ELIGIBLE alongside gemma — see `PROSE_ELIGIBLE_MODES` in
+   * operator-core's `search/prose-vector-dims.ts`. It costs nothing to move:
+   * OpenAI bills per TOKEN, not per dimension, and `dimensions` is applied
+   * server-side. Keeping a second eligible mode matters — it is the working
+   * prose fallback when gemma is unavailable, and it keeps the storage
+   * contract from silently becoming gemma-specific.
+   */
+  openai: {
+    model: "text-embedding-3-small",
+    nativeDims: 1536,
+    mrl: "continuous",
+    trainedDims: [1536],
+    targetDims: 768
+  },
+  /**
+   * EmbeddingGemma-300m at its NATIVE 768 — the case this guard was built for,
+   * resolved by REMOVING the truncation rather than relocating it to a
+   * different trained point (P-005 / D-005).
+   *
+   * The former `targetDims: 384` was an intermediate, untrained MRL cut taken
+   * to fit the pre-existing `vector(384)` columns. Measured (D-003), it cost
+   * ~19-21% of prose retrieval MRR: @384 scores .2889 against @512 .3435 and
+   * @768 .3492, and the paired bootstrap vs @384 excludes zero for both
+   * (@512 +.0546 CI [.0165,.0935]; @768 +.0603 CI [.0210,.1022]).
+   *
+   * WHY NATIVE 768 AND NOT THE TRAINED 512 (D-005). @768 is better on both the
+   * point estimate and the CI lower bound, and — the decisive part — costs the
+   * SAME compute: the model always runs a native-768 forward pass, so an MRL
+   * "truncation" is only a slice afterwards. 512 would buy ~400MB of disk at
+   * the price of keeping the truncation machinery, and therefore keeping this
+   * bug class one config typo away. At the native width `targetDims ===
+   * nativeDims`, so `isTrainedDim` is trivially true and no acknowledgement can
+   * ever be needed here again.
+   *
+   * ⚠ Do NOT "optimize" this back down to a narrower prefix without re-reading
+   * D-005: the re-embed corpus is ~395k vectors, so a width change is a
+   * multi-hour, all-at-once migration (pgvector cannot cast between widths).
+   * That cost is why the width chosen here is the model's terminal one.
+   */
+  gemma: {
+    model: "onnx-community/embeddinggemma-300m-ONNX",
+    nativeDims: 768,
+    mrl: "discrete",
+    trainedDims: [768, 512, 256, 128],
+    targetDims: 768
+  },
+  /**
+   * harrier-oss-v1-0.6b at its NATIVE 1024 (its own vector(1024) table), so
+   * the configured target needs no acknowledgement. Harrier publishes no MRL
+   * at all, which is why the exploratory `dims: 384` variant is an untrained
+   * cut — see `isTrainedDim`, which reports it as such, and the P-001 gate it
+   * must win before any prose-surface use.
+   */
+  harrier: {
+    model: "microsoft/harrier-oss-v1-0.6b",
+    nativeDims: 1024,
+    mrl: "none",
+    trainedDims: [1024],
+    targetDims: 1024
+  }
+};
+var CANDIDATE_DIM_SPECS = {
+  /**
+   * Granite-Embedding-97M-Multilingual-R2 — natively 384. The cheapest
+   * possible resolution of the untrained-cut bug: at the width the prose
+   * columns already store, there is no truncation happening at all, so the
+   * question "is this cut trained?" does not arise.
+   */
+  granite97: {
+    model: "onnx-community/granite-embedding-97m-multilingual-r2-ONNX",
+    nativeDims: 384,
+    mrl: "none",
+    trainedDims: [384],
+    targetDims: 384
+  },
+  /**
+   * Granite-Embedding-311M-Multilingual-R2 — 768 native, with card-published
+   * Matryoshka nesting at 768/512/384/256/128. 384 is among them, so
+   * `targetDims: 384` needs no `untrainedCut` acknowledgement (and if someone
+   * later adds one anyway, the validator's stale-ack rule rejects it).
+   *
+   * That is a statement about DECLARABILITY, not quality — see the warning on
+   * this table. Whether 311m@384 actually beats gemma@512 is P-003's
+   * measurement to make.
+   */
+  granite311: {
+    model: "onnx-community/granite-embedding-311m-multilingual-r2-ONNX",
+    nativeDims: 768,
+    mrl: "discrete",
+    trainedDims: [768, 512, 384, 256, 128],
+    targetDims: 384
+  },
+  /**
+   * Qwen3-Embedding-0.6B — 1024 native, card-documented MRL across
+   * user-defined widths from 32 to 1024, so reduction is first-class the way
+   * OpenAI's `dimensions` parameter is (hence `continuous`).
+   *
+   * ⚠ `continuous` here means "trained at any width in the published range",
+   * and that range has a FLOOR of 32 which this model shares with no other
+   * entry. `isTrainedDim` cannot express a floor, so it would call dims 1..31
+   * trained. Our target of 384 sits far inside the range; a future caller
+   * asking for a sub-32 width would need that floor checked by hand.
+   */
+  qwen3: {
+    model: "onnx-community/Qwen3-Embedding-0.6B-ONNX",
+    nativeDims: 1024,
+    mrl: "continuous",
+    trainedDims: [1024],
+    targetDims: 384
+  }
+};
+
 // ../../libs/generic/memory/src/gemma-embedder.ts
 var GEMMA_MODEL = "onnx-community/embeddinggemma-300m-ONNX";
 var TRANSFORMERS_PACKAGE2 = "@huggingface/transformers";
-var GEMMA_TARGET_DIMS = 384;
+var GEMMA_TARGET_DIMS = EMBEDDER_DIM_SPECS.gemma.targetDims;
 function gemmaPrompt(kind, text) {
   return kind === "query" ? `task: search result | query: ${text}` : `title: none | text: ${text}`;
 }
@@ -5337,39 +5497,37 @@ function mrlTruncate(vec, dims = GEMMA_TARGET_DIMS) {
   if (norm === 0) return sliced;
   return sliced.map((v) => v / norm);
 }
-var dynamicImport3 = new Function(
-  "specifier",
-  "return import(specifier)"
-);
 function buildGemmaEmbedder(opts) {
-  const { kind } = opts;
+  const { kind, dims = GEMMA_TARGET_DIMS } = opts;
   let pipelinePromise = null;
-  let workerDisabled = false;
   return async (text) => {
     const prompted = gemmaPrompt(kind, text);
-    if (!workerDisabled) {
+    if (!getWorkerState().disabled) {
       try {
         const full = await embedViaWorker(prompted, { model: GEMMA_MODEL, normalize: false });
-        return mrlTruncate(full, GEMMA_TARGET_DIMS);
-      } catch {
-        workerDisabled = true;
+        return mrlTruncate(full, dims);
+      } catch (err) {
+        warnEmbedFallback("gemma", err);
       }
     }
     if (!pipelinePromise) {
-      const transformers = await dynamicImport3(TRANSFORMERS_PACKAGE2);
+      const transformers = await dynamicImport(TRANSFORMERS_PACKAGE2);
       pipelinePromise = transformers.pipeline("feature-extraction", GEMMA_MODEL, {
         session_options: ORT_SESSION_OPTIONS
       });
     }
     const pipe = await pipelinePromise;
     const result = await pipe(prompted, { pooling: "mean", normalize: false });
-    return mrlTruncate(Array.from(result.data), GEMMA_TARGET_DIMS);
+    return mrlTruncate(Array.from(result.data), dims);
   };
 }
 
+// ../../libs/generic/memory/src/qwen3-embedder.ts
+var QWEN3_NATIVE_DIMS = CANDIDATE_DIM_SPECS.qwen3.nativeDims;
+
 // ../../libs/generic/memory/src/harrier-embedder.ts
 var HARRIER_MODEL = "onnx-community/harrier-oss-v1-0.6b-ONNX";
-var HARRIER_NATIVE_DIMS = 1024;
+var HARRIER_NATIVE_DIMS = EMBEDDER_DIM_SPECS.harrier.nativeDims;
 var HARRIER_GRAPH_OUTPUT = "sentence_embedding";
 var HARRIER_QUERY_TASK = "Given a web search query, retrieve relevant passages that answer the query";
 function harrierPrompt(kind, text) {
@@ -5382,18 +5540,13 @@ function assertNativeDims(vec) {
   }
   return vec;
 }
-var dynamicImport4 = new Function(
-  "specifier",
-  "return import(specifier)"
-);
 var TRANSFORMERS_PACKAGE3 = "@huggingface/transformers";
 function buildHarrierEmbedder(opts) {
   const { kind, dims = HARRIER_NATIVE_DIMS } = opts;
   let pipelinePromise = null;
-  let workerDisabled = false;
   return async (text) => {
     const prompted = harrierPrompt(kind, text);
-    if (!workerDisabled) {
+    if (!getWorkerState().disabled) {
       try {
         const full = await embedViaWorker(prompted, {
           model: HARRIER_MODEL,
@@ -5401,14 +5554,11 @@ function buildHarrierEmbedder(opts) {
         });
         return mrlTruncate(assertNativeDims(full), dims);
       } catch (err) {
-        workerDisabled = true;
-        console.warn(
-          `harrier embed worker path failed, falling back to inline: ${err instanceof Error ? err.message : String(err)}`
-        );
+        warnEmbedFallback("harrier", err);
       }
     }
     if (!pipelinePromise) {
-      const transformers = await dynamicImport4(TRANSFORMERS_PACKAGE3);
+      const transformers = await dynamicImport(TRANSFORMERS_PACKAGE3);
       pipelinePromise = transformers.pipeline("feature-extraction", HARRIER_MODEL, {
         session_options: ORT_SESSION_OPTIONS
       });
@@ -5426,23 +5576,183 @@ function buildHarrierEmbedder(opts) {
   };
 }
 
+// ../../libs/generic/memory/src/sidecar-embedder.ts
+var SIDECAR_MAX_TEXT_CHARS = 32e3;
+
+// ../../libs/generic/rerank/src/execution-target.ts
+var CPU_EXECUTION_TARGET = Object.freeze({
+  device: "cpu",
+  dtype: "q8",
+  why: "CPU provider: int8 kernels are native on x86, weights are ~4x smaller, and q8 preserves the ranking head (D-006)"
+});
+var CUDA_EXECUTION_TARGET = Object.freeze({
+  device: "cuda",
+  dtype: "fp16",
+  why: "CUDA provider: fp16 is native on the GPU, halves bandwidth, and avoids the int8 quantisation error entirely"
+});
+var WEBGPU_EXECUTION_TARGET = Object.freeze({
+  device: "webgpu",
+  dtype: "fp16",
+  why: "WebGPU provider: fp16 is the native shader format"
+});
+var RERANK_DEVICE_ENV = "PAPERCUSP_RERANK_DEVICE";
+function resolveExecutionTarget(env = typeof process === "undefined" ? {} : process.env) {
+  const raw = (env[RERANK_DEVICE_ENV] ?? "").trim().toLowerCase();
+  if (raw === "cuda" || raw === "gpu") return CUDA_EXECUTION_TARGET;
+  if (raw === "webgpu") return WEBGPU_EXECUTION_TARGET;
+  return CPU_EXECUTION_TARGET;
+}
+
+// ../../libs/generic/rerank/src/local-engine.ts
+var LOCAL_RERANKER_MODEL = "Alibaba-NLP/gte-reranker-modernbert-base";
+var FAST_RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2";
+var ORT_SESSION_OPTIONS2 = { intraOpNumThreads: 4, interOpNumThreads: 1 };
+var DEFAULT_MAX_LENGTH = 512;
+var DEFAULT_BATCH_SIZE = 16;
+var TRANSFORMERS_PACKAGE4 = "@huggingface/transformers";
+var dynamicImport2 = new Function("specifier", "return import(specifier)");
+var _models = /* @__PURE__ */ new Map();
+var _loaderOverride = null;
+async function defaultLoader(model, dtype, device) {
+  const transformers = await dynamicImport2(TRANSFORMERS_PACKAGE4);
+  const [tokenizer, classifier] = await Promise.all([
+    transformers.AutoTokenizer.from_pretrained(model),
+    transformers.AutoModelForSequenceClassification.from_pretrained(model, {
+      dtype,
+      device,
+      session_options: ORT_SESSION_OPTIONS2
+    })
+  ]);
+  return { tokenizer, model: classifier };
+}
+function loadCrossEncoder(opts = {}) {
+  return loadOnTarget(opts.model ?? LOCAL_RERANKER_MODEL, effectiveTarget(opts));
+}
+function effectiveTarget(opts) {
+  const host = resolveExecutionTarget();
+  if (opts.device === void 0 && opts.dtype === void 0) return host;
+  const device = opts.device ?? host.device;
+  const dtype = opts.dtype ?? host.dtype;
+  return { device, dtype, why: "explicit caller override" };
+}
+var _gpuUnusable = false;
+function reportDemotion(target, err) {
+  console.warn(
+    `[rerank] ${target.device}/${target.dtype} session failed to construct \u2014 falling back to ${CPU_EXECUTION_TARGET.device}/${CPU_EXECUTION_TARGET.dtype}. Reranking continues on CPU. Cause: ${String(err?.message ?? err).slice(0, 200)}`
+  );
+}
+function loadOnTarget(model, target) {
+  const effective = target.device !== "cpu" && _gpuUnusable ? CPU_EXECUTION_TARGET : target;
+  const key = `${model}::${effective.dtype}::${effective.device}`;
+  const cached = _models.get(key);
+  if (cached) return cached;
+  const loading = (_loaderOverride ?? defaultLoader)(model, effective.dtype, effective.device).catch(
+    (err) => {
+      _models.delete(key);
+      if (effective.device === "cpu") throw err;
+      _gpuUnusable = true;
+      reportDemotion(effective, err);
+      return loadOnTarget(model, CPU_EXECUTION_TARGET);
+    }
+  );
+  _models.set(key, loading);
+  return loading;
+}
+function activeExecutionTarget() {
+  const host = resolveExecutionTarget();
+  return host.device !== "cpu" && _gpuUnusable ? CPU_EXECUTION_TARGET : host;
+}
+var sigmoid = (x) => 1 / (1 + Math.exp(-x));
+function scoreFromLogits(row) {
+  if (row.length === 1) return sigmoid(row[0]);
+  const [negative, positive] = row;
+  return sigmoid(positive - negative);
+}
+async function scoreCrossEncoder(query, texts, opts = {}) {
+  if (texts.length === 0) return [];
+  const { tokenizer, model } = await loadCrossEncoder(opts);
+  const maxLength = opts.maxLength ?? DEFAULT_MAX_LENGTH;
+  const batchSize = Math.max(1, opts.batchSize ?? DEFAULT_BATCH_SIZE);
+  const scores = [];
+  for (let start = 0; start < texts.length; start += batchSize) {
+    const batch = texts.slice(start, start + batchSize);
+    const inputs = tokenizer(
+      // The cross-encoder scores a PAIR: the query is repeated against each doc.
+      new Array(batch.length).fill(query),
+      { text_pair: batch, padding: true, truncation: true, max_length: maxLength }
+    );
+    const { logits } = await model(inputs);
+    const numLabels = logits.dims.length > 1 ? logits.dims[logits.dims.length - 1] : 1;
+    if (logits.data.length !== batch.length * numLabels) {
+      throw new Error(
+        `rerank: logits length ${logits.data.length} != ${batch.length} pairs x ${numLabels} labels`
+      );
+    }
+    for (let i = 0; i < batch.length; i++) {
+      const row = [];
+      for (let l = 0; l < numLabels; l++) row.push(Number(logits.data[i * numLabels + l]));
+      scores.push(scoreFromLogits(row));
+    }
+  }
+  return scores;
+}
+
+// ../../libs/generic/rerank/src/index.ts
+var SCORE_TIMEOUT = Symbol("rerank-score-timeout");
+
 // ../../packages/operator-core/lib/memory/embed-sidecar-server.ts
 var EMBED_SIDECAR_DEFAULT_PORT = 3384;
 var EMBED_SIDECAR_PORT_ENV = "PAPERCUSP_EMBED_SIDECAR_PORT";
 var EMBED_SIDECAR_WARM_ENV = "PAPERCUSP_EMBED_SIDECAR_WARM";
 var EMBED_SIDECAR_READY_LINE = "PAPERCUSP_EMBED_SIDECAR_READY";
 var MAX_TEXTS_PER_CALL = 256;
-var MAX_TEXT_CHARS = 32e3;
+var MAX_TEXT_CHARS = SIDECAR_MAX_TEXT_CHARS;
 var MAX_BODY_BYTES = 16 * 1024 * 1024;
 var EMBED_CACHE_MAX_DEFAULT = 1024;
 var EMBED_SIDECAR_CONCURRENCY_ENV = "PAPERCUSP_EMBED_SIDECAR_CONCURRENCY";
 var EMBED_SIDECAR_MODELS = ["gemma", "local", "harrier"];
 var EMBED_SIDECAR_RUNTIME = "node-onnx-worker";
+var EMBED_SIDECAR_CAP_HEALTHZ = "GET /healthz";
+var EMBED_SIDECAR_CAP_EMBED = "POST /embed";
+var EMBED_SIDECAR_CAP_RERANK = "POST /rerank";
 var MODEL_REVS = {
   gemma: GEMMA_MODEL,
   local: LOCAL_EMBEDDER_MODEL,
   harrier: HARRIER_MODEL
 };
+var RERANK_SIDECAR_MODELS = ["rerank", "rerank-fast"];
+var RERANK_MODEL_REVS = {
+  rerank: LOCAL_RERANKER_MODEL,
+  "rerank-fast": FAST_RERANKER_MODEL
+};
+function validateRerankRequest(body) {
+  if (typeof body !== "object" || body === null) return { error: "body must be a JSON object" };
+  const b = body;
+  const model = b.model === void 0 ? "rerank" : b.model;
+  if (!RERANK_SIDECAR_MODELS.includes(model)) {
+    return { error: `unknown model '${String(model)}' \u2014 expected one of: ${RERANK_SIDECAR_MODELS.join(", ")}` };
+  }
+  if (typeof b.query !== "string" || b.query.trim() === "") {
+    return { error: "query must be a non-empty string" };
+  }
+  if (b.query.length > MAX_TEXT_CHARS) {
+    return { error: `query exceeds ${MAX_TEXT_CHARS} chars (got ${b.query.length}) \u2014 truncate before reranking` };
+  }
+  if (!Array.isArray(b.texts) || b.texts.length === 0) {
+    return { error: "texts must be a non-empty array of strings" };
+  }
+  if (b.texts.length > MAX_TEXTS_PER_CALL) {
+    return { error: `texts exceeds the ${MAX_TEXTS_PER_CALL}-per-call cap (got ${b.texts.length}) \u2014 split the batch` };
+  }
+  for (let i = 0; i < b.texts.length; i++) {
+    const t = b.texts[i];
+    if (typeof t !== "string") return { error: `texts[${i}] is not a string` };
+    if (t.length > MAX_TEXT_CHARS) {
+      return { error: `texts[${i}] exceeds ${MAX_TEXT_CHARS} chars (got ${t.length}) \u2014 truncate before reranking` };
+    }
+  }
+  return { model, query: b.query, texts: b.texts };
+}
 function validateEmbedRequest(body) {
   if (typeof body !== "object" || body === null) return { error: "body must be a JSON object" };
   const b = body;
@@ -5468,11 +5778,25 @@ function validateEmbedRequest(body) {
   }
   return { model, kind: b.kind, texts: b.texts };
 }
+var warmTokens = (env) => (env[EMBED_SIDECAR_WARM_ENV] ?? "").split(",").map((s) => s.trim()).filter((s) => s !== "");
 function resolveWarmModels(env = process.env) {
-  const raw = env[EMBED_SIDECAR_WARM_ENV];
-  if (!raw?.trim()) return ["gemma"];
-  const known = raw.split(",").map((s) => s.trim()).filter((s) => EMBED_SIDECAR_MODELS.includes(s));
-  return known.length > 0 ? [...new Set(known)] : ["gemma"];
+  const tokens = warmTokens(env);
+  if (tokens.length === 0) return ["gemma"];
+  const embedders = [
+    ...new Set(tokens.filter((s) => EMBED_SIDECAR_MODELS.includes(s)))
+  ];
+  if (embedders.length > 0) return embedders;
+  const namedAReranker = tokens.some((s) => RERANK_SIDECAR_MODELS.includes(s));
+  return namedAReranker ? [] : ["gemma"];
+}
+function resolveWarmRerankers(env = process.env) {
+  return [
+    ...new Set(
+      warmTokens(env).filter(
+        (s) => RERANK_SIDECAR_MODELS.includes(s)
+      )
+    )
+  ];
 }
 var defaultBuilders = {
   gemma: (kind) => Promise.resolve(buildGemmaEmbedder({ kind })),
@@ -5482,6 +5806,14 @@ var defaultBuilders = {
   // harrier-oss-0.6b @ native-1024 (P-014): pooling+normalize live in the
   // ONNX graph itself; kind picks the instruct-vs-raw prompt.
   harrier: (kind) => Promise.resolve(buildHarrierEmbedder({ kind }))
+};
+var buildSidecarReranker = (model) => async () => {
+  await loadCrossEncoder({ model });
+  return (query, texts) => scoreCrossEncoder(query, texts, { model });
+};
+var defaultRerankBuilders = {
+  rerank: buildSidecarReranker(LOCAL_RERANKER_MODEL),
+  "rerank-fast": buildSidecarReranker(FAST_RERANKER_MODEL)
 };
 function json(res, status, body) {
   const payload = JSON.stringify(body);
@@ -5507,6 +5839,7 @@ function readBody(req) {
 }
 function createEmbedSidecarServer(opts = {}) {
   const builders = opts.builders ?? defaultBuilders;
+  const rerankBuilders = opts.rerankBuilders ?? defaultRerankBuilders;
   const log = opts.log ?? ((line) => console.log(line));
   const port = opts.port ?? Number(process.env[EMBED_SIDECAR_PORT_ENV] ?? EMBED_SIDECAR_DEFAULT_PORT);
   const startedAt = Date.now();
@@ -5529,6 +5862,26 @@ function createEmbedSidecarServer(opts = {}) {
         }
       );
       embedders.set(key, p);
+    }
+    return p;
+  };
+  const rerankers = /* @__PURE__ */ new Map();
+  const getReranker = (model) => {
+    let p = rerankers.get(model);
+    if (!p) {
+      warm[model] = "warming";
+      p = rerankBuilders[model]().then(
+        (fn) => {
+          warm[model] = "warm";
+          return fn;
+        },
+        (err) => {
+          warm[model] = "failed";
+          rerankers.delete(model);
+          throw err;
+        }
+      );
+      rerankers.set(model, p);
     }
     return p;
   };
@@ -5578,8 +5931,7 @@ function createEmbedSidecarServer(opts = {}) {
       vecCache.delete(oldest);
     }
   };
-  const embedOneCached = (model, kind, text) => {
-    const key = `${model}:${kind}\0${text}`;
+  const computeCached = (key, work) => {
     const cached = cacheGet(key);
     if (cached) {
       cacheHits++;
@@ -5592,10 +5944,9 @@ function createEmbedSidecarServer(opts = {}) {
     }
     cacheMisses++;
     const run = enqueue(async () => {
-      const embed = await getEmbedder(model, kind);
-      const vec = await embed(text);
-      cachePut(key, vec);
-      return vec;
+      const value = await work();
+      cachePut(key, value);
+      return value;
     });
     inflight.set(key, run);
     void run.then(
@@ -5604,6 +5955,18 @@ function createEmbedSidecarServer(opts = {}) {
     );
     return run;
   };
+  const embedOneCached = (model, kind, text) => computeCached(`${model}:${kind}\0${text}`, async () => {
+    const embed = await getEmbedder(model, kind);
+    return embed(text);
+  });
+  const rerankOneCached = (model, query, text) => computeCached(`${model}\0${query}\0${text}`, async () => {
+    const rerankFn = await getReranker(model);
+    const scores = await rerankFn(query, [text]);
+    if (scores.length !== 1 || typeof scores[0] !== "number" || !Number.isFinite(scores[0])) {
+      throw new Error(`reranker returned a bad score for one pair: ${JSON.stringify(scores)}`);
+    }
+    return [scores[0]];
+  }).then((boxed) => boxed[0]);
   const handleEmbed = async (req, res) => {
     let parsed;
     try {
@@ -5632,22 +5995,61 @@ function createEmbedSidecarServer(opts = {}) {
       json(res, 500, { error: `embed_failed: ${e instanceof Error ? e.message : String(e)}` });
     }
   };
-  const server = http.createServer((req, res) => {
-    const url = (req.url ?? "").split("?")[0];
-    if (req.method === "GET" && url === "/healthz") {
+  const handleRerank = async (req, res) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(await readBody(req));
+    } catch (e) {
+      json(res, 400, { error: `invalid JSON body: ${e instanceof Error ? e.message : String(e)}` });
+      return;
+    }
+    const v = validateRerankRequest(parsed);
+    if ("error" in v) {
+      json(res, 400, { error: v.error });
+      return;
+    }
+    try {
+      const scores = await Promise.all(v.texts.map((text) => rerankOneCached(v.model, v.query, text)));
+      const body = {
+        scores,
+        runtime: EMBED_SIDECAR_RUNTIME,
+        modelRev: RERANK_MODEL_REVS[v.model]
+      };
+      json(res, 200, body);
+    } catch (e) {
+      json(res, 500, { error: `rerank_failed: ${e instanceof Error ? e.message : String(e)}` });
+    }
+  };
+  const handlers = {
+    [EMBED_SIDECAR_CAP_HEALTHZ]: (_req, res) => {
       json(res, 200, {
         ok: true,
         pid: process.pid,
         uptimeMs: Date.now() - startedAt,
         runtime: EMBED_SIDECAR_RUNTIME,
+        // Everything this build can serve. A client compares its REQUIRED
+        // capabilities against this before adopting the process.
+        capabilities,
         models: { ...warm },
+        // The (device, dtype) pair reranking is ACTUALLY running on — not the
+        // one requested. A GPU host whose CUDA provider failed to load is
+        // demoted to cpu/q8 silently as far as search is concerned (the engine
+        // is fail-safe by design), so this is where that shows up. Before the
+        // first load it reports the host's resolved target. See plan D-006.
+        rerankExecution: activeExecutionTarget(),
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
         concurrency
       });
-      return;
-    }
-    if (req.method === "POST" && url === "/embed") {
-      void handleEmbed(req, res);
+    },
+    [EMBED_SIDECAR_CAP_EMBED]: (req, res) => void handleEmbed(req, res),
+    [EMBED_SIDECAR_CAP_RERANK]: (req, res) => void handleRerank(req, res)
+  };
+  const capabilities = Object.keys(handlers);
+  const server = http.createServer((req, res) => {
+    const url = (req.url ?? "").split("?")[0];
+    const handle = handlers[`${req.method} ${url}`];
+    if (handle) {
+      handle(req, res);
       return;
     }
     json(res, 404, { error: `no route ${req.method} ${url}` });
@@ -5665,6 +6067,9 @@ function createEmbedSidecarServer(opts = {}) {
         for (const kind of ["document", "query"]) {
           getEmbedder(model, kind).then((embed) => embed("warm-up")).then(() => log(`[embed-sidecar] ${model}:${kind} warm`)).catch((e) => log(`[embed-sidecar] ${model}:${kind} warm-up failed: ${e instanceof Error ? e.message : e}`));
         }
+      }
+      for (const model of resolveWarmRerankers()) {
+        getReranker(model).then((rerankFn) => rerankFn("warm-up", ["warm-up"])).then(() => log(`[embed-sidecar] ${model} warm`)).catch((e) => log(`[embed-sidecar] ${model} warm-up failed: ${e instanceof Error ? e.message : e}`));
       }
     });
   }

@@ -33,10 +33,8 @@ import { CardStack } from "@papercusp/card-stack";
 import { useItemPlanFilter } from "./use-create-data";
 import { OBSERVATION_KIND_COLOR } from "@/app/harness/theme";
 import { Tooltip } from "@/app/harness/Tooltip";
-import {
-  endInteraction,
-  PERF_INTERACTIONS,
-} from "@/app/_components/perf/perf-marks";
+import { PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
+import { useInteractionSettle } from "@/app/_components/perf/use-interaction-settle";
 
 interface ObservationRow {
   id: string;
@@ -132,8 +130,13 @@ function getStalenessFromNewest(
 
 export default function ObservationsPanel({
   onStatus,
+  active = true,
 }: Partial<PanelComponentProps> & {
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+  /** True when this pane is the SELECTED learning view. LearningTab keeps warm
+   *  panes mounted and only flips `hidden`, so the settle point needs this to
+   *  fire on a revisit that does not remount (EI-19383745196363732). */
+  active?: boolean;
 } = {}) {
   const [itemPlans] = useItemPlanFilter();
   const [limit, setLimit] = useState(OBSERVATIONS_PAGE);
@@ -263,10 +266,15 @@ export default function ObservationsPanel({
   //
   // endInteraction is measure-once and no-ops without a matching begin, so this
   // stays inert when the panel mounts outside a Learning-tab view switch.
-  const settled = !query.loading && (query.data !== undefined || query.error);
-  useEffect(() => {
-    if (settled) endInteraction(PERF_INTERACTIONS.learningViewSwitch);
-  }, [settled]);
+  //
+  // Gated on `active` as well as `settled`: LearningTab keeps this pane MOUNTED
+  // when the user switches away, so on a revisit `settled` is already true and
+  // never changes — an effect keyed on it alone would never re-run and the
+  // switch would measure nothing (EI-19383745196363732).
+  const settled = Boolean(
+    !query.loading && (query.data !== undefined || query.error),
+  );
+  useInteractionSettle(PERF_INTERACTIONS.learningViewSwitch, settled, active);
   const loadMore = useCallback(
     () => setLimit((current) => current + OBSERVATIONS_PAGE),
     [],

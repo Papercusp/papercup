@@ -94,6 +94,16 @@ export function buildSuInstructionRuntime(opts: {
   return {
     source: 'bootstrap-su',
     ownerId: opts.ownerId,
+    // Stamp the observation time ONCE, here, rather than letting the precedence
+    // trace fall back to `new Date()` per render (instruction-lint.ts). That
+    // fallback made applySuPromptOverlays impure: two renders from the same
+    // runtime differed whenever they straddled a millisecond boundary, which is
+    // flaky-by-construction — it passes on a fast machine and reds the gate under
+    // load. `observedAt` describes when the RUNTIME was observed, so binding it to
+    // runtime construction is also the more truthful reading, and it is what makes
+    // the P-003 property ("a respawn's render equals a fresh render") checkable at
+    // all — a byte-comparison against a moving timestamp can never hold. (WI-7185)
+    observedAt: new Date().toISOString(),
     modes: opts.drainMode ? ['auto', 'drain'] : opts.autoMode || fleetSlug ? ['auto'] : [],
     route: fleetSlug
       ? { kind: 'fleet', fleet: fleetSlug, role: opts.fleet?.role ?? null }

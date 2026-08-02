@@ -123,13 +123,15 @@ function Harness({ view, warm }: { view: string; warm: boolean }) {
     if (p !== null && p !== view) beginInteraction(NAME);
   }, [view]);
   if (!warm) {
-    return view === "pipeline" ? <AnalyzePanel /> : <div>other view</div>;
+    return view === "pipeline" ? <AnalyzePanel active /> : <div>other view</div>;
   }
-  // Both panes stay mounted; only visibility changes.
+  // Both panes stay mounted; only visibility changes — so the panel is told
+  // whether it is the SELECTED view, exactly as LearningTab does
+  // (`active={mountedView === view}`).
   return (
     <>
       <section hidden={view !== "pipeline"}>
-        <AnalyzePanel />
+        <AnalyzePanel active={view === "pipeline"} />
       </section>
       <section hidden={view === "pipeline"}>other view</section>
     </>
@@ -187,6 +189,24 @@ describe("AnalyzePanel — learning-view-switch on a revisit", () => {
     rerender(<Harness view="other" warm />); // switch away — pane stays mounted
     rerender(<Harness view="pipeline" warm />); // switch back — no remount
 
+    expect(measureCount()).toBe(1);
+  });
+
+  it("does NOT settle a warm pane that becomes visible while still LOADING", () => {
+    // The false green this fix deliberately avoids: ending the moment a warm
+    // pane becomes visible would report ~0ms for a view the user is still
+    // waiting on. Reachable by switching away before the first read settles and
+    // coming straight back, inside the warm window.
+    analyzeResult = IN_FLIGHT;
+    const { rerender } = render(<Harness view="pipeline" warm />);
+    rerender(<Harness view="other" warm />);
+    rerender(<Harness view="pipeline" warm />); // visible again, still loading
+    expect(measureCount()).toBe(0);
+
+    // The measure lands when the content is actually final, spanning the whole
+    // wait rather than reporting an instant switch.
+    analyzeResult = RESOLVED;
+    rerender(<Harness view="pipeline" warm />);
     expect(measureCount()).toBe(1);
   });
 });

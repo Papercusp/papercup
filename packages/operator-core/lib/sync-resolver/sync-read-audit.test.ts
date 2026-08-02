@@ -81,10 +81,32 @@ describe('sync-read audit — allowlist hygiene (P-008)', () => {
 });
 
 describe('sync-read audit — budget evaluation', () => {
-  it('flags a non-allowlisted query over either ceiling', () => {
-    expect(evaluateBudget('some.unknownQuery', PAYLOAD_BUDGET_BYTES + 1, 10)).toEqual({ overBudget: true, allowlisted: false });
-    expect(evaluateBudget('some.unknownQuery', 10, LATENCY_BUDGET_MS + 1)).toEqual({ overBudget: true, allowlisted: false });
-    expect(evaluateBudget('some.unknownQuery', 10, 10)).toEqual({ overBudget: false, allowlisted: false });
+  it('flags a non-allowlisted query over either ceiling, and says WHICH axis', () => {
+    expect(evaluateBudget('some.unknownQuery', PAYLOAD_BUDGET_BYTES + 1, 10)).toEqual({
+      overBudget: true, allowlisted: false, overBytes: true, overMs: false,
+      byteCeil: PAYLOAD_BUDGET_BYTES, msCeil: LATENCY_BUDGET_MS,
+    });
+    expect(evaluateBudget('some.unknownQuery', 10, LATENCY_BUDGET_MS + 1)).toEqual({
+      overBudget: true, allowlisted: false, overBytes: false, overMs: true,
+      byteCeil: PAYLOAD_BUDGET_BYTES, msCeil: LATENCY_BUDGET_MS,
+    });
+    expect(evaluateBudget('some.unknownQuery', 10, 10)).toEqual({
+      overBudget: false, allowlisted: false, overBytes: false, overMs: false,
+      byteCeil: PAYLOAD_BUDGET_BYTES, msCeil: LATENCY_BUDGET_MS,
+    });
+  });
+
+  it('a bytes-only allowlist entry does NOT buy latency headroom (WI-7084)', () => {
+    // Being allowed to be BIG is not being allowed to be SLOW. Every current entry
+    // sets maxBytes alone, so each is still held to the DEFAULT latency ceiling —
+    // pinned because silently widening it would hide the regressions the
+    // ratchetRegressions bucket exists to surface.
+    const name = 'agentRunsConsolidated.bySlug';
+    expect(SYNC_READ_ALLOWLIST[name].maxMs).toBeUndefined();
+    const r = evaluateBudget(name, 10, LATENCY_BUDGET_MS + 1);
+    expect(r.msCeil).toBe(LATENCY_BUDGET_MS);
+    expect(r.overMs).toBe(true);
+    expect(r.overBytes).toBe(false);
   });
 
   it('an allowlisted query is judged against its RAISED ceiling', () => {
@@ -143,6 +165,75 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
     expect(runs.allowlisted).toBe(true);
     expect(runs.overBudget).toBe(false);
     expect(runs.rows).toBe(10);
+    // …and, being under its own ceiling, it is not a ratchet regression either.
+    expect(report.ratchetRegressions).toEqual([]);
+  });
+
+  /**
+   * WI-7084 — the regression this whole split exists for.
+   *
+   * An ALLOWLISTED read that busts its OWN ratcheted ceiling used to land in NO
+   * bucket: `violations` filtered `overBudget && !allowlisted`, so being on the
+   * allowlist made it invisible precisely when its recorded ceiling had rotted.
+   * Live proof at the time of filing: featuresConsolidated.bySlug measured
+   * 633,664 B against a ratcheted 500,000 and appeared nowhere.
+   */
+  it('an allowlisted read OVER ITS OWN ceiling is a ratchetRegression, not silence', async () => {
+    const name = 'agentRunsConsolidated.bySlug';
+    const ceiling = SYNC_READ_ALLOWLIST[name].maxBytes!;
+    const fakeFetch = (async () => ({
+      ok: true,
+      status: 200,
+      // Deliberately PAST its raised ceiling — the rotted-ratchet case.
+      text: async () => 'X'.repeat(ceiling + 1),
+    }) as Response) as unknown as typeof fetch;
+
+    const report = await measureSyncReadPayloadsViaRest({
+      baseUrl: 'http://x',
+      token: 't',
+      fixtures: { [name]: { harnessSlug: 'papercusp' } },
+      fetchImpl: fakeFetch,
+    });
+
+    const row = report.measured[0];
+    expect(row.overBudget).toBe(true);
+    expect(row.overBytes).toBe(true);
+    expect(row.byteCeil).toBe(ceiling); // judged against the RAISED ceiling, not the default
+    // It is NOT a plain violation — it has an entry — but it must not vanish.
+    expect(report.violations).toEqual([]);
+    expect(report.ratchetRegressions.map((m) => m.name)).toEqual([name]);
+  });
+
+  it('the two buckets are disjoint and together hold every over-budget row', async () => {
+    const fat = 'X'.repeat(PAYLOAD_BUDGET_BYTES + 5000);
+    const fakeFetch = (async (url: string) => {
+      const name = new URL(url).searchParams.get('name')!;
+      // workItems.stats: unallowlisted + fat → violation.
+      // agentRunsConsolidated.bySlug: allowlisted, and fat ENOUGH to clear its own
+      // raised ceiling → ratchetRegression.
+      const body = name === 'workItems.stats'
+        ? fat
+        : 'X'.repeat(SYNC_READ_ALLOWLIST['agentRunsConsolidated.bySlug'].maxBytes! + 1);
+      return { ok: true, status: 200, text: async () => body } as Response;
+    }) as unknown as typeof fetch;
+
+    const report = await measureSyncReadPayloadsViaRest({
+      baseUrl: 'http://x',
+      token: 't',
+      fixtures: {
+        'workItems.stats': { harnessSlug: 'papercusp' },
+        'agentRunsConsolidated.bySlug': { harnessSlug: 'papercusp' },
+      },
+      fetchImpl: fakeFetch,
+    });
+
+    const over = report.measured.filter((m) => m.overBudget).map((m) => m.name).sort();
+    const bucketed = [...report.violations, ...report.ratchetRegressions].map((m) => m.name).sort();
+    expect(bucketed).toEqual(over); // nothing over-budget falls through the gap
+    expect(over).toHaveLength(2);
+    // disjoint
+    const vNames = new Set(report.violations.map((m) => m.name));
+    expect(report.ratchetRegressions.some((m) => vNames.has(m.name))).toBe(false);
   });
 
   it('records a non-OK HTTP response as an error, not a false pass', async () => {

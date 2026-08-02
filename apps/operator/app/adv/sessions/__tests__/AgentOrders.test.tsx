@@ -315,8 +315,8 @@ describe('AgentOrders', () => {
       // them. The count lives INSIDE the cap for exactly this reason.
       setOrders({
         walls: [
-          { claim: 'P-006 — owner must settle', sinceMs: Date.now() - 30 * MIN, recheck: null },
-          { claim: 'needs a credential only you hold', sinceMs: null, recheck: null },
+          { claim: 'P-006 — owner must settle', sinceMs: Date.now() - 30 * MIN },
+          { claim: 'needs a credential only you hold' },
         ],
       });
       const { getByTestId } = render(<AgentOrders ownerId="su-1" />);

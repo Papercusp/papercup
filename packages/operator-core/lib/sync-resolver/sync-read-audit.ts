@@ -210,13 +210,41 @@ export interface SyncReadMeasurement {
   rows: number | null;
   overBudget: boolean;
   allowlisted: boolean;
+  /**
+   * The ceilings this row was ACTUALLY judged against — raised when allowlisted,
+   * the defaults otherwise. Carried so a reader never has to re-derive them from
+   * SYNC_READ_ALLOWLIST (re-deriving is how "over budget" and "over ITS budget"
+   * got conflated in the first place — WI-7084).
+   */
+  byteCeil: number;
+  msCeil: number;
+  /** WHICH axis busted. `overBudget` is just `overBytes || overMs`. */
+  overBytes: boolean;
+  overMs: boolean;
   error?: string;
 }
 
 export interface SyncReadAuditReport {
   measured: SyncReadMeasurement[]; // sorted by bytes desc
-  /** Over-budget queries NOT covered by an allowlist entry — the regressions. */
+  /**
+   * Over the DEFAULT budget with NO allowlist entry — an unrecorded regression.
+   * This is the "new fat read" bucket.
+   */
   violations: SyncReadMeasurement[];
+  /**
+   * ALLOWLISTED yet over its OWN ratcheted ceiling — the ratchet has ROTTED
+   * (WI-7084). Previously invisible: the report filtered `overBudget &&
+   * !allowlisted`, so an allowlisted read busting the very ceiling its entry
+   * exists to hold was silently dropped from BOTH buckets. It sat in `measured`
+   * with `overBudget: true` and nothing surfaced it.
+   *
+   * Measured live 2026-08-02: `featuresConsolidated.bySlug` was 633,664 B against
+   * its ratcheted 500,000 ceiling and appeared in NO bucket. That is the exact
+   * failure a ratchet is supposed to prevent, so it must be LOUDER than a plain
+   * violation, not quieter: someone already looked at this read, wrote down a
+   * number, and it has since drifted past it.
+   */
+  ratchetRegressions: SyncReadMeasurement[];
   skipped: string[]; // fixture === null (unmeasurable generically)
   budgetBytes: number;
   budgetMs: number;
@@ -266,13 +294,50 @@ export function buildLiveFixtureMap(
   return map;
 }
 
-/** Evaluate one measured (bytes, ms) against the budget + allowlist. */
-export function evaluateBudget(name: string, bytes: number, ms: number): { overBudget: boolean; allowlisted: boolean } {
+/**
+ * The ceilings a query is judged against: its allowlist entry's raised values
+ * where present, the defaults otherwise.
+ *
+ * ⚠ THE LATENCY AXIS IS DELIBERATELY *NOT* RAISED BY A BYTES-ONLY ENTRY. Every
+ * current allowlist entry sets `maxBytes` alone, so each is still held to the
+ * DEFAULT 150ms — being allowed to be BIG is not being allowed to be SLOW, and
+ * an entry that genuinely needs latency headroom has to say so with `maxMs`.
+ * Kept as-is on purpose (WI-7084): the bug was that a bust went UNREPORTED, not
+ * that the ceiling was wrong, and silently widening latency while fixing the
+ * reporting would have hidden the very regressions this change exists to show.
+ */
+export function budgetCeilings(name: string): { byteCeil: number; msCeil: number } {
   const allow = SYNC_READ_ALLOWLIST[name];
-  const byteCeil = allow?.maxBytes ?? PAYLOAD_BUDGET_BYTES;
-  const msCeil = allow?.maxMs ?? LATENCY_BUDGET_MS;
-  const overBudget = bytes > byteCeil || ms > msCeil;
-  return { overBudget, allowlisted: Boolean(allow) };
+  return {
+    byteCeil: allow?.maxBytes ?? PAYLOAD_BUDGET_BYTES,
+    msCeil: allow?.maxMs ?? LATENCY_BUDGET_MS,
+  };
+}
+
+/**
+ * Evaluate one measured (bytes, ms) against the budget + allowlist.
+ *
+ * Reports the axes SEPARATELY. `overBudget` alone cannot distinguish "too big"
+ * from "too slow", and on an allowlisted read it also cannot distinguish "over
+ * the default" from "over the raised ceiling its entry set" — the conflation
+ * behind WI-7084.
+ */
+export function evaluateBudget(
+  name: string,
+  bytes: number,
+  ms: number,
+): { overBudget: boolean; allowlisted: boolean; byteCeil: number; msCeil: number; overBytes: boolean; overMs: boolean } {
+  const { byteCeil, msCeil } = budgetCeilings(name);
+  const overBytes = bytes > byteCeil;
+  const overMs = ms > msCeil;
+  return {
+    overBudget: overBytes || overMs,
+    allowlisted: Boolean(SYNC_READ_ALLOWLIST[name]),
+    byteCeil,
+    msCeil,
+    overBytes,
+    overMs,
+  };
 }
 
 /**
@@ -289,7 +354,12 @@ export function evaluateBudget(name: string, bytes: number, ms: number): { overB
  *     token: fs.readFileSync(os.homedir()+'/.papercusp/superuser-token','utf8').trim(),
  *     fixtures,
  *   });
- *   report.violations // → the fat reads that need attention
+ *   report.violations         // → fat reads with NO allowlist entry
+ *   report.ratchetRegressions // → allowlisted reads that BUST their own ceiling
+ *
+ * READ BOTH. `violations` alone answers "what is newly fat"; it says nothing
+ * about a read whose recorded ceiling has rotted, which is the more serious case
+ * because someone already measured it and wrote the number down (WI-7084).
  *
  * `fixtures` is name→(args | null); a `null` fixture is SKIPPED (unmeasurable
  * generically). `fetchImpl` is injectable for tests; defaults to global fetch. */
@@ -315,7 +385,21 @@ export async function measureSyncReadPayloadsViaRest(opts: {
       const text = await res.text();
       const ms = Date.now() - started;
       if (!res.ok) {
-        measured.push({ name, bytes: text.length, ms, rows: null, overBudget: false, allowlisted: Boolean(SYNC_READ_ALLOWLIST[name]), error: `HTTP ${res.status}` });
+        // An errored fetch is never judged over-budget (its bytes are an error
+        // body), but it still carries the ceilings so a reader can see what it
+        // WOULD have been held to.
+        measured.push({
+          name,
+          bytes: text.length,
+          ms,
+          rows: null,
+          overBudget: false,
+          overBytes: false,
+          overMs: false,
+          ...budgetCeilings(name),
+          allowlisted: Boolean(SYNC_READ_ALLOWLIST[name]),
+          error: `HTTP ${res.status}`,
+        });
         continue;
       }
       let rows: number | null = null;
@@ -326,14 +410,35 @@ export async function measureSyncReadPayloadsViaRest(opts: {
       } catch {
         /* non-JSON body — keep rows null, still measure bytes */
       }
-      const { overBudget, allowlisted } = evaluateBudget(name, text.length, ms);
-      measured.push({ name, bytes: text.length, ms, rows, overBudget, allowlisted });
+      measured.push({ name, bytes: text.length, ms, rows, ...evaluateBudget(name, text.length, ms) });
     } catch (err) {
-      measured.push({ name, bytes: 0, ms: Date.now() - started, rows: null, overBudget: false, allowlisted: Boolean(SYNC_READ_ALLOWLIST[name]), error: err instanceof Error ? err.message : String(err) });
+      measured.push({
+        name,
+        bytes: 0,
+        ms: Date.now() - started,
+        rows: null,
+        overBudget: false,
+        overBytes: false,
+        overMs: false,
+        ...budgetCeilings(name),
+        allowlisted: Boolean(SYNC_READ_ALLOWLIST[name]),
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
   measured.sort((a, b) => b.bytes - a.bytes);
+  // The two buckets are DISJOINT and both are derived from the same `overBudget`
+  // — the point of WI-7084 is that every over-budget row now lands in exactly one
+  // of them instead of an allowlisted one landing in neither.
   const violations = measured.filter((m) => m.overBudget && !m.allowlisted);
-  return { measured, violations, skipped, budgetBytes: PAYLOAD_BUDGET_BYTES, budgetMs: LATENCY_BUDGET_MS };
+  const ratchetRegressions = measured.filter((m) => m.overBudget && m.allowlisted);
+  return {
+    measured,
+    violations,
+    ratchetRegressions,
+    skipped,
+    budgetBytes: PAYLOAD_BUDGET_BYTES,
+    budgetMs: LATENCY_BUDGET_MS,
+  };
 }

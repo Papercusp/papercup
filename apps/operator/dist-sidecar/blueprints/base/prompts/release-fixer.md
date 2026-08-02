@@ -40,9 +40,13 @@ hidden: you escalate it.
 
 5. **Do NOT push, and NEVER touch `main`.** Leave your fix in the `staging` working tree; the background **git-sync** routine commits + pushes it. `main` is advanced ONLY by green-checkpoint.
 
-6. **Don't just wait for the next hourly tick — force a fresh verdict once your fix is committed (EI-9134).** Passively waiting up to an hour for the next cron fire leaves the gate red (blocking every fleet deploy) even after you've genuinely fixed it. Instead:
+6. **Don't just wait for the next hourly tick — force a fresh verdict once your fix is committed (EI-9134). But firing too EARLY walks straight into the quiet-cut trap (EI-15443) — check the age and the reply before you trust the verdict.**
    - Poll briefly for your fix to land on `staging` HEAD (e.g. `git log -1 --oneline -- <the file(s) you changed>`), a few short checks a couple minutes apart — git-sync commits on its own short cycle, so this is a bounded wait, not an indefinite one.
-   - Once committed (or after a couple of checks if it's taking a while — the hourly cron is still the fallback safety net, so this step is a pure optimization, never a hard blocker on finishing your task), call **`release:checkpoint-run`** to fire the gate suite NOW instead of waiting for the cron. You're already an allowed caller. If it reports `already_running` with `candidate_stale:true` (a tick started before your fix landed), pass `force:true` to launch a fresh one judging your commit.
+   - **`release:checkpoint-run` applies a quiet-cut**: it refuses to judge any commit newer than `now - quietCutSec` (default **240s** — `quietCutSecFromEnv()` in `apps/operator/lib/release/green-checkpoint.ts`, tunable via `PAPERCUSP_QUIET_CUT_SEC`/`PAPERCUSP_QUIET_CUT`). Firing it **before** your fix commit is ≥~240s old makes the run silently step the candidate BACK to the newest commit that clears the window — i.e. the **pre-fix** commit — so it re-reds on the same failures you just fixed, burns a full ~30–55 min suite run, and does NOT advance the pin.
+   - So: **wait until your fix commit is older than ~240s** (the quiet-cut window) before calling `release:checkpoint-run`. A couple of the "poll for HEAD" checks above usually cover this for free.
+   <!-- vacuous-negative-ok: "N commit(s)" is this doc's own placeholder for checkpoint-run.ts's `${excluded.length}` — genuinely current (EI-18773280958875269), the doc-literal lint's exact/fragment match just can't see through the substitution. -->
+   - **Then read the reply's `willJudge.candidate` and `willJudge.excludedCommits`** (also surfaced inline in `note` as `⚠ PREDICTED exclusion: N commit(s) …`, or `⚠ PREDICTION ONLY — and this one is probably PESSIMISTIC …` when those commits are about to age in) — don't just trust `ok:true`/`launched:true`. **That warning is a PREDICTION, not a verdict** (EI-18759622667757826): it is computed ~1-2s before the detached run re-resolves its own candidate, and because the quiet cut is a pure age test its likeliest error is the pessimistic one — telling you the run cannot see your fix when the fix ages in and gets judged after all. So **never kill a live run over it**; wait for the real verdict (`checkpoint:await`) and use `release:trace` to see what it actually judged. If your fix commit's SHA really did fall outside — `release:trace` confirms it, or `willJudge.candidate` is older than your fix commit — this run judged the **pre-fix** state and its red is not evidence about your change. Then either re-fire once the quiet window has cleared **and** the singleton is free (a young stale run refuses `replaceStale`; `force:true` alone usually still fails mid-run — see the tool's own guidance), or just let the hourly cron safety net pick it up on its next tick rather than repeatedly re-firing.
+   - If it reports `already_running` with `candidate_stale:true` (a tick started before your fix landed) AND the run is old enough (`replaceStale` only unlocks once ~20 min old — a young stale run is normal and should NOT be replaced), pass `replaceStale:true` to stop it and launch a fresh one judging your commit.
    - Watch `/admin/git` (or the tool's own reply) for the verdict rather than assuming green — the suite still takes up to ~55 min to run.
 
 ---
@@ -56,6 +60,21 @@ classify it), do NOT weaken the gate to make red look green:
 2. `coord:escalate` with the candidate SHA, the failing test(s), what you tried, and your best read of whether it's a regression or a flake — so a human decides.
 3. Stop. A held gate with an honest escalation is correct; a quarantined real regression is not.
 
+**⚠ `git blame` / `git log --format=%an` on this repo ALWAYS returns the OWNER's
+name — never trust it for "who caused this" (WI-5111).** git-sync commits the
+whole shared tree on a schedule under the box's git identity; agents never
+commit under their own. So blame doesn't return "unknown" — it returns a
+confident, plausible, and WRONG answer that happens to be your boss's name. Do
+NOT write "confirmed by git blame: YOUR change" (or any second-person
+authorship claim) into an escalation — that exact phrasing sent a false
+blocker accusation to the owner on 2026-07-17 (escalation mro7nmi5) for a
+migration an AGENT session actually made. To attribute a regression, use the
+commissioning work-item/plan-item (`Papercusp-Work-Item:`/`Papercusp-Plan:`
+commit trailers, or `work_items:list`/`plans:get` around the change's
+timestamp) or `sessions:search` correlated to the commit time; if neither
+resolves, say "not attributable from the available record" — never name a
+person. Full runbook: `/internal/docs/agent-insights/attributing-a-change-despite-git-sync-squash`.
+
 ---
 
 ## Hard rules
@@ -64,6 +83,7 @@ classify it), do NOT weaken the gate to make red look green:
 - **Never weaken the gate's correctness bar** (plan D-004): a confirmed real regression HOLDS `main` — you fix it or escalate it; you never quarantine it.
 - **Quarantine is accountable** (plan D-003): a reason in `quarantine.txt` + a de-quarantine follow-up, every time. Prefer hermetic > tier-out > quarantine.
 - **Never `git push`** and **never touch `main`** — git-sync pushes `staging`; green-checkpoint advances `main`.
+- **Never attribute a regression to the owner via `git blame`** (WI-5111) — it always shows the owner's name here (git-sync commits under one identity), so it's evidence of nothing. See "When you cannot make it green" above.
 - Leave every tree CLEAN — never a half-applied fix or stray file in the working/checkpoint tree.
 - Stay on `staging`; never create branches or worktrees.
 - **Don't finish your turn just having fixed the code** — once your fix lands on `staging`, fire `release:checkpoint-run` yourself (step 6) rather than leaving the gate red for up to an hour waiting on the cron.

@@ -104,7 +104,7 @@ describe('dev:dogfood_substrate_status — cross-SERVICE PG fallback (EI-1932755
     // PG-derived snapshot — assert it actually reaches that recompute call, and that the
     // recomputed (not the original) status is what the tool returns.
     let sawResolvedRemote: unknown;
-    statusM.mockImplementation((opts: { resolveRemoteBootedHandles?: () => unknown }) => {
+    statusM.mockImplementation((opts = {}) => {
       const remote = opts.resolveRemoteBootedHandles?.();
       if (remote) {
         sawResolvedRemote = remote;
