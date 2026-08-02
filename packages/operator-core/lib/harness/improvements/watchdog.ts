@@ -203,7 +203,21 @@ export type WatchdogSource =
   // (the await log lives in one coord workspace, NOT per-harness); no flag gate (a healthy
   // await log emits nothing, and an unwitnessed suspect never pages — see the detector's
   // module doc for why the witness leg is required):
-  | 'lost-wake';
+  | 'lost-wake'
+  // EI-18787755090726525: the live DB carries a migration NEWER than anything this
+  // running process's code tree ships — the opposite direction from `migration-drift`
+  // (which fires when code is ahead of the DB). An index-SHAPE-changing migration
+  // (e.g. mig 689 turning a unique index partial) applies to the shared DB the INSTANT
+  // it runs, while the matching code lags behind git-sync → green-checkpoint → deploy
+  // by minutes-to-hours; every process still running the stale code can fail on EVERY
+  // write in the interim (facts:assert fleet-wide down ~25min, 2026-07-27) with an
+  // error that names neither the table nor the cause. `checkMigrationDrift`'s existing
+  // `schemaAhead` field already computes this (WI-5050); it was previously surfaced
+  // ONLY as a boot-time console warning (db-boot-migrate.ts), which is silent for the
+  // exact failure window — a process that does not reboot never re-checks. Wiring it
+  // into the periodic (~15min) watchdog turns a ~25min silent fleet-wide outage into a
+  // paged, tracked finding within one tick, on every table, not just agent_facts:
+  | 'schema-ahead-of-code';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -1460,6 +1474,58 @@ export async function collectMigrationDriftSignals(
       `Watchdog signal (migration-drift): ${missingDeployed.length} migration file(s) exist on disk in the ` +
       `DEPLOYED tree but are NOT applied to the live database — runtime code expecting those columns/tables ` +
       `will fail until the operator restarts (boot-apply).\n\nUnapplied: ${missingDeployed.slice(0, 20).join(', ')}${scanned}`,
+    severity: 'critical',
+    kind: 'bug',
+    paths: ['libs/papercusp/libs/db/sql'],
+  }];
+}
+
+/**
+ * schema-ahead-of-code (EI-18787755090726525): the OPPOSITE direction from
+ * `collectMigrationDriftSignals` above. That collector fires when code ships migrations
+ * the live DB hasn't applied yet; this one fires when the live DB has APPLIED a
+ * migration numbered higher than anything this running code tree ships — i.e. a
+ * migration landed on the shared DB (instantly, the moment it runs) before the code
+ * that depends on its new shape reached this process (which rides git-sync →
+ * green-checkpoint → deploy, and can lag by minutes to hours).
+ *
+ * For an ordinary additive migration (a new column/table) that gap is harmless: old
+ * code simply doesn't use the new shape yet. It is NOT harmless for an identity-INDEX
+ * shape change — Postgres infers an `ON CONFLICT` target by matching a live index, so
+ * a partial-index migration (e.g. mig 689 adding `WHERE superseded_at IS NULL`) makes
+ * every write from a still-running, pre-migration process fail at PLAN time with
+ * "no unique or exclusion constraint matching the ON CONFLICT specification" — an
+ * error that names neither the table nor the migration. That took `facts:assert` down
+ * fleet-wide for ~25min on 2026-07-27, self-healing only once the matching code
+ * deployed, with nothing paging in the interim.
+ *
+ * `checkMigrationDrift`'s `schemaAhead` field already computes exactly this set (added
+ * for WI-5050, a different incident — a stale dev-source tree serving a newer-migrated
+ * DB); it was previously surfaced ONLY as a `console.warn` on operator BOOT
+ * (db-boot-migrate.ts), which cannot catch a process that is already running through
+ * the gap — the exact window this bug describes. Wiring it into the periodic watchdog
+ * (~15min cadence) turns a silent, fleet-wide, minutes-to-hours-long outage into a
+ * paged, tracked finding within one tick, generalized past agent_facts to any table.
+ */
+export async function collectSchemaAheadSignals(
+  check: () => Promise<{ schemaAhead: string[]; sqlDir?: string | null }> = checkMigrationDrift,
+): Promise<WatchdogSignal[]> {
+  let drift: { schemaAhead: string[]; sqlDir?: string | null };
+  try { drift = await check(); } catch { return []; }
+  if (!drift.schemaAhead?.length) return [];
+  const scanned = drift.sqlDir ? `\n\nThis tree's sql dir: ${drift.sqlDir}` : '';
+  return [{
+    source: 'schema-ahead-of-code',
+    key: 'schema-ahead-of-code',
+    title: 'Schema AHEAD of code: the live DB has applied migrations this running tree does not ship',
+    body:
+      `Watchdog signal (schema-ahead-of-code): ${drift.schemaAhead.length} migration(s) are applied to the ` +
+      `live database but numbered higher than anything this process's code tree ships. If any of them changed ` +
+      `an identity INDEX's shape (e.g. adding a partial-index predicate), every ON CONFLICT write that infers ` +
+      `its target against the OLD index shape fails at plan time until the matching code deploys — a ` +
+      `fleet-wide, table-wide outage with an error that names neither the table nor the cause (EI-18787755090726525` +
+      `; ~25min facts:assert outage, 2026-07-27). Update/redeploy this process's code tree.\n\n` +
+      `DB-side migrations unknown to this tree: ${drift.schemaAhead.slice(0, 20).join(', ')}${scanned}`,
     severity: 'critical',
     kind: 'bug',
     paths: ['libs/papercusp/libs/db/sql'],

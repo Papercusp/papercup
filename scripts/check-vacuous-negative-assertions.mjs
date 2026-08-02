@@ -212,11 +212,21 @@ export const DOC_PROMPT_RE = /^libs\/papercusp\/packages\/harness\/blueprints\/[
 const BANNER_MARK_RE = /[⚠✓✗✅❌🚫⛔]/;
 
 /**
- * "Looks like it names emitted output" — the ticket's own predicate: prose-shaped
- * (≥3 words, mostly letters) OR carries a banner marker. Unlike `proseShaped` above,
- * digits are NOT disqualifying: a real banner routinely embeds a placeholder word or
- * count ("N commit(s)"), and rejecting on `\d` would silently exempt the exact shape
- * that bit this repo (`⚠ PREDICTED exclusion: N commit(s) …`).
+ * "Looks like it names emitted output" — deliberately narrowed to the banner-marker
+ * case ONLY, not the ticket's full "prose-shaped OR banner marker" predicate. A first
+ * pass with the OR'd prose branch (≥3 words, mostly letters, no digit) returned 245
+ * findings across 74 files on this repo's real prompt corpus — dominated by CLI-usage
+ * examples (`harness-features list <your-slug>`, a curl/jq invocation) that are
+ * legitimately prose-shaped by that measure but are USAGE TEMPLATES, not quoted
+ * emitted output, and blueprint prompts are full of them by design. A report nobody
+ * can act on trains the same "ignore the alarm" reflex CLAUDE.md's own load-average /
+ * false-alarm sections warn about. The banner-marker signal alone is what the
+ * motivating instance actually was (`⚠ quiet-cut EXCLUDED`), every genuinely-emitted
+ * banner in this codebase carries one (the `⚠`/`✓`/`✗`/`✅` convention is used
+ * pervasively per CLAUDE.md's own pipeline-state examples), and a marked backtick span
+ * is a shell command/URL/path essentially never. Widening back to prose-without-marker
+ * is a real option later, but needs its own noise-reduction pass (reject shell-shaped
+ * spans: `/`, `<`, `$`, `|`, leading CLI verbs) — scoped out of this ticket's landing.
  *
  * @param {string} lit
  * @returns {boolean}
@@ -224,11 +234,7 @@ const BANNER_MARK_RE = /[⚠✓✗✅❌🚫⛔]/;
 export function looksLikeEmittedOutput(lit) {
   const trimmed = lit.trim();
   if (trimmed.length < 4) return false;
-  if (BANNER_MARK_RE.test(trimmed)) return true;
-  const words = trimmed.split(/\s+/).filter(Boolean);
-  if (words.length < 3) return false;
-  if (trimmed.length < 15) return false;
-  return (trimmed.match(/[A-Za-z]/g) || []).length / trimmed.length >= 0.6;
+  return BANNER_MARK_RE.test(trimmed);
 }
 
 /**

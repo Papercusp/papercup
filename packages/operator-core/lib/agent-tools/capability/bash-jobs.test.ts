@@ -179,7 +179,10 @@ describe('terminal log marker (EI-18764990059061608)', () => {
   it('a RUNNING background job has NOT written the marker yet', async () => {
     const job = startBackground({ command: 'sleep 5', cwd: STATE, stateDir: STATE }, 10_000);
     expect(job.status).toBe('running');
-    const logContent = readFileSync(job.logPath, 'utf8');
+    // createWriteStream opens the fd asynchronously — the file may not exist on
+    // disk yet at this exact instant. Absence-of-file is itself "no marker yet",
+    // same as an existing-but-empty (or not-yet-marker-bearing) file.
+    const logContent = existsSync(job.logPath) ? readFileSync(job.logPath, 'utf8') : '';
     expect(logContent).not.toContain(JOB_LOG_END_MARKER_PREFIX);
     killJob(job);
   });

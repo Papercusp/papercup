@@ -649,7 +649,18 @@ function headTail(s: string): string {
 
 function safeWriteStream(path: string): WriteStream | null {
   try {
-    return createWriteStream(path, { flags: 'w' });
+    const stream = createWriteStream(path, { flags: 'w' });
+    // EI-18764990059061608's own test suite surfaced this: a stream with no
+    // 'error' listener turns ANY write-time fault (ENOSPC, EBADF, or a write
+    // racing an `end()` issued elsewhere — e.g. __resetBashJobs tearing down a
+    // just-killed job whose 'close' handler fires a moment later) into an
+    // UNCAUGHT exception that can crash the whole operator process over what is
+    // only a best-effort spill log. Losing the tail of a log is far cheaper than
+    // that.
+    stream.on('error', () => {
+      /* best-effort spill; a write/close fault here must never crash the process */
+    });
+    return stream;
   } catch {
     return null;
   }
