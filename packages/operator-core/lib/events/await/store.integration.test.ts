@@ -25,7 +25,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
 
-const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, cancelAwaitsByIds, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes, recordKeyFire, getKeyFireLatch, inspectEventKey, probeKeyFireEvidence, keyFireEvidencePrefix } =
+const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, cancelAwaitsByIds, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes, recordKeyFire, getKeyFireLatch, inspectEventKey, probeKeyFireEvidence, keyFireEvidencePrefix, probePatternMatchScope } =
   await import('./store');
 
 let rootSql: postgres.Sql;
@@ -57,7 +57,12 @@ beforeAll(async () => {
       once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false,
       payload_filter jsonb,
       causal_generation bigint, expected_condition jsonb, superseded_at timestamptz,
-      fired_by text, fired_payload jsonb
+      fired_by text, fired_payload jsonb,
+      -- migration 572 (composable-event-awaits): composed-TREE leaf columns. A plain
+      -- await leaves them NULL, but store.ts SELECTs root_id unconditionally
+      -- (listParkedAwaitsForSubscribers), so omitting them here failed that query with
+      -- a missing-column error -- fixture drift from the migration, not a prod bug.
+      node_id bigint, root_id bigint, member_fired_at timestamptz, member_payload jsonb
     )`);
   await rootSql.unsafe(`
     CREATE UNIQUE INDEX event_awaits_inbox_wake_one_per_agent
@@ -442,5 +447,76 @@ describe('probeKeyFireEvidence (PG) — EI-18676056143796303, the emitter eviden
     await recordKeyFire({ eventKey: 'wild:other:x' });
     expect((await probeKeyFireEvidence('wild:%:y')).fires).toBe(0);
     expect((await probeKeyFireEvidence('wild:_ther:y')).fires).toBe(0);
+  });
+});
+
+describe('probePatternMatchScope (PG) — EI-19332682533219755, the cross-pipeline glob disclosure', () => {
+  it('REPRODUCES THE INCIDENT: release:green:* spans co-hosted pipelines, and names the foreign one', async () => {
+    // The real latch on this host at the time of filing: papercusp's own gate key
+    // plus three other projects sharing the box. An agent armed `release:green:*`
+    // meaning "MY gate", and woke on oddsmith's verdict — satisfied:true, carrying
+    // a sha that is not even an object in this repository.
+    await recordKeyFire({ eventKey: 'release:green:papercusp' });
+    await recordKeyFire({ eventKey: 'release:green:oddsmith' });
+    await recordKeyFire({ eventKey: 'release:green:hello-world-3' });
+
+    const scope = await probePatternMatchScope('release:green:*');
+
+    expect(scope.prefix).toBe('release:green');
+    expect(scope.matchedKeys).toHaveLength(3);
+    expect(scope.matchedKeys).toEqual(expect.arrayContaining([
+      'release:green:papercusp',
+      'release:green:oddsmith',
+      'release:green:hello-world-3',
+    ]));
+    expect(scope.truncated).toBe(false);
+  });
+
+  it('does NOT match the BARE family key — `release:green:*` requires a pipeline segment', async () => {
+    // The emitter fires BOTH the global `release:green` and the scoped form, so a
+    // probe that swept the bare key into the match set would over-report by one on
+    // every host and make a single-pipeline box look cross-scoped.
+    await recordKeyFire({ eventKey: 'release:green' });
+    await recordKeyFire({ eventKey: 'release:green:papercusp' });
+
+    const scope = await probePatternMatchScope('release:green:*');
+    expect(scope.matchedKeys).toEqual(['release:green:papercusp']);
+  });
+
+  it('narrows with the REAL matcher, not just the prefix scan — a mid-key glob excludes non-matches', async () => {
+    await recordKeyFire({ eventKey: 'fleet:drained:red' });
+    await recordKeyFire({ eventKey: 'fleet:member-dead:red' });
+    await recordKeyFire({ eventKey: 'fleet:drained:blue' });
+
+    const scope = await probePatternMatchScope('fleet:*:red');
+    // The prefix scan can only anchor on 'fleet', so blue is read and then REJECTED
+    // by keyMatchesPattern — proving the two stages compose.
+    expect(scope.prefix).toBe('fleet');
+    expect(scope.matchedKeys.sort()).toEqual(['fleet:drained:red', 'fleet:member-dead:red']);
+  });
+
+  it('returns nothing for an EXACT key — the recommended fix must never warn about itself', async () => {
+    await recordKeyFire({ eventKey: 'release:green:papercusp' });
+    const scope = await probePatternMatchScope('release:green:papercusp');
+    expect(scope.matchedKeys).toEqual([]);
+  });
+
+  it('bounds a wildcard-led glob instead of scanning the whole table unanchored', async () => {
+    await recordKeyFire({ eventKey: 'release:green:papercusp' });
+    await recordKeyFire({ eventKey: 'other:family:papercusp' });
+    const scope = await probePatternMatchScope('*:papercusp');
+    // No anchorable prefix, so the scan is recency-bounded — but the matcher still
+    // decides membership, so both genuinely-matching keys are reported.
+    expect(scope.prefix).toBe('');
+    expect(scope.matchedKeys.sort()).toEqual(['other:family:papercusp', 'release:green:papercusp']);
+  });
+
+  it('flags a capped scan as truncated so the caller reads the count as a floor', async () => {
+    await recordKeyFire({ eventKey: 'many:key:a' });
+    await recordKeyFire({ eventKey: 'many:key:b' });
+    await recordKeyFire({ eventKey: 'many:key:c' });
+    const scope = await probePatternMatchScope('many:key:*', { limit: 2 });
+    expect(scope.truncated).toBe(true);
+    expect(scope.matchedKeys.length).toBeLessThanOrEqual(2);
   });
 });

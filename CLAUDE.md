@@ -659,7 +659,12 @@ check `inFlightRetriage` **before** concluding a re-fire is needed. Two agents w
 firing one on 2026-08-02 while the automatic refire was already green on the affected suite.
 
 ✅ **You no longer have to remember to check — the verb itself now refuses with the answer**
-(EI-19343516395023183). `release:checkpoint-run`'s `already_running` reply reads the marker and,
+(EI-19343516395023183). ⚠ On staging; **NOT yet deployed** while the gate is red, so the live
+operator can still answer an in-flight rescue with the plain `held_externally` refusal — until it
+ships, keep checking the marker yourself. Flip this caveat only when `dev:pipeline_position { path:
+'packages/operator-core/lib/agent-tools/release/checkpoint-run.ts', marker: 'AUTO-REFIRE IN FLIGHT'
+}` reports `deployed: true`; a doc promising an absent safety net is worse than silence, because it
+makes the reader stop checking. `release:checkpoint-run`'s `already_running` reply reads the marker and,
 when a refire is in flight for THAT run, leads its `note` with `🚨 AUTO-REFIRE IN FLIGHT — STAND
 DOWN`, names both candidates (the one being judged **and** the one already discarded), lists the
 files the abandoned red named so you don't go fix them, and reports the budget via
