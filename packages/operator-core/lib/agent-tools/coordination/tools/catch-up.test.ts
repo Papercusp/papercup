@@ -39,7 +39,9 @@ vi.mock('../audience-host', async (orig) => {
       listTargetSubscribers: async () => h.members,
       listActivePresence: async () => [],
       listTaggedTopics: async () => [],
-      listFleetMembers: async () => h.members,
+      listFleetMembers: async () => {
+        throw new Error('PROBE_MOCK_LISTFLEETMEMBERS_HIT');
+      },
       listFleetLeader: async () => [],
     },
   };

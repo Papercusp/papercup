@@ -304,8 +304,49 @@ export async function resolveOwnerClaudeSession(ownerId: string): Promise<Sessio
   );
 }
 
+/**
+ * What actually happened to a sent message — P-002 (the wake-mode correctness
+ * bug).
+ *
+ * The old banner said "Sent — the agent is woken if it's live" unconditionally,
+ * which is not a claim this code was ever in a position to make. Two routine
+ * states make it false:
+ *   - the agent is in `coord:wake-mode` MANUAL, where wakes are STAGED for the
+ *     owner to release rather than delivered. The message is real and queued,
+ *     but the agent is not working on it and will not until released;
+ *   - no live session picked the wake up at all (`recipient_absent`).
+ * Both reported as unqualified success, which is the worst kind of wrong: the
+ * human walks away believing they have asked for something.
+ *
+ * Rather than pre-reading wake-mode and guessing, we report what the send
+ * RESPONSE says — the authority on what the platform did with it. That also
+ * catches the absent case for free, which a wake-mode pre-check would not.
+ */
+export type SendDelivery =
+  | { kind: 'woken'; count: number }
+  | { kind: 'staged' }
+  | { kind: 'absent' }
+  | { kind: 'queued' };
+
+/** Read the delivery outcome out of a coord:send response. PURE → unit-tested. */
+export function deliveryFromSendResponse(body: unknown): SendDelivery {
+  const first = (body as { results?: Array<Record<string, unknown>> } | null)?.results?.[0];
+  if (!first) return { kind: 'queued' };
+  const wake = first.wake as { woken?: number; staged?: number | boolean } | undefined;
+  if (wake) {
+    if (typeof wake.woken === 'number' && wake.woken > 0) return { kind: 'woken', count: wake.woken };
+    // A staged wake is the manual-mode case: accepted, held for release.
+    if (wake.staged) return { kind: 'staged' };
+  }
+  if (first.recipient_absent === true) return { kind: 'absent' };
+  if (first.staged === true) return { kind: 'staged' };
+  // Delivered to the inbox with no wake attempted/reported — it will be read at
+  // the agent's next turn. Honest middle ground, not a claim of attention.
+  return { kind: 'queued' };
+}
+
 /** Send a live message to the session's owner. Exported for tests. */
-export async function sendToSessionOwner(ownerId: string, body: string): Promise<void> {
+export async function sendToSessionOwner(ownerId: string, body: string): Promise<SendDelivery> {
   const r = await fetch('/api/admin/coord/send', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -318,6 +359,14 @@ export async function sendToSessionOwner(ownerId: string, body: string): Promise
   });
   const text = await r.text();
   if (!r.ok) throw new Error(`coord:send → ${r.status}: ${text.slice(0, 200)}`);
+  // A non-JSON 200 is not a failure to report to the user — the message WAS
+  // accepted; we simply cannot characterise the delivery. Degrade to the
+  // weakest honest claim rather than inventing a stronger one.
+  try {
+    return deliveryFromSendResponse(JSON.parse(text));
+  } catch {
+    return { kind: 'queued' };
+  }
 }
 
 /** Same tone→class mapping HudBoard.tsx uses for its badge chips (P-007) —
@@ -613,7 +662,8 @@ export default function SessionChatModal({
   const [resolving, setResolving] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [sentOk, setSentOk] = useState(false);
+  // P-002: the DELIVERY OUTCOME, not a boolean. `null` = nothing sent yet.
+  const [sentOk, setSentOk] = useState<SendDelivery | null>(null);
 
   const open = sessionOwnerId !== null;
   // P-008: this owner's pending coord-escalation(s) with named options — the
@@ -637,7 +687,7 @@ export default function SessionChatModal({
     setResolved(null);
     setResolveError(null);
     setSendError(null);
-    setSentOk(false);
+    setSentOk(null);
     if (!sessionOwnerId) return;
     let cancelled = false;
     setResolving(true);
@@ -672,10 +722,10 @@ export default function SessionChatModal({
   const handleSend = (text: string) => {
     if (!sessionOwnerId) return;
     setSendError(null);
-    setSentOk(false);
+    setSentOk(null);
     setSending(true);
     sendToSessionOwner(sessionOwnerId, text)
-      .then(() => setSentOk(true))
+      .then((delivery) => setSentOk(delivery))
       .catch((e: unknown) => setSendError(e instanceof Error ? e.message : String(e)))
       .finally(() => setSending(false));
   };
@@ -1124,6 +1174,23 @@ export default function SessionChatModal({
                 {screenActive ? <Minimize size={12} aria-hidden="true" /> : <Maximize size={12} aria-hidden="true" />}
               </button>
             </Tooltip>
+            {/* P-015: same gate as the detail toggle below, same reason — both
+                panels are siblings of the conversation region, so neither can
+                be shown while it is maximized. Ordered LEFT-toggle first to
+                match the panels' own left-to-right order. */}
+            {!maximized ? (
+              <button
+                type="button"
+                className="pc-button"
+                onClick={() => void setOrdersOpen(!ordersOpen)}
+                aria-pressed={ordersOpen}
+                aria-label={ordersOpen ? 'Hide agent orders' : 'Show agent orders'}
+                data-testid="session-chat-orders-toggle"
+                style={CHAT_TOOLBAR_BUTTON_STYLE}
+              >
+                {ordersOpen ? '‹ Orders' : 'Orders ›'}
+              </button>
+            ) : null}
             {/* The detail toggle only makes sense while the rail can be shown;
                 maximized deliberately has no rail (D-002). */}
             {!maximized ? (
@@ -1213,7 +1280,25 @@ export default function SessionChatModal({
             onOpenDetail={scrollToDossierSection}
           />
         ) : null}
-        {sentOk ? <div style={BANNER_STYLE}>Sent — the agent is woken if it's live.</div> : null}
+        {/* P-002: say what ACTUALLY happened. "Staged" is the case this fixes —
+            a manual-wake-mode agent has the message held for you to release, so
+            reporting a bare "Sent" sends the human away believing they have
+            asked for something that is not yet in front of anyone. */}
+        {sentOk ? (
+          <div
+            style={sentOk.kind === 'woken' ? BANNER_STYLE : { ...BANNER_STYLE, color: 'var(--warn, #fbbf24)' }}
+            data-testid="session-chat-send-outcome"
+            data-delivery={sentOk.kind}
+          >
+            {sentOk.kind === 'woken'
+              ? 'Sent — the agent was woken and is working on it.'
+              : sentOk.kind === 'staged'
+                ? 'Staged — this agent has manual wakes, so the message is held until you release it. It is not working on this yet.'
+                : sentOk.kind === 'absent'
+                  ? 'Delivered to the inbox, but no live session picked it up — the agent may need respawning.'
+                  : 'Delivered to the agent’s inbox — it will be read at its next turn.'}
+          </div>
+        ) : null}
         </div>
         {/* ── Below the conversation region, therefore excluded from maximize
             (P-001 / D-002). These are the "panes below" of the owner's ask. ── */}

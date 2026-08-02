@@ -72,6 +72,21 @@ export function livenessProbeUrl(port = PORT) {
  *  bg-host's 30s poll granularity) so a real wedge is caught within ~1min, not left to fester. */
 const UNREACHABLE_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_UNREACHABLE_MS) || 45_000;
 const DEBOUNCE_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_DEBOUNCE_MS) || 5 * 60_000;
+/**
+ * RATE escalation (WI-6744). The restart threshold above only fires on ONE outage lasting
+ * >= UNREACHABLE_MS. A burst of short outages that each self-recover therefore produces a run of
+ * `recovered (was unreachable 10s)` lines and no action — which READS as a system healing itself
+ * rather than one failing repeatedly. Severity was invisible at the layer that observed it.
+ *
+ * ⚠ ORDERING: this detector is only safe because the liveness probe no longer traverses the
+ * upstream (WI-6743/WI-6924). Before that fix an `unreachable` event mostly meant "a deploy
+ * restarted :3070", so escalating on rate would have paged on ~76 routine deploys a month and
+ * been muted within a week. Now an event means the proxy failed to answer its OWN local route,
+ * which is always worth counting. Do not reintroduce a forwarded liveness path without also
+ * reconsidering these numbers.
+ */
+const RATE_WINDOW_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_RATE_WINDOW_MS) || 60 * 60_000;
+const RATE_THRESHOLD = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_RATE_THRESHOLD) || 3;
 const MAX_RESTARTS_PER_HR = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_MAX_RESTARTS_HR) || 6;
 const UNIT = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_UNIT || 'papercup-mcp-proxy';
 /** Durable, journald-INDEPENDENT decision log — see the bg-host / inference-gateway watchdogs'
@@ -136,6 +151,9 @@ const DB_PROBE_TOOL = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_TOOL || 
 const SUPERUSER_TOKEN_FILE = join(homedir(), '.papercusp', 'superuser-token');
 
 let unreachableSince = 0;
+/** Onset timestamps of recent unreachable episodes — the rolling window behind WI-6744. */
+let stallOnsets = [];
+let lastRateEscalationAt = 0;
 let handshakeFailingSince = 0;
 let dataFailingSince = 0;
 let lastRestart = 0;
@@ -161,6 +179,19 @@ const log = (m) => {
 export function shouldRestart(unreachableSinceMs, nowMs, thresholdMs = UNREACHABLE_MS) {
   if (!unreachableSinceMs) return false;
   return nowMs - unreachableSinceMs >= thresholdMs;
+}
+
+/**
+ * Pure decision for RATE escalation (WI-6744): drop events older than the window, then report
+ * whether the survivors reach the threshold. Exported for the same reason as shouldRestart —
+ * so the judgement is unit-testable without a live poll loop.
+ *
+ * Takes the event list by value and RETURNS the pruned list; the caller owns the state. Counting
+ * a self-recovering burst is the whole point: each event individually looks like a recovery.
+ */
+export function evaluateStallRate(eventTimesMs, nowMs, windowMs = RATE_WINDOW_MS, threshold = RATE_THRESHOLD) {
+  const kept = eventTimesMs.filter((t) => nowMs - t < windowMs);
+  return { kept, count: kept.length, escalate: kept.length >= threshold, windowMs, threshold };
 }
 
 /**
@@ -375,6 +406,21 @@ async function poll() {
     if (!unreachableSince) {
       unreachableSince = now;
       log(`unreachable (${e.message})`);
+      // WI-6744: count the ONSET, so a burst of short self-recovering outages is visible as a
+      // rate even though each one individually ends in a reassuring `recovered` line.
+      stallOnsets.push(now);
+      const rate = evaluateStallRate(stallOnsets, now, RATE_WINDOW_MS, RATE_THRESHOLD);
+      stallOnsets = rate.kept;
+      if (rate.escalate && now - lastRateEscalationAt >= RATE_WINDOW_MS) {
+        lastRateEscalationAt = now;
+        log(
+          `CRITICAL: ${rate.count} proxy stalls in the last ${Math.round(rate.windowMs / 60_000)}min ` +
+            `(threshold ${rate.threshold}) — each one self-recovered, so nothing has been restarted, but a ` +
+            `repeatedly-stalling proxy can kill whichever agent session is mid-handshake (WI-6740). ` +
+            `Since WI-6924 the liveness probe is proxy-local, so these are NOT :3070 deploys: the proxy ` +
+            `is failing to answer its own route. Investigate ${UNIT}; do not just wait for a longer outage.`,
+        );
+      }
     } else if (shouldRestart(unreachableSince, now, UNREACHABLE_MS)) {
       restart(`unreachable for ${Math.round((now - unreachableSince) / 1000)}s (${e.message})`);
     }

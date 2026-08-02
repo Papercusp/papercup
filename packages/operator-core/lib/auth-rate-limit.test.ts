@@ -12,6 +12,17 @@ let pgReachable = false;
 let mod: typeof import('./auth-rate-limit') | null = null;
 
 beforeAll(async () => {
+  // EI-19311807188719573 / WI-6877: the unit layer sets PAPERCUSP_FORBID_REAL_PG=1, which makes
+  // buildClient() throw on any real pool. Like the sibling this file names in its docstring
+  // (auth.test.ts), the code under test is end-to-end SQL with no separable pure path, so it
+  // takes the documented per-file opt-out from libs/test-config/src/setup-no-real-pg.ts: delete
+  // the var in our own beforeAll, which runs AFTER that module-level set and therefore wins.
+  //
+  // The pgReachable probe below CANNOT absorb this on its own: it opens a raw `pg` Client, which
+  // the rail does not guard (it guards buildClient, the shared-pool choke point). So the probe
+  // succeeds, pgReachable stays true, and the rail then throws inside auth-rate-limit.ts. A
+  // reachability probe that does not travel the same path as the code under test cannot gate it.
+  delete process.env.PAPERCUSP_FORBID_REAL_PG;
   try {
     const { pgClientFields } = await import('./memory/mem0-connection');
     const fields = await pgClientFields();

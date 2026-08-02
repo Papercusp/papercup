@@ -40,6 +40,14 @@ export function shouldRestart(
   thresholdMs?: number,
 ): boolean;
 
+/** Rolling-window verdict for stall RATE (WI-6744). Returns the pruned event list. */
+export function evaluateStallRate(
+  eventTimesMs: number[],
+  nowMs: number,
+  windowMs?: number,
+  threshold?: number,
+): { kept: number[]; count: number; escalate: boolean; windowMs: number; threshold: number };
+
 export function classifyProbeResult(result?: {
   networkError?: unknown;
   status?: number;

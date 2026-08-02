@@ -185,10 +185,11 @@ export default function PlanInputsPanel({
       if ('error' in res) {
         // set-template-data validates on write, so this is a real schema violation —
         // surface it rather than a generic failure.
-        const detail =
-          typeof (res as { hint?: unknown }).hint === 'string'
-            ? (res as { hint: string }).hint
-            : String(res.error);
+        // The error variant is an open record, so `hint` is `unknown` — read it
+        // through the index signature and narrow, rather than asserting a shape the
+        // server is not obliged to send.
+        const hint = res.hint;
+        const detail = typeof hint === 'string' ? hint : String(res.error);
         toast.error(`Save failed: ${detail}`, { duration: 10000 });
         return;
       }

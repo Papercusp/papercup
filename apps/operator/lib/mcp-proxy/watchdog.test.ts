@@ -13,6 +13,7 @@ let classifyDataPlaneResult: Watchdog['classifyDataPlaneResult'];
 let decideHandshakeAction: Watchdog['decideHandshakeAction'];
 let LIVENESS_PROBE_PATH: Watchdog['LIVENESS_PROBE_PATH'];
 let livenessProbeUrl: Watchdog['livenessProbeUrl'];
+let evaluateStallRate: Watchdog['evaluateStallRate'];
 beforeAll(async () => {
   ({
     shouldRestart,
@@ -21,6 +22,7 @@ beforeAll(async () => {
     decideHandshakeAction,
     LIVENESS_PROBE_PATH,
     livenessProbeUrl,
+    evaluateStallRate,
   } = await import('./watchdog.mjs'));
 });
 
@@ -85,6 +87,51 @@ describe('mcp-proxy watchdog — shouldRestart (unreachability threshold)', () =
     const now = Date.now();
     expect(shouldRestart(now - 5_000, now, 10_000)).toBe(false);
     expect(shouldRestart(now - 15_000, now, 10_000)).toBe(true);
+  });
+});
+
+/**
+ * WI-6744 — escalate on stall FREQUENCY, not only on one long outage.
+ *
+ * shouldRestart only fires when a SINGLE outage exceeds the threshold, so a burst of short
+ * outages that each self-recover produces a run of reassuring `recovered (was unreachable 10s)`
+ * lines and no action at all. That is how WI-6740 survived three weeks: severity was invisible
+ * at the layer that observed it.
+ */
+describe('mcp-proxy watchdog — evaluateStallRate (burst detection)', () => {
+  const now = 1_700_000_000_000;
+  const HOUR = 3_600_000;
+
+  it('does not escalate below the threshold', () => {
+    const r = evaluateStallRate([now - 60_000, now - 120_000], now, HOUR, 3);
+    expect(r.count).toBe(2);
+    expect(r.escalate).toBe(false);
+  });
+
+  it('THE POINT: escalates on a burst of SELF-RECOVERED stalls, which shouldRestart never sees', () => {
+    const onsets = [now - 1_000, now - 600_000, now - 1_200_000];
+    // Each of these recovered in ~10s, so the single-outage detector stays silent...
+    for (const t of onsets) expect(shouldRestart(t, t + 10_000, 45_000)).toBe(false);
+    // ...but the rate detector fires.
+    expect(evaluateStallRate(onsets, now, HOUR, 3).escalate).toBe(true);
+  });
+
+  it('prunes events outside the window and returns the survivors', () => {
+    const r = evaluateStallRate([now - 10_000, now - HOUR - 1, now - 2 * HOUR], now, HOUR, 3);
+    expect(r.kept).toEqual([now - 10_000]);
+    expect(r.count).toBe(1);
+    expect(r.escalate).toBe(false);
+  });
+
+  it('an old burst that has aged out does not keep firing', () => {
+    const stale = [now - HOUR - 1, now - HOUR - 2, now - HOUR - 3];
+    expect(evaluateStallRate(stale, now, HOUR, 3)).toMatchObject({ count: 0, escalate: false });
+  });
+
+  it('escalates exactly AT the threshold, not one past it', () => {
+    const three = [now - 1, now - 2, now - 3];
+    expect(evaluateStallRate(three, now, HOUR, 3).escalate).toBe(true);
+    expect(evaluateStallRate(three.slice(0, 2), now, HOUR, 3).escalate).toBe(false);
   });
 });
 

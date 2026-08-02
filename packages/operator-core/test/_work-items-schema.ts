@@ -193,7 +193,19 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- one is an explicit list, so it has to be named here or every integration test
       -- reading authority through the issue family would see "column does not exist"
       -- while live works fine.
-      authority
+      authority,
+      -- migration 698 (work-items-closed-ts): production dynamically ALTERs BOTH family
+      -- views (engineer_issues + harness_features_consolidated) to expose this column via
+      -- a pg_get_viewdef regex-replace, so no literal "CREATE VIEW ... closed_ts" line
+      -- exists in 698's migration file to grep for — easy to miss when hand-maintaining
+      -- this fixture. ISSUE_COLS (work-items.ts) selects it on every issue-family read, so
+      -- omitting it here fails EVERY test that reads an issue through this view with
+      -- 'column "closed_ts" does not exist' — the same class of fixture drift the
+      -- feature-family closed_ts column comment above already documents, just missed on
+      -- the issue-family view when 698 landed. Found via EI-19313515375179600 (WI-6822
+      -- follow-up): every test in work-items-claim-issue-scope-reread.integration.test.ts
+      -- was red for this reason, including ones unrelated to that item's own fix.
+      closed_ts
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;

@@ -15,6 +15,19 @@ import { generateEd25519KeypairDer, signWithPrivateKeyDer, verifyEd25519 } from 
 const WS = 'ws';
 const HOME = 'home';
 
+/**
+ * EI-19311807188719573 / WI-6915: `resolveWorkspaceId` DEFAULTS to the real
+ * `resolveHiveWorkspaceId`, which opens the live `org-admin` Postgres pool. Every test
+ * below injects the other seams, so an un-injected resolver was the ONE escaped mock —
+ * these unit tests were silently reading the developer's real database on every run
+ * until the no-real-PG rail surfaced it.
+ *
+ * Identity resolver for the cases that are NOT exercising the resolution step. The two
+ * WI-5321/WI-5061 tests deliberately inject their own asserting version instead — do
+ * not replace those with this one, it would erase what they exist to prove.
+ */
+const IDENTITY_RESOLVE: NonNullable<AuthorHivePolicySeams['resolveWorkspaceId']> = async (ws) => ws;
+
 function writeCapture() {
   const writes: Array<{ workspaceId: string; policyJson: string; signature: string; ownerPubkey: string; policyVersion: number }> = [];
   const write: AuthorHivePolicySeams['write'] = async (input) => {
@@ -37,6 +50,7 @@ describe('authorHivePolicy', () => {
     const policy: HivePolicy = { membership: 'allowlist', allowlist: ['octocat'], rate: { opsPerMin: 5 } };
 
     const res = await authorHivePolicy({ workspaceId: WS, potHomeSlug: HOME, policy }, {
+      resolveWorkspaceId: IDENTITY_RESOLVE,
       readCurrent: async () => ({ policyVersion: 5 } as ResolvedHivePolicy), // current v5 → author writes v6
       loadOwnerPubkey: async () => kp.pubkeyBase64,
       sign: async (_ws, _slug, bytes) => signWithPrivateKeyDer(kp.privateKeyDer, bytes),
@@ -61,6 +75,7 @@ describe('authorHivePolicy', () => {
     const kp = generateEd25519KeypairDer();
     const { writes, write } = writeCapture();
     await authorHivePolicy({ workspaceId: WS, potHomeSlug: HOME, policy: {} }, {
+      resolveWorkspaceId: IDENTITY_RESOLVE,
       readCurrent: async () => null,
       loadOwnerPubkey: async () => kp.pubkeyBase64,
       sign: async (_ws, _slug, bytes) => signWithPrivateKeyDer(kp.privateKeyDer, bytes),
@@ -72,6 +87,7 @@ describe('authorHivePolicy', () => {
   it('a Swarm without the Hive key is refused (not_owner_swarm) — never writes', async () => {
     const write = vi.fn();
     const res = await authorHivePolicy({ workspaceId: WS, potHomeSlug: HOME, policy: {} }, {
+      resolveWorkspaceId: IDENTITY_RESOLVE,
       loadOwnerPubkey: async () => null, // not the owner Swarm
       write: write as never,
     });
@@ -82,6 +98,7 @@ describe('authorHivePolicy', () => {
 
   it('sign throwing (key not held) maps to not_owner_swarm', async () => {
     const res = await authorHivePolicy({ workspaceId: WS, potHomeSlug: HOME, policy: {} }, {
+      resolveWorkspaceId: IDENTITY_RESOLVE,
       loadOwnerPubkey: async () => 'pk',
       readCurrent: async () => null,
       sign: async () => { throw new Error('hive private key not held'); },
@@ -141,6 +158,7 @@ describe('mutateHivePolicy (EN-3 ban/takedown write accessor)', () => {
       workspaceId: WS, potHomeSlug: HOME,
       mutate: (p) => ({ ...p, moderation: { ...p.moderation, bannedGithubIds: [...(p.moderation?.bannedGithubIds ?? []), '2'] } }),
     }, {
+      resolveWorkspaceId: IDENTITY_RESOLVE,
       readCurrent: async () => current,
       loadOwnerPubkey: async () => kp.pubkeyBase64,
       sign: async (_ws, _slug, bytes) => signWithPrivateKeyDer(kp.privateKeyDer, bytes),

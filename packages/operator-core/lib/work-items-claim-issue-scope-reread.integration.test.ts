@@ -202,7 +202,12 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
       by: 'w1',
       completionRef: 'verified elsewhere',
     });
-    expect(result?.state).toBe('resolved');
+    // work-item-status-full-unify (migration 638): the unified surface normalizes the
+    // legacy 'resolved'/'passed' spellings onto 'done' (and 'closed'/'deprecated' onto
+    // 'dropped') — this is the SAME normalization the pre-existing 'remote-origin issue
+    // rows...' test above would have hit too, had its refusal not short-circuited before
+    // ever reaching a real state write.
+    expect(result?.state).toBe('done');
 
     const rows = await db.sql<{ status: string; origin: string; terminal_owner: string | null }[]>`
       SELECT status, origin, terminal_owner

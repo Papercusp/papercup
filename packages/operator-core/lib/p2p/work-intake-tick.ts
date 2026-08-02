@@ -141,6 +141,11 @@ export interface RunWorkIntakeTickOpts {
   resolveAttestedGithubUserId?: typeof resolveAttestedGithubUserId;
   currentGrantorEpoch?: typeof currentGrantorEpoch;
   hostAvailability?: typeof buildHostAvailability;
+  /** The settings read is a real IO edge too (two `operator_state` layer reads).
+   *  It was the one edge missing from this seam set, which left the unit test
+   *  reading the developer's live DB — silently, until the no-real-PG rail
+   *  (EI-19311807188719573) made it loud. */
+  readP2pSettings?: typeof readP2pSettings;
   log?: (m: string) => void;
   nowMs?: number;
 }
@@ -187,8 +192,9 @@ export async function runWorkIntakeTick(
   const offers = await list(workspaceId, potHomeSlug, { kind: 'work', status: 'open' }, sql);
   if (!offers.length) return result;
 
+  const readSettings = opts.readP2pSettings ?? readP2pSettings;
   const [settingsLayers, flagEnabled] = await Promise.all([
-    readP2pSettings(workspaceId, sql),
+    readSettings(workspaceId, sql),
     getFlag(FLAGS.P2P, 'system').catch(() => false),
   ]);
   const maxRolloutTier: P2pEffectiveTier = resolveMaxRolloutTier({ flagEnabled });

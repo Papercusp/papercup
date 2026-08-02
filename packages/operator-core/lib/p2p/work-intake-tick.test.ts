@@ -19,6 +19,8 @@ import type { OfferAuthorship } from './offer-authorship';
 import type { PublisherSet } from './offer-authorship';
 import type { PullAndExecuteContext, PullAndExecuteResult } from './offer-pull-and-execute';
 import type { PullEvaluationInput } from './standing-puller';
+import type { Sql } from 'postgres';
+import { bakedP2pDefaults, mergeP2pLayers } from './settings';
 
 const HOST: WorkIntakeHostIdentity = {
   hostRef: 'host:self',
@@ -89,10 +91,24 @@ function storedOffer(over: Partial<StoredWorkOffer> = {}): StoredWorkOffer {
   };
 }
 
+// Every seam below is injected, so this handle is never dereferenced — it only has
+// to STOP `runWorkIntakeTick` from falling back to `getOrgPg().sql`, which opens a
+// real pool against the developer's live DB (the no-real-PG rail,
+// EI-19311807188719573, turned that silent live read into a loud failure).
+const SQL_STUB = {} as unknown as Sql;
+
 function baseDeps(overOffers: StoredWorkOffer[] = [storedOffer()]) {
   const receipts: unknown[] = [];
   return {
     host: HOST,
+    sql: SQL_STUB,
+    readP2pSettings: vi.fn(async () => ({
+      workspaceId: 'ws-1',
+      baked: bakedP2pDefaults(),
+      defaultLayer: null,
+      overrideLayer: null,
+      effective: mergeP2pLayers(bakedP2pDefaults()),
+    })),
     listWorkOffers: vi.fn(async () => overOffers),
     resolvePublisherSet: vi.fn(async () => OK_PUBLISHER_SET),
     resolveAttestedGithubUserId: vi.fn(async () => 5),
