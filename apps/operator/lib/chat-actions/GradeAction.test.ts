@@ -46,10 +46,16 @@ afterEach(() => {
 });
 
 describe('GradeAction — registration', () => {
-  it('registers posture-grade in the "posture" group', () => {
+  it('registers posture-grade in the "session" group, labelled with the chooser ellipsis', () => {
     const action = getChatAction('posture-grade');
     expect(action).toBeDefined();
-    expect(action?.group).toBe('posture');
+    // P-005 regrouped it: the posture BUTTONS became mode pills, so this is now
+    // an act performed on the session and clusters with the other such acts.
+    expect(action?.group).toBe('session');
+    // Direction D rule ②: a trailing "…" means a chooser opens. It also stops
+    // this reading as the GRADE *mode* pill beside it — the bare "Grade" was
+    // indistinguishable from it, which is deck change #3's second duplicate.
+    expect(action?.label).toBe('Grade session…');
   });
 
   it('is available only when the context carries a sessionOwnerId', () => {

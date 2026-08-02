@@ -22,7 +22,12 @@ const DEFAULT_NAV: NavLink[] = [
   { href: '/marketplace/', label: 'Marketplace' },
   { href: '/docs', label: 'Docs' },
   { href: '/support', label: 'Support' },
-  { href: 'https://github.com/papercupai/papercusp', label: 'GitHub', external: true },
+  // Canonical repo lives under the `Papercusp` GitHub Organization —
+  // `papercupai` is the maintainer's personal GitHub User login, not an org
+  // (WI-4978). Keep in sync with @papercusp/operator-core's
+  // canonical-github-identity.ts (not imported here to avoid coupling this
+  // standalone component lib to operator-core).
+  { href: 'https://github.com/Papercusp/papercup', label: 'GitHub', external: true },
 ];
 
 const DEFAULT_QUOTE = 'Nothing is so painful to the human mind as a great and sudden change';

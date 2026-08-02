@@ -389,9 +389,9 @@ Verified in this repo 2026-08-02 — `backingTables` in `sync-resolver/index.ts`
 count-changing commits, and against gate candidate `1ee32228` the two forms disagree:
 
 ```
-git log -1      -S backingTables  -> bd5ba29a9b : NOT-IN   <- FALSE NEGATIVE
-git log | tail -1 -S backingTables -> 362398846f : IN      <- correct
-blob truth: backingTables occurs 14x in that candidate     <- it is plainly present
+git log --oneline -1 -S backingTables -- "$F"        -> bd5ba29a9b : NOT-IN  <- FALSE NEGATIVE
+git log --oneline    -S backingTables -- "$F" | tail -1 -> 362398846f : IN   <- correct
+blob truth: backingTables occurs 14x in that candidate                       <- plainly present
 ```
 
 **No string unique to your change?** Use a *semantic discriminator* instead of a token: diff the
