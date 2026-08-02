@@ -71,7 +71,23 @@ export async function coordCellSetup(sql: postgres.Sql): Promise<void> {
   await ensureCoordWatermarksTable(sql);
 }
 
-/** harness_shared.shared_presence as the live schema has it (baseline + 187 + 181). */
+/**
+ * harness_shared.shared_presence as the live schema has it (baseline + 187 + 181
+ * + 682's `runs_routines`).
+ *
+ * ⚠ EI-18817201237512691 — this DDL is HAND-ROLLED, and there are NINE such
+ * copies across the tree (see the issue for the list). They drift independently:
+ * measured 2026-08-02, SEVEN of the nine still lacked `runs_routines` five days
+ * after migration 682 added it, and because production `presence.ts` writeToPg
+ * writes that column, every one of them made a merge pass throw
+ * `column "runs_routines" of relation "shared_presence" does not exist` — an
+ * error that names a COLUMN and never the stale fixture, so it reads as a code
+ * bug and is not one. All nine now carry it.
+ *
+ * If you add a column to shared_presence in a migration, you must add it here
+ * AND to the other eight. The recurrence fix (one shared fixture builder, or
+ * applying the real migration) is still open on that issue.
+ */
 export async function presenceCellSetup(sql: postgres.Sql): Promise<void> {
   await sql.unsafe(`
     CREATE TABLE harness_shared.shared_presence (
@@ -83,6 +99,7 @@ export async function presenceCellSetup(sql: postgres.Sql): Promise<void> {
       intent         text,
       current_view   text,
       last_seen_at   timestamptz NOT NULL DEFAULT now(),
+      runs_routines boolean,
       schema_version bigint      NOT NULL DEFAULT 1,
       pot_slug       text,
       fed_ts         bigint,

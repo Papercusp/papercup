@@ -60,6 +60,7 @@ describe('shared-presence-reaper (real PG)', () => {
         device_pubkey text NOT NULL,
         intent text, current_view text,
         last_seen_at timestamptz DEFAULT now() NOT NULL,
+        runs_routines boolean,
         schema_version bigint DEFAULT 1 NOT NULL,
         pot_slug text, fed_ts bigint, fed_hlc text,
         CONSTRAINT shared_presence_pkey PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)

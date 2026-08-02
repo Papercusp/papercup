@@ -107,11 +107,81 @@ describe('projectPlansReadForUi — plans:list', () => {
     expect(row.maxImportance).toBe('high');
   });
 
-  it('leaves a null nextAction untouched', () => {
+  /**
+   * SUPERSEDES the previous "leaves a null nextAction untouched" pin. WI-7045
+   * extends D-025's null-key omission to this feed — 125,553 B of a live
+   * 823,983 B / 934-row payload (15.2%) — so a null `nextAction` is now DROPPED
+   * rather than preserved. Preconditioned on the consumer audit in
+   * ui-read-projection.ts's header: zero `=== null` / `'k' in row` /
+   * hasOwnProperty / destructuring-with-default sites across the 39 non-test
+   * files that read this feed.
+   */
+  it('drops a null nextAction rather than preserving it (D-025)', () => {
     const out = projectPlansReadForUi('list', {
       plans: [{ slug: 'p', nextAction: null }],
-    }) as { plans: Array<{ nextAction: unknown }> };
-    expect(out.plans[0].nextAction).toBeNull();
+    }) as { plans: Array<Record<string, unknown>> };
+    expect(out.plans[0].nextAction).toBeUndefined();
+    expect('nextAction' in out.plans[0]).toBe(false);
+    expect(out.plans[0].slug).toBe('p');
+  });
+
+  it('drops every null-valued key — the columns that are null on nearly every row', () => {
+    const out = projectPlansReadForUi('list', {
+      plans: [
+        {
+          slug: 'p',
+          status: 'active',
+          initiative: null,
+          priority: null,
+          scheduleKind: null,
+          origin: null,
+          template: null,
+          startStatus: null,
+          maxImportance: null,
+          owner: null,
+          ownerIdentity: null,
+          lastEditor: null,
+          created: null,
+        },
+      ],
+    }) as { plans: Array<Record<string, unknown>> };
+    expect(Object.keys(out.plans[0]).sort()).toEqual(['slug', 'status']);
+  });
+
+  it('keeps non-null values, INCLUDING falsy ones (false / 0 / "") — only null goes', () => {
+    const out = projectPlansReadForUi('list', {
+      plans: [
+        { slug: 'p', archived: false, priority: 0, title: '', owner: null, itemCounts: {} },
+      ],
+    }) as { plans: Array<Record<string, unknown>> };
+    const row = out.plans[0];
+    expect(row.archived).toBe(false);
+    expect(row.priority).toBe(0);
+    expect(row.title).toBe('');
+    expect(row.itemCounts).toEqual({});
+    expect('owner' in row).toBe(false);
+  });
+
+  /**
+   * SHALLOW, per D-025. `avatarUrl` is null on all 1,436 live occurrences inside
+   * these identity objects (~26 KB more), but it is declared on the SHARED
+   * AuthorIdentity type that plans:items and the attention feed also carry — so
+   * it needs its own consumer audit, not a silent ride-along here.
+   */
+  it('does NOT recurse into nested objects (nested nulls survive)', () => {
+    const out = projectPlansReadForUi('list', {
+      plans: [{ slug: 'p', lastEditor: { handle: 'ada', avatarUrl: null } }],
+    }) as { plans: Array<{ lastEditor: Record<string, unknown> }> };
+    expect(out.plans[0].lastEditor).toEqual({ handle: 'ada', avatarUrl: null });
+  });
+
+  /** The clip runs before the omit, so the two compose on a real string. */
+  it('still clips a long nextAction while omitting the row-s other nulls', () => {
+    const out = projectPlansReadForUi('list', {
+      plans: [{ slug: 'p', nextAction: long(900), priority: null }],
+    }) as { plans: Array<Record<string, unknown>> };
+    expect((out.plans[0].nextAction as string).length).toBe(UI_TEXT_PREVIEW_MAX);
+    expect('priority' in out.plans[0]).toBe(false);
   });
 });
 

@@ -24,7 +24,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS } from '@papercusp/operator-core/lib/dbos/dbos-executor-reaper';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '@papercusp/operator-core/lib/harness/routines/release-actions';
 
-import { CHECKPOINT_LOCK_STALE_MS, SELF_WATCHDOG_MS } from './green-checkpoint';
+import { CHECKPOINT_LOCK_STALE_MS, DEFAULT_REFIRE_RUN_BUDGET_MS, SELF_WATCHDOG_MS } from './green-checkpoint';
 
 const MIN = 60_000;
 const m = (ms: number) => `${Math.round(ms / MIN)}m`;
@@ -114,5 +114,17 @@ describe('green-gate timing chain (WI-6112)', () => {
     expect(CHECKPOINT_LOCK_STALE_MS - DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS).toBeGreaterThanOrEqual(
       sweepHeadroom,
     );
+  });
+
+  it('stops starting refires BEFORE the suite timeout would kill one mid-flight (EI-19343532231631821)', () => {
+    // The refire budget is the new TIGHTEST link, and it belongs to the same one decision as the
+    // four above. A stale-red auto-refire recurses in-process, so a refire begun near the suite
+    // timeout is killed part-way through and the run dies having recorded NO verdict at all —
+    // strictly worse than recording the red it already had. Keeping the budget strictly under the
+    // suite timeout is what makes "stop refiring" happen before "get killed".
+    expect(DEFAULT_REFIRE_RUN_BUDGET_MS).toBeLessThan(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
+    // …with enough headroom that the deadline check (which predicts the next pass from the last
+    // one) is not itself racing the timeout it exists to stay clear of.
+    expect(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS - DEFAULT_REFIRE_RUN_BUDGET_MS).toBeGreaterThanOrEqual(5 * MIN);
   });
 });

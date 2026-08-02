@@ -24,6 +24,7 @@ describe('federated-presence query (real shared_presence)', () => {
         intent         text,
         current_view   text,
         last_seen_at   timestamptz NOT NULL DEFAULT now(),
+        runs_routines boolean,
         schema_version bigint NOT NULL DEFAULT 1,
         PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
       )`);

@@ -62,24 +62,18 @@ function attn(over: Partial<AttentionItem> = {}): AttentionItem {
     id: Math.random().toString(36).slice(2),
     kind: 'coord-message' as AttentionKind,
     source: 'test',
-    harnessSlug: null,
-    planSlug: null,
-    itemRef: null,
     title: 'item',
     body: '',
     status: 'open',
     importance: 'normal' as Importance,
     tier: 'activity' as AttentionTier,
     needsHuman: false,
-    // Required on AttentionItem (ownership + triage columns). Omitted here, they
-    // typed as `undefined`, which the row forbids — the factory claims to return a
-    // complete AttentionItem, so it must actually build one.
-    ownerAgentId: null,
-    ownerLabel: null,
+    // The scope/ownership/triage columns (harnessSlug, planSlug, itemRef,
+    // ownerAgentId, ownerLabel, triageNote, triagedBy, triagedAt) are `?: string`
+    // WITHOUT `| null` on purpose (plans-api.ts D-025/WI-7039): the wire omits
+    // null-valued keys, so they arrive ABSENT. A factory modeling the wire
+    // leaves them out — writing `null` is a type error by design.
     triageState: 'untriaged' as AttentionItem['triageState'],
-    triageNote: null,
-    triagedBy: null,
-    triagedAt: null,
     actions: [],
     ref: { kind: 'coord-message' } as AttentionItem['ref'],
     ...over,

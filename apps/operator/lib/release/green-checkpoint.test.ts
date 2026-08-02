@@ -20,6 +20,15 @@ import {
   nonTestGateIdsFrom,
   NON_TEST_GATE_SCRIPTS,
   autoRefireCapFromEnv,
+  normaliseFailingKey,
+  refireOverlap,
+  mergeFailingKeys,
+  refireAbsoluteCeiling,
+  refireDeadlineExceeded,
+  refireRunBudgetMsFromEnv,
+  refireBudgetInputs,
+  nextRefireOpts,
+  DEFAULT_REFIRE_RUN_BUDGET_MS,
   evaluateDeployStaleness,
   buildGreenCheckpointEnv,
   sanitizeForkNodeOptions,
@@ -1637,7 +1646,13 @@ describe('classifyRedAgainstTip (stale-candidate re-triage)', () => {
   it('calls a red STALE and auto-refires when the failing files pass at tip', () => {
     const v = classifyRedAgainstTip({ ...base, tipRetest: { ran: true, pass: true } });
     expect(v).toMatchObject({ classification: 'stale-candidate', autoRefire: true });
-    expect(v.detail).toContain('attempt 1/2');
+    // EI-19343532231631821 changed what this refire COSTS, not whether it happens. With no
+    // `priorFailing` there is no rescued set to have failed, so the refire is UNCHARGED and the
+    // detail must not claim "attempt 1/2" — the charged budget is untouched. (This assertion
+    // previously read `toContain('attempt 1/2')`, which asserted the old always-charge accounting.)
+    expect(v.chargeRefire).toBe(false);
+    expect(v.detail).toContain('UNCHARGED');
+    expect(v.detail).toContain('0/2');
   });
 
   it('stops auto-refiring at the cap (a refire storm is worse than a held gate)', () => {
@@ -1674,6 +1689,244 @@ describe('autoRefireCapFromEnv', () => {
     expect(autoRefireCapFromEnv({ PAPERCUSP_GATE_AUTO_REFIRE_CAP: '5' })).toBe(5);
     expect(autoRefireCapFromEnv({ PAPERCUSP_GATE_AUTO_REFIRE_CAP: '0' })).toBe(0);
     expect(autoRefireCapFromEnv({ PAPERCUSP_GATE_AUTO_REFIRE_CAP: 'nonsense' })).toBe(2);
+  });
+});
+
+/**
+ * EI-19343532231631821 — the refire budget is charged for a FAILED rescue, not for a refire.
+ *
+ * The bug these guard: on the papercusp gate run of 2026-08-02 the auto-refire spent its whole
+ * 2-attempt budget on tree churn. Each ~30-min-later cut rescued the previous red successfully and
+ * imported a COMPLETELY DISJOINT new one, so the run ended red having never once failed to rescue
+ * anything — then restarted ~55min later against an even later tip. Self-perpetuating.
+ */
+describe('refire charge accounting (EI-19343532231631821)', () => {
+  const base = {
+    candidate: 'aaaaaaaa1111',
+    tip: 'bbbbbbbb2222',
+    failingTests: ['a.test.ts'],
+    tipRetest: { ran: true, pass: true } as const,
+    refireAttempts: 0,
+    maxRefires: 2,
+  };
+
+  describe('normaliseFailingKey / refireOverlap — the FAIL-OPEN hazard', () => {
+    // THE dangerous direction, and the reason normalisation is a function rather than an inline
+    // compare. The rescued set survives as bare workspace-relative strings (the marker persists
+    // `failingFiles.map(f => f.file)`) while the current pass carries `{workspace, file}` objects.
+    // Compare those two shapes naively and NOTHING ever matches ⇒ nothing is ever charged ⇒ the
+    // charged budget silently ceases to exist and the gate can refire until it is killed.
+    it('matches a marker-shaped string against a FailingFile for the SAME file', () => {
+      const rescued = ['lib/harness/hygiene.test.ts', 'src/components/adv/TasksRosterPanel.test.tsx'];
+      const current: FailingFile[] = [
+        { workspace: '@papercusp/operator-core', file: 'lib/harness/hygiene.test.ts' },
+        { workspace: 'operator', file: 'src/components/adv/SomethingElse.test.tsx' },
+      ];
+      // The naive compare this guards against — object vs string — finds nothing:
+      expect(current.filter((f) => rescued.includes(f as unknown as string))).toEqual([]);
+      // The normalised compare finds the real overlap:
+      expect(refireOverlap(rescued, current)).toEqual(['lib/harness/hygiene.test.ts']);
+    });
+
+    it('normalises ./ and duplicate separators so cosmetic path drift cannot fake a disjoint set', () => {
+      expect(normaliseFailingKey('./lib//foo.test.ts')).toBe('lib/foo.test.ts');
+      expect(normaliseFailingKey({ workspace: 'ws', file: '  lib/foo.test.ts  ' })).toBe('lib/foo.test.ts');
+      expect(refireOverlap(['lib/foo.test.ts'], [{ workspace: 'ws', file: './lib/foo.test.ts' }])).toEqual([
+        'lib/foo.test.ts',
+      ]);
+    });
+
+    it('drops the workspace deliberately — a same-named file in another workspace over-charges (fails CLOSED)', () => {
+      // The cost of a key the marker can also produce. Over-charging degrades to today's
+      // always-charge behaviour; under-charging would remove the loop guard entirely.
+      const overlap = refireOverlap(
+        [{ workspace: 'pkg-a', file: 'lib/index.test.ts' }],
+        [{ workspace: 'pkg-b', file: 'lib/index.test.ts' }],
+      );
+      expect(overlap).toEqual(['lib/index.test.ts']);
+    });
+
+    it('non-test gate ids compare intact and never collide with a path', () => {
+      expect(refireOverlap(['lint:tsc'], ['lint:tsc'])).toEqual(['lint:tsc']);
+      expect(refireOverlap(['lint:tsc'], ['lint:migrations'])).toEqual([]);
+    });
+
+    it('an empty set on either side overlaps with nothing (the first refire of a run)', () => {
+      expect(refireOverlap([], [{ workspace: 'ws', file: 'a.test.ts' }])).toEqual([]);
+      expect(refireOverlap(undefined, undefined)).toEqual([]);
+    });
+  });
+
+  describe('the charge decision', () => {
+    it('does NOT charge a refire whose failures are DISJOINT from the rescued set', () => {
+      const v = classifyRedAgainstTip({
+        ...base,
+        priorFailing: ['lib/hyperbee/boot.test.ts', 'src/TasksRosterPanel.test.tsx'],
+        currentFailing: [
+          { workspace: 'operator', file: 'lib/release/release-actions.test.ts' },
+          { workspace: '@papercusp/operator-core', file: 'lib/harness/hygiene.test.ts' },
+        ],
+        totalRefires: 1,
+      });
+      expect(v).toMatchObject({ classification: 'stale-candidate', autoRefire: true, chargeRefire: false });
+      expect(v.detail).toContain('UNCHARGED');
+      expect(v.detail).toMatch(/rescue SUCCEEDED/i);
+    });
+
+    it('DOES charge when the same breakage survives the re-cut (the loop guard that must survive)', () => {
+      const v = classifyRedAgainstTip({
+        ...base,
+        priorFailing: ['lib/harness/hygiene.test.ts'],
+        currentFailing: [{ workspace: '@papercusp/operator-core', file: 'lib/harness/hygiene.test.ts' }],
+      });
+      expect(v).toMatchObject({ autoRefire: true, chargeRefire: true });
+      expect(v.detail).toContain('CHARGED attempt 1/2');
+      expect(v.detail).toContain('lib/harness/hygiene.test.ts');
+    });
+
+    it('charges on PARTIAL overlap — one surviving file is a failed rescue', () => {
+      const v = classifyRedAgainstTip({
+        ...base,
+        priorFailing: ['a.test.ts', 'b.test.ts'],
+        currentFailing: [
+          { workspace: 'ws', file: 'b.test.ts' },
+          { workspace: 'ws', file: 'c.test.ts' },
+        ],
+      });
+      expect(v.chargeRefire).toBe(true);
+    });
+
+    it('charges an OSCILLATION — {A}→{B}→{A} is no progress, and only the accumulated union sees it', () => {
+      // Against the PREVIOUS pass alone ({B}) the returning {A} looks disjoint and would run free.
+      const priorUnion = mergeFailingKeys(['a.test.ts'], [{ workspace: 'ws', file: 'b.test.ts' }]);
+      expect(priorUnion).toEqual(['a.test.ts', 'b.test.ts']);
+      const v = classifyRedAgainstTip({
+        ...base,
+        priorFailing: priorUnion,
+        currentFailing: [{ workspace: 'ws', file: 'a.test.ts' }],
+      });
+      expect(v.chargeRefire).toBe(true);
+    });
+
+    it("the run's FIRST refire is never charged — no rescue has been attempted, so none can have failed", () => {
+      const v = classifyRedAgainstTip({ ...base, priorFailing: [], currentFailing: [{ workspace: 'ws', file: 'a.test.ts' }] });
+      expect(v).toMatchObject({ autoRefire: true, chargeRefire: false });
+    });
+  });
+
+  describe('the two required safety bounds', () => {
+    it('stops at the ABSOLUTE ceiling even when nothing was ever charged', () => {
+      // The failure mode uncharged refires create: a tree where SOMETHING is always freshly red
+      // produces an unbroken chain of successful rescues and would otherwise refire forever.
+      const v = classifyRedAgainstTip({
+        ...base,
+        priorFailing: ['old.test.ts'],
+        currentFailing: [{ workspace: 'ws', file: 'new.test.ts' }],
+        totalRefires: 6,
+        absoluteCeiling: 6,
+      });
+      expect(v).toMatchObject({ autoRefire: false, refireBlockedBy: 'absolute-ceiling' });
+      // The operator action differs from a charged-budget stop — say so, don't send them to the files.
+      expect(v.detail).toMatch(/never simultaneously green/i);
+      expect(v.detail).toContain('NOT to debug the files');
+    });
+
+    it('stops at the DEADLINE rather than being killed mid-suite with no verdict at all', () => {
+      const v = classifyRedAgainstTip({
+        ...base,
+        priorFailing: ['old.test.ts'],
+        currentFailing: [{ workspace: 'ws', file: 'new.test.ts' }],
+        deadlineExceeded: true,
+      });
+      expect(v).toMatchObject({ autoRefire: false, refireBlockedBy: 'deadline' });
+      expect(v.detail).toMatch(/no verdict recorded/i);
+    });
+
+    it('the charged budget still stops a genuinely-broken tip, regardless of this pass"s charge', () => {
+      const v = classifyRedAgainstTip({
+        ...base,
+        refireAttempts: 2,
+        priorFailing: ['old.test.ts'],
+        currentFailing: [{ workspace: 'ws', file: 'brand-new.test.ts' }],
+      });
+      expect(v).toMatchObject({ autoRefire: false, refireBlockedBy: 'charged-budget' });
+      expect(v.detail).toContain('refire cap reached');
+    });
+
+    it('reports cap-disabled distinctly from a spent budget', () => {
+      const v = classifyRedAgainstTip({ ...base, maxRefires: 0 });
+      expect(v).toMatchObject({ autoRefire: false, refireBlockedBy: 'cap-disabled' });
+    });
+
+    it('refireAbsoluteCeiling is a multiple of the charged cap, and 0 when refire is disabled', () => {
+      expect(refireAbsoluteCeiling(2)).toBe(6);
+      expect(refireAbsoluteCeiling(0)).toBe(0);
+      expect(refireAbsoluteCeiling(Number.NaN)).toBe(0);
+    });
+
+    it('refireDeadlineExceeded predicts the NEXT pass from the last one, and never blocks unmeasured', () => {
+      const budgetMs = 110 * 60_000;
+      expect(refireDeadlineExceeded({ elapsedMs: 60 * 60_000, lastPassMs: 20 * 60_000, budgetMs })).toBe(false);
+      expect(refireDeadlineExceeded({ elapsedMs: 60 * 60_000, lastPassMs: 55 * 60_000, budgetMs })).toBe(true);
+      // Unmeasured ⇒ fail OPEN on time alone; refireAbsoluteCeiling is what still bounds the run.
+      expect(refireDeadlineExceeded({ elapsedMs: Number.NaN, lastPassMs: 1, budgetMs })).toBe(false);
+    });
+
+    it('the run budget stays strictly under the suite timeout that would kill a mid-flight refire', () => {
+      expect(refireRunBudgetMsFromEnv({})).toBe(DEFAULT_REFIRE_RUN_BUDGET_MS);
+      expect(refireRunBudgetMsFromEnv({ PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS: '900000' })).toBe(900_000);
+      expect(refireRunBudgetMsFromEnv({ PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS: 'nonsense' })).toBe(
+        DEFAULT_REFIRE_RUN_BUDGET_MS,
+      );
+    });
+  });
+
+  describe('nextRefireOpts — the recursion state', () => {
+    it('advances the charged counter ONLY on a charged refire, while totalRefires always climbs', () => {
+      const uncharged = nextRefireOpts(
+        { refireAttempts: 0, totalRefires: 0, priorFailing: ['a.test.ts'] },
+        { chargeRefire: false },
+        [{ workspace: 'ws', file: 'b.test.ts' }],
+        1_000,
+      );
+      expect(uncharged).toMatchObject({ refireAttempts: 0, totalRefires: 1, runStartedAtMs: 1_000 });
+      expect(uncharged.priorFailing).toEqual(['a.test.ts', 'b.test.ts']);
+
+      const charged = nextRefireOpts(
+        { refireAttempts: 0, totalRefires: 1, priorFailing: ['a.test.ts'] },
+        { chargeRefire: true },
+        [{ workspace: 'ws', file: 'a.test.ts' }],
+        1_000,
+      );
+      expect(charged).toMatchObject({ refireAttempts: 1, totalRefires: 2 });
+    });
+
+    it('replays the 2026-08-02 run: three passes that would have exhausted the budget now spend NONE', () => {
+      // pass 1 {hyperbee, TasksRoster, SessionsRoster} → refire 1 {release-actions, hygiene} → refire 2.
+      // Under the old unconditional increment this reached refireAttempts=2 and the final red STUCK.
+      let opts: Parameters<typeof nextRefireOpts>[0] = {};
+      const pass1 = [
+        { workspace: 'ws', file: 'lib/hyperbee/boot.test.ts' },
+        { workspace: 'operator', file: 'src/TasksRosterPanel.test.tsx' },
+        { workspace: 'operator', file: 'src/SessionsRosterView.test.tsx' },
+      ];
+      const pass2 = [
+        { workspace: 'operator', file: 'lib/release/release-actions.test.ts' },
+        { workspace: 'core', file: 'lib/harness/hygiene.test.ts' },
+      ];
+      for (const failing of [pass1, pass2]) {
+        const v = classifyRedAgainstTip({
+          ...base,
+          refireAttempts: opts.refireAttempts ?? 0,
+          ...refireBudgetInputs(opts, failing, 0, 0, () => 0),
+        });
+        expect(v.autoRefire).toBe(true);
+        expect(v.chargeRefire).toBe(false); // every rescue SUCCEEDED — nothing to charge
+        opts = nextRefireOpts(opts, v, failing, 0);
+      }
+      expect(opts.refireAttempts).toBe(0); // the whole charged budget is still available
+      expect(opts.totalRefires).toBe(2);
+    });
   });
 });
 

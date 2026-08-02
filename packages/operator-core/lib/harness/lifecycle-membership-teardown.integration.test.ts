@@ -60,6 +60,7 @@ const PRESENCE_DDL = `
     device_pubkey  text NOT NULL,
     intent         text, current_view text,
     last_seen_at   timestamptz DEFAULT now() NOT NULL,
+    runs_routines boolean,
     schema_version bigint DEFAULT 1 NOT NULL,
     hive_slug      text, fed_ts bigint,
     fed_hlc        text,

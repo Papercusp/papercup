@@ -49,6 +49,24 @@
  * {@link omitNullValues} for the wire-contract change that implies and why this
  * belongs in the resolver rather than the serializer.
  *
+ * plans:list gets the same omit (WI-7045) — 125,553 B of a live 823,983 B / 934-row
+ * payload, 15.2%, concentrated in a handful of optional columns that are null on
+ * nearly every row (initiative 934/934, priority 932, scheduleKind 932, origin 928,
+ * template 906, startStatus 903, maxImportance 743, owner + ownerIdentity 421).
+ * Its consumer audit is wider than attention's single entrypoint — 39 non-test
+ * files reachable from `PlanListRow` / `usePlanList` / the `plans.list` +
+ * `plans.byHive` resolvers — and came back with ZERO sites in the four categories
+ * {@link omitNullValues} breaks. The one `=== null` that looks like a hit
+ * (plan-sorting.ts `comparePlans('progress')`) tests `planProgress()`'s OWN return
+ * value, and that function's `if (!counts) return null` guard already treats a
+ * missing `itemCounts` the same as a null one.
+ *
+ * NOT extended into the nested identity objects: `avatarUrl` inside `lastEditor` /
+ * `ownerIdentity` is null on all 1,436 occurrences (~26 KB, 3.2% more), but it is
+ * declared on the SHARED `AuthorIdentity` type (AuthorBadge.tsx) that plans:items
+ * and the attention feed also carry, so it needs its own audit + change rather
+ * than riding along here.
+ *
  * plans:get and every other verb pass through unchanged — plans:get IS the
  * full-fidelity detail read.
  */
@@ -168,6 +186,14 @@ function projectItems(data: Record<string, unknown>): Record<string, unknown> {
   return { ...data, items: rows };
 }
 
+/**
+ * Slim a plans:list row: clip `nextAction` to a tooltip preview and omit
+ * null-valued keys (see {@link omitNullValues} — 15.2% of this payload).
+ *
+ * The clip runs BEFORE the omit so a `nextAction: null` is dropped rather than
+ * left as a clipped null; `clipPreview` passes non-strings through, so the two
+ * compose in either order for a real string.
+ */
 function projectList(data: Record<string, unknown>): Record<string, unknown> {
   const plans = (data as { plans?: unknown }).plans;
   if (!Array.isArray(plans)) return data;
@@ -175,7 +201,7 @@ function projectList(data: Record<string, unknown>): Record<string, unknown> {
     if (!row || typeof row !== 'object') return row;
     const r = { ...(row as Record<string, unknown>) };
     if ('nextAction' in r) r.nextAction = clipPreview(r.nextAction, UI_TEXT_PREVIEW_MAX);
-    return r;
+    return omitNullValues(r);
   });
   return { ...data, plans: rows };
 }

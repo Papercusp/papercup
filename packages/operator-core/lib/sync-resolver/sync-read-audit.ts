@@ -158,6 +158,12 @@ export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
       'The whole owner-attention feed (173 groups / ~1114 items). P-003 already split it list/detail (actions dropped, body clipped 609KB -> ~256KB); P-028/D-025 then removed the null-valued keys, measured 1,062,144 -> ~907,000 B (-14.6%) live. Still far over the 250KB budget and honestly so: the residual is item COUNT x rendered fields, and the feed is unscoped by design (the sidebar badge counts decisions workspace-wide). The next real cut is fewer items on the wire, not fewer bytes per item — the aggregate half already left via plans.attentionCounts, so what remains is paginating/windowing the list itself.',
     reviewBy: '2026-09-01',
   },
+  'plans.list': {
+    maxBytes: 720_000,
+    reason:
+      'The unscoped plan list (934 rows) behind the plans rail, the Create-tab picker, the Mug/Swarm steering trees and the ADV overview tiles. nextAction is already clipped to a 280-char tooltip preview (P-005); WI-7045/D-025 then removed the null-valued keys, measured 823,983 -> 698,430 B (-15.2%) live, concentrated in the columns that are null on nearly every row (initiative 934/934, priority 932, scheduleKind 932, origin 928, template 906, startStatus 903). Over the 250KB budget and honestly so: the residual is row COUNT x light rendered fields, and the feed is unscoped by design (the rail offers every plan in the workspace). The next real cuts are, in order: the nested identity avatarUrl (null on all 1,436 occurrences, ~26 KB, needs its own audit of the shared AuthorIdentity type), then windowing the list itself.',
+    reviewBy: '2026-09-01',
+  },
   'workItems.byHarness': {
     maxBytes: 300_000,
     reason:

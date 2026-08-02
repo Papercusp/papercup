@@ -70,32 +70,43 @@ export type Importance = 'urgent' | 'high' | 'normal' | 'low';
 export const IMPORTANCE_LEVELS: readonly Importance[] = ['urgent', 'high', 'normal', 'low'];
 export type PlanStartStatus = 'started' | 'paused' | 'done' | null;
 
+/**
+ * A row of the `plans.list` sync feed.
+ *
+ * ⚠ EVERY OPTIONAL FIELD BELOW IS `?: T`, NEVER `T | null` — deliberately, and
+ * the same contract `AttentionItem` carries (WI-7045 / no-http-anywhere-2026-07-28
+ * D-025). The server's UI projection omits null-valued keys from this feed
+ * (`ui-read-projection.ts` `projectList` — 125,553 B of a live 823,983 B payload),
+ * so an absent value arrives as `undefined`, not `null`. Declaring these `T | null`
+ * would keep a stale `row.priority === null` typechecking while being ALWAYS FALSE
+ * at runtime — a silent, invisible-to-tsc bug. As `?: T` the same line is a TS2367
+ * no-overlap error. Read them with `??` / `?.` / truthiness, never `=== null`.
+ */
 export interface PlanListRow {
   slug: string;
-  title: string | null;
+  title?: string;
   status: PlanStatus;
   /** Last REAL activity on the plan — the PG `updated_at` write timestamp
    *  (ISO), guarded server-side against no-op bumps. Falls back to the
    *  authored frontmatter date on rows a stale server serializes. */
-  updated: string | null;
-  /** Frontmatter created date — null when the plan never set one.
-   *  (May arrive undefined from a server predating the field.) */
-  created: string | null;
-  owner: string | null;
-  /** P-015: free-text initiative grouping label, or null. Plans sharing a label
-   *  group together via the plans-list initiative filter facet (shared-hive-
-   *  collaboration). Undefined from a server predating P-015. */
-  initiative?: string | null;
+  updated?: string;
+  /** Frontmatter created date — absent when the plan never set one. */
+  created?: string;
+  owner?: string;
+  /** P-015: free-text initiative grouping label. Plans sharing a label group
+   *  together via the plans-list initiative filter facet (shared-hive-
+   *  collaboration). Absent when unset, or from a server predating P-015. */
+  initiative?: string;
   /** B1 (P-001): resolved owner identity (handle/avatar) for the ownership badge —
-   *  derived from `owner` server-side. Undefined from a server predating B1 or
+   *  derived from `owner` server-side. Absent from a server predating B1 or
    *  when the attribution flag is off. */
-  ownerIdentity?: AuthorIdentity | null;
+  ownerIdentity?: AuthorIdentity;
   /** B1 (P-001): resolved last-editor identity (latest plan revision author). */
-  lastEditor?: AuthorIdentity | null;
+  lastEditor?: AuthorIdentity;
   archived: boolean;
   isLegacy: boolean;
-  itemCounts: Partial<Record<ItemStatus | 'unknown', number>> | null;
-  nextAction: string | null;
+  itemCounts?: Partial<Record<ItemStatus | 'unknown', number>>;
+  nextAction?: string;
   /**
    * Resolved harness slug for the plan — per
    * `plans-newbutton-and-subharness-scope-2026-05-25` P-022. Always
@@ -103,25 +114,26 @@ export interface PlanListRow {
    * when no ctx harness is provided).
    */
   harness: string;
-  /** Operational start state — null means never started. */
-  startStatus: PlanStartStatus;
-  /** Cross-plan dispatch rank — lower = dispatched first. Null = no explicit priority (uses started_at order). */
-  priority: number | null;
+  /** Operational start state — absent means never started. */
+  startStatus?: Exclude<PlanStartStatus, null>;
+  /** Cross-plan dispatch rank — lower = dispatched first. Absent = no explicit
+   *  priority (uses started_at order). */
+  priority?: number;
   /** Importance of the plan's hottest OPEN item (done/dropped excluded);
-   *  null when no items are open. Items without an `importance:` keyword
-   *  count as 'normal'. (Undefined from a server predating the field.) */
-  maxImportance: Importance | null;
+   *  absent when no items are open. Items without an `importance:` keyword
+   *  count as 'normal'. */
+  maxImportance?: Importance;
   /** 'scout' when the Scout loop routed this plan (ledger-derived server-side).
-   *  (May arrive undefined from a server predating the field.) */
-  origin?: 'scout' | null;
+   *  Absent otherwise, or from a server predating the field. */
+  origin?: 'scout';
   /** P-021 schedule glance — true when the plan has a recurrence set OR a one-shot
    *  fire time (scheduled-recurring-plans-2026-06-16). Undefined from a server
    *  predating the field. */
   scheduled?: boolean;
   /** Armed/firing (true) vs saved-but-paused/disarmed (false). */
   scheduleActive?: boolean;
-  /** A recurrence set (`recurring`) vs a one-shot `scheduled_at` (`one-shot`); null/undefined ⇒ unscheduled. */
-  scheduleKind?: 'recurring' | 'one-shot' | null;
+  /** A recurrence set (`recurring`) vs a one-shot `scheduled_at` (`one-shot`); absent ⇒ unscheduled. */
+  scheduleKind?: 'recurring' | 'one-shot';
 }
 
 export interface PlanItem {

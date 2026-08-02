@@ -67,6 +67,7 @@ export const SHARED_PRESENCE_DDL = `
     intent         text,
     current_view   text,
     last_seen_at   timestamptz DEFAULT now() NOT NULL,
+    runs_routines boolean,
     schema_version bigint DEFAULT 1 NOT NULL,
     pot_slug       text,
     fed_ts         bigint,

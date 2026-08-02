@@ -31,7 +31,11 @@ const CONFIG: Readonly<Record<string, ResourceDeltaConfig>> = {
   // clean full instead of reporting the whole view as `updated`.
   'plans.attention': { itemKeyField: 'key', schemaVersion: 'plans-attention-v2' },
   // plans.list resolves to the plan rows, keyed by `slug` (same key the plans:list tool uses).
-  'plans.list': { itemKeyField: 'slug', schemaVersion: 'plans-list-v1' },
+  // v2 (WI-7045 / D-025): the UI projection now omits null-valued keys here too,
+  // which changes every row's content hash. Same reason as the attention bump —
+  // without it an in-flight cursor reports the entire view as `updated` instead of
+  // taking ONE clean full.
+  'plans.list': { itemKeyField: 'slug', schemaVersion: 'plans-list-v2' },
 };
 
 /** The delta config for a sync resource name, or undefined → serve full (today's behavior). */
