@@ -641,17 +641,17 @@ describe('deriveSavings — a correct rewrite is not automatically a cheaper one
   });
 
   // The statistical trap, pinned. A mean of per-case ratios would report
-  // ((12/10) + (9000/10000)) / 2 = 1.05 -> "inflates", for a pair that plainly
+  // ((15/10) + (9000/10000)) / 2 = 1.2 -> "inflates", for a pair that plainly
   // saves ~1KB every time it is used. Totals are what context is actually paid in.
   it('aggregates as a ratio of totals, not a mean of per-case ratios', () => {
-    const s = deriveSavings([m(10, 12), m(10_000, 9_000)]);
+    const s = deriveSavings([m(10, 15), m(10_000, 9_000)]);
 
-    const meanOfRatios = (12 / 10 + 9_000 / 10_000) / 2;
+    const meanOfRatios = (15 / 10 + 9_000 / 10_000) / 2;
     expect(meanOfRatios).toBeGreaterThan(1 + SAVINGS_NEUTRAL_BAND); // the wrong method says "inflates"
 
     expect(s.verdict).toBe('reduces'); // the right method says "reduces"
-    expect(s.deltaBytes).toBe(-998);
-    expect(s.ratio).toBeCloseTo(9_012 / 10_010, 5);
+    expect(s.deltaBytes).toBe(-995);
+    expect(s.ratio).toBeCloseTo(9_015 / 10_010, 5);
   });
 
   it('handles a zero-byte bash side without dividing by it', () => {
@@ -662,6 +662,43 @@ describe('deriveSavings — a correct rewrite is not automatically a cheaper one
     expect(inflated.verdict).toBe('inflates');
     expect(inflated.ratio).toBeNull();
     expect(inflated.reason).toContain('bash returned no output');
+  });
+});
+
+describe('the read family, MEASURED against the real handler rather than asserted', () => {
+  // The plan's 3.4x figure for capability:read came from an aggregate over
+  // telemetry. This derives the same conclusion from an independent direction —
+  // replaying real commands through the real handler — which is what makes it
+  // evidence rather than a restatement.
+  const REPRESENTATIVE: Array<[SubstitutionPair, string]> = [
+    [sedRangeRead, "sed -n '1,5p' /var/log/a.log"],
+    [headFileRead, 'head -n 5 /var/log/a.log'],
+    [tailFileRead, 'tail -n 5 /var/log/a.log'],
+    [catFileRead, 'cat /var/log/a.log'],
+  ];
+
+  it('measures a real economy for every pair that declares a rewrite', async () => {
+    const measured: string[] = [];
+
+    for (const [pair, atom] of REPRESENTATIVE) {
+      const result = await replayPair(pair, sample([atom]), realExecutors(), options());
+      const s = result.savings;
+
+      measured.push(
+        `${pair.id}: ${result.verdict} / ${s.verdict} — bash ${s.bashBytes}B vs tool ${s.rewrittenBytes}B` +
+          `${s.ratio === null ? '' : ` (${Math.round(s.ratio * 100)}%)`}`,
+      );
+
+      // A pair that replays clean must carry a real measurement; an unmeasured
+      // economy on a clean pair would mean the axis silently did nothing.
+      if (result.verdict === 'replay-clean') {
+        expect(s.measuredCases, pair.id).toBeGreaterThan(0);
+        expect(s.verdict, pair.id).not.toBe('unmeasured');
+      }
+    }
+
+    // eslint-disable-next-line no-console -- the measurement IS the deliverable
+    console.log(`\n  measured economy of the read family:\n    ${measured.join('\n    ')}\n`);
   });
 });
 

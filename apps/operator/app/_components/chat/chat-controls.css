@@ -345,6 +345,25 @@
   font-size: 9px;
 }
 
+/* ═══ the fleet launcher's captioned form (P-007) ═══════════════════════════ */
+
+/* Two classes, so this reliably beats `.pc-new-session-launcher`'s own single-
+   class `display` on the same element rather than depending on stylesheet
+   order. The element keeps that class because the CONTROLS inside it are still
+   the new-session launcher's controls — only their arrangement changes: a
+   caption above each one turns a row of anonymous widgets into a form. */
+.pc-fleet-launch-row .pc-fleet-launch-row__fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 11px;
+  padding: 12px;
+  align-items: start;
+}
+
+.pc-fleet-launch-row .pc-fleet-launch-row__submit {
+  border-top: 1px solid var(--border);
+}
+
 /* ═══ shared focus treatment ════════════════════════════════════════════════ */
 
 .pc-ctl-mode:focus-visible,

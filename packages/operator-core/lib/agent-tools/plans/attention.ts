@@ -367,15 +367,31 @@ export default defineTool({
               // pin the ALS so a detached SWR refresh can't fall through to the
               // global registry workspace and leak another workspace's
               // messages-to-human into this one's feed.
+              // Bounded read (EI-19323045109346905) — replaces an unbounded
+              // ~20k-row scan when only the newest `WINDOW` rows are ever used.
+              //
+              // The stopping rule here is the RAW entry count, NOT the post-filter
+              // count its sibling call sites use, and the discriminator is the ORDER
+              // of slice vs filter: this caller slices the newest WINDOW FIRST and
+              // only then drops acked ones. So acked messages legitimately consume
+              // window slots and the output may be fewer than WINDOW. Counting only
+              // UNACKED entries would page further back and change behaviour — it
+              // would surface older messages this view has deliberately never shown.
+              // (`kinds` is applied inside readInbox, so `enough` already sees it.)
+              const WINDOW = 50;
               const [msgs, acked] = await runWithWorkspace(
                 conversationsWorkspace,
                 () =>
                   Promise.all([
-                    readInbox("human", { kinds: ["message"] }),
+                    readInbox(
+                      "human",
+                      { kinds: ["message"] },
+                      { enough: (entries) => entries.length >= WINDOW },
+                    ),
                     readAckedMsgIds(ADMIN_COORD_UI_OWNER),
                   ]),
               );
-              for (const m of msgs.slice(-50)) {
+              for (const m of msgs.slice(-WINDOW)) {
                 if (acked.has(m.msg_id)) continue;
                 const mm = m as typeof m & {
                   auto?: unknown;

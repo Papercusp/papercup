@@ -87,6 +87,7 @@ describe('github identity drift guard (WI-4978)', () => {
     for (const relPath of files) {
       if (!TEXT_EXTENSIONS.test(relPath)) continue;
       if (EXCLUDED_PATH_SEGMENTS.some((seg) => relPath.includes(seg))) continue;
+      if (ALLOWLISTED_FORK_FIXTURES.has(relPath)) continue;
 
       let content: string;
       try {

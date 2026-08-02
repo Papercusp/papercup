@@ -43,6 +43,16 @@
  * treats any existing pin as authoritative forever, so the ordinary pin-first
  * backfill (`pinRepoKeysForWorkspace`) never revisits an already-pinned entry.
  *
+ * ⚠ (b) RUNS UNCONDITIONALLY — it is NOT gated on the announce set (fixed
+ * 2026-08-02). The restore compares an entry against its OWN upstream coords, so
+ * it needs no peer announcement; it originally sat behind two early returns
+ * ("the directory threw" and "nothing announced a home key") that fired before
+ * the registry was even loaded. That made the guarantee above false in precisely
+ * the states where it is load-bearing — a fresh install, an offline device, a
+ * boot with no directory wired, and the COLD-JOIN state itself — so a device
+ * could stay permanently mis-keyed while this module read as having fixed it.
+ * Only the ADOPT half (a) legitimately depends on `byPotId`.
+ *
  * ⚠ WHAT ADOPTION ALONE DOES NOT FIX. Re-keying makes this device ASK for the
  * right repo; it does not stop a peer from serving a SUPERSEDED store under the
  * old key. The live incident stayed invisible for 7 days precisely because the
@@ -124,11 +134,32 @@ export async function adoptAnnouncedRepoKeysForWorkspace(
         return getHiveDirectory().listDiscoveredHives({ includeExpired: true });
       });
 
-    let announced: AnnouncedHomeKey[];
+    // ⚠ AN ABSENT / FAILING DIRECTORY MUST NOT SKIP THE RESTORE PASS (fixed
+    // 2026-08-02, the live tower corruption below). These two conditions used to
+    // `return` early, BEFORE the registry was even loaded — which silently made
+    // this module's own claim (b) ("actively RESTORES a corrupted entry") false in
+    // exactly the states that matter most:
+    //   · a device that discovers no peers — a fresh install, an offline laptop,
+    //     or the COLD-JOIN state this whole lane exists to make work;
+    //   · a boot with no directory wired (the lazy-import no-op path above);
+    //   · any transient throw out of the directory.
+    // The restore half is PURELY LOCAL — it compares an entry against its OWN
+    // upstream coords and needs no announcement whatsoever — so gating it behind
+    // "some peer announced something" was a precondition it never had. And the
+    // corruption it repairs is otherwise PERMANENT (`canonicalRepoKey` treats any
+    // existing pin as authoritative forever, so the pin-first backfill never
+    // revisits it), which is why an unreachable repair reads as a fixed bug while
+    // the device stays broken. Measured on the tower 2026-08-02: `papercusp` sat
+    // pinned to the rig's bare `papercusp`/'peer' despite carrying
+    // github_repository_id 1223568103, with a 4.0G store written under the wrong
+    // key. Only the ADOPT half legitimately depends on the announce set.
+    let announced: AnnouncedHomeKey[] = [];
     try {
       announced = await listAnnounced();
     } catch {
-      return { adopted: [], restoredOwnIdentity: [], unchanged: 0, wrote: false };
+      // Directory unavailable ⇒ nothing to adopt FROM, but the local restore below
+      // is still both valid and necessary. Fall through with an empty announce set.
+      announced = [];
     }
 
     // Only announces that actually carry a home key and a TRUSTWORTHY slug.
@@ -136,9 +167,6 @@ export async function adoptAnnouncedRepoKeysForWorkspace(
     for (const h of announced) {
       if (!h.homeRepoKey || h.potIdSynthetic) continue;
       byPotId.set(h.potId, h.homeRepoKey);
-    }
-    if (byPotId.size === 0) {
-      return { adopted: [], restoredOwnIdentity: [], unchanged: 0, wrote: false };
     }
 
     const reg = await load(workspaceId);
