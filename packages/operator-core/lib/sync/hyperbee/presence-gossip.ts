@@ -153,6 +153,16 @@ export function presenceFrameSigningBytes(body: PresenceFrameBody): Buffer {
     // is NOT a runner produces byte-identical frames to the pre-mig-682 wire form
     // and verification stays stable across a mixed-version deploy window.
     if (r.runs_routines != null) row.runs_routines = r.runs_routines;
+    // EI-19330771435294981 (mig 724): the published routine SET rides the SIGNED
+    // bytes for exactly the reason the bit above does — the git-sync INTEGRATOR
+    // election decides candidacy from it, so leaving it unsigned would let a
+    // tamperer claim 'git-sync' on any peer and capture the integrator lease
+    // (the failure WI-6996 was opened for). Appended LAST and emitted ONLY when
+    // present, so a publisher that does not send it produces byte-identical
+    // frames to the pre-mig-724 wire form and verification stays stable across a
+    // mixed-version deploy window. The publisher normalizes (dedupe + sort) so an
+    // unchanged set never re-orders these bytes.
+    if (r.active_routines != null) row.active_routines = r.active_routines;
     ordered.row = row;
   }
   if (body.del) {

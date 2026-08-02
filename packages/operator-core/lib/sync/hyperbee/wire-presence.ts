@@ -31,7 +31,7 @@ import { resolveLocalAnnounceIdentity } from './local-announce-identity';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
 import { machineFingerprint } from '../../identity/device-keychain-id';
 import { canonicalHiveHomeSlug } from '../../hive-federation';
-import { nodeRunsCadenceLoops } from '../../cadence-runner-capability';
+import { nodeActiveRoutines, nodeRunsCadenceLoops } from '../../cadence-runner-capability';
 import type { SharedPresenceRow } from './projections/presence';
 import {
   registerPresenceGossipTopic,
@@ -63,6 +63,10 @@ export interface WirePresenceOpts {
   /** EI-18761517980514694 test seam — override the runner-capability resolver
    *  stamped onto each announce (default: nodeRunsCadenceLoops for this harness). */
   resolveRunsRoutines?: () => Promise<boolean | null>;
+  /** EI-19330771435294981 test seam — override the published ACTIVE routine-name
+   *  SET stamped onto each announce (default: nodeActiveRoutines for this
+   *  harness). Each election derives its OWN capability predicate from it. */
+  resolveActiveRoutines?: () => Promise<readonly string[] | null>;
   getState?: () => PresenceState;
   setIntervalFn?: (cb: () => void, ms: number) => ReturnType<typeof setInterval>;
   clearIntervalFn?: (h: ReturnType<typeof setInterval>) => void;
@@ -210,6 +214,15 @@ export async function wirePresenceAnnounceForHarness(
     opts.resolveRunsRoutines ??
     (async () => nodeRunsCadenceLoops(handle.workspaceId, handle.harnessSlug));
 
+  // EI-19330771435294981: the published routine SET, stamped on the same announces
+  // and re-resolved on the same 60s cache for the same disarm-self-heal reason.
+  // Each election derives its own predicate from it (cadence-runner intersects
+  // CADENCE_RUNNER_ROUTINES; the git-sync integrator tests for 'git-sync'), which
+  // is what lets the integrator stop borrowing a bit about an unrelated loop.
+  const resolveActiveRoutines =
+    opts.resolveActiveRoutines ??
+    (async () => nodeActiveRoutines(handle.workspaceId, handle.harnessSlug));
+
   const getState =
     opts.getState ??
     ((): PresenceState => ({ intent: null, currentView: null, harnessSlug: handle.harnessSlug }));
@@ -229,7 +242,14 @@ export async function wirePresenceAnnounceForHarness(
       opts.presenceGossip ?? (await getFlag(FLAGS.PRESENCE_GOSSIP, 'system').catch(() => false));
     let writer: PresenceGossipWriter | undefined;
     if (gossipWriterOn) {
-      writer = await buildGossipWriter(handle, getState, potSlug, opts, resolveRunsRoutines);
+      writer = await buildGossipWriter(
+        handle,
+        getState,
+        potSlug,
+        opts,
+        resolveRunsRoutines,
+        resolveActiveRoutines,
+      );
       if (!writer) gossipWriterOn = false; // gh-unauthed → stay on the log path gate (no-op anyway)
     }
     await registerPresenceGossipTopic({
@@ -299,6 +319,7 @@ export async function wirePresenceAnnounceForHarness(
         : (op) => handle.append(op),
     potSlug,
     resolveRunsRoutines,
+    resolveActiveRoutines,
     intervalMs,
     now: opts.now,
     setIntervalFn: opts.setIntervalFn,
@@ -402,6 +423,7 @@ async function buildGossipWriter(
   potSlug: string,
   opts: WirePresenceOpts,
   resolveRunsRoutines: () => Promise<boolean | null>,
+  resolveActiveRoutines: () => Promise<readonly string[] | null>,
 ): Promise<PresenceGossipWriter | undefined> {
   try {
     const id = await resolveLocalAnnounceIdentity({ logCoreKeyHex: handle.ownLog.keyHex });
@@ -424,6 +446,16 @@ async function buildGossipWriter(
         } catch {
           runsRoutines = null;
         }
+        // EI-19330771435294981: same reasoning one field on — the gossip plane is
+        // the LIVE presence path, so a row published without the routine set reads
+        // as "no advertised capability" to peers and the git-sync integrator
+        // election never sees a candidate. Best-effort: never fail an announce.
+        let activeRoutines: readonly string[] | null = null;
+        try {
+          activeRoutines = await resolveActiveRoutines();
+        } catch {
+          activeRoutines = null;
+        }
         return buildPresenceAnnounceRow(
           {
             githubUserId: id.githubUserId,
@@ -434,6 +466,7 @@ async function buildGossipWriter(
           now(),
           potSlug,
           runsRoutines,
+          activeRoutines,
         );
       },
     };

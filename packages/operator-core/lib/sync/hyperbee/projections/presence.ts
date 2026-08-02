@@ -50,6 +50,22 @@ export interface SharedPresenceRow {
    *  pre-upgrade peer's record still validates; absent ⇒ that peer is not a runner
    *  candidate, which is safe because the selectors add SELF unconditionally. */
   runs_routines?: boolean | null;
+  /** EI-19330771435294981 (mig 724) — the ACTIVE routine NAMES this node runs for
+   *  this harness, at the `(workspace_id, install_slug)` grain of
+   *  `harness_shared.routines`. Published so each election asks its OWN capability
+   *  question instead of sharing one coarse bit: the cadence-runner election
+   *  intersects it with CADENCE_RUNNER_ROUTINES, the git-sync INTEGRATOR election
+   *  tests for `'git-sync'`. Pointing the second election at `runs_routines` (the
+   *  first one's bit) measurably turned integrator peer arbitration OFF — the bit
+   *  was null on every live row because gym-cycle was inactive here.
+   *
+   *  Stamped by the presence publisher (see lib/cadence-runner-capability.ts
+   *  `nodeActiveRoutines`), deduped + sorted so an unchanged set produces
+   *  byte-identical signed frames. Optional on DECODE (mirrors `runs_routines`)
+   *  so a pre-upgrade peer's record still validates; absent/empty ⇒ that peer is
+   *  not a candidate for either election, which is safe because both selectors
+   *  re-add SELF unconditionally after the exclusion filter. */
+  active_routines?: readonly string[] | null;
 }
 
 export interface PresenceProjectionOpts {
@@ -82,7 +98,16 @@ export function isSharedPresenceRow(input: unknown): input is SharedPresenceRow 
     // nullable (publisher could not resolve it) — never reject an older peer's row.
     (r.runs_routines === undefined ||
       r.runs_routines === null ||
-      typeof r.runs_routines === 'boolean')
+      typeof r.runs_routines === 'boolean') &&
+    // active_routines is optional (absent on pre-mig-724 peer records) + nullable
+    // (publisher could not resolve it) — never reject an older peer's row. When
+    // present it must be an array of non-empty strings: this rides the SIGNED
+    // frame and lands in a text[] column, so a malformed payload from a peer is
+    // rejected here rather than at the INSERT.
+    (r.active_routines === undefined ||
+      r.active_routines === null ||
+      (Array.isArray(r.active_routines) &&
+        r.active_routines.every((n) => typeof n === 'string' && n.length > 0)))
   );
 }
 
@@ -109,13 +134,14 @@ async function writeToPg(
     INSERT INTO harness_shared.shared_presence
       (workspace_id, harness_slug, github_user_id, machine_label, device_pubkey,
        intent, current_view, last_seen_at, schema_version, pot_slug, fed_ts, fed_hlc,
-       author_pubkey, runs_routines)
+       author_pubkey, runs_routines, active_routines)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.machine_label},
        ${row.device_pubkey}, ${row.intent}, ${row.current_view},
        to_timestamp(${row.last_seen_at} / 1000.0),
        ${row.schema_version}, ${row.hive_slug ?? null}, ${fedTs}, ${fedHlc},
-       ${authorPubkey}, ${row.runs_routines ?? null})
+       ${authorPubkey}, ${row.runs_routines ?? null},
+       ${row.active_routines ? [...row.active_routines] : null})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, machine_label) DO UPDATE SET
       device_pubkey = EXCLUDED.device_pubkey,
       intent = EXCLUDED.intent,
@@ -126,7 +152,8 @@ async function writeToPg(
       fed_ts = EXCLUDED.fed_ts,
       fed_hlc = EXCLUDED.fed_hlc,
       author_pubkey = EXCLUDED.author_pubkey,
-      runs_routines = EXCLUDED.runs_routines
+      runs_routines = EXCLUDED.runs_routines,
+      active_routines = EXCLUDED.active_routines
     -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,

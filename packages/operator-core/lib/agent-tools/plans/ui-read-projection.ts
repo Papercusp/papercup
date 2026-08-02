@@ -42,6 +42,13 @@
  * The full `body` + `actions` come back on selection via the `plans.attentionItem`
  * resolver, which bypasses this projection (`uiProjection: false`).
  *
+ * The attention feed additionally OMITS NULL-VALUED KEYS at the item + group top
+ * level (no-http-anywhere-2026-07-28 D-025 / WI-7039) — 154,971 B of a live
+ * 1,062,144 B payload, 14.6%, and the third distinct payload bug class after the
+ * unread field (D-023) and the unreachable field (D-024). See
+ * {@link omitNullValues} for the wire-contract change that implies and why this
+ * belongs in the resolver rather than the serializer.
+ *
  * plans:get and every other verb pass through unchanged — plans:get IS the
  * full-fidelity detail read.
  */
@@ -88,6 +95,46 @@ function omit(
   return out;
 }
 
+/**
+ * Drop the keys whose value is `null` — SHALLOW, one level only.
+ *
+ * A `"key":null` pair costs its key name + 6 bytes and carries no information a
+ * consumer cannot get from the key's absence. On the attention feed that is
+ * 154,971 B of a 1,062,144 B payload (14.6%), measured live 2026-08-02: the
+ * per-item optional fields are null on most rows (triageNote/triagedBy/
+ * triagedAt on 1114, ownerAgentId on 994, ownerLabel on 1081, authorizer +
+ * whyGated on 832, harnessSlug on 796).
+ *
+ * WHY SHALLOW. It is applied to the item and group TOP LEVEL only, never
+ * recursively into `ref` — that is a discriminated union whose members a
+ * consumer may narrow structurally, and it is worth 750 B.
+ *
+ * WHY HERE AND NOT IN THE SERIALIZER (no-http-anywhere-2026-07-28 D-025). This
+ * runs in the RESOLVER path, so the rows the delta protocol hashes are the rows
+ * that go on the wire. Stripping in `serializeJsonResponse` instead would strip
+ * AFTER `negotiateRowsDelta` computed the full-view checksum over the unstripped
+ * rows (rest-query.ts:83 vs :124) — the client recomputes that checksum over
+ * what it received (delta-client.ts:81) and force-fulls on mismatch, so every
+ * delta-enabled query would refetch full on every poll, forever.
+ *
+ * ⚠ THE CONTRACT THIS CHANGES: an omitted key reads as `undefined`, not `null`.
+ * Truthiness (`??`, `?.`, `!!`, a ternary), `== null`, and `typeof x ===
+ * 'string'` are unaffected; `=== null`, `'k' in row`, `hasOwnProperty` and
+ * destructuring-with-default are NOT. Audited across every consumer of this
+ * feed's single entrypoint (`plans-api.ts` `useSyncResource('plans.attention')`)
+ * before landing: zero sites in any of those four categories. Re-run that audit
+ * before applying this to another query — and declare the affected fields `?: T`
+ * rather than `T | null` in the client wire type, which turns a future `=== null`
+ * into a TS2367 no-overlap error instead of a silent always-false.
+ */
+function omitNullValues(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(obj)) {
+    if (val !== null) out[k] = val;
+  }
+  return out;
+}
+
 function projectItems(data: Record<string, unknown>): Record<string, unknown> {
   const items = (data as { items?: unknown }).items;
   if (!Array.isArray(items)) return data;
@@ -118,8 +165,9 @@ function projectList(data: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
- * Slim the attention feed to its LIST shape: drop the detail-tier fields and
- * clip `body` to a search/tooltip preview. A clipped item is stamped
+ * Slim the attention feed to its LIST shape: drop the detail-tier fields, clip
+ * `body` to a search/tooltip preview, and omit null-valued keys (see
+ * {@link omitNullValues} — 14.6% of this payload). A clipped item is stamped
  * `bodyTruncated: true` so a consumer can tell "short body" from "clipped body"
  * without re-measuring the string.
  */
@@ -129,10 +177,10 @@ function projectAttention(data: Record<string, unknown>): Record<string, unknown
   const projected = groups.map((group) => {
     if (!group || typeof group !== 'object') return group;
     const g = group as Record<string, unknown>;
-    if (!Array.isArray(g.items)) return group;
+    if (!Array.isArray(g.items)) return omitNullValues(g);
     const items = g.items.map((item) => {
       if (!item || typeof item !== 'object') return item;
-      const it = omit(item as Record<string, unknown>, ATTENTION_ITEM_DROP);
+      const it = omitNullValues(omit(item as Record<string, unknown>, ATTENTION_ITEM_DROP));
       const body = it.body;
       if (typeof body === 'string' && body.length > UI_ATTENTION_BODY_PREVIEW_MAX) {
         it.body = clipPreview(body, UI_ATTENTION_BODY_PREVIEW_MAX);
@@ -140,7 +188,10 @@ function projectAttention(data: Record<string, unknown>): Record<string, unknown
       }
       return it;
     });
-    return { ...g, items };
+    // The group's own null keys (`planSlug` on the synthetic Alerts buckets,
+    // `harnessSlug` on cross-harness groups) go too — `items` is re-set after,
+    // so it survives the omit regardless.
+    return { ...omitNullValues(g), items };
   });
   return { ...data, groups: projected };
 }

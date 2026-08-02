@@ -112,6 +112,7 @@ export function buildPresenceAnnounceRow(
   nowMs: number,
   potSlug: string | null = null,
   runsRoutines: boolean | null = null,
+  activeRoutines: readonly string[] | null = null,
 ): SharedPresenceRow {
   return {
     harness_slug: state.harnessSlug,
@@ -129,6 +130,12 @@ export function buildPresenceAnnounceRow(
     // (see presenceFrameSigningBytes) instead of breaking verification on peers
     // that have not upgraded yet.
     runs_routines: runsRoutines === true ? true : null,
+    // EI-19330771435294981 (mig 724): same emit-only-when-informative rule, for the
+    // same wire reason. An EMPTY set and "unknown" are the identical verdict to
+    // every consumer (not a candidate for any election), so collapsing both to null
+    // keeps a routine-less node's signed frame byte-identical to the pre-mig-724
+    // form rather than breaking verification on peers that have not upgraded.
+    active_routines: activeRoutines && activeRoutines.length > 0 ? activeRoutines : null,
   };
 }
 
@@ -141,8 +148,16 @@ export function buildPresenceAnnounceOp(
   nowMs: number,
   potSlug: string | null = null,
   runsRoutines: boolean | null = null,
+  activeRoutines: readonly string[] | null = null,
 ): LocalWriteOp {
-  const value = buildPresenceAnnounceRow(identity, state, nowMs, potSlug, runsRoutines);
+  const value = buildPresenceAnnounceRow(
+    identity,
+    state,
+    nowMs,
+    potSlug,
+    runsRoutines,
+    activeRoutines,
+  );
   return {
     type: 'put',
     table: 'presence',
@@ -206,6 +221,14 @@ export interface AnnounceLocalPresenceDeps {
    * A throw resolves to null ("not a runner") — the conservative direction.
    */
   resolveRunsRoutines?: () => Promise<boolean | null>;
+  /**
+   * EI-19330771435294981 — resolve the ACTIVE routine-name SET
+   * (`shared_presence.active_routines`, mig 724). Same lazy-resolver contract as
+   * `resolveRunsRoutines` above, and a resolver rather than a value for the same
+   * disarm-must-self-heal reason. A throw resolves to null ("no advertised
+   * capability") — the conservative direction for every election reading it.
+   */
+  resolveActiveRoutines?: () => Promise<readonly string[] | null>;
 }
 
 export interface AnnounceResult {
@@ -239,8 +262,23 @@ export async function announceLocalPresence(
       runsRoutines = null;
     }
   }
+  let activeRoutines: readonly string[] | null = null;
+  if (deps.resolveActiveRoutines) {
+    try {
+      activeRoutines = await deps.resolveActiveRoutines();
+    } catch {
+      activeRoutines = null;
+    }
+  }
   await deps.append(
-    buildPresenceAnnounceOp(identity, state, now, deps.potSlug ?? null, runsRoutines),
+    buildPresenceAnnounceOp(
+      identity,
+      state,
+      now,
+      deps.potSlug ?? null,
+      runsRoutines,
+      activeRoutines,
+    ),
   );
   return { announced: true, last: { state: { ...state }, atMs: now } };
 }
@@ -276,6 +314,9 @@ export interface PresenceAnnounceLoopDeps {
   /** EI-18761517980514694 — forwarded to {@link announceLocalPresence}; see its
    *  doc for why this is a per-announce RESOLVER and not a wire-time value. */
   resolveRunsRoutines?: () => Promise<boolean | null>;
+  /** EI-19330771435294981 — forwarded to {@link announceLocalPresence}; same
+   *  per-announce resolver contract as `resolveRunsRoutines`. */
+  resolveActiveRoutines?: () => Promise<readonly string[] | null>;
   /** Tick rate (the decision cadence is shouldAnnounce's; the loop just polls). */
   intervalMs: number;
   cadence?: AnnounceCadenceOpts;
@@ -364,6 +405,7 @@ export function startPresenceAnnounceLoop(deps: PresenceAnnounceLoopDeps): Prese
         cadence: deps.cadence,
         potSlug: deps.potSlug,
         resolveRunsRoutines: deps.resolveRunsRoutines,
+        resolveActiveRoutines: deps.resolveActiveRoutines,
       });
       if (result.last) prev = result.last;
     } catch (err) {

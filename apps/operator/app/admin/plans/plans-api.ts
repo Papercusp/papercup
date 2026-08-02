@@ -206,13 +206,27 @@ export interface AttentionAction {
   primary?: boolean;
 }
 
+/**
+ * ⚠ THE OPTIONAL (`?:`) FIELDS BELOW ARE OPTIONAL ON PURPOSE, AND THE ABSENCE OF
+ * `| null` ON THEM IS LOAD-BEARING (no-http-anywhere-2026-07-28 D-025 / WI-7039).
+ *
+ * The `plans.attention` LIST feed omits null-valued keys in the resolver
+ * projection (`ui-read-projection.ts` `omitNullValues`) — 14.6% of a 1,062 KB
+ * payload. So on the wire these arrive ABSENT, i.e. `undefined`, never `null`.
+ * Declaring them `T | null` would keep `item.triagedBy === null` typechecking
+ * while being always-false at runtime; declaring them `?: T` makes that
+ * comparison a TS2367 no-overlap error, which is the whole point.
+ *
+ * Read them with truthiness or `??`. Do NOT re-add `| null` to make a
+ * comparison compile — fix the comparison.
+ */
 export interface AttentionItem {
   id: string;
   kind: AttentionKind;
   source: string;
-  harnessSlug: string | null;
-  planSlug: string | null;
-  itemRef: string | null;
+  harnessSlug?: string;
+  planSlug?: string;
+  itemRef?: string;
   title: string;
   body: string;
   status: string;
@@ -221,13 +235,13 @@ export interface AttentionItem {
   tier: AttentionTier;
   needsHuman: boolean;
   /** The owning agent (the coord record's `from`), drives "Message owner". */
-  ownerAgentId: string | null;
-  ownerLabel: string | null;
+  ownerAgentId?: string;
+  ownerLabel?: string;
   /** Operator-triage overlay (D-006). */
   triageState: TriageState;
-  triageNote: string | null;
-  triagedBy: string | null;
-  triagedAt: string | null;
+  triageNote?: string;
+  triagedBy?: string;
+  triagedAt?: string;
   /** DETAIL-tier (WI-6551): the `plans.attention` LIST feed drops this — see
    *  `ATTENTION_ITEM_DROP` in operator-core's ui-read-projection.ts — and it is
    *  re-supplied by the `plans.attentionItem` detail fetch. It is therefore
@@ -244,25 +258,28 @@ export interface AttentionItem {
    *  report-carrying `coord-message` (an agent/fleet-leader status card sent
    *  via coord:send `report` — agent-report-cards-2026-07-17 P-002). */
   report?: ReportBlock;
-  /** The autonomy category this item's disposition belongs to (or null for an
+  /** The autonomy category this item's disposition belongs to (absent for an
    *  ungoverned signal). Drives the category badge. */
-  category?: string | null;
+  category?: string;
   /** A1 authorizer-split (queue-authorization-redesign P-002): WHO must sign off
    *  on this Decision + WHY it's gated. Set for `needsHuman` items only. */
-  authorizer?: 'you' | 'queen-eligible' | null;
-  whyGated?: 'protected' | 'owner-only' | 'unarmed' | 'above-ceiling' | null;
+  authorizer?: 'you' | 'queen-eligible';
+  whyGated?: 'protected' | 'owner-only' | 'unarmed' | 'above-ceiling';
   /** ISO timestamp of when the underlying event occurred (message/escalation
    *  sent, work-item updated, gate opened, report turn, …). Drives the Inbox
    *  card's date + recency ordering (inbox-pane-active-scope-dates-filters-2026-07-19).
-   *  Null when a source has no natural per-item timestamp. */
-  occurredAt?: string | null;
+   *  Absent when a source has no natural per-item timestamp. */
+  occurredAt?: string;
 }
 
 export interface AttentionGroup {
   key: string;
   kind: 'plan' | 'alerts';
-  planSlug: string | null;
-  harnessSlug: string | null;
+  /** Optional, not nullable — the LIST feed omits null keys (see the
+   *  {@link AttentionItem} header). Absent on the synthetic Alerts buckets. */
+  planSlug?: string;
+  /** Optional, not nullable — absent on a cross-harness group. */
+  harnessSlug?: string;
   title: string;
   items: AttentionItem[];
   maxImportance: Importance;
