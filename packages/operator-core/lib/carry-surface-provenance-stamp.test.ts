@@ -97,6 +97,7 @@ describe('mergeQuoteMismatchesIntoLint (EI-12890 — pure, no IO)', () => {
     snippet: 'I got logged out. Continue where you left off.',
     quote: 'now get our 0.0.11 release out on all 3 platforms',
     quoteMatch: false,
+    checked: true,
     ...over,
   });
 

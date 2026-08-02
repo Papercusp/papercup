@@ -141,6 +141,46 @@ async function defaultActiveSessions(ownerId: string): Promise<ActiveSessionRow[
   }
 }
 
+/**
+ * Resolve a SPECIFIC past session belonging to ownerId's claude isolation
+ * directory, identified by a prefix of its native session id — as opposed to
+ * resolveSelfSession, which always returns only the newest/current one.
+ *
+ * Scoped ONLY to the per-owner isolation dir
+ * (~/.papercusp/session-claude/<ownerId>/projects/**), which is intrinsically
+ * owner-scoped by directory path — deliberately never the shared
+ * ~/.claude/projects, ~/.omp, or ~/.codex roots, where a bare prefix match
+ * could resolve to a DIFFERENT owner's session (a worse bug than the one this
+ * fixes: reading and disclosing a stranger's transcript text as if it were
+ * the caller's own cited turn). A ref into a non-isolated / omp / codex OLDER
+ * session still reports unresolvable — narrower coverage, but never a
+ * cross-owner leak.
+ *
+ * Fixes EI-19297300002186512: work_items:checkpoint's turn-provenance
+ * verifier reported found:false for a GENUINE owner anchor that lived in an
+ * OLDER session of the same owner's carry-respawn chain — verifyTurnRefs
+ * previously only ever checked the current/newest transcript
+ * (resolveSelfSession's return), so any ref older than the latest respawn
+ * was unconditionally unverifiable even when the cited turn was real and
+ * still on disk, one directory over.
+ *
+ * Read-only + fail-soft, same contract as resolveSelfSession: any miss
+ * (no owner dir, no matching prefix, a raced/unreadable directory) returns
+ * null rather than throwing.
+ */
+export async function resolveOwnerIsolatedSessionByPrefix(
+  ownerId: string,
+  sessionPrefix: string,
+  opts: { home?: string } = {},
+): Promise<SelfSession | null> {
+  if (!ownerId || !sessionPrefix) return null;
+  const home = opts.home ?? HOME;
+  const pfx = sessionPrefix.toLowerCase();
+  const isoFiles = await listJsonlUnder(join(home, '.papercusp', 'session-claude', ownerId, 'projects'));
+  const hit = isoFiles.find((f) => basename(f, '.jsonl').toLowerCase().startsWith(pfx));
+  return hit ? { sourceKind: 'claude', sessionId: basename(hit, '.jsonl'), filePath: hit } : null;
+}
+
 /** Resolve the caller's live transcript. Fail-soft: null when unresolvable. */
 export async function resolveSelfSession(
   ownerId: string,

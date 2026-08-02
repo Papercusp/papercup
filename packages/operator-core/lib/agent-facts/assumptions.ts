@@ -57,11 +57,18 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
+  FACT_KINDS,
   FACT_PROVENANCE_QUOTE_CHARS,
   factCitationRef,
+  isAssumptionFact,
+  type FactKind,
   type FactScope,
   type FactSelector,
 } from './store';
+
+function parseKindColumn(raw: string | null): FactKind | null {
+  return raw != null && (FACT_KINDS as readonly string[]).includes(raw) ? (raw as FactKind) : null;
+}
 
 /**
  * The condition a declared assumption resolved to. Ordered from strongest to
@@ -182,6 +189,36 @@ export interface ResolvedAssumption {
   excerpt?: string;
   /** The key matched in MORE THAN ONE scope; `ref` names the most-specific hit. */
   ambiguous?: boolean;
+  /**
+   * The resolved fact's own `kind` (EI-19298742806956600 / D-019's modality
+   * discriminator) — null when the row never declared one, or when there is no
+   * row (dangling / unresolved). Stamped here, not just resolved live, because
+   * the fact this ref points at can be swept 30d past expiry (see the file
+   * header) — after that only what was stamped on the close survives.
+   */
+  kind: FactKind | null;
+  /** The resolved fact's `confidence` at resolution time; feeds the SAME legacy
+   *  assumption test {@link isAssumptionFact} uses (`kind` absent, confidence
+   *  `'suspected'`) — see `isAssumption` below. */
+  confidence: string | null;
+  /**
+   * Was this citation actually an ASSUMPTION (the unverified premise the field
+   * exists to capture), per {@link isAssumptionFact}? `null` when there is no
+   * row to judge (dangling / unresolved) — never coerced to `false`, because
+   * "not an assumption" and "nothing to check" are different findings.
+   *
+   * ── WHY THIS EXISTS (EI-19298742806956600) ──────────────────────────────
+   * The dangling-reference gate only ever checked that the cited key RESOLVES —
+   * it never inspected `kind`, so a closer citing a `kind:'conclusion'`,
+   * `confidence:'verified'` fact (the thing they already CONFIRMED, semantically
+   * the opposite of an unverified premise) satisfies the gate exactly as well as
+   * a real assumption. Measured live: 25/25 sampled citations were
+   * verified conclusions, 0/25 were `kind:'assumption'`. This field makes that
+   * distinguishable without a second ledger read, and {@link nonAssumptionKindAdvisory}
+   * turns it into a WARN-ONLY signal (never a refusal — see that function's own
+   * header for why tightening this into a refusal is deliberately NOT done yet).
+   */
+  isAssumption: boolean | null;
 }
 
 /**
@@ -221,6 +258,8 @@ interface RawRow {
   retracted_at: string | null;
   superseded_at: string | null;
   expired: boolean;
+  kind: string | null;
+  confidence: string | null;
 }
 
 function excerptOf(body: string): string {
@@ -282,7 +321,8 @@ export async function resolveAssumptions(
       SELECT id, scope, scope_ref, key, body,
              retracted_at::text AS retracted_at,
              superseded_at::text AS superseded_at,
-             (expires_at <= now()) AS expired
+             (expires_at <= now()) AS expired,
+             kind, confidence
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${ws}
          AND source_hive IS NULL
@@ -302,6 +342,9 @@ export async function resolveAssumptions(
       scopeRef: p.parsed?.scopeRef ?? null,
       versionId: p.parsed?.versionId ?? null,
       condition: 'unresolved' as const,
+      kind: null,
+      confidence: null,
+      isAssumption: null,
     }));
   }
 
@@ -317,7 +360,19 @@ function malformedOrDangling(declared: string, parsed: ParsedAssumptionRef | nul
     scopeRef: parsed?.scopeRef ?? null,
     versionId: parsed?.versionId ?? null,
     condition: 'dangling',
+    kind: null,
+    confidence: null,
+    isAssumption: null,
   };
+}
+
+/** Build the `kind`/`confidence`/`isAssumption` triple for a resolved row — the
+ *  one place that reads {@link isAssumptionFact}, so every construction site below
+ *  agrees with the ledger's canonical predicate. */
+function assumptionFieldsOf(row: RawRow): Pick<ResolvedAssumption, 'kind' | 'confidence' | 'isAssumption'> {
+  const kind = parseKindColumn(row.kind);
+  const confidence = row.confidence ?? null;
+  return { kind, confidence, isAssumption: isAssumptionFact({ kind, confidence }) };
 }
 
 function conditionOfRow(r: RawRow): AssumptionCondition {

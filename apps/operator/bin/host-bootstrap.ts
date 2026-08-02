@@ -315,6 +315,22 @@ export function runBootstrap(): void {
     }
   })();
 
+  // [EI-19298078028509573 startup visibility] Record the Postgres durability settings
+  // (synchronous_commit / fsync / full_page_writes) on every boot. Purely observational —
+  // never gates boot, never changes the setting — so that a post-crash "the row I know I
+  // wrote is gone" investigation starts from a KNOWN fact (relaxed durability was in effect)
+  // instead of rediscovering it hours in. Fail-soft like its siblings above.
+  void (async () => {
+    try {
+      const { checkDurabilitySettings } = await import(
+        '@papercusp/operator-core/lib/startup/validate-durability-settings'
+      );
+      await checkDurabilitySettings();
+    } catch (e) {
+      console.warn('[durability-settings] startup check skipped (non-fatal):', (e as Error)?.message ?? e);
+    }
+  })();
+
   // [cupboard-public-release-2026-07-12 P-001] Move the installed-packs root
   // `~/.papercusp/learning-packs/` → `~/.papercusp/knowledge-packs/`.
   //

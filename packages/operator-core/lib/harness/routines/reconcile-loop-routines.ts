@@ -861,9 +861,16 @@ export async function reconcileLoopRoutines(
       // `row.last_assistant_text_after_fire` is queried unconditionally regardless of `via` (see
       // the SELECT above) — it is NOT lifecycle-report-gated — so this reclassification costs
       // nothing extra and needs no new evidence source; it was simply never wired to this via.
-      // note-refresh / stuck-backstop are unchanged: a note-refresh is the cold protocol's own
-      // explicit checkpoint write (a much stronger real-work signal than bare presence), and
-      // stuck-backstop already always records 'error'.
+      // note-refresh is unchanged: it is the cold protocol's own explicit checkpoint write (a
+      // much stronger real-work signal than bare presence), so there is nothing to reclassify.
+      // stuck-backstop ALSO gets reclassified (EI-19295537569038753, see below) — it already
+      // always records 'error' regardless, but "always error" only fixes the ok/error verdict,
+      // not the REARM DELAY: a wedged turn that produces no lifecycle/turn-journal/presence
+      // signal at all (e.g. a provider-wall reply with no tool call, so presence never bumps)
+      // structurally can never reach the `if (signal)` branch above, so leaving stuck-backstop
+      // unreclassified meant its own captured wedge text was fetched and then silently never
+      // read — the loop kept re-firing at the bare interval into the same wall instead of the
+      // reset-aware delay every other via already gets.
       let turnDeath: LoopLifecycleDeathVerdict | null = null;
       if (signal) {
         completedAt = signal.completedAt;
@@ -963,6 +970,10 @@ export async function reconcileLoopRoutines(
         completedAt = lastFiredMs;
         via = 'stuck-backstop';
         if (quickRetryEligible && !stuckParkElapsed) quickRetry = true;
+        // EI-19295537569038753: reclassify here too, not just on the `if (signal)` vias above —
+        // see the comment block above this else/if for why this branch is exactly the one a
+        // wedged (no-signal) provider-wall death reaches, and why it was previously unread.
+        turnDeath = classifyLoopLifecycleTurn(row.last_assistant_text_after_fire, intervalMs, nowMs);
       }
 
       // EI-13818: a reclassified lifecycle-death re-arms after `turnDeath.rearmDelayMs` (reset-

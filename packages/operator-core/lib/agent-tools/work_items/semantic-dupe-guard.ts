@@ -53,8 +53,10 @@ export interface SemanticDupeCandidate {
    *  EI-9940). Both are 0..1; the `source` tag disambiguates which. */
   similarity: number;
   /** Which prescreen produced this candidate. Unset = the original embedding-based
-   *  P-008 guard (kept optional so no existing caller/test needs to change). */
-  source?: 'lexical-recent';
+   *  P-008 guard (kept optional so no existing caller/test needs to change).
+   *  'lexical-fulltext' = EI-19298062354262754's reuse of improvements:capture's
+   *  own full-text search-first dedup (fulltext-lexical-dupe-guard.ts). */
+  source?: 'lexical-recent' | 'lexical-fulltext';
 }
 
 export interface SemanticDupeResult {

@@ -1109,3 +1109,198 @@ describe('shouldLogChronicOutcome — EI-12968 (rate-limit the skip-family LOG L
     expect(claimWatchdogFire).toHaveBeenCalledWith(expect.objectContaining({ windowHours: 4 }));
   });
 });
+
+describe("workspace scoping (EI-19372306666296664) — a foreign tenant's row must never be reported", () => {
+  /**
+   * A `sql` mock that HONORS the `s.workspace_id = ${...}` predicate instead of ignoring the
+   * query the way the other suites' `mockRows` does.
+   *
+   * This is the whole point of the suite. The pre-existing helper is `vi.fn(() => rows)` — it
+   * returns the fixture no matter what SQL it is handed, so a test built on it passes
+   * IDENTICALLY with and without the workspace predicate and can therefore never catch its
+   * removal. A regression test that cannot fail before the fix is not a regression test.
+   *
+   * The mock is a faithful mini-interpreter of exactly the one predicate under test: the tagged
+   * template hands us (strings, ...values), so the chunk immediately preceding a bound value
+   * ends with `s.workspace_id =` precisely when the query filters on it. No predicate in the
+   * query => every fixture row is returned, which is exactly what the unscoped SELECT did.
+   */
+  function mockDb(rows: Array<AutoloopStateRow & { workspace_id: string }>): { sql: ReturnType<typeof vi.fn> } {
+    const sql = vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+      let scoped: string | undefined;
+      for (let i = 0; i < values.length; i += 1) {
+        if (String(strings[i]).trimEnd().endsWith('s.workspace_id =')) scoped = String(values[i]);
+      }
+      const visible = scoped == null ? rows : rows.filter((r) => r.workspace_id === scoped);
+      return Promise.resolve(visible.map(({ workspace_id: _w, ...rest }) => rest));
+    });
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    return { sql };
+  }
+
+  beforeEach(() => {
+    vi.mocked(recentWatchdogFires).mockResolvedValue(0);
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    vi.mocked(captureImprovement).mockResolvedValue({} as never);
+    vi.mocked(requestOverwatchWake).mockResolvedValue({ wired: true, result: { fired: true } });
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env.PAPERCUSP_AUTOLOOP_CHRONIC_THRESHOLD;
+    delete process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS;
+  });
+
+  // The exact live false alarm: EI-19370235414830628 filed "SILENTLY STOPPED autoloop role:
+  // director@papercusp — no fire in 2228h" from a `workspace_id='default'` row for a role retired
+  // 93 days earlier. `harness_slug='papercusp'` exists in BOTH workspaces, so the alert text was
+  // indistinguishable from a live papercusp incident.
+  it('the reproducing case: a `default`-workspace `director@papercusp` row is NOT reported as silently stopped', async () => {
+    mockDb([
+      {
+        workspace_id: 'default', // the legacy partition — NOT the active workspace
+        harness_slug: 'papercusp', // same slug as the live tenant: this is what made it undiagnosable
+        role: 'director',
+        consecutive_errors: 2,
+        last_status: 'ok',
+        routine_active: null,
+        last_fired_at: new Date(Date.now() - 2228 * HOUR_MS).toISOString(),
+      },
+    ]);
+
+    const results = await autoloopSilentStopSweep();
+
+    expect(results).toEqual([]);
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(requestOverwatchWake).not.toHaveBeenCalled();
+  });
+
+  it('a foreign-workspace chronic row is NOT escalated, while a live one in the SAME sweep still is', async () => {
+    mockDb([
+      {
+        workspace_id: 'default',
+        harness_slug: 'papercusp',
+        role: 'director',
+        consecutive_errors: 9,
+        last_status: 'dead legacy tenant row',
+        routine_active: null,
+        last_fired_at: new Date().toISOString(),
+      },
+      {
+        workspace_id: 'ws-test', // the active workspace (mocked activeWorkspaceId)
+        harness_slug: 'papercusp',
+        role: 'gym-cycle',
+        consecutive_errors: 9,
+        last_status: 'genuinely failing',
+        routine_active: true,
+        last_fired_at: new Date().toISOString(),
+      },
+    ]);
+
+    const results = await autoloopChronicFailureSweep();
+
+    // the live row still escalates — scoping must not suppress a real alert
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ role: 'gym-cycle', outcome: 'escalated' });
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+    // ...and the foreign tenant's row is absent from the filed artifact entirely
+    const title = String(vi.mocked(captureImprovement).mock.calls[0]?.[0]?.title ?? '');
+    expect(title).toContain('gym-cycle@papercusp');
+    expect(title).not.toContain('director');
+  });
+
+  // The write-side consequence, which is what makes this a correctness bug and not just noise:
+  // `workspaceId` was ALREADY resolved and handed to claimWatchdogFire/recentWatchdogFires, so an
+  // unscoped row consumed the ACTIVE workspace's 24h debounce slot for its (harness, role) — able
+  // to suppress a genuine alert for the same pair.
+  it("a foreign row never consumes the active workspace's debounce slot", async () => {
+    mockDb([
+      {
+        workspace_id: 'default',
+        harness_slug: 'papercusp',
+        role: 'director',
+        consecutive_errors: 9,
+        last_status: 'dead legacy tenant row',
+        routine_active: null,
+        last_fired_at: new Date().toISOString(),
+      },
+    ]);
+
+    await autoloopChronicFailureSweep();
+
+    expect(claimWatchdogFire).not.toHaveBeenCalled();
+  });
+
+  it('both sweeps bind the active workspace into the SELECT', async () => {
+    const { sql } = mockDb([]);
+    await autoloopChronicFailureSweep();
+    await autoloopSilentStopSweep();
+
+    expect(sql).toHaveBeenCalledTimes(2);
+    for (const call of sql.mock.calls) {
+      const [strings, ...values] = call as unknown as [TemplateStringsArray, ...unknown[]];
+      expect(strings.join('?')).toContain('s.workspace_id =');
+      expect(values).toContain('ws-test');
+    }
+  });
+
+  // EI-12429's guard keys on harness_slug, an axis independent of workspace_id. It is retained
+  // deliberately: activeWorkspaceId() honors a PAPERCUSP_WORKSPACE_ID env pin, so a process pinned
+  // to the sandbox workspace would surface the planted drill row with only the scope guard.
+  it('the red-queen drill guard still suppresses a planted row even when it IS in the active workspace', async () => {
+    mockDb([
+      {
+        workspace_id: 'ws-test',
+        harness_slug: SANDBOX_HARNESS_SLUG,
+        role: 'red-queen-drill-worker',
+        consecutive_errors: 7,
+        last_status: 'red-queen drill: synthetic consecutive fire errors (planted, origin=drill)',
+        routine_active: true,
+        last_fired_at: new Date().toISOString(),
+      },
+    ]);
+
+    const results = await autoloopChronicFailureSweep();
+
+    expect(results.map((r) => r.outcome)).toEqual(['skipped-drill']);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+});
+
+describe('autoloopRowIdentity (EI-19372306666296664)', () => {
+  it('renders role@harness [workspace] so a cross-tenant row can never masquerade as a live one', () => {
+    expect(autoloopRowIdentity({ role: 'director', harness_slug: 'papercusp' }, 'default')).toBe(
+      'director@papercusp [default]',
+    );
+    // the two rows that were textually identical before the workspace was printed
+    expect(autoloopRowIdentity({ role: 'director', harness_slug: 'papercusp' }, 'papercusp-workspace')).not.toBe(
+      autoloopRowIdentity({ role: 'director', harness_slug: 'papercusp' }, 'default'),
+    );
+  });
+
+  it('is what the escalation title actually renders', async () => {
+    const sql = vi.fn(() =>
+      Promise.resolve([
+        {
+          harness_slug: 'papercusp',
+          role: 'gym-cycle',
+          consecutive_errors: 9,
+          last_status: 'x',
+          routine_active: true,
+          last_fired_at: new Date().toISOString(),
+        },
+      ]),
+    );
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    vi.mocked(recentWatchdogFires).mockResolvedValue(0);
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    vi.mocked(captureImprovement).mockResolvedValue({} as never);
+    vi.mocked(requestOverwatchWake).mockResolvedValue({ wired: true, result: { fired: true } });
+
+    await autoloopChronicFailureSweep();
+
+    expect(captureImprovement).toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('gym-cycle@papercusp [ws-test]') }),
+    );
+    vi.clearAllMocks();
+  });
+});

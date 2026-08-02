@@ -420,17 +420,38 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
   // VACUOUSLY — its `stillRegistered` gate held open by the very entry it exists to
   // catch. EI-19372323793235963 removed the entry, the mapping and the audit fixture,
   // so the gate is closed and re-adding either half now fails here.
-  it('does not map operatorTurns.byConversation once its resolver entry is gone', () => {
+  // EI-19372846096817075 — this assertion is now TOTAL rather than gated.
+  //
+  // It used to read `if (!stillRegistered) { expect(mapped).toBe(false); }`, which
+  // made the gate depend on the very entry the guard exists to catch: while that
+  // entry survived, the test executed ZERO assertions and reported a green tick
+  // indistinguishable from a real pass. That is how it ran for ~12h while D-018
+  // recorded the deletion as done — two agents read "guard green + decision says
+  // removed" and concluded it had landed. It had not.
+  //
+  // The fix is not to pin `stillRegistered` absolutely (that would red the fleet's
+  // gate for any legitimate future interim, which is how the interim arose in the
+  // first place). It is to state the invariant the guard actually holds, which is
+  // an IMPLICATION and is therefore always assertable:
+  //
+  //     mapped  =>  some resolver serves the name
+  //
+  // Both-present (the tolerated interim) passes; mapped-with-no-resolver fails.
+  // There is no input for which this asserts nothing, so it cannot go vacuous —
+  // the dormant state that needed reporting simply no longer exists.
+  //
+  // Where an invariant genuinely CANNOT be stated totally — a guard landed ahead
+  // of the cleanup it enforces — use `expectArmed` from lib/testing-armed-guard.ts
+  // instead of an `if`, so the dormant run reports as a skip and expires loudly.
+  it('never maps operatorTurns.byConversation unless a resolver actually serves it', () => {
     const stillRegistered = knownQueryNamesV2().includes('operatorTurns.byConversation');
     for (const [table, names] of Object.entries(TABLE_TO_QUERY_NAMES)) {
       const mapped = names.some((n) => (typeof n === 'string' ? n : n.name) === 'operatorTurns.byConversation');
-      if (!stillRegistered) {
-        expect(
-          mapped,
-          `${table} maps 'operatorTurns.byConversation', but no resolver serves that name — ` +
-            `dead wiring: every invalidation fired at it is a no-op against a name nothing reads.`,
-        ).toBe(false);
-      }
+      expect(
+        !mapped || stillRegistered,
+        `${table} maps 'operatorTurns.byConversation', but no resolver serves that name — ` +
+          `dead wiring: every invalidation fired at it is a no-op against a name nothing reads.`,
+      ).toBe(true);
     }
   });
 });

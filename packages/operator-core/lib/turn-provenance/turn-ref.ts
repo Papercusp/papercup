@@ -21,7 +21,11 @@
  */
 
 import { open } from 'node:fs/promises';
-import { resolveSelfSession } from '../search/self-session';
+import {
+  resolveSelfSession,
+  resolveOwnerIsolatedSessionByPrefix,
+  type ResolveSelfSessionOptions,
+} from '../search/self-session';
 import { parseEnvelope } from './turn-provenance';
 
 /* ------------------------------------------------------------------ */
@@ -296,6 +300,17 @@ export interface TurnRefVerdict {
    *  same as false, which means a resolvable turn whose text does not
    *  contain the claim: a resolvable ref is necessary but not sufficient. */
   quoteMatch: boolean | null;
+  /** EI-19297300002186512: true when a transcript was actually LOCATED and
+   *  searched for this ref's timestamp (regardless of whether a matching
+   *  turn was found in it) — false when no transcript could be resolved at
+   *  all for the ref's session. Distinguishes a VERIFIED-ABSENT ref
+   *  (searched the right transcript, no turn at that timestamp) from a
+   *  genuinely UNRESOLVABLE one (never searched — e.g. a session outside
+   *  this owner's known claude isolation chain). Collapsing both into a bare
+   *  `found:false` invites reading "we couldn't check" as "it's not there" —
+   *  the same never-let-a-failed-lookup-report-a-confident-negative shape
+   *  that let a real owner directive read as refuted. */
+  checked: boolean;
 }
 
 export interface VerifyTurnRefsOptions {
@@ -303,6 +318,13 @@ export interface VerifyTurnRefsOptions {
   filePath?: string;
   sessionId?: string;
   scanBytes?: number;
+  /** Testability hook: threaded through to resolveSelfSession /
+   *  resolveOwnerIsolatedSessionByPrefix (mirrors ResolveSelfSessionOptions.home)
+   *  when `filePath` is not pinned. Production callers omit it. */
+  home?: string;
+  /** Testability hook: threaded through to resolveSelfSession, so a test can
+   *  avoid the real DB-backed active-sessions lookup. Production callers omit it. */
+  loadActiveSessions?: ResolveSelfSessionOptions['loadActiveSessions'];
 }
 
 const SNIPPET_CHARS = 160;
@@ -315,9 +337,25 @@ function tsMatches(refTs: string, turnTs: string): boolean {
 }
 
 /**
- * Verify each ref against the caller's own transcript. Fail-soft: an
- * unresolvable transcript returns every ref as found:false (never throws) —
- * the stamp degrades to "unverifiable", it does not block the write.
+ * Verify each ref against the caller's own transcript. Fail-soft: a ref whose
+ * session can't be resolved at all returns found:false, checked:false (never
+ * throws) — the stamp degrades to "unverifiable", it does not block the
+ * write.
+ *
+ * EI-19297300002186512: a ref does not have to point at the CURRENT session.
+ * A cold carry-respawn mints a fresh native session id while an earlier
+ * checkpoint's [turn:…] ref still names the OLDER one — both live in the
+ * same owner's claude isolation dir. Previously this function only ever
+ * loaded the current/newest transcript (resolveSelfSession's return) and
+ * flatly missed any ref whose session prefix didn't match it, even though
+ * the cited turn was real and one directory over. Each distinct session
+ * prefix among the refs is now resolved (and its transcript read) on its
+ * own — the current session first (no extra IO), falling back to a
+ * same-owner isolation-dir lookup by prefix for any ref that doesn't match
+ * it — with the resolved turns cached per prefix so refs sharing a session
+ * only pay the read once. `opts.filePath` (used by tests to pin an explicit
+ * transcript) disables this fallback: a caller who pinned a specific file
+ * gets exactly that file, no owner-chain scan.
  */
 export async function verifyTurnRefs(
   ownerId: string,
@@ -325,7 +363,7 @@ export async function verifyTurnRefs(
   opts: VerifyTurnRefsOptions = {},
 ): Promise<TurnRefVerdict[]> {
   if (refs.length === 0) return [];
-  const miss = (r: TurnRef): TurnRefVerdict => ({
+  const miss = (r: TurnRef, checked: boolean): TurnRefVerdict => ({
     ref: r.raw,
     found: false,
     verdict: null,
@@ -333,30 +371,69 @@ export async function verifyTurnRefs(
     snippet: null,
     quote: r.quote ?? null,
     quoteMatch: null,
+    checked,
   });
+
   let filePath = opts.filePath;
   let sessionId = opts.sessionId;
   if (!filePath) {
-    const self = await resolveSelfSession(ownerId).catch(() => null);
-    if (!self) return refs.map(miss);
+    const self = await resolveSelfSession(ownerId, {
+      home: opts.home,
+      loadActiveSessions: opts.loadActiveSessions,
+    }).catch(() => null);
+    if (!self) return refs.map((r) => miss(r, false));
     filePath = self.filePath;
     sessionId = sessionId ?? self.sessionId;
   }
-  let turns: RecordedUserTurn[];
-  try {
-    turns = parseUserTurns(await readTail(filePath, opts.scanBytes ?? SCAN_BYTES));
-  } catch {
-    return refs.map(miss);
+  const currentFilePath = filePath;
+  const currentSidLower = (sessionId ?? '').toLowerCase();
+  // Once a caller pins an explicit transcript (tests), no owner-chain
+  // fallback — a ref for a different session stays unresolvable against it.
+  const allowOwnerChainFallback = !opts.filePath;
+
+  // Cache of sessionPrefix -> resolved turns (or null when unresolvable), so
+  // refs sharing a prefix — the common case, everything anchored to the
+  // current session — only pay the IO once.
+  const turnsByPrefix = new Map<string, RecordedUserTurn[] | null>();
+  async function turnsFor(sessionPrefix: string): Promise<RecordedUserTurn[] | null> {
+    if (turnsByPrefix.has(sessionPrefix)) return turnsByPrefix.get(sessionPrefix) ?? null;
+    let path: string | null = null;
+    if (!currentSidLower || currentSidLower.startsWith(sessionPrefix)) {
+      // No pinned sessionId to compare (rare) — fall back to the current
+      // transcript, same as pre-fix behavior; or the prefix matches it.
+      path = currentFilePath;
+    } else if (allowOwnerChainFallback) {
+      const resolved = await resolveOwnerIsolatedSessionByPrefix(ownerId, sessionPrefix).catch(() => null);
+      path = resolved?.filePath ?? null;
+    }
+    if (!path) {
+      turnsByPrefix.set(sessionPrefix, null);
+      return null;
+    }
+    try {
+      const parsed = parseUserTurns(await readTail(path, opts.scanBytes ?? SCAN_BYTES));
+      turnsByPrefix.set(sessionPrefix, parsed);
+      return parsed;
+    } catch {
+      turnsByPrefix.set(sessionPrefix, null);
+      return null;
+    }
   }
-  const sidLower = (sessionId ?? '').toLowerCase();
-  return refs.map((r) => {
-    // A ref into a DIFFERENT session is out of reach here — report unverified
-    // rather than matching a same-timestamp turn from the wrong session.
-    if (sidLower && !sidLower.startsWith(r.sessionPrefix)) return miss(r);
+
+  const out: TurnRefVerdict[] = [];
+  for (const r of refs) {
+    const turns = await turnsFor(r.sessionPrefix);
+    if (!turns) {
+      out.push(miss(r, false));
+      continue;
+    }
     const turn = turns.find((t) => tsMatches(r.ts, t.ts));
-    if (!turn) return miss(r);
+    if (!turn) {
+      out.push(miss(r, true));
+      continue;
+    }
     const cls = classifyRecordedTurn(turn.text);
-    return {
+    out.push({
       ref: r.raw,
       found: true,
       verdict: cls.verdict,
@@ -366,8 +443,10 @@ export async function verifyTurnRefs(
       // Compared against the FULL turn text, not the truncated snippet above —
       // a match sitting past SNIPPET_CHARS must still count as a match.
       quoteMatch: r.quote ? quoteMatchesTurn(r.quote, turn.text) : null,
-    };
-  });
+      checked: true,
+    });
+  }
+  return out;
 }
 
 export interface CurrentTurnStamp {

@@ -19,11 +19,12 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, setWorkItemState, ensureClaimHoldAttribution, type WorkItem, type WorkItemKind } from '../../work-items';
+import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, setWorkItemState, ensureClaimHoldAttribution, familyOf, type WorkItem, type WorkItemKind } from '../../work-items';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import { findMirroredOpenItem } from './mirror-guard';
 import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-guard';
 import { findRecentLexicalDupes } from './recent-lexical-dupe-guard';
+import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 import { getOrgPg } from '@papercusp/db-org';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
