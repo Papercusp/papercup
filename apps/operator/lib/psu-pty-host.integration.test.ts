@@ -834,13 +834,23 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
   // ("boots on the REFRESHED render") fails. The second case pins the other direction —
   // with no refresh available the inherited path MUST be kept, because that fail-soft is
   // what stops an operator hiccup from costing a live session its respawn.
-  const childCode =
+  // The child is a real SCRIPT FILE, not `node -e`: node parses `--`-prefixed tokens
+  // that follow `-e` as its OWN options and dies with "bad option:
+  // --system-prompt-file". After a script path everything is a script arg, which is
+  // also how the real backend is invoked.
+  const childScript = join(
+    mkdtempSync(join(tmpdir(), 'psu-persona-guard-')),
+    'child.js',
+  );
+  writeFileSync(
+    childScript,
     "const i=process.argv.indexOf('--system-prompt-file');" +
-    "process.stdout.write('BOOT:'+process.pid+' SPF:'+(i>=0?process.argv[i+1]:'NONE')+'\\n');" +
-    "process.stdin.setEncoding('utf8');let b='';" +
-    "process.stdin.on('data',d=>{b+=d;let i2;while((i2=b.indexOf('\\n'))>=0){const line=b.slice(0,i2);b=b.slice(i2+1);" +
-    "if(line==='QUIT'){process.exit(0);}}});" +
-    'setTimeout(()=>process.exit(0),15000);';
+      "process.stdout.write('BOOT:'+process.pid+' SPF:'+(i>=0?process.argv[i+1]:'NONE')+'\\n');" +
+      "process.stdin.setEncoding('utf8');let b='';" +
+      "process.stdin.on('data',d=>{b+=d;let i2;while((i2=b.indexOf('\\n'))>=0){const line=b.slice(0,i2);b=b.slice(i2+1);" +
+      "if(line==='QUIT'){process.exit(0);}}});" +
+      'setTimeout(()=>process.exit(0),15000);',
+  );
 
   /** The PRE-FIX mint, frozen as a fixture: rotate the session id but copy every other
    *  flag through verbatim, ignoring personaFile entirely. That bare copy-through IS the
@@ -851,6 +861,8 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
   /** `refreshed` = what the operator's persona-refresh hands back: a path, or null
    *  when the refresh failed / was unavailable. `mint` defaults to the REAL one. */
   async function driveRespawn(refreshed: string | null, mint?: (a: string[]) => unknown) {
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore — pure JS script, no .d.ts
     const { mintRecycleArgs } = await import('../scripts/psu-launcher.mjs');
     const ownerId = `su-persona-refresh-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
@@ -861,7 +873,7 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
     let exitCode: number | null = null;
     const done = hostThroughPty({
       command: execPath,
-      args: ['-e', childCode, '--system-prompt-file', stale],
+      args: [childScript, '--system-prompt-file', stale],
       cwd: '/tmp',
       // PAPERCUSP_AGENT=claude so the REAL mint synthesizes a --session-id for this
       // resume-shaped argv instead of no-op'ing (the 2026-07-18 mint gap).

@@ -3482,6 +3482,20 @@ export async function runGreenCheckpoint(
           return null;
         },
       );
+      // EI-19329608646178878: tryLongestGreenPrefix's CONFIRM step resets the checkpoint
+      // checkout to `prefixTip` — an commit OLDER than `candidate` — via setupTree, whether
+      // the confirm succeeds or fails. Left unrestored, `candidateSource:'run-probe'` (the
+      // cron-path fallback in mapCheckpointRunInFlight, used whenever no retriage marker
+      // exists — the ONLY candidate signal a scheduled/cron-fired run's live probe has) reads
+      // the checkpoint checkout's raw git HEAD and reports that stale prefix as "the candidate
+      // this run is judging" for the rest of the run — observed live stepping a reported
+      // candidate BACKWARD by 85 commits / ~10h. `candidate` itself (this run's true,
+      // never-changing judgment target on this code path) is unaffected — only the checkout
+      // an external probe reads drifted. Restore it before any further externally-observable
+      // state (the fallthrough hold-result below, or a caller re-probing this tree).
+      await deps
+        .setupTree(candidate)
+        .catch((e) => deps.log(`warn: restore checkpoint tree to ${candidate.slice(0, 8)} after prefix-salvage: ${e}`));
       if (partial) return partial;
     }
 

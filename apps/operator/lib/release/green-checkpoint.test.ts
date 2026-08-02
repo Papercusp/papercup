@@ -3575,11 +3575,17 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
     expect(await revParse(repo, 'ready')).toBe(c3); // FF'd to the longest clean prefix, NOT the red tip
     expect(calls).toContain('runGreen:confirm');
     expect(calls).toContain('advance:' + c3.slice(0, 7));
+    // EI-19329608646178878: the confirm step (`runGreen:confirm`) checked out `prefixTip`
+    // (c3) via setupTree — the checkpoint tree must be restored to the run's TRUE candidate
+    // (c4) afterward, so a live probe of that checkout (candidateSource:'run-probe' on the
+    // cron path) never reports the stale salvage prefix as "the candidate under judgment".
+    const setupCalls = calls.filter((c) => c.startsWith('setup:'));
+    expect(setupCalls[setupCalls.length - 1]).toBe(`setup:${c4.slice(0, 7)}`);
   });
 
   it('holds (no advance) when the confirm-run on the prefix is RED — never FFs to unconfirmed', async () => {
     const { c1, c3, c4 } = await chain();
-    const { deps } = partialDeps({
+    const { deps, calls } = partialDeps({
       candidateFailingTests: ['@ws/failing'],
       affected: { [c4]: ['@ws/failing'] }, // c3 not listed ⇒ clean ⇒ chosen as the prefix to confirm
       commits: [c3, c4],
@@ -3589,6 +3595,11 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
     expect(r.reason).toBe('not-green');
     expect(r.advanced).toBe(false);
     expect(await revParse(repo, 'ready')).toBe(c1); // unchanged — no FF to an unconfirmed commit
+    // EI-19329608646178878: even on a FAILED confirm, the checkout was left at the
+    // unconfirmed prefix (c3) mid-function — it must still be restored to the real
+    // candidate (c4) before this run's final hold-result is returned.
+    const setupCalls = calls.filter((c) => c.startsWith('setup:'));
+    expect(setupCalls[setupCalls.length - 1]).toBe(`setup:${c4.slice(0, 7)}`);
   });
 
   it('holds when the FIRST new commit already implicates a failing workspace (no clean prefix)', async () => {

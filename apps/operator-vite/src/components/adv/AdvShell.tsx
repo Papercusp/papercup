@@ -188,7 +188,13 @@ export const SECONDARY_TAB_GROUPS: ReadonlyArray<{ id: string; label: string; ta
   { id: 'system', label: 'System', tabIds: ['frames', 'settings'] },
 ];
 
-if (process.env.NODE_ENV !== 'production') {
+// `vite build` pins process.env.NODE_ENV to 'production' regardless of --mode
+// and constant-folds this comparison at BUILD time — under the dev shell
+// (`vite build --watch --mode development`) that made this self-check
+// permanently dead code (WI-7002). `import.meta.env.MODE` is the predicate
+// that actually reflects --mode in every build (dev shell, HMR dev server,
+// and the packaged production build).
+if (import.meta.env.MODE !== 'production') {
   const grouped = new Set(SECONDARY_TAB_GROUPS.flatMap((g) => g.tabIds));
   // ADV_TABS, not ADV_TAB_IDS: 'prs' is a valid AdvTabId (its own redirect
   // route) but deliberately excluded from ADV_TABS — it was never a strip tab

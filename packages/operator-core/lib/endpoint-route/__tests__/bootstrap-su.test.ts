@@ -89,11 +89,17 @@ vi.mock('../../console-launcher', () => ({
     mode: 'shell',
   })),
 }));
+// Must enumerate EVERY export bootstrap-su.ts imports from adv-sessions: a factory
+// mock replaces the whole module, so an export the subject imports but this omits
+// throws "No <name> export is defined on the mock" the moment that code path runs —
+// silently at author time, loudly in the gate hours later (WI-7185).
 vi.mock('../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: recordAdvSessionMock,
   markAdvSessionEnded: vi.fn(async () => {}),
   reactivateAdvSession: vi.fn(async () => {}),
   reanchorAdvSessionNativeId: vi.fn(async () => ({ reanchored: true, owner: null })),
+  reanchorAdvSessionNativeIdByOwner: vi.fn(async () => ({ reanchored: true, owner: null })),
+  recordSuLaunchSpec: vi.fn(async () => true),
 }));
 vi.mock('../../session-port/store', () => ({
   assertSessionPortStorageReady: vi.fn(async () => undefined),

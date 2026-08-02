@@ -677,6 +677,40 @@ export interface BuildProgramSuccessOptions extends Pick<
   sinceMs?: number;
   /** Deterministic clock injection for tests. */
   nowMs?: number;
+  /**
+   * EI-19329929546171597: the ACTUAL install_slug the tick writer is using right now,
+   * resolved by {@link resolveScoutTickInstallSlug} (byte-identical to the same
+   * `workspaceBrainScopeKey(workspaceId, harnessSlug, isWorkspaceCoordinationOn())`
+   * computation `scheduler.ts`'s `recordTick` runs at write time). `buildProgramSuccessReport`
+   * resolves this itself before calling {@link programSuccessReadScopes} — this field exists
+   * so `programSuccessReadScopes` can stay a PURE sync function (and its existing tests stay
+   * byte-identical) while still reading under whatever slug the writer is actually using.
+   * Omitted ⇒ falls back to the hardcoded legacy `SCOUT_TICK_INSTALL_SLUG` (pre-fix behavior).
+   */
+  resolvedTickInstallSlug?: string;
+}
+
+/**
+ * Resolve the install_slug the Scout tick WRITER is using right now, for a given
+ * workspace — the read-side mirror of `scheduler.ts`'s `recordTick`, which computes
+ * `opts.workspaceId ? workspaceBrainScopeKey(opts.workspaceId, harnessSlug, on) : harnessSlug`
+ * with `harnessSlug === SCOUT_TICK_INSTALL_SLUG` for the workspace-singleton Scout routine.
+ *
+ * EI-19329929546171597: before this fix, `success-metrics.ts` read a HARDCODED
+ * `SCOUT_TICK_INSTALL_SLUG` ('@singleton') regardless of the `WORKSPACE_COORDINATION` flag,
+ * while the writer already followed the flag. The 2026-08-02 owner-attended cutover
+ * (workspace-scoped-coordination-2026-06-20 D-019) graduated that flag to default-ON, which
+ * flipped the writer's install_slug from '@singleton' to the workspaceId — and the reader,
+ * still pinned to the old constant, went permanently blind (0 ticks seen, 3
+ * blender:success-metrics bars stuck 'unknown', blender-release-readiness a PERMANENT NO-GO).
+ *
+ * No workspaceId ⇒ the writer's own fallback (`harnessSlug` unconditionally) — mirrored here
+ * as the legacy constant, since a workspace-less caller can't resolve the K1 sentinel key.
+ */
+export async function resolveScoutTickInstallSlug(workspaceId?: string): Promise<string> {
+  if (!workspaceId) return SCOUT_TICK_INSTALL_SLUG;
+  const { isWorkspaceCoordinationOn, workspaceBrainScopeKey } = await import('../workspace-brain-scope');
+  return workspaceBrainScopeKey(workspaceId, SCOUT_TICK_INSTALL_SLUG, await isWorkspaceCoordinationOn());
 }
 
 /** Default ledger row cap — also the truncation probe (rows === limit ⇒ older rows unseen). */
@@ -707,6 +741,11 @@ export function programSuccessReadScopes(opts: BuildProgramSuccessOptions = {}):
   // default, byte-identical to the pre-EI-12148 read.
   const tickSinceMs = opts.sinceMs ?? nowMs - (opts.cycleWindowMs ?? CYCLE_ERROR_WINDOW_MS);
   const tickWindowMs = opts.sinceMs != null ? Math.max(0, nowMs - opts.sinceMs) : (opts.cycleWindowMs ?? CYCLE_ERROR_WINDOW_MS);
+  // EI-19329929546171597: the writer's ACTUAL current install_slug, resolved by the caller
+  // (buildProgramSuccessReport) via resolveScoutTickInstallSlug — falls back to the legacy
+  // hardcoded constant when the caller hasn't resolved one (byte-identical pre-fix behavior,
+  // and what every existing unit test of this pure function still exercises).
+  const tickInstallSlug = opts.resolvedTickInstallSlug ?? SCOUT_TICK_INSTALL_SLUG;
   const shared: BuildQualityInputsOptions = {
     ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
     ...(opts.limit != null ? { limit: opts.limit } : {}),
@@ -717,7 +756,7 @@ export function programSuccessReadScopes(opts: BuildProgramSuccessOptions = {}):
       ...shared,
       harnessSlug: SCOUT_TICK_INSTALL_SLUG,
       origin: 'scout',
-      tickInstallSlug: SCOUT_TICK_INSTALL_SLUG,
+      tickInstallSlug,
       tickSinceMs,
     },
     suIdeate: {

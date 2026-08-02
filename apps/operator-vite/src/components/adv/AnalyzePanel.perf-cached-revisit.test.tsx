@@ -101,18 +101,39 @@ function measureCount(): number {
 }
 
 /**
- * The exact shape LearningTab uses: a PARENT that begins the interaction in a
- * layout effect when the view changes, and a child panel that ends it in a
- * passive effect once its read has settled.
+ * A PARENT that begins the interaction in a layout effect when the view
+ * changes, and a child panel that ends it in a passive effect once its read
+ * has settled.
+ *
+ * `warm` selects between the two mounting strategies, which is the whole
+ * experiment:
+ *
+ *   warm=false — the pane UNMOUNTS on the way out and remounts on the way
+ *     back. This is what the panel's settle effect implicitly assumes.
+ *   warm=true  — the pane stays MOUNTED and only `hidden` flips. This is what
+ *     LearningTab actually does (`warmViews`: the current pane plus the two
+ *     most recent stay mounted, `hidden={mountedView !== view}`), so a
+ *     back-and-forth inside that window never remounts.
  */
-function Harness({ view }: { view: string }) {
+function Harness({ view, warm }: { view: string; warm: boolean }) {
   const prev = useRef<string | null>(null);
   useLayoutEffect(() => {
     const p = prev.current;
     prev.current = view;
     if (p !== null && p !== view) beginInteraction(NAME);
   }, [view]);
-  return view === "pipeline" ? <AnalyzePanel /> : <div>other view</div>;
+  if (!warm) {
+    return view === "pipeline" ? <AnalyzePanel /> : <div>other view</div>;
+  }
+  // Both panes stay mounted; only visibility changes.
+  return (
+    <>
+      <section hidden={view !== "pipeline"}>
+        <AnalyzePanel />
+      </section>
+      <section hidden={view === "pipeline"}>other view</section>
+    </>
+  );
 }
 
 beforeEach(() => {
@@ -122,30 +143,50 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-describe("AnalyzePanel — learning-view-switch on a cached revisit", () => {
+describe("AnalyzePanel — learning-view-switch on a revisit", () => {
   it("emits a measure when the read resolves AFTER the switch (fresh load — negative control)", () => {
     analyzeResult = IN_FLIGHT;
-    const { rerender } = render(<Harness view="other" />);
+    const { rerender } = render(<Harness view="other" warm={false} />);
     expect(measureCount()).toBe(0);
 
     // Switch to the pipeline view while its read is still in flight.
-    rerender(<Harness view="pipeline" />);
+    rerender(<Harness view="pipeline" warm={false} />);
     expect(measureCount()).toBe(0); // still loading — must not settle yet
 
     // The read resolves.
     analyzeResult = RESOLVED;
-    rerender(<Harness view="pipeline" />);
+    rerender(<Harness view="pipeline" warm={false} />);
     expect(measureCount()).toBe(1);
   });
 
-  it("emits a measure when the read is ALREADY resolved at the switch (cached revisit)", () => {
+  it("emits a measure when the panel REMOUNTS with an already-resolved read", () => {
+    // Cache state alone is NOT the fault: a remount runs the settle effect, so
+    // an already-settled panel still ends the interaction.
     analyzeResult = RESOLVED;
-    const { rerender } = render(<Harness view="other" />);
+    const { rerender } = render(<Harness view="other" warm={false} />);
     expect(measureCount()).toBe(0);
 
-    // The revisit: the panel mounts with `settled` already true, so its settle
-    // effect fires on MOUNT, in the same commit as the parent's begin.
-    rerender(<Harness view="pipeline" />);
+    rerender(<Harness view="pipeline" warm={false} />);
+    expect(measureCount()).toBe(1);
+  });
+
+  it("emits a measure on a WARM revisit, where the pane stayed mounted and only `hidden` flipped", () => {
+    // THE BUG (EI-19383745196363732). LearningTab keeps the current pane and
+    // the two most recent mounted, so a normal back-and-forth never remounts.
+    // The pane is already settled, `settled` therefore never CHANGES, and an
+    // effect keyed on `[settled]` alone never re-runs — so the interaction the
+    // parent just began is never ended and the switch measures NOTHING.
+    //
+    // It is the silent-zero failure mode, not a wrong number: the start mark
+    // dangles until the next begin replaces it, so the budget check passes by
+    // measuring nothing at all — on the warm path a real user takes most.
+    analyzeResult = RESOLVED;
+    const { rerender } = render(<Harness view="pipeline" warm />);
+    expect(measureCount()).toBe(0); // first mount: no begin to pair with
+
+    rerender(<Harness view="other" warm />); // switch away — pane stays mounted
+    rerender(<Harness view="pipeline" warm />); // switch back — no remount
+
     expect(measureCount()).toBe(1);
   });
 });

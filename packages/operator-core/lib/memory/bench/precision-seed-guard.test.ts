@@ -48,6 +48,7 @@ vi.mock('./gold-set', () => ({
 }));
 
 import { assertCorpusSeeded, benchMemoryPrecision, runMemoryPrecisionMonitor } from './precision-monitor';
+import { MEMORY_INJECTION_COSINE_FLOOR, MEMORY_INJECTION_LEX_FLOOR } from '../injection';
 
 /** A manifest whose `ids` covers `seeded` corpus keys and whose `failed` lists the rest. */
 const manifest = (seeded: string[], failed: string[] = []): SeedManifest => ({
@@ -112,6 +113,42 @@ describe('benchMemoryPrecision — the guard is actually reached (delivery half)
     expect(m.rAt10).toBe(0.82);
     expect(m.fpAt5).toBe(0.17);
     expect(runGoldSetMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('benchMemoryPrecision — WI-7179: admission shape must come from pushSearchFloors(), not a copy', () => {
+  // Regression guard for the defect this item fixed: the monitor imported the
+  // right floor CONSTANTS but hardcoded `fusionMode: 'floored-union'` two lines
+  // under a comment claiming it measures "the EXACT production push floor" —
+  // while the live push path had moved to `cosine-gated` (D-010). Asserting the
+  // literal 'cosine-gated' here (the current production default) is deliberate:
+  // it is what pins a re-introduced hardcoded 'floored-union' as a failure,
+  // where comparing against `pushSearchFloors()`'s own output could not.
+  it('calls runGoldSet with the LIVE push-path fusion mode (cosine-gated), not a hardcoded floored-union', async () => {
+    seedCorpusMock.mockResolvedValue(manifest(['a', 'b', 'c']));
+    await benchMemoryPrecision();
+    expect(runGoldSetMock).toHaveBeenCalledTimes(1);
+    const [, , opts] = runGoldSetMock.mock.calls[0]!;
+    expect(opts.fusionMode).toBe('cosine-gated');
+  });
+
+  it('measures at the LIVE cosine/lexical floors (MEMORY_INJECTION_COSINE_FLOOR / _LEX_FLOOR)', async () => {
+    seedCorpusMock.mockResolvedValue(manifest(['a', 'b', 'c']));
+    await benchMemoryPrecision();
+    const [, , opts] = runGoldSetMock.mock.calls[0]!;
+    expect(opts.minScore).toBe(MEMORY_INJECTION_COSINE_FLOOR);
+    expect(opts.minLexScore).toBe(MEMORY_INJECTION_LEX_FLOOR);
+  });
+
+  it('records the measured floors and tags the row with the admission shape it was measured under', async () => {
+    seedCorpusMock.mockResolvedValue(manifest(['a', 'b', 'c']));
+    const m = await benchMemoryPrecision();
+    expect(m.floorCosine).toBe(MEMORY_INJECTION_COSINE_FLOOR);
+    expect(m.floorLex).toBe(MEMORY_INJECTION_LEX_FLOOR);
+    // WI-7179: a zero-migration traceability tag so a future reader (human or
+    // the recall-drop canary's triager) can tell a pre-fix (floored-union,
+    // untagged) row from a post-fix one when interpreting a baseline jump.
+    expect(m.notes).toBe('fusionMode:cosine-gated');
   });
 });
 

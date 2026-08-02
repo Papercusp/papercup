@@ -24,7 +24,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { runGoldSet, seedCorpus, type SeedManifest } from '@papercusp/memory/bench';
 
-import { MEMORY_INJECTION_COSINE_FLOOR, MEMORY_INJECTION_LEX_FLOOR } from '../injection';
+import { pushSearchFloors } from '../injection';
 import { loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import { BENCH_SCOPE, makeBackendCtx } from './run-bench';
@@ -109,15 +109,24 @@ export async function benchMemoryPrecision(): Promise<MemoryPrecisionMetrics> {
     // The manifest was previously DISCARDED — which is exactly how a total seed
     // failure became "recall = 0" instead of "the bench could not run".
     assertCorpusSeeded(manifest, corpus.length);
+    // WI-7179: read all three admission values from pushSearchFloors() — the
+    // SAME constructor `buildBlockInner` runs for the live push path — instead
+    // of re-declaring them. A copied constant (the old `fusionMode:
+    // 'floored-union'` literal below, paired with imported floor constants)
+    // cannot notice production has moved on: D-010 flipped the push default to
+    // `cosine-gated` and this monitor kept measuring the retired shape, which
+    // is precisely the failure mode `pushSearchFloors()`'s own doc comment
+    // names this file as the example of. Pattern proven on floor-sweep-cli.ts.
+    const f = pushSearchFloors();
     const retrieval = await runGoldSet(ctx.backend, gold.queries, {
       scope: BENCH_SCOPE,
       limit: 10,
       concurrency: 4,
       // Measure the EXACT production push floor — the whole point is monitoring
       // the LIVE injector's precision, not the unfloored raw-recall number.
-      minScore: MEMORY_INJECTION_COSINE_FLOOR,
-      minLexScore: MEMORY_INJECTION_LEX_FLOOR,
-      fusionMode: 'floored-union',
+      minScore: f.minScore,
+      minLexScore: f.minLexScore,
+      fusionMode: f.fusionMode,
     });
     const hardNeg = retrieval.byClass['hard-negative'];
     return {
@@ -126,8 +135,8 @@ export async function benchMemoryPrecision(): Promise<MemoryPrecisionMetrics> {
       goldVersion: gold.version,
       corpusN: corpus.length,
       goldN: gold.queries.length,
-      floorCosine: MEMORY_INJECTION_COSINE_FLOOR,
-      floorLex: MEMORY_INJECTION_LEX_FLOOR,
+      floorCosine: f.minScore ?? 0,
+      floorLex: f.minLexScore ?? 0,
       fpAt5: hardNeg?.fpAt5 ?? null,
       rAt10: retrieval.overall.r10,
       pAt5: retrieval.overall.p5,
@@ -137,7 +146,13 @@ export async function benchMemoryPrecision(): Promise<MemoryPrecisionMetrics> {
       byClass: retrieval.byClass as Record<string, unknown>,
       // Embedding cost is not separately metered here (small, no LLM); left null.
       costUsd: null,
-      notes: null,
+      // WI-7179: tag the admission shape onto the row (no schema migration —
+      // `notes` already exists). Rows recorded before this fix carry no tag and
+      // were measured under `floored-union`; a human (or the recall-drop
+      // canary's next reader) comparing across this boundary should expect a
+      // real one-time step-change here, not a regression — see WI-7179's
+      // completion note for why the pre-fix history isn't a valid baseline.
+      notes: `fusionMode:${f.fusionMode}`,
     };
   } finally {
     // A cleanup failure (e.g. a held pooled connection) must never lose the run;

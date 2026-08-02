@@ -68,7 +68,7 @@ async function sidecarBlocked(harness: string, id: string, workspace: string): P
   const rows = (await db.sql`
     SELECT 1 FROM harness_shared.work_item_blocked
      WHERE workspace_id = ${workspace} AND harness_slug = ${harness} AND feature_id = ${id}
-     LIMIT 1`) as unknown[];
+     LIMIT 1`) as unknown as unknown[];
   return rows.length > 0;
 }
 
