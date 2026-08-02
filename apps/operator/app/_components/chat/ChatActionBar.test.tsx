@@ -281,19 +281,30 @@ describe('ChatActionBar', () => {
       expect(label).toMatch(/change it/i);
     });
 
-    it('clicking opens the axis chooser and applies the pick through the descriptor’s own set()', async () => {
+    /**
+     * Opens a mode pill's dropdown.
+     *
+     * [owner 2026-08-02] the pill's chooser is a design-system Select, not a
+     * card, so these tests drive it the way the ThemeSelector tests drive
+     * their Radix menu: with a real pointer event. A bare `.click()` silently
+     * no-ops on a Radix trigger — the menu never opens and the assertion that
+     * follows fails for a reason that has nothing to do with the behaviour
+     * under test.
+     */
+    const openPill = (testId: string): void => {
+      const trigger = screen.getByTestId(testId);
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' });
+      fireEvent.pointerUp(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' });
+    };
+
+    it('opening the pill and picking applies the choice through the descriptor’s own set()', async () => {
       const set = vi.fn();
       registerChatModeAction(axis({ set }));
-      render(
-        <>
-          <ChatActionBar ctx={ctx} />
-          <LocalCardHost />
-        </>,
-      );
+      render(<ChatActionBar ctx={ctx} />);
 
-      fireEvent.click(screen.getByTestId('chat-mode-autonomy'));
-      await waitFor(() => expect(screen.getByText('Manual')).toBeTruthy());
-      fireEvent.click(screen.getByText('Manual'));
+      openPill('chat-mode-autonomy');
+      const manual = await screen.findByRole('option', { name: /manual/i });
+      fireEvent.click(manual);
       // The pick reaches set() as the OPTION ID, not the label — the descriptor
       // owns the vocabulary, the bar only carries the choice across.
       await waitFor(() => expect(set).toHaveBeenCalledWith(ctx, 'manual'));
@@ -302,21 +313,50 @@ describe('ChatActionBar', () => {
       await waitFor(() => expect(screen.getByTestId('chat-action-bar-done').textContent).toMatch(/AUTO/));
     });
 
+    it('the dropdown keeps the option HINTS the card used to show — compaction lost chrome, not information', async () => {
+      registerChatModeAction(
+        axis({
+          options: () => [
+            { id: 'manual', label: 'Manual', hint: 'Confirm-before-acting posture' },
+            { id: 'auto', label: 'Auto', hint: 'Act on your own judgment' },
+          ],
+        }),
+      );
+      render(<ChatActionBar ctx={ctx} />);
+
+      openPill('chat-mode-autonomy');
+      const manual = await screen.findByRole('option', { name: /manual/i });
+      expect(manual.textContent).toMatch(/confirm-before-acting/i);
+    });
+
+    /**
+     * The reason ChatModeState.optionId exists. This axis's display value is
+     * "on" while the option actually in force is `auto` — exactly the real
+     * autonomy descriptor's shape. Selecting by display text would find no row
+     * at all here (there is no option with id "on"), so the menu would open
+     * with NOTHING marked and quietly stop telling you what is set.
+     */
+    it('marks the option in force via optionId, not by matching the display value', async () => {
+      registerChatModeAction(
+        axis({ current: () => ({ value: 'on', optionId: 'auto', on: true, title: 'Acting without asking' }) }),
+      );
+      render(<ChatActionBar ctx={ctx} />);
+
+      openPill('chat-mode-autonomy');
+      const auto = await screen.findByRole('option', { name: /auto/i });
+      await waitFor(() => expect(auto.getAttribute('aria-selected')).toBe('true'));
+    });
+
     it('a failing set() surfaces the error instead of leaving the pill stuck busy', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       registerChatModeAction(axis({ set: () => { throw new Error('sticky conflict'); } }));
-      render(
-        <>
-          <ChatActionBar ctx={ctx} />
-          <LocalCardHost />
-        </>,
-      );
+      render(<ChatActionBar ctx={ctx} />);
 
-      fireEvent.click(screen.getByTestId('chat-mode-autonomy'));
-      await waitFor(() => expect(screen.getByText('Manual')).toBeTruthy());
-      fireEvent.click(screen.getByText('Manual'));
+      openPill('chat-mode-autonomy');
+      const manual = await screen.findByRole('option', { name: /manual/i });
+      fireEvent.click(manual);
       await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/sticky conflict/));
-      // The bar has to come back — a disabled pill with no card and no error is
+      // The bar has to come back — a disabled pill with no menu and no error is
       // the worst form of "nothing happened".
       expect((screen.getByTestId('chat-mode-autonomy') as HTMLButtonElement).disabled).toBe(false);
       warn.mockRestore();

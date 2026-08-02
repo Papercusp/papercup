@@ -55,16 +55,18 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(cfg.hooks.PostToolBatch[0].matcher).toBeUndefined(); // the event takes no matcher
 
     // PostToolUse: lock-release + activity (coord-folding, EI-11405) + workitem-nudge +
-    // ask-gate-mirror (in install order). The separate coord-inbox entry is retired —
-    // merged into activity.
+    // required-field-strand nudge (EI-19374535041074908) + ask-gate-mirror (in install
+    // order). The separate coord-inbox entry is retired — merged into activity.
     expect(commandsFor(cfg, 'PostToolUse')).toEqual([
       `${DEST}/posttooluse-locks-release.sh`,
       `${DEST}/posttooluse-activity-report.sh`,
       `${DEST}/workitem-verify-nudge.sh`,
+      `${DEST}/posttooluse-required-field-strand-nudge.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
     ]);
     expect(cfg.hooks.PostToolUse[1].matcher).toBe('*'); // activity (+ coord fold)
-    expect(cfg.hooks.PostToolUse[3].matcher).toBe('AskUserQuestion|ExitPlanMode');
+    expect(cfg.hooks.PostToolUse[3].matcher).toBe('Edit|Write|MultiEdit'); // strand nudge
+    expect(cfg.hooks.PostToolUse[4].matcher).toBe('AskUserQuestion|ExitPlanMode');
 
     // Session events + Stop.
     expect(commandsFor(cfg, 'SessionStart')).toEqual([`${DEST}/lifecycle-report.sh`]);

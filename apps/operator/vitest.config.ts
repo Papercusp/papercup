@@ -14,7 +14,10 @@ export default mergeConfig(
     exclude: ['**/test/**', '**/node_modules/**', '**/.next/**', '**/.next-prod/**'],
     // ResizeObserver polyfill for dockview-react in jsdom-environment
     // tests. Phase 0 of dockview-migration v4.
-    setupFiles: [resolve(__dirname, 'vitest-shims/resize-observer.ts')],
+    setupFiles: [
+      resolve(__dirname, 'vitest-shims/resize-observer.ts'),
+      resolve(__dirname, 'vitest-shims/radix-jsdom.ts'),
+    ],
   }),
   {
     resolve: {

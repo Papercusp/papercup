@@ -145,6 +145,11 @@ describe('host-bootstrap starts per-host singletons under cluster.isPrimary', ()
       call: 'startClaudeCredentialSync',
       costsIfDuplicated: 'N credential convergers racing rotating refresh tokens (EI-3385)',
     },
+    {
+      call: 'reconcileSpawnAdmissionOnBoot',
+      costsIfDuplicated:
+        'N workers redundantly running the same boot spawn-admission reclaim (candidate SELECT + a no-op UPDATE for every already-claimed row), with transient row-lock contention across them (EI-19303576975827285)',
+    },
   ];
 
   it('finds the cluster.isPrimary guard blocks it is going to assert against', () => {

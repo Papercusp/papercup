@@ -654,137 +654,176 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     req.on('end', () => {
       void (async () => {
         const rawBody = Buffer.concat(chunks);
-        // P-005: classify the forward + (for a tools/call) inject a per-request
-        // idempotencyKey ONCE, reused across every retry of THIS request so :3070 dedups a
-        // replay instead of double-applying the write. Kill-switch:
-        // PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 forces tools/call to 'opaque' (refused-only).
-        const keyingEnabled = process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY !== '0';
-        // P-010: absorb an admission-control 429 by retrying (kill-switch to opt out).
-        const absorb429 = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 !== '0';
-        const absorbBoot = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT !== '0';
-        const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, genKey: randomUUID });
-        // EI-19294517824914302: a cheap repeating beat fails fast instead of burning the
-        // restart-sized window (~30 attempts) and amplifying a transient stall ~30x.
-        const retryWindowMs = effectiveRetryWindowMs(req.url ?? '/', opts.retryWindowMs);
-        const started = Date.now();
-        let attempts = 0;
-        let postConnectRetries = 0;
-        let backpressureRetries = 0;
-        let handshakeTimeoutRetries = 0;
-        let last: ForwardOutcome | undefined;
-        // Retry loop: refused → replay across the window (shouldRetry); post-connect →
-        // replay only an idempotent/keyed request, bounded (postConnectRetryable);
-        // upstream 429 (admission-control backpressure) → absorb + retry (P-010).
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          attempts++;
-          // WI-6740: bound ONLY the write-free control-plane batch (see
-          // HANDSHAKE_UPSTREAM_TIMEOUT_MS). A tools/call stays unbounded — long tools are
-          // legitimate here and must not be converted into failures.
-          const outcome = await forwardOnce(
-            opts,
-            req.method ?? 'GET',
-            req.url ?? '/',
-            fwd.headers,
-            fwd.body,
-            fwd.klass === 'idempotent' ? (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS) : 0,
+        // EI-19305299022434394 — admission control, checked BEFORE any upstream socket is
+        // opened (and before we even bother classifying the forward). A request that arrives
+        // while `maxInFlight` forwards are already outstanding is shed immediately with 429 +
+        // Retry-After instead of being allowed to pile onto an already-struggling upstream —
+        // this is what stops the congestion-collapse feedback loop the unbounded agent used to
+        // create (3,450 simultaneous held requests, measured 2026-08-01).
+        const inFlightNow = inFlightStarts.size;
+        if (shouldShedForInFlight(inFlightNow, maxInFlight)) {
+          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '2' });
+          res.end(
+            JSON.stringify({
+              error: 'mcp_proxy_overloaded',
+              detail: `proxy already has ${inFlightNow} request(s) in flight (max ${maxInFlight}) — shed before forwarding`,
+              retryAfterSec: 2,
+            }),
           );
-          const elapsed = Date.now() - started;
-          if (outcome.ures) {
-            const ures = outcome.ures;
-            const status = ures.statusCode ?? 502;
-            // P-010: :3070 shed this tools/call (event loop critically saturated). The tool
-            // NEVER dispatched (429 = not fulfilled) → replay is write-safe for any class.
-            // Drain the shed response to free the socket, wait Retry-After, and retry within
-            // the window so the saturation is invisible to the agent. When the operator stays
-            // critical past the window/max, fall through and surface the 429 (honest, not a hang).
-            // POST-only: every real MCP call is a POST. A GET/HEAD (health probes, the
-            // watchdog's liveness check) that yields 404/405 must surface INSTANTLY —
-            // absorbing it would stall probes for the whole retry window and read as a
-            // wedge (worst case: the watchdog restart-loops the proxy, flapping the fleet).
-            const bootAbsorbable = req.method === 'POST' && BOOT_WINDOW_STATUSES.has(status) && absorbBoot;
+          log(`shed request — ${inFlightNow} already in flight (max ${maxInFlight})`);
+          record({ kind: 'shed_max_in_flight', method: req.method, path: req.url, inFlight: inFlightNow, maxInFlight });
+          return;
+        }
+        const inFlightId = nextInFlightId++;
+        inFlightStarts.set(inFlightId, Date.now());
+        try {
+          // P-005: classify the forward + (for a tools/call) inject a per-request
+          // idempotencyKey ONCE, reused across every retry of THIS request so :3070 dedups a
+          // replay instead of double-applying the write. Kill-switch:
+          // PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 forces tools/call to 'opaque' (refused-only).
+          const keyingEnabled = process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY !== '0';
+          // P-010: absorb an admission-control 429 by retrying (kill-switch to opt out).
+          const absorb429 = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 !== '0';
+          const absorbBoot = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT !== '0';
+          const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, genKey: randomUUID });
+          // EI-19294517824914302: a cheap repeating beat fails fast instead of burning the
+          // restart-sized window (~30 attempts) and amplifying a transient stall ~30x.
+          const retryWindowMs = effectiveRetryWindowMs(req.url ?? '/', opts.retryWindowMs);
+          const started = Date.now();
+          let attempts = 0;
+          let postConnectRetries = 0;
+          let backpressureRetries = 0;
+          let handshakeTimeoutRetries = 0;
+          let last: ForwardOutcome | undefined;
+          // Retry loop: refused → replay across the window (shouldRetry); post-connect →
+          // replay only an idempotent/keyed request, bounded (postConnectRetryable);
+          // upstream 429 (admission-control backpressure) → absorb + retry (P-010).
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            attempts++;
+            // WI-6740: bound the write-free control-plane batch tightly (see
+            // HANDSHAKE_UPSTREAM_TIMEOUT_MS). EI-19305299022434394: a real tools/call is no
+            // longer literally unbounded either — `maxHoldMs` (generous, default 10 min) is the
+            // absolute ceiling that stops a stalled-but-connected upstream from silently
+            // parking a socket for 32-89 minutes, while staying well above any legitimate tool's
+            // real runtime (`build:typecheck` ~160s).
+            const outcome = await forwardOnce(
+              opts,
+              req.method ?? 'GET',
+              req.url ?? '/',
+              fwd.headers,
+              fwd.body,
+              fwd.klass === 'idempotent'
+                ? (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS)
+                : maxHoldMs > 0
+                  ? maxHoldMs
+                  : 0,
+            );
+            const elapsed = Date.now() - started;
+            if (outcome.ures) {
+              const ures = outcome.ures;
+              const status = ures.statusCode ?? 502;
+              // P-010: :3070 shed this tools/call (event loop critically saturated). The tool
+              // NEVER dispatched (429 = not fulfilled) → replay is write-safe for any class.
+              // Drain the shed response to free the socket, wait Retry-After, and retry within
+              // the window so the saturation is invisible to the agent. When the operator stays
+              // critical past the window/max, fall through and surface the 429 (honest, not a hang).
+              // POST-only: every real MCP call is a POST. A GET/HEAD (health probes, the
+              // watchdog's liveness check) that yields 404/405 must surface INSTANTLY —
+              // absorbing it would stall probes for the whole retry window and read as a
+              // wedge (worst case: the watchdog restart-loops the proxy, flapping the fleet).
+              const bootAbsorbable = req.method === 'POST' && BOOT_WINDOW_STATUSES.has(status) && absorbBoot;
+              if (
+                ((isBackpressureStatus(status) && absorb429) || bootAbsorbable) &&
+                backpressureRetryable(backpressureRetries, MAX_BACKPRESSURE_RETRIES, elapsed, retryWindowMs)
+              ) {
+                backpressureRetries++;
+                const waitMs = retryAfterMs(ures.headers['retry-after'], backoff, MAX_BACKPRESSURE_WAIT_MS);
+                ures.resume(); // discard the shed/boot-window body so the (keepAlive:false) socket is released
+                record({
+                  kind: isBackpressureStatus(status) ? 'absorb_429' : 'absorb_boot_status',
+                  method: req.method, path: req.url, status, attempts, backpressureRetries, waitMs, elapsedMs: elapsed,
+                });
+                await new Promise((r) => setTimeout(r, waitMs));
+                continue;
+              }
+              res.writeHead(status, ures.headers);
+              ures.pipe(res);
+              if (attempts > 1) {
+                log(`recovered after ${attempts} attempts (${Date.now() - started}ms) — :3070 came back`);
+                record({ kind: 'recovered', method: req.method, path: req.url, status, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started });
+              }
+              // Forwarded a non-2xx: previously INVISIBLE (no tool_invocations row). A 4xx with
+              // `connection: close` is the stale-socket-400 signature (W1.3) — record it so any
+              // regression of that class is instantly visible, never silently "transient".
+              if (status >= 400) {
+                record({ kind: 'upstream_non2xx', method: req.method, path: req.url, status, attempts, elapsedMs: Date.now() - started, connection: (ures.headers['connection'] as string) ?? null });
+              }
+              return;
+            }
+            last = outcome;
+            if (!outcome.connected) {
+              // Refused / pre-connect: the request provably never reached :3070 → always safe to replay.
+              if (shouldRetry(false, elapsed, retryWindowMs)) {
+                await new Promise((r) => setTimeout(r, backoff));
+                continue;
+              }
+              break;
+            }
+            // WI-6740: upstream went SILENT (not a socket error). Replay the write-free
+            // handshake so a ~10s :3070 stall is a slightly-slower connect instead of a
+            // session that is tool-dark for hours. Checked BEFORE the socket-error branch
+            // so it gets its own (larger) bound rather than consuming MAX_POST_CONNECT_RETRIES.
             if (
-              ((isBackpressureStatus(status) && absorb429) || bootAbsorbable) &&
-              backpressureRetryable(backpressureRetries, MAX_BACKPRESSURE_RETRIES, elapsed, retryWindowMs)
+              outcome.timedOut &&
+              handshakeTimeoutRetryable(
+                fwd.klass, handshakeTimeoutRetries, MAX_HANDSHAKE_TIMEOUT_RETRIES, elapsed, retryWindowMs,
+              )
             ) {
-              backpressureRetries++;
-              const waitMs = retryAfterMs(ures.headers['retry-after'], backoff, MAX_BACKPRESSURE_WAIT_MS);
-              ures.resume(); // discard the shed/boot-window body so the (keepAlive:false) socket is released
-              record({
-                kind: isBackpressureStatus(status) ? 'absorb_429' : 'absorb_boot_status',
-                method: req.method, path: req.url, status, attempts, backpressureRetries, waitMs, elapsedMs: elapsed,
-              });
-              await new Promise((r) => setTimeout(r, waitMs));
+              handshakeTimeoutRetries++;
+              record({ kind: 'handshake_timeout_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, handshakeTimeoutRetries, elapsedMs: elapsed });
+              await new Promise((r) => setTimeout(r, backoff));
               continue;
             }
-            res.writeHead(status, ures.headers);
-            ures.pipe(res);
-            if (attempts > 1) {
-              log(`recovered after ${attempts} attempts (${Date.now() - started}ms) — :3070 came back`);
-              record({ kind: 'recovered', method: req.method, path: req.url, status, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started });
-            }
-            // Forwarded a non-2xx: previously INVISIBLE (no tool_invocations row). A 4xx with
-            // `connection: close` is the stale-socket-400 signature (W1.3) — record it so any
-            // regression of that class is instantly visible, never silently "transient".
-            if (status >= 400) {
-              record({ kind: 'upstream_non2xx', method: req.method, path: req.url, status, attempts, elapsedMs: Date.now() - started, connection: (ures.headers['connection'] as string) ?? null });
-            }
-            return;
-          }
-          last = outcome;
-          if (!outcome.connected) {
-            // Refused / pre-connect: the request provably never reached :3070 → always safe to replay.
-            if (shouldRetry(false, elapsed, retryWindowMs)) {
+            // Post-connect failure: replay ONLY an idempotent or server-keyed request, bounded.
+            if (postConnectRetryable(fwd.klass, postConnectRetries, MAX_POST_CONNECT_RETRIES, elapsed, retryWindowMs)) {
+              postConnectRetries++;
+              record({ kind: 'post_connect_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, elapsedMs: elapsed, detail: String(outcome.err?.message ?? '') });
               await new Promise((r) => setTimeout(r, backoff));
               continue;
             }
             break;
           }
-          // WI-6740: upstream went SILENT (not a socket error). Replay the write-free
-          // handshake so a ~10s :3070 stall is a slightly-slower connect instead of a
-          // session that is tool-dark for hours. Checked BEFORE the socket-error branch
-          // so it gets its own (larger) bound rather than consuming MAX_POST_CONNECT_RETRIES.
-          if (
-            outcome.timedOut &&
-            handshakeTimeoutRetryable(
-              fwd.klass, handshakeTimeoutRetries, MAX_HANDSHAKE_TIMEOUT_RETRIES, elapsed, retryWindowMs,
-            )
-          ) {
-            handshakeTimeoutRetries++;
-            record({ kind: 'handshake_timeout_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, handshakeTimeoutRetries, elapsedMs: elapsed });
-            await new Promise((r) => setTimeout(r, backoff));
-            continue;
-          }
-          // Post-connect failure: replay ONLY an idempotent or server-keyed request, bounded.
-          if (postConnectRetryable(fwd.klass, postConnectRetries, MAX_POST_CONNECT_RETRIES, elapsed, retryWindowMs)) {
-            postConnectRetries++;
-            record({ kind: 'post_connect_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, elapsedMs: elapsed, detail: String(outcome.err?.message ?? '') });
-            await new Promise((r) => setTimeout(r, backoff));
-            continue;
-          }
-          break;
+          // Exhausted the window (or a post-connect error we must not / no longer replay).
+          const refused = last && !last.connected;
+          res.writeHead(refused ? 503 : 502, { 'content-type': 'application/json', 'retry-after': '5' });
+          res.end(
+            JSON.stringify({
+              error: refused ? 'mcp_proxy_upstream_unavailable' : 'mcp_proxy_upstream_error',
+              detail: String(last?.err?.message ?? last?.err ?? 'unknown'),
+              attempts,
+              windowMs: retryWindowMs,
+              note: refused
+                ? ':3070 refused connections for the whole retry window (restart took too long or is down)'
+                : fwd.klass === 'opaque'
+                  ? 'upstream errored AFTER connecting — not retried (avoids double-applying a non-idempotent tools/call)'
+                  : `upstream errored AFTER connecting; retried ${postConnectRetries}× (${fwd.klass}) then surfaced the error`,
+            }),
+          );
+          log(`upstream ${refused ? 'unavailable' : 'error'} after ${attempts} attempt(s): ${last?.err?.message ?? last?.err}`);
+          record({ kind: refused ? 'exhausted_refused' : 'upstream_error', method: req.method, path: req.url, status: refused ? 503 : 502, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started, detail: String(last?.err?.message ?? last?.err ?? 'unknown') });
+        } finally {
+          // EI-19305299022434394: always release the in-flight slot, on every exit path
+          // (success return, exhausted-window fallthrough, or an unexpected throw).
+          inFlightStarts.delete(inFlightId);
         }
-        // Exhausted the window (or a post-connect error we must not / no longer replay).
-        const refused = last && !last.connected;
-        res.writeHead(refused ? 503 : 502, { 'content-type': 'application/json', 'retry-after': '5' });
-        res.end(
-          JSON.stringify({
-            error: refused ? 'mcp_proxy_upstream_unavailable' : 'mcp_proxy_upstream_error',
-            detail: String(last?.err?.message ?? last?.err ?? 'unknown'),
-            attempts,
-            windowMs: retryWindowMs,
-            note: refused
-              ? ':3070 refused connections for the whole retry window (restart took too long or is down)'
-              : fwd.klass === 'opaque'
-                ? 'upstream errored AFTER connecting — not retried (avoids double-applying a non-idempotent tools/call)'
-                : `upstream errored AFTER connecting; retried ${postConnectRetries}× (${fwd.klass}) then surfaced the error`,
-          }),
-        );
-        log(`upstream ${refused ? 'unavailable' : 'error'} after ${attempts} attempt(s): ${last?.err?.message ?? last?.err}`);
-        record({ kind: refused ? 'exhausted_refused' : 'upstream_error', method: req.method, path: req.url, status: refused ? 503 : 502, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started, detail: String(last?.err?.message ?? last?.err ?? 'unknown') });
       })();
     });
   });
+  server.on('close', () => {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+  });
+  return server;
 }
 
 /** Start the proxy from env/opts. Returns the listening server. */

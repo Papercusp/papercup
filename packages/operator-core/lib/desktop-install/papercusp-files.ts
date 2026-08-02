@@ -591,6 +591,16 @@ const CC_HOOK_FILES = [
   // falling through to the affirmative (and WRONG) OWNER default. See the
   // script's own header for the full root-cause + fix writeup.
   'pretooluse-schedule-wakeup-provenance.mjs',
+  // EI-19374535041074908: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge
+  // when an edit adds a REQUIRED field to an exported interface (or tightens one from
+  // optional), which silently strands every construction site in files the change never
+  // touched. The detector already exists (scripts/check-required-field-strands.mjs,
+  // WI-6814) and its own header names the real gap: "the hard part is KNOWING TO RUN IT."
+  // Documentation did not close it — the class recurred 7× in ~48h, each fixed one file
+  // at a time. Running the CLI later does not close it either: its `--base HEAD` diff goes
+  // EMPTY once git-sync sweeps the tree (minutes), so it false-greens — measured in its own
+  // formatNoFindings docstring. Only an edit-time hook sees the true pre-edit HEAD.
+  'posttooluse-required-field-strand-nudge.mjs',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1458,6 +1468,15 @@ export function mergeClaudeHookSettings(
     for (const e of ['Stop', 'SessionEnd'])
       hooks[e] = replaceOurHookEntries(ev(e), ours('workitem-verify-nudge.sh'), { hooks: cmd('workitem-verify-nudge.sh') });
   }
+  // merge_required_field_strand_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-19374535041074908). Advisory only: it can never deny, because adding a required
+  // field is usually correct. Reports to the AUTHOR while it is still their turn — the one
+  // moment the signal is both correct (HEAD is still pre-edit) and actionable.
+  if (has('posttooluse-required-field-strand-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-required-field-strand-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-required-field-strand-nudge.mjs'),
+    });
   // merge_statusline — non-destructive: set only when absent or already ours.
   if (has('statusline-fleet.sh')) {
     const sl = p('statusline-fleet.sh');
