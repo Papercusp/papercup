@@ -19,6 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL, ENGINEER_ISSUES_MIN_DDL } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
 import type { JudgeLlmCall } from './gym/primitives';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -87,11 +88,33 @@ const REPLICAS_DDL = `
     CONSTRAINT work_item_replicas_pkey PRIMARY KEY (workspace_id, harness_slug, work_item_id, replica_index),
     CONSTRAINT work_item_replicas_status_check CHECK (status IN ('claimed','complete','winner','loser')))`;
 
+/**
+ * The status a fixture row must carry to be visible to the claim floors.
+ *
+ * work-item-status-full-unify (2026-07-19, commit 5c112e51): `claimFloorsWhereSql`
+ * defaults to `states = ['open']` — the single unified claimable token across both
+ * families. The feature-family `todo` was RETIRED (migration 638 backfilled the rows,
+ * 642 rewrote every stored spec's `states` todo→open). This fixture kept writing
+ * 'todo' and so inserted rows that no claim can ever see: `claimNextWorkItem`
+ * returned undefined and the excludeRedundant test failed as
+ * `expected undefined to be 'F-051'` — a symptom that names neither the status
+ * column nor the vocabulary change.
+ *
+ * Do NOT hardcode a literal here: derive it from the production allowlist so the
+ * fixture cannot silently drift away from the floor a second time. The guard test
+ * below fails loudly (and self-explains) if the vocabulary moves again.
+ *
+ * ⚠ `FEATURE_DISPATCHABLE_STATE` in work-item-dispatch-states.ts still reads 'todo'
+ * and its docstring still claims to name the claimable state. It is inert (no
+ * production consumer) but actively misleading — do not reach for it here.
+ */
+const CLAIMABLE_STATUS = 'open';
+
 async function insertFeature(id: string, redundancy: number | null): Promise<void> {
   await h.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, redundancy, created_ts, updated_ts)
-    VALUES (${WS}, ${HARNESS}, ${id}, ${'T ' + id}, ${'summary ' + id}, 'todo', 'feature', ${redundancy}, ${Date.now()}, ${Date.now()})`;
+    VALUES (${WS}, ${HARNESS}, ${id}, ${'T ' + id}, ${'summary ' + id}, ${CLAIMABLE_STATUS}, 'feature', ${redundancy}, ${Date.now()}, ${Date.now()})`;
 }
 
 let db: FreshPgDb;
@@ -435,6 +458,16 @@ describe('judgeRedundancyGroup — judge each replica, pick + adopt the winner',
 });
 
 describe('claim_next excludeRedundant filter (the dispatch gate)', () => {
+  // RECURRENCE GUARD (the fixture-vs-floor drift that broke this file 2026-07-19..2026-08-02).
+  // Every claim assertion below silently degrades to "claimed nothing" if the fixture's status
+  // is not one the claim floors accept — and "claimed nothing" is indistinguishable from a
+  // genuine filter bug, which is exactly why the real cause took three weeks to surface.
+  // Assert the coupling DIRECTLY so the next vocabulary change fails here, naming itself,
+  // instead of as a mystifying `expected undefined to be 'F-051'` two tests later.
+  it('fixture status is a token the claim floors accept (guards status-vocabulary drift)', () => {
+    expect(CLAIM_STATES_ALLOWLIST).toContain(CLAIMABLE_STATUS);
+  });
+
   it('skips high-stakes items when excludeRedundant; takes them when not', async () => {
     await insertFeature('F-050', 3); // high-stakes
     await insertFeature('F-051', null); // normal

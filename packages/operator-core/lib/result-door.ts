@@ -214,20 +214,6 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const uri = buildScratchUri({ ...parts, basename });
     const fsPath = safeScratchFilesystemPath(uri);
     mkdirSync(dirname(fsPath), { recursive: true });
-    // EI-13918: `result.data` may ALREADY have been replaced upstream by a
-    // lossy payload-tier projection (payload-tier.ts) BEFORE this door ever
-    // saw it — in which case `fullText` below is not the tool's true full
-    // output; the genuinely-omitted content was never serialized at all, so
-    // paging this spill file can never recover it. Detect that via the
-    // `_meta.payloadProjection` marker (serialize-result.ts) rather than
-    // sniffing the serialized JSON text, and pick truthful header/footer
-    // wording for each case instead of unconditionally claiming "FULL".
-    const upstreamProjection = (
-      result._meta as { payloadProjection?: {
-        truncated: true; tier: string; forced: boolean;
-        originalChars: number; returnedChars: number; omittedCount: number;
-      } } | undefined
-    )?.payloadProjection;
     // EI-18745696571494110: no upstream `_meta` marker fired, but the tool may
     // have still truncated individual FIELDS inside its own body (coord:inbox's
     // per-entry `body_truncated`, a list's `summary_truncated`, …) — check only

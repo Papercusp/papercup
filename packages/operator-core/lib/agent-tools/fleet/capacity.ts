@@ -94,6 +94,13 @@ async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | 
       sustainedlyLimitedCount: rows.filter((r) => r.sustainedlyLimited).length,
       edgeThrottledSharedEgress: sharedEgress,
       edgeThrottledRearming: rearming,
+      // EI-19281217347369076: `lastProbeFailedAt` is set the moment an accounts:probe-capacity attempt
+      // came back 'no-reading' (the probe request itself failed) and cleared the moment ANY real
+      // observation lands (recordAccountWindow) — so its presence here means "the last thing we tried
+      // on this account got no answer", not "unmeasured in general". A majority of the pool carrying
+      // this flag is the network-shaped signal buildCapacityReport degrades `poolExhausted`'s confidence
+      // on (see its `blind` computation) instead of reporting a quota-shaped verdict off a stale store.
+      blindCount: rows.filter((r) => r.lastProbeFailedAt != null).length,
     };
   } catch {
     return undefined;

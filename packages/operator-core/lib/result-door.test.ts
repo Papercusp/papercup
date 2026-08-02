@@ -214,8 +214,46 @@ describe('applyResultDoor', () => {
       },
     );
 
-    it('a projected result that ALSO fits under the door budget is untouched (no false-positive spill)', () => {
-      const result = { content: [{ type: 'text' as const, text: 'small already-projected result' }], _meta: { payloadProjection } };
+    // EI-19361771982678588 — this case USED to assert `toBe(result)` (byte
+    // identity). That was stronger than its own stated intent: what must not
+    // happen is a false-positive SPILL, and no spill is still written here.
+    // But returning the body untouched also meant a result that was
+    // tier-trimmed and THEN landed under the door said NOTHING about being
+    // partial — every truncation disclosure in this file is downstream of the
+    // fits-the-budget early return. So the harder a tool trimmed itself, the
+    // likelier it was to go silent: the warning fired only when the
+    // already-trimmed body still overflowed. Measured on the facts:list case
+    // that motivated this, the margin was 245 chars out of ~6,000.
+    it('a projected result that fits the door writes NO spill, but still DISCLOSES that it is partial', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: 'small already-projected result' }],
+        _meta: { payloadProjection },
+      };
+      const doored = applyResultDoor(result, { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID });
+
+      // The original intent, unchanged: fitting the budget must never spill.
+      expect(() => readdirSync(join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'coord:orient', RUN_ID))).toThrow();
+
+      // The body itself is preserved verbatim — only a disclosure is appended.
+      expect((doored.content[0] as { text: string }).text).toBe('small already-projected result');
+      const note = (doored.content.at(-1) as { text: string }).text;
+      expect(note).toContain('PARTIAL RESULT');
+      expect(note).toContain('omittedCount=39');
+      expect(note).toContain('ABSENCE HERE IS NOT EVIDENCE');
+      expect(note).toContain("payloadTier:'full'");
+      expect(note).toContain('coord:orient');
+    });
+
+    it('an UNtruncated small result keeps the identity fast-path (no note, no copy)', () => {
+      const result = { content: [{ type: 'text' as const, text: 'small result' }] };
+      expect(applyResultDoor(result, { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+    });
+
+    it('a small result whose marker says truncated:false also keeps the fast-path', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: 'small result' }],
+        _meta: { payloadProjection: { ...payloadProjection, truncated: false as unknown as true } },
+      };
       expect(applyResultDoor(result, { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
     });
   });

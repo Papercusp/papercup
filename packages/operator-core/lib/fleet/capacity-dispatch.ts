@@ -625,7 +625,21 @@ export function buildCapacityReport(
       `→ this clears on the window reset; adding accounts or waiting is the fix, no infra escalation needed.`
     );
   })();
-  const advice = restartRecovering
+  // EI-19281217347369076: a majority-blind pool means the reading THIS advice is about to render
+  // confidently rests on stale/unrefreshable measurements — surface that BEFORE the confident verdict,
+  // not as a footnote, and name the concrete unstick (re-probe or check egress) instead of a bare
+  // "distrust this" flag. Composes with every branch below (restart-grace already means "re-check next
+  // wake" regardless, so it is deliberately excluded).
+  const blindCaveat = blind
+    ? `⚠ BLIND READING: ${acct!.blindCount}/${acct!.total} ${acct!.provider ?? 'claude'} account(s) have an ` +
+      `unresolved accounts:probe-capacity 'no-reading' failure — their available/usageWalled verdict rests ` +
+      `on a STALE reading that could not be refreshed (network/auth/timeout on the probe itself), not a live ` +
+      `measurement. Do NOT wait on resetInSec or treat a quota-exhaustion reading below as confirmed — a ` +
+      `probe failure is NETWORK-shaped, not QUOTA-shaped, and no reset clears a broken network path. Re-run ` +
+      `accounts:probe-capacity to get a fresh reading, or accounts:test-egress on the affected accounts to ` +
+      `check for a shared/down egress IP, before escalating on quota grounds. `
+    : '';
+  const advice = blindCaveat + (restartRecovering
     ? `gateway restarting (uptime ${Math.round((hr.processUptimeMs ?? 0) / 1000)}s) → startup capacity snapshot is recovering; place at normal ceiling and re-check next wake`
     : poolExhausted
     ? `pool EXHAUSTED: gateway reports ~${dispatchBudget ?? 0} bee slots but ${acct!.usable}/${acct!.total} ${acct!.provider ?? 'claude'} accounts are usable (rest walled/rate-paused/edge-throttled) → HOLD placements; dispatchBudget is a QUEUE figure, not real inference capacity (fresh spawns will die on their first call)${exhaustionCause ?? ''}`
@@ -637,7 +651,7 @@ export function buildCapacityReport(
       ? `scarce (factor ${factor.toFixed(2)}) → place the top-ranked items only, hold the rest${dispatchBudget != null ? `; ~${dispatchBudget} bee slots free` : ''}`
       : factor < 1
         ? `tightening (factor ${factor.toFixed(2)}) → trim low-priority placements${dispatchBudget != null ? `; ~${dispatchBudget} bee slots free` : ''}`
-        : 'abundant → place broadly up to your ceiling';
+        : 'abundant → place broadly up to your ceiling');
 
   return {
     reachable: true,
@@ -648,6 +662,7 @@ export function buildCapacityReport(
     paused: !!hr.paused,
     rejected: !!hr.rejected,
     resetInSec: hr.resetInSec ?? null,
+    resetInSecActionable: !blind,
     healthyAccounts: pt?.healthyAccounts ?? null,
     tier1Reserve: pt?.tier1Reserve ?? null,
     beeTier,
@@ -657,6 +672,8 @@ export function buildCapacityReport(
     poolExhausted,
     sustainedlyLimitedAccounts: acct?.sustainedlyLimitedCount ?? null,
     degraded,
+    blind,
+    blindAccounts: acct?.blindCount ?? null,
     capByTier,
     inFlight: hr.inFlight ?? null,
     queueDepth: hr.queueDepth ?? null,

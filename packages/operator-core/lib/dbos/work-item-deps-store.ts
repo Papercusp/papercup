@@ -187,9 +187,63 @@ export function wouldCreateCycle(
 }
 
 /**
- * Set ONE feature's `blocks` edges in work_item_deps to exactly `blockedBy` (delete + insert),
+ * Resolve ONE work-item id to the endpoint form its own family requires (EI-19325959789634791).
+ *
+ * This is the DB-backed other half of `assertDepEndpointRefForm`. That guard is pure, so it can
+ * only check ref FORM against a DECLARED kind; it cannot tell that the declared kind disagrees
+ * with the row the ref points at. Deciding the kind from the TARGET closes exactly that gap —
+ * the mismatch stops being expressible rather than merely being detected.
+ *
+ * The mapping is the one both floors already use, and it must stay that way or the edge is
+ * invisible to both:
+ *   - feature  → harness-QUALIFIED `<harness>#<id>`, gated by work_item_is_blocked() + the
+ *                work_item_blocked sidecar.
+ *   - issue    → BARE `<id>`, gated by depsBlockedExclusionSql, which keys on the bare
+ *                feature_id because the wir_* sidecar triggers do not track issues.
+ *
+ * ABSENT rows resolve to FEATURE, preserving the prior behavior: an edge naming a blocker with
+ * no row must still be writable (an absent blocker never deadlocks — see the claim-readiness
+ * suite's "ABSENT blocker ref does NOT block" cases), and feature is the form those tests pin.
+ */
+async function resolveDepEndpoint(
+  tx: { <T extends readonly unknown[]>(strings: TemplateStringsArray, ...args: never[]): Promise<T> },
+  harnessSlug: string,
+  id: string,
+): Promise<WorkItemDepEndpoint> {
+  // Resolved against `engineer_issues` — the SAME relation the issue floor's blocker leg
+  // (unsatisfiedBlockerSql: `bi.issue_id = d.blocker_ref`) consults, and matched the same way,
+  // on the bare id with no harness qualifier. Asking the floor's own relation is the point: a
+  // family lookup that disagrees with the floor would just relocate this bug. Deliberately NOT
+  // scoped by workspace_id — family is a property of the item, not of the tenant reading it,
+  // and scoping here would resolve the same item differently per caller.
+  const rows = await tx<{ one: number }[]>`
+    SELECT 1 AS one FROM harness_shared.engineer_issues
+     WHERE issue_id = ${id as never} LIMIT 1`;
+  // Only a row that positively identifies as issue-family takes the bare form. Unknown/absent
+  // stays feature — see the header: absent blockers must remain writable.
+  return rows.length > 0
+    ? { kind: ISSUE_ENDPOINT_KIND, ref: id }
+    : { kind: FEATURE_KIND, ref: featureRef(harnessSlug, id) };
+}
+
+/**
+ * Set ONE work-item's `blocks` edges in work_item_deps to exactly `blockedBy` (delete + insert),
  * rejecting any set that would introduce a cycle (P-008). Transactional + idempotent. Mirrors
  * syncFeatureBlockEdges (coord_links) so the dual-write / cutover (P-003) is a 1:1 swap.
+ *
+ * ⚠ EI-19325959789634791 / D-017 — endpoint kind is resolved from the TARGET ROW'S FAMILY, not
+ * assumed to be `feature`. It was assumed for a long time, and the assumption held only because
+ * the sole caller (promotion) feeds items it just MINTED, which are always feature-family.
+ * P-009's backfill widened the input to the whole `implements` plane — which includes
+ * convertPlanItem-created issue-family items — and every edge it wrote for one of those was
+ * SILENTLY INERT: written with kind='feature' + a qualified ref, while the issue floor matches a
+ * BARE ref, and the feature floor never evaluates an issue row at all. 6 such rows landed live,
+ * 3 on genuinely-open items with non-terminal blockers, while every counter reported success.
+ *
+ * The DELETE deliberately clears BOTH endpoint forms for the blocked side, not just the one this
+ * call is about to write. That is what makes the repair self-healing: re-running over an item
+ * whose edges were written under the old feature-only assumption removes the inert rows instead
+ * of leaving them behind next to the correct ones.
  */
 export async function syncWorkItemDepEdges(
   harnessSlug: string,
@@ -209,20 +263,32 @@ export async function syncWorkItemDepEdges(
     }
   }
   const { sql } = getOrgPg();
-  const blockedRef = featureRef(harnessSlug, featureId);
+  const qualifiedBlockedRef = featureRef(harnessSlug, featureId);
   await sql.begin(async (tx) => {
+    const blocked = await resolveDepEndpoint(tx as never, harnessSlug, featureId);
+    // Clear BOTH endpoint forms for this blocked item, not just the one we are about to write:
+    // rows minted under the old feature-only assumption are otherwise left behind, inert, beside
+    // the correct ones. This is what makes a re-run repair rather than merely append.
     await tx`
       DELETE FROM harness_shared.work_item_deps
        WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND dep_type = 'blocks'
-         AND blocked_kind = ${FEATURE_KIND} AND blocked_ref = ${blockedRef}
-         AND blocker_kind = ${FEATURE_KIND}`;
+         AND (
+           (blocked_kind = ${FEATURE_KIND} AND blocked_ref = ${qualifiedBlockedRef})
+           OR (blocked_kind = ${ISSUE_ENDPOINT_KIND} AND blocked_ref = ${featureId})
+         )`;
     for (const b of blockedBy) {
-      const blockerRef = featureRef(harnessSlug, b);
-      if (blockerRef === blockedRef) continue; // no self-block
+      const blocker = await resolveDepEndpoint(tx as never, harnessSlug, b);
+      if (blocker.kind === blocked.kind && blocker.ref === blocked.ref) continue; // no self-block
+      // Route through the shared pure guard so the kind↔ref-FORM invariant is enforced on this
+      // write path too. It previously bypassed it entirely: syncWorkItemDepEdges hand-rolled its
+      // INSERT while only the two link doors funnelled through workItemBlockingEdge, so the
+      // "ONE write seam" the P-005 guard documents was in fact two, and this was the unguarded one.
+      const edge = workItemBlockingEdge(blocker, blocked);
+      if (!edge) continue;
       await tx`
         INSERT INTO harness_shared.work_item_deps
           (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
-        VALUES (${DEFAULT_COORD_WORKSPACE}, ${FEATURE_KIND}, ${blockedRef}, ${FEATURE_KIND}, ${blockerRef}, 'blocks')
+        VALUES (${DEFAULT_COORD_WORKSPACE}, ${edge.blocked_kind}, ${edge.blocked_ref}, ${edge.blocker_kind}, ${edge.blocker_ref}, 'blocks')
         ON CONFLICT DO NOTHING`;
     }
   });
