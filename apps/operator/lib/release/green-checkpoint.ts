@@ -323,6 +323,20 @@ export interface CheckpointResult {
    *  failing file was touched in that range. See {@link GateLineage}. Absent when the
    *  lineage read itself failed (fail-soft — never blocks or alters the verdict). */
   lineage?: GateLineage;
+  /** EI-18850448565330905: this verdict was synthesized by the CLI entrypoint's own
+   *  crash handler because `runGreenCheckpoint` REJECTED instead of resolving a normal
+   *  CheckpointResult — i.e. something threw partway through a leg (a non-test member
+   *  like the PG-backed plane lints included) instead of the leg reporting its failure
+   *  through the ordinary allowNonZero/haltedBy path. Before this field existed, a
+   *  rejection hit the CLI's bare `.catch` and exited WITHOUT emitting
+   *  `__GREEN_CHECKPOINT_RESULT__` at all — every downstream reader (dev:pipeline_position,
+   *  the routine that records gate_health, an agent tailing the log) then saw either
+   *  nothing or a stale PREVIOUS verdict, and the raw log reads as truncated/OOM-killed
+   *  rather than as a reported failure. `summary` carries the thrown error's message;
+   *  the SPECIFIC leg that was running is not always recoverable at this level (the
+   *  exception may not identify it), so this is a coarse "the process crashed" signal,
+   *  not a substitute for a leg-scoped verdict. */
+  crashed?: boolean;
 }
 
 export interface CheckpointRunLock {
@@ -4903,6 +4917,39 @@ if (require.main === module) {
       console.error(`[green-checkpoint] verdict self-record failed (the caller will record): ${e instanceof Error ? e.message : e}`);
       return false;
     }
+  };
+
+  /**
+   * EI-18850448565330905 — GUARANTEE a marker on every terminal path, including a thrown
+   * exception. Before this, the `.catch` below `console.error`'d and exited WITHOUT ever
+   * calling `emitResult`, so a non-test leg (a PG-backed plane lint, or anything else that
+   * threw instead of reporting a normal red through allowNonZero/haltedBy) left NO
+   * `__GREEN_CHECKPOINT_RESULT__` line at all. Every downstream reader — the routine that
+   * records gate_health, dev:pipeline_position, an agent tailing the raw log — then saw
+   * either nothing or a stale PREVIOUS verdict, and the log reads as truncated/OOM-killed
+   * rather than as a reported failure (cost ~15min of misdirected "must be infra" diagnosis
+   * on the incident that filed this). Best-effort candidate resolution mirrors the
+   * `skipped-locked` path above; if even that fails, fall back to the raw `--candidate` arg
+   * (or the integration branch name) rather than emitting nothing.
+   */
+  const emitCrashResult = async (e: unknown): Promise<void> => {
+    let candidate = candidateArg ?? cfg.integrationBranch;
+    try {
+      candidate = await revParse(cfg.integrationRoot, candidateArg ?? cfg.integrationBranch);
+    } catch {
+      /* best-effort — keep the fallback candidate above */
+    }
+    const message = e instanceof Error ? (e.stack ?? e.message) : String(e);
+    emitResult({
+      advanced: false,
+      candidate,
+      from: null,
+      green: false,
+      reason: 'not-green',
+      crashed: true,
+      runId,
+      summary: `green-checkpoint crashed before producing a normal verdict: ${message}`,
+    });
   };
 
   const candidateArg = arg('--candidate');
