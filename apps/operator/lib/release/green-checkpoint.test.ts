@@ -4,7 +4,7 @@
  * logic; stub deps for the (heavy) suite run.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -806,6 +806,42 @@ describe('runGreenCheckpoint', () => {
     expect(p?.runId).toBe('run-red-1');
     expect(p?.logPath).toBe('/tmp/fake-checkpoint-run.log');
     expect(p?.failingTests).toEqual(['a.test.ts', 'b.test.ts', 'c.test.ts']);
+  });
+
+  it('EI-19370028836452003: a not-green verdict is APPENDED to the candidate log, so the file named for a candidate carries that candidate\'s OWN verdict', async () => {
+    // The regression: runGreen WRITES the per-candidate log before the not-green
+    // verdict block runs, so `...-cand-<X>.log` never contained X's own lineage /
+    // already-fixed-since notes — they landed in the NEXT pass's log, or nowhere.
+    // Measured 2026-08-02 on three consecutive real verdict logs: two had no lineage
+    // line at all and the third's named the PREVIOUS candidate. A triaging agent reads
+    // that absence as "no staleness note, so this is a real red" — the exact false
+    // negative the lineage line exists to prevent.
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const logDir = mkdtempSync(join(tmpdir(), 'gc-verdict-log-'));
+    const logPath = join(logDir, 'stamp-base-deadbeef-cand-cafebabe.log');
+    // Stand in for what runGreen already wrote: a header plus the suite body.
+    writeFileSync(logPath, '[green-checkpoint] candidate=... green=false\nSUITE BODY MARKER\n');
+    const deps: CheckpointDeps = {
+      setupTree: async () => {},
+      runGreen: async () => ({ green: false, summary: '1 failed', failingTests: ['a.test.ts'], logPath }),
+      advance: (candidate) => advanceReady(repo, candidate, 'ready'),
+      push: async () => {},
+      broadcast: async () => {},
+      escalate: async () => {},
+      clearEscalation: async () => {},
+      emitEvent: async () => {},
+      log: () => {},
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    const body = readFileSync(logPath, 'utf8');
+    rmSync(logDir, { recursive: true, force: true });
+    // APPENDED, not rewritten — the suite body a triager greps must survive.
+    expect(body).toContain('SUITE BODY MARKER');
+    // ...and the verdict for THIS candidate is now in THIS file.
+    expect(body).toContain(`[green-checkpoint verdict for candidate ${r.candidate.slice(0, 8)}]`);
+    expect(body).toContain(`candidate ${r.candidate.slice(0, 8)} is NOT green`);
   });
 
   it('holds ready when the candidate is NOT green', async () => {

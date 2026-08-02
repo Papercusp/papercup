@@ -33,10 +33,13 @@
  * the "fails on a NEW /proc fixture" property is durably verified, not merely
  * green-on-a-clean-tree.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
+
+const ROOT = new URL('..', import.meta.url).pathname;
 
 /** Files that legitimately contain the banned literal (this guard + its tests). */
 export const ALLOWLIST = new Set([
@@ -107,10 +110,36 @@ export function findProcFixtureOffenders(text) {
 const SCANNED_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
 const SKIP_DIR = /(^|\/)(node_modules|dist|build|\.next|coverage|_retired)\//;
 
+/**
+ * Candidate pre-filter: a file with no `/proc/` substring at all cannot contain an
+ * offender, so `git grep -l` narrows ~6k tracked files to a few dozen. Semantically
+ * exact (never widens or narrows the verdict), and takes the tree scan from ~6.7s to
+ * well under a second — which matters because this scan runs inside a unit test, not
+ * only as a CLI. Returns null when git grep is unusable, so the caller falls back to
+ * the exhaustive read.
+ */
+function candidateSet(cwd) {
+  try {
+    const out = execFileSync('git', ['grep', '--recurse-submodules', '-l', '-F', '/proc/'], {
+      cwd: cwd ?? ROOT,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return new Set(out.split('\n').filter(Boolean));
+  } catch (err) {
+    // exit 1 = "no matches" (a genuinely clean tree), which is a real answer.
+    if (err && err.status === 1) return new Set();
+    return null; // anything else: fall back to the exhaustive scan
+  }
+}
+
 export function findOffenders(cwd) {
   const { files, unscanned } = listTrackedFiles(cwd);
+  const candidates = candidateSet(cwd);
   const offenders = [];
   for (const f of files) {
+    if (candidates && !candidates.has(f)) continue;
     if (!SCANNED_EXT.test(f) || SKIP_DIR.test(f) || ALLOWLIST.has(f)) continue;
     let text;
     try {

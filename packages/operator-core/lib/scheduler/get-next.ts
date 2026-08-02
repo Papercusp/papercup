@@ -1506,6 +1506,251 @@ export async function readIssueClaimability(
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Claim-spec DELTA — what a proposed revision would change, before the write.
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Why a row's claimability moved between two specs. `filter` = the two `view.filter`s
+ *  disagree about it; `states` = the claimable-status floor changed under it; `both` = the
+ *  revision changed the filter AND the states in a way that each independently moves it.
+ *  Attribution matters because the two have completely different fixes, and the `states`
+ *  case is the one that has starved this fleet repeatedly (an issue-family lane left on the
+ *  feature-family `todo` token matches ~nothing, and the spec still validates). */
+export type ClaimSpecDeltaCause = 'filter' | 'states' | 'both';
+
+/** One row whose CLAIMABILITY changes between the current and the proposed spec. */
+export interface ClaimSpecDeltaRow extends IssueClaimableRow {
+  cause: ClaimSpecDeltaCause;
+}
+
+/** The whole before/after reading — both sides observed at ONE instant. */
+export interface ClaimSpecDeltaReading {
+  /** Claimable NOW, under the stored spec. */
+  currentClaimable: number;
+  /** Claimable if the proposed revision were written. */
+  proposedClaimable: number;
+  /** Claimable under BOTH (untouched by the change). */
+  retained: number;
+  /** Full counts — the row lists below are capped, these are not. */
+  newlyExcludedCount: number;
+  newlyAdmittedCount: number;
+  /** Rows the current lane serves that the proposal would DROP, in the order the CURRENT
+   *  spec would have handed them out (so the head of the list is the most consequential
+   *  loss, not an arbitrary one). Capped at `limit`. */
+  newlyExcluded: ClaimSpecDeltaRow[];
+  /** Rows the proposal would PICK UP, in the order the PROPOSED spec would hand them out. */
+  newlyAdmitted: ClaimSpecDeltaRow[];
+  truncated: { newlyExcluded: boolean; newlyAdmitted: boolean };
+}
+
+/** One side of a delta: the filter + states a spec would apply. */
+export interface ClaimSpecDeltaSide {
+  filter?: FilterNode;
+  states?: readonly string[];
+  /** Orders that side's rows via {@link compileRank} — the order get_next would claim in. */
+  spec?: ClaimSpec;
+}
+
+/**
+ * What a PROPOSED claim spec would change about a lane, item by item, WITHOUT writing it.
+ *
+ * WHY (agent-epistemics-2026-08-02 P-005): re-steering a fleet is a spec bump, and the only
+ * pre-write signal was `set_claim_spec`'s `poolEffect` — a COUNT (matched / pool /
+ * previousMatched). A count answers "did the lane get smaller"; it cannot answer "did it drop
+ * the four criticals I launched this fleet for". For WI-6995 the audit hand-rolled that
+ * item-level delta in raw SQL, and the answer OVERTURNED the proposal it was checking — which
+ * is precisely the case for making it a cheap first-class read rather than an ad-hoc query
+ * someone has to think to write.
+ *
+ * WHY IT REUSES THE ORACLE RATHER THAN RE-DERIVING IT: a second SQL copy of the claim floors
+ * drifts. That is not hypothetical here — D-007 measured a drifted copy of the blocked-deps
+ * floor reporting 0 blocked against the claim path's 5, advertising 5 items the claim door
+ * refuses. So this wraps the SAME {@link issueClaimCandidateSubquery} + the SAME
+ * {@link ALL_ISSUE_CLAIM_FLOORS_PASS} bar every other claimability read uses.
+ *
+ * WHY ONE MATERIALIZATION AND NOT TWO READS: the floors do not depend on the filter — only
+ * `spec_match` does. So the population is computed ONCE (the expensive part: ~13 floor
+ * predicates over the whole issue-family population) and decorated with TWO match columns.
+ * That is both cheaper than two {@link readIssueClaimability} calls and — the load-bearing
+ * half — ATOMIC BY CONSTRUCTION. Two separate reads observe two snapshots, so a peer's claim
+ * landing between them shows up as a row present in the first and absent from the second:
+ * indistinguishable from "your proposed spec excludes this item", i.e. a fabricated delta
+ * attributed to the caller's change. A preview whose whole purpose is deciding whether to
+ * narrow a lane must not invent narrowing that the fleet, not the spec, caused.
+ *
+ * States are handled by materializing the UNION of both sides' claimable states and testing
+ * membership per side, so a revision that changes ONLY `states` is a first-class delta rather
+ * than an empty diff over two differently-scoped populations.
+ *
+ * Read-only, and all-or-nothing like its sibling: a failed read THROWS rather than degrading
+ * to a zeroed delta, because "measured no change" is the answer that would wave a starving
+ * spec through.
+ */
+export async function readClaimSpecDelta(
+  current: ClaimSpecDeltaSide,
+  proposed: ClaimSpecDeltaSide,
+  opts: {
+    harness: string;
+    assignee?: string;
+    rigAvailable?: boolean;
+    /** Inject the sql client (tests / a non-default backend). Default getOrgPg().sql. */
+    client?: OrgSql;
+  },
+  readOpts: {
+    /** Max rows to list PER SIDE (the counts are always exact). */
+    limit: number;
+    /** Per-statement cap for the snapshot txn, ms (default 15000). */
+    statementTimeoutMs?: number;
+  },
+): Promise<ClaimSpecDeltaReading> {
+  const sql = opts.client ?? getOrgPg().sql;
+  const stmtMs = Math.max(100, Math.trunc(readOpts.statementTimeoutMs ?? 15_000));
+  const cap = Math.max(1, Math.min(Math.floor(readOpts.limit) || 1, 200));
+  const currentStates = [...(current.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
+  const proposedStates = [...(proposed.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
+  const unionStates = [...new Set([...currentStates, ...proposedStates])];
+
+  return (await sql.begin(async (tx) => {
+    // Same ordering constraint as readIssueClaimability: both SETs must precede the first
+    // data statement or PG silently leaves the reads on READ COMMITTED — which would
+    // reintroduce exactly the two-snapshot misattribution this function exists to prevent.
+    await tx.unsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    await tx.unsafe(`SET LOCAL statement_timeout = ${stmtMs}`);
+    const client = tx as unknown as OrgSql;
+
+    const issueWs = issuesScopeWorkspace();
+    const operatorScopeSlug = `operator:${issueWs}`;
+    const assignee = opts.assignee ?? '';
+    // `spec_match` on the materialized table is the CURRENT filter; the proposed filter is
+    // compiled as a second column over the same rows. Compiled filters reference item
+    // columns UNQUALIFIED (see FIELD_MAP), so they evaluate correctly against the derived
+    // table below, whose `c.*` carries every base `work_items` column.
+    const sub = issueClaimCandidateSubquery(client, {
+      compiled: compileFilter(client, current.filter),
+      assignee,
+      cooldown: releaseCooldownSec(),
+      harness: opts.harness,
+      states: unionStates,
+      issueWs,
+      operatorScopeSlug,
+      rigAvailable: opts.rigAvailable,
+    });
+    const proposedMatch = compileFilter(client, proposed.filter);
+    const table = 'claim_spec_delta_snapshot';
+    await client`
+      CREATE TEMP TABLE ${client.unsafe(table)} ON COMMIT DROP AS
+      SELECT c.*, (${proposedMatch}) AS proposed_match FROM (${sub}) c
+    `;
+
+    // in_current / in_proposed are the FULL claimability predicate per side: that side's
+    // filter AND every floor AND that side's claimable states.
+    const floors = client.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS);
+    const sided = client`
+      SELECT
+        feature_id                AS id,
+        COALESCE(item_kind, kind) AS kind,
+        title,
+        status,
+        COALESCE(payload->'_ei'->>'severity', payload->>'severity') AS severity,
+        source_plan_slug          AS plan,
+        feature_order,
+        created_ts,
+        spec_match,
+        proposed_match,
+        (spec_match     AND ${floors} AND status = ANY(${currentStates}::text[]))  AS in_current,
+        (proposed_match AND ${floors} AND status = ANY(${proposedStates}::text[])) AS in_proposed,
+        (status = ANY(${currentStates}::text[]))  AS status_in_current,
+        (status = ANY(${proposedStates}::text[])) AS status_in_proposed
+      FROM ${client.unsafe(table)}
+    `;
+
+    const [counts] = (await client`
+      SELECT
+        count(*) FILTER (WHERE in_current)                       AS current_claimable,
+        count(*) FILTER (WHERE in_proposed)                      AS proposed_claimable,
+        count(*) FILTER (WHERE in_current AND in_proposed)       AS retained,
+        count(*) FILTER (WHERE in_current AND NOT in_proposed)   AS newly_excluded,
+        count(*) FILTER (WHERE in_proposed AND NOT in_current)   AS newly_admitted
+      FROM (${sided}) d
+    `) as Array<Record<string, number | string | null>>;
+
+    // Each side is ordered by ITS OWN spec's rank: a dropped row is most interesting in the
+    // order the current lane would have served it, an added row in the order the proposal
+    // would. Reusing compileRank keeps both orders identical to what get_next would do.
+    const excludedRows = (await client`
+      SELECT * FROM (${sided}) d
+      WHERE in_current AND NOT in_proposed
+      ORDER BY ${compileRank(client, current.spec ?? DEFAULT_CLAIM_SPEC, { assignee })}
+      LIMIT ${cap}
+    `) as ClaimSpecDeltaSqlRow[];
+    const admittedRows = (await client`
+      SELECT * FROM (${sided}) d
+      WHERE in_proposed AND NOT in_current
+      ORDER BY ${compileRank(client, proposed.spec ?? DEFAULT_CLAIM_SPEC, { assignee })}
+      LIMIT ${cap}
+    `) as ClaimSpecDeltaSqlRow[];
+
+    const num = (v: number | string | null | undefined) => (v == null ? 0 : Number(v));
+    const newlyExcludedCount = num(counts?.newly_excluded);
+    const newlyAdmittedCount = num(counts?.newly_admitted);
+    return {
+      currentClaimable: num(counts?.current_claimable),
+      proposedClaimable: num(counts?.proposed_claimable),
+      retained: num(counts?.retained),
+      newlyExcludedCount,
+      newlyAdmittedCount,
+      newlyExcluded: excludedRows.map((r) => projectDeltaRow(r, 'excluded')),
+      newlyAdmitted: admittedRows.map((r) => projectDeltaRow(r, 'admitted')),
+      truncated: {
+        newlyExcluded: newlyExcludedCount > excludedRows.length,
+        newlyAdmitted: newlyAdmittedCount > admittedRows.length,
+      },
+    };
+  })) as ClaimSpecDeltaReading;
+}
+
+interface ClaimSpecDeltaSqlRow {
+  id: string;
+  kind: string;
+  title: string | null;
+  status: string;
+  severity: string | null;
+  plan: string | null;
+  feature_order: number | string | null;
+  created_ts: number | string | null;
+  spec_match: boolean;
+  proposed_match: boolean;
+  status_in_current: boolean;
+  status_in_proposed: boolean;
+}
+
+/**
+ * Attribute a moved row to the filter, the states, or both — and project it to the same
+ * lean shape {@link listIssueClaimableRows} returns, so a caller reading a delta row and a
+ * claimable row side by side sees one shape.
+ *
+ * A row is only ever passed here when it moved, so its floors passed on the side it was on;
+ * the move therefore decomposes exactly into the two spec-settable dimensions.
+ */
+function projectDeltaRow(r: ClaimSpecDeltaSqlRow, side: 'excluded' | 'admitted'): ClaimSpecDeltaRow {
+  const byFilter = side === 'excluded' ? r.spec_match && !r.proposed_match : r.proposed_match && !r.spec_match;
+  const byStates =
+    side === 'excluded'
+      ? r.status_in_current && !r.status_in_proposed
+      : r.status_in_proposed && !r.status_in_current;
+  return {
+    id: r.id,
+    kind: r.kind,
+    title: r.title,
+    status: r.status,
+    severity: r.severity,
+    plan: r.plan,
+    featureOrder: r.feature_order == null ? null : Number(r.feature_order),
+    createdTs: r.created_ts == null ? null : Number(r.created_ts),
+    cause: byFilter && byStates ? 'both' : byStates ? 'states' : 'filter',
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Rank compiler — spec.rank → an ORDER BY fragment.
 // ────────────────────────────────────────────────────────────────────────────
 

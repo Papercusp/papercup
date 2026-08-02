@@ -1,0 +1,206 @@
+/**
+ * scheduler:preview_spec_delta — what a proposed claim-spec revision would change, by ITEM,
+ * before you write it (agent-epistemics-2026-08-02 P-005).
+ *
+ * WHY: re-steering a fleet is a spec bump, and the only pre-write signal was
+ * `set_claim_spec`'s `poolEffect` — a COUNT (matched / pool / previousMatched), computed
+ * during the write and failing open. A count answers "did the lane get smaller"; it cannot
+ * answer "did it drop the four criticals this fleet was launched for". For WI-6995 the audit
+ * hand-rolled the item-level delta in raw SQL and the answer OVERTURNED the proposal it was
+ * checking — which is the case for making it a cheap first-class read instead of an ad-hoc
+ * query someone has to think to write.
+ *
+ * The engine is {@link readClaimSpecDelta}, deliberately co-located with the claim floors in
+ * scheduler/get-next.ts: a second SQL copy of those floors drifts (D-007 measured one
+ * reporting 0 blocked against the claim path's 5). This tool is a thin, READ-ONLY projection
+ * over it — it resolves the CURRENT spec exactly as scheduler:get_claim_spec does and
+ * validates the PROPOSED spec exactly as scheduler:set_claim_spec does, so a proposal that
+ * previews clean is one set_claim_spec will accept.
+ */
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { COORD_ROLES } from '../coordination/roles';
+import {
+  resolveClaimSpecWorkspace,
+  getClaimSpecRecord,
+  fleetSpecBeeKey,
+} from '../../scheduler/claim-spec-store';
+import { validateClaimSpec } from '../../scheduler/claim-spec';
+import { readClaimSpecDelta } from '../../scheduler/get-next';
+
+export default defineTool({
+  name: 'scheduler:preview_spec_delta',
+  profile: 'engineer',
+  description:
+    'Preview a claim-spec re-steer BEFORE writing it: which ITEMS the proposed revision would newly EXCLUDE from the lane and newly ADMIT, not just how many. READ-ONLY — nothing is stored. Returns exact counts (currentClaimable / proposedClaimable / retained) plus both row lists, each ordered the way its own spec would hand work out, and a per-row `cause`: "filter" (the view.filter disagrees) or "states" (the claimable-status floor changed). Both sides are read in ONE snapshot, so a peer claiming an item mid-read can never be misreported as a loss your change caused.',
+  guidance: {
+    when:
+      'Before scheduler:set_claim_spec on a live cup/fleet — especially a NARROWING revision, a `not:`/glob exclusion, or any `states` change. Also to explain a starved lane: preview the CURRENT spec against a wider candidate to see what it is holding back.',
+    notWhen:
+      'Writing the spec — scheduler:set_claim_spec. Reading the stored spec — scheduler:get_claim_spec. Today\'s claimable count/breakdown for ONE spec — work_items:claimable.',
+    chaining:
+      'scheduler:get_claim_spec (current) → scheduler:preview_spec_delta (what the revision costs) → scheduler:set_claim_spec (write it).',
+    seeAlso: [
+      'scheduler:set_claim_spec (write/re-steer — same spec grammar, documented on its `spec` arg)',
+      'work_items:claimable (single-spec claimable count + per-floor exclusion breakdown)',
+    ],
+  },
+  capability: 'work_items:read',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z
+    .object({
+      cupId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('the cup whose CURRENT spec is the baseline (bee → fleet → default inheritance) — exactly one of cupId | fleet'),
+      fleet: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("a fleet slug — baselines against that fleet's own sentinel spec"),
+      proposed: z
+        .record(z.string(), z.unknown())
+        .describe(
+          'the candidate spec, same grammar and validation as scheduler:set_claim_spec\'s `spec` arg (see it for the full shape) — an invalid one is rejected here exactly as it would be there.',
+        ),
+      harness: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('lane to evaluate against (default: the stored spec row\'s harness, else your session harness)'),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(200)
+        .optional()
+        .describe('max rows listed PER SIDE (default 25, cap 200) — the counts are always exact'),
+      workspace: z.string().max(120).optional().describe('override the workspace partition (default: from your identity)'),
+    })
+    .refine((a) => Boolean(a.cupId) !== Boolean(a.fleet), {
+      message: 'pass exactly ONE of cupId (one cup, with fleet inheritance) or fleet (the fleet sentinel spec)',
+    }),
+  async handler(args, ctx) {
+    const ident = resolveAgentIdentity(ctx);
+    const workspaceId = resolveClaimSpecWorkspace(args.workspace ?? ident.workspaceId);
+
+    // Validate FIRST: a malformed proposal must fail the same way set_claim_spec would fail
+    // it, before we spend a full claimability pass on it.
+    const validated = validateClaimSpec(args.proposed);
+    if (!validated.ok || !validated.spec) {
+      return {
+        data: {
+          ok: false as const,
+          error: 'proposed spec is invalid — set_claim_spec would reject it too; nothing was previewed',
+          issues: validated.errors,
+        },
+      };
+    }
+    const proposedSpec = validated.spec;
+
+    const targetBeeId = args.fleet ? fleetSpecBeeKey(args.fleet.trim()) : (args.cupId as string);
+    const record = await getClaimSpecRecord({ cupId: targetBeeId, workspaceId });
+
+    // The lane. A delta is meaningless without one, and guessing a default harness here would
+    // silently preview against the wrong backlog — so this refuses instead.
+    const harness =
+      args.harness ??
+      record.harnessSlug ??
+      ((ctx as { harnessSlug?: string | null }).harnessSlug || undefined);
+    if (!harness) {
+      return {
+        data: {
+          ok: false as const,
+          error:
+            'no harness to evaluate against — the stored spec row carries none and this session is not harness-scoped. Pass `harness` explicitly rather than previewing against a guessed lane.',
+        },
+      };
+    }
+
+    // The caller identity feeds the release-cooldown + reserved-plan-lane floors exactly as
+    // the real claim path resolves them — identical on both sides, so it can never itself
+    // manufacture a delta.
+    const reading = await readClaimSpecDelta(
+      { filter: record.spec.view.filter, states: record.spec.states, spec: record.spec },
+      { filter: proposedSpec.view.filter, states: proposedSpec.states, spec: proposedSpec },
+      { harness, assignee: ident.ownerId },
+      { limit: args.limit ?? 25 },
+    );
+
+    const net = reading.proposedClaimable - reading.currentClaimable;
+    const unchanged = reading.newlyExcludedCount === 0 && reading.newlyAdmittedCount === 0;
+    // The two shapes worth shouting about. STARVATION is the one that has actually bitten
+    // this fleet (a lane re-steered to 0 looks exactly like a drained queue, and the members
+    // go idle beside real work); a collapse short of 0 is the softer form of the same thing.
+    const starves = reading.proposedClaimable === 0 && reading.currentClaimable > 0;
+    const collapses =
+      !starves && reading.currentClaimable > 0 && reading.proposedClaimable < reading.currentClaimable / 4;
+    const statesOnly =
+      reading.newlyExcludedCount > 0 &&
+      reading.newlyExcluded.length > 0 &&
+      reading.newlyExcluded.every((r) => r.cause === 'states');
+
+    const warnings: string[] = [];
+    if (starves) {
+      warnings.push(
+        `STARVATION: this revision takes the lane from ${reading.currentClaimable} claimable to 0. ` +
+          'A starved lane is indistinguishable from a drained one — members go idle beside real work. ' +
+          'set_claim_spec will refuse this write without confirmCollapse:true.',
+      );
+    }
+    if (collapses) {
+      warnings.push(
+        `COLLAPSE: claimable drops ${reading.currentClaimable} → ${reading.proposedClaimable} (${Math.round(
+          (1 - reading.proposedClaimable / reading.currentClaimable) * 100,
+        )}% of the lane). Confirm the narrowing is intended before writing it.`,
+      );
+    }
+    if (statesOnly) {
+      warnings.push(
+        'Every listed exclusion is caused by `states`, not by the filter — the classic issue-family ' +
+          "trap: bug/change/task rows are status 'open', never 'todo', so a spec carrying the " +
+          'feature-family token matches ~nothing while still validating cleanly.',
+      );
+    }
+
+    return {
+      data: {
+        ok: true as const,
+        harness,
+        target: args.fleet ? { fleet: args.fleet } : { cupId: args.cupId },
+        current: {
+          specId: record.spec.specId,
+          revision: record.revision,
+          /** Which row answered: 'cup' (per-bee override), 'fleet' (inherited), 'default'
+           *  (neither exists — the baseline is DEFAULT_CLAIM_SPEC, i.e. the WHOLE lane). */
+          source: record.source,
+          ...(record.fleetSlug ? { fleetSlug: record.fleetSlug } : {}),
+          states: record.spec.states ?? null,
+        },
+        proposed: { specId: proposedSpec.specId, revision: proposedSpec.revision, states: proposedSpec.states ?? null },
+        counts: {
+          currentClaimable: reading.currentClaimable,
+          proposedClaimable: reading.proposedClaimable,
+          retained: reading.retained,
+          newlyExcluded: reading.newlyExcludedCount,
+          newlyAdmitted: reading.newlyAdmittedCount,
+          net,
+        },
+        newlyExcluded: reading.newlyExcluded,
+        newlyAdmitted: reading.newlyAdmitted,
+        truncated: reading.truncated,
+        ...(warnings.length > 0 ? { warnings } : {}),
+        note:
+          (unchanged
+            ? 'NO CHANGE: the proposed spec admits exactly the same items as the current one. '
+            : `${reading.newlyExcludedCount} item(s) would be DROPPED, ${reading.newlyAdmittedCount} PICKED UP. `) +
+          'Counts are exact; the row lists are capped by `limit` (see `truncated`). Both sides were read ' +
+          'in ONE snapshot, so nothing here is an artifact of a peer claiming mid-read. READ-ONLY — write ' +
+          'it with scheduler:set_claim_spec.',
+      },
+    };
+  },
+});
