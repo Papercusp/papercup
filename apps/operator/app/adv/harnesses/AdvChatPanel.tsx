@@ -47,15 +47,20 @@ const TERMINAL_STATES = new Set([
  * exactly this predicate server-side.
  *
  * Taking the full cap was costing twice over:
- *  - WRONG SAMPLE. The 2000-row window is ordered `updated_ts DESC` across ALL
- *    statuses, so recently-touched terminal work crowds out the in-flight items
- *    the picker exists to show. Measured on `papercusp` 2026-08-02: the window
- *    held 1,605 of the harness's 14,475 non-terminal items — 11%, not the
- *    "WHOLE non-terminal set" the old comment claimed. `states` fetches up to
- *    `perState` rows for EACH status, so every one is actually represented.
+ *  - WRONG SAMPLE (the reason this change was made). The 2000-row window is
+ *    ordered `updated_ts DESC` across ALL statuses, so recently-touched terminal
+ *    work crowds out the in-flight items the picker exists to show. Measured on
+ *    `papercusp` 2026-08-02: the window held 1,605 of the harness's 14,475
+ *    non-terminal items — 11%, not the "WHOLE non-terminal set" the old comment
+ *    claimed. `states` fetches up to `perState` rows for EACH status, so every
+ *    one is actually represented.
  *  - OVER-FETCH. Those are fully-enriched rows (body + payload JSONB) for a
  *    dropdown that renders {id, title, state}, re-resolved on every sync
- *    invalidation. This is a top-cost query shape on the box.
+ *    invalidation. ⚠ Do NOT cite this as a measured hot spot: this statement has
+ *    a large LIFETIME total in pg_stat_statements but did NOT appear in a 562s
+ *    in-window sample on 2026-08-02, i.e. it is mostly historical. The fix stands
+ *    on the sampling bug above; the row reduction (600 vs 2000) is a bonus, not a
+ *    measured win.
  *
  * Rollout-skew safety is preserved: an older deployed resolver that predates
  * `states` strips the unknown key (the schema is non-strict) and falls back to

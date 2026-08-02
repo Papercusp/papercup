@@ -1676,23 +1676,24 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
   // agent's local run. These stamps are PAPERCUSP_-prefixed, so they only work if
   // they are applied AFTER the strip loop — which is the whole point of the first
   // assertion below (a host value must be overridden, not merely absent).
+  // A deliberately PARTIAL host env — the builder only ever reads keys, and a fixture
+  // that had to spell out the whole environment would obscure what each case is about.
+  // The cast is needed because this project's tsconfig pulls in Next's generated
+  // `.next/types`, whose ProcessEnv augmentation makes NODE_ENV required; the older
+  // inline-literal call sites in this file predate that and still carry the error.
+  const partialEnv = (e: Record<string, string>): NodeJS.ProcessEnv => e as NodeJS.ProcessEnv;
+
   it('stamps PAPERCUSP_TEST_RUN_SOURCE=ci AFTER the strip, overriding any host value', () => {
-    // Typed rather than an inline literal: `source` is NodeJS.ProcessEnv and a bare
-    // object literal does not satisfy it under this project's settings (the older
-    // call sites in this file predate that and still carry the error).
-    const hostEnv: NodeJS.ProcessEnv = { PAPERCUSP_TEST_RUN_SOURCE: 'local' };
-    const env = buildGreenCheckpointEnv('b', hostEnv);
+    const env = buildGreenCheckpointEnv('b', partialEnv({ PAPERCUSP_TEST_RUN_SOURCE: 'local' }));
     expect(env.PAPERCUSP_TEST_RUN_SOURCE).toBe('ci');
   });
 
   it('groups the run with PAPERCUSP_TEST_RUN_GROUP only when a runId is given', () => {
-    const empty: NodeJS.ProcessEnv = {};
-    const withId = buildGreenCheckpointEnv('b', empty, 'run-abc');
+    const withId = buildGreenCheckpointEnv('b', partialEnv({}), 'run-abc');
     expect(withId.PAPERCUSP_TEST_RUN_GROUP).toBe('run-abc');
     // A host-leaked group must not survive when this run has no id of its own —
     // otherwise a gate run would inherit some agent's run-group and mis-attribute.
-    const leaked: NodeJS.ProcessEnv = { PAPERCUSP_TEST_RUN_GROUP: 'leaked' };
-    const noId = buildGreenCheckpointEnv('b', leaked);
+    const noId = buildGreenCheckpointEnv('b', partialEnv({ PAPERCUSP_TEST_RUN_GROUP: 'leaked' }));
     expect(noId.PAPERCUSP_TEST_RUN_GROUP).toBeUndefined();
     expect(noId.PAPERCUSP_TEST_RUN_SOURCE).toBe('ci');
   });

@@ -245,6 +245,38 @@ describe('renderColdWakeInjection — the cold-wake injected text (P-002 produce
     expect(base.toLowerCase()).not.toContain('stale');
   });
 
+  // WI-6849: the preamble used to ASSERT the reset as accomplished. The system only knows the
+  // SOCKET WRITE succeeded (wake-executor books `psu-socket-reset` on injectPsuHost => ok), so
+  // when a respawn is itself killed — observed live: a usage_limit wall took the retry 4s after
+  // the reset was booked `delivered` — the session resumes WARM and the claim is simply false.
+  describe('states the reset as REQUESTED, not accomplished (WI-6849)', () => {
+    it('never claims the transcript is already gone, in any rendering', () => {
+      for (const out of [renderColdWakeInjection('note'), renderColdWakeInjection('note', undefined, 4)]) {
+        expect(out).not.toContain('transcript is GONE');
+        expect(out).not.toContain('your context was just reset');
+        expect(out).toContain('REQUESTED');
+      }
+    });
+
+    it('carries the TOTAL invariant unconditionally — it needs no fire number to be decidable', () => {
+      // The EI-15799 clause keys on "turns from AFTER this fire number", so it cannot fire when
+      // the surviving turns predate the delivery — exactly the fire-#6 case that went unguarded.
+      const base = renderColdWakeInjection('note');
+      expect(base).toContain('THE RESET DID NOT TAKE');
+      expect(base.toLowerCase()).toContain('prior turns or tool calls');
+      expect(base.toLowerCase()).toContain('do not discard it');
+    });
+
+    it('keeps the invariant free of "stale" so the no-wakeCount rendering stays stale-free (EI-15799)', () => {
+      // Guards the interaction, not the wording: these are two DIFFERENT claims — "the reset did
+      // not take" vs "a later fire superseded this delivery" — and only the latter is fire-gated.
+      const base = renderColdWakeInjection('note');
+      expect(base).toContain('THE RESET DID NOT TAKE');
+      expect(base.toLowerCase()).not.toContain('stale');
+      expect(renderColdWakeInjection('note', undefined, 4).toLowerCase()).toContain('stale');
+    });
+  });
+
   // EI-18224278118395857: the cold-wake text is composed at fire time and can be flushed
   // minutes late from the host busy-gate, so a note fresh at fire time can be stale by the
   // time a cold successor (whose transcript is gone) reads it. Stamp the note's ABSOLUTE

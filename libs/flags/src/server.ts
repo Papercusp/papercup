@@ -170,7 +170,6 @@ function warnOverrideStoreMissingOnce(): void {
   if (process.env.NODE_ENV === 'test' || process.env.VITEST) return;
   if (warnedNoOverrideStore) return;
   warnedNoOverrideStore = true;
-  console.trace('[DIAG-WI-6822-temp] warnOverrideStoreMissingOnce fired here');
   console.warn(
     '[flags] No override store installed in this process: runtime overrides (flags:set / ' +
       'POST /api/flags/set) are INVISIBLE here and getFlag() is serving FLAG_DEFAULTS. ' +

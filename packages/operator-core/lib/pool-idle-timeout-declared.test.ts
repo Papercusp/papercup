@@ -344,3 +344,169 @@ describe('singleton pg-client pools always declare an application_name (WI-6062)
     ).toEqual([]);
   });
 });
+
+/**
+ * ── URL tracking (EI-19306394439939264, 2026-08-02) ─────────────────────────
+ * The THIRD member of the same "silent omission" family, on the same singleton shape.
+ *
+ * A pool must never outlive the URL that justified it. `connection.ts` learned this
+ * (EI-19285027465993737) and fixed it for the MANAGED admin clients by remembering the URL
+ * each pool was ACTUALLY BUILT WITH and rebinding through `endStalePool`. The decisive
+ * insight: every earlier guard asked *"what SHOULD we connect to?"*, and none asked *"what
+ * is the live pool actually bound to?"* — so URL resolution kept returning the right
+ * address the whole time the pool served a dead one.
+ *
+ * A module-level singleton built directly from `postgres(getHarnessAdminUrl(), …)` caches
+ * the pool but not the URL, so it can never notice the endpoint moved. That is a live
+ * failure mode here: on 2026-08-01 a dead embedded-pg port produced 20,144 ×
+ * `ECONNREFUSED 127.0.0.1:20216` over ~2h40m (WI-6739). ⚠ Those particular failures came
+ * from the MANAGED `getOrgPg()` path, which is already fixed — the pools guarded here are
+ * the half of the class still unguarded, not the proven cause of that outage.
+ *
+ * The fix for a transactional pool is `getLongLivedAdminPool(label, extra?)`, which
+ * re-resolves and rebinds on every use. A compliant file therefore has NO site here at all.
+ *
+ * ALLOWLIST IS SHRINK-ONLY, and split by WHY — deliberately, so a permanent design
+ * exemption is not rationed against a temporary one (the same reasoning as `DarkCase` for
+ * dark flags). `listen` entries are permanent; `pending-migration` entries must go to zero.
+ * A third test asserts every entry still matches a real site, so migrating a file FAILS
+ * until its now-stale entry is deleted — the allowlist cannot quietly outlive its reason.
+ */
+const LISTEN_EXEMPT: Record<string, string> = {
+  // A LISTEN connection carries subscription state a silent rebuild would drop: the caller
+  // keeps a live handle that no longer receives notifications — a worse, SILENT failure
+  // than the one being fixed. Rebinding these must also re-issue the LISTEN, which belongs
+  // with the code owning the subscription.
+  'packages/operator-core/lib/agent-activity-bus.ts': 'LISTEN — rebind must re-issue subscription',
+  'packages/operator-core/lib/pg-listen-hub.ts': 'LISTEN — rebind must re-issue subscription',
+  'packages/operator-core/lib/fleet-assignment-bus.ts': 'LISTEN — rebind must re-issue subscription',
+  'packages/operator-core/lib/coord-inbox-bus.ts': 'LISTEN — rebind must re-issue subscription',
+  'packages/operator-core/lib/pg-notify-bus.ts': 'LISTEN — rebind must re-issue subscription',
+  'packages/operator-core/lib/sync-sse.ts': 'LISTEN — the notify path already uses getOrgPg()',
+};
+
+/** Transactional pools not yet migrated. This map must only ever SHRINK. */
+const PENDING_MIGRATION: Record<string, string> = {
+  'packages/operator-core/lib/dock-layouts.ts': 'transactional — migrate to getLongLivedAdminPool',
+  'packages/operator-core/lib/llm-testing/telemetry.ts': 'transactional — migrate',
+  'packages/operator-core/lib/llm-testing/ledger.ts': 'transactional — migrate',
+  'packages/operator-core/lib/llm-testing/replay.ts': 'transactional — migrate',
+  'packages/operator-core/lib/llm-testing/storage.ts': 'transactional — migrate',
+  'packages/operator-core/lib/llm-testing/promotion/promote.ts': 'transactional — migrate',
+  'packages/operator-core/lib/llm-testing/promotion/candidates.ts': 'transactional — migrate',
+  'packages/operator-core/lib/system-health/desktop-perf-runs.ts': 'transactional — migrate',
+  'packages/operator-core/lib/sync/hyperbee/pg-merge-cursor-store.ts': 'transactional — migrate',
+  'packages/operator-core/lib/endpoint-route/routes/admin/llm-tests-findings.ts': 'transactional — migrate',
+  'packages/operator-core/lib/endpoint-route/routes/admin/llm-tests-runs.ts': 'transactional — migrate',
+  'packages/operator-core/lib/endpoint-route/routes/admin/llm-tests-finding-by-id.ts': 'transactional — migrate',
+  'packages/operator-core/lib/endpoint-route/routes/admin/llm-tests-run-by-id.ts': 'transactional — migrate',
+};
+
+const URL_TRACKING_ALLOWLIST = { ...LISTEN_EXEMPT, ...PENDING_MIGRATION };
+
+/**
+ * Module-level singleton pools built DIRECTLY from `getHarnessAdminUrl()` — the shape that
+ * cannot notice the endpoint moved. Narrower than {@link findSingletonPoolSites} by the
+ * URL source: a pool built from a bespoke URL (the watchdog tick-lock) is not admin-pool
+ * discovery and is out of scope.
+ */
+function findUntrackedAdminPoolSites(source: string): { line: number; name: string }[] {
+  const lines = source.split('\n');
+  return findSingletonPoolSites(source).filter((site) => {
+    for (let i = site.line; i < Math.min(lines.length, site.line + 3); i++) {
+      if (lines[i].includes('getHarnessAdminUrl(')) return true;
+    }
+    return false;
+  });
+}
+
+describe('the URL-tracking guard itself detects an untracked admin pool (non-vacuity)', () => {
+  const UNTRACKED = `
+let pool: ReturnType<typeof postgres> | null = null;
+function db() {
+  if (!pool) {
+    pool = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions('some-pool'),
+      max: 4,
+      idle_timeout: poolIdleTimeoutSec(),
+      prepare: false,
+    });
+  }
+  return pool;
+}`;
+  // The migrated shape: no postgres(...) call survives, so there is no site to flag.
+  const MIGRATED = `
+const db = () => getLongLivedAdminPool('some-pool', { max: 4, prepare: false });`;
+  // A singleton built from a BESPOKE url is out of scope — it is not admin discovery.
+  const BESPOKE_URL = `
+let _tickLockSql: Sql | null = null;
+function tickLockSql(): Sql {
+  if (!_tickLockSql) {
+    _tickLockSql = postgres(watchdogTickLockUrl(), { max: 1, idle_timeout: 0 });
+  }
+  return _tickLockSql;
+}`;
+
+  it('flags a singleton admin pool that tracks no URL', () => {
+    expect(findUntrackedAdminPoolSites(UNTRACKED)).toHaveLength(1);
+  });
+
+  it('finds nothing in a migrated file', () => {
+    expect(findUntrackedAdminPoolSites(MIGRATED)).toEqual([]);
+  });
+
+  it('ignores a singleton built from a bespoke (non-discovery) URL', () => {
+    expect(findUntrackedAdminPoolSites(BESPOKE_URL)).toEqual([]);
+  });
+});
+
+describe('admin pools track the URL they were built with (EI-19306394439939264)', () => {
+  const files = SCAN_ROOTS.flatMap((r) => walk(join(REPO_ROOT, r)));
+
+  it('finds the admin-pool sites it is meant to guard (test is not vacuously green)', () => {
+    const total = files.reduce((n, f) => n + findUntrackedAdminPoolSites(readFileSync(f, 'utf8')).length, 0);
+    expect(total).toBeGreaterThanOrEqual(10);
+  });
+
+  it('no NEW singleton admin pool bypasses getLongLivedAdminPool', () => {
+    const offenders: string[] = [];
+    for (const file of files) {
+      const rel = relative(REPO_ROOT, file);
+      if (URL_TRACKING_ALLOWLIST[rel]) continue;
+      const source = readFileSync(file, 'utf8');
+      for (const site of findUntrackedAdminPoolSites(source)) {
+        offenders.push(`${rel}:${site.line + 1} (${site.name})`);
+      }
+    }
+    expect(
+      offenders,
+      `These singleton pools are built directly from getHarnessAdminUrl() and remember no ` +
+        `URL, so they can never notice the endpoint moved and will serve a DEAD address ` +
+        `until the process restarts (WI-6739: 20,144 ECONNREFUSED over ~2h40m).\n` +
+        `  transactional → const db = () => getLongLivedAdminPool('<label>', { max, prepare })\n` +
+        `  LISTEN        → add to LISTEN_EXEMPT; a silent rebuild would drop the subscription\n` +
+        offenders.map((o) => `  - ${o}`).join('\n'),
+    ).toEqual([]);
+  });
+
+  it('every allowlist entry still matches a real site (allowlist is shrink-only)', () => {
+    const stale: string[] = [];
+    for (const rel of Object.keys(URL_TRACKING_ALLOWLIST)) {
+      const full = join(REPO_ROOT, rel);
+      let source: string;
+      try {
+        source = readFileSync(full, 'utf8');
+      } catch {
+        stale.push(`${rel} (file no longer exists)`);
+        continue;
+      }
+      if (findUntrackedAdminPoolSites(source).length === 0) stale.push(`${rel} (no untracked pool left)`);
+    }
+    expect(
+      stale,
+      `These allowlist entries no longer describe anything — the pool was migrated or the ` +
+        `file moved. Delete them; an exemption that outlives its reason silently re-permits ` +
+        `the bug it was granted for:\n` + stale.map((s) => `  - ${s}`).join('\n'),
+    ).toEqual([]);
+  });
+});

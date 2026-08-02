@@ -32,6 +32,17 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as net from 'node:net';
 import { StringDecoder } from 'node:string_decoder';
+// WI-6822: MUST be the first import in this file, textually before
+// `orchestrator-runner` below — it installs the flag-override store as an
+// import-time side effect. `orchestrator-runner` transitively imports
+// `work-item-claim-lease-wiring.ts`, whose OWN top-level
+// `void refreshClaimLease()` calls `getFlag()` during ITS import evaluation
+// — which, being a sibling import of this file, would otherwise run BEFORE
+// `installFlagOverrideStore()` (previously only called inside
+// `runSpawnerSidecarServer()`'s body, which executes after every import
+// already resolved — too late). See flag-override-store-boot-effect.ts's
+// docblock for the full explanation.
+import '../flag-override-store-boot-effect';
 import { spawnInvokeOnce, type SpawnInvokeOnceResult } from '../dbos/orchestrator-runner';
 import { installFlagOverrideStore } from '../flag-override-store';
 import { ensureFlagChangeListener } from '../flag-change-listener';

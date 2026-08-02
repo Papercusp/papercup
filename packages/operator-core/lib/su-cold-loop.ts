@@ -281,14 +281,38 @@ export function renderColdWakeInjection(
         "sessions:timeline { owner:'self', since:'<the note write-time above>' }."
       : null;
   return [
-    `❄️ COLD LOOP WAKE${fireTag} — your context was just reset to your carry-note. Your prior transcript is GONE;`,
-    'the note below IS your continuity — treat it as your working state and continue from its "Next action".',
+    `❄️ COLD LOOP WAKE${fireTag} — a context reset was REQUESTED for this session: the host was asked to drop your`,
+    'prior transcript and bring you back on the carry-note below. If it took, that note IS your continuity — treat it',
+    'as your working state and continue from its "Next action". Confirm it took, via the invariant immediately below.',
+    // WI-6849: this preamble used to ASSERT the reset as accomplished ("your context was just
+    // reset ... your prior transcript is GONE"). The system cannot know that. wake-executor's
+    // cold path books `channel: psu-socket-reset` on `injectPsuHost` returning ok — a
+    // SOCKET-WRITE ack, not proof the CLI child re-execed. Observed live 2026-08-02 on
+    // su-7854d874 fire #6: a genuine usage_limit kill triggered the reset, the socket write
+    // succeeded (ledger: status=delivered, attempts=1, last_error=NULL), the RESPAWN then hit
+    // the SAME usage wall 4s later and never completed, and the session resumed WARM holding
+    // its full transcript with this notice on top. The failure is self-reinforcing: whatever
+    // wedges a session (usage wall, wedged host) is also what can stop its respawn, so the
+    // false claim lands exactly when it is most costly — the agent is told to discard live
+    // context in favour of a carry-note that is, by construction, older than the work it did.
+    //
+    // The check is UNCONDITIONAL and deliberately does not reuse the word "stale": the
+    // fire-gated block below is a DIFFERENT claim (this delivery was superseded by a LATER
+    // fire, EI-15799), it needs a fire number to be decidable, and its no-wakeCount rendering
+    // is asserted to stay stale-free. "The reset did not take" needs no fire number at all,
+    // and gating it on one is precisely why the EI-15799 clause did not cover fire #6: the
+    // visible turns were from BEFORE that fire, not after it.
+    '⚠ THE RESET IS REQUESTED, NOT CONFIRMED. TOTAL INVARIANT: IF YOU CAN SEE ANY OF YOUR OWN PRIOR TURNS OR TOOL ' +
+      'CALLS AT ALL, THE RESET DID NOT TAKE — your context is intact, this preamble is WRONG about you, and the note ' +
+      'below is a LEAD, not the truth. Reconcile against your live transcript and DO NOT discard it. (A reset can be ' +
+      'requested and still not happen: the delivery is booked on a socket-write ack, and the very conditions that ' +
+      'trigger a reset — a usage wall, a wedged host — can also stop the respawn completing.)',
     ...(writeAgeLine ? [writeAgeLine] : []),
     ...(staleWorkLine ? [staleWorkLine] : []),
     ...(fireTag
       ? [
           'If you can see ANY tool calls or turns from AFTER this fire number in what looks like your own transcript, ' +
-            'this delivery is STALE (superseded by a later fire) — do NOT trust the "reset" claim: reconcile against your ' +
+            'this delivery is ALSO STALE (superseded by a later fire) — reconcile against your ' +
             'actual live transcript instead of discarding it, and treat the note below as a lead, not the truth.',
         ]
       : []),
