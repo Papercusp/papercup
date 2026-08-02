@@ -7,10 +7,14 @@ import { describe, it, expect } from 'vitest';
 import { resourceDeltaConfig } from './resource-delta-config';
 
 describe('resourceDeltaConfig', () => {
+  // The schemaVersion literal is pinned ON PURPOSE: changing the projected row
+  // shape without bumping it makes in-flight client cursors report the whole
+  // view as `updated` instead of taking one clean full. Failing here is the
+  // reminder to bump — v1 → v2 was WI-7039/D-025 (null-valued keys omitted).
   it('plans.attention keys on the AttentionGroup `key`', () => {
     expect(resourceDeltaConfig('plans.attention')).toEqual({
       itemKeyField: 'key',
-      schemaVersion: 'plans-attention-v1',
+      schemaVersion: 'plans-attention-v2',
     });
   });
 
