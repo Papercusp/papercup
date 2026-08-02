@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { classifyScope, EXEMPT_REASON_LABEL, type ExemptReason } from './scope-class';
+import {
+  classifyScope,
+  isTerminalWindowScope,
+  EXEMPT_REASON_LABEL,
+  type ExemptReason,
+} from './scope-class';
 import { ALLOWLIST } from '../../../../scripts/check-no-unenrolled-detached-spawn.mjs';
 
 const OUR_SLICE = '/user.slice/user-1000.slice/user@1000.service/papercusp.slice';
@@ -83,6 +88,53 @@ describe('classifyScope', () => {
     // must not be quietly filed as "by design".
     expect(classifyScope('', false).scope).toBe('unaccounted');
     expect(classifyScope('/', false).scope).toBe('unaccounted');
+  });
+
+  it('withdraws the terminal exemption once the window is CLOSED', () => {
+    // P-009. The scope outlives the window, so `vte-spawn-*` alone stopped being
+    // evidence that a human is watching: 17 such scopes were holding 123 processes
+    // on this box with nobody at the keyboard.
+    const vte = `${TERM_SLICE}/vte-spawn-d30b170a-4c58-4460-ad25-1073627f3ab8.scope`;
+    expect(classifyScope(vte, false, { terminalWindowAlive: true })).toEqual({
+      scope: 'exempt',
+      exemptReason: 'human-terminal',
+    });
+    expect(classifyScope(vte, false, { terminalWindowAlive: false })).toEqual({
+      scope: 'unaccounted',
+      exemptReason: null,
+    });
+  });
+
+  it('treats every not-a-positive-false as still exempt — unknown must never kill', () => {
+    // The one asymmetry the reaper this feeds will depend on. `false` is the ONLY
+    // value that withdraws the exemption; not-probed and could-not-tell do not.
+    const vte = `${TERM_SLICE}/vte-spawn-1111-2222.scope`;
+    for (const opts of [undefined, {}, { terminalWindowAlive: null }, { terminalWindowAlive: true }]) {
+      expect(classifyScope(vte, false, opts).scope, JSON.stringify(opts)).toBe('exempt');
+    }
+  });
+
+  it('never lets window liveness override ownership or reach a non-window cgroup', () => {
+    // A dead window cannot take a process out of OUR slice, and the flag must not
+    // leak onto the terminal application's own units — only a window has a window.
+    expect(classifyScope(`${OUR_SLICE}/pc-a.scope`, true, { terminalWindowAlive: false }).scope).toBe(
+      'owned',
+    );
+    expect(
+      classifyScope(`${TERM_SLICE}/gnome-terminal-server.service`, false, {
+        terminalWindowAlive: false,
+      }),
+    ).toEqual({ scope: 'exempt', exemptReason: 'human-terminal' });
+  });
+
+  it('isTerminalWindowScope names windows only, and accepts a bare leaf', () => {
+    // The scan uses this to decide when a probe is worth doing; it is exported so
+    // the vte naming rule has exactly one definition to keep in step.
+    expect(isTerminalWindowScope('vte-spawn-d30b170a-4c58-4460-ad25-1073627f3ab8.scope')).toBe(true);
+    expect(isTerminalWindowScope(`${TERM_SLICE}/vte-spawn-1111-2222.scope`)).toBe(true);
+    expect(isTerminalWindowScope(`${TERM_SLICE}/gnome-terminal-server.service`)).toBe(false);
+    expect(isTerminalWindowScope(`${APP_SLICE}/papercup-anything.scope`)).toBe(false);
+    expect(isTerminalWindowScope('')).toBe(false);
   });
 
   it('gives every reason a human label, so the pane never invents one', () => {

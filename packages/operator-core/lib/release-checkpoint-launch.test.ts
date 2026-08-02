@@ -862,8 +862,18 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const spawnFn = vi.fn(() => child) as never;
     const execFn = staleActiveExecFn(0, 45);
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
+    // EI-19326961954611487: this test's execFn reaches a SUCCESSFUL stop, which reaches
+    // recordDisplacement — inject a fake so it never falls through to the real appendFileSync.
+    const recordDisplacement = vi.fn();
 
-    const p = launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn, execFn, readLogHead);
+    const p = launchDetachedCheckpoint(
+      { root: '/tree', replaceStale: true },
+      spawnFn,
+      execFn,
+      readLogHead,
+      undefined,
+      recordDisplacement,
+    );
     child.emit('close', 0);
     const r = await p;
 
@@ -871,6 +881,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(spawnFn).toHaveBeenCalled();
     expect(r.launched).toBe(true);
     expect(r.replacedStale).toMatchObject({ active: true, candidate_stale: true, candidate: '11111111' });
+    expect(recordDisplacement).toHaveBeenCalledTimes(1);
   });
 
   it('a YOUNG stale run is REFUSED, not stopped — the EI-11667 replace-storm guard (stale is normal for a healthy young run on a busy tree)', async () => {
@@ -964,6 +975,9 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const execFn = staleActiveExecFn(0, 45);
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
     const cancelStaleAwaits = vi.fn(async (_root: string, _staleCandidateSha: string) => ({ cancelled: 2 }));
+    // EI-19326961954611487: this test's execFn also reaches a SUCCESSFUL stop → recordDisplacement
+    // — inject a fake here too so it never falls through to the real appendFileSync.
+    const recordDisplacement = vi.fn();
 
     const p = launchDetachedCheckpoint(
       { root: '/tree', replaceStale: true },
@@ -971,6 +985,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
       execFn,
       readLogHead,
       cancelStaleAwaits,
+      recordDisplacement,
     );
     child.emit('close', 0);
     const r = await p;
@@ -978,6 +993,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(cancelStaleAwaits).toHaveBeenCalledTimes(1);
     expect(cancelStaleAwaits).toHaveBeenCalledWith('/tree', '11111111');
     expect(r.launched).toBe(true);
+    expect(recordDisplacement).toHaveBeenCalledTimes(1);
   });
 
   it('WI-4957: a FAILED stop never calls cancelStaleAwaits (the run is not proven dead — nothing to retire)', async () => {

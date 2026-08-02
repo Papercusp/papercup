@@ -20,6 +20,29 @@ export function linuxStartTicksFromProcStat(stat: string): string | null {
   return ticks && /^\d+$/.test(ticks) ? ticks : null;
 }
 
+/**
+ * Linux /proc stat field 4 (ppid), robust to spaces and ')' in comm.
+ *
+ * Same `lastIndexOf(')')` discipline as starttime above, and for the same reason: a
+ * naive `split(/\s+/)[3]` reads the wrong field for any process whose comm contains
+ * a space or a paren, which on this box includes ordinary shells and editors.
+ * Returns null rather than a guess — a wrong ppid would silently mis-answer
+ * "is this process still attached to its parent?".
+ */
+export function linuxPpidFromProcStat(stat: string): number | null {
+  const close = stat.lastIndexOf(')');
+  if (close < 0) return null;
+  // Text after comm starts at field 3 (state); ppid is field 4 => index 1.
+  const fields = stat
+    .slice(close + 1)
+    .trim()
+    .split(/\s+/);
+  const ppid = fields[1];
+  if (!ppid || !/^\d+$/.test(ppid)) return null;
+  const n = Number(ppid);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
 export function linuxProcessIdentityFromStat(bootId: string, stat: string): string | null {
   const boot = bootId.trim();
   const ticks = linuxStartTicksFromProcStat(stat);

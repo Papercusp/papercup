@@ -242,7 +242,7 @@ const snap = (
       consecutiveReds: 0,
       lastGreenAtMs: 1,
       fireStale: false,
-      fireStaleReason: null,
+      fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null,
       // EI-19325520469216548: defaults for the fields git-pipeline-stats projects from
       // evaluateGateVerdictFreshness — a healthy/unmeasured-by-default fixture so existing
       // cases that don't care about staleness don't have to spell these out.
@@ -843,7 +843,7 @@ describe('gitPipelinePosition (P-002)', () => {
             stalled: false,
             consecutiveReds: 0,
             fireStale: true,
-            fireStaleReason: 'the routine has not FIRED in ~3h (active, cron hourly)',
+            fireStaleReason: 'the routine has not FIRED in ~3h (active, cron hourly)', verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null,
           }),
       },
     );
@@ -876,7 +876,7 @@ describe('gitPipelinePosition (P-002)', () => {
         git,
         loadDeploy: async () => deploy(),
         loadSnapshot: async () =>
-          snap({ stalled: false, consecutiveReds: 0, fireStale: false, fireStaleReason: null }, 'synced', {
+          snap({ stalled: false, consecutiveReds: 0, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null }, 'synced', {
             greenPinAtStagingHead: false,
           }),
       },
@@ -914,7 +914,7 @@ describe('gitPipelinePosition (P-002)', () => {
         loadDeploy: async () => deploy(),
         loadSnapshot: async () =>
           snap(
-            { stalled: false, consecutiveReds: 0, fireStale: false, fireStaleReason: null, lastGreenAtMs: Date.now() - 5 * 60_000 },
+            { stalled: false, consecutiveReds: 0, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null, lastGreenAtMs: Date.now() - 5 * 60_000 },
             'synced',
             { greenPinAtStagingHead: false },
           ),
@@ -1154,7 +1154,7 @@ describe('gitPipelinePosition (P-002)', () => {
       positionsNewerCommit: [],
       verdictUnknown: [],
       deployedSha: 'deployedsha0',
-      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
       verdictProvenance: {
         lastGreenSha: 'readysha0',
         lastGreenShortSha: 'readysha',
@@ -1432,7 +1432,7 @@ describe('computeStages: position x health', () => {
   const input = (over: Partial<StageInput> = {}): StageInput => ({
     dirtyUncommitted: false,
     positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
-    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
     verdictProvenance: {
       lastGreenSha: 'g',
       lastGreenShortSha: 'g',
@@ -1587,7 +1587,7 @@ describe('computeStages: position x health', () => {
 
   it('WI-282: a non-firing gate is `broken` and says waiting will not help', () => {
     const s = computeStages(
-      input({ gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: true, fireStaleReason: 'paused' } }),
+      input({ gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: true, fireStaleReason: 'paused', verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null } }),
     );
     expect(stage(s, 'gate').health).toBe('broken');
     expect(stage(s, 'gate').detail).toMatch(/Waiting will not help/i);
@@ -1596,7 +1596,7 @@ describe('computeStages: position x health', () => {
 
   it('a red gate is `stalled` and framed as yours to fix, not a queue to wait in', () => {
     const s = computeStages(
-      input({ gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null } }),
+      input({ gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null } }),
     );
     expect(stage(s, 'gate').health).toBe('stalled');
     expect(stage(s, 'gate').detail).toMatch(/RED \(3 consecutive\)/);
@@ -1656,7 +1656,7 @@ describe('computeStages: position x health', () => {
     it('a nonzero buffer with a RECENT green verdict reads advancing, not stalled — the reported symptom', () => {
       const s = computeStages(
         input({
-          gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: Date.now() - 5 * 60_000, fireStale: false, fireStaleReason: null },
+          gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: Date.now() - 5 * 60_000, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
           verdictProvenance: {
             lastGreenSha: 'g',
             lastGreenShortSha: 'g',
@@ -1679,7 +1679,7 @@ describe('computeStages: position x health', () => {
             consecutiveReds: 0,
             lastGreenAtMs: Date.now() - (MAIN_BUFFER_STALL_MS + 60_000),
             fireStale: false,
-            fireStaleReason: null,
+            fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null,
           },
           verdictProvenance: {
             lastGreenSha: 'g',
@@ -1698,7 +1698,7 @@ describe('computeStages: position x health', () => {
     it('a RED or WEDGED gate still marks `main` stalled regardless of buffer age — the gate is what actually blocks it', () => {
       const redGate = computeStages(
         input({
-          gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: Date.now(), fireStale: false, fireStaleReason: null },
+          gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: Date.now(), fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
           verdictProvenance: {
             lastGreenSha: 'g',
             lastGreenShortSha: 'g',
@@ -1716,7 +1716,7 @@ describe('computeStages: position x health', () => {
     it('no buffer at all (mainFastForwarded: true) is unconditionally advancing with no detail, however old lastGreenAtMs is', () => {
       const s = computeStages(
         input({
-          gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+          gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
           verdictProvenance: {
             lastGreenSha: 'g',
             lastGreenShortSha: 'g',
@@ -1878,7 +1878,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
   const base = (serving: ServingTruth, over: Partial<StageInput> = {}): StageInput => ({
     dirtyUncommitted: false,
     positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
-    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
     verdictProvenance: {
       lastGreenSha: 'g',
       lastGreenShortSha: 'g',
@@ -1964,7 +1964,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       positionsNewerCommit: [],
       verdictUnknown: [],
       deployedSha: 'deployedsha0',
-      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
       verdictProvenance: {
         lastGreenSha: 'readysha0',
         lastGreenShortSha: 'readysha',
@@ -2153,7 +2153,7 @@ describe('changeInCandidate (P-004)', () => {
       const stages = computeStages({
         dirtyUncommitted: false,
         positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
-        gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+        gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
         verdictProvenance: {
           lastGreenSha: 'g',
           lastGreenShortSha: 'g',
@@ -2181,7 +2181,7 @@ describe('changeInCandidate (P-004)', () => {
       // sends someone back to re-debug correct code — so containment leads, and the red
       // is explicitly demoted to "not about you yet".
       const s = gateStage({
-        gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+        gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
         changeInCandidate: contained({
           judgingSha: 'cand1234567890',
           judgingContainsPath: false,
@@ -2196,14 +2196,14 @@ describe('changeInCandidate (P-004)', () => {
 
     it('leaves the normal red-gate message alone when containment is not in question', () => {
       const s = gateStage({
-        gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+        gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
       });
       expect(s.detail).toMatch(/Gate is RED \(3 consecutive\)/);
     });
 
     it('containment also outranks a WEDGED gate — a verdict that cannot mention you is worse news', () => {
       const s = gateStage({
-        gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: true, fireStaleReason: 'no tick' },
+        gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: true, fireStaleReason: 'no tick', verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
         changeInCandidate: contained({
           nextCandidateSha: 'cand1234567890',
           nextContainsPath: false,
@@ -2234,7 +2234,7 @@ describe('changeInCandidate (P-004)', () => {
       positionsNewerCommit: [],
       verdictUnknown: [],
       deployedSha: 'deployedsha0',
-      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
       verdictProvenance: {
         lastGreenSha: 'readysha0',
         lastGreenShortSha: 'readysha',
@@ -2656,7 +2656,7 @@ describe('stage levers (P-005)', () => {
   const BASELINE: StageInput = {
     dirtyUncommitted: false,
     positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
-    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
     verdictProvenance: {
       lastGreenSha: 'g',
       lastGreenShortSha: 'g',
@@ -2687,7 +2687,7 @@ describe('stage levers (P-005)', () => {
     consecutiveReds: 5,
     lastGreenAtMs: 1,
     fireStale: false,
-    fireStaleReason: null,
+    fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null,
   };
   /** A suite really is running — the EI-18797292094433710 state, where waiting IS the lever. */
   const IN_FLIGHT = {
@@ -2734,7 +2734,7 @@ describe('stage levers (P-005)', () => {
   it('containment OUTRANKS a red gate — judging a candidate without your change buys nothing', () => {
     const l = lever('gate', {
       positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
-      gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
       changeInCandidate: { ...NO_CANDIDATE, judgingContainsPath: false, missingReason: 'uncommitted' },
     });
     expect(l).toMatch(/git-sync:run/);
@@ -2744,7 +2744,7 @@ describe('stage levers (P-005)', () => {
   it('a red gate with the change present routes to fixing the reds, not waiting', () => {
     const l = lever('gate', {
       positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
-      gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
     });
     expect(l).toMatch(/fix the reds/);
   });
@@ -2907,7 +2907,7 @@ describe('stage levers (P-005)', () => {
     // specifically about not throwing away an in-flight verdict.
     const l = lever('gate', {
       positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
-      gate: { stalled: true, consecutiveReds: 5, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      gate: { stalled: true, consecutiveReds: 5, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
       changeInCandidate: {
         ...NO_CANDIDATE,
         judgingSha: null,
@@ -2924,7 +2924,7 @@ describe('stage levers (P-005)', () => {
     // provably cannot see the work, waiting for the in-flight verdict is useless.
     const l = lever('gate', {
       positions: { committedLocal: false, onStaging: false, inMain: false, deployed: false },
-      gate: { stalled: true, consecutiveReds: 5, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      gate: { stalled: true, consecutiveReds: 5, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
       changeInCandidate: {
         ...NO_CANDIDATE,
         judgingSha: 'inflight123456',
@@ -3081,7 +3081,7 @@ describe('sweep exposure (P-006)', () => {
   const stageInput = (sweep: SweepExposure): Parameters<typeof computeStages>[0] => ({
     dirtyUncommitted: true,
     positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false },
-    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null },
     verdictProvenance: {
       lastGreenSha: 'g',
       lastGreenShortSha: 'g',

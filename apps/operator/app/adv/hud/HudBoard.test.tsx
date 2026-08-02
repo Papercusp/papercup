@@ -225,6 +225,85 @@ describe('HudBoard — sessions transcript search', () => {
 
     // A board that is about to fill must not read as a final "no matches" —
     // that is the same misread as the empty-roster one above, one state later.
+    /* Owner ask 2026-08-02, with a screenshot: a search for "harrier" returned
+       cards reading only "Claude needs your permission" — nothing on screen
+       said why any of them matched. The endpoint had been returning the excerpt
+       all along; HudView kept the ownerId and dropped it. */
+    describe('the matched excerpt is on the card', () => {
+      const hit = {
+        turnIdx: 10,
+        highlight: 'the <mark>Harrier</mark> embedder is default',
+        excerpt: 'the Harrier embedder is default',
+        speaker: 'assistant',
+        ts: '2026-08-01 20:47:28.193-04',
+        sessionId: '82d15100',
+        sourceKind: 'claude',
+        more: 3,
+      };
+      const withHit = (over: Partial<typeof hit> = {}) =>
+        buildHudBoard([entry()], [], {
+          nowMs: NOW,
+          searchHits: new Map([[entry().ownerId, { ...hit, ...over }]]),
+        });
+
+      it('renders the excerpt with the matched terms marked', () => {
+        const { container } = renderBoard([entry()], { board: withHit() });
+        const strip = container.querySelector('.hud__hit');
+        expect(strip).toBeTruthy();
+        expect(strip!.textContent).toContain('the Harrier embedder is default');
+        const marks = container.querySelectorAll('mark');
+        expect(marks).toHaveLength(1);
+        expect(marks[0].textContent).toBe('Harrier');
+      });
+
+      // A single excerpt with no hint that others exist reads as the whole
+      // answer for that session.
+      it('says how many OTHER turns in the same session matched', () => {
+        const { container } = renderBoard([entry()], { board: withHit() });
+        expect(container.querySelector('.hud__hit-more')!.textContent).toBe('+3 more matches');
+      });
+
+      it('singularises, and omits the count when this was the only match', () => {
+        const one = renderBoard([entry()], { board: withHit({ more: 1 }) });
+        expect(one.container.querySelector('.hud__hit-more')!.textContent).toBe('+1 more match');
+        cleanup();
+        const none = renderBoard([entry()], { board: withHit({ more: 0 }) });
+        expect(none.container.querySelector('.hud__hit-more')).toBeNull();
+      });
+
+      // THE safety property, asserted at the DOM: transcript text that contains
+      // markup must arrive as CHARACTERS. If this ever fails, the card is
+      // rendering agent transcript content as live markup in the operator.
+      it('renders markup inside an excerpt as literal text, never as elements', () => {
+        const { container } = renderBoard([entry()], {
+          board: withHit({
+            highlight: 'look <mark>here</mark> <img src=x onerror=1> <b>bold</b>',
+            excerpt: '',
+          }),
+        });
+        const strip = container.querySelector('.hud__hit')!;
+        expect(strip.querySelector('img')).toBeNull();
+        expect(strip.querySelector('b')).toBeNull();
+        expect(strip.textContent).toContain('<img src=x onerror=1>');
+        expect(strip.textContent).toContain('<b>bold</b>');
+      });
+
+      // No search running, or a session that matched on its own card text —
+      // the thing that matched is already visible, so an excerpt would be noise.
+      it('renders no strip at all when the session carries no transcript hit', () => {
+        const { container } = renderBoard([entry()]);
+        expect(container.querySelector('.hud__hit')).toBeNull();
+      });
+
+      it('falls back to the plain excerpt when the engine returned no highlight', () => {
+        const { container } = renderBoard([entry()], {
+          board: withHit({ highlight: null, excerpt: 'plain text only' }),
+        });
+        expect(container.querySelector('.hud__hit')!.textContent).toContain('plain text only');
+        expect(container.querySelector('mark')).toBeNull();
+      });
+    });
+
     it('an empty board mid-search says it is still searching, not that nothing matched', () => {
       const { getByText, queryByText } = renderBoard([], {
         onSessionQuery: vi.fn(),

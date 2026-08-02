@@ -65,7 +65,10 @@ export default defineTool({
       })
       .optional()
       .describe(
-        'A distinctive LITERAL string from YOUR change (a new function name, an added error message, an id). ' +
+        'A distinctive LITERAL string YOUR CHANGE INTRODUCED (a new function name, an added error message, an id) — ' +
+          'NEVER a pre-existing identifier, table/type name, or symbol the file already contained: a marker that was ' +
+          'already present before your edit proves nothing (EI-19325915429897280/EI-19325709344484737), so a leg only ' +
+          'gets corrected on a STRICT net-new occurrence count against the pre-change baseline, not bare presence. ' +
           'Answers "is MY change there?" definitively where the default checks CANNOT: they resolve a path to its NEWEST commit, ' +
           'so any peer commit to the same file breaks them permanently. Settles BOTH `changeInCandidate` (the commit the gate judges) ' +
           'AND the `positions.inMain` / `positions.deployed` legs, correcting them in either direction. ' +

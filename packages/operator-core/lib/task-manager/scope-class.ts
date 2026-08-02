@@ -37,6 +37,13 @@
  *     the human owns it. Guard allowlist: `console-spawn.ts` / `terminal-spawn.ts`,
  *     "a human's terminal WINDOW is the unit of control".
  *
+ *     ONLY WHILE THE WINDOW IS OPEN. The scope outlives the window — it persists as
+ *     long as anything inside it is alive — so a closed window leaves a scope full of
+ *     processes still claiming an exemption that says a human is watching them. On
+ *     this box that was 17 scopes holding 123 processes. `terminalWindowAlive:false`
+ *     withdraws the exemption; see `terminal-window` for how it is observed and why
+ *     "we could not tell" must never withdraw it.
+ *
  *   systemd-unit — the leaf is a `.service`, so systemd owns its lifecycle: it has
  *     a journal, a stop verb, and (for non-transient units) a restart policy. It is
  *     accounted for by a different accountant, not unaccounted for. Guard allowlist:
@@ -70,6 +77,33 @@ function segments(cgroupPath: string): string[] {
 }
 
 /**
+ * Is this cgroup one terminal WINDOW's own scope?
+ *
+ * Narrower than the exemption test below, which also covers the terminal
+ * application's own units. Exported so the scan knows when a window-liveness probe
+ * is worth doing, and so the naming rule lives in exactly one file — a second copy
+ * of the regex in the caller is how the two would drift apart.
+ *
+ * Accepts a bare leaf name as well as a full path (a one-segment path is its leaf).
+ */
+export function isTerminalWindowScope(cgroupPath: string): boolean {
+  const segs = segments(cgroupPath);
+  return VTE_SCOPE_RE.test(segs[segs.length - 1] ?? '');
+}
+
+export interface ClassifyScopeOptions {
+  /**
+   * Is the terminal window that owns this scope still open? `undefined`/`null` mean
+   * NOT PROBED / could not tell, and both leave the exemption intact.
+   *
+   * Only `false` — a positive observation that the window is gone — withdraws it.
+   * The asymmetry is deliberate: a false DEAD would present the owner's live
+   * terminal as unaccounted residue, so unknown must fail toward exempt.
+   */
+  terminalWindowAlive?: boolean | null;
+}
+
+/**
  * Classify one scanned process.
  *
  * `owned` short-circuits: a process inside our slice is ours regardless of what its
@@ -77,15 +111,26 @@ function segments(cgroupPath: string): string[] {
  * the `.service` rule because `gnome-terminal-server.service` satisfies both and
  * "human terminal" is the more informative reason.
  *
- * Pure — no /proc reads, no clock. The scan supplies the two inputs.
+ * Pure — no /proc reads, no clock. The scan supplies the inputs, window liveness
+ * included; the probe that produces it lives in `terminal-window`.
  */
-export function classifyScope(cgroupPath: string, owned: boolean): ScopeClassification {
+export function classifyScope(
+  cgroupPath: string,
+  owned: boolean,
+  opts: ClassifyScopeOptions = {},
+): ScopeClassification {
   if (owned) return { scope: 'owned', exemptReason: null };
 
   const segs = segments(cgroupPath);
   const leaf = segs[segs.length - 1] ?? '';
+  const isWindow = VTE_SCOPE_RE.test(leaf);
 
-  if (segs.includes(TERMINAL_SLICE) || VTE_SCOPE_RE.test(leaf)) {
+  if (segs.includes(TERMINAL_SLICE) || isWindow) {
+    // A closed window's scope is no longer "a lifetime the human owns" — it is
+    // whatever an agent left running inside a window nobody is watching.
+    if (isWindow && opts.terminalWindowAlive === false) {
+      return { scope: 'unaccounted', exemptReason: null };
+    }
     return { scope: 'exempt', exemptReason: 'human-terminal' };
   }
   if (leaf.endsWith('.service')) {

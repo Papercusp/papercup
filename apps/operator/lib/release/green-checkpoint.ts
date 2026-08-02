@@ -3387,6 +3387,9 @@ export async function runGreenCheckpoint(
               absoluteCeiling: refireAbsoluteCeiling(autoRefireCapFromEnv()),
             })
             .catch(() => {});
+          // EI-19326481022404981: same rationale as the test-file rescue arm above — this
+          // run is abandoning `candidate` for `tip`; retire any await sha-bound to it.
+          await deps.cancelStaleAwaits?.(candidate).catch(() => {});
           return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
         }
       }

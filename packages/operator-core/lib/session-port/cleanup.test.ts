@@ -46,7 +46,11 @@ describe('session-port stale cleanup', () => {
     });
     expect(result).toEqual({ expiredRows: 1, targetsFailed: 1, artifactsDeleted: 1, orphanArtifactsDeleted: 1, errors: 0 });
     expect(updateTarget).toHaveBeenCalledWith(9, 'ws', 'failed', { deliveryErrorClass: 'preparation-expired' });
-    expect(endTarget).toHaveBeenCalledWith(9, 1);
+    // exitCode is NULL, not a fabricated 1: this session was never reaped, so no status was
+    // ever observed, and a sentinel would be indistinguishable from an observed failure. The
+    // failure itself is carried by the updateTarget('failed') assertion above. See the
+    // rationale on cleanup.ts's endTarget call and adv-sessions.ts reconcileDeadTerminalLaunches.
+    expect(endTarget).toHaveBeenCalledWith(9, null, 'cleanup');
     expect(transition.mock.calls[0][3].metadata.cleanupComplete).toBe(true);
     expect(recordTelemetry).toHaveBeenCalledWith(expect.objectContaining({
       stage: 'failed',

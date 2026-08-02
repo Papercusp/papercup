@@ -68,6 +68,7 @@
     "scripts/check-vite-externalized-warnings.mjs",
     "scripts/lint-migrations.mjs",
     "scripts/lint-tsc-papercusp-libs.mjs",
+    "scripts/lint-tsc-workspaces.mjs",
     "scripts/check-no-unenrolled-detached-spawn.mjs",
     "packages/operator-core/lib/inference-gateway/watchdog.mjs"
   ]

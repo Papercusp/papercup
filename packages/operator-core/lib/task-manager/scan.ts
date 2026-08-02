@@ -37,7 +37,8 @@ import {
   type CgroupFs,
 } from './cgroup-read';
 import { TASK_ROOT_SLICE } from './types';
-import { classifyScope } from './scope-class';
+import { classifyScope, isTerminalWindowScope } from './scope-class';
+import { readTerminalAppPids, terminalWindowAlive } from './terminal-window';
 import type { ScannedProcess } from './reconcile';
 
 export interface ScanOptions {
@@ -154,6 +155,30 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
   let ownedTruncated = false;
   let foreignTruncated = false;
 
+  // Window liveness is a property of the SCOPE, not of each process in it, and a
+  // busy window holds dozens — so probe once per scope and reuse. The application's
+  // pid set is likewise read once per slice, not once per window.
+  const appPidsBySlice = new Map<string, Set<number>>();
+  const windowAliveByScope = new Map<string, boolean | null>();
+
+  const probeWindow = (absDir: string, cgroupPath: string): boolean | null | undefined => {
+    if (!isTerminalWindowScope(cgroupPath)) return undefined;
+    const cached = windowAliveByScope.get(absDir);
+    if (cached !== undefined) return cached;
+
+    // A window scope's parent IS the terminal app slice.
+    const sliceAbs = absDir.slice(0, absDir.lastIndexOf('/'));
+    let appPids = appPidsBySlice.get(sliceAbs);
+    if (!appPids) {
+      appPids = readTerminalAppPids(sliceAbs, fs);
+      appPidsBySlice.set(sliceAbs, appPids);
+    }
+
+    const alive = terminalWindowAlive(absDir, appPids, fs);
+    windowAliveByScope.set(absDir, alive);
+    return alive;
+  };
+
   const push = (pid: number, absDir: string, owned: boolean): void => {
     if (seen.has(pid)) return;
     // Two independent budgets — a busy foreign population must never be able to
@@ -177,7 +202,9 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
     // at runtime; duplicating it in a component is how the two drift apart, and a
     // pane that classifies for itself is a pane that can quietly invent a coverage
     // hole (EI-19325095302441792).
-    const { scope, exemptReason } = classifyScope(cgroupPath, owned);
+    const { scope, exemptReason } = classifyScope(cgroupPath, owned, {
+      terminalWindowAlive: probeWindow(absDir, cgroupPath),
+    });
     processes.push({
       pid,
       cgroupPath,

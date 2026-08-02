@@ -491,3 +491,71 @@ systemctl --user list-timers papercusp-db-backup.timer kopia-snapshots.timer kop
 journalctl --user -u papercusp-db-backup.service --since "2 hours ago"
 cat /mnt/data/Backup/db-dumps/STATUS.json
 ```
+
+---
+
+# Shared embedding sidecar — WI-4021 (relocated here EI-19380773834961669)
+
+`papercup-embed-sidecar.service` is the ONE supervised owner of the shared
+embedding + rerank sidecar on `127.0.0.1:3384`, plus its companion
+`papercup-embed-sidecar-watchdog.{service,timer}` (60s `/healthz` probe that
+restarts the unit if the event loop wedges) and the drop-in
+`papercup-embed-sidecar.service.d/98-embed-concurrency.conf` (bounded embed
+concurrency: 2 slots x intraOp 4 threads = exactly the unit's 800% CPUQuota).
+
+**Why these are here:** identical reasoning to the backup units above — these 4
+files existed ONLY as regular files in `~/.config/systemd/user/`, with no repo
+copy, so a machine re-provision would silently lose them. That is worse here
+than for most units: since WI-4021 clients **REQUIRE** the sidecar (the
+in-process embedder fallback was retired), losing it does not degrade memory and
+search, it **stops** them. Relocated + symlinked mirroring every other unit in
+this directory; the three files other than the `.service` were verified
+byte-identical (`diff -q`) before symlinking, and `daemon-reload` was confirmed
+not to restart the running sidecar (MainPID unchanged).
+
+**The one behavioral change made during the relocation** was adding `rerank` to
+the boot-warm set (see the unit's own header comment for the full rationale):
+
+```
+Environment=PAPERCUSP_EMBED_SIDECAR_WARM=gemma,harrier,rerank
+```
+
+The boot-warm RERANKER set is parsed from that same env and defaults to none, so
+this search-serving host had been bringing the ~150M cross-encoder up cold on
+every restart and paying the load inside the first `/rerank` caller's budget.
+
+## Install (one-time, on a fresh machine)
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+for f in papercup-embed-sidecar.service \
+         papercup-embed-sidecar-watchdog.service papercup-embed-sidecar-watchdog.timer; do
+  ln -sfn "$(pwd)/$f" ~/.config/systemd/user/
+done
+mkdir -p ~/.config/systemd/user/papercup-embed-sidecar.service.d
+ln -sfn "$(pwd)/papercup-embed-sidecar.service.d/98-embed-concurrency.conf" \
+        ~/.config/systemd/user/papercup-embed-sidecar.service.d/
+systemctl --user daemon-reload
+systemctl --user enable --now papercup-embed-sidecar.service papercup-embed-sidecar-watchdog.timer
+```
+
+The unit resolves the home directory via systemd's `%h` specifier (matching
+`papercup-mcp-proxy.service`), so it is portable across users. It does still
+assume the checkout lives at `~/papercupai-workspace/papercusp` and that node
+comes from linuxbrew — re-point `WorkingDirectory=` / `PATH=` on a host where
+either differs.
+
+## Verify
+
+```bash
+systemctl --user show papercup-embed-sidecar.service -p MainPID -p ActiveState
+systemctl --user show papercup-embed-sidecar.service -p Environment   # expect WARM=gemma,harrier,rerank
+curl -s http://127.0.0.1:3384/healthz | jq '{models, capabilities, rerankExecution}'
+```
+
+`capabilities` lists every route THIS BUILD serves — it is the honest test for
+"does this sidecar do reranking", NOT the presence of a warm reranker in
+`models`. Note the entry is esbuild-bundled by `ExecStartPre` on **every**
+start, so a restart always picks up current staging source; a long-lived sidecar
+can therefore be running a build many days older than the tree (measured
+2026-08-02: a 16.9-day-old process serving no `/rerank` route at all).

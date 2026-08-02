@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { scanProcesses, deriveUserManagerRoot, defaultForeignSignature } from './scan';
 import type { CgroupFs } from './cgroup-read';
+import { isTerminalWindowScope } from './scope-class';
 
 const ROOT = '/sys/fs/cgroup';
 const MGR = '/user.slice/user-1000.slice/user@1000.service';
@@ -11,6 +12,8 @@ function box(opts: {
   /** kernel-relative cgroup dir -> pids */
   cgroups: Record<string, number[]>;
   cmdlines?: Record<number, string>;
+  /** pid -> ppid. Defaults to 1 (orphaned), which is what a CLOSED window leaves. */
+  ppids?: Record<number, number>;
   selfCgroup?: string;
   bootId?: string | null;
 }): CgroupFs {
@@ -28,7 +31,8 @@ function box(opts: {
     files[`${abs}/cgroup.procs`] = pids.join('\n');
     for (const pid of pids) {
       files[`/proc/${pid}/cgroup`] = `0::${rel}\n`;
-      files[`/proc/${pid}/stat`] = `${pid} (node) S 1 1 1 0 -1 0 0 0 0 0 1 2 0 0 20 0 1 0 ${1000 + pid} 0 0`;
+      files[`/proc/${pid}/stat`] =
+        `${pid} (node) S ${opts.ppids?.[pid] ?? 1} 1 1 0 -1 0 0 0 0 0 1 2 0 0 20 0 1 0 ${1000 + pid} 0 0`;
       files[`/proc/${pid}/cmdline`] = (opts.cmdlines?.[pid] ?? `proc-${pid}`).split(' ').join('\0');
     }
   }
@@ -188,5 +192,98 @@ describe('defaultForeignSignature', () => {
     const sig = defaultForeignSignature('/srv/a+b/c.d');
     expect(sig.test('/srv/a+b/c.d/x')).toBe(true);
     expect(sig.test('/srv/aab/cXd/x')).toBe(false);
+  });
+});
+
+describe('terminal window liveness, end to end through the scan', () => {
+  const TERM = `${MGR}/app.slice/app-org.gnome.Terminal.slice`;
+  const SERVER = 500;
+  const REPO = '/srv/ws/papercusp';
+  // Hex-and-dashes, because that is what the real classifier accepts. A friendlier
+  // name like `vte-spawn-closed.scope` is rejected by the regex, which silently
+  // turns every assertion below into a test of the non-terminal path instead — two
+  // of these read green that way before this guard existed.
+  const OPEN = 'vte-spawn-0e0e-4a4a.scope';
+  const CLOSED = 'vte-spawn-0d0d-4b4b.scope';
+
+  it('uses fixture names the classifier actually recognises as windows', () => {
+    expect(isTerminalWindowScope(OPEN)).toBe(true);
+    expect(isTerminalWindowScope(CLOSED)).toBe(true);
+  });
+
+  /**
+   * Two windows, identical in shape and both holding an agent process the foreign
+   * signature matches. The ONLY difference is whether their shell is still a child
+   * of the terminal application.
+   */
+  function twoWindows(): CgroupFs {
+    return box({
+      cgroups: {
+        [OURS]: [],
+        [`${TERM}/gnome-terminal-server.service`]: [SERVER],
+        [`${TERM}/vte-spawn-0e0e-4a4a.scope`]: [600, 601],
+        [`${TERM}/vte-spawn-0d0d-4b4b.scope`]: [700, 701],
+      },
+      cmdlines: {
+        // The window shells — a bare `bash`, which the repo signature does NOT match.
+        600: 'bash',
+        700: 'bash',
+        // The agent processes left running inside each window.
+        601: `node ${REPO}/bin/agent`,
+        701: `node ${REPO}/bin/agent`,
+      },
+      ppids: { 600: SERVER, 601: 600, 700: 1, 701: 700 },
+    });
+  }
+
+  const scan = () =>
+    scanProcesses({
+      fs: twoWindows(),
+      foreignSignature: defaultForeignSignature(REPO),
+      selfPid: 999,
+    });
+
+  it('keeps an OPEN window exempt even though its shell is invisible to the signature', () => {
+    // THE REGRESSION GUARD. The cheap-looking implementation — reuse the ppids the
+    // scan already collected — cannot see pid 600 at all, because a bare `bash` does
+    // not match the repo signature and so is never scanned. It would conclude the
+    // window has no application child and downgrade every live window on the box.
+    // Measured: 82 of 86 real window shells are exactly this bare `bash`.
+    const p = scan().processes.find((x) => x.pid === 601)!;
+    expect(p.scope).toBe('exempt');
+    expect(p.exemptReason).toBe('human-terminal');
+  });
+
+  it('reports what a CLOSED window is still holding', () => {
+    const p = scan().processes.find((x) => x.pid === 701)!;
+    expect(p.scope).toBe('unaccounted');
+    expect(p.exemptReason).toBeNull();
+  });
+
+  it('leaves the terminal application’s own unit alone', () => {
+    // It is not a window, so it is never probed and never downgraded.
+    const r = scanProcesses({ fs: twoWindows(), foreignSignature: /.*/, selfPid: 999 });
+    const server = r.processes.find((x) => x.pid === SERVER)!;
+    expect(server.scope).toBe('exempt');
+    expect(server.exemptReason).toBe('human-terminal');
+  });
+
+  it('cannot tell, so stays exempt, when the application unit is unreadable', () => {
+    // No identifiable application => UNKNOWN => the exemption survives. A probe
+    // failure must never present the owner's live terminal as residue.
+    const fs = box({
+      cgroups: {
+        [OURS]: [],
+        [`${TERM}/vte-spawn-0d0d-4b4b.scope`]: [700, 701],
+      },
+      cmdlines: { 700: 'bash', 701: `node ${REPO}/bin/agent` },
+      ppids: { 700: 1, 701: 700 },
+    });
+    const p = scanProcesses({
+      fs,
+      foreignSignature: defaultForeignSignature(REPO),
+      selfPid: 999,
+    }).processes.find((x) => x.pid === 701)!;
+    expect(p.scope).toBe('exempt');
   });
 });

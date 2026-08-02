@@ -1093,7 +1093,22 @@ export type CheckpointDisplacementInfo = Pick<
 export function recordCheckpointDisplacement(
   logPath: string,
   info: CheckpointDisplacementInfo,
-  appendFn: (path: string, data: string) => void = (p, d) => appendFileSync(p, d, 'utf8'),
+  // EI-19326961954611487: an un-injected caller under test previously fell through to a REAL
+  // appendFileSync against the shared /tmp/papercup-green-checkpoint-manual-* namespace — the
+  // exact glob CLAUDE.md tells agents to trust as gate ground truth — and wrote synthetic
+  // "[displaced ...] STOPPED via replaceStale" lines with placeholder shas into it, which read
+  // as a real gate event to whoever debugged a red gate next. Refuse the real write under test
+  // (VITEST/NODE_ENV=test) instead of silently leaking to disk; the surrounding try/catch below
+  // already treats this as a fail-soft, logged-and-swallowed write failure, so an un-injected
+  // test call site now gets a loud console.error instead of a silent production-path leak.
+  appendFn: (path: string, data: string) => void = (p, d) => {
+    if (process.env.VITEST || process.env.NODE_ENV === 'test') {
+      throw new Error(
+        `[recordCheckpointDisplacement] refusing a real fs write to ${p} under test — inject an appendFn param instead of relying on the real default`,
+      );
+    }
+    appendFileSync(p, d, 'utf8');
+  },
 ): void {
   try {
     const line =

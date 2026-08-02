@@ -7,7 +7,7 @@
 # and port-raced sibling spawners (EADDRINUSE → adopt → stall → in-process
 # failover flap = the 2026-07-11 "mem0 down" incident).
 #
-# TREE: STAGING (/home/marsh-office/papercupai-workspace/papercusp) — the
+# TREE: STAGING (%h/papercupai-workspace/papercusp) — the
 # papercup-bg-host precedent (WI-3336); embedding vectors are tree-independent
 # (D-002: same model, same prompts, same runtime). The entry is esbuild-bundled
 # on EVERY start (no tsx loader) into dist-sidecar/ — its OWN outdir, because
@@ -51,10 +51,10 @@ Description=Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank)
 
 [Service]
 Type=simple
-WorkingDirectory=/home/marsh-office/papercupai-workspace/papercusp/apps/operator
+WorkingDirectory=%h/papercupai-workspace/papercusp/apps/operator
 # node + npx (for ExecStartPre's esbuild) — systemd user PATH lacks linuxbrew
 # (same fix as bg-host's 50-spawn-node-path.conf).
-Environment=PATH=/home/marsh-office/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PAPERCUSP_EMBED_SIDECAR_PORT=3384
 Environment=PAPERCUSP_EMBED_SIDECAR_WARM=gemma,harrier,rerank
 # Anti-recursion belt: a sidecar process must never spawn sidecars.

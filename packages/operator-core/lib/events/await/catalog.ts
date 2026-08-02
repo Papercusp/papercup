@@ -128,7 +128,14 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     describe: 'The green-checkpoint run ended with NO verdict (payload.reason names why, e.g. migrations-pending/skipped-locked) — not green, not red; just try again once the cause clears.',
     emitter: 'green-checkpoint (apps/operator/lib/release/green-checkpoint.ts)',
     exists: true,
-    sugar: 'checkpoint:await',
+    // Deliberately NO sugar. This entry carried `sugar: 'checkpoint:await'`, which the
+    // `checkpoint` (green) family already owns — a sugar verb maps to exactly ONE family,
+    // so the duplicate red-pinned the gate on catalog.test.ts's "every sugar-bearing
+    // family names a distinct verb" (8 families, 7 distinct verbs). Its sibling
+    // `checkpoint-red` has no sugar either: the convention is that the green family owns
+    // the verb and the other terminal outcomes are awaited by key. If this outcome should
+    // be sugar-awaitable, it needs its OWN verb (e.g. 'checkpoint:await-inconclusive'),
+    // not a second claim on this one.
     payloadFiltered: true,
   },
   // ── Locks / plan runs ─────────────────────────────────────────────────────
