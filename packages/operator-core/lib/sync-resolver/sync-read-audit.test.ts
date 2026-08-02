@@ -88,10 +88,14 @@ describe('sync-read audit — budget evaluation', () => {
   });
 
   it('an allowlisted query is judged against its RAISED ceiling', () => {
-    // agentRunsConsolidated.bySlug is allowlisted to 1.1MB — 1.0MB is fine, 1.2MB is over.
-    expect(evaluateBudget('agentRunsConsolidated.bySlug', 1_000_000, 10).overBudget).toBe(false);
-    expect(evaluateBudget('agentRunsConsolidated.bySlug', 1_200_000, 10).overBudget).toBe(true);
-    expect(evaluateBudget('agentRunsConsolidated.bySlug', 1_000_000, 10).allowlisted).toBe(true);
+    // Derived from the registry, NOT hard-coded: these budgets are deliberately
+    // RATCHETED DOWN as each query is slimmed (P-028 took this one 1.1MB → 600KB),
+    // and a literal here turns every ratchet into an unrelated red.
+    const ceiling = SYNC_READ_ALLOWLIST['agentRunsConsolidated.bySlug'].maxBytes!;
+    expect(ceiling).toBeGreaterThan(PAYLOAD_BUDGET_BYTES); // it IS a raised ceiling
+    expect(evaluateBudget('agentRunsConsolidated.bySlug', ceiling - 1, 10).overBudget).toBe(false);
+    expect(evaluateBudget('agentRunsConsolidated.bySlug', ceiling + 1, 10).overBudget).toBe(true);
+    expect(evaluateBudget('agentRunsConsolidated.bySlug', ceiling - 1, 10).allowlisted).toBe(true);
   });
 });
 
@@ -101,7 +105,13 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
     // over budget (violation), agentRunsConsolidated.bySlug fat-but-allowlisted.
     const bodies: Record<string, string> = {
       'featuresConsolidated.bySlug': JSON.stringify({ rows: [{ a: 1 }, { a: 2 }] }),
-      'agentRunsConsolidated.bySlug': JSON.stringify({ rows: Array.from({ length: 10 }, () => ({ x: 'y'.repeat(60_000) })) }), // ~600KB, allowlisted <1.1MB
+      // Fat enough to clear the DEFAULT budget but under this query's raised
+      // ceiling — sized from the registry so a budget ratchet doesn't red this.
+      'agentRunsConsolidated.bySlug': JSON.stringify({
+        rows: Array.from({ length: 10 }, () => ({
+          x: 'y'.repeat(Math.floor((PAYLOAD_BUDGET_BYTES + SYNC_READ_ALLOWLIST['agentRunsConsolidated.bySlug'].maxBytes!) / 2 / 10)),
+        })),
+      }),
       'workItems.stats': 'X'.repeat(PAYLOAD_BUDGET_BYTES + 5000), // over budget, NOT allowlisted → violation
     };
     const fakeFetch = (async (url: string) => {

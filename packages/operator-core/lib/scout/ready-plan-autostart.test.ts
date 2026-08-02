@@ -73,7 +73,18 @@ describe('startReadyScoutPlan', () => {
     return { sql: fn as unknown as Sql, values: () => captured };
   }
 
-  const args = { workspaceId: 'papercusp-workspace', installSlug: 'papercusp', planSlug: 'scout-x-2026-07-02' };
+  // WI-6978: the field is `planStorageSlug`, NOT `installSlug`. harness_plans is
+  // Hive-scoped — the write path collapses a member harness to its Hive home — so this
+  // function is handed the slug plans are STORED under, resolved once by the sweep via
+  // routineStorageSlug. The rename is deliberate: it is what makes a raw installSlug
+  // arriving here a compile error rather than a silent zero-row read.
+  // (Here they coincide: 'papercusp' IS the platform Pot home, which is exactly why
+  // the bug was invisible in this workspace.)
+  const args = {
+    workspaceId: 'papercusp-workspace',
+    planStorageSlug: 'papercusp',
+    planSlug: 'scout-x-2026-07-02',
+  };
 
   it('starts a never-started plan in the HIVE-OWN workspace and promotes its items there', async () => {
     const { sql, values } = fakeSql([{ prev_op_status: null }]);

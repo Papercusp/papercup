@@ -849,7 +849,15 @@ export async function trackGateStall(
         await notifyAttention({
           kind: 'intervention',
           title: 'Release pipeline STALLED — main frozen',
-          body: `green-checkpoint has held \`main\` for ${consecutiveReds} consecutive checkpoint(s)${heldHrs != null ? ` (~${heldHrs}h since the last green)` : ''}. Staging changes are NOT reaching the release. ${ownership.label}`,
+          // EI-19329732364513693: name the candidate's distance behind tip IN the alert. This is
+          // the surface a human actually reads, and a red whose candidate is far behind staging
+          // is very often already fixed — saying so here is what stops the chase, rather than
+          // leaving each reader to re-derive it (which, overwhelmingly, they do not).
+          body: `green-checkpoint has held \`main\` for ${consecutiveReds} consecutive checkpoint(s)${heldHrs != null ? ` (~${heldHrs}h since the last green)` : ''}. Staging changes are NOT reaching the release. ${ownership.label}${
+            staleness.commitsBehindTip != null && staleness.commitsBehindTip > 0
+              ? ` NOTE: the judged candidate is ${staleness.commitsBehindTip} commit(s) behind staging${staleness.candidateCommittedAt ? `, committed ${staleness.candidateCommittedAt}` : ''} — confirm a named failure still reproduces AT TIP before chasing it.`
+              : ''
+          }`,
           importance: 'urgent',
           workspaceId: ctx.workspaceId,
           data: {
@@ -857,6 +865,8 @@ export async function trackGateStall(
             candidate: candidate?.slice(0, 12) ?? null,
             ownership: ownership.state,
             ownerSpawnId: ownership.spawnId,
+            candidateCommittedAt: staleness.candidateCommittedAt,
+            commitsBehindTip: staleness.commitsBehindTip,
           },
         });
       } catch (e) {

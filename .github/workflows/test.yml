@@ -121,7 +121,15 @@ jobs:
       - name: Run affected unit + integration suites
         if: ${{ !cancelled() }}
         env:
-          AFFECTED_BASE: origin/${{ github.base_ref || 'main' }}
+          # WI-7013: on a pull_request run, github.event.inputs.base is unset (that
+          # event carries no `inputs`), so this falls through to the unchanged
+          # origin/${{ github.base_ref }} diff. On a workflow_dispatch run — the ONLY
+          # way this workflow ever actually fires on `main`, see the trigger comment
+          # above — github.event.inputs.base carries the pre-FF main sha
+          # green-checkpoint passed, so the diff is against what this promotion
+          # actually changed instead of origin/main == HEAD (an always-empty diff
+          # that reported `tasks=0 status=passed` having verified nothing).
+          AFFECTED_BASE: ${{ github.event.inputs.base || format('origin/{0}', github.base_ref || 'main') }}
           CI: 'true'
         run: node scripts/affected-tests.mjs --integration
 
@@ -290,6 +298,19 @@ jobs:
       - name: Lint no raw setInterval
         if: ${{ !cancelled() }}
         run: npm run lint:no-raw-setinterval
+
+      # no-raw-blocks-edge guard (work-item-dependency-edges-2026-08-02 P-007 / D-013):
+      # the DEPENDENCY-GRAPH analogue of the guard above. A feature→feature `blocks`
+      # CYCLE permanently deadlocks the dispatch frontier — every feature in the cycle
+      # is forever non-ready, because its blocker never terminates. The acyclicity
+      # policy lives in ONE module (dbos/feature-blockers-edges.ts): syncFeatureBlockEdges
+      # (the authoritative replace-semantics writer, which enforces it) or, for the link
+      # tools' single raw edge, guardFeatureBlockEdgeAcyclic. The existing acyclicity
+      # tests cover those functions' BEHAVIOUR but cannot observe a NEW call site that
+      # never calls them — this closes that gap. BASELINE is EMPTY and must stay empty.
+      - name: Lint no raw blocks edge
+        if: ${{ !cancelled() }}
+        run: npm run lint:no-raw-block-edge
 
       # no-unenrolled-detached-spawn guard (task-manager-no-escape-2026-07-27 P-016):
       # the PROCESS analogue of the setInterval guard above. A `detached: true` spawn

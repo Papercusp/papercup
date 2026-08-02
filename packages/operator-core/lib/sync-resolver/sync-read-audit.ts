@@ -141,9 +141,9 @@ export interface SyncReadAllowlistEntry {
 
 export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
   'agentRunsConsolidated.bySlug': {
-    maxBytes: 1_100_000,
+    maxBytes: 600_000,
     reason:
-      'Bounded run-history list (RUNS_LIST_CAP=2000). P-007 already dropped the 10 never-rendered fields; the residual ~1.01MB is 2000 rows × the minimal rendered set (+ errorMessage, rendered as the outcome-chip tooltip). Further cut needs a per-feature on-demand run split.',
+      'Bounded run-history list (RUNS_LIST_CAP=2000). P-007 dropped the 10 never-rendered fields; P-028/D-022 then found errorMessage was still 51% of the ~1041KB payload and that 464,840 B of it rode on the 1,874 rows whose featureId is NULL — provably unreachable, since it renders only inside DetailPanel featureRuns (filtered by featureId). Now nulled on those rows (rows that CAN render keep the full 1000-char cap), and harnessSlug dropped as redundant with the query arg. Budget ratcheted 1,100,000 -> 600,000. Any further cut needs a per-feature on-demand run split.',
     reviewBy: '2026-09-01',
   },
   'featuresConsolidated.bySlug': {

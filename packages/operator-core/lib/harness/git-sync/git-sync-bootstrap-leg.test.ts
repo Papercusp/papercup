@@ -193,7 +193,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 });
 
 // Import AFTER the mocks so the module resolves the mocked deps.
-import { __resetBootstrapDialBackoffForTest, runBootstrapLeg } from './git-sync-action';
+import { runBootstrapLeg } from './git-sync-action';
+import { __resetNoSuchRepoBackoffForTest } from './no-such-repo-backoff';
 
 const SLUG = 'shop-hive';
 const WS = 'ws-1';
@@ -263,7 +264,7 @@ beforeEach(() => {
   // EI-15333: the backoff map is module-scope state shared across every test
   // in this file — clear it each test or an earlier no-such-repo test would
   // silently starve a later test's dial of the same (slug, peer) pair.
-  __resetBootstrapDialBackoffForTest();
+  __resetNoSuchRepoBackoffForTest();
 });
 
 describe('runBootstrapLeg', () => {

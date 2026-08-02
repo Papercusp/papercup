@@ -82,6 +82,13 @@ import {
 } from '../../sync/pot-git/storage';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
 import { adoptRefusedRepoKey } from '../../sync/pot-git/adopt-refused-repo-key';
+import {
+  armNoSuchRepoBackoff,
+  devicesToArmForNoSuchRepo,
+  isNoSuchRepoBackoffActive,
+  noSuchRepoBackoffKey,
+  noSuchRepoBackoffSecondsLeft,
+} from './no-such-repo-backoff';
 import { runOwnHeadPublishTick } from '../../sync/pot-git/own-head-publish';
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer, hasPendingQuarantine } from '../../sync/pot-git/bootstrap';
@@ -1697,43 +1704,6 @@ async function resolveHiveGitTopicHex(
 }
 
 /**
- * EI-15333: a peer that refuses a bootstrap dial with a definitive
- * `no-such-repo` (serve-wiring.ts's `pathExists(join(repoPath, 'HEAD'))`
- * check — the peer genuinely does not have this repo's store on disk, not a
- * transient dial/connectivity failure) will keep refusing every future tick
- * until something about ITS store changes — which does not happen on a
- * ~5-minute cadence. Without this, `runBootstrapLeg` re-dials that exact
- * (repoKey, peer) pair every single tick forever: a wasted live-handshake
- * plus an identical permanent error line every ~5 min (live-caught: tower
- * bg-host dialing a mac joiner that only replicates a member repo, never
- * the pot-home store). Back off that specific pair for a bounded window
- * instead — long enough to stop the spam/waste, short enough to notice if
- * the peer's store later comes into existence (e.g. it runs its own
- * bootstrap and gains the repo). In-memory, per-process: resets harmlessly
- * on restart (one extra dial next tick costs nothing), keyed by
- * `${repoKey}:${peerDevicePubkeyBase64}` where `repoKey` is the FEDERATED
- * cross-device repo identity (WI-5168, repo-identity.ts's `canonicalRepoKey`
- * — NOT the local install slug, which can differ per device for the same
- * repo; see the openHiveGitDuplexToDevice call below).
- *
- * SHARED BY BOTH DIALING LEGS. `runRefAnnounceLeg` consults and arms the same
- * map (see its `openStream`): it is the same store on the same peer, so a
- * refusal learned on either leg is evidence for both — and the ref-announce leg
- * is the one that actually storms, because it re-drives every held announcement
- * on every tick rather than returning early on a seeded store. Wiring it here
- * only was itself the bug for ~5.9 days on the live tower (2026-08-02).
- */
-const NO_SUCH_REPO_BACKOFF_MS = 30 * 60 * 1000; // 30 min ≈ 6 ticks at the ~5-min cadence
-const noSuchRepoBackoffUntil = new Map<string, number>();
-const noSuchRepoBackoffKey = (slug: string, peerDevicePubkeyBase64: string): string =>
-  `${slug}:${peerDevicePubkeyBase64}`;
-/** Test-only: clear all backoff state so tests don't leak it across cases.
- *  Covers BOTH legs (the map is shared) despite the historical name. */
-export function __resetBootstrapDialBackoffForTest(): void {
-  noSuchRepoBackoffUntil.clear();
-}
-
-/**
  * WI-6372 (fix D) — is our mirror actually LEVEL WITH THE POT, or merely the
  * result of a fetch that completed?
  *
@@ -2126,8 +2096,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // definitively refuses this exact repo — never counts as a live
       // attempt (nothing was dialed), same as a registry no-path miss.
       const backoffKey = noSuchRepoBackoffKey(repoKey, peerDevicePubkeyBase64);
-      const backoffUntil = noSuchRepoBackoffUntil.get(backoffKey);
-      if (backoffUntil !== undefined && backoffUntil > Date.now()) {
+      if (isNoSuchRepoBackoffActive(backoffKey)) {
         dialLog.push(`${peerDevicePubkeyBase64.slice(0, 8)}:backoff(no-such-repo)`);
         continue;
       }
@@ -2185,7 +2154,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // dial failure) arms the backoff so this exact pair stops being
       // re-dialed every tick.
       if (!outcome.ok && dialErr?.message?.includes('no-such-repo')) {
-        noSuchRepoBackoffUntil.set(backoffKey, Date.now() + NO_SUCH_REPO_BACKOFF_MS);
+        armNoSuchRepoBackoff(backoffKey);
       }
       // WI-6364 (fix C, joiner half): the peer refused because the key we asked
       // for names a store IT ABANDONED, and told us what its store is really
@@ -2519,41 +2488,21 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       budgetStates: priorBudgetStates,
       openStream: async (device) => {
         // EI-15333 — THE SAME REPAIR, ON THE LEG THAT ACTUALLY KEEPS DIALING.
-        //
-        // `no-such-repo` is serve-wiring's `pathExists(join(repoPath,'HEAD'))`
-        // verdict: the peer does not have this store on disk. That is not a
-        // transient dial failure, so re-dialing on the tick cadence cannot
-        // change it — which is exactly why EI-15333 armed a bounded backoff on
-        // the BOOTSTRAP leg. It was never wired here, and this is the leg that
-        // hurts: the bootstrap leg returns early on an already-seeded store,
-        // while this one re-drives EVERY pending announcement EVERY tick and so
-        // re-dials the impossible pair forever. Structurally identical to the
-        // WI-6364 (fix C) miss below — a repair the stuck machine cannot reach
-        // is not a repair.
-        //
-        // Live-caught 2026-08-02 on the tower: `hello-world-3-pot` held its
-        // fed-event cursor at 7431042 and re-dialed NINE announcements from
-        // Lm1ABoMRKVoo on every tick, each refused `no-such-repo`, for 8470
-        // minutes (~5.9 days) without local progress — the re-dial storm behind
-        // WI-6189's superseded/aborted serves. The pending set grows without
-        // bound while the cursor is pinned, so the per-tick cost grows with the
-        // age of the stall.
-        //
-        // Backoff rather than cursor-advance is deliberate: advancing past the
-        // announcement would silently drop a namespace that was never mirrored,
-        // which is precisely what EI-15335's cursor hold exists to prevent. The
-        // hold is correct; re-dialing INSIDE the hold is what was wrong. One
-        // dial per 30 min still self-heals the moment the peer gains the store.
-        //
-        // Shares the bootstrap leg's `(repoKey, device)` key space on purpose: it
-        // is the same store on the same peer, so a refusal learned on either leg
-        // is evidence for both.
+        // The backoff was wired into `runBootstrapLeg` only, and this is the leg
+        // that storms: that one returns early on a seeded store, while this one
+        // re-drives EVERY pending announcement EVERY tick against a fed-event
+        // cursor that a permanent refusal PINS (EI-15335 holds it below the
+        // oldest failed row), so the held backlog is re-dialed forever and grows
+        // as new announcements pile up behind it. Structurally identical to the
+        // WI-6364 (fix C) miss below — a repair the stuck machine cannot reach is
+        // not a repair. Rationale, the live 5.9-day stall it was caught on, and
+        // why this is a backoff rather than a cursor-advance: see
+        // `no-such-repo-backoff.ts`.
         const backoffKey = noSuchRepoBackoffKey(repoKey, device);
-        const backoffUntil = noSuchRepoBackoffUntil.get(backoffKey);
-        if (backoffUntil !== undefined && backoffUntil > Date.now()) {
+        if (isNoSuchRepoBackoffActive(backoffKey)) {
           return destroyedStub(
             `no-such-repo backoff: ${device.slice(0, 8)} definitively refused ${repoKey}; ` +
-              `next dial in ${Math.ceil((backoffUntil - Date.now()) / 1000)}s`,
+              `next dial in ${noSuchRepoBackoffSecondsLeft(backoffKey)}s`,
           );
         }
         // DIAL-REGISTRY (WI-3583) — see module doc above. Real per-device
@@ -2601,20 +2550,10 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
     });
 
     // EI-15333 (second leg): arm the backoff for a pair that was ACTUALLY
-    // DIALED this tick and came back with a definitive `no-such-repo`.
-    //
-    // Gating on `dialedThisTick` is load-bearing, not defensive. A backoff SKIP
-    // also lands in `fetchFailed`, and its stderr NAMES `no-such-repo` (it has
-    // to — that is the diagnosis the operator needs). So arming off the stderr
-    // alone would push the deadline `NOW + 30min` forward on every single tick
-    // and the window would never expire: a bounded backoff silently becomes
-    // permanent suppression, and the pair would never be retried even once the
-    // peer gains the store. The dial set is the only evidence that separates
-    // "the peer just told us" from "we are quoting ourselves".
-    for (const f of cursorDecision.fetchFailed) {
-      if (!dialedThisTick.has(f.device)) continue;
-      if (!f.stderr.includes('no-such-repo')) continue;
-      noSuchRepoBackoffUntil.set(noSuchRepoBackoffKey(repoKey, f.device), Date.now() + NO_SUCH_REPO_BACKOFF_MS);
+    // DIALED this tick and came back with a definitive `no-such-repo`. The
+    // `dialedThisTick` gate is load-bearing — see `devicesToArmForNoSuchRepo`.
+    for (const device of devicesToArmForNoSuchRepo(cursorDecision.fetchFailed, dialedThisTick)) {
+      armNoSuchRepoBackoff(noSuchRepoBackoffKey(repoKey, device));
     }
     // Log fetch failures LOUDLY (the bootstrap leg already does) — otherwise a
     // missed receive is invisible: no operator signal distinguishes "nothing

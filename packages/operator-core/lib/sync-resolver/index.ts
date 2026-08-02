@@ -360,12 +360,18 @@ async function resolveRunsWithOutcome(harnessSlug: string, workspaceId?: string,
   // ~1.44MB by removing ~10 fields × 2000 rows of mostly-null keys. errorMessage
   // (the one genuinely heavy field, capped 1000 by P-004) is RENDERED for the
   // selected feature's runs so it stays.
+  // The coalesced feature id — projected below AND used as the gate on the
+  // detail-only `errorMessage` (see its comment).
+  const featureIdExpr = sql<string | null>`coalesce(${t.featureId}, ${spawn.featureId})`;
   const q = db
     .select({
-      harnessSlug: sql<string>`coalesce(${t.harnessSlug}, ${spawn.harnessSlug})`.as('harnessSlug'),
+      // NOTE: `harnessSlug` is deliberately NOT projected (P-028/D-022) — it is
+      // redundant with the query's own `harnessSlug` argument and is declared by
+      // NEITHER consumer type (useHarnessData's `SyncAgentRow`, DetailPanel's
+      // `RunRow`). ~52KB of the papercusp window at the 2000-row cap.
       runId: sql<string>`coalesce(${t.runId}, ${spawn.runId})`.as('runId'),
       role: sql<string>`coalesce(${t.role}, ${spawn.childRole})`.as('role'),
-      featureId: sql<string | null>`coalesce(${t.featureId}, ${spawn.featureId})`.as('featureId'),
+      featureId: featureIdExpr.as('featureId'),
       ts: tsExpr.as('ts'),
       sizeBytes: sql<number>`(coalesce(${t.sizeBytes}, 0))::float8`.as('sizeBytes'),
       costUsd: t.costUsd,
@@ -383,7 +389,22 @@ async function resolveRunsWithOutcome(harnessSlug: string, workspaceId?: string,
       // tooltip (run-outcome.ts) — a tooltip never needs a full message. Cap at 1000
       // chars: the max observed was 2431, so this clips only the long tail while the
       // chip + exit code stay fully intact.
-      errorMessage: sql<string | null>`left(${spawn.errorMessage}, 1000)`.as('errorMessage'),
+      //
+      // P-028/D-022 — and that cap almost never bit: measured over the real 2000-row
+      // papercusp window, errorMessage was 530,216 B = 51% of the ~1041KB payload, on
+      // 776 rows with a p50 length of 991. The decisive fact is WHERE it can render:
+      // the ONLY render path is run-outcome's `detail` → DetailPanel's
+      // `title={outcome.detail}`, inside `featureRuns` =
+      // `runs.filter(r => r.featureId === feature.id).slice(0, 3)`. `feature.id` is
+      // always a non-null string, so a row with a NULL featureId can never match and
+      // its errorMessage is unreachable — 464,840 B of the 530,216 rode on exactly
+      // those 1,874 rows. Gate on featureId instead of truncating harder: rows that
+      // CAN render keep the full 1000 chars (no rendered byte is lost), and the ~94%
+      // that cannot send `null`. ~457KB, ~43% of the query.
+      errorMessage: sql<string | null>`case
+        when ${featureIdExpr} is null then null
+        else left(${spawn.errorMessage}, 1000)
+      end`.as('errorMessage'),
       sessionId: spawn.sessionId,
     })
     .from(t)

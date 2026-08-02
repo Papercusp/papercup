@@ -842,6 +842,37 @@ describe('realCheckpointDeps.setupTree / push — real-path wiring (gap #10)', (
     await realCheckpointDeps(cfg, exec).push('ready');
     expect(mockCreateWorkflowDispatch).not.toHaveBeenCalled();
   });
+
+  // WI-7013: the dispatched workflow_dispatch run must carry the pre-FF sha as its
+  // `base` input, or test.yml's AFFECTED_BASE falls back to origin/main — which on a
+  // workflow_dispatch run checked out AT main IS HEAD, an always-empty diff that
+  // reports `tasks=0 status=passed` having verified nothing.
+  it('push threads a given baseSha through to the workflow_dispatch inputs.base', async () => {
+    mockCreateWorkflowDispatch.mockClear();
+    const { exec } = makeExec([{ code: 0 }]);
+    await realCheckpointDeps(cfg, exec).push('ready', 'deadbeef00112233');
+    expect(mockCreateWorkflowDispatch).toHaveBeenCalledWith({
+      owner: 'Papercusp',
+      repo: 'papercup',
+      workflow_id: 'test.yml',
+      ref: 'ready',
+      inputs: { base: 'deadbeef00112233' },
+    });
+  });
+
+  // AdvanceResult.from is `null` on a freshly-created ready branch (the first-ever
+  // advance) — the dispatch must degrade to the pre-WI-7013 shape (no `inputs` key
+  // at all) rather than sending a literal "null"/"undefined" base.
+  it('push omits inputs.base entirely when baseSha is null or omitted', async () => {
+    mockCreateWorkflowDispatch.mockClear();
+    const { exec: exec1 } = makeExec([{ code: 0 }]);
+    await realCheckpointDeps(cfg, exec1).push('ready', null);
+    const { exec: exec2 } = makeExec([{ code: 0 }]);
+    await realCheckpointDeps(cfg, exec2).push('ready');
+    for (const call of mockCreateWorkflowDispatch.mock.calls) {
+      expect(call[0]).not.toHaveProperty('inputs');
+    }
+  });
 });
 
 /**

@@ -163,6 +163,16 @@ export interface HygieneSweepResult {
   dupClosed: number;
   agedOut: number;
   dryRun: boolean;
+  /**
+   * Actions whose underlying write silently no-op'd (EI-19340598344414318): either
+   * `mergeIssuePayload` or `setIssueState` returned null — most commonly a
+   * remote-origin row (EI-7833/migration 521's INSTEAD OF trigger skip-guard on the
+   * `engineer_issues` compat view refuses a local UPDATE) or the row vanished mid-sweep.
+   * These are NOT counted in `dupClosed`/`agedOut` and get NO "duplicate of …" /
+   * "aged out …" comment — see the block comment above `runHygieneSweep` for why a
+   * comment must never be posted for a write that didn't actually take.
+   */
+  failed: { id: string; reason: string }[];
 }
 
 /** Injectable dependency seam (unit tests run without PG). */
@@ -202,6 +212,7 @@ export async function runHygieneSweep(
     dupClosed: 0,
     agedOut: 0,
     dryRun: opts.dryRun === true,
+    failed: [],
   };
   if (opts.dryRun) return result;
 
@@ -213,12 +224,32 @@ export async function runHygieneSweep(
       current.state === 'open' || current.state === 'recurred' || current.state === 'triaged'
         ? updateIdeaLifecycle(current, 'triaged', { triageDecision: 'reject', triageReason: a.reason })
         : current;
-    await deps.mergeIssuePayload(a.id, { ideaLifecycle: lifecycle, decidedReason: a.reason });
-    await deps.commentIssue(a.id, `🧹 ${a.reason}`, 'improvement-hygiene');
+    const merged = await deps.mergeIssuePayload(a.id, { ideaLifecycle: lifecycle, decidedReason: a.reason });
     // skipCompletionGate (WI-1403/WI-1404, contract C-1): an automated hygiene sweep
     // closing a duplicate/aged-out idea is a housekeeping dedup, not a genuine
     // completion — no principal did the work, so it must not satisfy C-1.
-    await deps.setIssueState(a.id, 'closed', 'improvement-hygiene', undefined, { skipCompletionGate: true });
+    const closedIssue = await deps.setIssueState(a.id, 'closed', 'improvement-hygiene', undefined, {
+      skipCompletionGate: true,
+    });
+    // EI-19340598344414318: both writes go through the `engineer_issues` compat view,
+    // whose INSTEAD OF trigger silently no-ops (returns null) an UPDATE against a
+    // remote-origin row (EI-7833/migration 521) or a row that vanished mid-sweep.
+    // `commentIssue` writes a DIFFERENT table (coord_thread_posts) unguarded by that
+    // trigger, so posting it unconditionally — as this loop used to — left a
+    // "duplicate of X (hygiene sweep)" comment on an item that was in fact NEVER
+    // closed: state stayed 'open', decidedReason/ideaLifecycle never updated, and it
+    // kept re-dispatching + getting re-claimed by agents for days (34-item chain,
+    // observed live 2026-08-02, EI-18290228499378268 and 3 siblings stuck 11+ days).
+    // Only report success — and only post the comment — when the row was actually
+    // mutated locally.
+    if (!merged || !closedIssue) {
+      result.failed.push({
+        id: a.id,
+        reason: !merged && !closedIssue ? 'no-op-write' : !merged ? 'merge-no-op' : 'set-state-no-op',
+      });
+      continue;
+    }
+    await deps.commentIssue(a.id, `🧹 ${a.reason}`, 'improvement-hygiene');
     if (a.kind === 'dup-close') result.dupClosed += 1;
     else result.agedOut += 1;
   }
