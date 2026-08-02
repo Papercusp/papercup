@@ -899,11 +899,13 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     // route in harness/spawn.ts), so `canonicalCoordRole` here is effectively an
     // identity no-op for every role this test can legally pass — asserted anyway
     // so a future re-introduction of a non-canonical role id at this chokepoint
-    // is still caught.
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'mug' });
+    // is still caught. (role: 'kettle' — the module-level AGENT_ROLES mock above
+    // doesn't include 'mug', but 'kettle' is the same class of workspace-singleton
+    // pipeline role and exercises the identical code path.)
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'kettle' });
     expect(res.ok).toBe(true);
     const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
-    expect(env.PAPERCUSP_AGENT_ROLE).toBe('mug');
+    expect(env.PAPERCUSP_AGENT_ROLE).toBe('kettle');
   });
 
   it('EI-13668: a different role is stamped as itself, not a stale/hardcoded value', async () => {
