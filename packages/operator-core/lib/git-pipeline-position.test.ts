@@ -2031,7 +2031,13 @@ describe('changeInCandidate (P-004)', () => {
       expect(r.detail).toMatch(/do not re-fire/i);
       // the false exoneration must be gone
       expect(r.detail).not.toMatch(/NOT evidence your change failed/);
-      // and it must not prescribe the re-fire that cost the outage two suite cycles
+      // and it must not prescribe the re-fire that cost the outage two suite cycles.
+      // vacuous-negative-ok: EI-18797292094433710 removed this exact phrasing on purpose
+      // (the current `newer-commit` lever text is the wholly-different "SETTLE IT IN ONE
+      // CALL..." wording asserted above) — the only other occurrence anywhere in the tree
+      // is a code COMMENT quoting the old wording for context (git-pipeline-position.ts,
+      // same EI), which can never be emitted at runtime. This assertion is a deliberate,
+      // stable ratchet against ever reintroducing that specific old bad advice.
       expect(r.detail).not.toMatch(/Re-fire once the commit ages/);
     });
 

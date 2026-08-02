@@ -152,10 +152,18 @@ describe('queryPresenceRows / queryPresenceRowsForHive — LOOSE last_seen_at pr
     expect(calls[0].values).toEqual(['h', 180]);
     expect(calls[0].text).not.toMatch(/workspace_id/);
     // BIGINT→string columns are still coerced to numbers. `runs_routines`
-    // (EI-18761517980514694, mig 682) is selected on the same read and normalised to
-    // null when the row predates the column — absent ⇒ not a runner candidate.
+    // (EI-18761517980514694, mig 682) and `active_routines` (EI-19330771435294981,
+    // mig 724) are selected on the same read and normalised to null when the row
+    // predates either column — absent ⇒ not a runner/routine candidate.
     expect(out).toEqual([
-      { device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm1', last_seen_ms: 123, runs_routines: null },
+      {
+        device_pubkey: 'aaa',
+        github_user_id: 1,
+        machine_label: 'm1',
+        last_seen_ms: 123,
+        runs_routines: null,
+        active_routines: null,
+      },
     ]);
   });
 
@@ -644,7 +652,12 @@ describe('lockAuthorityForHive — requiresRoutine (EI-19330771435294981)', () =
     runs_routines?: boolean | null;
     active_routines?: readonly string[] | null;
   };
-  const self = { githubUserId: 3, devicePubkey: 'mmm' };
+  // NOT 'mmm' (unlike the routineHostsOnly block above): several tests below
+  // expect a REAL remaining peer ('zzz'/tower) to win argmin once 'aaa' is
+  // excluded, which requires self to sort AFTER 'zzz' lexicographically —
+  // 'mmm' < 'zzz' would make self win those cases instead (as it correctly
+  // does, on purpose, in the routineHostsOnly block's own 'zzz'-only case).
+  const self = { githubUserId: 3, devicePubkey: 'zzzzzz' };
   // The real papercusp shape: no cadence routine anywhere (so runs_routines is null
   // on every row), but both peers DO run git-sync and now publish it.
   const rows: Row[] = [
