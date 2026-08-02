@@ -211,7 +211,8 @@ describe('search:semantic', () => {
     const [, opts] = runHybridSearch.mock.calls[0];
     expect(opts.query).toBe('auth strategy');
     expect(opts.mode).toBe('hybrid');
-    expect(opts.limit).toBe(4);
+    // rerankCandidateCount(4) = max(4, min(4*RERANK_OVERFETCH, RERANK_MAX_CANDIDATES)) = 16.
+    expect(opts.limit).toBe(16);
     expect(opts.workspaceId).toBe('ws_test');
   });
 
