@@ -28,6 +28,7 @@ import {
   formatNewFileGuidance,
   formatStandingRedFooter,
   partitionNewFilesByLiveEdit,
+  partitionBrokenFilesByLiveEdit,
   diagnosticLinesForFiles,
   partitionStandingByCommitRecency,
   formatLandingRaceCaveat,
@@ -469,6 +470,34 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
       changedFiles: new Set(['b.ts']),
     });
     expect(r.verdict).not.toBe('fail-syntax');
+  });
+
+  // EI-19321397364088260 — the residual gap left after EI-19321179234197157 scoped the exit
+  // code: the report itself still told EVERY unattributed broken file "a peer is likely
+  // mid-edit", even one that was actually committed. Both bug reports asked for the same
+  // committed-vs-uncommitted split `newFiles` already gets via partitionNewFilesByLiveEdit.
+  it('splits unattributed broken files into a peer live edit vs a committed standing red', () => {
+    const { liveEdits, standing } = partitionBrokenFilesByLiveEdit(
+      ['lib/peer-live.ts', 'lib/peer-standing.ts'],
+      new Set(['lib/peer-live.ts']),
+    );
+    expect(liveEdits).toEqual(['lib/peer-live.ts']);
+    expect(standing).toEqual(['lib/peer-standing.ts']);
+  });
+
+  it('with dirtyFiles unavailable (--mine, or an unreadable git state) treats every entry as standing', () => {
+    // Under --mine, changedFiles IS the dirty set, so anything reaching this function (outside
+    // changedFiles) is by construction already committed — and an unreadable git state must
+    // never manufacture an exoneration either. Same rule partitionNewFilesByLiveEdit applies.
+    const { liveEdits, standing } = partitionBrokenFilesByLiveEdit(['lib/peer-broken.ts'], null);
+    expect(liveEdits).toEqual([]);
+    expect(standing).toEqual(['lib/peer-broken.ts']);
+  });
+
+  it('with an empty dirtyFiles set, still treats every entry as standing', () => {
+    const { liveEdits, standing } = partitionBrokenFilesByLiveEdit(['lib/peer-broken.ts'], new Set());
+    expect(liveEdits).toEqual([]);
+    expect(standing).toEqual(['lib/peer-broken.ts']);
   });
 
   it('every file at its baseline is ok', () => {

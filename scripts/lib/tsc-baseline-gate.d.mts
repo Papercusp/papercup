@@ -236,16 +236,22 @@ export function formatNewFileGuidance({ explicit, liveEditCount, standingCount }
 /**
  * The closing lines of the SCOPED (`--files`) new-file report, for the COMMITTED population.
  *
- * WI-7153 — says the finding is ALREADY RECORDED and that tsc-red-sweep decides ownership after
- * `dwellSec`, instead of the old "…need an owner", which read as an instruction to file and
- * contradicted `recordStandingReds()` a few lines later.
+ * WI-7153. This block used to end "…the committed one(s) above need an owner", which reads as an
+ * instruction to FILE a work-item — and directly contradicts `recordStandingReds()`, called a few
+ * lines later on this same population. That mechanism exists precisely BECAUSE filing on first
+ * sight is wrong: these reds are dominated by self-healing (measured 2026-08-02: 4 of 5 gone in
+ * 15min, unaided), so `tsc-red-sweep` deliberately waits DWELL_SEC before judging one ownerless.
  *
- * @param {{ dwellSec?: number }} [opts] - dwell before a red counts as ownerless; defaults to
- *   DWELL_SEC so the printed text cannot drift from the policy it describes.
- * @returns {string[]} console lines, already indented.
+ * With the recording silent and the prose asking for an owner, every reader correctly concluded
+ * "nobody has this, so I should file it". Two agents filed the SAME 9 paths 75 seconds apart on
+ * 2026-08-02 (WI-7149 / WI-7150), at 1.9–7.1 minutes of observed life — 6–24x under the dwell —
+ * which is exactly the backlog-noise outcome the hot-path/sweeper split was designed to avoid.
+ *
+ * The dwell is read from DWELL_SEC rather than written out, so this text cannot drift from the
+ * policy it describes.
  */
-export function formatStandingRedFooter(opts?: {
-    dwellSec?: number;
+export function formatStandingRedFooter({ dwellSec }?: {
+    dwellSec?: number | undefined;
 }): string[];
 /**
  * Split `newFiles` into a peer's LIVE EDITS and STANDING reds — the two populations the
@@ -268,6 +274,33 @@ export function formatStandingRedFooter(opts?: {
 export function partitionNewFilesByLiveEdit(newFiles: PerFileGateEntry[]): {
     liveEdits: PerFileGateEntry[];
     standing: PerFileGateEntry[];
+};
+/**
+ * Split unattributed TS1xxx-broken files (outside the caller's `--mine`/`--files` set — see
+ * `decidePerFile`'s `unattributedBrokenFiles`) into a peer's LIVE EDIT (uncommitted right now)
+ * vs a COMMITTED standing red — the parse-error analog of `partitionNewFilesByLiveEdit` above
+ * (EI-19321397364088260).
+ *
+ * Before this split, every unattributed broken file was reported with one blanket "a peer is
+ * likely mid-edit" line — true for a genuinely dirty file, but false reassurance for a file that
+ * is actually COMMITTED and will red the fleet at the next bare run: a reader could dismiss a
+ * real standing defect as transient noise. Both the bug that added the underlying scoping
+ * (EI-19321179234197157) and the near-duplicate that re-found the gap (EI-19321397364088260)
+ * asked for exactly this split.
+ *
+ * `dirtyFiles === null` covers two cases, and both correctly route every entry to `standing`:
+ * under `--mine`, `changedFiles` IS the dirty set, so anything reaching this function (outside
+ * `changedFiles`) is by construction already committed; an unreadable git state (see
+ * `gitChangedFiles`'s fail-soft) must never manufacture an exoneration either — "unknown is
+ * never an exoneration", the same rule `partitionNewFilesByLiveEdit` applies.
+ *
+ * @param {string[]} unattributedBrokenFiles
+ * @param {Set<string> | null} dirtyFiles
+ * @returns {{liveEdits: string[], standing: string[]}}
+ */
+export function partitionBrokenFilesByLiveEdit(unattributedBrokenFiles: string[], dirtyFiles: Set<string> | null): {
+    liveEdits: string[];
+    standing: string[];
 };
 /**
  * The COMPILER LINES behind a new file's `+N` — the WHAT the count alone withholds (WI-6767).

@@ -28,6 +28,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   reconcileFleetScopeClaims: vi.fn(async () => ({ scope: scopeState.scope, quarantinedIds: scopeState.quarantinedIds })),
   readFleetPauseState: vi.fn(async () => ({ windingDown: scopeState.windingDown, reason: scopeState.pauseReason })),
   diagnoseFleetScopeCooldownMiss: vi.fn(async () => null),
+  diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
   fleetScopedMiss: () => ({ ok: false, error: 'scoped miss', windDown: true }),
 }));
 vi.mock('../../events/await/store', () => ({ cancelClaimableAwaits: vi.fn(async () => 0) }));

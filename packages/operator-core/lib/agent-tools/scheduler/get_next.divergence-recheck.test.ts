@@ -48,6 +48,9 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   readFleetPauseState: vi.fn(async () => ({ paused: false, reason: null })),
   diagnoseFleetScopeCooldownMiss: cooldownMissM,
   diagnoseFleetScopeIssueFloorMiss: issueFloorMissM,
+  // WI-7151: only ever reached when a breakdown reports matchedByFilter===0 — none of this
+  // file's fixtures do (survivors/drained are both 22), so this is a defensive stub only.
+  diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
   fleetScopedMiss: fleetScopedMissM,
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {

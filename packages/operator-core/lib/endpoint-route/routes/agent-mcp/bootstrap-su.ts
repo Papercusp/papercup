@@ -541,7 +541,21 @@ export async function resolveFleet(
   const requested = opts.fleet?.trim();
   if (!name && !requested) return { env: {}, notice: null, fleetSlug: null, fleetRole: null };
   try {
-    const { fleetSlugFromName, createFleetIfAbsent, resolveFleetScheme, getFleetScheme } =
+    // WI-1408 concurrency defect (EI-19320623095101585): this module used to have
+    // TWO separate `await import('../../../agent-fleets-store')` call sites in this
+    // function — this one, and a second at the join branch below for `getFleet`
+    // alone. Per the vitest-4 "mock paradox" (P-007 audit 2026-07-11 / EI-9658):
+    // two same-literal dynamic-import call sites for one module can resolve
+    // one-MOCKED/one-REAL under vi.mock when the co-executing test-file batch is
+    // under heavy contention — so under load, the join branch's OWN import could
+    // silently escape the test's `vi.mock('../../../agent-fleets-store', …)` and
+    // load the REAL store (whose `getFleet` opens a real PG pool), which the
+    // unit-layer's PAPERCUSP_FORBID_REAL_PG rail throws on — landing in the catch
+    // below and returning a false "does not exist" / fleetSlug:null verdict for a
+    // real, existing fleet. Fixed by importing every export this function needs
+    // through this SINGLE call site (one import edge, per the established fix
+    // pattern) so there is no second dynamic-import call site left to race.
+    const { fleetSlugFromName, createFleetIfAbsent, resolveFleetScheme, getFleetScheme, getFleet } =
       await import('../../../agent-fleets-store');
     // The fleet's bound scheme as env the psu launch path reads to recolor the
     // window at startup — so EVERY fleet window (not just capability:terminal)
@@ -586,7 +600,6 @@ export async function resolveFleet(
     // existed (a phantom membership, invisible to fleet:assignments' roster of real
     // agent_fleets rows even though the env var itself was non-null).
     const fleetSlug = requested as string;
-    const { getFleet } = await import('../../../agent-fleets-store');
     const record = await getFleet(workspaceId, fleetSlug);
     if (!record) {
       return {

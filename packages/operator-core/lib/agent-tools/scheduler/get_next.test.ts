@@ -52,6 +52,9 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   // WI-5561: real fn returns null (no issue-floor-breakdown signal) by default — these tests
   // don't exercise the issue-floor-breakdown path, only fleetScopedMiss's existing shapes.
   diagnoseFleetScopeIssueFloorMiss: vi.fn(async () => null),
+  // WI-7151: only ever reached when a breakdown reports matchedByFilter===0 (the issueFloorMiss
+  // mock above always returns null, so this path is unreachable here) — defensive stub only.
+  diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
   fleetScopedMiss: (
     scope: any,
     quarantinedIds: string[],

@@ -289,7 +289,7 @@ defineTool({
     // hard cap at 1875 total) — the detailed WI-5685 race-condition explanation now
     // lives ONLY on the candidateSha arg's own .describe() (still full detail there,
     // uncounted by the prompt-weight budget), not duplicated here.
-    "Sleep until the pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed) and green-checkpoint:red:<pipeline> (held), so you wake either way instead of polling. candidateSha (EI-12457) binds to your exact candidate; omit it to wake on any candidate and lineage-check payload.sha via release:trace — see the candidateSha arg description for the WI-5685 race caveat (a later candidate that still contains your commit will NOT wake a sha-bound await). A candidateSha ALREADY judged before you armed returns already_judged immediately instead of a dead wait. runId (WI-4957) binds to the exact judging run. pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait. Then END YOUR TURN.",
+    "Sleep until the pipeline green-checkpoint resolves — arms awaits on all THREE outcomes: release:green:<pipeline> (passed), green-checkpoint:red:<pipeline> (held), and green-checkpoint:inconclusive:<pipeline> (no verdict, e.g. migrations-pending/skipped-locked; payload.reason says why), so you never sleep through a wedged run. candidateSha (EI-12457) binds to your exact candidate; omit it to wake on any candidate and lineage-check payload.sha via release:trace — see the candidateSha arg description for the WI-5685 race caveat (a later candidate that still contains your commit will NOT wake a sha-bound await). A candidateSha ALREADY judged before you armed returns already_judged immediately instead of a dead wait. runId (WI-4957) binds to the exact judging run. pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait. Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
     when: "You need the gate verdict — green (your change cleared into main) or held/red — before proceeding, instead of re-polling dev:pipeline_position / dev:build_status.",
@@ -367,6 +367,9 @@ defineTool({
     const keys = [
       buildKey("checkpoint", { pipeline }),
       buildKey("checkpoint-red", { pipeline }),
+      // EI-19320479870270699: the third, non-judging outcome — armed alongside the
+      // other two so "await the decision" covers every way the run can end.
+      buildKey("checkpoint-inconclusive", { pipeline }),
     ];
     const note =
       args.note ??
