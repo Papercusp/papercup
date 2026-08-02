@@ -304,6 +304,12 @@ export const INFRA_SIGNAL_SOURCES: readonly string[] = [
   'service-down',
   'fire-circuit-open',
   'migration-drift',
+  // EI-18787755090726525: the live DB carries a migration this process's code tree
+  // doesn't ship yet — the fix is "update/redeploy this process", never an inline code
+  // edit (there is no diff to make; the code that matches the schema already exists,
+  // it just hasn't reached this process). Same class as migration-drift above, opposite
+  // direction.
+  'schema-ahead-of-code',
   // EI-5994: a dead-owner engine loop (loop:arm) parked with no completion signal is an
   // environment/session-liveness fact (the owner's process/wake-channel died), not a
   // product idea a worker can code-fix — misrouting it to ideaType:product/triageDecision:place

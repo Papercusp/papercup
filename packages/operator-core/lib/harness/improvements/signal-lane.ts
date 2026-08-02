@@ -67,6 +67,7 @@ export const DEFECT_SOURCES: readonly string[] = [
   'red-test',
   'smoke-fail',
   'migration-drift',
+  'schema-ahead-of-code',
   'repeated-tool-error',
   'insight-staleness',
   'service-down',
