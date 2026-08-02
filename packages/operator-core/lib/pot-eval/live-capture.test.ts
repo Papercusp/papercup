@@ -10,6 +10,7 @@ import {
   readLiveRunCapture,
   beesBusySamplesFromIntervals,
   behaviorFromSpawnRows,
+  collisionsFromSpawnRows,
   timingsFromSpawnRows,
   makeReplayExtractor,
   type LiveRunCapture,
@@ -155,6 +156,75 @@ describe('behaviorFromSpawnRows (pure)', () => {
     expect(noEkg.beeCacheCreationTokens).toBe(0);
     expect(noEkg.beeInputTokens).toBe(0);
     expect(noEkg.beeWarmInjects).toBe(0);
+  });
+
+  it('REGRESSION GUARD (EI-19323308682358684): collisions must NOT be structurally always-0 — two '
+    + 'bees overlapping on the SAME feature id, with no ekg override, produce a nonzero collision '
+    + 'count. If this ever reverts to 0 the D-003 low-comms discount can never bind again.', () => {
+    const rows = [
+      spawn({ spawnId: 'a', featureId: 'w1', startedAtMs: 0, finishedAtMs: 100 }),
+      spawn({ spawnId: 'b', featureId: 'w1', startedAtMs: 50, finishedAtMs: 150 }), // overlaps a on w1
+      spawn({ spawnId: 'c', featureId: 'w2', startedAtMs: 0, finishedAtMs: 100 }), // no overlap partner
+    ];
+    const b = behaviorFromSpawnRows(rows, { beeCap: 3, completedFeatureIds: new Set(['w1', 'w2']) });
+    expect(b.collisions).toBeGreaterThan(0);
+    expect(b.collisions).toBe(1);
+  });
+
+  it('an explicit ekg.collisions override still wins over the derived spawn-row signal', () => {
+    const rows = [
+      spawn({ spawnId: 'a', featureId: 'w1', startedAtMs: 0, finishedAtMs: 100 }),
+      spawn({ spawnId: 'b', featureId: 'w1', startedAtMs: 50, finishedAtMs: 150 }),
+    ];
+    const b = behaviorFromSpawnRows(rows, { beeCap: 2, completedFeatureIds: new Set(['w1']), ekg: { collisions: 7 } });
+    expect(b.collisions).toBe(7);
+  });
+});
+
+describe('collisionsFromSpawnRows (pure)', () => {
+  it('no rows → 0', () => {
+    expect(collisionsFromSpawnRows([])).toBe(0);
+  });
+
+  it('a single spawn per feature → 0 (the common, non-colliding case)', () => {
+    const rows = [
+      spawn({ spawnId: 'a', featureId: 'w1', startedAtMs: 0, finishedAtMs: 100 }),
+      spawn({ spawnId: 'b', featureId: 'w2', startedAtMs: 0, finishedAtMs: 100 }),
+    ];
+    expect(collisionsFromSpawnRows(rows)).toBe(0);
+  });
+
+  it('a null featureId never collides, even with an identical time window', () => {
+    const rows = [
+      spawn({ spawnId: 'a', featureId: null, startedAtMs: 0, finishedAtMs: 100 }),
+      spawn({ spawnId: 'b', featureId: null, startedAtMs: 0, finishedAtMs: 100 }),
+    ];
+    expect(collisionsFromSpawnRows(rows)).toBe(0);
+  });
+
+  it('same feature, sequential (non-overlapping) windows → 0 (a re-attempt, not a collision)', () => {
+    const rows = [
+      spawn({ spawnId: 'a', featureId: 'w1', startedAtMs: 0, finishedAtMs: 100 }),
+      spawn({ spawnId: 'b', featureId: 'w1', startedAtMs: 100, finishedAtMs: 200 }),
+    ];
+    expect(collisionsFromSpawnRows(rows)).toBe(0);
+  });
+
+  it('same feature, overlapping windows, different spawnIds → 1 collision', () => {
+    const rows = [
+      spawn({ spawnId: 'a', featureId: 'w1', startedAtMs: 0, finishedAtMs: 100 }),
+      spawn({ spawnId: 'b', featureId: 'w1', startedAtMs: 50, finishedAtMs: 150 }),
+    ];
+    expect(collisionsFromSpawnRows(rows)).toBe(1);
+  });
+
+  it('three-way overlap on one feature → 3 pairwise collisions', () => {
+    const rows = [
+      spawn({ spawnId: 'a', featureId: 'w1', startedAtMs: 0, finishedAtMs: 100 }),
+      spawn({ spawnId: 'b', featureId: 'w1', startedAtMs: 0, finishedAtMs: 100 }),
+      spawn({ spawnId: 'c', featureId: 'w1', startedAtMs: 0, finishedAtMs: 100 }),
+    ];
+    expect(collisionsFromSpawnRows(rows)).toBe(3);
   });
 });
 

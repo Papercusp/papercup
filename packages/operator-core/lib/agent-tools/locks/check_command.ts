@@ -18,6 +18,10 @@ import {
   type SubstitutionMatch,
 } from '../../bash-substitution/match';
 import { recordFiresDetached } from '../../bash-substitution/fires';
+import {
+  attachInvokeEnvelopes,
+  type InvokeEnvelope,
+} from '../../bash-substitution/invoke-envelope';
 import { getSubstitutionRows } from '../../bash-substitution/registry';
 import { readIdentity } from './identity';
 import { checkBashCommand } from './resource-command-match';
@@ -41,21 +45,32 @@ async function substitutionVerdict(
   command: string,
   workspaceId: string,
   ownerId: string | null,
-): Promise<{ substitutions: SubstitutionMatch[]; substitutionTier: string | null }> {
+): Promise<{
+  substitutions: (SubstitutionMatch & { invoke?: InvokeEnvelope })[];
+  substitutionTier: string | null;
+}> {
   try {
     const rows = await getSubstitutionRows(workspaceId);
-    const substitutions = matchCommandToSubstitutions(command, rows);
+    const matches = matchCommandToSubstitutions(command, rows);
 
     // P-003: record the fire. DETACHED and unawaited — the advisory is already
     // computed and an agent is blocked on this response, so making them wait on
     // a write only we will ever read is the wrong trade. It is also the second
     // half of the fail-open contract in this function's header: telemetry that
     // can delay or break a command is worse than no telemetry.
-    if (substitutions.length > 0) {
-      recordFiresDetached({ workspaceId, ownerId, matches: substitutions });
+    if (matches.length > 0) {
+      recordFiresDetached({ workspaceId, ownerId, matches });
     }
 
-    return { substitutions, substitutionTier: strongestTier(substitutions) };
+    // P-009: derive the EXECUTABLE form here rather than in either hook. Both
+    // gates then render the same envelope by construction, and neither has to
+    // carry a second copy of every pair's argument mapping (one of them is
+    // Python inside a shell script). Telemetry above is deliberately recorded
+    // against the UNDECORATED matches — `fires` measures which rows claimed a
+    // command, a question the envelope does not change.
+    const substitutions = attachInvokeEnvelopes(matches);
+
+    return { substitutions, substitutionTier: strongestTier(matches) };
   } catch {
     return { substitutions: [], substitutionTier: null };
   }
@@ -68,7 +83,8 @@ export default defineTool({
   guidance: {
     when: 'A hook (or you) wants to know, before running a command, whether it collides with an in-flight exclusive hold OR has a tool that should serve it instead.',
     notWhen: 'Acquiring a named-resource lock — use locks:acquire_resource. File edits — use locks:acquire.',
-    chaining: 'block → wait / coordinate; warn → proceed with care; allow → run. substitutionTier advise → the command runs, but prefer the named tool next time; substitutions[].advisoryText is the text to surface.',
+    chaining:
+      'block → wait / coordinate; warn → proceed with care; allow → run. substitutionTier advise → the command runs, but prefer the named tool next time; substitutions[].advisoryText is the text to surface. substitutions[].invoke, when present, is the EXECUTABLE form of that same advice — { name, args } already derived from the matched command, runnable as tools:invoke with no discovery step. Surface it in preference to re-deriving args from the prose.',
     seeAlso: [
       'locks:acquire_resource (take the exclusive hold the command needs)',
       'locks:queue (see who holds the conflicting lock)',

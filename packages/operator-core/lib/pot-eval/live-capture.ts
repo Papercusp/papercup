@@ -165,11 +165,52 @@ export function beesBusySamplesFromIntervals(rows: readonly SpawnRunRow[]): numb
 }
 
 /**
+ * Count coverage collisions among spawn rows — the D-003 failure pair for low communication
+ * (EI-19323308682358684): the number of distinct spawn-row PAIRS that were both actively working
+ * the SAME feature id at overlapping wall-clock windows. Two different spawnIds racing the same
+ * deliverable is duplicate/redundant effort — exactly the case a low-comms score must NOT earn
+ * credit for (the D-003 guard this metric feeds). This is a real, always-computable signal from
+ * data already captured on every run (spawn rows), unlike `claim_audit`: under SKIP LOCKED claim
+ * semantics a losing claimer's query simply never returns the contested row, so no "lost a race"
+ * event is ever recorded there for a genuine two-claimer collision — only unrelated single-claimer
+ * refusals (fail-closed spec gaps, plan-lane blocks) are. Rows with a null featureId, or with a
+ * non-finite start/end, never collide (no shared deliverable to collide over). A single row per
+ * feature (the overwhelmingly common case) yields 0 — this cannot regress the guard to "always
+ * fires"; it can only start firing when a genuine overlap is present. PURE.
+ */
+export function collisionsFromSpawnRows(rows: readonly SpawnRunRow[]): number {
+  const byFeature = new Map<string, { spawnId: string; start: number; end: number }[]>();
+  for (const r of rows) {
+    if (!r.featureId) continue;
+    const start = r.startedAtMs;
+    const end = r.finishedAtMs ?? start + Math.max(0, r.durationMs ?? 0);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+    const list = byFeature.get(r.featureId) ?? [];
+    list.push({ spawnId: r.spawnId, start, end });
+    byFeature.set(r.featureId, list);
+  }
+  let collisions = 0;
+  for (const spawns of byFeature.values()) {
+    if (spawns.length < 2) continue;
+    for (let i = 0; i < spawns.length; i++) {
+      for (let j = i + 1; j < spawns.length; j++) {
+        const a = spawns[i]!;
+        const b = spawns[j]!;
+        if (a.spawnId === b.spawnId) continue;
+        // Half-open [start,end) overlap test.
+        if (a.start < b.end && b.start < a.end) collisions++;
+      }
+    }
+  }
+  return collisions;
+}
+
+/**
  * Build the {@link RunBehavior} for a run from its spawn rows + the completed-feature set. The
- * spawn-derivable fields (parallelism samples, beesSpawned, uselessBees) are real; the EKG-sourced
- * fields default to 0 (first-live-run). A bee is USELESS when it served no completed feature — the
- * parallelism failure-pair (a high bee count with low completed work is the gaming the D-003 pair
- * catches). PURE.
+ * spawn-derivable fields (parallelism samples, beesSpawned, uselessBees, collisions) are real; the
+ * remaining EKG-sourced fields default to 0 (first-live-run). A bee is USELESS when it served no
+ * completed feature — the parallelism failure-pair (a high bee count with low completed work is
+ * the gaming the D-003 pair catches). PURE.
  */
 export function behaviorFromSpawnRows(rows: readonly SpawnRunRow[], input: BehaviorExtractInput): RunBehavior {
   const beesSpawned = rows.length;
@@ -183,7 +224,9 @@ export function behaviorFromSpawnRows(rows: readonly SpawnRunRow[], input: Behav
     completedItems: input.completedFeatureIds.size,
     beesSpawned,
     uselessBees,
-    collisions: ekg.collisions ?? 0,
+    // ekg.collisions is an explicit test/caller override; the real signal (EI-19323308682358684)
+    // is derived from the spawn rows themselves — see collisionsFromSpawnRows.
+    collisions: ekg.collisions ?? collisionsFromSpawnRows(rows),
     rework: ekg.rework ?? 0,
     lockContentionMs: ekg.lockContentionMs ?? 0,
     totalTokens: ekg.totalTokens ?? 0,

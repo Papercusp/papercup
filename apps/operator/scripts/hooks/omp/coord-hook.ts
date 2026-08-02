@@ -1438,6 +1438,12 @@ export interface SubstitutionWire {
   toolName?: string;
   advisoryText?: string;
   tier?: string;
+  /**
+   * P-009 — the EXECUTABLE form of this row's advice, when the server could
+   * derive one: args already mapped from the matched command. Optional by
+   * design; see `formatSubstitutionLines` for what its absence means.
+   */
+  invoke?: { name?: string; args?: unknown };
 }
 
 /** The `locks:check_command` verdict, narrowed to what this hook consumes. */

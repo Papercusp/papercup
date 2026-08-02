@@ -199,6 +199,7 @@ export {
   behaviorFromSpawnRows,
   timingsFromSpawnRows,
   beesBusySamplesFromIntervals,
+  collisionsFromSpawnRows,
   replayAcceptancePorts,
   LIVE_CAPTURE_KEY,
   type LiveRunCapture,
