@@ -24,7 +24,7 @@
  * launch anyway.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import {
   CANDIDATE_RERESOLVE_WINDOW_SEC,
   checkpointCandidateContainment,
@@ -49,10 +49,54 @@ export default defineTool({
       'To retune/pause the checkpoint cadence use routines:set. To SHIP an already-green pin use release:deploy op:trigger (checkpoint-run produces green; it does not deploy). To force an UN-green deploy use release:deploy op:force.',
     chaining:
       'fix/quarantine reds → release:checkpoint-run → (watch /admin/git for advanced/green) → release:deploy { op:status } → op:trigger { confirm:true }.',
-    seeAlso: [
-      'release:deploy (deploy the now-green pin — op:status then op:trigger)',
-      'release:checkpoint-config (tune the checkpoint gate)',
-    ],
+    /**
+     * state-plane-adoption-2026-08-02 P-002 / D-001: route the gate's own verb at the
+     * state plane, result-time rather than in `chaining` (see the plan decision — the
+     * pointer belongs where the value is in the caller's hand, and `chaining` is
+     * prompt-resident budget this family does not have).
+     *
+     * This tool is the single highest-value place in the repo for a "re-read, don't
+     * transcribe" pointer: its `candidate` is the field CLAUDE.md devotes a whole
+     * section to, because a run RE-CANDIDATES onto tip mid-flight (the in-process
+     * auto-refire in green-checkpoint.ts) — so pid and started_at stay fixed while the
+     * candidate legitimately advances. A candidate copied out of one reply and quoted
+     * an hour later is how a correct observation becomes a confidently wrong report,
+     * and it produced four contradictory agent verdicts in ninety minutes on
+     * 2026-08-02. `state:read` re-answers it from the same resolver; `state:subscribe`
+     * is the alternative to the re-fire reflex, which during a rescue window discards
+     * the auto-refire and costs a full ~55min suite.
+     */
+    seeAlso: (result) => {
+      const j = readJsonResult<{ already_running?: boolean; launched?: boolean }>(result);
+      // Same TOON/serialization rail as dev:pipeline_position: seeAlso runs on the
+      // SERIALIZED result, so a JSON-only gate can silently never fire. Fail open.
+      const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
+      const verdictIsComing =
+        (j?.already_running ?? /\balready_running\b["']?\s*:\s*true/.test(text)) ||
+        (j?.launched ?? /\blaunched\b["']?\s*:\s*true/.test(text));
+
+      const out: SeeAlsoEntry[] = [
+        'release:deploy (deploy the now-green pin — op:status then op:trigger)',
+        'release:checkpoint-config (tune the checkpoint gate)',
+      ];
+      if (verdictIsComing) {
+        out.push(
+          {
+            tool: 'state:read',
+            selector: "{ cell: 'gate.greenCheckpoint.candidate' }",
+            reason:
+              'a run re-candidates onto tip mid-flight, so this candidate can go stale INSIDE one run — re-read it before you act on it or quote it, never transcribe it',
+          },
+          {
+            tool: 'state:subscribe',
+            selector: "{ cell: 'gate.greenCheckpoint.verdict' }",
+            reason:
+              'wait for the verdict to change instead of polling or re-firing — a re-fire during a rescue discards it and costs a full suite',
+          },
+        );
+      }
+      return out;
+    },
   },
   requirePrincipal: false,
   // A red green-checkpoint blocks EVERY agent's deploys, and the persona tells any red-fixing
