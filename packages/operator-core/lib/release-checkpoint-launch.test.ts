@@ -22,6 +22,7 @@ import {
   checkpointLatestLogPath,
   launchDetachedCheckpoint,
   checkActiveCheckpointRun,
+  parseCheckpointCandidates,
   isCheckpointRunLockHeldCheap,
   stopActiveCheckpointUnit,
   recordCheckpointDisplacement,
@@ -203,6 +204,82 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     expect(r.eta_sec).toBeGreaterThan(0);
     expect(r.eta_sec).toBeLessThanOrEqual(CHECKPOINT_MAX_RUNTIME_SEC);
     expect(readLogHead).toHaveBeenCalledWith(`/tmp/${checkpointUnitForRoot('/tree')}.log`);
+  });
+
+  /**
+   * EI-19327704778173646 — recurrence guard.
+   *
+   * A single green-checkpoint run can legitimately change the candidate it judges: on a stale
+   * red it recurses into `runGreenCheckpoint({ candidate: tip, refireAttempts: +1 })` IN-PROCESS
+   * and re-enters `setupTree`, so the run emits a SECOND `checkpointing candidate` line while
+   * pid/started_at never move. Parsing the FIRST match — and reading only the log's first 4KB,
+   * where the second line structurally cannot appear — reported the ABANDONED sha for the rest
+   * of the run, while the tool's own prose told callers to verify their fix against it. That
+   * false negative produced several public retractions on 2026-08-02.
+   *
+   * Asserted against a synthetic log on purpose: the whole point of the bug is that LIVE
+   * observation of this field is what misled five agents, so a live gate run cannot verify it.
+   */
+  const refireSetup = (startedAt: string) =>
+    vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt })();
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD')
+        return { status: 0, stdout: '98817077fd79af9dfee00076a1c6e90445d268af\n', stderr: '' };
+      if (cmd === 'git' && args.includes('--format=%ct'))
+        return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 500), stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+
+  it('reports the LAST candidate, not the abandoned first, when a run auto-refired mid-flight', () => {
+    const startedAt = new Date(Date.now() - 45 * 60_000).toISOString();
+    // The head holds only the run's FIRST candidate — the refire line lands a whole suite later.
+    const head = '[green-checkpoint] checkpointing candidate 1ee32228 (base 94b17b25)\n';
+    const tail = [
+      '[green-checkpoint] red at 1ee32228; re-running 1 non-test gate(s) at tip 4a9b218b: lint:tsc',
+      '[green-checkpoint] re-triage: stale — gate passes at tip; auto-refiring (attempt 1/2)',
+      '[green-checkpoint] checkpointing candidate 4a9b218b (base 94b17b25)',
+    ].join('\n');
+
+    const r = checkActiveCheckpointRun('/tree', refireSetup(startedAt), () => head, undefined, undefined, undefined, () => tail);
+
+    // The sha actually being judged now — NOT the one the run started on and discarded.
+    expect(r.candidate).toBe('4a9b218b');
+    // Provenance, so a caller reading the status twice sees a documented move rather than
+    // concluding the field is corrupt and firing a manual run over it.
+    expect(r.initial_candidate).toBe('1ee32228');
+    expect(r.refire_observed).toBe(true);
+  });
+
+  it('omits refire provenance entirely when the run never re-candidated (unchanged reply shape)', () => {
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const log = '[green-checkpoint] checkpointing candidate 98817077 (base 94b17b25)\nrunning suite...\n';
+
+    const r = checkActiveCheckpointRun('/tree', refireSetup(startedAt), () => log, undefined, undefined, undefined, () => log);
+
+    expect(r.candidate).toBe('98817077');
+    // The common case must stay byte-for-byte what it was before this fix.
+    expect(r.refire_observed).toBeUndefined();
+    expect(r.initial_candidate).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(r, 'initial_candidate')).toBe(false);
+  });
+
+  it('degrades to the head-parsed candidate when the log tail cannot be read', () => {
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const head = '[green-checkpoint] checkpointing candidate 98817077 (base 94b17b25)\n';
+
+    // Missing / mid-rotation / unreadable log => null, exactly the pre-EI behaviour.
+    const r = checkActiveCheckpointRun('/tree', refireSetup(startedAt), () => head, undefined, undefined, undefined, () => null);
+
+    expect(r.candidate).toBe('98817077');
+    expect(r.refire_observed).toBeUndefined();
+  });
+
+  it('parseCheckpointCandidates returns every candidate in emission order', () => {
+    expect(parseCheckpointCandidates(null)).toEqual([]);
+    expect(parseCheckpointCandidates('no candidate lines here')).toEqual([]);
+    expect(
+      parseCheckpointCandidates('checkpointing candidate aaa1 (base x)\n...\ncheckpointing candidate bbb2 (base x)\n'),
+    ).toEqual(['aaa1', 'bbb2']);
   });
 
   it('marks an active run stale when its log candidate differs from the current quiet-cut candidate', () => {

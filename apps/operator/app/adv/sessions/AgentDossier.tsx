@@ -25,7 +25,7 @@ import { useLexicon } from '@/lib/useLexicon';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import { contextPct } from '../hud/hud-board-model';
 import type { NativeSessionHandle, RosterEntry } from './SessionsRosterView';
-import { useAgentDetail } from './use-agent-detail';
+import { useAgentDetail, type AgentDetail } from './use-agent-detail';
 // hud-first-nav-and-dossier-2026-07-26 P-004: the DTO + the `agentDetail.byOwner`
 // fetch hook now live in use-agent-detail.ts so the chat footer's "N locks / M
 // unread" summary chip can share the SAME useSyncQuery cache entry (no new
@@ -58,6 +58,16 @@ function MetaRow({ label, value }: { label: string; value: React.ReactNode }): R
       <span className="pc-dossier__meta-val">{value}</span>
     </div>
   );
+}
+
+/** Build MetaRows from label/value pairs, DROPPING the ones that would render
+ *  nothing. MetaRow itself returns null for an empty value, so handing a capped
+ *  list the unfiltered set would make it promise "Show 6 more" and then reveal
+ *  six blank lines — the count has to mean rows you can actually see. */
+function metaRows(pairs: Array<[string, React.ReactNode]>): React.ReactNode[] {
+  return pairs
+    .filter(([, v]) => v != null && v !== '' && v !== false)
+    .map(([label, value]) => <MetaRow key={label} label={label} value={value} />);
 }
 
 /** Rail R1 (session-chat-popup-direction-d-2026-08-02 P-008): every section
@@ -184,6 +194,104 @@ function nativeSessionCommand(handle: NativeSessionHandle): string | null {
       : `${prefix} codex resume --last`;
   }
   return handle.ompThreadId ? `omp -r ${handle.ompThreadId} --approval-mode yolo` : null;
+}
+
+/** Runtime provenance for the agent's underlying CLI session. Rail R1 P-008 moved
+ *  it below Reference and capped it — how to re-enter a session is reference
+ *  material, and the ACTIONS for it (Resume / Fork) live in the popup's control
+ *  strip, not here. */
+function NativeSessionSection({
+  nativeSession,
+  open,
+  onToggle,
+}: {
+  nativeSession: NativeSessionHandle;
+  open: boolean;
+  onToggle: () => void;
+}): React.JSX.Element {
+  return (
+    <section className="pc-dossier__section" id="pc-dossier-native-session">
+      <h4 className="pc-dossier__h">
+        Native Session
+        <span className="pc-dossier__badge-count">{nativeSession.backend}</span>
+        {!nativeSession.exactResumeSupported && nativeSession.missingReason ? (
+          <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {nativeSession.missingReason}</span>
+        ) : null}
+      </h4>
+      <CappedRows
+        noun="detail rows"
+        open={open}
+        onToggle={onToggle}
+        testId="dossier-native-session-rows"
+        rows={metaRows([
+          // WI-5226: only offer a copy-pasteable command when exactResumeSupported —
+          // the server verifies (and best-effort restores) the session's on-disk
+          // transcript before setting this true, so a false here means the command
+          // would ENOENT; the header's missingReason note already explains why.
+          // It leads because it is the only ACTIONABLE row in the section.
+          ['resume', nativeSession.exactResumeSupported ? nativeSessionCommand(nativeSession) : null],
+          ['exact resume', nativeSession.exactResumeSupported ? 'supported' : 'not ready'],
+          ['source', nativeSession.source],
+          ...(nativeSession.backend === 'claude'
+            ? ([['session', nativeSession.sessionId ?? 'not recorded']] as Array<[string, React.ReactNode]>)
+            : []),
+          ...(nativeSession.backend === 'codex'
+            ? ([
+                ['home', nativeSession.codexHome || 'not recorded'],
+                ['rollout', nativeSession.rolloutId ?? 'not recorded yet'],
+              ] as Array<[string, React.ReactNode]>)
+            : []),
+          ...(nativeSession.backend === 'omp'
+            ? ([
+                ['thread', nativeSession.ompThreadId ?? 'not linked yet'],
+                ['agent home', nativeSession.agentHome],
+              ] as Array<[string, React.ReactNode]>)
+            : []),
+        ])}
+      />
+    </section>
+  );
+}
+
+/** Codex-specific runtime diagnostics — eleven rows, the single tallest block in
+ *  the old rail, and pure reference. Capped like everything else (Rail R1 P-008). */
+function CodexSection({
+  codex,
+  open,
+  onToggle,
+}: {
+  codex: NonNullable<AgentDetail['codex']>;
+  open: boolean;
+  onToggle: () => void;
+}): React.JSX.Element {
+  return (
+    <section className="pc-dossier__section" id="pc-dossier-codex">
+      <h4 className="pc-dossier__h">
+        Codex Runtime
+        <span className="pc-dossier__badge-count">advanced</span>
+        {codex.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {codex.error}</span> : null}
+      </h4>
+      <CappedRows
+        noun="diagnostics"
+        open={open}
+        onToggle={onToggle}
+        testId="dossier-codex-rows"
+        rows={metaRows([
+          ['resume', codex.resumeCommand],
+          ['home', codex.codexHome],
+          ['rollout', codex.latestRolloutId ?? 'not recorded yet'],
+          ['AGENTS.md', codex.agentsExists ? codex.agentsPath : 'missing'],
+          ['config.toml', codex.configExists ? codex.configPath : 'missing'],
+          ['hooks', codex.hooksExists ? 'configured' : 'missing'],
+          ['auth', codex.authExists ? 'linked' : 'missing'],
+          ['prompts', codex.promptsExists ? 'available' : 'missing'],
+          ['lock status', codex.diagnostics?.lockEnforcement ?? 'unknown'],
+          ['PreToolUse', codex.diagnostics?.codexPreToolUseStatus ?? 'unknown'],
+          ['manual locks', codex.diagnostics?.requiresExplicitPapercuspLocks ? 'required' : 'not required'],
+        ])}
+      />
+    </section>
+  );
 }
 
 export default function AgentDossier({
@@ -392,93 +500,75 @@ export default function AgentDossier({
         </section>
       ) : null}
 
-      {nativeSession ? (
-        <section className="pc-dossier__section">
-          <h4 className="pc-dossier__h">
-            Native Session
-            <span className="pc-dossier__badge-count">{nativeSession.backend}</span>
-            {!nativeSession.exactResumeSupported && nativeSession.missingReason ? (
-              <span className="pc-dossier__h-note pc-dossier__h-note--err">
-                {' '}
-                · {nativeSession.missingReason}
-              </span>
-            ) : null}
-          </h4>
-          <MetaRow label="source" value={nativeSession.source} />
-          <MetaRow label="exact resume" value={nativeSession.exactResumeSupported ? 'supported' : 'not ready'} />
-          {/* WI-5226: only offer a copy-pasteable command when exactResumeSupported —
-              the server now verifies (and best-effort restores) the session's on-disk
-              transcript before setting this true, so a false here means the command
-              would ENOENT; the header's missingReason note already explains why. */}
-          <MetaRow
-            label="resume"
-            value={nativeSession.exactResumeSupported ? nativeSessionCommand(nativeSession) : null}
-          />
-          {nativeSession.backend === 'claude' ? (
-            <MetaRow label="session" value={nativeSession.sessionId ?? 'not recorded'} />
-          ) : null}
-          {nativeSession.backend === 'codex' ? (
-            <>
-              <MetaRow label="home" value={nativeSession.codexHome || 'not recorded'} />
-              <MetaRow label="rollout" value={nativeSession.rolloutId ?? 'not recorded yet'} />
-            </>
-          ) : null}
-          {nativeSession.backend === 'omp' ? (
-            <>
-              <MetaRow label="thread" value={nativeSession.ompThreadId ?? 'not linked yet'} />
-              <MetaRow label="agent home" value={nativeSession.agentHome} />
-            </>
-          ) : null}
-        </section>
-      ) : null}
+      {/* ── Waiting on ── */}
+      {/* [owner 2026-07-28, verbatim] "are the events an agent currently
+          subscribed to listed in their chat popup? If not add that". They were
+          not. The rail showed what the agent HELD (locks) and what it had SAID
+          (coord), but never what it was WAITING FOR — and an agent parked on an
+          await is indistinguishable from a dead one until you can see the await.
 
-      {codex ? (
-        <section className="pc-dossier__section">
-          <h4 className="pc-dossier__h">
-            Codex Runtime
-            <span className="pc-dossier__badge-count">advanced</span>
-            {codex.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {codex.error}</span> : null}
-          </h4>
-          <MetaRow label="home" value={codex.codexHome} />
-          <MetaRow label="resume" value={codex.resumeCommand} />
-          <MetaRow label="rollout" value={codex.latestRolloutId ?? 'not recorded yet'} />
-          <MetaRow label="AGENTS.md" value={codex.agentsExists ? codex.agentsPath : 'missing'} />
-          <MetaRow label="config.toml" value={codex.configExists ? codex.configPath : 'missing'} />
-          <MetaRow label="hooks" value={codex.hooksExists ? 'configured' : 'missing'} />
-          <MetaRow label="auth" value={codex.authExists ? 'linked' : 'missing'} />
-          <MetaRow label="prompts" value={codex.promptsExists ? 'available' : 'missing'} />
-          <MetaRow label="lock status" value={codex.diagnostics?.lockEnforcement ?? 'unknown'} />
-          <MetaRow
-            label="PreToolUse"
-            value={codex.diagnostics?.codexPreToolUseStatus ?? 'unknown'}
-          />
-          <MetaRow
-            label="manual locks"
-            value={codex.diagnostics?.requiresExplicitPapercuspLocks ? 'required' : 'not required'}
-          />
-        </section>
-      ) : null}
+          Rail R1 P-008 promotes it from LAST to second, and renames the heading
+          to what it answers: [deck R1] "Waiting on is promoted to second — it is
+          the answer to 'is this thing stuck or just parked?'", and the section
+          intro, "Events (what the agent is waiting on) is never buried behind a
+          message list". The owner's ask was that the subscriptions be listed;
+          they still are, under a heading that says why you'd look.
 
-      {/* ── Files in play (cross-marked with this agent's lock state) ── */}
-      {entry && entry.currentFiles.length > 0 ? (
-        <section className="pc-dossier__section">
-          <h4 className="pc-dossier__h">Files ({entry.currentFiles.length})</h4>
-          <ul className="pc-dossier__files">
-            {entry.currentFiles.map((f) => {
-              const mark = fileMark(f);
-              return (
-                <li key={f} className="pc-dossier__file" title={f}>
-                  <span className="pc-dossier__file-path">{f}</span>
-                  {mark === 'held' ? <span className="pc-dossier__lockmark pc-dossier__lockmark--held">L</span> : null}
-                  {mark === 'waiting' ? (
-                    <span className="pc-dossier__lockmark pc-dossier__lockmark--wait">W</span>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      ) : null}
+          `subs?.items ?? []` is the wire contract, not defensive noise, for
+          exactly the reason the coord `unread` list documents below: this is a
+          NEW field, the SPA rebuilds on the vite hot path while the sidecar only
+          rebuilds on restart, so a fresh bundle can genuinely be served a
+          `subscriptions`-less payload. Reading `.length` off it there would take
+          down the whole HUD tab over one optional list. */}
+      <section className="pc-dossier__section" id="pc-dossier-events">
+        <h4 className="pc-dossier__h">
+          Waiting on
+          {subs && subs.count > 0 ? (
+            <span className="pc-dossier__badge-count">{subs.count} subscribed</span>
+          ) : null}
+          {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
+          {subs?.error ? (
+            <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {subs.error}</span>
+          ) : null}
+        </h4>
+        {subRows.length > 0 ? (
+          <CappedRows
+            noun="events"
+            open={railOpen.has('events')}
+            onToggle={() => toggleRail('events')}
+            testId="dossier-events-list"
+            rows={subRows.map((s) => (
+              <div
+                key={`${s.eventKey}:${s.createdAt}`}
+                className="pc-dossier__coord-line"
+                data-testid="dossier-events-row"
+              >
+                {/* A standing watch keeps waking the agent; a one-shot fires
+                    once and is consumed. Opposite implications for "will this
+                    agent wake again", so the distinction is shown, not implied. */}
+                <span className="pc-dossier__dir" title={s.once ? 'one-shot await' : 'standing watch'}>
+                  {s.once ? '◉' : '↻'}
+                </span>
+                <span className="pc-dossier__coord-text">
+                  {s.eventKey}
+                  {s.note ? <span className="pc-dossier__h-note"> · {s.note}</span> : null}
+                  {!s.wakes ? <span className="pc-dossier__h-note"> · no wake</span> : null}
+                  {s.urgent ? <span className="pc-dossier__h-note"> · urgent</span> : null}
+                </span>
+                <span className="pc-dossier__coord-ts">{formatRelativeUpdated(s.createdAt)}</span>
+              </div>
+            ))}
+          />
+        ) : (
+          <div className="pc-dossier__empty-line">
+            {subs?.error ? `Couldn’t load subscriptions: ${subs.error}` : 'Not waiting on any event.'}
+          </div>
+        )}
+      </section>
+
+      {/* Rail R1 P-008 — Native Session + Codex Runtime moved to the BOTTOM, below
+          Reference. Both are runtime provenance, not "is this agent stuck", and
+          between them they were 16 rows sitting above Locks and Coord. */}
 
       {/* ── Locks ── */}
       {/* hud-first-nav-and-dossier-2026-07-26 P-004: id is the scroll target
@@ -491,30 +581,39 @@ export default function AgentDossier({
           {locks?.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {locks.error}</span> : null}
         </h4>
         {locks && (locks.held.length > 0 || locks.waiting.length > 0) ? (
-          <>
-            {locks.held.map((l) => (
-              <div key={l.path} className="pc-dossier__lock">
-                <span className="pc-dossier__lockmark pc-dossier__lockmark--held">L</span>
-                <span className="pc-dossier__file-path">{l.path}</span>
-                <span className="pc-dossier__lock-exp">{expiresIn(l.expiresAt)}</span>
-                {l.intent ? <span className="pc-dossier__lock-intent">{l.intent}</span> : null}
-              </div>
-            ))}
-            {locks.waiting.map((w) => (
-              <div key={w.ticketId} className="pc-dossier__lock">
-                <span className="pc-dossier__lockmark pc-dossier__lockmark--wait">W</span>
-                <span className="pc-dossier__file-path">{w.paths.join(', ')}</span>
-                <span className="pc-dossier__lock-exp">
-                  {w.aheadCount === 0 ? 'next' : `${w.aheadCount} ahead`}
-                </span>
-                {w.blockedBy.length > 0 ? (
-                  <span className="pc-dossier__lock-intent">
-                    blocked by {w.blockedBy.map((b) => b.holderLabel || b.holder).join(', ')}
+          <CappedRows
+            noun="locks"
+            open={railOpen.has('locks')}
+            onToggle={() => toggleRail('locks')}
+            testId="dossier-locks-list"
+            rows={[
+              // Waiting rows lead: a lock you are BLOCKED on is the one that
+              // explains a stalled agent, and with a 3-row cap whichever kind
+              // comes first is the kind you see. Held locks are the calm case.
+              ...locks.waiting.map((w) => (
+                <div key={w.ticketId} className="pc-dossier__lock">
+                  <span className="pc-dossier__lockmark pc-dossier__lockmark--wait">W</span>
+                  <span className="pc-dossier__file-path">{w.paths.join(', ')}</span>
+                  <span className="pc-dossier__lock-exp">
+                    {w.aheadCount === 0 ? 'next' : `${w.aheadCount} ahead`}
                   </span>
-                ) : null}
-              </div>
-            ))}
-          </>
+                  {w.blockedBy.length > 0 ? (
+                    <span className="pc-dossier__lock-intent">
+                      blocked by {w.blockedBy.map((b) => b.holderLabel || b.holder).join(', ')}
+                    </span>
+                  ) : null}
+                </div>
+              )),
+              ...locks.held.map((l) => (
+                <div key={l.path} className="pc-dossier__lock">
+                  <span className="pc-dossier__lockmark pc-dossier__lockmark--held">L</span>
+                  <span className="pc-dossier__file-path">{l.path}</span>
+                  <span className="pc-dossier__lock-exp">{expiresIn(l.expiresAt)}</span>
+                  {l.intent ? <span className="pc-dossier__lock-intent">{l.intent}</span> : null}
+                </div>
+              )),
+            ]}
+          />
         ) : (
           <div className="pc-dossier__empty-line">{detail ? 'No locks held or waiting.' : '—'}</div>
         )}
@@ -604,60 +703,47 @@ export default function AgentDossier({
         )}
       </section>
 
-      {/* ── Events ── */}
-      {/* [owner 2026-07-28, verbatim] "are the events an agent currently
-          subscribed to listed in their chat popup? If not add that". They were
-          not. The rail showed what the agent HELD (locks) and what it had SAID
-          (coord), but never what it was WAITING FOR — and an agent parked on an
-          await is indistinguishable from a dead one until you can see the await.
+      {/* ── Reference (Rail R1 P-008) ──
+          The ten Tier-1/2 rows that used to head the rail. Three previewed,
+          the rest one click away: [deck R1] "Nobody reads those while watching
+          a conversation." */}
+      {entry ? (
+        <section className="pc-dossier__section" id="pc-dossier-reference">
+          <h4 className="pc-dossier__h">Reference</h4>
+          <CappedRows
+            noun="detail rows"
+            open={railOpen.has('reference')}
+            onToggle={() => toggleRail('reference')}
+            testId="dossier-reference-rows"
+            rows={metaRows([
+              // The three the deck previews, in its order — the operational
+              // subset of the reference set.
+              ['plan', entry.currentPlanSlug],
+              ['started', formatRelativeUpdated(entry.startedAt)],
+              ['host · pid', [entry.host, entry.pid != null ? String(entry.pid) : null].filter(Boolean).join(' · ')],
+              // …and the rest, one click away.
+              ['liveness', `${entry.liveness} · active ${formatRelativeUpdated(entry.heartbeatAt)}`],
+              ['mode', entry.mode],
+              ['cwd', entry.cwd],
+              ['window', entry.windowId],
+              ['omp thread', entry.ompThreadId],
+              ['user', entry.userId],
+            ])}
+          />
+        </section>
+      ) : null}
 
-          `subs?.items ?? []` is the wire contract, not defensive noise, for
-          exactly the reason the coord `unread` list documents above: this is a
-          NEW field, the SPA rebuilds on the vite hot path while the sidecar only
-          rebuilds on restart, so a fresh bundle can genuinely be served a
-          `subscriptions`-less payload. Reading `.length` off it there would take
-          down the whole HUD tab over one optional list. */}
-      <section className="pc-dossier__section" id="pc-dossier-events">
-        <h4 className="pc-dossier__h">
-          Events
-          {subs && subs.count > 0 ? (
-            <span className="pc-dossier__badge-count">{subs.count} subscribed</span>
-          ) : null}
-          {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
-          {subs?.error ? (
-            <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {subs.error}</span>
-          ) : null}
-        </h4>
-        {subRows.length > 0 ? (
-          <ul className="pc-dossier__list" data-testid="dossier-events-list">
-            {subRows.map((s) => (
-              <li
-                key={`${s.eventKey}:${s.createdAt}`}
-                className="pc-dossier__coord-line"
-                data-testid="dossier-events-row"
-              >
-                {/* A standing watch keeps waking the agent; a one-shot fires
-                    once and is consumed. Opposite implications for "will this
-                    agent wake again", so the distinction is shown, not implied. */}
-                <span className="pc-dossier__dir" title={s.once ? 'one-shot await' : 'standing watch'}>
-                  {s.once ? '◉' : '↻'}
-                </span>
-                <span className="pc-dossier__coord-text">
-                  {s.eventKey}
-                  {s.note ? <span className="pc-dossier__h-note"> · {s.note}</span> : null}
-                  {!s.wakes ? <span className="pc-dossier__h-note"> · no wake</span> : null}
-                  {s.urgent ? <span className="pc-dossier__h-note"> · urgent</span> : null}
-                </span>
-                <span className="pc-dossier__coord-ts">{formatRelativeUpdated(s.createdAt)}</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <div className="pc-dossier__empty-line">
-            {subs?.error ? `Couldn’t load subscriptions: ${subs.error}` : 'Not waiting on any event.'}
-          </div>
-        )}
-      </section>
+      {nativeSession ? (
+        <NativeSessionSection
+          nativeSession={nativeSession}
+          open={railOpen.has('native')}
+          onToggle={() => toggleRail('native')}
+        />
+      ) : null}
+
+      {codex ? (
+        <CodexSection codex={codex} open={railOpen.has('codex')} onToggle={() => toggleRail('codex')} />
+      ) : null}
     </aside>
   );
 }

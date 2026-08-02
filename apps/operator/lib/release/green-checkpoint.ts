@@ -2937,6 +2937,31 @@ export type CheckpointExec = (
  *  records that file errored → it counts as still-failing (never a false green). */
 export const ISOLATION_RUN_TIMEOUT_MS = 5 * 60_000;
 
+/**
+ * EI-19332206710686203: the PER-TEST deadline every RESCUE re-run passes to vitest.
+ *
+ * Vitest's default `testTimeout` is 5s, and NOTHING in this repo's config chain raises it
+ * (`apps/operator/vitest.config.ts`, `libs/test-config/src/vitest-config.ts` — both silent),
+ * so every re-run below inherited 5s. That is structurally fatal to what those re-runs are
+ * FOR. A rescue re-run's whole job is to decide "was that red the box, or the code?" — but
+ * at loadavg 130+ on a 128-core box the dominant flake shape is a test that is merely SLOW,
+ * and a 5s deadline turns "slow" into "failed" in the re-run exactly as it did in the gate
+ * run. The rescue then re-observes the symptom it was launched to discriminate and votes to
+ * keep the red. Measured 2026-08-02: `github-identity-drift.test.ts` timed out at 11,725ms
+ * against the 5s default with ZERO actual offenders, and red-pinned the fleet's gate.
+ *
+ * 60s is deliberately generous: these re-runs are re-verification, not the deadline that
+ * polices test speed. The MAIN suite keeps vitest's tight default on purpose — that is what
+ * surfaces a genuinely hanging test, and loosening it fleet-wide would trade a real signal
+ * for this narrow rescue. Only the rescue paths need the room to discriminate.
+ *
+ * Fail-safe in both directions: each call site still carries its own OUTER wall-clock cap
+ * (ISOLATION_RUN_TIMEOUT_MS / CONCURRENT_CONFIRM_TIMEOUT_MS / WORKSPACE_RERUN_TIMEOUT_MS),
+ * so a genuinely hung test still trips the subprocess timeout → errored → treated as
+ * still-failing. Raising this can therefore delay a red, never manufacture a green.
+ */
+export const RESCUE_TEST_TIMEOUT_MS = 60_000;
+
 /** worker-pool-crash-absorption-2026-06-25 (WI-806): hard cap for ONE crashed-workspace
  *  re-run at single concurrency. A whole workspace suite (vs one file) needs more room
  *  than the per-file isolation run, but must still bound a genuine hang. On timeout the
@@ -3628,7 +3653,20 @@ export function realCheckpointDeps(
     try {
       const r = await exec(
         'npm',
-        ['run', 'test', '--workspace', workspace, '--', '--no-file-parallelism', file],
+        [
+          'run',
+          'test',
+          '--workspace',
+          workspace,
+          '--',
+          '--no-file-parallelism',
+          // EI-19332206710686203: single concurrency removes the SUITE's contention but not
+          // the box's ambient load, so an isolated re-run can still be slow. Without this the
+          // re-run inherits vitest's 5s default and re-fails a merely-slow test — the absorber
+          // would then never rescue a timeout-shaped flake, which is the commonest kind here.
+          `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+          file,
+        ],
         { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
       );
       return { workspace, file, passed: r.code === 0, durationMs: Date.now() - startedAt };
@@ -3655,7 +3693,20 @@ export function realCheckpointDeps(
   }): Promise<ConcurrentRerunResult> => {
     const env = buildGreenCheckpointEnv(null);
     try {
-      const r = await exec('npm', ['run', 'test', '--workspace', workspace, '--', ...files], {
+      // EI-19332206710686203: this re-run needs the generous per-test deadline too, and the
+      // reason is easy to get backwards. Absorption requires BOTH every file to pass alone
+      // AND this run to come back clean, so leaving it on vitest's 5s default would have kept
+      // the isolation fix inert: under the very load that produces the flake, a merely-slow
+      // test re-times-out HERE and is scored `reproduced`, re-pinning the red.
+      //
+      // Nor does the room blunt the experiment. What this run is measuring is whether the
+      // failure is CORRECTNESS-dependent on co-execution (shared temp file, port collision,
+      // cross-test state) — a defect that surfaces as an assertion failure or an error, and
+      // still does so at 60s. Being merely SLOWER when co-executed is not a defect at all;
+      // it is what contention is, and scoring it as one was the category error. A genuine
+      // co-execution DEADLOCK is unaffected: it blows 60s exactly as it blew 5s, and
+      // CONCURRENT_CONFIRM_TIMEOUT_MS still bounds the whole run.
+      const r = await exec('npm', ['run', 'test', '--workspace', workspace, '--', `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`, ...files], {
         cwd: cfg.checkpointRoot,
         env,
         allowNonZero: true,
@@ -3680,7 +3731,12 @@ export function realCheckpointDeps(
     const env = buildGreenCheckpointEnv(null);
     env.VITEST_MAX_FORKS = '1';
     env.VITEST_MAX_THREADS = '1';
-    const r = await exec('npm', ['run', 'test', '--workspace', workspace], {
+    // EI-19332206710686203: same rescue-discrimination problem as isolationRun — this re-runs
+    // a whole workspace at single concurrency after a worker-pool crash, on a box still under
+    // the load that crashed it. On vitest's 5s default a merely-slow test is scored
+    // `realFailure` and the crash is never absorbed. Note this argv had no `--` separator
+    // before: everything after it is forwarded to vitest, not consumed by npm.
+    const r = await exec('npm', ['run', 'test', '--workspace', workspace, '--', `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`], {
       cwd: cfg.checkpointRoot,
       env,
       allowNonZero: true,
@@ -3996,7 +4052,20 @@ export function realCheckpointDeps(
       for (const [workspace, wsFiles] of byWorkspace) {
         const r = await exec(
           'npm',
-          ['run', 'test', '--workspace', workspace, '--', '--no-file-parallelism', ...wsFiles],
+          [
+            'run',
+            'test',
+            '--workspace',
+            workspace,
+            '--',
+            '--no-file-parallelism',
+            // EI-19332206710686203: the stale-candidate rescue asks "is this red already fixed
+            // at tip?" — a question it cannot answer if a slow test re-times-out at vitest's
+            // 5s default. A false `pass:false` here reports a genuinely-fixed tip as still
+            // broken and keeps `main` frozen on a red that no longer exists.
+            `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+            ...wsFiles,
+          ],
           { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
         ).catch((e: unknown) => ({ code: 1, stdout: '', stderr: String(e) }));
         summaries.push(`${workspace}: ${r.code === 0 ? 'pass' : 'FAIL'}`);

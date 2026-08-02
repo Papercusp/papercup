@@ -22,7 +22,16 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'n
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkNpmScript, hasNpmScript, realCheckpointDeps, type CheckpointExec } from './green-checkpoint';
+import {
+  checkNpmScript,
+  hasNpmScript,
+  realCheckpointDeps,
+  CONCURRENT_CONFIRM_TIMEOUT_MS,
+  ISOLATION_RUN_TIMEOUT_MS,
+  RESCUE_TEST_TIMEOUT_MS,
+  WORKSPACE_RERUN_TIMEOUT_MS,
+  type CheckpointExec,
+} from './green-checkpoint';
 import { releaseConfig, type ReleaseConfig } from './release-config';
 
 // EI-18661485259809120: push() also fires a workflow_dispatch of test.yml (since the
@@ -617,7 +626,16 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     expect(calls[3].args).toContain('build'); // the SPA build DID run post-absorption
     const rerun = calls[1];
     expect(rerun.cmd).toBe('npm');
-    expect(rerun.args).toEqual(['run', 'test', '--workspace', '@papercusp/operator-core']);
+    // EI-19332206710686203 added the explicit per-test deadline (and the `--` separator this
+    // argv previously had no need for) — see the RESCUE_TEST_TIMEOUT_MS guards below.
+    expect(rerun.args).toEqual([
+      'run',
+      'test',
+      '--workspace',
+      '@papercusp/operator-core',
+      '--',
+      `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+    ]);
     expect(rerun.opts?.cwd).toBe(cpTree);
     expect(rerun.opts?.env?.VITEST_MAX_FORKS).toBe('1'); // reduced concurrency
     expect(rerun.opts?.env?.VITEST_MAX_THREADS).toBe('1');

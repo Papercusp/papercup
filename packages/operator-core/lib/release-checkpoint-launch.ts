@@ -26,7 +26,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
@@ -287,12 +287,56 @@ function defaultExecSync(cmd: string, args: string[]): { status: number | null; 
 
 function defaultReadLogHead(logPath: string): string | null {
   try {
-    // The candidate line is emitted first (`[green-checkpoint] checkpointing candidate …`);
-    // a small head-read is enough and stays cheap even for a large/rotating log.
+    // The FIRST candidate line is emitted at the top of the run
+    // (`[green-checkpoint] checkpointing candidate …`); a small head-read is enough to
+    // recover it and stays cheap even for a large/rotating log.
+    //
+    // EI-19327704778173646: this read can only ever see the run's FIRST candidate. An
+    // auto-refire emits a SECOND `checkpointing candidate` line after a whole suite has
+    // run — tens of thousands of lines later, far outside this 4KB window — so a refire is
+    // not merely likely to be missed here, it is structurally unobservable. That is what
+    // `readLogTail` below exists to recover; do not "fix" this by widening the slice (the
+    // point of a head-read is that it is O(1) on a multi-MB log).
     return readFileSync(logPath, { encoding: 'utf8' }).slice(0, 4096);
   } catch {
     return null;
   }
+}
+
+/** EI-19327704778173646: read the END of a run's log, where an auto-refire's second
+ *  `checkpointing candidate <sha>` line lands. Bounded to the last 64KB and seeked from the
+ *  file's end, so it stays O(1) on a multi-MB gate log rather than reading the whole thing.
+ *
+ * Best-effort by the same contract as `defaultReadLogHead`: any failure (missing file, no
+ * permission, mid-rotation) returns null, which degrades to exactly the pre-EI behaviour —
+ * the head-read's first candidate — rather than erroring a status probe. */
+function defaultReadLogTail(logPath: string, maxBytes = 65536): string | null {
+  let fd: number | null = null;
+  try {
+    const size = statSync(logPath).size;
+    if (size <= maxBytes) return readFileSync(logPath, { encoding: 'utf8' });
+    fd = openSync(logPath, 'r');
+    const buf = Buffer.allocUnsafe(maxBytes);
+    const read = readSync(fd, buf, 0, maxBytes, size - maxBytes);
+    return buf.subarray(0, read).toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* already closed / never opened — nothing to recover */
+      }
+    }
+  }
+}
+
+/** EI-19327704778173646: every `checkpointing candidate <sha>` sha in `text`, in emission
+ *  order. Exported for the recurrence-guard test. */
+export function parseCheckpointCandidates(text: string | null): string[] {
+  if (!text) return [];
+  return [...text.matchAll(/checkpointing candidate (\S+)/g)].map((m) => m[1]);
 }
 
 function parseSystemctlShow(stdout: string): Record<string, string> {
@@ -451,11 +495,20 @@ function checkpointLogDirFromEnv(): string {
  *
  * EI-18695275971973546: used ONLY to resolve the ACTUAL in-flight candidate when a run is
  * `held_externally` (the hourly cron tick holds the run-lock, not our manual unit, so we have
- * no log to parse a candidate from). The isolated checkpoint checkout is pinned to its judged
- * candidate for the run's WHOLE duration (green-checkpoint.ts's setupTree checks it out once,
- * up front, before the suite runs) — so reading that tree's HEAD *is* reading the true judged
+ * no log to parse a candidate from). Reading that tree's HEAD *is* reading the true judged
  * candidate, not a guess. Best-effort: a missing/mid-checkout tree just means `candidate` stays
- * null, same as before this fix. */
+ * null, same as before this fix.
+ *
+ * ⚠ EI-19327704778173646 — CORRECTION. This comment previously claimed the checkout is "pinned
+ * to its judged candidate for the run's WHOLE duration (setupTree checks it out once, up
+ * front)". That is FALSE. On a stale red, green-checkpoint.ts recurses into
+ * `runGreenCheckpoint({ candidate: tip, refireAttempts: +1 })` IN-PROCESS and the recursion
+ * re-enters `setupTree(candidate)` — re-pinning this very tree mid-run. So HEAD here is a LIVE
+ * read of a pin that can legitimately MOVE: two reads of the same run can return different
+ * shas, and the second is the correct one. That is a healthy auto-refire, not corruption — do
+ * not conclude the field is bogus (and above all do not fire a manual run over it: that
+ * discards the in-flight rescue and costs a full suite). Unlike the manual-unit path, this one
+ * always reports the CURRENT candidate; it simply cannot say what the run started on. */
 function checkpointRootMirror(root: string): string {
   return process.env.PAPERCUSP_CHECKPOINT_ROOT ?? path.join(path.dirname(root), `${path.basename(root)}-checkpoint`);
 }
@@ -563,6 +616,11 @@ export function checkActiveCheckpointRun(
   pidAlive: (pid: number) => boolean = defaultPidAlive,
   readLockOwner: (lockDir: string) => { pid?: number; startedAt?: string } | null = defaultReadLockOwner,
   readRunPhase: (lockDir: string) => { phase?: string; at?: string } | null = defaultReadRunPhase,
+  // EI-19327704778173646. Appended LAST and defaulted so every existing caller and test —
+  // all of which pass positionally and stop at `readRunPhase` — is unaffected: they get the
+  // real-file reader, which returns null for the synthetic paths tests use, degrading to the
+  // previous head-only behaviour.
+  readLogTail: (logPath: string) => string | null = defaultReadLogTail,
 ): ActiveCheckpointCheck {
   const unit = checkpointUnitForRoot(root);
   const r = execFn('systemctl', [
@@ -646,9 +704,21 @@ export function checkActiveCheckpointRun(
   const startedMs = startedAt ? Date.parse(startedAt) : NaN;
   const elapsedSec = Number.isFinite(startedMs) ? Math.max(0, Math.floor((Date.now() - startedMs) / 1000)) : null;
   const etaSec = elapsedSec != null ? Math.max(0, CHECKPOINT_MAX_RUNTIME_SEC - elapsedSec) : null;
-  const logHead = readLogHead(`/tmp/${unit}.log`);
-  const candidateMatch = logHead?.match(/checkpointing candidate (\S+)/);
-  const candidate = candidateMatch ? candidateMatch[1] : null;
+  const logPath = `/tmp/${unit}.log`;
+  const logHead = readLogHead(logPath);
+  // EI-19327704778173646: the head-read can only ever show the FIRST candidate. Prefer the
+  // LAST one seen in the log tail — after an in-process auto-refire that is the sha actually
+  // being judged, and the first one has been discarded. The tail read is best-effort: when it
+  // yields nothing (unreadable/mid-rotation/short log) this degrades to the head's first
+  // match, i.e. exactly the pre-EI behaviour.
+  const headCandidates = parseCheckpointCandidates(logHead);
+  const tailCandidates = parseCheckpointCandidates(readLogTail(logPath));
+  const firstCandidate = headCandidates[0] ?? tailCandidates[0] ?? null;
+  const candidate = tailCandidates[tailCandidates.length - 1] ?? firstCandidate;
+  // Only report provenance when the run demonstrably MOVED. Note `candidate` may be an
+  // 8-char prefix (green-checkpoint logs `candidate.slice(0, 8)`), so this compares like
+  // with like — both sides come from the same log format.
+  const refireObserved = candidate != null && firstCandidate != null && candidate !== firstCandidate;
   const current = currentCheckpointCandidate(root, execFn);
   // EI-18757156963245979: read the run's OWN published phase. A run past its suite is in the
   // verdict path (re-triage -> auto-refire -> salvage) and must not be replaced at any age.
@@ -657,6 +727,9 @@ export function checkActiveCheckpointRun(
     active: true,
     unit,
     candidate,
+    // EI-19327704778173646: provenance only when the run actually re-candidated, so the
+    // common (no-refire) status reply is byte-for-byte what it was before.
+    ...(refireObserved ? { initial_candidate: firstCandidate, refire_observed: true } : {}),
     ...current,
     candidate_stale: Boolean(candidate && current.current_candidate && !shaMatches(candidate, current.current_candidate)),
     started_at: startedAt,

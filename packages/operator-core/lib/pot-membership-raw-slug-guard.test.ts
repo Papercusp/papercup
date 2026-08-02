@@ -89,16 +89,32 @@ describe('raw-installSlug guard predicate (EI-19298972043721870)', () => {
     // one way it can rot is by growing the grandfather set instead of fixing sites.
     // 9 files / 18 sites were pre-existing when the guard landed.
     //
-    // ⚠ THIS CEILING MUST BE DECREMENTED ON EVERY GRADUATION — never raised. A ceiling
-    // pinned at the ORIGINAL size stops ratcheting the moment the first file graduates:
-    // it keeps passing while the set grows back toward it, so the assertion reads as a
-    // live guard while silently admitting the exact regression it names. (It sat at 9
-    // after the set had already reached 7, i.e. with two graduations' worth of slack.)
-    // Tighten it in the same edit that removes a BASELINE entry.
+    // ⚠ EQUALITY, NOT `<=` — deliberately, and this is the whole point of the test.
     //
-    // WI-6978 audit: 9 → 7 (green-stall-watchdog.ts, release-deploy-staleness-watchdog.ts
-    // both graduated to ALLOWLIST on the audited harness_escalations relation verdict).
-    expect(BASELINE.size).toBeLessThanOrEqual(7);
+    // A `<=` ceiling pinned at the ORIGINAL size stops ratcheting the moment the first
+    // file graduates: it keeps passing while the set grows back toward it, so the
+    // assertion reads as a live guard while silently admitting the exact regression its
+    // own name forbids. That is not hypothetical — this assertion sat at 9 after the set
+    // had already reached 7, i.e. carrying two graduations' worth of slack, and would
+    // have stayed green through a full regression from 7 back to 9 (EI-19333067460319780).
+    //
+    // Equality removes the slack STRUCTURALLY rather than asking the next agent to
+    // remember: a graduation now fails here until the count below is decremented in the
+    // SAME edit, and a regression fails just as loudly. Failing on a shrink is the
+    // feature, not a nuisance.
+    //
+    // History (append a line, never raise the number without a REASON):
+    //   18 sites / 9 files — pre-existing when the guard landed
+    //    9 → 7  2026-08-02 WI-6978 — green-stall-watchdog.ts and
+    //           release-deploy-staleness-watchdog.ts graduated to ALLOWLIST on the
+    //           audited "harness_escalations is not re-homed" relation verdict.
+    expect(
+      BASELINE.size,
+      'BASELINE changed size. If you GRADUATED a file (audited its relation and moved it to ' +
+        'ALLOWLIST, or converted it to routineStorageSlug), DECREMENT the expected count here ' +
+        'in this same edit and add a history line above. If this grew, you added a grandfather ' +
+        'instead of fixing a site — do NOT raise the number to make this pass.',
+    ).toBe(7);
   });
 });
 

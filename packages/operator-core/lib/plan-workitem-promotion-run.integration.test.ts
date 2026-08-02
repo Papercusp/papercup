@@ -438,6 +438,9 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(res).toMatchObject({ promoted: 2, edgesWritten: 0, edgesRejectedCyclic: 2, edgeFailures: 0 });
     // Nothing in EITHER store — asserting coord_links too, since that is the authoritative one
     // (D-010) and a mirror-only check would pass even if the authoritative write had landed.
+    // MUTATION-VERIFIED 2026-08-02: disabling the pre-flight makes this exact assertion fail with
+    // edgesWritten:1 / edgeFailures:1 and ONE persisted arrow in BOTH stores — i.e. the writer's
+    // own acyclicity guard does NOT produce this state, so a pass here proves the PRE-FLIGHT ran.
     expect(await depEdges()).toEqual([]);
     expect(await linkEdges()).toEqual([]);
     // …and refusing the edges costs no safety: every cycle member resolves to effective `blocked`,

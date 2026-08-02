@@ -369,7 +369,7 @@ async function writePromotedDependencyEdges(args: {
       // P-008 PRE-FLIGHT: refuse the edge if EITHER side sits in a cycle. Both directions
       // matter — a cyclic blocker is permanently non-terminating, so gating an otherwise
       // healthy item on it would propagate the deadlock outward from the cycle.
-      if (false && (blockedSideCyclic || args.cyclicPlanItemIds.has(blockerPlanItemId))) {
+      if (blockedSideCyclic || args.cyclicPlanItemIds.has(blockerPlanItemId)) {
         edgesRejectedCyclic++;
         continue;
       }
