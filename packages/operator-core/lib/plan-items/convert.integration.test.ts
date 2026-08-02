@@ -95,7 +95,7 @@ describe('listConvertedPlanItemRefs (PG)', () => {
     await edge({ plan: 'p3', item: 'I-3', srcRef: 'EI-4', rel: 'blocks' }); // wrong rel — excluded
     await edge({ plan: 'p4', item: 'I-4', srcRef: 'EI-5', dstKind: 'issue' }); // wrong dst_kind — excluded
     await edge({ plan: 'p5', item: 'I-5', srcRef: 'EI-6', ws: 'other-ws' }); // wrong workspace — excluded
-    const refs = await listConvertedPlanItemRefs(WS);
+    const refs = await listConvertedPlanItemRefs([WS]);
     expect([...refs].sort()).toEqual([planItemRef('p1', 'I-1'), planItemRef('p2', 'I-2')].sort());
   });
 });

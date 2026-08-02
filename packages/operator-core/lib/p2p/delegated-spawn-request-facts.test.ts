@@ -14,31 +14,44 @@ import {
 } from './delegated-spawn-request-facts';
 import { DEFAULT_HONOR_WINDOW_MS, type DelegatedSpawnRequestFacts } from './delegated-spawn-outcome';
 
-const SELF_UID = 1001;
-const RIG_UID = 2002;
+/**
+ * ⚠ The SHARED account id, deliberately used for BOTH publisher and target:
+ * every host in this deployment runs under one GitHub account, which is exactly
+ * why the account can never discriminate local from remote (see below).
+ */
+const SHARED_UID = 279_242_982;
 const REQUESTED_AT = 1_785_654_929_357;
 
+/** The Win rig's seat, per the live seat-offer row. */
+const RIG_DEVICE_PK = 'nWXvaGiA5pIPrkAP9dAsauQ2G3Z7wSHc07ofgwf8sZc=';
+/** This host's own seat signer. */
+const SELF_DEVICE_PK = 'IXfGu216EI/z1gNQG06dG9CUMUlY/clesNYQPoWXgRc=';
+
+// Field-for-field the shape of the real stored record (note `seat`, not
+// `seatOffer`, and the required `recordVersion` — a hand-guessed shape was
+// rejected outright by the closed-schema validator).
 const record = (over: Record<string, unknown> = {}, srOver: Record<string, unknown> = {}) => ({
-  offerId: 'spawnreq-43e5a7ad370026f9',
-  publisherGithubUserId: SELF_UID,
-  fleetSlug: 'fed-drill',
-  potSlug: null,
-  kind: 'spawn_request',
-  status: 'open',
-  cancelReason: null,
-  workOffer: null,
   authorship: null,
-  seatOffer: null,
+  cancelReason: null,
+  fleetSlug: 'fed-drill',
+  kind: 'spawn_request',
+  offerId: 'spawnreq-43e5a7ad370026f9',
+  potSlug: null,
+  publisherGithubUserId: SHARED_UID,
+  recordVersion: 1,
+  seat: null,
   spawnRequest: {
-    targetPublisherGithubUserId: RIG_UID,
-    targetOfferId: 'seat-0123456789abcdef',
     count: 1,
-    planSlug: 'fed-drill-host-dossier-2026-07-17',
-    requesterOwnerId: 'su-4ca244e4-540e-4acc-bb67-9335192fc85f',
-    requestedAtMs: REQUESTED_AT,
     launchContext: null,
+    planSlug: 'fed-drill-host-dossier-2026-07-17',
+    requestedAtMs: REQUESTED_AT,
+    requesterOwnerId: 'su-4ca244e4-540e-4acc-bb67-9335192fc85f',
+    targetOfferId: 'seat-78c6bba3c96de094',
+    targetPublisherGithubUserId: SHARED_UID,
     ...srOver,
   },
+  status: 'open',
+  workOffer: null,
   ...over,
 });
 
@@ -58,9 +71,11 @@ describe('spawnRequestFactsFromRow (WI-7042)', () => {
       count: 1,
       requestedAtMs: REQUESTED_AT,
     });
-    expect(r!.targetPublisherGithubUserId).toBe(RIG_UID);
+    expect(r!.targetPublisherGithubUserId).toBe(SHARED_UID);
     expect(r!.requesterOwnerId).toBe('su-4ca244e4-540e-4acc-bb67-9335192fc85f');
     expect(r!.planSlug).toBe('fed-drill-host-dossier-2026-07-17');
+    // The seat offer id is what identifies the honoring MACHINE.
+    expect(r!.targetOfferId).toBe('seat-78c6bba3c96de094');
   });
 
   it('prefers the SIGNED record fleetSlug over the projected column', () => {
@@ -90,34 +105,38 @@ describe('spawnRequestFactsFromRow (WI-7042)', () => {
 describe('memberEvidenceAvailableForHonor — the decision the filed item warns about', () => {
   it('is FALSE for a REMOTE honor: the requesting host holds no member trace at all', () => {
     expect(
-      memberEvidenceAvailableForHonor({ targetPublisherGithubUserId: RIG_UID, selfGithubUserId: SELF_UID }),
+      memberEvidenceAvailableForHonor({ honoringDevicePubkey: RIG_DEVICE_PK, selfDevicePubkey: SELF_DEVICE_PK }),
     ).toBe(false);
   });
 
-  it('is TRUE only when this host is itself the honoring host', () => {
+  it('is TRUE only when this host is itself the honoring machine', () => {
     expect(
-      memberEvidenceAvailableForHonor({ targetPublisherGithubUserId: SELF_UID, selfGithubUserId: SELF_UID }),
+      memberEvidenceAvailableForHonor({ honoringDevicePubkey: SELF_DEVICE_PK, selfDevicePubkey: SELF_DEVICE_PK }),
     ).toBe(true);
   });
 
-  it('fails toward FALSE on an unknown/invalid self identity — never claims visibility it cannot support', () => {
-    for (const self of [null, undefined, 0, -1, 1.5, Number.NaN]) {
-      expect(
-        memberEvidenceAvailableForHonor({ targetPublisherGithubUserId: RIG_UID, selfGithubUserId: self as number }),
-      ).toBe(false);
+  it('fails toward FALSE when either device identity is unknown — never claims visibility it cannot support', () => {
+    for (const bad of [null, undefined, '', '   ']) {
+      expect(memberEvidenceAvailableForHonor({ honoringDevicePubkey: RIG_DEVICE_PK, selfDevicePubkey: bad })).toBe(false);
+      expect(memberEvidenceAvailableForHonor({ honoringDevicePubkey: bad, selfDevicePubkey: SELF_DEVICE_PK })).toBe(false);
     }
   });
 
-  // The trap this exists to prevent: origin='local' is true of EVERY request we
-  // published, remote ones included, so it can never be the discriminator.
-  it("is decided by the TARGET, not by anything resembling the row's origin", () => {
+  /**
+   * THE REGRESSION GUARD. The natural discriminator — compare the GitHub ids —
+   * silently misclassifies every remote honor here, because all hosts share one
+   * account. This test pins the real live values so that reintroducing the
+   * account comparison fails loudly instead of resurfacing as a confident
+   * "nobody honored it".
+   */
+  it('a REMOTE honor has IDENTICAL publisher/target GitHub ids — so the account can never be the discriminator', () => {
     const remote = spawnRequestFactsFromRow(row())!;
-    expect(remote.targetPublisherGithubUserId).not.toBe(SELF_UID);
+    expect(remote.targetPublisherGithubUserId).toBe(SHARED_UID);
+    // Same account on both sides...
+    expect(remote.targetPublisherGithubUserId === SHARED_UID).toBe(true);
+    // ...yet it is genuinely a remote honor, which only the DEVICE reveals.
     expect(
-      memberEvidenceAvailableForHonor({
-        targetPublisherGithubUserId: remote.targetPublisherGithubUserId,
-        selfGithubUserId: SELF_UID,
-      }),
+      memberEvidenceAvailableForHonor({ honoringDevicePubkey: RIG_DEVICE_PK, selfDevicePubkey: SELF_DEVICE_PK }),
     ).toBe(false);
   });
 });

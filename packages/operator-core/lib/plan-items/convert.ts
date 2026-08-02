@@ -33,6 +33,9 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+// The OTHER half of the split implements-link plane (see listConvertedPlanItemRefs): the
+// dynamic coord scope issues-engineer.ts writes issue-family links under.
+import { coordScopeWorkspace } from '../agent-tools/coordination/log';
 import { readPlanBySlug } from '../agent-tools/plans/source';
 import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
 import {
@@ -277,35 +280,51 @@ export function looksLikeResidualClosure(text: string): boolean {
  * Queue already excludes), so a still-open plan-item carrying an edge is one that
  * is actively executing.
  *
- * ⚠ `workspaceId` is REQUIRED — deliberately, and it used to default to
- * `DEFAULT_COORD_WORKSPACE` ('default'). That default was a gen-1 tenant bug of exactly the
- * kind `agent-tools/plans/_write-scope.ts` documents three generations of, wearing a costume
- * that made it invisible: not a literal at the call site, but a DEFAULT PARAMETER, so every
- * caller read `listConvertedPlanItemRefs()` and looked perfectly clean.
+ * ⚠ TENANT-COMPLETE BY DEFAULT, and it must stay that way: the implements-link plane is SPLIT
+ * BY FAMILY across two workspaces, so NO single `workspace_id` can see every conversion.
  *
- * Migration 295 moved real plan data to PAPERCUSP_WORKSPACE_ID, so 'default' became legacy
- * residue that is still populated enough to look right: measured 2026-08-02, `coord_links`
- * held 1468 implements-links over 251 plans in 'papercusp-workspace' and 1371 over 196 plans
- * in 'default'. The OVERLAP is what made the bug survive — a caller reading the wrong tenant
- * still got a large, plausible, non-empty set, just missing whichever plans lived only in the
- * real one. P-009's backfill silently covered 18 of 24 edges (4 plans missed entirely) with
- * every counter reporting healthy: 0 failures, 0 dangling, 0 unresolved.
+ * The split is a half-finished rollout of the per-workspace coord flag, not a migration
+ * remnant. Two sibling modules construct the SAME `PgLinkStore` with different tenants:
  *
- * It is required rather than re-defaulted because no honest default exists: the correct tenant
- * is the caller's RESOLVED scope (`resolvePlanWriteScope` / `opts.workspaceId` / `ctx`), which
- * this function cannot see. Callers must pass it and therefore must think about it.
+ *   issues-engineer.ts  →  getWorkspaceId: () => coordScopeWorkspace()   (dynamic)
+ *   work-items.ts       →  workspaceId: DEFAULT_COORD_WORKSPACE          (static literal)
  *
- * ⚠ A test fixture using `workspaceId: 'default'` CANNOT observe this class of bug — the
- * fixture value silently satisfies the wrong default, which is precisely why P-009's 26/26
- * green, mutation-verified suite never saw it. Pin tenant behavior with a NON-default
- * workspace (see the tenant-scope regression test in plan-workitem-promotion-run).
+ * `coordScopeWorkspace()` returns `activeWorkspaceId()` once the coord-per-workspace flag is
+ * on, so ISSUE-family links moved to the real tenant while FEATURE-family links stayed on
+ * 'default'. work-items.ts's own comment says it "mirrors issues-engineer" — an invariant the
+ * code violates. Measured 2026-08-02 on `rel='implements' AND dst_kind='plan_item'`:
+ *
+ *   default             feature   1216   still being written (through 2026-08-02)
+ *   default             issue      155   stops 2026-06-23 — the changeover
+ *   papercusp-workspace issue     1468   still being written (through 2026-08-02)
+ *
+ * So each single-tenant read is blind to a whole family, and — because the half it DOES see is
+ * large and plausible — the blindness never announces itself. P-009's backfill discovered 18 of
+ * 24 edges and missed 4 plans entirely while every counter reported healthy (0 failures, 0
+ * dangling, 0 unresolved). Reading only the real tenant is not the fix but the same bug
+ * mirrored: it would hide all 1216 feature conversions and make promotion re-mint them.
+ *
+ * Callers therefore pass NOTHING and get the union. Idempotency reads must over-include: a ref
+ * seen that shouldn't be costs one skipped promotion, a ref MISSED mints a duplicate work-item.
+ * `workspaceIds` exists only to pin the set in tests.
+ *
+ * ⚠ A test fixture on `workspaceId: 'default'` CANNOT observe this class of bug — the fixture
+ * value silently satisfies whichever tenant the reader picked, which is exactly why P-009's
+ * 26/26 green, mutation-verified suite never saw it. Pin this with a fixture that writes the
+ * two families to DIFFERENT workspaces.
+ *
+ * The durable repair is to converge the two stores onto one resolver and migrate the stranded
+ * rows; until then this union is what keeps every reader honest.
  */
-export async function listConvertedPlanItemRefs(workspaceId: string): Promise<Set<string>> {
+export async function listConvertedPlanItemRefs(workspaceIds?: readonly string[]): Promise<Set<string>> {
   const { sql } = getOrgPg();
+  const scopes = workspaceIds?.length
+    ? [...new Set(workspaceIds)]
+    : [...new Set([DEFAULT_COORD_WORKSPACE, coordScopeWorkspace()])];
   const rows = await sql<{ dst_ref: string }[]>`
     SELECT DISTINCT dst_ref
       FROM harness_shared.coord_links
-     WHERE workspace_id = ${workspaceId}
+     WHERE workspace_id = ANY(${scopes})
        AND rel = ${IMPLEMENTS_REL}
        AND dst_kind = ${PLAN_ITEM_KIND}`;
   return new Set(rows.map((r) => r.dst_ref));

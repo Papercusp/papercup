@@ -96,21 +96,39 @@ export function spawnRequestFactsFromRow(row: SpawnRequestOfferRow): SpawnReques
  * absence read as a confident `no-response` — "nobody honored it" — for every
  * remote request, which is worse than silence because it reads as a finding.
  *
- * ⚠ Do NOT substitute the row's `origin` column for this. `origin='local'` only
- * means WE published the request, which is equally true of every remote request
- * (verified: all live fed-drill spawn requests are origin='local'). The
- * discriminator is the TARGET, and this comparison mirrors the honor path's own
- * self-check (`payload.targetPublisherGithubUserId !== opts.selfGithubUserId`).
+ * ⚠⚠ IT MUST BE THE DEVICE, NOT THE ACCOUNT — this is the trap, and it is not
+ * hypothetical. The obvious discriminator is
+ * `targetPublisherGithubUserId !== selfGithubUserId`, mirroring the honor path's
+ * own self-check. It is WRONG here: every host in this deployment runs under ONE
+ * GitHub account, so those ids are equal even for a genuinely remote honor.
+ * Measured 2026-08-02 on the live tower→Win-rig request
+ * (spawnreq-43e5a7ad370026f9): `publisherGithubUserId` and
+ * `targetPublisherGithubUserId` are BOTH 279242982. That comparison would have
+ * declared the remote honor local, passed `memberEvidenceAvailable: true`, and
+ * produced the confident false `no-response` this whole module exists to prevent.
+ *
+ * The per-MACHINE identity is the device pubkey. A seat offer id hashes the
+ * target device pubkey, so resolving the request's `targetOfferId` to that seat
+ * row's `signer_device_pubkey` names exactly one machine — verified distinct per
+ * host in the live data (the targeted seat's `nWXvaGiA…` vs this host's own
+ * `IXfGu216…`).
+ *
+ * ⚠ Nor is the spawn-request row's `origin` column usable: `origin='local'`
+ * merely means WE published the request, which is true of every remote request
+ * too (verified: all live fed-drill spawn requests are origin='local').
  */
 export function memberEvidenceAvailableForHonor(args: {
-  targetPublisherGithubUserId: number;
-  selfGithubUserId: number | null | undefined;
+  /** `signer_device_pubkey` of the seat offer named by `targetOfferId`. */
+  honoringDevicePubkey: string | null | undefined;
+  /** This host's own device pubkey (`resolveDevicePubkey`, as the honor path uses). */
+  selfDevicePubkey: string | null | undefined;
 }): boolean {
-  const self = args.selfGithubUserId;
-  // Unknown identity ⇒ we cannot claim visibility. Fail toward "indeterminate",
-  // never toward a verdict we cannot support.
-  if (typeof self !== 'number' || !Number.isInteger(self) || self <= 0) return false;
-  return args.targetPublisherGithubUserId === self;
+  const honoring = args.honoringDevicePubkey?.trim();
+  const self = args.selfDevicePubkey?.trim();
+  // Either side unknown ⇒ we cannot claim visibility. Fail toward
+  // "indeterminate", never toward a verdict we cannot support.
+  if (!honoring || !self) return false;
+  return honoring === self;
 }
 
 /**

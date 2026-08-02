@@ -24,6 +24,7 @@ import {
   __resetOpenAiEmbedCooldownForTest,
   EMBEDDER_PREFERENCES,
   proseSurfacePreference,
+  localAvailable,
   type ResolveEmbedderDeps,
 } from './configure';
 import {
@@ -526,6 +527,46 @@ describe('readEmbedderPreference — env override wiring (production seam)', () 
     expect(pref).not.toBe('bogus');
     expect(EMBEDDER_PREFERENCES).toContain(pref);
   });
+});
+
+/**
+ * THE REGRESSION GUARD for the VM-realm dynamic-import trap.
+ *
+ * `localAvailable()` answered the question "is @huggingface/transformers
+ * installed?" with a dynamic import performed inside a `new Function` body — a
+ * realm that, in some embedders (Vitest among them), has NO host dynamic-import
+ * callback. The import then throws `A dynamic import callback was not specified`
+ * whether or not the package exists, and the bare `catch` turns that into
+ * `false`. Downstream, the cascade reports
+ * `harrier_forced_but_transformers_not_installed` and the memory store silently
+ * runs with NO EMBEDDER on a box where the package imports fine from node.
+ *
+ * Nothing caught it because every cascade test above injects `localInstalled` as
+ * a seam, so the real function was never called under a test runner — the one
+ * environment that reproduces the bug.
+ *
+ * The assertion is conditional on the package genuinely being importable, so
+ * this stays honest (rather than brittle) in an environment that really lacks
+ * it: the invariant under test is "reachable by a direct import ⇒ reported
+ * available", never "this box has transformers installed".
+ */
+describe('localAvailable — must not report "not installed" for a VM-realm import failure', () => {
+  it('reports true whenever the package is genuinely importable here', async () => {
+    let importable = false;
+    try {
+      await import(/* @vite-ignore */ '@huggingface/transformers');
+      importable = true;
+    } catch {
+      importable = false;
+    }
+    if (!importable) {
+      // Genuinely absent — `false` is then the correct answer, and there is no
+      // invariant left to test. Assert that much rather than silently passing.
+      await expect(localAvailable()).resolves.toBe(false);
+      return;
+    }
+    await expect(localAvailable()).resolves.toBe(true);
+  }, 120_000);
 });
 
 describe('proseSurfacePreference — P-015 harrier is memory-side only', () => {

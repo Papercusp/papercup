@@ -24,7 +24,7 @@ function fakeSql(tables: {
 }
 
 describe('enrichPlanListRows', () => {
-  it('attaches ownerIdentity + lastEditor; null when absent', async () => {
+  it('attaches ownerIdentity + lastEditor; ABSENT (not null) when unresolved', async () => {
     const sql = fakeSql({
       revisions: [{ harness_slug: 'papercup', plan_slug: 'a', author_id: 'su-88991fc5-dd92', author_kind: 'agent' }],
     });
@@ -40,8 +40,13 @@ describe('enrichPlanListRows', () => {
     expect((rows[0].ownerIdentity as { handle: string }).handle).not.toContain('@');
     expect(rows[0].lastEditor).toMatchObject({ handle: 'su-88991fc5', kind: 'agent' });
     // row b — no owner, no revision
-    expect(rows[1].ownerIdentity).toBeNull();
-    expect(rows[1].lastEditor).toBeNull();
+    // WI-7045: unresolved attribution is ABSENT, not null — the enrichment runs
+    // after projectPlansReadForUi's null-key omission, so writing an explicit null
+    // here would put the keys back and contradict PlanListRow's `?: AuthorIdentity`.
+    expect(rows[1].ownerIdentity).toBeUndefined();
+    expect(rows[1].lastEditor).toBeUndefined();
+    expect('ownerIdentity' in (rows[1] as object)).toBe(false);
+    expect('lastEditor' in (rows[1] as object)).toBe(false);
   });
 
   it('enriches the owner to a verified github member when pot_members has a match', async () => {

@@ -149,16 +149,29 @@ export async function enrichPlanListRows(
   }
   const resolved = await resolvePlanAuthorIdentities(workspaceId, inputs, { sql });
 
+  // ⚠ SET THE KEY ONLY WHEN IT RESOLVES — never `ownerIdentity: null` (WI-7045).
+  // This enrichment runs AFTER `projectPlansReadForUi` has already omitted the
+  // row's null-valued keys (read-dispatch.ts projects, then the plans.list /
+  // plans.byHive resolvers enrich), so writing an unconditional null here puts
+  // 432 of them back on a live 934-row payload — and, worse, contradicts the
+  // wire contract that omission establishes: the client's `PlanListRow` declares
+  // these `?: AuthorIdentity`, so shipping an explicit null makes that
+  // declaration a lie in the opposite direction. Absent means unresolved.
   return list.map((r) => {
     const harness = planHarnessSlug(r.harness); // origin stamp, never a home-harness default (WI-374)
     const slug = typeof r.slug === 'string' ? r.slug : '';
     const ownerIdentity =
       typeof r.owner === 'string' && r.owner.trim()
-        ? resolved.get(planAuthorKey('email', r.owner.trim())) ?? null
-        : null;
+        ? resolved.get(planAuthorKey('email', r.owner.trim()))
+        : undefined;
     const le = latest.get(`${harness}:${slug}`);
-    const lastEditor = le ? resolved.get(planAuthorKey('authorId', le.authorId)) ?? null : null;
-    return { ...r, ownerIdentity, lastEditor };
+    const lastEditor = le ? resolved.get(planAuthorKey('authorId', le.authorId)) : undefined;
+    const out: PlanListRowLike = { ...r };
+    delete out.ownerIdentity;
+    delete out.lastEditor;
+    if (ownerIdentity) out.ownerIdentity = ownerIdentity;
+    if (lastEditor) out.lastEditor = lastEditor;
+    return out;
   });
 }
 
