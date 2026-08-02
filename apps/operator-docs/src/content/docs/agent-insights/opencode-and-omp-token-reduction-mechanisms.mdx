@@ -655,6 +655,80 @@ is routine propagation noise rather than a real invalidation.
 
 ---
 
+### O9 · Cap universality — two layers, not one, and the premise of the gap was wrong
+
+The original report recorded OMP's caps as *"wired per tool rather than at a single choke
+point"* and filed the universality question as an open gap. The exhaustive audit closes it, and
+the answer corrects the cell: **OMP has both a per-executor streaming cap and a universal
+choke-point cap, and the report saw only the first.** They sit at different boundaries and are
+not alternatives.
+
+**Layer 1 — streaming, per-executor by necessity.** `OutputSink`
+(`session/streaming-output.ts:728`) caps bytes *as they arrive from a live subprocess*. It is
+imported by exactly four execution sites — `exec/bash-executor.ts:10`,
+`eval/executor-base.ts:3`, `eval/js/executor.ts:1`, `tools/bash-interactive.ts:18` (plus
+`tools/eval.ts:12`). This layer is not incompletely applied; it is applied to precisely the set
+of tools that own a subprocess, because it is the only set for which a streaming cap is
+meaningful. Reading this set as "the cap coverage" is what produced the wrong cell.
+
+**Layer 2 — the context boundary, universal.** `spillLargeResultToArtifact`
+(`tools/output-meta.ts:650`) runs inside `wrappedExecute` (`:770-798`), which is installed by
+`wrapToolWithMetaNotice` (`:805`). Every registration path in the codebase wraps:
+
+| path | site |
+|---|---|
+| built-in tools | `tools/index.ts:595` — `createTools` maps **every** `BUILTIN_TOOLS` entry; `:634`, `:640` catch the two late-added xdev transport tools |
+| vibe (ephemeral) tools | `session/agent-session.ts:7195`, via `#wrapRuntimeTool` `:7171` |
+| MCP tools | `agent-session.ts:7786` |
+| RPC-host tools | `agent-session.ts:7837` |
+| SDK goal/write, CLI read | `sdk.ts:2377`, `:2412`; `cli/read-cli.ts:37` |
+
+Extension tools compose *outside* it — `ExtensionToolWrapper` wraps the already-wrapped tool
+(`:7173`, `:7788`, `:7839`) — so the cap still runs. There is no bypass: the saved original,
+`kUnwrappedExecute`, is referenced only within `output-meta.ts` (`:603`, `:770`, `:777`, `:806`,
+`:813`), as an idempotence guard and the wrapper's own call. The source states the intent
+plainly at `:679-680`: *"The spill wraps arbitrary tools (built-in, MCP, extension, RPC-host)."*
+
+Defaults: spill above **50 KB**, keeping **20 KB head + 20 KB tail** (middle elision) or 500
+tail lines — `config/settings-schema.ts:679`, `:703`, `:723`, `:765`.
+
+So the coverage fraction is **every registered tool**, with three exemptions — two of which are
+sound, and two genuine holes (one exemption, one scope limit):
+
+**Exemption 1 — `read`, by name (`:657`). Not a hole.** `read` implements a richer line-oriented
+cap of its own (`DEFAULT_MAX_BYTES` 50 KB, `DEFAULT_MAX_LINES` 3000, `truncateHead`,
+`truncateLine` — `read.ts:47-53`; `MAX_SUMMARY_BYTES` 2 MB, `MAX_SUMMARY_LINES` 20 000 —
+`:154-155`) which a byte-tail spill would corrupt.
+
+**Exemption 2 — a tool that already saved its own artifact (`:662`). Structurally unreachable by
+untrusted tools,** which is the interesting part. The skip keys on
+`result.details?.meta?.truncation?.artifactId`, so in principle a tool could self-exempt from
+the universal cap. A *remote* MCP server cannot: the bridge builds `details` from a fixed field
+list with no `meta` key and no spread of server-supplied data
+(`mcp/tool-bridge.ts:212-234`). The trust boundary strips the field, so only in-process tools
+that genuinely spilled — bash/eval via `OutputSink` — can take the exemption.
+
+**Hole 1 — no `SessionManager`, no cap at all (`:656`).** `sessionManager` is optional on
+`CustomToolContext` (`sdk.ts:542`), and the guard is a bare `if (!sessionManager) return
+result;`. An SDK or headless embedding without one therefore gets **no context cap whatsoever**,
+not a degraded one. That is inconsistent with how the *same function* handles a failed artifact
+save thirty lines later (`:684-692`): it catches, logs, and still truncates, under an explicit
+comment that *"a save failure must never … re-expose the full (possibly context-blowing)
+output"*. The storage-**failure** path degrades correctly to truncate-without-recovery; the
+storage-**absent** path does not degrade at all. Same risk, same function, two different
+answers.
+
+**Hole 2 — the universal cap is text-only.** `spillLargeResultToArtifact` measures only blocks
+where `block.type === "text"` (`:666-671`) and passes every non-text block through untouched
+(`:710-714`). Image blocks are emitted by `browser` (`tools/browser/run-output.ts:24`,
+`tab-worker.ts:1581`, `:1617`), `fetch` (`:1153`), `eval` (`:608-621`), `inspect_image`
+(`:223`) and `read` (`:1210`, `:1276`). They are governed only by a separate per-tool
+`MAX_IMAGE_INPUT_BYTES` of **20 MB** (`utils/image-loading.ts:7`) — a decode-safety limit, not a
+context budget. OMP does have an image-specific reduction path, but it is at the *compaction*
+layer (`dropImages()`, O4), not at the tool boundary.
+
+---
+
 ## Side-by-side, every cell cited or struck
 
 No "us" column, by design.
@@ -666,7 +740,7 @@ No "us" column, by design.
 | **Per-line/column cap** | only within tools: `read.ts:17` (2000 ch), `grep.ts:130-132` | global at the sink: `DEFAULT_MAX_COLUMN = 512` — `streaming-output.ts:12`, applied `:870-873` | High |
 | **Cap combination** | AND — both must pass — `truncate.ts:70` | per-dimension, tracked separately in `TruncationMeta` — `output-meta.ts:26-28` | High |
 | **Truncation directions** | head, tail — `truncate.ts:27` | head, tail, **middle** — `output-meta.ts:28`, `:19` | High |
-| **Applied universally?** | **Yes** — every tool result via `tool/tool.ts:86`; opt-out at `:83-85` | Per-sink (`OutputSink`), wired per tool — `bash.ts:20`, `eval.ts:12` | High / Medium |
+| **Applied universally?** | **Yes** — every tool result via `tool/tool.ts:86`; opt-out at `:83-85` | **Yes, at the registration boundary** — `wrapToolWithMetaNotice` → `spillLargeResultToArtifact`, `output-meta.ts:783`, `:650`; every registration path wraps (built-in `tools/index.ts:595`, MCP `agent-session.ts:7786`, RPC-host `:7837`, vibe `:7195`). Text blocks only; three exemptions — see **O9** | High |
 | **Full output spilled to disk** | **Yes** — `truncate.ts:104-107` | **Yes** — `session/artifacts.ts:101-119` | High |
 | **Spill identifier** | monotonic `ToolID` as filename — `truncate.ts:104` | sequential int per session, `<id>.<tool>.log` — `artifacts.ts:104` | High |
 | **Spill addressed as** | a filesystem path in the hint text — `truncate.ts:110-111` | a URL scheme `artifact://<id>` — `sdk.ts:1577`, `streaming-output.ts:631` | High |
@@ -711,9 +785,11 @@ Recording these explicitly, because an honest gap is worth more than a plausible
 - **Wall-clock cost of an opencode subagent spawn.** Not measurable by reading; would need a run.
 - **Whether opencode rolls child-session cost into the parent's displayed totals.** Cost is computed per assistant message (`session/index.ts:296-302`) and children are separate session rows; no aggregation path was located, but the search was not exhaustive.
 - **`code-mode.ts` in opencode's other 18 packages.** Absent from `packages/opencode/src` and no file in the tree matches `*code-mode*`; a full-repo content search for the concept under another name was not run.
-- **Whether OMP applies its caps as universally as opencode's `tool.ts:86` does.** `OutputSink` is wired per tool (`bash.ts`, `eval.ts`, …) rather than at a single choke point, but no exhaustive audit of every tool was performed.
 
-### ✓ Five of the original nine closed after publication — all five to one cause
+All three survivors need a **run** or a full-repo content search — none is answerable by reading
+the packages already cited. Every gap that a read could close has been closed.
+
+### ✓ Six of the original nine closed after publication — five of them to one cause
 
 The five that closed were all OMP gaps, and every one of them read as *"OMP does not appear to
 do this"* for the same wrong reason: **OMP is not one package.** The original read searched
@@ -741,12 +817,28 @@ What closed, and where it actually lived:
 | Subagent recursion depth | **2** by default — `task/structured-subagent.ts:211` (not `spawn-policy.ts`) | `pi-coding-agent` |
 | Prompt-caching strategy | 4-breakpoint *budget*, 1h default retention, TTL-ordering normalized — see **O8** | `pi-ai` |
 | Cache tokens vs overflow | **yes**, they count — minus provider-side orchestration tokens — `compaction.ts:215-222` | `pi-agent-core` |
+| Cap universality | **universal at the registration boundary** — `wrapToolWithMetaNotice`, `output-meta.ts:805`; see **O9** | `pi-coding-agent` |
 
-Two of these did not merely fill a blank — they **corrected cells that were already filled
-wrongly**. OMP's shake hysteresis and protection band were recorded as *none found* and
+**Three** of these did not merely fill a blank — they **corrected cells that were already filled
+wrongly**, and the three share a shape worth naming.
+
+Two were the shake cells. OMP's hysteresis and protection band were recorded as *none found* and
 *config-driven*; both exist and are cited above. The report had read only the aggressive path
 that the manual `/shake` command uses, where both thresholds are deliberately zero, and
 generalised from it. The auto path — the one that actually runs unattended — has real guards.
+
+The third was cap universality (**O9**), and it is the same error in a different dress. The
+report found `OutputSink` wired into `bash.ts` and `eval.ts`, correctly observed that this is
+per-tool, and concluded OMP has no single choke point. It does — one layer up, at tool
+*registration* rather than tool *execution*, wrapping every built-in, MCP, RPC-host and
+extension tool alike. Both mistakes are the same one: **finding one mechanism and treating it as
+the whole answer, when it was one layer of a layered design.** The package-boundary lesson below
+is the coarse version of this; the layer-boundary version is subtler, because everything you
+read is true — the per-tool wiring really is per-tool. It just was not the only thing there.
+
+The practical form of the rule: when a mechanism looks *surprisingly* incomplete in a codebase
+that is otherwise careful, the likely explanation is a second mechanism you have not found yet,
+not an oversight by the authors.
 
 ## What would change these findings
 

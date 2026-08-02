@@ -1442,6 +1442,67 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     });
   });
 
+  // WI-6862: the booked channel must say WHICH signal produced the `true`. injectIntoHost's
+  // bare boolean resolves true on a BARE SOCKET CLOSE, which is exactly what a host killed
+  // mid-delivery (a provider usage_limit wall hitting the respawn) looks like — so a cold
+  // reset that never re-execed was booked as an unqualified success and read back that way
+  // by whoever was diagnosing it (observed on WI-6852: booked delivered 02:58:02.883Z, the
+  // respawn hit the wall at 02:58:07.310Z).
+  describe('WI-6862 — the cold channel distinguishes an ACKED re-exec from an ASSUMED one', () => {
+    const confirming = (r: { ok: boolean; confirmation: string }) =>
+      ({ injectPsuHostWithConfirmation: vi.fn(async () => r) }) as unknown as Partial<ExecuteWakeDeps>;
+
+    it("books 'psu-socket-reset' when the HOST acked — the only value that means it confirmed", async () => {
+      const out = await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
+        coldDeps(confirming({ ok: true, confirmation: 'acked' })),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    });
+
+    it("books 'psu-socket-reset-unconfirmed' on a bare close — the wall-killed respawn that used to read as a clean success", async () => {
+      const out = await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
+        coldDeps(confirming({ ok: true, confirmation: 'assumed-close' })),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset-unconfirmed' });
+    });
+
+    it('the RECYCLE cadence (wakeCount % 8 === 0) carries the same distinction, both ways', async () => {
+      const acked = await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 8 }) }),
+        coldDeps(confirming({ ok: true, confirmation: 'acked' })),
+      );
+      expect(acked).toEqual({ kind: 'delivered', channel: 'psu-socket-recycle' });
+      const assumed = await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 8 }) }),
+        coldDeps(confirming({ ok: true, confirmation: 'assumed-close' })),
+      );
+      expect(assumed).toEqual({ kind: 'delivered', channel: 'psu-socket-recycle-unconfirmed' });
+    });
+
+    it('a NOT-ok confirmation is not a channel at all — it still falls through to the warm inject', async () => {
+      const out = await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
+        coldDeps(confirming({ ok: false, confirmation: 'timeout' })),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    });
+
+    // THE CONTROL. Without it the three assertions above would also pass if the fixture
+    // never reached the confirmation seam at all: `coldDeps` supplies an `injectPsuHost`
+    // stub, and a stub has no confirmation channel, so resolution deliberately falls back
+    // to today's exact boolean behavior. This case pins that fallback — proving the
+    // channels above are produced by the confirmation value and not by the fixture shape.
+    it('CONTROL: an injectPsuHost stub with no confirmation seam keeps TODAY’s channel unchanged', async () => {
+      const out = await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
+        coldDeps(),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    });
+  });
+
   it('P-003 (compaction-continuity-hardening): the cold injection appends the carry-brief EXTRAS (held items + walls/facts + awaits + fleet) after the note; the note stays the core', async () => {
     const injectPsuHost = vi.fn(async () => true);
     // The return is TYPED as CarryBrief on purpose: this fixture has now been

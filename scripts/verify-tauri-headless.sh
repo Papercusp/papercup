@@ -566,7 +566,18 @@ fi
 # run is a coin-flip and can even report a broken thing as fixed. Freezing a
 # snapshot the shared watcher can't touch makes THIS instance's module graph
 # stable AND genuinely isolated for the whole run.
-SHARED_SPA_DIST="$REPO_DIR/apps/operator-vite/dist"
+# PAPERCUSP_SHARED_SPA_DIST overrides WHICH build gets frozen. The default is the
+# shared `apps/operator-vite/dist`, but that is a PRODUCTION bundle, and some
+# checks only exist in a development one — `apps/operator-vite/src/query-health-gate.ts`
+# gates @papercusp/sync's query-health warnings on `import.meta.env.MODE !==
+# 'production'`, so they are statically compiled OUT of the shared dist and can
+# never fire here. Build the bundle you want somewhere harmless and point at it:
+#   PAPERCUSP_VITE_OUT_DIR=/tmp/spa-dev PAPERCUSP_VITE_FINAL_OUT_DIR=/tmp/spa-dev \
+#     npx vite build --mode development          # (in apps/operator-vite; swaps nothing)
+#   PAPERCUSP_SHARED_SPA_DIST=/tmp/spa-dev bash scripts/verify-tauri-headless.sh
+# Still frozen into $WORK/spa exactly as below, so the isolation property holds
+# whichever source it came from.
+SHARED_SPA_DIST="${PAPERCUSP_SHARED_SPA_DIST:-$REPO_DIR/apps/operator-vite/dist}"
 SPA_DIST=""
 if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   SPA_DIST="$WORK/spa"

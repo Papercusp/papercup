@@ -53,6 +53,27 @@ function row(over: Partial<TaskRow> & { taskId: string }): TaskRow {
   };
 }
 
+/**
+ * A scanned process, defaulted. Every fixture here is an in-slice process, which
+ * `classifyScope` maps to `{ scope: 'owned', exemptReason: null }`.
+ *
+ * This exists as a factory rather than eight inline literals because it already
+ * failed once that way: adding the required `scope` / `exemptReason` fields to
+ * `ScannedProcess` stranded all eight sites at once and red-ed the tsc ratchet
+ * (WI-7014). Constructing through here means the NEXT required field is one edit,
+ * and `tsc` points at this function instead of scattering across the file.
+ */
+function proc(over: Partial<ScannedProcess> & { pid: number; cgroupPath: string }): ScannedProcess {
+  return {
+    processIdentity: null,
+    cmdline: 'x',
+    owned: true,
+    scope: 'owned',
+    exemptReason: null,
+    ...over,
+  };
+}
+
 function scanResult(processes: ScannedProcess[], over: Partial<ScanResult> = {}): ScanResult {
   return {
     processes,
@@ -86,7 +107,7 @@ describe('reconcileTick — happy path', () => {
       listLive: async () => [row({ taskId: 'aaa111' })],
       scan: () =>
         scanResult([
-          { pid: 10, cgroupPath: dir, processIdentity: 'linux:b:10', cmdline: 'node x', owned: true },
+          proc({ pid: 10, cgroupPath: dir, processIdentity: 'linux:b:10', cmdline: 'node x' }),
         ]),
       fs: memFs({
         [`/sys/fs/cgroup${dir}/memory.current`]: '5242880',
@@ -122,13 +143,12 @@ describe('reconcileTick — happy path', () => {
       listLive: async () => [],
       scan: () =>
         scanResult([
-          {
+          proc({
             pid: 99,
             cgroupPath: `${OURS}/papercusp-bash-job.slice`,
             processIdentity: 'linux:b:99',
             cmdline: 'rogue',
-            owned: true,
-          },
+          }),
         ]),
       fs: memFs({}),
       notify,
@@ -143,13 +163,12 @@ describe('reconcileTick — happy path', () => {
       listLive: async () => [],
       scan: () =>
         scanResult([
-          {
+          proc({
             pid: 5,
             cgroupPath: `${OURS}/pc-ccc333.scope`,
             processIdentity: null,
             cmdline: 'zombie',
-            owned: true,
-          },
+          }),
         ]),
       fs: memFs({}),
     });
@@ -206,7 +225,7 @@ describe('reconcileTick — refusing to act on a bad scan', () => {
       listLive: async () => [row({ taskId: 'ggg777' }), row({ taskId: 'hhh888' })],
       scan: () =>
         scanResult(
-          [{ pid: 7, cgroupPath: dir, processIdentity: 'linux:b:7', cmdline: 'x', owned: true }],
+          [proc({ pid: 7, cgroupPath: dir, processIdentity: 'linux:b:7', cmdline: 'x' })],
           { ownedTruncated: true },
         ),
       fs: memFs({}),
@@ -274,7 +293,7 @@ describe('reconcileTick — notification discipline', () => {
       listLive: async () => [],
       scan: () =>
         scanResult([
-          { pid: 1, cgroupPath: `${OURS}/x`, processIdentity: null, cmdline: 'r', owned: true },
+          proc({ pid: 1, cgroupPath: `${OURS}/x`, processIdentity: null, cmdline: 'r' }),
         ]),
       fs: memFs({}),
       notify,
@@ -294,7 +313,7 @@ describe('reconcileTick — notification discipline', () => {
       listLive: async () => [],
       scan: () =>
         scanResult([
-          { pid: 1, cgroupPath: `${OURS}/x`, processIdentity: null, cmdline: 'r', owned: true },
+          proc({ pid: 1, cgroupPath: `${OURS}/x`, processIdentity: null, cmdline: 'r' }),
         ]),
       fs: memFs({}),
       notify,
@@ -303,8 +322,8 @@ describe('reconcileTick — notification discipline', () => {
       listLive: async () => [],
       scan: () =>
         scanResult([
-          { pid: 1, cgroupPath: `${OURS}/x`, processIdentity: null, cmdline: 'r', owned: true },
-          { pid: 2, cgroupPath: `${OURS}/y`, processIdentity: null, cmdline: 'r2', owned: true },
+          proc({ pid: 1, cgroupPath: `${OURS}/x`, processIdentity: null, cmdline: 'r' }),
+          proc({ pid: 2, cgroupPath: `${OURS}/y`, processIdentity: null, cmdline: 'r2' }),
         ]),
       fs: memFs({}),
       notify,

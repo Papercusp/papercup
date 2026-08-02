@@ -227,6 +227,137 @@ function scan(file, text) {
   return out;
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * R6 — ORPHANED ASSERT (WI-7000). Cross-file, so it cannot live in scan().
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** A function name counts as an assert if it says so. */
+const ASSERT_NAME = /assert/i;
+
+/**
+ * Strip `#`-to-EOL comments, quote-aware.
+ *
+ * NOT cosmetic — it is what makes R6 mean anything. The densest concentration
+ * of an assert's name in this tree is the prose ABOUT it: the lib's own
+ * docblock lists all five fed_assert_* helpers, and so does the LIVE-1 runbook.
+ * An un-stripped sweep therefore finds a "call" for every orphan and is most
+ * confident exactly where a helper is best documented and least used — i.e. it
+ * would have scored WI-7000 green. (Same trap closed for the same reason in
+ * check-declared-consumed.mjs: a comment is not a use.)
+ */
+function stripShellComments(line) {
+  let sq = false;
+  let dq = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '\\' && dq) { i++; continue; }
+    if (c === "'" && !dq) sq = !sq;
+    else if (c === '"' && !sq) dq = !dq;
+    else if (c === '#' && !sq && !dq && (i === 0 || /[\s;&|(]/.test(line[i - 1]))) return line.slice(0, i);
+  }
+  return line;
+}
+
+const FN_DEF = /^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{/;
+const FN_DEF_KW = /^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
+
+/**
+ * Split a script into regions: one per function definition, plus the top-level
+ * remainder (`name: null`). Function extents come from brace depth.
+ */
+function segmentFunctions(rawLines) {
+  const lines = rawLines.map(stripShellComments);
+  const fns = [];
+  const top = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(FN_DEF) || lines[i].match(FN_DEF_KW);
+    if (!m) { top.push(lines[i]); continue; }
+    let depth = 0;
+    let opened = false;
+    let j = i;
+    const body = [];
+    for (; j < lines.length; j++) {
+      for (const ch of lines[j]) {
+        if (ch === '{') { depth++; opened = true; } else if (ch === '}') depth--;
+      }
+      body.push(lines[j]);
+      if (opened && depth <= 0) break;
+    }
+    // Keep what follows the opening brace ON the def line: a one-liner
+    // (`drv_psql() { drv_psql_local "$@"; }`) has its ENTIRE body there, and
+    // dropping the whole line loses the delegation — which then reports the
+    // real implementation as unreachable.
+    body[0] = body[0].slice(body[0].indexOf('{') + 1);
+    fns.push({ name: m[1], defLine: i + 1, body: body.join('\n') });
+    i = j;
+  }
+  return { fns, top: top.join('\n') };
+}
+
+/**
+ * Assert helpers that no execution path can reach.
+ *
+ * REACHABILITY, not "is it called somewhere outside its own file". The naive
+ * form breaks both ways here: fed_assert_* helpers legitimately call sibling
+ * helpers in the same lib (so same-file calls are real), while a lib function
+ * called ONLY by another orphaned lib function is still an orphan. So: roots
+ * are the top-level regions of every script, then BFS through callees.
+ *
+ * The root set is deliberately PERMISSIVE (every file's top level, including
+ * libs that may themselves be sourced by nobody). An over-permissive root set
+ * can only under-report, never invent a finding — and it still re-derives
+ * WI-7000 exactly: delete parity.sh from the tree and this reports those five
+ * helpers and nothing else.
+ */
+function orphanedAsserts(files, read = (f) => readFileSync(resolve(ROOT, f), 'utf8')) {
+  const defs = new Map(); // name -> { file, defLine, lines }
+  const bodies = new Map(); // name -> concatenated body text
+  const roots = [];
+
+  for (const f of files) {
+    let raw;
+    try { raw = read(f); } catch { continue; }
+    const lines = raw.split('\n');
+    const { fns, top } = segmentFunctions(lines);
+    roots.push(top);
+    for (const fn of fns) {
+      if (!defs.has(fn.name)) defs.set(fn.name, { file: f, defLine: fn.defLine, lines });
+      bodies.set(fn.name, `${bodies.get(fn.name) ?? ''}\n${fn.body}`);
+    }
+  }
+
+  const names = [...defs.keys()];
+  // A call is the name as a whole word. `-` and `.` are excluded from the
+  // boundary class so `foo-bar` / `foo.sh` never read as a call to `foo`.
+  const callsIn = (text) => names.filter((n) => new RegExp(`(^|[^A-Za-z0-9_.-])${n}([^A-Za-z0-9_.-]|$)`, 'm').test(text));
+
+  const reachable = new Set();
+  const queue = [];
+  const push = (n) => { if (!reachable.has(n)) { reachable.add(n); queue.push(n); } };
+  for (const r of roots) for (const n of callsIn(r)) push(n);
+  while (queue.length) for (const c of callsIn(bodies.get(queue.shift()) ?? '')) push(c);
+
+  const asserts = names.filter((n) => ASSERT_NAME.test(n));
+  const findings = [];
+  for (const n of asserts) {
+    if (reachable.has(n)) continue;
+    const d = defs.get(n);
+    if (suppressed(d.lines, d.defLine - 1)) continue;
+    findings.push({
+      file: d.file,
+      line: d.defLine,
+      rule: 'R6-orphaned-assert',
+      msg:
+        `"${n}" is an assert that NO execution path reaches — no script's top level calls it, ` +
+        'and nothing reachable calls it either. It cannot fail, so it is not evidence; it is dead code ' +
+        'that reads like proof. Give it a real caller (a runner/scenario that is itself invoked), or delete it. ' +
+        'See WI-7000: five LIVE-1 parity asserts sat unreachable for a month after their named caller was retired, ' +
+        'while the surfaces they were written to prove stayed "unproven, manual PG inspection".',
+    });
+  }
+  return { findings, assertCount: asserts.length, unreachableAll: names.filter((n) => !reachable.has(n)) };
+}
+
 /**
  * Enumerate the rig/scenario scripts.
  *
@@ -293,20 +424,44 @@ function main() {
     findings.push(...scan(f, text));
   }
 
+  const orphans = orphanedAsserts(tracked);
+  findings.push(...orphans.findings);
+
+  // The same "couldn't measure is not a pass" guard, applied to R6's own input:
+  // if the walk found no assert helpers at all, the parse broke and a ✓ is a lie.
+  if (orphans.assertCount === 0) {
+    console.error(
+      `✗ assert-integrity: R6 found 0 assert-named functions across ${tracked.length} script(s).\n\n` +
+        '  The function-definition parse broke (or the rig moved). R6 cannot be green on a scan\n' +
+        '  that found nothing to check — that is the can-falsely-pass class this file exists to catch.',
+    );
+    process.exit(1);
+  }
+
+  if (process.argv.includes('--report-unreachable')) {
+    console.log(`ℹ unreachable functions (advisory, non-assert included): ${orphans.unreachableAll.length}`);
+    for (const n of orphans.unreachableAll.sort()) console.log(`    ${n}`);
+  }
+
   if (findings.length === 0) {
-    console.log(`✓ assert integrity: no can-falsely-pass shapes in ${tracked.length} rig/scenario script(s).`);
+    console.log(
+      `✓ assert integrity: no can-falsely-pass shapes in ${tracked.length} rig/scenario script(s); ` +
+        `all ${orphans.assertCount} assert helper(s) are reachable from a caller.`,
+    );
     process.exit(0);
   }
 
-  console.error('✗ assert-integrity: probe(s) whose FAILURE TO RUN can read as a PASS.\n');
-  console.error('  Rule (P-411): every "couldn\'t measure" must be a FAIL, never a pass.\n');
+  console.error('✗ assert-integrity: assert(s) that are not evidence.\n');
+  console.error('  R1-R5 (P-411):  every "couldn\'t measure" must be a FAIL, never a pass.');
+  console.error('  R6   (WI-7000): an assert nobody calls is not evidence.\n');
   for (const f of findings) {
     console.error(`    ${f.file}:${f.line}  [${f.rule}]`);
     console.error(`      ${f.msg}\n`);
   }
   console.error(
     `  ${findings.length} finding(s). Fix, or annotate the line with "# ${PRAGMA} <reason>"\n` +
-      '  if the shape is genuinely safe here. See WI-5788 / plan item P-411.',
+      '  if the shape is genuinely safe here (for R6 the pragma goes on the function\'s\n' +
+      '  definition line, or the comment block above it). See WI-5788 / P-411 and WI-7000.',
   );
   process.exit(1);
 }
@@ -314,4 +469,4 @@ function main() {
 const invokedPath = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : '';
 if (import.meta.url === invokedPath) main();
 
-export { scan, scriptsInScope, ROOT };
+export { scan, scriptsInScope, ROOT, orphanedAsserts, segmentFunctions, stripShellComments };

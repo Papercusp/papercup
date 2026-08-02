@@ -78,10 +78,33 @@ bin/local-matrix.sh                      # full 8-scenario matrix (needs a built
 bin/local-matrix.sh --only=coord_controlplane   # just the coord boundary scenario
 # tower↔VM rig (true kernel/network boundary — the P-059 drill):
 bin/vm-rig/deploy.sh && bin/vm-rig/probe-fwd.sh && bin/vm-rig/probe-rev.sh
+# surfaces 1-5 as one green/red exit (see the follow-up below):
+bin/vm-rig/parity.sh
 # (RETIRED, kept for reference — requires Hetzner access we no longer have:)
 # bin/deb-hetzner-federation.sh
 ```
 
-**Follow-up (bounded, not owner-gated):** codify surfaces 1–5 above into `fed_assert_*`
-helpers in `bin/lib/federation-asserts.sh` and call them from `deb-hetzner-federation.sh`, so
-the parity proof is a single green/red exit rather than manual PG inspection.
+**Follow-up — DONE 2026-08-02 (WI-7000).** ~~codify surfaces 1–5 above into `fed_assert_*`
+helpers in `bin/lib/federation-asserts.sh` and call them from `deb-hetzner-federation.sh`~~,
+so the parity proof is a single green/red exit rather than manual PG inspection.
+
+The helpers landed in July; **the caller named here never did** — `deb-hetzner-federation.sh`
+is the RETIRED Hetzner scenario, so all five asserts were unreachable dead code for a month
+while surfaces 1/2/4/5 stayed "unproven cross-machine, manual PG inspection". The driver is
+now **`bin/vm-rig/parity.sh`**, pointed at the rig that does exist (tower ↔ Mac VM); the
+asserts themselves were not modified. `npm run lint:assert-integrity` (R6) fails the build
+if any assert helper goes unreachable again.
+
+First real cross-machine run (1785661381, tower `main-server-Precision-7865-Tower` ↔
+`Avis-iMac.local`): **green=3 red=2**.
+
+- 🟢 `fedevents` (P-009), `claimspec` (P-016+M7), `presence` (P-004/P-005) — **proven
+  cross-machine**, first time; these three were "manual PG inspection" until now.
+- 🔴 `wakebridge` (P-002/P-003), `receipts` (P-008+M5a) — **NOT a federation fault.** The
+  message provably crosses (a tower `coord:send` msg_id lands in the Mac's `coord_event_log`
+  with `origin='remote'`). `fed_assert_wake_bridge` reads `fired_at` on the always-armed
+  `coord:inbox-wake:<agent>` row, and that observable stopped being produced when the watch
+  became always-armed-at-session-start (D-005): 1 firing in 24h across 28,590 tower rows; 2
+  ever on the Mac, both on the day the asserts were written. `receipts` is downstream of it.
+  Tracked as **WI-7012** — re-point the assert at what the wake executor actually writes per
+  delivery, or hand it to P-001. Do not read either red as "cross-machine wake is broken".

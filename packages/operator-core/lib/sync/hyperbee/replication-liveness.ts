@@ -231,6 +231,25 @@ interface LogState {
   alarmedNoReplicator: boolean;
   alarmedFrozen: boolean;
   alarmedConnectedNever: boolean;
+  /**
+   * WI-7011 — has this process ALREADY asked the durable ledger whether an EI is
+   * open for this (log, axis)? One latch per axis, set on the FIRST healthy
+   * observation of that axis and never cleared for the LogState's lifetime.
+   *
+   * Why a latch and not just "the alarm flag is false": for a RESTARTED process
+   * there is no alarm→recovered TRANSITION to hang the probe on. The log reads
+   * healthy from its very first sample and every sample after, so
+   * "healthy && !alarmed" is true on EVERY merge pass — gating the probe on that
+   * alone would be one PG read per pass per log, forever. The latch turns it into
+   * at most ONE read per (log, axis) per process lifetime.
+   *
+   * Not persisted on purpose: it is a per-process memo of a per-process question
+   * ("have I checked yet?"), and a fresh process SHOULD ask again — that is the
+   * whole point of the rehydration.
+   */
+  durableProbedNoReplicator: boolean;
+  durableProbedFrozen: boolean;
+  durableProbedConnectedNever: boolean;
 }
 
 /** Registry: `${workspaceId}::${harnessSlug}` → keyHex → state. */
@@ -423,6 +442,104 @@ let episodeRecoveredReporter:
   | ((recovery: ReplicationStallEpisode) => void)
   | null = null;
 
+/**
+ * WI-7011 — the DURABLE-ALARM probe seam.
+ *
+ * THE BUG THIS CLOSES. Every recovery report above is gated on an in-process
+ * `alarmedX` flag, and those flags live in `registry` — a module-scoped
+ * in-memory Map that a fresh process initialises to `false`. So:
+ *
+ *   1. Process A observes the stall → `alarmedX = true` → files a durable EI.
+ *   2. Process A exits (deploy, sidecar restart, crash).
+ *   3. Process B starts → fresh registry → `alarmedX = false`.
+ *   4. The log recovers → `wasAlarmed` is FALSE → no recovery is reported →
+ *      `resolveReplicationStallEi` is never called.
+ *   5. The EI stays open FOREVER, asserting a stall that ended days ago.
+ *
+ * Measured 2026-08-02: 43 of 47 open non-drain [replication-liveness] EIs had
+ * been silent 5.7–27.5 days (the emitter re-pages a STANDING condition every
+ * 24h, so multi-day silence means the condition is not standing). 36 of them sat
+ * on the two most ACTIVE harnesses — which is the tell, and the opposite of the
+ * intuition that busy systems get cleaned up best: the most-restarted harnesses
+ * orphan the most alarms.
+ *
+ * THE FIX is to stop treating the in-process flag as the only evidence a stall
+ * happened. An OPEN EI is the durable equivalent of `alarmedX = true`, and it is
+ * the one signal that survives the reset — `hasOpenReplicationStallEi`'s own doc
+ * says exactly that, and boot.ts's repair ladder already relies on it for the
+ * very same per-process-reset problem. This path simply asks it too.
+ *
+ * Production default: a LAZY dynamic import (same pattern as the two reporters
+ * above — the module never statically links PG). Pass a stub in unit tests.
+ *
+ * CLASS NOTE: third instance of one pattern (WI-6997 was the outbox-drain latch).
+ * A recovery path gated on IN-PROCESS state cannot resolve a DURABLE artifact
+ * filed by a PREVIOUS process. Any file/resolve pair whose file-side is durable
+ * and whose resolve-side is gated on memory has this bug.
+ */
+export type OpenStallEiProbe = (episode: {
+  harnessSlug: string;
+  logKeyHex: string;
+  kind: ReplicationStallEpisode['kind'];
+}) => Promise<boolean>;
+
+const defaultOpenStallEiProbe: OpenStallEiProbe = (episode) =>
+  import('./replication-stall-ei').then((m) => m.hasOpenReplicationStallEi(episode));
+
+let openStallEiProbe: OpenStallEiProbe | null = null;
+
+export function setOpenStallEiProbeForTests(fn: OpenStallEiProbe | null): void {
+  openStallEiProbe = fn;
+}
+
+/**
+ * WI-7011: on the FIRST healthy observation of one axis for one log in THIS
+ * process, ask the durable ledger whether a PREVIOUS process left an EI open for
+ * it — and if so, report the recovery the in-process flag could not.
+ *
+ * Bounded by the `durableProbed*` latch to at most ONE read per (log, axis) per
+ * process lifetime; see the latch's own doc for why "healthy && !alarmed" is NOT
+ * a usable edge on its own.
+ *
+ * Best-effort in the same sense as every other reporter here: fire-and-forget,
+ * swallow-all, and NEVER throws back into the merge pass it rides. A probe miss
+ * just leaves the EI open for manual triage — exactly the status quo it improves
+ * on, so a failure can never be worse than not having tried.
+ *
+ * Deliberately emits NO console line: this module's tests run under
+ * vitest-fail-on-console, and a recovered-by-rehydration is not a fault worth a
+ * diagnostic anyway — the recovery reporter it delegates to already logs.
+ */
+function probeDurableAlarm(
+  st: LogState,
+  latch: 'durableProbedNoReplicator' | 'durableProbedFrozen' | 'durableProbedConnectedNever',
+  episode: ReplicationStallEpisode,
+  onRecovery: (recovery: ReplicationStallEpisode) => void,
+): void {
+  if (st[latch]) return;
+  // Latch BEFORE firing: the probe is async and the merge pass is re-entrant, so
+  // latching afterwards would let every pass in the probe's flight window queue
+  // another read (and, worse, report the same recovery N times).
+  st[latch] = true;
+  try {
+    void Promise.resolve(
+      (openStallEiProbe ?? defaultOpenStallEiProbe)({
+        harnessSlug: episode.harnessSlug,
+        logKeyHex: episode.logKeyHex,
+        kind: episode.kind,
+      }),
+    )
+      .then((isOpen) => {
+        if (isOpen) onRecovery(episode);
+      })
+      .catch(() => {
+        /* best-effort: a probe miss leaves the EI open, same as before this existed */
+      });
+  } catch {
+    /* never let the probe throw back into the merge pass */
+  }
+}
+
 export function setReplicationStallRecoveryReporterForTests(
   fn: ((recovery: ReplicationStallEpisode) => void) | null,
 ): void {
@@ -606,6 +723,11 @@ export function sampleReplicationLiveness(
       alarmedNoReplicator: false,
       alarmedFrozen: false,
       alarmedConnectedNever: false,
+      // WI-7011: nothing probed yet — the first healthy observation of each axis
+      // asks the durable ledger once, then latches.
+      durableProbedNoReplicator: false,
+      durableProbedFrozen: false,
+      durableProbedConnectedNever: false,
     };
     logs.set(sample.keyHex, st);
   }
@@ -638,7 +760,26 @@ export function sampleReplicationLiveness(
       const priorStallMs = st.lastNonZeroPeersMs !== null ? now - st.lastNonZeroPeersMs : 0;
       st.lastNonZeroPeersMs = now;
       st.alarmedNoReplicator = false; // recovered — a future stall re-fires
+      if (!wasAlarmed) {
+        // WI-7011: healthy, and THIS process never saw it stall — which is also
+        // exactly what a restart looks like. Ask the durable ledger once whether a
+        // previous process left an EI open for this log; if so, THAT is the alarm
+        // this process lost, and the recovery is real.
+        probeDurableAlarm(st, 'durableProbedNoReplicator', {
+          workspaceId,
+          harnessSlug,
+          logKeyHex: sample.keyHex,
+          kind: 'no_replicator',
+          stalledForMs: 0, // the stall began in a previous process — unknown here
+          detail:
+            `log=${sample.keyHex.slice(0, 12)}… has a live replicator peer, and an EI ` +
+            `filed by a previous process was still open (durable rehydration, WI-7011)`,
+        }, onRecovery);
+      }
       if (wasAlarmed) {
+        // First-hand knowledge — nothing to rehydrate; latch so no read is spent
+        // and no duplicate report can race the async resolve (see the zombie axis).
+        st.durableProbedNoReplicator = true;
         void onRecovery({
           workspaceId,
           harnessSlug,
@@ -838,6 +979,11 @@ export function sampleReplicationLiveness(
     st.connectedNeverReplSinceMs = null;
     st.alarmedConnectedNever = false;
     if (wasAlarmedConnectedNever) {
+      // This process HAS first-hand knowledge of the stall and just resolved it —
+      // so there is nothing for the durable probe to rehydrate. Latch it (WI-7011)
+      // to spend no read, and to make a duplicate report impossible: the resolve
+      // above is async, so a probe racing it would still read the EI as open.
+      st.durableProbedConnectedNever = true;
       void onRecovery({
         workspaceId,
         harnessSlug,
@@ -849,6 +995,30 @@ export function sampleReplicationLiveness(
           `${Math.round(zombieStallMs / 1000)}s swarm-connected-but-dead`,
       });
     }
+  }
+
+  // WI-7011: the zombie axis needs its own healthy-observation probe, and it
+  // CANNOT ride the recovery branch above — that branch requires
+  // `connectedNeverReplSinceMs !== null` (a zombie window this process opened),
+  // which is always null in a fresh process. So on a restart the branch is
+  // structurally unreachable and the orphaned EI could never clear. Keyed on the
+  // same "a replicator is attached RIGHT NOW" signal the branch uses.
+  if (replicatorAttachedNow && !st.alarmedConnectedNever) {
+    probeDurableAlarm(
+      st,
+      'durableProbedConnectedNever',
+      {
+        workspaceId,
+        harnessSlug,
+        logKeyHex: sample.keyHex,
+        kind: 'connected_never_replicated',
+        stalledForMs: 0, // the stall began in a previous process — unknown here
+        detail:
+          `log=${sample.keyHex.slice(0, 12)}… has a live replicator attached, and an EI ` +
+          `filed by a previous process was still open (durable rehydration, WI-7011)`,
+      },
+      onRecovery,
+    );
   }
 
   // ── ingest-progress axis (frozen) ──
@@ -864,7 +1034,29 @@ export function sampleReplicationLiveness(
     const clearFrozen = (): void => {
       st.lastIngestProgressMs = now;
       st.alarmedFrozen = false;
+      if (!wasAlarmedFrozen) {
+        // WI-7011: ingest is healthy and THIS process never saw it freeze — the
+        // restart signature. Ask the durable ledger once.
+        probeDurableAlarm(
+          st,
+          'durableProbedFrozen',
+          {
+            workspaceId,
+            harnessSlug,
+            logKeyHex: sample.keyHex,
+            kind: 'frozen',
+            stalledForMs: 0, // the stall began in a previous process — unknown here
+            detail:
+              `log=${sample.keyHex.slice(0, 12)}… is ingesting normally, and an EI filed ` +
+              `by a previous process was still open (durable rehydration, WI-7011)`,
+          },
+          onRecovery,
+        );
+      }
       if (wasAlarmedFrozen) {
+        // First-hand knowledge — nothing to rehydrate; latch so no read is spent
+        // and no duplicate report can race the async resolve (see the zombie axis).
+        st.durableProbedFrozen = true;
         void onRecovery({
           workspaceId,
           harnessSlug,

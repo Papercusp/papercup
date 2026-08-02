@@ -762,22 +762,29 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
       expect(slotsLine(r.stderr)).toContain('slots=3 ');
     });
 
-    it('degrades to v1 depth (/4) on EVERY unreadable or unrecognized phase — never to relaxation', () => {
+    // One case PER `it`, deliberately — NOT a for-loop inside a single test.
+    // Each probe spawns a real bash subprocess, and this suite runs under
+    // vitest's DEFAULT 5s testTimeout (no testTimeout is set in apps/operator's
+    // config or the shared defineVitestConfig). Eight spawns sharing one 5s
+    // budget is a load-induced flake waiting to happen on this box — exactly how
+    // github-identity-drift.test.ts red-pinned the gate on 2026-08-02: it took
+    // 11,725ms against the 5s default with ZERO real offenders, purely because
+    // the host was loaded. it.each gives every case its own budget and names the
+    // offending body in the failure instead of collapsing all eight into one.
+    it.each([
+      ['empty file',                 ''],
+      ['truncated json',             '{'],
+      ['garbage',                    'not json at all'],
+      ['protocol 1 (field absent)',  '{"phase":"suite"}'],
+      ['protocol explicitly older',  '{"phase":"suite","phaseProtocol":1}'],
+      ['non-numeric protocol',       '{"phase":"suite","phaseProtocol":"two"}'],
+      ['unknown phase name',         '{"phase":"wat","phaseProtocol":2}'],
+      ['protocol but no phase',      '{"phaseProtocol":2}'],
+    ])('degrades to v1 depth (/4), never to relaxation: %s', (_label, body) => {
       const lock = plantLock(liveOwner());
-      for (const body of [
-        '',                                          // empty file
-        '{',                                         // truncated json
-        'not json at all',                           // garbage
-        '{"phase":"suite"}',                         // protocol 1 (field absent)
-        '{"phase":"suite","phaseProtocol":1}',       // protocol explicitly older
-        '{"phase":"suite","phaseProtocol":"two"}',   // non-numeric protocol
-        '{"phase":"wat","phaseProtocol":2}',         // unknown phase name
-        '{"phaseProtocol":2}',                       // protocol but no phase
-      ]) {
-        plantPhase(lock, body);
-        const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
-        expect(slotsLine(r.stderr), `body=${JSON.stringify(body)}`).toContain('slots=3 ');
-      }
+      plantPhase(lock, body);
+      const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+      expect(slotsLine(r.stderr)).toContain('slots=3 ');
     });
 
     it('a live run that never published phase.json stays at v1 depth', () => {

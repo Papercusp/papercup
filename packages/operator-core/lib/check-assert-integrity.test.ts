@@ -19,7 +19,7 @@ import { describe, expect, it } from 'vitest';
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs lint script, no type declarations
-import { scan, scriptsInScope, ROOT } from '../../../scripts/check-assert-integrity.mjs';
+import { scan, scriptsInScope, ROOT, orphanedAsserts } from '../../../scripts/check-assert-integrity.mjs';
 
 type Finding = { file: string; line: number; rule: string; msg: string };
 
@@ -230,6 +230,123 @@ describe('check-assert-integrity: the real rig scripts stay clean', () => {
     );
     const rendered = findings.map((f) => `${f.file}:${f.line} [${f.rule}]`).join('\n');
     expect(rendered).toBe('');
+  });
+});
+
+/**
+ * R6 — AN ASSERT NOBODY CALLS IS NOT EVIDENCE (WI-7000).
+ *
+ * The load-bearing cases here are the ones where a LOOSER implementation reports green.
+ * R6's whole value is that it re-derives WI-7000, and the three cheapest ways to write
+ * this check all score WI-7000 as fine:
+ *   · grep the name          -> the lib's own docblock and the runbook NAME all five orphans
+ *   · "called outside its file" -> a sibling helper's call is same-file and real
+ *   · one hop, not reachability -> an orphan called only by another orphan looks called
+ * Each has a negative control below. If an edit makes one go quiet, that is the regression.
+ */
+describe('check-assert-integrity: R6 orphaned assert', () => {
+  const orphansOf = (files: Record<string, string>): string[] => {
+    const { findings } = orphanedAsserts(Object.keys(files), (f: string) => files[f]) as {
+      findings: Finding[];
+    };
+    return findings.map((f) => f.msg.match(/^"([^"]+)"/)?.[1] ?? '').sort();
+  };
+
+  it('flags an assert helper that nothing calls', () => {
+    expect(
+      orphansOf({
+        'lib/a.sh': 'fed_assert_wake_bridge() {\n  [ "$n" = 1 ]\n}\n',
+        'run.sh': 'echo running\n',
+      }),
+    ).toEqual(['fed_assert_wake_bridge']);
+  });
+
+  it('does NOT flag one reached through a chain of helpers from a script top level', () => {
+    expect(
+      orphansOf({
+        'lib/a.sh': 'fed_assert_thing() {\n  [ "$n" = 1 ]\n}\nleg_two() {\n  fed_assert_thing "$@"\n}\n',
+        'run.sh': 'leg_two\n',
+      }),
+    ).toEqual([]);
+  });
+
+  // NEGATIVE CONTROL 1 — a comment is not a call. This is the case that makes or breaks
+  // R6: the densest mention of these helpers anywhere in the tree is the prose about them
+  // (federation-asserts.sh's own docblock lists all five), so a name-grep is MOST confident
+  // exactly where a helper is best documented and least used.
+  it('still flags an assert whose only mentions are comments and docblocks', () => {
+    expect(
+      orphansOf({
+        'lib/a.sh': '# fed_assert_wake_bridge proves P-002/P-003.\nfed_assert_wake_bridge() {\n  [ "$n" = 1 ]\n}\n',
+        'run.sh': '# TODO: call fed_assert_wake_bridge here once the rig is up\necho running   # not fed_assert_wake_bridge\n',
+      }),
+    ).toEqual(['fed_assert_wake_bridge']);
+  });
+
+  // NEGATIVE CONTROL 2 — transitivity. An orphan called only by another orphan is still
+  // unreachable; a single-hop "is it called anywhere" check reports this green.
+  it('still flags an assert called only by another unreachable function', () => {
+    expect(
+      orphansOf({
+        'lib/a.sh': 'fed_assert_thing() {\n  [ "$n" = 1 ]\n}\nretired_scenario() {\n  fed_assert_thing\n}\n',
+        'run.sh': 'echo running\n',
+      }),
+    ).toEqual(['fed_assert_thing']);
+  });
+
+  // NEGATIVE CONTROL 3 — same-file sibling calls are REAL. "Called outside its own file"
+  // would flag this, and flagging correct code is how a guard gets deleted.
+  it('does not flag an assert called by a sibling helper in the same lib', () => {
+    expect(
+      orphansOf({
+        'lib/a.sh': 'fed_assert_inner() {\n  [ "$n" = 1 ]\n}\nfed_run_all() {\n  fed_assert_inner\n}\n',
+        'run.sh': 'fed_run_all\n',
+      }),
+    ).toEqual([]);
+  });
+
+  it('treats a one-line delegation as a real call', () => {
+    expect(
+      orphansOf({
+        'lib/a.sh': 'fed_assert_impl() {\n  [ "$n" = 1 ]\n}\nfed_assert_api() { fed_assert_impl "$@"; }\n',
+        'run.sh': 'fed_assert_api\n',
+      }),
+    ).toEqual([]);
+  });
+
+  it('does not count a longer name that merely contains the assert name', () => {
+    expect(
+      orphansOf({
+        'lib/a.sh': 'fed_assert_wake() {\n  [ "$n" = 1 ]\n}\n',
+        'run.sh': 'fed_assert_wake_bridge_v2\n',
+      }),
+    ).toEqual(['fed_assert_wake']);
+  });
+
+  it('honours the pragma on the definition line and in the comment block above it', () => {
+    expect(
+      orphansOf({
+        'lib/a.sh': 'fed_assert_inline() { :; }   # assert-integrity-ok: called by the packaged installer\n',
+        'lib/b.sh':
+          '# assert-integrity-ok: dispatched dynamically via "$leg_fn",\n# which R6 cannot resolve statically.\nfed_assert_block() {\n  [ "$n" = 1 ]\n}\n',
+        'run.sh': 'echo running\n',
+      }),
+    ).toEqual([]);
+  });
+
+  /**
+   * THE LIVE RATCHET. This is the assertion that actually holds WI-7000 closed: if
+   * bin/vm-rig/parity.sh is deleted, or stops calling the five LIVE-1 parity helpers,
+   * this goes red — which is exactly what did NOT happen for the month those helpers
+   * spent unreachable after deb-hetzner-federation.sh was retired out from under them.
+   */
+  it('every assert helper in the real rig tree is reachable from a caller', () => {
+    const { findings, assertCount } = orphanedAsserts(scriptsInScope()) as {
+      findings: Finding[];
+      assertCount: number;
+    };
+    expect(assertCount).toBeGreaterThanOrEqual(10); // a zero-assert scan is not a pass
+    expect(findings.map((f) => `${f.file}:${f.line} ${f.msg.match(/^"([^"]+)"/)?.[1]}`).join('\n')).toBe('');
   });
 });
 

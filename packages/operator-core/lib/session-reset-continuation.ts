@@ -49,6 +49,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
+import type { WakeChannel } from './events/await/types';
 
 /**
  * Wake channels whose delivery DROPS THE CLI CHILD'S CONTEXT and brings the
@@ -56,8 +57,32 @@ import type { Sql } from 'postgres';
  * continuation. Warm channels (`psu-socket-inject` and friends) inject in
  * place without ending the session, so they never appear here: a SessionEnd
  * near a warm inject really is a death and must still release.
+ *
+ * ⚠ THE `-unconfirmed` VARIANTS BELONG HERE, and leaving them out silently
+ * reverts WI-6756 for the COMMON case. WI-6862 split the reset/recycle
+ * channels by whether the host ACKed the re-exec — but a host that simply
+ * never sends an ack (any pre-WI-5872 host) books the `-unconfirmed` channel
+ * for a reset that landed perfectly. This list answers "was a context reset
+ * ATTEMPTED for this owner", not "did the host confirm it": omit them and the
+ * `= ANY()` filter below stops matching, the SessionEnd reads as a death, and
+ * every work-item lease the owner holds is force-released — the exact bug
+ * WI-6756 exists to prevent.
+ *
+ * Over-matching is the FAIL-SAFE direction and under-matching is not: a
+ * genuine death that lands in the window merely waits for the P-001 reaper
+ * (documented above as an accepted delay), whereas a missed continuation
+ * strips claims from a session that is still alive.
+ *
+ * `satisfies` pins every member to a real WakeChannel (a typo cannot compile);
+ * the coverage of FUTURE reset-shaped channels is guarded by the test — tsc
+ * cannot see an omission, only an invention.
  */
-export const CONTEXT_RESET_WAKE_CHANNELS = ['psu-socket-reset', 'psu-socket-recycle'] as const;
+export const CONTEXT_RESET_WAKE_CHANNELS = [
+  'psu-socket-reset',
+  'psu-socket-recycle',
+  'psu-socket-reset-unconfirmed',
+  'psu-socket-recycle-unconfirmed',
+] as const satisfies readonly WakeChannel[];
 
 /**
  * How long after a context-reset wake its SessionEnd may still arrive.
