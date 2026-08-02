@@ -145,6 +145,12 @@ function VditorUnavailable({
  */
 export const VDITOR_CDN = '/vditor';
 
+// Vditor renders ```plantuml blocks by POSTING the diagram source to
+// plantuml.com. `cdn` cannot redirect it (the render fn takes a cdn arg and
+// ignores it), so it is intercepted in `transform` instead — see
+// vditor-plantuml-guard.ts (cdn-egress-fixes-2026-08-02 P-002).
+export { neutralizePlantuml } from './vditor-plantuml-guard';
+
 // Vditor's CSS (~45 KB / 302 rules) is loaded lazily alongside the editor
 // JS. Importing it at module level pulls the whole stylesheet into every
 // bundle that imports anything from this file — including consumers that
@@ -183,6 +189,7 @@ export function preloadVditor(): Promise<void> {
       const warm = document.createElement('div');
       await Vditor.preview(warm, 'warm', {
         cdn: VDITOR_CDN,
+        transform: neutralizePlantuml,
         mode: 'dark',
         lang: 'en_US',
       } as never);
@@ -306,6 +313,7 @@ export function MarkdownPreview({
       if (cancelled || !ref.current) return;
       const previewOpts: Record<string, unknown> = {
         cdn: VDITOR_CDN,
+        transform: neutralizePlantuml,
         mode: 'dark',
         theme: { current: 'dark' },
         math: { engine: 'KaTeX' },
@@ -485,6 +493,7 @@ export function MarkdownEditor({
         preview: {
           theme: { current: 'dark' },
           math: { engine: 'KaTeX' },
+          transform: neutralizePlantuml,
         },
         input: (next: string) => onChangeRef.current?.(next),
         after: () => {
