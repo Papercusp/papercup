@@ -231,11 +231,15 @@ function main() {
 
   if (offenders.length === 0) {
     // WI-6776: this line used to report `submodulePrefixes().length` — the count of
-    // gitlink entries in the INDEX, which is 38 whether or not a single submodule
-    // file was opened. Measured 2026-08-02: in papercusp-checkpoint (this gate's own
-    // tree) the scan covered ZERO submodules and still printed "and 38 submodule(s)",
-    // i.e. the success line asserted the exact opposite of what happened. Report what
-    // was actually reached, as a RATIO, so an empty scan cannot read as a clean one.
+    // gitlink entries in the INDEX, which is 38 whether or not a single submodule file
+    // was opened. Measured 2026-08-02 in papercusp-checkpoint (this gate's own tree):
+    // the scan covered ZERO submodules and still printed "and 38 submodule(s)", i.e.
+    // the success line asserted the exact opposite of what happened.
+    //
+    // That tree's shape VARIES (it read 38/39 sixteen minutes later, after a rebuild
+    // registered its submodules — see scripts/lib/tracked-files.mjs for the full shape
+    // table), which is precisely why this must be measured per-run and not assumed.
+    // Report what was actually reached, as a RATIO, so an empty scan cannot read clean.
     const prefixes = submodulePrefixes();
     const covered = prefixes.filter((p) => scanned.some((f) => f.startsWith(p)));
     const unscanned = prefixes.filter((p) => !covered.includes(p));

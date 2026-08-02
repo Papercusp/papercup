@@ -470,4 +470,79 @@ describe('SessionSearchResults in-flight honesty (WI-4734 — owner-hit: a 20s s
     await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
     expect(screen.getByText(/Inactive sessions/).closest('section')?.className).not.toContain('is-stale');
   });
+
+  // ── WI-6816: opening a session from SEARCH must hand the inspector the same
+  // focusTarget the ROSTER path does, or the "⤢ Focus window" button cannot
+  // render (owner-reported 2026-08-02). The pure-helper tests above cover the
+  // predicate; these cover the WIRING — the regression was never a wrong
+  // predicate, it was the prop simply not being passed. ─────────────────────
+  const liveHit = { turnIdx: 0, ts: '2026-07-13T11:00:00Z', owner: 'su-live', excerpt: 'x', highlight: 'x', score: 1 };
+
+  function respondWith(sessions: SearchSessionResult[]) {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, sessions }) })));
+  }
+
+  it('clicking a LIVE match passes focusTarget to the inspector — the button can render', async () => {
+    inspectorProps.last = null;
+    respondWith([
+      searchResult({
+        sessionId: 'sid-live',
+        hits: [liveHit],
+        active: rosterAgent({
+          ownerId: 'su-live',
+          label: 'su · su-live',
+          agent: 'claude',
+          sessionId: 'sid-live',
+          // The real-world shape: an advSessionId and NO pre-resolved windowId.
+          advSessionId: 14232,
+          windowId: null,
+          pid: 1624051,
+          intent: 'draining bugs',
+        }),
+      }),
+    ]);
+    render(<SessionSearchResults query="improvements" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    fireEvent.click(screen.getByTestId('hit-sid-live-0'));
+    await waitFor(() => expect(inspectorProps.last).not.toBeNull());
+    expect(inspectorProps.last?.focusTarget).toEqual({ advSessionId: 14232, windowId: null, pid: 1624051 });
+  });
+
+  it('clicking an ENDED match passes NO focusTarget — its window is gone, so no dead button', async () => {
+    inspectorProps.last = null;
+    respondWith([searchResult({ sessionId: 'sid-ended', hits: [liveHit], session: endedRow({ id: 77, agent: 'claude', sessionId: 'sid-ended' }) })]);
+    render(<SessionSearchResults query="improvements" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    fireEvent.click(screen.getByTestId('hit-sid-ended-0'));
+    await waitFor(() => expect(inspectorProps.last).not.toBeNull());
+    expect(inspectorProps.last?.focusTarget).toBeUndefined();
+    // …but Resume/Fork still wire up, so this is a focus-specific absence and
+    // not "the inspector got nothing".
+    expect(inspectorProps.last?.resumeTarget).toEqual({ sessionId: 'sid-ended', live: false, canFork: true });
+  });
+
+  it('clicking a LIVE match with neither handle passes NO focusTarget (pid alone is not focusable)', async () => {
+    inspectorProps.last = null;
+    respondWith([
+      searchResult({
+        sessionId: 'sid-nowin',
+        hits: [liveHit],
+        active: rosterAgent({
+          ownerId: 'su-nowin',
+          label: 'su · su-nowin',
+          agent: 'claude',
+          sessionId: 'sid-nowin',
+          advSessionId: null,
+          windowId: null,
+          pid: 3711110,
+          intent: 'presence-only process',
+        }),
+      }),
+    ]);
+    render(<SessionSearchResults query="improvements" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    fireEvent.click(screen.getByTestId('hit-sid-nowin-0'));
+    await waitFor(() => expect(inspectorProps.last).not.toBeNull());
+    expect(inspectorProps.last?.focusTarget).toBeUndefined();
+  });
 });

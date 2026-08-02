@@ -104,9 +104,9 @@ describe('tracked-files helper (WI-6730)', () => {
 
   it('describeUnscanned diagnoses the CAUSE by tree shape, not "not initialized" for everything', () => {
     // WI-6776. The first version reported every gap as "not initialized". Measured
-    // 2026-08-02 in papercusp-checkpoint (the green gate's own tree): 0/39 submodules
-    // enumerated while 38 are checked out WITH CONTENT ON DISK — `git archive`-extracted
-    // by setup-release-checkout.sh, so there is no `.git` for --recurse-submodules to
+    // 2026-08-02 in papercusp-release: 0/39 submodules enumerated while 38 are checked
+    // out WITH CONTENT ON DISK — submodule source is `git archive`-extracted by
+    // setup-release-checkout.sh, so there is no `.git` for --recurse-submodules to
     // descend into. "Not initialized" sends a reader to `git submodule update --init`
     // chasing a fault that does not exist, which is the wasted-diagnostic-time cost
     // EI-19301033966613245 was filed about.

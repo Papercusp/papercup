@@ -1329,6 +1329,8 @@ export async function aggregateAdmittedComposition(
     assignee?: string;
     rigAvailable?: boolean;
     client?: OrgSql;
+    /** EI-18802055183255275: see {@link aggregateIssueClaimExclusions}'s same-named opt. */
+    precomputedTable?: string;
   },
 ): Promise<IssueClaimAdmittedComposition> {
   const sql = opts.client ?? getOrgPg().sql;
@@ -1352,7 +1354,7 @@ export async function aggregateAdmittedComposition(
       COALESCE(payload->'_ei'->>'severity', payload->>'severity', 'unset')   AS severity,
       to_char(to_timestamp(created_ts / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
       count(*)::int                                                          AS n
-    FROM (${sub}) sub
+    FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} sub
     WHERE spec_match AND ${sql.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)}
     GROUP BY 1, 2, 3
   `) as AdmittedCompositionRow[];

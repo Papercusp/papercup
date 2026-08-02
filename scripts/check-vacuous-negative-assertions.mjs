@@ -398,11 +398,12 @@ function trackedFiles() {
  * If the scan resolves to implausibly little, the enumeration broke and a ✓ would be a lie.
  *
  * ⚠ WI-6776 — this is an ABSOLUTE floor, and it does NOT catch the submodule case.
- * In a release-shaped checkout (`papercusp-checkpoint`, `papercusp-release`: submodule
- * source is `git archive`-extracted, so there is no `.git` for `--recurse-submodules` to
- * descend into) the superproject alone clears both thresholds easily while contributing
- * ZERO submodule files — measured 2026-08-02: 20,106 files vs 25,647, with 488 `libs/`
- * files against 3,714.
+ * Where submodules are not git-enumerable (the release checkouts archive-extract their
+ * submodule source, so there is no `.git` for `--recurse-submodules` to descend into),
+ * the superproject alone clears both thresholds easily while contributing ZERO submodule
+ * files — measured 2026-08-02 in papercusp-release: 991 `libs/` files against staging's
+ * 3,715. The green gate's own tree has been observed in BOTH shapes hours apart, so this
+ * is not a property any run may assume; see scripts/lib/tracked-files.mjs for the table.
  *
  * For THIS lint a shrunken corpus is worse than a false clean: per the `trackedFiles`
  * note below, a smaller corpus makes literals look absent, which manufactures DRIFTED

@@ -147,19 +147,35 @@ function hasContentOnDisk(path, cwd) {
  *
  * ── WHY THIS REPORTS A CAUSE, NOT JUST A LIST (WI-6776) ─────────────────────
  * The first version said "NOT scanned — not initialized", which is the right
- * FACT with the wrong DIAGNOSIS, and the wrong diagnosis is expensive. Measured
- * 2026-08-02 in papercusp-checkpoint (the GREEN GATE's own tree): 0/39
- * submodules enumerated, yet 38 of them are checked out with content on disk.
- * They are `git archive`-extracted by setup-release-checkout.sh — deliberately,
- * because many pins are never pushed to origin — and an archive-extracted tree
- * has no `.git`, so `git ls-files --recurse-submodules` cannot descend. Nothing
- * is "uninitialized"; the enumerator simply cannot see a perfectly present tree.
- * (A linked worktree with unregistered submodules degrades identically.)
+ * FACT with the wrong DIAGNOSIS, and the wrong diagnosis is expensive: it sends
+ * a reader to `git submodule update --init` chasing a fault that does not exist.
+ * That wasted-diagnostic-time cost is what EI-19301033966613245 was filed about.
  *
- * Telling an agent "not initialized" in that tree sends it to `git submodule
- * update --init` chasing a fault that does not exist. That wasted-diagnostic-time
- * cost is precisely what EI-19301033966613245 was filed about, so the suffix
- * names the shape it actually found:
+ * THE SHAPES THIS REPO ACTUALLY HAS (all measured 2026-08-02, and note that the
+ * relevant `.git` is the SUBMODULE's — every one of these trees is itself a
+ * linked worktree, so the superproject `.git` is a file in all of them):
+ *
+ *   papercusp (staging)      38/39 enumerated. The one gap, libs/zero-harness,
+ *                            is retired and deliberately not checked out.
+ *   papercusp-release,       0/39 enumerated, yet 38 hold content ON DISK.
+ *   papercup-release         Submodule SOURCE is `git archive`-extracted by
+ *                            setup-release-checkout.sh (deliberate — many pins
+ *                            are never pushed to origin), and an archive
+ *                            extraction cannot produce a `.git`, so
+ *                            --recurse-submodules has nothing to descend into.
+ *                            Stable across repeated measurement.
+ *   papercusp-checkpoint     ⚠ VARIES. The GREEN GATE's own tree read 0/39 at
+ *                            02:05Z and 38/39 at 02:21Z, after a 02:17Z rebuild
+ *                            registered its submodules.
+ *
+ * That last row is the reason this function exists rather than a one-off fix.
+ * The gate's tree is not reliably either shape, so NO caller may assume one —
+ * and a guard's own output is the only surviving record of which shape it in
+ * fact ran against. Do not "simplify" this by hard-coding an expectation, and
+ * do not assert `.git` presence as a precondition: it is legitimately absent in
+ * the release checkouts, where a precondition demanding it would fail forever.
+ *
+ * The suffix therefore names the shape it actually found:
  *
  *   present-on-disk-but-not-enumerable → archive-extracted / worktree (BY DESIGN)
  *   absent-from-disk                   → genuinely not initialized
