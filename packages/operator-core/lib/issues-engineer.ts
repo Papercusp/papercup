@@ -1576,11 +1576,23 @@ export async function setIssueState(
       );
     }
   }
-  const { sql } = getOrgPg();
   const ws = await resolveIssueWorkspace(id);
   const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
-  const rows = isTerminal
-    ? await sql<IssueRowDb[]>`
+  // EI-19284963139619048: this UPDATE is the state-write half of EVERY issue-family
+  // work_items:complete/set_state call — the highest-traffic write in the fleet's
+  // completion path. It used to run on the raw, unbounded `getOrgPg()` admin pool
+  // (no statement_timeout — see pg-bounded-txn.ts's header, which documents this
+  // EXACT symptom class, "work_items:comment hung, then timed out on a blind
+  // retry", already fixed there but never migrated here). Under fleet load a stall
+  // here (lock wait, CPU-starved backend, slow scan) ran unbounded and hung the
+  // MCP call until the client's own 300s idle-timeout killed it blind, requiring a
+  // retry with no diagnostic. boundedOrgTxn sets a real statement_timeout +
+  // lock_timeout so a stall now fails fast with a typed OrgTxnTimeoutError instead
+  // — which the caller (work_items:complete/set_state) already catches and reports
+  // as `stateError` (the completion record is never lost, EI-24).
+  const rows = await boundedOrgTxn(async (tx) => {
+    return isTerminal
+      ? await tx<IssueRowDb[]>`
         UPDATE harness_shared.engineer_issues
            SET state = ${state}, origin = 'local', updated_at = now(),
                assignee = NULL, assigned_at = NULL,
@@ -1612,11 +1624,12 @@ export async function setIssueState(
                               ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
                          END
          WHERE workspace_id = ${ws} AND issue_id = ${id}
-        RETURNING ${sql.unsafe(ISSUE_COLS)}`
-    : await sql<IssueRowDb[]>`
+        RETURNING ${tx.unsafe(ISSUE_COLS)}`
+      : await tx<IssueRowDb[]>`
         UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local', updated_at = now()
          WHERE workspace_id = ${ws} AND issue_id = ${id}
-        RETURNING ${sql.unsafe(ISSUE_COLS)}`;
+        RETURNING ${tx.unsafe(ISSUE_COLS)}`;
+  });
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
   // work-item-status-full-unify: classify via the (transitionally-widened) terminal set so a

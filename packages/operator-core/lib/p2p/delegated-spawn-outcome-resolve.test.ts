@@ -35,8 +35,16 @@ const REQUESTED_AT = 1_785_654_929_357;
 const RIG_DEVICE_PK = 'nWXvaGiA5pIPrkAP9dAsauQ2G3Z7wSHc07ofgwf8sZc=';
 const SELF_DEVICE_PK = 'IXfGu216EI/z1gNQG06dG9CUMUlY/clesNYQPoWXgRc=';
 
-const recordJson = (over: Record<string, unknown> = {}) =>
-  JSON.stringify({
+/**
+ * ⚠ `spawnRequest` is pulled OUT of `over` and merged FIELD-WISE. A blanket
+ * `...over` at the end replaces the whole sub-object, which the closed-schema
+ * validator then rejects — and `spawnRequestFactsFromRow` reports a rejected
+ * record as `null`, i.e. "no request here". A fixture broken that way does not
+ * fail loudly; it silently vanishes from the result and reads as a code bug.
+ */
+const recordJson = (over: Record<string, unknown> = {}) => {
+  const { spawnRequest: srOver, ...rest } = over as { spawnRequest?: Record<string, unknown> };
+  return JSON.stringify({
     authorship: null,
     cancelReason: null,
     fleetSlug: FLEET,
@@ -46,6 +54,9 @@ const recordJson = (over: Record<string, unknown> = {}) =>
     publisherGithubUserId: SHARED_UID,
     recordVersion: 1,
     seat: null,
+    status: 'open',
+    workOffer: null,
+    ...rest,
     spawnRequest: {
       count: 1,
       launchContext: null,
@@ -54,12 +65,10 @@ const recordJson = (over: Record<string, unknown> = {}) =>
       requesterOwnerId: 'su-4ca244e4-540e-4acc-bb67-9335192fc85f',
       targetOfferId: SEAT_ID,
       targetPublisherGithubUserId: SHARED_UID,
-      ...((over.spawnRequest as Record<string, unknown>) ?? {}),
+      ...(srOver ?? {}),
     },
-    status: 'open',
-    workOffer: null,
-    ...over,
   });
+};
 
 const offer = (over: Partial<StoredWorkOffer> = {}): StoredWorkOffer => ({
   workspaceId: WS,

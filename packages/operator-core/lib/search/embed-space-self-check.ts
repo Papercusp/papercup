@@ -28,13 +28,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import type { ResolvedEmbedder } from '@papercusp/memory';
-import {
-  resolveBackfillEmbedder,
-  TARGETS,
-  modeColOf,
-  EMBEDDER_DIM,
-  type BackfillTarget,
-} from './embed-backfill';
+import { resolveBackfillEmbedder, TARGETS, modeColOf, type BackfillTarget } from './embed-backfill';
 import {
   openEscalation,
   resolveEscalation,
@@ -233,8 +227,10 @@ export async function runEmbedSpaceSelfCheckTick(
   const storedVec = parseVectorText(canary.storedVectorText);
   // A dimension mismatch against the expected width is itself worth noting,
   // but cosineDistance() already treats any length mismatch as maximal
-  // distance (1) — no separate branch needed here.
-  void EMBEDDER_DIM;
+  // distance (1) — no separate branch needed here. (This used to carry a
+  // `void EMBEDDER_DIM;` purely to keep an otherwise-unused import alive;
+  // the width now lives in `search/prose-vector-dims` and this file has no
+  // need of it.)
   const distance = cosineDistance(freshVec, storedVec);
 
   let openRec: EscalationRecord | null = null;

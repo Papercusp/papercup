@@ -1,0 +1,4 @@
+{
+  "count": 1065,
+  "_comment": "RATCHET-ONLY-DOWN (see scripts/check-mock-cast-escape.mjs). Raising this is a deliberate hand-edit with a justification, never an automatic write. Regenerate with --update on a quiet tree."
+}

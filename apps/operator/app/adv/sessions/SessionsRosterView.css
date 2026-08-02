@@ -815,6 +815,65 @@
   outline-offset: 2px;
 }
 
+/* ── Rail R1+ new legs (session-chat-popup-direction-d-2026-08-02 P-009) ──── */
+
+/* (d) Fleet wind-down banner. Sits above every section because it REFRAMES them:
+   an agent claiming nothing under a winding-down fleet is being refused work by
+   the scheduler, not stuck. Warn-toned, not bad-toned — this is a deliberate
+   fleet state, not a fault. */
+.pc-dossier__windown {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 0 0 10px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  border-left: 3px solid var(--warn);
+  background: color-mix(in oklab, var(--warn), transparent 88%);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.pc-dossier__windown-state {
+  font-weight: 600;
+  color: color-mix(in oklab, var(--warn), var(--fg) 25%);
+}
+.pc-dossier__windown-reason {
+  color: var(--fg);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* (c) The claim's health word, on the claim's own row. Colour carries the
+   verdict so it survives a glance; the text carries it for anyone who cannot
+   use the colour (the two must never disagree, so 'unknown' is muted rather
+   than merely uncoloured). */
+.pc-dossier__claim-health {
+  font-weight: 600;
+}
+.pc-dossier__claim-health[data-progress='progressing'] {
+  color: color-mix(in oklab, var(--good), var(--fg) 30%);
+}
+.pc-dossier__claim-health[data-progress='stalled'] {
+  color: color-mix(in oklab, var(--warn), var(--fg) 20%);
+}
+.pc-dossier__claim-health[data-progress='unknown'] {
+  font-weight: 400;
+  color: var(--pc-dossier-mute);
+}
+
+/* (b) "available, not awaited" — the second half of Waiting on. Deliberately a
+   sub-heading INSIDE that section rather than a section of its own: the two
+   lists are only diagnostic read together. */
+.pc-dossier__subhead {
+  margin: 8px 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--pc-dossier-mute);
+}
+
 /* ── Health signals (hud-first-nav-and-dossier-2026-07-26 P-005) ── */
 .pc-dossier__ctxbar-row {
   display: flex;

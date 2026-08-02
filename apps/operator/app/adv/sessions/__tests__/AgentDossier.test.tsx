@@ -154,12 +154,28 @@ const DETAIL: AgentDetail = {
   codex: null,
   signals: {
     loop: { active: true, intervalSec: 60, nextFireAt: new Date(Date.now() + 5 * 60_000).toISOString(), parked: true, stalled: false },
-    currentClaim: { id: 'WI-9001', title: 'Fix the thing', harness: 'papercusp' },
+    currentClaim: {
+      id: 'WI-9001',
+      title: 'Fix the thing',
+      harness: 'papercusp',
+      progress: 'progressing',
+      idleSec: 45,
+    },
     contextTokens: 40_000,
     compactionLimit: 200_000,
     lastCheckpoint: { text: 'did the thing, left the other thing', updatedAtMs: Date.now() - 2 * 86_400_000 },
     unansweredDirectedCount: 2,
     lastToolCallAt: new Date(Date.now() - 30_000).toISOString(),
+    // P-009 defaults: a lane, no gates, an active fleet (⇒ no wind-down banner).
+    lane: {
+      planSlug: 'hud-redesign-2026-08-01',
+      nowState: 'Rail density + control legibility',
+      nowNext: 'merge B/C into one band',
+      nextActionable: { id: 'P-004', title: 'merge B/C into one band', phase: 'Phase 2' },
+      claimableCount: 3,
+    },
+    announcedGates: [],
+    fleetControl: null,
     unavailableSignals: [],
   },
 };
@@ -773,6 +789,127 @@ describe('AgentDossier', () => {
       expect(ids.indexOf('pc-dossier-signals')).toBeLessThan(ids.indexOf('pc-dossier-events'));
       // …and the reference material sinks below everything operational.
       expect(ids.indexOf('pc-dossier-coord')).toBeLessThan(ids.indexOf('pc-dossier-reference'));
+    });
+  });
+
+  // ── Rail R1+ new legs (P-009) ─────────────────────────────────────────────
+  describe('rail R1+ — lane, gate availability, claim health, wind-down', () => {
+    const withSignals = (patch: Partial<NonNullable<AgentDetail['signals']>>) => {
+      syncState.detail = { ...DETAIL, signals: { ...DETAIL.signals!, ...patch } };
+    };
+
+    it('(a) renders the lane between Health and Waiting on — the section that makes the rest interpretable', async () => {
+      const { findByText, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Lane');
+      const lane = container.querySelector('#pc-dossier-lane')!;
+      expect(within(lane as HTMLElement).getByText('hud-redesign-2026-08-01')).toBeTruthy();
+      expect(within(lane as HTMLElement).getByText(/P-004 — merge B\/C/)).toBeTruthy();
+      expect(within(lane as HTMLElement).getByText('3 items in this lane')).toBeTruthy();
+      // Placement is load-bearing: a claim id is unreadable without the plan it
+      // belongs to, so the lane must precede the sections that reference it.
+      const ids = Array.from(container.querySelectorAll('section[id]')).map((n) => n.id);
+      expect(ids.indexOf('pc-dossier-signals')).toBeLessThan(ids.indexOf('pc-dossier-lane'));
+      expect(ids.indexOf('pc-dossier-lane')).toBeLessThan(ids.indexOf('pc-dossier-events'));
+    });
+
+    it('(a) says "nothing pickable" rather than going silent when a live plan has no claimable work', async () => {
+      // The distinct state a lone `next up` row cannot express: it would simply
+      // be absent, which reads as missing data rather than a drained lane.
+      withSignals({
+        lane: { ...DETAIL.signals!.lane!, nextActionable: null, claimableCount: 0 },
+      });
+      const { findByText } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+      expect(await findByText('nothing pickable')).toBeTruthy();
+    });
+
+    it('(a) a THROWN lane read reads as unavailable, never as an agent with no plan', async () => {
+      withSignals({ lane: null, unavailableSignals: ['lane'] });
+      const { findByText, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Lane');
+      expect(container.querySelector('#pc-dossier-lane')!.textContent).toContain('unavailable');
+    });
+
+    it('(b) shows a declared-but-unawaited gate INSIDE Waiting on, so both halves are read together', async () => {
+      withSignals({
+        announcedGates: [
+          { event: 'fleet:hud:mockups-approved', note: null, scope: 'fleet:hud', announcedBy: 'su-lead', awaited: false },
+          { event: 'fleet:hud:gate-green', note: null, scope: 'fleet:hud', announcedBy: 'su-lead', awaited: true },
+        ],
+      });
+      const { findByTestId, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByTestId('dossier-gates-subhead');
+      const rows = container.querySelectorAll('[data-testid="dossier-gate-row"]');
+      // ONLY the un-awaited one — an already-awaited gate is in the list above.
+      expect(rows.length).toBe(1);
+      expect(rows[0].textContent).toContain('fleet:hud:mockups-approved');
+      // It must live in the Waiting-on section, not a separate one: separating
+      // them destroys the side-by-side reading that makes either half useful.
+      expect(container.querySelector('#pc-dossier-events')!.contains(rows[0])).toBe(true);
+    });
+
+    it('(b) renders no sub-head at all when every visible gate is already awaited', async () => {
+      withSignals({
+        announcedGates: [
+          { event: 'fleet:hud:gate-green', note: null, scope: 'fleet:hud', announcedBy: 'su-lead', awaited: true },
+        ],
+      });
+      const { findByText, queryByTestId } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Waiting on');
+      expect(queryByTestId('dossier-gates-subhead')).toBeNull();
+    });
+
+    it('(c) qualifies the claim id on its OWN row — stalled carries the idle age', async () => {
+      const { findByTestId } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+      expect((await findByTestId('dossier-claim-progress')).textContent).toContain('progressing');
+
+      cleanup();
+      withSignals({
+        currentClaim: { ...DETAIL.signals!.currentClaim!, progress: 'stalled', idleSec: 2400 },
+      });
+      const second = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+      const badge = await second.findByTestId('dossier-claim-progress');
+      expect(badge.textContent).toContain('stalled 40m');
+      // The id and its verdict must be inseparable — a reader who sees one has
+      // necessarily seen the other.
+      expect((await second.findByTestId('dossier-claim-row')).textContent).toContain('WI-9001');
+    });
+
+    it('(c) says "activity unknown" rather than accusing an agent the data cannot judge', async () => {
+      withSignals({ currentClaim: { ...DETAIL.signals!.currentClaim!, progress: 'unknown', idleSec: null } });
+      const { findByTestId } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+      const badge = await findByTestId('dossier-claim-progress');
+      expect(badge.textContent).toContain('activity unknown');
+      expect(badge.textContent).not.toContain('stalled');
+    });
+
+    it('(d) shows the wind-down banner ABOVE every section, and nothing at all for an active fleet', async () => {
+      // Active fleet ⇒ server sends null ⇒ no row to learn to ignore.
+      const first = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+      await first.findByText('Health');
+      expect(first.queryByTestId('dossier-fleet-control')).toBeNull();
+      cleanup();
+
+      withSignals({
+        fleetControl: { fleet: 'hud', state: 'winding-down', reason: 'plan complete', by: 'su-lead', since: Date.now() - 60_000 },
+      });
+      const { findByTestId, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      const banner = await findByTestId('dossier-fleet-control');
+      expect(banner.textContent).toContain('winding-down');
+      expect(banner.textContent).toContain('plan complete');
+      // Above everything: it reframes every signal below it, so a reader cannot
+      // reach the "idle agent" misreading before seeing why.
+      const firstSection = container.querySelector('section[id]')!;
+      expect(banner.compareDocumentPosition(firstSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
 });

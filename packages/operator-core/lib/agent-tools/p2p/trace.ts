@@ -16,12 +16,13 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { listP2pReceipts, listRefusedOpCounters } from '../../p2p/receipts';
 import { resolveP2pGrantWorkspace } from '../../p2p/grant-store';
+import { resolveDelegatedSpawnOutcome } from '../../p2p/delegated-spawn-outcome-resolve';
 
 export default defineTool({
   name: 'p2p:trace',
   profile: 'engineer',
   description:
-    "Assemble the cross-machine P2P timeline for a pot (optionally one offer): receipts from BOTH sides (federated p2p_receipts facts, M21 offer-id threaded) + the local M15 refused-op counter snapshot. Read `kind`: 'refusal' is a refused action (carries refusalCode/missing); 'excused-breach' is a preemption-class interruption (X8), excluded from reliability signals; 'honored' is a SUCCESS fact, NOT a failure — a delegated spawn that ran, naming the account it ran under. A completed cross-peer action with NO 'honored' receipt is ambiguous rather than failed: the honoring peer may predate that kind (EI-19333624101736074).",
+    "Assemble the cross-machine P2P timeline for a pot (optionally one offer): receipts from BOTH sides (federated p2p_receipts facts, M21 offer-id threaded) + the local M15 refused-op counter snapshot. Read `kind`: 'refusal' is a refused action (carries refusalCode/missing); 'excused-breach' is a preemption-class interruption (X8), excluded from reliability signals; 'honored' is a SUCCESS fact, NOT a failure — a delegated spawn that ran, naming the account it ran under. A completed cross-peer action with NO 'honored' receipt is ambiguous rather than failed: the honoring peer may predate that kind (EI-19333624101736074). With `offerId` on a delegated SPAWN request you also get `spawnRequestOutcome` — the synthesized verdict (honored-live | honored-then-died | honored-completed | honored-unverified | refused | no-response | indeterminate | pending). `memberEvidenceAvailable:false` means this host CANNOT see the honoring host's members, so `indeterminate` reads as \"unknowable from here\", never \"nobody honored it\".",
   guidance: {
     when: 'Debugging a refused/silent-looking cross-peer action ("why did my offer/wake/spawn not run on peer X?"): pass the pot (and offerId when you have one) to see every receipt both sides produced, ordered by event time, plus the unauthenticated-refusal counters. The receipt names the EXACT missing capability/budget.',
     notWhen:
@@ -55,9 +56,23 @@ export default defineTool({
           "p2p:trace needs a concrete workspace partition (WI-1564) — an un-scoped session can't name which hive-home partition to read. Re-run from a workspace-scoped session or pass a scoped identity.",
       });
     }
-    const [receipts, counters] = await Promise.all([
+    const [receipts, counters, spawnOutcome] = await Promise.all([
       listP2pReceipts({ workspaceId: ws, potSlug: args.pot, offerId: args.offerId ?? null, limit: args.limit }),
       listRefusedOpCounters({ workspaceId: ws, potSlug: args.pot }),
+      // WI-7042: the SYNTHESIZED verdict, only meaningful for one offer's
+      // lifecycle. Best-effort: this is an enrichment on a debugging read, so a
+      // failure here must degrade to the raw timeline (which is still the whole
+      // pre-WI-7042 value of the tool) rather than fail the call.
+      args.offerId
+        ? resolveDelegatedSpawnOutcome({
+            workspaceId: ws,
+            potSlug: args.pot,
+            offerId: args.offerId,
+          }).catch((err) => {
+            console.error(`[p2p:trace] spawn-outcome reconciliation failed for ${args.offerId}:`, err);
+            return null;
+          })
+        : Promise.resolve(null),
     ]);
     return json({
       ok: true,
@@ -82,6 +97,32 @@ export default defineTool({
       // M15: unauthenticated refusals have no receipt — the counters are their
       // only trace. reason format: '<surface>:<reason>' (e.g. 'grant-apply:grantor_mismatch').
       refusedOpCounters: counters,
+      // WI-7042: present ONLY when `offerId` names a delegated spawn request.
+      // Absent for a seat/work offer or an unknown id — there is genuinely no
+      // spawn outcome for those, and an error-shaped field would read as a
+      // finding. `memberEvidenceAvailable:false` is the honest caveat, not a
+      // fault: for a REMOTE honor this host holds no member evidence at all, so
+      // `indeterminate` means "unknowable from here", never "nobody honored it".
+      spawnRequestOutcome: spawnOutcome
+        ? {
+            verdict: spawnOutcome.outcome.verdict,
+            detail: spawnOutcome.outcome.detail,
+            attribution: spawnOutcome.outcome.attribution,
+            members: spawnOutcome.outcome.members,
+            shortfall: spawnOutcome.outcome.shortfall,
+            refusalCode: spawnOutcome.outcome.refusalCode,
+            actionable: spawnOutcome.outcome.actionable,
+            fleetSlug: spawnOutcome.request.fleetSlug,
+            requestedSeats: spawnOutcome.request.count,
+            requestedAtMs: spawnOutcome.request.requestedAtMs,
+            targetOfferId: spawnOutcome.targetOfferId,
+            honoringDevicePubkey: spawnOutcome.honoringDevicePubkey,
+            memberEvidenceAvailable: spawnOutcome.memberEvidenceAvailable,
+            concurrentRequests: spawnOutcome.concurrentRequests,
+            requesterOwnerId: spawnOutcome.requesterOwnerId,
+            planSlug: spawnOutcome.planSlug,
+          }
+        : undefined,
       note:
         receipts.length === 0 && counters.length === 0
           ? 'no P2P receipts or refused-op counters for this scope — either nothing was refused, or the action predates mig 468.'

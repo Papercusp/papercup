@@ -35,7 +35,7 @@
 
 import { useCallback, useMemo } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
-import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
+import { formatRelativeUpdated, formatIdleAge } from '@papercusp/operator-core/lib/format/relative-time';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import { useLexicon } from '@/lib/useLexicon';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
@@ -404,6 +404,16 @@ export default function AgentDossier({
    *  these, so CappedRows names the gap instead of pretending it closed it. */
   const coordUnsentCount = coord ? Math.max(0, coord.unreadCount - unreadRows.length) : 0;
 
+  /** R1+ P-009 leg (b): gates declared in this agent's scopes that it is NOT
+   *  listening for. The server already flagged each one (exact-key match), so
+   *  this is a partition, not a re-derivation. `?? []` for the same wire reason
+   *  the subscriptions list documents: a fresh SPA bundle can be served by an
+   *  older sidecar that has never heard of this field. */
+  const availableGates = useMemo(
+    () => (signals?.announcedGates ?? []).filter((g) => !g.awaited),
+    [signals],
+  );
+
   // Files this agent holds / waits on — to cross-mark the file list.
   const heldPaths = new Set(locks?.held.map((l) => l.path) ?? []);
   const waitPaths = new Set(locks?.waiting.flatMap((w) => w.paths) ?? []);
@@ -539,11 +549,38 @@ export default function AgentDossier({
                     : null
             }
           />
+          {/* R1+ P-009 leg (c): the claim id NEVER renders alone any more. Held
+              looks identical whether it was taken 30 seconds or two hours ago,
+              and "held" reads as "being worked on" — the wrong conclusion for
+              the reader who matters here, a leader deciding whether to reclaim.
+              The verdict rides on the SAME row, not a separate one, so it cannot
+              be read apart from the id it qualifies. */}
           <MetaRow
             label="claim"
             value={
               signals?.currentClaim
-                ? `${signals.currentClaim.id}${signals.currentClaim.title ? ` — ${signals.currentClaim.title}` : ''}`
+                ? (() => {
+                    const c = signals.currentClaim;
+                    return (
+                      <span data-testid="dossier-claim-row">
+                        {c.id}
+                        {c.title ? ` — ${c.title}` : ''}
+                        <span
+                          className="pc-dossier__claim-health"
+                          data-progress={c.progress}
+                          data-testid="dossier-claim-progress"
+                        >
+                          {' · '}
+                          {c.progress === 'stalled' && c.idleSec != null
+                            ? `stalled ${formatIdleAge(c.idleSec)}`
+                            : c.progress === 'unknown'
+                              ? // Not an accusation the data supports — say so.
+                                'activity unknown'
+                              : c.progress}
+                        </span>
+                      </span>
+                    );
+                  })()
                 : // EI-18694403367371331: the bug this fixed — a live agent holding a
                   // real work-item rendered "none held" because the read threw, not
                   // because it genuinely held nothing.
@@ -597,6 +634,47 @@ export default function AgentDossier({
             label="last tool call"
             value={signals?.lastToolCallAt ? formatRelativeUpdated(signals.lastToolCallAt) : null}
           />
+        </section>
+      ) : null}
+
+      {/* ── Lane (R1+ P-009 leg a) ────────────────────────────────────────────
+          Sits directly under Health, above Waiting on, because it is what makes
+          everything below it interpretable: the rail could already say WHAT an
+          agent holds but never what it is FOR, and a claim id divorced from its
+          plan's `## Now` is unreadable to anyone who did not write the plan.
+
+          `claimable` is deliberately shown even at 0 — "this plan is alive but
+          has nothing pickable" is a real, distinct state that a lone "next up"
+          row cannot express (it would simply be absent, which reads as no data). */}
+      {signals?.lane || signals?.unavailableSignals.includes('lane') ? (
+        <section className="pc-dossier__section" id="pc-dossier-lane">
+          <h4 className="pc-dossier__h">Lane</h4>
+          {signals?.lane ? (
+            <>
+              {metaRows([
+                ['plan', signals.lane.planSlug],
+                ['now', signals.lane.nowState],
+                [
+                  'next up',
+                  signals.lane.nextActionable
+                    ? `${signals.lane.nextActionable.id} — ${signals.lane.nextActionable.title}`
+                    : null,
+                ],
+              ])}
+              <MetaRow
+                label="claimable"
+                value={
+                  signals.lane.claimableCount > 0
+                    ? `${signals.lane.claimableCount} item${signals.lane.claimableCount === 1 ? '' : 's'} in this lane`
+                    : 'nothing pickable'
+                }
+              />
+            </>
+          ) : (
+            // Same tri-state contract as every other signal: a read that THREW
+            // must never look like an agent that simply declared no plan.
+            <div className="pc-dossier__empty-line">⚠ unavailable (read failed)</div>
+          )}
         </section>
       ) : null}
 
@@ -664,6 +742,40 @@ export default function AgentDossier({
             {subs?.error ? `Couldn’t load subscriptions: ${subs.error}` : 'Not waiting on any event.'}
           </div>
         )}
+
+        {/* R1+ P-009 leg (b) — the second half of this section, and the reason
+            it is a HALF rather than its own section: neither list is diagnostic
+            alone. An await on a key nobody ever declared looks perfectly healthy
+            in the list above — it is simply a wait that will never end. A gate
+            declared for this agent that it is not listening for looks like
+            nothing at all. Only side by side does either failure become
+            obvious, so they must not be separated by other sections. */}
+        {availableGates.length > 0 ? (
+          <>
+            <div className="pc-dossier__subhead" data-testid="dossier-gates-subhead">
+              available, not awaited
+            </div>
+            <CappedRows
+              noun="gates"
+              open={railOpen.has('gates')}
+              onToggle={() => toggleRail('gates')}
+              testId="dossier-available-gates"
+              rows={availableGates.map((g) => (
+                <div key={`gate:${g.event}`} className="pc-dossier__coord-line" data-testid="dossier-gate-row">
+                  {/* Hollow, against the filled ◉/↻ above: this one is NOT armed. */}
+                  <span className="pc-dossier__dir" title="declared, but this agent holds no await on it">
+                    ○
+                  </span>
+                  <span className="pc-dossier__coord-text">
+                    {g.event}
+                    {g.note ? <span className="pc-dossier__h-note"> · {g.note}</span> : null}
+                    <span className="pc-dossier__h-note"> · {g.scope}</span>
+                  </span>
+                </div>
+              ))}
+            />
+          </>
+        ) : null}
       </section>
 
       {/* Rail R1 P-008 — Native Session + Codex Runtime moved to the BOTTOM, below

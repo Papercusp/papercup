@@ -11,12 +11,12 @@
  *
  *   npm run lint:vitest-mock-paths
  */
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
+import { describeUnscanned, listFilesIncludingUntracked } from '../../../scripts/lib/tracked-files.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const TEST_FILE_RE = /\.(test|spec)\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
@@ -189,22 +189,29 @@ export function findUnresolvedMocks({ files, root = ROOT }) {
   return { checked, unresolved };
 }
 
+/**
+ * WI-6666: `git ls-files -co --exclude-standard` (tracked + untracked-but-not-
+ * ignored) STOPS AT THE SUPERPROJECT BOUNDARY — a submodule (libs/generic/**,
+ * libs/papercusp/**, papercusp-desktop/**) is a single gitlink entry, so every
+ * test file inside one — including libs/papercusp's own vitest suites — was
+ * never scanned for an orphaned `vi.mock()`. `listFilesIncludingUntracked`
+ * recurses into each submodule's own working tree with the same flags (git
+ * refuses to combine `--others` with `--recurse-submodules` directly), so this
+ * keeps BOTH the untracked-file coverage this guard always had AND submodule
+ * coverage it never did.
+ */
 function trackedTestFiles(root) {
-  return execFileSync('git', ['ls-files', '-co', '--exclude-standard'], {
-    cwd: root,
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-  })
-    .split('\n')
-    .filter((file) =>
-      file &&
-      TEST_FILE_RE.test(file) &&
-      !file.startsWith('_retired/') &&
-      !file.includes('/_retired/') &&
-      !file.includes('/node_modules/') &&
-      !file.includes('/dist/') &&
-      !file.startsWith('.papercusp/'),
-    );
+  const { files, unscanned } = listFilesIncludingUntracked(root);
+  const filtered = files.filter((file) =>
+    file &&
+    TEST_FILE_RE.test(file) &&
+    !file.startsWith('_retired/') &&
+    !file.includes('/_retired/') &&
+    !file.includes('/node_modules/') &&
+    !file.includes('/dist/') &&
+    !file.startsWith('.papercusp/'),
+  );
+  return { files: filtered, unscanned };
 }
 
 function isMain() {
@@ -212,9 +219,10 @@ function isMain() {
 }
 
 if (isMain()) {
-  const result = findUnresolvedMocks({ files: trackedTestFiles(ROOT), root: ROOT });
+  const { files: testFiles, unscanned } = trackedTestFiles(ROOT);
+  const result = findUnresolvedMocks({ files: testFiles, root: ROOT });
   if (result.unresolved.length === 0) {
-    console.log(`✓ all ${result.checked} local vi.mock() specifiers resolve to real modules.`);
+    console.log(`✓ all ${result.checked} local vi.mock() specifiers resolve to real modules.` + describeUnscanned(unscanned));
   } else {
     console.error('✗ orphaned vi.mock() specifiers found:');
     for (const offender of result.unresolved) {

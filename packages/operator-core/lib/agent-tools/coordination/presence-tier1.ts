@@ -85,25 +85,12 @@ export function computeIntentStale(
   return lastActiveSecAgo > thresholdSec;
 }
 
-/** Pure: render an idle-age in seconds as the compact human string a reader
- *  actually thinks in — "42s", "9m", "2h41m", "3d2h" (two units max; sub-unit
- *  remainders drop past the hour scale). Raw seconds ("9641") read as noise
- *  next to a present-tense intent string — EI-9696: a roster reader took ~20
- *  hours-idle agents for active editors because the staleness signals sat in
- *  adjacent numeric/boolean columns — so the emitted prefix carries this form. */
-export function formatIdleAge(sec: number): string {
-  const s = Math.max(0, Math.floor(sec));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) {
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    return m ? `${h}h${m}m` : `${h}h`;
-  }
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  return h ? `${d}d${h}h` : `${d}d`;
-}
+/** Re-exported from `../../format/relative-time`, where the pure formatters
+ *  live. It moved because THIS module imports `getOrgPg`: a browser component
+ *  needing the one pure function would otherwise have pulled Postgres into the
+ *  SPA bundle. Re-exported rather than relocated-and-updated at every call site
+ *  so existing importers (and this module's own test) stay untouched. */
+export { formatIdleAge } from '../../format/relative-time';
 
 /** How much older `intentAgeSec` may run past `lastActiveSecAgo` before the gap
  *  itself counts as drift (EI-8988) — a busy agent (fresh lastActiveSecAgo) whose

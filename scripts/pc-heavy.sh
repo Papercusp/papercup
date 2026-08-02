@@ -444,7 +444,17 @@ if [ "$_coalesce_enabled" = 1 ]; then
 
   # Key on cwd + full argv + tree-state token, NUL-separated so args
   # containing spaces can't collide two different commands into the same key.
-  _key=$({ printf '%s\0' "$PWD"; printf '%s\0' "$@"; printf '%s\0' "$_tree_token"; } | sha1sum | cut -d' ' -f1)
+  #
+  # The trailing marker keeps barriered and unbarriered callers in SEPARATE cache
+  # populations. Without it the two coincide exactly when the tree token comes out
+  # empty (no file-like argv, cwd not in a git worktree) — so whether a barriered
+  # caller could inherit an unbarriered entry would depend on a condition neither
+  # caller can see. Both directions happen to be safe today (every write is stamped,
+  # so the barrier is enforced on replay regardless of who wrote the entry), but
+  # "safe because the token happened to be empty" is not an invariant anyone can
+  # rely on while editing this later. Separate them explicitly, so the rule is
+  # simply: a barriered caller only ever replays a barriered run, past its watermark.
+  _key=$({ printf '%s\0' "$PWD"; printf '%s\0' "$@"; printf '%s\0' "$_tree_token"; printf '%s\0' "${_fresh_after:+barrier}"; } | sha1sum | cut -d' ' -f1)
   _c_out="$_coalesce_dir/$_key.out"
   _c_err="$_coalesce_dir/$_key.err"
   _c_exit="$_coalesce_dir/$_key.exit"

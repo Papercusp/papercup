@@ -126,6 +126,8 @@ import {
   markIssueProgress,
   type EngineerIssue,
 } from './issues-engineer';
+// The prose column width contract — ONE source, not a restated `384` (D-005 §5).
+import { fitsProseColumns } from './search/prose-vector-dims';
 
 export { markIssueProgress };
 
@@ -1000,11 +1002,13 @@ export async function getWorkItemDetail(id: string, harness?: string): Promise<W
   };
 }
 
-/** Width of the migration-551 embedding columns (= embed-backfill's
- *  EMBEDDER_DIM). A local const — importing it would pull the whole embed
- *  stack (configure/sidecar/admission) into this module's static graph; the
- *  embedder itself is dynamic-imported inside the leg for the same reason. */
-const WORK_ITEM_EMBED_DIM = 384;
+/* The prose column width lives in `search/prose-vector-dims` (imported at the
+ * top of this file). It used to be a hand-copied local const, justified because
+ * importing embed-backfill's `EMBEDDER_DIM` would have pulled the whole embed
+ * stack (configure/sidecar/admission) into this module's static graph. That
+ * reason no longer applies: `prose-vector-dims` is a leaf module whose only
+ * import is the dims declaration itself. The embedder is still dynamic-imported
+ * inside the leg, for the original reason. */
 
 /** Test seam for the P-008 semantic leg: the query-embedder resolver to use
  *  (defaults to the real `buildQueryEmbedderResolved`). Injectable because the
@@ -1082,9 +1086,9 @@ export async function searchWorkItems(
       const resolved = await resolve();
       // The embedding columns are vector(384); a query vector in another width
       // (harrier@1024) can't rank against them — skip rather than SQL-error.
-      if (resolved && resolved.dims === WORK_ITEM_EMBED_DIM) {
+      if (resolved && fitsProseColumns(resolved.dims)) {
         const vec = await resolved.embed(query);
-        if (vec.length === WORK_ITEM_EMBED_DIM) {
+        if (fitsProseColumns(vec.length)) {
           const seen = new Set(out.map((w) => w.id));
           const semLimit = Math.min(limit, 20);
           if (wantIssue) {

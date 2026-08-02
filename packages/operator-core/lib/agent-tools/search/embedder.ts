@@ -46,7 +46,11 @@ import {
   isOpenAiEmbedInCooldown,
 } from '../../memory/configure';
 
-const EMBEDDER_DIM = 384;
+// The prose column width contract — ONE source, not a restated `384` (D-005 §5).
+// The QUERY vector must land in the same space as the STORED vectors, so this
+// side is bound by the same contract as the backfill side.
+import { modeTargetDims } from '../../search/prose-vector-dims';
+
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 
 function buildAdmissionGovernedOpenAiEmbedder(key: string): Embedder {
@@ -67,7 +71,7 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): Embedder {
         body: JSON.stringify({
           model: OPENAI_EMBEDDER_MODEL,
           input: text,
-          dimensions: EMBEDDER_DIM,
+          dimensions: modeTargetDims('openai'),
         }),
       });
       adm.recordResponse(headersToRecord(r.headers)); // learn the live limit / pause on remaining=0

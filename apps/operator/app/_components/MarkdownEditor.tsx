@@ -116,6 +116,35 @@ function VditorUnavailable({
   );
 }
 
+/**
+ * Where Vditor fetches its RUNTIME assets from (WI-7088).
+ *
+ * Vditor resolves everything it loads lazily — the Lute markdown parser, i18n,
+ * toolbar icons, highlight.js, mermaid/KaTeX/echarts renderers, emoji, content
+ * themes — from `options.cdn`, as `${cdn}/dist/<path>`. Its built-in default is
+ * `https://unpkg.com/vditor@<version>`, so OMITTING this option silently makes
+ * every cold markdown render depend on the public internet:
+ *
+ *     lute.min.js  3907 KB  ·  highlight.min.js  1025 KB  ·  icons  42 KB
+ *     third-languages.js  21 KB  ·  en_US.js  2 KB      =  ~4.9 MB per render
+ *
+ * That was measured as the "opening a plan takes several seconds" bug — and
+ * `lute.min.js` is a Go->WASM-transpiled blob, so it is slow to PARSE even once
+ * the bytes are cached. Pointing at a local mirror makes it a localhost read and
+ * makes markdown work offline.
+ *
+ * The mirror is `apps/operator/public/vditor/dist/**`, populated from
+ * node_modules by `apps/operator/scripts/setup-vditor-runtime.sh` (postinstall +
+ * operator-vite prebuild). `publicDir` is `apps/operator/public`, so it is
+ * served at `/vditor/**` in dev and copied into `dist/` for prod — hence the
+ * root-relative base below, matching how `/wordmark.svg` & co. resolve.
+ *
+ * ⚠ EVERY Vditor entry point must pass this. A surface that omits `cdn` silently
+ * reverts to unpkg for its own assets and reintroduces the bug for that surface
+ * only — which is why `MarkdownEditor.cdn.test.ts` asserts none of them do.
+ */
+export const VDITOR_CDN = '/vditor';
+
 // Vditor's CSS (~45 KB / 302 rules) is loaded lazily alongside the editor
 // JS. Importing it at module level pulls the whole stylesheet into every
 // bundle that imports anything from this file — including consumers that
@@ -152,7 +181,11 @@ export function preloadVditor(): Promise<void> {
       await loadVditorCss();
       const Vditor = (await import('vditor')).default;
       const warm = document.createElement('div');
-      await Vditor.preview(warm, 'warm', { mode: 'dark', lang: 'en_US' } as never);
+      await Vditor.preview(warm, 'warm', {
+        cdn: VDITOR_CDN,
+        mode: 'dark',
+        lang: 'en_US',
+      } as never);
     } catch {
       _vditorPreloadPromise = null; // best-effort — allow a later retry
     }
@@ -272,6 +305,7 @@ export function MarkdownPreview({
       const Vditor = (await import('vditor')).default;
       if (cancelled || !ref.current) return;
       const previewOpts: Record<string, unknown> = {
+        cdn: VDITOR_CDN,
         mode: 'dark',
         theme: { current: 'dark' },
         math: { engine: 'KaTeX' },
@@ -438,6 +472,7 @@ export function MarkdownEditor({
       const Vditor = (await import('vditor')).default;
       if (cancelled || !containerRef.current) return;
       const inst = new Vditor(containerRef.current, {
+        cdn: VDITOR_CDN,
         mode,
         theme: 'dark',
         lang: 'en_US',

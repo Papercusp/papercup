@@ -38,7 +38,7 @@
 import { EMBEDDER_DIM_SPECS, type EmbedderMode } from '@papercusp/memory';
 
 /**
- * Width of every shared prose embedding column, per migration 555.
+ * Width of every shared prose embedding column, per migration 727.
  *
  * 768 = EmbeddingGemma-300m's NATIVE width. Previously 384, an UNTRAINED MRL
  * cut that measured ~19-21% worse on prose retrieval MRR (D-003). Native means
@@ -69,16 +69,37 @@ export const PROSE_ELIGIBLE_MODES = ['gemma', 'openai'] as const satisfies reado
 export type ProseEligibleMode = (typeof PROSE_ELIGIBLE_MODES)[number];
 
 /**
- * Every column the width contract above applies to — the list a width
- * migration must ALTER, and the list the test uses so a NEW prose surface
- * cannot quietly adopt a stale width.
+ * Every column the width contract applies to — the list a width migration must
+ * ALTER, and the list `prose-vector-dims.integration.test.ts` checks the live
+ * schema against so a NEW surface cannot quietly adopt a stale width.
+ *
+ * ⚠ ENUMERATED FROM THE DATABASE (`pg_attribute.atttypmod` over every
+ * `harness_shared` vector column), NOT from the migrations. Building it by
+ * grepping migration files produced a list of FIVE and silently missed SEVEN —
+ * `code_recipes`, `harness_features`, `harness_features_consolidated`,
+ * `harness_brainstorm`, `harness_decisions`, `harness_escalations`,
+ * `datatype_registry`. Migrating 5 of 12 would have left seven surfaces at
+ * vector(384) under 768-emitting code, where every write fails inside a
+ * background sweep. Re-derive this list the same way if you extend it.
+ *
+ * `memory_vec_*` are deliberately NOT here: they are per-mode spaces with their
+ * own widths (local stays 384, harrier 1024), so they are not governed by the
+ * shared prose contract — but gemma's and openai's DO have to move with it, and
+ * migration 727 handles them alongside these.
  */
-export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string; migration: string }> = [
-  { table: 'harness_shared.session_turns', column: 'text_embedding', migration: '501' },
-  { table: 'harness_shared.operator_turns', column: 'text_embedding', migration: '000-baseline' },
-  { table: 'harness_shared.work_items', column: 'embedding', migration: '551' },
-  { table: 'harness_shared.doc_sections', column: 'embedding', migration: '552' },
-  { table: 'harness_shared.harness_plans', column: 'embedding', migration: '553' },
+export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
+  { table: 'harness_shared.session_turns', column: 'text_embedding' },
+  { table: 'harness_shared.operator_turns', column: 'text_embedding' },
+  { table: 'harness_shared.work_items', column: 'embedding' },
+  { table: 'harness_shared.doc_sections', column: 'embedding' },
+  { table: 'harness_shared.harness_plans', column: 'embedding' },
+  { table: 'harness_shared.harness_escalations', column: 'body_embedding' },
+  { table: 'harness_shared.harness_brainstorm', column: 'content_embedding' },
+  { table: 'harness_shared.harness_decisions', column: 'body_embedding' },
+  { table: 'harness_shared.code_recipes', column: 'embedding' },
+  { table: 'harness_shared.harness_features', column: 'embedding' },
+  { table: 'harness_shared.harness_features_consolidated', column: 'embedding' },
+  { table: 'harness_shared.datatype_registry', column: 'embedding' },
 ];
 
 /**

@@ -32,6 +32,7 @@ import {
   invalidateMemoryClient,
   dynamicImport,
   HARRIER_NATIVE_DIMS,
+  EMBEDDER_DIM_SPECS,
   type EmbedFn,
   type ResolvedEmbedder,
 } from '@papercusp/memory';
@@ -48,7 +49,11 @@ import {
 } from './backend-selection';
 import { getSessionExtractionLlm } from './session-extraction-llm';
 
-const EMBEDDER_DIM = 384;
+/* NOTE: there is deliberately NO shared EMBEDDER_DIM constant here any more.
+ * One number standing for "the width every mode emits" was true only by
+ * coincidence, and it silently became a LIE the moment two modes differed
+ * (D-005). Each branch below now reports its OWN declared targetDims — the
+ * shape the harrier branch already used. */
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 const TRANSFORMERS_PACKAGE = '@huggingface/transformers';
 
@@ -332,7 +337,7 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
           body: JSON.stringify({
             model: OPENAI_EMBEDDER_MODEL,
             input: text,
-            dimensions: EMBEDDER_DIM,
+            dimensions: EMBEDDER_DIM_SPECS.openai.targetDims,
           }),
           // Abort a STALLED connection so it can't consume the whole embed budget; bound by
           // the remaining wall-clock budget so the abort never pushes past the deadline.
@@ -550,23 +555,23 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
   const key = await deps.resolveKey();
 
   if (preference === 'openai') {
-    if (key) return { mode: 'openai', dims: EMBEDDER_DIM, embed: deps.buildOpenAi(key) };
+    if (key) return { mode: 'openai', dims: EMBEDDER_DIM_SPECS.openai.targetDims, embed: deps.buildOpenAi(key) };
     return { mode: 'disabled', reason: 'openai_forced_but_no_key' };
   }
 
   if (preference === 'local') {
     if (await deps.localInstalled()) {
-      return { mode: 'local', dims: EMBEDDER_DIM, embed: await deps.buildLocal() };
+      return { mode: 'local', dims: EMBEDDER_DIM_SPECS.local.targetDims, embed: await deps.buildLocal() };
     }
     return { mode: 'disabled', reason: 'local_forced_but_not_installed' };
   }
 
   if (preference === 'gemma') {
     // EmbeddingGemma uses the same @huggingface/transformers package as BGE, so
-    // localInstalled() gates it. Its OWN space (dims 384, mode 'gemma' →
+    // localInstalled() gates it. Its OWN space (native 768, mode 'gemma' →
     // memory_vec_gemma) so its vectors never mix with BGE ('local') or OpenAI.
     if (await deps.localInstalled()) {
-      return { mode: 'gemma', dims: EMBEDDER_DIM, embed: await deps.buildGemma() };
+      return { mode: 'gemma', dims: EMBEDDER_DIM_SPECS.gemma.targetDims, embed: await deps.buildGemma() };
     }
     return { mode: 'disabled', reason: 'gemma_forced_but_transformers_not_installed' };
   }
@@ -585,12 +590,12 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
   // single-key exhaustion must not keep re-trying a key we just learned is unusable when a
   // local embedder can serve the request instead.
   if (deps.isOpenAiRecentlyExhausted() && (await deps.localInstalled())) {
-    return { mode: 'local', dims: EMBEDDER_DIM, embed: await deps.buildLocal() };
+    return { mode: 'local', dims: EMBEDDER_DIM_SPECS.local.targetDims, embed: await deps.buildLocal() };
   }
   // 'auto' — openai first, then local, then disabled.
-  if (key) return { mode: 'openai', dims: EMBEDDER_DIM, embed: deps.buildOpenAi(key) };
+  if (key) return { mode: 'openai', dims: EMBEDDER_DIM_SPECS.openai.targetDims, embed: deps.buildOpenAi(key) };
   if (await deps.localInstalled()) {
-    return { mode: 'local', dims: EMBEDDER_DIM, embed: await deps.buildLocal() };
+    return { mode: 'local', dims: EMBEDDER_DIM_SPECS.local.targetDims, embed: await deps.buildLocal() };
   }
   return { mode: 'disabled', reason: 'no_openai_key_and_local_not_installed' };
 }
