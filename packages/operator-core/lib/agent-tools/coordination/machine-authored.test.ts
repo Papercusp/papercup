@@ -97,3 +97,76 @@ describe('WI-4537 — isMachineAuthoredSender', () => {
     expect(MACHINE_SENDER_PATTERN).not.toMatch(/\\[bBdDwWsS]/); // no JS-only character classes
   });
 });
+
+describe('WI-6768 — isMachineEmitterForStamping (the THIRD, stamp-only signal)', () => {
+  /**
+   * The emitters below are not hypothetical: they are the measured residue after
+   * P-033 (d)'s original two-signal stamp went live. Over the following 36h, 845 of
+   * 2,013 coord messages (42%) still carried no `expects`, and these accounted for
+   * 820 of them (97%). Each is asserted by NAME so the guard is anchored to the real
+   * population rather than to a pattern that merely looks plausible.
+   */
+  const MEASURED_RESIDUE = [
+    'git-sync-ref-announce',
+    'git-sync-integrator',
+    'coord-probe-canary-a',
+    'supervision-reconciler',
+    'intent-divergence-detector',
+    'green-checkpoint',
+    'release-deploy:4153546:abbd4c65-5dbb-4f40-b183-cf730b5e9c91',
+  ];
+
+  it('stamps every emitter in the measured residue', () => {
+    for (const s of MEASURED_RESIDUE) {
+      expect(isMachineEmitterForStamping(s), `${s} should be stamped`).toBe(true);
+    }
+  });
+
+  it('is NON-VACUOUS — it adds senders the original two signals genuinely missed', () => {
+    // Without this the suite would still pass if the new pattern matched nothing and
+    // every hit came from the pre-existing isMachineAuthoredSender leg.
+    const added = MEASURED_RESIDUE.filter((s) => !isMachineAuthoredSender(s));
+    expect(added.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('still stamps everything the original signal stamped (superset, never a replacement)', () => {
+    for (const s of ['system:delivery-ladder', 'system-watchdog', 'claim-discipline-watch', 'work-items']) {
+      expect(isMachineAuthoredSender(s)).toBe(true);
+      expect(isMachineEmitterForStamping(s)).toBe(true);
+    }
+  });
+
+  it('NEVER stamps a human or agent correspondent — the direction that costs most', () => {
+    for (const s of [
+      'pc-admin-coord-ui', // the owner typing in the admin UI
+      'human',
+      'su-1a0a0a1a-4c71-4ce5-abcf-58897784edf1',
+      'announcer', // no leading `-`, must not match `-announce$`
+      'my-detective', // `-detective`, not `-detector`
+      'integration', // not `-integrator`
+      'green-checkpoints', // trailing s — the anchored prefix must not slip
+    ]) {
+      expect(isMachineEmitterForStamping(s), `${s} must NOT be stamped`).toBe(false);
+    }
+  });
+
+  it('handles empty / absent senders without throwing', () => {
+    expect(isMachineEmitterForStamping('')).toBe(false);
+    expect(isMachineEmitterForStamping(null)).toBe(false);
+    expect(isMachineEmitterForStamping(undefined)).toBe(false);
+  });
+
+  it('is case- and whitespace-insensitive, like the pattern it supplements', () => {
+    expect(isMachineEmitterForStamping('  Git-Sync-Ref-Announce  ')).toBe(true);
+  });
+
+  it('stays OUT of the SQL pattern — the two must never be merged', () => {
+    // MACHINE_SENDER_PATTERN is embedded verbatim in four SQL sites; widening it would
+    // retroactively change which historical rows count as unanswered. This asserts the
+    // separation the fix depends on.
+    expect(MACHINE_SENDER_PATTERN).not.toContain('announce');
+    expect(MACHINE_SENDER_PATTERN).not.toContain('integrator');
+    expect(MACHINE_EMITTER_STAMP_PATTERN).not.toEqual(MACHINE_SENDER_PATTERN);
+    expect(() => new RegExp(MACHINE_EMITTER_STAMP_PATTERN)).not.toThrow();
+  });
+});

@@ -26,6 +26,10 @@ import { homedir, hostname } from 'node:os';
 import { join, dirname, delimiter, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { hostThroughPty, fleetOscFromEnv, findLiveHostFor } from './psu-pty-host.mjs';
+// Shared with the proxy itself (WI-6738) — psu must not give up while the proxy is still
+// retrying on its behalf. Plain .mjs so this bare-node script and the tsx-run proxy can
+// import the SAME definition.
+import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import {
   RUNTIME_OVERHEAD_TOKENS,
   buildContextBudget,
@@ -214,11 +218,21 @@ export function adoptOperatorTarget(t) {
  * call (`bootstrap-su/options`) with no output. A bounded timeout fails fast
  * with an actionable message instead. Override with PAPERCUSP_PSU_TIMEOUT_MS.
  */
-// Per-request timeout. Raised 15s→45s (2026-06-07): a busy operator can take
-// 10-30s on a hop-heavy bootstrap route under fleet load, and a 15s cap turned
-// every transient slow window into a hard `psu` failure. 45s rides through the
-// blip; a truly wedged host still fails (just later) with the same guidance.
-const REQUEST_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_TIMEOUT_MS) || 45_000;
+// Per-request timeout. History: 15s→45s (2026-06-07, a busy operator can take 10-30s on a
+// hop-heavy bootstrap route under fleet load), then 45s→DERIVED (WI-6738).
+//
+// 45s was wrong for a reason no amount of tuning fixes: psu dials the mcp-proxy, and the
+// proxy retries a refused upstream for up to MCP_PROXY_RETRY_WINDOW_MS (90s). Giving up at
+// 45s meant abandoning a request the front door was still actively retrying — so every
+// :3070 gap between 45s and 90s became a hard, user-visible psu failure that the proxy
+// existed to absorb. Owner hit exactly that on 2026-08-01 and reported the system down; it
+// self-recovered ~90s later.
+//
+// The number now DERIVES from the proxy's window (+ headroom) so the two cannot drift apart
+// again; budgets.test.ts asserts the invariant. A truly wedged host still fails with the
+// same guidance — just after the proxy has actually exhausted its retries, not during them.
+// Override still honored: PAPERCUSP_PSU_TIMEOUT_MS.
+const REQUEST_TIMEOUT_MS = PSU_REQUEST_TIMEOUT_MS;
 // A TIMEOUT means the host accepted but didn't answer within REQUEST_TIMEOUT_MS
 // (wedged, not restarting) — a retry just burns another full timeout, so keep
 // these few. Tunable via PAPERCUSP_PSU_RETRIES (kept for back-compat).
