@@ -153,9 +153,9 @@ export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
     reviewBy: '2026-09-01',
   },
   'workItems.byHarness': {
-    maxBytes: 450_000,
+    maxBytes: 300_000,
     reason:
-      'Bounded work-items grid (limit 500). P-006 dropped the heavy per-row summary (detail on demand); the residual is the grid page × light fields (id/title/state/assignee/counts). Row count, not per-row waste.',
+      'Bounded work-items grid (limit 500). P-006 dropped the heavy per-row summary (detail on demand); P-028/D-022 then replaced that deny-list with an ALLOW-LIST of the 18 fields the panels actually render, measured 429KB -> 258KB (-40%) on the live papercusp harness. The residual IS the grid page x those light fields — row count, not per-row waste. Budget ratcheted 450K -> 300K so the win cannot silently drift back.',
     reviewBy: '2026-09-01',
   },
 };

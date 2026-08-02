@@ -68,6 +68,20 @@ export type DelegatedSpawnVerdict =
   | 'refused'
   /** The honor window elapsed with no receipt and no member. Nobody picked it up. */
   | 'no-response'
+  /**
+   * MEASURED 2026-08-02, and the reason this verdict exists: for a REMOTE honor
+   * the requesting host holds NO evidence a member ever existed. The Win rig's
+   * member joined fleet `fed-drill` at 08:11:25Z and the tower has no row for it
+   * in `coord_presence` (reaped) AND none in the append-only
+   * `fleet_membership_events` (the fleet registry is machine-local) — the newest
+   * fed-drill membership rows are from 03:41Z. Only `p2p_receipts` demonstrably
+   * crosses (verified: 2 rows, both origin='remote', kind='refusal').
+   *
+   * So absent a refusal, a remote spawn's outcome is UNKNOWABLE from this side.
+   * Reporting that honestly is the whole point — emitting `no-response` here
+   * would dress the exact ambiguity this module exists to remove up as a verdict.
+   */
+  | 'indeterminate'
   /** Still inside the honor window with nothing observed yet. Not a failure. */
   | 'pending';
 

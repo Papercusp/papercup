@@ -2302,9 +2302,19 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     // The chronic-check fires as a fire-and-forget async IIFE off the
     // (synchronous) repair handler — give its microtask/await chain a tick
     // to resolve before asserting.
-    await vi.waitFor(() => expect(hasOpenSpy).toHaveBeenCalledTimes(1));
-    expect(hasOpenSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ harnessSlug, logKeyHex: keyHex, kind: 'frozen' }),
+    //
+    // Assert the chronic-check's CALL SHAPE, never a total call count: WI-7011
+    // added `probeDurableAlarm` in replication-liveness.ts, which reads this same
+    // `hasOpenReplicationStallEi` export once per (log, axis) — three axes — to
+    // rehydrate a recovery that a process restart would otherwise orphan. Those
+    // probes share this spy, so an exact count asserts how many UNRELATED callers
+    // the export has rather than anything about the WI-5332 shortcut, and any
+    // future caller re-breaks it. The escalation assertions below are what
+    // actually pin THIS path's behaviour.
+    await vi.waitFor(() =>
+      expect(hasOpenSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ harnessSlug, logKeyHex: keyHex, kind: 'frozen' }),
+      ),
     );
     await vi.waitFor(() => expect(exhaustedEvents()).toHaveLength(1));
     expect(exhaustedEvents()[0]!.message).toContain('chronic zombie');

@@ -2213,6 +2213,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // grid never renders/filters/searches it; DetailPanel fetches the selected
       // row's full detail on demand via workItems.detail. The /api HTTP route
       // (pui TUI) keeps the full row.
+      // P-028/D-022: that projection is now an ALLOW-LIST of the 18 fields the
+      // panels render, not "blank summary, spread the rest" — measured 429KB →
+      // 258KB (−40%) live, because ~14 unread fields (three of them already
+      // force-nulled by slimListRow) were pure key-name overhead on the wire.
       const { projectWorkItemsListForUi } = await import('./work-items-ui-projection');
       return projectWorkItemsListForUi(attachListMeta(rows, { total }));
     },

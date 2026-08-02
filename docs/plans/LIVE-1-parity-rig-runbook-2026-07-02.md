@@ -108,3 +108,31 @@ First real cross-machine run (1785661381, tower `main-server-Precision-7865-Towe
   ever on the Mac, both on the day the asserts were written. `receipts` is downstream of it.
   Tracked as **WI-7012** — re-point the assert at what the wake executor actually writes per
   delivery, or hand it to P-001. Do not read either red as "cross-machine wake is broken".
+
+  **RESOLVED 2026-08-02 (WI-7012): it was (a), a stale observable — not a wake-executor gap.**
+  `event_awaits.once` is the cardinality flag, and `fireAwaitsForKey` fires a STANDING
+  (`once=false`) row with a plain SELECT — "match without consuming" (store.ts:541-548) — while
+  only the `once=true` branch UPDATEs `fired_at`. The always-armed `coord:inbox-wake:<agent>` row
+  is standing, so `fired_at` is **never written for that row class**. Measured: `once=false` ->
+  28,569 rows, **0 ever fired**; `once=true` -> 58 rows, 55 fired. The earlier "1 firing in 24h"
+  mixed the two populations - that one firing was a one-shot.
+
+  `fed_assert_wake_bridge` now reads **`harness_shared.event_wake_deliveries`** (one row per
+  recipient per fire), asserting `status='delivered'` so it cannot pass on a wake that queued and
+  died; a failure prints the statuses actually observed instead of a bare 0. Verified satisfiable
+  BEFORE being relied on: delivered=33,684 (74 in the last hour), dropped=62 (none since
+  2026-07-10), dead=17 (none since 2026-07-19). Negative controls return 0 (bogus agent; future
+  `since`).
+
+  WARNING - deliberately NOT workspace-scoped. `subscriber_id` is a globally-unique agent id, so
+  `(subscriber_id, event_key)` already pins one identity. Scoping to
+  `workspace_id='papercusp-workspace'` - which `dev:pg_query`'s tenant advisory suggests - returns
+  **0**: every row is `workspace_id='default'` and there is exactly one distinct workspace. Adding
+  that filter would silently re-create the very always-0 bug this fixes.
+
+  **Legs 2+3 still cannot be RUN, for a different reason now:** there is no live session homed on
+  the Mac to address. The Mac receives tower gossip fine (its `shared_presence` /
+  `shared_session_presence` carry fresh tower rows, ~10s old) but publishes **nothing of its own**,
+  so the tower's roster holds no Mac row and target discovery fails before the bridge is ever
+  exercised. Note `fed_assert_presence_gossip` asserts only the **tower->Mac** direction, so its
+  green never covered this. Tracked separately.

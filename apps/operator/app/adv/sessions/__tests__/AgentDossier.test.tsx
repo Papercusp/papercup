@@ -680,10 +680,20 @@ describe('AgentDossier', () => {
               expiresAt: new Date(Date.now() + 60_000).toISOString(),
             },
           ],
-          waiting: [{ ticketId: 't1', paths: ['contended.ts'], aheadCount: 0, blockedBy: [] }],
+          waiting: [
+            {
+              ticketId: 't1',
+              paths: ['contended.ts'],
+              intent: 'waiting to edit',
+              aheadCount: 0,
+              queuedAt: new Date().toISOString(),
+              waitUntil: new Date(Date.now() + 120_000).toISOString(),
+              blockedBy: [],
+            },
+          ],
           error: null,
         },
-      } as AgentDetail;
+      } satisfies AgentDetail;
       const { container } = render(
         <AgentDossier
           ownerId="su-1"
@@ -712,10 +722,13 @@ describe('AgentDossier', () => {
         ...DETAIL,
         coord: {
           ...DETAIL.coord,
+          // The operator counts 38 but sends a BOUNDED slice — that gap IS the
+          // condition under test, so the fixture models it rather than padding
+          // `unread` out to 38 and testing nothing.
           unreadCount: 38,
           unread: DETAIL.coord.unread,
         },
-      } as AgentDetail;
+      } satisfies AgentDetail;
       const { container, findByText } = render(
         <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
       );

@@ -525,6 +525,105 @@ describe('lockAuthorityForHive — eligibleDevices (WI-5395 capability-gated ele
   });
 });
 
+// ── EI-19330771435294981: routineHostsOnly, and its EMPTY-CAPABLE degenerate case
+//
+// `routineHostsOnly` narrows candidacy to devices publishing
+// `shared_presence.runs_routines = true` (EI-18761517980514694). The bit is
+// published only by nodes with an ACTIVE cadence routine (gym-cycle / scout-cycle
+// — cadence-runner-capability.ts), so on a pot where neither is armed it is
+// unpublished by EVERY device: measured 2026-08-02 on papercusp-workspace,
+// `runs_routines` was null on all live presence rows.
+//
+// The narrowing then resolves to the EMPTY set — and an empty allowlist excludes
+// every ROW, self's own row included (`withEligibility` iterates rows, not peers).
+// Whether that ends in "self wins" or "nobody wins" is the difference between a
+// caller failing safe and a caller freezing indefinitely, and it had NO test:
+// the git-sync integrator election opted in (WI-6996, git-sync-action.ts:2716) on
+// the strength of a prose safety comment alone, and when the integrator kept
+// declining `not_authority` through an outage that comment was — reasonably, and
+// wrongly — read as disproven.
+//
+// These pin the real behaviour so a future change to `withEligibility` /
+// `selectAuthorityFromRows` that drops the unconditional self-add reds HERE
+// instead of silently freezing a pot's integrator.
+describe('lockAuthorityForHive — routineHostsOnly (EI-18761517980514694 narrowing + empty-capable degenerate case)', () => {
+  type Row = {
+    device_pubkey: string;
+    github_user_id: number;
+    machine_label: string;
+    last_seen_ms: number;
+    runs_routines?: boolean | null;
+  };
+  // 'aaa' plays the wrongly-elected peer: argmin winner, publishes no bit.
+  // 'zzz' plays the node that actually runs the loops.
+  const publishedRows: Row[] = [
+    { device_pubkey: 'aaa', github_user_id: 1, machine_label: 'mac', last_seen_ms: NOW - 1000, runs_routines: null },
+    { device_pubkey: 'zzz', github_user_id: 2, machine_label: 'tower', last_seen_ms: NOW - 1000, runs_routines: true },
+  ];
+  // The live shape: NOBODY publishes the bit.
+  const inertRows: Row[] = publishedRows.map((r) => ({ ...r, runs_routines: null }));
+  const self = { githubUserId: 3, devicePubkey: 'mmm' };
+  const hiveDeps = (rows: Row[], over: Partial<LockAuthorityDeps> = {}): LockAuthorityDeps => ({
+    now: () => NOW,
+    staleMs: 90_000,
+    fetchHivePresenceRows: async () => rows,
+    resolveSelf: async () => self,
+    useHrwRendezvous: false,
+    evictionMonitor: null,
+    routineHostsOnly: true,
+    ...over,
+  });
+
+  it('narrows candidacy to bit-publishing peers: the non-publishing argmin peer is excluded', async () => {
+    // Ungated, 'aaa' would win (argmin over aaa/mmm/zzz). Gated, only 'zzz'
+    // publishes the bit, so the peer set is {zzz} and self 'mmm' wins argmin.
+    const ungated = await lockAuthorityForHive('hive', hiveDeps(publishedRows, { routineHostsOnly: false }));
+    expect(ungated.isSelf).toBe(false);
+    expect(ungated.peer?.machineLabel).toBe('mac');
+
+    const gated = await lockAuthorityForHive('hive', hiveDeps(publishedRows));
+    expect(gated).toEqual({ isSelf: true, liveCount: 2 }); // {zzz, self}
+  });
+
+  it('EMPTY capable set ⇒ SELF wins — the narrowing fails SAFE, it never freezes the election', async () => {
+    const r = await lockAuthorityForHive('hive', hiveDeps(inertRows));
+    // Every row excluded; self re-added unconditionally by selectAuthorityFromRows.
+    expect(r).toEqual({ isSelf: true, liveCount: 1 });
+  });
+
+  it('EMPTY capable set on the HRW path ⇒ SELF wins there too (both selectors re-add self)', async () => {
+    const r = await lockAuthorityForHive('hive', hiveDeps(inertRows, { useHrwRendezvous: true }));
+    expect(r).toEqual({ isSelf: true, liveCount: 1 });
+  });
+
+  it('EMPTY capable set + NO self identity ⇒ the single-box fallback, still isSelf', async () => {
+    const r = await lockAuthorityForHive('hive', hiveDeps(inertRows, { resolveSelf: async () => null }));
+    expect(r).toEqual({ isSelf: true, liveCount: 0 });
+  });
+
+  it('a peer must satisfy BOTH constraints — the sets INTERSECT, they do not union', async () => {
+    // 'zzz' publishes the bit but is not in eligibleDevices → excluded anyway.
+    const r = await lockAuthorityForHive(
+      'hive',
+      hiveDeps(publishedRows, { eligibleDevices: new Set(['aaa', 'mmm']) }),
+    );
+    expect(r).toEqual({ isSelf: true, liveCount: 1 });
+  });
+
+  it('the git-sync integrator configuration (eligibleDevices + routineHostsOnly, bit unpublished) elects SELF every tick', async () => {
+    // git-sync-action.ts passes BOTH. With the bit unpublished the intersection is
+    // empty, so the narrowing cannot exclude *some* peers — it excludes ALL of
+    // them, on every node that reaches the election. Peer arbitration for the
+    // integrator is therefore OFF, not merely relaxed: this is what the opt-in
+    // actually buys today, and it is why the shipped fix "worked".
+    const r = await lockAuthorityForHive(
+      'hive',
+      hiveDeps(inertRows, { eligibleDevices: new Set(['mmm', 'aaa', 'zzz']) }),
+    );
+    expect(r).toEqual({ isSelf: true, liveCount: 1 });
+  });
+});
+
 describe('routeToAuthority — routing + fail-open (D-004)', () => {
   it('we are the authority → runs local, via local-authority', async () => {
     const res = await routeToAuthority('h', { local: async () => 'L' }, deps({ self: null, rows: [] }));
