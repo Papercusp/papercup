@@ -560,7 +560,13 @@ describe('typecheck.ts model tracks the real build:typecheck (D-015)', () => {
     expectArgSurface(
       buildTypecheck,
       'build:typecheck',
-      ['project', 'files', 'maxErrors', 'timeoutMs', 'incremental'],
+      // `scopeToFiles` (EI-19297428004790873) does NOT widen this family's coverage, which is
+      // why it is accepted here rather than treated as an under-claim. It compiles `files` +
+      // their import graph under a config that EXTENDS the project's, and plain tsc has no
+      // command shape for that: `tsc -p X a.ts` is refused by tsc itself ("Cannot use --project
+      // with source files"), and `tsc a.ts` IGNORES tsconfig entirely, so it runs under default
+      // compilerOptions — a materially different check that stays correctly uncovered below.
+      ['project', 'files', 'maxErrors', 'timeoutMs', 'incremental', 'scopeToFiles'],
       'pairs/typecheck.ts excludes an stdout redirect BY PATTERN because the tool produces no artifact, and treats ' +
         'every compiler option except --incremental as unexpressible. A new arg may mean the pattern is wrongly narrow.',
     );

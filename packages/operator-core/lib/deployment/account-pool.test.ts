@@ -17,6 +17,7 @@ import {
   recordAccountReset,
   recordAccountWindow,
   recordProbeFailure,
+  accountReadingStatus,
   isAvailable,
   isSustainedlyLimited,
   normalizeAccount,
@@ -428,6 +429,31 @@ describe('recordAccountWindow (D-003 unified-5h projection)', () => {
     expect(getAccount(p, 'a')!.rate.lastProbeFailedAt).toBe(T0);
     p = recordAccountWindow(p, 'a', { utilization: 0.5 }, T0 + MIN);
     expect(getAccount(p, 'a')!.rate.lastProbeFailedAt).toBeUndefined();
+  });
+});
+
+describe('accountReadingStatus (EI-18809949582687481: freshness verdict)', () => {
+  it('never-observed when utilizationAt is undefined', () => {
+    expect(accountReadingStatus(getAccount(poolOf('a'), 'a')!, T0)).toEqual({ readingStatus: 'never-observed' });
+  });
+
+  it('fresh right after an observation, and at the staleness boundary', () => {
+    const p = recordAccountWindow(poolOf('a'), 'a', { utilization: 0.4 }, T0);
+    const a = getAccount(p, 'a')!;
+    expect(accountReadingStatus(a, T0)).toEqual({ readingStatus: 'fresh', readingAgeMs: 0 });
+    expect(accountReadingStatus(a, T0 + DRAIN_UTIL_STALE_MS)).toEqual({
+      readingStatus: 'fresh',
+      readingAgeMs: DRAIN_UTIL_STALE_MS,
+    });
+  });
+
+  it('stale once older than DRAIN_UTIL_STALE_MS', () => {
+    const p = recordAccountWindow(poolOf('a'), 'a', { utilization: 0.4 }, T0);
+    const a = getAccount(p, 'a')!;
+    expect(accountReadingStatus(a, T0 + DRAIN_UTIL_STALE_MS + 1)).toEqual({
+      readingStatus: 'stale',
+      readingAgeMs: DRAIN_UTIL_STALE_MS + 1,
+    });
   });
 });
 

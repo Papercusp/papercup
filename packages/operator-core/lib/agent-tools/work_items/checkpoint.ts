@@ -374,7 +374,16 @@ export default defineTool({
         let checkpointToStore = it.checkpoint;
         if (wantsAppend && it.checkpoint) {
           const prior = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId }).catch(() => null);
-          checkpointToStore = joinCheckpoint(prior, it.checkpoint);
+          // EI-19298690705878336: strip any rendered `## Checks` section out of the
+          // prior BEFORE joining. That section runs to the end of the document (there
+          // is no following heading to bound it), so appending after it would bury the
+          // addendum INSIDE the section — where the re-render then drops it as an
+          // unparseable row. Caught by test: the addendum vanished entirely.
+          // The rows are NOT lost by stripping here: the transform below recovers them
+          // from the stored prior note, which the store reads inside its own locked
+          // transaction.
+          const priorBody = prior !== null ? splitCarryNoteChecks(prior).body : null;
+          checkpointToStore = joinCheckpoint(priorBody, it.checkpoint);
         }
         // EI-8824: c.workspaceId is '*' for an unscoped superuser session (the
         // read-scoping wildcard) — passing it straight through as `?? undefined`

@@ -9,6 +9,8 @@ import { describe, expect, it } from 'vitest';
 import {
   CORPUS_BLOCK_HEADING,
   CORPUS_MAX_ITEMS,
+  CORPUS_QUERY_MAX_TERMS,
+  corpusQueryText,
   corpusTerms,
   handleRefOfHit,
   renderCorpusBlock,
@@ -55,6 +57,39 @@ describe('corpusTerms', () => {
 
   it('is order-preserving and de-duplicated', () => {
     expect(corpusTerms('alpha beta alpha gamma')).toEqual(['alpha', 'beta', 'gamma']);
+  });
+});
+
+describe('corpusQueryText — the AND-satisfiability fix', () => {
+  it('collapses a long prompt envelope to two distinctive terms', () => {
+    // plainto_tsquery ANDs every lexeme, so the raw 1000-char turn-start
+    // envelope would produce an AND of ~150 terms and match nothing, ever.
+    const q = corpusQueryText(QUERY);
+    expect(q.split(' ')).toHaveLength(2);
+    expect(q).toContain('transport');
+  });
+
+  it('uses an id-shaped token ALONE — the near-unique retrieval key', () => {
+    expect(corpusQueryText('please look at WI-6512 about the sse transport regression')).toBe(
+      'wi-6512',
+    );
+    expect(corpusQueryText('does D-037 govern the injection budget question')).toBe('d-037');
+  });
+
+  it('never returns more terms than asked, however long the input', () => {
+    const envelope = `${'boilerplate envelope preamble '.repeat(40)} ${QUERY}`;
+    expect(corpusQueryText(envelope).split(' ').length).toBeLessThanOrEqual(
+      CORPUS_QUERY_MAX_TERMS,
+    );
+  });
+
+  it('returns empty for text with nothing searchable', () => {
+    expect(corpusQueryText('   ')).toBe('');
+    expect(corpusQueryText('a of to the and')).toBe('');
+  });
+
+  it('is deterministic for the same input', () => {
+    expect(corpusQueryText(QUERY)).toBe(corpusQueryText(QUERY));
   });
 });
 
@@ -211,6 +246,29 @@ describe('selectCorpusLines', () => {
       queryText: QUERY,
     });
     expect(lines).toHaveLength(0);
+  });
+});
+
+describe('teaser source — the match fragment beats the body lead', () => {
+  it('teases and JUDGES on the highlight, so a deep match is not dropped', () => {
+    const deep = wi({
+      // The lead says nothing about the query; the match is 3000 chars in.
+      excerpt: '[bug/open/major] the :3270 dev operator churns a new pid every 30s',
+      highlight: '… blocked on the <mark>http2</mark> <mark>transport</mark> cutover …',
+    });
+    const { lines } = selectCorpusLines({ hits: [deep], queryText: QUERY });
+    expect(lines).toHaveLength(1);
+    expect(lines[0].line).toContain('http2 transport');
+    // ts_headline markup is web emphasis — noise in a prompt.
+    expect(lines[0].line).not.toContain('<mark>');
+  });
+
+  it('falls back to the excerpt when a source produced no highlight', () => {
+    const { lines } = selectCorpusLines({
+      hits: [wi({ highlight: '' })],
+      queryText: QUERY,
+    });
+    expect(lines[0].line).toContain('http2 transport regression');
   });
 });
 

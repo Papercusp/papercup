@@ -55,7 +55,17 @@ export interface CorpusHit {
   sourceId: string;
   /** work_item: 'harness:<slug>' | 'operator'. session_turn: the harness slug, usually absent. */
   scope?: string | null;
+  /** The first ~200 chars of the body — the LEAD, not necessarily the match. */
   excerpt: string;
+  /**
+   * The ts_headline fragment around the actual match, `<mark>`-wrapped. Strongly
+   * preferred over `excerpt` for the teaser: on a long work-item body the match
+   * is routinely past the 200-char lead, so an excerpt teaser shows the agent a
+   * pointer without showing it WHY the pointer is here — and the term-overlap
+   * guard, reading that same lead, would then drop the hit as irrelevant when
+   * it is not. Optional: a source that skipped highlighting falls back cleanly.
+   */
+  highlight?: string | null;
   /** Fused RRF (hybrid) — rank-derived, NOT an absolute similarity. See header. */
   score: number;
   ts?: string | number | Date | null;
@@ -182,6 +192,58 @@ export function corpusTerms(text: string): string[] {
   return out;
 }
 
+/**
+ * Content terms kept when the text carries no id-shaped token. TWO, and the
+ * number is forced rather than chosen — see {@link corpusQueryText}.
+ */
+export const CORPUS_QUERY_MAX_TERMS = 2;
+
+/**
+ * Build the COMPACT retrieval query for this leg from the injected text.
+ *
+ * This is not a nicety, it is the difference between the lexical leg working
+ * and being structurally dead. Both corpora are searched through
+ * `plainto_tsquery`, which **ANDs every term**, and the text arriving at the
+ * injection port is the raw submitted prompt, envelope and all — measured over
+ * `memory_recall_stats` (3d, 2026-08-02): turn-start is clamped at 1000 chars
+ * with a MEDIAN of 1000, mid-turn ~196, claim/create 300. Handing that
+ * straight to the engine produces an AND of ~150 lexemes, which matches
+ * nothing, ever. Verified against live PG:
+ *
+ *   'why did the http2 sse transport change on the endpoint'
+ *     → 'http2' & 'sse' & 'transport' & 'chang' & 'endpoint'  → 0 rows
+ *   'http2 transport'                                          → 3 rows
+ *   'WI-6512' → 'wi' & '-6512'                                 → 11 work-items, 58 turns
+ *
+ * So: an ID-SHAPED token wins outright and is used ALONE. A work-item id in
+ * the prompt is a near-unique retrieval key — ANDing anything beside it can
+ * only cost recall, and it cannot buy precision the id does not already have.
+ * That case is also this item's entire motivating example (find WI-6512 and
+ * its post), so it is the case worth optimizing.
+ *
+ * Failing an id, the two longest distinct content terms. Length is a crude
+ * distinctiveness proxy; it is used deliberately in place of a tuned constant
+ * because there is no corpus-frequency signal on this path yet. TERM SELECTION
+ * IS THE TUNABLE THIS LEG'S TELEMETRY SHOULD DRIVE — measure it before
+ * changing it, and note D-008's lesson first: on this path the natural
+ * constant to retune is usually not the one governing the behavior.
+ *
+ * The same compact query also serves the EMBEDDING leg, and that is an
+ * improvement rather than a compromise: a 1000-char envelope embeds mostly its
+ * own boilerplate, which is precisely the effect P-041 was added to measure.
+ * PURE.
+ */
+export function corpusQueryText(text: string, maxTerms = CORPUS_QUERY_MAX_TERMS): string {
+  const terms = corpusTerms(text);
+  if (terms.length === 0) return '';
+  const id = terms.find((t) => ID_TOKEN_RE.test(t));
+  if (id) return id;
+  return [...terms]
+    .sort((a, b) => b.length - a.length || terms.indexOf(a) - terms.indexOf(b))
+    .slice(0, Math.max(1, maxTerms))
+    .join(' ');
+}
+
 /** The session id a `session_turn` hit came from, or null for other sources.
  *  `sourceId` is `<source_kind>:<session_id>:<turn_idx>` and a session id may
  *  itself contain colons, so the turn index is stripped from the END. PURE. */
@@ -218,6 +280,17 @@ function inHarnessScope(hit: CorpusHit, harnessSlugs: readonly string[]): boolea
 }
 
 const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
+
+/** Strip ts_headline's `<mark>` wrappers — the emphasis is markup for a web
+ *  surface, noise in a prompt. PURE. */
+const unmark = (s: string): string => s.replace(/<\/?mark>/g, '');
+
+/** The text a hit is JUDGED and TEASED on: the highlighted match fragment when
+ *  the source produced one, else the body lead. PURE. */
+export function hitText(hit: CorpusHit): string {
+  const h = unmark(hit.highlight ?? '').trim();
+  return h || hit.excerpt || '';
+}
 
 /** Render the resolving tool call for a handle. This is the whole point of a
  *  handle: the agent does not have to know HOW to fetch it. PURE. */
@@ -273,7 +346,9 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
       dropped.push({ ref, reason: 'out-of-scope' });
       return;
     }
-    const shared = corpusTerms(hit.excerpt).filter((t) => queryTerms.has(t));
+    // Judged on the match fragment when there is one — see CorpusHit.highlight
+    // for why the body lead alone would drop genuine deep matches.
+    const shared = corpusTerms(hitText(hit)).filter((t) => queryTerms.has(t));
     if (queryTerms.size > 0 && shared.length === 0) {
       dropped.push({ ref, reason: 'no-term-overlap' });
       return;
@@ -314,7 +389,7 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
       resolve: resolveCall(kind, ref, terms),
     };
     const label = kind === 'work-item' ? `work-item ${ref}` : `session ${ref}`;
-    const teaser = oneLine(hit.excerpt).slice(0, CORPUS_TEASER_MAX_CHARS);
+    const teaser = oneLine(hitText(hit)).slice(0, CORPUS_TEASER_MAX_CHARS);
     const line = `- [${label}${dateLabel(hit.ts)}] ${teaser} → ${handle.resolve}`;
     if (spent + line.length > budget && lines.length > 0) {
       dropped.push({ ref, reason: 'budget-exhausted' });

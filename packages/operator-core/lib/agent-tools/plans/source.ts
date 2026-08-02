@@ -143,8 +143,15 @@ export interface PlanRow {
   template: string | null;
   /** Per-plan structured template instance data (jsonb), validated against the
    *  template's registry zod schema on write (plans:set-template-data, P-005);
-   *  null until set, never parsed from frontmatter. */
+   *  null until set, never parsed from frontmatter. When the plan declares an
+   *  `inputSchema` instead of a `template`, THIS is where its input VALUES live —
+   *  one value slot, two possible schema sources (plan-structured-inputs D-002). */
   templateData: unknown;
+  /** The plan's own JSON Schema for its inputs (jsonb, mig 714 — plans:set-input-schema).
+   *  The runtime-authored alternative to a code-registry `template` type, and MUTUALLY
+   *  EXCLUSIVE with it (D-002/D-008 Q3). Its `required` array is what the start gate
+   *  checks `templateData` against. Null ⇒ the plan declares no inputs. */
+  inputSchema: unknown;
   supersedes: string[];
   supersededBy: string | null;
   opStatus: 'started' | 'paused' | 'done' | null;
@@ -195,6 +202,7 @@ interface PlanDbRow {
   initiative: string | null;
   template: string | null;
   template_data: unknown;
+  input_schema: unknown;
   supersedes: string[] | null;
   superseded_by: string | null;
   op_status: string | null;
@@ -235,6 +243,7 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     initiative: r.initiative,
     template: r.template ?? null,
     templateData: r.template_data ?? null,
+    inputSchema: r.input_schema ?? null,
     supersedes: r.supersedes ?? [],
     supersededBy: r.superseded_by,
     opStatus: (r.op_status as PlanRow['opStatus']) ?? null,
@@ -607,7 +616,7 @@ export async function getPlanRow(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next, promote_policy,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, template_data
+               template, template_data, input_schema
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            AND plan_slug = ${slug}
@@ -623,7 +632,7 @@ export async function getPlanRow(
       err.message?.includes('does not exist')
     ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
-        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data'>[]>`
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data' | 'input_schema'>[]>`
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
@@ -645,6 +654,7 @@ export async function getPlanRow(
         run_seq: null,
         template: null,
         template_data: null,
+        input_schema: null,
       } as PlanDbRow);
     }
     throw err;
@@ -771,7 +781,7 @@ export async function listPlanRows(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, template_data
+               template, template_data, input_schema
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          ${archivedFilter}
@@ -787,7 +797,7 @@ export async function listPlanRows(
     ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
         const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data'>[]>`
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data' | 'input_schema'>[]>`
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
@@ -810,6 +820,7 @@ export async function listPlanRows(
           run_seq: null,
           template: null,
           template_data: null,
+          input_schema: null,
         } as PlanDbRow),
       );
     }
@@ -919,8 +930,8 @@ export async function listPlanIndexRows(
       // rowFromDb — is identical whether or not the caller opted in.
       const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
       const heavyCols = opts.heavyFields
-        ? tx`now_state, template_data,`
-        : tx`NULL::text AS now_state, NULL::jsonb AS template_data,`;
+        ? tx`now_state, template_data, input_schema,`
+        : tx`NULL::text AS now_state, NULL::jsonb AS template_data, NULL::jsonb AS input_schema,`;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
@@ -983,6 +994,7 @@ export async function listPlanIndexRows(
           run_seq: null,
           template: null,
           template_data: null,
+          input_schema: null,
         } as PlanDbRow);
         return rest;
       });
@@ -1055,8 +1067,8 @@ export async function listPlanIndexRowsForWorkspace(
       // P-006 payload projection — identical to listPlanIndexRows above; see its docstring.
       const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
       const heavyCols = opts.heavyFields
-        ? tx`now_state, template_data,`
-        : tx`NULL::text AS now_state, NULL::jsonb AS template_data,`;
+        ? tx`now_state, template_data, input_schema,`
+        : tx`NULL::text AS now_state, NULL::jsonb AS template_data, NULL::jsonb AS input_schema,`;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
@@ -1119,6 +1131,7 @@ export async function listPlanIndexRowsForWorkspace(
           run_seq: null,
           template: null,
           template_data: null,
+          input_schema: null,
         } as PlanDbRow);
         return rest;
       });
@@ -1222,7 +1235,7 @@ export async function listPlanRowsMatchingAnyToken(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, template_data
+               template, template_data, input_schema
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          ${archivedFilter}
@@ -1241,7 +1254,7 @@ export async function listPlanRowsMatchingAnyToken(
     ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
         const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data'>[]>`
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data' | 'input_schema'>[]>`
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
@@ -1268,6 +1281,7 @@ export async function listPlanRowsMatchingAnyToken(
             run_seq: null,
             template: null,
             template_data: null,
+            input_schema: null,
           } as PlanDbRow),
         ),
         truncated,

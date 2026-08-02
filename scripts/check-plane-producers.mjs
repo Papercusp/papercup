@@ -243,10 +243,24 @@ export const TERMINAL_STATUSES = new Set(['done', 'dropped', 'resolved', 'closed
 
 export function rollupCensus(rows) {
   const noProducer = rows.filter((r) => r.verdict === 'no-producer');
+  const producing = rows.filter((r) => r.verdict === 'producing');
   return {
-    producing: rows.filter((r) => r.verdict === 'producing').length,
+    producing: producing.length,
     noData: rows.filter((r) => r.verdict === 'no-data').length,
     knownUnbuilt: noProducer.filter((r) => r.knownUnbuilt).length,
+    /**
+     * PRODUCING, but carrying a `knownUnbuilt` note anyway — i.e. the field is
+     * WRITTEN and the note records something else about it (for `agent_facts.claim`:
+     * D-103 retired its only consumer, so it has a producer and NO consumer).
+     *
+     * Counted separately because the census answers exactly one question — "is
+     * anything writing this field" — and a bare `✓` was being read as "this field is
+     * healthy". A write-only field passes that question truthfully and is still dead
+     * weight, which is the MIRROR IMAGE of the defect this gate was built for. The
+     * note existed on the row the whole time; it was simply never printed for a
+     * producing row (WI-6768).
+     */
+    producingWithNote: producing.filter((r) => r.knownUnbuilt).length,
     // Only an UNEXPLAINED dead producer fails the build.
     failures: noProducer.filter((r) => !r.knownUnbuilt),
   };
@@ -312,18 +326,32 @@ async function main() {
 
   console.log('\nPRODUCER CENSUS — agent-state plane (P-001)\n');
   for (const r of rows) {
-    console.log(`  ${mark[r.verdict]} ${r.id.padEnd(38)} ${String(r.populated).padStart(8)}/${String(r.total).padEnd(9)} ${pct(r)}  ${r.sinceDays}d`);
+    // A producing row that still carries a note is NOT a plain ✓ — see
+    // `producingWithNote` in rollupCensus for why a bare tick was actively misleading.
+    const glyph = r.verdict === 'producing' && r.knownUnbuilt ? '✓*' : mark[r.verdict];
+    console.log(`  ${glyph.padEnd(2)}${r.id.padEnd(38)} ${String(r.populated).padStart(8)}/${String(r.total).padEnd(9)} ${pct(r)}  ${r.sinceDays}d`);
     if (r.verdict === 'no-producer') {
       console.log(`      producer: ${r.producer}`);
       console.log(`      breaks:   ${r.why}`);
       if (r.knownUnbuilt) console.log(`      KNOWN:    ${r.knownUnbuilt} — reported, not failing the build`);
+    }
+    // The row is WRITTEN, so it passes this gate's question — but the note says
+    // something the tick does not, and printing it only for dead rows is how a
+    // write-only field read as healthy for as long as it did.
+    if (r.verdict === 'producing' && r.knownUnbuilt) {
+      console.log(`      NOTE:     ${r.knownUnbuilt} — has a producer, but see below; ✓ means "written", not "healthy"`);
+      console.log(`      status:   ${r.why}`);
     }
     if (r.verdict === 'no-data') {
       console.log(`      no rows in the ${r.sinceDays}d window — this says NOTHING about the producer, and is deliberately not a pass.`);
     }
   }
   console.log(
-    `\n  ${roll.producing} producing · ${roll.failures.length} DEAD · ${roll.knownUnbuilt} known-unbuilt · ${roll.noData} no-data\n`,
+    `\n  ${roll.producing} producing · ${roll.failures.length} DEAD · ${roll.knownUnbuilt} known-unbuilt · ${roll.noData} no-data` +
+      (roll.producingWithNote
+        ? `\n  ⚠ ${roll.producingWithNote} of the producing rows carry a note (✓*) — written, but not therefore healthy.`
+        : '') +
+      '\n',
   );
 
   // Stale-pointer disclosure. Printed BEFORE both terminal branches below, because

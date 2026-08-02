@@ -83,6 +83,31 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
     expect((ctx as { workspaceId: string }).workspaceId).toBe('ws-1');
   });
 
+  it('sends the COMPACT query, never the raw prompt envelope', async () => {
+    // The engine ANDs every lexeme; a 1000-char turn-start envelope (the
+    // measured median) would match nothing at all.
+    runHybridSearch.mockResolvedValue(ok());
+    const envelope = `${'envelope preamble boilerplate '.repeat(40)}${QUERY}`;
+    await recallCorpusContext({ ...base, queryText: envelope });
+    const [, ctx] = runHybridSearch.mock.calls[0];
+    const sent = (ctx as { query: string }).query;
+    expect(sent.length).toBeLessThan(40);
+    expect(sent.split(' ').length).toBeLessThanOrEqual(2);
+  });
+
+  it('sends a work-item id ALONE when the turn mentions one', async () => {
+    runHybridSearch.mockResolvedValue(ok());
+    await recallCorpusContext({ ...base, queryText: 'what happened with WI-6512 and the sse leg' });
+    const [, ctx] = runHybridSearch.mock.calls[0];
+    expect((ctx as { query: string }).query).toBe('wi-6512');
+  });
+
+  it('skips a query with nothing searchable in it', async () => {
+    const res = await recallCorpusContext({ ...base, queryText: 'a of to the and' });
+    expect(res.block).toBeNull();
+    expect(runHybridSearch).not.toHaveBeenCalled();
+  });
+
   it('over-fetches so the pure core has candidates left after filtering', async () => {
     runHybridSearch.mockResolvedValue(ok());
     await recallCorpusContext({ ...base, maxItems: 3 });

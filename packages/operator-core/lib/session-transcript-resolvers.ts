@@ -24,6 +24,19 @@ function defaultOmpSessionsRoot(): string {
 const codexPathCache = new Map<string, string>();
 const ompPathCache = new Map<string, string>();
 
+/**
+ * WI-6794: the cache key MUST carry the ROOT that was searched, not just the
+ * session id. Every resolver here takes a home/root override, so keying by id
+ * alone serves one home's answer to a caller that asked about another — and
+ * the staleness guard cannot catch it, because it only re-stats the cached
+ * path, which still exists under the wrong root. Caught by WI-6581's live
+ * probe, where a homeOverride hit made a later default lookup report a file
+ * that is not in the default home at all.
+ */
+function pathCacheKey(kind: string, id: string | number, root: string): string {
+  return `${kind}::${id}::${root}`;
+}
+
 /** Test seam. */
 export function __resetTranscriptResolverCaches(): void {
   codexPathCache.clear();
@@ -49,13 +62,13 @@ export async function findCodexRolloutPath(
   sessionKey: string | number,
   opts: { homeOverride?: string } = {},
 ): Promise<string | null> {
-  const cacheKey = String(sessionKey);
+  const root = join(opts.homeOverride ?? codexHomeForSessionKey(sessionKey), 'sessions');
+  const cacheKey = pathCacheKey('codex-key', sessionKey, root);
   const cached = codexPathCache.get(cacheKey);
   if (cached) {
     if ((await statMtime(cached)) !== null) return cached;
     codexPathCache.delete(cacheKey);
   }
-  const root = join(opts.homeOverride ?? codexHomeForSessionKey(sessionKey), 'sessions');
   let best: { path: string; mtime: number } | null = null;
   // Bounded walk: sessions/<yyyy>/<mm>/<dd>/rollout-*.jsonl — one home, ≤4 levels.
   let years: string[];
@@ -112,13 +125,13 @@ export async function findCodexRolloutPathByUuid(
   opts: { homeOverride?: string } = {},
 ): Promise<string | null> {
   if (!/^[0-9a-f][0-9a-f-]{7,}$/i.test(rolloutId)) return null;
-  const cacheKey = `uuid:${rolloutId}`;
+  const root = join(opts.homeOverride ?? join(homedir(), '.codex'), 'sessions');
+  const cacheKey = pathCacheKey('codex-uuid', rolloutId, root);
   const cached = codexPathCache.get(cacheKey);
   if (cached) {
     if ((await statMtime(cached)) !== null) return cached;
     codexPathCache.delete(cacheKey);
   }
-  const root = join(opts.homeOverride ?? join(homedir(), '.codex'), 'sessions');
   const wanted = `-${rolloutId.toLowerCase()}.jsonl`;
   let best: { path: string; mtime: number } | null = null;
   let years: string[];
@@ -187,12 +200,13 @@ export async function findOmpSessionPath(
   opts: { rootOverride?: string } = {},
 ): Promise<string | null> {
   if (!/^[A-Za-z0-9_-]{6,}$/.test(threadId)) return null;
-  const cached = ompPathCache.get(threadId);
+  const root = opts.rootOverride ?? defaultOmpSessionsRoot();
+  const cacheKey = pathCacheKey('omp', threadId, root);
+  const cached = ompPathCache.get(cacheKey);
   if (cached) {
     if ((await statMtime(cached)) !== null) return cached;
-    ompPathCache.delete(threadId);
+    ompPathCache.delete(cacheKey);
   }
-  const root = opts.rootOverride ?? defaultOmpSessionsRoot();
   const suffix = `_${threadId}.jsonl`;
   let cwdDirs: string[];
   try {
@@ -210,7 +224,7 @@ export async function findOmpSessionPath(
     for (const f of files) {
       if (f.endsWith(suffix)) {
         const p = join(root, dir, f);
-        ompPathCache.set(threadId, p);
+        ompPathCache.set(cacheKey, p);
         return p;
       }
     }

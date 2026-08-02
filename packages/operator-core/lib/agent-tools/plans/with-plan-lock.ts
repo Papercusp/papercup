@@ -81,6 +81,19 @@ export interface TemplateDataPatch {
   data: unknown;
 }
 
+/**
+ * A structured `input_schema` write (plan-structured-inputs-2026-08-01 P-003) — the
+ * sibling of TemplateDataPatch for the plan's DECLARED input schema (mig 714).
+ * `schema` is the ajv-compilable JSON Schema the caller already checked
+ * (`schema === null` clears the column, un-declaring the plan's inputs). Follows
+ * the same rules as TemplateDataPatch: structured-only when the mutator returns
+ * `newBody: null` (still bumps `version` and fires `afterWrite`), or riding along
+ * with a body write in the same locked transaction.
+ */
+export interface InputSchemaPatch {
+  schema: Record<string, unknown> | null;
+}
+
 export interface WithPlanLockOpts {
   /** Plan slug (the PG key + the advisory lock key). */
   slug: string;
@@ -176,7 +189,12 @@ export async function withPlanLock<T>(
   mutator: (
     current: string | null,
     meta: PlanWriteMeta | null,
-  ) => Promise<{ newBody: string | null; value: T; templateData?: TemplateDataPatch }>,
+  ) => Promise<{
+    newBody: string | null;
+    value: T;
+    templateData?: TemplateDataPatch;
+    inputSchema?: InputSchemaPatch;
+  }>,
 ): Promise<WithPlanLockResult<T>> {
   if (typeof opts.slug !== 'string' || !VALID_PLAN_SLUG.test(opts.slug)) {
     throw new Error(`withPlanLock: invalid plan slug ${JSON.stringify(opts.slug)}`);
@@ -240,10 +258,12 @@ export async function withPlanLock<T>(
       ? { version: curVersion, contentHash: cur.content_hash }
       : null;
 
-    const { newBody, value, templateData } = await mutator(cur?.content ?? null, meta);
+    const { newBody, value, templateData, inputSchema } = await mutator(cur?.content ?? null, meta);
     // A structured template_data write (plans:set-template-data, P-005). Present
     // (even with data:null = clear) ⇒ write the jsonb column.
     const writesTemplateData = templateData !== undefined;
+    // The same contract for the declared input schema (plans:set-input-schema, P-003).
+    const writesInputSchema = inputSchema !== undefined;
 
     let newVersion = curVersion;
     // The body to record a revision against (afterWrite): the new body for a content
@@ -370,7 +390,7 @@ export async function withPlanLock<T>(
         `;
       }
     }
-    if (writesTemplateData && (cur || newBody !== null)) {
+    if ((writesTemplateData || writesInputSchema) && (cur || newBody !== null)) {
       // template_data write (plans:set-template-data, P-005) — structured-only OR
       // COMBINED with a body write in the same locked transaction (EI-10751's
       // ratifyRubric flips the frontmatter status AND stamps the ratifier atomically).
@@ -386,16 +406,34 @@ export async function withPlanLock<T>(
         newVersion = curVersion + 1;
         writtenBody = cur!.content;
       }
-      const dataJson = templateData!.data === null ? null : JSON.stringify(templateData!.data);
-      await tx`
-        UPDATE harness_shared.harness_plans
-           SET template_data = ${dataJson}::text::jsonb,
-               version       = ${newVersion},
-               updated_at    = now(),
-               origin        = 'local'
-         WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
-           AND plan_slug = ${slug}
-      `;
+      // Both structured columns share ONE version bump (computed above): two
+      // statements, not two versions — a caller writing both in one mutator must
+      // not see the row jump two revisions for a single logical write.
+      if (writesTemplateData) {
+        const dataJson = templateData!.data === null ? null : JSON.stringify(templateData!.data);
+        await tx`
+          UPDATE harness_shared.harness_plans
+             SET template_data = ${dataJson}::text::jsonb,
+                 version       = ${newVersion},
+                 updated_at    = now(),
+                 origin        = 'local'
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+             AND plan_slug = ${slug}
+        `;
+      }
+      if (writesInputSchema) {
+        const schemaJson =
+          inputSchema!.schema === null ? null : JSON.stringify(inputSchema!.schema);
+        await tx`
+          UPDATE harness_shared.harness_plans
+             SET input_schema = ${schemaJson}::text::jsonb,
+                 version      = ${newVersion},
+                 updated_at   = now(),
+                 origin       = 'local'
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+             AND plan_slug = ${slug}
+        `;
+      }
     }
 
     return {

@@ -17,28 +17,42 @@
  * consumer shipping first, the other seven inherit its accidents.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * RULE (a) — ONE derivation, and why it is NOT `getCell` here.
+ * RULE (a) — ONE derivation, and which leg goes through `getCell`.
  *
- * The item says the resolver "resolves through `getCell(cell, reader)`". Measured
- * against the registry before building (D-083 §2): **no goal cell and no
- * assumption cell exist** — only five infrastructure cells are registered, and
+ * ⚠ STATUS, because this rule has MOVED and the history below is the reason it
+ * moved — do not read the historical paragraph as current:
+ *   · the GOAL leg **now passes the cell gate** — P-016 landed
+ *     {@link AGENT_GOAL_CELL_ID}, and `resolveHolderContext` reads the goal only
+ *     when `getCell(AGENT_GOAL_CELL_ID, reader)` discloses it (see the swap note
+ *     on that function). This is the anticipated swap, not a deviation.
+ *   · the ASSUMPTIONS leg **still does not**, and that is deliberate rather than
+ *     pending: `agent_facts` carries its own `audience_scope`, applied IN SQL by
+ *     `foldFacts`, so a cell in front of it would be a SECOND audience check on
+ *     data that already has one — the re-implementation D-042 names as the failure.
+ *
+ * The original rationale, kept because it is why the assumptions leg stays as it
+ * is: the item said the resolver "resolves through `getCell(cell, reader)`", and
+ * measured against the registry before building (D-083 §2) **no goal cell and no
+ * assumption cell existed** — only five infrastructure cells were registered, and
  * their producers (P-016 goal-as-ref, P-009 assumption stamping, P-011
- * conflicting-assumption cells) are all still `todo`. Building against a cell
+ * conflicting-assumption cells) were all still `todo`. Building against a cell
  * that does not exist would satisfy the sentence and derive NOTHING — the exact
- * failure this plan has now hit three times (D-082, and the `currentFiles`
+ * failure this plan had then hit three times (D-082, and the `currentFiles`
  * near-miss before it).
  *
- * So D-083 (i) rules: honour the rule's INTENT — one audience oracle, no consumer
+ * So D-083 (i) ruled: honour the rule's INTENT — one audience oracle, no consumer
  * re-implementing the check — via the boundary each source's data actually has:
  *   · the goal → `plan_item_claims.intent`, whose audience boundary is the claim
  *     read itself (it is already disclosed unconditionally to anyone who collides
- *     with the claim — see `plan-items/claim-holder.ts`);
+ *     with the claim — see `plan-items/claim-holder.ts`). ← SUPERSEDED by P-016's
+ *     cell, per the status note above;
  *   · assumptions → `agent_facts`' own `audience_scope`, applied IN SQL by
  *     `foldFacts` (the store's conservative default folds only unrestricted
- *     facts, so a reader whose audience context is unknown receives none).
- * When P-016/P-009 land their cells they swap in behind {@link HolderContextSources}
- * with NO consumer change — which is precisely the "build it before any consumer"
- * rationale. A cell read added here MUST use `getCell(cell, reader)` /
+ *     facts, so a reader whose audience context is unknown receives none). ← STILL
+ *     CURRENT.
+ * P-016's cell swapped in behind {@link HolderContextSources} with NO consumer
+ * change — which is precisely the "build it before any consumer" rationale paying
+ * off. A cell read added here MUST use `getCell(cell, reader)` /
  * `listCells(reader)` and NEVER the `*Unchecked` accessors (D-042 / D-078 (c),
  * mechanically gated by `cell-access-parity.test.ts`).
  *

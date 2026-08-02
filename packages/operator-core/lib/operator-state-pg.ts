@@ -174,6 +174,18 @@ const OPERATOR_STATE_SYNC_NAMES: Partial<Record<StateTable, readonly string[]>> 
   operator_preferences: ['operatorConfig.byWorkspace', 'operatorPreferences.byWorkspace'],
   operator_voice_prefs: ['voicePrefs.effective', 'voicePrefs.workspace'],
   operator_account_override: ['accounts.sessionOverride', 'accounts.pool'],
+  // WI-6796: the POOL itself, not just the owner's override. `accounts.pool`
+  // resolves accountStatus() straight off this table, and the inference gateway
+  // rewrites it continuously (makeWindowProjector -> recordAccountWindow) as it
+  // observes each response's anthropic-ratelimit-unified-* headers — that stream
+  // IS the Accounts tab's live data. Without this entry notifyOperatorStateSync
+  // early-returns on every saveAccountPool write, so a left-open tab never learns
+  // the numbers moved and only refreshes on the handful of explicit
+  // notifySyncInvalidate('accounts.pool') action callsites (register / remove /
+  // reset-rate / probe-capacity) or on remount. Reported by the owner as "the
+  // accounts tab stopped updating". The sibling override entry above had the
+  // mapping; the pool never did.
+  operator_account_pool: ['accounts.pool'],
   operator_standing_candidates: ['operatorStandingApprovals.byWorkspace'],
 };
 

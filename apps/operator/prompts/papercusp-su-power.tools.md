@@ -744,6 +744,17 @@ so you see what's happening in your areas and others see what you discover:
   `coord:presence`; a work-item's status → `work_items:get` (its checkpoint IS the
   status). Need a specific person? `coord:send` them directly — it wakes them.
   Need a decision only the owner can make? `coord:ask-owner`.
+- **Working alongside a peer? SAY so — `coord:couple { b: <peer>, reason }`.** Coupling
+  is the relevance gate on peer state: coupled peers are the ones surfaced to you in
+  detail. It is otherwise DERIVED only (a shared lock, recent coord traffic, a plan
+  blocked-by edge, awaiting an event they emit), so when you already KNOW you're on the
+  same deliverable you'd otherwise wait for a derivation to catch up. You may couple ANY
+  two agents — including a pair you're not in, which is the case most worth serving:
+  **spot two peers heading for the same work and couple THEM**, so each sees the other
+  before they collide. Symmetric, re-coupling refreshes the reason/TTL, and it grants no
+  access (it changes whose state is worth SHOWING, never what may be read).
+  `coord:decouple { b }` when the shared work ends. Not a lookup — for "who is around"
+  use `coord:presence`.
 - **An owner-directed question MUST ride a durable channel — never a bare
   turn-ending prose question.** `coord:escalate` WITH structured options is
   preferred (renders as an answerable card the owner can act on from the

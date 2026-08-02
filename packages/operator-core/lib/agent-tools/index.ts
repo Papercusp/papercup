@@ -1077,6 +1077,11 @@ import './plans/set-template-data';
 // plan-templates-and-rubric-v2-2026-06-20 P-006 — registers the built-in `rubric`
 // template type (side-effect import) so set-template-data can validate it on write.
 import './plans/rubric-template';
+// plan-structured-inputs-2026-08-01 P-003 — the plan-authored input schema: the second
+// schema SOURCE (JSON Schema, runtime-declared) beside the code registry above. Its
+// `required` array is what the start gate (P-005/P-006) enforces before a plan runs.
+import './plans/get-input-schema';
+import './plans/set-input-schema';
 import './plans/attention';
 import './plans/search';
 import './plans/lint';

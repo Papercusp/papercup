@@ -34,6 +34,7 @@ import { buildQueryEmbedder } from '../agent-tools/search/embedder';
 import {
   CORPUS_BUDGET_CHARS,
   CORPUS_MAX_ITEMS,
+  corpusQueryText,
   renderCorpusBlock,
   selectCorpusLines,
   type CorpusDrop,
@@ -150,7 +151,12 @@ async function corpusRecallEnabled(): Promise<boolean> {
 export async function recallCorpusContext(
   input: CorpusRecallInput,
 ): Promise<CorpusRecallResult> {
-  const queryText = input.queryText?.trim() ?? '';
+  const rawText = input.queryText?.trim() ?? '';
+  if (!rawText) return EMPTY;
+  // The engine ANDs every lexeme (plainto_tsquery) and the injected text is the
+  // raw prompt envelope — median 1000 chars at turn-start — so the raw text
+  // must NEVER reach the engine. See corpusQueryText for the measurements.
+  const queryText = corpusQueryText(rawText);
   if (!queryText) return EMPTY;
   if (!input.skipFlagCheck && !(await corpusRecallEnabled())) return EMPTY;
 
@@ -179,7 +185,10 @@ export async function recallCorpusContext(
         mode: 'hybrid',
         embedder,
         embedTimeoutMs: embedBudget,
-        // Highlights are unused here (the teaser is built from `excerpt`).
+        // Highlights ARE used — the teaser and the relevance guard both read the
+        // match fragment rather than the body lead. Deferring means the engine
+        // hydrates them for the final top-N only, instead of paying ts_headline
+        // across the whole limit*3 over-fetch pool.
         deferHighlight: true,
       });
     })();
@@ -192,6 +201,7 @@ export async function recallCorpusContext(
       sourceId: r.source_id,
       scope: r.scope ?? null,
       excerpt: r.excerpt ?? '',
+      highlight: r.highlight ?? null,
       score: r.score,
       ts: r.ts ?? null,
       rankers: r.rankers,

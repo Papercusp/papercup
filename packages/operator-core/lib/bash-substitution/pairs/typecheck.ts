@@ -44,7 +44,12 @@
  * ── The envelope, read from the tool, not assumed ────────────────────────────
  * `build:typecheck` (lib/agent-tools/build/typecheck.ts) takes
  * `{ project: string(1..400), files?: string[0..50], maxErrors?, timeoutMs?,
- * incremental? }`. Consequences that decide coverage below:
+ * incremental?, scopeToFiles? }`. Consequences that decide coverage below:
+ *  • `scopeToFiles` (EI-19297428004790873) compiles only `files` + their import
+ *    graph, under a generated config that EXTENDS the project's. It does NOT
+ *    widen this family: no plain-tsc command asks for "the project's
+ *    compilerOptions over a SUBSET of its files" — `tsc -p X a.ts` is refused by
+ *    tsc itself, and `tsc a.ts` discards tsconfig and uses default options.
  *  • `project` is resolved against the REPO ROOT, so a cwd-relative operand
  *    cannot be expressed (above).
  *  • The tool always passes `--noEmit`, so a command WITHOUT it is asking tsc to
@@ -256,7 +261,12 @@ function coverTypecheckCommand(parsed: ParsedTypecheckCommand): CoverageResult {
   if (parsed.files.length > 0) {
     return {
       covered: false,
-      reason: `passes explicit file operand(s) (${parsed.files[0]}), which makes tsc IGNORE tsconfig.json entirely; build:typecheck always checks a project`,
+      // NOT "build:typecheck always checks a project" any more — `scopeToFiles` checks a
+      // SUBSET. The refusal survives that change for a sharper reason: the tool always
+      // applies the PROJECT'S compilerOptions (scoped mode extends them), whereas explicit
+      // file operands make tsc discard tsconfig and compile under DEFAULTS. Same files,
+      // different compiler settings, so it is a different question — not a re-spelling.
+      reason: `passes explicit file operand(s) (${parsed.files[0]}), which makes tsc IGNORE tsconfig.json and compile under DEFAULT compilerOptions; build:typecheck always applies the project's own options (scopeToFiles narrows the file set but still extends that config)`,
     };
   }
   if (parsed.project === null) {
