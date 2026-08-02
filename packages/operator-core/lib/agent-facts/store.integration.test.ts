@@ -382,6 +382,13 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       db.sql,
     );
     const keys = live.map((f) => f.key);
+    // FIRST prove the cap actually BIT in this scope — otherwise the two
+    // expectations below pass just as happily against an eviction that silently
+    // no-op'd, and the guard would be vacuous. With the slots excluded from the
+    // ranking, 60 ordinary facts are ranked and the 10 oldest-updated fall past
+    // the cap: `ordinary-0` must be gone and `ordinary-<last>` must remain.
+    expect(keys).not.toContain('ordinary-0');
+    expect(keys).toContain(`ordinary-${FACTS_PER_SCOPE_CAP + 9}`);
     // Still LIVE, not merely still-present: eviction writes `retracted_at`, the same
     // field a deliberate retract writes, and listLapsedWallFacts filters
     // `retracted_at IS NULL` — so an evicted wall is invisible to the watchdog built

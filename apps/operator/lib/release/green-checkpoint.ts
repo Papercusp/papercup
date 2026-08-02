@@ -2426,8 +2426,12 @@ export async function runGreenCheckpoint(
     // that guarantee explicit, not incidental). Global + pipeline-scoped key (EI-7646: a waiter on
     // ONE pipeline's gate must not wake on every OTHER pipeline's verdict).
     {
-      const redSummary = `green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
       const pipeline = pipelineName(cfg.integrationRoot);
+      // P-004/D-002: name the pipeline in the banner — symmetric with the green summary
+      // below. The global `green-checkpoint:red` key emitted here fires from every
+      // co-hosted pipeline (30 awaits / 12 agents on record), so a pipeline-blind "not
+      // green — main held" reads as the awaiter's OWN gate being red.
+      const redSummary = `[${pipeline}] green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
       // WI-4957: carry the FULL failing-test signature + an exact log reference on the
       // event payload itself — a consumer previously had only the de-noised `summary`
       // tail, which is unreliable for anything more precise than "something failed".
@@ -2778,8 +2782,17 @@ export async function runGreenCheckpoint(
   // awaiter: 87 timeouts / 0 events across its whole history). Global key (back-compat) +
   // pipeline-scoped (EI-7646). Fail-soft but LOUD — a broken emit is logged, never swallowed.
   {
-    const greenSummary = `${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
     const pipeline = pipelineName(cfg.integrationRoot);
+    // P-004/D-002: the BANNER must name the pipeline, not just the payload. This box
+    // co-hosts ~13 pipelines and the GLOBAL `release:green` key emitted just below fires
+    // from EVERY one of them, so a pipeline-blind summary reads as "MY gate went green"
+    // to whichever awaiter it wakes. Confirmed live: await 42194 (`release:green:*`) woke
+    // a papercusp agent on ODDSMITH's advance of 9a8aa848 at 2026-08-02T03:17:35Z —
+    // papercusp had no green_checkpoint row in that window at all — and the agent
+    // believed it and reported the gate green (EI-19311522275272409). The discriminator
+    // was already on `payload.pipeline`; the summary is what a human/agent actually
+    // reads, so it has to carry it too.
+    const greenSummary = `[${pipeline}] ${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
     // WI-4957: runId (this run's identity) rides the payload alongside sha/from/pipeline.
     const payload = { sha: candidate, from: adv.from, pipeline, runId: deps.runId ?? null };
     // EI-12457: this candidate resolved green — a subscriber's still-pending red

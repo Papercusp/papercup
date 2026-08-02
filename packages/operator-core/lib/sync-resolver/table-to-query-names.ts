@@ -309,6 +309,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // THIS event). The view keys are kept for documentation + are COVERAGE_EXEMPT in
   // cache-tag-trigger-coverage.integration.test.ts.
   'harness_shared.work_items': [
+    // WI-6961: agentOrders.byOwner renders the agent's HELD work-items via
+    // buildCarryBrief, so a state/claim write is exactly when the Orders panel
+    // is wrong. Coarse (any work_items write invalidates it), but the query is
+    // per-ownerId and only subscribed while the popup is actually open.
+    'agentOrders.byOwner',
     'featuresConsolidated.bySlug',
     // P-007: the single-feature on-demand detail read (carries the `summary`
     // dropped from bySlug) — bridged wherever bySlug is so an open Detail pane
@@ -458,6 +463,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'network.board',
     'dev.coordPresence',
     'agentDetail.byOwner',
+    // WI-6961: the ORDERS half of the same session popup — buildCarryBrief reads
+    // presence, so the panel goes stale on exactly the writes agentDetail does.
+    'agentOrders.byOwner',
     'advRoster.list',
     // hiveRoster.byHive (presence-v2 P-006) folds coord_presence + the fleet
     // work-detail; a presence/intent/claim/last_active write refreshes it too.

@@ -501,9 +501,22 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     // the SPA build). This assertion previously read `toHaveLength(3)` with the comment
     // "no SPA build (the suite started red)" — it was encoding the defect: an absorbed
     // candidate reached `main` having never been built or typechecked.
-    expect(calls).toHaveLength(5);
-    expect(calls[3].cmd).toBe('git'); // conflict-marker grep
-    expect(calls[4].args).toContain('build'); // the SPA build DID run post-absorption
+    // WI-6956 adds call 3: the CONFIRMING co-execution re-run that now gates absorption.
+    expect(calls).toHaveLength(6);
+    expect(calls[4].cmd).toBe('git'); // conflict-marker grep
+    expect(calls[5].args).toContain('build'); // the SPA build DID run post-absorption
+    // WI-6956: the confirming re-run puts BOTH originally-failing files in ONE npm
+    // invocation and — the whole point — does NOT pass --no-file-parallelism or pin the
+    // fork/thread caps, so a shared-state concurrency defect reproduces here.
+    expect(calls[3].cmd).toBe('npm');
+    expect(calls[3].args.slice(0, 4)).toEqual(['run', 'test', '--workspace', '@papercusp/operator-core']);
+    expect(calls[3].args).toContain('lib/llm-testing/__tests__/runner-aggregate.test.ts');
+    expect(calls[3].args).toContain('lib/scout/scheduler-workspace-scope.test.ts');
+    expect(calls[3].args).not.toContain('--no-file-parallelism');
+    expect(calls[3].opts?.env?.VITEST_MAX_FORKS).toBeUndefined();
+    expect(calls[3].opts?.env?.VITEST_MAX_THREADS).toBeUndefined();
+    expect(calls[3].opts?.cwd).toBe(cpTree);
+    expect(calls[3].opts?.env?.GREEN_CHECKPOINT).toBe('1');
     // the isolation re-runs are `npm run test --workspace <ws> -- --no-file-parallelism <file>`
     // at SINGLE concurrency, in the checkpoint tree, with the stripped gate env.
     for (const c of calls.slice(1, 3)) {

@@ -220,6 +220,54 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
       },
     ],
   },
+  // WI-6961: bash-substitution/fires.ts has TWO real consumers on DIFFERENT
+  // activation routes, so the WI-5440 plural form applies rather than the
+  // bg-host-only default the routinesTick guard would otherwise expect.
+  // Confirmed by tracing import sites, not by directory heuristic.
+  {
+    match: /^packages\/operator-core\/lib\/bash-substitution\/fires\.ts$/,
+    own: [
+      {
+        host: 'bg-host',
+        releasePipelineApplies: false,
+        restartTarget: 'bg-host',
+        activation:
+          'resolveFireCompliance is dispatched by routinesTickImpl (dbos/routines-workflow.ts), which only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). For THAT consumer it loads on RESTART: dev:restart { target: "bg-host", confirm: true } — a deploy never carries it.',
+      },
+      {
+        host: 'operator-release',
+        releasePipelineApplies: true,
+        restartTarget: 'staging',
+        activation:
+          'recordFiresDetached is called from agent-tools/locks/check_command.ts — the PreToolUse bash-substitution gate, served by the RELEASE-CHECKOUT operator (:3070). For THAT consumer the ordinary staging→green-gate→deploy pipeline is the activation path (or dev:restart { target: "staging", confirm: true } to exercise it now on :3170).',
+      },
+    ],
+  },
+  // WI-6961: workspace-registry.ts is dispatched by routinesTick AND imported by
+  // a large set of operator-served modules (sync resolvers via adv-agent-orders,
+  // role-capability-grants, user-preferences, operator-notes, issues-engineer,
+  // …). Classifying it bg-host-only would be wrong in the OPPOSITE direction of
+  // the usual failure: it would tell an agent a deploy does NOT make their edit
+  // live when, for the operator-served consumers, it does.
+  {
+    match: /^packages\/operator-core\/lib\/workspace-registry\.ts$/,
+    own: [
+      {
+        host: 'bg-host',
+        releasePipelineApplies: false,
+        restartTarget: 'bg-host',
+        activation:
+          'Dispatched by routinesTickImpl (bg-host only). For THAT consumer it loads on RESTART: dev:restart { target: "bg-host", confirm: true } — a deploy never carries it.',
+      },
+      {
+        host: 'operator-release',
+        releasePipelineApplies: true,
+        restartTarget: 'staging',
+        activation:
+          'activeWorkspaceId() is read by operator-served paths (sync resolvers, user-preferences, operator-notes, issues-engineer, role-capability-grants) on the RELEASE-CHECKOUT operator (:3070) — for THOSE consumers the ordinary staging→green-gate→deploy pipeline is the activation path (or dev:restart { target: "staging", confirm: true } to exercise it now on :3170).',
+      },
+    ],
+  },
   // WI-4996: these three `*-sidecar-spawn.ts` supervisor modules live under a
   // directory that (correctly, for most of its files) maps to the sidecar they
   // supervise — but the SUPERVISOR itself runs in the SUPERVISING process, not

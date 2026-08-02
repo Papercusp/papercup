@@ -400,10 +400,11 @@ export default defineTool({
           // ⚠ ATTRIBUTION: the 491,954-call / 30.1-hour figure on that statement is
           // the total across ALL of readInbox's callers, NOT this tool's share.
           // coord:inbox is only ~38k invocations over the same period (and some are
-          // served from the cache below), so it is a minority of them — the hottest
-          // caller is the `agent.coordMailbox` sync resolver, which re-runs on every
-          // coord_event_log write. Do not read this comment as "coord:inbox costs
-          // 30 hours".
+          // served from the cache below), so it is a MINORITY of them. Which caller
+          // dominates is NOT established — a pg_stat_statements figure is per-STATEMENT
+          // and cannot be split by call site. Do not read this comment as "coord:inbox
+          // costs 30 hours", and do not substitute another call site into that claim
+          // without measuring it.
           //
           // So read a bounded newest-first window, paging backwards only while THIS
           // tool's own filters have not yet yielded `limit` visible entries. The

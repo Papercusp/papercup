@@ -90,6 +90,7 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'learning.analyzeCycle': null, // a specific cycleId (from learning.analyze)
   'agentChats.detail': null,
   'agentDetail.byOwner': null,
+  'agentOrders.byOwner': null, // a specific ownerId, like its agentDetail sibling
   'chunkPlans.byFeature': null,
   'conversations.agentChatDetail': null,
   'conversations.agentMessageDetail': null, // a specific coord_event_log msg_id

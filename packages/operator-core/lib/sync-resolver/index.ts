@@ -5319,14 +5319,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { owner } = args as { owner: string };
       const { readInbox, readOutbox } = await import('../agent-tools/coordination/messages');
       const TAIL = 50;
-      // WI-6939: this resolver is invalidated by `backingTables` on EVERY write to
-      // coord_event_log, per subscribed owner — making it the hottest caller of the
-      // unbounded readInbox (that statement measured 491,954 calls / 220ms mean /
-      // 30.1h cumulative ACROSS ALL CALLERS, each one seq-scanning the table,
-      // sorting ~20k rows and launching 3 parallel workers). It then kept tail(50),
-      // discarding >99% of the ~20k rows / ~10MB it had just transferred and parsed.
-      // For a typical owner that matched set is 99.8% BROADCAST, so it barely varies
-      // with how much mail this owner actually has.
+      // WI-6939: this had the WORST read-to-use ratio of readInbox's call sites — an
+      // unbounded read (~20k rows / ~10MB for a typical owner, 99.8% of it BROADCAST
+      // and so barely varying with how much mail this owner actually has) to return
+      // tail(50). >99% of what it transferred, JSON-parsed and allocated was thrown
+      // away. The unbounded readInbox statement measured 491,954 calls / 220ms mean /
+      // 30.1h cumulative ACROSS ALL CALLERS, each call seq-scanning coord_event_log,
+      // sorting ~20k rows and launching 3 parallel workers.
+      //
+      // ⚠ This site's SHARE of that total is NOT established. `backingTables` makes it
+      // re-run on every coord_event_log write, but only for SUBSCRIBED clients, and it
+      // backs an observer view (the bee-dossier comms section) that is often unwatched.
+      // Bounding it is justified by the ratio above on its own, not by a call-count
+      // claim — do not cite this site as the source of the 30.1h.
       //
       // Bounding is semantically FREE here, unlike at coord:inbox: `tail` wants the
       // newest TAIL entries and no further filters run, so stopping the read once
