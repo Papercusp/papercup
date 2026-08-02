@@ -1515,9 +1515,21 @@ describe('background `;`-chain trailing-reporter exit-code advisory (WI-6944)', 
     ['date stamp after the run', 'npm test > /tmp/o 2>&1; date'],
     ['wc counting the output', 'npm test > /tmp/o 2>&1; wc -l /tmp/o'],
     ['newline-separated, not semicolon', 'npm test > /tmp/o 2>&1\necho "===EXIT:$?==="'],
-    ['|| fallback also masks (runs only on failure, exits 0)', 'npm test > /tmp/o 2>&1 || echo failed'],
   ])('fires on a trailing reporter: %s', (_label, command) => {
     expectChainAdvisory(runGate(bashWithInput({ command, run_in_background: true })));
+  });
+
+  // Deliberate NON-targets. Each masks (or looks like it might), but each also
+  // demonstrates that the author already knows about exit codes — so advising
+  // them is noise. The pipe suite above independently asserts the first two;
+  // these cases exist so a later change can't quietly widen this guard back
+  // over them and rediscover the same false positives.
+  it.each([
+    ['`||` — writing a failure branch IS awareness of the failure path', 'npm test || echo failed'],
+    ['PIPESTATUS — an explicit exit-status-preservation idiom', 'npm test 2>&1 | tail -20; echo "EXIT=${PIPESTATUS[0]}"'],
+    ['pipefail — same', 'set -o pipefail; npm test 2>&1 | tee /tmp/o; echo done'],
+  ])('deliberately silent: %s', (_label, command) => {
+    expectAllow(runGate(bashWithInput({ command, run_in_background: true })));
   });
 
   // The correct pattern must stay SILENT, or the advisory punishes the fix.

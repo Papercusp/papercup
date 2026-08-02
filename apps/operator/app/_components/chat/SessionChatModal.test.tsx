@@ -686,7 +686,78 @@ describe('SessionChatModal', () => {
         }),
       ),
     );
-    await waitFor(() => expect(screen.getByText(/Sent — the agent is woken/)).toBeTruthy());
+    /* The banner is OUTCOME-SPECIFIC (see the note above SendDelivery): this send is
+       mocked as a bare { ok, msg_id } with no wake report, which is the QUEUED outcome,
+       not the woken one. The old assertion here expected "Sent — the agent is woken",
+       the unconditional banner that was REMOVED precisely because it claimed a wake
+       that had not happened — so asserting it again would re-pin the lie. */
+    await waitFor(() =>
+      expect(screen.getByTestId('session-chat-send-outcome').getAttribute('data-delivery')).toBe('queued'),
+    );
+    expect(screen.getByText(/Delivered to the agent’s inbox/)).toBeTruthy();
+  });
+
+  /* The other three delivery outcomes had NO coverage at all, which is how the stale
+     assertion above survived: the whole point of this banner is that it must not claim
+     a wake that did not happen, and nothing was pinning that. One case per branch. */
+  it('reports a real wake as woken when the send reports woken > 0', async () => {
+    mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+    render(<SessionChatModal sessionOwnerId="su-live-1" ownerLabel="su · live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(captured).not.toBeNull());
+    act(() => {
+      captured!.handlers.backfill!(JSON.stringify([]));
+    });
+
+    mockFetchOnce(200, { ok: true, results: [{ ok: true, wake: { woken: 1 } }] });
+    fireEvent.change(screen.getByPlaceholderText(/Type to wake su · live-1/i), {
+      target: { value: 'ping' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('session-chat-send-outcome').getAttribute('data-delivery')).toBe('woken'),
+    );
+    expect(screen.getByText(/was woken and is working on it/)).toBeTruthy();
+  });
+
+  it('does NOT claim a wake when the recipient was absent', async () => {
+    mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+    render(<SessionChatModal sessionOwnerId="su-live-1" ownerLabel="su · live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(captured).not.toBeNull());
+    act(() => {
+      captured!.handlers.backfill!(JSON.stringify([]));
+    });
+
+    mockFetchOnce(200, { ok: true, results: [{ ok: true, recipient_absent: true }] });
+    fireEvent.change(screen.getByPlaceholderText(/Type to wake su · live-1/i), {
+      target: { value: 'ping' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('session-chat-send-outcome').getAttribute('data-delivery')).toBe('absent'),
+    );
+    expect(screen.getByText(/no live session picked it up/)).toBeTruthy();
+  });
+
+  it('reports a manual-wake recipient as staged, not delivered', async () => {
+    mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+    render(<SessionChatModal sessionOwnerId="su-live-1" ownerLabel="su · live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(captured).not.toBeNull());
+    act(() => {
+      captured!.handlers.backfill!(JSON.stringify([]));
+    });
+
+    mockFetchOnce(200, { ok: true, results: [{ ok: true, staged: true }] });
+    fireEvent.change(screen.getByPlaceholderText(/Type to wake su · live-1/i), {
+      target: { value: 'ping' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('session-chat-send-outcome').getAttribute('data-delivery')).toBe('staged'),
+    );
+    expect(screen.getByText(/held until you release it/)).toBeTruthy();
   });
 
   it('surfaces a coord:send failure instead of silently dropping the message', async () => {

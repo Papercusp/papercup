@@ -360,6 +360,35 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // …and it is the newest revision, not an evicted one.
     expect(live.find((f) => f.key === 'ver')?.body).toBe(`rev ${FACTS_PER_SCOPE_CAP + 4}`);
   });
+
+  it('WI-6935: a wall/dead-end fact survives a 51st assert — the typed safety slots are exempt from eviction', async () => {
+    const scopeRef = 'su-slot-cap';
+    const slotted = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+    await assertFact({ ...slotted, key: 'wall:owner-must-ratify', body: 'HOLD — owner gate' }, db.sql);
+    await assertFact({ ...slotted, key: 'dead-end:already-tried', body: 'do not re-try this' }, db.sql);
+
+    // Fill well past the cap. Asserting these two FIRST makes them the
+    // oldest-updated rows in the scope — precisely the victims the eviction's
+    // `ORDER BY updated_at DESC OFFSET` ranking picks first. That ordering is why
+    // the bug was certain rather than unlikely: a wall is asserted once and then
+    // never touched again, so it sinks to the bottom of the victim ordering.
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 10; i++) {
+      await assertFact({ ...slotted, key: `ordinary-${i}`, body: `n ${i}` }, db.sql);
+    }
+
+    const live = await foldFacts(
+      [{ scope: 'owner', scopeRef }],
+      { workspaceId: WS, audiences: 'all', limitPerSelector: 500 },
+      db.sql,
+    );
+    const keys = live.map((f) => f.key);
+    // Still LIVE, not merely still-present: eviction writes `retracted_at`, the same
+    // field a deliberate retract writes, and listLapsedWallFacts filters
+    // `retracted_at IS NULL` — so an evicted wall is invisible to the watchdog built
+    // to page on exactly that wall.
+    expect(keys).toContain('wall:owner-must-ratify');
+    expect(keys).toContain('dead-end:already-tried');
+  });
 });
 
 describe('P-008 (b) depends_on / kind / claim (migration 690)', () => {

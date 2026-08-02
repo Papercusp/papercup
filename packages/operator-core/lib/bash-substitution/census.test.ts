@@ -170,6 +170,40 @@ describe('classifyAtom — the P-006 pipe-filter class is a parameter, not an as
     const [entry] = atomsOf('head -5 a.ts');
     expect(classifyAtom(entry, { pipeFilterPolicy: 'irreducible' }).rule).not.toMatch(/^pipe-filter/);
   });
+
+  describe('policy (c) producer-aware', () => {
+    const PRODUCER_AWARE = { pipeFilterPolicy: 'producer-aware' } as const;
+
+    it('is reachable when the producer is a tool call', () => {
+      const parts = atomsOf('journalctl -u papercup | tail -20');
+      expect(classifyAtom(parts[1], PRODUCER_AWARE).rule).toBe('pipe-filter:absorbable');
+    });
+
+    it('stays irreducible when the producer has no tool form', () => {
+      const parts = atomsOf('./scripts/run.sh | tail -20');
+      expect(classifyAtom(parts[1], PRODUCER_AWARE).rule).toBe('pipe-filter:no-producer');
+    });
+
+    it('follows a multi-stage chain back to its ROOT, not just one level up', () => {
+      // `sort` is itself an operand-less filter, so a one-level producer test
+      // would call this chain unreachable. It is one tool call plus a projection.
+      const parts = atomsOf('grep -rn foo packages/ | sort | head -5');
+      expect(parts[2]).toMatchObject({ upstream: 'sort', pipelineRoot: 'grep -rn foo packages/' });
+      expect(classifyAtom(parts[2], PRODUCER_AWARE).rule).toBe('pipe-filter:absorbable');
+    });
+
+    it('sits between the two blanket policies, which is the whole point', () => {
+      const corpus = [
+        ...atomsOf('journalctl -u papercup | tail -20', 's1'),
+        ...atomsOf('./scripts/run.sh | tail -20', 's1'),
+      ];
+      const strict = runCensus(corpus, { pipeFilterPolicy: 'irreducible' }).reachableCeilingPct;
+      const middle = runCensus(corpus, { pipeFilterPolicy: 'producer-aware' }).reachableCeilingPct;
+      const blanket = runCensus(corpus, { pipeFilterPolicy: 'projection' }).reachableCeilingPct;
+      expect(middle).toBeGreaterThan(strict);
+      expect(middle).toBeLessThan(blanket);
+    });
+  });
 });
 
 describe('runCensus', () => {

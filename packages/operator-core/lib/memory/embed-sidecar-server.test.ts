@@ -6,6 +6,7 @@
  * pins the wire contract: validation, routing, D-004 response shape, lazy
  * per-model:kind embedder memoization, and loopback-only binding.
  */
+import { isCoherentTarget } from '@papercusp/rerank';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createEmbedSidecarServer,
@@ -98,6 +99,20 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(body.ok).toBe(true);
     expect(body.runtime).toBe(EMBED_SIDECAR_RUNTIME);
     expect(body.models).toEqual({}); // warmAtBoot:false + no embeds yet ⇒ all cold
+  });
+
+  it('GET /healthz reports the ACTIVE rerank (device, dtype) pair, and it is always coherent (P-009 D-006)', async () => {
+    await boot();
+    const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as {
+      rerankExecution: { device: string; dtype: string };
+    };
+    // The pair is what makes this reportable at all: a GPU host whose provider
+    // failed to load is demoted to cpu/q8, and search cannot tell you that
+    // happened (the engine is fail-safe by design), so /healthz must.
+    expect(body.rerankExecution).toBeDefined();
+    expect(isCoherentTarget(body.rerankExecution)).toBe(true);
+    // Default host, no PAPERCUSP_RERANK_DEVICE ⇒ the CPU pair, both halves.
+    expect(body.rerankExecution).toMatchObject({ device: 'cpu', dtype: 'q8' });
   });
 
   it('GET /healthz ADVERTISES every route it serves (EI-19314150478401738)', async () => {

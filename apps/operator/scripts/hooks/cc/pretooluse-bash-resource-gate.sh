@@ -1096,25 +1096,33 @@ except Exception:
 # ended `===TSC_EXIT:1===` with "1 NEW file(s) have type errors" under a
 # reported exit 0, and were nearly accepted as a green gate check.
 #
-# Deliberately NOT escaped by an `EXIT=$?` capture, unlike the pipe guard
+# Deliberately NOT escaped by a bare `EXIT=$?` capture, unlike the pipe guard
 # above: capturing the code into the LOG makes the artifact honest but does
 # nothing for the NOTIFICATION, and here that very echo is the masking cause.
-# `&&` is safe (it short-circuits, so a failure propagates) and is not matched;
-# `;` and `||` are not.
+#
+# Three things ARE excluded, each because the author has already shown they
+# know about exit codes — advising them is noise, and the pipe guard's suite
+# already encodes the first two as deliberate non-targets:
+#   * `&&` — short-circuits, so a failure propagates; not a hazard at all.
+#   * `||` — writing a failure branch (`npm test || echo failed`) IS awareness
+#     of the failure path. It does mask, but it masks a case the author chose.
+#   * `pipefail` / `PIPESTATUS` — an explicit exit-status-preservation idiom.
+# The target is the UNAWARE case: a plain `;` chain ending in a reporter.
 #
 # SOFT (never denies), and silent when the command already ends in an explicit
 # `exit "$rc"` — the correct pattern, which makes BOTH channels truthful.
 try:
     if (tool_name.lower() == 'bash'
             and tool_input.get('run_in_background')
-            and not ADVISORY):
+            and not ADVISORY
+            and not re.search(r'pipefail|PIPESTATUS', command)):
         _tr_cmd = _strip_shell_quotes(command)
         # Already correct? Check RAW too — the fix is usually quoted.
         _EXIT_RESTORE_RE = re.compile(
             r'\bexit\s+"?\$\{?(?:rc|RC|status|code|\?)\}?"?\s*$')
         if not (_EXIT_RESTORE_RE.search(_tr_cmd.strip())
                 or _EXIT_RESTORE_RE.search(command.strip())):
-            _tr_segs = [s.strip() for s in re.split(r';|\n|\|\|', _tr_cmd)
+            _tr_segs = [s.strip() for s in re.split(r';|\n', _tr_cmd)
                         if s.strip()]
             # Only a MULTI-command line can mask: a lone `echo` masks nothing.
             if len(_tr_segs) >= 2 and re.match(

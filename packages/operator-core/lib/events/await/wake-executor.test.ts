@@ -1387,6 +1387,61 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(data).toContain('(fire #96)');
   });
 
+  // WI-6951: the un-checkpointed-work banner must read the STRICT turn signal
+  // (lastRealTurnAt = session_turn_journal) and never the lastTurnAt union, which folds
+  // in the '■ session ended' lifecycle marker. A cold reset KILLS its predecessor, so that
+  // marker always postdates the final loop:checkpoint — feeding it to this check reported a
+  // session death as "you completed a turn at …". These three cases are the live incident
+  // (su-7854d874 fire #12), its true-positive twin, and the no-fallback rule.
+  describe('WI-6951 — un-checkpointed-work banner sources the strict turn signal', () => {
+    const noteAtMs = Date.parse('2026-08-02T05:29:48.175Z');
+    const realTurnIso = '2026-08-02T05:30:24.495Z'; // 36s after the note — INSIDE the 5-min floor
+    const sessionEndIso = '2026-08-02T06:00:23.817Z'; // predecessor killed, ~31m after the note
+    const BANNER = 'UN-CHECKPOINTED WORK EXISTS';
+
+    const coldDataWithStatus = async (status: Record<string, unknown> | null) => {
+      const injectPsuHost = vi.fn(async () => true);
+      await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 12 }) }),
+        coldDeps({
+          injectPsuHost: injectPsuHost as never,
+          getLoopCarryNoteFn: undefined,
+          getLoopCarryNoteWithMetaFn: vi.fn(async () => ({
+            note: '## Next action\nresume the wiring',
+            updatedAtMs: noteAtMs,
+          })) as never,
+          getLoopStatusFn: vi.fn(async () => status) as never,
+        }),
+      );
+      return (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
+    };
+
+    it('does NOT fire when only the session-END marker postdates the note (the live false alarm)', async () => {
+      const data = await coldDataWithStatus({
+        lastTurnAt: sessionEndIso, // the union — a session DEATH, ~31m after the note
+        lastRealTurnAt: realTurnIso, // the truth — a turn 36s after the note
+      });
+      expect(data).not.toContain(BANNER);
+      // and specifically never quotes the kill instant back as a completed turn
+      expect(data).not.toContain('06:00:23');
+      expect(data).toContain('## Next action\nresume the wiring');
+    });
+
+    it('STILL fires when a real turn genuinely postdates the note (the true positive is preserved)', async () => {
+      const data = await coldDataWithStatus({
+        lastTurnAt: sessionEndIso,
+        lastRealTurnAt: sessionEndIso, // a genuine journal turn that late
+      });
+      expect(data).toContain(BANNER);
+      expect(data).toContain('06:00:23');
+    });
+
+    it('does NOT fall back to lastTurnAt when the strict signal is absent — silence beats a false alarm', async () => {
+      const data = await coldDataWithStatus({ lastTurnAt: sessionEndIso, lastRealTurnAt: null });
+      expect(data).not.toContain(BANNER);
+    });
+  });
+
   it('P-003 (compaction-continuity-hardening): the cold injection appends the carry-brief EXTRAS (held items + walls/facts + awaits + fleet) after the note; the note stays the core', async () => {
     const injectPsuHost = vi.fn(async () => true);
     // The return is TYPED as CarryBrief on purpose: this fixture has now been

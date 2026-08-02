@@ -611,6 +611,20 @@ export async function readInboxWindow(
     const entries = await readInbox(ownerId, opts);
     return { entries, exhausted: true, rowsScanned: entries.length, pages };
   }
+  // Never truncate silently. Running out of page budget without satisfying the
+  // caller means older matching rows exist that this read did NOT return — the
+  // same failure shape as the row cap (EI-19314819320465915), and the caller only
+  // sees `entries`, so without this the shortfall is invisible. `exhausted:false`
+  // is the machine-readable form; this is the one a human debugging a short inbox
+  // will actually see.
+  if (!exhausted && pages >= INBOX_MAX_PAGES) {
+    console.warn(
+      `[readInboxWindow] page budget (${INBOX_MAX_PAGES} x ${INBOX_PAGE_ROWS}) exhausted for ` +
+        `owner=${ownerId} since_ts=${opts.since_ts ?? '(none)'} without satisfying the caller's ` +
+        `stopping rule — matching rows OLDER than the ${raw.length} read were NOT returned; ` +
+        'page via since_ts for a genuine full-history backfill.',
+    );
+  }
   return { entries: visible(), exhausted, rowsScanned: raw.length, pages };
 }
 

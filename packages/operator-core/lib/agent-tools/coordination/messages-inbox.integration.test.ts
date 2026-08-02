@@ -26,7 +26,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { filterInbox, type CoordEnvelope, type InboxOptions } from '@papercusp/coordination/core';
 import { coordLog, coordWorkspaceId } from './log';
-import { readInbox, readInboxWindow, INBOX_FAST_PATH_ROW_CAP, INBOX_PAGE_ROWS } from './messages';
+import {
+  readInbox,
+  readInboxWindow,
+  INBOX_FAST_PATH_ROW_CAP,
+  INBOX_PAGE_ROWS,
+  INBOX_MAX_PAGES,
+} from './messages';
 
 let fx: BaselineCoordFixture;
 
@@ -329,6 +335,27 @@ describe('readInbox recipient-pushdown (P-003 / D-005 SQL path)', () => {
       // ...while the retracted message is gone, exactly as the unbounded path does.
       expect(seen.has('victim')).toBe(false);
       expect(ids(got.entries)).toEqual(ids(await readInbox('alice')));
+    });
+
+    it('WARNS instead of truncating silently when the page budget runs out', async () => {
+      // The failure shape this guards is the one EI-19314819320465915 was about: a
+      // read that returns a plausible full-looking result while quietly omitting
+      // matching rows. The caller of readInbox only ever sees `entries`, so budget
+      // exhaustion has to be audible.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await seedPages(INBOX_PAGE_ROWS * INBOX_MAX_PAGES + 50);
+      const got = await readInboxWindow('alice', {}, () => false);
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('page budget'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('were NOT returned'));
+      warn.mockRestore();
+
+      expect(got.exhausted).toBe(false);
+      expect(got.pages).toBe(INBOX_MAX_PAGES);
+      expect(got.rowsScanned).toBe(INBOX_PAGE_ROWS * INBOX_MAX_PAGES);
+      // The budget is deliberately >= the old row cap, so a bounded read never
+      // reaches LESS history than the unbounded path it replaces.
+      expect(INBOX_PAGE_ROWS * INBOX_MAX_PAGES).toBeGreaterThanOrEqual(INBOX_FAST_PATH_ROW_CAP);
     });
 
     it('honours since_ts, and a short first page reports exhausted', async () => {
