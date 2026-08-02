@@ -381,8 +381,12 @@ const LISTEN_EXEMPT: Record<string, string> = {
   'packages/operator-core/lib/pg-listen-hub.ts': 'LISTEN — rebind must re-issue subscription',
   'packages/operator-core/lib/fleet-assignment-bus.ts': 'LISTEN — rebind must re-issue subscription',
   'packages/operator-core/lib/coord-inbox-bus.ts': 'LISTEN — rebind must re-issue subscription',
-  'packages/operator-core/lib/pg-notify-bus.ts': 'LISTEN — rebind must re-issue subscription',
-  'packages/operator-core/lib/sync-sse.ts': 'LISTEN — the notify path already uses getOrgPg()',
+  // NOTE: pg-notify-bus.ts and sync-sse.ts also open LISTEN clients from
+  // getHarnessAdminUrl(), but neither is in the module-level `let x: T | null = null`
+  // singleton shape this guard scans, so neither is a site and neither may be listed here
+  // (the shrink-only test rejects an entry matching nothing). If either is ever refactored
+  // into that shape, the guard will flag it and it can be added then — which is the
+  // self-correcting behaviour we want, not an omission.
 };
 
 /** Transactional pools not yet migrated. This map must only ever SHRINK. */

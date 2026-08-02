@@ -32,6 +32,13 @@ vi.mock('@/app/coord/presence-ui', () => ({ LivenessDot: () => null }));
 // below can assert what the SEARCH results actually hand it (renders nothing,
 // exactly as before — every other test in this file is unaffected).
 const inspectorProps = vi.hoisted(() => ({ last: null as Record<string, unknown> | null }));
+// Reset through a helper, not a bare `inspectorProps.last = null` in the test
+// body: an assignment TypeScript can see narrows the property to `null` for the
+// rest of that flow, so the later `inspectorProps.last?.focusTarget` reads
+// resolve against `never` and fail the operator-vite typecheck ratchet.
+function resetInspectorProps() {
+  inspectorProps.last = null;
+}
 vi.mock('@/app/harness/AgentInspectorModal', () => ({
   default: (props: Record<string, unknown>) => {
     inspectorProps.last = props;
@@ -483,7 +490,7 @@ describe('SessionSearchResults in-flight honesty (WI-4734 — owner-hit: a 20s s
   }
 
   it('clicking a LIVE match passes focusTarget to the inspector — the button can render', async () => {
-    inspectorProps.last = null;
+    resetInspectorProps();
     respondWith([
       searchResult({
         sessionId: 'sid-live',
@@ -509,7 +516,7 @@ describe('SessionSearchResults in-flight honesty (WI-4734 — owner-hit: a 20s s
   });
 
   it('clicking an ENDED match passes NO focusTarget — its window is gone, so no dead button', async () => {
-    inspectorProps.last = null;
+    resetInspectorProps();
     respondWith([searchResult({ sessionId: 'sid-ended', hits: [liveHit], session: endedRow({ id: 77, agent: 'claude', sessionId: 'sid-ended' }) })]);
     render(<SessionSearchResults query="improvements" nowMs={NOW} />);
     await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
@@ -522,7 +529,7 @@ describe('SessionSearchResults in-flight honesty (WI-4734 — owner-hit: a 20s s
   });
 
   it('clicking a LIVE match with neither handle passes NO focusTarget (pid alone is not focusable)', async () => {
-    inspectorProps.last = null;
+    resetInspectorProps();
     respondWith([
       searchResult({
         sessionId: 'sid-nowin',

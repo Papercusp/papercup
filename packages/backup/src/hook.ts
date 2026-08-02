@@ -72,6 +72,14 @@ const EXCLUDED_TABLE_DATA = [
   'harness_shared.agent_usage_samples',
   'harness_shared.telemetry_reports_archive',
   'harness_shared.audit_log',
+  // Session-transcript archive blobs (~3 GB TOAST) + their parent metadata rows
+  // (excluded together so a restore sees a clean absence, not dangling refs).
+  // This pair dominated the dump — one 279s-mean COPY per snapshot, ~65% of the
+  // output bytes (P-013, db-performance-remediation-2026-07-26). Archives stay
+  // recoverable from the hourly host-level dump (db-backup.sh →
+  // /mnt/data/Backup/db-dumps/pg/papercusp/), which includes all table data.
+  'harness_shared.session_archives',
+  'harness_shared.session_archive_files',
 ] as const;
 
 const MIN_RESTORABLE_DUMP_BYTES = 10_000;
