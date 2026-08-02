@@ -905,6 +905,14 @@ export function usePlanList(params?: {
   /** P-029: fan out across multiple harnesses. Pass undefined to use
    *  the ctx-resolved single harness. */
   harness_slugs?: readonly string[];
+  /**
+   * Gate the subscription (default true). Exposed so a call site that only
+   * needs plans while its tab is open does NOT have to hand-roll a raw
+   * `useSyncQuery('plans.list')` to get an `enabled` — which is how a second,
+   * near-identical 800 KB key got minted (no-http-anywhere-2026-07-28 P-026).
+   * `useSyncResource` already supported it; only this signature did not.
+   */
+  enabled?: boolean;
 }): AsyncResult<{ plans: PlanListRow[] }> {
   // Stable join so a same-content array doesn't churn the query key.
   const harnessSlugsKey = params?.harness_slugs?.slice().sort().join('|') ?? '';
@@ -919,7 +927,7 @@ export function usePlanList(params?: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [params?.status, harnessSlugsKey],
   );
-  const r = useSyncResource<PlanListRow, 'plans'>('plans.list', args, 'plans');
+  const r = useSyncResource<PlanListRow, 'plans'>('plans.list', args, 'plans', params?.enabled ?? true);
   // Mirror the SERVER defaults exactly: archived off unless asked, legacy on
   // unless refused (see filterPlanListRows).
   const includeArchived = params?.includeArchived === true;

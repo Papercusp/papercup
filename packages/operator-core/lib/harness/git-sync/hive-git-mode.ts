@@ -33,6 +33,33 @@
  * one wins and the other rejects noisily — divergence surfaces, refs never
  * corrupt. Do not "fix" this by failing closed; a blip silencing a healthy
  * legacy hive's pushes is the worse failure.
+ *
+ * ⚠ THAT RISK NOTE IS ABOUT THE **PUSH** DECISION ONLY — and "fail-open" INVERTS
+ * between this function's two consumers (WI-6815):
+ *
+ *   - `git-sync-action.ts` (PUSH): `legacy` ⇒ the member keeps pushing origin,
+ *     i.e. today's behavior. Reading `legacy` on a blip is genuinely OPEN, and
+ *     the paragraph above is the correct analysis for it.
+ *   - `sync/pot-git/serve-wiring.ts` (SERVE GATE): `legacy` ⇒ **REFUSE every
+ *     pot-git serve**. Reading `legacy` on a blip fails CLOSED — it silently
+ *     disables the whole P2P serve plane — which the analysis above never
+ *     considered. A gate whose "safe default" is derived from a different
+ *     consumer's failure direction is not a safe default at all.
+ *
+ * `getPotGitMode` therefore collapses four very different states into one
+ * `legacy`: an OWNER-CHOSEN legacy, a never-configured hive, a malformed value,
+ * and a store read that THREW. For the push path that collapse is harmless; for
+ * the serve gate it is the difference between "correctly not serving" and
+ * "silently broken", and it is indistinguishable from the DIALING side — which
+ * is precisely why WI-6815 could not tell "the setting never replicated to the
+ * peer" from "the peer's read is throwing" without peer-side DB access.
+ *
+ * So: `getPotGitMode` keeps its collapsing fail-open contract (the push path is
+ * unchanged, byte for byte), and {@link readPotGitMode} exposes the DISTINCTION
+ * for callers that need to fail in their own direction — or, at minimum, to name
+ * which of the four states they refused on. Refusal reasons travel back over the
+ * wire, so naming the state makes a peer's misconfiguration diagnosable from the
+ * DIALER's log alone.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -53,22 +80,69 @@ export function coercePotGitMode(v: unknown): PotGitMode {
 }
 
 /**
+ * WHY this hive read as the mode it did — the distinction `getPotGitMode`'s
+ * fail-open deliberately collapses (see the module header, WI-6815).
+ *
+ *  - `set`       an explicit, well-formed value the owner chose.
+ *  - `absent`    no row: this hive never configured a mode. Legitimately legacy.
+ *  - `malformed` a row whose value is not a known mode — a real misconfiguration.
+ *  - `error`     the settings-store read THREW. The mode is **UNKNOWN**; `legacy`
+ *                here is a fallback, NOT a statement about the hive.
+ *
+ * Only `set` licenses a caller to say "this hive is legacy". The other three are
+ * "I could not establish the mode", which a serve gate must be able to say out
+ * loud rather than silently rendering as an owner decision.
+ */
+export type PotGitModeSource = 'set' | 'absent' | 'malformed' | 'error';
+
+export interface PotGitModeRead {
+  /** Always a usable mode — `legacy` whenever the source is not `set`. */
+  mode: PotGitMode;
+  source: PotGitModeSource;
+}
+
+/**
+ * Read a hive's git mode AND why it reads that way. Never throws — a store
+ * failure surfaces as `{ mode: 'legacy', source: 'error' }` rather than
+ * propagating, so a caller that only wants the mode keeps the fail-open
+ * contract while a caller that needs to distinguish can.
+ */
+export async function readPotGitMode(
+  workspaceId: string,
+  potHomeSlug: string,
+  sql?: Sql,
+): Promise<PotGitModeRead> {
+  let rec: Awaited<ReturnType<typeof getHiveSetting>>;
+  try {
+    rec = await getHiveSetting(workspaceId, potHomeSlug, POT_GIT_MODE_SETTING_KEY, sql);
+  } catch {
+    return { mode: 'legacy', source: 'error' };
+  }
+  if (!rec || rec.value == null) return { mode: 'legacy', source: 'absent' };
+  const mode = coercePotGitMode(rec.value);
+  // `coercePotGitMode` maps BOTH a literal 'legacy' and any junk to 'legacy', so
+  // the stored value — not the coerced one — is what separates an owner's
+  // explicit legacy from a corrupt row.
+  if (mode === 'legacy' && rec.value !== 'legacy') return { mode: 'legacy', source: 'malformed' };
+  return { mode, source: 'set' };
+}
+
+/**
  * Read a hive's git mode from the federated settings store. Absent / unset /
  * malformed → `legacy`. NEVER throws: a settings-store failure also reads as
  * `legacy` (fail-open to today's behavior — a PG blip must not flip a healthy
  * legacy hive into silent commit-only mode).
+ *
+ * ⚠ This collapses four states into one (see {@link PotGitModeSource}). That is
+ * correct for the PUSH decision and WRONG for a serve gate — use
+ * {@link readPotGitMode} anywhere `legacy` means "deny" rather than "carry on".
  */
 export async function getPotGitMode(
   workspaceId: string,
   potHomeSlug: string,
   sql?: Sql,
 ): Promise<PotGitMode> {
-  try {
-    const rec = await getHiveSetting(workspaceId, potHomeSlug, POT_GIT_MODE_SETTING_KEY, sql);
-    return coercePotGitMode(rec?.value);
-  } catch {
-    return 'legacy';
-  }
+  return (await readPotGitMode(workspaceId, potHomeSlug, sql)).mode;
 }
 
 /**

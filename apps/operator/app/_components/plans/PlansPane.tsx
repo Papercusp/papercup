@@ -50,6 +50,7 @@ import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import PlanPopupModal from './PlanPopupModal';
 import './plans-pane.css';
+import { advRosterArgs } from '@/lib/adv-roster-args';
 
 /** Buckets shown by default — "not started + started", never the finished. */
 const ACTIVE_BUCKETS: ReadonlySet<PlanBucket> = new Set(['draft', 'ready', 'running']);
@@ -167,9 +168,12 @@ export default function PlansPane() {
 
   // Live-agent counts: the shared Sessions-roster sync entry (no new query
   // when the roster panel is also mounted). Reading only active[].currentPlanSlug.
+  // NB this comment was ASPIRATIONAL until P-026 — the call site omitted
+  // `endedLimit`, and an omitted field is a different query key even though the
+  // resolver defaults it to the same value. advRosterArgs makes it true.
   const roster = useSyncQuery<RosterPayloadRow>({
     queryName: 'advRoster.list',
-    args: useMemo(() => ({ workspaceId: workspaceId ?? null }), [workspaceId]),
+    args: advRosterArgs(workspaceId),
   });
 
   const needsYouByPlan = useMemo(() => {

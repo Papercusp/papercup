@@ -94,6 +94,7 @@ import '../../adv/sessions/SessionsRosterView.css';
 // the surface Direction D restyles; see chat-controls.css's own header for the
 // grammar and the two repo rails (letter-spacing:0, no flex on a <button>).
 import './chat-controls.css';
+import { advRosterArgs } from '@/lib/adv-roster-args';
 
 /** The roster payload shape (advRoster.list). Inlined, never imported from the
  *  server module — same rationale as HudView.tsx's identical inline type
@@ -629,7 +630,7 @@ function LiveSessionChat({
   // per-message `planSlug` source those messages are stamped with below.
   const roster = useSyncQuery<RosterPayload>({
     queryName: 'advRoster.list',
-    args: { workspaceId: null, endedLimit: 50 },
+    args: advRosterArgs(null),
   });
   const rosterEntry = useMemo<HudRosterEntry | null>(() => {
     const payload = roster.data?.[0];
@@ -830,7 +831,7 @@ export default function SessionChatModal({
   // action bar's ctx is built in THIS component's scope.
   const actionRoster = useSyncQuery<RosterPayload>({
     queryName: 'advRoster.list',
-    args: { workspaceId: null, endedLimit: 50 },
+    args: advRosterArgs(null),
   });
   const actionRosterEntry = useMemo<HudRosterEntry | null>(() => {
     const payload = actionRoster.data?.[0];

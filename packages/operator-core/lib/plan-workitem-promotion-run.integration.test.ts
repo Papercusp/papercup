@@ -336,15 +336,48 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(await depEdges()).toEqual([]);
   });
 
-  it('P-006: an OPEN blocker that resolves to no work-item is COUNTED, never silently dropped', async () => {
-    // A dangling blockedBy ref. The failure mode this plan exists to kill is an edge that
-    // quietly is not there, so the anomaly has to surface in the result, not just a log line.
+  it('P-008: a DANGLING blockedBy ref (names no plan item) counts as dangling, NOT unresolved', async () => {
+    // The failure mode this plan exists to kill is an edge that quietly is not there, so the
+    // anomaly has to surface in the result, not just a log line. P-008 splits the counter: this
+    // is a plan-AUTHORING error (fix the text, and plans:lint already reports it), which demands
+    // a different response than a promotion that should have happened and didn't.
     h.plans.set(PLAN, {
       items: [{ id: 'P-001', status: 'todo', text: 'Points at a ghost', blockedBy: ['P-404'] }],
     });
     const res = await run.promotePlanItems(base);
-    expect(res).toMatchObject({ promoted: 1, edgesWritten: 0, blockersUnresolved: 1, edgeFailures: 0 });
+    expect(res).toMatchObject({
+      promoted: 1,
+      edgesWritten: 0,
+      blockersDangling: 1,
+      blockersUnresolved: 0,
+      edgeFailures: 0,
+    });
     expect(await depEdges()).toEqual([]);
+  });
+
+  it('P-008: a REAL open blocker that resolves to no work-item is still counted UNRESOLVED (the other half of the split)', async () => {
+    // The genuine system anomaly, as opposed to the authoring error above: the blocker is a real,
+    // open plan item that promotion believes is already converted (it has the implements edge, so
+    // it is not re-minted) yet whose work-item is gone. Constructed by promoting P-001, then
+    // deleting its row while leaving the edge — exactly the inconsistency the counter exists for.
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Vanishes' }] });
+    expect((await run.promotePlanItems(base)).promoted).toBe(1);
+    await db.sql`DELETE FROM harness_shared.work_items`;
+
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Vanishes' },
+        { id: 'P-002', status: 'todo', text: 'Depends on the vanished one', blockedBy: ['P-001'] },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res).toMatchObject({
+      promoted: 1,
+      edgesWritten: 0,
+      blockersUnresolved: 1,
+      blockersDangling: 0,
+      edgeFailures: 0,
+    });
   });
 
   it('P-006: one item with TWO blockers writes both edges (edgesWritten counts EDGES, not items)', async () => {
@@ -365,6 +398,86 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(edges.map((e) => e.blocker).sort()).toEqual(
       [rows.find((r) => r.title === 'Prereq A')!.feature_id, rows.find((r) => r.title === 'Prereq B')!.feature_id].sort(),
     );
+  });
+
+  /** The blocker edges in coord_links (the AUTHORITATIVE store), as bare ids. */
+  const linkEdges = async () => {
+    const rows = await db.sql<{ src_ref: string; dst_ref: string }[]>`
+      SELECT src_ref, dst_ref FROM harness_shared.coord_links WHERE rel = 'blocks' ORDER BY dst_ref, src_ref`;
+    return rows.map((r) => ({ blocked: r.dst_ref, blocker: r.src_ref }));
+  };
+
+  it('P-008: a 2-cycle writes ZERO edges — not one arbitrary arrow of it', async () => {
+    // THE regression this pins. Under the P-006 interim (attempt each write, catch the throw) the
+    // FIRST write SUCCEEDED and only the second was refused, persisting one arrow of the cycle —
+    // and which arrow survived depended on mint order. The pre-flight sees the whole set at once.
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'A waits on B', blockedBy: ['P-002'] },
+        { id: 'P-002', status: 'todo', text: 'B waits on A', blockedBy: ['P-001'] },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    // The NODES are still minted — P-008 refuses the edges, not the promotion.
+    expect(res).toMatchObject({ promoted: 2, edgesWritten: 0, edgesRejectedCyclic: 2, edgeFailures: 0 });
+    // Nothing in EITHER store — asserting coord_links too, since that is the authoritative one
+    // (D-010) and a mirror-only check would pass even if the authoritative write had landed.
+    expect(await depEdges()).toEqual([]);
+    expect(await linkEdges()).toEqual([]);
+    // …and refusing the edges costs no safety: every cycle member resolves to effective `blocked`,
+    // so pass 1's lane gate already parked both. This is what licenses edge-granularity refusal.
+    expect((await features()).map((r) => r.status)).toEqual(['blocked', 'blocked']);
+  });
+
+  it('P-008: a 3-cycle is refused whole (the rule is cycle membership, not pair detection)', async () => {
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'A', blockedBy: ['P-003'] },
+        { id: 'P-002', status: 'todo', text: 'B', blockedBy: ['P-001'] },
+        { id: 'P-003', status: 'todo', text: 'C', blockedBy: ['P-002'] },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res).toMatchObject({ promoted: 3, edgesWritten: 0, edgesRejectedCyclic: 3, edgeFailures: 0 });
+    expect(await depEdges()).toEqual([]);
+    expect((await features()).map((r) => r.status)).toEqual(['blocked', 'blocked', 'blocked']);
+  });
+
+  it('P-008: refuses the EDGES, not the PROMOTION — a healthy pair in the same plan keeps its edge', async () => {
+    // The deliberate departure from features.ts, which 400s the whole batch (D-011/D-012): one
+    // cyclic pair must not cost the plan its healthy dependency structure, because promotion's
+    // purpose is that a started plan never sits at zero placeable work.
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Cyclic A', blockedBy: ['P-002'] },
+        { id: 'P-002', status: 'todo', text: 'Cyclic B', blockedBy: ['P-001'] },
+        { id: 'P-003', status: 'todo', text: 'Healthy prereq' },
+        { id: 'P-004', status: 'todo', text: 'Healthy dependent', blockedBy: ['P-003'] },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res).toMatchObject({ promoted: 4, edgesWritten: 1, edgesRejectedCyclic: 2, edgeFailures: 0 });
+
+    const rows = await features();
+    const blocked = rows.find((r) => r.title === 'Healthy dependent')!.feature_id;
+    const blocker = rows.find((r) => r.title === 'Healthy prereq')!.feature_id;
+    expect(await depEdges()).toEqual([{ blocked, blocker }]);
+  });
+
+  it('P-008: an edge from a HEALTHY item ONTO a cycle member is refused too (both sides count)', async () => {
+    // A cyclic blocker never terminates, so gating an otherwise-healthy item on it would
+    // propagate the deadlock outward from the cycle rather than contain it.
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Cyclic A', blockedBy: ['P-002'] },
+        { id: 'P-002', status: 'todo', text: 'Cyclic B', blockedBy: ['P-001'] },
+        { id: 'P-003', status: 'todo', text: 'Healthy but depends on the cycle', blockedBy: ['P-001'] },
+      ],
+    });
+    const res = await run.promotePlanItems(base);
+    expect(res).toMatchObject({ promoted: 3, edgesWritten: 0, edgesRejectedCyclic: 3, edgeFailures: 0 });
+    expect(await depEdges()).toEqual([]);
+    expect(await linkEdges()).toEqual([]);
   });
 
   it('is a NO-OP when the flag is OFF (flagOff:true, nothing minted)', async () => {

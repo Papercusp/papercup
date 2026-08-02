@@ -16,6 +16,7 @@ vi.mock('@papercusp/db-org', () => ({
 import {
   coercePotGitMode,
   getPotGitMode,
+  readPotGitMode,
   setPotGitMode,
   POT_GIT_MODE_SETTING_KEY,
 } from './hive-git-mode';
@@ -71,6 +72,89 @@ describe('getPotGitMode — federated read, fail-open to legacy', () => {
 
   it("no injected sql + unreachable PG → 'legacy' (the default-resolver path in unit-shaped envs)", async () => {
     expect(await getPotGitMode('ws', 'shop-hive')).toBe('legacy');
+  });
+});
+
+/**
+ * WI-6815 — the four states `getPotGitMode` collapses into one `legacy`. The
+ * SERVE gate refuses on `legacy`, so for it the collapse turns "I could not read
+ * the mode" into "this hive chose not to serve" — indistinguishable from the
+ * dialing side, which is what made WI-6815 undiagnosable without peer DB access.
+ */
+describe('readPotGitMode — separates an owner-chosen legacy from a failed read', () => {
+  it("an explicitly-stored 'legacy' is source 'set' — the ONLY case that is an owner decision", async () => {
+    expect(await readPotGitMode('ws', 'shop-hive', fakeSql([settingRow('legacy')]))).toEqual({
+      mode: 'legacy',
+      source: 'set',
+    });
+  });
+
+  it("a stored non-default mode is source 'set'", async () => {
+    expect(await readPotGitMode('ws', 'shop-hive', fakeSql([settingRow('bridged')]))).toEqual({
+      mode: 'bridged',
+      source: 'set',
+    });
+    expect(await readPotGitMode('ws', 'shop-hive', fakeSql([settingRow('p2p-only')]))).toEqual({
+      mode: 'p2p-only',
+      source: 'set',
+    });
+  });
+
+  it("no row → source 'absent', NOT 'set' — the hive never chose legacy, the setting is simply not here", async () => {
+    expect(await readPotGitMode('ws', 'shop-hive', fakeSql([]))).toEqual({
+      mode: 'legacy',
+      source: 'absent',
+    });
+  });
+
+  it("a NULL-valued row is 'absent' too (a tombstoned setting is not a choice)", async () => {
+    expect(await readPotGitMode('ws', 'shop-hive', fakeSql([settingRow(null)]))).toEqual({
+      mode: 'legacy',
+      source: 'absent',
+    });
+  });
+
+  it("junk value → source 'malformed' — coercion still yields legacy, but the row is corrupt, not a decision", async () => {
+    expect(await readPotGitMode('ws', 'shop-hive', fakeSql([settingRow('turbo')]))).toEqual({
+      mode: 'legacy',
+      source: 'malformed',
+    });
+    // Case matters: 'BRIDGED' coerces to legacy and is a misconfiguration, not an
+    // owner opting out of P2P.
+    expect(await readPotGitMode('ws', 'shop-hive', fakeSql([settingRow('BRIDGED')]))).toEqual({
+      mode: 'legacy',
+      source: 'malformed',
+    });
+  });
+
+  it("a THROWN store read → source 'error' — the mode is UNKNOWN; it must never present as an owner's legacy", async () => {
+    expect(await readPotGitMode('ws', 'shop-hive', fakeSql(new Error('pg down')))).toEqual({
+      mode: 'legacy',
+      source: 'error',
+    });
+  });
+
+  it('never throws, even with no injected sql and an unreachable PG', async () => {
+    await expect(readPotGitMode('ws', 'shop-hive')).resolves.toEqual({
+      mode: 'legacy',
+      source: 'error',
+    });
+  });
+
+  it("getPotGitMode stays byte-identical across all four states — the PUSH path's contract is unchanged", async () => {
+    const cases: Array<[unknown[] | Error, string]> = [
+      [[settingRow('legacy')], 'legacy'],
+      [[settingRow('bridged')], 'bridged'],
+      [[], 'legacy'],
+      [[settingRow('turbo')], 'legacy'],
+      [new Error('pg down'), 'legacy'],
+    ];
+    for (const [rows, expected] of cases) {
+      const sql = fakeSql(rows);
+      expect(await getPotGitMode('ws', 'shop-hive', sql)).toBe(expected);
+      // ...and it agrees with the richer read's `mode`, so the two can never drift.
+      expect((await readPotGitMode('ws', 'shop-hive', sql)).mode).toBe(expected);
+    }
   });
 });
 

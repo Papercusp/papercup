@@ -38,6 +38,7 @@ import {
 // is available to answer.
 import { displayName, isRunningAgent, type RosterAgent } from '../adv/AgentsRunningPill';
 import { conversationErrText, coordFetch } from './unified-conversations';
+import { advRosterArgs } from '@/lib/adv-roster-args';
 
 /** advRoster.list returns a single-element array wrapping the roster object. */
 interface RosterResponse {
@@ -63,7 +64,7 @@ export function useAskAgents(enabled = true): {
 } {
   const roster = useSyncQuery<RosterResponse>({
     queryName: 'advRoster.list',
-    args: { workspaceId: null, endedLimit: 20 },
+    args: advRosterArgs(null),
     enabled,
     staleTime: 8_000,
   });

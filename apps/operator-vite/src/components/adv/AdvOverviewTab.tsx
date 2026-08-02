@@ -35,6 +35,7 @@ import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import { requestDockPanelOpen } from '@/app/adv/harnesses/open-dock-panel';
 import { KindPill } from '@/app/harness/primitives';
 import { useLexicon } from '@/lib/useLexicon';
+import { advRosterArgs } from '@/lib/adv-roster-args';
 
 /**
  * Brief 23 — the Overview / dashboard: the default landing surface of /adv.
@@ -564,7 +565,7 @@ export default function AdvOverviewTab() {
   // NaN under WebKit ⇒ every agent read 'stale' ⇒ "No live agents").
   const rosterQ = useSyncQuery<{ active: RosterAgent[] }>({
     queryName: 'advRoster.list',
-    args: { workspaceId: null, endedLimit: 20 },
+    args: advRosterArgs(null),
     staleTime: 8_000,
   });
 

@@ -32,6 +32,8 @@ import { Link } from '@tanstack/react-router';
 import { useSyncQuery } from '@papercusp/sync';
 import { useQueryState, parseAsString } from 'nuqs';
 import { useLexicon } from '@/lib/useLexicon';
+import { advRosterArgs } from '@/lib/adv-roster-args';
+import { usePlanList } from '@/app/admin/plans/plans-api';
 // Relative, not `@/…`: the `@` alias points at the operator (Next) tree, so an
 // intra-operator-vite import must be a relative path or it won't resolve.
 import {
@@ -168,11 +170,14 @@ export default function SwarmTab({ active }: { active: boolean }) {
   // The SAME workspace-wide, fleet-stamped roster the agents-running pill reads —
   // deliberately with the IDENTICAL args, so the two surfaces share one sync cache
   // entry (one resolve, one push) instead of issuing two near-duplicate queries.
-  // (`endedLimit` is `.positive()` server-side, so 0 is not a legal "don't fetch
-  // ended" — it fails zod validation. We ignore `ended` here regardless.)
+  // (This pane ignores `ended` entirely; it still rides the shared key rather
+  // than asking for a smaller slice, because a narrower `endedLimit` is a
+  // DIFFERENT cache key — a second full resolve to receive LESS. `endedLimit`
+  // is also `.positive()` server-side, so 0 is not a legal "don't fetch ended".
+  // The one canonical shape lives in advRosterArgs — P-026.)
   const roster = useSyncQuery<RosterResponse>({
     queryName: 'advRoster.list',
-    args: { workspaceId: null, endedLimit: 20 },
+    args: advRosterArgs(null),
     enabled: active,
     staleTime: 8_000,
   });
@@ -181,11 +186,15 @@ export default function SwarmTab({ active }: { active: boolean }) {
     enabled: active,
     staleTime: 8_000,
   });
-  const plans = useSyncQuery<PlanRow>({
-    queryName: 'plans.list',
-    enabled: active,
-    staleTime: 15_000,
-  });
+  // usePlanList, NOT a raw `useSyncQuery('plans.list')`: the raw form here
+  // omitted `args` entirely, which is the key `{}` — distinct from the
+  // `{includeArchived:true,includeLegacy:true}` SUPERSET every other pane
+  // (MugTab, AdvOverviewTab) already holds, so the sidebar was paying for a
+  // second ~800 KB resolve to receive a strict SUBSET of rows it then filtered
+  // the same way. usePlanList over-fetches once and narrows client-side; its
+  // `{}` narrowing (archived off, legacy on) is exactly the server default this
+  // call site used to get. P-026.
+  const plans = usePlanList({ enabled: active });
   // Per-agent comms: only fetched for the expanded agent.
   const mail = useSyncQuery<CupMailRow>({
     queryName: 'sidebar.cupMail',
@@ -285,7 +294,7 @@ export default function SwarmTab({ active }: { active: boolean }) {
     if (g?.declaredPlanSlug) slugs.add(g.declaredPlanSlug);
     for (const c of g?.claims ?? []) if (c.planSlug) slugs.add(c.planSlug);
     if (a.currentPlanSlug) slugs.add(a.currentPlanSlug);
-    const agentPlans = (plans.data ?? [])
+    const agentPlans = (plans.data.plans ?? [])
       .filter((p) => !p.archived && slugs.has(p.slug) && planTotals(p).total > 0)
       .sort((x, y) => (y.priority ?? 0) - (x.priority ?? 0));
 

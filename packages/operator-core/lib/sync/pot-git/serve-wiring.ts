@@ -70,7 +70,11 @@ import { Duplex } from 'node:stream';
 import { join } from 'node:path';
 import Protomux, { type ProtomuxChannel } from 'protomux';
 import c, { type CompactEncoding, type CompactEncodingState } from 'compact-encoding';
-import { getPotGitMode, type PotGitMode } from '../../harness/git-sync/hive-git-mode';
+import {
+  readPotGitMode,
+  type PotGitModeRead,
+  type PotGitModeSource,
+} from '../../harness/git-sync/hive-git-mode';
 import { hiveGitRepoPath, pathExists } from './storage';
 import { isScopeRepoFamilyPath, parseScopeRepoWireKey, scopeRepoPath } from './scope-repo';
 import { POT_GIT_PROTOCOL, serveUploadPack } from './fetch-transport';
@@ -656,6 +660,33 @@ function failAllSessions(state: ChannelState): void {
 const REFUSE_LOG_WINDOW_MS = 30_000;
 const refuseLogLast = new Map<string, { at: number; suppressed: number }>();
 
+/**
+ * WI-6815 — the serve gate's refusal reason per mode-read state.
+ *
+ * `mode-legacy` is reserved for an OWNER-CHOSEN legacy hive (source `set`): the
+ * one case where refusing is correct and final. The other three each mean "I
+ * could not establish that this hive serves", which is an operational fault the
+ * dialer must be able to tell apart:
+ *
+ *   mode-unset       no `hiveGit.mode` row here. On a member that IS meant to
+ *                    serve, this is the federation not having landed — the
+ *                    setting never replicated, or it replicated under a scope
+ *                    this reader is not looking in.
+ *   mode-malformed   a row exists but carries a value that is not a known mode.
+ *   mode-unreadable  the settings-store read THREW — a PG blip / no pool / a
+ *                    migration mid-flight. Says nothing about the hive's intent.
+ *
+ * These strings are wire-visible (handleRefuse re-raises them on the dialer), so
+ * they are part of the diagnostic contract, not local log text — do not collapse
+ * them back into one reason.
+ */
+const POT_GIT_MODE_REFUSAL: Record<PotGitModeSource, string> = {
+  set: 'mode-legacy',
+  absent: 'mode-unset',
+  malformed: 'mode-malformed',
+  error: 'mode-unreadable',
+};
+
 /** Emit a plane diagnostic. Suppressed under vitest — the repo runs
  *  `vitest-fail-on-console`, so an unconditional diagnostic would fail every
  *  suite that exercises a refusal path (live-caught: serve-wiring's 3 refusal
@@ -767,7 +798,7 @@ function peerTag(state: ChannelState): string {
  * FAILS OPEN by contract. An unreadable/absent registry means "no verdict", not
  * "refuse": a diagnostic improvement must never be able to take the serve plane
  * down, and falling through leaves exactly today's behaviour (the existence gate
- * below). Same fail-soft posture as `getPotGitMode`'s catch above.
+ * below). Same fail-soft posture as `readPotGitMode`'s catch above.
  */
 async function resolveSupersededRepoKey(
   potHomeSlug: string,
@@ -1067,13 +1098,24 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
   void (async () => {
     const cfg = state.serverConfig;
     if (!cfg) return refuse('not-serving');
-    let mode: PotGitMode;
+    // WI-6815: refuse with the reason that names WHICH of the four mode states we
+    // are refusing on, not a blanket `mode-legacy`. Only an explicitly-SET legacy
+    // is an owner decision; `absent`/`malformed`/`error` mean we could not
+    // establish the mode at all, and rendering those as "this hive chose legacy"
+    // is what made a peer's misconfiguration undiagnosable without peer-side DB
+    // access. The reason string travels back over the wire (handleRefuse), so the
+    // DIALER's log now separates "never replicated here" (mode-unset) from "my
+    // read is throwing" (mode-unreadable) with no access to the peer at all.
+    let read: PotGitModeRead;
     try {
-      mode = await getPotGitMode(cfg.workspaceId, cfg.potHomeSlug);
+      read = await readPotGitMode(cfg.workspaceId, cfg.potHomeSlug);
     } catch {
-      mode = 'legacy';
+      // readPotGitMode is documented never to throw; belt-and-braces so a future
+      // regression there degrades to a NAMED refusal rather than an unhandled
+      // rejection that presents to the dialer as a timeout.
+      read = { mode: 'legacy', source: 'error' };
     }
-    if (mode === 'legacy') return refuse('mode-legacy');
+    if (read.mode === 'legacy') return refuse(POT_GIT_MODE_REFUSAL[read.source]);
     // WI-3641: a `scope:`-prefixed wire repoKey (scopeRepoWireKey) addresses a
     // `scopes/` family repo — hiveGitRepoPath's single-path-component join can
     // never itself PRODUCE a `scopes/<owner>/<slug>.git` path (that's 2

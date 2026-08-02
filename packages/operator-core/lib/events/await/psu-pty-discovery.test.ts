@@ -13,6 +13,7 @@ import {
   latestRespawnNativeId,
   mcpReconnectViaPty,
   injectIntoHost,
+  injectIntoHostWithConfirmation,
   interruptViaPty,
   recolorViaPty,
   pidIsPsuHost,
@@ -311,6 +312,60 @@ describe('injectIntoHost — application-level ACK (EI-18676244363359331 / WI-58
     const dir = tmpDir();
     const { sock } = startSocket(dir, 'acker-old');
     expect(await injectIntoHost(sock, { mode: 'turn', data: 'x' })).toBe(true);
+  });
+});
+
+describe('injectIntoHostWithConfirmation — WHY a true happened (WI-6862)', () => {
+  it('reports an explicit {ok:true} ack as CONFIRMED by the host', async () => {
+    const dir = tmpDir();
+    const { sock } = startAckingSocket(dir, 'conf-ok', { ok: true, reason: 'delivered' });
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'reset', data: 'x' })).toEqual({
+      ok: true,
+      confirmation: 'acked',
+    });
+  });
+
+  // THE POINT OF THE WHOLE ITEM: this case and the one above are INDISTINGUISHABLE through the
+  // boolean — both are ok:true — yet only one is a confirmed delivery. The bare close also
+  // covers a host that crashed mid-delivery, which is exactly what a provider usage-limit wall
+  // does to a respawn, so booking it as a clean 'delivered' is what made a reset that never
+  // happened read back as a success (WI-6852's 02:58:02 reset).
+  it('reports a BARE CLOSE as assumed, not confirmed — the same ok:true the ack path returns', async () => {
+    const dir = tmpDir();
+    const { sock } = startAckingSocket(dir, 'conf-none', 'none');
+    const res = await injectIntoHostWithConfirmation(sock, { mode: 'reset', data: 'x' });
+    expect(res).toEqual({ ok: true, confirmation: 'assumed-close' });
+    // The control that gives that assertion its meaning: the legacy boolean cannot tell the two
+    // apart, which is precisely why the confirmation field had to exist.
+    expect(res.ok).toBe(await injectIntoHost(sock, { mode: 'reset', data: 'x' }));
+  });
+
+  it('reports an explicit {ok:false} ack as a CONFIRMED refusal (a real server-side drop)', async () => {
+    const dir = tmpDir();
+    const { sock } = startAckingSocket(dir, 'conf-drop', { ok: false, reason: 'deferred-busy-gate' });
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'reset', data: 'x' })).toEqual({
+      ok: false,
+      confirmation: 'acked',
+    });
+  });
+
+  it('reports a malformed ack line as assumed-close (parse failure must never hang or throw)', async () => {
+    const dir = tmpDir();
+    const { sock } = startAckingSocket(dir, 'conf-bad', 'malformed');
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'reset', data: 'x' })).toEqual({
+      ok: true,
+      confirmation: 'assumed-close',
+    });
+  });
+
+  it('reports an absent socket as an error, never as an assumed success', async () => {
+    const res = await injectIntoHostWithConfirmation(
+      join(tmpDir(), 'absent.sock'),
+      { mode: 'reset', data: 'x' },
+      500,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.confirmation).toBe('error');
   });
 });
 

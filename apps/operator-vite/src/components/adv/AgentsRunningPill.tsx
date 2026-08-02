@@ -30,6 +30,7 @@ import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 // not mount AdvShell (quick-panel-status-pills D-001). This pill's own wrapper +
 // roster popover styles remain self-injected in RosterStyles below.
 import './adv-header-pills.css';
+import { advRosterArgs } from '@/lib/adv-roster-args';
 
 /** The subset of a server RosterEntry (adv-roster.ts) this control reads. The
  *  fleet fields are stamped by resolveFleetInfoByOwner; the base frontend
@@ -444,7 +445,7 @@ export default function AgentsRunningPill() {
   const [open, setOpen] = useQueryState('agentsRoster', parseAsBoolean.withDefault(false));
   const { data } = useSyncQuery<RosterResponse>({
     queryName: 'advRoster.list',
-    args: { workspaceId: null, endedLimit: 20 },
+    args: advRosterArgs(null),
   });
   // A 1s clock — only while the roster is open — so the last-active pills tick up
   // live between the sync query's pushes.

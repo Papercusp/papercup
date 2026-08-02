@@ -40,6 +40,7 @@ import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import HudBoard from './HudBoard';
 import HudEntityColumns from './HudEntityColumns';
 import { workItemIdForCard, type HudEntityCard } from './hud-entity-board';
+import { advRosterArgs } from '@/lib/adv-roster-args';
 import {
   ALL_FLEETS,
   ALL_PLANS,
@@ -167,7 +168,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
 
   const roster = useSyncQuery<RosterPayload>({
     queryName: 'advRoster.list',
-    args: { workspaceId, endedLimit: 50 },
+    args: advRosterArgs(workspaceId),
   });
 
   /**

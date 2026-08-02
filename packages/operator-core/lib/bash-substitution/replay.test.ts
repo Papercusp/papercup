@@ -694,6 +694,22 @@ describe('the read family, MEASURED against the real handler rather than asserte
       if (result.verdict === 'replay-clean') {
         expect(s.measuredCases, pair.id).toBeGreaterThan(0);
         expect(s.verdict, pair.id).not.toBe('unmeasured');
+
+        // THE FINDING, PINNED (D-058). Every read-family pair returns the right
+        // answer and costs MORE to do it — which is why none of them was ever a
+        // viable auto-substitution candidate, mechanism aside.
+        //
+        // Direction, not magnitude: the measured ratio here (1.9x-4.2x) is
+        // fixture-dependent, because the tool's per-line numbering and header are
+        // overhead that a small answer cannot amortize. The DIRECTION is the
+        // durable fact, and it agrees with the plan's independent 3.4x aggregate
+        // from telemetry.
+        //
+        // If this assertion ever fails, the economics have CHANGED — most likely
+        // because the P-020 projection stage reached capability:read — and that is
+        // a signal to re-open the substitution question for this family, not a
+        // test to relax.
+        expect(s.verdict, `${pair.id} — read-family economy (see D-058)`).toBe('inflates');
       }
     }
 

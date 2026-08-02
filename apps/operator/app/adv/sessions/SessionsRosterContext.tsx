@@ -13,6 +13,7 @@
 import { createContext, useContext } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import type { RosterResponse } from './SessionsRosterView';
+import { advRosterArgs } from '@/lib/adv-roster-args';
 
 export interface RosterState {
   data: RosterResponse | null;
@@ -27,7 +28,7 @@ function useRoster(
 ): RosterState {
   const query = useSyncQuery<RosterResponse>({
     queryName: 'advRoster.list',
-    args: { workspaceId: workspaceId ?? null, endedLimit: 50 },
+    args: advRosterArgs(workspaceId),
     enabled,
   });
   return {

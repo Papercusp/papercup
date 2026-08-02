@@ -46,6 +46,7 @@ import AskAgentPane from './AskAgentPane';
 import SwarmTab from './SwarmTab';
 // Relative, not `@/…`: the `@` alias points at the operator (Next) tree.
 import { isRunningAgent, type RosterAgent } from '../adv/AgentsRunningPill';
+import { advRosterArgs } from '@/lib/adv-roster-args';
 
 export const AGENT_VIEWS = ['routines', 'dynamic'] as const;
 export type AgentView = (typeof AGENT_VIEWS)[number];
@@ -72,7 +73,7 @@ export default function AgentsTab({ active }: { active: boolean }) {
   });
   const roster = useSyncQuery<RosterResponse>({
     queryName: 'advRoster.list',
-    args: { workspaceId: null, endedLimit: 20 },
+    args: advRosterArgs(null),
     enabled: active,
     staleTime: 8_000,
   });
