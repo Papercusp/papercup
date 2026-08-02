@@ -1026,9 +1026,8 @@ export default defineTool({
     'entry: ROOT deadline + any/all mode), benchSuggestion, `dormant`, `spinning` ' +
     '(productiveToolCallAgeMs stale despite fresh lastToolCallAgeMs — taking turns on nothing ' +
     'but housekeeping calls), ' +
-    'unownedCriticals (LOCAL-origin only, actionable here) + unownedCriticalsFederated ' +
-    '(remote-origin — visible but this node can neither claim nor close them) + ' +
-    'abandonedUnclaimed (assignee IS NULL — CLAIM it).',
+    'unownedCriticals (local-origin, actionable) + unownedCriticalsFederated (remote-origin, ' +
+    'not actionable here) + abandonedUnclaimed (assignee IS NULL — CLAIM it).',
   guidance: {
     when:
       'AFTER a wake: "who is working / stuck / unanswered / about to compact across MY fleet". ' +
@@ -1045,10 +1044,8 @@ export default defineTool({
       'fleet:bench onto the blocked-on gate; `dormant:true` → wake, never bench. ' +
       '`spinning:true` → coord:send { wake: "required" } and investigate; it is taking turns ' +
       'but doing nothing productive, so waiting out a tick will not fix it. ' +
-      'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (already unassigned, so ' +
-      'work_items:release is a no-op (ok:true) — WI-6678). Nonzero `unownedCriticalsFederated` ' +
-      'is NOT actionable here (WI-6846) — remote-origin, this node can neither claim nor close ' +
-      'it; only the authoring peer (or federation delivering its resolution) clears it. ' +
+      'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (release is a no-op — WI-6678). ' +
+      '`unownedCriticalsFederated` is remote-origin — not claimable/closable here (WI-6846). ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },
   capability: 'work_items:read',

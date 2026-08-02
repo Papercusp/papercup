@@ -365,6 +365,47 @@ describe('engineer issues surface (real PG)', () => {
     expect(await issues.countIssues({ topic: 'observations', state: 'resolved' })).toBe(1);
   });
 
+  /**
+   * countObservationsByKind groups by an EXPRESSION over payload, aliased `kind`
+   * — and `kind` is ALSO a real column on engineer_issues. A bare `GROUP BY kind`
+   * therefore binds to the COLUMN, not the alias, leaving the payload expression
+   * ungrouped, and Postgres rejects the whole statement:
+   *
+   *   column "ei.payload" must appear in the GROUP BY clause
+   *
+   * Both branches shipped that way, so the Observations panel's signal
+   * distribution 500'd on every single call (measured live 2026-08-02 against
+   * :3070). This MUST be an integration test: the bug is in what Postgres does
+   * with the statement, so a unit test over a mocked `sql` tag cannot see it —
+   * it would happily "pass" against the broken query forever.
+   */
+  it('countObservationsByKind groups by the payload expression, not the same-named column', async () => {
+    await topicStore.create({ slug: 'obs-kinds', description: 'kind rollup', created_ts: NOW });
+    const obs = (kind: string, title: string) =>
+      issues.createIssue({
+        title,
+        topics: ['obs-kinds'],
+        createdBy: 'agA',
+        payload: { observation: { kind } },
+      });
+    await obs('friction', 'friction one');
+    await obs('friction', 'friction two');
+    await obs('gap', 'a gap');
+    // No observation payload at all — must roll up under 'other', not crash.
+    await issues.createIssue({ title: 'plain issue', topics: ['obs-kinds'], createdBy: 'agA' });
+
+    // The topic-joined branch (what the sync resolver actually calls).
+    const byTopic = await issues.countObservationsByKind({ topic: 'obs-kinds' });
+    expect(byTopic.friction).toBe(2);
+    expect(byTopic.gap).toBe(1);
+    expect(byTopic.other).toBe(1);
+
+    // The unjoined branch carried the identical defect, so cover it too.
+    const all = await issues.countObservationsByKind({});
+    expect(all.friction).toBe(2);
+    expect(all.gap).toBe(1);
+  });
+
   it('promote → mints + links an F-FIX feature; issue stays open', async () => {
     const { id } = await issues.createIssue({ title: 'broken thing', scope: 'harness:papercup', createdBy: 'agA' });
     const res = await issues.promoteIssue(id, { actor: 'agA' });

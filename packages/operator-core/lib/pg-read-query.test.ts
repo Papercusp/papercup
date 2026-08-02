@@ -474,6 +474,55 @@ describe('buildTenantScopeAdvisory — corpus-namespaced tables (EI-187496760917
   });
 });
 
+// WI-6847: event_awaits/event_wake_deliveries have a workspace_id column
+// (DEFAULT 'default') that is measurably 'default' for 100% of rows — the
+// generic advisory recommended a predicate that silently empties the result
+// (0 of 32,152 rows on event_awaits, 0 of 37,756 on event_wake_deliveries).
+// Same class as EI-18749676091756794 above; folded into the same registry.
+describe('buildTenantScopeAdvisory — corpus-namespaced tables (WI-6847)', () => {
+  beforeEach(() => clearTenantScopeSchemaCache());
+
+  it('is silent for event_awaits even though it has a workspace_id column and no scope predicate', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'event_awaits', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'event_awaits', column_name: 'event_key' },
+      { table_schema: 'harness_shared', table_name: 'event_awaits', column_name: 'subscriber_id' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.event_awaits WHERE event_key = 'x' AND created_at > now() - interval '7 days'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+  });
+
+  it('is silent for event_wake_deliveries the same way', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'event_wake_deliveries', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'event_wake_deliveries', column_name: 'subscriber_id' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.event_wake_deliveries WHERE subscriber_id = 'x'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+  });
+
+  it('still fires generically for a real tenant table joined alongside event_awaits, while event_awaits is silenced', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'event_awaits', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'harness_slug' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT * FROM harness_shared.event_awaits e JOIN harness_shared.harness_plans p ' +
+        "ON true WHERE e.event_key = 'x'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('harness_plans');
+    expect(advisory).not.toContain('event_awaits');
+  });
+});
+
 describe('buildDerivedColumnRedirect (EI-18801042715296007 — the derived-verdict dead end)', () => {
   const NOT_EXIST = (col: string): string => `column "${col}" does not exist`;
   const PRESENCE_SQL = 'SELECT session_state FROM harness_shared.coord_presence';

@@ -134,11 +134,19 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // event carries no plan_slug (shouldn't happen for this table, but a
     // defensive `null` costs nothing).
     { name: 'plans.get', scope: planSlugScope },
-    // plans.items stays a full-bust: it has NO live useSyncQuery consumer
-    // today (grep apps/operator for queryName:'plans.items' — none), so
-    // there's no confirmed consumer args shape to scope against; scoping a
-    // name with an unconfirmed/no shape risks a silent stop-refreshing bug
-    // the moment a consumer lands with different args. Revisit when one exists.
+    // plans.items stays a full-bust — but NOT for the reason this comment used
+    // to give. It claimed "no live useSyncQuery consumer today"; that lapsed
+    // (WI-7086). There are now four: usePlanItems() with `{needsHuman:true}` /
+    // `{actionable:true}` / `{status:'blocked'}` (PlansClient, use-create-data)
+    // and HydratedWorkRefPill with `{slug}`.
+    //
+    // Knowing the shapes makes the case for full-bust STRONGER, not weaker.
+    // `planSlugScope` emits `{slug}`, and a scope must be a MATCHING SUBSET of
+    // the consumer's args — so it would match only the pill and leave the three
+    // slug-less bucket queries subscribed to a scope they can never match, i.e.
+    // silently never refreshing. That is precisely the failure the old comment
+    // feared; scoping this name needs a predicate over a UNION of arg shapes,
+    // which the scope grammar does not express.
     'plans.items',
     'plans.attention',
     // plans.attentionItem (slim-plans-attention-sync-payload-2026-07-26 P-004) —

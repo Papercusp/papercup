@@ -1,0 +1,623 @@
+<title>Session popup — contrast study</title>
+
+<style>
+  :root {
+    --ground: #f6f7f9;
+    --raised: #ffffff;
+    --ink: #101720;
+    --ink-2: #3d4a58;
+    --muted: #5b6875;
+    --rule: #dfe4ea;
+    --rule-2: #c8d1db;
+    --accent: #0a6f9e;
+    --accent-wash: #e8f2f8;
+    --good: #1a7f52;
+    --warn: #9a6a06;
+    --bad: #a83232;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #0a0e14;
+      --raised: #111821;
+      --ink: #e4ecf4;
+      --ink-2: #b3c2d0;
+      --muted: #8496a8;
+      --rule: #1c242e;
+      --rule-2: #2b3743;
+      --accent: #5cc6f5;
+      --accent-wash: #10202c;
+      --good: #4ec98d;
+      --warn: #e0b45c;
+      --bad: #f08a8a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0a0e14;
+    --raised: #111821;
+    --ink: #e4ecf4;
+    --ink-2: #b3c2d0;
+    --muted: #8496a8;
+    --rule: #1c242e;
+    --rule-2: #2b3743;
+    --accent: #5cc6f5;
+    --accent-wash: #10202c;
+    --good: #4ec98d;
+    --warn: #e0b45c;
+    --bad: #f08a8a;
+  }
+  :root[data-theme="light"] {
+    --ground: #f6f7f9;
+    --raised: #ffffff;
+    --ink: #101720;
+    --ink-2: #3d4a58;
+    --muted: #5b6875;
+    --rule: #dfe4ea;
+    --rule-2: #c8d1db;
+    --accent: #0a6f9e;
+    --accent-wash: #e8f2f8;
+    --good: #1a7f52;
+    --warn: #9a6a06;
+    --bad: #a83232;
+  }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 40px 24px 96px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+  h1 {
+    font-size: clamp(26px, 3.4vw, 38px);
+    line-height: 1.15;
+    font-weight: 680;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+    margin: 0 0 14px;
+  }
+  .lede { max-width: 64ch; font-size: 16.5px; color: var(--ink-2); margin: 0; }
+  .lede strong { color: var(--ink); font-weight: 620; }
+
+  h2 {
+    font-size: 20px;
+    font-weight: 660;
+    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  h3 { font-size: 15.5px; font-weight: 650; margin: 0 0 4px; }
+  p { margin: 0 0 12px; max-width: 68ch; }
+
+  section { margin-top: 52px; }
+  .sec-head { border-top: 2px solid var(--ink); padding-top: 12px; margin-bottom: 22px; }
+  .sec-head .eyebrow { margin-bottom: 6px; }
+  .sec-head p { color: var(--muted); margin: 4px 0 0; font-size: 14.5px; }
+
+  code, .m { font-family: var(--mono); font-size: 0.88em; }
+  code {
+    background: var(--accent-wash);
+    color: var(--accent);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* ── findings ─────────────────────────────────────────── */
+  .finding {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 340px);
+    gap: 26px;
+    align-items: start;
+    padding: 20px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .finding:first-of-type { border-top: 0; }
+  .finding-tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--bad);
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    padding: 0 5px;
+    margin-bottom: 8px;
+  }
+  .meter { display: grid; gap: 9px; }
+  .meter-row { display: grid; grid-template-columns: 108px 1fr 62px; gap: 10px; align-items: center; }
+  .meter-label { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; }
+  .meter-track { height: 9px; border-radius: 2px; background: var(--rule); overflow: hidden; }
+  .meter-fill { height: 100%; border-radius: 2px; background: var(--accent); }
+  .meter-fill[data-tone="bad"] { background: var(--bad); }
+  .meter-fill[data-tone="good"] { background: var(--good); }
+  .meter-val { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  /* ── specimen grid ────────────────────────────────────── */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+    gap: 20px;
+  }
+  .card {
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    background: var(--raised);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .card--pick { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-wash); }
+  .card-head { padding: 13px 15px 12px; border-bottom: 1px solid var(--rule); }
+  .card-head .k {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .pick-flag {
+    color: var(--accent);
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    padding: 0 4px;
+    letter-spacing: 0.05em;
+  }
+  .card-head h3 { margin: 5px 0 3px; }
+  .card-head p { font-size: 13px; color: var(--muted); margin: 0; }
+  .card-foot {
+    margin-top: auto;
+    padding: 11px 15px 13px;
+    border-top: 1px solid var(--rule);
+    font-size: 12.5px;
+    color: var(--ink-2);
+  }
+  .card-foot dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
+  .card-foot dt { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .card-foot dd { margin: 0; font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+  /* ══ SPECIMEN — locked to the operator's real dark palette ══
+     These depict the app, so they do NOT follow the viewer's theme:
+     judging contrast against a light page would be judging the wrong
+     thing. Values are the live tokens from app/_semantic.css. */
+  .sp {
+    --panel: #0d1829;
+    --fg: #e7f7ff;
+    --fg-dim: #b9d4e8;
+    --fg-mute: #7f9bb4;
+    --accent-sp: #38bdf8;
+    --accent-soft: #bae6fd;
+    --warn-sp: #fbbf24;
+    --good-sp: #34d399;
+    background: var(--panel);
+    padding: 0;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--fg);
+    font-family: var(--sans);
+  }
+  .sp-sec { padding: 9px 12px; }
+  .sp-h {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 6px;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    font-weight: 640;
+  }
+  .sp-n {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    font-weight: 500;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .sp-row { display: flex; gap: 8px; padding: 2px 0; font-size: 10.5px; }
+  .sp-k { flex: none; width: 62px; color: var(--fg-mute); }
+  .sp-v { min-width: 0; }
+  .sp-txt { font-size: 10.5px; }
+
+  /* — CONTROL: exactly as shipped — */
+  .sp--now .sp-sec { border-top: 1px solid rgba(125, 211, 252, 0.15); }
+  .sp--now .sp-sec:first-child { border-top: 0; }
+  .sp--now .sp-h { color: var(--fg-mute); }
+  .sp--now .sp-txt { color: var(--fg); }
+
+  /* — A: type ladder. Heading brightens ABOVE its body; rule strengthens. — */
+  .sp--a .sp-sec { border-top: 1px solid rgba(125, 211, 252, 0.32); }
+  .sp--a .sp-sec:first-child { border-top: 0; }
+  .sp--a .sp-h { color: var(--fg); font-weight: 700; font-size: 10px; }
+  .sp--a .sp-txt { color: var(--fg-dim); }
+  .sp--a .sp-k { color: var(--fg-mute); }
+
+  /* — B: banded headers. The heading sits in its own filled bar. — */
+  .sp--b .sp-sec { padding: 0 0 9px; }
+  .sp--b .sp-sec:last-child { padding-bottom: 4px; }
+  .sp--b .sp-h {
+    margin: 0 0 7px;
+    padding: 5px 12px;
+    background: rgba(255, 255, 255, 0.08);
+    border-top: 1px solid rgba(125, 211, 252, 0.22);
+    border-bottom: 1px solid rgba(125, 211, 252, 0.16);
+    color: var(--fg);
+    font-weight: 700;
+    font-size: 10px;
+  }
+  .sp--b .sp-sec:first-child .sp-h { border-top: 0; }
+  .sp--b .sp-row, .sp--b .sp-txt-wrap { padding-left: 12px; padding-right: 12px; }
+  .sp--b .sp-txt { color: var(--fg-dim); }
+  .sp--b .sp-k { color: var(--fg-mute); }
+
+  /* — C: inset cards. Each section is its own raised surface. — */
+  .sp--c { padding: 9px; display: flex; flex-direction: column; gap: 8px; }
+  .sp--c .sp-sec {
+    padding: 8px 10px;
+    border: 1px solid rgba(125, 211, 252, 0.20);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.045);
+  }
+  .sp--c .sp-h { color: var(--accent-soft); font-weight: 700; font-size: 10px; }
+  .sp--c .sp-txt { color: var(--fg-dim); }
+  .sp--c .sp-k { color: var(--fg-mute); }
+
+  /* ── axes table ───────────────────────────────────────── */
+  .scroller { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 560px; }
+  th, td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    border-bottom-color: var(--rule-2);
+  }
+  td .m { font-size: 12px; }
+
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-wash);
+    padding: 13px 16px;
+    border-radius: 0 5px 5px 0;
+    font-size: 14px;
+    color: var(--ink-2);
+    margin: 22px 0 0;
+  }
+  .note strong { color: var(--ink); }
+  .note p:last-child { margin-bottom: 0; }
+
+  .foot {
+    margin-top: 60px;
+    padding-top: 16px;
+    border-top: 1px solid var(--rule);
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .foot p { max-width: none; }
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">Session chat popup · contrast study · 2026-08-02</p>
+  <h1>Three ways to make the sections read as sections</h1>
+  <p class="lede">
+    The ask was two things at once — make it clearer <strong>that there are different sections</strong>,
+    and raise the contrast <strong>between a heading and the text under it</strong>. Those are separate
+    levers, so this sheet measures each, then shows three treatments that pull them in different
+    proportions. Structure and general design are unchanged throughout: same rail, same order, same
+    content.
+  </p>
+
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">What's actually wrong</p>
+      <h2>Two defects, both measurable</h2>
+      <p>Ratios are computed against the popup ground <span class="m">--bg-popover #0d1829</span>, using the shared token values the sections are built from.</p>
+    </div>
+
+    <div class="finding">
+      <div>
+        <span class="finding-tag">Defect 1 · invisible boundaries</span>
+        <h3>The section divider is a 1.39:1 line</h3>
+        <p>
+          Sections are separated by a single hairline at <span class="m">--border</span> —
+          sky-300 at 15% alpha, which composites to <span class="m">#1e3449</span> on the panel.
+          At <strong>1.39:1</strong> against its own background it is below every legibility floor
+          there is; the boundary is functionally not drawn. Nothing else in the layout marks a
+          section edge, so the rail reads as one continuous column of small text.
+        </p>
+      </div>
+      <div class="meter">
+        <div class="meter-row">
+          <span class="meter-label">current rule</span>
+          <span class="meter-track"><span class="meter-fill" data-tone="bad" style="width:9%"></span></span>
+          <span class="meter-val">1.39:1</span>
+        </div>
+        <div class="meter-row">
+          <span class="meter-label">--border-strong</span>
+          <span class="meter-track"><span class="meter-fill" style="width:23%"></span></span>
+          <span class="meter-val">2.22:1</span>
+        </div>
+        <div class="meter-row">
+          <span class="meter-label">non-text floor</span>
+          <span class="meter-track"><span class="meter-fill" data-tone="good" style="width:33%"></span></span>
+          <span class="meter-val">3.00:1</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div>
+        <span class="finding-tag">Defect 2 · inverted hierarchy</span>
+        <h3>The heading is 2.6× dimmer than the text it labels</h3>
+        <p>
+          Headings are <span class="m">--fg-mute</span> at <strong>6.15:1</strong>; the body beneath
+          them is <span class="m">--fg</span> at <strong>16.23:1</strong>. So the label is the
+          <em>quietest</em> thing in its own section — and it is also the smallest, at 9.5px against
+          the body's 10.5px. Size, weight and colour all point the same wrong way, and only
+          uppercasing pushes back. A heading has to win at least one of those axes to read as a
+          heading.
+        </p>
+      </div>
+      <div class="meter">
+        <div class="meter-row">
+          <span class="meter-label">heading now</span>
+          <span class="meter-track"><span class="meter-fill" data-tone="bad" style="width:38%"></span></span>
+          <span class="meter-val">6.15:1</span>
+        </div>
+        <div class="meter-row">
+          <span class="meter-label">body now</span>
+          <span class="meter-track"><span class="meter-fill" style="width:100%"></span></span>
+          <span class="meter-val">16.23:1</span>
+        </div>
+        <div class="meter-row">
+          <span class="meter-label">step</span>
+          <span class="meter-track"><span class="meter-fill" data-tone="bad" style="width:14%"></span></span>
+          <span class="meter-val">0.38×</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>The fix for defect 2 is not "brighten the heading".</strong> Both values are already
+        high-contrast against the ground — the problem is that they are close to each other and
+        ordered backwards. Every treatment below therefore moves them <em>apart</em>: heading up to
+        <span class="m">--fg</span>, body down to <span class="m">--fg-dim</span>. That inverts the
+        step from 0.38× to <strong>1.40×</strong> without introducing a single new colour.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Side by side</p>
+      <h2>The same rail, four ways</h2>
+      <p>Real tokens, real type sizes, real content. These panels keep the app's dark palette regardless of your page theme — judging them on a light ground would be judging the wrong thing.</p>
+    </div>
+
+    <div class="grid">
+
+      <!-- CONTROL -->
+      <div class="card">
+        <div class="card-head">
+          <div class="k">Control</div>
+          <h3>As it ships today</h3>
+          <p>Hairline dividers, muted headings.</p>
+        </div>
+        <div class="sp sp--now">
+          <div class="sp-sec">
+            <p class="sp-h">Mission</p>
+            <div class="sp-row"><span class="sp-k">effective</span><span class="sp-v sp-txt">execute-owner-directed-scope</span></div>
+            <div class="sp-row"><span class="sp-k">authority</span><span class="sp-v sp-txt">act-with-disclosure</span></div>
+            <div class="sp-row"><span class="sp-k">route</span><span class="sp-v sp-txt">self</span></div>
+          </div>
+          <div class="sp-sec">
+            <p class="sp-h">Modes <span class="sp-n">2</span></p>
+            <div class="sp-txt-wrap"><p class="sp-txt" style="margin:0">AUTO — act, don't ask</p></div>
+            <div class="sp-txt-wrap"><p class="sp-txt" style="margin:0">GRADE — fleet-execution-health</p></div>
+          </div>
+          <div class="sp-sec">
+            <p class="sp-h">Walls</p>
+            <p class="sp-txt" style="margin:0">Nothing blocked on you.</p>
+          </div>
+        </div>
+        <div class="card-foot">
+          <dl>
+            <dt>rule</dt><dd>1.39:1</dd>
+            <dt>head</dt><dd>6.15:1</dd>
+            <dt>step</dt><dd>0.38×</dd>
+          </dl>
+        </div>
+      </div>
+
+      <!-- A -->
+      <div class="card">
+        <div class="card-head">
+          <div class="k">Treatment A</div>
+          <h3>Type ladder</h3>
+          <p>Heading up, body down, rule strengthened. No structural change at all.</p>
+        </div>
+        <div class="sp sp--a">
+          <div class="sp-sec">
+            <p class="sp-h">Mission</p>
+            <div class="sp-row"><span class="sp-k">effective</span><span class="sp-v sp-txt">execute-owner-directed-scope</span></div>
+            <div class="sp-row"><span class="sp-k">authority</span><span class="sp-v sp-txt">act-with-disclosure</span></div>
+            <div class="sp-row"><span class="sp-k">route</span><span class="sp-v sp-txt">self</span></div>
+          </div>
+          <div class="sp-sec">
+            <p class="sp-h">Modes <span class="sp-n">2</span></p>
+            <div class="sp-txt-wrap"><p class="sp-txt" style="margin:0">AUTO — act, don't ask</p></div>
+            <div class="sp-txt-wrap"><p class="sp-txt" style="margin:0">GRADE — fleet-execution-health</p></div>
+          </div>
+          <div class="sp-sec">
+            <p class="sp-h">Walls</p>
+            <p class="sp-txt" style="margin:0">Nothing blocked on you.</p>
+          </div>
+        </div>
+        <div class="card-foot">
+          <dl>
+            <dt>rule</dt><dd>2.22:1</dd>
+            <dt>head</dt><dd>16.23:1</dd>
+            <dt>step</dt><dd>1.40×</dd>
+          </dl>
+        </div>
+      </div>
+
+      <!-- B -->
+      <div class="card card--pick">
+        <div class="card-head">
+          <div class="k">Treatment B <span class="pick-flag">recommended</span></div>
+          <h3>Banded headers</h3>
+          <p>The heading gets its own filled bar, full width of the rail.</p>
+        </div>
+        <div class="sp sp--b">
+          <div class="sp-sec">
+            <p class="sp-h">Mission</p>
+            <div class="sp-row"><span class="sp-k">effective</span><span class="sp-v sp-txt">execute-owner-directed-scope</span></div>
+            <div class="sp-row"><span class="sp-k">authority</span><span class="sp-v sp-txt">act-with-disclosure</span></div>
+            <div class="sp-row"><span class="sp-k">route</span><span class="sp-v sp-txt">self</span></div>
+          </div>
+          <div class="sp-sec">
+            <p class="sp-h">Modes <span class="sp-n">2</span></p>
+            <div class="sp-txt-wrap"><p class="sp-txt" style="margin:0">AUTO — act, don't ask</p></div>
+            <div class="sp-txt-wrap"><p class="sp-txt" style="margin:0">GRADE — fleet-execution-health</p></div>
+          </div>
+          <div class="sp-sec">
+            <p class="sp-h">Walls</p>
+            <div class="sp-txt-wrap"><p class="sp-txt" style="margin:0">Nothing blocked on you.</p></div>
+          </div>
+        </div>
+        <div class="card-foot">
+          <dl>
+            <dt>band</dt><dd>+8% fill</dd>
+            <dt>head</dt><dd>16.23:1</dd>
+            <dt>step</dt><dd>1.40×</dd>
+          </dl>
+        </div>
+      </div>
+
+      <!-- C -->
+      <div class="card">
+        <div class="card-head">
+          <div class="k">Treatment C</div>
+          <h3>Inset cards</h3>
+          <p>Each section becomes its own raised, bordered surface.</p>
+        </div>
+        <div class="sp sp--c">
+          <div class="sp-sec">
+            <p class="sp-h">Mission</p>
+            <div class="sp-row"><span class="sp-k">effective</span><span class="sp-v sp-txt">execute-owner-directed-scope</span></div>
+            <div class="sp-row"><span class="sp-k">authority</span><span class="sp-v sp-txt">act-with-disclosure</span></div>
+            <div class="sp-row"><span class="sp-k">route</span><span class="sp-v sp-txt">self</span></div>
+          </div>
+          <div class="sp-sec">
+            <p class="sp-h">Modes <span class="sp-n">2</span></p>
+            <p class="sp-txt" style="margin:0">AUTO — act, don't ask</p>
+            <p class="sp-txt" style="margin:0">GRADE — fleet-execution-health</p>
+          </div>
+          <div class="sp-sec">
+            <p class="sp-h">Walls</p>
+            <p class="sp-txt" style="margin:0">Nothing blocked on you.</p>
+          </div>
+        </div>
+        <div class="card-foot">
+          <dl>
+            <dt>border</dt><dd>1.7:1</dd>
+            <dt>head</dt><dd>accent</dd>
+            <dt>step</dt><dd>1.16×</dd>
+          </dl>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">The trade</p>
+      <h2>What each one costs</h2>
+      <p>All three fix defect 2 identically — they differ only in how hard they push on defect 1, and what that costs in vertical space and visual noise.</p>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr>
+            <th>Treatment</th>
+            <th>Section signal</th>
+            <th>Vertical cost</th>
+            <th>Risk</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>A</strong> · Type ladder</td>
+            <td>A stronger line, still only a line — <span class="m">2.22:1</span>, under the 3:1 floor.</td>
+            <td>None. Byte-for-byte the same height.</td>
+            <td>May not go far enough. If the complaint was "I can't see the sections", a brighter hairline is the smallest possible answer to it.</td>
+          </tr>
+          <tr>
+            <td><strong>B</strong> · Banded headers</td>
+            <td>A filled bar spanning the rail. Separation comes from an area, not a line, so it survives at any zoom.</td>
+            <td>~2px per section.</td>
+            <td>Rail starts to look striped if a section holds only one row. Mitigated by the bands being subtle (8%) rather than boxed.</td>
+          </tr>
+          <tr>
+            <td><strong>C</strong> · Inset cards</td>
+            <td>Strongest — each section is a discrete object.</td>
+            <td>~8px per section, plus 9px of gutter on both edges.</td>
+            <td>Eats horizontal room in a 272px rail, and reads as a different design language from the rest of the popup. This is the one that stops being "same general design".</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>Recommendation: B.</strong> Defect 1 is the one you actually raised first, and it is a
+        boundary problem — a boundary drawn as an <em>area</em> is legible in a way a 1px line at any
+        alpha is not, which is why A tops out under the 3:1 floor while B clears it by construction.
+        B also keeps the rail's structure and rhythm exactly as-is: no new gutters, no rounded boxes,
+        nothing that changes the language of the surrounding popup the way C does.
+      </p>
+      <p>
+        If B's bands feel too heavy once they're live, the fill drops from 8% to 5% and it degrades
+        gracefully toward A — the two are the same treatment at different strengths, so switching
+        between them later is a one-line change, not a redesign.
+      </p>
+    </div>
+  </section>
+
+  <div class="foot">
+    <p>
+      Ratios computed from <span class="m">app/_semantic.css</span> token values against
+      <span class="m">--bg-popover</span>, sRGB relative luminance per WCAG 2.1. The Orders rail
+      additionally lightens its own local copies of these tokens
+      (<span class="m">--pc-orders-dim</span>, <span class="m">--pc-orders-text</span>), which narrows
+      the heading/body step but does not reorder it — the heading stays the quieter of the two.
+      Nothing here is implemented yet; pick a treatment and it goes in as a scoped change to
+      <span class="m">AgentOrders.css</span> plus its Activity-rail counterpart.
+    </p>
+  </div>
+
+</div>

@@ -12,6 +12,7 @@ import {
   computeFloorStarvedFleetAlert,
   computeIdleWithClaimableAlert,
   computeSpecStarvedFleetAlert,
+  computeSpinningAlert,
   computeStrandedFleetAlert,
   decorateComposedParkedOn,
   projectMember,

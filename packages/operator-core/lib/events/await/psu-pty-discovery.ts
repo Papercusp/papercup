@@ -505,6 +505,23 @@ export function injectIntoHostWithConfirmation(
      * findLiveHost was just called with).
      */
     ownerId?: string;
+    /** EI-19311270129974785: the SENDER's durable `event_wake_deliveries.id` for
+     * this wake, when the message represents one (a loop-wake / event-wake
+     * `turn`/`reset`/`recycle`/`carry-respawn` delivery — never a one-shot
+     * `raw`/`osc`/`compact`/`mcp-reconnect` call, which has no delivery row).
+     * Riding it on the envelope lets the RECEIVING host recognize a RETRY of a
+     * delivery it already accepted (the client's own ack-wait can time out or
+     * the ack write back can fail — either way is indistinguishable from a
+     * genuine miss to the client, which then retries — even though the host,
+     * having already ack'd 'accepted', is unstoppably committed to delivering
+     * the ORIGINAL attempt) and short-circuit the duplicate instead of running
+     * the gated pipeline (and writing a second real turn into the pty) again.
+     * Omitted ⇒ the receiving host's dedup check is a no-op (unchanged
+     * behavior) — every existing caller that omits it keeps working exactly
+     * as before; new/updated callers should always pass it when the message
+     * corresponds to a durable delivery row.
+     */
+    deliveryId?: string;
   },
   timeoutMs = 2000,
 ): Promise<InjectHostResult> {
@@ -519,6 +536,7 @@ export function injectIntoHostWithConfirmation(
     fireNumber?: number;
     routineId?: string;
     ownerId?: string;
+    deliveryId?: string;
   } = {
     v: 1,
     mode: msg.mode,
@@ -531,6 +549,7 @@ export function injectIntoHostWithConfirmation(
   if (msg.fireNumber !== undefined) envelope.fireNumber = msg.fireNumber;
   if (msg.routineId !== undefined) envelope.routineId = msg.routineId;
   if (msg.ownerId !== undefined) envelope.ownerId = msg.ownerId;
+  if (msg.deliveryId !== undefined) envelope.deliveryId = msg.deliveryId;
   const payload = JSON.stringify(envelope);
   if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES)
     return Promise.resolve({ ok: false, confirmation: 'oversize' as const });

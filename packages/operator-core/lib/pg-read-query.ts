@@ -275,10 +275,15 @@ const TENANT_SCOPE_OVERRIDES: Record<string, TenantScopeOverride> = {
 };
 
 /**
- * Tables whose `workspace_id` is a CORPUS NAMESPACE (always the literal
- * `'default'`, per `bash-substitution/report.ts`'s `ROLLUP_CORPUS_WORKSPACE`),
- * NOT a tenant discriminator — the generic workspace_id/harness_slug heuristic
- * below is actively wrong for them in two ways at once (EI-18749676091756794):
+ * Tables whose `workspace_id` is a CORPUS NAMESPACE — always the literal
+ * `'default'` (for `tool_usage_rollup`/`session_turns`, per
+ * `bash-substitution/report.ts`'s `ROLLUP_CORPUS_WORKSPACE`; for
+ * `event_awaits`/`event_wake_deliveries` the column simply defaults to
+ * `'default'` at the DDL level — libs/papercusp/libs/db/sql/163-await-event-
+ * subscriptions.sql — and, per WI-6847, is measurably 100% `'default'` in
+ * practice too) — NOT a tenant discriminator. The generic workspace_id/
+ * harness_slug heuristic below is actively wrong for these tables in two
+ * ways at once (EI-18749676091756794, WI-6847):
  *
  *   1. `harness_slug` does not exist as a column on these tables at all, so
  *      the generic "actionable" suggestion named a column PG then rejects
@@ -287,13 +292,29 @@ const TENANT_SCOPE_OVERRIDES: Record<string, TenantScopeOverride> = {
  *      'papercusp-workspace') matches ZERO rows — every row is written under
  *      the literal 'default' — so "correcting" an unscoped query per the
  *      advisory turns a right answer into a silent, confidence-inspiring
- *      empty result.
+ *      empty result. Measured 2026-08-02 (WI-6847): a workspace_id-scoped
+ *      read of event_awaits returned 0 rows against 32,152 real rows, and
+ *      event_wake_deliveries the same against 37,756 real rows.
  *
  * So for these tables an UNSCOPED read is the correct one; suppress the
  * generic advisory entirely rather than try to "fix" it into a still-wrong
  * predicate.
+ *
+ * ⚠ Deliberately a hardcoded per-table registry, like TENANT_SCOPE_OVERRIDES
+ * above, NOT a runtime-derived check (e.g. "does this column have exactly one
+ * distinct value") — that would require a live cardinality probe on every
+ * advisory call for every referenced table, on the hot query path. Extend
+ * this set when another table is found to have the same defect; verify with
+ * a real `count(*) GROUP BY workspace_id` first (per-table, as WI-6847 did),
+ * since `work_items`/`harness_plans` and friends ARE genuinely multi-tenant
+ * and must keep the advisory.
  */
-const CORPUS_NAMESPACED_TABLES = new Set(['tool_usage_rollup', 'session_turns']);
+const CORPUS_NAMESPACED_TABLES = new Set([
+  'tool_usage_rollup',
+  'session_turns',
+  'event_awaits',
+  'event_wake_deliveries',
+]);
 
 /** The bare (unqualified) table name — `schema.table` → `table`. */
 function bareTableName(ref: string): string {

@@ -1163,7 +1163,18 @@ async function injectPsuHostWake(
   const fireNumber = loopMarker?.wakeCount;
   const routineId = loopMarker?.routineId;
   const injectWarm = async (): Promise<WakeOutcome | null> => {
-    const ok = await injectPsuHost(sock, { mode: 'turn', data: warmText, fireNumber, routineId, ownerId: d.subscriberId });
+    // EI-19311270129974785: thread this delivery's own durable id so a retry the
+    // CLIENT believes is fresh (its ack-wait timed out, or the host's ack write
+    // back failed) is recognized by the host as the SAME delivery it already
+    // committed to, instead of injecting a second real duplicate turn.
+    const ok = await injectPsuHost(sock, {
+      mode: 'turn',
+      data: warmText,
+      fireNumber,
+      routineId,
+      ownerId: d.subscriberId,
+      deliveryId: String(d.id),
+    });
     return ok ? { kind: 'delivered', channel: 'psu-socket-inject' } : null;
   };
 
@@ -1311,12 +1322,16 @@ async function injectPsuHostWake(
     // inventing a confirmation we do not have — additive by construction, like the WI-6852
     // part-(a) watermark.
     const confirming = deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation);
+    // EI-19311270129974785: same delivery-id dedup rationale as injectWarm above —
+    // the cold reset/recycle path goes through the identical gated pipeline and
+    // is exposed to the identical ack-loss-then-retry duplicate.
     const injectMsg = {
       mode: decision.mode,
       data: coldText,
       fireNumber: coldFireCount,
       routineId,
       ownerId: d.subscriberId,
+      deliveryId: String(d.id),
     };
     let ok: boolean;
     let confirmation: InjectConfirmation | null = null;

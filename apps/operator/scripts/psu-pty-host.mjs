@@ -1062,6 +1062,20 @@ export function decodeOwnerIdentity(o) {
   return ownerId !== undefined ? { ownerId } : {};
 }
 
+/** Parse `{ deliveryId }` off a raw envelope object, or `{}` when absent/malformed
+ *  (EI-19311270129974785: the sender's `event_wake_deliveries.id` for this wake,
+ *  when the message represents one — see injectIntoHostWithConfirmation's
+ *  `deliveryId` doc in psu-pty-discovery.ts). Absent on any pre-fix sender, a
+ *  legacy non-envelope payload, or a one-shot raw/osc/compact/mcp-reconnect call
+ *  (no delivery row) ⇒ the receiver's dedup check below is a no-op for that
+ *  message (unchanged behavior) — mirrors decodeOwnerIdentity exactly.
+ *  Pure — exported for tests. */
+export function decodeDeliveryId(o) {
+  const deliveryId =
+    typeof o?.deliveryId === 'string' && o.deliveryId.length > 0 ? o.deliveryId.slice(0, 200) : undefined;
+  return deliveryId !== undefined ? { deliveryId } : {};
+}
+
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
  *  a legacy idle-gated turn. Pure — exported for tests. */
 export function decodeControl(payload) {
@@ -1103,6 +1117,7 @@ export function decodeControl(payload) {
           gated: true,
           ...decodeFireIdentity(o),
           ...decodeOwnerIdentity(o),
+          ...decodeDeliveryId(o),
         };
       if (o.mode === 'recycle')
         return {
@@ -1111,6 +1126,7 @@ export function decodeControl(payload) {
           gated: true,
           ...decodeFireIdentity(o),
           ...decodeOwnerIdentity(o),
+          ...decodeDeliveryId(o),
         };
       // carry-respawn (deterministic-context-carry P-018): a clean-boundary
       // RECYCLE whose fresh Claude child receives the deterministic carry as a
@@ -1127,6 +1143,7 @@ export function decodeControl(payload) {
           gated: true,
           ...decodeFireIdentity(o),
           ...decodeOwnerIdentity(o),
+          ...decodeDeliveryId(o),
         };
       // compact — RETIRED (P-022): still DECODED so a stale pre-cutover sender's
       // message reaches the handler's loud drop instead of falling through to the
@@ -1153,6 +1170,7 @@ export function decodeControl(payload) {
         gated: true,
         ...decodeFireIdentity(o),
         ...decodeOwnerIdentity(o),
+        ...decodeDeliveryId(o),
       };
     }
   } catch {
@@ -1478,6 +1496,52 @@ export function makeTurnCoalescer() {
     },
     size() {
       return pending.size;
+    },
+  };
+}
+
+/** Default TTL a delivery id is remembered as "already accepted" (EI-19311270129974785).
+ *  Sized comfortably above the client's own retry envelope — `markDeliveryFailed`'s
+ *  backoff caps at 10min and the pump gives up after a bounded attempt count — so a
+ *  legitimate late retry of an already-accepted delivery is always still deduped, while
+ *  the map cannot grow unbounded on a long-lived host. Exported for tests. */
+export const DELIVERY_DEDUP_TTL_MS = 30 * 60_000;
+
+/**
+ * The per-host delivery-id dedup memory (EI-19311270129974785): once a delivery has
+ * been ACK'd 'accepted' (see the conn.on('end') handler's early-ack fast path), the
+ * host is unstoppably committed to eventually running the gated pipeline for it —
+ * but the CLIENT cannot always tell that happened. Its own ack-wait can time out, or
+ * the host's ack write-back can fail (both explicitly documented as best-effort, see
+ * the "the client's own timeout is the backstop" comment below) — either way looks to
+ * the client exactly like a miss, and it retries with an IDENTICAL delivery id. Without
+ * this memory, a retry arriving after the original waiter already cleared (delivered or
+ * dropped) reads as a brand-new, unrelated request and gets a SECOND real turn written
+ * into the pty — the turnCoalescer above only folds concurrent duplicates still parked
+ * at the gate, and has no notion of "this exact delivery already ran to completion."
+ * `isDuplicate` opportunistically sweeps expired entries on every call (bounded cost —
+ * only iterates while there is something to evict); pure factory, exported for tests. */
+export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.now } = {}) {
+  const acceptedAt = new Map(); // deliveryId -> acceptedAtMs
+  return {
+    /** True when `id` was already marked accepted within the TTL. `id` may be
+     *  undefined/empty (a message with no delivery row) — always false then, so
+     *  callers can pass it through unconditionally. */
+    isDuplicate(id) {
+      if (!id) return false;
+      const t = now();
+      for (const [k, at] of acceptedAt) {
+        if (t - at > ttlMs) acceptedAt.delete(k);
+      }
+      return acceptedAt.has(id);
+    },
+    /** Record `id` as accepted, starting its TTL window. No-op for a falsy id. */
+    markAccepted(id) {
+      if (!id) return;
+      acceptedAt.set(id, now());
+    },
+    size() {
+      return acceptedAt.size;
     },
   };
 }
@@ -2356,6 +2420,11 @@ export function hostThroughPty(o) {
   // injects that stack up at the gates while the agent is busy — see the
   // makeTurnCoalescer doc block for the measured 9× duplication this kills.
   const turnCoalescer = makeTurnCoalescer();
+  // EI-19311270129974785: remember delivery ids already ack'd 'accepted' so a
+  // client retry that arrives AFTER the original waiter already cleared (not a
+  // concurrent duplicate the coalescer above would catch) is recognized as the
+  // SAME delivery instead of injecting a second real duplicate turn.
+  const deliveryDedup = makeDeliveryDedup();
   // EI-8822: serialize the gated-inject critical section so a wake `turn` and a
   // session:request-compaction `/compact` freed at the SAME clean boundary can't
   // both pass the at-prompt gate and interleave their bytes into one pty input
