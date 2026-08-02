@@ -56,11 +56,31 @@
  * source repo pruned the ref's objects mid-run the clone would break. It cannot
  * silently corrupt anything — git errors loudly — and the tree is disposable.
  *
+ * THE SAME BUG HAS A TEST-SHAPED FACE (EI-19328... , 2026-08-02)
+ * Everything above is written about lints, but the trap is not specific to them. On
+ * 2026-08-02 an agent ran a failing gate test standalone via `testing:run`, saw it
+ * PASS, and published "not reproducible => spy pollution / ordering effect, don't touch
+ * the impl". It was passing because a peer's FIX was sitting UNCOMMITTED in the shared
+ * working tree: `testing:run` (like `npm run test:file`) executes the WORKING TREE, so
+ * the green was evidence of the peer's fix, not evidence of flakiness. The wrong
+ * conclusion was shipped to the peer who was relying on it before being retracted.
+ *
+ * That is axis 1 and axis 2 again, wearing a test's clothes: which test file ran, and
+ * which source it exercised. So `--` forwarding exists to make the sound check as cheap
+ * as the unsound one for tests too:
+ *
+ *     npm run lint:as-committed -- test:file --any -- path/to/one.test.ts
+ *
+ * Before drawing ANY conclusion from a test run, name which of the three programs you
+ * ran: the working tree, HEAD, or the gate's candidate. This tool answers for the
+ * second (and, with --ref, the third).
+ *
  * USAGE
  *   npm run lint:as-committed -- lint:no-owner-name-tags
  *   npm run lint:as-committed -- lint:no-owner-name-tags lint:no-identity-literals
  *   npm run lint:as-committed -- lint:tsc --ref=origin/staging
  *   npm run lint:as-committed -- lint:no-box-identity --keep   # keep the tree to poke at
+ *   npm run lint:as-committed -- test:file --any -- a.test.ts  # run a TEST as committed
  *
  * FAIL-CLOSED BEHAVIOUR (the property that makes a green from this tool mean anything)
  *  - A script that does not exist AT THE REF is a hard FAILURE, never a skip. "It only
@@ -84,19 +104,38 @@ import { dirname, join } from 'node:path';
  * extracted tree with symlinked node_modules, which is a fine place to run a
  * read-only scanner and a bad place to run a build/migrate/deploy script. Requiring
  * `--any` makes the blast radius an explicit choice rather than a typo away.
+ *
+ * A bare `--` ends this tool's own arguments: everything after it is FORWARDED
+ * verbatim to the npm script. That is what lets a script taking operands — above all
+ * `test:file` — be run as committed:
+ *
+ *     npm run lint:as-committed -- test:file --any -- path/to/one.test.ts
+ *
+ * Forwarding to SEVERAL scripts at once is refused rather than guessed at (see
+ * `forwardAmbiguous` below): one operand list cannot be meant for two different
+ * scripts, and quietly passing it to both is how a run tests something nobody asked
+ * for and reports green for it.
  */
 export function parseArgs(argv) {
   const scripts = [];
+  const forward = [];
   let ref = 'HEAD';
   let keep = false;
   let any = false;
+  let sawSeparator = false;
   const unknown = [];
 
   for (const arg of argv) {
-    if (arg === '--keep') keep = true;
+    if (sawSeparator) {
+      forward.push(arg);
+      continue;
+    }
+    if (arg === '--') sawSeparator = true;
+    else if (arg === '--keep') keep = true;
     else if (arg === '--any') any = true;
     else if (arg.startsWith('--ref=')) ref = arg.slice('--ref='.length);
-    else if (arg === '--help' || arg === '-h') return { help: true, scripts: [], ref, keep, any, unknown };
+    else if (arg === '--help' || arg === '-h')
+      return { help: true, scripts: [], forward: [], ref, keep, any, unknown };
     else if (arg.startsWith('-')) unknown.push(arg);
     else scripts.push(arg);
   }
@@ -109,7 +148,11 @@ export function parseArgs(argv) {
   // the ref rather than "this is a runner, not a lint". Name it instead of letting the
   // reader misdiagnose it.
   const selfRecursive = scripts.filter((s) => s === 'lint:as-committed');
-  return { help: false, scripts, ref, keep, any, unknown, nonLint, selfRecursive };
+  // One operand list, two scripts, is never a coherent request — and the failure mode
+  // of guessing is silent: both scripts run, one of them against operands meant for the
+  // other, and the summary reports on whatever came back. Refuse instead.
+  const forwardAmbiguous = forward.length > 0 && scripts.length > 1;
+  return { help: false, scripts, forward, ref, keep, any, unknown, nonLint, selfRecursive, forwardAmbiguous };
 }
 
 /**
@@ -157,13 +200,20 @@ const USAGE = `
 lint-as-committed — run a lint as the release gate runs it (committed detector, committed content)
 
   npm run lint:as-committed -- <lint:script> [<lint:script>...] [--ref=<git-ref>] [--keep] [--any]
+  npm run lint:as-committed -- <script> --any -- <args forwarded to the script>
 
   --ref=<git-ref>   which commit to test (default HEAD). e.g. --ref=origin/staging
   --keep            do not delete the extracted tree (path is printed)
   --any             allow a non-'lint:' npm script (blast-radius opt-in)
+  --                everything after this is forwarded verbatim to the npm script
+                    (only one script may be named when forwarding)
 
 Why: 'npm run lint:x' runs YOUR detector over YOUR uncommitted content. The gate runs
 the COMMITTED detector over COMMITTED content. Those are different questions.
+
+The same holds for TESTS — 'npm run test:file' / testing:run execute the WORKING TREE,
+so a green there can be a peer's uncommitted fix rather than a property of the code:
+  npm run lint:as-committed -- test:file --any -- path/to/one.test.ts
 `.trimStart();
 
 function git(args, cwd) {
@@ -197,6 +247,14 @@ function main() {
         `  (It matches the lint:* prefix, so a sweep over every lint script picks it up; the inner run would\n` +
         `   exit 2 on its own usage guard and report as a FAIL, which reads like a violation at the ref.)\n` +
         `  Pass the lints you actually want checked.\n`,
+    );
+    process.exit(2);
+  }
+  if (args.forwardAmbiguous) {
+    console.error(
+      `lint-as-committed: refusing to forward arguments to ${args.scripts.length} scripts (${args.scripts.join(', ')}).\n` +
+        `  Everything after '--' is one operand list; it cannot be meant for two different scripts.\n` +
+        `  Name exactly one script when forwarding.\n`,
     );
     process.exit(2);
   }
@@ -311,9 +369,14 @@ function main() {
         continue;
       }
       console.log(`  committed command: ${command}`);
+      if (args.forward.length > 0) console.log(`  forwarded args:    ${args.forward.join(' ')}`);
 
-      // Detector drift: WHY a working-tree run may disagree with this one.
-      for (const p of detectorPathsFromCommand(command)) {
+      // Detector drift: WHY a working-tree run may disagree with this one. Forwarded
+      // operands (the test file you named) get the same treatment as the detector —
+      // for `test:file` the operand IS the code under test, so its drift is the whole
+      // answer to "did my green come from the commit or from someone's dirty edit?".
+      const forwardedPaths = args.forward.filter((a) => !a.startsWith('-') && /\.[cm]?[jt]sx?$/.test(a));
+      for (const p of [...detectorPathsFromCommand(command), ...forwardedPaths]) {
         const atRef = showAtRef(repoRoot, sha, p);
         const local = existsSync(join(repoRoot, p)) ? readFileSync(join(repoRoot, p), 'utf8') : null;
         if (atRef === null) console.log(`  detector ${p}: absent at ${short} (untracked locally?)`);
@@ -321,7 +384,19 @@ function main() {
         else if (local !== atRef) console.log(`  detector ${p}: DIFFERS from your working tree — a local run executes different code`);
       }
 
-      const run = spawnSync('npm', ['run', script], {
+      // A forwarded file that does not exist at the ref must stop the run, not be
+      // handed to the script anyway. Running it would answer a question about a
+      // DIFFERENT program than the one requested, and the tool's whole contract is that
+      // a result names the program it came from. Fail-closed, same as MISSING@REF.
+      const absentOperands = forwardedPaths.filter((p) => showAtRef(repoRoot, sha, p) === null);
+      if (absentOperands.length > 0) {
+        console.log(`  MISSING at ${short}: forwarded file(s) not present at this ref: ${absentOperands.join(', ')}`);
+        console.log(`  Refusing to run — the result would describe a different program than you asked about.`);
+        results.push({ script, status: 'missing', note: `operand(s) absent at ${short}: ${absentOperands.join(', ')}` });
+        continue;
+      }
+
+      const run = spawnSync('npm', ['run', script, ...(args.forward.length > 0 ? ['--', ...args.forward] : [])], {
         cwd: workRoot,
         encoding: 'utf8',
         stdio: 'inherit',
@@ -346,8 +421,8 @@ function main() {
   for (const line of lines) console.log(line);
   console.log(
     failedCount === 0
-      ? `\nAll ${results.length} lint(s) pass AS COMMITTED at ${short}.`
-      : `\n${failedCount} of ${results.length} lint(s) did NOT pass as committed at ${short}.`,
+      ? `\nAll ${results.length} check(s) pass AS COMMITTED at ${short}.`
+      : `\n${failedCount} of ${results.length} check(s) did NOT pass as committed at ${short}.`,
   );
   process.exit(exitCode);
 }

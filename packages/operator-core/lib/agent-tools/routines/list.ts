@@ -10,14 +10,49 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 
+/**
+ * The DELIBERATE-PAUSE record, read back out of `routines.metadata.pause`.
+ *
+ * EI-19336000265007219. `routines:set` has recorded { reason, pausedBy, pausedAtMs }
+ * on every pause since EI-18654017982759582 — which existed precisely because "a
+ * routine paused during an incident with no reason/owner recorded has TWICE stayed
+ * silently paused for days ... nothing durable said WHO paused it or WHY, so a
+ * responder could not tell a stuck bug from a deliberate hold".
+ *
+ * The write side landed. The READ side never did: this tool selected `active` and not
+ * `metadata`, so the responder the record was written FOR still saw a bare
+ * `active:false` — indistinguishable from a stall. It happened a third time
+ * (improvement-implement, paused 2026-07-28T03:40Z via the Agents pane, noticed 5 days
+ * later and filed as a suspected stall by an agent who correctly hedged "may be an
+ * intentional pause ... not obviously documented anywhere I found"). The answer was
+ * sitting in the same ROW they had queried, one column over.
+ *
+ * A durable record nobody can read is not a fix — it is the same silence with better
+ * bookkeeping. Hence: surfaced here, and in the TRIMMED projection, which is what an
+ * agent sees by default.
+ */
+function pauseOf(
+  metadata: Record<string, unknown> | null,
+): { reason: string | null; by: string | null; at: string | null } | null {
+  const p = metadata?.pause;
+  if (!p || typeof p !== 'object') return null;
+  const rec = p as Record<string, unknown>;
+  const atMs = typeof rec.pausedAtMs === 'number' ? rec.pausedAtMs : null;
+  return {
+    reason: typeof rec.reason === 'string' ? rec.reason : null,
+    by: typeof rec.pausedBy === 'string' ? rec.pausedBy : null,
+    at: atMs !== null && Number.isFinite(atMs) ? new Date(atMs).toISOString() : null,
+  };
+}
+
 export default defineTool({
   name: 'routines:list',
   profile: 'engineer',
   description:
-    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group. Read-only. Pass `group` to filter to one routine group, or `rollup:true` for a per-group aggregate view instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).',
+    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` — the deliberate-pause record { reason, by, at } when one exists, so a deliberate hold is distinguishable from a stall. Read-only. Pass `group` to filter to one routine group, or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).',
   capability: 'operator:read',
   guidance: {
-    when: 'See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Pass rollup:true for a per-group count/active/last-fire summary instead of scrolling hundreds of raw rows.',
+    when: 'See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Pass rollup:true for a per-group count/active/last-fire summary instead of scrolling hundreds of raw rows. Investigating a routine that has not fired? Read `paused` BEFORE concluding it is stalled: non-null means someone deliberately paused it and it carries { reason, by, at }. A bare active:false with paused:null is the one that warrants investigation.',
     notWhen: 'To CHANGE a routine, use routines:set. For a harness blueprint autoloop, use autoloop:status. To manage group metadata or bulk pause/resume a group, use routines:group-set (also routines:list { rollup:true } for the group view).',
     chaining: 'routines:set to retune or pause a routine you find here (use its exact name + installSlug). routines:list { rollup:true } for group metadata + review-due status.',
     seeAlso: [
@@ -67,6 +102,11 @@ export default defineTool({
           active: r.active === true,
           nextFireAt: r.nextFireAt ?? null,
           group: r.group ?? null,
+          // EI-19336000265007219: kept in the TRIMMED tier deliberately. A bare
+          // `active:false` is exactly what makes a deliberate hold read as a stall, and
+          // trimmed is the tier an agent sees by default — dropping `paused` here would
+          // reinstate the whole bug for every default call.
+          paused: r.paused ?? null,
         };
       });
       if (d.routines.length > CAP) {
@@ -77,6 +117,7 @@ export default defineTool({
           active: false,
           nextFireAt: null,
           group: null,
+          paused: null,
         });
       }
       return { count: d.count ?? d.routines.length, routines: rows };
@@ -103,6 +144,7 @@ export default defineTool({
           last_reviewed_at: Date | null;
           count: string;
           active_count: string;
+          paused_count: string;
           most_recent_fire: Date | null;
         }>
       >`
@@ -113,6 +155,13 @@ export default defineTool({
                g.last_reviewed_at,
                count(*)::text AS count,
                count(*) FILTER (WHERE r.active)::text AS active_count,
+               -- EI-19336000265007219: split the INACTIVE population. "Deliberately
+               -- paused (has a metadata.pause record)" and "inactive with no pause
+               -- record" (never-armed, one-shot spent, or genuinely dropped) are
+               -- different conditions that a single inactiveCount fuses into one
+               -- number — which is what sends a responder to raw SQL. Measured here
+               -- 2026-08-02: 128 active / 19 paused / 129 inactive-no-record.
+               count(*) FILTER (WHERE NOT r.active AND r.metadata ? 'pause')::text AS paused_count,
                max(r.last_fired_at) AS most_recent_fire
           FROM harness_shared.routines r
           LEFT JOIN harness_shared.routine_groups g
@@ -139,6 +188,10 @@ export default defineTool({
           count: Number(r.count),
           activeCount: Number(r.active_count),
           inactiveCount: Number(r.count) - Number(r.active_count),
+          /** Of `inactiveCount`, how many were DELIBERATELY paused (carry a
+           *  metadata.pause record). The remainder are inactive with no recorded
+           *  reason — never-armed, spent one-shots, or genuinely dropped. */
+          pausedCount: Number(r.paused_count),
           mostRecentFire: iso(r.most_recent_fire),
         };
       });
@@ -160,9 +213,10 @@ export default defineTool({
         next_fire_at: Date | null;
         last_fired_at: Date | null;
         group_slug: string | null;
+        metadata: Record<string, unknown> | null;
       }>
     >`
-      SELECT install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, last_fired_at, group_slug
+      SELECT install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, last_fired_at, group_slug, metadata
         FROM harness_shared.routines
        WHERE workspace_id = ${ws}
          AND (${slug}::text IS NULL OR install_slug = ${slug})
@@ -180,6 +234,7 @@ export default defineTool({
       nextFireAt: iso(r.next_fire_at),
       lastFiredAt: iso(r.last_fired_at),
       group: r.group_slug,
+      paused: pauseOf(r.metadata),
     }));
     // {data} envelope so the payload-tier shaper applies.
     return { data: { count: routines.length, routines } };

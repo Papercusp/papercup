@@ -73,6 +73,109 @@ describe('routines:list', () => {
     expect(b.routines[0]).toMatchObject({ name: 'git-sync', cron: '0 */10 * * * *', active: true, lastFiredAt: null });
   });
 
+  /*
+   * EI-19336000265007219 — a DELIBERATE PAUSE must be distinguishable from a STALL.
+   *
+   * routines:set has recorded metadata.pause { reason, pausedBy, pausedAtMs } on every
+   * pause since EI-18654017982759582, which existed because a routine paused during an
+   * incident had TWICE sat silently paused for days: "nothing durable said WHO paused
+   * it or WHY, so a responder could not tell a stuck bug from a deliberate hold".
+   *
+   * But this tool never SELECTed `metadata`, so the responder that record was written
+   * for still saw a bare active:false. It happened a third time — improvement-implement,
+   * paused 2026-07-28T03:40Z via the Agents pane, noticed five days later and filed as a
+   * suspected stall by an agent who correctly hedged "may be an intentional pause ... not
+   * obviously documented anywhere I found". The answer was one column over in the row
+   * they had already queried.
+   *
+   * These tests pin the READ side, because a durable record nobody reads is just a
+   * quieter silence.
+   */
+  it('surfaces the deliberate-pause record on a paused routine (EI-19336000265007219)', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'improvement-implement',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 */30 * * * *' },
+        target_role: 'system:improvement-implement',
+        active: false,
+        next_fire_at: null,
+        last_fired_at: new Date('2026-07-28T03:30:01Z'),
+        metadata: {
+          pause: { reason: 'Paused via the Agents pane', pausedBy: 'loopback', pausedAtMs: 1785210000297 },
+        },
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0].paused).toEqual({
+      reason: 'Paused via the Agents pane',
+      by: 'loopback',
+      at: '2026-07-28T03:40:00.297Z',
+    });
+  });
+
+  it('reports paused:null for an inactive routine with NO pause record — the case that IS worth investigating', async () => {
+    // The distinction is the whole point: this row and the one above are both
+    // active:false, and only the pause record tells them apart.
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'never-armed',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 0 * * * *' },
+        target_role: 'system:never-armed',
+        active: false,
+        next_fire_at: null,
+        last_fired_at: null,
+        metadata: {},
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0]).toMatchObject({ active: false, paused: null });
+  });
+
+  it('tolerates a malformed/partial pause record rather than throwing', async () => {
+    // Defensive: metadata is free-form jsonb written by several call sites, and a
+    // read surface that throws on a surprise shape is worse than one that degrades.
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'odd',
+        trigger_kind: 'cron',
+        trigger_config: {},
+        target_role: 'system:odd',
+        active: false,
+        next_fire_at: null,
+        last_fired_at: null,
+        metadata: { pause: { reason: 42, pausedAtMs: 'not-a-number' } },
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0].paused).toEqual({ reason: null, by: null, at: null });
+  });
+
+  it('KEEPS `paused` in the trimmed projection — dropping it would reinstate the bug by default', async () => {
+    // trimmed is the tier an agent sees unless it asks for full, so this is where the
+    // fix actually has to land. Asserted explicitly so a future trim-slimming edit
+    // cannot quietly remove it.
+    const trimmed = listTool.payload!.trimmed!({
+      count: 1,
+      routines: [
+        {
+          installSlug: 'papercusp',
+          name: 'improvement-implement',
+          cron: '0 */30 * * * *',
+          active: false,
+          nextFireAt: null,
+          group: null,
+          paused: { reason: 'Paused via the Agents pane', by: 'loopback', at: '2026-07-28T03:40:00.297Z' },
+        },
+      ],
+    }) as { routines: Array<Record<string, unknown>> };
+    expect(trimmed.routines[0].paused).toMatchObject({ reason: 'Paused via the Agents pane' });
+  });
+
   // EI-7242: `q` was previously not a recognized arg at all — zod silently
   // stripped it and the query ran unfiltered (the whole catalog came back).
   it('accepts a `q` free-text filter and passes it through as an ILIKE pattern (EI-7242)', async () => {

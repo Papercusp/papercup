@@ -3,7 +3,7 @@
  * paths (SQL-free), X8 wire-row validation, the receiver-enforced responder
  * identity gate, the outbox mapper, and registry agreement.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import {
   _testing,
@@ -11,7 +11,7 @@ import {
   type P2pReceiptWireRow,
   type P2pReceiptsProjectionOpts,
 } from './p2p-receipts';
-import { emitP2pReceipt } from '../../../p2p/receipts';
+import { emitP2pReceipt, isRefusalClassReceiptKind, P2P_RECEIPT_KINDS } from '../../../p2p/receipts';
 import { outboxRowToLocalWriteOp, CDC_CAPTURED_TABLES } from '../feature-issue-op-keys';
 import { PEER_LOG_TABLES } from '../../../harness-state/table-registry';
 import { checkPeerLogConsistency } from '../../../harness-state/projection-engine';
@@ -69,7 +69,71 @@ describe('emitP2pReceipt refusal paths (loud, SQL-free)', () => {
   });
 });
 
+// EI-19333624101736074: the success-receipt kind. A delegated spawn used to be
+// loud on refusal and silent on success, so a phantom honor was
+// indistinguishable from "nobody picked it up".
+describe("emitP2pReceipt kind='honored' (the success fact)", () => {
+  it('refuses a success receipt that carries a structured refusal', async () => {
+    const r = await emitP2pReceipt(
+      {
+        workspaceId: 'ws-1',
+        potSlug: 'h',
+        kind: 'honored',
+        action: 'delegated-seat:spawn',
+        detail: 'opened 1/1',
+        refusal: { code: 'nope', detail: 'x' },
+        responderGithubUserId: 1,
+      },
+      throwingSql,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.refusal.code).toBe('refusal_on_success_receipt');
+  });
+
+  it('refuses a success receipt with no detail — detail is its only payload', async () => {
+    for (const detail of [undefined, '', '   ']) {
+      const r = await emitP2pReceipt(
+        { workspaceId: 'ws-1', potSlug: 'h', kind: 'honored', action: 'delegated-seat:spawn', detail, responderGithubUserId: 1 },
+        throwingSql,
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.refusal.code).toBe('detail_required');
+    }
+  });
+
+  it('classifies honored as NOT refusal-class, so it can never bump the M15 refused-op counters (P-413)', () => {
+    expect(isRefusalClassReceiptKind('refusal')).toBe(true);
+    expect(isRefusalClassReceiptKind('excused-breach')).toBe(true);
+    expect(isRefusalClassReceiptKind('honored')).toBe(false);
+  });
+});
+
 describe('wire-row validation (X8 taxonomy)', () => {
+  it("accepts the new 'honored' kind (mig 723 widened the DB CHECK to match)", () => {
+    expect(isP2pReceiptWireRow(wireRow({ kind: 'honored', refusal_code: null, missing_capability: null }))).toBe(true);
+    expect(P2P_RECEIPT_KINDS).toContain('honored');
+  });
+
+  // The guard still DROPS an unknown kind — accepting an unvalidated one would
+  // defeat it — but a newer peer's kind must not vanish without a word, which
+  // is the same silent-drop class the 'honored' kind exists to fix.
+  it('logs once when it drops a receipt whose kind is newer than this peer, then stays quiet', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const future = wireRow({ kind: 'settled-in-full' });
+      expect(_testing.decodeValue(future)).toBeNull();
+      expect(_testing.decodeValue(future)).toBeNull();
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]![0]).toContain('settled-in-full');
+      // A MALFORMED row is not taxonomy skew and must not claim to be.
+      warn.mockClear();
+      expect(_testing.decodeValue(wireRow({ receipt_id: '' }))).toBeNull();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('accepts refusal + excused-breach; rejects unknown kinds and malformed rows', () => {
     expect(isP2pReceiptWireRow(wireRow())).toBe(true);
     expect(isP2pReceiptWireRow(wireRow({ kind: 'excused-breach' }))).toBe(true);

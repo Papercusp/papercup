@@ -31,12 +31,14 @@ const { parseArgs, detectorPathsFromCommand, summarize, isDirectCliInvocation } 
   parseArgs: (argv: string[]) => {
     help: boolean;
     scripts: string[];
+    forward: string[];
     ref: string;
     keep: boolean;
     any: boolean;
     unknown: string[];
     nonLint?: string[];
     selfRecursive?: string[];
+    forwardAmbiguous?: boolean;
   };
   detectorPathsFromCommand: (command: unknown) => string[];
   summarize: (results: { script: string; status: string; note?: string }[]) => {
@@ -94,6 +96,49 @@ describe('parseArgs', () => {
     expect(a.unknown).toEqual(['--ref']);
     expect(a.scripts).toEqual(['lint:mdx']);
     expect(a.ref).toBe('HEAD');
+  });
+
+  // ── `--` forwarding: what makes a TEST runnable as committed ──
+
+  it('forwards everything after a bare -- to the script, verbatim', () => {
+    // The motivating case: `test:file` takes operands, so without forwarding there is
+    // no way to ask "does this test pass AT THE COMMIT" rather than "in my dirty tree".
+    const a = parseArgs(['test:file', '--any', '--', 'packages/x/lib/a.test.ts']);
+    expect(a.scripts).toEqual(['test:file']);
+    expect(a.forward).toEqual(['packages/x/lib/a.test.ts']);
+    expect(a.any).toBe(true);
+  });
+
+  it('stops interpreting its OWN flags after the separator', () => {
+    // `--keep` and `--ref=` past the separator belong to the inner script; swallowing
+    // them here would silently change which commit is tested while appearing to
+    // configure the inner run.
+    const a = parseArgs(['test:file', '--any', '--ref=origin/staging', '--', 'a.test.ts', '--keep', '--ref=nope']);
+    expect(a.ref).toBe('origin/staging');
+    expect(a.keep).toBe(false);
+    expect(a.forward).toEqual(['a.test.ts', '--keep', '--ref=nope']);
+  });
+
+  it('defaults forward to empty when no separator is present', () => {
+    expect(parseArgs(['lint:mdx']).forward).toEqual([]);
+  });
+
+  it('REFUSES to forward one operand list to several scripts', () => {
+    // Guessing here fails silently: both scripts run, one against operands meant for
+    // the other, and the summary reports on whatever came back.
+    const a = parseArgs(['lint:a', 'lint:b', '--', 'x.test.ts']);
+    expect(a.forwardAmbiguous).toBe(true);
+  });
+
+  it('does not flag ambiguity for a single script, or when nothing is forwarded', () => {
+    expect(parseArgs(['test:file', '--any', '--', 'x.test.ts']).forwardAmbiguous).toBe(false);
+    expect(parseArgs(['lint:a', 'lint:b']).forwardAmbiguous).toBe(false);
+  });
+
+  it('--help returns an empty forward list rather than an undefined one', () => {
+    // The early return is a separate code path from the main loop; an undefined
+    // `forward` there would throw on `.length` at the ambiguity guard.
+    expect(parseArgs(['--help']).forward).toEqual([]);
   });
 });
 
