@@ -103,6 +103,52 @@ async function latestMeasure(name: string): Promise<number | null> {
   }, name);
 }
 
+/**
+ * SPA-navigate to a new path WITHOUT tearing down the WebDriver session.
+ *
+ * WHY NOT `history.pushState({}, "", path)` + a synthetic `popstate`
+ * (WI-6543, verified live 2026-08-02 via tauri-agent-tools eval against the
+ * running dev shell — not guessed from reading the test failure alone):
+ *
+ *   1. `history.pushState` is ALREADY MONKEY-PATCHED by TanStack Router
+ *      (@tanstack/history's `createBrowserHistory`) to synchronously notify
+ *      the router on every call (`onPushPop("PUSH")` → `history.notify(...)`).
+ *      A plain `history.pushState(...)` call is therefore already a complete,
+ *      correctly-classified PUSH navigation — no extra event needed.
+ *   2. Dispatching a SYNTHETIC `PopStateEvent` on top of that is not a no-op:
+ *      it fires the router's *separate* `popstate` listener
+ *      (`onPushPopEvent`), which computes `delta = nextIndex - currentIndex`
+ *      from `history.state[stateIndexKey]` to decide FORWARD/BACK/GO. Passing
+ *      `{}` as the pushState `state` (as the old code did) means that index
+ *      is `undefined` on both sides → `delta` is `NaN` → neither `isForward`
+ *      nor `isBack` matches → the router misclassifies the navigation as a
+ *      "GO" to an inconsistent history index and enters a slow recovery path.
+ *   3. Measured impact: for a CROSS-ROUTE transition (/adv → /workbench) this
+ *      added an unpredictable **10–40+ SECOND** stall before the new route's
+ *      React tree actually rendered — comfortably eating the 20s budget this
+ *      suite gives `harness-dock-open` to even RECORD a measure, independent
+ *      of how fast the interaction under test actually is. (A SAME-route
+ *      query-only change, as `command-palette-open` used, happened not to
+ *      trip this — nuqs's own param read is unaffected by which router state
+ *      the misclassified GO settles on — which is why that check kept
+ *      passing while this one kept failing "no measure recorded".)
+ *
+ * The fix: call the (already-patched) `pushState` directly, preserve the
+ * router's OWN state shape (`__TSR_index`/`__TSR_key`, not `{}`) so the
+ * bookkeeping stays consistent even if something else later reads it, and
+ * never dispatch a synthetic `popstate` for a navigation that was never a
+ * real back/forward. Verified live: this took the /adv → /workbench
+ * transition from 10–40s down to <1s.
+ */
+async function spaNavigate(path: string): Promise<void> {
+  await browser.execute((p) => {
+    const prevState = (window.history.state ?? {}) as Record<string, unknown>;
+    const prevIndex =
+      typeof prevState.__TSR_index === "number" ? prevState.__TSR_index : 0;
+    history.pushState({ ...prevState, __TSR_index: prevIndex + 1 }, "", p);
+  }, path);
+}
+
 describe("Packaged Papercusp desktop — broader real interactions (P-006)", () => {
   it("opens the global command palette within budget", async () => {
     const NAME = "command-palette-open";
@@ -118,11 +164,14 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       } catch {
         /* ignore */
       }
+    }, NAME);
+    const paletteUrl = await browser.execute(() => {
       const u = new URL(location.href);
       u.searchParams.set("palette", "true");
-      history.pushState({}, "", u.pathname + u.search + u.hash);
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    }, NAME);
+      return u.pathname + u.search + u.hash;
+    });
+    // SPA-navigate — see spaNavigate's doc comment for why NOT pushState+popstate.
+    await spaNavigate(paletteUrl);
 
     await browser.waitUntil(
       async () =>
