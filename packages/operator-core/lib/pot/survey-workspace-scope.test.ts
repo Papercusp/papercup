@@ -236,12 +236,11 @@ describe('surveyWorkspace — the cross-pot ranked backlog (P-003 Phase B / D-00
           ],
         }),
         listPlanRows: async () => [],
-        // Unlike the shared depsForPots() helper, this inline fixture predates these two seams
-        // and was never updated — and because SurveyDeps members are optional with a
+        // Unlike the shared depsForPots() helper, this inline fixture was never updated when
+        // fetchEscalatedIssues was added — and because SurveyDeps members are optional with a
         // `?? realImplementation` fallback, tsc could not flag the gap: the survey silently fell
         // through to the REAL getOrgPg() reader [EI-19311807188719573]. Hermetic, like the rest.
         fetchEscalatedIssues: async () => [],
-        fetchQuarantinedCount: async () => 0,
         // each pot has a tier2 lane blocked by an in-flight tier1
         fetchFrontier: async (surveySlugs) =>
           surveySlugs.includes('proj-a')

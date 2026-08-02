@@ -162,8 +162,9 @@ describe('PlanInputsPanel', () => {
     const harness = await screen.findByLabelText(/harness/i);
     expect((harness as HTMLInputElement).value).toBe('papercusp');
     expect(screen.getByText('Which harness to run in.')).toBeTruthy();
-    // The boolean gets a checkbox, the array a textarea.
-    expect((await screen.findByLabelText(/dryRun/i)).getAttribute('type')).toBe('checkbox');
+    // The boolean gets a checkbox (the shared Radix primitive — role, not the
+    // native type= attribute, per design-primitives.test.ts), the array a textarea.
+    expect((await screen.findByLabelText(/dryRun/i)).getAttribute('role')).toBe('checkbox');
   });
 
   it('surfaces the gate\'s own refusal hint and flags the missing field', async () => {

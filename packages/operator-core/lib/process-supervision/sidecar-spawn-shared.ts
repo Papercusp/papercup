@@ -99,6 +99,57 @@ export function resolveSidecarSpawnPlan(opts: ResolveSidecarSpawnPlanOpts): Side
 // implementation now backs every call site instead of 3 divergent ones; see
 // isSidecarEnabledFromEnv below.
 
+/**
+ * Why a sidecar cannot serve this caller. `unreachable` = nothing answered
+ * /healthz. `stale-build` = it answered but advertises NO capability list at
+ * all, i.e. it was built before capability advertisement existed, and the
+ * routes the caller needs postdate it. `missing-capabilities` = it advertises
+ * a list and the caller's requirements are not in it.
+ */
+export type SidecarUnfitReason = 'unreachable' | 'stale-build' | 'missing-capabilities';
+
+export type SidecarFitness =
+  | { fit: true }
+  | { fit: false; reason: SidecarUnfitReason; missing: string[] };
+
+/**
+ * Pure: can the sidecar described by `health` serve everything in `required`?
+ *
+ * A sidecar is a long-running process started from a BUILT BUNDLE, so it is
+ * frozen at its build time while its callers keep advancing. Liveness is
+ * therefore NOT fitness: a 16-day-old sidecar answers /healthz 200 and still
+ * 404s every route added since it was built, forever, for every process that
+ * adopts it — and each caller's fail-safe converts that 404 into a silent
+ * degradation (EI-19314150478401738).
+ *
+ * `legacyCapabilities` is what a health payload with NO `capabilities` key may
+ * be credited with — the routes that have existed for the whole life of the
+ * artifact. Crediting a pre-advertisement build with exactly those (and never
+ * more) is what lets an old sidecar keep serving its original routes without
+ * being trusted for newer ones.
+ */
+export function verifySidecarFitness(
+  health: unknown | null,
+  required: readonly string[],
+  legacyCapabilities: readonly string[] = [],
+): SidecarFitness {
+  if (health === null || health === undefined || typeof health !== 'object') {
+    return { fit: false, reason: 'unreachable', missing: [...required] };
+  }
+  const raw = (health as { capabilities?: unknown }).capabilities;
+  const declared = Array.isArray(raw) ? raw.filter((c): c is string => typeof c === 'string') : null;
+  // No advertisement ⇒ a pre-capability build. Credit it with the historical
+  // floor only; anything beyond that is a route it provably cannot have.
+  const effective = declared ?? legacyCapabilities;
+  const missing = required.filter((c) => !effective.includes(c));
+  if (missing.length === 0) return { fit: true };
+  return {
+    fit: false,
+    reason: declared === null ? 'stale-build' : 'missing-capabilities',
+    missing,
+  };
+}
+
 export interface SidecarEnabledOpts {
   /** Per-host opt-in enable var, e.g. 'PAPERCUSP_SPAWNER_SIDECAR'. */
   enableVar: string;

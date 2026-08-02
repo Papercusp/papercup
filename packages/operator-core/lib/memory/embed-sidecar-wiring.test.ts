@@ -10,7 +10,30 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { buildSidecarAwareEmbedder, resolveProcessSidecarUrl } from './embed-sidecar-wiring';
+import {
+  _resetSidecarSkewReportForTests,
+  buildSidecarAwareEmbedder,
+  buildSidecarAwareReranker,
+  resolveProcessSidecarUrl,
+} from './embed-sidecar-wiring';
+import {
+  EMBED_SIDECAR_CAP_EMBED,
+  EMBED_SIDECAR_CAP_RERANK,
+} from './embed-sidecar-server';
+
+/** Health payload of a CURRENT sidecar — advertises what it serves. */
+const CURRENT_HEALTH = {
+  ok: true,
+  capabilities: ['GET /healthz', EMBED_SIDECAR_CAP_EMBED, EMBED_SIDECAR_CAP_RERANK],
+};
+/** Health payload of the 16-day-old bundle measured live in
+ *  EI-19314150478401738 — 200 OK, warm models, and NO capabilities key. */
+const STALE_HEALTH = {
+  ok: true,
+  pid: 2034810,
+  uptimeMs: 1_401_886_441,
+  models: { 'gemma:document': 'warm' },
+};
 
 const SIDECAR_VECTOR = [0.1, 0.2, 0.3];
 
@@ -47,6 +70,7 @@ describe('resolveProcessSidecarUrl', () => {
         ensured++;
         return null;
       },
+      probeHealth: async () => CURRENT_HEALTH,
     });
     expect(url).toBe('http://127.0.0.1:9999');
     expect(ensured).toBe(0);
@@ -54,9 +78,143 @@ describe('resolveProcessSidecarUrl', () => {
 
   it('falls through to ensure() when no explicit URL', async () => {
     expect(
-      await resolveProcessSidecarUrl({ resolveUrl: () => null, ensure: async () => 'http://127.0.0.1:3384' }),
+      await resolveProcessSidecarUrl({
+        resolveUrl: () => null,
+        ensure: async () => 'http://127.0.0.1:3384',
+        probeHealth: async () => CURRENT_HEALTH,
+      }),
     ).toBe('http://127.0.0.1:3384');
-    expect(await resolveProcessSidecarUrl({ resolveUrl: () => null, ensure: async () => null })).toBeNull();
+    expect(
+      await resolveProcessSidecarUrl({
+        resolveUrl: () => null,
+        ensure: async () => null,
+        probeHealth: async () => CURRENT_HEALTH,
+      }),
+    ).toBeNull();
+  });
+
+  it('an UNREACHABLE explicit sidecar still resolves to its URL — an outage must not silently reinstate in-process failover (WI-4021)', async () => {
+    // The WHOLE point of D-003's retirement: a configured-but-down sidecar is
+    // the client's problem to throw about, NOT a cue to quietly embed
+    // in-process. Returning null here would be a worse bug than the skew this
+    // file otherwise guards.
+    expect(
+      await resolveProcessSidecarUrl(
+        { resolveUrl: () => 'http://127.0.0.1:9999', ensure: async () => null, probeHealth: async () => null },
+        [EMBED_SIDECAR_CAP_EMBED],
+      ),
+    ).toBe('http://127.0.0.1:9999');
+  });
+
+  describe('capability verification on the EXPLICIT-URL path (EI-19314150478401738)', () => {
+    // This is the path the live box actually uses
+    // (PAPERCUSP_EMBED_SIDECAR_URL is set in papercup-dev-api.service), and
+    // before this fix it did NO check at all — not even liveness.
+    afterEach(() => _resetSidecarSkewReportForTests());
+
+    it('a pre-capability STALE sidecar is still used for /embed (no embedding regression)', async () => {
+      // The 16-day-old bundle serves /embed perfectly well. Refusing the whole
+      // sidecar because it cannot do /rerank would break embedding fleet-wide.
+      expect(
+        await resolveProcessSidecarUrl(
+          {
+            resolveUrl: () => 'http://127.0.0.1:3384',
+            ensure: async () => null,
+            probeHealth: async () => STALE_HEALTH,
+          },
+          [EMBED_SIDECAR_CAP_EMBED],
+        ),
+      ).toBe('http://127.0.0.1:3384');
+    });
+
+    it('a pre-capability STALE sidecar is REFUSED for /rerank instead of 404ing forever', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(
+          await resolveProcessSidecarUrl(
+            {
+              resolveUrl: () => 'http://127.0.0.1:3384',
+              ensure: async () => null,
+              probeHealth: async () => STALE_HEALTH,
+            },
+            [EMBED_SIDECAR_CAP_RERANK],
+          ),
+        ).toBeNull();
+        // Loud + actionable: names the skew, and the rebuild (NOT just a
+        // restart — a restart re-execs the same stale bundle).
+        const msg = errSpy.mock.calls.flat().join(' ');
+        expect(msg).toMatch(/VERSION SKEW/);
+        expect(msg).toMatch(/POST \/rerank/);
+        expect(msg).toMatch(/rebuild/i);
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
+
+    it('a CURRENT sidecar that advertises /rerank is used', async () => {
+      expect(
+        await resolveProcessSidecarUrl(
+          {
+            resolveUrl: () => 'http://127.0.0.1:3384',
+            ensure: async () => null,
+            probeHealth: async () => CURRENT_HEALTH,
+          },
+          [EMBED_SIDECAR_CAP_RERANK],
+        ),
+      ).toBe('http://127.0.0.1:3384');
+    });
+
+    it('a sidecar that advertises a list WITHOUT the needed route is refused', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(
+          await resolveProcessSidecarUrl(
+            {
+              resolveUrl: () => 'http://127.0.0.1:3384',
+              ensure: async () => null,
+              probeHealth: async () => ({ ok: true, capabilities: ['GET /healthz', EMBED_SIDECAR_CAP_EMBED] }),
+            },
+            [EMBED_SIDECAR_CAP_RERANK],
+          ),
+        ).toBeNull();
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
+
+    it('logs the skew ONCE per condition, not per call', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const deps = {
+          resolveUrl: () => 'http://127.0.0.1:3384',
+          ensure: async () => null,
+          probeHealth: async () => STALE_HEALTH,
+        };
+        for (let i = 0; i < 5; i++) await resolveProcessSidecarUrl(deps, [EMBED_SIDECAR_CAP_RERANK]);
+        expect(errSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
+
+    it('the reranker seam requires /rerank — so a stale sidecar degrades it to the in-process cross-encoder, not to nothing', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        let requested: readonly string[] | null = null;
+        await buildSidecarAwareReranker('rerank', {
+          resolveUrl: () => 'http://127.0.0.1:3384',
+          ensure: async () => null,
+          probeHealth: async () => {
+            requested = [EMBED_SIDECAR_CAP_RERANK];
+            return STALE_HEALTH;
+          },
+        });
+        // It probed, and it asked about the rerank route specifically.
+        expect(requested).toEqual([EMBED_SIDECAR_CAP_RERANK]);
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
   });
 });
 
@@ -67,6 +225,7 @@ describe('buildSidecarAwareEmbedder', () => {
     const embed = await buildSidecarAwareEmbedder('gemma', 'query', {
       resolveUrl: () => stub.url,
       ensure: async () => null,
+      probeHealth: async () => CURRENT_HEALTH,
     });
     expect(await embed('hello')).toEqual(SIDECAR_VECTOR);
     expect(stub.hits.length).toBe(1);
@@ -82,6 +241,7 @@ describe('buildSidecarAwareEmbedder', () => {
       const embed = await buildSidecarAwareEmbedder('gemma', 'document', {
         resolveUrl: () => null,
         ensure: async () => stub.url,
+        probeHealth: async () => CURRENT_HEALTH,
       });
       // A resolved-but-dead sidecar must reject loudly (D-003 retired): if this
       // ever silently falls back to a real in-process gemma load again, this

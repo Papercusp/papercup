@@ -34,10 +34,13 @@ import {
   pruneRespawnWindow,
   respawnBudgetExhausted,
   registerSidecarShutdownHooks as registerSharedSidecarShutdownHooks,
+  verifySidecarFitness,
+  type SidecarFitness,
 } from '../process-supervision/sidecar-spawn-shared';
 import { isBenignHostError } from '../host-benign-errors';
 import {
   EMBED_SIDECAR_DEFAULT_PORT,
+  EMBED_SIDECAR_LEGACY_CAPABILITIES,
   EMBED_SIDECAR_PORT_ENV,
   EMBED_SIDECAR_READY_LINE,
 } from './embed-sidecar-server';
@@ -74,21 +77,60 @@ export function embedSidecarLocalUrl(env: NodeJS.ProcessEnv = process.env): stri
   return `http://127.0.0.1:${port}`;
 }
 
-/** Does anything answer /healthz at `url`? Cheap loopback probe used for the
- *  shared-fixed-port adoption logic (ensure + respawn): the sidecar port is
- *  ONE per host, so "already served" means a sibling process owns it — adopt
- *  it, never spawn a doomed EADDRINUSE child into a crash-respawn loop. */
-async function healthzAnswers(url: string, timeoutMs = 1500): Promise<boolean> {
+/** Fetch and parse /healthz at `url`, or null if nothing healthy answers.
+ *  Returns the PAYLOAD, not a boolean: liveness alone cannot decide whether a
+ *  sidecar is usable, because a long-running one is frozen at its build time
+ *  and 404s every route added since (EI-19314150478401738). Callers that need
+ *  a route pair this with verifySidecarFitness(). */
+export async function probeSidecarHealth(url: string, timeoutMs = 1500): Promise<unknown | null> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const res = await fetch(`${url.replace(/\/$/, '')}/healthz`, { signal: ctl.signal });
-    return res.ok;
+    if (!res.ok) return null;
+    return (await res.json()) as unknown;
   } catch {
-    return false;
+    return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Does anything answer /healthz at `url`? Liveness ONLY — the right question
+ *  for "is this port already bound" (don't spawn a doomed EADDRINUSE child),
+ *  and the WRONG question for "may I use this sidecar" (see
+ *  probeSidecarHealth + verifySidecarFitness). */
+async function healthzAnswers(url: string, timeoutMs = 1500): Promise<boolean> {
+  return (await probeSidecarHealth(url, timeoutMs)) !== null;
+}
+
+/**
+ * Render an unfit sidecar as a LOUD, actionable, distinguishable line.
+ *
+ * The whole failure mode this guards is silence: a permanent 404 on a route
+ * the client was built to call means VERSION SKEW, not an outage, and it must
+ * never be absorbed into a generic "degraded" path. It also cannot be fixed by
+ * restarting the process — the bundle must be REBUILT first, or a restart just
+ * re-execs the same stale artifact. So the remedy is spelled out.
+ */
+export function describeUnfitSidecar(url: string, fitness: SidecarFitness): string {
+  if (fitness.fit) return '';
+  if (fitness.reason === 'unreachable') {
+    return `[embed-sidecar] ${url} did not answer /healthz — not adopting.`;
+  }
+  const missing = fitness.missing.join(', ');
+  const age =
+    fitness.reason === 'stale-build'
+      ? 'it advertises NO capabilities at all, so it predates capability advertisement'
+      : `it advertises capabilities but not: ${missing}`;
+  return (
+    `[embed-sidecar] VERSION SKEW: the sidecar at ${url} cannot serve [${missing}] — ${age}. ` +
+    'It is a long-running process running a BUILT BUNDLE, so restarting it is NOT enough: ' +
+    'rebuild the bundle (npm run build:embed-sidecar) and then restart its owner ' +
+    '(systemctl --user restart papercup-embed-sidecar.service), or point ' +
+    'PAPERCUSP_EMBED_SIDECAR_URL at a current one. Falling back to the in-process engine ' +
+    'for this capability rather than calling a route that would 404 forever.'
+  );
 }
 
 /** Short exponential backoff + sliding-window circuit breaker — a persistently
@@ -262,11 +304,24 @@ export async function spawnEmbedSidecar(): Promise<void> {
  * that instance instead of spawning a second child that would EADDRINUSE-die.
  * First process to need the sidecar spawns it; everyone else rides along.
  */
-export async function ensureEmbedSidecar(): Promise<string | null> {
+export async function ensureEmbedSidecar(
+  requiredCapabilities: readonly string[] = [],
+): Promise<string | null> {
   if (!embedSidecarEnabled()) return null;
   const url = embedSidecarLocalUrl();
   if (isEmbedSidecarRunning()) return url;
-  if (await healthzAnswers(url)) return url; // sibling-owned — adopt
+  // Sibling-owned? Liveness alone is NOT enough to adopt: the sibling may be a
+  // long-running bundle that predates the routes this caller needs, in which
+  // case adopting it means 404-forever (EI-19314150478401738).
+  const health = await probeSidecarHealth(url);
+  if (health !== null) {
+    const fitness = verifySidecarFitness(health, requiredCapabilities, EMBED_SIDECAR_LEGACY_CAPABILITIES);
+    if (fitness.fit) return url; // sibling-owned and capable — adopt
+    console.error(describeUnfitSidecar(url, fitness));
+    // The port is BOUND by that unfit sibling, so spawning here would just
+    // EADDRINUSE-crash into the circuit breaker. Refuse honestly instead.
+    return null;
+  }
   try {
     await spawnEmbedSidecar();
     registerEmbedSidecarShutdownHooks();

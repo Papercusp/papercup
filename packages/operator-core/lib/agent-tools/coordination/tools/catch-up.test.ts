@@ -45,6 +45,24 @@ vi.mock('../audience-host', async (orig) => {
   };
 });
 
+// The `../audience-host` mock above is NOT enough on its own, and the reason is worth
+// stating: it IS applied to this file's and ./catch-up's bindings, but `../messages`
+// still resolves the REAL `hostAudienceResolvers` — measured 2026-08-02 with a probe
+// (the mocked `listFleetMembers` was never called, while the real one appeared in the
+// stack under `sendMessage` → `expandAudience` → `resolveSelector`). The seeding
+// `sendMessage` calls below therefore ran the real fleet resolver, which reached the
+// developer's LIVE Postgres via `liveFleetMemberIds` — silently, until the no-real-PG
+// rail (EI-19311807188719573) made it a hard failure.
+//
+// So stub the PG BOUNDARY itself, exactly as the sibling audience-host.test.ts does:
+// `liveFleetMemberIds` is the ONLY unguarded PG reach in the real `listFleetMembers`
+// (every other read there is inside a fail-soft try/catch, and getFleetDeliveryOverrides
+// is stubbed below), so with it doubled the real resolver returns `h.members` too — the
+// same answer the audience-host mock gives, by whichever binding is reached.
+vi.mock('../../../fleet/fleet-roster', () => ({
+  liveFleetMemberIds: vi.fn(async () => h.members),
+}));
+
 // Fleet membership for the GATE is read directly from presence (NOT the delivery
 // audience) — so a muted/digest member can still catch up. Stub it on h.callerFleet.
 vi.mock('../presence-fleet', () => ({

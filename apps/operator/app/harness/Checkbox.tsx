@@ -34,6 +34,8 @@ export function Checkbox({
   disabled,
   indeterminate,
   ariaLabel,
+  describedBy,
+  id,
   style,
   className,
   dataTestId,
@@ -43,6 +45,11 @@ export function Checkbox({
   disabled?: boolean;
   indeterminate?: boolean;
   ariaLabel?: string;
+  /** Forwarded as aria-describedby, for pairing with a nearby hint/description. */
+  describedBy?: string;
+  /** Forwarded as the element id — pair with a <label htmlFor={id}> for native
+   *  label association (findByLabelText etc). */
+  id?: string;
   style?: CSSProperties;
   className?: string;
   /** Forwarded as data-testid on the checkbox element itself, so tests that
@@ -52,10 +59,12 @@ export function Checkbox({
   const value: boolean | 'indeterminate' = indeterminate ? 'indeterminate' : checked;
   return (
     <RC.Root
+      id={id}
       checked={value}
       onCheckedChange={(v) => onChange(v === true)}
       disabled={disabled}
       aria-label={ariaLabel}
+      aria-describedby={describedBy}
       data-testid={dataTestId}
       className={className}
       style={className ? undefined : { ...ROOT_STYLE, ...style }}

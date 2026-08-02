@@ -40,8 +40,8 @@
  * keeps `gen-tool-routing.ts` to file reads and exit codes.
  */
 
-import { auditPair } from './equivalence';
-import type { SubstitutionRow } from './match';
+import { auditPair, meetsAuditFloor } from './equivalence';
+import { normalizeRegistryFlags, type SubstitutionRow } from './match';
 import type { PairWithFixture } from './seed';
 import type { EquivalenceVerdict } from './types';
 
@@ -93,6 +93,25 @@ export type RowDrift =
  */
 export function expectedRows(fixtures: PairWithFixture[]): ExpectedRow[] {
   return fixtures.map(({ pair, fixture }) => {
+    // A pair whose population is below the audit floor has no evidence to
+    // recompute FROM, so the honest expected row records `unaudited` rather than
+    // a verdict — auditing it would throw and take the whole drift check with it.
+    // Everything else on the row still comes from the pair, because the ROW is
+    // real even when the verdict is not: `deps.unsafe-install` is enforced at
+    // `deny` on D-003's independent authority, and dropping it here would let the
+    // registry quietly diverge from the pairs for exactly the rows that are gated
+    // hardest. (Reached at P-002, when the D-047 atomizer fix took that pair's
+    // population from 28 atoms to 18.)
+    if (!meetsAuditFloor(fixture.sample.length, fixture)) {
+      return {
+        intentLabel: pair.intentLabel,
+        bashPattern: pair.bashPattern.source,
+        bashPatternFlags: normalizeRegistryFlags(pair.bashPattern.flags),
+        toolName: pair.toolName,
+        advisoryText: pair.advisoryText,
+        equivalenceVerdict: 'unaudited' as const,
+      };
+    }
     // Pass the fixture as the POPULATION so a homogeneous-but-high-volume pair
     // (few distinct spellings, many real commands) is audited as a census rather
     // than rejected as under-sampled — see auditPair's census note.

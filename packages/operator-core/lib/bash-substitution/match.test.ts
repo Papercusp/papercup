@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { auditPair } from './equivalence';
+import { auditPair, meetsAuditFloor } from './equivalence';
 import {
   atomsOf,
   compileRegistryPattern,
@@ -153,8 +153,14 @@ describe('every seeded pair survives the registry round-trip', () => {
 
   for (const { pair, fixture } of fixtures) {
     it(`${pair.id} matches identically before and after storage`, () => {
-      const audit = auditPair(pair, fixture.sample, fixture);
-      const stored = compileRegistryPattern(audit.bashPattern, audit.bashPatternFlags);
+      // Projected straight off the pair rather than through `auditPair`: these
+      // two fields ARE what the seeder stores, the audit only echoes them, and
+      // routing the round-trip check through a verdict made this property
+      // untestable for a pair that is enforced without one (see below).
+      const stored = compileRegistryPattern(
+        pair.bashPattern.source,
+        normalizeRegistryFlags(pair.bashPattern.flags),
+      );
       expect(stored, `${pair.id} stored pattern failed to compile`).not.toBeNull();
 
       const asAudited = compileRegistryPattern(pair.bashPattern.source, pair.bashPattern.flags)!;
@@ -175,18 +181,24 @@ describe('every seeded pair survives the registry round-trip', () => {
       // and an advisory would tell the agent to stop doing the right thing. So
       // for those the sample must claim ZERO — that is the assertion proving the
       // negative row is inert, not merely unpromoted.
-      const audit = auditPair(pair, fixture.sample, fixture);
+      // A pair below the audit floor has no verdict to be entitled BY, but it can
+      // still be enforced on D-003's authority — so the invariant becomes the
+      // simpler one: the stored row claims exactly what its pattern matches.
+      // Asserting nothing here would leave the hardest-gated row unchecked.
+      const verdict = meetsAuditFloor(fixture.sample.length, fixture)
+        ? auditPair(pair, fixture.sample, fixture).verdict
+        : pair.expectedVerdict;
       const registryRow = row({
-        intentLabel: audit.intentLabel,
-        bashPattern: audit.bashPattern,
-        bashPatternFlags: audit.bashPatternFlags,
-        toolName: audit.toolName,
-        equivalenceVerdict: audit.verdict,
+        intentLabel: pair.intentLabel,
+        bashPattern: pair.bashPattern.source,
+        bashPatternFlags: normalizeRegistryFlags(pair.bashPattern.flags),
+        toolName: pair.toolName,
+        equivalenceVerdict: verdict,
       });
       const claimed = fixture.sample.filter(
         (entry) => matchCommandToSubstitutions(entry.atom, [registryRow]).length === 1,
       );
-      const expected = audit.verdict === 'not-a-substitute' ? 0 : audit.sampleSize;
+      const expected = verdict === 'not-a-substitute' ? 0 : fixture.sample.length;
       expect(claimed).toHaveLength(expected);
     });
   }

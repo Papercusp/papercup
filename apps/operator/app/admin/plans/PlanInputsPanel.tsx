@@ -27,6 +27,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 import {
   fetchPlanInputs,
   savePlanInputs,
@@ -281,27 +283,24 @@ export default function PlanInputsPanel({
                 </p>
               ) : null}
               {kind === 'boolean' ? (
-                <input
+                <Checkbox
                   id={id}
-                  type="checkbox"
                   checked={!!bools[name]}
-                  aria-describedby={describedBy}
-                  onChange={(e) => setBools((s) => ({ ...s, [name]: e.target.checked }))}
+                  describedBy={describedBy}
+                  onChange={(checked) => setBools((s) => ({ ...s, [name]: checked }))}
                 />
               ) : kind === 'enum' ? (
-                <select
+                <Select
                   id={id}
                   value={draft[name] ?? ''}
-                  aria-describedby={describedBy}
-                  onChange={(e) => setDraft((s) => ({ ...s, [name]: e.target.value }))}
-                >
-                  <option value="">—</option>
-                  {(prop.enum ?? []).map((opt) => (
-                    <option key={String(opt)} value={String(opt)}>
-                      {String(opt)}
-                    </option>
-                  ))}
-                </select>
+                  describedBy={describedBy}
+                  placeholder="—"
+                  onChange={(v) => setDraft((s) => ({ ...s, [name]: v }))}
+                  options={(prop.enum ?? []).map((opt) => ({
+                    value: String(opt),
+                    label: String(opt),
+                  }))}
+                />
               ) : kind === 'string-array' || kind === 'json' ? (
                 <textarea
                   id={id}

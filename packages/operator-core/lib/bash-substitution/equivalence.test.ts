@@ -21,6 +21,7 @@ import {
   deriveVerdict,
   matchingAtoms,
   maxTierFor,
+  meetsAuditFloor,
   MIN_POPULATION_ATOMS,
   MIN_POPULATION_SESSIONS,
   MIN_SAMPLE_SIZE,
@@ -127,6 +128,35 @@ describe('verdict derivation (D-008 — total coverage or it is not equivalent)'
 
 describe.each(ALL_PAIRS)('pair $id', (pair) => {
   const fixture = loadFixture(pair.id);
+
+  // A pair whose population fell BELOW the audit floor is pinned in that state
+  // rather than skipped. Skipping would let a future change quietly restore a
+  // confident-looking verdict without restoring the evidence under it — which is
+  // the precise failure this whole harness exists to prevent, so it would be an
+  // odd thing to leave a hole for. (`deps.unsafe-install` landed here at P-002:
+  // the D-047 atomizer fix removed ten `npm install` lines that only ever existed
+  // inside heredoc bodies, taking its population from 28 atoms to 18.)
+  if (!meetsAuditFloor(fixture.sample.length, fixture)) {
+    it('is recorded as unaudited, and the harness refuses to derive a verdict', () => {
+      expect(pair.expectedVerdict).toBe('unaudited');
+      expect(() => auditPair(pair, fixture.sample, fixture)).toThrow(/too rare to enforce/);
+    });
+
+    it('still carries real corpus commands, however few', () => {
+      expect(fixture.sample.length).toBeGreaterThan(0);
+      for (const entry of fixture.sample) {
+        expect(entry.sid).toMatch(/^su-|^[0-9a-f-]{8,}/);
+      }
+    });
+
+    it('is enforced only if some authority OTHER than this audit grants it', () => {
+      // The one legitimate reason to gate a pattern with no verdict: D-003's
+      // pre-existing-rule carve-out. Anything else reaching `deny`/`advise` here
+      // would be enforcement resting on nothing at all.
+      if (pair.policyTier) expect(pair.policyTier).toBe('deny');
+    });
+    return;
+  }
 
   it(`carries at least ${MIN_SAMPLE_SIZE} real commands, by sample or by census`, () => {
     // Two admissible shapes (see auditPair's census note): a normal pair carries

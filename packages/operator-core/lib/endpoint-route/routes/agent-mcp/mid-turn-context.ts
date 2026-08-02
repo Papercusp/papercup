@@ -298,17 +298,30 @@ const midTurnContext = defineTool({
       const { activeWorkspaceId } = await import('../../../workspace-registry');
       const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
 
-      const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }] = await Promise.all([
-        import('../../../memory/injection'),
-        import('../../../auth'),
-      ]);
+      const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }, { buildRecallQueryWithHumanTail }] =
+        await Promise.all([
+          import('../../../memory/injection'),
+          import('../../../auth'),
+          import('../../../memory/human-turn-tail'),
+        ]);
       const user = await getSessionUserOrDefault().catch(() => null);
+      // P-006 / D-046, the mirror of the turn-start change: what the agent is
+      // DOING (the tool-derived query) plus what the human last SAID. Composed
+      // AFTER admitCall deliberately — the cost guards above key on the
+      // tool-derived query alone, so appending a tail that shifts when ingest
+      // lands must not perturb "identical consecutive query ⇒ skip".
+      const queryContext = await buildRecallQueryWithHumanTail({
+        owner,
+        workspaceId,
+        current: query,
+        clamp: QUERY_CLAMP,
+      });
       const block =
         (await buildMemoryContextBlock({
           userId: user?.id ?? null,
           workspaceId,
           harnessSlugs: harness ? [harness] : [],
-          queryContext: query,
+          queryContext,
           // Free-text port; the epoch ledger is port-agnostic (D-006), so this
           // inherits turn-start's dedup instead of needing one of its own.
           session: { sessionId: owner, port: 'mid-turn' },

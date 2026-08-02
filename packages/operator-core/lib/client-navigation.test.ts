@@ -130,7 +130,16 @@ describe('navigateClient', () => {
       __TAURI_INTERNALS__: { invoke },
     });
     navigateClient('/settings/voice');
-    expect(invoke).toHaveBeenCalledWith('open_route_in_app', { route: '/settings/voice' });
+    // Assert the command name + payload only. `openRouteInApp` now goes through the
+    // typed specta binding (EI-18899708711154370 / D-014) instead of poking
+    // `__TAURI_INTERNALS__.invoke` directly, and `@tauri-apps/api`'s `invoke()`
+    // forwards a third `options` argument to the internals. That trailing argument
+    // is the API's business, not this module's contract — matching on it would make
+    // the test fail on a Tauri upgrade that changes nothing we care about.
+    expect(invoke.mock.calls[0]?.slice(0, 2)).toEqual([
+      'open_route_in_app',
+      { route: '/settings/voice' },
+    ]);
     // Crucially: the panel window itself does NOT navigate.
     expect(w.history.pushState).not.toHaveBeenCalled();
     expect(w.location.assign).not.toHaveBeenCalled();

@@ -36,29 +36,82 @@ import {
   type GemmaEmbedKind,
 } from '@papercusp/memory';
 import { buildSidecarFirstReranker, type RerankScoreFn } from '@papercusp/rerank';
-import { ensureEmbedSidecar } from './embed-sidecar-spawn';
-import type { RerankSidecarModel } from './embed-sidecar-server';
+import { describeUnfitSidecar, ensureEmbedSidecar, probeSidecarHealth } from './embed-sidecar-spawn';
+import {
+  EMBED_SIDECAR_CAP_EMBED,
+  EMBED_SIDECAR_CAP_RERANK,
+  EMBED_SIDECAR_LEGACY_CAPABILITIES,
+  type RerankSidecarModel,
+} from './embed-sidecar-server';
+import { verifySidecarFitness } from '../process-supervision/sidecar-spawn-shared';
 
 /** Injectable seams (tests swap the env read + the spawn side effect). */
 export interface SidecarWiringDeps {
   resolveUrl: () => string | null;
-  ensure: () => Promise<string | null>;
+  ensure: (requiredCapabilities: readonly string[]) => Promise<string | null>;
+  /** /healthz probe for the EXPLICIT-URL path (that sidecar is owned by another
+   *  process, so this one never saw it start and cannot know its build). */
+  probeHealth: (url: string) => Promise<unknown | null>;
 }
 
 const defaultDeps: SidecarWiringDeps = {
   resolveUrl: resolveEmbedSidecarUrl,
   ensure: ensureEmbedSidecar,
+  probeHealth: probeSidecarHealth,
 };
 
+/** Version-skew is a standing condition, not a per-call event — log each
+ *  distinct (url, missing) once so a stale sidecar says its piece loudly and
+ *  then stops shouting. */
+const reportedSkew = new Set<string>();
+
 /**
- * The sidecar URL THIS process should embed through, or null for pure
- * in-process. Explicit URL wins over the spawn-locally opt-in (an operator
- * fleet points workers at one URL; the owner host sets the opt-in).
+ * The sidecar URL THIS process should use for `requiredCapabilities`, or null
+ * for pure in-process. Explicit URL wins over the spawn-locally opt-in (an
+ * operator fleet points workers at one URL; the owner host sets the opt-in).
+ *
+ * ⚠ Both paths are capability-verified, and the EXPLICIT one especially: it
+ * points at a sidecar owned by another process (typically
+ * papercup-embed-sidecar.service), so this process never saw it start and has
+ * no idea which build it is running. Before EI-19314150478401738 that path did
+ * NO check at all — not even liveness — which is how a 16-day-old bundle kept
+ * being handed out for a /rerank route it had never contained.
+ *
+ * Verification is per-CAPABILITY, not per-sidecar: a pre-advertisement build
+ * still serves /embed perfectly well, so embedding keeps using it while only
+ * the capability it genuinely lacks falls back. Refusing the whole sidecar
+ * would turn one silent bug into a fleet-wide embedding regression.
  */
-export async function resolveProcessSidecarUrl(deps: SidecarWiringDeps = defaultDeps): Promise<string | null> {
+export async function resolveProcessSidecarUrl(
+  deps: SidecarWiringDeps = defaultDeps,
+  requiredCapabilities: readonly string[] = [],
+): Promise<string | null> {
   const explicit = deps.resolveUrl();
-  if (explicit) return explicit;
-  return deps.ensure();
+  if (!explicit) return deps.ensure(requiredCapabilities);
+
+  const health = await deps.probeHealth(explicit);
+  // A sidecar that is merely DOWN is not a skew problem, and must NOT resolve
+  // to null here: WI-4021 (D-003 retired) makes a configured sidecar REQUIRED,
+  // so the URL is handed back and the client's retry-then-throw contract owns
+  // the outage. Returning null for an outage would silently reinstate the
+  // in-process failover that retirement removed — a much worse bug than the
+  // one being fixed. ONLY a capability mismatch refuses below.
+  if (health === null) return explicit;
+
+  const fitness = verifySidecarFitness(health, requiredCapabilities, EMBED_SIDECAR_LEGACY_CAPABILITIES);
+  if (fitness.fit) return explicit;
+
+  const key = `${explicit}|${fitness.reason}|${fitness.missing.join(',')}`;
+  if (!reportedSkew.has(key)) {
+    reportedSkew.add(key);
+    console.error(describeUnfitSidecar(explicit, fitness));
+  }
+  return null;
+}
+
+/** Test seam — clear the once-per-condition skew log memo. */
+export function _resetSidecarSkewReportForTests(): void {
+  reportedSkew.clear();
 }
 
 /**
@@ -74,7 +127,7 @@ export async function buildSidecarAwareEmbedder(
   kind: GemmaEmbedKind,
   deps: SidecarWiringDeps = defaultDeps,
 ): Promise<EmbedFn> {
-  const url = await resolveProcessSidecarUrl(deps);
+  const url = await resolveProcessSidecarUrl(deps, [EMBED_SIDECAR_CAP_EMBED]);
   return buildSidecarFirstEmbedder({
     model,
     kind,
@@ -112,6 +165,6 @@ export async function buildSidecarAwareReranker(
   model: RerankSidecarModel = 'rerank',
   deps: SidecarWiringDeps = defaultDeps,
 ): Promise<RerankScoreFn> {
-  const url = await resolveProcessSidecarUrl(deps);
+  const url = await resolveProcessSidecarUrl(deps, [EMBED_SIDECAR_CAP_RERANK]);
   return buildSidecarFirstReranker({ model, url });
 }

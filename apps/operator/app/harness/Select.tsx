@@ -98,6 +98,7 @@ export function Select({
   placeholder,
   id,
   ariaLabel,
+  describedBy,
   disabled,
   testId,
   triggerStyle,
@@ -111,6 +112,8 @@ export function Select({
   placeholder?: string;
   id?: string;
   ariaLabel?: string;
+  /** Forwarded as aria-describedby on the trigger, for pairing with a nearby hint. */
+  describedBy?: string;
   disabled?: boolean;
   testId?: string;
   triggerStyle?: CSSProperties;
@@ -123,6 +126,7 @@ export function Select({
       <RS.Trigger
         id={id}
         aria-label={ariaLabel}
+        aria-describedby={describedBy}
         data-testid={testId}
         className={triggerClassName ?? className}
         style={triggerClassName || className ? undefined : { ...TRIGGER_DEFAULT_STYLE, ...triggerStyle }}

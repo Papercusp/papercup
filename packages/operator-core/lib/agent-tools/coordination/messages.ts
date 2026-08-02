@@ -430,6 +430,25 @@ export async function readInbox(
   // Both are PRE-filters only: `filterInbox` below remains the authoritative,
   // exact filter over the (now bounded) reduced set.
   //
+  // ⚠ THE CAP'S ORDER IS LOAD-BEARING, AND IT MUST BE `id DESC` (EI-19314819320465915).
+  // A LIMIT keeps the rows the ORDER BY puts FIRST, so `ORDER BY id ASC LIMIT n` keeps
+  // the n OLDEST matching rows and silently discards the NEWEST — i.e. once an owner's
+  // matching set exceeds the cap, their inbox freezes: they keep re-reading ancient mail
+  // and never see anything new again. That is the worst possible failure mode for an
+  // inbox, and it is SILENT (the read still returns a full, plausible 25k rows). `DESC`
+  // keeps the newest instead, so the cap degrades by forgetting history — recoverable,
+  // and what every caller actually wants.
+  // This was latent, not academic: at the time of the fix the `to` array matched 20,365
+  // broadcast rows (`to` containing '*') against a 25,000 cap — 81% of the way there,
+  // growing ~150/day, so ~1 month of headroom fleet-wide.
+  // SAFE because the SQL order is NOT the output order: `filterInbox` ends in
+  // `.sort(compareByTsThenId)` (libs/generic/pubsub-substrate/src/core/inbox.ts), so it
+  // re-sorts ascending by (ts, msg_id) regardless of what order the rows arrive in. The
+  // ORDER BY therefore chooses only WHICH rows survive the cap, never how they are
+  // presented. It also strictly improves `collectRetractedIds`, which reads the same
+  // window: retractions skew recent, so keeping the newest rows keeps the retractions
+  // that are actually still suppressing something.
+  //
   // Gated on a true PG backend (coordHasPgFastPath): an in-memory/fs seam (tests)
   // keeps using readLines, since coordSql() would otherwise read getOrgPg() and miss
   // the swapped store. Any query error falls through to the authoritative full read.
@@ -447,13 +466,13 @@ export async function readInbox(
            ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
            AND jsonb_typeof(body->'to') = 'array'
            AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
-         ORDER BY id ASC
+         ORDER BY id DESC
          LIMIT ${INBOX_FAST_PATH_ROW_CAP}
       `;
       if (rows.length >= INBOX_FAST_PATH_ROW_CAP) {
         console.warn(
           `[readInbox] fast-path row cap (${INBOX_FAST_PATH_ROW_CAP}) hit for owner=${ownerId} ` +
-            `since_ts=${opts.since_ts ?? '(none)'} — the oldest matching rows beyond the cap were NOT ` +
+            `since_ts=${opts.since_ts ?? '(none)'} — the OLDEST matching rows beyond the cap were NOT ` +
             'returned; a caller doing a genuine full-history backfill should page via since_ts.',
         );
       }

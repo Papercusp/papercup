@@ -137,23 +137,39 @@ const turnStartMemory = defineTool({
       const memoryPromise = (async (): Promise<string> => {
         if (body.memoryEnabled === false) return '';
         try {
-          const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }, { stripInjectedChrome }] =
-            await Promise.all([
-              import('../../../memory/injection'),
-              import('../../../auth'),
-              import('../../../turn-provenance/turn-provenance'),
-            ]);
+          const [
+            { buildMemoryContextBlock },
+            { getSessionUserOrDefault },
+            { stripInjectedChrome },
+            { buildRecallQueryWithHumanTail },
+          ] = await Promise.all([
+            import('../../../memory/injection'),
+            import('../../../auth'),
+            import('../../../turn-provenance/turn-provenance'),
+            import('../../../memory/human-turn-tail'),
+          ]);
           const user = await getSessionUserOrDefault().catch(() => null);
           // Retrieve on what the turn is ABOUT, not on the scaffolding it
           // arrived in — see PROMPT_QUERY_CLAMP above and D-033. Never empty
           // for a non-empty prompt, so this cannot silently disable recall.
           const queryText = stripInjectedChrome(prompt);
+          // P-006 / D-046: the query is the prompt PLUS the last 3 turns the
+          // HUMAN spoke. The prompt is composed first and is never displaced,
+          // so this can only ADD signal to the query that used to ship — and a
+          // failed/empty tail degrades to exactly the old prompt-only slice.
+          // ⚠ The tail filters on PROVENANCE, not `speaker`; see human-turn-tail.ts.
+          const queryContext = await buildRecallQueryWithHumanTail({
+            owner,
+            workspaceId,
+            current: queryText,
+            clamp: PROMPT_QUERY_CLAMP,
+          });
           return (
             (await buildMemoryContextBlock({
               userId: user?.id ?? null,
               workspaceId,
               harnessSlugs: harness ? [harness] : [],
-              queryContext: queryText.slice(0, PROMPT_QUERY_CLAMP),
+              queryContext,
               session: { sessionId: owner, port: 'turn-start' },
               budgetChars: TURN_START_BUDGET_CHARS,
               heading: 'Relevant memory (turn-start delta)',

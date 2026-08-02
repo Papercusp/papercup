@@ -11,7 +11,15 @@
  *              →  { vectors: number[][], dims, runtime, modelRev }
  *   POST /rerank  { model?, query: string, texts: string[] }
  *              →  { scores: number[], runtime, modelRev }
- *   GET  /healthz →  { ok, pid, uptimeMs, models: { '<model>:<kind>': state } }
+ *   GET  /healthz →  { ok, pid, uptimeMs, capabilities: string[],
+ *                      models: { '<model>:<kind>': state } }
+ *
+ * `capabilities` lists every route THIS BUILD serves ("POST /rerank", ...),
+ * derived from the route table itself. A sidecar outlives the code that talks
+ * to it, so a client must be able to ask what it can do BEFORE using it —
+ * without that, a route added after the running bundle was built just 404s
+ * forever and every caller's fail-safe silently swallows it
+ * (EI-19314150478401738).
  *
  * /rerank serves cross-encoder rerankers for the same reason: one warm ~150M
  * model per host, not per process. It returns scores INDEX-ALIGNED with the
@@ -121,6 +129,35 @@ export interface EmbedResponse {
 
 /** transformers.js ONNX in a worker thread — the space-defining runtime tag. */
 export const EMBED_SIDECAR_RUNTIME = 'node-onnx-worker';
+
+/**
+ * Capability names — one per route, in the `"<METHOD> <path>"` shape /healthz
+ * advertises. Exported so CLIENTS state what they need symbolically instead of
+ * duplicating a wire string (EI-19314150478401738).
+ */
+export const EMBED_SIDECAR_CAP_HEALTHZ = 'GET /healthz';
+export const EMBED_SIDECAR_CAP_EMBED = 'POST /embed';
+export const EMBED_SIDECAR_CAP_RERANK = 'POST /rerank';
+
+/**
+ * What a sidecar that advertises NOTHING may be assumed to serve.
+ *
+ * A sidecar is a long-running process started from a BUILT BUNDLE, so one that
+ * predates capability advertisement (any build before EI-19314150478401738)
+ * answers /healthz 200 with no `capabilities` key at all. Refusing those
+ * outright would break embedding on every host still running one — so instead
+ * they are credited with exactly the routes that have existed since the
+ * original D-004 wire, and nothing more.
+ *
+ * ⛔ NEVER ADD TO THIS LIST. It is a statement about HISTORY (what every build
+ * that could ever be running already served), not a default capability set.
+ * Adding a newer route here would re-create the exact silent-404 bug: an old
+ * sidecar would be credited with a route it does not have.
+ */
+export const EMBED_SIDECAR_LEGACY_CAPABILITIES: readonly string[] = [
+  EMBED_SIDECAR_CAP_HEALTHZ,
+  EMBED_SIDECAR_CAP_EMBED,
+];
 
 const MODEL_REVS: Record<EmbedSidecarModel, string> = {
   gemma: GEMMA_MODEL,
@@ -598,26 +635,37 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     }
   };
 
-  const server = http.createServer((req, res) => {
-    const url = (req.url ?? '').split('?')[0];
-    if (req.method === 'GET' && url === '/healthz') {
+  // The route table is the ONE source for both dispatch and the capability
+  // list /healthz advertises — a route cannot be added without being
+  // advertised, because the advertisement is derived from these very keys.
+  // That is the anti-drift property EI-19314150478401738 needed: a sidecar
+  // must be able to say what it CANNOT do, so a client that outlived it can
+  // tell "route absent" (version skew) from "request bad".
+  const handlers: Record<string, (req: http.IncomingMessage, res: http.ServerResponse) => void> = {
+    [EMBED_SIDECAR_CAP_HEALTHZ]: (_req, res) => {
       json(res, 200, {
         ok: true,
         pid: process.pid,
         uptimeMs: Date.now() - startedAt,
         runtime: EMBED_SIDECAR_RUNTIME,
+        // Everything this build can serve. A client compares its REQUIRED
+        // capabilities against this before adopting the process.
+        capabilities,
         models: { ...warm },
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
         concurrency,
       });
-      return;
-    }
-    if (req.method === 'POST' && url === '/embed') {
-      void handleEmbed(req, res);
-      return;
-    }
-    if (req.method === 'POST' && url === '/rerank') {
-      void handleRerank(req, res);
+    },
+    [EMBED_SIDECAR_CAP_EMBED]: (req, res) => void handleEmbed(req, res),
+    [EMBED_SIDECAR_CAP_RERANK]: (req, res) => void handleRerank(req, res),
+  };
+  const capabilities = Object.keys(handlers);
+
+  const server = http.createServer((req, res) => {
+    const url = (req.url ?? '').split('?')[0];
+    const handle = handlers[`${req.method} ${url}`];
+    if (handle) {
+      handle(req, res);
       return;
     }
     json(res, 404, { error: `no route ${req.method} ${url}` });
