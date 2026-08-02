@@ -353,7 +353,7 @@ export default function PlansClient() {
   // headers (show the human title + a ready/running pill instead of the raw
   // slug).
   const planMetaBySlug = useMemo(() => {
-    const m = new Map<string, { title: string | null; bucket: PlanBucket }>();
+    const m = new Map<string, { title?: string | null; bucket: PlanBucket }>();
     for (const p of planList.data?.plans ?? []) {
       m.set(p.slug, { title: p.title ?? null, bucket: bucketOf(p) });
     }

@@ -15,12 +15,18 @@
 import { parseWorkOfferRecordJson } from './offer-store-schema';
 import type { DelegatedSpawnRequestFacts } from './delegated-spawn-outcome';
 
-/** The subset of a `harness_shared.p2p_work_offers` row this mapper needs. */
+/**
+ * The subset of a `harness_shared.p2p_work_offers` row this mapper needs.
+ *
+ * Note the absence of `fleet_slug`: the column is a projection of the signed
+ * record, and the closed-schema validator already REFUSES a `spawn_request`
+ * whose record carries no fleetSlug — so a column fallback would be unreachable
+ * by construction (proven: a fixture with `fleetSlug: null` fails to parse at
+ * all rather than reaching any fallback). The signed record is the only source.
+ */
 export interface SpawnRequestOfferRow {
   offer_id: string;
   record_json: string;
-  /** Column fallback; the signed record's own fleetSlug wins when present. */
-  fleet_slug?: string | null;
 }
 
 export interface SpawnRequestFactsResult {
@@ -60,12 +66,12 @@ export function spawnRequestFactsFromRow(row: SpawnRequestOfferRow): SpawnReques
   const record = parseWorkOfferRecordJson(row.record_json);
   if (!record || record.kind !== 'spawn_request' || !record.spawnRequest) return null;
 
-  // A spawn_request always carries a non-null fleetSlug on the signed record
-  // (offer-store-schema), so prefer it — the column is a projection of it and
-  // is nullable in the table's type. Refuse rather than invent one: the fleet
-  // is what member attribution is scoped by, and guessing it would credit
-  // another fleet's members to this request.
-  const fleetSlug = record.fleetSlug ?? row.fleet_slug ?? null;
+  // A spawn_request always carries a non-null fleetSlug (offer-store-schema
+  // enforces it, and the validator above rejects a record without one). The
+  // guard stays because the FIELD's type is `string | null` for the seat kind —
+  // and refusing beats inventing a fleet, since fleet is what member
+  // attribution is scoped by: a guess would credit another fleet's members here.
+  const fleetSlug = record.fleetSlug;
   if (!fleetSlug) return null;
 
   const p = record.spawnRequest;

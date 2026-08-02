@@ -9,7 +9,7 @@
  * The script's pure functions are imported directly (same pattern as apps/operator's
  * psu-pty-host / ptool script tests).
  */
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1090,14 +1090,36 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
     });
 
     it('reports command:null for a workspace with NO typecheck script — a real coverage gap', () => {
-      const dir = mkdtempSync(join(tmpdir(), 'tsc-gate-'));
+      const root = mkdtempSync(join(tmpdir(), 'tsc-gate-'));
       try {
-        writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'ungated', scripts: {} }));
-        const s = suggestTypecheckGate(dir, 'sub/file.ts');
+        mkdirSync(join(root, 'apps', 'ungated', 'src'), { recursive: true });
+        writeFileSync(
+          join(root, 'apps', 'ungated', 'package.json'),
+          JSON.stringify({ name: 'ungated', scripts: {} }),
+        );
+        const s = suggestTypecheckGate(root, 'apps/ungated/src/file.ts');
         expect(s).not.toBeNull();
+        expect(s!.workspaceDir).toBe('apps/ungated');
+        // No `typecheck` script => nothing local will ever check this file. Say so; do not
+        // invent a command that does not exist.
         expect(s!.command).toBeNull();
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('never suggests the monorepo ROOT package — `--workspace .` would be noise, not a route', () => {
+      // The repo root always has a package.json, so matching it would give every uncovered file
+      // a confident, useless suggestion. Walking stops before the root on purpose.
+      const root = mkdtempSync(join(tmpdir(), 'tsc-gate-'));
+      try {
+        writeFileSync(
+          join(root, 'package.json'),
+          JSON.stringify({ name: 'the-monorepo', scripts: { typecheck: 'tsc' } }),
+        );
+        expect(suggestTypecheckGate(root, 'sub/file.ts')).toBeNull();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
       }
     });
   });

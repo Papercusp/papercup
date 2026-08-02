@@ -33,7 +33,7 @@ interface Props {
   harnessByPlan?: Map<string, string>;
   /** plan-slug → display title + lifecycle bucket, for the group headers.
    *  Headers show the human title + a ready/running pill instead of the slug. */
-  planMeta?: Map<string, { title: string | null; bucket: PlanBucket }>;
+  planMeta?: Map<string, { title?: string | null; bucket: PlanBucket }>;
   /** Narrow the list to these plans (multi-select OR; the rail toggles
    *  them). Empty/undefined = all plans. */
   planFilters?: string[];

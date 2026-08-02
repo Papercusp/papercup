@@ -148,7 +148,7 @@ describe('PlanBucketTabs — count badges', () => {
   it('badges reflect a seeded shared filter param (?pArchived shows only archived)', () => {
     const plansWithArchived = [
       ...PLANS,
-      plan('archived-ready-2026-02-01', 'ready', null, { archived: true }),
+      plan('archived-ready-2026-02-01', 'ready', undefined, { archived: true }),
     ];
     render(<PlanBucketTabs plans={plansWithArchived} query="" />, {
       wrapper: withNuqsTestingAdapter({ searchParams: '?pArchived=true' }),

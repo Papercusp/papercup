@@ -986,6 +986,7 @@ export interface RedTriage {
    *  was rescued but the tree was never simultaneously green inside one run window, so the answer
    *  is to slow the tree or widen the window, NOT to debug the last-named files. */
   refireBlockedBy: 'cap-disabled' | 'charged-budget' | 'absolute-ceiling' | 'deadline' | null;
+  detail: string;
 }
 
 /** Bounded auto-refire cap; 0 disables auto-refire entirely. Default 2 — enough to

@@ -36,6 +36,11 @@ vi.mock('../work-items', () => ({
   isWorkItemKind: () => true,
 }));
 vi.mock('../agent-tools/plans/source', () => ({ readPlanBySlug: vi.fn() }));
+// The dynamic half of the split implements-link plane. Controlled here so the union
+// default is deterministic — with a real coordScopeWorkspace() the two scopes can
+// collapse to one and the tenant-completeness test below would pass vacuously.
+const cs = vi.hoisted(() => ({ scope: 'default' }));
+vi.mock('../agent-tools/coordination/log', () => ({ coordScopeWorkspace: () => cs.scope }));
 vi.mock('./liveness', () => ({ claimPlanItem: vi.fn() }));
 vi.mock('./compile-brief', () => ({ compilePlanItemBrief: vi.fn(), decisionsForItem: vi.fn() }));
 
@@ -78,6 +83,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items `;
+  cs.scope = 'default'; // collapse the union to WS unless a test widens it
 });
 
 async function edge(o: { plan: string; item: string; srcKind?: string; srcRef: string; rel?: string; dstKind?: string; ws?: string; createdAt?: string }) {
@@ -88,6 +94,36 @@ async function edge(o: { plan: string; item: string; srcKind?: string; srcRef: s
 }
 
 describe('listConvertedPlanItemRefs (PG)', () => {
+  /**
+   * THE REGRESSION THIS SUITE PREVIOUSLY COULD NOT SEE. The implements-link plane is split by
+   * FAMILY across two workspaces — feature-family under DEFAULT_COORD_WORKSPACE (work-items.ts
+   * binds the store to the static literal), issue-family under coordScopeWorkspace() (
+   * issues-engineer.ts binds the dynamic resolver). A reader pinned to EITHER single tenant is
+   * blind to a whole family, and stays plausible while blind because the half it does see is
+   * large: measured 2026-08-02, 1216 feature links under 'default' and 1468 issue links under
+   * 'papercusp-workspace'.
+   *
+   * Every other test in this file writes and reads under ONE workspace (WS), so the fixture
+   * value silently satisfies whichever tenant the reader picked — which is exactly why P-009's
+   * 26/26 green, mutation-verified suite shipped this bug. The guard has to write the two
+   * families to DIFFERENT workspaces or it proves nothing.
+   */
+  it('is TENANT-COMPLETE: unions both workspaces the plane is split across', async () => {
+    cs.scope = 'papercusp-workspace';
+    await edge({ plan: 'pf', item: 'I-1', srcKind: 'feature', srcRef: 'web#F-1', ws: DEFAULT_COORD_WORKSPACE });
+    await edge({ plan: 'pi', item: 'I-2', srcKind: 'issue', srcRef: 'EI-1', ws: 'papercusp-workspace' });
+    // Pinning to either tenant alone returns exactly one of these — the bug.
+    const refs = await listConvertedPlanItemRefs();
+    expect([...refs].sort()).toEqual([planItemRef('pf', 'I-1'), planItemRef('pi', 'I-2')].sort());
+  });
+
+  it('an explicit workspace list still pins the read (the test-only escape hatch)', async () => {
+    cs.scope = 'papercusp-workspace';
+    await edge({ plan: 'pf', item: 'I-1', srcRef: 'EI-1', ws: DEFAULT_COORD_WORKSPACE });
+    await edge({ plan: 'pi', item: 'I-2', srcRef: 'EI-2', ws: 'papercusp-workspace' });
+    expect([...(await listConvertedPlanItemRefs([DEFAULT_COORD_WORKSPACE]))]).toEqual([planItemRef('pf', 'I-1')]);
+  });
+
   it('returns the DISTINCT set of implements→plan_item dst_refs, workspace-scoped', async () => {
     await edge({ plan: 'p1', item: 'I-1', srcRef: 'EI-1' });
     await edge({ plan: 'p1', item: 'I-1', srcRef: 'EI-2' }); // duplicate dst → DISTINCT collapses

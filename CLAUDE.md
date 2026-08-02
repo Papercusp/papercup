@@ -1034,6 +1034,17 @@ regression there is invisible to *both* routine checks and first reds the
 **green-checkpoint**. Editing outside operator-core? Also typecheck that workspace —
 **`build:typecheck { project: "<workspace>" }`** (EI-18719561823587590).
 
+> ✅ **`--files=` no longer lies about this** (EI-19341572300046923). Naming a path outside
+> the project a gate compiles used to scope the VERDICT to files that compile never saw, so
+> the run printed a clean result having typechecked **none of them** — a green indistinguishable
+> from a real pass, and how two operator-vite reds reached the fleet gate on 2026-08-02. Now the
+> gate checks coverage BEFORE the ~150s compile: if *every* named file is outside, it exits **1
+> in ~0.15s** and names the command that does cover them (`npm run --workspace <dir> typecheck`);
+> if only some are, it warns loudly and still reports the covered verdict. Coverage is derived
+> from each CLI's own `-p` operand, so all four per-project gates (`lint:tsc`,
+> `lint:tsc:operator-vite`, `lint:tsc:orchestrator`, `lint:tsc:papercusp-libs`) inherit it. It
+> fails OPEN on an unparseable command — never a red it cannot substantiate.
+
 > ⚠ Use the tool, not a hand-run `npx tsc -p . --noEmit`, and this is a correctness
 > point rather than a style one: **there is no root `tsconfig.json` in this repo** (only
 > `tsconfig.base.json`), so from the repo root `-p .` and `-p tsconfig.json` fail

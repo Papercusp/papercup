@@ -14,12 +14,9 @@ function plan(over: Partial<PlanListRow> & { slug: string; harness: string }): P
     slug: over.slug,
     title: over.title ?? `Title for ${over.slug}`,
     status: over.status ?? 'active',
-    updated: over.updated ?? null,
-    owner: null,
+    updated: over.updated,
     archived: false,
     isLegacy: false,
-    itemCounts: null,
-    nextAction: null,
     harness: over.harness,
   } as PlanListRow;
 }

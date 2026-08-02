@@ -93,9 +93,9 @@ import PlansPane from './PlansPane';
 function plan(over: Partial<PlanListRow> & { slug: string }): PlanListRow {
   return {
     slug: over.slug, title: over.title ?? over.slug, status: over.status ?? 'active',
-    updated: over.updated ?? '2026-07-17T00:00:00Z', created: null, owner: null,
-    archived: false, isLegacy: false, itemCounts: over.itemCounts ?? null, nextAction: null,
-    harness: 'papercusp', startStatus: over.startStatus ?? null, priority: null, maxImportance: null,
+    updated: over.updated ?? '2026-07-17T00:00:00Z',
+    archived: false, isLegacy: false, itemCounts: over.itemCounts,
+    harness: 'papercusp', startStatus: over.startStatus,
   } as PlanListRow;
 }
 
