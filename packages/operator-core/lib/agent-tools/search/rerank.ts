@@ -72,6 +72,31 @@ export const RERANK_OVERFETCH = 4;
 export const RERANK_MAX_CANDIDATES = 24;
 
 /**
+ * Wall-clock budget for the whole rerank stage of a prose search. On expiry the
+ * page degrades to RRF order through @papercusp/rerank's single fail-safe seam
+ * — the same path as an engine outage, so search never throws and never stalls.
+ *
+ * SIZED FROM THE MEASUREMENT, not guessed. At the {@link RERANK_MAX_CANDIDATES}
+ * cap the worst case is 24 × ~45ms ≈ 1.1s on this box, and P-001 found a laptop
+ * runs ~1.5–2× slower ⇒ ≈ 2.2s. 4s leaves ~1.8× headroom over that worst case,
+ * so a HEALTHY rerank — even a slow laptop at the cap — never trips it, and only
+ * genuine pathology does.
+ *
+ * DELIBERATELY TIGHTER than the library backstop (20s) and than the sidecar
+ * client's 15s retry budget, because those bound a HANG while this bounds a
+ * user's wait. A search that has already spent 4s reranking has failed its
+ * latency contract regardless of whether the sidecar might still recover.
+ *
+ * ⚠ ACCEPTED TRADEOFF: an in-process COLD START (first query in a fresh process
+ * loads a ~150M model) can exceed this, so that first search returns RRF order
+ * and later ones rerank normally. That is the correct failure direction —
+ * correct results slightly less well ordered, rather than a multi-second stall
+ * on someone's first search. It does not arise in the intended deployment,
+ * where the sidecar holds the model warm across processes.
+ */
+export const PROSE_RERANK_TIMEOUT_MS = 4_000;
+
+/**
  * How many hits to RETRIEVE so the reranker has a real pool to choose from.
  * Never returns fewer than `limit` (an over-fetch must never under-fetch).
  */
@@ -224,6 +249,9 @@ export async function rerankProseHits(
       })),
       {
         limit,
+        // Bound the stage so a sick engine degrades the page instead of
+        // stalling it (the lib's 20s backstop is a hang guard, not a UX budget).
+        rerankTimeoutMs: PROSE_RERANK_TIMEOUT_MS,
         ...(resolved.engine === 'zeroentropy'
           ? { rerankApiKey: resolved.apiKey }
           : { engine: 'local' as const, scorer: resolved.scorer }),

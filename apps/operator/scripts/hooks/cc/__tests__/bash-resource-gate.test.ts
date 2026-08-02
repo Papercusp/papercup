@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,12 +24,52 @@ const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'pretoolus
 
 let fakeHome = '';
 
+/** The two $HOME-relative credential files the hook's bash preamble gates on. */
+const credPaths = () => ({
+  token: join(fakeHome, '.papercusp', 'superuser-token'),
+  agentId: join(fakeHome, '.papercusp', 'su-agent-id'),
+});
+
+/**
+ * Re-assert the credential precondition before EVERY hook invocation (EI-18829641916212203).
+ *
+ * The hook's preamble allows UNCONDITIONALLY — exit 0, no stdout — when either
+ * credential file is missing or empty (`[ ! -s "$TOKEN_PATH" ] || [ ! -s "$AGENT_ID_PATH" ]`).
+ * That is byte-identical to a legitimate allow, so if `fakeHome` ever looks empty
+ * mid-run, every deny-expecting test fails as a bare `JSON.parse('')` SyntaxError
+ * instead of as a missing-credentials error. Observed live: 11 such failures at once
+ * under fleet load (load ~82-92), all green on a re-run minutes later and all green
+ * when their describe ran alone — i.e. a shared-state flake, not a logic bug.
+ *
+ * Writing this once in `beforeAll` leaves the whole suite depending on those two
+ * files surviving ~431 tests. Re-asserting costs two stats per invocation and
+ * removes the dependency outright.
+ *
+ * NOTE: this hardens the leading hypothesis; it is deliberately paired with
+ * `parseDecision`'s diagnostic below, so that if the real mechanism turns out to be
+ * something else, the next occurrence reports itself instead of recurring as a
+ * mystery red. Do not drop one as redundant with the other.
+ */
+function ensureGateCredentials(): void {
+  const { token, agentId } = credPaths();
+  mkdirSync(join(fakeHome, '.papercusp'), { recursive: true });
+  for (const [path, body] of [
+    [token, 'test-token\n'],
+    [agentId, 'test-agent\n'],
+  ] as const) {
+    let size = -1;
+    try {
+      size = statSync(path).size;
+    } catch {
+      /* missing — rewritten below */
+    }
+    if (size <= 0) writeFileSync(path, body);
+  }
+}
+
 beforeAll(() => {
   fakeHome = mkdtempSync(join(tmpdir(), 'gate-home-'));
-  const dir = join(fakeHome, '.papercusp');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'superuser-token'), 'test-token\n');
-  writeFileSync(join(dir, 'su-agent-id'), 'test-agent\n');
+  ensureGateCredentials();
 });
 
 afterAll(() => {
@@ -51,7 +91,10 @@ const nextSid = () => `gate-suite-${process.pid}-${++sidSeq}`;
 function runGate(
   payload: unknown,
   env: Record<string, string> = {},
-): { stdout: string; status: number | null } {
+): { stdout: string; stderr: string; status: number | null } {
+  // EI-18829641916212203: cheap re-assert so a transiently-absent credential file
+  // cannot turn a deny test into an unexplained JSON.parse('') failure.
+  ensureGateCredentials();
   const r = spawnSync('bash', [SCRIPT], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
     encoding: 'utf8',
@@ -74,9 +117,49 @@ function runGate(
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
 }
 
-function expectDeny(out: { stdout: string; status: number | null }) {
+/**
+ * Parse the hook's decision JSON, turning the fail-open shape into a SELF-DIAGNOSING
+ * error (EI-18829641916212203).
+ *
+ * `status === 0` with empty stdout is the hook's allow/fail-open shape. Parsed
+ * naively that surfaces as `SyntaxError: Unexpected end of JSON input`, which names
+ * neither the cause nor where to look — and it lands on deny-expecting tests, where
+ * it is indistinguishable at a glance from a real regression in a SAFETY rail. That
+ * ambiguity is the expensive part: 11 of these appeared alongside one unrelated
+ * 2-line change and had to be manually proven not to be its fault.
+ *
+ * `runGate` already captures stderr; this reports it, plus whether each credential
+ * file actually existed and its size, so the next occurrence explains itself.
+ */
+function parseDecision(out: { stdout: string; stderr?: string; status: number | null }): {
+  hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string };
+} {
+  if (out.status === 0 && out.stdout.trim() === '') {
+    const describeFile = (p: string) => {
+      try {
+        return `${p} (size=${statSync(p).size})`;
+      } catch {
+        return `${p} (MISSING)`;
+      }
+    };
+    const { token, agentId } = credPaths();
+    throw new Error(
+      'gate hook exited 0 with EMPTY stdout — it FAIL-OPENED instead of emitting a decision. ' +
+        'This is the credential-precondition shape (EI-18829641916212203), not a logic failure: ' +
+        "the hook's preamble allows unconditionally when either $HOME credential file is missing " +
+        'or empty. Diagnostics:\n' +
+        `  stderr:   ${JSON.stringify(out.stderr ?? '(not captured)')}\n` +
+        `  token:    ${describeFile(token)}\n` +
+        `  agent-id: ${describeFile(agentId)}\n` +
+        `  HOME:     ${fakeHome}`,
+    );
+  }
+  return JSON.parse(out.stdout);
+}
+
+function expectDeny(out: { stdout: string; stderr?: string; status: number | null }) {
   expect(out.status).toBe(0); // deny is exit 0 + decision JSON (hook protocol)
-  const decision = JSON.parse(out.stdout);
+  const decision = parseDecision(out);
   expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
   expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('pot:declare-wake');
 }
@@ -86,9 +169,12 @@ function expectAllow(out: { stdout: string; status: number | null }) {
   expect(out.stdout.trim()).toBe(''); // silence = allow
 }
 
-function expectGitDeny(out: { stdout: string; status: number | null }) {
+function expectGitDeny(out: { stdout: string; stderr?: string; status: number | null }) {
   expect(out.status).toBe(0); // deny is exit 0 + decision JSON (hook protocol)
-  const decision = JSON.parse(out.stdout);
+  // parseDecision, not a bare JSON.parse: the shell-write / `sed -i` deny tests that
+  // route through here are precisely the ones observed failing en masse on the
+  // fail-open shape (EI-18829641916212203).
+  const decision = parseDecision(out);
   expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
   expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('shared-tree guard');
 }
@@ -210,9 +296,9 @@ describe('native-scheduler lockout: fleet-slug backstop (EI-18815668439722436)',
  * Only the REASON branches. These are recurrence guards: they fail against the
  * old single hardcoded message.
  */
-function denyReason(out: { stdout: string; status: number | null }): string {
+function denyReason(out: { stdout: string; stderr?: string; status: number | null }): string {
   expect(out.status).toBe(0);
-  const decision = JSON.parse(out.stdout);
+  const decision = parseDecision(out);
   expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
   return decision.hookSpecificOutput.permissionDecisionReason as string;
 }

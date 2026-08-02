@@ -100,8 +100,24 @@ export function isMachineAuthoredSender(from: string | null | undefined): boolea
  * match open, whereas an unanchored `green-checkpoint` also swallowed `green-checkpoints`
  * — caught by this module's own "NEVER stamps a human" test rather than in review.
  */
+/**
+ * ⚠ `-health$` added 2026-08-02 (EI-19315474516256070), same methodology: MEASURED, not
+ * guessed. Over the 24h AFTER the WI-6768 stamp went live, the stamp is working exactly as
+ * designed on the senders it matches — `git-sync-ref-announce` 41/41 and `git-sync-integrator`
+ * 21/21 of post-deploy messages carry `fieldProvenance.expects = 'system-emitter-derived'`.
+ * The residue was a sender matching NEITHER pattern: `service-health` sent 40 messages of
+ * which 38 still carried no `expects` at all, plus `hive-owner-key-health`. Both are health
+ * probes — process emitters that cannot read a reply — and no human or agent identity is
+ * plausibly named `*-health` (the protected senders remain `pc-admin-coord-ui`, `human`,
+ * `su-…`/`s-…`/`role-…` and bare uuids, none of which this suffix can reach).
+ *
+ * NOT added, deliberately: `inference-gateway` (1 message in the same window). One sample is
+ * below the evidentiary bar this module holds itself to, and an unanchored guess is how a
+ * pattern starts swallowing names nobody measured — the `green-checkpoint`/`green-checkpoints`
+ * near-miss recorded above. Re-measure and add it if the volume ever justifies it.
+ */
 export const MACHINE_EMITTER_STAMP_PATTERN =
-  '-(announce|integrator|reconciler|detector)$|^green-checkpoint$|^(coord-probe-|release-deploy:)';
+  '-(announce|integrator|reconciler|detector|health)$|^green-checkpoint$|^(coord-probe-|release-deploy:)';
 
 const MACHINE_EMITTER_STAMP_RE = new RegExp(MACHINE_EMITTER_STAMP_PATTERN);
 

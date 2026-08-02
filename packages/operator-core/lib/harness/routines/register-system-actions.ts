@@ -386,6 +386,13 @@ import './unclaimed-work-digest-action';
 // sweep (`system:autonomy-trust-scan`). Self-gates on MUG_AUTONOMY_ARMED (P-092);
 // the seed routine ships INACTIVE (go-live activates it).
 import './autonomy-trust-scan-action';
+// work-item-dependency-edges-2026-08-02 P-004: `system:readiness-drift-monitor` — runs
+// reconcileReadiness on a cadence and repairs drift between the trigger-maintained
+// work_item_blocked sidecar and its oracle. The detector had existed since
+// work-item-deps-and-readiness-2026-06-22 P-005 with NO production caller (its only
+// caller in the tree was its own integration test), so sidecar drift — including the
+// direction that hands out blocked work — was going unobserved.
+import './readiness-drift-monitor-action';
 import './cargo-test-action';
 // p2p-git-live-activation-2026-07-09 P-205 (G-9): `system:hive-git-gc` — the
 // ephemeral (tier:'ephemeral') per-hive-home cadence bounding a hive-git bare

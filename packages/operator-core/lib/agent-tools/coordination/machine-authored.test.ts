@@ -114,6 +114,14 @@ describe('WI-6768 — isMachineEmitterForStamping (the THIRD, stamp-only signal)
     'intent-divergence-detector',
     'green-checkpoint',
     'release-deploy:4153546:abbd4c65-5dbb-4f40-b183-cf730b5e9c91',
+    // EI-19315474516256070, measured the same way over the 24h AFTER the WI-6768 stamp
+    // went live: the stamp was working perfectly on the senders it matched
+    // (git-sync-ref-announce 41/41, git-sync-integrator 21/21 of post-deploy messages
+    // carrying fieldProvenance.expects='system-emitter-derived'), and these were the
+    // residue matching NEITHER pattern — service-health alone sent 40 messages of which
+    // 38 still carried no `expects`.
+    'service-health',
+    'hive-owner-key-health',
   ];
 
   it('stamps every emitter in the measured residue', () => {
@@ -145,6 +153,9 @@ describe('WI-6768 — isMachineEmitterForStamping (the THIRD, stamp-only signal)
       'my-detective', // `-detective`, not `-detector`
       'integration', // not `-integrator`
       'green-checkpoints', // trailing s — the anchored prefix must not slip
+      'health', // bare word, no leading `-` — must not match `-health$`
+      'healthy', // does not END in `health`
+      'telehealth', // ends in `health` but has no `-` separator
     ]) {
       expect(isMachineEmitterForStamping(s), `${s} must NOT be stamped`).toBe(false);
     }

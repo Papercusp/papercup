@@ -398,6 +398,7 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
  *   changedFiles?: Set<string> | null,
  *   typeReferencedFiles?: Set<string> | null,
  *   dirtyFiles?: Set<string> | null,
+ *   attributionDeclared?: boolean,
  * }} args
  * @returns {PerFileGateResult}
  */
@@ -409,6 +410,7 @@ export function decidePerFile({
   changedFiles = null,
   typeReferencedFiles = null,
   dirtyFiles = null,
+  attributionDeclared = false,
 }) {
   const total = sumValues(currentByFile);
   const baselineTotal = sumValues(baselineByFile);
@@ -479,8 +481,26 @@ export function decidePerFile({
       // but not gated — that is the "verify MY change is clean" affordance (EI-1984), and it is why
       // --mine is opt-in and never the CI default.
       if (attributed.length > 0) return { verdict: 'fail-attributed', ...base, attributed, typeAttributed, peerDrift, newFiles };
-      if (newFiles.length > 0) return { verdict: 'fail-new-file', ...base, attributed: [], peerDrift, newFiles };
-      return { verdict: 'ok-peer-drift', ...base, attributed: [], peerDrift, newFiles: [] };
+      // EI-19305736771912430 — whether an unscoped NEW file may set the EXIT CODE turns on how the
+      // changed-set was obtained, because that is what decides whether "not in the set" is evidence.
+      //
+      //  · `--mine` INFERS the set from `git status`. EI-18766822535373909's argument holds in full
+      //    there: absence cannot clear you, because git-sync commits the tree every few minutes and
+      //    your own new file is dirty for only a short window. So --mine still fails. Unchanged.
+      //  · `--files` DECLARES the set: the caller enumerated their own files by hand. A new file
+      //    outside that enumeration is one they asserted is not theirs — the very evidence git
+      //    status cannot supply. Failing on it makes a SCOPED run non-deterministic (it reds or not
+      //    depending on what peers happen to have dirty), and `--files` exists precisely to remove
+      //    that (EI-18731016038876755, which fixed the REPORTING and left the exit code).
+      //
+      // The unscoped findings are NOT dropped — they ride the ok verdict and are still printed with
+      // the same live-edit/standing split and fleet-gate warning. Silencing them would trade one
+      // failure for another; the point is that a red must mean "something YOU must fix", or the
+      // fleet learns to ignore reds — and the next one, which IS theirs, reads identically.
+      if (newFiles.length > 0 && !attributionDeclared) {
+        return { verdict: 'fail-new-file', ...base, attributed: [], peerDrift, newFiles };
+      }
+      return { verdict: 'ok-peer-drift', ...base, attributed: [], peerDrift, newFiles };
     }
     return { verdict: 'fail-regressed', ...base };
   }
@@ -864,7 +884,18 @@ export function runTscBaselineGate({
   // and can never reach `newFiles` — computing it there would cost a git call to learn nothing.
   const dirtyFiles = explicitFiles !== null ? gitChangedFiles(root) : null;
 
-  const result = decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles, typeReferencedFiles, dirtyFiles });
+  // EI-19305736771912430 — `--files` DECLARES the caller's own file set; `--mine` only INFERS it
+  // from git status. Only the declared form may stop an unscoped new file setting the exit code.
+  const result = decidePerFile({
+    currentByFile,
+    baselineByFile,
+    brokenFiles,
+    updateFlag,
+    changedFiles,
+    typeReferencedFiles,
+    dirtyFiles,
+    attributionDeclared: explicitFiles !== null,
+  });
   console.log(
     `TSC ${label}: ${result.total} type errors across ${Object.keys(currentByFile).length} file(s) ` +
       `(baseline total ${result.baselineTotal})${explicitFiles ? ' [--files]' : mineFlag ? ' [--mine]' : ''}`,
@@ -983,14 +1014,32 @@ export function runTscBaselineGate({
       process.exit(1);
       break;
     }
-    case 'ok-peer-drift':
+    case 'ok-peer-drift': {
       console.log(`✓ Your changed files are tsc-clean. ${result.peerDrift.length} file(s) already in the baseline regressed but are not in your changed set:`);
       for (const r of result.peerDrift) console.log(formatRow(r));
       console.log(`   (Not gated under --mine. Note the changed set comes from git status, and git-sync auto-commits this tree`);
       console.log(`    every few minutes — so a file you edited a while ago can appear here. Use --files= to scope precisely.`);
       console.log(`    A bare npm run of this gate will still catch these for whoever owns them.)`);
+      // EI-19305736771912430 — under `--files` an unscoped NEW file no longer sets the exit code,
+      // but it is emphatically still REPORTED: a committed one is a standing red that WILL red the
+      // fleet at the next bare run, and someone has to see it. Not gating it is what stops a SCOPED
+      // run crying wolf; not printing it would just move the problem.
+      if (result.newFiles.length > 0) {
+        const { liveEdits, standing } = partitionNewFilesByLiveEdit(result.newFiles);
+        console.log(
+          `   ⚠ ${result.newFiles.length} NEW file(s) (absent from the baseline) also have type errors, ` +
+            `none of them in the set you named:`,
+        );
+        for (const r of liveEdits) console.log(`${formatRow(r)}  ← uncommitted, a peer is likely mid-edit`);
+        for (const r of standing) console.log(`${formatRow(r)}  ← COMMITTED: a standing red that WILL red the fleet`);
+        if (standing.length > 0) {
+          console.log(`    Not YOUR gate failure (you did not name them), so this run stays green — but the`);
+          console.log(`    committed one(s) above need an owner. A bare npm run of this gate reds the fleet on them.`);
+        }
+      }
       process.exit(0);
       break;
+    }
     case 'ok-ratchet':
       // Reached ONLY on an explicit `--update` with at least one improved file (decidePerFile gates it).
       writeBaseline(result.newBaselineByFile, 'Ratcheted improved file(s) down (--update)');

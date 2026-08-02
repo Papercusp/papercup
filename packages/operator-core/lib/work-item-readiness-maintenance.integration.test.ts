@@ -68,10 +68,11 @@ async function insertIssue(
   status = 'open',
   kind = 'bug',
   workspace = 'default',
+  harness = '',
 ): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, status, item_kind)
-    VALUES (${workspace}, '', ${feature}, ${feature}, ${status}, ${kind})`;
+    VALUES (${workspace}, ${harness}, ${feature}, ${feature}, ${status}, ${kind})`;
 }
 
 /** A blocks-edge: blocked_ref is blocked until blocker_ref is terminal. */
@@ -213,21 +214,24 @@ describe('migration 379 — maintained readiness sidecar (work_item_blocked)', (
     expect(await isBlocked('h', 'F1', WS)).toBe(false);
   });
 
-  it('(g2) a same-id blocker in a DIFFERENT workspace does not block', async () => {
+  it('(g2) a same-id issue blocker in a DIFFERENT workspace does not block', async () => {
     const WS = 'papercusp-workspace';
 
-    // The blocked feature lives in WS; an OPEN issue with the SAME id lives in
-    // 'default'. Resolution is workspace-scoped, so the foreign row must be ignored —
-    // (harness_slug, feature_id) is not unique across workspaces (44 real collisions),
-    // which is why the 2-arg oracle had no correct answer and was removed.
+    // An issue blocker_ref is a BARE feature_id, which is not unique on its own: 66
+    // bare issue ids span more than one harness_slug in live data. So the SAME bare id
+    // can name two different rows, and without a workspace scope the oracle can select
+    // the foreign one. (Two rows are only possible under different harness_slugs —
+    // work_items' PK is (harness_slug, feature_id) — which is exactly the shape that
+    // occurs in practice.)
     await insertFeature('h', 'F1', 'todo', WS);
-    await insertIssue('BUG-DUP', 'open', 'bug', 'default');
+    await insertIssue('BUG-DUP', 'open', 'bug', 'default', 'other-harness');
     await addBlocksEdge('h#F1', 'BUG-DUP', 'feature', 'issue');
 
+    // The only matching row is OPEN but lives in another workspace → must NOT block.
     expect(await isBlocked('h', 'F1', WS)).toBe(false);
 
-    // Same id, now present and OPEN in WS too → blocks, on the strength of the WS row.
-    await insertIssue('BUG-DUP', 'open', 'bug', WS);
+    // Same bare id, now also present and OPEN in WS → blocks, on the WS row's strength.
+    await insertIssue('BUG-DUP', 'open', 'bug', WS, 'h');
     expect(await isBlocked('h', 'F1', WS)).toBe(true);
   });
 

@@ -5447,6 +5447,15 @@ export async function updateWorkItem(
   // a misleading "not found" for a row that plainly exists. Detect it BEFORE attempting
   // the write (mirrors the identical guard in setWorkItemState / work_items:complete) so
   // the caller gets an honest, specific reason instead.
+  //
+  // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
+  // creation. When the caller IS the recorded author, self-heal the base-table origin
+  // back to 'local' first (see selfHealAuthorOriginIfStranded's docblock) so the write
+  // that follows isn't ALSO silently blocked by the same trigger.
+  if (wi.origin === 'remote' && by && wi.createdBy && by === wi.createdBy) {
+    const healed = await selfHealAuthorOriginIfStranded(id, by);
+    if (healed) wi.origin = 'local';
+  }
   if (wi.origin === 'remote') return { ok: false, reason: 'remote_origin_not_editable' };
   const issue = await updateIssue(id, { ...patch, by });
   if (issue === null) return { ok: false, reason: 'not_found' };

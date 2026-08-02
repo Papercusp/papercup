@@ -121,6 +121,14 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     -- column keeps this short name because the consolidated views make it rename-proof;
     -- the API surface disambiguates it as completionAuthority.
     authority text,
+    -- migration 698 (work-items-closed-ts): the terminal timestamp. FEATURE_COLS selects
+    -- it on EVERY feature read and claim, so a fixture without it fails the claim UPDATE
+    -- outright with 'column "closed_ts" does not exist' — which is what
+    -- claim-respects-blocking.integration.test.ts was doing (8/8 red) before this line.
+    -- Same trap the terminal_reason comment above records: when a migration adds a column
+    -- to FEATURE_COLS, this fixture must gain it too or every claim-path suite goes red
+    -- for a reason that has nothing to do with what it is testing.
+    closed_ts bigint,
     last_released_by text,
     last_released_at timestamptz,
     _search tsvector GENERATED ALWAYS AS (

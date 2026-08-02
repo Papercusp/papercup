@@ -378,7 +378,11 @@ async function completeOne(
   // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
   // creation (still-under-investigation federation/replay-provenance defect). Trusting it
   // ALONE strands the true author — check IDENTITY first: createdBy === the caller means
-  // they genuinely ARE the authoring peer regardless of what `origin` currently reads.
+  // they genuinely ARE the authoring peer regardless of what `origin` currently reads. This
+  // is only the early-exit guard; the actual base-table origin self-heal (required before the
+  // trigger-guarded write below can succeed — see selfHealAuthorOriginIfStranded in
+  // work-items.ts) happens inside setWorkItemStateWithAliasInfo → setWorkItemState, which this
+  // function calls further down when `it.state` is set.
   const callerIsAuthor = !!existing.createdBy && existing.createdBy === ident.ownerId;
   if (it.state && existing.family === 'issue' && existing.origin === 'remote' && !callerIsAuthor) {
     return {

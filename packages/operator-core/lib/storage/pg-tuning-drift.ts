@@ -53,10 +53,13 @@ const TOAST_RING_BUFFER = 2000;
  * the derived map, for a DEDICATED database (`embeddedPg: false` — this check
  * only ever runs against a native PG, see the header).
  *
- * `shared_preload_libraries` is deliberately NOT included. pg-autotune computes
- * it as a UNION with whatever is already loaded, so its target depends on live
- * state rather than on the derivation — a fixed expectation here would alarm on
- * any host that legitimately preloads an extra library.
+ * `shared_preload_libraries` is deliberately NOT included, for two independent
+ * reasons. pg-autotune computes it as a UNION with whatever is already loaded, so
+ * its target depends on live state rather than on the derivation — a fixed
+ * expectation here would alarm on any host that legitimately preloads an extra
+ * library. And `pg_settings` does not expose it to the operator's non-superuser
+ * role at all (verified on the dev box: 14 of the 14 GUCs below are readable,
+ * `shared_preload_libraries` is not), so it would only ever land in `unknown`.
  */
 export function targetSettings(): Record<string, string> {
   return databaseTuningToSettings(deriveDatabaseTuning(detectResourceSignals({ embeddedPg: false })));

@@ -9,6 +9,7 @@ vi.mock('../../memory/embed-sidecar-wiring', () => ({ buildSidecarAwareReranker:
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 
 import {
+  PROSE_RERANK_TIMEOUT_MS,
   RERANK_MAX_CANDIDATES,
   RERANK_OVERFETCH,
   _resetLocalRerankScorerForTests,
@@ -16,6 +17,8 @@ import {
   rerankProseHits,
   rerankText,
 } from './rerank';
+// Real constants (not mocked): the ordering between these three IS the guard.
+import { DEFAULT_RERANK_TIMEOUT_MS, DEFAULT_SIDECAR_TIMEOUT_MS } from '@papercusp/rerank';
 import { readCredentials } from '../../credentials';
 import { rankWithReranker } from '@papercusp/search-core';
 import { buildSidecarAwareReranker } from '../../memory/embed-sidecar-wiring';
@@ -100,6 +103,29 @@ describe('rerankProseHits — engine selection', () => {
     expect(opts.scorer).toBe(scorer);
     // No credential is involved on the local path.
     expect(opts.rerankApiKey).toBeUndefined();
+  });
+
+  it('forwards the search latency budget on BOTH engines, so neither can stall a page', async () => {
+    // The budget is the only thing standing between a sick engine and a hung
+    // search, and it is a plain option — silently droppable. Assert it on both
+    // branches: a hosted-only assertion would not catch losing it on the local
+    // path (the default engine), and vice versa.
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+
+    await rerankProseHits('q', HITS, 5); // local (no key configured)
+    expect(vi.mocked(rankWithReranker).mock.calls[0][2].rerankTimeoutMs).toBe(PROSE_RERANK_TIMEOUT_MS);
+
+    vi.mocked(readCredentials).mockResolvedValue({ zeroentropy_api_key: 'ze_test' });
+    await rerankProseHits('q', HITS, 5); // hosted
+    expect(vi.mocked(rankWithReranker).mock.calls[1][2].rerankTimeoutMs).toBe(PROSE_RERANK_TIMEOUT_MS);
+  });
+
+  it('the search budget is tighter than the layers below it, or it guards nothing', async () => {
+    // A budget above the sidecar's own 15s retry budget would never bind: the
+    // sidecar would give up first and this would be decorative. Encode the
+    // ordering so a later bump to either number has to stay coherent.
+    expect(PROSE_RERANK_TIMEOUT_MS).toBeLessThan(DEFAULT_SIDECAR_TIMEOUT_MS);
+    expect(DEFAULT_SIDECAR_TIMEOUT_MS).toBeLessThan(DEFAULT_RERANK_TIMEOUT_MS);
   });
 
   it('a configured key still wins — hosted, with no local scorer built', async () => {

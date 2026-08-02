@@ -2044,16 +2044,36 @@ const handler = createMcpHandler(
           // tooldef-mcp returns an SDK-neutral McpToolCallResult; cast it to the
           // mutable shape the MCP SDK's setRequestHandler accepts (same shape the
           // legacy branch below returns) at this host boundary.
-          // EI-19301511582594101: the tool's REAL outcome, captured so the replay
-          // receipt can be persisted AFTER its transaction commits. Deliberately the
-          // execute() promise and never the value dispatchWithSynthesizedTx returns:
-          // on a P2-5 deadline those differ, and persisting the raced timeout envelope
-          // would make every retry replay the timeout instead of the real outcome.
-          let toolOutcome: Promise<McpCallResult> | null = null;
-          // Set when the deadline branch wins the race — the caller has already been
-          // answered, so the receipt must be persisted in the BACKGROUND rather than
-          // blocking the response on a tool that is still running server-side.
-          let deadlineFired = false;
+          // Written by the raceDeadline callbacks below, read by the persist block
+          // after dispatchWithSynthesizedTx resolves.
+          //
+          // WI-6868 — these are a holder object rather than two plain `let`s ON
+          // PURPOSE; do not "simplify" it back. TypeScript's control-flow analysis
+          // does not track assignments made inside a nested function, so a
+          // `let toolOutcome: Promise<McpCallResult> | null = null` stays narrowed to
+          // `null` at the read site and the `&& toolOutcome` guard then narrows it to
+          // `never` — which makes `.then` an error, silently types its `result`
+          // parameter as `any`, and leaves the `as StoredMcpResult` cast unchecked.
+          // A property reference keeps its declared type, so the guard narrows the way
+          // the code actually behaves at runtime. (The `never` form typechecked as 2
+          // errors that the file's tsc baseline of 3 masked entirely.)
+          const raced: {
+            /**
+             * EI-19301511582594101: the tool's REAL outcome, captured so the replay
+             * receipt can be persisted AFTER its transaction commits. Deliberately the
+             * execute() promise and never the value dispatchWithSynthesizedTx returns:
+             * on a P2-5 deadline those differ, and persisting the raced timeout
+             * envelope would make every retry replay the timeout instead of the real
+             * outcome.
+             */
+            toolOutcome: Promise<McpCallResult> | null;
+            /**
+             * Set when the deadline branch wins the race — the caller has already been
+             * answered, so the receipt must be persisted in the BACKGROUND rather than
+             * blocking the response on a tool that is still running server-side.
+             */
+            deadlineFired: boolean;
+          } = { toolOutcome: null, deadlineFired: false };
           const runDispatch = async (ctx: UnifiedToolContext): Promise<McpCallResult> => {
             // The tool execution as ONE promise, so the P2-5 deadline can return a
             // clean client error WITHOUT cancelling it: it completes server-side and
@@ -2280,10 +2300,10 @@ const handler = createMcpHandler(
             const deadlineMs = effectiveMcpDeadlineMs(projected.timeoutSec);
             return raceDeadline<McpCallResult>(deadlineMs, () => {
               const outcome = execute();
-              toolOutcome = outcome;
+              raced.toolOutcome = outcome;
               return outcome;
             }, () => {
-              deadlineFired = true;
+              raced.deadlineFired = true;
               return {
                 isError: true,
                 content: [{
@@ -2312,11 +2332,11 @@ const handler = createMcpHandler(
           // `withWorkspace` transaction has COMMITTED, and still before this result is
           // returned to the transport. That ordering is the whole fix: a receipt can no
           // longer be durable for a write that never committed.
-          // Always keyed off `toolOutcome` (the tool's real result), never `dispatched`
+          // Always keyed off `raced.toolOutcome` (the tool's real result), never `dispatched`
           // — on a deadline those differ, and storing the timeout envelope would make
           // every subsequent retry replay the timeout forever.
-          if (idempotencyKey && !skipReplayForReadOnly && toolOutcome) {
-            const persist = toolOutcome
+          if (idempotencyKey && !skipReplayForReadOnly && raced.toolOutcome) {
+            const persist = raced.toolOutcome
               .then((result) => storeMcpResult({
                 ownerKey: replayOwnerKey,
                 idempotencyKey,
@@ -2337,7 +2357,7 @@ const handler = createMcpHandler(
             // and the receipt is durable before we answer. Deadline path: the caller
             // was answered already — let it persist in the background rather than
             // re-blocking the response we just raced to send.
-            if (!deadlineFired) await persist;
+            if (!raced.deadlineFired) await persist;
           }
           return dispatched;
         }

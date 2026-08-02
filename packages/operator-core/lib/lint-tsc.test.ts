@@ -291,6 +291,47 @@ describe('parseExplicitFiles feeding decidePerFile (EI-18731016038876755)', () =
     expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual(['brand-new.ts']);
   });
 
+  // EI-19305736771912430 — the same input must gate or not depending ONLY on how the changed set
+  // was OBTAINED, because that is what decides whether "absent from the set" is evidence at all.
+  // `--mine` INFERS it from git status (absence proves nothing — git-sync commits your new file out
+  // of the set within minutes, which is the whole EI-18766822535373909 hazard above). `--files`
+  // DECLARES it: the caller enumerated their own files, so a new file outside that list is one they
+  // asserted is not theirs. These three cases are deliberately adjacent so the distinction cannot be
+  // "simplified" away by a future reader who sees only one of them.
+  const newFileOutsideSet = {
+    currentByFile: { 'a.ts': 2, 'peer-brand-new.ts': 1 },
+    baselineByFile: { 'a.ts': 2 },
+    brokenFiles: brokenFree,
+    changedFiles: new Set(['b.ts']),
+  };
+
+  it('--files (DECLARED): a new file outside the named set does NOT set the exit code — but is still reported', () => {
+    const r = decidePerFile({ ...newFileOutsideSet, attributionDeclared: true });
+    expect(r.verdict).toBe('ok-peer-drift');
+    // Reported, not swallowed: a committed one is a standing red that WILL red the fleet, and the
+    // reporter prints it. Not gating is what stops a SCOPED run crying wolf; dropping it entirely
+    // would just trade one failure for another.
+    expect(r.newFiles!.map((x: { file: string }) => x.file)).toEqual(['peer-brand-new.ts']);
+  });
+
+  it('--mine (INFERRED): the SAME input still gates — EI-18766822535373909 is not weakened', () => {
+    const r = decidePerFile({ ...newFileOutsideSet, attributionDeclared: false });
+    expect(r.verdict).toBe('fail-new-file');
+    expect(r.newFiles!.map((x: { file: string }) => x.file)).toEqual(['peer-brand-new.ts']);
+  });
+
+  it('--files (DECLARED): a new file that IS in the named set still gates — scoping never excuses your own', () => {
+    const r = decidePerFile({
+      currentByFile: { 'brand-new.ts': 1 },
+      baselineByFile: {},
+      brokenFiles: brokenFree,
+      changedFiles: new Set(['brand-new.ts']),
+      attributionDeclared: true,
+    });
+    expect(r.verdict).toBe('fail-attributed');
+    expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual(['brand-new.ts']);
+  });
+
   // '(unattributed)' is not a file and is genuinely un-actionable, so it must NOT be pulled into
   // the gating new-file bucket just because it has no baseline entry.
   it("'(unattributed)' errors with no baseline stay in peerDrift, never gating as a new file", () => {
