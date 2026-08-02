@@ -974,7 +974,7 @@ function PlanActivityFeed({
               <p style={{ margin: '2px 0 0', color: 'var(--fg)', lineHeight: 1.4 }}>{rev.rationale.slice(0, 140)}{rev.rationale.length > 140 ? '…' : ''}</p>
             ) : (
               <p style={{ margin: '2px 0 0', color: 'var(--fg-mute)' }}>
-                +{rev.diffStat.added} −{rev.diffStat.removed} lines
+                +{rev.diffStat?.added ?? 0} −{rev.diffStat?.removed ?? 0} lines
               </p>
             )}
           </div>
@@ -1078,8 +1078,8 @@ function FeatureSlideOver({
                 {new Date(ev.iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </time>
               <div>
-                <span style={{ fontWeight: 500, marginRight: 6 }}>{ev.kind.replace(/_/g, ' ')}</span>
-                <span style={{ color: 'var(--fg-mute)' }}>{ev.detail}</span>
+                <span style={{ fontWeight: 500, marginRight: 6 }}>{(ev.kind ?? '').replace(/_/g, ' ')}</span>
+                <span style={{ color: 'var(--fg-mute)' }}>{ev.detail ?? ''}</span>
               </div>
             </div>
           ))}

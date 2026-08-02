@@ -20,6 +20,12 @@ let planResult: {
   loading: boolean;
   error: string | null;
 };
+// EI-… (WI-5520 regression coverage): PlanActivityFeed (rev.diffStat) and
+// FeatureSlideOver (ev.kind) are local components in PlanDetail.tsx driven
+// by these two hooks — configurable per-test so a malformed row (missing
+// diffStat / a null kind) can be asserted to render instead of crash.
+let revisionsResult: { data: unknown[] | null; loading: boolean } = { data: [], loading: false };
+let featureTimelineEvents: unknown[] = [];
 const refreshSpy = vi.fn();
 const setDataSpy = vi.fn();
 
@@ -27,18 +33,35 @@ vi.mock('./plans-api', () => ({
   usePlan: () => ({ ...planResult, refresh: refreshSpy, setData: setDataSpy }),
   usePlanLock: () => ({ data: null }),
   usePlanLint: () => ({ data: null }),
-  usePlanRevisions: () => ({ data: [], loading: false }),
+  usePlanRevisions: () => revisionsResult,
   setPlanContent: vi.fn(async () => ({ ok: true })),
   staleConflictOf: () => null,
   writeErrorOf: () => null,
 }));
 
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({ data: [], error: null, fetching: false, loading: false, invalidate: vi.fn() }),
+  useSyncQuery: (opts: { queryName: string }) => {
+    if (opts.queryName === 'featureTimeline.byFeature') {
+      return { data: featureTimelineEvents, error: null, fetching: false, loading: false, invalidate: vi.fn() };
+    }
+    return { data: [], error: null, fetching: false, loading: false, invalidate: vi.fn() };
+  },
 }));
 
 // Heavy / Vditor / IPC children — stub to inert nodes (their own tests cover them).
-vi.mock('./PlanEditor', () => ({ default: () => <div data-testid="plan-editor" /> }));
+// The feature-badge click is exposed as a button so a test can drive
+// selectedFeatureId (and thus mount FeatureSlideOver) without a real Vditor render.
+vi.mock('./PlanEditor', () => ({
+  default: ({ onFeatureClick }: { onFeatureClick?: (id: string) => void }) => (
+    <div data-testid="plan-editor">
+      {onFeatureClick ? (
+        <button type="button" onClick={() => onFeatureClick('F-1')}>
+          open feature
+        </button>
+      ) : null}
+    </div>
+  ),
+}));
 vi.mock('./PlanJumpToItem', () => ({ default: () => null }));
 vi.mock('./LockBanner', () => ({ default: () => null }));
 vi.mock('./LintBanner', () => ({ default: () => null }));
@@ -84,6 +107,8 @@ function mkPlan(over: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   planResult = { data: null, loading: false, error: null };
+  revisionsResult = { data: [], loading: false };
+  featureTimelineEvents = [];
   refreshSpy.mockClear();
   setDataSpy.mockClear();
 });
@@ -182,5 +207,44 @@ describe('PlanDetail (plan-detail main pane)', () => {
     // The EditBar Save button is present in edit mode.
     expect(screen.getByRole('button', { name: /Save/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
+  });
+
+  // WI-5520 regression coverage: "PlanDetail popup crashes ('This view hit an
+  // error')" when opening a plan. The exact reported plan's data no longer
+  // exists to re-run the literal repro, but the report named two specific
+  // unguarded accesses as suspected culprits (rev.rationale/diffStat in the
+  // Activity feed, ev.kind in the feature timeline drawer) — both are hardened
+  // here, and these two tests assert the malformed-row shape renders instead
+  // of throwing.
+  it('renders an Activity revision with neither rationale nor diffStat without crashing', () => {
+    planResult = { data: mkPlan(), loading: false, error: null };
+    revisionsResult = {
+      data: [
+        {
+          id: 1,
+          authorKind: 'agent',
+          createdAt: Date.now(),
+          rationale: null,
+          // diffStat intentionally absent — older/malformed revision rows.
+        },
+      ],
+      loading: false,
+    };
+    expect(() =>
+      renderDetail(<PlanDetail slug="my-plan" onClose={() => {}} />, '?activity=open'),
+    ).not.toThrow();
+    expect(screen.getByText(/\+0 −0 lines/)).toBeTruthy();
+  });
+
+  it('renders a feature-timeline event with a null kind without crashing', () => {
+    planResult = { data: mkPlan(), loading: false, error: null };
+    featureTimelineEvents = [{ iso: new Date().toISOString(), kind: null, detail: null }];
+    renderDetail(<PlanDetail slug="my-plan" onClose={() => {}} />);
+    expect(() =>
+      fireEvent.click(screen.getByRole('button', { name: 'open feature' })),
+    ).not.toThrow();
+    // The slide-over mounted (its close button is present) and the null
+    // kind/detail rendered as empty rather than throwing.
+    expect(screen.getByLabelText('Close')).toBeTruthy();
   });
 });
