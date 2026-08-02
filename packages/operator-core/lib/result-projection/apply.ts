@@ -251,12 +251,25 @@ export function applyResultProjection<T extends ProjectableResult>(
     const items = result.content;
     if (!Array.isArray(items)) return result;
 
-    // A delta result reconstructs client-side from structured JSON in
+    // A genuine DELTA envelope reconstructs client-side from a patch payload in
     // content[0].text; appending a footer (or reshaping the body) breaks that
-    // parse. The delta protocol is itself a result-shrinking mechanism, so the
-    // caller loses nothing here beyond the projection — say so in _meta, which
-    // is not part of the parsed payload.
-    if (result._meta && (result._meta as { delta?: unknown }).delta != null) {
+    // parse, so it is skipped — noted in _meta, which is not part of what the
+    // client parses.
+    //
+    // But `_meta.delta` alone does NOT mean that. Every delta-CAPABLE tool
+    // stamps the block on ordinary responses too, to advertise the capability
+    // and carry the cursor: `mode:'full'` + `reason:'no_request'` is a normal
+    // full body from a caller who never asked for delta, and
+    // `reason:'proxy_reconstructed'` is a plain JSON row array the proxy
+    // rebuilt. Both are ordinary content that projects perfectly well.
+    //
+    // Guarding on mere PRESENCE therefore silently disabled this whole stage
+    // for every list tool in the catalog — caught only by running it live
+    // against work_items:list, which returned the full 4.8KB payload and no
+    // footer while every unit test passed. `mode` is the honest discriminator:
+    // 'full' means the body is normal, anything else means it is a patch.
+    const deltaMeta = (result._meta as { delta?: { mode?: unknown } } | undefined)?.delta;
+    if (deltaMeta != null && deltaMeta.mode !== 'full') {
       return {
         ...result,
         _meta: {
@@ -269,8 +282,9 @@ export function applyResultProjection<T extends ProjectableResult>(
             charsIn: 0,
             charsOut: 0,
             notes: [
-              'projection SKIPPED: this is a delta-protocol result, whose body is client-parsed JSON — ' +
-                'reshaping it would corrupt the reconstruction. Re-call without delta to project.',
+              `projection SKIPPED: this is a delta-protocol result (mode=${String(deltaMeta.mode)}), whose ` +
+                'body is a client-reconstructed patch — reshaping it would corrupt the reconstruction. ' +
+                'Re-call without delta to project.',
             ],
           } satisfies ProjectionReport,
         },
@@ -292,6 +306,30 @@ export function applyResultProjection<T extends ProjectableResult>(
         parsed = JSON.parse(working);
       } catch {
         parseOk = false;
+      }
+      // A structured tool result is routinely NOT one text item: the JSON
+      // payload is followed by advisory prose ("See also: …"), so the joined
+      // text does not parse even though the payload plainly does. Caught live
+      // on work_items:list, where `pick` reported "not JSON" against a body
+      // that visibly starts `[{"id":…`. Fall back to the first text item that
+      // DOES parse — that is the payload — and say that the advisory items
+      // were dropped rather than dropping them quietly.
+      if (!parseOk) {
+        for (const it of textItems) {
+          try {
+            parsed = JSON.parse(it.text);
+            parseOk = true;
+            if (textItems.length > 1) {
+              notes.push(
+                `pick applied to the JSON payload item; ${textItems.length - 1} advisory text item(s) ` +
+                  `(e.g. "See also" routing hints) were dropped — re-call without \`pick\` to keep them.`,
+              );
+            }
+            break;
+          } catch {
+            /* not this one — keep looking */
+          }
+        }
       }
       if (!parseOk) {
         notes.push(

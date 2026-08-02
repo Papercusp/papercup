@@ -194,6 +194,23 @@ describe('applyResultProjection — pick (structured, D-041 tier 3)', () => {
     expect(bodyText(out).trim()).toBe('"id": "WI-2"');
   });
 
+  it('finds the JSON PAYLOAD item when advisory prose follows it (the live work_items:list shape)', () => {
+    // Structured results are routinely two text items: the payload, then a
+    // "See also:" routing hint. Joining them makes the whole thing unparseable,
+    // so a naive parse reports "not JSON" against a body that visibly starts
+    // `[{"id":…`. This is the shape that broke it live.
+    const multi = {
+      content: [
+        { type: 'text' as const, text: JSON.stringify([{ id: 'WI-1', state: 'open', bulk: 'x'.repeat(500) }]) },
+        { type: 'text' as const, text: 'See also: work_items:claimable (…routing hint…)' },
+      ],
+    };
+    const out = applyResultProjection(multi, spec({ pick: ['[].id'] }));
+    expect(JSON.parse(bodyText(out))).toEqual([{ id: 'WI-1' }]);
+    expect(footerOf(out)).toContain('advisory text item(s)');
+    expect(bodyText(out)).not.toContain('See also');
+  });
+
   it('a NON-JSON body fails OPEN, and the reason reaches the in-band footer', () => {
     const out = applyResultProjection(textResult('just some log text'), spec({ pick: ['a.b'] }));
     expect(bodyText(out)).toBe('just some log text');
@@ -238,12 +255,39 @@ describe('parsePickPath / applyPick', () => {
 });
 
 describe('applyResultProjection — safety contracts', () => {
-  it('SKIPS a delta result: reshaping it would corrupt the client-side parse', () => {
-    const delta = { content: [{ type: 'text' as const, text: '{"delta":1}' }], _meta: { delta: { seq: 1 } } };
+  it('SKIPS a genuine delta ENVELOPE: reshaping it would corrupt the client-side parse', () => {
+    const delta = {
+      content: [{ type: 'text' as const, text: '{"delta":1}' }],
+      _meta: { delta: { mode: 'delta', seq: 1 } },
+    };
     const out = applyResultProjection(delta, spec({ pipe: [{ op: 'head', n: 1 }] }));
     expect(out.content).toEqual(delta.content); // body untouched — no footer appended
     expect(reportOf(out)).toMatchObject({ applied: false });
     expect(reportOf(out).notes.join(' ')).toContain('delta');
+  });
+
+  it('still PROJECTS a delta-CAPABLE result whose body is normal (mode:"full")', () => {
+    // Regression guard for the bug that live verification caught and every unit
+    // test missed: every delta-capable tool stamps `_meta.delta` on ORDINARY
+    // responses to advertise the capability and carry a cursor. Skipping on the
+    // block's mere presence silently disabled the whole stage for every list
+    // tool in the catalog. `mode` is the discriminator, not presence.
+    const capable = {
+      content: [{ type: 'text' as const, text: 'a\nb\nc' }],
+      _meta: { delta: { mode: 'full', reason: 'no_request', itemKeyField: 'id' } },
+    };
+    const out = applyResultProjection(capable, spec({ pipe: [{ op: 'head', n: 1 }] }));
+    expect(bodyText(out)).toBe('a');
+    expect(reportOf(out)).toMatchObject({ applied: true });
+  });
+
+  it('projects a proxy-RECONSTRUCTED full body too — it is plain JSON rows, not a patch', () => {
+    const reconstructed = {
+      content: [{ type: 'text' as const, text: '[{"id":"a"},{"id":"b"}]' }],
+      _meta: { delta: { mode: 'full', reason: 'proxy_reconstructed' }, deltaProxy: { reconstructedFull: true } },
+    };
+    const out = applyResultProjection(reconstructed, spec({ pick: ['[].id'] }));
+    expect(JSON.parse(bodyText(out))).toEqual([{ id: 'a' }, { id: 'b' }]);
   });
 
   it('drops structuredContent — and says so in the footer, not only in _meta', () => {
