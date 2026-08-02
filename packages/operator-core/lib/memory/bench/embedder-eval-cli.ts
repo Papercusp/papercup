@@ -5,7 +5,8 @@
  *     [--legs gemma,local,openai,harrier,harrier384,sidecar[:model],ollama:<model>] \
  *     [--corpus memory|prose] \
  *     [--sidecar http://127.0.0.1:PORT] [--ollama http://127.0.0.1:11434] \
- *     [--dims 384] [--out <path.json>]
+ *     [--dims 384] [--out <path.json>] \
+ *     [--baseline <leg>] [--compare-with <prior-run.json>]
  *
  * An MRL WIDTH SWEEP is written `--legs gemma@768,gemma@512,gemma@384,gemma@256`:
  * siblings of one family cost ONE forward pass at the widest width, with the
@@ -355,7 +356,12 @@ function scoreLeg(
 }
 
 async function main(): Promise<void> {
-  const legNames = argValue('--legs')?.split(',') ?? ['gemma', 'local'];
+  // `--legs none` embeds nothing: a PURE ANALYSIS pass that only re-compares
+  // runs already on disk (paired stats are computed from stored per-query rows,
+  // so re-deriving a verdict — or comparing two past runs against each other —
+  // must not cost another corpus pass).
+  const legsArg = argValue('--legs');
+  const legNames = legsArg === 'none' ? [] : (legsArg?.split(',').filter(Boolean) ?? ['gemma', 'local']);
   const sidecarUrl = argValue('--sidecar');
   const ollamaUrl = argValue('--ollama') ?? 'http://127.0.0.1:11434';
   const outPath =
@@ -385,6 +391,42 @@ async function main(): Promise<void> {
   console.log(
     `corpus=${corpusChoice}/${corpusVersion} docs=${corpusKeys.length} queries=${gold.queries.length} legs=${legNames.join(',')}`,
   );
+
+  // Validate --compare-with BEFORE embedding anything. Discovering a fixture
+  // mismatch after a 20-minute corpus pass would be a pointlessly expensive way
+  // to learn it, so this is checked while it is still free.
+  type PriorRun = {
+    path: string;
+    corpus?: string;
+    corpusVersion?: string;
+    goldSetVersion?: string;
+    results?: Record<string, unknown>;
+  };
+  const comparePaths = (argValue('--compare-with') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const priorRuns: PriorRun[] = [];
+  for (const p of comparePaths) {
+    const prior = { path: p, ...(JSON.parse(fs.readFileSync(p, 'utf8')) as Omit<PriorRun, 'path'>) };
+    // A cross-run comparison is only meaningful on the SAME corpus and the SAME
+    // queries. A mismatch would still yield a confident-looking CI computed
+    // over queries that are not the same queries — refuse rather than mislead.
+    // Checked BEFORE embedding, while it is still free.
+    if (
+      prior.corpus !== corpusChoice ||
+      prior.corpusVersion !== corpusVersion ||
+      prior.goldSetVersion !== gold.version
+    ) {
+      console.error(
+        `--compare-with REFUSED: fixture mismatch. this run = ${corpusChoice}/${corpusVersion} gold ${gold.version}; ` +
+          `${p} = ${prior.corpus}/${prior.corpusVersion} gold ${prior.goldSetVersion}. ` +
+          `Comparing legs scored on different queries is not a comparison.`,
+      );
+      process.exit(1);
+    }
+    priorRuns.push(prior);
+  }
 
   const results: Record<string, unknown> = {};
 
@@ -481,36 +523,16 @@ async function main(): Promise<void> {
   // SAME width across runtimes — in-process vs the production sidecar — which
   // is the only way to check that a bench verdict transfers to what actually
   // ships.
-  const compareWith = argValue('--compare-with');
-  if (compareWith) {
-    const prior = JSON.parse(fs.readFileSync(compareWith, 'utf8')) as {
-      corpusVersion?: string;
-      goldSetVersion?: string;
-      corpus?: string;
-      results?: Record<string, unknown>;
-    };
-    // A cross-run comparison is only meaningful on the SAME queries and the
-    // same corpus. Mismatched fixtures would still produce a confident-looking
-    // CI over queries that are not the same queries — refuse instead.
-    const mismatch =
-      prior.corpus !== corpusChoice || prior.corpusVersion !== corpusVersion || prior.goldSetVersion !== gold.version;
-    if (mismatch) {
-      console.error(
-        `--compare-with REFUSED: fixture mismatch. this run = ${corpusChoice}/${corpusVersion} gold ${gold.version}; ` +
-          `${compareWith} = ${prior.corpus}/${prior.corpusVersion} gold ${prior.goldSetVersion}. ` +
-          `Comparing legs scored on different queries is not a comparison.`,
-      );
-      process.exit(1);
-    }
-    const label = path.basename(compareWith).replace(/\.json$/, '');
+  for (const prior of priorRuns) {
+    const label = path.basename(prior.path).replace(/\.json$/, '');
     for (const [name, leg] of Object.entries(prior.results ?? {})) {
       if (!hasPerQuery(leg)) continue;
       const merged = `${label}:${name}`;
-      results[merged] = { ...(leg as object), fromRun: compareWith };
+      results[merged] = { ...(leg as object), fromRun: prior.path };
       scoredLegs.push([merged, leg]);
     }
-    console.log(`\nfolded ${scoredLegs.length} total legs (incl. prior run ${compareWith})`);
   }
+  if (priorRuns.length) console.log(`\nfolded ${scoredLegs.length} legs total (incl. ${priorRuns.length} prior run(s))`);
   const baselineName = argValue('--baseline') ?? scoredLegs[0]?.[0];
   const comparisons: Record<string, unknown> = {};
   const baseline = scoredLegs.find(([n]) => n === baselineName);

@@ -59,6 +59,7 @@
     "scripts/lib/vitest-summary.mjs",
     "scripts/proc-guard.mjs",
     "scripts/lib/tsc-baseline-gate.mjs",
+    "scripts/lib/identity-leak-patterns.mjs",
     "scripts/check-vacuous-negative-assertions.mjs",
     "scripts/check-no-ungated-infinite-animation.mjs",
     "scripts/lint-tsc.mjs",

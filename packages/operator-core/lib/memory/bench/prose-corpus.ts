@@ -51,6 +51,10 @@ import crypto from 'node:crypto';
 
 import type { CorpusEntry } from '@papercusp/memory/bench';
 
+// The SAME module the three gate lints and the edit-time hook import — so the scrub applied at
+// generation time and the leak definition enforced at commit time cannot drift (WI-6992).
+import { redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
+
 export const PROSE_CORPUS_FIXTURE_VERSION = 'v1';
 
 const FIXTURES_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures');
@@ -157,10 +161,66 @@ export function loadProseCorpusFixtureMeta(
   return JSON.parse(fs.readFileSync(file, 'utf8')) as ProseCorpusFixture;
 }
 
-/** Write a prose corpus snapshot as a frozen fixture (deliberate versioning). */
+/**
+ * Scrub identity leaks out of a harvested fixture, in place, returning a new envelope.
+ *
+ * ## Why this exists (WI-6992)
+ *
+ * The corpus is harvested from LIVE workspace prose — doc pages, session transcripts, plans —
+ * and that prose legitimately contains real names, home paths and this box's git identity. The
+ * fixture is then COMMITTED SOURCE, and tracked source is packed into the release bundle
+ * (source.tar.zst), so every one of those is a leak the moment it lands.
+ *
+ * It is not hypothetical. The v1 snapshot shipped 26 named provenance tags, 113 bare box
+ * literals and 24 home paths, red-pinning all three identity lints and holding `main` for the
+ * whole fleet ~6.8h on 2026-08-02. The generator had no redaction at all, so the artifact was
+ * scrubbed by hand — which fixes one file and leaves the trap armed for the next regeneration.
+ * This is the durable half: the scrub now happens at the single point every fixture write goes
+ * through, so a corpus cannot be generated dirty.
+ *
+ * The redactor is imported from the SAME module as the three gate matchers rather than
+ * reimplemented here, so "what is a leak" has exactly one definition (see the header of
+ * scripts/lib/identity-leak-patterns.mjs).
+ *
+ * ## Keys are verified, never rewritten
+ *
+ * `prose-gold-set.v1.json` binds its expected keys to this corpus version — "regenerate BOTH
+ * together, never in place". Silently redacting a KEY would therefore break the gold set in a
+ * way that surfaces as an unrelated retrieval-scoring failure much later. So keys are CHECKED
+ * and a leak in one is a loud throw: it needs a deliberate decision (re-key the entry, or
+ * regenerate both fixtures together), not a quiet rewrite.
+ */
+export function redactProseCorpusFixture(fixture: ProseCorpusFixture): ProseCorpusFixture {
+  const offendingKeys: string[] = [];
+  const entries = fixture.entries.map((e) => {
+    if (redactIdentityLeaks(e.key) !== e.key) offendingKeys.push(e.key);
+    const text = redactIdentityLeaks(e.text);
+    const description =
+      typeof e.description === 'string' ? redactIdentityLeaks(e.description) : e.description;
+    return { ...e, text, ...(description !== undefined ? { description } : {}) };
+  });
+
+  if (offendingKeys.length > 0) {
+    throw new Error(
+      `prose corpus: ${offendingKeys.length} entry KEY(s) carry an identity leak, e.g. ` +
+        `${offendingKeys.slice(0, 3).join(', ')}. Keys are not auto-redacted because the gold ` +
+        `set binds to them — re-key those entries or regenerate corpus + gold set together.`,
+    );
+  }
+
+  return { ...fixture, note: redactIdentityLeaks(fixture.note), entries };
+}
+
+/**
+ * Write a prose corpus snapshot as a frozen fixture (deliberate versioning).
+ *
+ * Redaction is applied HERE, at the single choke point, rather than in the snapshot CLI — so a
+ * second generator (or a future re-sampler) cannot reintroduce the leak by forgetting to call
+ * it. See `redactProseCorpusFixture` for the incident behind this.
+ */
 export function writeProseCorpusFixture(fixture: ProseCorpusFixture): string {
   const file = path.join(FIXTURES_DIR, `prose-corpus.${fixture.version}.json`);
   fs.mkdirSync(FIXTURES_DIR, { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(fixture, null, 2) + '\n', 'utf8');
+  fs.writeFileSync(file, JSON.stringify(redactProseCorpusFixture(fixture), null, 2) + '\n', 'utf8');
   return file;
 }
