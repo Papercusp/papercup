@@ -24,11 +24,12 @@ import {
   type SubscribeHandle as LibSubscribeHandle,
   type NotifyInvalidateOpts,
 } from '@papercusp/sync/server';
-import { createPgListenSource, createPgNotifySink } from '@papercusp/sync/server/pg';
+import { createPgListenSource, createPgNotifySink, type PgSqlLike } from '@papercusp/sync/server/pg';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { queryNamesForTriggerEvent } from './sync-resolver/table-to-query-names';
 import { getOperatorCache } from './cache/instance';
 import { emitSystemEvent } from './events/engine';
+import { hubListen, listenHubEnabled } from './pg-listen-hub';
 
 export type SyncEvent = LibSyncEvent;
 export type SubscribeHandle = LibSubscribeHandle;
@@ -82,6 +83,36 @@ function runInvalidationListenHooks(): void {
 }
 
 /**
+ * `createPgListenSource`'s `open()` returns a `PgSqlLike` — something with a
+ * `.listen(channel, onNotify, onListen)` + optional `.end()`. When the shared
+ * listen-hub is enabled (EI-19285171982840672 / pg-listen-hub.ts), this shim
+ * routes `sync_invalidate`'s LISTEN onto that ONE shared per-process backend
+ * instead of opening a dedicated connection — the 5th and last of the
+ * homogeneous wake buses to join it. `onListen` (the cold-bust cache-clear
+ * hook) is passed straight through: postgres-js re-invokes it on reconnect,
+ * per-channel, independent of the hub's other subscribers.
+ *
+ * Never called as a template tag — `createPgListenSource` only calls
+ * `.listen()`/`.end()` on what `open()` returns — so the callable half of
+ * `PgSqlLike` is a defensive throw, never reached in practice.
+ */
+function hubBackedListenSource(): PgSqlLike {
+  let unsub: (() => void) | null = null;
+  const fn = ((..._args: unknown[]) => {
+    throw new Error('[sync-sse] hub-backed listen source does not support direct queries');
+  }) as unknown as PgSqlLike;
+  fn.listen = async (channel, onNotify, onListen) => {
+    unsub = await hubListen(channel, onNotify, onListen);
+    return undefined;
+  };
+  fn.end = async () => {
+    unsub?.();
+    unsub = null;
+  };
+  return fn;
+}
+
+/**
  * Bridge a raw PG-trigger `<schema>.<table>.changed` event to the camelCase query names
  * existing useSyncQuery consumers subscribe to (P-006/P-067) — AND tap it into the in-process
  * reaction matcher (caching-layer-tag-eca KEYSTONE) so the `cache.bumpTags` ECA rule, and any
@@ -105,18 +136,22 @@ export function bridgeTriggerEvent(
 }
 
 const bus = createInvalidationBus({
-  // Dedicated single LISTEN connection on the embedded-PG admin URL.
+  // Onto the shared listen-hub when enabled (server-class hosts, default ON —
+  // see hubBackedListenSource above); a dedicated single LISTEN connection on
+  // the embedded-PG admin URL otherwise (desktop / PAPERCUSP_LISTEN_HUB=0).
   listen: createPgListenSource({
     // EI-18122461766429683: tagged + zombie-safe — this untagged, unreaped singleton
     // (one per operator-host process, never closed on an abrupt kill/restart) was a
     // major contributor to the server-wide PG connection-saturation crit.
     open: () =>
-      postgres(getHarnessAdminUrl(), {
-        ...longLivedPoolConnectionOptions('sync-sse-listen'),
-        max: 1,
-        idle_timeout: 0,
-        connect_timeout: 30,
-      }),
+      listenHubEnabled()
+        ? hubBackedListenSource()
+        : postgres(getHarnessAdminUrl(), {
+            ...longLivedPoolConnectionOptions('sync-sse-listen'),
+            max: 1,
+            idle_timeout: 0,
+            connect_timeout: 30,
+          }),
     channel: CHANNEL,
     // caching-layer-tag-eca P-017 — cold-bust on (re)connect. Fires on the initial
     // LISTEN AND every reconnect (postgres-js re-issues LISTEN after a dropped

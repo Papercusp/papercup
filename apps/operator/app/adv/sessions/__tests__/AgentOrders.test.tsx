@@ -22,7 +22,7 @@
  *      exists.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, within } from '@testing-library/react';
 import AgentOrders from '../AgentOrders';
 import { carryStaleness, formatAgeShort, type AgentOrders as AgentOrdersDTO } from '../use-agent-orders';
 
@@ -220,11 +220,15 @@ describe('AgentOrders', () => {
           { mode: 'ideate', reason: null, setBy: 'su-1', ownerDirected: false, setAt: null },
         ],
       });
-      const { getByText } = render(<AgentOrders ownerId="su-1" />);
+      const { container } = render(<AgentOrders ownerId="su-1" />);
+      // Scoped to the Modes section on purpose: the Mission section's `route`
+      // is also the literal string "self", so an unscoped getByText matches two
+      // unrelated elements and passes for the wrong reason.
+      const modes = within(container.querySelector('#pc-orders-modes') as HTMLElement);
       // Different authority — an agent that put ITSELF in a mode is a
       // different fact from one the owner directed.
-      expect(getByText('owner')).toBeTruthy();
-      expect(getByText('self')).toBeTruthy();
+      expect(modes.getByText('owner')).toBeTruthy();
+      expect(modes.getByText('self')).toBeTruthy();
     });
 
     it('warns that a MANUAL-wake agent stages messages, because the composer above reports "Sent" either way', () => {

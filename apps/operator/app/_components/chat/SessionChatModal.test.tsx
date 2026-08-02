@@ -70,6 +70,16 @@ vi.mock('../plans/PlanPopupModal', () => ({
 vi.mock('./FleetLaunchRow', () => ({
   default: () => <div data-testid="fleet-launch-row-stub" />,
 }));
+// P-001 D-003 (2026-08-02): the desktop half of full-screen. Mocked to spies so
+// this file asserts the modal's BRANCH (which mechanism it reaches for, and
+// whether it gives the window back) — the module's own ownership/soft-fail
+// contract is covered by desktop-window-fullscreen.test.ts.
+const desktopFs = vi.hoisted(() => ({
+  isDesktopShell: vi.fn(() => false),
+  enterDesktopWindowFullscreen: vi.fn(async () => ({ active: true, owned: true })),
+  exitDesktopWindowFullscreen: vi.fn(async () => {}),
+}));
+vi.mock('@/lib/desktop-window-fullscreen', () => desktopFs);
 // hud-first-nav-and-dossier-2026-07-26 P-003: AgentDossier's own behavior is
 // covered by AgentDossier.test.tsx — stubbed here (same pattern as
 // WorkItemPopupModal/PlanPopupModal above) to a tiny probe asserting only
@@ -1536,6 +1546,9 @@ describe('SessionChatModal', () => {
     // test would pass whether or not the click did anything.
     beforeEach(() => {
       for (const s of Object.values(nuqsSetters)) s.mockClear();
+      desktopFs.isDesktopShell.mockReset().mockReturnValue(false);
+      desktopFs.enterDesktopWindowFullscreen.mockReset().mockResolvedValue({ active: true, owned: true });
+      desktopFs.exitDesktopWindowFullscreen.mockReset().mockResolvedValue(undefined);
     });
 
     function seedRoster(entries: Array<Record<string, unknown>>) {
@@ -1687,6 +1700,130 @@ describe('SessionChatModal', () => {
       expect(document.activeElement).not.toBe(screen.getByTestId('session-chat-full-window'));
       // Focusable for the redirect, but never a Tab stop of its own.
       expect(region.getAttribute('tabindex')).toBe('-1');
+    });
+
+    /**
+     * D-003 — the desktop half, and the bug that produced it.
+     *
+     * [owner 2026-08-02, verbatim] "both fullscreen buttons do the same thing.
+     * one of them is supposed to full screen on the full desktop display not
+     * just the window".
+     *
+     * Inside the Tauri webview `requestFullscreen()` cannot reach the window
+     * manager: the element grows to fill the WEBVIEW, which is pixel-for-pixel
+     * what `window` mode already produces — so the two controls converged. The
+     * assertion that actually guards the fix is therefore about WHICH MECHANISM
+     * is reached for, because a test that only checked `chatMax === 'screen'`
+     * passes against the broken build (it set that too, over identical pixels).
+     */
+    describe('D-003 desktop: full screen must leave the webview', () => {
+      /** Give jsdom a Fullscreen API so "the DOM path was NOT taken" is a real
+       *  assertion rather than one satisfied by jsdom's missing implementation. */
+      function withDomFullscreen(fn: (spy: ReturnType<typeof vi.fn>) => Promise<void>) {
+        const spy = vi.fn().mockResolvedValue(undefined);
+        (HTMLElement.prototype as unknown as { requestFullscreen: unknown }).requestFullscreen =
+          function (this: HTMLElement) {
+            return spy(this);
+          };
+        return fn(spy).finally(() => {
+          delete (HTMLElement.prototype as unknown as { requestFullscreen?: unknown }).requestFullscreen;
+        });
+      }
+
+      it('drives the WINDOW and never the document', async () => {
+        desktopFs.isDesktopShell.mockReturnValue(true);
+        await withDomFullscreen(async (requestFullscreen) => {
+          await renderResolved();
+          fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+
+          await waitFor(() => expect(desktopFs.enterDesktopWindowFullscreen).toHaveBeenCalled());
+          // The whole fix: on the desktop the DOM API is not merely redundant,
+          // it is the thing that made this control a duplicate of full-window.
+          expect(requestFullscreen).not.toHaveBeenCalled();
+          await waitFor(() => expect(nuqsSetters.chatMax).toHaveBeenCalledWith('screen'));
+        });
+      });
+
+      it('falls back to full window when the window refuses — an older shell whose baked ACL lacks set-fullscreen', async () => {
+        desktopFs.isDesktopShell.mockReturnValue(true);
+        desktopFs.enterDesktopWindowFullscreen.mockResolvedValue({ active: false, owned: false });
+        await renderResolved();
+
+        fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+        // Never a dead button — same rule as the browser fallback above.
+        await waitFor(() => expect(nuqsSetters.chatMax).toHaveBeenCalledWith('window'));
+      });
+
+      it('gives the window back when full screen is toggled off', async () => {
+        desktopFs.isDesktopShell.mockReturnValue(true);
+        const { rerender } = await renderResolved();
+        fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+        await waitFor(() => expect(nuqsSetters.chatMax).toHaveBeenCalledWith('screen'));
+
+        nuqs.chatMax = 'screen';
+        rerenderOpen(rerender);
+        fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+        await waitFor(() => expect(desktopFs.exitDesktopWindowFullscreen).toHaveBeenCalled());
+        await waitFor(() => expect(nuqsSetters.chatMax).toHaveBeenCalledWith(null));
+      });
+
+      it('never takes away a fullscreen the user set themselves (adopted, not owned)', async () => {
+        desktopFs.isDesktopShell.mockReturnValue(true);
+        desktopFs.enterDesktopWindowFullscreen.mockResolvedValue({ active: true, owned: false });
+        const { rerender } = await renderResolved();
+        fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+        await waitFor(() => expect(nuqsSetters.chatMax).toHaveBeenCalledWith('screen'));
+
+        nuqs.chatMax = 'screen';
+        rerenderOpen(rerender);
+        fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+        // The layout mode goes away; the window the user had already
+        // fullscreened does NOT.
+        await waitFor(() => expect(nuqsSetters.chatMax).toHaveBeenCalledWith(null));
+        expect(desktopFs.exitDesktopWindowFullscreen).not.toHaveBeenCalled();
+      });
+
+      it('releases the window when the popup closes — never strands the app fullscreen', async () => {
+        desktopFs.isDesktopShell.mockReturnValue(true);
+        const { rerender } = await renderResolved();
+        fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+        await waitFor(() => expect(desktopFs.enterDesktopWindowFullscreen).toHaveBeenCalled());
+
+        nuqs.chatMax = 'screen';
+        rerenderOpen(rerender);
+        fireEvent.click(screen.getByTestId('session-chat-close'));
+        // Otherwise the whole app stays on the display with the control that
+        // would undo it no longer rendered.
+        await waitFor(() => expect(desktopFs.exitDesktopWindowFullscreen).toHaveBeenCalled());
+      });
+
+      it('Escape leaves desktop full screen instead of doing nothing', async () => {
+        // The dialog's own Escape handler is disarmed while `screen` is active
+        // (in the browser the UA consumes the key). On the desktop nothing
+        // consumes it, so without this the only way out is one corner icon on a
+        // fullscreen window.
+        desktopFs.isDesktopShell.mockReturnValue(true);
+        const { rerender } = await renderResolved();
+        fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+        await waitFor(() => expect(desktopFs.enterDesktopWindowFullscreen).toHaveBeenCalled());
+        nuqs.chatMax = 'screen';
+        rerenderOpen(rerender);
+        nuqsSetters.chatMax.mockClear();
+
+        fireEvent.keyDown(document, { key: 'Escape' });
+        await waitFor(() => expect(desktopFs.exitDesktopWindowFullscreen).toHaveBeenCalled());
+        await waitFor(() => expect(nuqsSetters.chatMax).toHaveBeenCalledWith(null));
+      });
+
+      it('leaves the browser on the DOM path — the desktop branch must not swallow it', async () => {
+        // isDesktopShell() stays false (the beforeEach default).
+        await withDomFullscreen(async (requestFullscreen) => {
+          await renderResolved();
+          fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+          await waitFor(() => expect(requestFullscreen).toHaveBeenCalled());
+          expect(desktopFs.enterDesktopWindowFullscreen).not.toHaveBeenCalled();
+        });
+      });
     });
 
     it('leaving fullscreen by Esc/F11 clears the mode (the DOM is the authority, not our own flag)', async () => {

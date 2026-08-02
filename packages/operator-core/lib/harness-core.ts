@@ -344,6 +344,37 @@ export async function checkHomeHarnessResolves(
  *      (a genuine cross-workspace slug collision, never picked silently); none →
  *      null (the caller fails loud).
  */
+/**
+ * EI-19286551248996972: thrown by {@link resolveWorkspaceForHarnessSlugIn} when the
+ * registry could not be READ at all (a dead pool, a statement timeout, a transient
+ * PG blip) — as opposed to a genuine, successfully-read "this slug carries no
+ * project in any workspace" absence. The two used to be indistinguishable: both
+ * paths returned a bare `null`, which every caller (fill_workspace_id_from_projects
+ * → resolvePlanScope → plans:list's regex-keyed swallow) treated as authoritative
+ * proof of non-registration — so a transient read fault silently became the
+ * confident assertion "register the harness", and `plans:list`/`plans:get` returned
+ * `ok:true` with an EMPTY result for a harness that in fact carried live rows (960,
+ * in the incident that filed this). Deliberately a DISTINCT class (not reusing the
+ * generic `Error` `resolveWorkspaceForHarnessSlug:` ambiguous-collision throw two
+ * lines below, and deliberately NOT containing the phrases "not registered" / "not a
+ * Hive home" that `plans:list`'s regex swallow and `isUnresolvablePlanScopeError`
+ * key off of) so it propagates as a LOUD, visible failure through the whole call
+ * chain instead of being folded into the same silent-absence handling.
+ */
+export class RegistryReadUnavailableError extends Error {
+  constructor(slug: string, cause: unknown) {
+    super(
+      `resolveWorkspaceForHarnessSlug: could not READ the harness registry for slug '${slug}' — ` +
+        `the read itself failed (a transient DB/pool fault), so registration status is UNKNOWN, not ` +
+        `confirmed absent. Retry, or investigate the underlying read failure, before concluding this ` +
+        `harness needs registering.` +
+        (cause instanceof Error ? ` Underlying: ${cause.message}` : ''),
+    );
+    this.name = 'RegistryReadUnavailableError';
+    this.cause = cause;
+  }
+}
+
 export async function resolveWorkspaceForHarnessSlug(slug: string): Promise<string | null> {
   return resolveWorkspaceForHarnessSlugIn(activeWorkspaceId(), slug);
 }
@@ -367,11 +398,19 @@ export async function resolveWorkspaceForHarnessSlugIn(
 ): Promise<string | null> {
   const raw = slug?.trim();
   if (!raw) return null;
+  // EI-19286551248996972: track whether either read GENUINELY FAILED (as opposed to
+  // succeeding and legitimately finding nothing) — a failure here must never be
+  // indistinguishable from a confirmed absence (see RegistryReadUnavailableError's
+  // doc above for the incident this closes).
+  let preferredReadFailed: unknown;
+  let crossWsReadFailed: unknown;
   // 1. Preferred-workspace-first (confined by default).
   try {
     const reg = await loadHarnessRegistry(preferredWs);
     if (reg.projects.some((p) => p.slug === raw)) return preferredWs;
-  } catch { /* preferred registry unreadable → fall through to the cross-ws scan */ }
+  } catch (e) {
+    preferredReadFailed = e; // fall through to the cross-ws scan
+  }
   // 2. Cross-workspace fallback — collision-aware.
   const carriers = new Set<string>();
   try {
@@ -380,8 +419,19 @@ export async function resolveWorkspaceForHarnessSlugIn(
       const reg = await loadHarnessRegistry(ws.id);
       if (reg.projects.some((p) => p.slug === raw)) carriers.add(ws.id);
     }
-  } catch { /* registry unreadable → treat as no cross-ws carriers */ }
-  if (carriers.size === 0) return null;
+  } catch (e) {
+    crossWsReadFailed = e; // treat as no cross-ws carriers OBSERVED (not confirmed absent)
+  }
+  if (carriers.size === 0) {
+    // EI-19286551248996972: nothing was found — but if EITHER leg never actually
+    // completed a read, "nothing was found" is not the same claim as "we looked
+    // everywhere and confirmed absence". Throw a distinguishable error rather than
+    // returning the same `null` a genuine absence returns.
+    if (preferredReadFailed !== undefined || crossWsReadFailed !== undefined) {
+      throw new RegistryReadUnavailableError(raw, preferredReadFailed ?? crossWsReadFailed);
+    }
+    return null;
+  }
   if (carriers.size > 1) {
     throw new Error(
       `resolveWorkspaceForHarnessSlug: harness slug '${raw}' is registered in ` +

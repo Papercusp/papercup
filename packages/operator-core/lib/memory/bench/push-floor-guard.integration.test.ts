@@ -153,16 +153,53 @@ describe('P-002 — the push path admits nothing off-topic and nothing below the
     expect(result.floors).toEqual(pushSearchFloors());
   });
 
-  it('(a) every off-topic query admits ZERO entries', () => {
+  /**
+   * P-002 as written asked for ZERO admitted entries on an off-topic query.
+   * D-057 REFUSED that criterion as unsatisfiable and re-derived this one; the
+   * refusal is the finding, so read that decision before "fixing" this test.
+   *
+   * MEASURED 2026-08-02: the hard-negative class's top cosine scores span
+   * 0.4658–0.6250 while the weakest ON-TOPIC query tops out at 0.5500. The
+   * ranges OVERLAP, so no single threshold admits every real hit and rejects
+   * every hard negative — ZERO is unreachable at any floor. (D-006 calibrated
+   * 0.45 when the classes WERE separable, ~0.385 vs ~0.51–0.58; the embedder
+   * flip to harrier@1024 invalidated that and nobody re-swept.)
+   *
+   * What IS both satisfiable and exactly the defect: a floor below the off-topic
+   * class's MINIMUM top score is arithmetically incapable of rejecting a single
+   * off-topic query. That is the live state (0.45 < 0.4658 → 0 of 30 rejected),
+   * and this assertion goes green the moment the floor is re-calibrated above
+   * that line.
+   *
+   * ⚠ Deliberately NOT an admission-RATE ratchet ("no worse than 30/30"). At
+   * 30/30 such a bound sits on its own ceiling and asserts nothing — the
+   * pinned-statistic trap this plan has now hit four times (fpAt5, top_score,
+   * turn-start hit_count/D-054, and this).
+   */
+  it('(a) the configured floor is high enough to reject SOME off-topic query', () => {
+    const neg = result.spread.find((s) => s.className === 'hard-negative');
+    expect(neg, 'no hard-negative class in the probe set').toBeDefined();
+    const floor = result.floors.minScore;
+    expect(floor, 'no cosine floor configured').toBeGreaterThan(0);
     const admitting = result.offTopic.filter((o) => o.admitted > 0);
     const detail = admitting
-      .slice(0, 5)
+      .slice(0, 3)
       .map((o) => `  ${o.queryId} "${o.query}" → ${o.admitted}: ${o.entries.map((e) => e.text.slice(0, 60)).join(' | ')}`)
       .join('\n');
     expect(
-      admitting.length,
-      `${admitting.length}/${result.offTopic.length} off-topic queries admitted entries:\n${detail}`,
-    ).toBe(0);
+      floor,
+      `the cosine floor ${floor} sits at or below the WEAKEST off-topic query's top score ` +
+        `(${neg!.min.toFixed(4)}), so it cannot reject ANY off-topic query — ${admitting.length}/` +
+        `${result.offTopic.length} admitted, mean ${(
+          result.offTopic.reduce((s, o) => s + o.admitted, 0) / result.offTopic.length
+        ).toFixed(1)} entries each. Re-sweep the floor (bench/floor-sweep-cli.ts); see D-056/D-057.\n${detail}`,
+    ).toBeGreaterThan(neg!.min);
+  });
+
+  it('reports the separation spread as evidence (never asserts ZERO — see D-057)', () => {
+    // Not a pass/fail bar: the spread is the artifact a future re-sweep reads.
+    expect(result.spread.length).toBeGreaterThan(1);
+    expect(result.spread.every((s) => s.queries > 0 && s.min <= s.median && s.median <= s.max)).toBe(true);
   });
 
   it('(b) no admitted entry scores below the configured cosine floor', () => {

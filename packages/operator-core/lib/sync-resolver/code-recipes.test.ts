@@ -1,11 +1,14 @@
 /**
  * codeRecipes + recipeCandidates resolver coverage (code-recipes-2026-06-21 P-009).
  *
- * Asserts both queries are registered, that codeRecipes returns the hive-scoped
- * recipe rows from listRecipes() in order, and that recipeCandidates wraps the
- * { promoteCandidates, mergeClusters } envelope in a single flat row (the resolver
- * flat-row contract). The store + candidate scorer are mocked — this is the
- * resolver wiring (arg → workspace/hive resolution → shape), not the SQL.
+ * Asserts both queries are registered, that codeRecipes returns the recipe rows
+ * from listRecipes() in order PROJECTED to the UI read set (WI-7085), and that
+ * recipeCandidates wraps the { promoteCandidates, mergeClusters } envelope in a
+ * single flat row (the resolver flat-row contract). The store + candidate scorer
+ * are mocked — this is the resolver wiring (arg → shape), not the SQL.
+ *
+ * Recipes are GLOBAL (data-scoping-audit-2026-06-22 P-001, reversing D-005), so
+ * there is no hive narrowing to assert here — only that none is attempted.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -32,13 +35,14 @@ vi.mock('../recipe-cooccurrence-leg', () => ({ buildRecipeCooccurrenceDep: H.bui
 
 import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';
 
+/** A CodeRecipeListRow as listRecipes() now returns it — no `script`, which the
+ *  store stopped SELECTing under WI-7085 (no list caller ever read it). */
 const RECIPE = {
   id: 'fetch-and-summarize',
   workspaceId: 'ws-1',
   potSlug: 'papercusp',
   title: 'Fetch and summarize',
   description: 'pulls a URL then summarizes',
-  script: '// ...',
   authorRole: 'operator',
   toolsUsed: ['fetch:get', 'llm:summarize'],
   runCount: 7,
@@ -52,6 +56,19 @@ const RECIPE = {
   createdBy: 'owner:abc',
   createdAt: '2026-06-20T00:00:00.000Z',
   updatedAt: '2026-06-21T00:00:00.000Z',
+};
+
+/** What the UI actually renders/sorts/filters on — everything else is projected off. */
+const PROJECTED = {
+  id: 'fetch-and-summarize',
+  title: 'Fetch and summarize',
+  description: 'pulls a URL then summarizes',
+  authorRole: 'operator',
+  toolsUsed: ['fetch:get', 'llm:summarize'],
+  runCount: 7,
+  successCount: 6,
+  lastRunAt: '2026-06-21T00:00:00.000Z',
+  status: 'active',
 };
 
 describe('codeRecipes resolver', () => {
@@ -69,16 +86,38 @@ describe('codeRecipes resolver', () => {
     expect(names).toContain('recipeCandidates');
   });
 
-  it('returns the hive-scoped recipe rows from listRecipes() with the true total on row[0]._meta', async () => {
+  it('returns the recipe rows from listRecipes() with the true total on row[0]._meta', async () => {
     H.countRecipes.mockResolvedValue(42);
-    const rows = (await resolveNamedQueryV2('codeRecipes', {})) as Array<typeof RECIPE & { _meta?: { total?: number } }>;
-    // The row data is preserved; row[0] carries the capped-aware total via attachListMeta.
-    expect(rows[0]).toMatchObject(RECIPE);
+    const rows = (await resolveNamedQueryV2('codeRecipes', {})) as Array<
+      Record<string, unknown> & { _meta?: { total?: number } }
+    >;
+    // Every field the UI reads survives; row[0] carries the capped-aware total via
+    // attachListMeta, which must be applied AFTER the projection or it is stripped.
+    expect(rows[0]).toMatchObject(PROJECTED);
     expect(rows[0]._meta).toEqual({ total: 42 });
     // recipes are GLOBAL (P-001): no workspace/hive filter; default LIMIT applied.
     expect(H.listRecipes).toHaveBeenCalledWith({}, { limit: 1000, includeTrivial: true });
     // COUNT is the true total (also global, no limit).
     expect(H.countRecipes).toHaveBeenCalledWith({});
+  });
+
+  it('projects rows to the UI read set — drops the unread columns and null-valued keys (WI-7085)', async () => {
+    const rows = (await resolveNamedQueryV2('codeRecipes', {})) as Array<Record<string, unknown>>;
+    // Unread columns never reach the wire. `script` is already gone one layer down
+    // (listRecipes stopped selecting it) — the rest are dropped by the projection.
+    for (const dead of ['script', 'potSlug', 'workspaceId', 'mergedInto', 'tags', 'hasEmbedding', 'createdBy', 'createdAt', 'updatedAt']) {
+      expect(rows[0], `${dead} must not reach the client`).not.toHaveProperty(dead);
+    }
+    // D-025: a null-valued key is OMITTED, not sent as `"k":null`. promotedTool is
+    // in the read set but null on every live row, so it costs nothing on the wire.
+    expect(rows[0]).not.toHaveProperty('promotedTool');
+    expect(Object.values(rows[0]).some((v) => v === null)).toBe(false);
+  });
+
+  it('keeps a NON-null promotedTool — null-omission must not drop real values', async () => {
+    H.listRecipes.mockResolvedValue([{ ...RECIPE, promotedTool: 'recipes:run' }]);
+    const rows = (await resolveNamedQueryV2('codeRecipes', {})) as Array<Record<string, unknown>>;
+    expect(rows[0].promotedTool).toBe('recipes:run');
   });
 
   it('honors an explicit limit arg (recipes are global — no hive narrowing)', async () => {

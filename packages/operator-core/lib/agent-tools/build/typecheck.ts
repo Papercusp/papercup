@@ -48,10 +48,18 @@
 
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import type { Dirent } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   errorsOnly,
@@ -337,6 +345,78 @@ function relatedProjects(byBucket: string[][], requested: string): string[] {
  * `extends` is absolute for the same reason as (1): a relative extends would resolve
  * against the temp dir.
  */
+/**
+ * The `@types/*` packages tsc would auto-include for a config whose `types` is undefined
+ * — i.e. every directory directly under `typeRoot`. Returned as bare package names
+ * (`node`, `babel__core`), which is the form `compilerOptions.types` expects.
+ *
+ * Returns [] on any read failure, and the caller then OMITS `types` entirely: emitting
+ * `types: []` would be strictly worse than not setting it, because it means "include NO
+ * ambient packages" and would guarantee the very phantom-error flood this exists to stop.
+ */
+export function ambientTypePackages(typeRoot: string): string[] {
+  try {
+    return readdirSync(typeRoot, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => e.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Does this project (or anything in its `extends` chain) DECLARE `compilerOptions.types`?
+ *
+ * This gate is why the trap-3 fix is not simply "always set `types`". A project that
+ * declares `types` has usually done so to EXCLUDE things, and an explicit `types` in the
+ * extending config silently overrides the inherited one. MEASURED 2026-08-02: injecting
+ * the full 96-package enumeration into a scoped run of packages/operator-core took it from
+ * 1 error to 92 — operator-core pins `types: ["node"]` precisely to keep the other ambient
+ * test-framework globals out, and overriding it dragged them all back in. So: declared ⇒
+ * inherit it untouched; undeclared ⇒ supply the enumeration tsc would have used anyway.
+ *
+ * Fails OPEN (returns true ⇒ "leave it alone") on an unreadable/malformed config: the
+ * enumeration is a repair for a known-broken case, never something to force on a project
+ * whose intent we could not read.
+ */
+export function projectDeclaresTypes(tsconfigAbs: string, depth = 0): boolean {
+  if (depth > 8) return true; // cyclic or absurd extends chain — do not intervene
+  let parsed: { compilerOptions?: { types?: unknown }; extends?: unknown };
+  try {
+    const raw = readFileSync(tsconfigAbs, 'utf8');
+    // Plain JSON FIRST, and only fall back to comment-stripping if that fails.
+    //
+    // Not an optimisation — stripping unconditionally is actively WRONG here. tsconfig
+    // path aliases contain `/*` (`"@/*": ["./*"]`), which a block-comment regex happily
+    // treats as the start of a comment and eats through the rest of `paths`. That made
+    // apps/operator's perfectly valid JSON unparseable, and since this function fails
+    // open, every project silently reported "declares types" and the repair never ran —
+    // a fix that quietly did nothing while its tests looked fine.
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = JSON.parse(
+        raw
+          .replace(/^\s*\/\/.*$/gm, '')
+          .replace(/,(\s*[}\]])/g, '$1'),
+      );
+    }
+  } catch {
+    return true;
+  }
+  if (parsed?.compilerOptions && 'types' in parsed.compilerOptions) return true;
+  const ext = parsed?.extends;
+  if (typeof ext !== 'string' || ext.length === 0) return false;
+  // Only a relative/absolute path extends is resolvable here; a bare package specifier
+  // (e.g. "@tsconfig/node20/tsconfig.json") is treated as declaring, i.e. hands-off.
+  if (!ext.startsWith('.') && !isAbsolute(ext)) return true;
+  const next = isAbsolute(ext) ? ext : resolve(dirname(tsconfigAbs), ext);
+  const withExt = existsSync(next) ? next : `${next}.json`;
+  if (!existsSync(withExt)) return true;
+  return projectDeclaresTypes(withExt, depth + 1);
+}
+
 export function buildScopedTsconfig(
   root: string,
   projectTsconfigAbs: string,
@@ -351,6 +431,9 @@ export function buildScopedTsconfig(
   }
 
   const typeRoot = join(root, 'node_modules', '@types');
+  // Only repair a project that declares NO `types` — see projectDeclaresTypes for the
+  // measured reason overriding a declared one is destructive.
+  const ambientTypes = projectDeclaresTypes(projectTsconfigAbs) ? [] : ambientTypePackages(typeRoot);
   const dir = mkdtempSync(join(tmpdir(), 'pc-typecheck-scoped-'));
   const configPath = join(dir, 'tsconfig.json');
   writeFileSync(
@@ -366,9 +449,7 @@ export function buildScopedTsconfig(
           // auto-included. Omitted entirely when the scan finds nothing, so an unreadable
           // or absent @types dir degrades to today's behaviour rather than pinning `types`
           // to [] and deleting every ambient global we were trying to preserve.
-          ...(ambientTypePackages(typeRoot).length > 0
-            ? { types: ambientTypePackages(typeRoot) }
-            : {}),
+          ...(ambientTypes.length > 0 ? { types: ambientTypes } : {}),
         },
         files: resolvedFiles,
         include: [],

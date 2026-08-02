@@ -86,7 +86,7 @@ vi.mock('./agent-tools/plans/source', () => ({
 
 const run = await import('./plan-workitem-promotion-run');
 const convert = await import('./plan-items/convert');
-const { planItemRef } = await import('./issue-blocks-merge');
+const { planItemRef, PLAN_ITEM_KIND } = await import('./issue-blocks-merge');
 // P-010: the REAL claim door, so the proof ends at "is it served?" rather than "was a row written?".
 const wi = await import('./work-items');
 
@@ -758,6 +758,16 @@ describe('P-010: a promoted plan chain GATES the real claim door (end-to-end, no
       VALUES (${HARNESS}, ${id}, ${`issue ${id}`}, ${opts.status ?? 'open'}, 'task', ${WS},
               ${opts.takenBy ?? null}, ${opts.createdTs ?? 0}, 0,
               ${db.sql.json({ plan_item: { plan_slug: PLAN, item_id: opts.itemId } })})`;
+    // The `implements` edge promotion writes alongside the stamp. Not decoration: it is the
+    // SAME truth the backfill derives its candidate plans from (listConvertedPlanItemRefs), so
+    // without it this plan is never even scanned — and creating it here is what proves an
+    // ISSUE-family converted item is discoverable by that sweep at all, not just resolvable.
+    await wi.linkWorkItem(
+      id,
+      { kind: PLAN_ITEM_KIND, ref: planItemRef(PLAN, opts.itemId) },
+      convert.IMPLEMENTS_REL,
+      { harness: HARNESS, by: 'su-test' },
+    );
   };
 
   const backfill = () =>

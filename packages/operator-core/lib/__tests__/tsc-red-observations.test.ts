@@ -18,8 +18,11 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS guard script, no .d.ts
+// Types come from the hand-written sibling `scripts/lib/tsc-red-observations.d.mts`.
+// This import previously carried a `// @ts-ignore — pure JS guard script, no .d.ts`,
+// which suppressed NOTHING: TS reports TS7016 at the module-specifier line, not at the
+// `import` keyword, and @ts-ignore only covers the line directly after it. The result
+// was 7 committed type errors that read as handled (EI-19365056012137849).
 import {
   recordStandingReds,
   readObservations,

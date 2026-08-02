@@ -827,10 +827,21 @@ function issueIdsWhereSql(sql: OrgSql, aliased: boolean, ids: readonly string[])
 }
 
 function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
+  // WI-6934/EI-19286331042101069: the lane leg filters the STORED generated column
+  // (migration 721), not the payload jsonb — mirrors observationLaneExclusionSql
+  // (work-items.ts). Any `payload ->> 'lane'` here forces the whole payload datum to
+  // be fetched and decompressed (payload/_search are large and out-of-line) for every
+  // candidate row, on TOP of the three payload accesses still below it (_claimHold,
+  // needsHuman, plan_item) — this was the one of the four with a ready-made fast
+  // column, so it's the one fixed here; the other three are tracked in WI-7102 rather
+  // than migrated in the same breath (each needs its own generated-column migration +
+  // A/B measurement, mirroring 721's own diligence). Same NULL-safety as the COALESCE
+  // form: `lane` is NULL both when payload is NULL and when the key is absent, and
+  // `NULL IS DISTINCT FROM 'observation'` = TRUE ⇒ included (never excluded).
   return aliased
     ? sql`(
         (ei.origin = 'local' OR ei.origin IS NULL)
-        AND COALESCE(ei.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
+        AND ei.lane IS DISTINCT FROM 'observation'
         AND COALESCE(ei.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
         AND COALESCE(ei.payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
         AND NOT (
@@ -851,7 +862,7 @@ function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
       )`
     : sql`(
         (origin = 'local' OR origin IS NULL)
-        AND COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
+        AND lane IS DISTINCT FROM 'observation'
         AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
         AND COALESCE(payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
         AND NOT (

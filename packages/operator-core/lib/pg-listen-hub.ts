@@ -1,13 +1,22 @@
 /**
  * pg-listen-hub — ONE shared LISTEN connection for the homogeneous wake buses.
  *
- * C1-3 of backend-connection-scaling-2026-06-17. Today each of the four
- * `postgres().listen()` buses (agent-activity, fleet-assignment, pending-events,
- * coord-inbox) opens its OWN dedicated `postgres(getHarnessAdminUrl(), {max:1})`
- * connection — four long-lived PG backends that never close. postgres-js
- * multiplexes MULTIPLE `.listen(channel, cb)` calls on ONE `sql` instance onto a
- * single backend (verified), so routing them all through one shared instance
- * collapses 4 backends → 1.
+ * C1-3 of backend-connection-scaling-2026-06-17. Historically each
+ * `postgres().listen()` bus (agent-activity, fleet-assignment, pending-events,
+ * coord-inbox, and — since EI-19285171982840672 — sync-sse) opened its OWN
+ * dedicated `postgres(getHarnessAdminUrl(), {max:1})` connection — five
+ * long-lived PG backends that never close, one per operator-host process.
+ * postgres-js multiplexes MULTIPLE `.listen(channel, cb)` calls on ONE `sql`
+ * instance onto a single backend (verified), so routing them all through one
+ * shared instance collapses 5 backends → 1 per process.
+ *
+ * `hubListen`'s optional `onListen` callback (per-channel, passed straight
+ * through to postgres-js) is what let the fifth bus — sync-sse, whose
+ * `onListen` clears an in-process cache on every (re)connect so a NOTIFY that
+ * fired during a connection gap can't leave a stale entry behind — join
+ * without losing that cold-bust safety net: postgres-js re-invokes each
+ * channel's own `onListen` on reconnect-relisten independent of the other
+ * channels riding the same shared backend.
  *
  * DEFAULT-ON for server-class hosts (see {@link listenHubEnabled}) — proven live
  * on the :3070 cluster + an integration test, so it no longer ships dark.
@@ -83,13 +92,20 @@ function ensureSql(): postgres.Sql {
 export async function hubListen(
   channel: string,
   cb: (payload: string) => void,
+  onListen?: () => void,
 ): Promise<() => void> {
   const instance = ensureSql();
   subCount++;
   let unlisten: (() => Promise<void>) | null = null;
   try {
     // postgres-js .listen() resolves with a meta object carrying .unlisten().
-    const handle = await instance.listen(channel, cb);
+    // `onListen` (this channel's own 3rd callback) fires on the initial LISTEN
+    // AND every reconnect-relisten postgres-js performs after the shared hub
+    // connection drops — independent of every other channel riding the same
+    // backend, since postgres-js tracks reconnect-relisten per channel. This is
+    // what lets a subscriber with cold-bust-on-reconnect semantics (sync-sse's
+    // cache clear) move onto the hub without losing that safety net.
+    const handle = await instance.listen(channel, cb, onListen);
     unlisten = handle.unlisten;
   } catch (err) {
     // Failed to establish this subscription — undo the ref-count bump and, if we
