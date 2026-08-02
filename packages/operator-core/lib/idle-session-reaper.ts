@@ -245,6 +245,15 @@ export async function gatherProtectedSessionOwners(
 ): Promise<Set<string>> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? IDLE_SESSION_GRACE_MS) / 1000));
   const includeClaimHolders = opts.includeClaimHolders !== false;
+  // EI-19357343... (WI-6638 side-finding): harness_features_consolidated is the
+  // FEATURE-ONLY view (`WHERE item_kind <> ALL ('{bug,change,task}')` — see its
+  // pg_get_viewdef) — issue-family (bug/change/task) claims live in
+  // harness_shared.engineer_issues (`assignee`), exactly the split
+  // runWorkItemLeaseReap below already unions correctly. Without this leg, a
+  // session actively holding a WI-/EI- claim (the majority of live issue-family
+  // work) was invisible to this "claim holder" protection and could be
+  // live-idle-terminated out from under genuine in-flight work.
+  const issueWs = issuesScopeWorkspace();
   const rows = await sql<Array<{ alias: string }>>`
     WITH owners AS (
       SELECT owner_id AS alias
@@ -267,6 +276,11 @@ export async function gatherProtectedSessionOwners(
         FROM harness_shared.harness_features_consolidated
        WHERE ${includeClaimHolders ? sql`TRUE` : sql`FALSE`}
          AND taken_by IS NOT NULL
+      UNION
+      SELECT assignee AS alias
+        FROM harness_shared.engineer_issues
+       WHERE ${includeClaimHolders ? sql`TRUE` : sql`FALSE`}
+         AND workspace_id = ${issueWs} AND assignee IS NOT NULL AND assignee <> ''
     )
     SELECT DISTINCT alias FROM owners WHERE alias IS NOT NULL AND alias <> ''`;
   const protectedOwners = new Set(rows.map((r) => r.alias));
@@ -698,11 +712,21 @@ export async function gatherBusyOwners(
   opts: { graceMs?: number } = {},
 ): Promise<Set<string>> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? IDLE_SESSION_GRACE_MS) / 1000));
+  // EI-19357343... (WI-6638 side-finding): harness_features_consolidated excludes
+  // issue-family (bug/change/task) rows by construction (its view definition is
+  // `WHERE item_kind <> ALL ('{bug,change,task}')`) — those claims live in
+  // engineer_issues (`assignee`). Without this leg a session holding a WI-/EI-
+  // claim was never "busy" here and could be live-idle-terminated mid-work.
+  const issueWs = issuesScopeWorkspace();
   const rows = await sql<Array<{ alias: string }>>`
     WITH busy AS (
       SELECT taken_by AS alias
         FROM harness_shared.harness_features_consolidated
        WHERE taken_by IS NOT NULL
+      UNION
+      SELECT assignee AS alias
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${issueWs} AND assignee IS NOT NULL AND assignee <> ''
       UNION
       -- in-flight wake delivery only (mid-resume) — NOT standing event_awaits.
       SELECT subscriber_id AS alias

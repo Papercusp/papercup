@@ -304,6 +304,14 @@ import './gc-plan-runs-action';
 // INACTIVE loop rows whose owning session has been silent past the retention
 // window (14d default); an armed loop is never touched at any age.
 import './gc-dead-loops-action';
+// `system:sweep-stalled-loops` — the COHERENCE sibling of gc-dead-loops above
+// (WI-6639). gc-dead-loops reaps already-INACTIVE loop rows past a long retention
+// window; this disarms an ARMED loop whose `computeTurnsStalled` verdict says fires
+// are landing (or have stopped) with no turn actually produced — the "armed but
+// dead" class nothing previously acted on (turnsStalled's only consumer was the
+// read-only loop:status tool). Auto-pause + a single fleet-wide broadcast naming
+// every disarmed owner (a cluster is usually one systemic event, not N failures).
+import './stalled-loops-action';
 import './gc-verify-instances-action';
 // `system:precompute-derived-reads` — the cadence behind the derived-read substrate
 // (precompute-derived-sync-reads-2026-07-19, WI-5460). Computes the three expensive

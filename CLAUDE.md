@@ -400,9 +400,20 @@ SELECT metadata->'gate_health'->'inFlightRetriage'   AS live_refire,     -- the 
 
 The two keys answer DIFFERENT questions — conflating them is its own confident-wrong-answer path:
 
-- **`inFlightRetriage` non-null ⇒ its `refiringCandidate` IS the sha being judged right now**, and
-  `refireAttempt`/`maxRefires` say how much rescue budget is left. Null ⇒ no refire in flight ⇒ the
-  run is still on its first candidate. Treat a marker older than 3h as an abandoned run.
+- **`inFlightRetriage` non-null ⇒ its `refiringCandidate` IS the sha being judged right now.** Null ⇒
+  no refire in flight ⇒ the run is still on its first candidate. Treat a marker older than 3h as an
+  abandoned run.
+  ⚠ **`refireAttempt`/`maxRefires` are NOT "how much rescue budget is left"** — this file used to say
+  they were, and that reading is wrong in the direction that costs you a suite. There are **two**
+  bounds and they advance differently (EI-19343532231631821): `refireAttempt` counts only refires
+  whose failures OVERLAP the set already being rescued — i.e. **FAILED** rescues — while
+  `totalRefires` counts every refire and is bounded by `absoluteCeiling` (= `maxRefires` × 3). So a
+  run five successful rescues deep reads `refireAttempt 0/2` — indistinguishable from "hasn't
+  refired yet" — while sitting one red away from the ceiling, where the next red really does STICK.
+  Read BOTH, and prefer the tools: `dev:pipeline_position`'s mid-rescue note and
+  `release:checkpoint-run`'s `in_flight_retriage.budget`/`at_cap` both render them via one shared
+  helper (`describeRefireBudget`, `packages/operator-core/lib/release/in-flight-retriage.ts`), so
+  they cannot drift from each other or from this paragraph.
 - **`observedCandidate` names the LAST COMPLETED pass**, never the live one — the same caveat this
   file already states for the persisted checkpoint-logs. Reading it as the in-flight candidate is a
   guaranteed one-pass-stale answer.
@@ -646,6 +657,17 @@ window is where a STALE red gets voided and the gate re-fires itself onto a newe
 suite". A gate that looks stuck on a doomed candidate is very often seconds from rescuing itself —
 check `inFlightRetriage` **before** concluding a re-fire is needed. Two agents were minutes from
 firing one on 2026-08-02 while the automatic refire was already green on the affected suite.
+
+✅ **You no longer have to remember to check — the verb itself now refuses with the answer**
+(EI-19343516395023183). `release:checkpoint-run`'s `already_running` reply reads the marker and,
+when a refire is in flight for THAT run, leads its `note` with `🚨 AUTO-REFIRE IN FLIGHT — STAND
+DOWN`, names both candidates (the one being judged **and** the one already discarded), lists the
+files the abandoned red named so you don't go fix them, and reports the budget via
+`in_flight_retriage.budget`/`at_cap`. Its containment check switches to the marker's candidate too,
+so `callerEditsInCandidate` answers about the sha actually being judged rather than the checkout
+HEAD inference. A marker written BEFORE that run started is deliberately NOT attributed to it (the
+run-lock is a singleton, so it belongs to an earlier run) and the pre-existing refusal is returned
+unchanged — `in_flight_retriage: null` means "no refire in flight", never "unknown".
 
 ⚠ And when it does re-fire: **a passing affected-tests suite is NOT a green gate.** The lint/perf/
 desktop/delta gates and the `main` fast-forward still have to clear; an agent asserted "gate green"

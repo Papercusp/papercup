@@ -1,7 +1,7 @@
-# Piping ANY background command through `| tail -N` hides a real FAILURE behind exit code 0 (EI-8871)
+# Piping ANY background command through `| tail -N` hides a real FAILURE behind exit code 0 (EI-8871) — and the notification can lie even WITHOUT a pipe (EI-18830387270139783)
 URL: /internal/docs/agent-insights/background-test-pipe-exit-code-trap
 
-A shell pipeline's exit code is its LAST stage's. Pipe any command through tail/grep/head and the harness reports 'completed (exit code 0)' even when the real command failed — seen with npm run test:affected (exit 1), rsync (exit 23 and 12), and ssh. Redirect to a log file, or append `; echo \"EXIT=$?\"`, whenever the command's own exit code matters. Not a testing-specific trap.
+A shell pipeline's exit code is its LAST stage's. Pipe any command through tail/grep/head and the harness reports 'completed (exit code 0)' even when the real command failed — seen with npm run test:affected (exit 1), rsync (exit 23 and 12), and ssh. Redirect to a log file, or append `; echo \"EXIT=$?\"`, whenever the command's own exit code matters. Not a testing-specific trap. UPDATE: the background-task notification's reported exit code has ALSO been observed wrong (5x in one session) for a command that was NOT piped at all — fully redirected to a log with its own captured `$?` — so the notification's number is never sufficient by itself; only the log's own embedded exit line is trustworthy.
 
 > **This is not a testing trap.** It was first found with `npm run test:affected`, and
 > was written up that way — which is precisely why it kept firing. On 2026-07-12 it bit
@@ -140,6 +140,40 @@ set -o pipefail
 `$?` after a pipeline is the LAST stage's status; `${PIPESTATUS[0]}` is the first
 stage's — the one you actually care about. **Read the printed value. Never the
 notification.**
+
+## It can lie even with NO pipe at all — the notification number is never sufficient by itself (EI-18830387270139783)
+
+Everything above explains ONE mechanism (a downstream pipeline stage swallowing the
+upstream's real status) and its fix (redirect to a log instead of piping). That fix is
+necessary but **observed NOT sufficient**: on 2026-07-27 (su-6eab8) the exact "safe
+pattern" this doc recommends —
+
+```bash
+(npm run test:affected > /tmp/ct-affected.log 2>&1; echo "AFFECTED_EXIT=$?" >> /tmp/ct-affected.log)
+```
+
+— run via the Bash tool's `run_in_background: true`, no pipe anywhere in the command —
+STILL produced a background-task completion notification of `"completed (exit code 0)"`
+while the log's own last line read `AFFECTED_EXIT=1` (three packages genuinely red).
+Observed **5 times in one session**, always in the same direction (notification says
+success, the real run failed) — including a deliberately-failing red-first run, which is
+exactly the case where a false green is most dangerous (it destroys the evidentiary value
+of the red-first step and can send an agent to delete a correct test believing it never
+failed). This is NOT the pipe-swallows-status trap covered above (no pipe was in the
+command, and the wrapping subshell's own `$?` was captured correctly into the log) — the
+reported number appears to come from something other than the tracked command's real wait
+status (plausibly the outer wrapper/subshell the harness itself constructs around your
+command, or a default). The mechanism is unconfirmed and lives in the CLI harness itself,
+not in this repository, so there is no papercusp-side code fix — but the takeaway
+generalizes past this doc's original pipe-specific framing:
+
+**The background-task notification's exit-code number is *never* sufficient by itself —
+not with a pipe, and not without one.** The only signal worth trusting is one YOU wrote
+and then independently READ: embed an explicit exit marker in the log
+(`echo "MY_EXIT=$?" >> file`) and `grep`/`Read` that line yourself once the task
+completes. Do not stop at "the notification said exit code 0" for ANY background run
+whose pass/fail verdict you intend to report or act on — treat that number as, at best, a
+hint to go read the log, never as the verification itself.
 
 ## The verification habit that catches this regardless
 

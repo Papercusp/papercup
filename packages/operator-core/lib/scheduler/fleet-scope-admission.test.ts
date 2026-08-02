@@ -70,6 +70,7 @@ import {
   fleetScopeLeaderRemedy,
   fleetScopedMiss,
   hasLiveFleetRouteTarget,
+  itemMatchesRawClaimSpec,
   notifyFleetScopeRefusal,
   readFleetPauseState,
   reconcileFleetScopeClaims,
@@ -1353,5 +1354,81 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(evaluateDataCondition(miss.payloadFilter!, crossHarnessPayload)).toBe(false);
       expect(evaluateDataCondition(miss.payloadFilter!, sameHarnessPayload)).toBe(true);
     });
+  });
+});
+
+/**
+ * EI-18862608742257943: itemMatchesRawClaimSpec — the SAME feature/issue-family branch
+ * as the private itemMatchesScope (exercised above via admitWorkItemForFleetTarget), but
+ * against a RAW ClaimSpec with no live FleetScopeContext/fleet-membership required. This
+ * is what lets fleet:launch-on-plan check, BEFORE any member has joined a brand-new
+ * fleet, whether the claim spec it is about to apply actually admits a work-item its own
+ * kickoff brief names.
+ */
+describe('itemMatchesRawClaimSpec (EI-18862608742257943 — pre-launch kickoff-vs-spec check)', () => {
+  beforeEach(() => {
+    admissionMocks.sql.mockReset();
+  });
+
+  const issueSpec: ClaimSpecRecord['spec'] = {
+    specVersion: '1.0',
+    specId: 'nonp2p-bugs',
+    revision: 6,
+    view: { filter: { field: 'kind', op: 'in', value: ['bug', 'change'] } },
+    rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+  };
+
+  it('matches an issue-family item purely (no SQL call) when its kind is in-spec', async () => {
+    const item = {
+      id: 'WI-6502',
+      family: 'issue',
+      kind: 'bug',
+      title: 'A bug',
+      summary: '',
+      state: 'open',
+      assignee: null,
+    } as unknown as Parameters<typeof itemMatchesRawClaimSpec>[0];
+    await expect(itemMatchesRawClaimSpec(item, issueSpec, 'papercusp-workspace')).resolves.toBe(true);
+    expect(admissionMocks.sql).not.toHaveBeenCalled();
+  });
+
+  it('does NOT match an issue-family item whose kind is outside the spec (the exact live repro shape)', async () => {
+    const item = {
+      id: 'WI-9',
+      family: 'issue',
+      kind: 'task',
+      title: 'A task',
+      summary: '',
+      state: 'open',
+      assignee: null,
+    } as unknown as Parameters<typeof itemMatchesRawClaimSpec>[0];
+    const taskLessSpec: ClaimSpecRecord['spec'] = {
+      ...issueSpec,
+      view: { filter: { field: 'kind', op: 'in', value: ['bug', 'change'] } },
+    };
+    await expect(itemMatchesRawClaimSpec(item, taskLessSpec, 'papercusp-workspace')).resolves.toBe(false);
+  });
+
+  it('routes a feature-family item through the SQL EXISTS check, keyed on the passed workspaceId', async () => {
+    const item = {
+      id: 'WI-feat',
+      family: 'feature',
+      kind: 'feature',
+      title: 'WI-feat',
+      summary: '',
+      state: 'todo',
+      assignee: null,
+    } as unknown as Parameters<typeof itemMatchesRawClaimSpec>[0];
+    admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
+    admissionMocks.sql.mockImplementation((strings: readonly string[], ...values: unknown[]) => {
+      if (strings.some((s) => s.includes('workspace_id ='))) {
+        return Promise.resolve([{ matched: values[0] === 'papercusp-workspace' }]);
+      }
+      return 'FRAGMENT';
+    });
+    await expect(
+      itemMatchesRawClaimSpec(item, { ...issueSpec, view: { filter: { field: 'kind', op: '=', value: 'feature' } } }, 'papercusp-workspace'),
+    ).resolves.toBe(true);
+    expect(admissionMocks.sql).toHaveBeenCalled();
   });
 });
