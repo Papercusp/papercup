@@ -548,6 +548,106 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
   });
 });
 
+// PC_HEAVY_FRESH_AFTER — the per-caller freshness barrier (EI-19340233074452707).
+//
+// The tree-state token above is SOUND but far stricter than correctness requires: it
+// asks "did ANY file in the tree change?" when the question that governs a caller's
+// answer is "did MY file change since the compile started?". On the shared staging tree
+// the token moves ~every 18s against a ~170s operator-core compile, so two agents
+// arriving seconds apart never compute the same key and every one of them pays a full
+// compile (3-5 byte-identical compiles were observed running at once, three separate
+// times on 2026-08-02).
+//
+// A caller that knows which files it is asking about passes max(mtime) over them; the
+// token is then dropped and a replay is admitted only from a run that STARTED at/after
+// that watermark — the exact question, per file, instead of the conservative one.
+describe('pc-heavy.sh — per-caller freshness barrier (EI-19340233074452707)', () => {
+  const cmd = ['bash', '-c', 'echo barrier-out; echo barrier-err >&2; exit 7'];
+
+  const coalesceFileByExt = (ext: string): string | null => {
+    const coalesceDir = join(dir, 'coalesce');
+    if (!existsSync(coalesceDir)) return null;
+    const f = readdirSync(coalesceDir).find((n) => n.endsWith(ext));
+    return f ? join(coalesceDir, f) : null;
+  };
+
+  it('replays a cached run that STARTED at/after the barrier', () => {
+    // Barrier of 1 (epoch 1970) — any run at all starts after it.
+    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    expect(first.status).toBe(7);
+    expect(first.stderr).not.toContain('coalesced:');
+
+    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    expect(second.status).toBe(7); // exit code survives the packed "<rc> <startedAt>" format
+    expect(second.stdout).toContain('barrier-out');
+    expect(second.stderr).toContain('coalesced:');
+  });
+
+  it('does NOT replay a run that started BEFORE the barrier — the pre-edit-answer hazard', () => {
+    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    expect(first.status).toBe(7);
+    expect(first.stderr).not.toContain('coalesced:');
+
+    // Same key (same cwd+argv, token suppressed), but this caller edited its file
+    // AFTER that run began, so the cached diagnostics cannot describe it.
+    const future = String(Math.floor(Date.now() / 1000) + 3600);
+    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: future });
+    expect(second.status).toBe(7);
+    expect(second.stderr).not.toContain('coalesced:'); // ran for real, did not replay
+  });
+
+  it('suppresses the tree-state token, so the barrier is what gates the replay', () => {
+    // Same scenario as the token suite's git-edit case: an edit lands between the two
+    // runs. WITHOUT a barrier the token busts the key (asserted above). WITH one, the
+    // caller has taken responsibility for freshness, so the replay is admitted — that
+    // is the whole point, and it is what lets concurrent callers share one compile.
+    execSync('git init -q', { cwd: dir });
+    execSync('git config user.email t@example.com && git config user.name test', { cwd: dir });
+    writeFileSync(join(dir, 'src.txt'), 'v1');
+    execSync('git add -A && git commit -q -m init', { cwd: dir });
+
+    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    expect(first.stderr).not.toContain('coalesced:');
+
+    writeFileSync(join(dir, 'src.txt'), 'v2'); // dirties git status — would bust the token
+
+    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    expect(second.stderr).toContain('coalesced:');
+  });
+
+  it('refuses to replay a cached result carrying no start stamp (fail closed across an upgrade)', () => {
+    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    expect(first.status).toBe(7);
+
+    // Rewrite the exit file in the pre-barrier format (bare rc, no start stamp), as a
+    // result written by an older pc-heavy would be. Absence of a stamp is not evidence
+    // the run was recent enough — it must read as "cannot replay", never as "fine".
+    const exitFile = coalesceFileByExt('.exit');
+    expect(exitFile).not.toBeNull();
+    writeFileSync(exitFile as string, '7\n');
+
+    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    expect(second.status).toBe(7);
+    expect(second.stderr).not.toContain('coalesced:');
+  });
+
+  it('leaves an unbarriered caller on the old tree-token path (opt-in only)', () => {
+    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+    expect(first.status).toBe(7);
+    expect(first.stderr).not.toContain('coalesced:');
+
+    // A barriered caller keys DIFFERENTLY (no token), so it must not pick up the
+    // unbarriered run's cache entry — the two populations stay separate rather than
+    // one silently inheriting the other's freshness assumptions.
+    const barriered = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    expect(barriered.stderr).not.toContain('coalesced:');
+
+    // ...while a second unbarriered caller still replays as it always did.
+    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+    expect(second.stderr).toContain('coalesced:');
+  });
+});
+
 describe('pc-heavy.sh — load-adaptive slot count (EI-19313096203661357)', () => {
   // A PATH-shimmed `nproc` pins the core count so the formula asserts the same
   // numbers on any host; PC_HEAVY_LOAD1_OVERRIDE pins load1 (same convention as

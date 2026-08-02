@@ -36,6 +36,17 @@ const CONFIG: Readonly<Record<string, ResourceDeltaConfig>> = {
   // without it an in-flight cursor reports the entire view as `updated` instead of
   // taking ONE clean full.
   'plans.list': { itemKeyField: 'slug', schemaVersion: 'plans-list-v2' },
+  // plans.byHive resolves to the SAME rows as plans.list (it reuses that read with the
+  // hive's member-slug set), so it takes the same `slug` key. It could not have one
+  // before WI-7083: the harness_slugs fan-out fabricated one copy of the hive's plan set
+  // PER MEMBER, so `slug` had 910 distinct values across 1,820 rows and no single field
+  // was unique. With the fan-out deduped on the resolved PLAN SCOPE, one hive reads one
+  // plan set and `slug` is unique again.
+  //
+  // If a caller ever assembles a slug set spanning two DIFFERENT hive homes, `slug` could
+  // collide across them — that costs a refetch, never a wrong view (the response carries
+  // the full-view checksum and the client refetches on mismatch; see the header note).
+  'plans.byHive': { itemKeyField: 'slug', schemaVersion: 'plans-byhive-v1' },
 };
 
 /** The delta config for a sync resource name, or undefined → serve full (today's behavior). */

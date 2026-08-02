@@ -886,6 +886,54 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
       expect(firstGreeting).toContain('fleet-alpha-fleet-launch-context.md');
     }
   });
+
+  // EI-19276371920501216: passing actual brief TEXT (not a path) as `launchContext`
+  // used to die inside readFileSync with ENAMETOOLONG, silently dropping the brief
+  // for every member while the launch still reported ok:true. It must now compose
+  // straight into the generated baseline file instead.
+  it('EI-19276371920501216: composes MULTI-LINE launchContext TEXT into the baseline file — no ENAMETOOLONG, no briefReadError', async () => {
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    const briefText = 'MISSION: full drain of the non-P2P backlog.\nDo NOT touch WI-1234 — a peer owns it.';
+    const res = await tool.handler(
+      { name: 'Text Brief Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, launchContext: briefText } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.briefReadError).toBeNull();
+    expect(payload.opened).toHaveLength(1);
+    expect(payload.memberBaselineApplied).toBe(true);
+    expect(payload.memberLaunchContextPath).toContain('fleet-text-brief-fleet-launch-context.md');
+    const fs = require('node:fs');
+    const composed = fs.readFileSync(payload.memberLaunchContextPath, 'utf8');
+    expect(composed).toContain('MISSION: full drain of the non-P2P backlog.');
+    expect(composed).toContain('Do NOT touch WI-1234 — a peer owns it.');
+    // The path actually handed to psu is the WRITTEN file, never the raw brief text.
+    const firstGreeting = spawnConsoleMock.mock.calls[0][0].envelope.greetingCmd as string;
+    expect(firstGreeting).toContain('--launch-context=');
+    expect(firstGreeting).not.toContain('MISSION:');
+  });
+
+  // Regression safety: a genuine (short, single-line) path that just happens not to
+  // exist must still be treated as a path and still report the old read error —
+  // the fix must not swallow real path-read failures.
+  it('a short single-line nonexistent PATH is still treated as a path and reports the old read error', async () => {
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    const res = await tool.handler(
+      {
+        name: 'Missing Brief Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        launchContext: '/tmp/fleet-launch-ctx-test/does-not-exist-brief.md',
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.briefReadError).toMatch(/Could not read launchContext/);
+    expect(payload.opened).toHaveLength(1);
+  });
 });
 
 describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context briefs', () => {

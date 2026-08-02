@@ -347,6 +347,60 @@ function isoOrNull(ts: unknown): string | null {
   return Number.isFinite(d.getTime()) ? d.toISOString() : null;
 }
 
+/** Injectable seam for {@link resolveFanOutPlanScopes} — the two real resolvers. */
+export interface FanOutResolvers {
+  /** Validates the slug is registered; throws otherwise. */
+  validate: (slug: string) => Promise<{ harnessSlug: string }>;
+  /** Collapses a harness onto the PLAN SCOPE it actually reads (its Hive home). */
+  scope: (slug: string) => Promise<{ harnessSlug: string }>;
+}
+
+/**
+ * Resolve the `harness_slugs` fan-out to the DISTINCT plan scopes to read.
+ *
+ * Plans are HIVE-scoped: `resolvePlanScope` collapses a member harness onto its Hive
+ * HOME, and `listPlanIndexRows` performs that same collapse internally. So deduping on
+ * the REQUESTED slug is not enough — every member of one hive resolves to the same home
+ * and would get its own batch reading the SAME plan set. The rows come back N times,
+ * distinguishable only by the `harness` stamp the caller puts on each batch, which the
+ * downstream `${harnessSlug}:${slug}` row-dedupe key cannot see by construction.
+ *
+ * Measured on `plans.byHive` before this collapse (papercusp hive, members [papercusp,
+ * hive-canary]): 1,820 rows / 1,249,676 B, of which 910 rows / ~50% were a fabricated
+ * second copy stamped `harness: 'hive-canary'` — a harness with ZERO rows of its own in
+ * `harness_plans`. It also made the rollup UI render every plan twice and drill into a
+ * member that does not own it, and it left no unique field to key the rows-delta on
+ * (WI-7083).
+ *
+ * An unresolvable slug is a WARNING entry, never a throw — the caller may be holding a
+ * stale registry snapshot, and `resolvePlanScope`'s "not a Hive home" refusal means the
+ * same thing the batch loop means by it: no plan scope, so no rows.
+ */
+export async function resolveFanOutPlanScopes(
+  slugs: readonly string[],
+  resolvers: FanOutResolvers = {
+    validate: (s) => resolveHarnessPlansDir(s),
+    scope: (s) => resolvePlanScope({ harnessSlug: s }),
+  },
+): Promise<{ scopes: string[]; unknown: string[] }> {
+  const scopes: string[] = [];
+  const unknown: string[] = [];
+  const seen = new Set<string>();
+  for (const slug of slugs) {
+    const trimmed = slug.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    try {
+      const validated = await resolvers.validate(trimmed);
+      const scope = await resolvers.scope(validated.harnessSlug);
+      if (!scopes.includes(scope.harnessSlug)) scopes.push(scope.harnessSlug);
+    } catch {
+      unknown.push(trimmed);
+    }
+  }
+  return { scopes, unknown };
+}
+
 export default defineTool({
   name: "plans:list",
   description:
@@ -433,39 +487,9 @@ export default defineTool({
     const unknownHarnesses: string[] = [];
     if (!args.workspaceWide) {
       if (args.harness_slugs && args.harness_slugs.length > 0) {
-        const seen = new Set<string>();
-        for (const slug of args.harness_slugs) {
-          const trimmed = slug.trim();
-          if (!trimmed || seen.has(trimmed)) continue;
-          seen.add(trimmed);
-          try {
-            // Validate the slug is registered (throws for an unknown one) …
-            const r = await resolveHarnessPlansDir(trimmed);
-            // … then dedupe on the PLAN SCOPE, not the requested slug. Plans are
-            // HIVE-scoped: resolvePlanScope collapses a member harness onto its Hive
-            // HOME, and listPlanIndexRows below does that collapse internally. Deduping
-            // on the requested slug therefore let N members of one hive each read the
-            // SAME home plan set — N identical copies, distinguishable only by the
-            // `harness` stamp this loop puts on them, which the per-batch
-            // `harnessSlug:slug` dedupe key downstream cannot see (WI-7083).
-            //
-            // Measured on plans.byHive (papercusp hive, members [papercusp,
-            // hive-canary]): 1,820 rows / 1,249,676 B, of which 910 rows / ~50% were a
-            // fabricated second copy stamped `harness: 'hive-canary'` — a harness with
-            // ZERO rows of its own in harness_plans. It also made the rollup UI show
-            // every plan twice and drill to the wrong member.
-            const scope = await resolvePlanScope({ harnessSlug: r.harnessSlug });
-            if (!perHarness.includes(scope.harnessSlug))
-              perHarness.push(scope.harnessSlug);
-          } catch {
-            // Unchanged contract for this loop: an unresolvable slug is a warning
-            // entry, never a throw (the caller may be holding a stale registry
-            // snapshot). resolvePlanScope's "not a Hive home" refusal lands here too
-            // and means the same thing the batch loop below means by it — that
-            // harness has no plan scope to read, so it contributes no rows.
-            unknownHarnesses.push(trimmed);
-          }
-        }
+        const fanOut = await resolveFanOutPlanScopes(args.harness_slugs);
+        perHarness.push(...fanOut.scopes);
+        unknownHarnesses.push(...fanOut.unknown);
       } else {
         const one = await ctxToPlanSourceOpts(
           harnessScopedCtx(args.harness, ctx),

@@ -45,6 +45,7 @@ vi.mock('./workspace-registry', async () => {
 });
 
 const wi = await import('./work-items');
+const depsStore = await import('./dbos/work-item-deps-store');
 const H = 'papercup';
 const WS = 'default'; // == DEFAULT_COORD_WORKSPACE; work_item_deps + engineer_issues live here
 let db: FreshPgDb;
@@ -170,6 +171,68 @@ describe('claimNextWorkItem readiness — issue blocker (P-005, F2 cross-family 
     await seedFeature('F-blocked', { status: 'open', createdTs: 100 });
     await blockByIssue('F-blocked', 'EI-ghost');
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-blocked');
+  });
+});
+
+/**
+ * EI-19325959789634791 / D-017 — WRITER↔FLOOR AGREEMENT, not floor behavior.
+ *
+ * Every test above seeds `work_item_deps` by HAND, via blockByFeature/blockByIssue, which
+ * write the correct per-family convention by construction. That is exactly why the whole
+ * suite stayed green while the production writer emitted edges that gate nothing: these
+ * tests prove the FLOOR honors a well-formed edge, and nothing proved the WRITER produces
+ * one. So the bug lived in the gap between two green suites.
+ *
+ * These tests therefore route through the PRODUCTION writer (`syncWorkItemDepEdges`) and
+ * assert on the CLAIM PATH. Do not "simplify" them by seeding the dep directly — that
+ * deletes the only thing they test.
+ *
+ * The defect: `syncWorkItemDepEdges` hardcodes FEATURE_KIND + featureRef() (harness-QUALIFIED)
+ * for both endpoints, but the issue-family floor (`depsBlockedExclusionSql`) matches
+ * `d.blocked_ref = wi.feature_id` — BARE. So an issue-family item's edge is invisible to the
+ * issue floor, and the feature floor never evaluates it (the wir_* sidecar triggers are
+ * feature-only). Measured live 2026-08-02: 6 such rows in papercusp, 3 on genuinely-open
+ * items with non-terminal blockers, all advertised claimable while blocked.
+ */
+describe('claimNextWorkItem readiness — edges from the PRODUCTION writer gate ISSUE-family items (EI-19325959789634791)', () => {
+  it('an issue-family item whose blocker edge was written by syncWorkItemDepEdges is NOT claimed', async () => {
+    await seedIssue('WI-blocker', 'open'); // non-terminal, and assigned so it is not itself claimed
+    await seedIssue('WI-blocked', 'open', { assignee: null }); // the only claimable candidate
+
+    // The production write path — NOT a hand-seeded row.
+    await depsStore.syncWorkItemDepEdges(H, 'WI-blocked', ['WI-blocker']);
+
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
+  });
+
+  it('and IS claimed once that blocker reaches a terminal state (the fix must not over-gate)', async () => {
+    await seedIssue('WI-blocker', 'open');
+    await seedIssue('WI-blocked', 'open', { assignee: null });
+    await depsStore.syncWorkItemDepEdges(H, 'WI-blocked', ['WI-blocker']);
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
+
+    await db.sql`UPDATE harness_shared.engineer_issues SET state='resolved' WHERE issue_id='WI-blocker'`;
+    expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('WI-blocked');
+  });
+
+  it('the edge it wrote is READABLE BY THE FLOOR — kind and ref form both match the target family', async () => {
+    await seedIssue('WI-blocker', 'open');
+    await seedIssue('WI-blocked', 'open', { assignee: null });
+    await depsStore.syncWorkItemDepEdges(H, 'WI-blocked', ['WI-blocker']);
+
+    // The structural statement of the same defect: an issue-family endpoint must carry
+    // kind='issue' + a BARE ref. Asserted separately from the claim-path tests above so a
+    // failure says WHICH half broke — the row shape, or the gating.
+    const [row] = await db.sql<{ blocked_kind: string; blocked_ref: string; blocker_kind: string; blocker_ref: string }[]>`
+      SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref
+        FROM harness_shared.work_item_deps
+       WHERE dep_type = 'blocks' AND blocked_ref LIKE ${'%WI-blocked'}`;
+    expect(row).toMatchObject({
+      blocked_kind: 'issue',
+      blocked_ref: 'WI-blocked',
+      blocker_kind: 'issue',
+      blocker_ref: 'WI-blocker',
+    });
   });
 });
 

@@ -630,6 +630,132 @@ export function mergeDistilledRuns(
   return merged;
 }
 
+/**
+ * The BYTE ceiling on a `testing:run` result (plan
+ * `bash-substitution-reachable-ceiling-2026-08-01`, D-062).
+ *
+ * DERIVED, NOT CHOSEN — do not round it to a convenient number. 5,949 B is the
+ * hard cap `| tail -60` imposes on the bash command this tool replaces (the
+ * median pipe agents actually write, per D-021). The promotion argument needs
+ * per-call DOMINANCE, not a better average: an average lets the tool be worse
+ * exactly when a suite fails badly and the agent can least afford it. Measured
+ * before this bound existed, `testing:run` reached 20,569 B, with 2.6% of calls
+ * carrying 28.7% of all its bytes.
+ *
+ * WHY `maxFailures` COULD NOT DO THIS. `maxFailures` caps the failure LIST
+ * COUNT, which is not a byte bound in any sense — one long assertion diff can
+ * outweigh fifty terse failures. That is the whole reason D-062 had to settle
+ * the parameter before anyone coded it.
+ */
+export const TESTING_RUN_MAX_PAYLOAD_BYTES = 5949;
+
+/**
+ * Message-length ladder tried before any failure is DROPPED.
+ *
+ * Order matters and encodes a judgement: knowing WHICH tests failed is worth
+ * more than the full text of any one failure, so we shrink messages across the
+ * board before we stop naming failures at all. An agent who still needs the
+ * full diff can re-run one file (or pass `testNamePattern`) — but it cannot
+ * re-discover a failure whose existence was never reported.
+ */
+const MESSAGE_BUDGET_LADDER = [1200, 600, 300, 150, 80, 40] as const;
+
+/** Bytes of a value as it will actually be transported. */
+function payloadBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8');
+}
+
+function clampFailureMessage(f: DistilledTestFailure, chars: number): DistilledTestFailure {
+  if (f.message.length <= chars) return f;
+  return { ...f, message: `${f.message.slice(0, Math.max(0, chars))}…` };
+}
+
+/**
+ * Bound a `testing:run` result to {@link TESTING_RUN_MAX_PAYLOAD_BYTES} BYTES,
+ * keeping every COUNT complete and stating plainly what was cut (D-062).
+ *
+ * ── The invariant this exists to protect ────────────────────────────────────
+ * `failed` is ALWAYS the true total number of failing tests. `failures` is a
+ * bounded SAMPLE of them. Those are different objects, and reading the second
+ * as the first is exactly the error class filed as EI-19340874432965755 ("a
+ * signal that is TRUE, about a different object than it was read as"). So when
+ * this function cuts anything it emits `failuresReturned`, `failuresOmitted`
+ * and a human-readable `truncationNote` — `failures.length` can then never be
+ * mistaken for "how many failed", because the payload says both numbers out
+ * loud.
+ *
+ * ── Why the un-truncated path adds NOTHING ──────────────────────────────────
+ * The verification criterion for this change (plan Now/next) is that the max
+ * drops to ≤5,949 B while the MEDIAN stays unmoved near 197 B — a median that
+ * moves means the bound is clipping ordinary results and is set too low. The
+ * median call is a green run with zero failures, so adding explanatory fields
+ * unconditionally would move the very number that certifies the change is
+ * correct. Hence: when nothing is cut, the payload is returned byte-identical
+ * to what it was before this function existed.
+ */
+export function boundTestRunPayload<E extends Record<string, unknown>>(
+  envelope: E,
+  run: DistilledTestRun,
+  opts?: { maxBytes?: number },
+): E & DistilledTestRun & {
+  failuresReturned?: number;
+  failuresOmitted?: number;
+  truncationNote?: string;
+} {
+  const budget = opts?.maxBytes ?? TESTING_RUN_MAX_PAYLOAD_BYTES;
+
+  const build = (failures: DistilledTestFailure[], truncated: boolean) => {
+    const base = { ...envelope, ...run, failures, failuresTruncated: run.failuresTruncated || truncated };
+    if (!base.failuresTruncated) return base;
+    const omitted = Math.max(0, run.failed - failures.length);
+    return {
+      ...base,
+      failuresReturned: failures.length,
+      failuresOmitted: omitted,
+      truncationNote:
+        `showing ${failures.length} of ${run.failed} failing test(s); the counts above are COMPLETE — ` +
+        `\`failures.length\` is a bounded sample, not how many failed. ` +
+        `Payload bounded to ${budget} B. Re-run one file, or pass testNamePattern, for the full text.`,
+    };
+  };
+
+  // Fast path: it already fits. Return it untouched so the common green result
+  // keeps the exact shape (and byte count) it had before this bound existed.
+  const asIs = build(run.failures, false);
+  if (payloadBytes(asIs) <= budget) return asIs;
+
+  // Lever 1 — shrink every message, preserving the full list of WHICH tests failed.
+  for (const chars of MESSAGE_BUDGET_LADDER) {
+    const candidate = build(run.failures.map((f) => clampFailureMessage(f, chars)), true);
+    if (payloadBytes(candidate) <= budget) return candidate;
+  }
+
+  // Lever 2 — still over: drop failures from the end at the tightest clamp.
+  const tightest = MESSAGE_BUDGET_LADDER[MESSAGE_BUDGET_LADDER.length - 1];
+  let kept = run.failures.map((f) => clampFailureMessage(f, tightest));
+  while (kept.length > 1) {
+    kept = kept.slice(0, -1);
+    const candidate = build(kept, true);
+    if (payloadBytes(candidate) <= budget) return candidate;
+  }
+
+  // Lever 3 — a single failure whose own name/path still overruns. Never report
+  // zero failures for a red run: give the one survivor whatever budget is left,
+  // even if that is no message at all. If the envelope ALONE exceeds the budget
+  // there is nothing further to trim, and an honest over-budget result beats a
+  // silent claim that nothing failed.
+  if (kept.length === 1) {
+    const headroom = budget - payloadBytes(build([{ ...kept[0], message: '' }], true));
+    if (headroom > 0) {
+      const fitted = clampFailureMessage(kept[0], Math.max(0, Math.min(kept[0].message.length, headroom - 8)));
+      const candidate = build([fitted], true);
+      if (payloadBytes(candidate) <= budget) return candidate;
+    }
+    return build([{ ...kept[0], message: '' }], true);
+  }
+  return build(kept, true);
+}
+
 /** A postgres-js-like tagged-template client; injectable so the persist path is unit-testable. */
 type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown>;
 

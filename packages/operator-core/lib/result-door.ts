@@ -155,9 +155,55 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // session override; sync snapshot, fail-soft to the baked 1500-token floor).
     const doorTokens = computeTurnDoors(0, getDoorConstantsSync(opts.ownerId)).resultEach;
     const budgetChars = doorTokens * CHARS_PER_TOKEN_ESTIMATE;
+    // EI-13918: `result.data` may ALREADY have been replaced upstream by a
+    // lossy payload-tier projection (payload-tier.ts) BEFORE this door ever
+    // saw it — in which case `fullText` below is not the tool's true full
+    // output; the genuinely-omitted content was never serialized at all, so
+    // paging this spill file can never recover it. Detect that via the
+    // `_meta.payloadProjection` marker (serialize-result.ts) rather than
+    // sniffing the serialized JSON text, and pick truthful header/footer
+    // wording for each case instead of unconditionally claiming "FULL".
+    const upstreamProjection = (
+      result._meta as { payloadProjection?: {
+        truncated: true; tier: string; forced: boolean;
+        originalChars: number; returnedChars: number; omittedCount: number;
+      } } | undefined
+    )?.payloadProjection;
     let totalChars = 0;
     for (const it of items) if (isTextItem(it)) totalChars += it.text.length;
-    if (totalChars <= budgetChars) return result;
+    if (totalChars <= budgetChars) {
+      // EI-19361771982678588: FITTING THE DOOR IS NOT BEING COMPLETE. This
+      // early return is the fast path for an ordinary small result — but a
+      // result that was tier-trimmed upstream and THEN landed under the door
+      // budget took this path too, and every truncation disclosure below is
+      // downstream of here. So the more aggressively a tool trimmed its own
+      // payload, the more likely it was to say nothing about it: the warning
+      // fired only when the *already-trimmed* body still overflowed. The
+      // facts:list case that motivated this cleared the door by 245 chars out
+      // of ~6,000 — a slightly tighter trim would have gone silent.
+      //
+      // Nothing to spill (the omitted rows were never serialized), so this
+      // discloses in-band and returns; the identity fast-path is preserved for
+      // the overwhelmingly common untruncated case.
+      if (!upstreamProjection?.truncated) return result;
+      return {
+        ...result,
+        content: [
+          ...items,
+          {
+            type: 'text' as const,
+            text:
+              `\n[⚠ PARTIAL RESULT — this fit the per-result door, but it is NOT the tool's full ` +
+              `output: it was tier-projected upstream (payloadProjection: tier=${upstreamProjection.tier} ` +
+              `forced=${upstreamProjection.forced} omittedCount=${upstreamProjection.omittedCount}, ` +
+              `${upstreamProjection.returnedChars} of ${upstreamProjection.originalChars} chars). Those ` +
+              `${upstreamProjection.omittedCount} field(s)/row(s) were never serialized, so nothing ` +
+              `downstream can recover them and their ABSENCE HERE IS NOT EVIDENCE THEY DO NOT EXIST. ` +
+              `Re-call ${opts.toolName} with payloadTier:'full' (or narrower args) for the missing detail.]`,
+          },
+        ],
+      } as T;
+    }
 
     const fullText = items
       .filter(isTextItem)

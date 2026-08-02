@@ -244,6 +244,25 @@ function floorCap(n: number | null | undefined): number | null {
   return typeof n === 'number' && Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null;
 }
 
+/** Below this, a value is still plausible as a real filesystem path even without a
+ *  newline; above it we treat it as inline text rather than risk feeding it to
+ *  `readFileSync` (Linux/macOS PATH_MAX is 4096 — this ceiling sits well under that,
+ *  since no genuine caller path is anywhere close to it). */
+const LAUNCH_CONTEXT_INLINE_TEXT_LENGTH_THRESHOLD = 1000;
+
+/**
+ * `launchContext` documents itself as a file PATH, but its own schema text ("sent as
+ * brief text, <=8000 chars") reads as if the arg CARRIES the text — a caller who
+ * passes actual brief TEXT dies deep inside `readFileSync` with ENAMETOOLONG, and
+ * every member silently boots on the bare baseline while the launch still reports
+ * `ok:true` (EI-19276371920501216). Multi-line content, or content implausibly long
+ * to be a filename, is almost certainly inline text rather than a path — disambiguate
+ * cheaply instead of finding out via a failed `open(2)`.
+ */
+export function looksLikeInlineLaunchContextText(value: string): boolean {
+  return value.includes('\n') || value.length > LAUNCH_CONTEXT_INLINE_TEXT_LENGTH_THRESHOLD;
+}
+
 /**
  * EI-6805: a relaunch/top-up wave must not only warn about capacity, it must
  * clamp the number of NEW terminals it opens to the shared capacity oracle.
@@ -892,7 +911,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "psu --launch-context: path to a brief/markdown file injected as EVERY member's launch context (shared). Use `perMemberLaunchContext` instead when different members need DISTINCT briefs.",
+        "psu --launch-context: PATH to a brief/markdown file injected as EVERY member's launch context (shared) — or, if the value contains a newline or is too long to plausibly be a filename, the brief TEXT itself (composed straight into the generated launch-context file; no read attempted). Use `perMemberLaunchContext` instead when different members need DISTINCT briefs.",
       ),
     perMemberLaunchContext: z
       .array(z.string())
@@ -1556,10 +1575,17 @@ export default defineTool({
       // composes it under the member baseline itself (delegated-spawn-honor).
       let remoteBriefText: string | null = null;
       if (args.launchContext?.trim()) {
-        try {
-          remoteBriefText = readFileSync(args.launchContext.trim(), 'utf8');
-        } catch (e: any) {
-          return err(`Could not read launchContext \`${args.launchContext}\` for the remote brief: ${e?.message ?? e}`);
+        const rawLaunchContext = args.launchContext.trim();
+        if (looksLikeInlineLaunchContextText(rawLaunchContext)) {
+          // EI-19276371920501216: this is brief TEXT, not a path — send it as-is
+          // rather than handing it to readFileSync (ENAMETOOLONG).
+          remoteBriefText = rawLaunchContext;
+        } else {
+          try {
+            remoteBriefText = readFileSync(rawLaunchContext, 'utf8');
+          } catch (e: any) {
+            return err(`Could not read launchContext \`${rawLaunchContext}\` for the remote brief: ${e?.message ?? e}`);
+          }
         }
         if (remoteBriefText.length > 8000) {
           return err(
@@ -1891,10 +1917,18 @@ export default defineTool({
     let sharedBriefText: string | null = null;
     try {
       if (effectiveLaunchContext) {
-        try {
-          sharedBriefText = readFileSync(effectiveLaunchContext, 'utf8');
-        } catch (e: any) {
-          briefReadError = `Could not read launchContext \`${effectiveLaunchContext}\` (${e?.message ?? e}) — members got the baseline only.`;
+        if (looksLikeInlineLaunchContextText(effectiveLaunchContext)) {
+          // EI-19276371920501216: this is brief TEXT, not a path — use it directly
+          // instead of handing it to readFileSync (ENAMETOOLONG). It still lands in
+          // the composed baseline file below, so `effectiveLaunchContext` gets
+          // reassigned to the WRITTEN file path either way (never the raw text).
+          sharedBriefText = effectiveLaunchContext;
+        } else {
+          try {
+            sharedBriefText = readFileSync(effectiveLaunchContext, 'utf8');
+          } catch (e: any) {
+            briefReadError = `Could not read launchContext \`${effectiveLaunchContext}\` (${e?.message ?? e}) — members got the baseline only.`;
+          }
         }
       }
       const composed = composeMemberLaunchContext({

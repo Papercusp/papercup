@@ -20,4 +20,15 @@ registerSystemAction('sweep-stalled-loops', async (ctx: SystemActionCtx) => {
         `${result.checked} armed loop(s) with no turns produced despite repeated fires, e.g. ${result.sample.join(', ')}`,
     );
   }
+  // EI-19362678179163398: a non-zero veto count is a LIVE signal that last_turn_at is
+  // under-reporting again (the exact failure class this guard's own root-cause fix
+  // closed once already) — surfaced loudly rather than silently swallowed, since the
+  // guard's per-owner console.warn inside the sweep is easy to miss in a routine's log.
+  if (result.vetoedByRecentTurn.length > 0) {
+    console.warn(
+      `[sweep-stalled-loops] VETOED ${result.vetoedByRecentTurn.length} owner(s) that read turnsStalled:true ` +
+        `but had produced a real turn inside the floor — last_turn_at may be under-reporting again ` +
+        `(EI-19362678179163398): ${result.vetoedByRecentTurn.join(', ')}`,
+    );
+  }
 });

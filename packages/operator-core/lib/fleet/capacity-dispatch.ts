@@ -98,6 +98,18 @@ export interface AccountPoolAvailability {
    * clears, a POLICY bug, not a dead egress path. `undefined` = no prior read to compare against yet.
    */
   edgeThrottledRearming?: boolean;
+  /**
+   * EI-19281217347369076: how many of `total` accounts carry a recent, UNRESOLVED
+   * `accounts:probe-capacity` 'no-reading' failure (`lastProbeFailedAt` set — the probe request itself
+   * failed: network/auth/timeout, so upstream told us nothing) that has not since been superseded by a
+   * real observation. When this is a MAJORITY of the pool, every `available`/`usageWalled`/`utilization`
+   * verdict those accounts feed into rests on a STALE, unrefreshable reading, not a live measurement —
+   * `poolExhausted`/`resetInSec` must not be reported with the same confidence as a freshly-measured
+   * quota wall (the "reports a broken egress path as pool exhausted with a quota-shaped resetInSec"
+   * trap: a probe failure is network-shaped, not quota-shaped, and no reset clears a broken network
+   * path). Optional, same fail-safe-omit contract as the other optional fields here.
+   */
+  blindCount?: number;
 }
 
 /** One account's edge-throttle state, as read at ONE point in time — the pure input to
@@ -384,6 +396,17 @@ export interface CapacityReport {
   paused: boolean;
   rejected: boolean;
   resetInSec: number | null;
+  /**
+   * EI-19281217347369076: false when the pool reading is `blind` (see below) — `resetInSec` is still
+   * SURFACED (never destroyed — it may be genuine, and deleting it hides real information from a caller
+   * who wants it anyway), but the reader must not treat it as an actionable "wait until this many
+   * seconds pass" figure: the probe that would confirm/refresh it could not complete, so the number may
+   * describe a window that will never clear (e.g. every account collapsed onto one down/throttled
+   * egress IP — no quota reset fixes that). True whenever `blind` is false, including when `blind`
+   * cannot be determined (no accountAvailability cross-check supplied) — same fail-safe-omit posture as
+   * every other cross-check-only field.
+   */
+  resetInSecActionable: boolean;
   healthyAccounts: number | null;
   tier1Reserve: number | null;
   /** The admission tier bee work maps to (default 3) — the band `dispatchBudget` is measured in. */
@@ -407,6 +430,18 @@ export interface CapacityReport {
    *  `poolExhausted` (nothing is walled/edge-throttled), but not abundant either. When true, `factor` is
    *  capped at `degradedFactorCap` and `advice` says place conservatively instead of "abundant". */
   degraded: boolean;
+  /**
+   * EI-19281217347369076: true when a MAJORITY (>=50%) of the cross-checked `accountAvailability` pool
+   * carries an unresolved `accounts:probe-capacity` no-reading failure — the verdict this report is
+   * built on rests on stale/unrefreshable readings, not a live measurement. Distinct from `poolExhausted`
+   * (which is about zero USABLE accounts) and `degraded` (about sustained rate-limiting): `blind` is
+   * about NOT KNOWING, and can co-occur with either. False (never true) when no `accountAvailability`
+   * cross-check (or no `blindCount` on it) was supplied — same fail-safe-omit default as
+   * `poolExhausted`/`degraded` already use for a missing cross-check.
+   */
+  blind: boolean;
+  /** The `blindCount` this report's `blind` verdict was computed from. null when not supplied. */
+  blindAccounts: number | null;
   capByTier: { tier: number; cap: number | null; inFlight: number; queued: number }[] | null;
   inFlight: number | null;
   queueDepth: number | null;
@@ -464,6 +499,7 @@ export function buildCapacityReport(
     return {
       reachable: false, tierLayer: false, clampArmed: opts.clampArmed,
       utilization: null, utilizationPct: null, paused: false, rejected: false, resetInSec: null,
+      resetInSecActionable: true,
       healthyAccounts: null, tier1Reserve: null, beeTier,
       dispatchBudget: null,
       usableAccounts: opts.accountAvailability?.usable ?? null,
@@ -471,6 +507,8 @@ export function buildCapacityReport(
       poolExhausted: false,
       sustainedlyLimitedAccounts: opts.accountAvailability?.sustainedlyLimitedCount ?? null,
       degraded: false,
+      blind: false,
+      blindAccounts: opts.accountAvailability?.blindCount ?? null,
       capByTier: null, inFlight: null, queueDepth: null,
       processUptimeMs: null, restartRecovering: false,
       factor: 1, recommendedHeadroom: opts.headroom ?? null, throttled: opts.headroom != null ? false : null,
@@ -494,6 +532,11 @@ export function buildCapacityReport(
   // Suppressed during the fresh-restart grace (the store may not be the cause, and restart-recovery already
   // means "place at ceiling, re-check next wake").
   const acct = opts.accountAvailability;
+  // EI-19281217347369076: a MAJORITY of the cross-checked pool having an unresolved probe-capacity
+  // no-reading failure means the available/usageWalled/utilization verdicts feeding poolExhausted/
+  // degraded/resetInSec are themselves unmeasured — not suppressed by restart-grace (a fresh-restart
+  // gateway snapshot says nothing about whether the STORE's own account readings are stale).
+  const blind = acct != null && acct.total > 0 && (acct.blindCount ?? 0) / acct.total >= 0.5;
   const poolExhausted =
     !restartRecovering && acct != null && acct.total > 0 && acct.usable <= 0 && (dispatchBudget ?? 0) > 0;
   if (poolExhausted) factor = 0;

@@ -22,6 +22,29 @@ describe('resourceDeltaConfig', () => {
     expect(resourceDeltaConfig('plans.list')?.itemKeyField).toBe('slug');
   });
 
+  // WI-7083: byHive reuses plans.list's read, so it takes the same key. It could not
+  // have one before the fan-out was deduped on the resolved plan SCOPE — `slug` had 910
+  // distinct values across 1,820 rows because every hive member fabricated its own copy
+  // of the home plan set, leaving no unique single field to key on.
+  it('plans.byHive keys on `slug`, like the plans.list read it reuses', () => {
+    expect(resourceDeltaConfig('plans.byHive')).toEqual({
+      itemKeyField: 'slug',
+      schemaVersion: 'plans-byhive-v1',
+    });
+    expect(resourceDeltaConfig('plans.byHive')?.itemKeyField).toBe(
+      resourceDeltaConfig('plans.list')?.itemKeyField,
+    );
+  });
+
+  // The two share a key FIELD but must not share a cursor: rest-query scopes each
+  // digest by `${name}:${argsJson}`, and the schemaVersions differ so an in-flight
+  // cursor cannot be replayed across them.
+  it('plans.byHive and plans.list carry distinct schemaVersions', () => {
+    expect(resourceDeltaConfig('plans.byHive')?.schemaVersion).not.toBe(
+      resourceDeltaConfig('plans.list')?.schemaVersion,
+    );
+  });
+
   it('an unconfigured resource serves full (undefined → no delta)', () => {
     expect(resourceDeltaConfig('workItems.byHarness')).toBeUndefined();
   });

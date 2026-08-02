@@ -31,6 +31,7 @@ import launchOnPlan, {
   resolveRemotePlacementHive,
   isSelfPublishedSeatOffer,
   extractKickoffWorkItemIds,
+  looksLikeInlineLaunchContextText,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -788,6 +789,30 @@ describe("distributeRemotePlacement (WI-5211 — cross-machine max-spread round-
     expect(dist.ok).toBe(false);
     if (dist.ok) return;
     expect(dist.error).toMatch(/fleet or its pot/);
+  });
+});
+
+// EI-19276371920501216: `launchContext` reads (per its own schema text) as if it
+// could carry the brief TEXT directly, and a caller who does that used to die deep
+// inside readFileSync with ENAMETOOLONG — silently dropping the brief for every
+// member while the launch still reported ok:true. looksLikeInlineLaunchContextText
+// is the cheap disambiguator: multi-line, or implausibly long for a filename, means
+// "this is text, not a path".
+describe('looksLikeInlineLaunchContextText (EI-19276371920501216)', () => {
+  it('treats a short, plausible single-line path as a PATH (false)', () => {
+    expect(looksLikeInlineLaunchContextText('/tmp/brief.md')).toBe(false);
+    expect(looksLikeInlineLaunchContextText('.papercusp/launch-context/fleet-x-launch-context.md')).toBe(false);
+  });
+
+  it('treats ANY multi-line value as inline TEXT (true), regardless of length', () => {
+    expect(looksLikeInlineLaunchContextText('MISSION: drain the queue\nDo not touch WI-1234.')).toBe(true);
+    expect(looksLikeInlineLaunchContextText('short\nbrief')).toBe(true);
+  });
+
+  it('treats a single-line value implausibly long for a filename as inline TEXT (true)', () => {
+    expect(looksLikeInlineLaunchContextText('x'.repeat(1001))).toBe(true);
+    // just under the threshold, still a "path" by this heuristic
+    expect(looksLikeInlineLaunchContextText('x'.repeat(1000))).toBe(false);
   });
 });
 

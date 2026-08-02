@@ -12,6 +12,15 @@
 //   --integration   also run `npm run test:integration` where defined
 //   --all           ignore git diff; run every workspace's tests
 //   --dry           print what would run, don't run
+//
+// Diagnostics:
+//   --print-affected                  print `AFFECTED_WS\t<name>` per affected workspace, then exit
+//   --changed-paths a/b.ts,c/d.mjs    derive the affected set from these paths instead of a git diff
+//
+//   Together they answer "which suites would a change to THESE files run?" —
+//     node scripts/affected-tests.mjs --changed-paths scripts/lint-tsc.mjs --print-affected
+//   which a git-based probe cannot answer here: git-sync sweeps the whole tree, so no
+//   real commit is ever scoped to just your paths.
 
 import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync, appendFileSync } from 'node:fs';
@@ -121,6 +130,14 @@ const dry = has('--dry');
 // WITHOUT running any tests — a cheap git+graph affected-set probe per candidate prefix.
 const rangeFrom = arg('--range-from', null);
 const rangeTo = arg('--range-to', null);
+// --changed-paths a,b,c — compute the affected set from these paths instead of a
+// git diff. See affectedWorkspaces() for why a git-based probe cannot answer
+// "what would touching X select?" on this tree.
+const changedPathsOverride = (() => {
+  const raw = arg('--changed-paths', null);
+  if (raw == null) return null;
+  return raw.split(',').map((p) => p.trim()).filter(Boolean);
+})();
 const printAffected = has('--print-affected');
 const runElSuite = has('--el-suite');
 const excludeArg = arg('--exclude', '');
@@ -362,6 +379,22 @@ if (printAffected) {
 function affectedWorkspaces() {
   if (runAll) return [...wsByDir.values()];
 
+  // --changed-paths <a,b,c>: compute the affected set from an EXPLICIT path list
+  // instead of a git diff. Two uses, one mechanism (EI-19346163916263067):
+  //   - "what would touching this file actually select?" — the question whose
+  //     unanswerability let root `scripts/` map to zero workspaces unnoticed. On
+  //     this tree a git-based probe cannot answer it: git-sync sweeps the WHOLE
+  //     tree, so no real commit is ever scoped to the paths you care about, and
+  //     the working-tree/untracked legs of changedFiles() fold in every peer's
+  //     in-flight edits on top.
+  //   - it makes the selection rules unit-testable hermetically (no repo history,
+  //     no clean tree, no synthetic commits).
+  // Read-only and selection-only — it cannot cause anything to run that a real
+  // change to those same paths would not.
+  if (changedPathsOverride) {
+    return resolveAffected(changedPathsOverride);
+  }
+
   let changed;
   try {
     changed = changedFiles();
@@ -410,19 +443,29 @@ function affectedWorkspaces() {
     }
   }
 
+  return resolveAffected(changed);
+}
+
+// The path-set -> workspace-set rule, factored out so the --changed-paths probe
+// (and its guard test) exercise the SAME code the real git-diff path does. Two
+// copies of this that could drift would make the test prove nothing.
+function resolveAffected(changed) {
   const directlyChanged = new Set();
   for (const file of changed) {
+    let matchedAWorkspace = false;
     for (const ws of wsByDir.values()) {
       // `file === ws.dir` (no trailing slash) is the SUBMODULE case: a gitlink
       // change is reported as the bare directory, not as a path beneath it. Without
       // this arm, a submodule workspace can never be marked affected.
       if (file === ws.dir || file === `${ws.dir}/package.json` || file.startsWith(`${ws.dir}/`)) {
         directlyChanged.add(ws.name);
+        matchedAWorkspace = true;
       }
     }
     // Paths in a non-workspace source directory (see NON_WORKSPACE_PATH_ROUTES).
-    // Only reached when the loop above matched nothing — a route must never
-    // override a genuine workspace that owns the path.
+    // Deliberately a FALLBACK, not an override: if a real workspace ever owns the
+    // path, that ownership wins and the route stays silent.
+    if (matchedAWorkspace) continue;
     for (const route of NON_WORKSPACE_PATH_ROUTES) {
       if (!file.startsWith(route.prefix)) continue;
       if (wsByName.has(route.workspace)) directlyChanged.add(route.workspace);

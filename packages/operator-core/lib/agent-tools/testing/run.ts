@@ -49,7 +49,12 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { distillVitestRun, mergeDistilledRuns } from '../../testing-run-store';
+import {
+  boundTestRunPayload,
+  distillVitestRun,
+  mergeDistilledRuns,
+  TESTING_RUN_MAX_PAYLOAD_BYTES,
+} from '../../testing-run-store';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
@@ -100,7 +105,7 @@ function runRouter(args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutM
 export default defineTool({
   name: 'testing:run',
   description:
-    'Run exact Vitest files through the repo router (scripts/test-files.mjs) and return a DISTILLED result — { passed, failed, skipped, files, failures:[{file,test,message}], durationMs, runId } — instead of raw reporter output you have to tail/grep. Routes each file to its owning workspace config and hard-refuses a zero/partial-match false-green run. Stamps PAPERCUSP_TEST_RUN_GROUP so the run correlates in harness_shared.test_runs.',
+    'Run exact Vitest files through the repo router (scripts/test-files.mjs) and return a DISTILLED result — { passed, failed, skipped, files, failures:[{file,test,message}], durationMs, runId } — instead of raw reporter output you have to tail/grep. Routes each file to its owning workspace config and hard-refuses a zero/partial-match false-green run. `failed` is always the TRUE total; `failures` is a bounded sample of it, so when `failuresTruncated` is set read `failuresOmitted`, never `failures.length`. Stamps PAPERCUSP_TEST_RUN_GROUP so the run correlates in harness_shared.test_runs.',
   guidance: {
     when: 'You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.',
     notWhen: 'Running everything your edits affected (use `npm run test:affected` — not covered here), a non-Vitest suite (cargo/playwright), or when you genuinely need raw reporter output.',
@@ -124,7 +129,9 @@ export default defineTool({
         `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so a slow suite returns an actionable timeout instead of an opaque transport error. For a longer suite run it detached via capability:inspect { run_in_background: true }.`,
       ),
     maxFailures: z.number().int().min(1).max(100).optional()
-      .describe('Cap the returned failures list (default 20). Counts stay complete; `failuresTruncated` flags the cut.'),
+      .describe(
+        `Cap the returned failures list (default 20). Counts stay complete; \`failuresTruncated\` flags the cut. Note this caps the LIST COUNT, not bytes — the result is separately bounded to ${TESTING_RUN_MAX_PAYLOAD_BYTES} B, which is what actually limits a run with huge assertion diffs.`,
+      ),
   }),
   async handler(args, ctx) {
     // EI-1754, again: this tool must judge the tree the AGENT is editing, not the
@@ -209,12 +216,17 @@ export default defineTool({
         reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: args.maxFailures })),
         { maxFailures: args.maxFailures },
       );
+      // D-062: bound the payload in BYTES, not entries. `maxFailures` caps the
+      // LIST COUNT and so cannot bound bytes at all — one long assertion diff
+      // outweighs fifty terse failures, which is how this tool reached 20,569 B
+      // with 2.6% of calls carrying 28.7% of its total. Counts stay complete and
+      // a cut is stated explicitly, so `failures.length` is never readable as
+      // "how many failed". A result that already fits is returned untouched.
       return {
-        data: {
-          ok: run.failed === 0 && outcome.code === 0,
-          runId,
-          ...run,
-        },
+        data: boundTestRunPayload(
+          { ok: run.failed === 0 && outcome.code === 0, runId },
+          run,
+        ),
       };
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => { /* best-effort */ });
