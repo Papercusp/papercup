@@ -40,7 +40,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runGitSync, type RunGit } from './run-git-sync';
 
 // ── real-git helpers (subprocess; mirrors two-peer-convergence) ─────────────────
@@ -493,6 +493,21 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
     // and it must reach the LOG, not only the routine metadata that gets nulled.
     expect(logs.some((m) => m.includes('merge failed (no conflicted paths)') && m.includes('merge-base=NONE(unrelated)'))).toBe(true);
     expect(await git(['status', '--porcelain', '--untracked-files=no'], victim)).toBe('');
+
+    // WI-6824 (the actual root cause): with NO `log` injected the default sink must still
+    // be a REAL one. It was `() => {}`, and the sole production caller passes no `log` —
+    // so this exact failure alarmed the fleet for ~10h while leaving zero trace in
+    // journald. Asserting on the injected sink alone would never have caught that, because
+    // the injection is what the test supplies and production does not.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const again = await runGitSync('rworphan-victim', { runGit: testRunGit, repoPath: victim, config: { branch: 'main' } });
+      expect(again.status).toBe('error');
+      const warned = warn.mock.calls.map((c) => String(c[0]));
+      expect(warned.some((m) => m.includes('merge failed (no conflicted paths)'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
     } finally {
       await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
     }

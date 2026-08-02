@@ -691,6 +691,57 @@ describe('pkill/killall host-wide dev-process guard (EI-18690252462401774)', () 
   });
 });
 
+/**
+ * Wait-loop self-match (EI-19312699396945642): `until ! pgrep -f '<pat>'; do
+ * sleep …; done` can never exit from an agent shell — the loop's own bash -c
+ * argv contains the pattern, so `pgrep -f` (full-cmdline match) finds the
+ * poller itself and the condition holds forever. A peer burned 27 silent
+ * minutes exactly here (2026-08-02). `ps | grep` loop conditions share the
+ * defect, and `grep -v grep` does NOT fix it (the bash -c wrapper still
+ * matches). UNCONDITIONAL, same rationale as the pkill guard. Scoped to loop
+ * CONDITIONS: one-shot pgrep/ps|grep reads terminate and stay allowed.
+ */
+function expectSelfMatchDeny(out: { stdout: string; status: number | null }) {
+  const reason = denyReason(out);
+  expect(reason).toContain('EI-19312699396945642');
+}
+
+describe('process-table wait-loop self-match guard (EI-19312699396945642)', () => {
+  it.each([
+    [
+      'the exact live repro (27-min silent loop)',
+      "until ! pgrep -f 'lint-tsc' >/dev/null; do sleep 5; done; echo \"=== lint:tsc finished ===\"",
+    ],
+    ['while-form pgrep -f poll', 'while pgrep -f test:affected >/dev/null; do sleep 10; done'],
+    ['bundled short flag (-qf)', 'until ! pgrep -qf my-build-marker; do sleep 2; done'],
+    ['long flag (--full)', 'while pgrep --full some-long-job; do sleep 1; done'],
+    ['ps|grep loop condition', 'until ! ps aux | grep -q build-step; do sleep 5; done'],
+    [
+      'ps|grep with grep -v grep (still self-matches via the bash -c wrapper)',
+      'while ps aux | grep my-task | grep -v grep; do sleep 5; done',
+    ],
+    ['bash -c wrapped (the argv that actually self-matches)', 'bash -c "until ! pgrep -f lint-tsc; do sleep 5; done"'],
+    ['after a compound separator', 'echo start; until ! pgrep -f render-job; do sleep 3; done'],
+  ])('denies %s', (_label, command) => {
+    expectSelfMatchDeny(runGate(bashCmd(command)));
+  });
+
+  it.each([
+    ["bracket idiom pgrep (the documented escape): pgrep -f '[l]int-tsc'", "until ! pgrep -f '[l]int-tsc' >/dev/null; do sleep 5; done"],
+    ["bracket idiom ps|grep: grep '[b]uild-step'", "until ! ps aux | grep '[b]uild-step'; do sleep 5; done"],
+    ['name-only pgrep (no -f: matches comm, not the argv)', 'until ! pgrep myserver; do sleep 5; done'],
+    ['pidfile flag -F is not -f', 'while pgrep -F /run/x.pid worker; do sleep 5; done'],
+    ['one-shot pgrep -f (terminates; merely includes itself)', 'pgrep -f lint-tsc'],
+    ['one-shot ps|grep (the routine listing idiom)', 'ps aux | grep "npm install"'],
+    ['PID-based wait loop (the recommended remedy)', 'while kill -0 12345; do sleep 5; done'],
+    ['tail --pid wait (the other remedy)', 'tail --pid=12345 -f /dev/null'],
+    ['non-process-table until loop', 'until curl -s localhost:3070/api/health; do sleep 2; done'],
+    ['prose mention, not command position', 'echo "an until pgrep -f loop never exits"'],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command)));
+  });
+});
+
 describe('owner sessions + fail-open (D-003)', () => {
   it("never fires without the agent marker — the owner's crontab is their business", () => {
     expectAllow(runGate(bashCmd('crontab -l')));

@@ -89,6 +89,7 @@ export function Modal({
   closeOnOverlayClick = closeOnOutsideClick,
   modal = true,
   nonDismissableOutsideSelector,
+  onOpenAutoFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -112,6 +113,21 @@ export function Modal({
    * that must remain live while a modal-like surface is open.
    */
   nonDismissableOutsideSelector?: string;
+  /**
+   * Radix's open-autofocus hook. By default Radix focuses the FIRST TABBABLE
+   * descendant, which is whatever happens to be first in the DOM — often a
+   * window control (a close/maximize button) rather than the content. That is
+   * both poor a11y (the reader lands on chrome, not on what they opened) and,
+   * if that control is a tooltip trigger, an Escape thief: the tooltip opens on
+   * focus, mounts its own dismissable layer, and swallows the first Escape so
+   * the dialog never closes.
+   *
+   * Prevent-and-redirect to opt out:
+   *   onOpenAutoFocus={(e) => { e.preventDefault(); myRef.current?.focus(); }}
+   * (give the redirect target `tabIndex={-1}` so it is focusable but not
+   * itself tabbable).
+   */
+  onOpenAutoFocus?: (event: Event) => void;
 }) {
   // Default to 100 so modals render above the persistent OracleDock (z:80).
   const z = zIndex ?? 100;
@@ -159,6 +175,7 @@ export function Modal({
             className={contentClassName ? `pc-modal-content ${contentClassName}` : 'pc-modal-content'}
             data-anim="pop"
             style={content}
+            onOpenAutoFocus={onOpenAutoFocus}
             onEscapeKeyDown={closeOnEscape ? undefined : (e) => e.preventDefault()}
             onPointerDownOutside={keepAllowedOutsideInteractionOpen}
             onInteractOutside={keepAllowedOutsideInteractionOpen}

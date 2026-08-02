@@ -912,6 +912,19 @@ export default function SessionChatModal({
          conversation the user was reading disappears when they only asked for
          a smaller window. */
       closeOnEscape={!screenActive}
+      /* Send the dialog's initial focus to the CONVERSATION, not to a window
+         control. Radix otherwise focuses the first tabbable descendant, which
+         since P-001 is the full-window button — and that button is a tooltip
+         trigger, so focusing it OPENS the tooltip, which mounts its own
+         dismissable layer and eats the first Escape. The chat then ignored the
+         first Escape press entirely (caught by the pre-existing "calls onClose
+         when the dialog is dismissed" test, which is why it is a test worth
+         having). Focusing the transcript is also the better landing spot: it is
+         what the reader opened the popup for, and it is scrollable by keyboard. */
+      onOpenAutoFocus={(e) => {
+        e.preventDefault();
+        conversationRef.current?.focus();
+      }}
       wrapStyle={maximized ? { padding: 0 } : undefined}
       contentStyle={
         maximized
@@ -960,6 +973,9 @@ export default function SessionChatModal({
         <div
           ref={conversationRef}
           data-testid="session-chat-conversation"
+          /* -1: focusable so `onOpenAutoFocus` can land here, but NOT tabbable,
+             so it never becomes a stop in the Tab order itself. */
+          tabIndex={-1}
           style={{
             flex: 1,
             minWidth: 0,

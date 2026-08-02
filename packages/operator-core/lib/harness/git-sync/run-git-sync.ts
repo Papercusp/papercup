@@ -1072,10 +1072,10 @@ async function reconcileAndPushOneRepo(
     // merge-resolver can fix (e.g. "local changes would be overwritten", "not
     // something we can merge") — surface as error, don't dispatch a resolver at it.
     if (conflicted.length === 0) {
-      // WI-6824: LOG it as well as returning it — `last_error` is nulled by the next
-      // healthy tick, so for an intermittent fault the log line is the only durable trace.
+      // WI-6824: the ref pair rides in the MESSAGE, not a second log call — runGitSync's
+      // `absorb` already logs every error verbatim, so the message is what reaches both
+      // the journal and `last_error`. One channel, no divergence between the two records.
       const diag = await describeFailedMerge(runGit, repoPath, remote, branch, 'initial');
-      o.log(`[git-sync] ${repoPath}: merge failed (no conflicted paths) — ${diag}: ${mergeOut.slice(0, 300)}`);
       return { status: 'error', message: `merge failed (no conflicted paths) [${diag}]: ${mergeOut.slice(0, 300)}` };
     }
     return { status: 'conflict', conflictedFiles: conflicted };
@@ -1095,7 +1095,6 @@ async function reconcileAndPushOneRepo(
         await runGit(['merge', '--abort'], repoPath);
         if (conflicted.length === 0) {
           const diag = await describeFailedMerge(runGit, repoPath, remote, branch, 'non-ff-retry');
-          o.log(`[git-sync] ${repoPath}: merge failed (no conflicted paths) — ${diag}: ${m2Out.slice(0, 300)}`);
           return { status: 'error', message: `merge failed (no conflicted paths) [${diag}]: ${m2Out.slice(0, 300)}` };
         }
         return { status: 'conflict', conflictedFiles: conflicted };
@@ -1169,7 +1168,17 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const message = cfg.message ?? `chore(git-sync): auto-commit ${slug} [skip ci]`;
   const maxBlobBytes = cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;
   const maxCommitTotalBytes = cfg.maxCommitTotalBytes ?? DEFAULT_MAX_COMMIT_TOTAL_BYTES;
-  const log = opts.log ?? (() => {});
+  // WI-6824: this default was `() => {}`, and the SOLE production caller
+  // (git-sync-action.ts) passes no `log` — so every line below was discarded in
+  // production: oversized exclusions, content quarantines, merge conflicts, merge
+  // ERRORS, and the P-011 branch-guess warning whose own comment says "make it LOUD".
+  // That is why an unrelated-history merge failure could alarm the fleet for ~10h
+  // across 39 sweeps while leaving ZERO occurrences in journald, recorded only in
+  // routine metadata that the next healthy tick nulls. Defaulting to a REAL sink fixes
+  // the class rather than one call site: a caller can no longer go dark by omission,
+  // only by explicitly passing a silent log. Every call site here is an exceptional
+  // event — a healthy tick still logs nothing.
+  const log = opts.log ?? ((m: string) => console.warn(m));
   // WI-1416: the checkpoint seam — each phase below runs under `step` so a durable
   // caller records one operation_output per phase (see GitSyncStepRunner).
   const step: GitSyncStepRunner = opts.step ?? (async (_name, fn) => fn());

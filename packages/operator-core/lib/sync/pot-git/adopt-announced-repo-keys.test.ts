@@ -154,6 +154,73 @@ describe('adoptAnnouncedRepoKeysForWorkspace', () => {
     }
   });
 
+  it('NEVER adopts into an entry with its own federated identity, even when a peer announces a different value for the same potId (live regression, 2026-08-02)', async () => {
+    // The tower's own shape: self_repo home WITH real github coords. A weaker
+    // peer (the rig, with no coords) announces ITS OWN bare-slug guess under
+    // the SAME potId — `byPotId` is last-write-wins, so this is exactly the
+    // announce the tower's own adopt pass could see.
+    const { state, deps } = fakes(
+      [
+        localPotHome({
+          github_repository_id: 1223568103,
+          pot_repo_key: 'gh-1223568103',
+          pot_repo_key_source: 'local',
+        }),
+      ],
+      [{ potId: 'papercusp', homeRepoKey: 'papercusp' }],
+    );
+    const res = await adoptAnnouncedRepoKeysForWorkspace('ws', deps);
+    expect(res.adopted).toEqual([]);
+    expect(res.restoredOwnIdentity).toEqual([]);
+    expect(state.stored.projects[0]!.pot_repo_key).toBe('gh-1223568103');
+    expect(state.stored.projects[0]!.pot_repo_key_source).toBe('local');
+  });
+
+  it('RESTORES a federated-identity entry already corrupted by a prior (buggy) adopt — the live tower incident', async () => {
+    // Exactly the corrupted state found live on the tower 2026-08-02: its own
+    // papercusp entry (id 1223568103) had been flipped to the rig's bare
+    // 'papercusp', stamped 'peer' — which `adoptRepoKey`'s own
+    // never-re-derive-a-peer-pin rule would otherwise freeze forever.
+    const { state, deps } = fakes(
+      [
+        localPotHome({
+          github_repository_id: 1223568103,
+          pot_repo_key: 'papercusp',
+          pot_repo_key_source: 'peer',
+        }),
+      ],
+      [{ potId: 'papercusp', homeRepoKey: 'papercusp' }],
+    );
+    const res = await adoptAnnouncedRepoKeysForWorkspace('ws', deps);
+    expect(res.adopted).toEqual([]);
+    expect(res.restoredOwnIdentity).toEqual([
+      { slug: 'papercusp', from: 'papercusp', to: 'gh-1223568103' },
+    ]);
+    expect(res.wrote).toBe(true);
+    const entry = state.stored.projects[0]!;
+    expect(entry.pot_repo_key).toBe('gh-1223568103');
+    expect(entry.pot_repo_key_source).toBe('local');
+  });
+
+  it('a federated-identity entry already correct is a true no-op (steady state)', async () => {
+    const { state, deps } = fakes(
+      [
+        localPotHome({
+          github_repository_id: 1223568103,
+          pot_repo_key: 'gh-1223568103',
+          pot_repo_key_source: 'local',
+        }),
+      ],
+      [{ potId: 'papercusp', homeRepoKey: 'gh-1223568103' }],
+    );
+    const res = await adoptAnnouncedRepoKeysForWorkspace('ws', deps);
+    expect(res.adopted).toEqual([]);
+    expect(res.restoredOwnIdentity).toEqual([]);
+    expect(res.wrote).toBe(false);
+    expect(state.saves).toBe(0);
+    expect(state.stored.projects[0]!.pot_repo_key).toBe('gh-1223568103');
+  });
+
   it('FAIL-SOFT when the hive directory is unavailable', async () => {
     const res = await adoptAnnouncedRepoKeysForWorkspace('ws', {
       loadRegistry: async () => ({ projects: [localPotHome()] }) as HarnessRegistry,

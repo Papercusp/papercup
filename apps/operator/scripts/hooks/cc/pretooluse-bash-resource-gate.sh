@@ -1493,6 +1493,55 @@ for _seg in re.split(r'[;&|\n]', _scannable()):
     if _pk_m and _PKILL_DEV_TOKEN_RE.search(_pk_m.group(2)):
         deny(_PKILL_DENY.format(op=_pk.strip()[:160]))
 
+# ── process-table wait-loop self-match guard (EI-19312699396945642) ──────────
+# `until ! pgrep -f '<pat>' …; do sleep …; done` can NEVER exit when run from
+# an agent shell: `pgrep -f` matches the FULL command line, and the loop's own
+# `bash -c` argv contains the literal pattern text, so the poll matches ITSELF
+# and the condition is permanently true. Observed live 2026-08-02: a peer
+# session looped 27 minutes (silently — no error, no output) "waiting" on a
+# lint-tsc run that had long finished. Same self-match class as the pkill
+# guard above, in wait-loop form. `ps … | grep <pat>` loop conditions share
+# the defect — and there `grep -v grep` does NOT save you, because the
+# `bash -c` wrapper's own cmdline still contains the pattern and is not named
+# grep. UNCONDITIONAL for the same reason as the pkill guard: the hazard is
+# the process-table scope of the poll, not any particular tree. Scoped to the
+# loop CONDITION (the unexitable form) — a one-shot `pgrep -f` merely includes
+# itself in the result and still terminates, so it stays allowed.
+_PGREP_LOOP_DENY = (
+    'process-table wait-loop self-match guard (EI-19312699396945642): this '
+    'loop can NEVER exit — `{op}` matches the FULL command line, and your own '
+    "shell's argv contains the literal pattern, so the poll matches ITSELF "
+    'and the condition stays true forever (a peer burned 27 silent minutes '
+    'exactly here on 2026-08-02). `grep -v grep` does not help: the `bash -c` '
+    'wrapper still matches. Fixes, best first: (1) do not poll — launch the '
+    'job with capability:bash {{ run_in_background: true }} and read it with '
+    'capability:bash_output {{ bash_id, filter }}; (2) wait on the PID, not a '
+    'pattern: `tail --pid=<pid> -f /dev/null`, or `kill -0 <pid>` in the '
+    'loop; (3) if you MUST pattern-poll, bracket the first character so the '
+    "pattern cannot match its own argv: pgrep -f '[l]int-tsc' (same trick as "
+    "ps aux | grep '[f]oo')."
+)
+
+def _pgrep_short_flags_have_f(flags_str):
+    # Case-sensitive: -f/--full is full-cmdline match; -F is pidfile (not it).
+    for _g in re.findall(r'-([A-Za-z]+)', flags_str):
+        if 'f' in _g:
+            return True
+    return False
+
+for _lp in re.finditer(
+        r'(?:^|[;&\n])\s*(?:until|while)\s+(?:!\s*)?([^;\n]{1,300})',
+        _scannable()):
+    _cond = _lp.group(1)
+    _pg = re.search(r'\bpgrep\s+((?:-{1,2}[\w-]+\s+)*)([^\s|>;]+)', _cond)
+    if _pg and '[' not in _pg.group(2) and (
+            '--full' in _pg.group(1) or _pgrep_short_flags_have_f(_pg.group(1))):
+        deny(_PGREP_LOOP_DENY.format(op=('pgrep -f … in: ' + _cond.strip())[:160]))
+    _psg = re.search(
+        r'\bps\s[^|;\n]*\|\s*grep\s+((?:-{1,2}[\w-]+\s+)*)([^\s|>;]+)', _cond)
+    if _psg and '[' not in _psg.group(2):
+        deny(_PGREP_LOOP_DENY.format(op=('ps | grep … in: ' + _cond.strip())[:160]))
+
 # ── tauri-agent-tools target guard (EI-10939) ────────────────────────────────
 # SAFETY. `tauri-agent-tools` picks its target by scanning /tmp for
 # `tauri-dev-bridge-<pid>.token` files and taking THE FIRST LIVE ONE IT HAPPENS

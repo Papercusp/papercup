@@ -1565,6 +1565,29 @@ describe('SessionChatModal', () => {
       }
     });
 
+    /**
+     * Regression guard for a bug the maximize toolbar CAUSED and the
+     * pre-existing "calls onClose when the dialog is dismissed" test caught.
+     *
+     * The toolbar's buttons are Radix Tooltip triggers. Radix Dialog focuses
+     * the first TABBABLE descendant on open, which made that the full-window
+     * button; focusing a tooltip trigger OPENS the tooltip, which mounts its
+     * own dismissable layer and SWALLOWS the first Escape — so the popup
+     * ignored the user's first Escape press entirely.
+     *
+     * Asserting the fix at the level of the invariant (where does focus land)
+     * rather than re-asserting onClose, so this still fails if someone
+     * reintroduces the problem via a different control.
+     */
+    it('lands initial focus on the conversation, never on a window control (Escape-thief guard)', async () => {
+      await renderResolved();
+      const region = screen.getByTestId('session-chat-conversation');
+      await waitFor(() => expect(document.activeElement).toBe(region));
+      expect(document.activeElement).not.toBe(screen.getByTestId('session-chat-full-window'));
+      // Focusable for the redirect, but never a Tab stop of its own.
+      expect(region.getAttribute('tabindex')).toBe('-1');
+    });
+
     it('leaving fullscreen by Esc/F11 clears the mode (the DOM is the authority, not our own flag)', async () => {
       const { rerender } = await renderResolved();
       nuqs.chatMax = 'screen';

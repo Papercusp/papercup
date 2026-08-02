@@ -18,7 +18,7 @@
  *
  * The spawn seam is injected, so none of this runs a real tsc.
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -120,6 +120,31 @@ describe('refusing to look green when nothing was checked', () => {
     expect(sink.warns.join('\n')).toContain('NOT evidence that libs/papercusp typechecks');
     // Must NOT be reported as packages passing — that is the vacuous green.
     expect(sink.stdout()).not.toContain('passed,');
+  });
+
+  // THE anti-silent-un-gating guard, deliberately sited HERE rather than in the script: a
+  // removal reds this TEST at development time, where it costs the author a fix — instead of
+  // reddening the release gate, where it would hold `main` for the whole fleet. This is what
+  // makes the script's zero-package WARN safe rather than a loophole.
+  it('the REAL libs/papercusp still declares the typecheck scripts this gate exists to run', () => {
+    const realLibsRoot = join(__dirname, '..', '..', '..', 'libs', 'papercusp');
+    if (!existsSync(join(realLibsRoot, 'package.json'))) return; // subject hive / uninit submodule
+
+    const found = discover(realLibsRoot, 0, realLibsRoot).map((p: { rel: string }) => p.rel);
+    // The eight that earned a gate one at a time (EI-19302566985147894 /
+    // EI-19305781578043773 / WI-6826). Named individually so a removal says WHICH.
+    for (const expected of [
+      'libs/db',
+      'packages/blueprint-distribution',
+      'packages/file-claim',
+      'packages/harness',
+      'packages/harness/docs-viewer',
+      'packages/locks',
+      'packages/orchestrator',
+      'plugins/gitnexus-bridge',
+    ]) {
+      expect(found, `${expected} lost its typecheck script — this gate stopped covering it`).toContain(expected);
+    }
   });
 
   it('a corrupt package.json is a failure, never a silent opt-out (WI-6056)', () => {

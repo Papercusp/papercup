@@ -532,6 +532,46 @@ describe('databaseTuningToSettings — renders GUC strings with units', () => {
     expect(big.max_slot_wal_keep_size).toBe('32GB');
     expect(small.max_slot_wal_keep_size).toBe('32GB');
   });
+
+  // WI-6859 — the JIT-compilation defense. PG gates its LLVM passes on the
+  // PLANNER'S COST ESTIMATE, which this workload's jsonb/LATERAL shapes cannot
+  // produce reliably: measured 2,101,755 estimated for a plan touching 97
+  // buffers, which cleared both 500k thresholds and bought 839 ms of compilation
+  // for a query doing 1.3 ms of work. Live delta: 13.68% of ALL database
+  // execution time was JIT compilation.
+  it('the expensive JIT passes are disabled in the GUC map', () => {
+    const s = databaseTuningToSettings(
+      deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB })),
+    );
+    expect(s.jit_inline_above_cost).toBe('-1');
+    expect(s.jit_optimize_above_cost).toBe('-1');
+  });
+
+  it('leaves jit itself ON — the cheap passes still earn their keep', () => {
+    // Deliberately NOT `jit = off`. Statements doing 38,554 / 8,673 / 5,257 ms of
+    // real work per call pay only 37-70 ms of JIT, because their estimates sit
+    // BELOW these thresholds — they were only ever buying generation + emission.
+    // Raising the two expensive knobs removes the waste without stripping JIT
+    // from the queries it exists for.
+    const s = databaseTuningToSettings(
+      deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB })),
+    );
+    expect(s.jit).toBeUndefined();
+    expect(s.jit_above_cost).toBeUndefined();
+  });
+
+  it('the JIT knobs are a fixed workload shape, not host-scaled', () => {
+    // A laptop-class embedded host runs the SAME short-OLTP statements as the
+    // 128-core box, so it inherits the same defense.
+    const big = databaseTuningToSettings(
+      deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB })),
+    );
+    const small = databaseTuningToSettings(
+      deriveDatabaseTuning(signals({ cores: 2, embeddedPg: true, totalMemBytes: 4 * GIB })),
+    );
+    expect(small.jit_inline_above_cost).toBe(big.jit_inline_above_cost);
+    expect(small.jit_optimize_above_cost).toBe(big.jit_optimize_above_cost);
+  });
 });
 
 describe('resource profile exposes the database tuning', () => {

@@ -385,6 +385,43 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
     // ever caps a pathological stuck slot. 32GB ≫ normal WAL churn (max_wal_size
     // ~1GB) and ≪ the cluster's data volume.
     max_slot_wal_keep_size: '32GB',
+    // jit_inline_above_cost / jit_optimize_above_cost — LLVM-compilation defense
+    // (WI-6859). Like max_slot_wal_keep_size above, these are FIXED, not
+    // host-scaled: they encode a workload SHAPE (short OLTP statements), not a
+    // machine size.
+    //
+    // PG's JIT gates its passes on the PLANNER'S COST ESTIMATE, which is only as
+    // good as its selectivity model. This workload queries jsonb bodies through
+    // `CROSS JOIN LATERAL jsonb_array_elements_text(...)` with correlated
+    // subplans — a shape the planner cannot estimate. Measured on the
+    // unanswered-directed rollup (coord:orient + coord:inbox call it on EVERY
+    // orient): estimated cost 2,101,755 for a plan that touches 97 buffers,
+    // reads zero pages from disk and returns zero rows. That estimate clears
+    // both 500k thresholds, so PG buys the two most expensive LLVM passes for a
+    // query that needs none of them:
+    //
+    //   jit=on (defaults)            866-885 ms  (839 ms of it compilation)
+    //   inline/optimize disabled      69- 73 ms  (40 ms compilation)
+    //   jit=off                        1.3 ms
+    //
+    // Disabling optimize also collapses EMISSION (285 ms → 34 ms): there is far
+    // less optimized IR to emit. Net ~95% of the JIT cost, for a 12x speedup on
+    // the hot path.
+    //
+    // Systemic, not one query: 300,826 s (83.6 h) of lifetime JIT compilation
+    // across 258 statements, 158 of which do <100 ms of REAL work per call. A
+    // live 60 s delta measured JIT at 13.68% of ALL database execution time.
+    //
+    // -1 rather than `jit = off`, deliberately. A blanket disable would also
+    // strip JIT from the few statements that genuinely earn it — measured at
+    // 38,554 / 8,673 / 5,257 ms of real work per call against only 37-70 ms of
+    // JIT, because their estimates sit BELOW these thresholds and they were only
+    // ever paying generation + emission. Raising the two expensive knobs removes
+    // the waste without touching the queries JIT exists for.
+    //
+    // Both are SIGHUP-reloadable — no restart required to apply or revert.
+    jit_inline_above_cost: '-1',
+    jit_optimize_above_cost: '-1',
     max_worker_processes: String(t.maxWorkerProcesses),
     max_parallel_workers: String(t.maxParallelWorkers),
     max_parallel_workers_per_gather: String(t.maxParallelWorkersPerGather),
