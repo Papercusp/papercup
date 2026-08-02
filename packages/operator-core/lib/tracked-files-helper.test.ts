@@ -38,27 +38,41 @@ describe('tracked-files helper (WI-6730)', () => {
     expect(scan.files.some((f) => f.startsWith('packages/operator-core/'))).toBe(true);
   });
 
-  it('recurses into submodules — the defect the helper exists to fix', () => {
-    // libs/generic/sync is a submodule; a bare `git ls-files` emits ONE gitlink
-    // entry for it and none of its contents.
-    expect(
-      scan.files.some((f) => f.startsWith('libs/generic/sync/src/')),
-      'no libs/generic/sync/src files — the enumerator is not recursing',
-    ).toBe(true);
-    expect(scan.files.some((f) => f.startsWith('libs/papercusp/packages/'))).toBe(true);
+  it('recurses into submodules WHERE GIT CAN — and the scanned/unscanned split says which', () => {
+    // ⚠ Do NOT assert "libs/generic/sync/src files are present" unconditionally.
+    // `git ls-files --recurse-submodules` DOES NOT WORK IN A LINKED WORKTREE whose
+    // submodules are not registered: it silently returns FEWER paths than a plain
+    // `git ls-files` (measured in the green-checkpoint worktree: 20,060 vs 20,098,
+    // and zero under libs/generic/sync/src) even though the files are on disk. An
+    // unconditional assertion here therefore passes in the shared tree and reds the
+    // fleet gate — which is exactly what it did on candidate 3a18e44b.
+    //
+    // The real contract is a BICONDITIONAL, and it is what makes the helper safe to
+    // trust in either environment: a submodule's files appear iff that submodule is
+    // reported as scanned. Both directions are checked, so this cannot pass by the
+    // enumerator simply returning nothing.
+    for (const path of scan.scanned) {
+      expect(
+        scan.files.some((f) => f.startsWith(`${path}/`)),
+        `${path} is reported SCANNED but contributed no files — the split is lying`,
+      ).toBe(true);
+    }
+    for (const path of scan.unscanned) {
+      expect(
+        scan.files.some((f) => f.startsWith(`${path}/`)),
+        `${path} is reported UNSCANNED but contributed files — the split is lying`,
+      ).toBe(false);
+    }
   });
 
-  it('reports declared-but-unscanned submodules instead of silently dropping them', () => {
-    // The contract: coverage is part of the return value, so a caller cannot
-    // mistake "not scanned" for "clean". Asserted structurally — which submodules
-    // are initialized varies by checkout, and pinning a specific one would make
-    // this test a checkout detector rather than a contract test.
+  it('accounts for every declared submodule — none may be silently dropped', () => {
+    // Coverage is part of the return value, so a caller cannot mistake "not
+    // scanned" for "clean". Which submodules are initialized varies by checkout
+    // (see above), so this asserts the PARTITION rather than a specific outcome.
     expect(scan.declared.length).toBeGreaterThan(30);
     expect(new Set([...scan.scanned, ...scan.unscanned])).toEqual(new Set(scan.declared));
-    expect(scan.scanned.length).toBeGreaterThan(0);
-    for (const path of scan.unscanned) {
-      expect(scan.files.some((f) => f.startsWith(`${path}/`))).toBe(false);
-    }
+    // Disjoint: a submodule cannot be both.
+    expect(scan.scanned.filter((p) => scan.unscanned.includes(p))).toEqual([]);
   });
 
   it('declaredSubmodules reads .gitmodules and is sorted + deduped', () => {

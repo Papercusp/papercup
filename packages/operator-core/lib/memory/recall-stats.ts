@@ -484,6 +484,25 @@ export interface RecallPoolHealth {
   /** Distinct scope keys this pool was queried under in the window. A pool
    *  whose scope set CHANGED mid-window is the unmigrated-rename signature. */
   scopes: string[];
+  /** Of `recalls`, how many ASKED this pool under an EMPTY scope list.
+   *
+   *  ⚠ Not derivable from `scopes`, and that is the whole point (D-035). That
+   *  field aggregates DISTINCT scope keys across the entire group, so a pool
+   *  queried with no scope on 70% of its recalls and one scope on the other 30%
+   *  still presents a perfectly healthy non-empty scope array. Only a row-level
+   *  count can see it. */
+  emptyScope: number;
+  /** emptyScope / recalls. THE gate-3 detector.
+   *
+   *  Why this cannot be folded into `zeroHitRate`: a pool that returned nothing
+   *  BECAUSE IT WAS ASKED FOR NOTHING and a pool that was asked correctly and
+   *  genuinely held nothing relevant are indistinguishable in any hit-count
+   *  aggregate — and they have OPPOSITE remedies (pass the scope vs. fix the
+   *  scope key / fill the corpus). Measured live 2026-08-01: `turn-start/harness`
+   *  sat at 68.8% empty-scope, under the 0.85 zero-hit gate and therefore
+   *  invisible to gate-2; `initialize/harness` was the mirror image at 98.8%
+   *  zero-hit with 0% empty-scope — same alarm, different bug. */
+  emptyScopeRate: number;
 }
 
 /**

@@ -46,6 +46,37 @@ import { loadHarnessRegistry } from '../../harness-registry';
 import { captureImprovement } from '../improvements/capture-core';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
 import { requestUrgentPotWake } from '../../pot/urgent-wake';
+import { resolveWorkItemPot } from '../../pot-membership';
+
+/**
+ * The harness_slug canary rows are actually STORED under — which is NOT always the
+ * routine's `install_slug` (EI-19298246923137692).
+ *
+ * `hive-canary` is a WORKSPACE_GLOBAL_LABEL (pot-membership.ts), so Pot-membership
+ * enforcement re-homes every row written under it to the platform Pot (`papercusp`).
+ * The write path therefore lands rows at a DIFFERENT slug than `installSlug`, while
+ * every read/stamp here used to filter on `installSlug` verbatim — matching zero rows
+ * forever, with no error and no warning. Both detectors went silently blind: 6 canaries
+ * (F-CANARY-20260722..27) sat open with `canary_reported`/`canary_sla_reported` NULL
+ * for up to 11 days, and the 15-min SLA sweep reported nothing on every single tick.
+ *
+ * Resolving through the SAME resolver the write path uses keeps read and write in
+ * agreement BY CONSTRUCTION, including for any label added to that set later.
+ * `installSlug` is still the right value for the registry self-gate, pause resolution,
+ * log lines and watchdogKeys (stable alarm identity) — only DB row addressing moves.
+ */
+async function canaryStorageSlug(installSlug: string, workspaceId: string): Promise<string> {
+  try {
+    return (await resolveWorkItemPot({ rawSlug: installSlug, workspaceId })) ?? installSlug;
+  } catch (e) {
+    // Fail open to the literal slug: a resolver hiccup must not silently disable the
+    // detector (that failure mode is exactly what this function exists to prevent).
+    console.warn(
+      `[hive-canary] pot resolve failed for "${installSlug}" — falling back to literal slug: ${e instanceof Error ? e.message : e}`,
+    );
+    return installSlug;
+  }
+}
 
 /**
  * Terminal-enough statuses: the loop carried the canary to a verdict. Includes the
@@ -254,10 +285,12 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
   }
 
   const { sql } = getOrgPg();
+  // Address rows where they are actually STORED, not where the routine is installed.
+  const storageSlug = await canaryStorageSlug(installSlug, workspaceId);
   const rows = await sql<CanaryFeatureRow[]>`
     SELECT feature_id, status, created_ts, payload
       FROM harness_shared.harness_features_consolidated
-     WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${storageSlug}
        AND item_kind = 'feature' AND payload IS NOT NULL AND payload->>'canary' = 'true'
      ORDER BY created_ts DESC LIMIT 30`;
 
@@ -318,7 +351,7 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
              terminal_owner = 'system:hive-canary',
              terminal_completion_ref = ${`Canary missed its ${deadlineHours}h deadline; reported as ${res.issue?.id ?? (res.created ? 'a new bug' : 'a deduped bug')}. Auto-deprecated (EI-8524) — the miss is captured via the linked bug; a fresh canary is queued daily regardless.`},
              updated_ts = ${Date.now()}
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug} AND feature_id = ${fid}
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${storageSlug} AND feature_id = ${fid}
        RETURNING feature_id`;
     if (updateResult.length === 0) {
       console.warn(
@@ -353,7 +386,11 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
         (harness_slug, feature_id, title, summary, status, attempts, item_kind,
          feature_order, payload, needs_human_review, workspace_id, ts, created_ts, updated_ts)
       VALUES
-        (${installSlug}, ${plan.queueId}, ${title},
+        -- Write the RESOLVED storage slug directly (EI-19298246923137692): Pot-membership
+        -- enforcement would re-home a workspace-global label anyway, so writing it here
+        -- keeps ON CONFLICT (harness_slug, feature_id) idempotent against the row's real
+        -- resting slug instead of depending on the trigger rewrite for dedup.
+        (${storageSlug}, ${plan.queueId}, ${title},
          'Trivial daily canary feature — the autonomous loop must carry it to DONE untouched.',
          -- work-item-status-full-unify P-007: born at the unified claimable token 'open' (was
          -- 'todo') — this raw INSERT bypasses the alias-fold, and a 'todo' canary sits OUTSIDE

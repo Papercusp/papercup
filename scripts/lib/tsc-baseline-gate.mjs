@@ -739,8 +739,16 @@ export function runTscBaselineGate({
         );
       }
       if (result.newFiles.length > 0) {
-        console.error(`   (also ${result.newFiles.length} NEW file(s) with errors — see below)`);
-        for (const r of result.newFiles) console.error(formatRow(r));
+        // EI-19278299775574199 — same split as the fail-new-file branch: an uncommitted new file is
+        // a peer's live buffer, not part of the caller's regression.
+        const { liveEdits } = partitionNewFilesByLiveEdit(result.newFiles);
+        console.error(
+          `   (also ${result.newFiles.length} NEW file(s) with errors` +
+            `${liveEdits.length > 0 ? `, ${liveEdits.length} uncommitted — a peer is likely mid-edit, NOT yours` : ''} — see below)`,
+        );
+        for (const r of result.newFiles) {
+          console.error(r.dirty === true ? `${formatRow(r)}  ← uncommitted, not attributed to you` : formatRow(r));
+        }
       }
       if (result.peerDrift.length > 0) {
         console.error(`   (also ${result.peerDrift.length} regressed file(s) not in your changed set — not gated under --mine)`);

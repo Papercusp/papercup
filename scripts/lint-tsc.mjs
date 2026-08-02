@@ -70,6 +70,7 @@ import {
   filesReferencingTypeNames,
   formatAttributionHeadline,
   formatNewFileGuidance,
+  partitionNewFilesByLiveEdit,
   runTscBaselineGate,
 } from './lib/tsc-baseline-gate.mjs';
 
@@ -85,6 +86,7 @@ export {
   filesReferencingTypeNames,
   formatAttributionHeadline,
   formatNewFileGuidance,
+  partitionNewFilesByLiveEdit,
 };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');

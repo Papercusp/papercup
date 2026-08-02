@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildCoordHealthPatterns,
+  aggregatePremiseStamps,
   type CoordHealthInput,
 } from './coord-health-lane';
+import type { PremiseRefKind } from '../agent-tools/coordination/message-fields';
+import type { PremiseStatus } from '../agent-tools/coordination/premise-resolve';
 
 /**
  * blender-self-learning-2026-07-12 P-008 / WI-4453: the coord-health lane feeds
@@ -208,5 +211,189 @@ describe('buildCoordHealthPatterns — the coordination-breakdown lane (WI-4453)
       { limit: 4 },
     );
     expect(out.length).toBe(4);
+  });
+});
+
+/**
+ * P-011 / D-091 — the premise-resolve measurement that REPLACES fill rate
+ * (D-104: forced sectioning made fill rate 100% by construction).
+ *
+ * The load-bearing test in this block is the NO-SENDER-KEY one. Every other
+ * property here would fail loudly if broken; that one would keep passing as a
+ * green suite while the metric quietly acquired the per-agent attribution D-091
+ * forbids — so it is pinned explicitly rather than left to review.
+ */
+describe('premise-resolve-rate — the P-011 measurement (D-091)', () => {
+  const stamp = (
+    ref: string,
+    kind: PremiseRefKind,
+    status: PremiseStatus,
+    note?: string,
+  ) => ({ ref, kind, status, note });
+
+  it('holds `not-checkable` and `unknown` OUTSIDE the rate — they are not sender failures', () => {
+    const agg = aggregatePremiseStamps([
+      stamp('WI-1#completion', 'work-item-completion', 'holds'),
+      stamp('/internal/docs/x', 'doc', 'not-checkable'),
+      stamp('some free prose', 'opaque', 'not-checkable'),
+      stamp('owner-turn:abc', 'owner-directive', 'unknown'),
+    ]);
+    // Only the ONE falsifiable ref may reach the rate: counting doc/opaque would
+    // punish honestly citing what no graph holds (D-026); counting `unknown`
+    // would charge the sender for OUR probe failing.
+    expect(agg.checked).toBe(1);
+    expect(agg.holds).toBe(1);
+    expect(agg.notCheckable).toBe(2);
+    expect(agg.unknown).toBe(1);
+    expect(agg.refsSeen).toBe(4);
+  });
+
+  it('breaks the tally down by REF KIND, never by sender', () => {
+    const agg = aggregatePremiseStamps([
+      stamp('WI-1#completion', 'work-item-completion', 'broken', 'WI-1 is open'),
+      stamp('WI-2#completion', 'work-item-completion', 'holds'),
+      stamp('p#D-001', 'plan-decision', 'holds'),
+    ]);
+    const wic = agg.byKind.find((k) => k.kind === 'work-item-completion');
+    expect(wic).toMatchObject({ checked: 2, holds: 1, broken: 1 });
+    expect(agg.byKind.find((k) => k.kind === 'plan-decision')).toMatchObject({
+      checked: 1,
+      holds: 1,
+    });
+    // The aggregate has no sender dimension at all — not even an empty one.
+    expect(Object.keys(agg)).not.toContain('bySender');
+    expect(JSON.stringify(agg)).not.toMatch(/su-[0-9a-f]/);
+  });
+
+  it('emits an UNSUFFIXED ref — a sender-keyed metric on an ASSERTED field is forbidden (D-091)', () => {
+    const out = buildCoordHealthPatterns(
+      base({
+        premiseResolve: aggregatePremiseStamps([
+          stamp('WI-1#completion', 'work-item-completion', 'broken', 'WI-1 is open'),
+          ...Array.from({ length: 6 }, (_, i) =>
+            stamp(`p#D-00${i}`, 'plan-decision' as const, 'holds' as const),
+          ),
+        ]),
+      }),
+    );
+    const p = out.find((x) => x.ref.startsWith('coord:premise-resolve-rate'));
+    expect(p).toBeDefined();
+    // EXACT equality, not startsWith: `coord:premise-resolve-rate:<sender>` is
+    // the shape this decision exists to prevent, and the lane emits keyed refs
+    // elsewhere (`coord:wake-storm:<recipient>`) so the mistake is one keystroke
+    // away. Attaching a per-agent consequence to being caught with an
+    // unresolvable ref makes "cite only what a graph can verify" dominant, and
+    // the uncheckable-but-true premises go first — the metric would destroy
+    // what it measures.
+    expect(p!.ref).toBe('coord:premise-resolve-rate');
+  });
+
+  it('reports the resolve RATE, never a fill rate, and never gates', () => {
+    const out = buildCoordHealthPatterns(
+      base({
+        premiseResolve: aggregatePremiseStamps([
+          ...Array.from({ length: 3 }, (_, i) =>
+            stamp(`WI-${i}#completion`, 'work-item-completion' as const, 'broken' as const),
+          ),
+          ...Array.from({ length: 7 }, (_, i) =>
+            stamp(`p#D-01${i}`, 'plan-decision' as const, 'holds' as const),
+          ),
+        ]),
+      }),
+    );
+    const p = out.find((x) => x.ref === 'coord:premise-resolve-rate')!;
+    expect(p.summary).toContain('70%'); // 7 of 10 checked
+    expect(p.summary).not.toMatch(/fill rate/i);
+    expect(p.detail).not.toMatch(/fill rate/i);
+    // D-088's standing condition: verification is never authorisation.
+    expect(p.detail).toMatch(/NOT a gate/);
+  });
+
+  it('stays silent below the checked floor — a 1-of-1 window is not a rate', () => {
+    const out = buildCoordHealthPatterns(
+      base({
+        premiseResolve: aggregatePremiseStamps([
+          stamp('WI-1#completion', 'work-item-completion', 'broken'),
+        ]),
+      }),
+    );
+    expect(out.find((x) => x.ref === 'coord:premise-resolve-rate')).toBeUndefined();
+  });
+
+  it('still emits at a PERFECT rate — a reader that only sees failures cannot tell "all held" from "none checkable"', () => {
+    const out = buildCoordHealthPatterns(
+      base({
+        premiseResolve: aggregatePremiseStamps(
+          Array.from({ length: 8 }, (_, i) =>
+            stamp(`p#D-02${i}`, 'plan-decision' as const, 'holds' as const),
+          ),
+        ),
+      }),
+    );
+    const p = out.find((x) => x.ref === 'coord:premise-resolve-rate');
+    expect(p).toBeDefined();
+    expect(p!.summary).toContain('100%');
+    // ...but it ranks low, so the cap deprioritises a clean reading naturally.
+    expect(p!.weight).toBeLessThan(0.3);
+  });
+
+  it('ranks a failing window above a clean one', () => {
+    const clean = buildCoordHealthPatterns(
+      base({
+        premiseResolve: aggregatePremiseStamps(
+          Array.from({ length: 8 }, (_, i) =>
+            stamp(`p#D-03${i}`, 'plan-decision' as const, 'holds' as const),
+          ),
+        ),
+      }),
+    ).find((x) => x.ref === 'coord:premise-resolve-rate')!;
+    const failing = buildCoordHealthPatterns(
+      base({
+        premiseResolve: aggregatePremiseStamps(
+          Array.from({ length: 8 }, (_, i) =>
+            stamp(`WI-${i}#completion`, 'work-item-completion' as const, 'broken' as const),
+          ),
+        ),
+      }),
+    ).find((x) => x.ref === 'coord:premise-resolve-rate')!;
+    expect(failing.weight!).toBeGreaterThan(clean.weight!);
+  });
+
+  it('survives the pattern cap on a noisy fleet — the corpus reading outranks per-recipient floods', () => {
+    const out = buildCoordHealthPatterns(
+      base({
+        premiseResolve: aggregatePremiseStamps(
+          Array.from({ length: 8 }, (_, i) =>
+            stamp(`WI-${i}#completion`, 'work-item-completion' as const, 'broken' as const),
+          ),
+        ),
+        wakeStorms: Array.from({ length: 30 }, (_, i) => ({
+          recipient: `su-${i}`,
+          count: 1000 + i,
+        })),
+      }),
+      { limit: 5 },
+    );
+    // Wake storms emit one pattern PER RECIPIENT; without the deliberate
+    // ordering they would push this single corpus-wide reading past the cap and
+    // silently delete the measurement.
+    expect(out.find((x) => x.ref === 'coord:premise-resolve-rate')).toBeDefined();
+  });
+
+  it('names the failing REF, with its verdict, so the fix lands in the grammar', () => {
+    const out = buildCoordHealthPatterns(
+      base({
+        premiseResolve: aggregatePremiseStamps([
+          stamp('WI-6502#completion', 'work-item-completion', 'broken', 'WI-6502 is open'),
+          ...Array.from({ length: 5 }, (_, i) =>
+            stamp(`p#D-04${i}`, 'plan-decision' as const, 'holds' as const),
+          ),
+        ]),
+      }),
+    );
+    const p = out.find((x) => x.ref === 'coord:premise-resolve-rate')!;
+    expect(p.detail).toContain('WI-6502#completion');
+    expect(p.detail).toContain('broken');
+    expect(p.detail).toContain('work-item-completion');
   });
 });
