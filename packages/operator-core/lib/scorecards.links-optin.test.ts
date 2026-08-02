@@ -141,9 +141,12 @@ describe('the surfacing readers still opt IN (WI-6124 — guards the new default
     const entry = getRegistryEntryV2('scorecards.list');
     expect(entry, "the 'scorecards.list' sync query must exist").toBeTruthy();
 
-    const rows = (await entry!.resolve!({ rubricRef: 'test-rubric', limit: 100 } as never, {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any)) as { linkedItems?: unknown[] }[];
+    // `resolve` takes exactly ONE argument (sync-resolver/index.ts: `resolve: (args: TArgs)`),
+    // so the second `{} as any` this used to pass was silently discarded at runtime and only
+    // ever served to red the typecheck.
+    const rows = (await entry!.resolve!({ rubricRef: 'test-rubric', limit: 100 } as never)) as {
+      linkedItems?: unknown[];
+    }[];
 
     // If this fails, the UI panel silently shows no linked items — the exact cost of the
     // opt-in default, and invisible to types because the resolver returns `as unknown[]`.

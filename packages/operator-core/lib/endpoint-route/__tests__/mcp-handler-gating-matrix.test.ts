@@ -513,22 +513,28 @@ describe('a replayed call records a tool_invocation row', () => {
   });
 
   it('attributes the row exactly as a fresh call would — the point of building ctx first', async () => {
+    // The SIGNED driver, deliberately: it pins run/spawn, so "same attribution"
+    // is a real comparison. (A superuser call synthesizes a fresh run id per
+    // request, which no placement of the lookup could make match.)
+    const signed = extraFor(signedUrl({ role: 'scoper' }));
+
     // Baseline: what the SAME call records when it really dispatches.
-    const fresh = await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+    const fresh = await callTool('gatingtest:scoped', {}, signed, {
       idempotencyKey: 'idem-attrib-fresh',
     });
-    expect(fresh.isError).not.toBe(true);
+    expect(fresh.isError).toBeUndefined();
     expect(h.invocations).toHaveLength(1);
     const freshRow = h.invocations[0]!;
     expect(freshRow.status).toBe('ok');
 
     h.invocations.length = 0;
     h.storedReplay = REPLAYED;
-    await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+    await callTool('gatingtest:scoped', {}, signed, {
       idempotencyKey: 'idem-attrib-replay',
     });
     expect(h.invocations).toHaveLength(1);
     const replayRow = h.invocations[0]!;
+    expect(replayRow.status).toBe('replayed');
 
     // Same window key ⇒ the replay groups with the real calls it accompanies,
     // which is what makes "how much of this window was replay?" one query.

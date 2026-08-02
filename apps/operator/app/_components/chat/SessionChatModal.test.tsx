@@ -1411,4 +1411,166 @@ describe('SessionChatModal', () => {
   // cycle. The guard for this invariant is the scoped live measurement recorded
   // on the plan, and the lesson is to scope a geometry selector to the surface
   // under test whenever more than one host can render the same component.
+
+  /**
+   * session-chat-popup-direction-d-2026-08-02 P-001 — full-window / full-screen.
+   *
+   * [owner 2026-08-01 22:29] the two buttons must maximize "the actual
+   * conversation not the panes to the left and belo, but it should also include
+   * the chatbox for the user to enter in messages".
+   *
+   * So the assertions that matter are about WHAT SURVIVES, not that a state flag
+   * flipped: the composer must still be on screen (it is the explicit carve-out)
+   * and the excluded panes must be gone. A test that only checked `chatMax` was
+   * set would pass against a build that maximized the popup and dropped the
+   * chatbox — the one outcome the ask rules out by name.
+   */
+  describe('P-001 maximize: full window + full screen', () => {
+    const COMPOSER = /Type to wake/;
+
+    function seedRoster(entries: Array<Record<string, unknown>>) {
+      H.results['advRoster.list'] = {
+        data: [{ active: entries, pending: [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    }
+
+    /** Render a resolved, live conversation — the state all of these act on. */
+    async function renderResolved(onClose = vi.fn()) {
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      const r = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={onClose} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      return r;
+    }
+
+    const rerenderOpen = (rerender: (ui: React.ReactElement) => void, onClose = vi.fn()) =>
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={onClose} />);
+
+    it('offers both maximize buttons while open, and neither while closed', async () => {
+      await renderResolved();
+      expect(screen.getByTestId('session-chat-full-window')).toBeTruthy();
+      expect(screen.getByTestId('session-chat-full-screen')).toBeTruthy();
+
+      cleanup();
+      render(<SessionChatModal sessionOwnerId={null} onClose={vi.fn()} />);
+      expect(screen.queryByTestId('session-chat-full-window')).toBeNull();
+      expect(screen.queryByTestId('session-chat-full-screen')).toBeNull();
+    });
+
+    it('full window keeps the transcript AND the chatbox, and drops the rail, the action bar and the fleet row', async () => {
+      const { rerender } = await renderResolved();
+      // Baseline: the excluded panes are present before maximizing, so their
+      // absence below is caused by the mode and not by the fixture.
+      expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy();
+      expect(screen.getByTestId('fleet-launch-row-stub')).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId('session-chat-full-window'));
+      expect(nuqsSetters.chatMax).toHaveBeenCalledWith('window');
+      rerenderOpen(rerender);
+
+      // The carve-out the owner named explicitly.
+      expect(screen.getByPlaceholderText(COMPOSER)).toBeTruthy();
+      expect(screen.getByTestId('session-chat-conversation')).toBeTruthy();
+      // "not the panes to the left and belo".
+      expect(screen.queryByTestId('session-chat-dossier-rail')).toBeNull();
+      expect(screen.queryByTestId('fleet-launch-row-stub')).toBeNull();
+      expect(screen.queryByTestId('session-chat-dossier-toggle')).toBeNull();
+    });
+
+    it('exposes a close button ONLY while maximized — the backdrop it would otherwise be dismissed by is covered', async () => {
+      const onClose = vi.fn();
+      const { rerender } = await renderResolved(onClose);
+      expect(screen.queryByTestId('session-chat-close')).toBeNull();
+
+      nuqs.chatMax = 'window';
+      rerenderOpen(rerender, onClose);
+      fireEvent.click(screen.getByTestId('session-chat-close'));
+      expect(onClose).toHaveBeenCalled();
+      // and it clears the mode, so reopening any session is not stuck maximized
+      expect(nuqsSetters.chatMax).toHaveBeenCalledWith(null);
+    });
+
+    it('restores the rail and the fleet row when full window is toggled back off', async () => {
+      nuqs.chatMax = 'window';
+      const { rerender } = await renderResolved();
+      expect(screen.queryByTestId('fleet-launch-row-stub')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('session-chat-full-window'));
+      expect(nuqsSetters.chatMax).toHaveBeenCalledWith(null);
+      rerenderOpen(rerender);
+      expect(screen.getByTestId('fleet-launch-row-stub')).toBeTruthy();
+      expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy();
+    });
+
+    it('full screen requests fullscreen on the CONVERSATION element, not the modal — that element IS the spec', async () => {
+      const requestFullscreen = vi.fn().mockResolvedValue(undefined);
+      // jsdom implements no Fullscreen API at all, so the element under test
+      // gets one. Attached to the prototype (not one node) because the assert
+      // below is about WHICH node received the call.
+      (HTMLElement.prototype as unknown as { requestFullscreen: unknown }).requestFullscreen =
+        function (this: HTMLElement) {
+          return requestFullscreen(this);
+        };
+      try {
+        await renderResolved();
+        const region = screen.getByTestId('session-chat-conversation');
+        fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+
+        await waitFor(() => expect(requestFullscreen).toHaveBeenCalled());
+        // The element handed to the browser is the conversation region — which
+        // is what makes the excluded set structural (D-002). If this ever
+        // becomes the modal content or the column wrapper, maximize silently
+        // starts including the action bar and the rail again.
+        expect(requestFullscreen).toHaveBeenCalledWith(region);
+        await waitFor(() => expect(nuqsSetters.chatMax).toHaveBeenCalledWith('screen'));
+      } finally {
+        delete (HTMLElement.prototype as unknown as { requestFullscreen?: unknown }).requestFullscreen;
+      }
+    });
+
+    it('falls back to full window when the webview has no Fullscreen API — never a dead button', async () => {
+      // No requestFullscreen on the prototype: exactly jsdom's default, and the
+      // shape of a webview with fullscreen disabled.
+      expect((HTMLElement.prototype as { requestFullscreen?: unknown }).requestFullscreen).toBeUndefined();
+      await renderResolved();
+
+      fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+      // The user asked for bigger and gets bigger, rather than one click that
+      // visibly does nothing.
+      expect(nuqsSetters.chatMax).toHaveBeenCalledWith('window');
+    });
+
+    it('a rejected fullscreen request also lands in full window rather than nowhere', async () => {
+      (HTMLElement.prototype as unknown as { requestFullscreen: unknown }).requestFullscreen = () =>
+        Promise.reject(new Error('permissions policy'));
+      try {
+        await renderResolved();
+        fireEvent.click(screen.getByTestId('session-chat-full-screen'));
+        await waitFor(() => expect(nuqsSetters.chatMax).toHaveBeenCalledWith('window'));
+      } finally {
+        delete (HTMLElement.prototype as unknown as { requestFullscreen?: unknown }).requestFullscreen;
+      }
+    });
+
+    it('leaving fullscreen by Esc/F11 clears the mode (the DOM is the authority, not our own flag)', async () => {
+      const { rerender } = await renderResolved();
+      nuqs.chatMax = 'screen';
+      rerenderOpen(rerender);
+      nuqsSetters.chatMax.mockClear();
+
+      // document.fullscreenElement stays null — i.e. the browser is not
+      // painting anything fullscreen — and the event fires as it does on Esc.
+      act(() => {
+        document.dispatchEvent(new Event('fullscreenchange'));
+      });
+      expect(nuqsSetters.chatMax).toHaveBeenCalled();
+      const setTo = nuqsSetters.chatMax.mock.calls.at(-1)?.[0];
+      // The setter takes an updater here (prev => prev === 'screen' ? null …).
+      expect(typeof setTo === 'function' ? setTo('screen') : setTo).toBeNull();
+    });
+  });
 });
