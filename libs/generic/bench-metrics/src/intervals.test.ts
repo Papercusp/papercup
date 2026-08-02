@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { wilsonInterval, bootstrapMeanCI, meanStderr } from './intervals';
+import { wilsonInterval, bootstrapMeanCI, meanStderr, pairedBootstrapCI, mcnemarExact } from './intervals';
 
 describe('wilsonInterval', () => {
   it('is centered on p̂ and symmetric for p=0.5', () => {
@@ -64,5 +64,144 @@ describe('bootstrapMeanCI', () => {
   it('collapses for single/empty samples', () => {
     expect(bootstrapMeanCI([0.5])).toEqual({ point: 0.5, lower: 0.5, upper: 0.5, ci: 0.95 });
     expect(bootstrapMeanCI([])).toEqual({ point: 0, lower: 0, upper: 0, ci: 0.95 });
+  });
+});
+
+describe('pairedBootstrapCI', () => {
+  /** Deterministic per-item difficulty + a constant shift for arm B. */
+  function correlatedArms(n: number, shift: number): { a: number[]; b: number[] } {
+    const a: number[] = [];
+    const b: number[] = [];
+    for (let i = 0; i < n; i++) {
+      // Wide spread ACROSS items, so the unpaired variance is large...
+      const difficulty = ((i * 37) % 100) / 100;
+      a.push(difficulty);
+      b.push(difficulty + shift); // ...but the per-item difference is constant.
+    }
+    return { a, b };
+  }
+
+  it('recovers the observed delta as the point estimate', () => {
+    const { a, b } = correlatedArms(120, 0.02);
+    const r = pairedBootstrapCI(a, b);
+    expect(r.delta.point).toBeCloseTo(0.02, 10);
+    expect(r.meanB - r.meanA).toBeCloseTo(0.02, 10);
+    expect(r.n).toBe(120);
+  });
+
+  /**
+   * THE property this function exists for. The arms below differ by a constant
+   * 0.02 while spreading over the full [0,1] range, so an UNPAIRED interval on
+   * either arm's mean is an order of magnitude wider than the effect and sees
+   * nothing. Resampling pairs cancels the shared difficulty and the same data
+   * resolves the shift cleanly.
+   *
+   * If pairedBootstrapCI ever regressed to independent resampling, this test is
+   * what catches it — and nothing else here would, because the point estimate
+   * would stay exactly right while the interval silently became useless.
+   */
+  it('EXPLOITS the pairing: resolves a shift the unpaired interval cannot see', () => {
+    const { a, b } = correlatedArms(120, 0.02);
+    const paired = pairedBootstrapCI(a, b);
+    expect(paired.rho).toBeCloseTo(1, 6); // constant offset ⇒ perfectly correlated
+    expect(paired.significant).toBe(true);
+    expect(paired.halfWidth).toBeLessThan(0.001);
+
+    // The unpaired view of the same data: each arm's own mean CI is wide and
+    // hugely overlapping, so the 0.02 shift is invisible.
+    const unpairedA = bootstrapMeanCI(a);
+    const unpairedB = bootstrapMeanCI(b);
+    expect(unpairedB.lower).toBeLessThan(unpairedA.upper); // overlapping ⇒ no verdict
+    expect(unpairedA.upper - unpairedA.point).toBeGreaterThan(10 * paired.halfWidth);
+  });
+
+  it('reports a null WITH the effect it could have detected', () => {
+    const { a } = correlatedArms(120, 0);
+    const b = a.map((x, i) => x + (i % 2 === 0 ? 0.3 : -0.3)); // noisy, zero mean shift
+    const r = pairedBootstrapCI(a, b);
+    expect(r.delta.point).toBeCloseTo(0, 6);
+    expect(r.significant).toBe(false);
+    // A null is only interpretable next to a resolution — and 80% power always
+    // demands a LARGER effect than the CI half-width alone.
+    expect(r.mde80).toBeGreaterThan(r.halfWidth);
+    expect(r.mde80).toBeGreaterThan(0);
+  });
+
+  it('is deterministic across runs and sensitive to the seed', () => {
+    const { a, b } = correlatedArms(60, 0.05);
+    expect(pairedBootstrapCI(a, b, { seed: 7 })).toEqual(pairedBootstrapCI(a, b, { seed: 7 }));
+    expect(pairedBootstrapCI(a, b, { seed: 7 }).delta.lower).not.toBe(
+      pairedBootstrapCI(a, b, { seed: 8 }).delta.lower,
+    );
+  });
+
+  it('rejects misaligned arms rather than silently comparing a prefix', () => {
+    expect(() => pairedBootstrapCI([1, 2, 3], [1, 2])).toThrow(/index-aligned/);
+  });
+
+  it('degrades honestly on empty and single-pair samples', () => {
+    const empty = pairedBootstrapCI([], []);
+    expect(empty).toMatchObject({ n: 0, rho: 0, significant: false });
+    const one = pairedBootstrapCI([0.4], [0.9]);
+    expect(one.delta.point).toBeCloseTo(0.5, 10);
+    expect(one.significant).toBe(false); // n=1 can never be significant
+  });
+
+  it('reports rho=0 when an arm is constant (the pairing provably bought nothing)', () => {
+    const r = pairedBootstrapCI([0.5, 0.5, 0.5, 0.5], [0.1, 0.9, 0.2, 0.8]);
+    expect(r.rho).toBe(0);
+  });
+});
+
+describe('mcnemarExact', () => {
+  it('matches the hand-computable exact binomial on a clean split', () => {
+    // 5 discordant pairs, all favouring B: p = 2·P(X≤0 | n=5,½) = 2/32 = 0.0625
+    const a = [false, false, false, false, false, true, false];
+    const b = [true, true, true, true, true, true, false];
+    const r = mcnemarExact(a, b);
+    expect(r).toMatchObject({ onlyA: 0, onlyB: 5, concordant: 2 });
+    expect(r.p).toBeCloseTo(0.0625, 10);
+  });
+
+  it('counts only DISCORDANT pairs — concordant ones carry no evidence', () => {
+    const base = mcnemarExact([false, false], [true, true]);
+    // Adding 500 pairs both arms agree on must not move the p-value at all.
+    const padded = mcnemarExact(
+      [false, false, ...Array(500).fill(true)],
+      [true, true, ...Array(500).fill(true)],
+    );
+    expect(padded.p).toBeCloseTo(base.p, 12);
+    expect(padded.concordant).toBe(500);
+  });
+
+  it('gives p=1 when the arms never disagree — a power statement, not equivalence', () => {
+    const same = [true, false, true, true];
+    expect(mcnemarExact(same, same)).toMatchObject({ onlyA: 0, onlyB: 0, p: 1 });
+  });
+
+  it('is symmetric in the arms', () => {
+    const a = [true, false, true, false, false, true];
+    const b = [false, false, true, true, true, true];
+    expect(mcnemarExact(a, b).p).toBeCloseTo(mcnemarExact(b, a).p, 12);
+  });
+
+  it('stays finite for large discordant counts (log-space summation)', () => {
+    // 2000 discordant pairs: the binomial coefficients overflow a naive product.
+    const a = [...Array(1200).fill(true), ...Array(800).fill(false)];
+    const b = [...Array(1200).fill(false), ...Array(800).fill(true)];
+    const r = mcnemarExact(a, b);
+    expect(Number.isFinite(r.p)).toBe(true);
+    expect(r.p).toBeGreaterThan(0);
+    expect(r.p).toBeLessThan(1e-10); // 1200 vs 800 is overwhelming evidence
+  });
+
+  it('never exceeds p=1 on a perfectly balanced split', () => {
+    const a = [true, false, true, false];
+    const b = [false, true, false, true];
+    expect(mcnemarExact(a, b).p).toBeLessThanOrEqual(1);
+  });
+
+  it('rejects misaligned arms', () => {
+    expect(() => mcnemarExact([true], [true, false])).toThrow(/index-aligned/);
   });
 });

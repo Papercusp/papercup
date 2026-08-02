@@ -234,7 +234,12 @@ export function isReplaySafe(atom: string): { safe: boolean; reason?: string } {
  *  - No stateful flags (`g`/`y`). A `lastIndex`-carrying regex reused across
  *    lines matches on some calls and not others, so the same input normalizes
  *    differently depending on what preceded it. This is the WI-5998 lesson from
- *    the registry patterns, in a second place where it bites.
+ *    the registry patterns, in a second place where it bites. The ban is uniform
+ *    across all three fields although only `stripLeadingLines` can currently
+ *    suffer it (`RegExp.test` carries `lastIndex` forward; `String.replace`
+ *    resets it): which field uses which call is an implementation detail of
+ *    {@link normalizeAnswer}, and a later edit that swaps one for the other must
+ *    not silently arm a bug that was merely dormant.
  */
 export function assertReplayEnvelope(envelope: AnswerEnvelope, pairId: string): void {
   const stateful = (re: RegExp, field: string) => {

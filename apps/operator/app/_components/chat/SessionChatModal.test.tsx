@@ -471,7 +471,17 @@ describe('SessionChatModal', () => {
     });
   });
 
-  describe('P-007 session footer', () => {
+  /**
+   * Direction D P-004 moved this surface: the read-only facts that used to sit
+   * in a footer UNDER the composer now render as the status band ABOVE the
+   * transcript (`session-chat-state-header`), because description belongs above
+   * the transcript and operation below it. The assertions are the P-007/D-002
+   * ones, re-pointed — plus one new invariant that is the whole point of the
+   * move: MODE chips must NOT appear here, because a mode is now a control in
+   * the band below, and having it in both places is the duplicate pair
+   * ("AUTO" + "Autonomy") the owner reported as confusing.
+   */
+  describe('P-004 session status band (was the P-007 footer)', () => {
     function seedRoster(entries: Array<Record<string, unknown>>) {
       H.results['advRoster.list'] = {
         data: [{ active: entries, pending: [] }],
@@ -493,7 +503,7 @@ describe('SessionChatModal', () => {
           currentPlanSlug: 'gui-chat-session-controls-2026-07-25',
           contextTokens: 40_000,
           compactionLimit: 200_000,
-          modes: [],
+          modes: ['auto'],
           claims: [{ id: 'WI-1', status: 'done' }, { id: 'WI-2', status: 'wip' }],
           currentFiles: [],
           intent: 'Building the session footer',
@@ -507,18 +517,25 @@ describe('SessionChatModal', () => {
         captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
       });
 
-      const footer = await waitFor(() => screen.getByTestId('session-chat-footer'));
-      // D-002 footer fields: liveness, context %, current claim (the
-      // claims-progress badge), mode chips, awaiting-gate.
-      expect(footer.textContent).toContain('live');
-      expect(footer.textContent).toContain('ctx 20%');
-      expect(footer.textContent).toContain('1/2');
+      const band = await waitFor(() => screen.getByTestId('session-chat-state-header'));
+      // D-002 glance fields: liveness, context %, the held claim, awaiting-gate.
+      expect(band.textContent).toContain('live');
+      expect(band.textContent).toContain('ctx 20%');
+      // P-004: the claim renders by IDENTITY, not as a bare done/total — "which
+      // item is it holding" is the useful question, and "1/2" never answered it.
+      expect(band.textContent).toContain('WI-1');
+      expect(band.textContent).toContain('+1');
+      expect(band.textContent).not.toContain('1/2');
+      // THE Direction D invariant: a mode is a CONTROL now, so it must not also
+      // appear here as a fact. If this ever fails, the AUTO/Autonomy duplicate
+      // the owner complained about has come back.
+      expect(band.textContent).not.toContain('AUTO');
       // Identity/reference fields that duplicated the AgentDossier panel
-      // (P-003) moved there exclusively — the footer no longer repeats them.
-      expect(footer.textContent).not.toContain('gui-chat-controls');
-      expect(footer.textContent).not.toContain('👑');
-      expect(footer.textContent).not.toContain('gui-chat-session-controls-2026-07-25');
-      expect(footer.textContent).not.toContain('Building the session footer');
+      // (P-003) moved there exclusively — this band never repeats them.
+      expect(band.textContent).not.toContain('gui-chat-controls');
+      expect(band.textContent).not.toContain('👑');
+      expect(band.textContent).not.toContain('gui-chat-session-controls-2026-07-25');
+      expect(band.textContent).not.toContain('Building the session footer');
     });
 
     it('never renders the always-armed inbox-wake as a blocked-on gate (isInfrastructureAwait)', async () => {
@@ -543,9 +560,9 @@ describe('SessionChatModal', () => {
         captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
       });
 
-      const footer = await waitFor(() => screen.getByTestId('session-chat-footer'));
-      expect(footer.textContent).not.toContain('Waiting on');
-      expect(footer.textContent).not.toContain('coord:inbox-wake');
+      const band = await waitFor(() => screen.getByTestId('session-chat-state-header'));
+      expect(band.textContent).not.toContain('Waiting on');
+      expect(band.textContent).not.toContain('coord:inbox-wake');
     });
 
     it('renders a real open-await note as the blocked-on line', async () => {
@@ -570,11 +587,11 @@ describe('SessionChatModal', () => {
         captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
       });
 
-      const footer = await waitFor(() => screen.getByTestId('session-chat-footer'));
-      expect(footer.textContent).toContain('waiting for review');
+      const band = await waitFor(() => screen.getByTestId('session-chat-state-header'));
+      expect(band.textContent).toContain('waiting for review');
     });
 
-    it('omits the footer entirely when there is no matching roster row (same fallback as the identity chip)', async () => {
+    it('omits the band entirely when there is no matching roster row (same fallback as the identity chip)', async () => {
       seedRoster([{ ownerId: 'su-someone-else' }]);
       mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
       render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
@@ -584,7 +601,7 @@ describe('SessionChatModal', () => {
       });
 
       await waitFor(() => expect(screen.getByText('hi')).toBeTruthy());
-      expect(screen.queryByTestId('session-chat-footer')).toBeNull();
+      expect(screen.queryByTestId('session-chat-state-header')).toBeNull();
     });
 
     it('P-004: the "N locks / M unread" summary chip renders from agentDetail.byOwner and opens the dossier rail on click (D-002 deliberate duplicate)', async () => {
@@ -615,22 +632,31 @@ describe('SessionChatModal', () => {
         captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
       });
 
-      const chip = await waitFor(() => screen.getByTestId('session-chat-footer-detail-chip'));
-      expect(chip.textContent).toContain('1 lock');
-      // WI-6504: the count must NAME its corpus. A bare "3 unread" in this
-      // footer reads as "this conversation has 3 unread messages", but it
-      // counts COORD messages — the owner reported "32 unread" beside a single
-      // rendered message. Assert the qualifier so the ambiguous label cannot
-      // come back, and assert the tooltip says which list it means.
-      expect(chip.textContent).toContain('3 coord unread');
-      expect(chip.getAttribute('title')).toContain('coord message');
-      expect(chip.getAttribute('title')).toContain('separate list');
+      // P-004 splits the old single summary chip into TWO alerts, because they
+      // route to two different rail sections and one merged chip could only
+      // ever open one of them.
+      const locks = await waitFor(() => screen.getByTestId('session-chat-alert-locks'));
+      expect(locks.textContent).toContain('1 lock');
 
-      fireEvent.click(chip);
+      const coord = screen.getByTestId('session-chat-alert-coord');
+      // WI-6504: the count must NAME its corpus. A bare "3 unread" beside the
+      // transcript reads as "this conversation has 3 unread messages", but it
+      // counts COORD messages — the owner reported "32 unread" beside a single
+      // rendered message. Assert the visible qualifier so the ambiguous label
+      // cannot come back.
+      expect(coord.textContent).toContain('3 coord unread');
+      // The full distinction now rides on aria-label rather than a `title`
+      // attribute: these are Tooltip triggers (design-primitives forbids a
+      // title-only tooltip on a button), and aria-label is the half that is
+      // actually announced rather than only revealed on hover.
+      expect(coord.getAttribute('aria-label')).toContain('coord message');
+      expect(coord.getAttribute('aria-label')).toContain('separate list');
+
+      fireEvent.click(locks);
       expect(nuqsSetters['chatDossier']).toHaveBeenCalledWith(true);
     });
 
-    it('omits the summary chip when there are no locks and nothing unread', async () => {
+    it('omits both alerts when there are no locks and nothing unread', async () => {
       seedRoster([{ ownerId: 'su-live-1', liveness: 'live', modes: [], claims: [], currentFiles: [], openAwait: null }]);
       H.results['agentDetail.byOwner'] = {
         data: [
@@ -654,8 +680,12 @@ describe('SessionChatModal', () => {
         captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
       });
 
-      await waitFor(() => expect(screen.getByTestId('session-chat-footer')).toBeTruthy());
-      expect(screen.queryByTestId('session-chat-footer-detail-chip')).toBeNull();
+      // The band itself still renders — it is the ALERTS that are conditional.
+      // Asserting the band is present first is what keeps this a real check
+      // rather than one that would pass against a surface that vanished.
+      await waitFor(() => expect(screen.getByTestId('session-chat-state-header')).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-alert-locks')).toBeNull();
+      expect(screen.queryByTestId('session-chat-alert-coord')).toBeNull();
     });
   });
 

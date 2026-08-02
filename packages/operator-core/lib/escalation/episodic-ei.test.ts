@@ -9,7 +9,13 @@
  * isolation.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { createEpisodicEscalator, type EpisodicEiDeps } from './episodic-ei';
+import {
+  collapseDuplicateOpenEis,
+  createEpisodicEscalator,
+  type CollapsibleOpenEi,
+  type DuplicateCollapseDeps,
+  type EpisodicEiDeps,
+} from './episodic-ei';
 
 type Ep = { key: string; detail: string };
 type Rec = { key: string; detail: string };

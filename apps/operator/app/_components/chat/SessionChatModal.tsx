@@ -579,7 +579,13 @@ function SessionStateHeader({
             className="pc-ctl-alert"
             onClick={() => onOpenDetail?.('coord')}
             data-testid="session-chat-alert-coord"
-            aria-label={`${unreadCount} unread coord message${unreadCount === 1 ? '' : 's'} — open the detail panel`}
+            /* WI-6504: the count must NAME its corpus. A bare "3 unread" beside
+               a transcript reads as "this conversation has 3 unread", but it
+               counts COORD messages — the owner reported "32 unread" next to a
+               single rendered message. The visible label carries the qualifier
+               and this carries the full distinction, so the explanation is
+               announced to a screen reader rather than hidden in a hover. */
+            aria-label={`${unreadCount} unread coord message${unreadCount === 1 ? '' : 's'} addressed to this agent — a separate list from the conversation shown here. Opens the agent detail panel.`}
           >
             <span className="pc-ctl-alert__inner">
               {unreadCount} coord unread

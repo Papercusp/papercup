@@ -34,7 +34,16 @@ export {
   type ArmTaskTrials,
   type FrontierArmSummary,
 } from './frontier-rank';
-export { wilsonInterval, bootstrapMeanCI, meanStderr, type Interval } from './intervals';
+export {
+  wilsonInterval,
+  bootstrapMeanCI,
+  meanStderr,
+  pairedBootstrapCI,
+  mcnemarExact,
+  type Interval,
+  type PairedComparison,
+  type McNemarResult,
+} from './intervals';
 export { dominates, paretoFrontier, costAccuracyFrontier, type Direction } from './pareto';
 
 // METR-style time-horizon fit (plan benchmark-suite-metr-hcast-2026-06-17 / P-006).

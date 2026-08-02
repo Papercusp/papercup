@@ -22,6 +22,12 @@
  * `own-log-fork-ei.ts` are thin wrappers over it (EI-9030a). It is domain-free —
  * a detector supplies only its topic, title/body/note builders, severity, and
  * provenance strings.
+ *
+ * WI-6986 adds a sixth, CONVERGENT behaviour — see `collapseDuplicateOpenEis`.
+ * Behaviour 5 above only MITIGATES duplicate opens (resolve closes them all);
+ * nothing ever RETIRES the duplicates while the condition stays standing, so
+ * they accumulate as `major`-severity triage noise (measured: 88 open
+ * replication-liveness rows covering just 48 distinct conditions).
  */
 
 import type { IssueSeverity } from '../issues-engineer';
@@ -122,6 +128,149 @@ export interface EpisodicEscalator<E, R, Sev extends IssueSeverity = IssueSeveri
   /** Test seam: clear the per-process in-flight guard. */
   _resetForTests(): void;
 }
+
+/** One open EI as the duplicate-collapse pass needs to see it. */
+export interface CollapsibleOpenEi {
+  id: string;
+  title: string;
+  /** ISO-8601. Ties are broken by `id` so the keeper is fully deterministic. */
+  createdAt: string;
+}
+
+/** DI seam for `collapseDuplicateOpenEis` (same lazy-import default as the escalator). */
+export interface DuplicateCollapseDeps {
+  listOpenByTopic(topic: string): Promise<CollapsibleOpenEi[]>;
+  /** Retire ONE duplicate row. May reject (e.g. remote-authored) — never fatal. */
+  drop(id: string, note: string): Promise<void>;
+}
+
+export interface DuplicateCollapseResult {
+  /** Open EIs inspected this pass. */
+  checked: number;
+  /** Distinct titles found holding more than one open EI. */
+  duplicatedTitles: number;
+  /** Ids actually retired. */
+  collapsedIds: string[];
+  /** Duplicates this node could not mutate (peer-authored) — expected, not a fault. */
+  skippedUnmutable: number;
+}
+
+/**
+ * WI-6986: collapse DUPLICATE OPEN EIs — more than one open row carrying the
+ * same stable title — down to a single survivor per title.
+ *
+ * Why this cannot be prevented at file() time. `file()` is a read-then-create
+ * (`listOpenByTopic` → `create`) with no uniqueness constraint, and the ledger
+ * is FEDERATED across machines that each hold their own PG: two nodes can each
+ * file for one condition before the other's row replicates in, so neither the
+ * per-process `inFlight` Set nor a racing `listOpenByTopic` can see the peer's
+ * not-yet-arrived row. A unique index would be actively WRONG here — it would
+ * reject a legitimately-replicated peer row at ingest. The only sound fix for a
+ * converging multi-writer ledger is therefore CONVERGENT, not preventive:
+ * let the duplicate be created, then deterministically retire it.
+ *
+ * The keeper rule is `(createdAt, id)` ASCENDING — the OLDEST row survives.
+ * Deterministic (every node computes the same keeper from replicated state, so
+ * they cannot collectively retire all of them), and stable (a newly-arriving
+ * duplicate never displaces the incumbent, so the survivor's age keeps
+ * reflecting genuine FIRST detection — which is what triage sorts on).
+ *
+ * Each node retires only the rows it can actually mutate: a peer-authored row
+ * is refused locally ("remote-authored ... its authoring peer must claim/resolve
+ * it"), which is counted as `skippedUnmutable`, NOT an error. Every node running
+ * the same pass over the same replicated set converges on one survivor.
+ *
+ * Retires as `dropped`, never `resolved`: the underlying condition may well
+ * still be standing — only the redundant ROW is being discarded, and calling
+ * that "resolved" would falsely assert recovery.
+ *
+ * Best-effort and never throws — mirrors the rest of this module, so a hiccup
+ * can never wedge the scheduled sweep that calls it.
+ */
+export async function collapseDuplicateOpenEis(
+  topic: string,
+  dropNote: string,
+  deps?: DuplicateCollapseDeps,
+): Promise<DuplicateCollapseResult> {
+  const empty: DuplicateCollapseResult = {
+    checked: 0,
+    duplicatedTitles: 0,
+    collapsedIds: [],
+    skippedUnmutable: 0,
+  };
+  // Same VITEST-without-deps safety gate as file()/resolve(): never touch
+  // production PG from a unit test that only transitively imports this.
+  if (process.env.VITEST && !deps) return empty;
+
+  let d: DuplicateCollapseDeps;
+  try {
+    d = deps ?? (await defaultCollapseDeps());
+  } catch {
+    return empty;
+  }
+
+  let open: CollapsibleOpenEi[];
+  try {
+    open = await d.listOpenByTopic(topic);
+  } catch {
+    return empty;
+  }
+
+  const byTitle = new Map<string, CollapsibleOpenEi[]>();
+  for (const ei of open) {
+    const group = byTitle.get(ei.title);
+    if (group) group.push(ei);
+    else byTitle.set(ei.title, [ei]);
+  }
+
+  const result: DuplicateCollapseResult = { ...empty, checked: open.length, collapsedIds: [] };
+  for (const group of byTitle.values()) {
+    if (group.length < 2) continue;
+    result.duplicatedTitles++;
+    // Oldest-wins, id as the tiebreak so every node picks the same keeper even
+    // when two rows share a timestamp. An unparseable createdAt sorts LAST so a
+    // malformed row is never chosen as the survivor over a well-formed one.
+    const sorted = [...group].sort((a, b) => {
+      const at = Date.parse(a.createdAt);
+      const bt = Date.parse(b.createdAt);
+      const an = Number.isFinite(at) ? at : Number.POSITIVE_INFINITY;
+      const bn = Number.isFinite(bt) ? bt : Number.POSITIVE_INFINITY;
+      return an === bn ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : an - bn;
+    });
+    for (const dupe of sorted.slice(1)) {
+      try {
+        await d.drop(dupe.id, dropNote);
+        result.collapsedIds.push(dupe.id);
+      } catch {
+        // Peer-authored (or a transient write fault): its author retires it on
+        // its own pass. Counted, never thrown — one refusal must not strand the
+        // rest of the group.
+        result.skippedUnmutable++;
+      }
+    }
+  }
+  return result;
+}
+
+/** Lazy-imported production deps for `collapseDuplicateOpenEis`. */
+async function defaultCollapseDeps(): Promise<DuplicateCollapseDeps> {
+  const m = await import('../issues-engineer');
+  return {
+    listOpenByTopic: async (topic) => {
+      // Bounded like the orphan sweep: a single pass covers the current
+      // backlog; any overflow simply converges over the next few runs.
+      const rows = await m.listIssues({ state: 'open', topic, limit: 1000 });
+      return rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.createdAt }));
+    },
+    drop: async (id, note) => {
+      await m.setIssueState(id, 'dropped', DUPLICATE_COLLAPSE_OWNER, note);
+    },
+  };
+}
+
+/** Resolver identity stamped on collapsed duplicates — kept distinct from a real
+ *  recovery and from the orphan sweep so each closure reason stays attributable. */
+export const DUPLICATE_COLLAPSE_OWNER = 'system:episodic-ei-duplicate-collapse';
 
 /**
  * Build an episodic durable-EI escalator. Each instance owns its own
