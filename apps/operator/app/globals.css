@@ -25757,6 +25757,55 @@ body.papercusp-chromeless .oracle-fab {
   flex-direction: row-reverse;
 }
 
+/* The turn a HUD search result opened ON (owner ask 2026-08-02, part b).
+   A transcript scrolled to an arbitrary mid-list position with nothing saying
+   WHICH row is the answer reads as a scroll bug, not a result — so the match
+   is marked, and the mark decays rather than persisting: it did its job the
+   moment your eye found the row, and a permanent band would then just be a
+   stripe on one message with no way to dismiss it.
+
+   Marked with a RAIL and a background tint, never colour alone, for the same
+   reason the HUD's card state is: it has to survive greyscale and
+   colour-blindness. */
+.oracle-msg--focus-match .oracle-msg-stack {
+  position: relative;
+  animation: oracle-focus-match-fade 4s ease-out forwards;
+  border-radius: 8px;
+}
+
+.oracle-msg--focus-match .oracle-msg-stack::before {
+  content: '';
+  position: absolute;
+  inset: -4px auto -4px -8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent, #6ea8fe);
+}
+
+.oracle-msg-user.oracle-msg--focus-match .oracle-msg-stack::before {
+  inset: -4px -8px -4px auto;
+}
+
+@keyframes oracle-focus-match-fade {
+  0%,
+  55% {
+    background: color-mix(in srgb, var(--accent, #6ea8fe) 16%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+/* A reader who asked for less motion still needs to know which row matched —
+   drop the animation, keep the tint. The rail is a ::before, so it is
+   unaffected either way. */
+@media (prefers-reduced-motion: reduce) {
+  .oracle-msg--focus-match .oracle-msg-stack {
+    animation: none;
+    background: color-mix(in srgb, var(--accent, #6ea8fe) 12%, transparent);
+  }
+}
+
 .oracle-msg-stack {
   min-width: 0;
   display: flex;

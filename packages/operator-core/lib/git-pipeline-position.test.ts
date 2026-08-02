@@ -140,8 +140,24 @@ function fakeGit(opts: {
    * (`ls-tree`), i.e. it models a ref whose blob can genuinely be read.
    */
   blobAtRef?: Record<string, string>;
+  /**
+   * EI-19325915429897280: `pathCommit`'s PARENT (`${pathCommit}~1`) — the file's
+   * content immediately BEFORE the change under discussion, which is the marker
+   * baseline `markerBaseline`/`markerBaselineCount` are computed from. Supplying
+   * it makes `${pathCommit}~1` resolve (`rev-parse`), list (`ls-tree`), and read
+   * (`show`) — modeling a baseline that CAN be measured. Omitting it (the
+   * default) models a baseline commit that does not resolve: `rev-parse` on
+   * `${pathCommit}~1` fails `SHA_RE` (the literal string contains `~`), exactly
+   * like a genuinely-unresolvable parent, so `markerBaselineCount` stays null.
+   */
+  parentBlobAtTarget?: string;
 }): GitRunner {
   const root = '/repo';
+  // EI-19325915429897280: the literal revision string `markerAtCommit` is called
+  // with for the marker baseline — real git accepts `<sha>~1` directly, so the
+  // fake never needs a separate resolved identity; it only needs the THREE
+  // commands markerAtCommit issues to agree on this one string.
+  const targetParent = opts.pathCommit ? `${opts.pathCommit}~1` : null;
   return async (_repo, args) => {
     if (args[0] === 'config' && args.includes('.gitmodules')) {
       const subs = opts.submodules ?? [];
@@ -163,6 +179,11 @@ function fakeGit(opts: {
       }
       // WI-6646: a ref with a known blob genuinely HAS the path.
       if (opts.blobAtRef && args[1] in opts.blobAtRef) return `100644 blob deadbeef\t${args[3]}`;
+      // EI-19325915429897280: the marker-baseline commit HAS the path too, when
+      // the fixture supplies its content.
+      if (opts.parentBlobAtTarget !== undefined && targetParent && args[1] === targetParent) {
+        return `100644 blob deadbeef\t${args[3]}`;
+      }
       return null;
     }
     // The naive cross-boundary content probe: empty, because the superproject
@@ -172,6 +193,8 @@ function fakeGit(opts: {
       // WI-6646: `show <ref>:<path>` for a ref whose blob the fixture defines.
       const ref = args[1]?.split(':')[0];
       if (opts.blobAtRef && ref !== undefined && ref in opts.blobAtRef) return opts.blobAtRef[ref];
+      // EI-19325915429897280: `show <pathCommit>~1:<path>` for the marker baseline.
+      if (opts.parentBlobAtTarget !== undefined && ref === targetParent) return opts.parentBlobAtTarget;
       return null;
     }
     if (args[0] === 'rev-parse') {
@@ -182,6 +205,12 @@ function fakeGit(opts: {
       // correctly refuses it as unresolvable — the fixture would otherwise test the
       // resolver-failed path while claiming to test marker containment.
       if (opts.blobAtRef && want in opts.blobAtRef) return 'a'.repeat(40);
+      // EI-19325915429897280: the marker-baseline commit (`${pathCommit}~1`) resolves
+      // to something sha-shaped ONLY when the fixture supplies its content — an
+      // omitted `parentBlobAtTarget` falls through to `return want`, and `want` here
+      // contains a literal `~`, which SHA_RE rejects, faithfully modeling a baseline
+      // that could not be measured.
+      if (opts.parentBlobAtTarget !== undefined && targetParent && want === targetParent) return 'c'.repeat(40);
       return want;
     }
     // WI-6646: the REF-SCOPED variant (`log -1 --pretty=%H <ref> -- <path>`) asks a
@@ -402,6 +431,10 @@ describe('gitPipelinePosition (P-002)', () => {
         newestInRef: { 'origin/main': MINE },
         // main's version of the file DOES carry the caller's change.
         blobAtRef: { 'origin/main': 'function looksDeadOrStuck() {}\n// looksDeadOrStuck again\n' },
+        // EI-19325915429897280: the marker occurred ZERO times before the change,
+        // so its 2 occurrences in `origin/main` are a strict net-new count — this
+        // is the baseline the "CORRECTED to true" verdict below now REQUIRES.
+        parentBlobAtTarget: 'nothing relevant here\n',
       });
       const res = await gitPipelinePosition(
         { path: P, marker: 'looksDeadOrStuck' },

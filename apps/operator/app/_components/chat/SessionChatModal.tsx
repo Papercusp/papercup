@@ -690,6 +690,7 @@ function LiveSessionChat({
   onSend,
   sending,
   sendError,
+  focusAnchor,
 }: {
   streamUrl: string;
   /** The su agent this session belongs to — resolves its roster entry for the
@@ -699,6 +700,10 @@ function LiveSessionChat({
   onSend: (text: string) => void;
   sending: boolean;
   sendError: string | null;
+  /** Scroll the transcript to the message containing this text instead of
+   *  opening at the tail — the HUD search result's matched turn (owner ask
+   *  2026-08-02). Null/absent keeps the pre-existing tail behavior. */
+  focusAnchor?: string | null;
 }) {
   const { events, status, thinking } = useAgentThinkingStream('', '', '', streamUrl);
 
@@ -782,6 +787,7 @@ function LiveSessionChat({
   return (
     <OperatorChat
       messages={messages}
+      focusAnchor={focusAnchor}
       busy={sending}
       peerBusy={thinking}
       passive
@@ -813,6 +819,7 @@ export default function SessionChatModal({
   ownerLabel,
   onClose,
   pendingLaunch = null,
+  focusAnchor = null,
 }: {
   /** The inbox item's ownerAgentId — null hides the modal. */
   sessionOwnerId: string | null;
@@ -828,6 +835,11 @@ export default function SessionChatModal({
    *  as "starting up" instead. Self-clears: as soon as the session registers
    *  (roster row) or its transcript resolves, the normal branches take over. */
   pendingLaunch?: { ownerId: string; startedAtMs: number } | null;
+  /** Open the transcript ON the turn containing this text rather than at the
+   *  tail. HudView passes the anchor derived from the search hit that put the
+   *  card on screen (`searchHitAnchor`), so clicking a search result lands on
+   *  the match. Null (every other caller) is unchanged behavior. */
+  focusAnchor?: string | null;
 }) {
   const [resolved, setResolved] = useState<SessionListRow | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
@@ -1590,6 +1602,7 @@ export default function SessionChatModal({
             onSend={handleSend}
             sending={sending}
             sendError={sendError}
+            focusAnchor={focusAnchor}
           />
         ) : null}
         {/* P-002: say what ACTUALLY happened. "Staged" is the case this fixes —

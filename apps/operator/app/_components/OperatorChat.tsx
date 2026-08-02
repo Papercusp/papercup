@@ -72,6 +72,10 @@ interface Props {
   onLoadEarlier?: () => void;
   hasMoreEarlier?: boolean;
   loadingEarlier?: boolean;
+  /** Open the transcript ON the message containing this text instead of at the
+   *  tail — forwarded verbatim to ChatConversation (HUD search → the matched
+   *  turn). Same passthrough pattern as the infinite-scroll props above. */
+  focusAnchor?: string | null;
 
   /**
    * chat:ask_choice resolution. Called when the user commits a
@@ -197,7 +201,7 @@ const STARTING_PROMPTS = [
 
 export function OperatorChat({
   messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
-  onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
+  onLoadEarlier, hasMoreEarlier, loadingEarlier, focusAnchor, onAnswerChoice,
   conversationId, workspaceId, agentName = 'Papercup', onDrillIn, canDrillIn,
   renderAvatar, paneIcon, footer, harnessSlug,
 }: Props) {
@@ -467,6 +471,7 @@ export function OperatorChat({
         onLoadEarlier={onLoadEarlier}
         hasMoreEarlier={hasMoreEarlier}
         loadingEarlier={loadingEarlier}
+        focusAnchor={focusAnchor}
         harnessSlug={harnessSlug}
         onWorkRefActivate={handleWorkRefActivate}
       />

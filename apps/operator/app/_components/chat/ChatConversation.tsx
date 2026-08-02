@@ -26,7 +26,7 @@
  * gives the body more vertical room).
  */
 
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import { ArrowUpRight, Coffee, CupSoda, Thermometer } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import ReactMarkdown from 'react-markdown';
@@ -1030,6 +1030,7 @@ export function ChatConversation(props: ChatConversationProps) {
                   /* Only the LAST row can still be streaming, so only it is
                      exempt from the empty-turn notice (P-005). */
                   pending={busy && vi.index === messages.length - 1}
+                  focused={vi.index === focusIndex}
                 />
               );
             })}

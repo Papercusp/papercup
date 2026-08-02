@@ -48,6 +48,7 @@ import {
   buildHudBoard,
   matchesSessionText,
   reconcileBoardIdentity,
+  searchHitAnchor,
   HUD_COLUMNS,
   type HudAsk,
   /* Aliased: `HudBoard` is already the default-imported COMPONENT above, and
@@ -122,6 +123,17 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     parseAsBoolean.withDefault(false),
   );
   const [openOwner, setOpenOwner] = useQueryState('hudsession', parseAsString);
+  /* Which turn the modal should open ON — the text of the search match that
+     put this card on screen (owner ask 2026-08-02, part b).
+
+     nuqs, not useState, and deliberately so: it is user-meaningful (it changes
+     what the modal shows), it must survive the reload/share the `hudsession`
+     param already survives, and — the repo rule that settles it — anything in
+     useState is invisible to the agent UI control surface (`ui:get_state` /
+     `ui:dispatch` read the URL). TEXT rather than a turn index because the
+     search index and the modal's transcript are different stores; see
+     `searchHitAnchor`. */
+  const [openFocus, setOpenFocus] = useQueryState('hudfocus', parseAsString);
   // WI-6367: which session THIS view just launched, and when. Deliberately
   // useState, not nuqs: it is mid-flight lifecycle state, not user-meaningful
   // (a shared/reloaded URL must not claim a session is "starting up" — by then
@@ -643,7 +655,24 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      identity re-renders every card), and this call site is held by a structural
      guard in the same file, because HudView itself has no render harness. Do
      not inline it back. */
-  const onOpenSession = useCallback((ownerId: string) => void setOpenOwner(ownerId), [setOpenOwner]);
+  /* The hits are read through a ref rather than taken as a dep ON PURPOSE.
+     `onOpenSession`'s identity is load-bearing — hud-render-stability.test.tsx
+     pins that a changing identity re-renders every card — and `searchHits`
+     changes on every keystroke's search response, which is exactly when the
+     board is busiest. The handler only needs the hits AT CLICK TIME, never a
+     re-render when they change, which is precisely the case a latest-ref is
+     for. */
+  const searchHitsRef = useRef(searchHits);
+  searchHitsRef.current = searchHits;
+  const onOpenSession = useCallback(
+    (ownerId: string) => {
+      void setOpenOwner(ownerId);
+      // Null clears the param: opening a NON-search card must not inherit the
+      // previous search's anchor and scroll to a turn nobody asked about.
+      void setOpenFocus(searchHitAnchor(searchHitsRef.current?.get(ownerId) ?? null));
+    },
+    [setOpenOwner, setOpenFocus],
+  );
 
   const entityView =
     tab === 'plans' ? (
@@ -748,6 +777,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         sessionOwnerId={openOwner}
         ownerLabel={openLabel}
         pendingLaunch={pendingLaunch}
+        focusAnchor={openFocus}
         onClose={() => {
           // WI-6367: the launch context is only meaningful for the modal it
           // opened — drop it on close so reopening the same session later
@@ -755,6 +785,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
           // empty states rather than a stale "starting up".
           setPendingLaunch(null);
           void setOpenOwner(null);
+          void setOpenFocus(null);
         }}
       />
       {/* P-002: the Plans / Work items tabs' destination. Mounted here (not in

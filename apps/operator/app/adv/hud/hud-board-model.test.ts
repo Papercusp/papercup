@@ -23,6 +23,7 @@ import {
   isSuSession,
   matchesSessionText,
   parseHighlight,
+  searchHitAnchor,
   shortHandle,
   TERMINAL_LAUNCH_ONLINE_GRACE_SEC,
   toHudSession,
@@ -976,5 +977,85 @@ describe('parseHighlight', () => {
     const segs = parseHighlight('start <mark>never closed');
     expect(segs.map((s) => s.text).join('')).toBe('start <mark>never closed');
     expect(segs.every((s) => !s.mark)).toBe(true);
+  });
+});
+
+describe('searchHitAnchor', () => {
+  const hit = (over: Partial<HudSearchHit> = {}): HudSearchHit => ({
+    turnIdx: 3,
+    highlight: null,
+    excerpt: '',
+    speaker: 'assistant',
+    ts: null,
+    sessionId: 's1',
+    sourceKind: 'claude',
+    more: 0,
+    ...over,
+  });
+
+  it('strips the <mark> tags — the anchor must be text the transcript literally contains', () => {
+    expect(
+      searchHitAnchor(hit({ highlight: 'the <mark>Harrier</mark> embedder never converged' })),
+    ).toBe('the Harrier embedder never converged');
+  });
+
+  it('takes the LONGEST fragment: ts_headline glues up to 2 with " … ", so the whole string is not contiguous', () => {
+    // A substring search for the joined string would find nothing at all —
+    // the ellipsis stands for text that was cut out between the fragments.
+    expect(
+      searchHitAnchor(
+        hit({ highlight: 'a short <mark>bit</mark> … the considerably longer second fragment here' }),
+      ),
+    ).toBe('the considerably longer second fragment here');
+  });
+
+  it('decodes entities — ts_headline escapes, the transcript holds the raw character', () => {
+    expect(searchHitAnchor(hit({ highlight: 'if a &lt; b &amp;&amp; c &gt; d then bail' }))).toBe(
+      'if a < b && c > d then bail',
+    );
+  });
+
+  it('condenses whitespace, because ts_headline reflows the source newlines away', () => {
+    expect(searchHitAnchor(hit({ highlight: 'line one\n\n   line two continues' }))).toBe(
+      'line one line two continues',
+    );
+  });
+
+  it('falls back to the excerpt MINUS its synthetic [speaker owner ts] prefix', () => {
+    // That prefix is built by the search source and appears nowhere in the
+    // transcript, so leaving it on guarantees the anchor never matches.
+    expect(
+      searchHitAnchor(
+        hit({ excerpt: '[assistant su-ae348 2026-08-02T10:00:00Z] the deploy wedged on a lock timeout' }),
+      ),
+    ).toBe('the deploy wedged on a lock timeout');
+  });
+
+  it('prefers the highlight over the excerpt — a headline fragment sits ON the match', () => {
+    expect(
+      searchHitAnchor(
+        hit({
+          highlight: 'wedged on a <mark>lock</mark> timeout',
+          excerpt: '[assistant] some earlier prefix of the same turn entirely',
+        }),
+      ),
+    ).toBe('wedged on a lock timeout');
+  });
+
+  it('declines an anchor too short to discriminate rather than returning a bad one', () => {
+    // 'a b' would match half the transcript, and the FIRST such match is
+    // almost never the hit — a wrong scroll is worse than no scroll.
+    expect(searchHitAnchor(hit({ highlight: '<mark>a</mark> b' }))).toBeNull();
+    expect(searchHitAnchor(hit({ highlight: '', excerpt: '[user] hi' }))).toBeNull();
+  });
+
+  it('returns null for no hit at all (the card was not a search result)', () => {
+    expect(searchHitAnchor(null)).toBeNull();
+    expect(searchHitAnchor(undefined)).toBeNull();
+  });
+
+  it('drops a trailing … so the anchor is not searched for with the truncation marker', () => {
+    const a = searchHitAnchor(hit({ excerpt: '[user] the first two hundred characters of the turn…' }));
+    expect(a).toBe('the first two hundred characters of the turn');
   });
 });

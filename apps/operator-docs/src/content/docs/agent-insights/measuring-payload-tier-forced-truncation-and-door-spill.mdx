@@ -1,0 +1,100 @@
+---
+title: Measuring payload-tier forced truncation and result-door spill
+description: The telemetry for both truncation stages does not exist in tool_invocations — here is the method that actually works, and the measured 2026-08-02 numbers.
+---
+
+Two separate stages can cut a tool result before it reaches an agent. They have
+very different recoverability, very different rates, and — the trap this page
+exists for — **neither is recorded in `tool_invocations`.**
+
+## The two stages are not the same thing
+
+| | payload-tier forced hard ceiling | result-door spill |
+|---|---|---|
+| threshold | 30,000 chars (`PAYLOAD_TIER_HARD_CEILING_CHARS`) | ~1500 tokens per result |
+| recoverable? | **No** — content is dropped in memory | **Yes** — full result written to scratch |
+| rate (measured 2026-08-02) | 939 fires / 7 days (~134/day) | 68,649 spills / 24h |
+
+The lossy stage runs **before** the lossless one, so the door can only preserve
+what already survived — `result-door.ts:159-166` says so in its own comment.
+That ordering is real. What it is *not* is expensive: the irrecoverable stage
+fires roughly **500× less often** than the recoverable one.
+
+## Do not try to measure this from `tool_invocations`
+
+This is the expensive mistake, because the table looks like it should answer it.
+
+- `harness_shared.tool_invocations` has 30 columns and **none** records payload
+  projection or truncation.
+- `forced: true` is set on the response object in
+  `libs/generic/tooldef/src/payload-tier.ts:532,556` and otherwise emitted only
+  to a `console.warn`.
+- `result-door.ts` writes **no** durable telemetry row at all. Grep it for
+  insert/telemetry/metric and you get nothing.
+- `output_size` is not a usable proxy. Measured over 2 days: 1,413 recorded
+  calls, `output_size` 99.2% populated, but only **2** above the 30,000-char
+  ceiling — while **73,587** spill files sat on disk. The table under-records
+  real tool traffic by roughly **50×**.
+
+A query over `output_size` returns a well-formed, plausible, wrong answer. It
+will tell you truncation is nearly nonexistent.
+
+## The method that works
+
+The forced path emits a distinctive warn line at both sites, so the journal is a
+direct census:
+
+```bash
+journalctl --user -u papercup-dev-api --since '7 days ago' --no-pager \
+  | grep -c 'hard ceiling'
+
+# which tools hit it
+journalctl --user -u papercup-dev-api --since '7 days ago' --no-pager \
+  | grep 'hard ceiling' \
+  | sed -E 's/.*\[payload-tier\] ([^ ]+) .*/\1/' | sort | uniq -c | sort -rn
+```
+
+For the door, the durable record is the **filesystem**, not the database:
+
+```bash
+find ~/.papercusp/scratch -name 'result-door-*.md' | wc -l
+# by tool
+find ~/.papercusp/scratch/<workspace> -name 'result-door-*.md' \
+  | sed 's|.*/scratch/<workspace>/||; s|/.*||' | sort | uniq -c | sort -rn
+```
+
+## Measured distribution (2026-08-02)
+
+Forced hard-ceiling fires by tool, 7 days, `papercup-dev-api` (staging: 0):
+
+| tool | fires | re-callable? |
+|---|---|---|
+| `coord:orient` | 648 (69%) | yes — cheap wake bootstrap |
+| `work_items:observe` | 106 | yes |
+| `plans:get` | 54 | yes |
+| `work_items:get` | 38 | yes |
+| `work_items:list` | 33 | yes |
+| `coord:presence` | 13 | yes |
+| `work_items:claim` | 11 | **no — side-effecting** |
+| `facts:list` | 8 | yes |
+| `fleet:assignments` | 6 | yes |
+| `plans:items` | 5 | yes |
+
+Only 1.2% of fires are on a side-effecting call. For everything else,
+re-calling with `payloadTier:'full'` is already the correct and cheapest
+recovery — which is why building a raw-payload mirror to invert the ladder was
+measured and **rejected**, not shipped.
+
+## The dominant spill source is one tool, and it is a write
+
+87% of all spill files (64,326 of 73,587) come from **`activity:report`** — the
+per-CLI hook ingest tool called on every tool call by every agent. Its own
+description says it is fire-and-forget and *"returns `{ ok, id }`"*. Measured
+response sizes across 64,380 spills: **median 202KB, p90 351KB, max 492KB**.
+
+Scratch sits at **13G** against a 24h GC retention
+(`scratch-gc.ts`, `RETENTION_MS = 24h`, DBOS-scheduled daily 03:00 behind
+`FLAGS.STORAGE_RETAIN_SCRATCH`), i.e. roughly 11G/day written for the response
+of a write-only telemetry call that nobody reads.
+
+If you are hunting spill volume, start there — not with the agents.
