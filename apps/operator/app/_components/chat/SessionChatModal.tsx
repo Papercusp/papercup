@@ -95,6 +95,14 @@ import '../../adv/sessions/SessionsRosterView.css';
 // grammar and the two repo rails (letter-spacing:0, no flex on a <button>).
 import './chat-controls.css';
 import { advRosterArgs } from '@/lib/adv-roster-args';
+// P-001 full-screen: in the desktop shell the DOM Fullscreen API cannot leave
+// the webview, so "fill the display" has to drive the WINDOW. See that module's
+// header for why the two mechanisms are not interchangeable.
+import {
+  enterDesktopWindowFullscreen,
+  exitDesktopWindowFullscreen,
+  isDesktopShell,
+} from '@/lib/desktop-window-fullscreen';
 
 /** The roster payload shape (advRoster.list). Inlined, never imported from the
  *  server module — same rationale as HudView.tsx's identical inline type
@@ -231,10 +239,24 @@ function useIsNarrowViewport(query: string): boolean {
  * actual conversation not the panes to the left and belo, but it should also
  * include the chatbox for the user to enter in messages"
  *
- * Two modes, one rule. `window` grows the modal to the whole app window;
- * `screen` hands the conversation to the Fullscreen API. In BOTH, what you see
+ * Two modes, one rule. `window` grows the modal to the whole app WINDOW;
+ * `screen` puts the conversation on the whole DISPLAY. In BOTH, what you see
  * is the transcript, the composer and the one-line status footer — the dossier
  * rail, the control band and the fleet row are out.
+ *
+ * D-003 (2026-08-02): `screen` needs TWO mechanisms, because "the display" is
+ * reached differently in the two hosts we ship into, and the wrong one silently
+ * degrades into `window`:
+ *   - BROWSER — `requestFullscreen()` on the conversation region. The UA takes
+ *     the OS window fullscreen and paints that element on it.
+ *   - DESKTOP (Tauri) — the webview is a widget inside a window WE own, and a
+ *     DOM fullscreen request does not escape it: the element grows to fill the
+ *     webview, which is pixel-for-pixel what `window` mode already gives. So
+ *     the desktop path drives the WINDOW (`setFullscreen`) and lets the same
+ *     maximized layout fill it.
+ * [owner 2026-08-02, verbatim] "both fullscreen buttons do the same thing. one
+ * of them is supposed to full screen on the full desktop display not just the
+ * window" — that was the desktop taking the browser path.
  *
  * D-002: the excluded set is defined STRUCTURALLY, by the DOM, and never as a
  * list of things to hide. `screen` calls requestFullscreen() on the
@@ -966,18 +988,43 @@ export default function SessionChatModal({
   const [chatMax, setChatMax] = useQueryState('chatMax', parseAsStringLiteral(CHAT_MAX_MODES));
   const conversationRef = useRef<HTMLDivElement | null>(null);
 
-  /* Whether the browser is ACTUALLY painting our region fullscreen, which is
-     not the same question as `chatMax === 'screen'` and must not be inferred
-     from it. Two ways they diverge, both routine:
+  /* Whether something is ACTUALLY painting our region on the whole display,
+     which is not the same question as `chatMax === 'screen'` and must not be
+     inferred from it. Two ways they diverge, both routine:
        - a shared/reloaded URL carrying `chatMax=screen` cannot enter
-         fullscreen on load, because the API requires a user gesture. The page
-         renders maximized and the button still offers to go fullscreen;
+         fullscreen on load, because the DOM API requires a user gesture. The
+         page renders maximized and the button still offers to go fullscreen;
        - Esc / F11 leaves fullscreen without any click of ours.
-     So the DOM is the authority and this mirrors it. */
+     So the host is the authority and this mirrors it. */
   const [screenActive, setScreenActive] = useState(false);
+
+  /* D-003 — the DESKTOP half of `screen`, and the only state that says whether
+     we may put the window back:
+       'owned'   we fullscreened the window, so exiting is ours to do;
+       'adopted' it was ALREADY fullscreen (the user's own F11, another
+                 surface) — we ride it and must NOT take it away on the way out;
+       null      the desktop path is not engaged (browser, or refused).
+     A ref rather than state: it is read inside the document listener below,
+     where a stale closure over a state value would make the listener act on
+     the mode we were in one render ago. */
+  const windowScreen = useRef<'owned' | 'adopted' | null>(null);
+
+  /** Give the window back. Idempotent, and safe to fire from an unmount. */
+  const releaseWindowScreen = useCallback(async () => {
+    const held = windowScreen.current;
+    windowScreen.current = null;
+    setScreenActive(false);
+    if (held === 'owned') await exitDesktopWindowFullscreen();
+  }, []);
+
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const sync = () => {
+      // Desktop path: the DOCUMENT never enters fullscreen there, so a
+      // fullscreenchange raised by anything else (a video player, an embedded
+      // frame) would read as "the user left fullscreen" and cancel a mode they
+      // are still in. The window state is authoritative while it is engaged.
+      if (windowScreen.current) return;
       const active = isFullscreenElement(conversationRef.current);
       setScreenActive(active);
       // Left fullscreen by a route we did not drive (Esc, F11, the browser
@@ -1003,6 +1050,11 @@ export default function SessionChatModal({
   const ordersVisible = open && ordersOpen && !maximized;
 
   const exitScreen = useCallback(async () => {
+    // Desktop first: if the window is carrying the mode, the document is not.
+    if (windowScreen.current) {
+      await releaseWindowScreen();
+      return;
+    }
     if (typeof document === 'undefined') return;
     if (document.fullscreenElement) {
       try {
@@ -1012,7 +1064,21 @@ export default function SessionChatModal({
         // settles the real state either way. Nothing to report to the user.
       }
     }
-  }, []);
+  }, [releaseWindowScreen]);
+
+  /* Never strand the WINDOW fullscreen. Closing the popup while it owns the
+     display would leave the whole app filling the screen with the control that
+     undoes it no longer rendered — so release on close AND on unmount, not
+     only in `closeChat` (which a route change or a cleared session skips). */
+  useEffect(() => {
+    if (!open) void releaseWindowScreen();
+  }, [open, releaseWindowScreen]);
+  useEffect(
+    () => () => {
+      void releaseWindowScreen();
+    },
+    [releaseWindowScreen],
+  );
 
   const toggleWindow = useCallback(() => {
     if (chatMax === 'window') {
@@ -1040,6 +1106,23 @@ export default function SessionChatModal({
       void exitScreen().then(() => setChatMax(null));
       return;
     }
+    /* D-003 — DESKTOP: drive the WINDOW, not the document. A DOM fullscreen
+       request inside the Tauri webview only grows the element to the webview,
+       which is the same rectangle `window` mode already gives — which is
+       exactly the bug ("both fullscreen buttons do the same thing"). Taking the
+       OS window to the display and letting the maximized layout fill it is the
+       only path that reaches the pixels the owner asked for. */
+    if (isDesktopShell()) {
+      void enterDesktopWindowFullscreen().then(({ active, owned }) => {
+        windowScreen.current = active ? (owned ? 'owned' : 'adopted') : null;
+        setScreenActive(active);
+        // Refused — an older desktop binary whose baked capabilities predate
+        // `core:window:allow-set-fullscreen`. Same rule as the browser fallback
+        // below: the user asked for bigger, so give the bigger we still have.
+        void setChatMax(active ? 'screen' : 'window');
+      });
+      return;
+    }
     const el = conversationRef.current;
     // No element, or a webview with the Fullscreen API switched off: fall back
     // to full-window rather than doing nothing. A dead button is the worse
@@ -1051,6 +1134,25 @@ export default function SessionChatModal({
     void Promise.resolve(el.requestFullscreen())
       .then(() => setChatMax('screen'))
       .catch(() => setChatMax('window'));
+  }, [screenActive, exitScreen, setChatMax]);
+
+  /* D-003 — Esc leaves DESKTOP full screen.
+     In the browser the UA owns Esc while it paints a fullscreen element, which
+     is why `closeOnEscape` is disarmed below. On the desktop path nothing
+     consumes it, so with the dialog's own handler disarmed Esc would simply be
+     dead — leaving a fullscreen window whose only exit is one small icon in a
+     corner. Restore the gesture people already expect. */
+  useEffect(() => {
+    if (!screenActive || typeof document === 'undefined') return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || !windowScreen.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void exitScreen().then(() => setChatMax(null));
+    };
+    // Capture: the dialog's own layers see the key first otherwise.
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
   }, [screenActive, exitScreen, setChatMax]);
 
   /* Leaving the popup must not leave the browser in fullscreen or the mode in
@@ -1222,10 +1324,15 @@ export default function SessionChatModal({
             display: 'flex',
             flexDirection: 'column',
             position: 'relative',
-            // A fullscreened element is transparent by default (the UA only
+            // A DOM-fullscreened element is transparent by default (the UA only
             // paints ::backdrop black), so without this the transcript renders
-            // on bare black instead of the popup's own surface.
-            ...(screenActive ? { background: 'var(--bg-popover, #0d1829)' } : null),
+            // on bare black instead of the popup's own surface. Scoped to that
+            // mechanism: on the desktop path (D-003) nothing is lifted out of
+            // the page, so the modal's own surface is already behind us and an
+            // extra background here would just double-paint it.
+            ...(screenActive && windowScreen.current === null
+              ? { background: 'var(--bg-popover, #0d1829)' }
+              : null),
           }}
         >
         {open ? (

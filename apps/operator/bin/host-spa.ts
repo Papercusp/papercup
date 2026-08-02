@@ -82,13 +82,37 @@ const TEXT_EXTS = new Set([
   '.html', '.js', '.mjs', '.css', '.json', '.map', '.svg', '.txt', '.webmanifest',
 ]);
 
-function serveFile(absPath: string, status = 200): Response {
+/**
+ * Immutable, version-pinned third-party runtime assets (WI-7088).
+ *
+ * `/vditor/**` is a wholesale mirror of one PINNED vditor version, regenerated
+ * by replacing the directory when the dependency changes (setup-vditor-runtime.sh
+ * rm -rf's and re-copies), never mutated in place — so a long-lived `immutable`
+ * cache entry can never go stale under a reader.
+ *
+ * Why it earns a special case: the mirror exists to stop Vditor fetching ~4.9MB
+ * from unpkg.com on every cold render, and lute.min.js alone is 3.9MB. Without a
+ * cache header, `serveFile` below readFileSync's all 3.9MB on EVERY page load —
+ * measured at ~30ms a time inside the desktop webview, versus ~4ms when the
+ * browser is allowed to reuse its copy. unpkg was, ironically, sending
+ * `max-age=31536000` and we were not, so the local mirror won the cold fetch
+ * (~30ms vs ~225ms) but lost the warm one. This closes that last gap.
+ */
+const IMMUTABLE_ASSET_PREFIX = '/vditor/';
+const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+
+function serveFile(absPath: string, status = 200, cacheControl?: string): Response {
   const ext = extname(absPath).toLowerCase();
   const contentType = EXT_CONTENT_TYPE[ext] ?? 'application/octet-stream';
   const body = TEXT_EXTS.has(ext)
     ? readFileSync(absPath, 'utf-8')
     : readFileSync(absPath);
-  return new Response(body, { status, headers: { 'content-type': contentType } });
+  return new Response(body, {
+    status,
+    headers: cacheControl
+      ? { 'content-type': contentType, 'cache-control': cacheControl }
+      : { 'content-type': contentType },
+  });
 }
 
 /**
@@ -199,7 +223,11 @@ spaRoutes.get('*', async (c) => {
   if (rel && extname(rel)) {
     const abs = safeDistPath(rel);
     if (abs && existsSync(abs) && statSync(abs).isFile()) {
-      return serveFile(abs, 200);
+      return serveFile(
+        abs,
+        200,
+        pathname.startsWith(IMMUTABLE_ASSET_PREFIX) ? IMMUTABLE_CACHE_CONTROL : undefined,
+      );
     }
     return new Response('Not found', {
       status: 404,

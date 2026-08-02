@@ -2166,13 +2166,24 @@ export async function setWorkItemState(
         );
       }
     }
-    const { sql } = getOrgPg();
     const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
     // D-007: a genuine terminal success/drop resets the stale-reclaim requeue
     // counter, so a later legitimate re-open starts fresh with the full cap.
     const resetRequeue = isTerminal;
-    const rows = isTerminal
-      ? await sql<FeatureRowDb[]>`
+    // EI-19284963139619048: this UPDATE is the state-write half of EVERY feature-family
+    // work_items:complete/set_state call. It used to run on the raw, unbounded
+    // `getOrgPg()` admin pool (no statement_timeout — see pg-bounded-txn.ts's header,
+    // which documents this EXACT symptom class, "work_items:comment hung, then timed
+    // out on a blind retry", already fixed there but never migrated to this equally-hot
+    // sibling). Under fleet load a stall here (lock wait, CPU-starved backend, slow
+    // scan) ran unbounded and hung the MCP call until the client's own 300s
+    // idle-timeout killed it blind, requiring a retry with no diagnostic. boundedOrgTxn
+    // sets a real statement_timeout + lock_timeout so a stall now fails fast with a
+    // typed OrgTxnTimeoutError instead — which the caller (work_items:complete/
+    // set_state) already catches and reports as `stateError` (the completion record is
+    // never lost, EI-24).
+    const rows = await boundedOrgTxn(async (tx) => isTerminal
+      ? await tx<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET status = ${state},
              requeue_count = 0,
@@ -2218,15 +2229,15 @@ export async function setWorkItemState(
                             ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
                        END
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
-      RETURNING ${sql.unsafe(FEATURE_COLS)}`
-      : await sql<FeatureRowDb[]>`
+      RETURNING ${tx.unsafe(FEATURE_COLS)}`
+      : await tx<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET status = ${state},
              requeue_count = CASE WHEN ${resetRequeue} THEN 0 ELSE requeue_count END,
              last_progress_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_progress_at END,
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
-      RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+      RETURNING ${tx.unsafe(FEATURE_COLS)}`);
     result = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
   // work-item-status-full-unify (P-003 writer-flip): preserve the collapsed

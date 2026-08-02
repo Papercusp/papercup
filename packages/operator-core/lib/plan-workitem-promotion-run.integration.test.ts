@@ -87,6 +87,8 @@ vi.mock('./agent-tools/plans/source', () => ({
 const run = await import('./plan-workitem-promotion-run');
 const convert = await import('./plan-items/convert');
 const { planItemRef } = await import('./issue-blocks-merge');
+// P-010: the REAL claim door, so the proof ends at "is it served?" rather than "was a row written?".
+const wi = await import('./work-items');
 
 let db: FreshPgDb;
 
@@ -107,7 +109,10 @@ beforeAll(async () => {
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
-      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
+      -- P-010 drives the real claim path, which projects signal_origin (parity with
+      -- work-items-claim-readiness.integration.test.ts's fixture).
+      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';
     CREATE TABLE IF NOT EXISTS harness_shared.contributors (
       workspace_id text NOT NULL, harness_slug text NOT NULL,
       github_user_id bigint NOT NULL, github_username text NOT NULL DEFAULT '');
@@ -708,5 +713,118 @@ describe('backfillPromotedDependencyEdges (P-009): already-promoted items gain t
     const res = await backfill();
     expect(res).toMatchObject({ plansScanned: 0, itemsConsidered: 0, edgesWritten: 0 });
     expect(res.perPlan).toEqual([]);
+  });
+});
+
+/**
+ * P-010 — THE WHOLE CHAIN: plan `blockedBy` → the real writer → the real CLAIM DOOR.
+ *
+ * Why this exists even though both halves are already green elsewhere (D-017, the plan's
+ * most important result). The promotion suite above proves edges get WRITTEN;
+ * work-items-claim-readiness.integration.test.ts proves the floor HONORS a well-formed edge
+ * — but it HAND-SEEDS the dep, so it constructs the correct per-family convention by
+ * construction. Nothing tested that the WRITER emits what the READER matches, and the bug
+ * lived in exactly that gap: P-009 shipped 6 edges that gate nothing, past three green checks
+ * (count-matching, mirror symmetry, acyclicity) — all of which measure ROWS.
+ * ROW-SHAPE EVIDENCE CANNOT DISTINGUISH "WRITTEN" FROM "EFFECTIVE". So these tests assert on
+ * `claimNextWorkItem` — whether the item is actually SERVED — never on a row count.
+ *
+ * ⚠ DO NOT "simplify" by seeding work_item_deps directly, and do not narrow this to the
+ * feature family. Both shortcuts delete the only thing it tests:
+ *
+ *  1. The ISSUE-family leg is mandatory (D-017). A feature-only e2e goes green against the
+ *     very defect — the writer's feature path was always correct; the issue path was inert.
+ *  2. The blocked item's STATUS is a confound that must be neutralized. EI-14024 mints a
+ *     DAG-blocked item already `status='blocked'`, which the claim floor's status predicate
+ *     excludes on its own — so a naive test passes with a completely inert edge, proving
+ *     nothing. Each test below forces the blocked row back to a claimable status first, so
+ *     the ONLY thing that can hold it back is the dependency edge.
+ */
+describe('P-010: a promoted plan chain GATES the real claim door (end-to-end, nothing hand-seeded)', () => {
+  /**
+   * An ISSUE-family (task) work-item carrying the durable `payload.plan_item` stamp — the
+   * same stamp `findConvertedWorkItemByStamp` resolves. This is how issue-family rows enter
+   * the promotion graph in production: promotion MINTS only features (computePromotions
+   * hardcodes kind:'feature'), but the backfill resolves whatever work-item is stamped to the
+   * plan item, and that resolver falls through to `item_kind = ANY(ISSUE_FAMILY_KINDS)`.
+   */
+  const seedStampedIssue = async (
+    id: string,
+    opts: { itemId: string; status?: string; takenBy?: string | null; createdTs?: number },
+  ) => {
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, title, status, item_kind, workspace_id, taken_by, created_ts, updated_ts, payload)
+      VALUES (${HARNESS}, ${id}, ${`issue ${id}`}, ${opts.status ?? 'open'}, 'task', ${WS},
+              ${opts.takenBy ?? null}, ${opts.createdTs ?? 0}, 0,
+              ${db.sql.json({ plan_item: { plan_slug: PLAN, item_id: opts.itemId } })})`;
+  };
+
+  const backfill = () =>
+    run.backfillPromotedDependencyEdges({ workspaceId: WS, harnessSlug: HARNESS });
+
+  /** The raw edge rows, UNSTRIPPED — the per-family ref form is exactly what is on trial here. */
+  const rawEdges = () =>
+    db.sql<{ blocked_kind: string; blocked_ref: string; blocker_kind: string; blocker_ref: string }[]>`
+      SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref
+        FROM harness_shared.work_item_deps
+       WHERE dep_type = 'blocks' ORDER BY blocked_ref`;
+
+  it('FEATURE family: the promoted blocked item is NOT served while its blocker is non-terminal, and IS once it is', async () => {
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent', blockedBy: ['P-001'] },
+      ],
+    });
+    expect((await run.promotePlanItems(base)).edgesWritten).toBe(1);
+
+    const rows = await features();
+    const blocked = rows.find((r) => r.title === 'Dependent')!.feature_id;
+    const blocker = rows.find((r) => r.title === 'Prereq')!.feature_id;
+
+    // Neutralize the two confounds so ONLY the edge can hold the item back:
+    //  • the blocker goes 'wip' — non-terminal, and not itself a claimable candidate;
+    //  • the blocked row goes back to 'open', undoing EI-14024's already-gated mint.
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='wip' WHERE feature_id=${blocker}`;
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='open' WHERE feature_id=${blocked}`;
+
+    // It is now the only 'open', unclaimed candidate — so a null claim is attributable to the
+    // promoted edge and nothing else.
+    expect(await wi.claimNextWorkItem({ harness: HARNESS, assignee: 'w1' })).toBeNull();
+
+    // …and the gate LIFTS when the blocker is satisfied (proving it gates, not just refuses).
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='passed' WHERE feature_id=${blocker}`;
+    expect((await wi.claimNextWorkItem({ harness: HARNESS, assignee: 'w1' }))?.id).toBe(blocked);
+  });
+
+  it('ISSUE family (D-017): a backfilled edge onto an issue-family item actually gates get_next', async () => {
+    // The exact live shape D-017 found inert: both endpoints resolve to ISSUE-family rows.
+    // The blocker is assigned so it is not itself self-selected by the same claim call.
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Issue prereq' },
+        { id: 'P-002', status: 'todo', text: 'Issue dependent', blockedBy: ['P-001'] },
+      ],
+    });
+    await seedStampedIssue('WI-2001', { itemId: 'P-001', takenBy: 'other-owner', createdTs: 100 });
+    await seedStampedIssue('WI-2002', { itemId: 'P-002', createdTs: 200 });
+
+    const res = await backfill();
+    expect(res).toMatchObject({ itemsConsidered: 1, edgesWritten: 1, edgeFailures: 0 });
+
+    // The row the FLOOR reads must speak the issue family's convention: kind='issue' with a
+    // BARE ref. Written harness-qualified (the feature convention) it is well-formed, mirrors
+    // correctly, and gates NOTHING — which is precisely how it passed three green checks.
+    expect(await rawEdges()).toEqual([
+      { blocked_kind: 'issue', blocked_ref: 'WI-2002', blocker_kind: 'issue', blocker_ref: 'WI-2001' },
+    ]);
+
+    // THE ASSERTION THAT ROW-SHAPE CHECKS CANNOT MAKE: it is not served.
+    expect(await wi.claimNextWorkItem({ harness: HARNESS, assignee: 'w1' })).toBeNull();
+
+    // And it is served once the blocker is terminal — so the fix gates without over-gating.
+    await db.sql`UPDATE harness_shared.work_items SET status='resolved' WHERE feature_id='WI-2001'`;
+    expect((await wi.claimNextWorkItem({ harness: HARNESS, assignee: 'w1' }))?.id).toBe('WI-2002');
   });
 });

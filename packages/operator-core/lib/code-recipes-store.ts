@@ -46,6 +46,18 @@ export interface CodeRecipeRow {
   updatedAt: string;
 }
 
+/**
+ * A recipe row WITHOUT its `script` body — what every LIST read returns.
+ *
+ * The script is the single fattest column in the table (~2.3 KB/row measured over
+ * the live 1,000-recipe corpus, 79% of the whole `codeRecipes` sync payload) and
+ * NO list caller has ever used it: `recipes:list`, the learning-retain read, and
+ * the `codeRecipes` sync resolver each project it straight back off. Selecting it
+ * was pure waste on BOTH legs — Postgres→node and, for the sync read, node→client.
+ * Fetch a body by id with {@link getRecipe}, which still returns the full row.
+ */
+export type CodeRecipeListRow = Omit<CodeRecipeRow, 'script'>;
+
 export interface UpsertCodeRecipeInput {
   /** Stable kebab slug derived from the title (the PRIMARY KEY). */
   id: string;
@@ -108,12 +120,13 @@ const asIso = (v: Date | string): string => (typeof v === 'string' ? v : v.toISO
 const asIsoOrNull = (v: Date | string | null): string | null => (v == null ? null : asIso(v));
 const asInt = (v: number | string): number => (typeof v === 'number' ? v : parseInt(v, 10));
 
-function mapRow(r: DbRow): CodeRecipeRow {
+/** Map every column EXCEPT `script` — shared by {@link mapRow} and the list reads,
+ *  so the two shapes can never drift apart. */
+function mapListRow(r: Omit<DbRow, 'script'>): CodeRecipeListRow {
   return {
     id: r.id,
     title: r.title,
     description: r.description,
-    script: r.script,
     potSlug: r.pot_slug,
     authorRole: r.author_role,
     toolsUsed: r.tools_used ?? [],
@@ -131,14 +144,22 @@ function mapRow(r: DbRow): CodeRecipeRow {
   };
 }
 
+function mapRow(r: DbRow): CodeRecipeRow {
+  return { ...mapListRow(r), script: r.script };
+}
+
 /** SELECT-list shared by every read so `has_embedding` is computed uniformly
  *  (the raw VECTOR is never serialized back into JS — only its presence).
  *  Accepts a plain Sql OR a TransactionSql so the merge transaction can reuse it. */
-const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
-  id, title, description, script, pot_slug, author_role,
+const LIST_SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
+  id, title, description, pot_slug, author_role,
   tools_used, run_count, success_count, last_run_at, status, promoted_tool,
   merged_into, tags, (embedding IS NOT NULL) AS has_embedding,
   created_by, created_at, updated_at
+`;
+
+const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
+  script, ${LIST_SELECT_COLS(sql)}
 `;
 
 /**
@@ -407,21 +428,25 @@ export function isLowValueRecipe(r: { toolsUsed?: string[] | null; title: string
  * Capped at `limit` (default {@link DEFAULT_LIST_LIMIT}, clamped to
  * {@link MAX_LIST_LIMIT}) so a large corpus can't flood the sync transport; pair
  * with {@link countRecipes} for the true total (attachListMeta).
+ *
+ * Returns {@link CodeRecipeListRow} — every column EXCEPT the `script` body, which
+ * no list caller has ever read and which was 79% of the `codeRecipes` sync payload
+ * (WI-7085). Use {@link getRecipe} when you need one recipe's script.
  */
 export async function listRecipes(
   sql: postgres.Sql,
   opts: { limit?: number; includeTrivial?: boolean } = {},
-): Promise<CodeRecipeRow[]> {
+): Promise<CodeRecipeListRow[]> {
   const lim = clampLimit(opts.limit);
   const whereTrivial = opts.includeTrivial
     ? sql`TRUE`
     : sql`array_length(tools_used, 1) >= 2 AND title NOT ILIKE 'recipe: %'`;
-  const rows = await sql<DbRow[]>`
-    SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
+  const rows = await sql<Omit<DbRow, 'script'>[]>`
+    SELECT ${LIST_SELECT_COLS(sql)} FROM harness_shared.code_recipes
      WHERE ${whereTrivial}
      ORDER BY last_run_at DESC NULLS LAST, run_count DESC, id
      LIMIT ${lim}`;
-  return rows.map(mapRow);
+  return rows.map(mapListRow);
 }
 
 /**

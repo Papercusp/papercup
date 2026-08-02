@@ -310,7 +310,7 @@ function relatedProjects(byBucket: string[][], requested: string): string[] {
  * pass, and whether you get away with it depends on your file's ALPHABETICAL position
  * relative to an unrelated backlog. This mode removes the reason to hand-roll.
  *
- * TWO TRAPS, both hit while proving the recipe out — do not "simplify" them away:
+ * THREE TRAPS, all hit while proving the recipe out — do not "simplify" them away:
  *  1. The config lives OUTSIDE the tree (writing it inside would be swept into a commit
  *     by git-sync, which commits the whole shared tree). That means `typeRoots` MUST be
  *     absolute — left relative, `@types` resolves against the temp dir and every ambient
@@ -318,6 +318,21 @@ function relatedProjects(byBucket: string[][], requested: string): string[] {
  *  2. `include: []` is required alongside `files`. Without it the extended project's own
  *     `include` globs survive and pull the entire project back in, silently restoring the
  *     very cost this mode exists to avoid — and it still LOOKS scoped.
+ *  3. `types` must be listed EXPLICITLY. Absolute `typeRoots` (trap 1) is necessary but
+ *     NOT sufficient: with `types` left undefined, TS's automatic "@types under typeRoots"
+ *     inclusion does not survive the config living in a temp dir, so every ambient global
+ *     disappears — the identical phantom-error flood trap 1 is about, from a different
+ *     cause. It hid because the projects this mode was proved on (operator-core) declare
+ *     `types: ["node"]` in their OWN tsconfig and so were immune; a project that does not
+ *     (apps/operator) got a wall of nonsense. MEASURED 2026-08-02 on
+ *     apps/operator/scripts/hooks/cc/__tests__/pc-heavy.test.ts: 28 errors, every one a
+ *     "Cannot find name 'process'" / "Cannot find name 'node:fs'" phantom -> 0 errors with
+ *     `types` populated, same file, same everything else.
+ *
+ *     The list is READ from disk rather than hardcoded to `["node"]` so this reproduces
+ *     TS's own default faithfully instead of guessing: hardcoding node would both miss a
+ *     project's other ambient packages AND inject node globals into a DOM-only project,
+ *     where `process` SHOULD be an error and would silently start passing.
  *
  * `extends` is absolute for the same reason as (1): a relative extends would resolve
  * against the temp dir.
@@ -335,6 +350,7 @@ export function buildScopedTsconfig(
     else missing.push(f);
   }
 
+  const typeRoot = join(root, 'node_modules', '@types');
   const dir = mkdtempSync(join(tmpdir(), 'pc-typecheck-scoped-'));
   const configPath = join(dir, 'tsconfig.json');
   writeFileSync(
@@ -345,7 +361,14 @@ export function buildScopedTsconfig(
         compilerOptions: {
           noEmit: true,
           incremental: false,
-          typeRoots: [join(root, 'node_modules', '@types')],
+          typeRoots: [typeRoot],
+          // Trap 3 above — enumerated, not hardcoded, so this mirrors what tsc would have
+          // auto-included. Omitted entirely when the scan finds nothing, so an unreadable
+          // or absent @types dir degrades to today's behaviour rather than pinning `types`
+          // to [] and deleting every ambient global we were trying to preserve.
+          ...(ambientTypePackages(typeRoot).length > 0
+            ? { types: ambientTypePackages(typeRoot) }
+            : {}),
         },
         files: resolvedFiles,
         include: [],

@@ -81,6 +81,47 @@ export function computeDeepReadiness(args: {
   return dbosOk && pgOk && memoryOk;
 }
 
+export interface LoopLagReading {
+  /** 'ok' when no lag monitor is running (absence of signal, never a false-healthy claim). */
+  pressure: 'ok' | 'elevated' | 'critical';
+  p95Ms: number | null;
+  p99Ms: number | null;
+  maxMs: number | null;
+}
+
+/**
+ * EI-19285078178745571: a 2026-08-01 incident had EVERY MCP tool call wedged for
+ * ~17min while `/api/health` (and this deep probe's own PG/memory legs) kept
+ * answering fast — because neither of those legs touches whether the event loop
+ * itself is able to timely service queued work; they only prove PG/memory are
+ * reachable FROM a loop iteration that got to run. The near-identical 2026-06-19
+ * EI-79 outage (sustained synchronous CPU work starving the loop) had the SAME
+ * blind spot and is exactly what `event-loop-lag-monitor.ts`'s standing gauge was
+ * built to make "self-evident next time" — but that gauge only ever reached a
+ * structured console.warn, never an HTTP-visible signal. Surfacing it here closes
+ * that gap for an external monitor/dashboard without guessing at a mechanism this
+ * file can't reproduce.
+ *
+ * Deliberately does NOT gate `ready`/503: unlike PG/memory (binary reachable-or-not,
+ * and the operator genuinely cannot serve without them), loop pressure is a
+ * continuous signal the admission-control layer (mcp-admission.ts) already sheds
+ * NEW requests on at the 'critical' band — flipping deep-health to 503 on the same
+ * signal would just duplicate that shedding at the readiness layer (risking a
+ * legitimate load-balancer / process-supervisor overreaction to a transient,
+ * self-recovering spike) instead of adding new information. This is a read-only
+ * diagnostic: the raw p95/p99/max let a human or monitor see "the loop was under
+ * pressure" even when no threshold breach reads as a hard failure.
+ */
+export function readLoopLag(): LoopLagReading {
+  const lag = currentLoopLag();
+  return {
+    pressure: loopPressure(),
+    p95Ms: lag?.p95Ms ?? null,
+    p99Ms: lag?.p99Ms ?? null,
+    maxMs: lag?.maxMs ?? null,
+  };
+}
+
 export default defineTool({
   method: 'GET',
   path: '/health/deep',
@@ -106,6 +147,8 @@ export default defineTool({
         return avail.ok ? 'ok' : 'disabled';
       }, DEEP_PROBE_TIMEOUT_MS),
     ]);
+    // Synchronous, cheap (a native histogram read) — no deadline race needed.
+    const loopLag = readLoopLag();
 
     const ready = computeDeepReadiness({
       dbosEnabled,
@@ -115,7 +158,7 @@ export default defineTool({
     });
 
     return Response.json(
-      { ok: ready, ready, dbos, dbosEnabled, pg, memory, ts: new Date().toISOString() },
+      { ok: ready, ready, dbos, dbosEnabled, pg, memory, loopLag, ts: new Date().toISOString() },
       { status: ready ? 200 : 503 },
     );
   },

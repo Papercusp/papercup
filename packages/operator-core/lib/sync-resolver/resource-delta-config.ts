@@ -47,6 +47,13 @@ const CONFIG: Readonly<Record<string, ResourceDeltaConfig>> = {
   // collide across them — that costs a refetch, never a wrong view (the response carries
   // the full-view checksum and the client refetches on mismatch; see the header note).
   'plans.byHive': { itemKeyField: 'slug', schemaVersion: 'plans-byhive-v1' },
+  // codeRecipes resolves to the recipe corpus for /admin/recipes, keyed by `id` — the
+  // PRIMARY KEY of harness_shared.code_recipes, and measured distinct on 1000/1000 live
+  // rows. The corpus is re-fetched whole on every recipe write (capture-recipe,
+  // recipes:sweep and recipes:merge all fire notifySyncInvalidate('codeRecipes')), and a
+  // capture changes exactly ONE row — so this is the same re-send shape plans.attention
+  // has, at 1,000 rows a poll.
+  'codeRecipes': { itemKeyField: 'id', schemaVersion: 'code-recipes-v1' },
 };
 
 /** The delta config for a sync resource name, or undefined → serve full (today's behavior). */

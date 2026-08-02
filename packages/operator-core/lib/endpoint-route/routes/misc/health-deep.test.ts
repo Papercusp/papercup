@@ -5,8 +5,9 @@
  * outage into a 503). The handler's real PG/memory round-trips are integration
  * territory; the logic here is what determines ready vs 503.
  */
-import { describe, expect, it } from 'vitest';
-import { computeDeepReadiness, probeSubsystem, type ProbeStatus } from './health-deep';
+import { describe, expect, it, afterEach } from 'vitest';
+import { computeDeepReadiness, probeSubsystem, readLoopLag, type ProbeStatus } from './health-deep';
+import { startEventLoopLagMonitor, type LagMonitorHandle } from '../../../event-loop-lag-monitor';
 
 describe('computeDeepReadiness', () => {
   const base = { dbosEnabled: false, dbosLaunched: false, pg: 'ok' as ProbeStatus, memory: 'ok' as ProbeStatus };
@@ -57,5 +58,35 @@ describe('probeSubsystem', () => {
     const r = await probeSubsystem(() => new Promise<ProbeStatus>(() => {}), 20);
     expect(r.status).toBe('down');
     expect(r.detail).toMatch(/timeout after 20ms/);
+  });
+});
+
+// EI-19285078178745571: a green /api/health(/deep) during an actually-wedged host is
+// exactly the detector gap this closes (a 2026-08-01 incident had every MCP call hang
+// while both stayed 200; the near-identical 2026-06-19 EI-79 outage was event-loop-lag
+// shaped). These pin readLoopLag's no-monitor-running fail-safe AND its live pass-through
+// of the SAME event-loop-lag-monitor gauge the P-010 admission layer already sheds on.
+describe('readLoopLag', () => {
+  let handle: LagMonitorHandle | undefined;
+  afterEach(() => {
+    handle?.stop();
+    handle = undefined;
+  });
+
+  it('no monitor running ⇒ pressure ok, every figure null (absence of signal is never a false-healthy OR false-unhealthy claim)', () => {
+    const r = readLoopLag();
+    expect(r.pressure).toBe('ok');
+    expect(r.p95Ms).toBeNull();
+    expect(r.p99Ms).toBeNull();
+    expect(r.maxMs).toBeNull();
+  });
+
+  it('a running monitor is reflected live (finite figures, pressure derived from the SAME gauge the admission layer reads)', () => {
+    handle = startEventLoopLagMonitor();
+    const r = readLoopLag();
+    expect(['ok', 'elevated', 'critical']).toContain(r.pressure);
+    expect(typeof r.p95Ms).toBe('number');
+    expect(typeof r.p99Ms).toBe('number');
+    expect(typeof r.maxMs).toBe('number');
   });
 });

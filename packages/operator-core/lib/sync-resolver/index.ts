@@ -6467,15 +6467,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return accountStatus(workspace ?? activeWorkspaceId());
     },
   },
-  // codeRecipes — the hive-scoped corpus of reusable code:run RECIPES for the
-  // /admin/recipes dashboard (code-recipes-2026-06-21 P-009). One row per recipe
-  // (the CodeRecipeRow shape: title/description/run+success counts/last_run/status/
-  // tools_used/author_role/promoted_tool/...), newest-run then most-run first —
-  // exactly listRecipes()'s order. Hive defaults to the operator-home hive (the
-  // sharing boundary, D-005); pass `harnessSlug` to scope another hive, or
-  // `allHives: true` for the whole workspace. The capture path (capture-recipe.ts),
-  // recipes:sweep, and recipes:merge fire notifySyncInvalidate('codeRecipes') after
-  // committing, so the tab is live over desktop SSE with no polling.
+  // codeRecipes — the corpus of reusable code:run RECIPES for the /admin/recipes
+  // dashboard (code-recipes-2026-06-21 P-009). One row per recipe, newest-run then
+  // most-run first — exactly listRecipes()'s order.
+  //
+  // GLOBAL, not hive-scoped: recipes are a reusable capability like a tool
+  // DEFINITION (data-scoping-audit-2026-06-22 P-001, which REVERSED the earlier
+  // hive-scoping D-005 — a good recipe should help every hive). `limit` is the only
+  // argument; there is no harnessSlug/allHives scoping to pass. (This comment used
+  // to describe the pre-P-001 D-005 hive scoping and args that do not exist —
+  // corrected under WI-7085.)
+  //
+  // Rows are projected to the UI read set by code-recipes-ui-projection.ts, and the
+  // `script` body is not selected at all (listRecipes returns CodeRecipeListRow):
+  // together those took the payload from 2,936,018 B to the allowlisted ceiling —
+  // it was the fattest sync read in the tree. See that file for the field census.
+  //
+  // The capture path (capture-recipe.ts), recipes:sweep, and recipes:merge fire
+  // notifySyncInvalidate('codeRecipes') after committing, so the tab is live over
+  // desktop SSE with no polling; the resource keys its rows-delta on `id`
+  // (resource-delta-config.ts) so one capture re-sends one row, not the corpus.
   codeRecipes: {
     argsSchema: z
       .object({
@@ -6485,10 +6496,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { limit } = (args ?? {}) as { limit?: number };
       const lim = limit ?? 1000;
-      const [{ getOrgPg }, { listRecipes, countRecipes }] = await Promise.all([
-        import('@papercusp/db-org'),
-        import('../code-recipes-store'),
-      ]);
+      const [{ getOrgPg }, { listRecipes, countRecipes }, { projectCodeRecipeRows }] =
+        await Promise.all([
+          import('@papercusp/db-org'),
+          import('../code-recipes-store'),
+          import('./code-recipes-ui-projection'),
+        ]);
       const sql = getOrgPg().sql;
       // Recipes are GLOBAL (P-001): capped list + cheap COUNT (no workspace/hive
       // filter), so the dashboard can show "N of TOTAL" via attachListMeta.
@@ -6499,7 +6512,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         listRecipes(sql, { limit: lim, includeTrivial: true }),
         countRecipes(sql),
       ]);
-      return attachListMeta(rows, { total }) as unknown[];
+      // Project to the UI read set BEFORE attachListMeta, so `_meta` (which the
+      // client reads off row[0] via readListTotal) survives the projection.
+      return attachListMeta(projectCodeRecipeRows(rows), { total }) as unknown[];
     },
   },
 
