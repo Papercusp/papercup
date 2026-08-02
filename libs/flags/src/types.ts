@@ -653,6 +653,20 @@ export const FLAGS = {
   // + legacy NULL-workspace rows). Dark CUTOVER — the flip is the attended live recall-
   // hit-rate verify. Rides migration 398's generated workspace_id column.
   MEMORY_WORKSPACE_SCOPED_RECALL: "papercusp-memory-workspace-scoped-recall",
+  // context-injection-audit-2026-07-28 P-008 / D-037: the SECOND retrieval leg.
+  // The injector read mem0 memories ONLY — session transcripts (~400k turns,
+  // gemma@384-embedded + tsvector-indexed) and work-items were structurally
+  // unreachable from an injected turn. This leg searches both through the
+  // existing @papercusp/search sources and appends a small POINTER section
+  // (teaser + the tool call that resolves it) on its OWN item cap + char
+  // budget. It takes no share of INJECTION_TOTAL_LIMIT, because the mem0 user
+  // pool alone already saturates that ceiling on 64.3% of turn-start recalls,
+  // and because the two corpora sit in incompatible vector spaces
+  // (harrier@1024 vs gemma@384) so they cannot share one comparable ranking.
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS): additive, bounded
+  // (2s), and fail-open. OFF = the clean kill-switch — the block returns to
+  // its mem0-only form byte-identically.
+  MEMORY_CORPUS_RECALL: "papercusp-memory-corpus-recall",
   // self-learning-frontier-2026-06-12 (P-031 / FB-20): Red Queen vaccination —
   // `system:red-queen-drill` plants origin=drill synthetic frictions in the
   // SANDBOX workspace ('red-queen-sandbox'), detects them with a real watchdog

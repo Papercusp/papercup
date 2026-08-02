@@ -197,6 +197,26 @@ export default defineTool({
         ? buildFacadeHelp(result.unknownRefs, all, allowed)
         : undefined;
 
+    // EI-19301148486657755: the FIELD-name counterpart of facadeHelp above. A wrong TOOL name
+    // already hands back typed signatures; a wrong FIELD name was silent, because `undefined` is
+    // indistinguishable from a legitimately-absent value and the `?? null` / `?? 0` fallbacks
+    // agents write to keep summaries bounded launder it into a confident number. Live case: a
+    // monitor script read `claimable.count` (real key: `claimableCount`), reported "0 claimable"
+    // against a queue of 1,397, and nearly stood down a 10-agent fleet.
+    //
+    // Stated as a correction rather than a dump: the miss only exists because the author was
+    // ALREADY wrong, so the useful payload is "you read X, the keys are Y".
+    const fieldMissHelp = result.fieldMisses?.length
+      ? [
+          `⚠ ${result.fieldMisses.length} read(s) of a field the tool result does NOT have — the value you got was undefined, ` +
+            `which a \`?? null\` / \`?? 0\` fallback turns into a real-looking value. Check these before trusting the summary:`,
+          ...result.fieldMisses.map(
+            (m) =>
+              `  • ${m.tool} → read \`${m.read}\` on ${m.path}, which has: ${m.available.join(', ') || '(no keys)'}`,
+          ),
+        ].join('\n')
+      : undefined;
+
     // WI-1377: keep the full plannedMutations echo ONLY under dryRun (the mutation preview the
     // agent inspects before committing). On a REAL run the writes already executed, so echoing
     // every call's full args back is pure waste that overflows the 100k result cap on a large
@@ -206,11 +226,12 @@ export default defineTool({
     const shownResult = shapeCodeRunLogs(shapeMutationEcho(result));
 
     const payload =
-      similarRecipes.length > 0 || facadeHelp
+      similarRecipes.length > 0 || facadeHelp || fieldMissHelp
         ? {
             ...shownResult,
             ...(similarRecipes.length > 0 ? { similarRecipes } : {}),
             ...(facadeHelp ? { facadeHelp } : {}),
+            ...(fieldMissHelp ? { fieldMissHelp } : {}),
           }
         : shownResult;
 

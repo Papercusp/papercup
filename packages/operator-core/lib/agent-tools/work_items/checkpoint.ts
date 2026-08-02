@@ -102,6 +102,12 @@ import { lookupWorkItem } from './_lookup';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
+import {
+  CARRY_NOTE_MAX_CHECKS,
+  normalizeCheckEntries,
+  splitCarryNoteChecks,
+  withCarryNoteChecks,
+} from '../../carry-note';
 
 /** First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
  *  accidental collision between two DIFFERENT checkpoint bodies is not a real concern. */
@@ -168,6 +174,52 @@ function dependsOnSpec() {
     );
 }
 
+/**
+ * EI-19298690705878336: the verified-vs-asserted marking, reused from the SAME
+ * `carry-note` machinery `loop:checkpoint` already exposes — deliberately not a
+ * second, drifting notion of what a carried claim is.
+ *
+ * The gap this closes: a work-item checkpoint could carry a confident factual
+ * claim with no way to mark whether it had been VERIFIED or merely predicted, and
+ * the checkpoint re-injects on every subsequent invocation of the item in the
+ * author's own voice. A wrong claim therefore reads as better-established on each
+ * re-read rather than more suspect. Root incident: an assertion about a plan
+ * item's scope survived FIVE consecutive wakes, was restated each time, and was
+ * refuted by a single query nobody ran because nothing said it was unverified.
+ *
+ * That surface matters more here than on the loop note: a loop note is read by the
+ * author's own next wake, whereas a work-item checkpoint is what an unrelated
+ * SUCCESSOR inherits — the reader least able to tell an asserted claim from a
+ * checked one.
+ */
+function checksSpec() {
+  return z
+    .array(
+      z.object({
+        claim: z.string().min(1).max(500).describe('The claim about external state, stated concretely.'),
+        recheck: z.string().max(300).optional().describe('The concrete probe that would falsify the claim.'),
+        verified: z
+          .string()
+          .max(300)
+          .optional()
+          .describe(
+            'The EVIDENCE STRING (what you actually observed), NOT a boolean — `true`/`false` is rejected. ' +
+              'Presence renders the row ✓ VERIFIED; omitting it entirely renders ? PREDICTED, telling a ' +
+              'successor to run `recheck` before relying on the claim.',
+          ),
+      }),
+    )
+    .max(CARRY_NOTE_MAX_CHECKS)
+    .optional()
+    .describe(
+      'Carried CHECKS — claims about EXTERNAL state paired with the probe that falsifies them, rendered as a ' +
+        '`## Checks` section every time this checkpoint is re-injected. Put hash/id/timestamp/state expectations ' +
+        'HERE rather than in checkpoint prose, so the probe travels with the claim and a successor can tell an ' +
+        'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
+        'plain rewrite never silently drops them), [] clears them, a list merges by claim text.',
+    );
+}
+
 const itemSpec = z.object({
   id: z.string().min(1).describe('the work-item id to checkpoint'),
   /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint. */
@@ -184,6 +236,7 @@ const itemSpec = z.object({
       'more than half is BLOCKED (`shrink_blocked`) by default. Pass true to confirm the replace is intentional.',
   ),
   dependsOn: dependsOnSpec(),
+  checks: checksSpec(),
 });
 
 export default defineTool({
@@ -227,6 +280,7 @@ export default defineTool({
       confirmShrink: looseBoolean().describe(
         'single shorthand default for `confirmShrink` (EI-18140632570924965), also the items[] default.',
       ),
+      checks: checksSpec(),
       dependsOn: dependsOnSpec(),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id), {
@@ -362,7 +416,41 @@ export default defineTool({
         // stamping apply on the append/clear paths too.
         const isPlainReplace = !wantsAppend && !!checkpointToStore && checkpointToStore.length > 0;
         const newLength = checkpointToStore?.length ?? 0;
+        // EI-19298690705878336: `checks` rows are rendered INTO the stored note, so a
+        // write must MERGE them against the prior note rather than replace it — and
+        // that merge has to happen inside the store's locked transaction, or a
+        // concurrent writer on the same item can interleave between our read and our
+        // write. Hence the `transform` seam rather than a read-then-write here.
+        const suppliedChecks = it.checks ?? args.checks;
+        const isClear = !(checkpointToStore && checkpointToStore.length > 0);
+        // A CLEAR wipes the checks too, UNLESS the caller supplied some in the same
+        // call. This is a DELIBERATE divergence from loop:checkpoint, where checks
+        // survive a note clear: work_items:complete clears the checkpoint as terminal
+        // cleanup, and rows surviving that would resurrect a checks-only checkpoint on
+        // an already-closed item.
+        const checksTransform =
+          suppliedChecks !== undefined || !isClear
+            ? (priorNote: string | null, incoming: string | null | undefined) => {
+                const prior = splitCarryNoteChecks(priorNote).checks;
+                // `incoming` may carry its OWN rendered `## Checks` — append mode folds
+                // the whole prior note in, section and all — so strip it before
+                // re-attaching or the note ends up with two Checks sections.
+                const { body } = splitCarryNoteChecks(incoming ?? '');
+                const merged =
+                  suppliedChecks !== undefined ? normalizeCheckEntries(suppliedChecks, prior) : prior;
+                if (merged.length === 0) return body.length > 0 ? body : null;
+                const rendered = withCarryNoteChecks(body, merged);
+                if (rendered.length <= CHECKPOINT_CAP) return rendered;
+                // Over cap: trim the BODY from the front (oldest content) and re-attach,
+                // so the checks — bounded to CARRY_NOTE_MAX_CHECKS rows — are never the
+                // part that gets cut. Mirrors joinCheckpoint's front-trim rationale.
+                const overflow = rendered.length - CHECKPOINT_CAP + TRUNCATION_MARKER.length;
+                const trimmedBody = TRUNCATION_MARKER + body.slice(Math.min(overflow, body.length));
+                return withCarryNoteChecks(trimmedBody, merged);
+              }
+            : undefined;
         const res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
+          ...(checksTransform ? { transform: checksTransform } : {}),
           guard:
             isPlainReplace && !wantsConfirmShrink
               ? (_priorNote, priorLen) =>
@@ -432,6 +520,13 @@ export default defineTool({
           verified: stored !== null ? (true as const) : null,
           /** P-003: first 80 chars of what was stored — eyeball-check without a re-read. */
           storedHead: stored !== null ? stored.slice(0, 80) : null,
+          /**
+           * EI-19298690705878336: how many `## Checks` rows the stored note ended up
+           * carrying. Read back off `stored` rather than counting the caller's input,
+           * so it reflects the MERGE the store actually performed (carried-forward rows
+           * included) instead of what was passed in.
+           */
+          checks: stored !== null ? splitCarryNoteChecks(stored).checks.length : 0,
           by: ident.ownerId,
           // P-007/D-013: what the freshness axis recorded for this write. Absent
           // entirely when the caller declared nothing (the common case today), so

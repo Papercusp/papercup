@@ -75,13 +75,16 @@ export interface HarnessPlanRow {
   /** P-015 initiative grouping label. Optional on the wire for back-compat —
    *  a peer predating P-015 omits it; we tolerate absence and default to null. */
   initiative?: string | null;
-  /** mig 329/331 — plan-template provenance + auto-promote policy. Part of the plan's
-   *  definition, so they federate (a peer/authority that reads or promotes the plan needs
-   *  them — else they land NULL, data loss). OPTIONAL on the wire (pre-329/331 back-compat).
-   *  template_data + promote_policy are JSONB blobs, opaque to the projection. */
+  /** mig 329/331/714 — plan-template provenance, auto-promote policy, and the plan's
+   *  declared input schema. Part of the plan's definition, so they federate (a peer/authority
+   *  that reads, promotes or STARTS the plan needs them — else they land NULL, data loss:
+   *  a peer missing input_schema would compute an empty required-set and let a plan start
+   *  with no arguments). OPTIONAL on the wire (pre-329/331/714 back-compat).
+   *  template_data + promote_policy + input_schema are JSONB blobs, opaque to the projection. */
   template?: string | null;
   template_data?: unknown;
   promote_policy?: unknown;
+  input_schema?: unknown;
   supersedes: string[];
   superseded_by: string | null;
   archived: boolean;
@@ -310,12 +313,13 @@ async function writeToPg(
     await sql`
       INSERT INTO harness_shared.harness_plans
         (workspace_id, harness_slug, plan_slug, content, content_hash, version,
-         title, status, created, updated, owner, initiative, template, template_data, promote_policy, supersedes, superseded_by,
+         title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema, supersedes, superseded_by,
          archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
       VALUES
         (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
          ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
          ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
+         ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
          ${row.supersedes}, ${row.superseded_by},
          ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
       ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
@@ -331,13 +335,14 @@ async function writeToPg(
   await sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version,
-       title, status, created, updated, owner, initiative, template, template_data, promote_policy, supersedes, superseded_by,
+       title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema, supersedes, superseded_by,
        archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
        ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
        -- jsonb: bind via JSON.stringify(x)::text::jsonb (sql.json throws under getOrgPg)
        ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
+       ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
        ${row.supersedes}, ${row.superseded_by},
        ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
@@ -355,6 +360,7 @@ async function writeToPg(
       template       = EXCLUDED.template,
       template_data  = EXCLUDED.template_data,
       promote_policy = EXCLUDED.promote_policy,
+      input_schema   = EXCLUDED.input_schema,
       supersedes    = EXCLUDED.supersedes,
       superseded_by = EXCLUDED.superseded_by,
       archived      = EXCLUDED.archived,

@@ -6,37 +6,19 @@
  * `work_items:create { kind:'bet', payload }`, the payload is checked against the schema the
  * datatype declared — a malformed bet is REJECTED instead of stored as an untyped blob.
  *
- * JSON Schema via ajv (the codebase's validator — mirrors design-ir/validate.ts:
- * Ajv2020, strict:false, allErrors). Pure + cached; unit-testable with no DB.
+ * The ajv machinery itself now lives in `./json-schema-validation`, shared with the
+ * plan-input schemas that migration 714 added (plan-structured-inputs-2026-08-01 P-002) —
+ * same problem, one instance, one compiled-validator cache. This module keeps the
+ * DOMAIN-named wrapper and, importantly, this domain's fail-open policy: see below.
  */
-import Ajv2020 from 'ajv/dist/2020';
-import type { ErrorObject, ValidateFunction } from 'ajv';
-
-// One instance; compiled validators cached by serialized schema (a workspace's datatype
-// payload_schemas are few + stable, so this avoids recompiling on every instance create).
-const ajv = new Ajv2020({ allErrors: true, strict: false });
-const cache = new Map<string, ValidateFunction>();
-
-function compileSchema(schema: Record<string, unknown>): ValidateFunction {
-  const key = JSON.stringify(schema);
-  let v = cache.get(key);
-  if (!v) {
-    v = ajv.compile(schema); // throws on a malformed schema
-    cache.set(key, v);
-  }
-  return v;
-}
+import {
+  checkAgainstJsonSchema,
+  isCompilableSchema as isCompilableJsonSchema,
+} from './json-schema-validation';
 
 /** True iff `schema` is a compilable JSON Schema. Used at DECLARE time to reject a datatype
  *  whose `payload_schema` is malformed, so instance creation never has to fail-open. */
-export function isCompilableSchema(schema: Record<string, unknown>): boolean {
-  try {
-    compileSchema(schema);
-    return true;
-  } catch {
-    return false;
-  }
-}
+export const isCompilableSchema = isCompilableJsonSchema;
 
 export type PayloadValidation = { ok: true } | { ok: false; errors: string[] };
 
@@ -46,23 +28,18 @@ export type PayloadValidation = { ok: true } | { ok: false; errors: string[] };
  *   - malformed schema ⇒ ok (fail-open: a datatype-declaration bug must not block instance
  *     creation; declare-time `isCompilableSchema` is the gate that catches it).
  *   - otherwise the payload must satisfy the schema.
+ *
+ * The fail-open branch is deliberate and LOCAL TO DATATYPES — the shared seam reports a
+ * non-compilable schema as `bad_schema` and this wrapper maps it back to ok. Do not copy
+ * that mapping into a gate that DENIES on failure (the plan start gate treats `bad_schema`
+ * as fatal, because "could not check" must not render as "nothing was required").
  */
 export function validateDatatypePayload(
   schema: Record<string, unknown> | null | undefined,
   payload: unknown,
 ): PayloadValidation {
-  if (!schema || Object.keys(schema).length === 0) return { ok: true };
-  let validate: ValidateFunction;
-  try {
-    validate = compileSchema(schema);
-  } catch {
-    return { ok: true }; // malformed schema → fail-open (declare-time gate owns this)
-  }
-  if (validate(payload ?? {})) return { ok: true };
-  return { ok: false, errors: formatErrors(validate.errors) };
-}
-
-function formatErrors(errors: readonly ErrorObject[] | null | undefined): string[] {
-  if (!errors || errors.length === 0) return ['payload is invalid'];
-  return errors.map((e) => `${e.instancePath || '/'} ${e.message ?? 'invalid'}`.trim());
+  const r = checkAgainstJsonSchema(schema, payload ?? {});
+  if (r.ok) return { ok: true };
+  if (r.code === 'bad_schema') return { ok: true }; // declare-time gate owns schema validity
+  return { ok: false, errors: r.errors.length > 0 ? r.errors : ['payload is invalid'] };
 }

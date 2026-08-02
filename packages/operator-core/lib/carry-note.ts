@@ -683,12 +683,27 @@ export async function setCarryNoteWithPrior(
      * The caller resolves + stamps the tokens; this layer only persists them.
      */
     deps?: unknown;
+    /**
+     * EI-19298690705878336: MERGE the incoming note against the prior one before it
+     * is journaled and stored — the seam that lets a caller carry `## Checks` /
+     * `## Walls` rows forward so a plain replace cannot silently drop a claim's
+     * verification probe.
+     *
+     * Why here rather than in the caller: the caller would have to read the note,
+     * merge, then write — a read-then-write with a genuine race against a
+     * concurrent writer on the same scope. This row is ALREADY `SELECT ... FOR
+     * UPDATE`ed a few lines above, so a merge performed here is atomic with the
+     * write and costs no extra round-trip.
+     *
+     * Runs AFTER `guard`, so a blocked write never transforms. Returning
+     * null/blank still means CLEAR, exactly as passing a blank `note` does.
+     */
+    transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
   },
 ): Promise<SetCarryNoteResult> {
   const journalEnabled = opts?.journal ?? true;
   const { ws, scope } = resolveRef(ref);
   const { sql } = getOrgPg();
-  const trimmed = (note ?? '').trim();
   const now = Date.now();
   const depsSpecified = opts !== undefined && 'deps' in opts;
   return (await sql.begin(async (tx) => {
@@ -703,6 +718,11 @@ export async function setCarryNoteWithPrior(
       const blockedReason = opts.guard(priorNote, priorLength);
       if (blockedReason) return { stored: priorNote, priorLength, blockedReason, priorDeps };
     }
+    // The merge seam (see `transform`). Deliberately AFTER the guard — a blocked
+    // write must not transform — and BEFORE journaling, so the ring records what was
+    // actually stored rather than the caller's pre-merge draft.
+    const effectiveNote = opts?.transform ? opts.transform(priorNote, note) : note;
+    const trimmed = (effectiveNote ?? '').trim();
     // journaling ON: append (blank ⇒ unchanged ring); OFF: never keep a ring.
     const journal = journalEnabled ? appendCarryJournal(prevJournal, trimmed, now) : [];
     const noteCol = trimmed.length > 0 ? trimmed : null;

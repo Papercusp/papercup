@@ -10,7 +10,13 @@ import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeG
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
+import type { ImprovementCandidate } from '../harness/improvements/policy';
 import type { HealthPanel, PanelKey, PanelStatus, SystemHealth, SystemHealthPanels } from './types';
+
+/** A real (minimal) ImprovementCandidate — id/kind/scope/title are the only required
+ *  fields, so these tests need no cast and stay honest if the shape changes. */
+const candidate = (id: string): ImprovementCandidate =>
+  ({ id, kind: 'bug', scope: 'operator', title: `candidate ${id}` });
 
 describe('makeOpenImprovementsReader — one open-improvements read per tick (P-008)', () => {
   // Why this is pinned: collectWorkFeed (auto-eligible-stuck) and collectImprovements
@@ -32,20 +38,20 @@ describe('makeOpenImprovementsReader — one open-improvements read per tick (P-
     // A value-memo would let both collectors fire before either resolved — the exact
     // duplicate this exists to remove, since they start in the same Promise.all.
     let calls = 0;
-    let release!: (v: ImprovementCandidateLike[]) => void;
+    let release!: (v: ImprovementCandidate[]) => void;
     const reader = makeOpenImprovementsReader(() => {
       calls += 1;
-      return new Promise<ImprovementCandidateLike[]>((res) => { release = res; });
+      return new Promise<ImprovementCandidate[]>((res) => { release = res; });
     });
     const a = reader();
     const b = reader(); // starts BEFORE the first resolves
     expect(calls).toBe(1);
-    release([{ id: 'EI-1' }]);
+    release([candidate('EI-1')]);
     expect(await a).toBe(await b); // same array instance — one read, shared rows
   });
 
   it('gives every caller the same rows (the two panels can never disagree)', async () => {
-    const rows = [{ id: 'EI-1' }, { id: 'EI-2' }];
+    const rows = [candidate('EI-1'), candidate('EI-2')];
     const reader = makeOpenImprovementsReader(async () => rows);
     expect(await reader()).toBe(rows);
     expect(await reader()).toBe(rows);
@@ -73,8 +79,6 @@ describe('makeOpenImprovementsReader — one open-improvements read per tick (P-
   });
 });
 
-/** Minimal structural stand-in — these tests care about identity//call-count, not shape. */
-type ImprovementCandidateLike = { id: string };
 
 describe('splitAutoEligibleStuck — keyed dispatcher-stuck vs keyless human-review backlog (EI-14223)', () => {
   it('counts only KEYED, attempts:0 items as autoEligibleStuck', () => {

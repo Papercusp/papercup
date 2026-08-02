@@ -53,6 +53,7 @@ import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
 import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
 import { fetchUnansweredDirected } from "../unanswered-directed";
+import { authoredFieldsMarker } from "../message-fields";
 
 /**
  * SWR backstop for the coord:inbox derive (cache-expensive-tool-reads-2026-06-22 P-008).
@@ -732,7 +733,20 @@ export default defineTool({
       entries as unknown as Array<Record<string, unknown>>,
       all as unknown as Array<Record<string, unknown>>,
     );
-    const boundEntries = boundInboxEntries(annotatedEntries, effectiveCap);
+    const boundEntries = boundInboxEntries(annotatedEntries, effectiveCap).map((entry) => {
+      // P-033 (e): mark which entries carry AUTHORED structure (premises /
+      // forYouBecause / youMayNotKnow / couldNotDetermine / clarify). Derived AFTER
+      // bounding on purpose: bounding truncates only `summary`/`body` and preserves
+      // every other field, so the marker sees the same `sections` either way — while
+      // deriving here guarantees it survives to the returned row.
+      //
+      // The compact marker, not the full projection: this surface budgets its entries
+      // to ~15KB total and scales the per-entry cap DOWN as `limit` rises, so a full
+      // per-section block per row is exactly what that budget exists to prevent.
+      // `coord:read <msg_id>` shows the structure in full.
+      const authored = authoredFieldsMarker(entry);
+      return authored ? { ...entry, authored } : entry;
+    });
 
     return {
       content: [

@@ -161,6 +161,13 @@ export async function setWorkItemCheckpointWithPrior(
      * a non-empty list ⇒ resolve each to a version token and stamp it.
      */
     dependsOn?: readonly string[] | null;
+    /**
+     * EI-19298690705878336: merge the incoming checkpoint against the prior one
+     * INSIDE the store's locked transaction — how `## Checks` rows survive a plain
+     * replace without a racy read-then-write in the caller. Forwarded verbatim to
+     * {@link setCarryNoteWithPrior}; see its `transform` doc for the contract.
+     */
+    transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
   },
 ): Promise<WorkItemCheckpointWithPriorResult> {
   // EI-9013: canonicalize the workspace AT THE SUBSTRATE — a caller that passes
@@ -240,7 +247,12 @@ export async function setWorkItemCheckpointWithPrior(
     checkpoint,
     // Only pass `deps` when the caller spoke — otherwise the substrate preserves
     // the existing declaration (see setCarryNoteWithPrior's `deps` tri-state).
-    { journal: false, guard: opts?.guard, ...(depsSpecified ? { deps: depsPayload } : {}) },
+    {
+      journal: false,
+      guard: opts?.guard,
+      ...(opts?.transform ? { transform: opts.transform } : {}),
+      ...(depsSpecified ? { deps: depsPayload } : {}),
+    },
   );
   // A blocked write is a no-op — never bump the progress anchor for it.
   if (stored !== null && !blockedReason) await bumpCheckpointProgressAnchor(ref, ws);

@@ -32,6 +32,7 @@ import { fetchPresenceFleet } from '../presence-fleet';
 import { readCoordFeed, MAX_FEED_LIMIT } from '../feed';
 import { COORD_ROLES } from '../roles';
 import { boundRowField } from '../../_bound-output';
+import { authoredFieldsMarker } from '../message-fields';
 
 const CATCHUP_DEFAULT_LIMIT = 50;
 const BODY_CAP = 200;
@@ -110,6 +111,15 @@ export default defineTool({
 
     let boundedRows = boundRowField(rows, 'body', BODY_CAP, BODY_BUDGET);
     boundedRows = boundRowField(boundedRows, 'summary', SUMMARY_CAP, SUMMARY_BUDGET);
+    // P-033 (e): mark which rows carry AUTHORED structure. Catch-up is read precisely
+    // when you were ABSENT for the conversation, so "this message rested on premises /
+    // named a question it could not settle" is the signal most worth not losing — but
+    // the rows are budget-bound (a fleet may have been paused a week), so this is the
+    // compact marker; `coord:read <msg_id>` shows it in full.
+    boundedRows = boundedRows.map((row) => {
+      const authored = authoredFieldsMarker(row);
+      return authored ? { ...row, authored } : row;
+    });
 
     return {
       content: [

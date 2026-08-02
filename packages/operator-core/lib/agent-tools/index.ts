@@ -1013,6 +1013,13 @@ import './fleet/leader-brief';
 // catching a bench miss at stage time) instead of a hand-written per-member
 // convention; { list: true } queries who's benched, on what key, staged how.
 import './fleet/bench';
+// fleet:invariant — register a leader's CUSTOM invariant, evaluated on every
+// fleet:leader-brief (fleet-leadership-continuity-and-actuation-2026-08-01
+// P-014): read-only SQL where ROWS RETURNED == VIOLATED, so an ad-hoc check
+// outlives the turn that wrote it instead of dying with it. The built-in
+// alerts are checks somebody thought to build in advance; this is the escape
+// hatch for the one nobody did.
+import './fleet/invariant';
 // fleet:require-checkpoint — leader-initiated FORCED checkpoint that RETURNS
 // whether it landed (fleet-leadership-continuity-and-actuation-2026-08-01 P-012):
 // the answer a leader needs before standing a member down / killing it /

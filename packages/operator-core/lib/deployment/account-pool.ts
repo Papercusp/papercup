@@ -497,6 +497,23 @@ export function recordProbeFailure(pool: AccountPool, id: string, now: number): 
   };
 }
 
+/**
+ * How stale the account's observed usage-window reading (`rate.utilizationAt`) is, RIGHT NOW —
+ * the freshness verdict `accounts:status` surfaces per row so a caller can tell "measured a moment
+ * ago" apart from "never measured" / "measured a long time ago" instead of trusting a bare
+ * `available`/`usageWalled` boolean at face value (EI-18809949582687481). Pure; shares the same
+ * `DRAIN_UTIL_STALE_MS` window the drain selector itself uses to discount a stale reading.
+ */
+export function accountReadingStatus(
+  account: Pick<ClaudeAccount, 'rate'>,
+  now: number,
+): { readingStatus: 'never-observed' | 'stale' | 'fresh'; readingAgeMs?: number } {
+  const at = account.rate.utilizationAt;
+  if (at === undefined) return { readingStatus: 'never-observed' };
+  const readingAgeMs = Math.max(0, now - at);
+  return { readingStatus: readingAgeMs > DRAIN_UTIL_STALE_MS ? 'stale' : 'fresh', readingAgeMs };
+}
+
 /** Is the account usable right now (not currently paused)? */
 export function isAvailable(account: ClaudeAccount, now: number): boolean {
   // Tolerate a partially-hydrated row (e.g. a hand-written pool JSON with `rate: {}`): a MISSING

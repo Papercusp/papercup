@@ -293,6 +293,15 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:pr-poll': { spend: 'none', why: 'Polls GitHub for PR state' },
   'system:cargo-test': { spend: 'none', why: 'Runs the Rust test suite' },
   'system:gate-watcher-tick': { spend: 'none', why: 'Reads gate state' },
+  'system:fleet-transition-sweep': {
+    spend: 'none',
+    // Verified against fleet-transition-sweep-action.ts before classifying: it
+    // gathers observations through the same path fleet:assignments uses
+    // (groupByAgent → the wakeability oracle → context-pressure buckets) and
+    // diffs them against the previous snapshot. No spawn, no session wake, no
+    // dispatch, and no DB writes — a pure observer, so a fire cannot bill turns.
+    why: 'Reads fleet assignments + wakeability to detect member transitions — observer only, no wake/spawn/dispatch',
+  },
   'system:gate-canary-sweep': { spend: 'none', why: 'Sweeps stale gate canaries' },
   'system:autoloop-release-readiness-monitor': { spend: 'none', why: 'Reads release-readiness state' },
   'system:doc-anchor-reconcile': { spend: 'none', why: 'Reconciles doc anchors against HEAD (sha compare)' },

@@ -32,10 +32,10 @@ import {
   accountFull,
   accountProvider,
   accountsForProvider,
+  accountReadingStatus,
   bindAccount,
   clearSoftPin,
   DRAIN_FULL_UTIL,
-  DRAIN_UTIL_STALE_MS,
   decideScaleOut,
   effectiveDrainUtil,
   getAccount,
@@ -642,9 +642,7 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
   const gatewayStats =
     deps.gatewayStats !== undefined ? deps.gatewayStats : await fetchGatewayStatsRaw({ timeoutMs: 500 });
   return pool.accounts.map((a) => {
-    const readingAgeMs = a.rate.utilizationAt !== undefined ? Math.max(0, now - a.rate.utilizationAt) : undefined;
-    const readingStatus: AccountStatusRow['readingStatus'] =
-      readingAgeMs === undefined ? 'never-observed' : readingAgeMs > DRAIN_UTIL_STALE_MS ? 'stale' : 'fresh';
+    const { readingStatus, readingAgeMs } = accountReadingStatus(a, now);
     return {
       id: a.id,
       provider: accountProvider(a),

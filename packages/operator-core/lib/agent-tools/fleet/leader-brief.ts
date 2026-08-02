@@ -72,6 +72,7 @@ import {
   type UnownedCriticalCandidate,
   type OrphanedInFlightCandidate,
 } from '../../harness/improvements/unowned-critical-escalation';
+import type { InvariantEvaluation } from './invariants';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import type { TimeoutBehavior } from '../../events/await/types';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -1221,6 +1222,30 @@ export default defineTool({
     } catch {
       /* best-effort — never block the brief on a spec-effect preview failure */
     }
+    // P-014: leader-REGISTERED custom invariants, evaluated here alongside the
+    // built-in alerts above. The built-ins are checks somebody thought to build in
+    // advance; this is where a leader's own ad-hoc check lives instead of dying with
+    // the turn that wrote it. Same best-effort discipline as the preview above — and
+    // internally each invariant is isolated too, so one bad registry entry reports
+    // itself as errored rather than costing the leader the rest of the brief.
+    let customInvariants: InvariantEvaluation[] | undefined;
+    let customInvariantAlert: { reason: string } | undefined;
+    try {
+      const { listFleetInvariants, evaluateFleetInvariants, computeCustomInvariantAlert } =
+        await import('./invariants');
+      const registered = await listFleetInvariants({ workspaceId, fleetSlug: fleet });
+      if (registered.length > 0) {
+        const evaluations = await evaluateFleetInvariants({
+          invariants: registered,
+          workspaceId,
+          fleetSlug: fleet,
+        });
+        customInvariants = evaluations;
+        customInvariantAlert = computeCustomInvariantAlert(evaluations);
+      }
+    } catch {
+      /* best-effort — never block the brief on the custom-invariant registry */
+    }
     return {
       data: {
         ok: true,
@@ -1231,6 +1256,7 @@ export default defineTool({
           specStarvedAlert: specStarvedAlert != null,
           idleWithClaimableAlert: idleWithClaimableAlert != null,
           floorStarvedAlert: floorStarvedAlert != null,
+          ...(customInvariants ? { customInvariantAlert: customInvariantAlert != null } : {}),
         },
         members: markedMembers,
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
@@ -1252,6 +1278,12 @@ export default defineTool({
           ? { idleWithClaimableAlertReason: idleWithClaimableAlert.reason }
           : {}),
         ...(floorStarvedAlert ? { floorStarvedAlertReason: floorStarvedAlert.reason } : {}),
+        // P-014: always carried when ANY invariant is registered — including the
+        // all-satisfied case. A leader must be able to tell "my checks ran and found
+        // nothing" from "my checks are not running", which a reason-only field cannot
+        // express (that is the same false-clean shape the invariants exist to catch).
+        ...(customInvariants ? { customInvariants } : {}),
+        ...(customInvariantAlert ? { customInvariantAlertReason: customInvariantAlert.reason } : {}),
         // EI-18703234178947959: the owner's own stated pause reason, verbatim, so the
         // leader reads WHY the fleet is standing down without a second registry lookup.
         ...(fleetPause.paused && fleetPause.reason

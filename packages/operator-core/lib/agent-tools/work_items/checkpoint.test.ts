@@ -643,4 +643,141 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(out.results[0].error).toContain('shrink_blocked');
     });
   });
+
+  /**
+   * EI-19298690705878336 — verified-vs-asserted marking on the work-item checkpoint.
+   *
+   * The gap: a checkpoint could carry a confident factual claim with nothing marking
+   * whether it had been CHECKED, and it re-injects on every later invocation of the
+   * item in the author's own voice — so a wrong claim reads as better-established each
+   * time rather than more suspect. It matters more here than on the loop note, because
+   * a work-item checkpoint is what an unrelated SUCCESSOR inherits.
+   *
+   * These drive the REAL merge: the store mock applies the `transform` the tool passes,
+   * mirroring setCarryNoteWithPrior's own post-transform handling (trim; blank ⇒ null),
+   * so the rows go through genuine render → parse → re-render round-trips.
+   */
+  describe('checks (verified-vs-asserted marking)', () => {
+    const withPrior = (priorNote: string | null) => {
+      setWorkItemCheckpointWithPrior.mockImplementation(
+        async (
+          _ref: unknown,
+          cp: string | null | undefined,
+          opts?: { transform?: (p: string | null, n: string | null | undefined) => string | null | undefined },
+        ) => {
+          const effective = opts?.transform ? opts.transform(priorNote, cp) : cp;
+          const trimmed = (effective ?? '').trim();
+          return { stored: trimmed.length > 0 ? trimmed : null, priorLength: (priorNote ?? '').length };
+        },
+      );
+    };
+    const lastStored = async (): Promise<string | null> =>
+      ((await setWorkItemCheckpointWithPrior.mock.results.at(-1)!.value) as { stored: string | null }).stored;
+
+    beforeEach(() => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    });
+
+    it('renders ✓ for a claim WITH evidence and ? for one without — the whole point of the field', async () => {
+      withPrior(null);
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'mid-refactor',
+        checks: [
+          { claim: 'gate is green', recheck: 'npm run test:file -- x.test.ts', verified: 'ran 21:30Z, 24/24 pass' },
+          { claim: 'the deploy will pick this up', recheck: 'dev:pipeline_position { path }' },
+        ],
+      });
+      expect(r.ok).toBe(true);
+      const stored = await lastStored();
+      expect(stored).toContain('## Checks');
+      // VERIFIED carries its evidence; PREDICTED carries only its probe.
+      expect(stored).toContain('- ✓ gate is green');
+      expect(stored).toContain('evidence: ran 21:30Z, 24/24 pass');
+      expect(stored).toContain('- ? the deploy will pick this up');
+      // The count is read back off what was STORED, not off the input.
+      expect(r.checks).toBe(2);
+    });
+
+    it('CARRIES ROWS FORWARD across a plain replace that drops the body — the silent-drop guard', async () => {
+      // A rewrite that does not re-state the checks must not lose them: that silent
+      // drop is exactly how a claim outlives the probe that would falsify it.
+      withPrior(null);
+      await one({ id: 'WI-7', checkpoint: 'first body', checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }] });
+      const prior = await lastStored();
+      expect(prior).toContain('- ✓ X holds');
+
+      withPrior(prior);
+      const r2 = await one({ id: 'WI-7', checkpoint: 'second body, fully rewritten' });
+      const stored2 = await lastStored();
+      expect(stored2).toContain('second body, fully rewritten');
+      expect(stored2).not.toContain('first body');
+      expect(stored2).toContain('- ✓ X holds');
+      expect(r2.checks).toBe(1);
+    });
+
+    it('checks:[] clears the rows explicitly', async () => {
+      withPrior(null);
+      await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'X holds', recheck: 'probe X' }] });
+      const prior = await lastStored();
+
+      withPrior(prior);
+      const r = await one({ id: 'WI-7', checkpoint: 'body', checks: [] });
+      const stored = await lastStored();
+      expect(stored).not.toContain('## Checks');
+      expect(stored).not.toContain('X holds');
+      expect(r.checks).toBe(0);
+    });
+
+    it('a CLEAR wipes the rows too, so completion cleanup cannot resurrect a checks-only checkpoint', async () => {
+      // Deliberate divergence from loop:checkpoint, where checks survive a note clear.
+      // work_items:complete clears the checkpoint as terminal cleanup; rows surviving
+      // that would leave a closed item carrying a checkpoint made only of checks.
+      withPrior(null);
+      await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }] });
+      const prior = await lastStored();
+
+      withPrior(prior);
+      const r = await one({ id: 'WI-7', checkpoint: '' });
+      expect(r.ok).toBe(true);
+      expect(r.cleared).toBe(true);
+      expect(await lastStored()).toBeNull();
+      expect(r.checks).toBe(0);
+    });
+
+    it('append mode folds the prior note WITHOUT emitting a second ## Checks section', async () => {
+      // append joins the whole prior note — rendered Checks section and all — so the
+      // transform has to strip it before re-attaching, or the note grows one section
+      // per append and the parse becomes ambiguous.
+      withPrior(null);
+      await one({ id: 'WI-7', checkpoint: 'first', checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }] });
+      const prior = await lastStored();
+
+      getWorkItemCheckpoint.mockResolvedValue(prior);
+      withPrior(prior);
+      const r = await one({ id: 'WI-7', checkpoint: 'an addendum', append: true });
+      const stored = await lastStored();
+      expect(stored!.match(/## Checks/g) ?? []).toHaveLength(1);
+      expect(stored).toContain('first');
+      expect(stored).toContain('an addendum');
+      expect(stored).toContain('- ✓ X holds');
+      expect(r.checks).toBe(1);
+    });
+
+    it('re-stating a carried claim WITH evidence promotes it from ? to ✓', async () => {
+      // The intended lifecycle: carry a prediction, then upgrade it once you actually
+      // ran the probe — rather than leaving a stale prediction reading as established.
+      withPrior(null);
+      await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'X holds', recheck: 'probe X' }] });
+      const prior = await lastStored();
+      expect(prior).toContain('- ? X holds');
+
+      withPrior(prior);
+      await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'ran probe X at 21:40Z' }] });
+      const stored = await lastStored();
+      expect(stored).toContain('- ✓ X holds');
+      expect(stored).not.toContain('- ? X holds');
+      expect(stored).toContain('evidence: ran probe X at 21:40Z');
+    });
+  });
 });
