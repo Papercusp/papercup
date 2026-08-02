@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { collectExportedRequiredProps, diffRequiredAdditions } from '../../../../scripts/check-required-field-strands.mjs';
+import { collectExportedRequiredProps, diffRequiredAdditions, formatNoFindings } from '../../../../scripts/check-required-field-strands.mjs';
 
 const BEFORE = `
 export interface IssueClaimExclusionBreakdown {
@@ -121,5 +121,46 @@ describe('diffRequiredAdditions', () => {
       `export interface A { w?: { p: number; q: number; }; }`,
     );
     expect(added).toEqual([{ path: 'A.w.q', reason: 'added-required' }]);
+  });
+});
+
+/**
+ * The check is only as good as its NEGATIVE verdict, and on this tree that verdict
+ * used to be unfalsifiable. git-sync commits the whole shared tree on a schedule, so
+ * minutes after you edit, working-tree == HEAD and the default `--base HEAD` diff is
+ * EMPTY — the scan then examines zero files and printed the same green as a real pass.
+ *
+ * Measured 2026-08-02: `npm run lint:required-field-strands` reported "no required
+ * fields added" for a change that HAD added required field `ServeProgress.bytesIn`
+ * (serve-wiring.ts). Re-running with `--base <introducing-commit>^` flagged it
+ * correctly. Same "checked nothing, rendered as clean" class as the `tsc -p .`
+ * zero-file trap.
+ */
+describe('formatNoFindings — "examined nothing" must never read as "clean"', () => {
+  it('does NOT claim a clean bill when zero files were examined', () => {
+    const msg = formatNoFindings(0, 'HEAD');
+    expect(msg).toContain('NOT CHECKED');
+    expect(msg).toContain('ZERO files');
+    // The specific misreading this exists to prevent.
+    expect(msg).not.toMatch(/^✓/m);
+  });
+
+  it('names git-sync as the likely cause and gives a runnable recovery', () => {
+    const msg = formatNoFindings(0, 'HEAD');
+    expect(msg).toContain('git-sync');
+    expect(msg).toContain('--base');
+  });
+
+  it('passes cleanly when files WERE examined, and says how many', () => {
+    const msg = formatNoFindings(3, 'HEAD~1');
+    expect(msg).toMatch(/^✓/);
+    // Naming the count is what makes the green falsifiable at a glance.
+    expect(msg).toContain('3 changed file(s) examined');
+    expect(msg).toContain('HEAD~1');
+    expect(msg).not.toContain('NOT CHECKED');
+  });
+
+  it('reports the base it actually used, so a wrong --base is visible in the verdict', () => {
+    expect(formatNoFindings(2, 'abc123^')).toContain('abc123^');
   });
 });

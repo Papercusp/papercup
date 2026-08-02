@@ -177,7 +177,7 @@ export default defineTool({
   guidance: {
     when: 'Use for an su/interactive session that should keep advancing a goal on a recurring cadence. Arm it last before ending your turn. Pass ownerId only to arm an already-running, wake-reachable session other than your own.',
     notWhen:
-      'Not for wall-clock schedules (plans:set-schedule), one-off wakes (events:await), or autonomous queen/bee/scout loops (pot:declare-wake / kettle:declare-wake). Do not use Claude /loop instead.',
+      'Not for wall-clock schedules (plans:set-schedule) or autonomous queen/bee/scout loops (pot:declare-wake / kettle:declare-wake). Do not use Claude /loop instead. Not the PRIMARY watcher when the thing you watch already emits — park on it with events:await and keep the loop as the slow backstop.',
     chaining:
       'loop:arm { intervalSec, goal } → end turn → re-wakes each iteration → loop:status to inspect → loop:end to stop.',
     seeAlso: [
@@ -533,7 +533,29 @@ export default defineTool({
         : args.carry == null && carry === 'cold'
           ? ' ❄️ Defaulted to COLD carry (headless/unattended): each wake RESETS this session to its carry-note instead of re-waking warm, so keep loop:checkpoint { did, left, insight, next } fresh every wake. Pass carry:"warm" to override.'
           : '';
-    const note = baseNote + overwriteNoteText + claimNote + warningNote + coldDefaultNote;
+    // EI-19326580626849271 — invert the monitor-loop default toward PUSH.
+    //
+    // P-009 shipped fleet-transition events so a leader could react to pushes
+    // instead of polling, and adoption was ~zero: 1 deliberate await in 48h
+    // across 310 agents, while gate events (release:*, green-checkpoint:*) got
+    // 66 across 11 agents. The mechanism was never the problem — the keys are
+    // catalogued and events:await works. The problem is that nothing offers
+    // them at the one moment a leader decides HOW to watch, and this tool's
+    // own notWhen actively wrote events:await off as "one-off wakes".
+    //
+    // mode:'monitor' IS that moment, declared by the caller: a loop that
+    // WATCHES rather than works. So name the push path here, with real keys.
+    // Deliberately a runtime note rather than more guidance prose: it costs no
+    // prompt weight, fires only for monitor loops, and arrives with the keys
+    // already spelled out — static guidance is read before the decision, this
+    // is read during it. The clock loop stays armed either way; this argues
+    // for demoting it to a backstop, never refuses it.
+    const monitorPushNote =
+      args.mode === 'monitor'
+        ? ' 📡 Monitor loop armed — but prefer PUSH wherever the thing you are watching already emits. A fleet leader can park on fleet:member-dead · fleet:claim-released · fleet:item-completed · fleet:context-critical via events:await { event, timeout_sec, on_timeout:"wake" }, which wakes you ON the transition instead of N times between transitions. Keep THIS loop as the slow backstop (a longer intervalSec) rather than the primary watcher. events:catalog lists the full set.'
+        : '';
+    const note =
+      baseNote + overwriteNoteText + claimNote + warningNote + coldDefaultNote + monitorPushNote;
 
     return {
       content: [

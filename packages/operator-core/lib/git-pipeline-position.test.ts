@@ -686,6 +686,30 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(leg?.unknown.code).toBe('not-applicable');
       expect(res.changeInCandidate.judgingSha).toBeNull();
     });
+
+    /**
+     * WI-6485 — the asymmetry the WI reported: the sha-only-probe leg above and the
+     * submodule leg both already hoist `changeInCandidate.judgingSha` as
+     * `not-applicable` when it's null for an explainable reason. The ORDINARY path
+     * branch (a real path, no submodule) did not, even though "no checkpoint run is
+     * in flight right now" is the exact same kind of explainable, enumerable null —
+     * so `state:read { cell:'gate.greenCheckpoint.candidate' }` read it as a
+     * measured, confident `value:null` via the CellHoist contract. A REAL path with
+     * no `resolveGateCandidates` override falls through to the unmocked resolver,
+     * which fails safely to `{judgingSha:null, nextCandidateSha:null}` in this
+     * sandboxed test environment (no real checkout to probe) — i.e. exactly "no
+     * checkpoint run is in flight", the case this fix hoists.
+     */
+    it('hoists changeInCandidate.judgingSha as not-applicable for an ORDINARY path too, when no run is in flight (WI-6485)', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'apps/operator/app/x.ts' },
+        { git: measuring(), loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      const leg = res.verdictUnknown.find((v) => v.leg === 'changeInCandidate.judgingSha');
+      expect(leg?.unknown.code).toBe('not-applicable');
+      expect(leg?.unknown.detail).toMatch(/no checkpoint run is in flight/);
+      expect(res.changeInCandidate.judgingSha).toBeNull();
+    });
   });
 
   // EI-18694888339365359: the local origin/staging remote-tracking ref lagged

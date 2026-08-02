@@ -116,6 +116,39 @@ function workspaceFor(file) {
   return WORKSPACE_TYPECHECKS.find((w) => file.startsWith(w.prefix)) ?? null;
 }
 
+/**
+ * The no-findings verdict, as text.
+ *
+ * Exported as a seam because the DISTINCTION it draws is the entire value of the
+ * check: "examined N files, found nothing" is a clean bill, while "examined ZERO
+ * files" is not a result at all. Rendering the two identically is the same failure
+ * class as `tsc -p .` typechecking zero files and reading as a pass — and on THIS
+ * tree it is the common case rather than an edge one, because git-sync commits the
+ * whole tree on a schedule, so a few minutes after you edit, working-tree == HEAD
+ * and the default `--base HEAD` diff is empty.
+ *
+ * Measured 2026-08-02: this printed a green for a change that HAD added required
+ * field `ServeProgress.bytesIn`, purely because git-sync had already swept it.
+ */
+export function formatNoFindings(changedFileCount, base) {
+  if (changedFileCount > 0) {
+    // Naming the count is what makes a green unfalsifiable: a reader can see at a
+    // glance whether the check actually looked at anything.
+    return `✓ no required fields added to exported types (${changedFileCount} changed file(s) examined vs ${base})`;
+  }
+  return [
+    `⚠ NOT CHECKED — nothing differs from '${base}', so ZERO files were examined.`,
+    '  This is NOT a clean bill. On this shared tree it usually means git-sync',
+    '  already committed your edit, not that you changed nothing.',
+    '',
+    '  Re-run against the commit that actually carried your change:',
+    "    C=$(git log -1 --format=%H -S'<a string your change introduced>' -- <file>)",
+    '    node scripts/check-required-field-strands.mjs --base "$C^"',
+    '',
+    '  (Use -G instead of -S when searching by a name you did not introduce.)',
+  ].join('\n');
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const json = argv.includes('--json');
@@ -153,28 +186,7 @@ function main() {
   if (json) console.log(JSON.stringify({ base, findings }, null, 2));
 
   if (!findings.length) {
-    if (!json) {
-      // "Checked nothing" must never render as "clean" — the same failure class as
-      // `tsc -p .` typechecking zero files and reading as a pass. On THIS tree it is
-      // the common case, not an edge one: git-sync commits the whole tree on a
-      // schedule, so a few minutes after you edit, working-tree == HEAD and the
-      // default `--base HEAD` diff is empty. Measured 2026-08-02 — this printed a
-      // green for a change that HAD added required field `ServeProgress.bytesIn`.
-      if (!changedFiles.length) {
-        console.log(`⚠ NOT CHECKED — nothing differs from '${base}', so ZERO files were examined.`);
-        console.log('  This is NOT a clean bill. On this shared tree it usually means git-sync');
-        console.log('  already committed your edit, not that you changed nothing.\n');
-        console.log('  Re-run against the commit that actually carried your change:');
-        console.log("    C=$(git log -1 --format=%H -S'<a string your change introduced>' -- <file>)");
-        console.log('    node scripts/check-required-field-strands.mjs --base "$C^"\n');
-        console.log('  (Use -G instead of -S when searching by a name you did not introduce.)');
-      } else {
-        console.log(
-          `✓ no required fields added to exported types ` +
-            `(${changedFiles.length} changed file(s) examined vs ${base})`,
-        );
-      }
-    }
+    if (!json) console.log(formatNoFindings(changedFiles.length, base));
     process.exit(0);
   }
 

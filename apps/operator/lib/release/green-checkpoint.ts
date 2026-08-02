@@ -966,7 +966,18 @@ export interface RedTriage {
   /** Re-fire the gate on the newer tip? Only ever true for `stale-candidate`, and
    *  only while under the attempt cap — a re-fire storm is worse than a held gate. */
   autoRefire: boolean;
-  detail: string;
+  /** EI-19343532231631821: does this refire CONSUME a slot of the CHARGED budget
+   *  (`refireAttempts`/`maxRefires`)? True only when this pass's failing set OVERLAPS the set
+   *  the run was already rescuing — i.e. the previous rescue FAILED. A refire whose failures are
+   *  DISJOINT from the rescued set is a SUCCESSFUL rescue that merely inherited fresh tree churn
+   *  from the newer cut, and is not charged. See `classifyRedAgainstTip` for the full rationale. */
+  chargeRefire: boolean;
+  /** When a stale-candidate red does NOT auto-refire, WHICH bound stopped it. The distinction is
+   *  the operator's action: `charged-budget` = the same breakage survived N rescues, so the tip is
+   *  genuinely broken and a human is needed; `absolute-ceiling`/`deadline` = every individual red
+   *  was rescued but the tree was never simultaneously green inside one run window, so the answer
+   *  is to slow the tree or widen the window, NOT to debug the last-named files. */
+  refireBlockedBy: 'cap-disabled' | 'charged-budget' | 'absolute-ceiling' | 'deadline' | null;
 }
 
 /** Bounded auto-refire cap; 0 disables auto-refire entirely. Default 2 — enough to
