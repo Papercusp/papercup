@@ -170,6 +170,43 @@ describe('suggestProjects — a refusal has to be actionable', () => {
     expect(nested).toBeGreaterThan(flags);
   });
 
+  it('RANKS projects sharing the requested path prefix first (EI-19302566985147894)', () => {
+    // Widening the scan alone fixed nothing on the real tree: the cap is filled
+    // by depth-1 projects long before a nested one is reached, so the caller's
+    // own operand has to rank the list. Verified live, not just here.
+    const suggestions = suggestProjects(root, 'libs/submodule/libs/db');
+    expect(suggestions[0]).toBe('libs/submodule/libs/db/tsconfig.json');
+  });
+
+  it('surfaces sibling projects of a requested path that has no tsconfig of its own', () => {
+    // The real case: an agent edits libs/papercusp/packages/<x>, asks to
+    // typecheck it, and needs to be shown the projects that DO exist nearby.
+    const suggestions = suggestProjects(root, 'libs/submodule/packages/nothing-here');
+    expect(suggestions.some((s) => s.startsWith('libs/submodule/'))).toBe(true);
+  });
+
+  it('matches whole path SEGMENTS, so a prefix-of-a-name is not treated as related', () => {
+    // 'libs/sub' must not rank libs/submodule/** — that would promote a typo
+    // above genuinely-related neighbours.
+    const suggestions = suggestProjects(root, 'libs/sub');
+    expect(suggestions).toEqual(suggestProjects(root));
+  });
+
+  it('falls back to the generic interleaved list when the operand relates to nothing', () => {
+    // `-p .` is the single most common mistake; it must still get the full list.
+    expect(suggestProjects(root, '.')).toEqual(suggestProjects(root));
+    expect(suggestProjects(root, 'tsconfig.json')).toEqual(suggestProjects(root));
+  });
+
+  it('still caps the list once related projects are prepended', () => {
+    expect(suggestProjects(root, 'libs/submodule/libs/db').length).toBeLessThanOrEqual(12);
+  });
+
+  it('never repeats a project that is both related and generically ranked', () => {
+    const suggestions = suggestProjects(root, 'libs/flags');
+    expect(new Set(suggestions).size).toBe(suggestions.length);
+  });
+
   it('returns an empty list rather than throwing when no bucket exists', () => {
     const bare = mkdtempSync(join(tmpdir(), 'p024-bare-'));
     try {

@@ -115,7 +115,7 @@ const SUGGEST_PRUNE = new Set(['node_modules', 'dist', 'build', 'coverage', '.gi
  * path under `libs/papercusp/**` at all, and reasonably read that as "this tree
  * cannot be typechecked" rather than "the suggester cannot see this far down".
  */
-const SUGGEST_MAX_DEPTH = 1;
+const SUGGEST_MAX_DEPTH = 3;
 
 interface FoundProject {
   /** repo-relative path to the tsconfig.json */
@@ -226,8 +226,16 @@ export function resolveProjectPath(root: string, project: string): string | null
  * an agent who meant `apps/operator-vite` was handed twelve suggestions with not
  * one `apps/` entry among them — a list that is technically correct and
  * practically useless. Caught by live verification, not by the unit suite.
+ *
+ * `requested` — the operand that just failed — RANKS the list. Without it the
+ * cap is the whole problem again in a new place (EI-19302566985147894): widening
+ * the scan to find nested projects changed nothing on the real tree, because the
+ * 12 slots are filled by depth-1 projects long before any `libs/papercusp/**`
+ * entry is reached. A generic list cannot help someone who asked for a specific
+ * path; the projects sharing that path's prefix are the only ones they plausibly
+ * meant, so those go first. Verified against the live repo, not just fixtures.
  */
-export function suggestProjects(root: string): string[] {
+export function suggestProjects(root: string, requested?: string): string[] {
   const byBucket: string[][] = [];
   for (const bucket of SUGGEST_ROOTS) {
     const dir = resolve(root, bucket);
@@ -252,7 +260,39 @@ export function suggestProjects(root: string): string[] {
     }
     if (interleaved.length === before) break; // every bucket exhausted
   }
-  return interleaved;
+
+  const related = requested ? relatedProjects(byBucket, requested) : [];
+  if (related.length === 0) return interleaved;
+  // Related first, then the generic list fills whatever cap remains. Dedupe so a
+  // project that is both related and generically-ranked appears once.
+  const ordered = [...related];
+  for (const p of interleaved) {
+    if (ordered.length >= MAX_SUGGESTIONS) break;
+    if (!ordered.includes(p)) ordered.push(p);
+  }
+  return ordered.slice(0, MAX_SUGGESTIONS);
+}
+
+/**
+ * Projects whose path shares a leading directory prefix with what the caller
+ * asked for, most-specific first. Matching on whole path SEGMENTS (not raw
+ * characters) is deliberate: `libs/pap` must not look like a partial match for
+ * `libs/papercusp`, or a typo would rank above a real neighbour.
+ */
+function relatedProjects(byBucket: string[][], requested: string): string[] {
+  const wanted = requested.replace(/\\/g, '/').replace(/\/?(tsconfig\.json)?\/*$/, '').split('/').filter(Boolean);
+  if (wanted.length === 0) return [];
+  const scored: { path: string; shared: number }[] = [];
+  for (const bucket of byBucket) {
+    for (const path of bucket) {
+      const segs = path.split('/').slice(0, -1); // drop the trailing tsconfig.json
+      let shared = 0;
+      while (shared < segs.length && shared < wanted.length && segs[shared] === wanted[shared]) shared += 1;
+      if (shared > 0) scored.push({ path, shared });
+    }
+  }
+  scored.sort((a, b) => b.shared - a.shared || a.path.localeCompare(b.path));
+  return scored.slice(0, MAX_SUGGESTIONS).map((s) => s.path);
 }
 
 /**
@@ -402,7 +442,7 @@ export default defineTool({
             (existsSync(resolve(root, 'tsconfig.base.json')) && /^\.?$|^tsconfig\.json$/.test(args.project)
               ? ' The repo root has only tsconfig.base.json (a shared base, not a project), which is why `-p .` and `-p tsconfig.json` check nothing here.'
               : ''),
-          availableProjects: suggestProjects(root),
+          availableProjects: suggestProjects(root, args.project),
         },
       };
     }
@@ -512,7 +552,7 @@ export default defineTool({
           code: noInput.code,
           durationMs,
           message: `${noInput.code}: ${noInput.message} — zero files were typechecked, so this is NOT a clean result.`,
-          availableProjects: suggestProjects(root),
+          availableProjects: suggestProjects(root, args.project),
         },
       };
     }

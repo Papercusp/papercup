@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runFullTextSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
-import { rerankProseHits } from './rerank';
+import { rerankCandidateCount, rerankProseHits } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { resolveAgentIdentity } from '../coordination/identity';
 
@@ -91,7 +91,9 @@ export default defineTool({
       query: args.query,
       workspaceId: ctx.workspaceId ?? '',
       scopeFilter: args.harness_slug ?? null,
-      limit,
+      // Stage B over-fetch — see the note in semantic.ts. `rerankProseHits`
+      // slices back to `limit`, including on the passthrough path.
+      limit: rerankCandidateCount(limit),
       filters,
       log: ctx.log,
     });

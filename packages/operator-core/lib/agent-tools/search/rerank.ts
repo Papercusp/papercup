@@ -25,6 +25,40 @@
 
 import type { SearchHit } from '@papercusp/search';
 
+/**
+ * Over-fetch factor: how many candidates to RETRIEVE per requested result.
+ *
+ * A reranker can only reorder what retrieval handed it, so reranking an
+ * already-sliced page is nearly pointless — it can shuffle the page but can
+ * never pull a buried hit INTO it. Retrieving `limit * RERANK_OVERFETCH` and
+ * letting the reranker choose the final `limit` is what makes Stage B worth
+ * paying for at all.
+ */
+export const RERANK_OVERFETCH = 4;
+
+/**
+ * Hard ceiling on candidates scored per query.
+ *
+ * MEASURED (P-001 spike, 2026-08-01, gte-reranker-modernbert-base @ q8, pinned
+ * to 4 cores): ~45ms per query/document pair, and it does NOT improve with more
+ * cores (4 pinned cores matched a 128-core box under load 136). So cost is
+ * linear in candidates with no parallelism escape hatch, and the cap — not the
+ * multiplier — is what bounds worst-case latency.
+ *
+ * Both prose search tools default to `limit` 5 (max 20). Without a cap, a
+ * `limit: 20` call would rerank 80 pairs ≈ 3.6s. At 24 the worst case is
+ * ≈ 1.1s while the common `limit: 5` path still gets a full 4× pool.
+ */
+export const RERANK_MAX_CANDIDATES = 24;
+
+/**
+ * How many hits to RETRIEVE so the reranker has a real pool to choose from.
+ * Never returns fewer than `limit` (an over-fetch must never under-fetch).
+ */
+export function rerankCandidateCount(limit: number): number {
+  return Math.max(limit, Math.min(limit * RERANK_OVERFETCH, RERANK_MAX_CANDIDATES));
+}
+
 /** Read the rerank key from operator_credentials, falling back to the env var. */
 async function rerankApiKey(): Promise<string | undefined> {
   try {
@@ -42,10 +76,10 @@ async function rerankApiKey(): Promise<string | undefined> {
  * relevance order, sliced to `limit`. Pure passthrough when no key is
  * configured (the RRF order, sliced to `limit`).
  *
- * `hits` is the already-fused/sliced page from `@papercusp/search`; this
- * reorders it. (Over-fetching a larger candidate pool so the reranker can pull
- * a buried hit *into* the page is the natural next step once a key exists and a
- * golden-set eval justifies it — see the adoption plan.)
+ * `hits` is the OVER-FETCHED candidate pool from `@papercusp/search` — size the
+ * retrieval call with `rerankCandidateCount(limit)`, not `limit`. This reorders
+ * that pool and slices to `limit`, so the reranker can pull a buried hit INTO
+ * the page instead of only shuffling a page retrieval already chose.
  */
 export async function rerankProseHits(
   query: string,

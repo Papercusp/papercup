@@ -23,7 +23,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { runFullTextSearch, runHybridSearch, type SearchHit } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../../../agent-tools/search/sources';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../../../agent-tools/search/embedder';
-import { rerankProseHits } from '../../../agent-tools/search/rerank';
+import { rerankCandidateCount, rerankProseHits } from '../../../agent-tools/search/rerank';
 
 interface ProseHit {
   source: string;
@@ -58,7 +58,10 @@ async function searchProse(q: string, mode: 'bm25' | 'hybrid', limit: number): P
     workspaceId: activeWorkspaceId(),
     harnessFilter: null,
     scopeFilter: null,
-    limit,
+    // Stage B over-fetch — see the note in agent-tools/search/semantic.ts.
+    // This route's `limit` reaches 20, so the RERANK_MAX_CANDIDATES cap (not
+    // the 4x multiplier) is what bounds it here.
+    limit: rerankCandidateCount(limit),
   };
   let results: SearchHit[];
   if (mode === 'hybrid') {

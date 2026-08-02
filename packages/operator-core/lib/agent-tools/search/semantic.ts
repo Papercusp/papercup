@@ -18,7 +18,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHybridSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from './embedder';
-import { rerankProseHits } from './rerank';
+import { rerankCandidateCount, rerankProseHits } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { resolveAgentIdentity } from '../coordination/identity';
 
@@ -100,7 +100,11 @@ export default defineTool({
       query: args.query,
       workspaceId: ctx.workspaceId ?? '',
       scopeFilter: args.harness_slug ?? null,
-      limit,
+      // Stage B over-fetch: retrieve a larger pool than we return so the
+      // reranker can pull a buried hit INTO the page. `rerankProseHits` slices
+      // back to `limit`, so the caller-visible page size is unchanged — and it
+      // still slices correctly when reranking is unavailable (passthrough).
+      limit: rerankCandidateCount(limit),
       mode,
       embedder,
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),

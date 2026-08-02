@@ -630,8 +630,15 @@ export default function AdvOverviewTab() {
     args: {},
     staleTime: 30_000,
   });
-  // No `args` key — matches the sidebar AccountsTab's own subscription exactly so
-  // the two share one cache entry (an `args:{}` here would key a second one).
+  // No `args` key — matches the sidebar AccountsTab's own subscription so the two
+  // share one cache entry. (For the record: an explicit `args:{}` would share it
+  // TOO — createUsePollingQuery defaults `args = {}`, so both forms key
+  // ['sync','accounts.pool',{}]. This comment previously claimed `{}` would key a
+  // SECOND entry, which is false and cost a WI-6796 misdiagnosis: it implies a
+  // no-args subscriber is keyed on `undefined` and therefore unreachable by the
+  // `notifySyncInvalidate(name, {})` that 30+ callsites emit. It is reachable.
+  // The real invalidation gotcha is a NON-EMPTY mismatched args — see
+  // /internal/docs/agent-insights/adding-a-sync-query.)
   const accountsQ = useSyncQuery<OverviewAccountRow>({
     queryName: 'accounts.pool',
     staleTime: 30_000,
