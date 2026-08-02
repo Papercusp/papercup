@@ -94,6 +94,30 @@ async function readRefSha(repoPath: string, ref: string, runGit: RunGit): Promis
   return r.code === 0 && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
 }
 
+/**
+ * WI-6996 — every cause that can be persisted in `of_alerted_cause`, so recovery can be
+ * worded for the cause that actually alarmed.
+ *
+ * The `satisfies` clause is the point: this is a RECURRENCE GUARD, not a lookup table.
+ * Recovery used to normalise the stored string with a ternary that defaulted anything
+ * unrecognised to 'origin-behind', so adding a fourth signal (this one) would have
+ * silently announced "GitHub origin has caught back up" when what actually happened was
+ * a publish backlog draining — reintroducing the precise mis-framing WI-6643 existed to
+ * fix, and doing it invisibly. With `satisfies`, adding a member to OriginFreshnessCause
+ * without adding it here is a COMPILE ERROR at this line.
+ */
+const PERSISTED_ALERT_CAUSES = {
+  'publish-refused': true,
+  'publish-backlog': true,
+  'origin-behind': true,
+} as const satisfies Record<OriginFreshnessCause, true>;
+
+/** Narrow a persisted `of_alerted_cause` string back to a known cause (legacy/absent ⇒ the
+ *  original framing, matching WI-6643's treatment of rows that latched pre-key). */
+function normalizeAlertedCause(stored: string | null | undefined): OriginFreshnessCause {
+  return stored != null && stored in PERSISTED_ALERT_CAUSES ? (stored as OriginFreshnessCause) : 'origin-behind';
+}
+
 /** `git -C repoPath rev-list --count from..to` — null on any error (incl. either sha missing). */
 async function revListCount(repoPath: string, from: string, to: string, runGit: RunGit): Promise<number | null> {
   const r = await runGit(['rev-list', '--count', `${from}..${to}`], repoPath);
@@ -311,7 +335,11 @@ export async function checkOriginFreshness(
           of_alerted_cause: string | null;
           of_stall_sweeps: number | null;
           of_publish_refused_sweeps: number | null;
+          of_publish_backlog_sweeps: number | null;
           publish_refused: string | null;
+          publish_drained: string | null;
+          publish_published_sha: string | null;
+          publish_head_sha: string | null;
           egress_head: string | null;
         }[]
       >`
@@ -321,7 +349,11 @@ export async function checkOriginFreshness(
                metadata->>'of_alerted_cause' AS of_alerted_cause,
                COALESCE((metadata->>'of_stall_sweeps')::int, 0) AS of_stall_sweeps,
                COALESCE((metadata->>'of_publish_refused_sweeps')::int, 0) AS of_publish_refused_sweeps,
+               COALESCE((metadata->>'of_publish_backlog_sweeps')::int, 0) AS of_publish_backlog_sweeps,
                metadata->'own_head_publish'->>'refused' AS publish_refused,
+               metadata->'own_head_publish'->>'drained' AS publish_drained,
+               metadata->'own_head_publish'->>'publishedSha' AS publish_published_sha,
+               metadata->'own_head_publish'->>'sha' AS publish_head_sha,
                metadata->'github_bridge'->>'egress_head' AS egress_head
           FROM harness_shared.routines
          WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'
@@ -402,8 +434,45 @@ export async function checkOriginFreshness(
            WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'`;
       }
 
+      // WI-6996: the publish leg's OWN backlog self-report — the signal that catches the
+      // failure the two inferred signals are structurally blind to (canonical frozen ⇒
+      // canonical === origin ⇒ aheadCount exactly 0 ⇒ early-return ok on every sweep).
+      //
+      // ⚠ POLARITY: `drained` is assigned `!resolution.complete`, so the string 'true'
+      // means BACKLOG REMAINS, not "has been drained". Reading the name instead of the
+      // value inverts this detector into one that fires only when the plane is healthy.
+      // A hard refusal / CAS failure records `false` here, which is correct: those are
+      // the refusal signal's job, not this one's, so the two never double-count.
+      const publishHasBacklog = row?.publish_drained === 'true';
+      const prevBacklogSweeps = row?.of_publish_backlog_sweeps ?? 0;
+      const publishBacklogSweeps = publishHasBacklog ? prevBacklogSweeps + 1 : 0;
+      if (publishBacklogSweeps !== prevBacklogSweeps) {
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb)
+                   || jsonb_build_object('of_publish_backlog_sweeps', ${publishBacklogSweeps}::int),
+                 updated_at = now()
+           WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'`;
+      }
+
+      // How far the published head trails the worktree head, for the alarm body only.
+      // Never thresholded: a large backlog that is draining is healthy, a small one that
+      // never moves is not — the SWEEP COUNT is the verdict. revListCount returns null if
+      // either sha is missing from the bare store (the worktree head need not be there).
+      const publishBacklogCommits =
+        publishHasBacklog && row?.publish_published_sha && row?.publish_head_sha
+          ? await revListCount(repoPath, row.publish_published_sha, row.publish_head_sha, runGit)
+          : null;
+
       const verdict = evaluateOriginFreshness(
-        { aheadCount, originTipAgeMs, publishRefusedSweeps, publishRefusalCode },
+        {
+          aheadCount,
+          originTipAgeMs,
+          publishRefusedSweeps,
+          publishRefusalCode,
+          publishBacklogSweeps,
+          publishBacklogCommits,
+        },
         opts,
       );
 
@@ -421,6 +490,7 @@ export async function checkOriginFreshness(
         slug: entry.slug,
         potHomeSlug,
         publishRefusalCode,
+        publishBacklogCommits,
       });
 
       if (verdict.state === 'stale') {
@@ -510,10 +580,7 @@ export async function checkOriginFreshness(
                      - 'of_alerted_cause',
                    updated_at = now()
              WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'`;
-          recoveredForBroadcast.push({
-            slug: entry.slug,
-            cause: alertedCause === 'publish-refused' ? 'publish-refused' : 'origin-behind',
-          });
+          recoveredForBroadcast.push({ slug: entry.slug, cause: normalizeAlertedCause(alertedCause) });
           out.recovered.push(entry.slug);
         } else if (cleared.count > 0) {
           console.warn(

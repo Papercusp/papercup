@@ -2958,7 +2958,16 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     const { sql } = getOrgPg();
     const rows = await sql<
       {
-        worktree_bridge: { lastEventId: number; epochSeq: EpochSeq | null; stagingSha: string | null } | null;
+        worktree_bridge: {
+          lastEventId: number;
+          epochSeq: EpochSeq | null;
+          stagingSha: string | null;
+          /** EI-19332963201820362: consecutive ticks that consumed >=1
+           *  announcement and accepted NONE. Optional — absent on any row
+           *  written before this field existed. */
+          acceptFreeTicks?: number | null;
+          acceptFreeSince?: number | null;
+        } | null;
         integrator: { epoch: number } | null;
       }[]
     >`
@@ -3088,14 +3097,64 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
       }
     }
 
+    // EI-19332963201820362: the acceptance census + the accept-free streak.
+    //
+    // A tick that CONSUMED announcements and ACCEPTED none is the signature of
+    // a bridge whose cursor is draining the announcement log while its
+    // watermark stands still. One such tick is ordinary (a stale or replayed
+    // envelope); a STEADY STATE of them is never healthy, and it is exactly
+    // what hid a ~6h canonical-staging freeze on 2026-08-02 (85 commits with
+    // no off-box copy) behind `last_status: 'synced'`, a null `last_error`,
+    // and a `worktree_bridge.at` advancing every tick. Terminal rejections
+    // ('non-fast-forward' for every announcement, because the namespace head
+    // trailed the accepted watermark) skip-and-continue and logged NOTHING,
+    // so no surface anywhere could distinguish it from a healthy idle bridge.
+    const consumed = outcome.results.length;
+    const consumedNoneAccepted = consumed > 0 && outcome.acceptedCount === 0;
+    const priorAcceptFree = priorState?.acceptFreeTicks ?? 0;
+    const acceptFreeTicks = consumedNoneAccepted ? priorAcceptFree + 1 : 0;
+    const acceptFreeSince = consumedNoneAccepted
+      ? (priorState?.acceptFreeSince ?? Date.now())
+      : null;
+
     await patchRoutineMetadata(slug, workspaceId, {
       worktree_bridge: {
         lastEventId: newCursor,
         epochSeq: outcome.watermark.epochSeq,
         stagingSha: outcome.watermark.stagingSha,
         at: Date.now(),
+        // EI-19332963201820362: the census a health check reads. `consumed`
+        // and `accepted` together answer "is this bridge idle, or starving?"
+        // — a question no persisted field could answer before.
+        consumed,
+        accepted: outcome.acceptedCount,
+        rejectedTerminal: outcome.terminalRejections,
+        acceptFreeTicks,
+        acceptFreeSince,
       },
     });
+
+    // Warn on the STREAK, not on a single accept-free tick — one stale envelope
+    // is not a fault and warning on it would train readers to ignore this line.
+    // Re-warn periodically (not every tick) so a persistent freeze keeps a live
+    // signal without flooding the log across hours.
+    const ACCEPT_FREE_WARN_AFTER = 3;
+    if (acceptFreeTicks >= ACCEPT_FREE_WARN_AFTER && (acceptFreeTicks - ACCEPT_FREE_WARN_AFTER) % 10 === 0) {
+      const stuckForMs = acceptFreeSince === null ? null : Date.now() - acceptFreeSince;
+      const byReason = Object.entries(outcome.terminalRejections)
+        .map(([reason, n]) => `${reason}=${n}`)
+        .join(',');
+      console.warn(
+        `[git-sync] ${slug}: worktree-bridge has accepted NOTHING for ${acceptFreeTicks} consecutive ticks` +
+          (stuckForMs === null ? '' : ` (~${Math.round(stuckForMs / 60_000)}m)`) +
+          ` while consuming announcements (this tick: ${consumed} consumed, 0 accepted` +
+          (byReason ? `, terminal rejections ${byReason}` : '') +
+          `). The watermark is standing still at ` +
+          `epoch=${outcome.watermark.epochSeq?.epoch ?? 'null'},seq=${outcome.watermark.epochSeq?.seq ?? 'null'} — ` +
+          `canonical staging is NOT advancing. Check whether our published namespace head trails the accepted ` +
+          `watermark (own_head_publish.publishedSha vs .sha).`,
+      );
+    }
 
     if (outcome.errors.length) {
       console.warn(`[git-sync] ${slug}: worktree-bridge-tick reported errors: ${outcome.errors.join('; ')}`);

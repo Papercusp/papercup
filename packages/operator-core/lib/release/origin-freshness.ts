@@ -23,7 +23,15 @@
  *      git-sync-stall-watchdog uses for the local HEAD, applied here to the origin tip).
  *   3. `publishRefusedSweeps` — the publish leg says outright it will not publish (WI-5738).
  *   4. `publishBacklogSweeps` — the publish leg is publishing, admitted, and STILL not
- *      keeping up: `drained:false` sustained (WI-6996). See below.
+ *      keeping up: `own_head_publish.drained === true` sustained (WI-6996). See below.
+ *
+ * ⚠ `drained` IS NAMED BACKWARDS — read the value, never the name. It is assigned
+ * `!resolution.complete` (own-head-publish.ts:311), so `drained: true` means "the publish
+ * advanced but did NOT reach the worktree head — backlog REMAINS", and `false` means
+ * complete (or a hard refusal / CAS failure, both of which the refusal signal covers).
+ * The name reads as "has been drained" (healthy) and means the opposite; wiring it the
+ * intuitive way round silently inverts this detector into one that alarms only when the
+ * pipeline is healthy.
  *
  * WI-6996 — WHY SIGNALS 1+2 CANNOT BE THE WHOLE STORY, and why 4 exists.
  *
@@ -90,10 +98,10 @@ export interface OriginFreshnessSnapshot {
    * WI-6996 — the FOURTH signal, and the one that catches the failure the other three
    * are all blind to: the publish leg is ADMITTED (no refusal) and still not keeping up.
    *
-   * Count of CONSECUTIVE sweeps the publish leg has reported `drained:false` — i.e. it
-   * finished its tick with backlog remaining. 0 = fully drained (healthy). Null when
-   * unknown (pre-WI-7009 metadata that never recorded `drained`), which is treated as
-   * healthy rather than guessed at.
+   * Count of CONSECUTIVE sweeps the publish leg finished with backlog remaining — i.e.
+   * `own_head_publish.drained === true` (the field is named backwards; see the module
+   * header). 0 = fully caught up (healthy). Null when unknown (pre-WI-7009 metadata that
+   * never recorded the field), which is treated as healthy rather than guessed at.
    *
    * A tick or two of backlog is NORMAL — that is what incremental publish IS, and it is
    * why this is a sustained-sweep count and not a boolean. What is not normal is backlog

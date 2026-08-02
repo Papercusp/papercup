@@ -382,11 +382,23 @@ the in-process auto-refire RE-EMITS it. So the **LAST** match is the sha being j
 number of matches is the number of candidates this run has had:
 
 ```bash
-grep -o "checkpointing candidate [0-9a-f]*" /tmp/papercup-green-checkpoint-manual-*T*Z.log | tail -1
+# Pick the NEWEST log by mtime FIRST, then take that ONE file's last candidate.
+f=$(ls -t /tmp/papercup-green-checkpoint-manual-*T*Z.log | head -1)
+grep -o "checkpointing candidate [0-9a-f]*" "$f" | tail -1
 ```
+
+⚠ **Do not collapse that to a single `grep … *T*Z.log | tail -1`.** The glob expands sorted by the
+UNIT-NAME segment before the timestamp, so the alphabetically-last file is not the newest run —
+measured 2026-08-02, the one-liner returned a candidate from a **2026-07-17** log belonging to a
+different unit. Select the file by mtime, then grep it.
 
 Measured 2026-08-02 on the live 08:37Z run: `14fb28da` at byte 177, `auto-refiring (attempt 1/2)`,
 then `4961cfb8` at byte 2281 — two candidates, one run, and the second is the real one.
+Cross-checked against the verdict's own persisted log, whose FILENAME independently names it:
+`~/.papercusp/checkpoint-logs/<ts>-base-<sha>-cand-4961cfb8b3fc.log`. Those two sources are
+independent, so when they agree the candidate is settled. Note the persisted log is written at each
+pass's END, so during a live run it names the PREVIOUS pass — prefer the `/tmp` unit log for a run
+still in flight, and use the persisted filename to confirm a COMPLETED verdict.
 
 ⚠ **Do NOT take the FIRST match, and do not trust `release:checkpoint-run`'s `candidate` over this
 grep.** Until EI-19327704778173646 that field came from a bare `.match()` on the log — the FIRST

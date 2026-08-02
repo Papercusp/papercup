@@ -139,6 +139,30 @@ export interface WorktreeBridgeTickOutcome {
    */
   unprocessedFromIndex: number | null;
   errors: string[];
+  /**
+   * EI-19332963201820362: how many announcements this tick ACCEPTED. Together
+   * with `results.length` (how many it consumed) this is the acceptance census
+   * a health layer needs, and it exists because the absence of it hid a ~6h
+   * canonical-staging freeze on 2026-08-02 behind uniformly green surfaces.
+   *
+   * `consumed >= 1 && acceptedCount === 0` is a REPORTABLE condition. It is not
+   * necessarily a fault for ONE tick (a single stale/replayed envelope is
+   * ordinary), but it is never healthy as a STEADY STATE: it means the cursor
+   * is draining the announcement log while the watermark stands still.
+   */
+  acceptedCount: number;
+  /**
+   * EI-19332963201820362: terminal (non-retryable) rejections this tick, counted
+   * by reason — `{ 'non-fast-forward': 12 }`.
+   *
+   * Note the inversion this exists to correct: RETRYABLE rejections, which are
+   * transient and self-correcting, each push to {@link WorktreeBridgeTickOutcome.errors}
+   * and halt the batch — they are LOUD. TERMINAL rejections, which by definition
+   * can never succeed on retry and therefore indicate a PERSISTENT problem, used
+   * to skip-and-continue emitting nothing at all. The quiet path was the
+   * dangerous one.
+   */
+  terminalRejections: Record<string, number>;
 }
 
 /**
@@ -152,9 +176,23 @@ export async function runWorktreeBridgeTick(
   const errors: string[] = [];
   const results: WorktreeBridgeTickResultEntry[] = [];
   let watermark = input.prior;
+  // EI-19332963201820362: the acceptance census. Both were already derivable
+  // from `results` and simply never aggregated — the information was computed
+  // and dropped on every one of ~6h of ticks.
+  let acceptedCount = 0;
+  const terminalRejections: Record<string, number> = {};
 
   if (input.pending.length === 0) {
-    return { ran: false, results, watermark, stoppedOnFetchFailure: false, unprocessedFromIndex: null, errors };
+    return {
+      ran: false,
+      results,
+      watermark,
+      stoppedOnFetchFailure: false,
+      unprocessedFromIndex: null,
+      errors,
+      acceptedCount,
+      terminalRejections,
+    };
   }
 
   for (const [index, incoming] of input.pending.entries()) {
@@ -188,13 +226,23 @@ export async function runWorktreeBridgeTick(
 
     if (bridge.outcome === 'accepted') {
       watermark = bridge.watermark;
+      acceptedCount += 1;
       continue;
     }
     if (bridge.outcome === 'fetch-failed') {
       errors.push(
         `fetch failed for epoch=${incoming.epoch},seq=${incoming.seq}: ${bridge.detail} — stopping this tick's batch, retrying next tick`,
       );
-      return { ran: true, results, watermark, stoppedOnFetchFailure: true, unprocessedFromIndex: index, errors };
+      return {
+        ran: true,
+        results,
+        watermark,
+        stoppedOnFetchFailure: true,
+        unprocessedFromIndex: index,
+        errors,
+        acceptedCount,
+        terminalRejections,
+      };
     }
     if (bridge.outcome === 'rejected' && RETRYABLE_REJECT_REASONS.has(bridge.reason)) {
       // P-505: transient-state rejection — the SAME envelope verifies once the
@@ -204,11 +252,33 @@ export async function runWorktreeBridgeTick(
         `retryable rejection (${bridge.reason}) for epoch=${incoming.epoch},seq=${incoming.seq} — ` +
           `holding the batch here, retrying next tick`,
       );
-      return { ran: true, results, watermark, stoppedOnFetchFailure: false, unprocessedFromIndex: index, errors };
+      return {
+        ran: true,
+        results,
+        watermark,
+        stoppedOnFetchFailure: false,
+        unprocessedFromIndex: index,
+        errors,
+        acceptedCount,
+        terminalRejections,
+      };
     }
     // 'rejected' with a TERMINAL reason (stale/malformed/forged/wrong-device/
-    // non-ff): skip, never starve the rest of the batch.
+    // non-ff): skip, never starve the rest of the batch — but COUNT it
+    // (EI-19332963201820362). Skipping is still right; skipping SILENTLY is not.
+    if (bridge.outcome === 'rejected') {
+      terminalRejections[bridge.reason] = (terminalRejections[bridge.reason] ?? 0) + 1;
+    }
   }
 
-  return { ran: true, results, watermark, stoppedOnFetchFailure: false, unprocessedFromIndex: null, errors };
+  return {
+    ran: true,
+    results,
+    watermark,
+    stoppedOnFetchFailure: false,
+    unprocessedFromIndex: null,
+    errors,
+    acceptedCount,
+    terminalRejections,
+  };
 }
