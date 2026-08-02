@@ -51,9 +51,10 @@
  *   produced the master tally, not a per-call-site classification for every one of
  *   these). NEW files may NOT be added here.
  */
-import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -167,6 +168,10 @@ export const isExcluded = (f) =>
   f.includes('/build/') ||
   f.includes('/storybook-static/') ||
   f.includes('/code-server/') ||
+  // WI-6666: bundled sidecar BUILD OUTPUT (esbuild-minified serve.mjs), not source — only
+  // reachable once the enumerator recurses into submodules (papercusp-desktop). Sibling
+  // guards (check-no-raw-setinterval, check-no-control-bytes) already carry this exclusion.
+  f.includes('/env-sidecars/') ||
   f.includes('/spa/assets/') ||
   f.includes('/holepunch-spike/') ||
   /\.(test|spec)\.[cm]?tsx?$/.test(f) ||
@@ -208,15 +213,18 @@ export function hasUnclassifiedCall(text) {
   return findManagedSetIntervalCalls(text).some((argText) => !/\bclassification\s*:/.test(argText));
 }
 
-/** Scan the tracked tree for offenders (excludes vendored/tests/.tsx + ALLOWLIST + BASELINE). */
+/**
+ * Scan the tracked tree for offenders (excludes vendored/tests/.tsx + ALLOWLIST + BASELINE).
+ *
+ * WI-6666: enumerates via the shared `listTrackedFiles` helper, which recurses into
+ * submodules. A bare `git ls-files` does NOT — it emits one gitlink entry per submodule —
+ * so this guard previously printed a clean verdict having scanned none of the 39
+ * submodules (including libs/generic/scheduled-registry's own tests and the bundled
+ * desktop sidecar). Returns the coverage report alongside the offenders so `main` can
+ * state what it could not check instead of implying a clean tree.
+ */
 export function findOffenders() {
-  const tracked = execSync('git ls-files', {
-    cwd: ROOT,
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-  })
-    .split('\n')
-    .filter(Boolean);
+  const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
   const offenders = [];
   for (const f of tracked) {
@@ -231,14 +239,14 @@ export function findOffenders() {
     }
     if (hasUnclassifiedCall(text)) offenders.push(f);
   }
-  return offenders;
+  return { offenders, unscanned };
 }
 
 function main() {
-  const offenders = findOffenders();
+  const { offenders, unscanned } = findOffenders();
   if (offenders.length === 0) {
     const note = BASELINE.size > 0 ? ` (${BASELINE.size} file(s) still in the shrink-to-empty BASELINE — P-011)` : '';
-    console.log(`✓ no NEW unclassified managedSetInterval() timer${note}.`);
+    console.log(`✓ no NEW unclassified managedSetInterval() timer${note}.` + describeUnscanned(unscanned));
     process.exit(0);
   }
   console.error('✗ NEW managedSetInterval(...) call(s) missing a D-004 classification:');

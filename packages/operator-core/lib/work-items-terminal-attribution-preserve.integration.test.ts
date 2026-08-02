@@ -35,31 +35,19 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 
 const WS = 'ws-terminal-attribution';
+const SLUG = 'papercusp';
 
 /**
- * A minimal `work_items` carrying what 726 touches. `closed_ts` is deliberately
- * absent — migration 698 adds it, and 726 depends on 698 for the canonical
- * `work_item_status_is_terminal()` predicate, so applying both here also pins
- * that dependency edge.
+ * The CANONICAL live-shape fixture (test/_work-items-schema.ts), not a hand-rolled
+ * table. That module exists precisely because ~36 integration tests each rolled
+ * their own `work_items` DDL and drifted from the migrations one column at a time;
+ * reusing it means this guard cannot rot the same way. It provisions the table,
+ * both family views, and the engineer_issues INSTEAD OF trigger.
  */
-const BASE_DDL = `
-  CREATE TABLE harness_shared.work_items (
-    workspace_id            text   NOT NULL,
-    feature_id              text   NOT NULL,
-    item_kind               text   NOT NULL,
-    status                  text   NOT NULL,
-    title                   text,
-    created_ts              bigint,
-    updated_ts              bigint,
-    terminal_owner          text,
-    terminal_completion_ref text,
-    authority               text,
-    terminal_reason         text,
-    PRIMARY KEY (workspace_id, feature_id)
-  );
-`;
+const BASE_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 describe('work_items terminal attribution preservation (migration 726)', () => {
   let db: FreshPgDb;
@@ -71,7 +59,12 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
     await sql.unsafe(BASE_DDL);
     await applyMigrationsForTest(
       sql,
-      ['698-work-items-closed-ts.sql', '726-preserve-terminal-attribution-on-federated-write.sql'],
+      [
+        '698-work-items-closed-ts.sql',
+        '721-work-items-lane-generated-column.sql',
+        '725-payload-object-shape-guard-and-plan-item-stamp-index.sql',
+        '726-preserve-terminal-attribution-on-federated-write.sql',
+      ],
       { label: 'work-items-terminal-attribution' },
     );
   }, 120_000);
@@ -84,9 +77,9 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
   async function seedCompleted(id: string, status = 'done') {
     await sql`
       INSERT INTO harness_shared.work_items
-        (workspace_id, feature_id, item_kind, status, title, created_ts, updated_ts,
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, created_ts, updated_ts,
          terminal_owner, terminal_completion_ref, authority, terminal_reason)
-      VALUES (${WS}, ${id}, 'bug', ${status}, ${'t-' + id}, ${Date.now()}, ${Date.now()},
+      VALUES (${WS}, ${SLUG}, ${id}, 'bug', ${status}, ${'t-' + id}, ${Date.now()}, ${Date.now()},
               'su-original-completer', 'ref-original', 'committed', 'resolved')`;
     return id;
   }
@@ -105,7 +98,7 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
     >`
       SELECT status, title, terminal_owner, terminal_completion_ref, authority, terminal_reason, updated_ts
         FROM harness_shared.work_items
-       WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+       WHERE harness_slug = ${SLUG} AND feature_id = ${id}`;
     return row;
   }
 
@@ -118,7 +111,7 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
       UPDATE harness_shared.work_items
          SET terminal_owner = NULL, terminal_completion_ref = NULL,
              authority = NULL, terminal_reason = NULL, updated_ts = ${Date.now()}
-       WHERE workspace_id = ${WS} AND feature_id = 'wi-preserve'`;
+       WHERE harness_slug = ${SLUG} AND feature_id = 'wi-preserve'`;
 
     const row = await read('wi-preserve');
     expect(row.terminal_owner).toBe('su-original-completer');
@@ -139,7 +132,7 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
       await sql`
         UPDATE harness_shared.work_items
            SET status = ${to}, terminal_owner = NULL, terminal_completion_ref = NULL, authority = NULL
-         WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+         WHERE harness_slug = ${SLUG} AND feature_id = ${id}`;
       const row = await read(id);
       expect(row.status).toBe(to);
       expect(row.terminal_owner, `${from} -> ${to} lost terminal_owner`).toBe('su-original-completer');
@@ -162,7 +155,7 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
       UPDATE harness_shared.work_items
          SET terminal_owner = 'su-new-completer', terminal_completion_ref = 'ref-new',
              authority = 'proposed', terminal_reason = 'done'
-       WHERE workspace_id = ${WS} AND feature_id = 'wi-overwrite'`;
+       WHERE harness_slug = ${SLUG} AND feature_id = 'wi-overwrite'`;
 
     const row = await read('wi-overwrite');
     expect(row.terminal_owner).toBe('su-new-completer');
@@ -178,7 +171,7 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
     await sql`
       UPDATE harness_shared.work_items
          SET terminal_owner = 'su-new-completer', terminal_completion_ref = NULL, authority = NULL
-       WHERE workspace_id = ${WS} AND feature_id = 'wi-partial'`;
+       WHERE harness_slug = ${SLUG} AND feature_id = 'wi-partial'`;
 
     const row = await read('wi-partial');
     expect(row.terminal_owner).toBe('su-new-completer');
@@ -195,7 +188,7 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
       UPDATE harness_shared.work_items
          SET status = 'open', terminal_owner = NULL, terminal_completion_ref = NULL,
              authority = NULL, terminal_reason = NULL
-       WHERE workspace_id = ${WS} AND feature_id = 'wi-reopen'`;
+       WHERE harness_slug = ${SLUG} AND feature_id = 'wi-reopen'`;
 
     const row = await read('wi-reopen');
     expect(row.status).toBe('open');
@@ -208,11 +201,11 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
   it('leaves a non-terminal -> non-terminal write completely alone', async () => {
     await sql`
       INSERT INTO harness_shared.work_items
-        (workspace_id, feature_id, item_kind, status, title, created_ts, updated_ts)
-      VALUES (${WS}, 'wi-open', 'bug', 'open', 't', ${Date.now()}, ${Date.now()})`;
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, created_ts, updated_ts)
+      VALUES (${WS}, ${SLUG}, 'wi-open', 'bug', 'open', 't', ${Date.now()}, ${Date.now()})`;
     await sql`
       UPDATE harness_shared.work_items SET status = 'in_progress'
-       WHERE workspace_id = ${WS} AND feature_id = 'wi-open'`;
+       WHERE harness_slug = ${SLUG} AND feature_id = 'wi-open'`;
 
     const row = await read('wi-open');
     expect(row.status).toBe('in_progress');
@@ -235,11 +228,11 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
 
     await sql`
       INSERT INTO harness_shared.work_items
-        (workspace_id, feature_id, item_kind, status, title, created_ts, updated_ts,
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, created_ts, updated_ts,
          terminal_owner, terminal_completion_ref, authority, terminal_reason)
-      VALUES (${WS}, 'wi-fed', 'bug', 'done', 'peer-copy', ${Date.now()}, ${Date.now()},
+      VALUES (${WS}, ${SLUG}, 'wi-fed', 'bug', 'done', 'peer-copy', ${Date.now()}, ${Date.now()},
               NULL, NULL, NULL, NULL)
-      ON CONFLICT (workspace_id, feature_id) DO UPDATE SET
+      ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
         title                   = EXCLUDED.title,
         status                  = EXCLUDED.status,
         updated_ts              = EXCLUDED.updated_ts,
