@@ -143,6 +143,28 @@ const turnStartMemory = defineTool({
               import('../../../auth'),
               import('../../../turn-provenance/turn-provenance'),
             ]);
+          // P-044 (F-L): resolve the agent's ACTION signals and route them to the
+          // lexical leg. Started here so its two indexed lookups overlap the user
+          // resolution below rather than adding to this path serially; it is
+          // deadline-bounded and never throws, so a slow or failed read degrades
+          // to "no signals" — the pre-P-044 query — and never delays the turn.
+          const signalsPromise = (async () => {
+            try {
+              const [{ resolveAgentSignals, pgAgentSignalsSource, resolveRepoRootSync }, { getOrgPg }] =
+                await Promise.all([
+                  import('../../../memory/agent-signals'),
+                  import('@papercusp/db-org'),
+                ]);
+              const { sql } = getOrgPg();
+              const repoRoot = resolveRepoRootSync(body.cwd);
+              return await resolveAgentSignals(
+                pgAgentSignalsSource(sql, { ownerId: owner, workspaceId }),
+                repoRoot ? { repoRoot } : {},
+              );
+            } catch {
+              return undefined;
+            }
+          })();
           const user = await getSessionUserOrDefault().catch(() => null);
           // Retrieve on what the turn is ABOUT, not on the scaffolding it
           // arrived in — see PROMPT_QUERY_CLAMP above and D-033. Never empty
@@ -155,12 +177,20 @@ const turnStartMemory = defineTool({
           // procedural ("continue where you left off" — the single most common human
           // turn in this corpus) loses its on-topic hits entirely. See plan decision
           // D-047. Do not wire this without re-running that measurement.
+          const agentSignals = await signalsPromise;
           return (
             (await buildMemoryContextBlock({
               userId: user?.id ?? null,
               workspaceId,
               harnessSlugs: harness ? [harness] : [],
-              queryContext: queryText.slice(0, PROMPT_QUERY_CLAMP),
+              // P-044: the COSINE leg still gets the human's words alone — that
+              // is the point, not a leftover (identifiers were measured diluting
+              // that vector, D-041). The signals ride the LEXICAL leg's query,
+              // composed by `lexicalQueryText`.
+              queryContext: {
+                userText: queryText.slice(0, PROMPT_QUERY_CLAMP),
+                ...(agentSignals ? { agentSignals } : {}),
+              },
               session: { sessionId: owner, port: 'turn-start' },
               budgetChars: TURN_START_BUDGET_CHARS,
               heading: 'Relevant memory (turn-start delta)',

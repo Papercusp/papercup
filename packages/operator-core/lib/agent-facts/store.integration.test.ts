@@ -401,6 +401,41 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(keys).toContain('dead-end:already-tried');
   });
 
+  it('WI-6935 (c): the cap evicts by DECLARED VALUE, not by write-recency', async () => {
+    const scopeRef = 'su-value-rank';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // The two rows the OLD `ORDER BY updated_at DESC` ranking would have killed
+    // FIRST, precisely because they are written once and never touched again.
+    // Asserting them before the filler makes them the oldest-updated in the scope.
+    await assertFact({ ...base, key: 'settled', body: 'a verified finding', confidence: 'verified' }, db.sql);
+    await assertFact({ ...base, key: 'long-lived', body: 'deliberately given 90 days', ttlSec: 90 * 86400 }, db.sql);
+    // …and a hedge, which SHOULD be the first thing sacrificed.
+    await assertFact({ ...base, key: 'hedge', body: 'a hunch', confidence: 'suspected' }, db.sql);
+
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact({ ...base, key: `filler-${i}`, body: `n ${i}` }, db.sql);
+    }
+
+    const live = await foldFacts(
+      [{ scope: 'owner', scopeRef }],
+      { workspaceId: WS, audiences: 'all', limitPerSelector: 500 },
+      db.sql,
+    );
+    const keys = live.map((f) => f.key);
+    // Prove the cap FIRED — without this the survival assertions below would pass
+    // just as happily against an eviction that never ran (the vacuity trap the
+    // sibling guard above was originally built with).
+    expect(keys.length).toBeLessThanOrEqual(FACTS_PER_SCOPE_CAP);
+    // The hedge is sacrificed first…
+    expect(keys).not.toContain('hedge');
+    // …while the verified finding and the deliberately long-lived fact survive,
+    // even though both are the OLDEST-updated rows in the scope and would have been
+    // the very first victims under the previous write-recency ranking.
+    expect(keys).toContain('settled');
+    expect(keys).toContain('long-lived');
+  });
+
   it('WI-6935 (b): a cap eviction is distinguishable from a deliberate retract via evicted_at', async () => {
     const scopeRef = 'su-evicted-at';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };

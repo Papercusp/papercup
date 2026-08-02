@@ -9,6 +9,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { askChoiceOptionIds } from '../../../ask-choice-options';
+import { canonicalToolName } from '../../../operator-mcp-tools';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -80,8 +81,15 @@ export default defineTool({
           : [];
         const tool = tools[body.toolIndex];
         if (!tool || typeof tool !== 'object') return { kind: 'bad_index' as const };
-        if (tool.name !== 'chat:ask_choice') {
-          return { kind: 'wrong_tool' as const, name: tool.name };
+        // WI-4949: a row persisted before the ingest-side canonicalization fix
+        // (or one the read-side normalization in operator-conversations.ts
+        // hasn't touched, since this query bypasses that helper for an atomic
+        // FOR UPDATE read) may still carry the Claude-sanitized `chat_ask_choice`
+        // name. Un-sanitize before comparing so an old card's click doesn't 400
+        // as "wrong_tool" even though the card rendered correctly.
+        const toolName = typeof tool.name === 'string' ? canonicalToolName(tool.name) : tool.name;
+        if (toolName !== 'chat:ask_choice') {
+          return { kind: 'wrong_tool' as const, name: toolName };
         }
         if (tool.answered) {
           return { kind: 'already_answered' as const, answered: tool.answered };

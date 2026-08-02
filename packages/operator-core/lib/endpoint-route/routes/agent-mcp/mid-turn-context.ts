@@ -240,6 +240,52 @@ export function deriveBatchQuery(calls: BatchCall[]): string {
   return parts.join(' · ');
 }
 
+/**
+ * A path-shaped token, for removal from the COSINE query only.
+ *
+ * Two shapes, and the second condition is what keeps it honest: ≥2 slashes
+ * (`apps/operator-vite/src`, `/home/x/y`), OR exactly one slash plus a file
+ * extension (`memory/injection.ts`). A single-slash token with no extension is
+ * LEFT ALONE, because that is where the false positives live — `and/or`,
+ * `input/output`, `24/7` are prose an agent really does type into a Grep
+ * pattern or a Bash description, and stripping them would delete meaning from
+ * the very query this is protecting.
+ */
+const COSINE_PATH_TOKEN_RE =
+  /(?:^|\s)(?:~?\/?(?:[\w.@*[\]-]+\/){2,}[\w.@*[\]-]*|[\w.@*[\]-]+\/[\w.@*[\]-]*\.[A-Za-z][\w]{0,5})(?=\s|$)/g;
+
+/**
+ * Split the derived text into the two per-leg queries (P-044 / F-L, motivated by
+ * D-041's live measurement).
+ *
+ * The derived text is the LEXICAL leg's query unchanged — that leg is
+ * token-matching and embed-free, and identifiers are precisely what it is for,
+ * so this endpoint's lexical input is byte-identical to what it has always sent.
+ * What changes is the COSINE query: it loses the path tokens.
+ *
+ * WHY, measured rather than assumed (D-041): replaying the WI-6512
+ * investigation, batch one carried `apps/operator-vite/src` TWICE plus a full
+ * component path against four content words, and the record that answered the
+ * question was retrievable only by a query naming its literal id. The cosine leg
+ * embeds its query as ONE vector, so those tokens were not inert padding — they
+ * were pulling the vector toward "files under apps/operator-vite" and away from
+ * the problem the agent was actually stuck on.
+ *
+ * ⚠ THE FALLBACK IS LOAD-BEARING, not defensive garnish. A batch of nothing but
+ * `Read` calls strips to the empty string, and `buildMemoryContextBlock` gates
+ * on the COSINE text being non-empty — so returning '' there would silently
+ * disable mid-turn recall for every path-only batch, a much larger regression
+ * than the dilution this fixes. When there is no prose to protect, there is also
+ * nothing to dilute, so keeping the full text costs nothing.
+ */
+export function splitLegQueries(derived: string): { cosine: string; lexical: string } {
+  const lexical = derived;
+  const stripped = derived.replace(COSINE_PATH_TOKEN_RE, ' ').replace(/\s+/g, ' ').trim();
+  // Punctuation-only residue ("· ·", "(no result)") is not prose worth keeping.
+  const hasWords = /[A-Za-z0-9]/.test(stripped.replace(/\(no result\)/g, ''));
+  return { cosine: hasWords ? stripped : lexical, lexical };
+}
+
 const midTurnContext = defineTool({
   method: 'POST',
   path: '/agent-mcp/mid-turn-context',
@@ -264,14 +310,20 @@ const midTurnContext = defineTool({
     if (!owner) return Response.json({ ok: false, error: 'owner required' }, { status: 400 });
 
     try {
-      const query = (
+      const derived = (
         Array.isArray(body.toolCalls) && body.toolCalls.length
           ? deriveBatchQuery(body.toolCalls)
           : deriveQuery((body.tool ?? '').trim(), body.toolInput)
       ).slice(0, QUERY_CLAMP);
       // No signal in this tool call — drop before spending anything.
-      if (!query) return Response.json({ ok: true, text: '' });
-      if (!admitCall(owner, query, Date.now())) return Response.json({ ok: true, text: '' });
+      if (!derived) return Response.json({ ok: true, text: '' });
+      // P-044: one derived signal, two per-leg queries. See splitLegQueries().
+      const { cosine: query, lexical: lexicalQuery } = splitLegQueries(derived);
+      // The cost guards key on the FULL derived text, not the stripped cosine
+      // half — two batches that differ only in which files were read are
+      // genuinely different questions for the lexical leg, and collapsing them
+      // here would suppress the second one's recall entirely.
+      if (!admitCall(owner, derived, Date.now())) return Response.json({ ok: true, text: '' });
       pruneRateState(Date.now());
 
       let harness = (body.harness ?? '').trim();
@@ -314,7 +366,11 @@ const midTurnContext = defineTool({
           userId: user?.id ?? null,
           workspaceId,
           harnessSlugs: harness ? [harness] : [],
-          queryContext: query,
+          // P-044: `userText` is the de-diluted prose the cosine leg embeds;
+          // `lexicalText` is the full derived signal, identifiers and all, for
+          // the leg that actually wins on them. When the strip finds no prose to
+          // protect the two are the same string and nothing changes.
+          queryContext: { userText: query, lexicalText: lexicalQuery },
           // Free-text port; the epoch ledger is port-agnostic (D-006), so this
           // inherits turn-start's dedup instead of needing one of its own.
           session: { sessionId: owner, port: 'mid-turn' },

@@ -1,20 +1,24 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  agentSignalTerms,
+  lexicalQueryText,
   retrievalQueryText,
   toRecallQuery,
+  LEXICAL_MAX_IDS,
+  LEXICAL_MAX_PATHS,
+  LEXICAL_MAX_SYMBOLS,
   type AgentSignals,
   type RecallQuery,
 } from './recall-query';
 
 /**
- * context-injection-audit-2026-07-28 P-042 (F-J) — the structured recall query.
+ * context-injection-audit-2026-07-28 P-042 (F-J) — the structured recall query —
+ * and P-044 (F-L), which split what is ISSUED into one query per fusion leg.
  *
- * These tests pin the SEAM's contract, which is deliberately narrow: both input
- * forms normalize to the same structure, and carrying agent signals does not yet
- * change what is issued to the index. The second half is the whole point of the
- * item — it is what lets P-042 land while P-041's live baseline is still being
- * gathered, without contaminating the measurement it will be judged against.
+ * These tests pin the seam's contract (both input forms normalize to one
+ * structure) and then the per-leg split: the COSINE query stays the human's
+ * words alone, and the agent's identifiers reach the LEXICAL query only.
  */
 describe('toRecallQuery — the accepted forms normalize to one structure', () => {
   it('treats a bare string as the user text', () => {

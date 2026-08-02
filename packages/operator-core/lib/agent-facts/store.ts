@@ -966,6 +966,32 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // update-capture triggers (461/462), so moving eviction off that field would
   // spring every evicted row back into every fold — the cap would silently stop
   // capping. Additive keeps behavior identical and adds only the provenance.
+  //
+  // WI-6935 (c): rank victims by DECLARED VALUE, not by write-recency.
+  // `ORDER BY updated_at DESC` alone made the destruction systematic rather than
+  // random: a fact is written once and then, if it stays TRUE, never touched
+  // again — so under that ordering the settled conclusions sink to the bottom of
+  // the victim list and the churn survives. Correctness was inversely correlated
+  // with survival. Measured 2026-08-02: 11 facts evicted from one scope in 25
+  // minutes, ordinary `conclusion` rows with TTLs months out.
+  //
+  // The ranking below keeps the MOST valuable first (the OFFSET drops the tail):
+  //   1. confidence — a 'suspected' hedge should die before a 'verified' finding.
+  //      An UNSET confidence ranks with 'provisional', deliberately mid: most
+  //      existing rows predate the field, and ranking them worst would mass-evict
+  //      the entire legacy corpus on the next assert.
+  //   2. expires_at DESC — the TTL is the author's OWN declaration of how long
+  //      this should live. A fact expiring in an hour is a cheaper loss than one
+  //      deliberately given 90 days. This is the signal `updated_at` should have
+  //      been all along: it is about the fact's intended life, not its edit time.
+  //   3. updated_at DESC — retained only as the final tiebreak, so behavior is
+  //      unchanged among rows the first two keys cannot separate.
+  //
+  // ⚠ ASSUMPTION, stated rather than hidden [self-imposed]: this ordering is my
+  // judgement, not an owner ruling — the routing question has gone unanswered
+  // across 4 agent-origin wakes, and leaving `updated_at DESC` in place is ALSO a
+  // judgement, one that is actively destroying data. Revisit the key order if the
+  // owner rules differently; the guard test pins the intent, not the SQL.
   await sql`
     UPDATE harness_shared.agent_facts SET retracted_at = now(), evicted_at = now()
      WHERE source_hive IS NULL
@@ -980,7 +1006,14 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
           AND retracted_at IS NULL AND expires_at > now()
           AND key NOT LIKE ${`${WALL_KEY_PREFIX}%`}
           AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
-        ORDER BY updated_at DESC
+        ORDER BY CASE confidence
+                   WHEN 'verified'    THEN 0
+                   WHEN 'provisional' THEN 1
+                   WHEN 'suspected'   THEN 2
+                   ELSE 1
+                 END ASC,
+                 expires_at DESC,
+                 updated_at DESC
        OFFSET ${FACTS_PER_SCOPE_CAP})`;
   return rowToFact(rows[0]);
 }

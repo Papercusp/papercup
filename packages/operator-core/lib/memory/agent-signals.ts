@@ -48,6 +48,8 @@
  * see coordination plumbing and conclude the signal was absent.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Sql } from 'postgres';
 import type { AgentSignals } from './recall-query';
 import { withMemoryTimeout, MemoryTimeoutError } from './op-deadline';
@@ -219,6 +221,54 @@ export function relativizeRepoPath(raw: string, repoRoot?: string): string | nul
   // false exclusion silently drops real signal.
   if (/(?:^|\/)(?:node_modules|\.git|dist|coverage)(?:\/|$)/.test(p)) return null;
   return p;
+}
+
+/** Levels to walk up looking for a repo root. Mirrors detect-harness-slug's. */
+const MAX_ROOT_WALK_DEPTH = 32;
+
+/** Memoized per cwd — the same handful of session cwds recur every turn. */
+const repoRootCache = new Map<string, string | undefined>();
+
+/**
+ * The repo root containing `cwd`, by walking up to the nearest `.git`.
+ *
+ * ⚠ NOT OPTIONAL PLUMBING — without it this resolver harvests almost nothing
+ * (P-044). `relativizeRepoPath` drops any path it cannot make repo-relative, and
+ * the agent tools that carry the strongest path signal REQUIRE an absolute
+ * `file_path` (Read, Edit, Write all do), so in production essentially every
+ * trajectory path arrives absolute. With no root every one of them relativizes
+ * to null and `trajectory.paths` comes back empty — a resolver that looks like
+ * it is working and silently returns nothing.
+ *
+ * A WRONG root is fail-safe in the same direction (paths outside it are
+ * dropped, never mis-attributed), so a miss costs recall, never correctness.
+ */
+export function resolveRepoRootSync(cwd: string | undefined): string | undefined {
+  const start = (cwd ?? '').trim();
+  if (!start || !path.isAbsolute(start)) return undefined;
+  const cached = repoRootCache.get(start);
+  if (cached !== undefined || repoRootCache.has(start)) return cached;
+
+  let dir = start;
+  let found: string | undefined;
+  for (let i = 0; i < MAX_ROOT_WALK_DEPTH; i++) {
+    try {
+      // `.git` is a DIRECTORY in a normal checkout and a FILE in a submodule or
+      // worktree — `existsSync` covers both, and this tree is full of the latter.
+      if (fs.existsSync(path.join(dir, '.git'))) {
+        found = dir;
+        break;
+      }
+    } catch {
+      break;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  if (repoRootCache.size > 256) repoRootCache.clear();
+  repoRootCache.set(start, found);
+  return found;
 }
 
 /**

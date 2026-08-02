@@ -93,6 +93,21 @@ export interface RecallQuery {
   userText: string;
   /** Grounded agent context. OPTIONAL — see `RecallQueryInput` for why. */
   agentSignals?: AgentSignals;
+  /**
+   * A PRE-COMPOSED lexical-leg query, for a caller that already knows its own
+   * identifier text and would lose it by round-tripping through `AgentSignals`
+   * (P-044). The mid-turn endpoint is the case this exists for: its signal is a
+   * tool BATCH, whose paths are frequently DIRECTORIES (`apps/operator-vite/src`
+   * — the exact text D-041 measured), and the signal-derived composition below
+   * reduces a path to its basename stem, which turns that directory into the
+   * useless token `src`. So mid-turn hands the full derived text over verbatim
+   * and keeps only the prose in `userText`.
+   *
+   * Wins over `agentSignals` when both are present. Same length warning as
+   * `SearchOptions.lexicalQuery`: this string is SCORED against a token-count
+   * normalization, so it is not a free place to put text.
+   */
+  lexicalText?: string;
 }
 
 /**
@@ -239,6 +254,8 @@ export function agentSignalTerms(signals: AgentSignals | undefined): string[] {
  * make room for the agent's would trade a real signal for a speculative one.
  */
 export function lexicalQueryText(query: RecallQuery): string | undefined {
+  const pre = query.lexicalText?.trim();
+  if (pre) return pre;
   const terms = agentSignalTerms(query.agentSignals);
   if (terms.length === 0) return undefined;
   const user = query.userText.trim();
