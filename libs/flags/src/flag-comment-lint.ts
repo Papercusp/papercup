@@ -185,17 +185,41 @@ const DEFAULTS_TO_ON_RE = /\bdefaults?\s+to\s+ON\b/i;
  *  entries that are entirely fine. */
 const LISTED_DARK_RE = /\blisted in\s+(?:the\s+)?(?:KNOWN_)?DARK_FLAGS\b/i;
 
+/**
+ * The SIXTH established form (module doc step 6, EI-18886519654229938 /
+ * EI-19360358881224651 — the fifth AND sixth recurrences of this exact bug class,
+ * found live in the SAME file): a "ships dark" / "ship dark" narrative claim, most
+ * often as "…so it ships dark until the plan's P-001 arming gate closes". This is
+ * the phrasing LEARNING_SLO_SENSORS and GRADUATION_TRACKER both used — neither
+ * "DEFAULT OFF" nor "listed in DARK_FLAGS" nor either reversed/verb form appears in
+ * that phrasing at all, so all five prior forms silently skipped both entries
+ * (classified null) despite the mismatch being exactly the class this file exists
+ * to catch. "ship(s) dark" is the load-bearing phrase; anchoring on it alone
+ * (rather than requiring "until … gate" too) covers the bare form seen elsewhere in
+ * this file ("OFF = the Class-C loops ship dark").
+ *
+ * MUST exclude the common repo-wide alpha-policy idiom "finished work never ships
+ * dark" (INBOX_DURABLE_ESCALATIONS, EPHEMERAL_CADENCE, and others use this exact
+ * phrase to explain why THEY are correctly default-ON) — that is a negated general
+ * principle, not a claim that THIS flag itself currently ships dark. Without the
+ * negation guard, every entry citing that idiom as its OWN justification for being
+ * ON would flip to a bogus 'off' claim.
+ */
+const DARK_SHIP_RE = /\bships?\s+dark\b/i;
+const NEGATED_DARK_SHIP_RE = /\b(?:never|not|no|n't)\b[^.\n]{0,30}\bships?\s+dark\b/i;
+
 /** The entry's own claimed default, per the module doc's conservative parsing rules.
  *  Returns null (unclassifiable / ambiguous — skip, never assert) when the normalized
  *  comment claims both 'on' and 'off', or neither. */
 export function claimedDefault(entry: FlagCommentEntry): ClaimedDefault {
   const normalized = normalize(entry.comment);
-  // Any established form counts as claiming a default; see module doc steps 4-5.
+  // Any established form counts as claiming a default; see module doc steps 4-6.
   const hasOff =
     DEFAULT_OFF_RE.test(normalized) ||
     LISTED_DARK_RE.test(normalized) ||
     REVERSED_OFF_RE.test(normalized) ||
-    DEFAULTS_TO_OFF_RE.test(normalized);
+    DEFAULTS_TO_OFF_RE.test(normalized) ||
+    (DARK_SHIP_RE.test(normalized) && !NEGATED_DARK_SHIP_RE.test(normalized));
   const hasOn =
     DEFAULT_ON_RE.test(normalized) ||
     REVERSED_ON_RE.test(normalized) ||

@@ -82,8 +82,10 @@ const argsSchema = z.object({
     .optional()
     .describe(
       "Harness slug whose docs to search. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope) — " +
-        "but only on an UNSCOPED (--all-workspaces) session; a workspace-scoped su session gets harness_forbidden and must " +
-        "name a concrete harness instead (EI-12898). Omit only when the session is already scoped to a harness — otherwise you'll get harness_required.",
+        "but only on an UNSCOPED (--all-workspaces) session; a workspace-scoped su session gets harness_forbidden for 'all'/'*' " +
+        "(EI-12898). To reach the SAME framework/agent-insights corpus from a workspace-scoped session, pass 'engineering' " +
+        "instead — a distinct literal the workspace clamp does not intercept (EI-18894866320087268). Omit only when the " +
+        "session is already scoped to a harness — otherwise you'll get harness_required.",
     ),
   semantic: z
     .boolean()
@@ -97,7 +99,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'docs:search',
   description:
-    "Keyword search across your context's documentation — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Returns ranked hits (slug, title, description, excerpt). A harness/project-scoped call does NOT include agent-insights/ or the framework docs (a separate `harness:'all'` surface) — a weak result carries a `scopeNote` saying so; don't read it as \"no such page\".",
+    "Keyword search across your context's documentation — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Returns ranked hits (slug, title, description, excerpt). A harness/project-scoped call does NOT include agent-insights/ or the framework docs (a separate `harness:'all'`/`harness:'engineering'` surface) — a weak result carries a `scopeNote` saying so; don't read it as \"no such page\". A workspace-scoped session gets `harness_forbidden` for `harness:'all'` — pass `harness:'engineering'` instead to reach the same corpus.",
   guidance: {
     when: 'You have specific terminology in mind (a function name, concept, or component) and want to find which doc page covers it. Faster than scanning the outline when the section name is non-obvious.',
     notWhen:
@@ -126,7 +128,14 @@ export default defineTool({
       metadata?: (d: Record<string, unknown>) => void;
       progress?: (pct: number, msg: string) => void;
     };
-    const scope = resolveHarnessScope(args.harness, ctxAny);
+    // EI-18894866320087268: 'engineering' is a distinct sentinel from 'all'/'*' that a
+    // workspace-scoped session CAN use (see isEngineeringDocsSentinel's doc comment) —
+    // handled before resolveHarnessScope so it never falls into the "concrete harness
+    // slug" branch (which would otherwise 404 looking up a harness literally named
+    // "engineering"). Resolves to the exact same scope as harness:'all'.
+    const scope: HarnessScope = isEngineeringDocsSentinel(args.harness)
+      ? { kind: 'all' }
+      : resolveHarnessScope(args.harness, ctxAny);
     if (scope.kind === 'none') {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ error: 'harness_required', detail: HARNESS_REQUIRED_DETAIL }) }],
@@ -233,7 +242,7 @@ export default defineTool({
     const scopeNote =
       resolved.surface === 'engineering'
         ? undefined
-        : `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference — those live on the separate 'engineering' surface. A weak or zero-looking result here does not mean no such page exists; retry with harness:'all' before concluding that.`;
+        : `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference — those live on the separate 'engineering' surface. A weak or zero-looking result here does not mean no such page exists; retry with harness:'engineering' before concluding that (harness:'all' reaches the same corpus but is REJECTED with harness_forbidden on a workspace-scoped session — EI-18894866320087268).`;
 
     const payload: Record<string, unknown> = {
       ...response,

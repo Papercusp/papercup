@@ -639,9 +639,27 @@ function cap(s: string, max: number): string {
  * is eventually delivered), so a successor reading it can diff it against its
  * own current wall-clock and judge staleness directly, instead of relying
  * solely on remembering to re-orient. Pure; exported for direct testing.
+ *
+ * EI-18894888815338094 (the carry-respawn BLIND WINDOW): this stamp is when
+ * the document was ASSEMBLED, and delivery can lag it by up to 30 minutes —
+ * but the pre-respawn session does not necessarily stop working the instant
+ * the document is built. It can keep running real, durable tool calls (an
+ * experiment finishing, a file written, a work-item checkpointed) right up
+ * until it actually dies, and NONE of that lands in this already-frozen
+ * document — a successor was observed re-building an experiment from scratch
+ * that had, in fact, already completed 7 minutes after this stamp. So this
+ * document is a LOWER BOUND on what was done, never an upper one: before
+ * (re)constructing anything this doc describes as pending — an experiment, an
+ * artifact, an analysis — check for evidence newer than this stamp first (the
+ * artifact directory, the work-item's own comments/checkpoint via
+ * work_items:get). The filesystem and the work-item are the authority on what
+ * was actually done; this document is not.
  */
 export function renderBuiltAtStamp(now: number): string {
-  return `> Carry document built at ${new Date(now).toISOString()} — if it is now meaningfully later than that, treat any "currently working on / waiting on" claim below as UNVERIFIED until coord:orient reconciles it (a queued carry-respawn can deliver up to 30 minutes after it was built).`;
+  return (
+    `> Carry document built at ${new Date(now).toISOString()} — if it is now meaningfully later than that, treat any "currently working on / waiting on" claim below as UNVERIFIED until coord:orient reconciles it (a queued carry-respawn can deliver up to 30 minutes after it was built).\n` +
+    `> ⚠ BLIND WINDOW: this document is a snapshot of what was known AT BUILD TIME, not of everything the pre-respawn session actually did — it may have kept working (and completing real artifacts) after this stamp, right up until it died. Before starting or re-doing anything below, check the filesystem / work-item for evidence newer than this stamp; do not assume this document is complete.`
+  );
 }
 
 function renderIdentity(id: CarryDocIdentity): string {

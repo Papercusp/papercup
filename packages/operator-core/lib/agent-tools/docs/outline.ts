@@ -26,7 +26,7 @@ import {
 } from '@papercusp/docs-engine';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
-import { HARNESS_REQUIRED_DETAIL, resolveHarnessScope } from '../_harness-scope';
+import { HARNESS_REQUIRED_DETAIL, isEngineeringDocsSentinel, resolveHarnessScope, type HarnessScope } from '../_harness-scope';
 
 const cache = new RunCache<OutlinePayload>();
 
