@@ -561,6 +561,84 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
 // A caller that knows which files it is asking about passes max(mtime) over them; the
 // token is then dropped and a replay is admitted only from a run that STARTED at/after
 // that watermark — the exact question, per file, instead of the conservative one.
+// A leader publishes its output by RENAME, never by writing the live cache files,
+// so a replay can never observe a half-written (or freshly truncated) entry.
+describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
+  const cmd = 'sleep 3; echo REAL-OUTPUT-LINE';
+  const coalesceFileByExt = (ext: string): string | null => {
+    const coalesceDir = join(dir, 'coalesce');
+    if (!existsSync(coalesceDir)) return null;
+    const f = readdirSync(coalesceDir).find((n) => n.endsWith(ext));
+    return f ? join(coalesceDir, f) : null;
+  };
+
+  it('a NEW leader does not truncate the previous entry a follower may still replay [positive-controlled]', async () => {
+    // The bug: `tee "$_c_out"` truncates at OPEN — the instant the new leader
+    // starts — while freshness is gated on $_c_exit, which still holds the old
+    // run's rc and mtime. A follower in that window was told "fresh, rc=0" and
+    // then replayed an emptied file: exit 0 with NO output, which `lint:tsc`
+    // reported as "tsc produced no output — toolchain failure". The window
+    // lasts the whole run (~174s for a real typecheck), not a microsecond.
+    //
+    // Two callers disagreeing about freshness is all it takes, and that is
+    // routine: PC_HEAVY_COALESCE_SEC is per-caller (default 90, this suite 30).
+    const first = runSync(['bash', '-c', cmd], { PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '90' });
+    expect(first.stdout).toContain('REAL-OUTPUT-LINE');
+    const outFile = coalesceFileByExt('.out');
+    expect(outFile).not.toBeNull();
+    const populatedSize = statSync(outFile as string).size;
+    expect(populatedSize).toBeGreaterThan(0);
+
+    await new Promise((r) => setTimeout(r, 1600)); // age the entry past the short window below
+
+    // A caller with a 1s window sees that entry as STALE, so it runs for real —
+    // becoming a second leader while the entry is still fresh to a 90s caller.
+    const secondLeader = spawn('bash', [PC_HEAVY, 'bash', '-c', cmd], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '1' }),
+      cwd: dir,
+      detached: true,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 1200)); // second leader is mid-run
+
+      // THE INVARIANT: the published entry is still intact while it runs.
+      expect(statSync(outFile as string).size).toBe(populatedSize);
+
+      // ...so a follower that passes the freshness gate replays REAL output,
+      // never an empty success.
+      const follower = runSync(['bash', '-c', cmd], { PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '90' });
+      expect(follower.stderr).toContain('coalesced:'); // it really did replay
+      expect(follower.stdout).toContain('REAL-OUTPUT-LINE'); // and got the output
+      expect(follower.stdout.trim()).not.toBe('');
+    } finally {
+      try { process.kill(-(secondLeader.pid as number), 'SIGKILL'); } catch { /* already gone */ }
+    }
+  }, 20_000);
+
+  it('leaves no .part temp files behind, even when a leader is hard-killed mid-run', async () => {
+    const partCount = () => {
+      const coalesceDir = join(dir, 'coalesce');
+      if (!existsSync(coalesceDir)) return 0;
+      return readdirSync(coalesceDir).filter((n) => n.endsWith('.part')).length;
+    };
+    // Clean completion publishes by rename, so the temps are consumed.
+    runSync(['bash', '-c', 'echo done'], { PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '30' });
+    expect(partCount()).toBe(0);
+
+    // A hard-killed leader must not leave its in-progress temp behind either —
+    // the EXIT trap that sweeps the lockdir sweeps these too.
+    const doomed = spawn('bash', [PC_HEAVY, 'bash', '-c', 'echo x; sleep 30'], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '30' }),
+      cwd: dir,
+      detached: true,
+    });
+    await new Promise((r) => setTimeout(r, 700));
+    process.kill(-(doomed.pid as number), 'SIGTERM'); // SIGTERM so the trap runs
+    await new Promise((r) => setTimeout(r, 700));
+    expect(partCount()).toBe(0);
+  }, 20_000);
+});
+
 describe('pc-heavy.sh — per-caller freshness barrier (EI-19340233074452707)', () => {
   const cmd = ['bash', '-c', 'echo barrier-out; echo barrier-err >&2; exit 7'];
 

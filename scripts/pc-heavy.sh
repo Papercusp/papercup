@@ -590,7 +590,10 @@ if [ "$_coalesce_enabled" = 1 ]; then
       # tolerates the sub-millisecond gap where the dir exists unstamped.
       _leader_id > "$_c_lockdir/pid" 2>/dev/null || true
       _do_cache_write=1
-      trap 'rm -rf "$_c_lockdir" 2>/dev/null' EXIT
+      # Also sweep the leader's in-progress output temps (EI-19368312145172418):
+      # a leader killed mid-run would otherwise leave a `.part` behind. Unset
+      # here, so this is a no-op on every path that never becomes a leader.
+      trap 'rm -rf "$_c_lockdir" 2>/dev/null; rm -f "$_c_out_tmp" "$_c_err_tmp" 2>/dev/null' EXIT
       break
     fi
     # Reclaim an ABANDONED lock. Unlike the flock slots above, a plain mkdir
@@ -701,10 +704,37 @@ if [ "$_do_cache_write" = 1 ]; then
   # (Stamping the earlier instant would still be sound — it only ever makes the
   # stamp smaller, i.e. the check stricter — but it needlessly rejects replays.)
   _started_at=$(date +%s)
-  "${_runner[@]}" "$@" > >(tee "$_c_out") 2> >(tee "$_c_err" >&2)
+  # Tee to PER-PROCESS TEMP files, never straight to the live $_c_out/$_c_err
+  # (EI-19368312145172418). `tee FILE` TRUNCATES at open — i.e. the instant this
+  # leader starts, before it has a single byte to write — while freshness is
+  # gated on a DIFFERENT file, $_c_exit, which still holds the PREVIOUS run's rc
+  # and mtime. Writing the live files directly therefore opens a window, lasting
+  # this entire run (~174s for a typecheck), in which a follower is told "fresh,
+  # rc=0" and then replays a file that was just emptied. Measured: a follower
+  # returned exit 0 with NO output, and `lint:tsc`'s own "no output means the
+  # toolchain broke" check turned that into a hard red pointing at the caller's
+  # toolchain rather than at this cache.
+  #
+  # Reaching it only needs two callers to disagree about freshness — routine,
+  # since PC_HEAVY_COALESCE_SEC is per-caller (default 90, this repo's own suite
+  # passes 30) — so the second caller runs as a new leader and truncates an entry
+  # the first still considers replayable.
+  #
+  # This is the same "one write, one atomic fact" rule already argued for the
+  # start-stamp above; it was applied to $_c_exit but not to the output files.
+  # Rename is atomic within a directory, so a follower sees either the complete
+  # OLD pair or the complete NEW one, never a half-written file. Publish the
+  # outputs BEFORE $_c_exit, because $_c_exit is the gate: anything that passes
+  # it must already have its output in place.
+  _c_out_tmp="$_c_out.$$.part"
+  _c_err_tmp="$_c_err.$$.part"
+  "${_runner[@]}" "$@" > >(tee "$_c_out_tmp") 2> >(tee "$_c_err_tmp" >&2)
   _rc=$?
   wait 2>/dev/null || true   # let both tee subshells flush before we publish the result
+  mv -f "$_c_out_tmp" "$_c_out" 2>/dev/null
+  mv -f "$_c_err_tmp" "$_c_err" 2>/dev/null
   printf '%s %s\n' "$_rc" "$_started_at" > "$_c_exit" 2>/dev/null
+  rm -f "$_c_out_tmp" "$_c_err_tmp" 2>/dev/null   # no-op after a successful mv
   rm -rf "$_c_lockdir" 2>/dev/null
   trap - EXIT
   exit "$_rc"

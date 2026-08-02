@@ -28,6 +28,21 @@ Then drive the **Tauri window** it opens (agent-driven UI checks:
 operator sidecar, migrations, and the webview. There is no "just the webapp"
 mode.
 
+> ⚠ **Launch via `npm run dev` — never a bare `npm run tauri dev` / `cargo tauri
+> dev`.** `~/.cargo/config.toml` pins ONE shared Rust target dir for the whole box
+> (`build.target-dir=~/.cargo-target`, set 2026-06-17 to stop per-checkout `target/`
+> dirs bloating to ~150G), so two concurrent desktop builds interleave writes to the
+> GENERATED app-manifest and **both** die with `build.rs:305 panicked: failed to run
+> tauri_build with the app-command manifest (WI-1976): failed to parse JSON`. Because
+> `tauri dev` rebuilds on change, a second instance takes down the FIRST one too —
+> on 2026-08-02 an agent starting its own instance killed the **owner's live
+> desktop** (WI-7101). The malformed file is generated, not tracked, so `git status`
+> is clean and every checked-in `capabilities/*.json` parses fine, which is exactly
+> why it reads as a mystery. `npm run dev` now claims a per-instance target-dir slot
+> (`bin/lib/claim-target-dir.sh`) so concurrent desktops cannot corrupt each other:
+> a lone launch keeps the shared dir and its warm cache, a second one isolates
+> automatically and says so. Bypassing the wrapper bypasses that protection.
+
 > **You CAN — and therefore MUST — verify UI yourself; "I can't check UI
 > headless" is a mistake, not a constraint.** Launching this shell is within
 > YOUR reach (run the command above — it's just `npm run dev`; first cargo build

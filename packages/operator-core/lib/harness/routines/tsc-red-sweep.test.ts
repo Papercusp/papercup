@@ -1,0 +1,288 @@
+/**
+ * tsc-red-sweep.test.ts — EI-19342686127995790, unit 2 (the sweeper).
+ *
+ * WHAT IS ACTUALLY AT RISK HERE. The dwell DECISION is already covered by
+ * `__tests__/tsc-red-observations.test.ts` (it is pure, and lives in the .mjs). What this
+ * file protects is the part that can only fail in production: the sweep either files
+ * NOTHING when it should (re-creating the silent-log problem it exists to close) or files
+ * REPEATEDLY for one red (the backlog noise that would train agents to ignore the lane).
+ *
+ * NOTE ON CONTROLS. Most assertions below are negatives — "capture was not called" — and a
+ * negative passes just as happily against a sweep that files nothing at all, or one that
+ * threw before reaching the call. So every rejection case is PAIRED with a positive that
+ * differs in exactly ONE dimension: same fixture, one seam flipped. A file-nothing
+ * implementation fails the paired positive; a file-everything one fails the rejection.
+ * Neither can pass this file.
+ */
+import { describe, it, expect, vi } from 'vitest';
+import {
+  tscRedSweep,
+  buildRedCapture,
+  debounceKeyFor,
+  MAX_FILES_PER_TICK,
+  DEBOUNCE_HOURS,
+  type DwelledRed,
+} from './tsc-red-sweep';
+
+const NOW = 1_800_000_000_000;
+const nowSec = Math.floor(NOW / 1000);
+
+function red(over: Partial<DwelledRed> = {}): DwelledRed {
+  return {
+    file: 'packages/operator-core/lib/some-new-file.ts',
+    firstSeen: nowSec - 3600,
+    lastSeen: nowSec - 60,
+    sightings: 9,
+    spanSec: 3540,
+    latestCount: 3,
+    ...over,
+  };
+}
+
+/** All seams stubbed to the "would file" configuration; each test flips exactly one. */
+function deps(over: Record<string, unknown> = {}) {
+  const captureFn = vi.fn(async () => ({ id: 'EI-1' }));
+  const claimFireFn = vi.fn(async () => true);
+  const recentFiresFn = vi.fn(async () => 0);
+  const pruneObservationsFn = vi.fn(() => ({ ok: true, kept: 0 }));
+  const readObservationsFn = vi.fn(() => [{ ts: nowSec - 60, file: 'x', count: 1, project: '' }]);
+  const selectDwelledRedsFn = vi.fn(() => [red()]);
+  return {
+    nowMs: NOW,
+    captureFn,
+    claimFireFn,
+    recentFiresFn,
+    pruneObservationsFn,
+    readObservationsFn,
+    selectDwelledRedsFn,
+    workspaceIdFn: () => 'ws-test',
+    ...over,
+  } as never;
+}
+
+describe('buildRedCapture', () => {
+  it('names the file, the dwell in minutes and the error count in the title', () => {
+    const c = buildRedCapture(red({ spanSec: 3600, latestCount: 4 }));
+    expect(c.title).toContain('packages/operator-core/lib/some-new-file.ts');
+    expect(c.title).toContain('60min');
+    expect(c.title).toContain('4 errors');
+  });
+
+  it('reports an unknown error count as "unknown" rather than "null"', () => {
+    // The store records `count: null` when the gate could not parse one. Rendering that
+    // as the string "null" reads as a real value and is how a diagnostic quietly lies.
+    expect(buildRedCapture(red({ latestCount: null })).title).toContain('unknown errors');
+    // CONTROL: the same field populated must NOT say unknown.
+    expect(buildRedCapture(red({ latestCount: 2 })).title).not.toContain('unknown');
+  });
+
+  it('derives evidenceAt from lastSeen, not from now', () => {
+    // evidenceAt gates capture-core's stale-evidence check: a resolved duplicate re-files
+    // only when the evidence POST-DATES the resolution. Stamping `now` would make every
+    // filing look maximally fresh and defeat that guard entirely.
+    const c = buildRedCapture(red({ lastSeen: nowSec - 600 }));
+    expect(c.evidenceAt).toBe(new Date((nowSec - 600) * 1000).toISOString());
+    expect(c.evidenceAt).not.toBe(new Date(NOW).toISOString());
+  });
+
+  it('keys dedup on the path so two different files never collide', () => {
+    const a = buildRedCapture(red({ file: 'a/one.ts' }));
+    const b = buildRedCapture(red({ file: 'b/two.ts' }));
+    expect(a.watchdogKey).toBe(debounceKeyFor('a/one.ts'));
+    expect(a.watchdogKey).not.toBe(b.watchdogKey);
+    // Same path => same key across ticks, which is what makes the debounce work at all.
+    expect(buildRedCapture(red({ file: 'a/one.ts', sightings: 99 })).watchdogKey).toBe(a.watchdogKey);
+  });
+
+  it('carries the path in paths[] for the protected-path gate', () => {
+    expect(buildRedCapture(red({ file: 'a/one.ts' })).paths).toEqual(['a/one.ts']);
+  });
+
+  it('tells the reader to re-run the ownership test before claiming', () => {
+    // The measured base rate is self-healing, so a filed red may already be fixed by the
+    // time a human or agent reads it. A filing that does not say so invites wasted work.
+    const body = buildRedCapture(red()).body;
+    expect(body).toContain('git status --porcelain');
+    expect(body).toContain('lint:tsc');
+  });
+});
+
+describe('tscRedSweep — files a dwelled red', () => {
+  it('files exactly one improvement for a dwelled red', async () => {
+    const d = deps();
+    const out = await tscRedSweep(d);
+    expect(d.captureFn).toHaveBeenCalledTimes(1);
+    expect(out).toHaveLength(1);
+    expect(out[0].outcome).toBe('filed');
+  });
+
+  it('files it as a major bug, unassigned, with open-scoped dedup', async () => {
+    const d = deps();
+    await tscRedSweep(d);
+    const arg = d.captureFn.mock.calls[0][0];
+    expect(arg.kind).toBe('bug');
+    // A committed non-baselined red reds the SHARED gate — it blocks everyone, not just
+    // the author. Downgrading this to 'minor' is how it gets ignored.
+    expect(arg.severity).toBe('major');
+    // The premise of the filing is that the red is OWNERLESS; auto-claiming would put a
+    // machine's name on work no machine is doing.
+    expect(arg.assignee).toBeUndefined();
+    // A RESOLVED duplicate means the red came back — a regression worth re-filing.
+    expect(arg.dedupScope).toBe('open');
+    expect(arg.watchdogKey).toBe(debounceKeyFor(red().file));
+  });
+
+  it('does not file when nothing has dwelled — and does not even look up the workspace', async () => {
+    const workspaceIdFn = vi.fn(() => 'ws-test');
+    const d = deps({ selectDwelledRedsFn: () => [], workspaceIdFn });
+    const out = await tscRedSweep(d);
+    expect(out).toEqual([]);
+    expect(d.captureFn).not.toHaveBeenCalled();
+    expect(workspaceIdFn).not.toHaveBeenCalled();
+    // CONTROL: the identical sweep WITH a dwelled red does file, so the negative above
+    // cannot be satisfied by a sweep that is simply broken.
+    const d2 = deps();
+    await tscRedSweep(d2);
+    expect(d2.captureFn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('tscRedSweep — debounce', () => {
+  it('does NOT re-file a red already filed inside the window', async () => {
+    const d = deps({ recentFiresFn: vi.fn(async () => 1) });
+    const out = await tscRedSweep(d);
+    expect(d.captureFn).not.toHaveBeenCalled();
+    expect(out[0].outcome).toBe('debounced');
+    // CONTROL: same fixture, prior-fire count back to 0 => it files.
+    const d2 = deps({ recentFiresFn: vi.fn(async () => 0) });
+    await tscRedSweep(d2);
+    expect(d2.captureFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT file when the single-flight claim is lost to a racing tick', async () => {
+    // Two overlapping ticks both pass the recentFires read; only the one that wins the
+    // atomic claim may file. Without this, a slow capture duplicates the item.
+    const d = deps({ claimFireFn: vi.fn(async () => false) });
+    const out = await tscRedSweep(d);
+    expect(d.captureFn).not.toHaveBeenCalled();
+    expect(out[0].reason).toContain('raced');
+    // CONTROL: winning the claim files.
+    const d2 = deps({ claimFireFn: vi.fn(async () => true) });
+    await tscRedSweep(d2);
+    expect(d2.captureFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('claims the debounce slot with the path embedded verbatim in the reason', async () => {
+    // claimWatchdogFire matches its scope key with `reason LIKE '%key%'`, so a reason that
+    // omits the key silently debounces ALL paths against each other — one red would then
+    // suppress every other red for 24h.
+    const d = deps();
+    await tscRedSweep(d);
+    const claim = d.claimFireFn.mock.calls[0][0];
+    expect(claim.reason).toContain(red().file);
+    expect(claim.source).toBe('tsc-new-file-red');
+    expect(claim.windowHours).toBe(DEBOUNCE_HOURS);
+  });
+
+  it('scopes the debounce per path, so one red does not suppress another', async () => {
+    const seen: string[] = [];
+    const d = deps({
+      selectDwelledRedsFn: () => [red({ file: 'a/one.ts' }), red({ file: 'b/two.ts' })],
+      recentFiresFn: vi.fn(async (_ws: string, installSlug: string) => {
+        seen.push(installSlug);
+        return 0;
+      }),
+    });
+    await tscRedSweep(d);
+    expect(seen).toEqual([debounceKeyFor('a/one.ts'), debounceKeyFor('b/two.ts')]);
+    expect(d.captureFn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('tscRedSweep — blast radius', () => {
+  it('caps how many it files in one tick, taking the longest-standing first', async () => {
+    const many = Array.from({ length: 7 }, (_, i) =>
+      red({ file: `f${i}.ts`, spanSec: 7000 - i * 100 }),
+    );
+    const d = deps({ selectDwelledRedsFn: () => many, maxFiles: 2 });
+    const out = await tscRedSweep(d);
+    expect(d.captureFn).toHaveBeenCalledTimes(2);
+    expect(d.captureFn.mock.calls[0][0].title).toContain('f0.ts');
+    expect(out.filter((r) => r.outcome === 'capped')).toHaveLength(5);
+    // CONTROL: the identical fixture with the cap raised files all 7, so the assertion
+    // above is measuring the CAP and not some unrelated failure to file.
+    const d2 = deps({ selectDwelledRedsFn: () => many, maxFiles: 7 });
+    await tscRedSweep(d2);
+    expect(d2.captureFn).toHaveBeenCalledTimes(7);
+  });
+
+  it('defaults the cap to MAX_FILES_PER_TICK', async () => {
+    const many = Array.from({ length: MAX_FILES_PER_TICK + 3 }, (_, i) => red({ file: `f${i}.ts` }));
+    const d = deps({ selectDwelledRedsFn: () => many });
+    await tscRedSweep(d);
+    expect(d.captureFn).toHaveBeenCalledTimes(MAX_FILES_PER_TICK);
+  });
+});
+
+describe('tscRedSweep — fail-soft', () => {
+  it('never throws when the store cannot be read, and still prunes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {}); // expected diagnostic log
+    const d = deps({
+      readObservationsFn: () => {
+        throw new Error('EACCES');
+      },
+    });
+    await expect(tscRedSweep(d)).resolves.toEqual([]);
+    expect(d.captureFn).not.toHaveBeenCalled();
+    // The swallow must still be OBSERVABLE — a fail-soft path that logs nothing is
+    // indistinguishable from a sweep that silently stopped running.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('EACCES');
+    // Retention still runs: the store is bounded even on a tick that read nothing.
+    expect(d.pruneObservationsFn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('records a per-file error and keeps going rather than abandoning the tick', async () => {
+    // One unfileable red must not blind the sweep to the others — that would make the
+    // sweep's coverage depend on alphabetical luck.
+    const captureFn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockResolvedValueOnce({ id: 'EI-2' });
+    const d = deps({
+      selectDwelledRedsFn: () => [red({ file: 'a/one.ts' }), red({ file: 'b/two.ts' })],
+      captureFn,
+    });
+    const out = await tscRedSweep(d);
+    expect(out[0].outcome).toBe('error');
+    expect(out[0].reason).toContain('db down');
+    expect(out[1].outcome).toBe('filed');
+  });
+
+  it('prunes even on a tick where filing failed', async () => {
+    // Retention is what BOUNDS the store; skipping the prune on the error path turns a
+    // transient DB outage into an unbounded file in the runtime dir.
+    const d = deps({
+      captureFn: vi.fn().mockRejectedValue(new Error('db down')),
+    });
+    await tscRedSweep(d);
+    expect(d.pruneObservationsFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('prunes on the happy path too', async () => {
+    const d = deps();
+    await tscRedSweep(d);
+    expect(d.pruneObservationsFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a failing prune mask a successful filing', async () => {
+    const d = deps({
+      pruneObservationsFn: vi.fn(() => {
+        throw new Error('read-only fs');
+      }),
+    });
+    const out = await tscRedSweep(d);
+    expect(out[0].outcome).toBe('filed');
+  });
+});

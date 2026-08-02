@@ -373,7 +373,7 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
   {
     // Tier 1 — bg-host ONLY. Verified: no non-test importer outside the bg-host
     // sweep set itself, so a deploy can never be the activation path for any consumer.
-    match: /^packages\/operator-core\/lib\/(harness\/routines\/(reconcile-loop-routines|reconcile-plan-runs|autoloop-chronic-failure|claim|learning-loop-health-sweep)|rubric-staleness-watchdog|wall-lapse-watchdog|agent-state-divergence-sweep|agent-plane-measurement-sweep|release-deploy-staleness-watchdog|search\/session-ingest-lag-watchdog|sync\/hyperbee\/cold-join-(canary|executor))\.ts$/,
+    match: /^packages\/operator-core\/lib\/(harness\/routines\/(reconcile-loop-routines|reconcile-plan-runs|autoloop-chronic-failure|claim|learning-loop-health-sweep|tsc-red-sweep)|rubric-staleness-watchdog|wall-lapse-watchdog|agent-state-divergence-sweep|agent-plane-measurement-sweep|release-deploy-staleness-watchdog|search\/session-ingest-lag-watchdog|sync\/hyperbee\/cold-join-(canary|executor))\.ts$/,
     own: {
       host: 'bg-host',
       releasePipelineApplies: false,

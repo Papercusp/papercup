@@ -1018,6 +1018,30 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'learning-loop-health-sweep' },
   );
 
+  // EI-19342686127995790: the INTERPRETER for the new-file tsc reds the baseline gate
+  // observes on its hot path. The gate recomputes that finding ~9x/hour (every agent's
+  // post-edit `lint:tsc`) and recorded it ZERO times — it went to a stdout block agents
+  // skim past on the way to `TSC_EXIT=`. But filing on first sight is the WRONG remedy:
+  // measured 2026-08-02, 4 of 5 committed reds cleared unaided within ~15 minutes, so
+  // eager filing would mint items that close themselves unread. This files only reds that
+  // OUTLIVE the dwell threshold — the ones whose author has moved on and which therefore
+  // red the shared green-checkpoint with nobody on them. Own 24h per-path debounce ledger
+  // (source 'tsc-new-file-red'). Fail-soft: a missing/corrupt store files nothing.
+  await DBOS.runStep(
+    async () => {
+      const { tscRedSweep } = await import('../harness/routines/tsc-red-sweep');
+      const results = await tscRedSweep();
+      for (const r of results) {
+        if (r.outcome === 'debounced') continue;
+        console.warn(
+          `[tsc-red-sweep] ${r.outcome}: ${r.file} (${Math.round(r.spanSec / 60)}min, ` +
+            `${r.sightings} sightings) — ${r.reason.slice(0, 160)}`,
+        );
+      }
+    },
+    { name: 'tsc-red-sweep' },
+  );
+
   // scheduled-recurring-plans-2026-06-16 (Phase 5) — the scheduled-plan RUN completion +
   // governance sweep. A `system:plan-run` fire mints a plan_runs row at status='running' +
   // work_items; nothing settled the run when those finished, and the cost-cap / failure-streak
