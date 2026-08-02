@@ -367,9 +367,19 @@ neither matched the candidate the tool was reporting, and reading the wrong one 
 confident wrong answer that went out to 16 agents. A worktree HEAD is a *live* read of a tree
 that may be between runs, mid-reset, or simply not the one the gate is using.
 
-Nor can you settle it from `started_at`/`elapsed_sec` when the response says the manual unit is
-**idle** and `held_externally: true` — those fields then describe the idle unit, not the cron
-process actually holding the run-lock, and `elapsed_sec` is only `now − started_at` recomputed.
+⚠ On that same `held_externally: true` (cron) reply the fields have **OPPOSITE** trustworthiness, so
+do not tar them with one brush — this file used to, and discredited the only reliable one (WI-7041):
+
+- **`started_at` / `elapsed_sec` — TRUST THEM.** They do NOT describe the idle manual unit. They come
+  from `checkRunLockHeld`, which reads the RUN LOCK's owner record and returns nothing unless
+  `pidAlive(owner.pid)` — so they describe the process actually holding the lock, i.e. the cron run.
+  Measured 2026-08-02 11:48Z: `ps` put pid 514562 at 11:15:03Z, the tool reported 11:15:04.561Z and
+  `elapsedSec 1980` (33m), matching wall-clock. Run age + a liveness-verified lock owner is exactly
+  what separates "healthy long run, wait it out" from "wedged, intervene".
+- **`candidate` — AN INFERENCE, not an observation.** This branch returns before the log parse and
+  reports the checkpoint checkout's live HEAD, which silently changes between two reads and is right
+  only while that checkout stays pinned. This is the field that deserves the caution — settle it
+  from the `inFlightRetriage` marker instead.
 
 **The only primary observation is the verdict itself, which names its own candidate.** When the
 containment question cannot be settled from primary evidence, say so and wait — do not arbitrate

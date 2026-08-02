@@ -52,6 +52,94 @@ function makeRow(devicePubkey: string, over?: Partial<SharedPresenceRow>): Share
   };
 }
 
+/**
+ * The two CAPABILITY fields on a presence row — `runs_routines` (mig 682,
+ * EI-18761517980514694) and `active_routines` (mig 724, EI-19330771435294981).
+ *
+ * Both carry the same two-sided contract, and NEITHER was pinned before this
+ * describe: they must ride the SIGNED bytes (an election decides candidacy from
+ * them, so an unsigned field lets a tamperer capture a lease — the WI-6996 freeze
+ * shape), while being emitted ONLY when present so a publisher that does not send
+ * them produces byte-identical frames to the pre-migration wire form and
+ * verification stays stable across a mixed-version deploy window.
+ */
+describe('presence frame capability fields — signed, but omitted when absent', () => {
+  it('WIRE COMPAT: an absent capability field signs byte-identically to the pre-migration form', async () => {
+    const dev = makeDevice();
+    const bare = await buildPresencePutFrame(makeRow(dev.pubB64), T0, dev.sign);
+    // A publisher that resolves "no advertised capability" emits null for both —
+    // and null must be indistinguishable from a field that does not exist at all,
+    // or every non-capable node on the old build fails verification on the new one.
+    const explicitlyNull = await buildPresencePutFrame(
+      makeRow(dev.pubB64, { runs_routines: null, active_routines: null }),
+      T0,
+      dev.sign,
+    );
+    expect(explicitlyNull.sig).toBe(bare.sig);
+    expect(verifyPresenceFrame(explicitlyNull, { nowMs: T0 })).toBe(true);
+  });
+
+  it('an EMPTY routine set is not the same bytes as a populated one', async () => {
+    const dev = makeDevice();
+    const empty = await buildPresencePutFrame(
+      makeRow(dev.pubB64, { active_routines: [] }),
+      T0,
+      dev.sign,
+    );
+    const populated = await buildPresencePutFrame(
+      makeRow(dev.pubB64, { active_routines: ['git-sync'] }),
+      T0,
+      dev.sign,
+    );
+    expect(empty.sig).not.toBe(populated.sig);
+    expect(verifyPresenceFrame(populated, { nowMs: T0 })).toBe(true);
+  });
+
+  it('TAMPER: injecting a routine into a signed frame fails verify', async () => {
+    // The attack this exists to stop: claim 'git-sync' on a peer's row and win the
+    // integrator lease, reproducing the ~5.5h origin/staging freeze of WI-6996.
+    const dev = makeDevice();
+    const frame = await buildPresencePutFrame(
+      makeRow(dev.pubB64, { active_routines: ['gym-cycle'] }),
+      T0,
+      dev.sign,
+    );
+    expect(verifyPresenceFrame(frame, { nowMs: T0 })).toBe(true);
+    const tampered = {
+      ...frame,
+      row: { ...frame.row!, active_routines: ['gym-cycle', 'git-sync'] },
+    } as SignedPresenceFrame;
+    expect(verifyPresenceFrame(tampered, { nowMs: T0 })).toBe(false);
+  });
+
+  it('TAMPER: flipping the runner bit into a signed frame fails verify', async () => {
+    const dev = makeDevice();
+    const frame = await buildPresencePutFrame(makeRow(dev.pubB64), T0, dev.sign);
+    const tampered = {
+      ...frame,
+      row: { ...frame.row!, runs_routines: true },
+    } as SignedPresenceFrame;
+    expect(verifyPresenceFrame(tampered, { nowMs: T0 })).toBe(false);
+  });
+
+  it('ROUTINE-SET ORDER is part of the signature, which is why the publisher sorts', async () => {
+    // nodeActiveRoutines dedupes + sorts precisely so an UNCHANGED set cannot churn
+    // these bytes between announces on incidental row ordering from the reader.
+    const dev = makeDevice();
+    const ascending = await buildPresencePutFrame(
+      makeRow(dev.pubB64, { active_routines: ['git-sync', 'gym-cycle'] }),
+      T0,
+      dev.sign,
+    );
+    const reversed = await buildPresencePutFrame(
+      makeRow(dev.pubB64, { active_routines: ['gym-cycle', 'git-sync'] }),
+      T0,
+      dev.sign,
+    );
+    expect(ascending.sig).not.toBe(reversed.sig);
+  });
+});
+
 describe('presence frame sign/verify', () => {
   it('a signed put frame round-trips verify', async () => {
     const dev = makeDevice();

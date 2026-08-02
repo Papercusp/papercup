@@ -224,7 +224,12 @@ function row(record: WorkOfferStoreRecord = requestRecord()) {
 function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
   const setDisposition = vi.fn(async () => true);
   const spawnMembers = vi.fn(async () => ({ opened: 2, failed: 0, firstError: null }));
-  const emitReceipt = vi.fn(async () => ({ ok: true }) as any);
+  // The `_args` parameter is load-bearing for TYPES, not behaviour: declared
+  // zero-arg, the mock's calls are typed `[]`, so reading back the emitted
+  // receipt (`emitReceipt.mock.calls[0]![0]`) is a TS2493 tuple-index error.
+  // The honored-receipt tests assert on the emitted payload's CONTENT, so they
+  // need that read (EI-19333624101736074).
+  const emitReceipt = vi.fn(async (_args?: any) => ({ ok: true }) as any);
   // Passing runtime probe by default so honor tests never depend on whether the
   // TEST host has `claude`/`omp` on its login PATH (WI-5306). The absent-runtime
   // path is covered by its own test that injects a failing probe.

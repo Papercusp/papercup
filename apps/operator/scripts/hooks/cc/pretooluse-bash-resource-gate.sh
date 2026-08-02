@@ -2609,6 +2609,7 @@ def _payload_literal_tree_path(body, canon, cwd):
 
 
 def _interpreter_write_guard():
+    global ADVISORY
     _canon = _canonical_tree_root()
     if not _canon:
         return
@@ -2627,6 +2628,23 @@ def _interpreter_write_guard():
         return  # e.g. a plain `node script.js` — the code lives in a real
         # file, which Edit already locks; nothing new for this guard to see.
     _bodies = _extract_quoted_flag_bodies(command) + _extract_heredoc_bodies(command)
+    # EI-18828866497684686: a write whose PATH ARGUMENT is COMPUTED (joined
+    # from a parsed log, a loop variable, an env var, string concatenation —
+    # anything that is not a plain quoted literal) is structurally invisible
+    # to `_payload_literal_tree_path`, same "honest limit" this guard's own
+    # header comment already documents as permanent (no static scan of the
+    # command text can see a runtime-constructed path). Silently allowing it
+    # is the correct call — deny-by-default here would flag the overwhelmingly
+    # common, SAFE case of a script writing an out-of-tree scratch/log file via
+    # a computed path too, reopening exactly the false-positive class this file
+    # has already paid for six times over (see the family of EI-* comments
+    # above). But a SILENT pass reads as an endorsement an agent has no way to
+    # tell apart from "this guard checked and found nothing wrong" — so when a
+    # write-indicating interpreter body clears every check above with NO
+    # literal in-tree hit, say so, once per session, non-blocking: the guard
+    # only sees literal paths; a computed one inside the tree still bypasses
+    # locking and this guard cannot catch it.
+    _saw_write_no_hit = False
     for _body in _bodies:
         if not _body_indicates_file_write(_body):
             continue  # a read, a stdout/stderr print, or no recognized file
@@ -2644,6 +2662,21 @@ def _interpreter_write_guard():
                 'Genuinely a scratch/log file? Write it outside the tree '
                 '(~/.papercusp/scratch or /tmp).' % (_interp, _hit)
             )
+        else:
+            _saw_write_no_hit = True
+    if _saw_write_no_hit and not ADVISORY:
+        ADVISORY = (
+            'shell-write guard notice (EI-18828866497684686): this `%s` invocation writes a '
+            'file (open()/write_text()/writeFileSync()/etc.) but no LITERAL in-tree path was '
+            'found among its write-call arguments. This guard only recognizes a plain quoted '
+            'path string — it cannot see a COMPUTED path (joined from a parsed log, a loop '
+            'variable, an env var, string concatenation, …). If the write actually lands '
+            'inside the shared staging tree, no lock is being claimed and this guard cannot '
+            'catch that. If you are rewriting tracked file(s) by a computed path, prefer '
+            'Edit/Write per file (they claim the lock for you), or claim it yourself first: '
+            'locks:acquire { paths, intent }. Advisory only; this command is proceeding as '
+            'issued.' % _interp
+        )
 
 
 try:

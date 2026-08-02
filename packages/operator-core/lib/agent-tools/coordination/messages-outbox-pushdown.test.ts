@@ -33,7 +33,12 @@ vi.mock('./log', () => ({
 }));
 
 import type { CoordEnvelope } from '@papercusp/coordination/core';
-import { readOutbox, OUTBOX_FAST_PATH_ROW_CAP } from './messages';
+import {
+  readOutbox,
+  readOutboxWindow,
+  OUTBOX_FAST_PATH_ROW_CAP,
+  INBOX_PAGE_ROWS,
+} from './messages';
 
 function env(p: Partial<CoordEnvelope> = {}): CoordEnvelope {
   return {
@@ -223,5 +228,101 @@ describe('readOutbox — PG fast path (sender pushdown)', () => {
     const viaLines = await readOutbox('alice');
 
     expect(viaPg).toEqual(viaLines);
+  });
+});
+
+/**
+ * EI-19340198432470691 — the BOUNDED window half of readOutbox.
+ *
+ * The single-shot path above was covered; the window path was not, in either
+ * form. It is the half that can fail SILENTLY: a stopping rule that never fires
+ * restores the unbounded read this exists to remove, and a dropped `exhausted`
+ * turns "48 messages" from a fact into a floor presented as a census.
+ *
+ * The keyset pager issues `SELECT id, body` (it needs the cursor column), which
+ * is why it needs its own primer — `primeSql` routes on `SELECT body` and would
+ * hand the pager the fragment stub instead of rows.
+ */
+function primeWindowSql(pages: { id: number; body: unknown }[][]) {
+  const queries: unknown[][] = [];
+  sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = Array.isArray(strings) ? strings.join('?') : String(strings);
+    if (!text.includes('SELECT id, body')) return { fragment: text, values };
+    queries.push(values);
+    return Promise.resolve(pages[queries.length - 1] ?? []);
+  });
+  return queries;
+}
+
+/** A page of `n` envelopes from `alice`, newest-first like the SQL `id DESC`. */
+const page = (n: number, startId = 0) =>
+  Array.from({ length: n }, (_, i) => ({
+    id: startId + n - i,
+    body: env({ msg_id: `m${startId + n - i}`, ts: new Date(Date.now() - i * 1000).toISOString() }),
+  }));
+
+describe('readOutboxWindow — bounded keyset-paged read (EI-19340198432470691)', () => {
+  beforeEach(() => {
+    fastPathState.on = true;
+  });
+
+  it('stops at the first page once the caller has enough, and reports NOT exhausted', async () => {
+    const queries = primeWindowSql([page(INBOX_PAGE_ROWS), page(INBOX_PAGE_ROWS, 5000)]);
+    const got = await readOutboxWindow('alice', {}, (entries) => entries.length >= 50);
+    // One page only: a full page that satisfied the rule must not fetch another.
+    expect(queries).toHaveLength(1);
+    expect(got.entries.length).toBe(INBOX_PAGE_ROWS);
+    expect(got.rowsScanned).toBe(INBOX_PAGE_ROWS);
+    expect(got.pages).toBe(1);
+    // The caller stopped us early, so older mail may exist — say so.
+    expect(got.exhausted).toBe(false);
+  });
+
+  it('pages on when the rule is unsatisfied, and a SHORT page means exhausted', async () => {
+    const queries = primeWindowSql([page(INBOX_PAGE_ROWS), page(3, 5000)]);
+    const got = await readOutboxWindow('alice', {}, () => false);
+    expect(queries).toHaveLength(2);
+    expect(got.pages).toBe(2);
+    expect(got.rowsScanned).toBe(INBOX_PAGE_ROWS + 3);
+    // History ran out rather than the caller stopping us — the count is real.
+    expect(got.exhausted).toBe(true);
+  });
+
+  it('a first page shorter than the page size is exhausted immediately', async () => {
+    primeWindowSql([page(2)]);
+    const got = await readOutboxWindow('alice', {}, () => false);
+    expect(got.pages).toBe(1);
+    expect(got.exhausted).toBe(true);
+    expect(got.entries).toHaveLength(2);
+  });
+
+  it('applies the sender filter and returns ASCENDING despite paging id DESC', async () => {
+    primeWindowSql([
+      [
+        { id: 3, body: env({ msg_id: 'a2', ts: '2026-08-02T12:00:02.000Z' }) },
+        { id: 2, body: env({ msg_id: 'b1', from: 'bob', ts: '2026-08-02T12:00:03.000Z' }) },
+        { id: 1, body: env({ msg_id: 'a1', ts: '2026-08-02T12:00:01.000Z' }) },
+      ],
+    ]);
+    const got = await readOutboxWindow('alice', {}, () => false);
+    expect(got.entries.map((e) => e.msg_id)).toEqual(['a1', 'a2']); // bob dropped, ascending
+  });
+
+  it('readOutbox(…, window) DELEGATES here — same entries, boundary discarded', async () => {
+    primeWindowSql([page(4)]);
+    const viaArrayForm = await readOutbox('alice', {}, { enough: () => false });
+    primeWindowSql([page(4)]);
+    const viaWindowForm = await readOutboxWindow('alice', {}, () => false);
+    // One implementation, so the two shapes cannot drift in what they return.
+    expect(viaArrayForm).toEqual(viaWindowForm.entries);
+  });
+
+  it('falls back to the authoritative full read on a non-PG seam, reporting exhausted', async () => {
+    fastPathState.on = false;
+    readLinesMock.mockResolvedValue([env({ msg_id: 'a1' }), env({ msg_id: 'b1', from: 'bob' })]);
+    const got = await readOutboxWindow('alice', {}, () => false);
+    expect(got.entries.map((e) => e.msg_id)).toEqual(['a1']);
+    // That read IS the whole history, so the boundary claim is honest.
+    expect(got.exhausted).toBe(true);
   });
 });

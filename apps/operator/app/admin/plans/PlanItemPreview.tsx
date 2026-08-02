@@ -227,7 +227,9 @@ export function buildPlanItemAttention({
     id: `plan-item:${planSlug}:${itemId}`,
     kind: 'plan-item',
     source: 'plan',
-    harnessSlug: harnessSlug ?? null,
+    // `undefined`, not `null` — the wire type's optional fields are `?: T` so a
+    // synthesized item matches what the LIST feed actually ships (WI-7039/D-025).
+    harnessSlug: harnessSlug ?? undefined,
     planSlug,
     itemRef: itemId,
     title: selected?.text ?? itemId,

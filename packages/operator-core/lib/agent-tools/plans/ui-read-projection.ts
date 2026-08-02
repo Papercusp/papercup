@@ -135,6 +135,22 @@ function omitNullValues(obj: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
+/**
+ * The null-omission half of the attention projection, for the DETAIL read
+ * (`plans.attentionItem`), which deliberately bypasses `projectPlansReadForUi`
+ * via `uiProjection: false` so it can keep `actions` and the unclipped `body`.
+ *
+ * It still needs THIS, so the two reads agree on one wire contract: the client's
+ * `AttentionItem` declares the affected fields `?: T` (not `T | null`), and a
+ * detail read that shipped `triageNote: null` against that declaration would
+ * make it a lie in the opposite direction from the one D-025 set out to fix.
+ * The byte saving on one item is noise; the uniform contract is the point.
+ */
+export function omitNullsForAttentionDetail(item: unknown): unknown {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+  return omitNullValues(item as Record<string, unknown>);
+}
+
 function projectItems(data: Record<string, unknown>): Record<string, unknown> {
   const items = (data as { items?: unknown }).items;
   if (!Array.isArray(items)) return data;

@@ -13,6 +13,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
   CADENCE_RUNNER_ROUTINES,
+  nodeActiveRoutines,
   nodeRunsCadenceLoops,
   _resetCadenceRunnerCapabilityCache,
 } from './cadence-runner-capability';
@@ -138,6 +139,164 @@ describe('nodeRunsCadenceLoops — the TTL cache', () => {
     expect(await nodeRunsCadenceLoops(WS, 'other-harness', deps)).toBe(false);
     expect(seen).toEqual([`${WS}::${HARNESS}`, `${WS}::other-harness`]);
   });
+});
+
+/**
+ * nodeActiveRoutines — the published routine SET (EI-19330771435294981, mig 724).
+ *
+ * Why a set rather than a second boolean: WI-6996 pointed the git-sync INTEGRATOR
+ * election at `runs_routines`, a bit about a DIFFERENT loop. Measured on papercusp
+ * 2026-08-02 that bit was null on every live presence row (gym-cycle inactive,
+ * scout-cycle nonexistent), so the narrowing resolved to ∅ and integrator peer
+ * arbitration was turned OFF rather than tightened. Publishing the facts lets each
+ * election ask its own question instead of sharing one coarse bit.
+ */
+describe('nodeActiveRoutines — the published capability SET', () => {
+  it('publishes the active routine names when the routine host launches here', async () => {
+    expect(
+      await nodeActiveRoutines(WS, HARNESS, {
+        dbosLaunches: () => true,
+        activeRoutineNames: async () => ['git-sync', 'gym-cycle'],
+        ttlMs: 0,
+      }),
+    ).toEqual(['git-sync', 'gym-cycle']);
+  });
+
+  it('publishes NOTHING on a request-only host, even with routines armed', async () => {
+    // Same both-legs rule as the boolean: an armed routine on a host that never
+    // launches the routine host NEVER FIRES, so advertising it would claim a
+    // capability this node does not have — exactly the WI-6996 failure shape.
+    let asked = false;
+    expect(
+      await nodeActiveRoutines(WS, HARNESS, {
+        dbosLaunches: () => false,
+        activeRoutineNames: async () => {
+          asked = true;
+          return ['git-sync'];
+        },
+        ttlMs: 0,
+      }),
+    ).toEqual([]);
+    expect(asked).toBe(false);
+  });
+
+  it('DEDUPES and SORTS, so an unchanged set produces byte-identical signed frames', async () => {
+    // The set rides presenceFrameSigningBytes. Were the publisher to pass the
+    // reader's raw row order through, an unchanged routine set could re-order
+    // between announces and churn the signed bytes for no reason. Normalizing in
+    // the resolver makes determinism independent of what the reader returns.
+    expect(
+      await nodeActiveRoutines(WS, HARNESS, {
+        dbosLaunches: () => true,
+        activeRoutineNames: async () => ['gym-cycle', 'git-sync', 'gym-cycle'],
+        ttlMs: 0,
+      }),
+    ).toEqual(['git-sync', 'gym-cycle']);
+  });
+
+  it('never throws — a failed lookup publishes the EMPTY set (the safe direction)', async () => {
+    // Empty can never make an election go dark: both selectors re-add SELF
+    // unconditionally after the exclusion filter, so the worst case is a duplicate,
+    // never a stall. Over-reporting is what elects a node that cannot do the work.
+    expect(
+      await nodeActiveRoutines(WS, HARNESS, {
+        dbosLaunches: () => true,
+        activeRoutineNames: async () => {
+          throw new Error('routines table unreachable');
+        },
+        ttlMs: 0,
+      }),
+    ).toEqual([]);
+  });
+
+  it('returns a FROZEN array, so a caller cannot poison the shared cache entry', async () => {
+    const set = await nodeActiveRoutines(WS, HARNESS, {
+      dbosLaunches: () => true,
+      activeRoutineNames: async () => ['git-sync'],
+    });
+    expect(Object.isFrozen(set)).toBe(true);
+    // Cached by reference and handed to every subsequent announce — a mutation
+    // here would silently rewrite what this node advertises to its peers.
+    expect(() => (set as string[]).push('gym-cycle')).toThrow();
+    expect(
+      await nodeActiveRoutines(WS, HARNESS, {
+        dbosLaunches: () => true,
+        activeRoutineNames: async () => ['git-sync'],
+      }),
+    ).toEqual(['git-sync']);
+  });
+
+  it('SELF-HEALS on disarm, on the same TTL as the boolean', async () => {
+    let armed = ['git-sync', 'gym-cycle'];
+    let now = 1_000_000;
+    let calls = 0;
+    const deps = {
+      now: () => now,
+      dbosLaunches: () => true,
+      activeRoutineNames: async () => {
+        calls++;
+        return [...armed];
+      },
+      ttlMs: 60_000,
+    };
+    expect(await nodeActiveRoutines(WS, HARNESS, deps)).toEqual(['git-sync', 'gym-cycle']);
+    expect(await nodeActiveRoutines(WS, HARNESS, deps)).toEqual(['git-sync', 'gym-cycle']);
+    expect(calls).toBe(1); // one cached read per announce, not one per poll
+
+    armed = ['gym-cycle']; // git-sync disarmed here
+    now += 60_001; // still well inside the 90s authority staleness window
+    expect(await nodeActiveRoutines(WS, HARNESS, deps)).toEqual(['gym-cycle']);
+  });
+
+  it('caches per (workspace, harness) — one harness cannot answer for another', async () => {
+    const seen: string[] = [];
+    const deps = {
+      dbosLaunches: () => true,
+      activeRoutineNames: async (ws: string, h: string) => {
+        seen.push(`${ws}::${h}`);
+        return h === HARNESS ? ['gym-cycle'] : [];
+      },
+    };
+    expect(await nodeActiveRoutines(WS, HARNESS, deps)).toEqual(['gym-cycle']);
+    expect(await nodeActiveRoutines(WS, 'other-harness', deps)).toEqual([]);
+    expect(seen).toEqual([`${WS}::${HARNESS}`, `${WS}::other-harness`]);
+  });
+});
+
+describe('nodeActiveRoutines ⊃ nodeRunsCadenceLoops — the invariant P-004 rests on', () => {
+  // P-004 replaces the separately-published boolean with a derivation:
+  //   runs_routines  ⇔  set ∩ CADENCE_RUNNER_ROUTINES ≠ ∅
+  // That is only a safe swap if the two agree on EVERY input today, including the
+  // dbos leg. Pinned here so P-004 cannot silently widen or narrow the predicate.
+  const cases: Array<{ dbos: boolean; routines: string[]; label: string }> = [
+    { dbos: true, routines: ['gym-cycle'], label: 'a cadence routine armed' },
+    { dbos: true, routines: ['scout-cycle', 'git-sync'], label: 'cadence + unrelated' },
+    { dbos: true, routines: ['git-sync'], label: 'ONLY the unrelated routine' },
+    { dbos: true, routines: [], label: 'no routines at all' },
+    { dbos: false, routines: ['gym-cycle'], label: 'request-only host' },
+  ];
+
+  for (const { dbos, routines, label } of cases) {
+    it(`agrees for: ${label}`, async () => {
+      _resetCadenceRunnerCapabilityCache();
+      const derived = (
+        await nodeActiveRoutines(WS, HARNESS, {
+          dbosLaunches: () => dbos,
+          activeRoutineNames: async () => [...routines],
+          ttlMs: 0,
+        })
+      ).some((n) => (CADENCE_RUNNER_ROUTINES as readonly string[]).includes(n));
+
+      const published = await nodeRunsCadenceLoops(WS, HARNESS, {
+        dbosLaunches: () => dbos,
+        hasActiveCadenceRoutine: async () =>
+          routines.some((n) => (CADENCE_RUNNER_ROUTINES as readonly string[]).includes(n)),
+        ttlMs: 0,
+      });
+
+      expect(derived).toBe(published);
+    });
+  }
 });
 
 describe('CADENCE_RUNNER_ROUTINES', () => {

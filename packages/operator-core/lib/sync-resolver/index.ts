@@ -3085,7 +3085,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         // duplication useInboxAttention dedupes client-side, WI-5337) — first
         // match wins, they are the same object.
         const hit = items.find((it) => (it as { id?: unknown })?.id === id);
-        if (hit) return [hit];
+        if (hit) {
+          // WI-7039/D-025: the LIST feed omits null-valued keys, and the client
+          // wire type declares those fields `?: T` on the strength of it. The
+          // detail read skips the rest of the UI projection on purpose (it is
+          // what re-supplies `actions` + the unclipped `body`), but it must
+          // still honour that one contract or the declaration is false here.
+          const { omitNullsForAttentionDetail } = await import(
+            '../agent-tools/plans/ui-read-projection'
+          );
+          return [omitNullsForAttentionDetail(hit)];
+        }
       }
       return [];
     },

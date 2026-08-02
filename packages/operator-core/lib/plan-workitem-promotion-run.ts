@@ -41,7 +41,7 @@ import {
   listConvertedPlanItemRefs,
   type PlanItemStamp,
 } from './plan-items/convert';
-import { syncFeatureBlockEdges } from './dbos/feature-blockers-edges';
+import { getFeatureBlockers, syncFeatureBlockEdges } from './dbos/feature-blockers-edges';
 import { syncLinkedWorkItemsToPlanLane, type PlanLaneSyncStatus } from './plan-items/reconcile-linked-work-items';
 import { computePromotions, type OpenPlanItem } from './plan-workitem-promotion';
 
@@ -84,6 +84,13 @@ export interface PromotePlanResult {
    * done/dropped blocker (deliberately uncounted) and no longer the dangling ref (see above).
    */
   blockersUnresolved: number;
+  /**
+   * P-009/D-015: pre-existing blocker edges CARRIED THROUGH a union write rather than deleted by
+   * `syncFeatureBlockEdges`' replace-semantics. Always 0 on the promotion path (a just-minted item
+   * has no edges, so there is nothing to preserve) — it is the backfill's proof that reuse did not
+   * silently destroy an edge some other author wrote. Counts EDGES, like `edgesWritten`.
+   */
+  edgesPreserved: number;
 }
 
 /** The zero-edge result shape shared by every early return (nothing minted ⇒ nothing to link). */
@@ -93,10 +100,48 @@ const NO_EDGES = {
   edgesRejectedCyclic: 0,
   blockersDangling: 0,
   blockersUnresolved: 0,
+  edgesPreserved: 0,
 } as const;
 
 function isOpenStatus(status: string | null): boolean {
   return status !== 'done' && status !== 'dropped';
+}
+
+/** A plan item reduced to exactly what the edge write needs: identity, status, text, blockers. */
+interface RawPlanItem {
+  id: string;
+  status: string | null;
+  text: string;
+  blockedBy: string[];
+}
+
+type PlanRead = NonNullable<Awaited<ReturnType<typeof readPlanBySlug>>>;
+
+/**
+ * Mirror convertPlanItem's item read: prefer the PG-canonical `row.items`, fall back to the
+ * parsed markdown items. `blockedBy` is carried through too (EI-14024) so DAG-blocked items can
+ * be minted already GATED instead of briefly claimable.
+ *
+ * Shared by promotion and P-009's backfill deliberately: the backfill's whole contract is "write
+ * what promotion WOULD have written", so if these two ever read the plan differently the backfill
+ * stops being a rehearsal of promotion and becomes a second, unreviewed source of edges.
+ */
+function readRawPlanItems(read: PlanRead): RawPlanItem[] {
+  return read.row.items.length > 0
+    ? read.row.items.map((i) => ({
+        id: i.id,
+        status: i.status as string | null,
+        text: (i.text as string | null) ?? '',
+        blockedBy: Array.isArray((i as { blockedBy?: unknown }).blockedBy)
+          ? ((i as { blockedBy: string[] }).blockedBy ?? [])
+          : [],
+      }))
+    : read.parsed.items.map((i) => ({
+        id: i.id,
+        status: i.storedStatus as string | null,
+        text: i.text ?? '',
+        blockedBy: i.blockedBy ?? [],
+      }));
 }
 
 /**
@@ -119,25 +164,7 @@ export async function promotePlanItems(opts: {
   });
   if (!read) return { promoted: 0, skipped: 0, ...NO_EDGES };
 
-  // Mirror convertPlanItem's item read: prefer the PG-canonical row.items, fall
-  // back to the parsed markdown items. blockedBy is carried through too (EI-14024)
-  // so DAG-blocked items can be minted already GATED instead of briefly claimable.
-  const rawItems =
-    read.row.items.length > 0
-      ? read.row.items.map((i) => ({
-          id: i.id,
-          status: i.status as string | null,
-          text: (i.text as string | null) ?? '',
-          blockedBy: Array.isArray((i as { blockedBy?: unknown }).blockedBy)
-            ? ((i as { blockedBy: string[] }).blockedBy ?? [])
-            : [],
-        }))
-      : read.parsed.items.map((i) => ({
-          id: i.id,
-          status: i.storedStatus as string | null,
-          text: i.text ?? '',
-          blockedBy: i.blockedBy ?? [],
-        }));
+  const rawItems = readRawPlanItems(read);
   const openItems: OpenPlanItem[] = rawItems
     .filter((i) => isOpenStatus(i.status))
     .map((i) => ({ id: i.id, text: i.text }));
@@ -316,18 +343,46 @@ async function writePromotedDependencyEdges(args: {
   cyclicPlanItemIds: ReadonlySet<string>;
   /** Every plan item id, so a `blockedBy` ref naming no item is distinguishable from an unpromoted one. */
   knownPlanItemIds: ReadonlySet<string>;
+  /**
+   * P-009/D-015: UNION the plan-derived blockers with the item's CURRENT edges instead of
+   * replacing them. Default false, which keeps the promotion path byte-identical.
+   *
+   * `syncFeatureBlockEdges` is DELETE-all-then-INSERT on the blocked side. That is safe at
+   * promotion only because pass 1 minted the item microseconds earlier, so its edge set is
+   * necessarily empty — a precondition of the CALLER, invisible here. A backfill targets items
+   * that have existed for weeks and may already carry edges from another author entirely
+   * (measured: 3 of 185, all agent-authored, all naming a plan item the plan's own `blockedBy`
+   * does not). Replacing them would silently delete a gate, which is the same bug class this
+   * plan exists to fix, pointed the other way.
+   */
+  preserveExistingEdges?: boolean;
+  /**
+   * Compute every counter but perform NO write. Deliberately gates only the
+   * `syncFeatureBlockEdges` call, not the resolution logic above it — a dry run that skipped
+   * the stamp lookups, the cycle pre-flight or the terminal-blocker skip would measure a
+   * different function than the real run and be worse than no rehearsal at all.
+   */
+  dryRun?: boolean;
 }): Promise<{
   edgesWritten: number;
   edgeFailures: number;
   edgesRejectedCyclic: number;
   blockersDangling: number;
   blockersUnresolved: number;
+  edgesPreserved: number;
 }> {
   let edgesWritten = 0;
   let edgeFailures = 0;
   let edgesRejectedCyclic = 0;
   let blockersDangling = 0;
   let blockersUnresolved = 0;
+  let edgesPreserved = 0;
+
+  // D-015: ONE read of the live blocks graph for the whole plan (not one per item) — the union
+  // source. Loaded up front so a plan with no pre-existing edges costs exactly one query.
+  const existingBlockers = args.preserveExistingEdges
+    ? await getFeatureBlockers(args.harnessSlug)
+    : null;
 
   if (args.cyclicPlanItemIds.size > 0) {
     // Loud, once per plan: the plan cannot express a valid ordering for these items, so their
@@ -393,9 +448,23 @@ async function writePromotedDependencyEdges(args: {
     // semantics, so an empty call would clear edges rather than leave them alone.
     if (blockerWorkItemIds.length === 0) continue;
 
-    try {
-      await syncFeatureBlockEdges(args.harnessSlug, workItemId, blockerWorkItemIds);
+    // D-015: under `preserveExistingEdges`, carry the item's current blockers through the
+    // replace. Order puts the pre-existing set first so the write is stable across re-runs.
+    const carried = (existingBlockers?.get(workItemId) ?? []).filter(
+      (b) => b !== workItemId && !blockerWorkItemIds.includes(b),
+    );
+    const toWrite = carried.length > 0 ? [...carried, ...blockerWorkItemIds] : blockerWorkItemIds;
+
+    if (args.dryRun) {
       edgesWritten += blockerWorkItemIds.length;
+      edgesPreserved += carried.length;
+      continue;
+    }
+
+    try {
+      await syncFeatureBlockEdges(args.harnessSlug, workItemId, toWrite);
+      edgesWritten += blockerWorkItemIds.length;
+      edgesPreserved += carried.length;
     } catch (err) {
       // BACKSTOP (P-008/D-012), no longer the expected path: the plan-level pre-flight above
       // has already refused every edge the plan's OWN graph makes cyclic, so reaching here means
@@ -413,5 +482,189 @@ async function writePromotedDependencyEdges(args: {
     }
   }
 
-  return { edgesWritten, edgeFailures, edgesRejectedCyclic, blockersDangling, blockersUnresolved };
+  return {
+    edgesWritten,
+    edgeFailures,
+    edgesRejectedCyclic,
+    blockersDangling,
+    blockersUnresolved,
+    edgesPreserved,
+  };
+}
+
+/** Per-plan counters from the backfill, so a surprising total is attributable to a plan. */
+export interface BackfillPlanEdgeResult {
+  planSlug: string;
+  itemsConsidered: number;
+  edgesWritten: number;
+  edgeFailures: number;
+  edgesRejectedCyclic: number;
+  blockersDangling: number;
+  blockersUnresolved: number;
+  edgesPreserved: number;
+}
+
+export interface BackfillDependencyEdgesResult {
+  dryRun: boolean;
+  /** Plans carrying ≥1 promoted item — the candidate set actually read. */
+  plansScanned: number;
+  /** Plans that contributed ≥1 considered item (the rest had no open, promoted, blocked item). */
+  plansTouched: number;
+  /** Already-promoted, still-open plan items with ≥1 `blockedBy` — the iteration set. */
+  itemsConsidered: number;
+  edgesWritten: number;
+  edgeFailures: number;
+  edgesRejectedCyclic: number;
+  blockersDangling: number;
+  blockersUnresolved: number;
+  edgesPreserved: number;
+  /** Only plans with a nonzero counter, so the report stays readable at 150+ plans. */
+  perPlan: BackfillPlanEdgeResult[];
+}
+
+/**
+ * P-009 BACKFILL — give ALREADY-promoted plan items the dependency edges promotion would write
+ * for them today. Promotion (P-006) only writes edges for items it mints in that call, so every
+ * plan promoted before P-006 landed carries its NODES with none of its GRAPH.
+ *
+ * This is deliberately NOT a second edge writer. It reuses `writePromotedDependencyEdges` whole
+ * (D-014) by feeding it the ALREADY-PROMOTED `planItemId → workItemId` pairs where promotion
+ * feeds the newly-minted ones — the parameter is named `mintedByPlanItem` but its actual meaning
+ * is "the pairs to write edges FOR", and everything downstream of it (the stamp lookup for
+ * blockers promoted by an earlier run, D-012's per-edge cycle pre-flight, the terminal-blocker
+ * skip, the dangling-vs-unresolved split, the never-call-sync-with-an-empty-set rule) is already
+ * backfill-correct. Consequently the backfill inherits D-010's authoritative writer and cannot
+ * trip P-007's `lint:no-raw-block-edge` guard.
+ *
+ * ONE behavior differs, and it is a correction rather than a variation — see D-015: the writer is
+ * called with `preserveExistingEdges`, because `syncFeatureBlockEdges` replaces the blocked side's
+ * whole edge set and these items, unlike freshly-minted ones, may already carry edges another
+ * author wrote.
+ *
+ * NOT flag-gated, on purpose. `FLAGS.PLAN_WORKITEM_PROMOTION` gates the automatic write-path so a
+ * plan start cannot mint work-items unexpectedly; this is an explicitly-invoked, idempotent repair
+ * of data that already exists. Gating it behind that flag would make the repair unavailable in
+ * exactly the state that most needs it (items promoted while the flag was on, flag since off).
+ *
+ * Idempotent: re-running converges rather than duplicating — `syncFeatureBlockEdges` is
+ * set-to-exactly-this-list and the union in D-015 is order-stable.
+ */
+export async function backfillPromotedDependencyEdges(opts: {
+  workspaceId: string;
+  harnessSlug: string;
+  /** Restrict to these plans; default = every plan with ≥1 promoted item. */
+  planSlugs?: readonly string[];
+  /** Compute and report without writing. Run this FIRST — it yields the true expected write count. */
+  dryRun?: boolean;
+}): Promise<BackfillDependencyEdgesResult> {
+  const dryRun = opts.dryRun ?? false;
+
+  // The candidate plans: every plan with at least one `implements` edge, i.e. at least one
+  // promoted item. Derived from the SAME truth promotion uses for idempotency, so the backfill
+  // cannot consider a plan promotion would not have.
+  let planSlugs: string[];
+  if (opts.planSlugs) {
+    planSlugs = [...opts.planSlugs];
+  } else {
+    const refs = await listConvertedPlanItemRefs();
+    const slugs = new Set<string>();
+    for (const ref of refs) {
+      // planItemRef is `<planSlug>#<itemId>`; split on the LAST '#' so a slug containing one
+      // cannot truncate the plan name (item ids never contain '#').
+      const hash = ref.lastIndexOf('#');
+      if (hash > 0) slugs.add(ref.slice(0, hash));
+    }
+    planSlugs = [...slugs].sort();
+  }
+
+  const totals: BackfillDependencyEdgesResult = {
+    dryRun,
+    plansScanned: 0,
+    plansTouched: 0,
+    itemsConsidered: 0,
+    edgesWritten: 0,
+    edgeFailures: 0,
+    edgesRejectedCyclic: 0,
+    blockersDangling: 0,
+    blockersUnresolved: 0,
+    edgesPreserved: 0,
+    perPlan: [],
+  };
+
+  for (const planSlug of planSlugs) {
+    const read = await readPlanBySlug(planSlug, {
+      harnessSlug: opts.harnessSlug,
+      workspaceId: opts.workspaceId,
+    });
+    // A converted ref for a plan in ANOTHER workspace/harness — not ours to touch.
+    if (!read) continue;
+    totals.plansScanned++;
+
+    const rawItems = readRawPlanItems(read);
+    if (rawItems.length === 0) continue;
+
+    // Same resolve promotion runs, over the FULL item set, for the same reason: `cycleMembers`
+    // IS D-012's pre-flight, and a blocker outside the open set must still resolve correctly.
+    const planItemsForResolve: PlanItem[] = rawItems.map((i) => ({
+      id: i.id,
+      text: i.text,
+      storedStatus: (i.status ?? 'todo') as ItemStatus,
+      importance: 'normal',
+      blockedBy: i.blockedBy,
+      decisionRefs: [],
+      phase: null,
+      lineNumber: 0,
+      rawLine: '',
+    }));
+    const { cycleMembers } = resolveEffectiveStatusForItems(planItemsForResolve);
+
+    // The iteration set: items promotion WOULD write an edge for — still-open, ≥1 blocker — that
+    // are ALREADY promoted. Openness is judged on PLAN-item status, matching promotion's
+    // `openItems` filter, so the backfill covers exactly the items promotion would have.
+    const existingByPlanItem = new Map<string, string>();
+    for (const item of rawItems) {
+      if (!isOpenStatus(item.status) || item.blockedBy.length === 0) continue;
+      const wi = await findConvertedWorkItemByStamp(planSlug, item.id, opts.harnessSlug);
+      if (wi?.id) existingByPlanItem.set(item.id, wi.id);
+    }
+    if (existingByPlanItem.size === 0) continue;
+
+    const counts = await writePromotedDependencyEdges({
+      planSlug,
+      harnessSlug: opts.harnessSlug,
+      mintedByPlanItem: existingByPlanItem,
+      blockedByById: new Map(rawItems.map((i) => [i.id, i.blockedBy])),
+      statusById: new Map(rawItems.map((i) => [i.id, i.status])),
+      cyclicPlanItemIds: new Set(cycleMembers),
+      knownPlanItemIds: new Set(rawItems.map((i) => i.id)),
+      preserveExistingEdges: true,
+      dryRun,
+    });
+
+    totals.plansTouched++;
+    totals.itemsConsidered += existingByPlanItem.size;
+    totals.edgesWritten += counts.edgesWritten;
+    totals.edgeFailures += counts.edgeFailures;
+    totals.edgesRejectedCyclic += counts.edgesRejectedCyclic;
+    totals.blockersDangling += counts.blockersDangling;
+    totals.blockersUnresolved += counts.blockersUnresolved;
+    totals.edgesPreserved += counts.edgesPreserved;
+
+    const nonZero =
+      counts.edgesWritten > 0 ||
+      counts.edgeFailures > 0 ||
+      counts.edgesRejectedCyclic > 0 ||
+      counts.blockersDangling > 0 ||
+      counts.blockersUnresolved > 0 ||
+      counts.edgesPreserved > 0;
+    if (nonZero) {
+      totals.perPlan.push({
+        planSlug,
+        itemsConsidered: existingByPlanItem.size,
+        ...counts,
+      });
+    }
+  }
+
+  return totals;
 }
