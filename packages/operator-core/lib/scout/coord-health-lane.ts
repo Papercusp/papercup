@@ -128,6 +128,45 @@ export interface CoordPremiseResolve {
   samples: readonly { ref: string; status: PremiseStatus; note?: string }[];
 }
 
+/**
+ * P-012 / D-106 — did moving clarification onto the LIVE path actually raise
+ * P(answer)? The adoption reading for the `clarify` message field.
+ *
+ * WHAT THIS MEASURES, AND WHY IT IS THIS AND NOT FILL RATE. `clarify` carries a
+ * question PAIRED with the assumption the sender proceeds on. `assuming` is
+ * MANDATORY IN THE SCHEMA — so "share of entries carrying an assumption" is
+ * 100% by construction and measures exactly nothing. That is D-104's vacuous
+ * metric in a new costume, and it is deliberately absent from this type.
+ *
+ * The falsifiable question is the one D-106's whole argument rests on: asking
+ * only pays when an answer actually arrives, so the signal is the ANSWER RATE.
+ * The baselines to beat were measured on the incumbent surface before the field
+ * existed (2026-08-02, 60d): the conversation path answered 10 of 42 questions
+ * (~24%) and orphaned 32 (76%), while `coord:ask` drew 6 calls against
+ * `coord:send`'s 3512 (~1:84). If clarification-on-the-live-path is the right
+ * call, this rate beats 24%.
+ *
+ * ⚠ EXPECT ZERO FOR A WHILE, AND THAT IS NOT A DEFECT. The field ships in the
+ * same change as this reading, so there is no traffic yet by construction. The
+ * builder is SILENT below `minClarifyAsks` rather than reporting a 0/0 rate,
+ * for the same reason `coord:premise-resolve-rate` is: a rate over a handful of
+ * events is noise wearing a number's clothes, and an emitted 0% would read as a
+ * finding about the field rather than an absence of data.
+ *
+ * ⚠ NO SENDER DIMENSION — same constraint as `CoordPremiseResolve`, and it
+ * binds harder here. Keying an ASK metric by the asking agent makes asking a
+ * thing to avoid being seen doing, which kills the field outright (D-091,
+ * generalising the owner's D-090 R3).
+ */
+export interface CoordClarifyAdoption {
+  /** agent-authored messages in the window carrying ≥1 `clarify` entry. */
+  asks: number;
+  /** of those, how many drew a reply. The RATE's numerator. */
+  answered: number;
+  /** total `clarify` entries (one message may carry several). Context, not a rate. */
+  entries: number;
+}
+
 /** The pure builder's input — the coordination-breakdown aggregate over the window. */
 export interface CoordHealthInput {
   /** re-mounting escalation signatures (open events grouped by signature). */
@@ -140,7 +179,17 @@ export interface CoordHealthInput {
   claimConflicts: number;
   /** premise-citation quality (P-011 / D-091). Absent ⇒ the signal is simply not emitted. */
   premiseResolve?: CoordPremiseResolve;
+  /** `clarify` adoption (P-012 / D-106). Absent ⇒ the signal is simply not emitted. */
+  clarifyAdoption?: CoordClarifyAdoption;
 }
+
+/**
+ * The incumbent-surface baselines this reading is judged against, measured
+ * 2026-08-02 over 60d BEFORE `clarify` existed (D-106). Named constants rather
+ * than numbers inline in a template string, so a future re-measurement updates
+ * one place and the emitted text cannot drift from the comment explaining it.
+ */
+export const CLARIFY_BASELINE_CONVERSATION_ANSWER_RATE = 0.24;
 
 export interface CoordHealthOpts {
   /** min re-mounts to surface an escalation storm (advisory); a blocker surfaces at 1. */
@@ -153,6 +202,8 @@ export interface CoordHealthOpts {
   minClaimConflicts?: number;
   /** min CHECKED premise refs before the resolve-rate is worth reporting at all. */
   minPremiseChecked?: number;
+  /** min `clarify` asks before the answer-rate is worth reporting at all. */
+  minClarifyAsks?: number;
   /** cap on emitted patterns. */
   limit?: number;
 }
@@ -198,6 +249,7 @@ export function buildCoordHealthPatterns(
   const minWake = opts.minWakeStorm ?? 200;
   const minClaim = opts.minClaimConflicts ?? 3;
   const minPremiseChecked = opts.minPremiseChecked ?? 5;
+  const minClarifyAsks = opts.minClarifyAsks ?? 5;
   const limit = opts.limit ?? 10;
 
   const out: MetaPattern[] = [];
@@ -301,6 +353,36 @@ export function buildCoordHealthPatterns(
       // premise-resolve.ts makes for carrying both stamp halves), but it ranks
       // low enough that the cap deprioritises it naturally.
       weight: Math.min(0.75, 0.25 + 0.5 * failRate),
+    });
+  }
+
+  // 4b. `clarify` adoption (P-012 / D-106) — did moving clarification onto the
+  //     live path raise P(answer)? Emitted next to the premise reading, and for
+  //     the same cap reason: it is ONE corpus-wide reading competing with
+  //     per-recipient floods.
+  const ca = input.clarifyAdoption;
+  if (ca && ca.asks >= minClarifyAsks) {
+    const rate = ca.answered / ca.asks;
+    const base = CLARIFY_BASELINE_CONVERSATION_ANSWER_RATE;
+    const pct = (n: number) => `${Math.round(n * 100)}%`;
+    const verdict =
+      rate > base
+        ? `ABOVE the ${pct(base)} conversation-path baseline — moving clarification onto the live path is paying`
+        : `at or BELOW the ${pct(base)} conversation-path baseline — the live path is not (yet) buying a better answer rate`;
+
+    out.push({
+      category: 'coord-health',
+      ref: 'coord:clarify-answer-rate',
+      summary: `clarify asks answered ${pct(rate)} (${ca.answered}/${ca.asks}) — ${verdict}`,
+      detail:
+        `${ca.asks} agent-authored message(s) carried a \`clarify\` section in 24h (${ca.entries} entr(y|ies) total); ${ca.answered} drew a reply. ` +
+        `\`clarify\` pairs a question with the assumption the sender proceeds on ANYWAY, so an unanswered ask is not a stalled sender — it is a peer acting on an assumption nobody corrected. ` +
+        `Baseline to beat (measured before the field existed): the conversation path answered ~${pct(base)} of questions and orphaned 76%, and coord:ask drew 6 calls against coord:send's 3512. ` +
+        `Read this as a reading on the MECHANISM, never on the askers: no per-agent breakdown exists or may be added, because attaching a consequence to being seen asking is what kills the field (D-091/D-090 R3). ` +
+        `Never a gate, and never a fill rate — \`assuming\` is schema-mandatory, so its fill rate is 100% by construction and measures nothing (D-104).`,
+      // Ranks by SHORTFALL against the baseline: a rate that beats the incumbent
+      // is good news and should not crowd out live coordination breakdowns.
+      weight: Math.min(0.7, 0.25 + Math.max(0, base - rate)),
     });
   }
 
@@ -450,6 +532,107 @@ export function aggregatePremiseStamps(
 }
 
 /**
+ * The `clarify` adoption read (P-012 / D-106).
+ *
+ * REPLY DETECTION, AND ITS KNOWN BIAS — STATED, NOT HIDDEN. An ask counts as
+ * answered when a RECIPIENT sent a message threaded to it
+ * (`related_msg_id` = the ask's `msg_id`). That is branch (1) of
+ * `unanswered-directed`'s hardened predicate, reused verbatim in shape rather
+ * than re-derived.
+ *
+ * Its LOOSE branch — an un-threaded reply back to the sender, narrowed and
+ * PAIRED so one reply clears at most one ask (WI-6729, EI-13819, WI-5345) — is
+ * deliberately NOT reproduced here. That logic is subtle, order-dependent, and
+ * exists to protect a counter that PREEMPTS an agent's work; a second, simpler
+ * copy of it in a digest lane would drift from the original and quietly
+ * disagree with it. So this reading UNDER-COUNTS answers, because this fleet's
+ * agents overwhelmingly reply in fresh standalone messages rather than
+ * re-threading.
+ *
+ * The direction of that error is the safe one for THIS metric: it can only make
+ * clarification look WORSE than it is, so a rate that still beats the 24%
+ * conversation baseline is a conservative win rather than an artefact. It is
+ * also apples-to-apples with that baseline, which was itself measured on an
+ * explicit linkage (`accepted_post_id`). If the rate ever sits just under the
+ * baseline, this bias is the FIRST thing to re-examine — not evidence against
+ * the field.
+ *
+ * Fail-soft to `undefined`: an outage removes the signal, never the lane.
+ */
+export async function loadCoordClarifyAdoption(
+  ws: string,
+): Promise<CoordClarifyAdoption | undefined> {
+  try {
+    const { sql } = getOrgPg();
+    const { MACHINE_SENDER_PATTERN } = await import(
+      '../agent-tools/coordination/machine-authored'
+    );
+
+    const rows = await sql<Array<{ asks: number; answered: number; entries: number }>>`
+      WITH asks AS (
+        SELECT e.body->>'msg_id' AS msg_id,
+               e.body->'to'      AS recipients,
+               (
+                 SELECT count(*)
+                   FROM jsonb_array_elements(e.body->'sections') s2
+                   CROSS JOIN LATERAL jsonb_array_elements(s2->'clarify') c
+                  WHERE jsonb_typeof(s2->'clarify') = 'array'
+               )::int AS entries
+          FROM harness_shared.coord_event_log e
+         WHERE e.workspace_id = ${ws}
+           AND e.surface = 'messages'
+           AND e.ts > now() - interval '24 hours'
+           AND jsonb_typeof(e.body->'sections') = 'array'
+           AND e.body->>'msg_id' IS NOT NULL
+           AND NOT (coalesce(e.body->>'from', '') ~ ${MACHINE_SENDER_PATTERN})
+           AND EXISTS (
+             SELECT 1 FROM jsonb_array_elements(e.body->'sections') s
+              WHERE jsonb_typeof(s->'clarify') = 'array'
+                AND jsonb_array_length(s->'clarify') > 0
+           )
+      ),
+      -- MATERIALISE THE REPLIES ONCE. The obvious shape -- a correlated EXISTS
+      -- over coord_event_log per ask -- is a full scan PER ASK (related_msg_id
+      -- lives in jsonb and is unindexed), so it costs nothing while clarify has
+      -- no traffic and TIMES OUT the moment it does. Not hypothetical: the
+      -- correlated form was measured against a populated field of the same
+      -- shape (premises) and hit the statement timeout, while this one returns
+      -- in ~35ms over the same rows. A lane query that only works while its
+      -- field is unused is a latent outage, and a zero-traffic read can never
+      -- reveal it.
+      replies AS (
+        SELECT DISTINCT r.body->>'related_msg_id' AS to_msg_id,
+                        r.body->>'from'           AS responder
+          FROM harness_shared.coord_event_log r
+         WHERE r.workspace_id = ${ws}
+           AND r.surface = 'messages'
+           AND r.ts > now() - interval '24 hours'
+           AND r.body ? 'related_msg_id'
+      )
+      SELECT count(*)::int AS asks,
+             coalesce(sum(a.entries), 0)::int AS entries,
+             count(*) FILTER (
+               WHERE EXISTS (
+                 SELECT 1 FROM replies rp
+                  WHERE rp.to_msg_id = a.msg_id
+                    AND a.recipients @> to_jsonb(ARRAY[rp.responder])
+               )
+             )::int AS answered
+        FROM asks a`;
+
+    const r = rows[0];
+    if (!r || Number(r.asks) === 0) return undefined;
+    return {
+      asks: Number(r.asks) || 0,
+      answered: Number(r.answered) || 0,
+      entries: Number(r.entries) || 0,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The PG edge: the 24h coordination-breakdown aggregate over coord_event_log for
  * the active workspace + the fleet-wide unanswered-directed read (REUSING the
  * hardened fetchUnansweredDirected). Returns [] on any failure (fail-soft lane).
@@ -554,8 +737,18 @@ export async function buildCoordHealthLane(
       /* best-effort — the premise signal is optional decoration */
     }
 
+    // `clarify` adoption (P-012 / D-106) — independently fail-soft, so a zero-
+    // traffic or failing read costs this one signal and never the lane.
+    let clarifyAdoption: CoordClarifyAdoption | undefined;
+    try {
+      clarifyAdoption = await loadCoordClarifyAdoption(ws);
+    } catch {
+      /* best-effort — the clarify signal is optional decoration */
+    }
+
     return buildCoordHealthPatterns({
       premiseResolve,
+      clarifyAdoption,
       escalationStorms: escRows.map((r) => ({
         signature: r.sig || 'unknown',
         count: Number(r.n) || 0,

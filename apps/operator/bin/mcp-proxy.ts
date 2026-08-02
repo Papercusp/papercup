@@ -15,9 +15,14 @@
  *                                     a :3070 deploy restart measured ~45s wall
  *                                     on 2026-07-01, with recoveries landing at
  *                                     45.6s = past the old 45s window; 90s gives
- *                                     2× headroom so a slow restart can't 503)
+ *                                     2× headroom so a slow restart can't 503).
+ *                                     Read via lib/mcp-proxy/budgets.mjs, which is
+ *                                     also what psu reads — see WI-6738: this window
+ *                                     is only useful if the CLIENT waits at least
+ *                                     this long, and it used to give up at 45s.
  */
 import { readOperatorJsonTarget, startMcpProxy } from '../lib/mcp-proxy/proxy';
+import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
 
 const dynamicTarget = process.env.PAPERCUSP_MCP_PROXY_DYNAMIC_TARGET === '1';
 const targetHost = process.env.PAPERCUSP_MCP_PROXY_TARGET_HOST ?? '127.0.0.1';
@@ -28,5 +33,5 @@ startMcpProxy({
   ...(dynamicTarget
     ? { resolveTarget: () => readOperatorJsonTarget() ?? { host: targetHost, port: targetPort, source: 'fallback' } }
     : { targetHost, targetPort }),
-  retryWindowMs: Number(process.env.PAPERCUSP_MCP_PROXY_RETRY_MS ?? 90_000),
+  retryWindowMs: MCP_PROXY_RETRY_WINDOW_MS,
 });

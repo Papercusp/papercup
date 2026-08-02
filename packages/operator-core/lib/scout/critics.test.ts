@@ -129,4 +129,22 @@ describe('buildCriticPrompt — mission framing (P-010 prompt-overlay seam)', ()
     expect(system).toContain('FEASIBILITY critic');
     expect(system).toContain('conceptualNovelty');
   });
+
+  // EI-18801316749542776 — two Scout analogical ideas proposed a capability that
+  // already fully existed, and cited incidents whose own titles contradicted the
+  // claimed mechanism (a local token-bucket pause read as an upstream HTTP 429).
+  // Both critic axes must carry an explicit instruction to catch this shape,
+  // regardless of the domain MISSION override.
+  it('the NOVELTY + FEASIBILITY axes carry the already-exists + evidence-class checks (EI-18801316749542776)', () => {
+    const { system } = buildCriticPrompt(idea(), [], {});
+    expect(system).toContain('MORE LIKELY to already exist than not');
+    expect(system).toContain("idea's OWN cited evidence");
+  });
+
+  it('the already-exists + evidence-class checks survive a blueprint mission override', () => {
+    const mission = 'You are TWO critics judging an idea proposed for a WORK hive. Pull against each other:';
+    const { system } = buildCriticPrompt(idea(), [], { mission });
+    expect(system).toContain('MORE LIKELY to already exist than not');
+    expect(system).toContain("idea's OWN cited evidence");
+  });
 });

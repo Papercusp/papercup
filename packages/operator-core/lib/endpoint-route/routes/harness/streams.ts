@@ -966,22 +966,32 @@ const sessionThinkingStream = defineTool({
         // death resolves to no on-disk path. Rather than fall through to the
         // "wait for a first turn" poll below (which never terminates for a
         // session that already ended), rematerialize the transcript from the
-        // session archive ONCE, then re-resolve. claude is keyed by its session
-        // uuid, omp by its thread id; codex's archive keying differs so it's
-        // skipped here (it terminates cleanly in the ended branch below instead).
-        // Best-effort + lazy import (session-archive fails LOUD at import when
-        // zstd is unavailable — keep that off this module's load path).
+        // session archive ONCE, then re-resolve.
+        //
+        // WI-6581: codex used to be skipped here because its archive keying
+        // differs twice over — the archive key is the ROLLOUT UUID rather than
+        // the adv-row session key, and the restore lands in the session's own
+        // CODEX_HOME rather than the global ~/.codex the by-uuid resolver
+        // scans. Both are now bridged in `session-transcript-remat`, which owns
+        // the per-backend keying (and the lazy session-archive import — that
+        // module fails LOUD at import when zstd is unavailable, so it must stay
+        // off this module's load path). Best-effort: every failure mode comes
+        // back as a `reason` and falls through to the ended-terminate branch.
         if (!path && ended) {
-          const rematKey = sessionId
-            ? ({ sourceKind: 'claude', sessionId } as const)
-            : ompThreadId
-              ? ({ sourceKind: 'omp', sessionId: ompThreadId } as const)
-              : null;
+          const rematKey = codexSessionKey
+            ? ({ kind: 'codex-session-key', sessionKey: codexSessionKey } as const)
+            : codexRolloutId
+              ? ({ kind: 'codex-rollout', rolloutId: codexRolloutId } as const)
+              : ompThreadId
+                ? ({ kind: 'omp', threadId: ompThreadId } as const)
+                : sessionId
+                  ? ({ kind: 'claude', sessionId, owner } as const)
+                  : null;
           if (rematKey) {
             try {
-              const { pgSessionArchiveStore, rematerializeSession } = await import('../../../session-archive');
-              const r = await rematerializeSession(rematKey, pgSessionArchiveStore());
-              if (r.ok) path = await source.resolve();
+              const { rematerializeTranscript } = await import('../../../session-transcript-remat');
+              const r = await rematerializeTranscript(rematKey);
+              if (r.path) path = r.path;
             } catch { /* best-effort — the ended-terminate branch below handles the miss */ }
           }
         }

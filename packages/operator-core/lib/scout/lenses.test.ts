@@ -79,6 +79,18 @@ describe('buildIdeatorPrompt — anti-mode-collapse + lens stance', () => {
     expect(r.user).toContain('prior elites here');
     expect(buildIdeatorPrompt({ lens: 'reframing', digest: d, priming: '   ' }).user).not.toContain('prior elites');
   });
+
+  // EI-18801316749542776 — Scout analogical ideas proposed capabilities that already
+  // existed in the tree, and cited incidents whose own description contradicted the
+  // claimed mechanism (a local rate-governor pause treated as an upstream HTTP 429).
+  // Every ideator prompt must carry both self-checks, regardless of lens.
+  it('every lens carries the EXISTENCE CHECK + EVIDENCE-CLASS CHECK rules (EI-18801316749542776)', () => {
+    for (const lens of CREATIVE_LENSES) {
+      const s = buildIdeatorPrompt({ lens, digest: d }).system;
+      expect(s).toContain('EXISTENCE CHECK');
+      expect(s).toContain('EVIDENCE-CLASS CHECK');
+    }
+  });
 });
 
 describe('flattenDigest / digestRefSet / renderDigest', () => {

@@ -183,6 +183,21 @@ LOG="$WORK/tauri.log"
 
 log() { printf '\n[verify-tauri-headless] %s\n' "$*" >&2; }
 
+# EI-18805100008031244 (correct-state ask #3, "report contention honestly at
+# boot"): when the port picker retries or a bind loses a race, the caller was
+# left with an opaque EADDRINUSE and no sense of scale — "is this a one-off
+# collision, or is the box carrying a dozen of these?" Count live verifier
+# instances (Xvfb displays this script owns — >=90, never :0/:1/:2) and
+# accumulated work dirs so every contention message can say so honestly.
+# Best-effort and non-fatal: a pgrep/find race just under-counts, never errors.
+contention_summary() {
+  local live_instances stale_dirs
+  live_instances="$(pgrep -a -f 'Xvfb :' 2>/dev/null | grep -Ecv 'Xvfb :[0-2] ')"
+  stale_dirs="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'verify-tauri-headless.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+  printf '%s live verifier instance(s), %s work dir(s) under %s' \
+    "${live_instances:-0}" "${stale_dirs:-0}" "${TMPDIR:-/tmp}"
+}
+
 # EI-18738872670541790: find a live process (by pgrep pattern) whose OWN
 # /proc/<pid>/environ carries an EXACT `DISPLAY=<want>` — the same env-matching
 # technique this script already uses to disambiguate BRIDGE_PID/SIDECAR_PID
@@ -356,6 +371,7 @@ pick_and_lock_ports() {
 pick_and_lock_ports
 
 log "display=:$DISPLAY_NUM devPort=$DEV_PORT ptyPort=$PTY_PORT work=$WORK"
+log "contention: $(contention_summary)"
 
 # ── teardown (always runs; scoped to exactly what THIS invocation started) ──
 XVFB_PID="" OPENBOX_PID="" TAURI_PID="" PORT_LOCK_KEEPER_PID="" ISOLATED_PG_PID=""
@@ -837,7 +853,7 @@ while :; do
   fi
 
   if [ "$BOOT_ATTEMPTS" -lt "$MAX_BOOT_ATTEMPTS" ]; then
-    log "EADDRINUSE racing :$DEV_PORT at bind-time (attempt $BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS) — tearing down this attempt and re-picking a fresh port once (EI-18734124566158657)"
+    log "EADDRINUSE racing :$DEV_PORT at bind-time (attempt $BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS) — tearing down this attempt and re-picking a fresh port once (EI-18734124566158657). Box contention right now: $(contention_summary)."
     [ -n "$TAURI_PID" ] && { kill -TERM -- -$TAURI_PID 2>/dev/null; sleep 1; kill -9 -- -$TAURI_PID 2>/dev/null; }
     mv "$LOG" "$WORK/tauri.attempt${BOOT_ATTEMPTS}.log" 2>/dev/null || true
     fed_release_port_locks
@@ -849,7 +865,11 @@ while :; do
 
   echo "FATAL: our operator sidecar could not bind :$DEV_PORT (EADDRINUSE) — another instance owns it," >&2
   echo "       so this webview is loading a PEER's operator, not our tree. Refusing to verify, after" >&2
-  echo "       $BOOT_ATTEMPTS attempt(s) across freshly-picked ports. Tail:" >&2
+  echo "       $BOOT_ATTEMPTS attempt(s) across freshly-picked ports. Box contention right now:" >&2
+  echo "       $(contention_summary) — a large count here (not \"another instance owns it\") is" >&2
+  echo "       almost certainly the real cause (EI-18805100008031244); gc-verify-instances reaps" >&2
+  echo "       stale ones hourly, but a burst of concurrent live runs will still race for a while." >&2
+  echo "       Tail:" >&2
   grep -aE "EADDRINUSE|pty-ws" "$LOG" | head -5 >&2
   exit 1
 done
@@ -1034,6 +1054,16 @@ WARN
 fi
 tauri-agent-tools probe --pid "$VERIFY_TAURI_PID" 2>&1 | sed 's/^/[probe] /' >&2 || true
 
+# EI-18805100008031244 (correct-state ask #2, "a TTL on --boot-only itself"):
+# an abandoned --boot-only session (the caller died, was compacted, or simply
+# forgot) used to run forever — nothing enforced the header's own "NEVER leave
+# it running unattended" warning. This TTL watchdog is a SECOND, faster line of
+# defence than the external gc-verify-instances sweep (WI-6684, 6h default,
+# runs hourly from OUTSIDE the instance) — it fires from INSIDE the instance
+# with no dependency on any sweep ever running, and can be refreshed by a
+# caller that is legitimately still using it. 0 disables it.
+BOOT_ONLY_TTL_MIN="${VERIFY_TAURI_BOOT_ONLY_TTL_MIN:-240}"
+
 if [ "${1:-}" = "--boot-only" ]; then
   # The parent exits after printing the source-able environment, so keep the
   # advisory port locks alive in a tiny child for the interactive session; the
@@ -1055,6 +1085,30 @@ if [ "${1:-}" = "--boot-only" ]; then
   PORT_LOCK_KEEPER_PID=$!
   trap - EXIT INT TERM   # caller owns teardown from here
   write_stop_script
+
+  # ── TTL self-watchdog (see the BOOT_ONLY_TTL_MIN comment above) ───────────
+  HEARTBEAT_FILE="$WORK/.heartbeat"
+  touch "$HEARTBEAT_FILE"
+  if [ "$BOOT_ONLY_TTL_MIN" -gt 0 ] 2>/dev/null; then
+    ( trap - EXIT INT TERM
+      while kill -0 "$XVFB_PID" 2>/dev/null; do
+        sleep 60
+        hb_epoch="$(stat -c %Y "$HEARTBEAT_FILE" 2>/dev/null || echo 0)"
+        hb_age_min=$(( ( $(date +%s) - hb_epoch ) / 60 ))
+        if [ "$hb_age_min" -ge "$BOOT_ONLY_TTL_MIN" ]; then
+          {
+            printf '\n[verify-tauri-headless] TTL watchdog: no heartbeat refresh in %sm (>= %sm) — ' \
+              "$hb_age_min" "$BOOT_ONLY_TTL_MIN"
+            printf 'self-terminating abandoned --boot-only instance (display :%s, work=%s)\n' \
+              "$DISPLAY_NUM" "$WORK"
+          } >>"$WORK/watchdog.log" 2>&1
+          "$WORK/stop.sh" >>"$WORK/watchdog.log" 2>&1 || true
+          exit 0
+        fi
+      done ) &
+    WATCHDOG_PID=$!
+  fi
+
   cat <<EOF
 export VERIFY_TAURI_PID=$VERIFY_TAURI_PID
 export VERIFY_TAURI_PORT=$VERIFY_TAURI_PORT
@@ -1063,6 +1117,11 @@ export VERIFY_TAURI_LOG=$VERIFY_TAURI_LOG
 export VERIFY_TAURI_POLL=$VERIFY_TAURI_POLL
 export VERIFY_TAURI_STOP=$WORK/stop.sh
 export VERIFY_TAURI_FRESHNESS_CHECK=$WORK/check-freshness.sh
+export VERIFY_TAURI_HEARTBEAT=$HEARTBEAT_FILE
+# TTL watchdog (EI-18805100008031244): this instance self-terminates ${BOOT_ONLY_TTL_MIN} min
+# after the last heartbeat refresh (0 = disabled; set VERIFY_TAURI_BOOT_ONLY_TTL_MIN
+# before boot to change it). A legitimately long-running session must heartbeat:
+#   touch "$WORK/.heartbeat"
 # EI-17134: edited apps/operator-vite source AFTER this boot? Run this BEFORE
 # trusting a re-check/reload against THIS instance — the SPA snapshot is frozen
 # (EI-10364) and will never pick up the edit; this warns loudly if it drifted:

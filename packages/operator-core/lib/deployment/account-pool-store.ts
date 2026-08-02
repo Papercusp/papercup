@@ -35,6 +35,7 @@ import {
   bindAccount,
   clearSoftPin,
   DRAIN_FULL_UTIL,
+  DRAIN_UTIL_STALE_MS,
   decideScaleOut,
   effectiveDrainUtil,
   getAccount,
@@ -582,6 +583,26 @@ export interface AccountStatusRow {
   egressPool?: AccountEgress[];
   /** Live governor buckets keyed to this account (present only if THIS process ran under it). */
   liveBuckets: { key: string; provider: string; modelClass: string; paused: boolean; pausedUntil: number }[];
+  /**
+   * How stale the `rate.utilization`/`utilization7d` projection this row's `available`/`usageWalled`
+   * verdict is based on actually is (EI-18809949582687481 — a caller reading `available:false` had no
+   * way to tell "we just measured this" from "we haven't asked in days"):
+   *  - `'never-observed'` — no probe or live traffic has EVER reported a usage window for this account;
+   *    `available`/`usageWalled` are computed purely from the (possibly ancient) rate-pause fields.
+   *  - `'stale'` — the last observation is older than `DRAIN_UTIL_STALE_MS`; the drain selector already
+   *    discounts it (see `effectiveDrainUtil`), and a caller deciding fleet capacity should too.
+   *  - `'fresh'` — observed within the staleness window.
+   */
+  readingStatus: 'never-observed' | 'stale' | 'fresh';
+  /** Epoch ms since the last observed window (`rate.utilizationAt`), or `undefined` if never observed. */
+  readingAgeMs?: number;
+  /**
+   * Epoch ms of the most recent `accounts:probe-capacity` attempt that came back `no-reading` (the
+   * probe request itself failed) and has NOT since been superseded by a real observation. Present ⇒
+   * the last thing we tried on this account got no answer — read this row's `available`/`usageWalled`
+   * as UNKNOWN, not as a measured verdict, until a fresh probe succeeds.
+   */
+  lastProbeFailedAt?: number;
 }
 
 export interface AccountStatusDeps {
@@ -620,32 +641,40 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
   const scalePolicy = await readScalePolicy();
   const gatewayStats =
     deps.gatewayStats !== undefined ? deps.gatewayStats : await fetchGatewayStatsRaw({ timeoutMs: 500 });
-  return pool.accounts.map((a) => ({
-    id: a.id,
-    provider: accountProvider(a),
-    label: a.label,
-    credentialRef: a.credentialRef,
-    boundTo: a.boundTo,
-    // WI-3310: `available` = "can actually serve" — pause-clear AND usage headroom. The old
-    // pause-only read (`isAvailable`) told every consumer (stall-waker capacityBack, why-chain,
-    // Accounts tab, fleet preflights) that a usage-exhausted account had recovered every time
-    // its bounded pause lapsed (≤6h), while the weekly window stayed at 100% for days.
-    available: !accountFull(a, now),
-    usageWalled: effectiveDrainUtil(a, now) >= DRAIN_FULL_UTIL,
-    usageResetAt: usageWalledUntil(a, now) || undefined,
-    sustainedlyLimited: isSustainedlyLimited(a, now, scalePolicy),
-    ...projectLiveEdgeThrottle(a.id, gatewayStats),
-    rate: a.rate,
-    egress: a.egress,
-    egressPool: a.egressPool,
-    liveBuckets: live
-      .filter((b) => b.accountId === a.id)
-      .map((b) => ({
-        key: b.key,
-        provider: b.provider,
-        modelClass: b.modelClass,
-        paused: b.state.pausedUntil > now,
-        pausedUntil: b.state.pausedUntil,
-      })),
-  }));
+  return pool.accounts.map((a) => {
+    const readingAgeMs = a.rate.utilizationAt !== undefined ? Math.max(0, now - a.rate.utilizationAt) : undefined;
+    const readingStatus: AccountStatusRow['readingStatus'] =
+      readingAgeMs === undefined ? 'never-observed' : readingAgeMs > DRAIN_UTIL_STALE_MS ? 'stale' : 'fresh';
+    return {
+      id: a.id,
+      provider: accountProvider(a),
+      label: a.label,
+      credentialRef: a.credentialRef,
+      boundTo: a.boundTo,
+      // WI-3310: `available` = "can actually serve" — pause-clear AND usage headroom. The old
+      // pause-only read (`isAvailable`) told every consumer (stall-waker capacityBack, why-chain,
+      // Accounts tab, fleet preflights) that a usage-exhausted account had recovered every time
+      // its bounded pause lapsed (≤6h), while the weekly window stayed at 100% for days.
+      available: !accountFull(a, now),
+      usageWalled: effectiveDrainUtil(a, now) >= DRAIN_FULL_UTIL,
+      usageResetAt: usageWalledUntil(a, now) || undefined,
+      sustainedlyLimited: isSustainedlyLimited(a, now, scalePolicy),
+      ...projectLiveEdgeThrottle(a.id, gatewayStats),
+      rate: a.rate,
+      egress: a.egress,
+      egressPool: a.egressPool,
+      liveBuckets: live
+        .filter((b) => b.accountId === a.id)
+        .map((b) => ({
+          key: b.key,
+          provider: b.provider,
+          modelClass: b.modelClass,
+          paused: b.state.pausedUntil > now,
+          pausedUntil: b.state.pausedUntil,
+        })),
+      readingStatus,
+      readingAgeMs,
+      lastProbeFailedAt: a.rate.lastProbeFailedAt,
+    };
+  });
 }

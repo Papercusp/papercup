@@ -3,96 +3,6 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/tsc-baseline-gate.mjs and regenerate.
 /**
- * One diagnostic parsed out of tsc's output.
- *
- * @typedef {object} TscErrorEntry
- * @property {string | null} file - null when the diagnostic carries no file (unattributable).
- * @property {string} code - The `TSnnnn` code.
- */
-/**
- * One file's standing against its baseline.
- *
- * @typedef {object} PerFileGateEntry
- * @property {string} file
- * @property {number} baseline
- * @property {number} current
- * @property {number} delta - `current - baseline`; positive is a regression.
- * @property {boolean} [dirty] - Set only on `newFiles`, and only when the dirty set could be read:
- *   the file is uncommitted in the shared working tree, i.e. a peer is very likely mid-edit
- *   (EI-19278299775574199). `undefined` means UNKNOWN, never "clean" — see
- *   `partitionNewFilesByLiveEdit`.
- */
-/**
- * A baseline owned by ANOTHER package, whose recorded counts this gate inherits for
- * files under `prefix` rather than assuming an implicit 0 (EI-18649014117371738).
- *
- * @typedef {object} ForeignBaselineSource
- * @property {string} prefix - Repo-relative path prefix of the files the other package owns.
- * @property {Record<string, number>} files - That package's own per-file baseline map.
- * @property {string} [label]
- */
-/**
- * The verdict vocabulary. `fail-new-file` is split out of `peerDrift` so `--mine` can
- * never greenwash a brand-new file: absence from the git-status changed set does not
- * prove a new file isn't yours, because git-sync auto-commits this shared tree every few
- * minutes (EI-18766822535373909).
- *
- * @typedef {'fail-syntax' | 'fail-regressed' | 'fail-attributed' | 'fail-new-file' | 'ok-peer-drift' | 'ok-ratchet' | 'ok-below' | 'ok'} PerFileGateVerdict
- */
-/**
- * A cross-package baseline named by PATH, for `runTscBaselineGate`'s options. Distinct
- * from `ForeignBaselineSource`, which carries the already-LOADED `files` map — this is
- * what a CLI passes in before the gate reads it off disk.
- *
- * @typedef {object} ForeignBaselineRef
- * @property {string} prefix - Repo-relative path prefix the owning package covers.
- * @property {string} baselineFile - Absolute path to that package's `.tsc-baseline.json`.
- * @property {string} [label]
- */
-/**
- * Options for the shared CLI entry point.
- *
- * ⚠ Written as a `@typedef` with `@property` tags, NOT as an inline `@param {{ … }}`
- * object type. TypeScript's JSDoc TYPE parser does not accept `//` comments inside a type
- * expression: this options bag was previously documented inline with a `//` gloss per
- * field, and everything from the first comment-only continuation line onward — including
- * `foreignBaselines` — was silently dropped from the emitted type while still reading as
- * fully documented. `@property` descriptions are prose by design, so the annotation and
- * the explanation can coexist without one eating the other.
- *
- * @typedef {object} RunTscBaselineGateOptions
- * @property {string} root - cwd the tscCommand runs from (repo root).
- * @property {string} tscCommand - e.g. 'npx tsc -p apps/foo/tsconfig.json --noEmit --incremental false'.
- * @property {string} baselineFile - Absolute path to this project's `.tsc-baseline.json`.
- * @property {string} label - Human label for console output, e.g. 'operator-core'.
- * @property {string[]} argv - `process.argv.slice(2)`.
- * @property {string} [countField] - Baseline JSON field the derived total is written to on
- *   `--update` (default 'errorCount'; operator-core keeps its legacy 'operatorCoreErrorCount'
- *   name for back-compat with existing tooling).
- * @property {ForeignBaselineRef[]} [foreignBaselines] - Cross-package files this gate
- *   MEASURES but does not OWN: a file under `prefix` that is absent from this gate's
- *   baseline inherits the owning package's recorded count instead of an implicit 0. See
- *   `effectiveBaselineByFile` (EI-18649014117371738).
- */
-/**
- * The full decision for one run.
- *
- * @typedef {object} PerFileGateResult
- * @property {PerFileGateVerdict} verdict
- * @property {PerFileGateEntry[]} regressions
- * @property {PerFileGateEntry[]} improvements
- * @property {PerFileGateEntry[]} [attributed]
- * @property {PerFileGateEntry[]} [typeAttributed] - Subset of `attributed` NOT in the caller's
- *   changed-file set, attributed instead because the file references an exported type/interface
- *   one of the changed files also exports (EI-18756182128903253's cause-aware widening).
- * @property {PerFileGateEntry[]} [peerDrift]
- * @property {PerFileGateEntry[]} [newFiles] - Regressions in files ABSENT from the baseline.
- * @property {number} total
- * @property {number} baselineTotal
- * @property {Record<string, number>} [newBaselineByFile]
- * @property {string[]} [brokenFiles]
- */
-/**
  * Parse tsc output into { file, code } entries (file null when unattributable).
  *
  * @param {string} tscOutput
@@ -344,12 +254,114 @@ export function partitionNewFilesByLiveEdit(newFiles: PerFileGateEntry[]): {
     standing: PerFileGateEntry[];
 };
 /**
+ * The COMPILER LINES behind a new file's `+N` — the WHAT the count alone withholds (WI-6767).
+ *
+ * The gate holds the full tsc output and, until now, reported only `file: 0 → 1 (+1)`. Recovering
+ * the message from that costs a fresh full-project compile, which on this box is ~100s under
+ * contention and is exactly what the two agents who hit this could not afford: the WI-6764 filer
+ * recorded that a full `tsc -p packages/operator-core` blew their shell budget TWICE, so they filed
+ * a major bug without ever seeing the error; the next agent then spent ~20 minutes re-deriving it.
+ * The line was sitting in a string the gate already had.
+ *
+ * It matters far beyond convenience, because the message is frequently the whole diagnosis. The
+ * WI-6764 error read `TS2322: Type '"memory-recall-scale"' is not assignable to type
+ * 'WatchdogSource'` — naming a type in a DIFFERENT file, which is the signature of a multi-file
+ * change still landing (see `formatLandingRaceCaveat`). A bare `+1` cannot suggest that; the
+ * message says it outright.
+ *
+ * Deliberately a separate projection rather than a widening of `parseTscErrors`: that function's
+ * `{file, code}` shape is asserted with strict equality by `lint-tsc.test.ts` and its narrowness is
+ * a documented decision (`packages/operator-core/lib/tsc-diagnostics.ts` explains why the gate
+ * counts rather than carries messages). This is display-only and feeds nothing that decides a
+ * verdict.
+ *
+ * @param {string} tscOutput - Raw compiler output.
+ * @param {Iterable<string>} files - Repo-relative paths to quote lines for.
+ * @param {{maxPerFile?: number}} [opts] - `maxPerFile` bounds the quote so a file with 40 errors
+ *   cannot bury the guidance underneath it (the report stays readable; the count already told you
+ *   the true total).
+ * @returns {Map<string, string[]>} file → its diagnostic lines, in compiler order, capped.
+ */
+export function diagnosticLinesForFiles(tscOutput: string, files: Iterable<string>, { maxPerFile }?: {
+    maxPerFile?: number;
+}): Map<string, string[]>;
+/**
+ * Last commit time (epoch seconds) per path. Fail-SOFT per file: anything unreadable maps to
+ * `null`, which `partitionStandingByCommitRecency` treats as NOT recent — i.e. the loud, standing
+ * reading. An unreadable git state must never manufacture a "probably fine, ignore it" caveat.
+ *
+ * Uses `execFileSync` (argv, no shell) so a path with a space or a shell metacharacter is passed
+ * verbatim instead of being re-split or interpreted.
+ *
+ * @param {string} root - Repo root to run git in.
+ * @param {Iterable<string>} files
+ * @returns {Map<string, number | null>}
+ */
+export function lastCommitTimes(root: string, files: Iterable<string>): Map<string, number | null>;
+/**
+ * Split committed new files into ones committed so recently they may be a LANDING RACE, and ones
+ * settled long enough that the red is really standing (WI-6767).
+ *
+ * `null`/missing/future timestamps fall to `settled` — the same "unknown is never an exoneration"
+ * rule `partitionNewFilesByLiveEdit` applies, and for the same reason: this caveat tells a reader
+ * it is safe to wait rather than act, so it must be earned by positive evidence, never by an
+ * absence of evidence.
+ *
+ * @param {PerFileGateEntry[]} standing - The COMMITTED subset (never a peer's live buffer).
+ * @param {Map<string, number | null>} commitTimes
+ * @param {number} nowSec - Current time, epoch seconds (injected so this stays pure/testable).
+ * @param {number} [windowSec]
+ * @returns {{recent: PerFileGateEntry[], settled: PerFileGateEntry[]}}
+ */
+export function partitionStandingByCommitRecency(standing: PerFileGateEntry[], commitTimes: Map<string, number | null>, nowSec: number, windowSec?: number): {
+    recent: PerFileGateEntry[];
+    settled: PerFileGateEntry[];
+};
+/**
+ * The LANDING-RACE caveat — the third population the committed/uncommitted split cannot express.
+ *
+ * EI-19278299775574199 taught this report to separate a peer's UNCOMMITTED live edit ("don't touch
+ * it") from a COMMITTED standing red ("fix it now"). That split is right and stays. But it assumes
+ * `committed` means `settled`, and on this repo it does not: git-sync commits the WHOLE shared tree
+ * on a schedule, so ONE logical multi-file change routinely lands across TWO ticks. Between them
+ * the committed tree holds a half-landed change that typechecks as a genuine error belonging to
+ * nobody.
+ *
+ * Measured, not hypothesised (WI-6764): commit 133317acd0 @20:25:57 landed a file emitting
+ * `source: 'memory-recall-scale'`; the union that accepts that value arrived in watchdog.ts at
+ * 82a0d03bef @20:33:46. For 7m49s the tree carried exactly one real type error. An agent ran this
+ * gate inside that window, checked `git status` (clean), correctly concluded "committed ⇒ standing
+ * red" — and filed a major bug for something that had healed itself ~1 minute earlier. Their
+ * reasoning was sound; the report simply had no way to say "wait a moment first".
+ *
+ * Note what this does NOT do: it never moves the verdict, never suppresses a row, and never
+ * downgrades the exit code. A landing race and a standing red are indistinguishable at this
+ * instant, so the honest report is "still failing — and here is the one cheap check that tells you
+ * which".
+ *
+ * @param {{recentCount: number, windowMin?: number}} opts
+ * @returns {string[]} console lines, already indented; empty when nothing is recent.
+ */
+export function formatLandingRaceCaveat({ recentCount, windowMin }: {
+    recentCount: number;
+    windowMin?: number;
+}): string[];
+/**
  * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
  * `main()` every per-project CLI (lint-tsc.mjs, lint-tsc-operator-vite.mjs, …) delegates to.
  *
  * @param {RunTscBaselineGateOptions} options
  */
 export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv, countField, foreignBaselines, }: RunTscBaselineGateOptions): void;
+/**
+ * How recently a file must have been committed for its red to be treated as possibly still landing.
+ *
+ * 20 minutes, sized from the mechanism rather than taste: git-sync commits this tree on a schedule
+ * of a few minutes, and the observed WI-6764 split was 7m49s between the two halves of one logical
+ * change. 20min covers that with margin while staying far below the hours a genuine standing red
+ * survives. It only ever adds a caveat — never removes one — so erring long is the safe direction.
+ */
+export const LANDING_RACE_WINDOW_SEC: number;
 /**
  * One diagnostic parsed out of tsc's output.
  */

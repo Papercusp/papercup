@@ -265,7 +265,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // 2026-07-12 (WI-4240) — papercusp-workspace-coordination was added here as the TENTH
   // EI-7230 instance (an UNVERIFIED workspace-brain re-key cutover held OFF by a hand-placed
   // operator_flag_overrides row); GRADUATED OUT 2026-08-02 (WI-605, workspace-scoped-
-  // coordination-2026-06-20 D-011): owner-attended cutover — flipped ON live via the pg
+  // coordination-2026-06-20 D-019): owner-attended cutover — flipped ON live via the pg
   // override, brains verified re-keyed, default graduated. Count 27 → 26 relative to that
   // era's chain; the per-hive OFF path remains the kill-switch until post-graduation cleanup.
   // 2026-07-12 (WI-4240) — papercusp-authority-rpc-protomux + papercusp-authority-eviction-
@@ -563,7 +563,11 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // owner directive the same day it shipped default-ON ("put the task manager behind a
     // testing flag it isn't ready yet"). case: incomplete, so the parking subset and the
     // watermark both move 13 → 14. Count 32 → 33.
-    expect(offCount).toBe(33);
+    // 2026-08-02 (WI-605) — papercusp-workspace-coordination GRADUATED to default-ON at the
+    // owner-attended cutover (workspace-scoped-coordination-2026-06-20 D-019): build verified
+    // complete (D-010), flipped live via the pg override, brains re-key verified. case was
+    // 'cutover' — no watermark impact. Count 33 → 32.
+    expect(offCount).toBe(32);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

@@ -4311,7 +4311,16 @@ export async function claimNextIssueWorkItem(
   // scheduler:get_next/claim_next call whenever it's still the oldest/highest-
   // ranked eligible row (the confirmed-live WI-652/WI-2381-class ping-pong).
   const cooldown = releaseCooldownSec();
-  const rows = await sql<FeatureRowDb[]>`
+  // EI-18806283145814329: run the claim UPDATE inside a bounded admin-pool txn (mirrors
+  // get-next.ts tiers 1/2 — EI-18805386252364731) so a stall here surfaces as a typed
+  // OrgTxnTimeoutError instead of hanging the caller indefinitely: getOrgPg()'s raw
+  // `harness_admin` pool carries a role-default lock_timeout but DELIBERATELY NO
+  // statement_timeout (migrations share the pool and must run unbounded on it), and
+  // postgres-js cannot cancel an in-flight query from JS once it stalls. Every SQL
+  // fragment below is compiled against the TRANSACTION client `tx` — not the outer
+  // `sql` — so it belongs to the same connection that carries the SET LOCAL timeouts.
+  const rows = await boundedOrgTxn(
+    (tx) => tx<FeatureRowDb[]>`
     UPDATE harness_shared.work_items
        SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
      WHERE (workspace_id, harness_slug, feature_id) = (
@@ -4320,15 +4329,15 @@ export async function claimNextIssueWorkItem(
         WHERE wi.item_kind = ANY(${issueKinds}::text[])
           AND wi.workspace_id = ${issueWs}
           -- WI-4309: narrow to the spec's closed-world id set, when one was extracted.
-          AND ${idFilter ? sql`wi.feature_id = ANY(${idFilter}::text[])` : sql`TRUE`}
+          AND ${idFilter ? tx`wi.feature_id = ANY(${idFilter}::text[])` : tx`TRUE`}
           -- WI-5258: exclude ids the spec negatively excludes (a not-wrapped id leaf).
-          AND ${excludeIdFilter ? sql`NOT (wi.feature_id = ANY(${excludeIdFilter}::text[]))` : sql`TRUE`}
+          AND ${excludeIdFilter ? tx`NOT (wi.feature_id = ANY(${excludeIdFilter}::text[]))` : tx`TRUE`}
           -- The FULL compiled claim-spec filter: the paths/plan/title/tag legs (and any
           -- any/not combination) that the kind/id narrowings above structurally cannot
           -- express. Without this the claim path served spec-violating rows and leaned on a
           -- 5-attempt post-claim release-and-retry, which false-reported a narrow lane as
           -- drained ~88% of the time. See opts.specFilterSql.
-          AND ${specFilterSql ?? sql`TRUE`}
+          AND ${specFilterSql ?? tx`TRUE`}
           AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
           AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
           AND wi.status = ANY(${[...states]}::text[])
@@ -4342,11 +4351,11 @@ export async function claimNextIssueWorkItem(
           -- self-selectable (the issue-family analog of the feature family's ownAuthorWhereSql leg;
           -- without it, node-identity drift permanently strands this box's own bugs). A true-peer
           -- remote row stays excluded. Shared with the READY diagnose so the two never diverge.
-          AND ${isIssueLocallyClaimableWhereSql(sql, issueWs)}
+          AND ${isIssueLocallyClaimableWhereSql(tx, issueWs)}
           -- swarm affinity (P-002): under the per-Hive lease, honor the issue's affinity too.
-          AND ${filter.swarmId ? sql`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
+          AND ${filter.swarmId ? tx`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : tx`TRUE`}
           -- P-014: skip high-stakes (redundancy>1) items under the redundancy flag.
-          AND ${filter.excludeRedundant ? sql`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : sql`TRUE`}
+          AND ${filter.excludeRedundant ? tx`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : tx`TRUE`}
           -- Readiness (P-005/P-007): never self-select a row with a PRESENT, NON-TERMINAL blocker.
           -- The issue's blocked_ref is its BARE feature_id (issues:link). The issue-claim path ALWAYS
           -- uses the INLINE predicate over work_item_deps + cross-family blocker statuses — NOT the
@@ -4373,52 +4382,52 @@ export async function claimNextIssueWorkItem(
                  )
           )
           -- WI-2118 (P-009 leak): never self-select an item reserved by another active plan lane.
-          AND ${reservedPlanLaneExclusionSql(sql, filter.assignee)}
+          AND ${reservedPlanLaneExclusionSql(tx, filter.assignee)}
           -- WI-2796: never self-select a cross-machine-rig-gated item unless the caller
           -- declared it has rig access.
-          AND ${crossMachineRigExclusionSql(sql, filter.rigAvailable)}
+          AND ${crossMachineRigExclusionSql(tx, filter.rigAvailable)}
           -- WI-2797: never self-select an item a peer has explicitly claim-held (do-not-
           -- opportunistically-claim) — still directly claimable by id.
-          AND ${claimHoldExclusionSql(sql)}
+          AND ${claimHoldExclusionSql(tx)}
           -- D-005: never self-select a lane:'observation' scorecard/reflection — by design it
           -- "never enters the work queue" (only the Observations pane + Scout digest read it).
-          AND ${observationLaneExclusionSql(sql)}
+          AND ${observationLaneExclusionSql(tx)}
           -- EI-7776: never self-select an item improvements:resolve already routed to a human
           -- (payload.needsHuman) — the issue-family status dialect has no real terminal
           -- "needs-human" state (it collapses to 'open'), so without this floor a drain-loop
           -- bee re-claims the SAME already-diagnosed item and re-posts the identical
           -- "routed to a human" comment forever (confirmed live: EI-7592 "resolved" 3x in one
           -- afternoon). Still directly claimable BY ID.
-          AND ${needsHumanExclusionSql(sql)}
-          AND ${externalBlockersExclusionSql(sql)}
+          AND ${needsHumanExclusionSql(tx)}
+          AND ${externalBlockersExclusionSql(tx)}
           -- WI-2633: never self-select an auto-filed replication-liveness detector EI
           -- (payload._ei.created_by='system:replication-liveness'). A generic backlog-drain
           -- worker structurally cannot action it — verifying the current verdict needs the
           -- p2p-release-readiness fleet's live in-process getReplicationLiveness()/dogfood-
           -- substrate diagnostics — so it would only ever close it as gated-to-another-fleet,
           -- burning a wake each time. Still directly claimable BY ID (the p2p fleet's triage).
-          AND ${federationDetectorExclusionSql(sql)}
+          AND ${federationDetectorExclusionSql(tx)}
           -- EI-8802: never self-select a stray AUTO-loop-iteration bookkeeping marker (a
           -- misfiled loop:checkpoint substitute) — pure recycle churn for zero real work.
           -- Still directly claimable BY ID.
-          AND ${loopIterationNoiseExclusionSql(sql)}
+          AND ${loopIterationNoiseExclusionSql(tx)}
           -- EI-8972: never self-select a row that already carries a genuine terminal
           -- completion (terminal_owner + terminal_completion_ref both set) even if its
           -- status was never flipped terminal — a peer already finished/diagnosed it
           -- (work_items:complete's own stateWarning documents this exact gap: a caller can
           -- omit state and leave the row claimable). Still directly claimable BY ID.
-          AND ${alreadyTerminallyCompletedExclusionSql(sql)}
+          AND ${alreadyTerminallyCompletedExclusionSql(tx)}
           -- Mig 499: release-cooldown floor (mirrors claimFloorsWhereSql's feature-family
           -- clause) — NULL-safe: never released, released by someone else, or released
           -- long enough ago, all pass; only "released by ME within the cooldown window"
           -- excludes the row from MY OWN next self-select.
           AND ${
             cooldown > 0
-              ? sql`(wi.last_released_by IS NULL
+              ? tx`(wi.last_released_by IS NULL
                 OR wi.last_released_by <> ${filter.assignee}
                 OR wi.last_released_at IS NULL
                 OR wi.last_released_at < now() - make_interval(secs => ${cooldown}))`
-              : sql`TRUE`
+              : tx`TRUE`
           }
         -- EI-7407: feature_order steering must be UNCONDITIONAL for issue-family claims (per
         -- this function's own doc above — "the Mug can now steer issues too, P-007" — with
@@ -4427,11 +4436,13 @@ export async function claimNextIssueWorkItem(
         -- it); the fix moves feature_order OUT of that ternary so a plain, lease-less
         -- work_items:set_priority actually changes this query's pull order instead of
         -- silently no-op'ing on ordering while still reporting written:true.
-        ORDER BY ${filter.swarmId ? sql`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST,` : sql``} wi.feature_order ASC NULLS LAST, wi.created_ts ASC
+        ORDER BY ${filter.swarmId ? tx`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST,` : tx``} wi.feature_order ASC NULLS LAST, wi.created_ts ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
      )
-    RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+    RETURNING ${tx.unsafe(FEATURE_COLS)}`,
+    { client: sql },
+  );
   // RETURNING the base row uses the feature column shape; the row IS an issue-family row, so
   // map it through the issue facade (state dialect, no claim-time columns) for a consistent
   // WorkItem. featureRowToWorkItem would mislabel family/state, so re-read via the issue path.
@@ -4451,11 +4462,15 @@ export async function claimNextIssueWorkItem(
   // a race. Do not leak the claim or misreport it as a retryable miss: RELEASE it (return the
   // row to the pool) and surface an honest error so the fault is visible, not disguised. Clear
   // the claim with a workspace-EXACT UPDATE (not releaseWorkItem, which re-derives the scope via
-  // getIssue and would hit the same drift) so the undo can't itself leak.
-  await sql`
+  // getIssue and would hit the same drift) so the undo can't itself leak. Bounded for the same
+  // reason as the claim UPDATE above — a write on this pool must never hang unboundedly.
+  await boundedOrgTxn(
+    (tx) => tx`
     UPDATE harness_shared.work_items
        SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL, updated_ts = ${Date.now()}
-     WHERE workspace_id = ${issueWs} AND harness_slug = ${rows[0].harness_slug} AND feature_id = ${rows[0].feature_id}`;
+     WHERE workspace_id = ${issueWs} AND harness_slug = ${rows[0].harness_slug} AND feature_id = ${rows[0].feature_id}`,
+    { client: sql },
+  );
   throw new Error(
     `claimNextIssueWorkItem: claimed issue ${rows[0].feature_id} in workspace '${issueWs}' but could ` +
       `not re-read it (getIssueInWorkspace returned null); released the claim. This is an anomaly, ` +

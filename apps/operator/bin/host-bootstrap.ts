@@ -41,6 +41,10 @@ import { validateHomeHarnessResolution, homeHarnessValidationFatal, isLikelyFres
 import { applyToProcessEnv, readAgentConfig, agentCmdBootWarning } from '@papercusp/operator-core/lib/agent-config';
 import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
 import { isSidecarEnabledFromEnv } from '@papercusp/operator-core/lib/process-supervision/sidecar-spawn-shared';
+// The proxy's retry window, defined ONCE (WI-6738) and shared with psu-launcher.mjs, which
+// must not give up before this window elapses. Static (not lazy like the proxy import
+// below): dependency-free and side-effect-free apart from reading env.
+import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -82,7 +86,7 @@ function startPackagedMcpProxy(): void {
           listenPort: port,
           resolveTarget: () =>
             readOperatorJsonTarget() ?? { host: '127.0.0.1', port: staticPort, source: 'fallback' },
-          retryWindowMs: Number(process.env.PAPERCUSP_MCP_PROXY_RETRY_MS || 90_000),
+          retryWindowMs: MCP_PROXY_RETRY_WINDOW_MS,
         });
         // startMcpProxy attaches no 'error' handler; without this an EADDRINUSE
         // (non-proxy squatter that failed the health probe above) would be an
@@ -110,7 +114,7 @@ function startPackagedMcpProxy(): void {
         PAPERCUSP_MCP_PROXY_DYNAMIC_TARGET: '1',
         PAPERCUSP_MCP_PROXY_TARGET_HOST: process.env.PAPERCUSP_MCP_PROXY_TARGET_HOST || '127.0.0.1',
         PAPERCUSP_MCP_PROXY_TARGET_PORT: process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT || process.env.PAPERCUSP_HONO_PORT || '3070',
-        PAPERCUSP_MCP_PROXY_RETRY_MS: process.env.PAPERCUSP_MCP_PROXY_RETRY_MS || '90000',
+        PAPERCUSP_MCP_PROXY_RETRY_MS: String(MCP_PROXY_RETRY_WINDOW_MS),
         PAPERCUSP_MCP_PROXY_BASE: process.env.PAPERCUSP_MCP_PROXY_BASE || `http://127.0.0.1:${port}`,
       },
     });

@@ -82,7 +82,7 @@ export default defineTool({
   }),
   async handler(args) {
     const { loadAccountPool, updateAccountPool } = await import('../../deployment/account-pool-store');
-    const { recordAccountWindow } = await import('../../deployment/account-pool');
+    const { recordAccountWindow, recordProbeFailure } = await import('../../deployment/account-pool');
     const ws = args.workspace ?? activeWorkspaceId();
     const apply = args.apply ?? true;
 
@@ -101,7 +101,14 @@ export default defineTool({
     if (apply) {
       const t = Date.now();
       for (const r of results) {
-        if (!r.ok) continue;
+        if (!r.ok) {
+          // The probe itself failed (network/auth/timeout) — no window was observed. Persist that
+          // fact so a later accounts:status read can tell "we just asked and got nothing" apart
+          // from "no one has asked in days" instead of silently keeping the old, now-unverified
+          // projection (EI-18809949582687481).
+          await updateAccountPool((p) => recordProbeFailure(p, r.accountId, t), ws);
+          continue;
+        }
         const w = r.windows;
         if (w.utilization === undefined && w.utilization7d === undefined) continue;
         await updateAccountPool(

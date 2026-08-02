@@ -380,6 +380,51 @@ describe('premise-resolve-rate — the P-011 measurement (D-091)', () => {
     expect(out.find((x) => x.ref === 'coord:premise-resolve-rate')).toBeDefined();
   });
 
+  it('emits the clarify answer-rate UNSUFFIXED, and never a fill rate (P-012 / D-106)', () => {
+    const out = buildCoordHealthPatterns(
+      base({ clarifyAdoption: { asks: 10, answered: 4, entries: 13 } }),
+    );
+    const p = out.find((x) => x.ref.startsWith('coord:clarify-answer-rate'));
+    expect(p).toBeDefined();
+    // EXACT: keying an ASK metric by the asking agent makes asking a thing to
+    // avoid being seen doing, which kills the field outright (D-091/D-090 R3).
+    expect(p!.ref).toBe('coord:clarify-answer-rate');
+    expect(p!.summary).toContain('40%');
+    // `assuming` is schema-mandatory, so its fill rate is 100% by construction.
+    expect(p!.summary).not.toMatch(/fill rate/i);
+    expect(JSON.stringify(p)).not.toMatch(/su-[0-9a-f]/);
+  });
+
+  it('reads the rate AGAINST the measured incumbent baseline, in both directions', () => {
+    const beating = buildCoordHealthPatterns(
+      base({ clarifyAdoption: { asks: 10, answered: 9, entries: 10 } }),
+    ).find((x) => x.ref === 'coord:clarify-answer-rate')!;
+    const losing = buildCoordHealthPatterns(
+      base({ clarifyAdoption: { asks: 10, answered: 1, entries: 10 } }),
+    ).find((x) => x.ref === 'coord:clarify-answer-rate')!;
+    expect(beating.summary).toMatch(/ABOVE/);
+    expect(losing.summary).toMatch(/BELOW/);
+    // Ranks by SHORTFALL: beating the incumbent is good news and must not crowd
+    // out live coordination breakdowns.
+    expect(losing.weight!).toBeGreaterThan(beating.weight!);
+  });
+
+  it('stays SILENT below the ask floor — the field ships with zero traffic by construction', () => {
+    // Not a defect: `clarify` shipped in the same change as this reading, so an
+    // emitted 0% would read as a finding about the field rather than an absence
+    // of data.
+    expect(
+      buildCoordHealthPatterns(base({ clarifyAdoption: { asks: 0, answered: 0, entries: 0 } })).find(
+        (x) => x.ref === 'coord:clarify-answer-rate',
+      ),
+    ).toBeUndefined();
+    expect(
+      buildCoordHealthPatterns(base({ clarifyAdoption: { asks: 2, answered: 0, entries: 2 } })).find(
+        (x) => x.ref === 'coord:clarify-answer-rate',
+      ),
+    ).toBeUndefined();
+  });
+
   it('names the failing REF, with its verdict, so the fix lands in the grammar', () => {
     const out = buildCoordHealthPatterns(
       base({

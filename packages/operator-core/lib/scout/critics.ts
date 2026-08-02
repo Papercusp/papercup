@@ -107,8 +107,8 @@ export function buildCriticPrompt(
     // mechanism + JSON output contract below stay hardcoded.
     ctx.mission ?? DEFAULT_CRITIC_MISSION,
     '',
-    '• NOVELTY critic (skeptic): is this genuinely NEW, or the obvious move dressed up / something already tried? Be harsh — penalise ideas close to what already exists. Score conceptualNovelty 0 (obvious / already done) … 1 (a real leap).',
-    '• FEASIBILITY critic: could this actually work in THIS architecture, and is the cost worth the upside? Score feasibility 0 (impractical / no clear payoff) … 1 (clearly buildable, high payoff).',
+    '• NOVELTY critic (skeptic): is this genuinely NEW, or the obvious move dressed up / something already tried? Be harsh — penalise ideas close to what already exists. This is a mature, actively-developed platform: a well-known operational category (rate-limit ladders, per-account throttling, egress rotation, circuit breakers, retries, caching, scheduling) is MORE LIKELY to already exist than not, so an idea that confidently asserts such a gap without hedging or evidence should be scored LOW, not taken at face value. Score conceptualNovelty 0 (obvious / already done) … 1 (a real leap).',
+    "• FEASIBILITY critic: could this actually work in THIS architecture, and is the cost worth the upside? Also check the idea's OWN cited evidence (specific incidents/logs/tickets) actually supports the mechanism it claims — e.g. a citation describing a local rate-governor pause is NOT evidence of an upstream HTTP 429, and citing the wrong event class undermines the whole premise. If the citations contradict or fail to support the claim, score feasibility LOW and say so explicitly in the rationale. Score feasibility 0 (impractical / no clear payoff, or premise contradicted by its own evidence) … 1 (clearly buildable, high payoff).",
     '',
     'A great idea is novel AND feasible; a leap may be novel but not-yet-feasible (that is fine — it is preserved separately). Reason briefly, then output ONLY this JSON (no prose, no fences):',
     '{"conceptualNovelty": <0-1 number>, "feasibility": <0-1 number>, "rationale": "<one or two sentences>"}',

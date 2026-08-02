@@ -16,13 +16,24 @@
  * live operator re-runs on every hot-reload — so an over-budget edit surfaces
  * in the operator's own logs the moment the file is saved, not at the gate.
  *
- * A STATIC (source-text) read cannot do this job: 12 fleet:* tools compose
- * their guidance from a shared `ROUTING_LADDER` constant (+368 chars each) and
- * a couple build their description non-literally, so a source scan under-counts
- * exactly the tools nearest the ceiling. Only the RUNTIME-projected catalog
+ * A STATIC (source-text) read cannot be TRUSTED for this job: a tool may build
+ * its description/guidance non-literally (concatenating a shared constant, a
+ * helper call, or per-role blocks), and a source scan then under-counts exactly
+ * the tools nearest the ceiling. Only the RUNTIME-projected catalog
  * (listAllProjectedTools, after the agent-tools barrel has registered) is
  * ground truth — which is precisely what registration-time has and a file
  * scanner does not.
+ *
+ * ⚠ This paragraph used to cite "12 fleet:* tools compose their guidance from a
+ * shared `ROUTING_LADDER` constant (+368 chars each)" as the worked example.
+ * That constant NO LONGER EXISTS anywhere in the repo (2026-08-02: the only
+ * remaining occurrence of the identifier was this comment). The stale example
+ * actively misleads: chasing a ~+368/tool hidden surcharge makes a CORRECT
+ * static measurement look wrong, which is how an agent triaging a breach ends
+ * up trimming a tool that already fits. Measured that day, fleet:leader-brief
+ * projected at runtime to exactly its static weight (1503, byRole: []).
+ * The RULE above still stands — verify with the runtime catalog, not a grep —
+ * but do NOT expect a fixed hidden surcharge; measure the tool in question.
  *
  *   - BUDGET (1,500 chars, description + all guidance fields): every tool must
  *     fit unless grandfathered in ALLOW_OVER_BUDGET.

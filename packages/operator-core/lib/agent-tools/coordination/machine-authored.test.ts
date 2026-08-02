@@ -8,7 +8,12 @@
  *     silently suppressed. That is the direction these tests guard hardest.
  */
 import { describe, expect, it } from 'vitest';
-import { isMachineAuthoredSender, MACHINE_SENDER_PATTERN } from './machine-authored';
+import {
+  isMachineAuthoredSender,
+  isMachineEmitterForStamping,
+  MACHINE_EMITTER_STAMP_PATTERN,
+  MACHINE_SENDER_PATTERN,
+} from './machine-authored';
 
 describe('WI-4537 — isMachineAuthoredSender', () => {
   it('classifies the machine senders that were actually polluting the live counter', () => {
@@ -65,6 +70,22 @@ describe('WI-4537 — isMachineAuthoredSender', () => {
 
   it('is case- and whitespace-insensitive', () => {
     expect(isMachineAuthoredSender('  System:Delivery-Ladder  ')).toBe(true);
+  });
+
+  it('does NOT treat the stamp-only emitters as machine-authored (they must stay out of the SQL pattern)', () => {
+    // WI-6768. These six are stamped at the sendMessage seam but must NOT widen the
+    // shared pattern, because that string is embedded verbatim in four SQL sites and
+    // widening it retroactively changes which historical rows count as unanswered.
+    for (const s of [
+      'git-sync-ref-announce',
+      'git-sync-integrator',
+      'supervision-reconciler',
+      'intent-divergence-detector',
+      'green-checkpoint',
+      'coord-probe-canary-a',
+    ]) {
+      expect(isMachineAuthoredSender(s)).toBe(false);
+    }
   });
 
   it('exposes a pattern that is valid in BOTH JS and POSIX ERE (it is embedded verbatim in SQL)', () => {

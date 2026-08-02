@@ -1452,7 +1452,7 @@ export const FLAGS = {
   // SCOUT + OVERWATCH per-HIVE → per-WORKSPACE brain re-key — ONE central brain per workspace
   // spanning all its hives (all halves flip together on THIS one flag; keying must stay
   // consistent across the three brains, D-006). DEFAULT ON — graduated 2026-08-02 at the
-  // owner-attended cutover (WI-605, D-011; build verified complete D-010, flipped live via the
+  // owner-attended cutover (WI-605, D-019; build verified complete D-010, flipped live via the
   // pg override first). OFF = the reversible kill-switch restoring the per-hive brains (that
   // code path is deliberately retained until the post-graduation cleanup):
   // isWorkspaceCoordinationOn() fails to false and workspaceBrainScopeKey read-falls-back to

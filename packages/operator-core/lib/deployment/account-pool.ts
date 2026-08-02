@@ -168,6 +168,16 @@ export interface AccountRateState {
   utilization7d?: number;
   /** Epoch ms the unified-7d window resets (`anthropic-ratelimit-unified-7d-reset`). `undefined` until observed. */
   windowResetAt7d?: number;
+  /**
+   * Epoch ms of the most recent `accounts:probe-capacity` attempt on this account that came back
+   * `no-reading` (the probe request itself failed — network/auth/timeout — so upstream told us
+   * nothing). Cleared the next time a probe or live traffic actually observes a window (see
+   * `recordAccountWindow`). EI-18809949582687481: without this, a caller reading `available:false`
+   * or a stale `utilization` has no way to tell "we just tried and got no answer" from "we haven't
+   * asked in days" — both looked identical. `undefined` = no known probe failure since the last
+   * successful observation.
+   */
+  lastProbeFailedAt?: number;
 }
 
 export interface AccountPool {
@@ -467,9 +477,23 @@ export function recordAccountWindow(
         utilization7d: w.utilization7d ?? a.rate.utilization7d,
         windowResetAt7d: w.windowResetAt7d ?? a.rate.windowResetAt7d,
         utilizationAt: now,
+        // A real observation just landed — any earlier "we asked and got nothing" marker is stale.
+        lastProbeFailedAt: undefined,
       };
       return { ...a, rate };
     }),
+  };
+}
+
+/**
+ * Record that an `accounts:probe-capacity` attempt on this account came back `no-reading` (the
+ * probe itself failed — no window observed, so `recordAccountWindow` was never called). Pure;
+ * unknown id = no-op. Companion to `recordAccountWindow`, which clears this the next time a real
+ * observation lands (from a probe OR from live traffic). EI-18809949582687481.
+ */
+export function recordProbeFailure(pool: AccountPool, id: string, now: number): AccountPool {
+  return {
+    accounts: pool.accounts.map((a) => (a.id === id ? { ...a, rate: { ...a.rate, lastProbeFailedAt: now } } : a)),
   };
 }
 

@@ -651,6 +651,94 @@ describe('buildSilentNullPathAdvisory (WI-6674 — the always-NULL accessor)', (
     ).toBeNull();
   });
 
+  // ── work_items.kind — effectively dead (3 of 28,255 rows non-null, measured
+  // 2026-08-02) while item_kind is populated on every row. `WHERE kind='bug'`
+  // therefore returns ~nothing and reads exactly like "there are no bugs".
+  describe('work_items.kind vs item_kind', () => {
+    it('flags a kind PREDICATE — the shape that silently returns zero rows', () => {
+      const advisory = buildSilentNullPathAdvisory(
+        "SELECT count(*) FROM harness_shared.work_items WHERE kind = 'bug'",
+      );
+      expect(advisory).toContain('always-NULL accessor');
+      expect(advisory).toContain('item_kind');
+    });
+
+    it('flags kind IN (...) and kind IS NULL too', () => {
+      expect(
+        buildSilentNullPathAdvisory(
+          "SELECT * FROM harness_shared.work_items WHERE kind IN ('bug','change')",
+        ),
+      ).toContain('always-NULL accessor');
+      expect(
+        buildSilentNullPathAdvisory(
+          'SELECT * FROM harness_shared.work_items WHERE kind IS NULL',
+        ),
+      ).toContain('always-NULL accessor');
+    });
+
+    it('points at the observation lane too — item_kind alone is not the real-work filter', () => {
+      // The count that bit was not just kind-vs-item_kind: ~84% of open rows are
+      // lane='observation' and never enter the queue, so a backlog number needs
+      // BOTH discriminators. An advisory that fixed only half would still hand
+      // back a confidently wrong backlog.
+      const advisory =
+        buildSilentNullPathAdvisory(
+          "SELECT count(*) FROM harness_shared.work_items WHERE kind = 'bug'",
+        ) ?? '';
+      expect(advisory).toContain('observation');
+    });
+
+    it('stays SILENT on item_kind — the CORRECT column must never be flagged', () => {
+      expect(
+        buildSilentNullPathAdvisory(
+          "SELECT count(*) FROM harness_shared.work_items WHERE item_kind = 'bug'",
+        ),
+      ).toBeNull();
+    });
+
+    it('stays SILENT on an `AS kind` alias or GROUP BY — a false advisory is worse than none', () => {
+      // Both are legitimate, common shapes. This file's own tenant-scope note is
+      // explicit that a wrong advisory trains readers to ignore advisories, so
+      // the trap is scoped to predicate position rather than any mention.
+      expect(
+        buildSilentNullPathAdvisory(
+          "SELECT coalesce(item_kind,'?') AS kind, count(*) FROM harness_shared.work_items GROUP BY kind",
+        ),
+      ).toBeNull();
+    });
+  });
+
+  // ── lane lives at the TOP level of payload, never under _ei. Measured
+  // 2026-08-02: payload ? 'lane' true for 12,694 rows, payload->'_ei' ? 'lane'
+  // for ZERO — so the _ei form silently counts every observation as real work.
+  describe("work_items payload->'_ei'->>'lane'", () => {
+    it('flags the _ei lane accessor on work_items', () => {
+      const advisory = buildSilentNullPathAdvisory(
+        "SELECT count(*) FROM harness_shared.work_items WHERE payload->'_ei'->>'lane' <> 'observation'",
+      );
+      expect(advisory).toContain('always-NULL accessor');
+      expect(advisory).toContain("payload->>'lane'");
+    });
+
+    it('stays SILENT on the correct top-level lane accessor', () => {
+      expect(
+        buildSilentNullPathAdvisory(
+          "SELECT count(*) FROM harness_shared.work_items WHERE coalesce(payload->>'lane','') <> 'observation'",
+        ),
+      ).toBeNull();
+    });
+
+    it("does not disturb the existing _ei->>'severity' allowance on work_items", () => {
+      // Regression guard: the severity path IS correct on this TABLE, and adding
+      // a lane trap to the same relation must not start flagging it.
+      expect(
+        buildSilentNullPathAdvisory(
+          "SELECT count(*) FROM harness_shared.work_items WHERE payload->'_ei'->>'severity' = 'critical'",
+        ),
+      ).toBeNull();
+    });
+  });
+
   it('stays SILENT on an unrelated payload path — only the _ei blob is subtracted', () => {
     expect(
       buildSilentNullPathAdvisory(

@@ -36,7 +36,7 @@ import {
 } from './cue-authority';
 import { resolveSenderCueAuthority } from './cue-authority-resolve';
 import { collectRetractedIds, suppressRetracted } from './retraction';
-import { isMachineAuthoredSender } from './machine-authored';
+import { isMachineAuthoredSender, isMachineEmitterForStamping } from './machine-authored';
 import { noteIntentDeclared } from '../../agent-state-stamp';
 
 export type { InboxOptions };
@@ -289,7 +289,12 @@ export async function sendMessage(
   // NOT done here: it is embedded verbatim in unanswered-directed's SQL, so
   // changing it also changes which historical rows count as unanswered — a
   // separate change with its own measurement, not a side effect of this one.
-  if (env.expects === undefined && (isMachineAuthoredSender(identity.ownerId) || env.auto === true)) {
+  // WI-6768: the two signals above were MEASURED insufficient — 36h after they went
+  // live, 845 of 2,013 messages (42%) still carried no `expects`, 97% of them from six
+  // named process emitters matching neither. `isMachineEmitterForStamping` adds those
+  // as a THIRD, stamp-only signal (see machine-authored.ts for why it is a separate
+  // pattern and not a widening of the SQL-embedded one).
+  if (env.expects === undefined && (isMachineEmitterForStamping(identity.ownerId) || env.auto === true)) {
     env.expects = 'none';
     const existing = (env.fieldProvenance ?? {}) as Record<string, unknown>;
     env.fieldProvenance = { ...existing, expects: 'system-emitter-derived' };

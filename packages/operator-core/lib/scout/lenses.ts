@@ -416,6 +416,8 @@ export function buildIdeatorPrompt(input: BuildIdeatorPromptInput): { system: st
     '- If federated mutation seeds are provided, ADAPT them to local friction instead of copying them. Cite any foreign elite you actively reuse in optional `seededByRefs`.',
     '- State the concrete `mechanism` — HOW it would work. No hand-waving.',
     '- Diverge: prefer one strong unexpected idea over three safe ones.',
+    "- EXISTENCE CHECK: this is a mature, actively-developed platform. A well-known operational category (rate-limit ladders, per-account throttling, egress rotation, circuit breakers, retries, caching, scheduling) is more likely to already exist here than not. You have no code access, so NEVER assert a gap exists as fact — phrase it as an explicit, falsifiable claim the reader must verify (e.g. \"I found no evidence of X in the digest above; verify before building\"), and say so in `body`.",
+    '- EVIDENCE-CLASS CHECK: if you cite a specific incident/log/ticket as support, its own description must be the SAME CLASS of event as your hypothesis (e.g. a local rate-governor pause is NOT an upstream HTTP 429 — do not conflate them). Citing evidence that contradicts your own claim is worse than citing none.',
     '',
     '## Output',
     `Return ONLY a JSON object (no prose, no code fences), at most ${maxIdeas} ideas:`,
