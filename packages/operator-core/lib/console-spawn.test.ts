@@ -829,3 +829,86 @@ describe('macConsoleInvocation (operator-direct macOS spawn — approach C)', ()
     expect(inv.content).toContain('#d8b4fe'); // cursor (OSC 12) survives
   });
 });
+
+describe('spawnMacConsole verifies `open` — GUI-less mac ghost members (EI-19311623077693508)', () => {
+  // The live failure: a rig mac whose sidecar was started over ssh has NO GUI
+  // session, so LaunchServices refuses (`osascript` ⇒ -10810, `/dev/console`
+  // owned by root) and `open` exits NON-ZERO. This path used to return ok the
+  // instant Node forked, so delegated-spawn-honor counted a phantom member as
+  // `opened` — which ALSO made its own `r.status !== 'ok'` headless fallback
+  // dead code on macOS, and the requesting leader waited out the whole offer
+  // expiry for a member that never existed.
+  const envelope: ConsoleEnvelope = {
+    cwd: '/tmp',
+    env: {},
+    mcpJsonContents: '',
+    greetingCmd: 'true',
+    needsSuperuserBootstrap: false,
+    sessionId: 'test-sid',
+  };
+  const realPlatform = process.platform;
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'mac-spawn-'));
+    vi.stubEnv('TMPDIR', tmp);
+    spawnMock.mockReset();
+    // spawnConsole dispatches on process.platform; the suite runs on Linux.
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    vi.unstubAllEnvs();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('`open` exiting NON-ZERO ⇒ LOUD error, not a phantom ok (the GUI-less rig mac)', async () => {
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(5150);
+      queueMicrotask(() => child.emit('exit', 1, null));
+      return child;
+    });
+    const r = await spawnConsole({ envelope });
+    expect(r.status).toBe('error');
+    const err = r as { code: number; error: string };
+    expect(err.code).toBe(502);
+    expect(err.error).toMatch(/no window opened/i);
+    expect(err.error).toContain('exit 1');
+    // The message must point at the GUI-session cause — that is what turns a
+    // silent phantom success into a diagnosable one.
+    expect(err.error).toMatch(/-10810|GUI/);
+  });
+
+  it('`open` killed by a signal ⇒ error', async () => {
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(5151);
+      queueMicrotask(() => child.emit('exit', null, 'SIGKILL'));
+      return child;
+    });
+    const r = await spawnConsole({ envelope });
+    expect(r.status).toBe('error');
+    expect((r as { error: string }).error).toContain('SIGKILL');
+  });
+
+  it('`open` exiting 0 ⇒ ok — an early exit is NORMAL on mac (open is a launcher, not the terminal)', async () => {
+    // Guards the mac-specific inversion: the Linux probe treats ANY early exit
+    // as failure. Applying that rule here would fail every healthy mac launch,
+    // since `open` hands off to LaunchServices and returns 0 immediately.
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(5152);
+      queueMicrotask(() => child.emit('exit', 0, null));
+      return child;
+    });
+    const r = await spawnConsole({ envelope });
+    expect(r.status).toBe('ok');
+    expect((r as { pid: number | null }).pid).toBe(5152);
+    expect((r as { terminal: string }).terminal).toBe('Terminal.app');
+  });
+
+  it('a slow `open` that outlives the probe ⇒ ok (fail OPEN — never manufacture a failure)', async () => {
+    spawnMock.mockImplementation(() => fakeChild(5153)); // never exits
+    const r = await spawnConsole({ envelope });
+    expect(r.status).toBe('ok');
+    expect((r as { pid: number | null }).pid).toBe(5153);
+  }, 10_000);
+});

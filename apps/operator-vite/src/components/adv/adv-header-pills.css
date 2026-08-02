@@ -172,3 +172,195 @@
 .pc-advshell__hives-pop .pclsb-panel__error {
   background: #0f1b2d;
 }
+
+/* ── Tasks pill + Task Manager dropdown (WI-6844) ─────────────────────────────
+   Owner ask 2026-08-02: the task manager moves out of the left rail's middle
+   pane and becomes the third pill in `pc-advshell__header-status`, right of
+   "agents running". Styles live HERE rather than self-carried in the component
+   because that is the D-001 reason this file exists — AdvShell and the Quick
+   Panel popup both render these pills, and a self-carried <style> only ships
+   with whichever tree mounted the component first. */
+.pc-advshell__action--tasks {
+  color: #cbb8fb;
+  border-color: rgba(167, 139, 250, 0.42);
+}
+.pc-advshell__action--tasks:hover,
+.pc-advshell__action--tasks[aria-expanded="true"] {
+  border-color: rgba(167, 139, 250, 0.9);
+  background: #1b2c42;
+}
+
+.pc-advshell__tasks-pop {
+  width: 620px;
+  max-width: calc(100vw - 40px);
+  padding: 0;
+}
+.pc-tasks-roster {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: #e6ecf4;
+}
+.pc-tasks-roster__loading,
+.pc-tasks-roster__empty {
+  padding: 14px;
+  color: #8497ad;
+  font-size: 11.5px;
+}
+
+/* Summary before detail. `Enrolled` and `Scanned` are deliberately two numbers:
+   the ledger undercounts real processes until every spawn seam enrols (P-009),
+   and presenting one figure would hide that gap rather than expose it. */
+.pc-tasks-roster__pressure {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  margin: 0;
+  background: #1a2a3e;
+  border-bottom: 1px solid #22364f;
+}
+.pc-tasks-roster__pressure > div {
+  background: #0d1829;
+  padding: 6px 10px 7px;
+}
+.pc-tasks-roster__pressure dt {
+  font-size: 9.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #5d7086;
+}
+.pc-tasks-roster__pressure dd {
+  margin: 1px 0 0;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.pc-tasks-roster__pressure dd.is-warn { color: #f5a524; }
+.pc-tasks-roster__pressure dd.is-bad { color: #e5484d; }
+
+.pc-tasks-roster__alarm {
+  padding: 7px 10px;
+  border-bottom: 1px solid #22364f;
+  background: rgba(229, 72, 77, 0.1);
+  color: #e5484d;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.pc-tasks-roster__alarm.is-warn {
+  background: rgba(245, 165, 36, 0.1);
+  color: #f5a524;
+}
+.pc-tasks-roster__alarm span {
+  display: block;
+  font-weight: 400;
+  color: #8497ad;
+  font-size: 10.5px;
+}
+
+.pc-tasks-roster__search { padding: 6px 10px; border-bottom: 1px solid #1a2a3e; }
+.pc-tasks-roster__search input {
+  width: 100%;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 8px;
+  background: #070d17;
+  color: #e6ecf4;
+  border: 1px solid #22364f;
+  border-radius: 5px;
+}
+.pc-tasks-roster__search input::placeholder { color: #5d7086; }
+
+.pc-tasks-roster__scroll { max-height: 360px; overflow-y: auto; }
+.pc-tasks-roster__group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 3px;
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #8497ad;
+  position: sticky;
+  top: 0;
+  background: #0d1829;
+  z-index: 1;
+}
+.pc-tasks-roster__group-head.is-bad { color: #e5484d; }
+.pc-tasks-roster__group-count {
+  font-family: ui-monospace, monospace;
+  opacity: 0.6;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.pc-tasks-roster__chip {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 10px;
+  color: #f5a524;
+  border: 1px solid rgba(245, 165, 36, 0.4);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.pc-tasks-roster__row {
+  display: grid;
+  grid-template-columns: 34px minmax(84px, max-content) minmax(0, 1fr) 56px 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  border-left: 3px solid transparent;
+}
+.pc-tasks-roster__row:hover { background: #142235; }
+/* An unconfined row ran outside a cgroup scope; an orphan has no ledger row at
+   all. Both are visible gaps, tinted rather than hidden. */
+.pc-tasks-roster__row.is-unconfined { border-left-color: rgba(245, 165, 36, 0.55); }
+.pc-tasks-roster__row.is-orphan { background: rgba(229, 72, 77, 0.08); }
+.pc-tasks-roster__row[data-state="stranded"] { opacity: 0.55; }
+
+.pc-tasks-roster__age {
+  font-family: ui-monospace, monospace;
+  font-size: 9.5px;
+  color: #8497ad;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.pc-tasks-roster__name {
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pc-tasks-roster__doing {
+  color: #8497ad;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.pc-tasks-roster__wi {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: #38bdf8;
+  margin-right: 5px;
+}
+.pc-tasks-roster__num {
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: #8497ad;
+}
+
+.pc-tasks-roster__foot {
+  border-top: 1px solid #22364f;
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10.5px;
+  color: #5d7086;
+}
+.pc-tasks-roster__foot a { color: #38bdf8; text-decoration: none; }
+.pc-tasks-roster__foot a:hover { text-decoration: underline; }

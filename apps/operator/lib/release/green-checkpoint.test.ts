@@ -1677,16 +1677,22 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
   // they are applied AFTER the strip loop — which is the whole point of the first
   // assertion below (a host value must be overridden, not merely absent).
   it('stamps PAPERCUSP_TEST_RUN_SOURCE=ci AFTER the strip, overriding any host value', () => {
-    const env = buildGreenCheckpointEnv('b', { PAPERCUSP_TEST_RUN_SOURCE: 'local' });
+    // Typed rather than an inline literal: `source` is NodeJS.ProcessEnv and a bare
+    // object literal does not satisfy it under this project's settings (the older
+    // call sites in this file predate that and still carry the error).
+    const hostEnv: NodeJS.ProcessEnv = { PAPERCUSP_TEST_RUN_SOURCE: 'local' };
+    const env = buildGreenCheckpointEnv('b', hostEnv);
     expect(env.PAPERCUSP_TEST_RUN_SOURCE).toBe('ci');
   });
 
   it('groups the run with PAPERCUSP_TEST_RUN_GROUP only when a runId is given', () => {
-    const withId = buildGreenCheckpointEnv('b', {}, 'run-abc');
+    const empty: NodeJS.ProcessEnv = {};
+    const withId = buildGreenCheckpointEnv('b', empty, 'run-abc');
     expect(withId.PAPERCUSP_TEST_RUN_GROUP).toBe('run-abc');
     // A host-leaked group must not survive when this run has no id of its own —
     // otherwise a gate run would inherit some agent's run-group and mis-attribute.
-    const noId = buildGreenCheckpointEnv('b', { PAPERCUSP_TEST_RUN_GROUP: 'leaked' });
+    const leaked: NodeJS.ProcessEnv = { PAPERCUSP_TEST_RUN_GROUP: 'leaked' };
+    const noId = buildGreenCheckpointEnv('b', leaked);
     expect(noId.PAPERCUSP_TEST_RUN_GROUP).toBeUndefined();
     expect(noId.PAPERCUSP_TEST_RUN_SOURCE).toBe('ci');
   });

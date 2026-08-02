@@ -37,7 +37,7 @@ import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Network, Coffee, Thermometer, CupSoda, KeyRound, Cog, Bot, Coins, MessagesSquare, Activity, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Network, Coffee, Thermometer, CupSoda, KeyRound, Cog, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -101,9 +101,6 @@ const ConversationsTab = lazy(() => import('./ConversationsTab'));
 // overlapping roles and reported the SAME dollars as its own. Cost is a peer tab
 // now, sitting right of Agents, with the attribution limit stated on it.
 const SpendTab = lazy(() => import('./SpendTab'));
-// Lazy like its siblings — the task table + its 5s poll must not land in the eager
-// boot bundle for a tab nobody has opened.
-const TasksTab = lazy(() => import('./TasksTab'));
 // (The 📥 Inbox tab (EI-13037) MOVED to the op-chat sidebar — owner placement
 // correction 2026-07-16: this middle rail is the SETTINGS surface; the far-left
 // papercup-chat sidebar is the live surface. See _components/inbox/InboxPane.)
@@ -159,16 +156,17 @@ const TABS = [
   // surface was retired 2026-07-26 (WI-6097). Agent messages replaced them as
   // the pane's highest-volume source, so it leads.
   { id: 'conversations', label: (_t: BoundLexicon) => 'Convos', icon: MessagesSquare, tip: (_t: BoundLexicon) => 'Conversations — agent messages, group decisions and agent chats', render: (a: boolean) => <ConversationsTab active={a} /> },
-  // 📊 Tasks — the task manager (task-manager-no-escape-2026-07-27 P-018 follow-up).
-  // APPENDED, not inserted, per the WI-5754 convention above: the order ahead of it
-  // is owner-set and pinned by a test, so a new tab must not reshuffle it.
+  // (The 📊 Tasks tab MOVED to the AdvShell header — owner ask 2026-08-02,
+  // WI-6844: "move the location of it from the middle pane to a button on our top
+  // bar to the right of the 'agents running' button". It is now TasksRunningPill,
+  // the third pill in `pc-advshell__header-status`, beside the two other
+  // workspace-wide pills. `tasks` joins `blender`/`docs` as a RETIRED tab id: a
+  // stale `?lst=tasks` deep link falls through to the default tab.
   //
-  // Conceptually it belongs between System and Spend — System is what we SCHEDULED,
-  // Tasks is what is actually EXECUTING, Spend is what it cost in dollars, and Tasks
-  // is the resource counterpart to Spend (CPU-seconds + RSS per work-item). Moving it
-  // there is a one-line change plus the order test, and needs the owner's word since
-  // the current order is theirs.
-  { id: 'tasks', label: (_t: BoundLexicon) => 'Tasks', icon: Activity, tip: (_t: BoundLexicon) => 'Every process running right now — who launched it, for which work-item, and what it is consuming', render: (a: boolean) => <TasksTab active={a} /> },
+  // This supersedes plan decision D-014, which settled where in THIS rail the tab
+  // belonged — a question the move makes moot. The reasoning there still holds and
+  // is in fact why the pill reads the whole box: Tasks was never pot-scoped, and
+  // the header strip is where the other workspace-wide reads already live.)
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];

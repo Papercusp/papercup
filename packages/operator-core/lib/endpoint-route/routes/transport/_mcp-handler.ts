@@ -2008,7 +2008,6 @@ const handler = createMcpHandler(
                     metadataJson: { replayIdempotencyKey: idempotencyKey },
                   });
                 } catch (err) {
-                  throw err;
                   console.warn(
                     `[mcp-replay] telemetry failed for ${toolName} (key=${idempotencyKey}): ` +
                       (err instanceof Error ? err.message : String(err)),

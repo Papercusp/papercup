@@ -38,6 +38,7 @@ import { FLAGS } from '@papercusp/flags';
 import { CATEGORICAL } from '@/app/harness/theme';
 import HivesRunningPill from './HivesRunningPill';
 import AgentsRunningPill from './AgentsRunningPill';
+import TasksRunningPill from './TasksRunningPill';
 // The pills' own button/popover styles. Portable by design
 // (quick-panel-status-pills-2026-07-13 D-001) precisely so they render correctly
 // wherever they are mounted — here in the tab strip, and in the Quick Panel popup
@@ -690,9 +691,18 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
 
               Each pill self-hides when it has nothing to say (no local pot / flag
               off; zero running agents), so this adds no empty chrome. */}
+          {/* TasksRunningPill joins them 2026-08-02 (WI-6844, owner ask: "move the
+              location of it from the middle pane to a button on our top bar to the
+              right of the 'agents running' button"). It reads the whole box, not one
+              pot, so it belongs in this strip for the same reason the other two do —
+              and it self-hides when the ledger is empty or the flag is switched off,
+              so it adds no empty chrome either. Its old home was the left rail's
+              `tasks` tab, removed in the same change; plan decision D-014 reasoned
+              about WHERE in that rail it sat, which this supersedes. */}
           <div className="pc-advshell__header-status">
             <HivesRunningPill />
             <AgentsRunningPill />
+            <TasksRunningPill />
           </div>
           <button
             type="button"

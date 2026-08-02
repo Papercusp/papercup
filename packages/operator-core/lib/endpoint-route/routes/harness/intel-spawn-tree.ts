@@ -7,7 +7,21 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const ALLOWED_STATUS = new Set(['ok', 'error', 'timeout', 'quota-exceeded', 'role-not-allowed']);
+/**
+ * Mirrors the writer's status vocabulary (RecordInvocationInput['status'] in
+ * projected-tool-deps.ts) — a status that can be WRITTEN but not filtered for is
+ * only half-observable. Had drifted: 'invalid-input' was never added, and
+ * 'replayed' arrived with WI-6792.
+ */
+const ALLOWED_STATUS = new Set([
+  'ok',
+  'error',
+  'timeout',
+  'quota-exceeded',
+  'role-not-allowed',
+  'invalid-input',
+  'replayed',
+]);
 
 export default defineTool({
   method: 'GET',

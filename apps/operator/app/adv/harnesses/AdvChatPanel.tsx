@@ -23,22 +23,58 @@ import { Select } from '../../harness/Select';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 
 // Terminal states excluded from the picker — steering targets in-flight work.
-const TERMINAL_STATES = new Set(['done', 'closed', 'resolved', 'archived', 'deprecated']);
+// Kept as a client-side backstop; `PICKER_FETCH_STATES` below is what actually
+// bounds the fetch. NB 'dropped'/'passed' are terminal too and were missing here,
+// so before the states fetch this set let dropped work into the picker.
+const TERMINAL_STATES = new Set([
+  'done',
+  'closed',
+  'resolved',
+  'archived',
+  'deprecated',
+  'dropped',
+  'passed',
+]);
 
-// The picker filters to NON-terminal items client-side ("not done/closed/…"),
-// a multi-state predicate a single server-side `state` filter can't express. So
+/**
+ * The NON-terminal statuses the picker fetches, one bounded slice each.
+ *
+ * WI-6124. This used to send no `limit` at all, deliberately: the picker wants a
+ * multi-state predicate ("not done/closed/…") that a single server-side `state`
+ * filter could not express, so it took the resolver's full 2000-row cap and
+ * filtered client-side. That reasoning is now obsolete — `workItems.byHarness`
+ * grew a `states` arg (hud-open-destinations-2026-07-27 P-004) that expresses
+ * exactly this predicate server-side.
+ *
+ * Taking the full cap was costing twice over:
+ *  - WRONG SAMPLE. The 2000-row window is ordered `updated_ts DESC` across ALL
+ *    statuses, so recently-touched terminal work crowds out the in-flight items
+ *    the picker exists to show. Measured on `papercusp` 2026-08-02: the window
+ *    held 1,605 of the harness's 14,475 non-terminal items — 11%, not the
+ *    "WHOLE non-terminal set" the old comment claimed. `states` fetches up to
+ *    `perState` rows for EACH status, so every one is actually represented.
+ *  - OVER-FETCH. Those are fully-enriched rows (body + payload JSONB) for a
+ *    dropdown that renders {id, title, state}, re-resolved on every sync
+ *    invalidation. This is a top-cost query shape on the box.
+ *
+ * Rollout-skew safety is preserved: an older deployed resolver that predates
+ * `states` strips the unknown key (the schema is non-strict) and falls back to
+ * its default window — i.e. exactly today's behaviour, never an error.
+ */
+const PICKER_FETCH_STATES = ['needs-human', 'wip', 'in-progress', 'blocked', 'open', 'todo'];
+/** Per-status slice. 6 statuses x 100 caps the fetch at 600 rows (vs 2000) while
+ *  giving each status far more headroom than a dropdown can usefully show. */
+const PICKER_PER_STATE = 100;
+
 /** The free-slot empty state: pick a work item, start a worker chat on it.
  *  Same `openFeatureChat` defaults as the Detail-pane Chat button (EI-290):
  *  role worker, mode discuss. The drain then fills this (first free) slot. */
 function StartChatPicker({ slug }: { slug: string }) {
   const [featureId, setFeatureId] = useState('');
   const [starting, setStarting] = useState(false);
-  // No explicit `limit` — rely on the resolver default (its full cap) so the
-  // picker sees the harness's WHOLE non-terminal set, AND a newer client never
-  // sends a value an older deployed resolver would reject (rollout-skew safety).
   const query = useSyncQuery<{ id: string; title: string; state: string }>({
     queryName: 'workItems.byHarness',
-    args: { harnessSlug: slug },
+    args: { harnessSlug: slug, states: PICKER_FETCH_STATES, perState: PICKER_PER_STATE },
     enabled: Boolean(slug),
   });
   const items = useMemo(

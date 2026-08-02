@@ -132,11 +132,11 @@ describe('<LeftSidebar> shell', () => {
       // because a 3-column tab cell fits ~8 characters beside its icon at the
       // rail's 300px minimum; the pane header carries the full word.
       'Convos',
-      // task-manager-no-escape-2026-07-27 — APPENDED for the same reason Convos was.
-      // It reads best between System and Spend (scheduled -> executing -> cost), but
-      // that position is owner-set territory: moving it there is a deliberate
-      // re-order, not a side effect of adding a tab.
-      'Tasks',
+      // NOTE there is deliberately no 'Tasks' here any more: the task manager left
+      // this rail on 2026-08-02 for the AdvShell header (WI-6844, owner ask) and is
+      // now TasksRunningPill. Removing it was a REMOVAL from the end, so every
+      // position above is untouched — which is exactly what this test exists to
+      // prove about any change to the rail, additions and removals alike.
     ]);
   });
 
@@ -161,7 +161,6 @@ describe('<LeftSidebar> shell', () => {
       'system',
       'spend',
       'conversations',
-      'tasks',
     ]);
   });
 

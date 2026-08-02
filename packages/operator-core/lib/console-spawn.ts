@@ -973,10 +973,15 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
     scheme: opts.scheme ?? null,
   });
 
-  // 3. macOS: the operator is a child of the desktop .app in the user's GUI
-  //    session, so it can open a Terminal window itself — mirroring the Linux
+  // 3. macOS: the operator is USUALLY a child of the desktop .app in the user's
+  //    GUI session, so it can open a Terminal window itself — mirroring the Linux
   //    child_process path (no webview/Tauri round-trip). Fleet color schemes
   //    work here for free because the OSC prelude is already in the one-liner.
+  //    ⚠ "usually" is load-bearing (EI-19311623077693508): a headless rig mac
+  //    (sidecar started over ssh, nobody logged into the GUI) has NO GUI session,
+  //    so LaunchServices refuses and `open` exits non-zero. spawnMacConsole
+  //    verifies that exit rather than assuming success — callers get a real
+  //    error and can fall back to spawnHeadless.
   if (process.platform === 'darwin') {
     return spawnMacConsole(envelope, oneliner);
   }
@@ -1201,7 +1206,25 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
  * installed, else Terminal.app. The `.command` execs the same login-shell
  * one-liner the Linux path runs, so colors/env/sentinel behave identically.
  */
-function spawnMacConsole(envelope: ConsoleEnvelope, oneliner: string): SpawnConsoleResult {
+async function spawnMacConsole(envelope: ConsoleEnvelope, oneliner: string): Promise<SpawnConsoleResult> {
+  // EI-19311623077693508: this path used to return ok the instant Node forked
+  // `open`, never observing its EXIT — making macOS the ONLY spawn backend with
+  // no verification at all (Linux has the WI-1886(b) probe below; spawnHeadless
+  // has its own). On a mac with no GUI session (a rig VM parked at the
+  // loginwindow: `stat -f %Su /dev/console` ⇒ root, osascript ⇒ -10810)
+  // LaunchServices CANNOT open a window, so `open` exits NON-ZERO — but
+  // asynchronously, and with stdio ignored nobody ever saw it. The lie
+  // propagated: delegated-spawn-honor counted a phantom member as `opened`,
+  // which ALSO made its own headless fallback (`r.status !== 'ok'`) dead code on
+  // macOS, so the requester waited out the full offer expiry for a member that
+  // was never coming. Verify the launcher instead of assuming it.
+  //
+  // ⚠ The macOS verdict is NOT the Linux one. `open` is a LAUNCHER that hands
+  // off to LaunchServices and exits 0 immediately on success — the terminal is
+  // NOT its child. So an early exit is normal here, and only a NON-ZERO/signalled
+  // exit proves failure (the same condition spawnHeadless uses). Copying the
+  // Linux "died inside the probe ⇒ failed" rule would fail every healthy launch.
+  let stderrPath: string | null = null;
   try {
     const inv = macConsoleInvocation(oneliner, {
       tmpDir: process.env.TMPDIR || '/tmp',
@@ -1210,17 +1233,59 @@ function spawnMacConsole(envelope: ConsoleEnvelope, oneliner: string): SpawnCons
       hasITerm: existsSync('/Applications/iTerm.app'),
     });
     writeFileSync(inv.file, inv.content, { mode: 0o755 });
+    // Capture `open`'s stderr so the operator error carries LaunchServices' own
+    // words (e.g. "-10810") rather than a bare exit code.
+    stderrPath = join(tmpdir(), `papercup-console-stderr-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`);
+    let stderrFd: number | null = null;
+    try {
+      stderrFd = openSync(stderrPath, 'w');
+    } catch {
+      stderrFd = null;
+    }
     const child = spawn('open', inv.openArgs, {
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', stderrFd ?? 'ignore'],
       cwd: envelope.cwd,
       env: { ...process.env, ...envelope.env },
     });
     child.unref();
+    if (stderrFd != null) {
+      closeSync(stderrFd); // the child holds its own dup
+      stderrFd = null;
+    }
+
+    const earlyExit = await watchEarlyExit(child, EARLY_EXIT_PROBE_MS);
+    if (earlyExit && (earlyExit.signal != null || (earlyExit.code ?? 0) !== 0)) {
+      let stderrText = '';
+      try {
+        stderrText = readFileSync(stderrPath, 'utf8').trim().slice(0, 800);
+      } catch {
+        stderrText = '';
+      }
+      try { unlinkSync(stderrPath); } catch { /* best-effort */ }
+      stderrPath = null;
+      const how = earlyExit.signal ? `signal ${earlyExit.signal}` : `exit ${earlyExit.code}`;
+      return {
+        status: 'error',
+        error:
+          `open ${inv.term} failed (${how}) — no window opened` +
+          `${stderrText ? `: ${stderrText}` : ''}` +
+          ' (EI-19311623077693508: is anyone logged into the GUI? `stat -f %Su /dev/console` ⇒ root and' +
+          ' osascript ⇒ -10810 mean there is no GUI session; a headless spawn works there, a window cannot)',
+        code: 502,
+      };
+    }
+    // Exited 0, or outlived the probe ⇒ the launch was accepted. Fail OPEN on
+    // the no-exit case: a slow `open` must not be reported as a failure.
+    try { unlinkSync(stderrPath); } catch { /* best-effort */ }
+    stderrPath = null;
     // macOS has no X DISPLAY concept — display/desktopEnvResolvedVia are always
     // null here (the EI-8289 disclosure only applies to the Linux X11 path).
     return { status: 'ok', pid: child.pid ?? null, terminal: inv.term, child, display: null, desktopEnvResolvedVia: null };
   } catch (e: any) {
+    if (stderrPath != null) {
+      try { unlinkSync(stderrPath); } catch { /* best-effort */ }
+    }
     return { status: 'error', error: `open Terminal failed: ${e?.message}`, code: 500 };
   }
 }

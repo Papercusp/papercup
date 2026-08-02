@@ -11,18 +11,30 @@
  * bound to?"* — so URL resolution kept returning the correct address the whole time the
  * pool was serving a dead one.
  *
- * That fix did not reach the ~25 hand-rolled module-scoped pools built as
+ * That fix did not reach the ~22 hand-rolled module-scoped pools built as
  * `postgres(getHarnessAdminUrl(), { ...longLivedPoolConnectionOptions(label) })`, which
- * cache a pool in a module-level `let` and track no URL at all. They are the population
- * that actually failed on 2026-08-01 (WI-6739): `[await-event]`, `[harness-status-sweep]`,
- * `[expirable-registry]` and `[sync-sse] notify` logged 20,144 × `connect ECONNREFUSED
- * 127.0.0.1:20216` — a dead embedded-pg port — for ~100 minutes, until a manual restart.
+ * cache a pool in a module-level `let` and track no URL at all.
  *
- * The outage was self-healable and simply did not self-heal. `:3070` has no `DATABASE_URL`
- * in the release `.env.local`, so it resolves via DISCOVERY; when the desktop's embedded PG
- * died and `~/.papercusp/embedded-pg.json` emptied, `getHarnessAdminUrl()` began correctly
- * returning the healthy native `:5432` fallback. A pool that compared itself against that
- * would have rebound on its very next use. These pools never asked.
+ * ## What this is — and, precisely, what it is NOT
+ *
+ * This is PREVENTIVE hardening of that defect class. It is **not** the fix for the
+ * 2026-08-01 outage (WI-6739), and an earlier version of this comment wrongly said it was.
+ * Every logger identifiable in that outage — `[await-event]` (`events/await/engine.ts:798`),
+ * `[harness-status-sweep]`, `[expirable-registry]` and `[sync-sse] notify`
+ * (`sync-sse.ts:137`, `getSql: () => getOrgPg().sql`) — reaches PG through the MANAGED
+ * `getOrgPg()`, which `endStalePool` already rebinds. Those four logged 20,144 ×
+ * `connect ECONNREFUSED 127.0.0.1:20216` — a dead embedded-pg port — over ~2h40m.
+ *
+ * The pools below carry the IDENTICAL defect and were very likely bound to that same dead
+ * endpoint, but they are not separately identifiable in the logs, so nothing here claims
+ * they caused the outage. They are simply the half of the class still unguarded — worth
+ * closing because the trigger (an endpoint that moves under a cached pool) is unchanged.
+ *
+ * The outage was self-healable and did not self-heal. `:3070` has no `DATABASE_URL` — there
+ * is no `.env.local` in `papercup-release` and no env file defines one — so it resolves via
+ * DISCOVERY; with `~/.papercusp/embedded-pg.json` gone, `getHarnessAdminUrl()` correctly
+ * returns the healthy native `:5432`. A pool that compared itself against that would have
+ * rebound on its very next use. These pools never ask.
  *
  * ## What this gives a call site
  *

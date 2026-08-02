@@ -191,6 +191,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.coord_conversations': [
     'conversations.questionsList',
     { name: 'conversations.questionDetail', scope: idScope },
+    // EI-19304902443341820: `sidebar.conversations` (the Swarm comms all-hands list) reads this
+    // SAME table via listConversations, but was never in this list — so a new conversation never
+    // pushed to it and the list refreshed on remount only. The accounts.pool shape exactly: the
+    // table was mapped, just not to every query that reads it, which is the variant a
+    // table-presence check cannot see. Found by the resolver→table coverage guard.
+    'sidebar.conversations',
   ],
   // A coord thread can be a standalone deliberation OR the timeline attached
   // to a Q&A conversation. These tables do not expose a trigger id that matches
@@ -237,6 +243,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'dev.coordFeed',
     'coord.history',
     'coord.inbox',
+    // EI-19304902443341820: `sidebar.cupMail` reads this same log (readInbox/readOutbox) for the
+    // Swarm view's per-agent mailbox, but was never listed — so a coord message pushed to
+    // coord.inbox and dev.coordFeed while the mailbox beside them stayed stale until remount.
+    // Found by the resolver→table coverage guard. The 90s (name,args) dedupe bounds the extra
+    // fan-out on this append-heavy log.
+    'sidebar.cupMail',
   ],
   // harness_shared.messages_consolidated entry retired with the work-item
   // mail read queries — see retire-work-item-mail-surface-2026-07-26 P-004.
@@ -461,7 +473,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   ],
   // hive_members (admission) is the offline half of the @-assign picker — a new
   // admitted member becomes assignable the moment they're admitted (P-016).
-  'harness_shared.pot_members': ['dev.assignableMembers'],
+  // EI-19304902443341820: `p2p.devices` renders the pot's device/member roster straight off this
+  // table but was not listed, so a device joining or leaving never pushed to it. Low-churn table,
+  // so the added fan-out is negligible. Found by the resolver→table coverage guard.
+  'harness_shared.pot_members': ['dev.assignableMembers', 'p2p.devices'],
   // pot_settings backs the owner-steering:* keys (queen-steering-panel B-01/C-1)
   // and per-Pot beacon consent. Steering remains a workspace-wide fold; beacon
   // consent is keyed by the changed row's natural harness_slug so only that pot's

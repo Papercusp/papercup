@@ -92,6 +92,20 @@ beforeEach(() => {
   H.state.forceNoMatch = false;
 });
 
+/**
+ * The op_status UPDATE, found by CONTENT rather than by position. The handler
+ * runs other reads through the same mocked `withWorkspace` before it writes —
+ * the P-006 `checkPlanStartable` gate reads the plan row first — so indexing
+ * `txCalls[0]` pins the transaction's statement ORDER, which no assertion here
+ * is actually about. Adding a read ahead of the write then reds this file for a
+ * change that never touched the write at all (it did, 2026-08-01).
+ */
+const opStatusUpdate = (): { strings: readonly string[]; values: unknown[] } => {
+  const call = H.state.txCalls.find((c) => c.strings.join('§').includes('UPDATE harness_shared.harness_plans'));
+  if (!call) throw new Error(`no op_status UPDATE among ${H.state.txCalls.length} tx call(s) — the write never ran`);
+  return call;
+};
+
 describe('plans:start terminal guard', () => {
   it.each(['shipped', 'superseded'])('refuses a %s plan without writing the started row', async (status) => {
     H.state.frontmatterStatus = status;
@@ -111,9 +125,8 @@ describe('plans:start terminal guard', () => {
     expect(res.isError).toBeUndefined();
     expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
     expect(res.data.results[0]).toMatchObject({ ok: true, status: 'started' });
-    expect(H.state.txCalls).toHaveLength(1);
     // PG-canonical: op_status is folded onto the plan's own harness_plans row.
-    const sql = H.state.txCalls[0].strings.join('§');
+    const sql = opStatusUpdate().strings.join('§');
     expect(sql).toContain('UPDATE harness_shared.harness_plans');
     expect(sql).toContain("op_status     = 'started'");
   });
@@ -122,13 +135,13 @@ describe('plans:start terminal guard', () => {
     H.state.frontmatterStatus = null;
     const res = await run({ slug: 'legacy-plan' });
     expect(res.isError).toBeUndefined();
-    expect(H.state.txCalls).toHaveLength(1);
+    expect(() => opStatusUpdate()).not.toThrow();
   });
 
   it('WI-5825: the UPDATE is keyed on the resolvePlanScope pair — the same authority the plan READ used', async () => {
     H.state.frontmatterStatus = 'ready';
     await run({ slug: 'live-plan-2026-06-02' });
-    const { values } = H.state.txCalls[0];
+    const { values } = opStatusUpdate();
     // This handler reads the plan through the reader path and then writes; keying
     // the write off a second resolver (activeWorkspaceId / the raw ctx slug) is
     // exactly how the two came to disagree.
