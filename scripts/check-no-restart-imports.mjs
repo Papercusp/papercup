@@ -23,14 +23,16 @@
  * the old config, but break a fresh build). Learned migrating Restart's sibling
  * libs (Restart scripts/check-migrated-scope.mjs caught exactly these).
  */
-import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
-const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
-  .split('\n')
-  .filter(Boolean);
+// WI-6730: enumerate via the shared helper, which recurses into submodules. A bare
+// `git ls-files` does not — it emits one gitlink entry per submodule — so this
+// retirement guard never checked a single file inside any of the 39, which is
+// exactly where a revived @restart/* import would be least likely to be noticed.
+const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
 const isExcluded = (f) =>
   f.startsWith('_retired/') ||
@@ -62,7 +64,9 @@ for (const f of tracked) {
 }
 
 if (offenders.length === 0) {
-  console.log('✓ no live @restart/* imports or deps — retirement intact (use @papercusp/* only).');
+  console.log(
+    `✓ no live @restart/* imports or deps — retirement intact (use @papercusp/* only).${describeUnscanned(unscanned)}`,
+  );
   process.exit(0);
 }
 

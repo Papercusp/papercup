@@ -45,7 +45,17 @@ const inScope = (f) =>
   /\.(ts|tsx|mjs)$/.test(f) &&
   !/\.(test|spec)\.(ts|tsx|mjs)$/.test(f) &&
   !/\.integration\.test\.(ts|tsx)$/.test(f) &&
-  !f.endsWith('.d.ts');
+  !f.endsWith('.d.ts') &&
+  // WI-6730: bundled sidecar BUILD OUTPUT (esbuild-minified serve.mjs — a single
+  // 42MB line-wrapped bundle), not source. Recursing into submodules made it
+  // visible for the first time and it produced 3 false positives: in minified
+  // output a backtick lands next to a `--` by coincidence, and there is no
+  // authored comment to rephrase. Same exclusion, same reason, as
+  // check-no-raw-setinterval.mjs — keep the two in step.
+  !f.includes('/env-sidecars/') &&
+  !f.includes('/node_modules/') &&
+  !f.includes('/dist/') &&
+  !f.includes('/_retired/');
 
 // A genuine SQL `--` comment marker: dash-dash preceded by start-of-line or
 // whitespace, followed by whitespace (distinguishes it from a `--flag` /

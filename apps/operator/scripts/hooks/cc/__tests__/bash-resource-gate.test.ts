@@ -634,7 +634,6 @@ describe('heavy-command admission control (WI-3821)', () => {
   it.each([
     ['npm test', 'npm test'],
     ['npm run test', 'npm run test'],
-    ['npm run test:affected', 'npm run test:affected'],
     ['npm run build', 'npm run build'],
     ['bare vitest', 'vitest run lib/x.test.ts'],
     ['npx vitest', 'npx vitest run lib/x.test.ts'],
@@ -656,6 +655,23 @@ describe('heavy-command admission control (WI-3821)', () => {
     ['tsc --noEmit', 'tsc --noEmit'],
   ])('allows %s when the host is UNDER the load threshold', (_label, command) => {
     expectAllow(runGate(bashCmd(command), { ...AGENT, ...UNDER }));
+  });
+
+  // The ROOT entrypoints wrapped in scripts/pc-heavy.sh inside package.json are
+  // SELF-THROTTLING — denying them over-threshold would re-open the EI-10001
+  // "the remedy doesn't work" trap (EI-19296434833105508). Bare `npm test` /
+  // `npm run test` stay denied above: a workspace cwd resolves those to its own
+  // raw vitest, not the wrapper.
+  it.each([
+    ['npm run test:affected', 'npm run test:affected'],
+    ['npm run test:affected:integration', 'npm run test:affected:integration'],
+    ['npm run test:all', 'npm run test:all'],
+    ['npm run test:file', 'npm run test:file -- lib/x.test.ts'],
+    ['npm run lint:tsc', 'npm run lint:tsc'],
+    ['npm run typecheck', 'npm run typecheck'],
+    ['cd-prefixed test:file', 'cd /some/dir && npm run test:file -- lib/x.test.ts'],
+  ])('allows the self-throttled root entrypoint %s even OVER the threshold', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
   });
 
   it.each([
