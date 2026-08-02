@@ -50,9 +50,30 @@ const DEFAULT_DRAIN_SEC = 60;
 // is a guaranteed lock-order inversion against ordinary fleet read traffic);
 // any other psql error (syntax, constraint, …) fails immediately, unretried.
 const MIGRATION_LOCK_TIMEOUT_SQL = '10s';
+const DEFAULT_LOCK_TIMEOUT_SEC = 10;
 const LOCK_RETRY_MAX_ATTEMPTS = 5;
 const LOCK_RETRY_BASE_DELAY_MS = 2000;
 const LOCK_RETRY_MAX_DELAY_MS = 30_000;
+// WI-6381: EI-9417's 5×10s retry (worst case ~80s incl. backoff) assumes the
+// blocker is ordinary hot-table CONTENTION — another agent's brief write —
+// which clears in seconds. It cannot ride out a genuinely long-lived
+// NON-OPERATOR holder: confirmed live via pg_locks, the host's pg_dump-based
+// backup (packages/backup + ~/.config/kopia/db-backup.sh, EI-10733) dumps the
+// whole cluster with no per-table exclusions, and while it works through a
+// large table (e.g. harness_shared.session_archive_files, which stores
+// zstd-compressed session transcripts and can run for MULTIPLE MINUTES — one
+// observed instance held its lock 9m34s) it keeps holding AccessShareLock on
+// every table it already touched earlier in the SAME dump transaction,
+// including small hot ones like agent_facts. No amount of short retries beats
+// that — the fix is to let ONE (or two) attempts actually WAIT it out, via a
+// caller-opted-in wider lock_timeout, mirroring the sanctioned manual
+// workaround (`SET LOCAL lock_timeout = '180s'`) db:migrate's own withheld
+// branch already documents. `lock_timeout_sec` below is that lever; when a
+// caller opts in, MAX attempts drops to 2 — the whole point of a long
+// per-attempt wait is to absorb the contention in ONE try, not to multiply a
+// multi-minute timeout by 5 attempts and blow far past this tool's own budget.
+const MAX_LOCK_TIMEOUT_SQL_SEC = 300; // ceiling — mirrors MAX_DRAIN_SEC's magnitude
+const CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS = 2;
 
 /** True iff psql's stderr is PG's own "canceling statement due to lock
  *  timeout" (SQLSTATE 55P03). Exported + pure for unit testing. */
@@ -253,7 +274,11 @@ export default defineTool({
       'INSERT command to run by hand. EI-13299: no shell/PG access (a cup) + genuinely urgent + deploy gate red? ' +
       'Re-call with escalate:true instead — opens a blocker coord:escalate carrying that same ready command for ' +
       'a human/su to run. Omit escalate for routine attempts (no spam). Emits ctx.progress during drain/apply; a ' +
-      'client-side timeout does NOT stop the server call — verify schema_migrations before retrying, never assume failure.',
+      'client-side timeout does NOT stop the server call — verify schema_migrations before retrying, never assume ' +
+      'failure. WI-6381: repeated lock_timeout_retries_exhausted:true against a table that looks otherwise idle? ' +
+      'Check pg_locks/pg_stat_activity for a long-lived NON-operator holder first (the host pg_dump backup is a ' +
+      'known one — it can hold AccessShareLock on any table for several minutes while dumping a large one). If ' +
+      'confirmed, retry with lock_timeout_sec set high enough to outlast it rather than looping the default retry.',
     seeAlso: [
       'db:check_drift (verify schema drift first)',
       'db:next-migration (scaffold a new migration)',
@@ -261,9 +286,13 @@ export default defineTool({
     ],
   },
   capability: 'locks:write',
-  // EI-9417: + budget for the lock-timeout retry loop's worst case (5 attempts
-  // x MIGRATION_LOCK_TIMEOUT_SQL, plus backoff between them — see above).
-  timeoutSec: MAX_DRAIN_SEC + 60 + 120,
+  // EI-9417: + budget for the default lock-timeout retry loop's worst case (5
+  // attempts x MIGRATION_LOCK_TIMEOUT_SQL, plus backoff between them — see
+  // above). WI-6381: widened to also cover the caller-opted-in long-wait path
+  // (CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS attempts x MAX_LOCK_TIMEOUT_SQL_SEC),
+  // whichever is larger — a real call almost never approaches this; it is
+  // only the outer ceiling this tool's MCP transport enforces.
+  timeoutSec: MAX_DRAIN_SEC + CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS * MAX_LOCK_TIMEOUT_SQL_SEC + 120,
   // EI-18733783500981433: this handler drains (up to MAX_DRAIN_SEC) then shells
   // out to psql — up to several minutes — and never reads ctx.tx. Without this,
   // the host's ambient workspace transaction sits idle for the whole drain+apply
@@ -289,6 +318,24 @@ export default defineTool({
           'urgent, already-committed migration when you have no shell/PG access of your own (a cup) and the ' +
           'normal deploy pipeline is blocked. Default false (a routine withheld confirm stays silent). Repeated ' +
           'escalations for the SAME file coalesce onto one open escalation instead of flooding the inbox.',
+      ),
+    lock_timeout_sec: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_LOCK_TIMEOUT_SQL_SEC)
+      .optional()
+      .describe(
+        `WI-6381: widen the per-attempt SQL lock_timeout beyond the ${DEFAULT_LOCK_TIMEOUT_SEC}s default ` +
+          `(max ${MAX_LOCK_TIMEOUT_SQL_SEC}s) for a migration repeatedly failing with ` +
+          'lock_timeout_retries_exhausted:true against a KNOWN long-lived NON-operator holder — confirmed via ' +
+          'pg_locks/pg_stat_activity, e.g. the host pg_dump backup process, which can hold AccessShareLock on an ' +
+          'otherwise-idle table for several minutes while it dumps a large one elsewhere in the same transaction ' +
+          '(the whole DB is dumped with no per-table exclusions). Setting this drops the retry-attempt count to ' +
+          `${CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS} — a wide per-attempt wait is meant to ride out the contention in ` +
+          'ONE try (mirroring the sanctioned manual `SET LOCAL lock_timeout` workaround), not to be multiplied by ' +
+          `the default's 5 short attempts. Omit for ordinary hot-table contention (EI-9417's 5×10s default is the ` +
+          'right shape there — most lock timeouts clear in seconds).',
       ),
   }),
   async handler(args, ctx) {
@@ -460,13 +507,20 @@ export default defineTool({
         // the perf:allow A4 rationale below intact.
         const sha256 = createHash('sha256').update(readFileSync(args.file, 'utf8')).digest('hex');
         const filenameLiteral = path.basename(args.file).replace(/'/g, "''");
+        // WI-6381: the caller-opted-in wide wait (see args.lock_timeout_sec's
+        // description above) — falls back to the EI-9417 default when omitted,
+        // producing the exact same script text as before this change.
+        const lockTimeoutSec = args.lock_timeout_sec ?? DEFAULT_LOCK_TIMEOUT_SEC;
+        const migrationMaxAttempts = args.lock_timeout_sec != null ? CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS : LOCK_RETRY_MAX_ATTEMPTS;
         const script =
           `BEGIN;\n` +
           `SET LOCAL statement_timeout = 0;\n` +
           // EI-9417: fail FAST on lock contention (was unset — could hang
           // indefinitely against a hot table) instead of waiting it out; the
           // retry loop below is what actually rides out the contention.
-          `SET LOCAL lock_timeout = '${MIGRATION_LOCK_TIMEOUT_SQL}';\n` +
+          // WI-6381: caller-widened when riding out a known long-lived
+          // non-operator holder instead (see migrationMaxAttempts above).
+          `SET LOCAL lock_timeout = '${lockTimeoutSec}s';\n` +
           `\\i ${args.file}\n` +
           `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${filenameLiteral}', '${sha256}');\n` +
           `COMMIT;\n`;
@@ -485,7 +539,7 @@ export default defineTool({
         // EI-9417: retries automatically on "canceling statement due to lock
         // timeout" against a hot coordination table (coord_presence et al) —
         // see runMigrationWithLockRetry above.
-        const { result: r, attempts } = await runMigrationWithLockRetry(url, script, undefined, undefined, (attempt, maxAttempts) => {
+        const { result: r, attempts } = await runMigrationWithLockRetry(url, script, undefined, migrationMaxAttempts, (attempt, maxAttempts) => {
           if (attempt > 1) {
             emitProgress(
               undefined,
@@ -524,8 +578,12 @@ export default defineTool({
             // EI-18747087108453188: was isLockTimeoutFailure-only, so a deadlock
             // or serialization-failure exhaustion (both now retried above)
             // silently reported false here. Widened to match the same
-            // predicate the retry loop itself uses.
-            lock_timeout_retries_exhausted: attempts >= LOCK_RETRY_MAX_ATTEMPTS && isRetryableLockFailure(r.stderr ?? ''),
+            // predicate the retry loop itself uses. WI-6381: compares against
+            // migrationMaxAttempts (2 when lock_timeout_sec was set), not the
+            // hardcoded default — otherwise a caller who opted into the
+            // 2-attempt long-wait path would see this flag stick at false
+            // forever (attempts never reaches 5).
+            lock_timeout_retries_exhausted: attempts >= migrationMaxAttempts && isRetryableLockFailure(r.stderr ?? ''),
           });
         }
         // Record only on a successful apply (first writer wins). This is the

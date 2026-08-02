@@ -10,9 +10,9 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import * as childProcess from 'node:child_process';
@@ -28,7 +28,12 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import '../index';
 import { lookupByMcpName } from '@papercusp/tooldef';
-import buildTypecheck, { resolveProjectPath, suggestProjects, runTsc } from './typecheck';
+import buildTypecheck, {
+  resolveProjectPath,
+  suggestProjects,
+  runTsc,
+  buildScopedTsconfig,
+} from './typecheck';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   MCP_TRANSPORT_CAP_MS,
@@ -47,7 +52,7 @@ describe('registration', () => {
 
   it('declares the argument surface the substitution audit models', () => {
     expect(Object.keys((buildTypecheck as unknown as { args: { shape: Record<string, unknown> } }).args.shape).sort())
-      .toEqual(['files', 'incremental', 'maxErrors', 'project', 'timeoutMs']);
+      .toEqual(['files', 'incremental', 'maxErrors', 'project', 'scopeToFiles', 'timeoutMs']);
   });
 });
 
@@ -281,5 +286,88 @@ describe('EI-18793290418757939 — runTsc settles at its own timer even when the
     } finally {
       spawnMock.mockReset();
     }
+  });
+});
+
+/**
+ * EI-19297428004790873 — the scoped-config builder behind `scopeToFiles`.
+ *
+ * Each assertion here pins a property whose ABSENCE is silent: a broken one does not
+ * throw, it produces a config that compiles the wrong program and still exits 0. That
+ * is the same false-green shape as the hand-rolled `tsc | head` fallback this mode
+ * exists to replace, so these are correctness guards, not shape trivia.
+ */
+describe('buildScopedTsconfig (scopeToFiles)', () => {
+  const pkgRoot = join(__dirname, '..', '..', '..');
+  const realFile = join(pkgRoot, 'lib', 'tsc-diagnostics.ts');
+  const projectTsconfig = join(pkgRoot, 'tsconfig.json');
+
+  it('emits include:[] so the extended project globs cannot silently pull the whole project back in', () => {
+    const s = buildScopedTsconfig(pkgRoot, projectTsconfig, [realFile]);
+    try {
+      const cfg = JSON.parse(readFileSync(s.configPath, 'utf8'));
+      // Without this, `files` is ADDITIVE to the inherited `include` — the run still
+      // looks scoped, costs the same as project-wide, and nothing reports the loss.
+      expect(cfg.include, 'inherited include globs would restore project-wide cost').toEqual([]);
+      expect(cfg.files).toHaveLength(1);
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it('writes typeRoots and extends as ABSOLUTE paths, because the config lives outside the tree', () => {
+    const s = buildScopedTsconfig(pkgRoot, projectTsconfig, [realFile]);
+    try {
+      const cfg = JSON.parse(readFileSync(s.configPath, 'utf8'));
+      // Relative here resolves against the TEMP dir, so every ambient @types vanishes
+      // and the run drowns in phantom errors — the trap that cost the filing agent a round.
+      expect(isAbsolute(cfg.compilerOptions.typeRoots[0])).toBe(true);
+      expect(isAbsolute(cfg.extends)).toBe(true);
+      expect(cfg.files.every((f: string) => isAbsolute(f))).toBe(true);
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it('writes the config OUTSIDE the repo tree, so git-sync cannot sweep it into a commit', () => {
+    const s = buildScopedTsconfig(pkgRoot, projectTsconfig, [realFile]);
+    try {
+      // git-sync commits the WHOLE shared tree on a timer; a temp tsconfig written
+      // next to the real one would be committed by whoever's tick lands first.
+      expect(s.configPath.startsWith(pkgRoot), `scoped config leaked into the tree at ${s.configPath}`).toBe(false);
+      expect(s.configPath.startsWith(tmpdir())).toBe(true);
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it('separates resolvable files from missing ones instead of silently dropping them', () => {
+    const s = buildScopedTsconfig(pkgRoot, projectTsconfig, [realFile, 'lib/does-not-exist-xyz.ts']);
+    try {
+      // A dropped path is how a scoped run ends up compiling an empty program and
+      // exiting 0 — the handler refuses on an empty resolvedFiles, which needs this split.
+      expect(s.resolvedFiles).toHaveLength(1);
+      expect(s.missing).toEqual(['lib/does-not-exist-xyz.ts']);
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it('resolves repo-relative paths against the root and leaves absolute ones alone', () => {
+    const s = buildScopedTsconfig(pkgRoot, projectTsconfig, ['lib/tsc-diagnostics.ts']);
+    try {
+      expect(s.missing).toEqual([]);
+      expect(s.resolvedFiles[0]).toBe(realFile);
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it('cleanup removes the temp directory and is safe to call twice', () => {
+    const s = buildScopedTsconfig(pkgRoot, projectTsconfig, [realFile]);
+    expect(existsSync(s.configPath)).toBe(true);
+    s.cleanup();
+    expect(existsSync(s.configPath)).toBe(false);
+    expect(() => s.cleanup()).not.toThrow();
   });
 });

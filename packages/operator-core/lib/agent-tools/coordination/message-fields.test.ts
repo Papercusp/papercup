@@ -16,6 +16,7 @@ import {
   assertEnvelopeSectionSplit,
   EnvelopeFieldOnSectionError,
   messageSectionSchema,
+  SECTION_ONLY_FIELDS,
   stampMessageFields,
   toSections,
   sectionsToText,
@@ -50,11 +51,48 @@ describe('renderAuthoredFieldsSuffix — making the fields visible', () => {
     );
   });
 
+  it('clarify is SECTION-scoped and REQUIRES its assumption (D-106)', () => {
+    expect(SECTION_ONLY_FIELDS).toContain('clarify');
+    // `assuming` is mandatory: an ask with no stated fallback is precisely the
+    // blocking round-trip this field replaces, and the measured reason the
+    // existing clarification VERB went unused (coord:ask 6 calls/30d vs
+    // coord:send 3512; 76% of question conversations orphaned).
+    expect(
+      messageSectionSchema.safeParse({ text: 'a', clarify: [{ question: 'which harness?' }] })
+        .success,
+    ).toBe(false);
+    expect(
+      messageSectionSchema.safeParse({
+        text: 'a',
+        clarify: [{ question: 'which harness?', assuming: 'papercusp' }],
+      }).success,
+    ).toBe(true);
+  });
+
   it('SPELLS OUT couldNotDetermine — it marks a question OPEN, which is a different action', () => {
     const out = renderAuthoredFieldsSuffix({
       sections: [{ text: 'a', couldNotDetermine: [{ what: 'whether the deploy carries the fix' }] }],
     });
     expect(out).toContain('? undetermined: whether the deploy carries the fix');
+  });
+
+  it('SPELLS OUT clarify WITH its assumption — the stake is that a peer is already acting (D-106)', () => {
+    const out = renderAuthoredFieldsSuffix({
+      sections: [
+        {
+          text: 'a',
+          clarify: [
+            { question: 'is the release gate mine to green?', assuming: 'yes, greening it myself' },
+          ],
+        },
+      ],
+    });
+    expect(out).toContain('is the release gate mine to green?');
+    // The ASSUMPTION must render too. A counted "1 clarification" would hide the
+    // recipient's entire reason to answer: a peer is proceeding on a fallback
+    // that may be wrong, and silence has a cost.
+    expect(out).toContain('assuming: yes, greening it myself');
+    expect(out).not.toMatch(/1 clarif/);
   });
 
   it('surfaces blocking and the coupling relation', () => {
@@ -468,6 +506,21 @@ describe('projectAuthoredFields — making the fields readable', () => {
     // The VALUE is still shown — a reader needs it — but it is flagged as not authored.
     expect(out?.expects).toBe('none');
     expect(out?.derivedFields).toContain('expects');
+  });
+
+  it('projects clarify through to the reader — an unrendered field is a mechanism with no consumer', () => {
+    const out = projectAuthoredFields(
+      stamped(
+        {
+          body: [
+            { text: 'a', clarify: [{ question: 'which harness?', assuming: 'papercusp' }] },
+          ],
+        },
+        {},
+      ),
+    );
+    expect(out?.sections?.[0]?.clarify?.[0]?.question).toBe('which harness?');
+    expect(out?.sections?.[0]?.clarify?.[0]?.assuming).toBe('papercusp');
   });
 
   it('a fully-derived message is still distinguishable from an authored one', () => {

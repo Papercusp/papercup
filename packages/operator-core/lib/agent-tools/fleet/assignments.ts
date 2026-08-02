@@ -1023,7 +1023,7 @@ export default defineTool({
           // NB: resolveSelfRef returns { ownerId, ownerLabel }, NOT a bare id — an
           // `args.agent === self` comparison here is string-vs-object and is ALWAYS
           // false, which would ship this flag permanently dead while looking correct.
-          selfScoped: !!(self && args.agent && (args.agent as unknown) === (self as unknown)), /* BUG SIM */
+          selfScoped: !!(self?.ownerId && args.agent && args.agent === self.ownerId),
           /** Whether ANY narrowing filter applied. false ⇒ the counts are workspace-wide. */
           filtered: !!(args.agent || args.plan || args.fleet || args.harness),
         },

@@ -427,6 +427,53 @@ const couldNotDetermineArg = z
       'the receiver cannot distinguish "unknown" from "not asked".',
   );
 
+/**
+ * P-012 / D-106 — clarification as a first-class act, made NON-BLOCKING.
+ *
+ * WHY THIS IS A FIELD AND NOT A VERB. A clarification VERB already exists
+ * (`coord:ask` → a `question` conversation) and is empirically dead: measured
+ * 2026-08-02 over 30d, `coord:ask` took 6 calls against `coord:send`'s 3512
+ * (~1:84), and over 60d 32 of 42 question conversations (76%) were never
+ * answered. A fifth verb on that surface would be deader than the fourth, so
+ * clarification rides the surface agents actually use — the one that already
+ * carries a reply OBLIGATION (unanswered-directed: a directed message outranks
+ * the recipient's own work) rather than the one that orphans.
+ *
+ * WHY BOTH HALVES ARE REQUIRED. Asking costs a round-trip of unbounded latency;
+ * proceeding on an assumption costs nothing now — so a rational agent declines
+ * to ask, which is exactly what 1:84 shows. Pairing the question with the
+ * assumption the sender proceeds on ANYWAY collapses that cost to zero: the
+ * sender never waits, and the answer CORRECTS rather than unblocks. `assuming`
+ * is what makes this cheap enough to actually get used, so it is mandatory —
+ * an ask with no stated fallback is the blocking round-trip this replaces.
+ *
+ * It is also the load-bearing half of the value-of-information test: an agent
+ * that cannot name the assumption it would proceed on has not yet identified a
+ * decision, and therefore has nothing worth a peer's turn.
+ *
+ * DESCRIPTIVE ONLY (P-009's boundary): a clarification request must never drive
+ * a state transition or be dispatched on. Per D-088, typing it makes
+ * VERIFICATION mechanical, never COMPLIANCE — verification is never authorisation.
+ */
+const clarifyArg = z
+  .array(
+    z.object({
+      question: z.string().min(1),
+      assuming: z.string().min(1),
+    }),
+  )
+  .max(10)
+  .optional()
+  .describe(
+    'PER-SECTION. A question you need answered, PAIRED with the assumption you are proceeding ' +
+      'on meanwhile: { question, assuming }. NON-BLOCKING by construction — you do not wait, and ' +
+      'the answer CORRECTS you rather than unblocking you. `assuming` is REQUIRED: if you cannot ' +
+      'name the fallback you will act on regardless, you have not identified a decision worth a ' +
+      "peer's turn. Ask only what a QUERY cannot answer (locks:list, fleet:assignments, " +
+      'work_items:get) and where being wrong is expensive or irreversible. Descriptive only — ' +
+      'never dispatched on.',
+  );
+
 // ─────────────────────────────────────────────────────────────────────────────
 // why / evidence — ENVELOPE-scoped
 // ─────────────────────────────────────────────────────────────────────────────
@@ -504,24 +551,33 @@ const blockingArg = z
 // The section, and the envelope/section boundary ENFORCED
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** P-012 / D-106: a question PAIRED with the assumption the sender acts on meanwhile. */
+export interface ClarifyEntry {
+  question: string;
+  /** REQUIRED — the fallback the sender proceeds on. Absent ⇒ a blocking ask. */
+  assuming: string;
+}
+
 export interface MessageSection {
   text: string;
   premises?: string[];
   forYouBecause?: ForYouBecause;
   youMayNotKnow?: YouMayNotKnowEntry[];
   couldNotDetermine?: CouldNotDetermineEntry[];
+  clarify?: ClarifyEntry[];
 }
 
 /** The four field names that may NEVER appear on a section (D-064's split;
  *  `evidence` renamed `basedOn` by D-084 — see {@link BasedOnEntry}). */
 export const ENVELOPE_ONLY_FIELDS = ['expects', 'blocking', 'why', 'basedOn'] as const;
 
-/** The four that may never appear on the envelope. */
+/** The five that may never appear on the envelope. */
 export const SECTION_ONLY_FIELDS = [
   'premises',
   'forYouBecause',
   'youMayNotKnow',
   'couldNotDetermine',
+  'clarify',
 ] as const;
 
 export const messageSectionSchema = z
@@ -531,6 +587,7 @@ export const messageSectionSchema = z
     forYouBecause: forYouBecauseArg,
     youMayNotKnow: youMayNotKnowArg,
     couldNotDetermine: couldNotDetermineArg,
+    clarify: clarifyArg,
   })
   .strict()
   .superRefine((section, ctx) => {
@@ -591,7 +648,15 @@ export const messageBodyArg = z
       'section.',
   );
 
-export { premisesArg, forYouBecauseArg, youMayNotKnowArg, couldNotDetermineArg, whyArg, blockingArg };
+export {
+  premisesArg,
+  forYouBecauseArg,
+  youMayNotKnowArg,
+  couldNotDetermineArg,
+  clarifyArg,
+  whyArg,
+  blockingArg,
+};
 
 /**
  * Normalise `body` to sections. A string becomes the one-element array D-064
@@ -693,6 +758,18 @@ export function renderAuthoredFieldsSuffix(env: Record<string, unknown>): string
     parts.push(`? undetermined: ${cnd.map((c) => c.what).join('; ').slice(0, 120)}`);
   }
 
+  // P-012 / D-106: SPELLED OUT, and it carries the ASSUMPTION, not just the
+  // question. A counted "1 clarification" would be worse than nothing here — the
+  // recipient's whole reason to answer is that the sender is ALREADY ACTING on a
+  // stated fallback, so the cost of staying silent is a peer proceeding on a
+  // possibly-wrong assumption. Hiding `assuming` would hide exactly that stake.
+  const clr = sections.flatMap((s) => s.clarify ?? []);
+  if (clr.length && !derived.clarify) {
+    parts.push(
+      `?? ${clr.map((c) => `${c.question} (assuming: ${c.assuming})`).join('; ').slice(0, 160)}`,
+    );
+  }
+
   return parts.length ? ` ⟨${parts.join(' · ')}⟩` : '';
 }
 
@@ -706,6 +783,7 @@ export interface ProjectedSection {
   forYouBecause?: ForYouBecause;
   youMayNotKnow?: YouMayNotKnowEntry[];
   couldNotDetermine?: CouldNotDetermineEntry[];
+  clarify?: ClarifyEntry[];
 }
 
 /**
@@ -773,12 +851,17 @@ export function projectAuthoredFields(extra: unknown): AuthoredFieldsProjection 
       if (s.forYouBecause) section.forYouBecause = s.forYouBecause;
       if (s.youMayNotKnow?.length) section.youMayNotKnow = s.youMayNotKnow;
       if (s.couldNotDetermine?.length) section.couldNotDetermine = s.couldNotDetermine;
+      if (s.clarify?.length) section.clarify = s.clarify;
       return section;
     });
     // Only surface sections that carry something beyond their text — an n=1
     // plain-string send must not grow a section block it never authored.
-    if (projected.some((s) => s.premises || s.forYouBecause || s.youMayNotKnow || s.couldNotDetermine)
-      || projected.length > 1) {
+    if (
+      projected.some(
+        (s) => s.premises || s.forYouBecause || s.youMayNotKnow || s.couldNotDetermine || s.clarify,
+      ) ||
+      projected.length > 1
+    ) {
       out.sections = projected;
     }
   }
@@ -814,7 +897,12 @@ export function stampMessageFields(input: {
 }): StampedMessageFields {
   const sections = toSections(input.body);
   const authored = sections.some(
-    (s) => s.premises?.length || s.forYouBecause || s.youMayNotKnow?.length || s.couldNotDetermine?.length,
+    (s) =>
+      s.premises?.length ||
+      s.forYouBecause ||
+      s.youMayNotKnow?.length ||
+      s.couldNotDetermine?.length ||
+      s.clarify?.length,
   );
   const stamp: StampedMessageFields = {};
   // Only stamp sections when they CARRY something — a plain-string send stays

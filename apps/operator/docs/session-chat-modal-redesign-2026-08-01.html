@@ -498,8 +498,10 @@ section { padding-top: 74px; scroll-margin-top: 20px; }
   <a href="#a">A · quiet status</a>
   <a href="#b">B · chip is the control</a>
   <a href="#c">C · now / do</a>
+  <a href="#d" style="color:var(--mark);border-color:var(--mark)">D · chosen</a>
   <a href="#rails">rail R1–R3</a>
-  <a href="#pick">pick &amp; mix</a>
+  <a href="#add" style="color:var(--mark);border-color:var(--mark)">what to add</a>
+  <a href="#pick">the build</a>
 </nav>
 
 <!-- ═══════════════════════════════════════════════════════ THE BRIEF ═══ -->
@@ -1028,6 +1030,83 @@ section { padding-top: 74px; scroll-margin-top: 20px; }
   </div>
 </section>
 
+<!-- ═════════════════════════════════════════════════════ DIRECTION D ═══ -->
+<section id="d">
+  <div class="sec-head">
+    <p class="eyebrow">Direction D · chosen — B + C merged</p>
+    <h2>State in the header, modes in the control band</h2>
+    <p>C's spatial rule (<em>description above the transcript, operation below it</em>)
+       carrying B's consolidation (<em>a mode and the control that sets it are one
+       object</em>). The header holds only facts that change on their own; the
+       control band holds only things you can act on — and the mode pills are
+       controls, so they belong below.</p>
+  </div>
+
+  <div class="plate">
+    <div class="plate-cap"><b>D</b> <span>header = state · one control band · mode pills set their own mode · fleet moves to the board</span></div>
+    <div class="plate-body">
+      <div class="op">
+        <div style="background:var(--op-panel);border-bottom:1px solid var(--op-border)">
+          <div class="op-title" style="border:0;padding-bottom:5px">
+            <span style="color:var(--op-good)">●</span>
+            <span style="font-family:var(--mono);color:var(--op-fg);font-weight:600">su-018aa</span>
+            <span style="color:var(--op-mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+              redesigning the HUD session popup</span>
+            <span class="x">✕</span>
+          </div>
+          <div class="band" style="padding:0 12px 9px;gap:6px">
+            <span class="v-state"><span class="dot"></span>live · 4h12m</span>
+            <span class="v-state">ctx 83%</span>
+            <span class="v-state">WI-6747 · 18m</span>
+            <span style="flex:1"></span>
+            <button type="button" class="v-alert">⚠ 2 locks <span class="car">›</span></button>
+            <button type="button" class="v-alert">32 coord unread <span class="car">›</span></button>
+          </div>
+        </div>
+
+        <div class="op-tx" style="padding-top:16px">
+          <div class="ln a"></div><div class="ln b"></div>
+          <div class="ln c"></div><div class="ln d"></div>
+          <div class="ln a" style="width:64%"></div>
+        </div>
+
+        <div class="op-composer">Message this agent…</div>
+
+        <div class="band band--do" style="gap:6px">
+          <span class="v-mode"><span class="cap">AUTO</span><span class="car">on ▾</span></span>
+          <span class="v-mode off"><span class="cap">IDEATE</span><span class="car">off ▾</span></span>
+          <span class="v-mode"><span class="cap">GRADE</span><span class="car">on ▾</span></span>
+          <span class="v-mode off"><span class="cap">DRAIN</span><span class="car">off ▾</span></span>
+          <span class="sep"></span>
+          <button type="button" class="v-act"><span class="ic">▣</span>Focus window</button>
+          <button type="button" class="v-act ghost"><span class="ic">⋯</span>Session…</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h3>Why the merge works</h3>
+      <ul>
+        <li><strong>The one place B and C disagreed is resolved by C's own rule.</strong> C put modes in the header as read-only state; B made them controls. A control belongs below the transcript — so they go in the control band, and C's “nothing clickable above the line” invariant holds intact.</li>
+        <li><strong>The header keeps only genuinely self-changing facts</strong> — liveness, context, the held claim and how long it's been held. Three pills, one line.</li>
+        <li><strong>One band under the transcript</strong>, and it is entirely verbs and switches. Nothing in it is inert.</li>
+        <li><strong>Both duplicate pairs are gone.</strong> No <code>AUTO</code>/<code>Autonomy</code>, no <code>GRADE</code>/<code>Grade</code> — each concept is one object that both reports and sets.</li>
+        <li>Added <code>WI-6747 · 18m</code> to the header: the held claim and its age is the single most useful thing about a working agent, and today it is only in the rail.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>What it needs</h3>
+      <ul>
+        <li><strong>The <code>ChatAction</code> registry needs a second descriptor shape</strong> — a mode-action carrying its current value plus its options, so <code>PostureActions</code> can render as a pill instead of a button. This is the one real architectural change, and it is B's, inherited.</li>
+        <li><strong>The fleet-launcher move needs your sign-off</strong> — WI-6505 deliberately put it in the popup so it stays reachable when a session is dead. Moving it to the Sessions board arguably serves that better (the board is always reachable), but it overrides a stated decision.</li>
+        <li>Touches all four components plus the Sessions board. ~3–4 days.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
 <!-- ═════════════════════════════════════════════════ RAIL TREATMENTS ═══ -->
 <section id="rails">
   <div class="sec-head">
@@ -1339,13 +1418,248 @@ section { padding-top: 74px; scroll-margin-top: 20px; }
   </div>
 </section>
 
+<!-- ═══════════════════════════════════════════════ WHAT ELSE TO ADD ═══ -->
+<section id="add">
+  <div class="sec-head">
+    <p class="eyebrow">Your question 2 · read from the source, not from memory</p>
+    <h2>What the rail is missing</h2>
+    <p>I diffed <code>OrientResult</code> (<code>agent-tools/coordination/tools/orient.ts</code>,
+       24 fields plus 10 handler folds) against <code>AgentDetail</code>
+       (<code>adv-agent-detail.ts</code>) and the roster entry the rail already reads.
+       One gap dominates everything else.</p>
+  </div>
+
+  <div class="callout">
+    <p><strong>The rail shows what the agent is <em>doing</em> and <em>holding</em>.
+       It shows nothing about what the agent has been <em>told</em>.</strong></p>
+    <p>Locks, files, claims, coord, events, loop, context — all of it is behaviour.
+       But an agent's behaviour is driven by standing orders it received outside the
+       conversation: <code>facts</code> folded verbatim into its every orient,
+       registered <code>modes</code> and who set them, and the resolved
+       <code>instructionPrecedence</code> that says which generic rules are
+       <em>suppressed</em> right now. None of that is visible anywhere in the popup —
+       and unlike everything else in the rail, <strong>you cannot recover it by
+       reading the transcript</strong>, because it never appears there. It arrives in
+       the agent's system context.</p>
+  </div>
+
+  <h3 style="margin-top:44px;font-size:19px;font-family:var(--serif);font-weight:400">The diff</h3>
+  <div class="plate" style="margin-top:14px">
+    <div class="plate-cap"><b>coord:orient → rail</b> <span>what it returns · whether the rail shows it · where the data already lives</span></div>
+    <div class="plate-body spec-wrap" style="background:var(--plate)">
+      <table class="matrix" style="min-width:720px">
+        <thead>
+          <tr><th>orient field</th><th>What it carries</th><th>In the rail?</th><th>Source for a third-party read</th></tr>
+        </thead>
+        <tbody>
+          <tr style="background:var(--mark-bg)"><td>facts</td><td>Standing facts folded <em>verbatim</em> into this agent's every orient — scoped, TTL'd, deterministic</td><td class="no">no</td><td>durable, per-owner scope</td></tr>
+          <tr style="background:var(--mark-bg)"><td>instructionPrecedence</td><td>Effective mission + execution-authorization + which generic rules are suppressed, and why</td><td class="no">no</td><td><strong>pure function</strong> of modes + route + scope — all already on the roster entry</td></tr>
+          <tr style="background:var(--mark-bg)"><td>modes</td><td>Registered modes with <em>reason</em> and <em>ownerDirected</em></td><td>name only, as a chip</td><td>durable mode registry</td></tr>
+          <tr style="background:var(--mark-bg)"><td>ownerDirectives</td><td>Open owner directives block</td><td class="no">no</td><td>durable, workspace-scoped</td></tr>
+          <tr><td>planNow</td><td>The plan's <code>## Now</code>, the next actionable item, this agent's claims within it</td><td>slug only</td><td>plans table</td></tr>
+          <tr><td>announcedGates</td><td>Declared-but-unfired gates <em>visible to this agent</em></td><td class="no">no</td><td>durable gate table</td></tr>
+          <tr><td>me · orphaned/stalled</td><td>Whether the held claim is <em>progressing</em> or stalled</td><td class="no">no — shows the claim, not its health</td><td>fleet:assignments</td></tr>
+          <tr><td>fleetControl</td><td>Fleet state when it is <em>not</em> plain active — winding down, paused, and by whom</td><td class="no">no</td><td>agent_fleets registry (mig 575)</td></tr>
+          <tr><td>claimable</td><td>What this agent could pick up next</td><td class="no">no</td><td>work_items</td></tr>
+          <tr><td>fleetHealth</td><td>bees / wake / governor glance</td><td class="no">no</td><td>live glance</td></tr>
+          <tr><td>captureMiss · ideate</td><td>“filed zero observations on a high-signal turn” · “overdue for an ideate pass”</td><td class="no">no</td><td>indexed per-owner reads</td></tr>
+          <tr><td>inbox.summary</td><td>by_kind breakdown, coalesced-dupe count</td><td>count only</td><td>already fetched</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="notes" style="margin-top:22px">
+    <div class="note"><span class="pin" style="background:var(--ink-3)">·</span>
+      <span><strong>Four fields I'd deliberately <em>not</em> add.</strong>
+      <code>memory</code> and <code>recipes</code> are recalled against the
+      <em>caller's</em> intent — they describe the asking session, not the agent, so
+      they're meaningless in a third-party view. <code>recovery</code> only exists on
+      an <code>afterCompaction</code> call. <code>taskToolSchemaPack</code> is
+      plumbing.</span></div>
+    <div class="note"><span class="pin" style="background:var(--ink-3)">·</span>
+      <span><strong>Three that belong to the HUD, not the rail.</strong>
+      <code>pipeline</code> (is the release gate red?), <code>ownerPresent</code>, and
+      <code>host</code> (load, free memory) are <em>global</em> — identical for every
+      agent. Repeating them in each agent's rail is noise; they want to be HUD chrome.
+      <code>pipeline</code> especially: orient's own comment notes an agent that starts
+      editing without knowing the gate is red is working on something that cannot
+      ship.</span></div>
+  </div>
+
+  <h3 style="margin-top:52px;font-size:19px;font-family:var(--serif);font-weight:400">What that looks like in R1</h3>
+  <p style="margin-top:8px">Three new sections, each capped like the rest. <strong>Standing
+     orders</strong> goes first — it is the section that explains everything below it.</p>
+
+  <div class="plate" style="margin-top:18px">
+    <div class="plate-cap"><b>R1 +</b> <span>standing orders · lane · waiting-vs-available</span></div>
+    <div class="plate-body">
+      <div class="rail-pair">
+        <div class="rail-stub">
+          <div style="height:7px;border-radius:3px;background:var(--op-surface);width:78%"></div>
+          <div style="height:7px;border-radius:3px;background:var(--op-surface);width:52%"></div>
+          <div style="height:7px;border-radius:3px;background:rgba(56,189,248,.1);width:86%"></div>
+        </div>
+        <div class="rail" style="height:520px">
+          <div class="rail-head">
+            <div class="rail-id">su-018aa</div>
+            <div class="rail-intent">redesigning the HUD session popup</div>
+          </div>
+
+          <div class="rail-sec" style="background:rgba(56,189,248,.045)">
+            <div class="rail-h">Standing orders <span class="n">4</span></div>
+            <div class="rail-kv"><span class="k">mission</span><span class="v">execute owner-directed scope</span></div>
+            <div class="rail-kv"><span class="k">authority</span><span class="v" style="color:var(--op-warn)">confirm before execution</span></div>
+            <div class="rail-row" style="margin-top:5px"><span class="dir" style="color:var(--op-accent)">◆</span><span class="txt">AUTO — owner-directed, 2h ago</span></div>
+            <div class="rail-row"><span class="dir" style="color:var(--op-mute)">◇</span><span class="txt">suppressed: generic-backlog-selection</span></div>
+            <div class="rail-row"><span class="dir" style="color:var(--op-accent)">§</span><span class="txt">fact: desktop notifications are OFF</span></div>
+            <div class="rail-row"><span class="dir" style="color:var(--op-accent)">§</span><span class="txt">fact: PLUR is decommissioned</span></div>
+            <button type="button" class="rail-more">All 4 facts &amp; directives ›</button>
+          </div>
+
+          <div class="rail-sec">
+            <div class="rail-h">Health</div>
+            <div class="rail-kv"><span class="k">loop</span><span class="v" style="color:var(--op-good)">armed · every 60s · next 41s</span></div>
+            <div class="rail-kv"><span class="k">claim</span><span class="v">WI-6747 <span style="color:var(--op-good)">· progressing</span></span></div>
+            <div class="rail-kv"><span class="k">context</span><span class="v">83% · 166k / 200k</span></div>
+            <div class="rail-kv"><span class="k">last tool</span><span class="v">12s ago</span></div>
+          </div>
+
+          <div class="rail-sec">
+            <div class="rail-h">Lane</div>
+            <div class="rail-kv"><span class="k">plan</span><span class="v">hud-redesign-2026-08-01</span></div>
+            <div class="rail-kv"><span class="k">now</span><span class="v">Rail density + control legibility</span></div>
+            <div class="rail-kv"><span class="k">next up</span><span class="v">P-004 — merge B/C into one band</span></div>
+            <div class="rail-kv"><span class="k">claimable</span><span class="v">3 items in this lane</span></div>
+          </div>
+
+          <div class="rail-sec">
+            <div class="rail-h">Waiting on <span class="n">3</span></div>
+            <div class="rail-row"><span class="dir">◉</span><span class="txt">fleet:hud-redesign:gate-green</span><span class="ts">4m</span></div>
+            <div class="rail-row"><span class="dir">↻</span><span class="txt">work-item:done:WI-6740</span><span class="ts">1h</span></div>
+            <div class="rail-row"><span class="dir">↻</span><span class="txt">release:deploy:staging</span><span class="ts">2h</span></div>
+            <div style="margin-top:7px;padding-top:7px;border-top:1px dashed var(--op-border)">
+              <div class="rail-kv"><span class="k" style="width:auto">available, not awaited</span></div>
+              <div class="rail-row"><span class="dir" style="color:var(--op-mute)">○</span><span class="txt" style="color:var(--op-mute)">fleet:hud-redesign:mockups-approved</span></div>
+            </div>
+          </div>
+
+          <div class="rail-sec">
+            <div class="rail-h">Locks <span class="n hot">2</span></div>
+            <div class="rail-row"><span class="dir" style="color:var(--op-warn)">L</span><span class="txt">…/chat/SessionChatModal.tsx</span><span class="ts">8m</span></div>
+            <div class="rail-row"><span class="dir" style="color:var(--op-warn)">L</span><span class="txt">…/sessions/AgentDossier.tsx</span><span class="ts">8m</span></div>
+          </div>
+
+          <div class="rail-sec">
+            <div class="rail-h">Coord <span class="n hot">32 unread</span></div>
+            <div class="rail-row"><span class="dir">←</span><span class="who">watchdog</span><span class="txt">MCP proxy failing: 861/1h</span><span class="ts">4m</span></div>
+            <div class="rail-row"><span class="dir">←</span><span class="who">su-7854d</span><span class="txt">Restarting mcp-proxy shortly</span><span class="ts">7m</span></div>
+            <div class="rail-row"><span class="dir">→</span><span class="who">su-4ca24</span><span class="txt">Taking WI-6747</span><span class="ts">9m</span></div>
+            <button type="button" class="rail-more">Open all 32 ›</button>
+          </div>
+
+          <div class="rail-sec">
+            <div class="rail-h">Files <span class="n">7</span></div>
+            <div class="rail-row"><span class="txt">…/chat/SessionChatModal.tsx</span><span class="ts">L</span></div>
+            <div class="rail-row"><span class="txt">…/chat/FleetLaunchRow.tsx</span><span class="ts"></span></div>
+            <div class="rail-row"><span class="txt">…/sessions/AgentDossier.tsx</span><span class="ts">L</span></div>
+            <button type="button" class="rail-more">Show 4 more ›</button>
+          </div>
+
+          <div class="rail-sec">
+            <div class="rail-h">Reference</div>
+            <button type="button" class="rail-more">Session, host &amp; runtime detail ›</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h3>The three new sections</h3>
+      <ul>
+        <li><strong>Standing orders</strong> — resolved mission, current authority
+          (<em>confirm-first</em> vs <em>act-and-report</em>), each active mode with
+          who set it, what is <em>suppressed</em>, and the standing facts. Tinted,
+          because it is the only section that explains the others.</li>
+        <li><strong>Lane</strong> — the plan's <code>## Now</code>, the next actionable
+          item, and how much is claimable. Today the rail shows a plan <em>slug</em>,
+          which tells you where the agent is but not what it's for.</li>
+        <li><strong>Waiting on</strong> gains a second half: gates that were
+          <em>declared and are available</em> but which this agent is not awaiting.
+          An agent parked on a gate nobody declared waits forever — that failure is
+          invisible until you can see both lists together.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Two small upgrades to what's there</h3>
+      <ul>
+        <li><strong><code>claim</code> gains a health word.</strong> Today it reads
+          <code>WI-6747</code>; <code>me</code> already knows whether that claim is
+          orphaned or stalled, so it can read <code>WI-6747 · progressing</code> or
+          <code>· stalled 40m</code>. Same row, decisive difference.</li>
+        <li><strong>Fleet wind-down surfaces.</strong> <code>fleetControl</code> is
+          folded only when the fleet is <em>not</em> active — so if it's present at
+          all, it's news, and it belongs at the top of the rail as a banner rather
+          than a field.</li>
+        <li>Every one of these reads from a durable per-agent source, so this is
+          additive legs on <code>getAgentDetail</code> — not new plumbing.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
 <!-- ══════════════════════════════════════════════════════ PICK & MIX ═══ -->
 <section id="pick">
   <div class="sec-head">
-    <p class="eyebrow">Decide</p>
-    <h2>Pick one of each</h2>
-    <p>The bottom strip and the rail are separate components with no shared state —
-       any A/B/C pairs with any R1/R2/R3.</p>
+    <p class="eyebrow">Decided 2026-08-01</p>
+    <h2>What we're building</h2>
+    <p><strong>Direction D</strong> (B + C merged) for the bottom, <strong>R1</strong>
+       (capped lists) for the rail, plus the three new rail sections. A, B, C and
+       R2/R3 stay below as the record of what was considered.</p>
+  </div>
+
+  <div class="plate" style="margin-bottom:34px">
+    <div class="plate-cap"><b>Scope</b> <span>five components · one new server leg set</span></div>
+    <div class="plate-body spec-wrap" style="background:var(--plate)">
+      <table class="matrix" style="min-width:640px">
+        <thead><tr><th>#</th><th>Change</th><th>Where</th><th>Risk</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Control vocabulary — the five shapes as real CSS</td><td>a new stylesheet the chat surface loads</td><td class="yes">Low</td></tr>
+          <tr><td>2</td><td>State moves into the modal header; footer keeps nothing read-only</td><td>SessionChatModal · SessionFooter</td><td class="yes">Low</td></tr>
+          <tr><td>3</td><td>Mode-actions render as pills that set their own mode</td><td>chat-actions registry · PostureActions · GradeAction</td><td>Medium — new descriptor shape</td></tr>
+          <tr><td>4</td><td>Resume/Fork fold into <code>Session…</code>; Focus stays out</td><td>ChatActionBar · SessionActions</td><td class="yes">Low</td></tr>
+          <tr><td>5</td><td>Fleet launcher moves to the Sessions board <em>(needs your sign-off — overrides WI-6505)</em></td><td>FleetLaunchRow · the board's launch row</td><td>Medium — moves a surface</td></tr>
+          <tr><td>6</td><td>Rail: cap every section, reorder by urgency, drill-in links</td><td>AgentDossier · SessionsRosterView.css</td><td class="yes">Low</td></tr>
+          <tr><td>7</td><td>Rail: Standing orders · Lane · available-gates</td><td>adv-agent-detail (new legs) + AgentDossier</td><td>Medium — new reads</td></tr>
+          <tr><td>8</td><td><code>claim</code> gains progressing/stalled; fleet wind-down banner</td><td>adv-agent-detail · AgentDossier</td><td class="yes">Low</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="callout">
+    <p><strong>One open decision, and it's yours: item 5.</strong> WI-6505 put the
+       fleet launcher in this popup deliberately, so it stays reachable exactly when
+       a session is dead or won't start. D moves it to the Sessions board. I think
+       the board serves that reason <em>better</em> — it's always reachable, and it's
+       where the new-session launcher already lives — but it overrides a stated
+       decision, so I'm not making that call silently. Say the word and it moves;
+       say otherwise and it stays as a <code>Launch a fleet…</code> disclosure in the
+       control band.</p>
+  </div>
+
+  <p style="margin-top:34px;font-size:13px;color:var(--ink-3);border-top:1px solid var(--rule);padding-top:20px">
+    Everything below is the option set as first presented — kept so the reasoning
+    behind D and R1 stays legible.
+  </p>
+</section>
+
+<section id="archive">
+  <div class="sec-head">
+    <p class="eyebrow">Record</p>
+    <h2>The full option set</h2>
   </div>
 
   <div class="plate">
@@ -1367,32 +1681,18 @@ section { padding-top: 74px; scroll-margin-top: 20px; }
     </div>
   </div>
 
-  <div class="callout">
-    <p><strong>If you want my pick: B + R2.</strong></p>
-    <p><strong>B</strong> because your complaint ② is precisely that a mode and the
-       button that sets it are two indistinguishable objects — and B is the only
-       direction that deletes one of them rather than restyling both. A is safer but
-       leaves the duplicate standing; C is the better <em>layout</em> but keeps the
-       duplicate too, just further apart.</p>
-    <p><strong>R2</strong> because the rail's real job is triage — “is this agent
-       fine?” — and an index of six headers carrying <code>ok</code>,
-       <code>2 held</code>, <code>32 unread</code>, <code>3 waiting</code> answers that
-       without opening anything. R3 is equally immune to ① and slightly cheaper, but
-       it hides the counts' context; R1 reads best but is the only one that still needs
-       a “where does <em>Open all 32</em> go?” answer built.</p>
-    <p>Worth noting: <strong>C's header move and B's mode pills are not exclusive.</strong>
-       If you like both, the combination is real — state in the header as C draws it,
-       mode pills in the control band as B draws them. That is a fourth direction I'd
-       happily draw up if it's the one you want.</p>
-  </div>
-
-  <div class="callout" style="border-left-color:var(--ink-3);background:var(--rule-2);margin-top:20px">
-    <p style="color:var(--ink-2)"><strong>Two things I did not decide for you.</strong>
-       First, whether the fleet launcher should leave the popup — WI-6505 put it here
-       deliberately, and overriding that is your call, not mine. Second, the
-       auto-open rule for R2: I've suggested “open anything hot, leave calm sections
-       shut”, but the right default depends on what you actually open when you click
-       an agent.</p>
+  <div class="callout" style="border-left-color:var(--ink-3);background:var(--rule-2)">
+    <p style="color:var(--ink-2)"><strong>What I originally recommended, and what you
+       chose instead.</strong> I argued for B + R2. You took <strong>R1</strong> and
+       asked for <strong>B and C together</strong> — which is the combination I'd
+       flagged as real but hadn't drawn. It's the better call on both counts: R1
+       keeps the whole-agent read that R2 trades away for an index, and the B/C merge
+       gets C's spatial rule <em>and</em> B's de-duplication instead of choosing
+       between them. Drawn as <a href="#d">Direction D</a>.</p>
+    <p style="color:var(--ink-2)">R1's one open cost stands: <strong>“Open all 32” needs
+       a destination.</strong> Cheapest honest answer is to let the section expand in
+       place to a scrolling sub-list — R3's mechanism, borrowed for one section
+       instead of applied to all of them.</p>
   </div>
 </section>
 

@@ -20,6 +20,8 @@
  * resolve-core pattern).
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   getIssue,
   setIssueState,
@@ -32,12 +34,15 @@ import type { ScoredItem } from './digest';
 import type { TriageDecision } from './triage';
 import { classifyIdeaType, extractCitedIds } from './triage';
 import { issueToCandidate } from './read-items';
+import { integrationRoot } from '../../release-deploy-launch';
 import {
   initializeIdeaLifecycle,
   updateIdeaLifecycle,
   isValidTransition,
   type IdeaLifecyclePayload,
 } from './lifecycle';
+
+const pexecFile = promisify(execFile);
 
 export interface ApplyTriageInput {
   id: string;

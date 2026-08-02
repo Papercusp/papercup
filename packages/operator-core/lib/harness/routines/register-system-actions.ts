@@ -359,6 +359,10 @@ import '../../attention/gate-watch-action';
 import './token-report-action';
 import './hive-canary-action';
 import './coord-invariant-actions';
+// P-009 / D-008: the derived half of the fleet leader transition feed
+// (member-dead + context-critical), so a leader parks on an event instead of
+// polling leader-brief on a 60s loop.
+import './fleet-transition-sweep-action';
 import './cross-hive-drain-action';
 import './human-queue-digest-action';
 // platform-ops-batch-2026-07-09 P-001: the daily 09:00 UTC unclaimed-work digest —

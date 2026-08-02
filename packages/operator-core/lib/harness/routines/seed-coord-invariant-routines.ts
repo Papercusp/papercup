@@ -42,6 +42,16 @@ const ROUTINES = [
   // contend the same tick. Every 10 min (not hourly like P-013): this is a LIVE
   // double-placement risk, not a slow leak, so it needs a short detection window.
   { name: 'claim-integrity-sweep', target: 'system:claim-integrity-sweep', cron: '0 */10 * * * *', payload: {} },
+  // fleet-leadership-continuity-and-actuation-2026-08-01 P-009 / D-008: the derived
+  // half of the leader transition feed (member-dead + context-critical). EVERY
+  // MINUTE — unlike the invariant monitors above, this is not a slow-leak watcher
+  // but the mechanism a sleeping fleet leader depends on to be told anything at
+  // all, so its interval IS the leader's detection latency. The prior polled
+  // design took up to 3 minutes to notice a member had gone; a sweep slower than
+  // that would make the push path worse than what it replaces. Cheap enough to
+  // justify it: one grouped assignments read plus two batched lookups, and it
+  // emits only on a CROSSING, so a quiet fleet costs nothing downstream.
+  { name: 'fleet-transition-sweep', target: 'system:fleet-transition-sweep', cron: '0 * * * * *', payload: {} },
 ] as const;
 
 async function main(): Promise<void> {

@@ -130,6 +130,15 @@ export type WatchdogSource =
   // and a surface whose other pools answer normally reads healthy throughout
   // (learning-slo.ts). WORKSPACE-GLOBAL — not in HARNESS_SCOPED_WATCHDOG_SOURCES:
   | 'memory-recall-pool'
+  // context-injection-audit-2026-07-28 P-037 (F-G) gate-5: a recorded
+  // `score_scale` label that its own top_score makes arithmetically impossible
+  // (an rrf row above the rrf ceiling, a cosine row below the admission floor).
+  // NOT a retrieval-quality signal — it says the DISCRIMINATOR every scale-aware
+  // reader trusts is lying, silently reinstating the D-001 mixing bug for all of
+  // them. Deliberately has no rate floor or minimum sample, unlike the count
+  // SLOs above: a contradiction is impossible rather than merely unusual.
+  // WORKSPACE-GLOBAL — not in HARNESS_SCOPED_WATCHDOG_SOURCES:
+  | 'memory-recall-scale'
   // context-injection-audit-2026-07-28 P-014 (D-025): the desktop IPC bridge is
   // LISTENING but carrying nothing while clients reach this host over the HTTP
   // transport it exists to replace. The generalised "shipped but not engaged"

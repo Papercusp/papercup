@@ -48,7 +48,8 @@
 
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
@@ -200,6 +201,81 @@ export function suggestProjects(root: string): string[] {
   return interleaved;
 }
 
+/**
+ * EI-19297428004790873 — build a throwaway tsconfig that checks ONLY the given files
+ * and their import graph, so a project too big to typecheck inline under fleet load
+ * still has a fast, HONEST answer.
+ *
+ * Why this exists at all: the foreground cap (~50s, held below the transport's ~55s)
+ * is not raisable, so on a big workspace under load the tool could only ever hand back
+ * `error:'timeout'`. The documented next step (a detached `capability:inspect` + poll)
+ * is several calls, so agents hand-rolled `npx tsc -p ... | head -25` instead — which
+ * lies in the GREEN direction: tsc emits path-ordered, so on a project with a
+ * pre-existing error backlog the head budget is consumed by unrelated files and your
+ * file never appears. A zero-hit grep over that output is indistinguishable from a
+ * pass, and whether you get away with it depends on your file's ALPHABETICAL position
+ * relative to an unrelated backlog. This mode removes the reason to hand-roll.
+ *
+ * TWO TRAPS, both hit while proving the recipe out — do not "simplify" them away:
+ *  1. The config lives OUTSIDE the tree (writing it inside would be swept into a commit
+ *     by git-sync, which commits the whole shared tree). That means `typeRoots` MUST be
+ *     absolute — left relative, `@types` resolves against the temp dir and every ambient
+ *     type vanishes, producing a flood of phantom errors.
+ *  2. `include: []` is required alongside `files`. Without it the extended project's own
+ *     `include` globs survive and pull the entire project back in, silently restoring the
+ *     very cost this mode exists to avoid — and it still LOOKS scoped.
+ *
+ * `extends` is absolute for the same reason as (1): a relative extends would resolve
+ * against the temp dir.
+ */
+export function buildScopedTsconfig(
+  root: string,
+  projectTsconfigAbs: string,
+  requestedFiles: string[],
+): { configPath: string; cleanup: () => void; resolvedFiles: string[]; missing: string[] } {
+  const resolvedFiles: string[] = [];
+  const missing: string[] = [];
+  for (const f of requestedFiles) {
+    const abs = isAbsolute(f) ? f : resolve(root, f);
+    if (existsSync(abs) && statSync(abs).isFile()) resolvedFiles.push(abs);
+    else missing.push(f);
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), 'pc-typecheck-scoped-'));
+  const configPath = join(dir, 'tsconfig.json');
+  writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        extends: projectTsconfigAbs,
+        compilerOptions: {
+          noEmit: true,
+          incremental: false,
+          typeRoots: [join(root, 'node_modules', '@types')],
+        },
+        files: resolvedFiles,
+        include: [],
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  return {
+    configPath,
+    resolvedFiles,
+    missing,
+    cleanup: () => {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* a leaked temp dir is harmless; never fail a typecheck over cleanup */
+      }
+    },
+  };
+}
+
 export default defineTool({
   name: 'build:typecheck',
   description:
@@ -241,6 +317,10 @@ export default defineTool({
       ),
     incremental: z.boolean().optional()
       .describe('Allow tsc to use a warm tsconfig.tsbuildinfo. Default false — EI-487: an incremental run UNDER-reports errors in files the cache has not reindexed, which read as green for days. Only set true when you want a fast re-check and already know the tree is warm.'),
+    scopeToFiles: z.boolean().optional()
+      .describe(
+        'Compile ONLY `files` + their import graph instead of the whole project, so a run still fits the foreground cap under fleet load. Requires `files`. COST IS YOUR IMPORT GRAPH, NOT THE PROJECT — measured in operator-core: a leaf file (lib/tsc-diagnostics.ts) 2.6s vs a hub file (agent-tools/build/typecheck.ts) 63s, because a hub transitively pulls in most of the project. Great for a leaf, no help for a hub — a hub can still exceed the cap and time out. ⚠ NARROWER GUARANTEE: it cannot see errors your change caused in files that do NOT import yours (the classic case: adding a required field to a shared interface breaks distant fixtures). A clean scoped run means "these files and what they import compile", NOT "my change is safe" — for that verdict use the project-wide run or `npm run lint:tsc -- --files=...`.',
+      ),
   }),
   async handler(args, ctx) {
     // EI-1754 (same defect as testing:run): `inferWorkspaceRoot()` walks up from
@@ -277,10 +357,49 @@ export default defineTool({
     // return the structured timeout below, instead of the transport killing the call and
     // surfacing an opaque `CONNECTION_CLOSED 127.0.0.1:6432` (EI-18776865728050036).
     const timeoutMs = clampForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const tscArgs = ['--noEmit', '--pretty', 'false', '-p', resolved];
+
+    // EI-19297428004790873: scoped mode swaps the project for a throwaway config over just
+    // `files` + their import graph. Refuse the two ways it could silently check NOTHING —
+    // same ethos as the project_not_found and tsc_failed_to_run guards: this tool never
+    // reports a zero it did not earn.
+    let scoped: ReturnType<typeof buildScopedTsconfig> | null = null;
+    if (args.scopeToFiles) {
+      if (!args.files?.length) {
+        return {
+          data: {
+            ok: false,
+            error: 'scope_requires_files',
+            message:
+              'scopeToFiles:true needs `files` — with no files the generated config would compile an EMPTY program and exit 0, i.e. report a clean zero having checked nothing.',
+          },
+        };
+      }
+      scoped = buildScopedTsconfig(root, resolved, args.files);
+      if (!scoped.resolvedFiles.length) {
+        scoped.cleanup();
+        return {
+          data: {
+            ok: false,
+            error: 'scope_files_not_found',
+            project: relative(root, resolved),
+            missing: scoped.missing,
+            searchedFrom: root,
+            message:
+              'None of the requested `files` exist on disk, so the scoped program would be empty and tsc would exit 0 — a clean zero that checked nothing. Paths are resolved against the repo root (or pass absolute); note this differs from the non-scoped `files` filter, which matches by path SUFFIX.',
+          },
+        };
+      }
+    }
+
+    const tscArgs = ['--noEmit', '--pretty', 'false', '-p', scoped ? scoped.configPath : resolved];
     if (args.incremental !== true) tscArgs.push('--incremental', 'false');
 
-    const outcome = await runTsc(tscArgs, root, timeoutMs);
+    let outcome: TscOutcome;
+    try {
+      outcome = await runTsc(tscArgs, root, timeoutMs);
+    } finally {
+      scoped?.cleanup();
+    }
     const durationMs = Date.now() - started;
 
     if (outcome.timedOut) {
@@ -297,9 +416,13 @@ export default defineTool({
           // real answer for a project this size (EI-18776865728050036).
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
-            `This project is too large to typecheck inline — re-run it detached: ` +
-            `capability:inspect { check: 'typecheck', package: '${relative(root, resolved) || '.'}', run_in_background: true, onlyPaths: ['<your changed files>'] }, ` +
-            `then poll capability:bash_output. Do NOT fall back to a hand-rolled \`npx tsc -p .\` — it checks ZERO files here and reads as clean.`,
+            `CHEAPEST NEXT STEP (one call): re-run scoped to your own files — ` +
+            `build:typecheck { project: '${relative(root, resolved) || '.'}', files: ['<your changed files>'], scopeToFiles: true }. ` +
+            `That compiles only those files + their import graph; cost tracks YOUR import graph, not the project (measured: leaf 2.6s, hub 63s), so it fixes this for a leaf file but a hub can still time out. ` +
+            `It also does NOT see errors your change caused in files that do not import yours. ` +
+            `For the full project-wide answer, run it detached instead: ` +
+            `capability:inspect { check: 'typecheck', package: '${relative(root, resolved) || '.'}', run_in_background: true, onlyPaths: ['<your changed files>'] }, then poll capability:bash_output. ` +
+            `Do NOT fall back to a hand-rolled \`npx tsc\`: \`-p .\` checks ZERO files here, and piping a real run through \`head\`/\`grep\` truncates PATH-ORDERED output, so your file can be silently absent and read as clean.`,
           output: outcome.output.slice(-2000),
         },
       };
@@ -342,7 +465,12 @@ export default defineTool({
 
     const errors = errorsOnly(diagnostics);
     const byFile = summariseByFile(errors);
-    const shown = args.files ? filterToFiles(errors, args.files) : errors;
+    // In scoped mode `files` defined the PROGRAM, so it must not also narrow the OUTPUT:
+    // the scoped program deliberately includes the import graph, and an error your change
+    // caused in a file you import is exactly what you need to see. Re-applying the suffix
+    // filter here would hide it and hand back a clean-looking zero — the same false-green
+    // this mode exists to eliminate.
+    const shown = args.files && !args.scopeToFiles ? filterToFiles(errors, args.files) : errors;
     const maxErrors = args.maxErrors ?? DEFAULT_MAX_ERRORS;
     const reported = parseFoundSummary(outcome.output);
 
@@ -351,7 +479,25 @@ export default defineTool({
         ok: errors.length === 0 && outcome.code === 0,
         project: relative(root, resolved),
         errorCount: shown.length,
-        ...(args.files ? { totalErrorCount: errors.length, filteredTo: args.files } : {}),
+        // A scoped PASS is a weaker claim than a project-wide one, so it must never be
+        // reported in the same shape. These fields travel with the result so a reader
+        // (or a successor reading a checkpoint that quotes it) cannot mistake
+        // "this file's import graph compiles" for "my change is safe".
+        ...(scoped
+          ? {
+              scopedToFiles: scoped.resolvedFiles.map((f) => relative(root, f)),
+              ...(scoped.missing.length ? { scopeMissing: scoped.missing } : {}),
+              // Split the count so a HUB file stays navigable: its import graph can drag in
+              // most of the project along with that project's pre-existing error backlog, and
+              // without this you cannot tell "my file is broken" from "something I import
+              // already was". Errors in the graph are still REPORTED (hiding them is how the
+              // hand-rolled fallback lied) — this just says which ones are yours.
+              errorsInRequestedFiles: filterToFiles(errors, args.files ?? []).length,
+              scopeCaveat:
+                'SCOPED RUN — only these files and their import graph were compiled. Errors your change caused in files that do not import these are NOT covered (e.g. adding a required field to a shared interface breaks distant fixtures). This is not the gate verdict.',
+            }
+          : {}),
+        ...(args.files && !args.scopeToFiles ? { totalErrorCount: errors.length, filteredTo: args.files } : {}),
         errors: shown.slice(0, maxErrors),
         errorsTruncated: shown.length > maxErrors,
         byFile: byFile.slice(0, 30),
