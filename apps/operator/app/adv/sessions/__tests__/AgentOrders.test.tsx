@@ -22,7 +22,9 @@
  *      exists.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, within } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import AgentOrders from '../AgentOrders';
 import { carryStaleness, formatAgeShort, type AgentOrders as AgentOrdersDTO } from '../use-agent-orders';
 
@@ -273,6 +275,87 @@ describe('AgentOrders', () => {
       // enabled:false ⇒ the sync mock returns no data ⇒ no sections render.
       expect(queryByTestId('orders-suppressed')).toBeNull();
       expect(queryByTestId('orders-wake-mode')).toBeNull();
+    });
+  });
+
+  /* ── Sections that get big ──────────────────────────────────────────────────
+     [owner 2026-08-02] "make sure the sections that get big have a good way to
+     collapse and expand them", against the complaint the whole redesign started
+     from [owner 2026-08-01]: "the coord section and others take up huge vertical
+     space if its a long list, thats bad".
+
+     TWO mechanisms, and BOTH are asserted, because each covers a reader the
+     other misses: the cap-as-toggle serves someone who folds a section they
+     never read, and the height bound serves someone who never clicks anything —
+     which is the reader who complained. Shipping only the toggle would look like
+     a fix and leave the original complaint intact for the default view. */
+  describe('sections that get big can be collapsed (owner ask 2026-08-02)', () => {
+    it('folds a section away when its cap is clicked, and brings it back on the next click', () => {
+      setOrders({});
+      const { getByTestId, container } = render(<AgentOrders ownerId="su-1" />);
+      const section = container.querySelector('#pc-orders-modes')!;
+
+      // Open by default: a rail that starts folded hides the signal it exists to
+      // surface, and the reader has to learn what is behind six closed doors.
+      expect(section.getAttribute('data-collapsed')).toBe('false');
+      const toggle = getByTestId('rail-section-toggle-o-modes');
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+      fireEvent.click(toggle);
+      expect(section.getAttribute('data-collapsed')).toBe('true');
+      expect(getByTestId('rail-section-toggle-o-modes').getAttribute('aria-expanded')).toBe('false');
+
+      fireEvent.click(getByTestId('rail-section-toggle-o-modes'));
+      expect(container.querySelector('#pc-orders-modes')!.getAttribute('data-collapsed')).toBe('false');
+    });
+
+    it('keeps the COUNT visible while collapsed — folding Walls away must not hide that there are walls', () => {
+      // The failure this guards is subtle and bad: a reader folds a section to
+      // save space and thereby stops being told that something is blocked on
+      // them. The count lives INSIDE the cap for exactly this reason.
+      setOrders({
+        walls: [
+          { claim: 'P-006 — owner must settle', sinceMs: Date.now() - 30 * MIN, recheck: null },
+          { claim: 'needs a credential only you hold', sinceMs: null, recheck: null },
+        ],
+      });
+      const { getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      fireEvent.click(getByTestId('rail-section-toggle-o-walls'));
+
+      const cap = getByTestId('rail-section-toggle-o-walls');
+      expect(cap.textContent).toContain('Walls');
+      expect(cap.textContent).toContain('2');
+      // …and the wall TEXT is what folded away, not the count.
+      expect(cap.textContent).not.toContain('owner must settle');
+    });
+
+    it('toggles are real buttons with an accessible name that says what the click DOES', () => {
+      // A chevron cannot be seen by a screen reader, and `aria-expanded` alone
+      // does not say which section it belongs to.
+      setOrders({});
+      const { getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      const toggle = getByTestId('rail-section-toggle-o-facts');
+      expect(toggle.tagName).toBe('BUTTON');
+      expect(toggle.getAttribute('aria-label')).toBe('Standing facts — collapse this section');
+      fireEvent.click(toggle);
+      expect(getByTestId('rail-section-toggle-o-facts').getAttribute('aria-label')).toBe(
+        'Standing facts — expand this section',
+      );
+    });
+
+    it('bounds an OPEN section too — the half of the fix that needs no click', () => {
+      // jsdom applies no CSS, so this is a source assertion (the same reason the
+      // vocabulary suite reads chat-controls.css directly). Without a ceiling,
+      // one 40-row section still pushes every other section off the screen, and
+      // the original complaint survives the toggle.
+      const css = readFileSync(join(__dirname, '..', 'AgentOrders.css'), 'utf8');
+      const rule = css.split('}').find((b) => b.includes('.pc-orders__sec {'));
+      expect(rule).toMatch(/max-height:\s*\d/);
+      expect(rule).toMatch(/overflow-y:\s*auto/);
+      // The cap stays put while the body scrolls under it — a section you have
+      // scrolled into is otherwise a list with no title.
+      const cap = css.split('}').find((b) => b.includes('.pc-orders__h {'));
+      expect(cap).toMatch(/position:\s*sticky/);
     });
   });
 

@@ -601,6 +601,12 @@ export interface LoopStatus {
    *  "healthy reading while the thing it monitors is dead" failure this field exists to
    *  surface. Requires ≥3 fires (never flags a freshly-armed loop) — see computeTurnsStalled. */
   turnsStalled: boolean;
+  /** EI-19325288514307343: non-null iff the most recent recorded fire was a
+   *  provider-wall lifecycle-death and the loop is waiting out its backoff before
+   *  retrying — the "backed off until T (reason)" signal that lets a reader
+   *  distinguish this from a genuinely dead loop without opening the escalation
+   *  queue. See {@link computeLifecycleBackoff}. */
+  lifecycleBackoff: LifecycleBackoffInfo | null;
 }
 
 /**
@@ -673,6 +679,53 @@ export function turnsStalledFloorMs(intervalSec: number | null | undefined): num
   return Math.max(30 * 60_000, (intervalSec ?? 60) * 4 * 1000);
 }
 
+/** EI-19325288514307343: a loop backed off on a provider usage-wall (a "lifecycle
+ *  death" — see reconcile-loop-routines.ts's classifyLoopLifecycleTurn) is, from
+ *  every liveness surface an owner actually looks at, PIXEL-IDENTICAL to a
+ *  genuinely dead loop for up to `LIFECYCLE_DEATH_REARM_CAP_MS` (currently 6h): it
+ *  reads `active:true` with a `nextFireAt` far in the future and nothing else
+ *  distinguishes "walled, will resume" from "wedged, needs a human". The
+ *  escalation the reconciler fires (defaultEscalateLifecycleDeath) is correctly
+ *  advisory-severity and lands only in the passive alert-tier attention queue —
+ *  it deliberately does not push a toast/OS notification, so it does not help an
+ *  owner who is looking at loop:status / fleet:assignments instead of that queue. */
+export interface LifecycleBackoffInfo {
+  /** The provider-kill classification (`classifyLoopLifecycleTurn`'s reason, e.g.
+   *  'usage_limit' / 'rate_limited') — the raw suffix of `lastDeliveryOutcome`. */
+  reason: string;
+  /** ISO of the fire this backoff is waiting for (mirrors `nextFireAt`), or null
+   *  when the routine has no scheduled next fire (should not happen while active
+   *  and un-parked, but defensive). */
+  until: string | null;
+  /** Milliseconds from `nowMs` until `until`, clamped to >=0. Null when `until`
+   *  is null or unparseable. */
+  resumesInMs: number | null;
+}
+
+/**
+ * PURE derivation: is this loop's MOST RECENT recorded fire outcome a provider
+ * lifecycle-death, and if so when is it due to retry. `lastDeliveryOutcome` is
+ * overwritten on every fire (recordFire), so this clears itself the moment a
+ * later fire produces a normal outcome — it is never a sticky/stale flag.
+ * Gated on `active`: an ended/paused loop has nothing to "resume".
+ */
+export function computeLifecycleBackoff(input: {
+  active: boolean;
+  lastDeliveryOutcome: string | null;
+  nextFireAtIso: string | null;
+  nowMs?: number;
+}): LifecycleBackoffInfo | null {
+  if (!input.active) return null;
+  const prefix = 'loop-lifecycle-death:';
+  const outcome = input.lastDeliveryOutcome;
+  if (!outcome || !outcome.startsWith(prefix)) return null;
+  const reason = outcome.slice(prefix.length).trim() || 'unknown';
+  const now = input.nowMs ?? Date.now();
+  const untilMs = input.nextFireAtIso ? new Date(input.nextFireAtIso).getTime() : NaN;
+  const resumesInMs = Number.isFinite(untilMs) ? Math.max(0, untilMs - now) : null;
+  return { reason, until: input.nextFireAtIso, resumesInMs };
+}
+
 export function computeTurnsStalled(input: {
   active: boolean;
   fireCount: number;
@@ -738,6 +791,12 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastActiveAtMs: presenceMs,
     intervalSec,
   });
+  const nextFireAtIso = r.next_fire_at ? new Date(r.next_fire_at).toISOString() : null;
+  const lifecycleBackoff = computeLifecycleBackoff({
+    active: Boolean(r.active),
+    lastDeliveryOutcome: r.last_delivery_outcome ?? null,
+    nextFireAtIso,
+  });
   return {
     name: r.name,
     ownerId: r.target_owner_id ?? fallbackOwnerId,
@@ -749,7 +808,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     mode: pt?.mode === 'monitor' ? 'monitor' : 'work',
     fireCount,
     parked,
-    nextFireAt: r.next_fire_at ? new Date(r.next_fire_at).toISOString() : null,
+    nextFireAt: nextFireAtIso,
     lastFiredAt: r.last_fired_at ? new Date(r.last_fired_at).toISOString() : null,
     armedAt: r.armed_at ? new Date(r.armed_at).toISOString() : null,
     costCapCents: typeof costCap === 'number' ? costCap : null,
@@ -766,6 +825,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
     lastRealTurnAt: r.last_real_turn_at ? new Date(r.last_real_turn_at).toISOString() : null,
     turnsStalled,
+    lifecycleBackoff,
   };
 }
 

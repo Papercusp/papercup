@@ -289,17 +289,49 @@ function findImporters(sourceFileRelPath) {
   return out.split('\n').filter(Boolean);
 }
 
-export function formatNoFindings(changedFileCount, base) {
-  if (changedFileCount > 0) {
-    return `✓ no optional seam-dependency members added to exported types (${changedFileCount} changed file(s) examined vs ${base})`;
+/**
+ * The green path. Ported from check-required-field-strands.mjs (EI-19378316829314080),
+ * which carried the byte-identical defect: a bare COUNT of "changed files examined".
+ *
+ * Why a count is not enough on THIS tree: the set is INFERRED from `git diff`, and the
+ * working tree is shared by the whole fleet, so it is every agent's uncommitted edits.
+ * git-sync commits YOUR file within minutes — dropping it out of the diff — while peers'
+ * churn keeps the count non-zero. So the zero-files guard below never fires and the green
+ * is a true statement about files you have never opened. That makes the guard effectively
+ * unreachable in normal operation, which is precisely why it looked fine for so long.
+ */
+export function formatNoFindings(examinedFiles, base, { declared = false } = {}) {
+  const files = Array.isArray(examinedFiles) ? examinedFiles : [];
+  if (files.length > 0) {
+    // Naming the COUNT was not enough. A count is unfalsifiable by the one person who
+    // could catch the mistake — the author, who knows which file carries their change.
+    // Listing the files lets them see in one glance that theirs is not among them.
+    const lines = [
+      `✓ no optional seam-dependency members added to exported types (${files.length} file(s) examined vs ${base})`,
+      ...files.map((f) => `    ${f}`),
+    ];
+    if (!declared) {
+      lines.push(
+        '  ⚠ That set is INFERRED from `git diff` — on this shared tree it is EVERY agent’s',
+        '    uncommitted edits, not necessarily yours. If the file carrying your change is',
+        '    not listed above, this green says NOTHING about it (git-sync commits your edit',
+        '    within minutes, which drops it out of this diff).',
+        '    Scope it to what you actually changed:',
+        '      node scripts/check-optional-seam-strands.mjs --files=<your,files>',
+      );
+    }
+    return lines.join('\n');
   }
   return [
     `⚠ NOT CHECKED — nothing differs from '${base}', so ZERO files were examined.`,
-    '  This is NOT a clean bill — on this shared tree it usually means git-sync already',
-    '  committed your edit, not that nothing changed. Re-run against the commit that',
-    '  actually carried it:',
+    '  This is NOT a clean bill. On this shared tree it usually means git-sync',
+    '  already committed your edit, not that you changed nothing.',
+    '',
+    '  Re-run against the commit that actually carried your change:',
     "    C=$(git log -1 --format=%H -S'<a string your change introduced>' -- <file>)",
     '    node scripts/check-optional-seam-strands.mjs --base "$C^"',
+    '',
+    '  (Use -G instead of -S when searching by a name you did not introduce.)',
   ].join('\n');
 }
 
@@ -310,17 +342,42 @@ function main() {
   const baseIdx = argv.indexOf('--base');
   const base = baseIdx >= 0 ? argv[baseIdx + 1] : 'HEAD';
 
-  const nameStatus = git(['diff', '--name-status', base, '--', '*.ts', '*.tsx'], { allowFail: true });
-  if (nameStatus === null) {
-    console.error(`check-optional-seam-strands: cannot diff against '${base}'`);
-    process.exit(0);
+  // `--files=a,b,c` DECLARES the set instead of inferring it. Mirrors lint:tsc, which
+  // learned the same lesson: on a tree the whole fleet edits, an inferred "changed set"
+  // is everyone's, so only a declared one carries trustworthy attribution.
+  const filesArg = argv.find((a) => a.startsWith('--files='));
+  const declaredFiles = filesArg
+    ? filesArg
+        .slice('--files='.length)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : null;
+
+  let candidates;
+  if (declaredFiles) {
+    candidates = declaredFiles.map((file) => ({ status: 'M', file }));
+  } else {
+    const nameStatus = git(['diff', '--name-status', base, '--', '*.ts', '*.tsx'], { allowFail: true });
+    if (nameStatus === null) {
+      console.error(`check-optional-seam-strands: cannot diff against '${base}'`);
+      process.exit(0);
+    }
+    candidates = nameStatus
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [status, ...rest] = line.split('\t');
+        return { status, file: rest[rest.length - 1] };
+      });
   }
-  const changedFiles = nameStatus.split('\n').filter(Boolean);
 
   const findings = [];
-  for (const line of changedFiles) {
-    const [status, ...rest] = line.split('\t');
-    const file = rest[rest.length - 1];
+  // The files genuinely COMPARED — not merely listed as candidates. A candidate can be
+  // skipped (added/deleted, .d.ts, no base version, gone from the tree), and counting
+  // those as "examined" is the same overstatement this check exists to stop.
+  const examinedFiles = [];
+  for (const { status, file } of candidates) {
     if (!file || status.startsWith('A') || status.startsWith('D')) continue;
     if (file.endsWith('.d.ts')) continue;
 
@@ -330,6 +387,7 @@ function main() {
     if (!existsSync(abs)) continue;
     const afterText = readFileSync(abs, 'utf8');
 
+    examinedFiles.push(file);
     const additions = diffOptionalSeamAdditions(beforeText, afterText, file);
     for (const add of additions) {
       const fallback = findRealFallback(afterText, add.member);
@@ -360,12 +418,12 @@ function main() {
     }
   }
 
-  if (json) console.log(JSON.stringify({ base, findings }, null, 2));
+  if (json) console.log(JSON.stringify({ base, examined: examinedFiles, findings }, null, 2));
 
   const realStrands = findings.filter((f) => f.strandedSites.length > 0);
 
   if (!findings.length) {
-    if (!json) console.log(formatNoFindings(changedFiles.length, base));
+    if (!json) console.log(formatNoFindings(examinedFiles, base, { declared: Boolean(declaredFiles) }));
     process.exit(0);
   }
 

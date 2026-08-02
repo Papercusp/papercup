@@ -224,16 +224,69 @@ describe('end-to-end shape — the member-content-guard live instance, minimised
 
 describe('formatNoFindings — "examined nothing" must never read as "clean"', () => {
   it('does NOT claim a clean bill when zero files were examined', () => {
-    const msg = formatNoFindings(0, 'HEAD');
+    const msg = formatNoFindings([], 'HEAD');
     expect(msg).toContain('NOT CHECKED');
     expect(msg).toContain('ZERO files');
+    // The specific misreading this exists to prevent.
     expect(msg).not.toMatch(/^✓/m);
   });
 
+  it('names git-sync as the likely cause and gives a runnable recovery', () => {
+    const msg = formatNoFindings([], 'HEAD');
+    expect(msg).toContain('git-sync');
+    expect(msg).toContain('--base');
+  });
+
   it('passes cleanly when files WERE examined, and says how many', () => {
-    const msg = formatNoFindings(4, 'HEAD~1');
+    const msg = formatNoFindings(['a.ts', 'b.ts', 'c.ts'], 'HEAD~1');
     expect(msg).toMatch(/^✓/);
-    expect(msg).toContain('4 changed file(s) examined');
+    expect(msg).toContain('3 file(s) examined');
+    expect(msg).toContain('HEAD~1');
     expect(msg).not.toContain('NOT CHECKED');
+  });
+
+  it('reports the base it actually used, so a wrong --base is visible in the verdict', () => {
+    expect(formatNoFindings(['a.ts', 'b.ts'], 'abc123^')).toContain('abc123^');
+  });
+
+  /**
+   * EI-19378316829314080 — the byte-identical twin of EI-19377892307939503, ported here.
+   * The zero-file branch above is real but UNREACHABLE on this tree: `git diff` returns
+   * every agent's uncommitted edits, so peers keep the count non-zero indefinitely while
+   * git-sync quietly drops YOUR file out of the diff within minutes. A count alone cannot
+   * expose that; the file list can.
+   */
+  it('NAMES the files examined, so an author sees their own file is absent', () => {
+    const msg = formatNoFindings(['peer/one.ts', 'peer/two.ts'], 'HEAD');
+    expect(msg).toContain('peer/one.ts');
+    expect(msg).toContain('peer/two.ts');
+  });
+
+  it('warns that an INFERRED set is the whole fleet’s edits, not yours', () => {
+    const msg = formatNoFindings(['peer/one.ts'], 'HEAD');
+    expect(msg).toContain('INFERRED');
+    // The actionable escape: declare the set instead of inferring it.
+    expect(msg).toContain('--files=');
+  });
+
+  it('drops that warning for a DECLARED set, whose attribution IS trustworthy', () => {
+    // A declared set is exactly what the caveat tells you to switch to, so repeating it
+    // there would train readers to ignore it.
+    const msg = formatNoFindings(['mine.ts'], 'HEAD', { declared: true });
+    expect(msg).toMatch(/^✓/);
+    expect(msg).toContain('mine.ts');
+    expect(msg).not.toContain('INFERRED');
+  });
+
+  /**
+   * A count-only green was satisfiable by a run that compared NOTHING relevant. Guard the
+   * inverse too: a non-array argument (the OLD count-passing call shape) must degrade to
+   * the loud "NOT CHECKED" branch, never to a silent ✓ — so a stale caller cannot
+   * resurrect the defect.
+   */
+  it('treats a legacy COUNT argument as "examined nothing", never as a pass', () => {
+    const msg = formatNoFindings(4 as unknown as string[], 'HEAD');
+    expect(msg).toContain('NOT CHECKED');
+    expect(msg).not.toMatch(/^✓/m);
   });
 });

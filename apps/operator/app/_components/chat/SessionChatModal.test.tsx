@@ -1216,6 +1216,45 @@ describe('SessionChatModal', () => {
       expect(within(right).getByTestId('session-chat-dossier-toggle')).toBeTruthy();
     });
 
+    /* ── The Framed look: six NAMED zones (owner-approved 2026-08-02, artifact
+       6379bb65) ──────────────────────────────────────────────────────────────
+       The design's whole claim is that every region is named and ruled, and its
+       one non-obvious constraint is that naming the three HORIZONTAL zones costs
+       ZERO added height — the cap shares the band's existing row instead of
+       taking a header row of its own. That is exactly the kind of promise a
+       later "tidy-up" breaks silently (someone lifts the cap into its own div
+       "for alignment"), and no behavioural test would notice, so it is asserted
+       structurally: the cap must be a DIRECT CHILD of the band. */
+    it('names the Status zone with an inline cap INSIDE the band — zero added rows', async () => {
+      seedRoster([{ ownerId: 'su-live-1', liveness: 'live' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      const band = await waitFor(() => screen.getByTestId('session-chat-state-header'));
+      const cap = band.querySelector(':scope > .pc-zone-cap');
+      expect(cap).toBeTruthy();
+      expect(cap!.textContent).toBe('Status');
+      // A child of the BAND, not a wrapper around it: a cap in its own row would
+      // add a row to a popup the owner had just asked to compact.
+      expect(cap!.parentElement).toBe(band);
+    });
+
+    it('gives the Activity rail its zone title — but only in the popup, never in the /adv two-pane', async () => {
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+
+      // A PROP rather than always-on: the same component is the detail pane of a
+      // board that already says what it is, where a second title bar is noise.
+      // Asserting the prop (not the stub's markup) is what keeps this a claim
+      // about the popup's decision rather than about AgentDossier's rendering.
+      expect(lastAgentDossierProps?.zoneTitle).toBe(true);
+      // …and the rail carries the class the zone treatment is scoped to, which
+      // is what keeps the two-pane's own look untouched.
+      expect(screen.getByTestId('session-chat-dossier-rail').className).toContain('pc-zone--activity');
+    });
+
     it('honors an explicit chatDossier=false (deep link) by hiding the rail even though the default is open', async () => {
       nuqs.chatDossier = false;
       seedRoster([{ ownerId: 'su-live-1' }]);

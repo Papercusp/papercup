@@ -38,6 +38,30 @@ describe('ChatActionBar', () => {
     expect(container.firstChild).toBeNull();
   });
 
+  /* The Framed look (owner-approved 2026-08-02, artifact 6379bb65): this band is
+     the "Controls" zone — everything in it changes THIS session, which is what
+     separates it from the Fleet strip below. The cap must ride INSIDE the band's
+     existing row: the popup had just been compacted from five rows to two, so a
+     title row per zone would have spent that saving back. Asserting direct
+     childhood is what catches a later "tidy-up" that lifts the cap into its own
+     wrapper — a change no behavioural test would notice. */
+  it('names itself the Controls zone with an inline cap inside the band — no extra row', () => {
+    registerChatAction({ id: 'shown', label: 'Shown', available: () => true, run: vi.fn() });
+    const { container } = render(<ChatActionBar ctx={ctx} />);
+    const band = container.querySelector('.chat-action-bar')!;
+    const cap = band.querySelector(':scope > .pc-zone-cap');
+    expect(cap).toBeTruthy();
+    expect(cap!.textContent).toBe('Controls');
+    expect(cap!.parentElement).toBe(band);
+  });
+
+  it('stays absent entirely when there is nothing to control — a zone cap alone is not a zone', () => {
+    // The cap must not resurrect an empty band: an empty "Controls" strip is a
+    // row of chrome naming a region with nothing in it.
+    const { container } = render(<ChatActionBar ctx={ctx} />);
+    expect(container.firstChild).toBeNull();
+  });
+
   it('renders only available() actions', () => {
     registerChatAction({ id: 'shown', label: 'Shown', available: () => true, run: vi.fn() });
     registerChatAction({ id: 'hidden', label: 'Hidden', available: () => false, run: vi.fn() });

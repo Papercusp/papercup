@@ -115,12 +115,40 @@ describe('applyResultDoor', () => {
     expect(spill).toContain('trailing text fully over budget');
   });
 
-  it('a delta-protocol result (_meta.delta set) is NEVER doored — its text is client-parsed JSON', () => {
+  it('a genuine delta ENVELOPE result (_meta.delta.mode !== "full") is NEVER doored — its text is client-parsed JSON', () => {
     const result = {
       content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }],
       _meta: { delta: { mode: 'reconstructed' } },
     };
     expect(applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+  });
+
+  it('EI-19325631662380565: a delta-CAPABLE result whose body is normal (mode:"full", reason:"no_request") IS doored', () => {
+    // Regression guard: every delta-capable tool stamps `_meta.delta` on an
+    // ORDINARY full response to advertise the capability + carry a cursor — the
+    // mere presence of the block used to skip the door entirely for the whole
+    // list-tool family (work_items:list, coord:orient, ...), the fattest
+    // population the door exists to cap. `mode` is the discriminator, not presence.
+    const result = {
+      content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }],
+      _meta: { delta: { mode: 'full', reason: 'no_request', itemKeyField: 'id' } },
+    };
+    const doored = applyResultDoor(result, { toolName: 'work_items:list', workspaceId: 'ws-1', runId: RUN_ID });
+    expect(doored).not.toBe(result);
+    const totalChars = doored.content
+      .filter((c) => (c as { type?: string }).type === 'text')
+      .reduce((n, c) => n + (c as { text: string }).text.length, 0);
+    expect(totalChars).toBeLessThan(longText(BUDGET_CHARS * 2).length);
+    expect((doored.content.at(-1) as { text: string }).text).toContain('result-door');
+  });
+
+  it('EI-19325631662380565: a proxy-RECONSTRUCTED full body (mode:"full", reason:"proxy_reconstructed") IS doored too', () => {
+    const result = {
+      content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }],
+      _meta: { delta: { mode: 'full', reason: 'proxy_reconstructed' }, deltaProxy: { reconstructedFull: true } },
+    };
+    const doored = applyResultDoor(result, { toolName: 'work_items:list', workspaceId: 'ws-1', runId: RUN_ID });
+    expect(doored).not.toBe(result);
   });
 
   it('kill-switch PAPERCUSP_RESULT_DOOR_OFF=1 bypasses entirely', () => {

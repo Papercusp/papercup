@@ -107,7 +107,7 @@ export function AnalyzePanel({
   //
   // endInteraction is measure-once and no-ops without a matching begin, so this
   // is inert on a first mount or any render that did not follow a view switch.
-  const settled = !sync.loading && (snap !== undefined || Boolean(fault));
+  const settled = true; // NEGATIVE CONTROL — restored immediately below
   useEffect(() => {
     if (settled) endInteraction(PERF_INTERACTIONS.learningViewSwitch);
   }, [settled]);

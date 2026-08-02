@@ -920,4 +920,47 @@ describe('AgentDossier', () => {
       expect(banner.compareDocumentPosition(firstSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
+
+  /* ── the Framed zone + collapsible sections (owner-approved 2026-08-02) ─────
+     Coord is THE section the complaint named [owner 2026-08-01]: "the coord
+     section and others take up huge vertical space if its a long list". It is
+     also the section where hiding the count would be worst, so both halves are
+     asserted together. */
+  describe('sections that get big can be collapsed (owner ask 2026-08-02)', () => {
+    it('folds Coord away on a click while keeping its unread count on the cap', () => {
+      syncState.detail = {
+        ...DETAIL,
+        coord: { ...DETAIL.coord, unreadCount: 19 },
+      } satisfies AgentDetail;
+      const { getByTestId, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+
+      const section = () => container.querySelector('#pc-dossier-coord')!;
+      expect(section().getAttribute('data-collapsed')).toBe('false');
+
+      fireEvent.click(getByTestId('rail-section-toggle-a-coord'));
+      expect(section().getAttribute('data-collapsed')).toBe('true');
+      // The whole point of putting the count on the cap: a reader who folds the
+      // section away is still told 19 messages arrived.
+      expect(getByTestId('rail-section-toggle-a-coord').textContent).toContain('19 unread');
+    });
+
+    it('wears its zone title ONLY when the host asks for one', () => {
+      // Two homes, one component: named zone inside the session popup, plain
+      // detail pane inside the /adv two-pane (which already frames it). A title
+      // bar that always rendered would put a second header on that board.
+      const bare = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+      expect(bare.queryByTestId('dossier-zone-title')).toBeNull();
+      cleanup();
+
+      const zoned = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} zoneTitle />,
+      );
+      const title = zoned.getByTestId('dossier-zone-title');
+      expect(title.textContent).toContain('Activity');
+      // Same voice as the Orders rail on the opposite edge — "they", never "it".
+      expect(title.textContent).toContain('what they’re doing');
+    });
+  });
 });

@@ -532,6 +532,28 @@ describe('WI-7110: the fleet row’s container layout has exactly one owner', ()
       expect(rule).toMatch(/flex-wrap:\s*wrap/);
     });
 
+    /* The Framed look (owner-approved 2026-08-02, artifact 6379bb65). This strip
+       is the ONE band that does not act on the session you are looking at — it
+       launches new ones — and that was the thing readers got wrong: it read as
+       more session controls. The zone cap is what makes it legible, and it
+       replaces a grey group caption rather than adding a row. */
+    it('wears the Fleet zone cap, in place of the old grey group caption', () => {
+      const { container } = renderRow(<FleetLaunchRow />);
+      const cap = container.querySelector('.pc-zone-cap');
+      expect(cap).toBeTruthy();
+      expect(cap!.textContent).toBe('Fleet');
+      // Still the strip's own leading element, i.e. the same row it always was —
+      // the cap is a restyle of an existing label, not a new line of chrome.
+      expect(cap!.classList.contains('pc-fleet-strip__label')).toBe(true);
+    });
+
+    it('draws the zone RULE above itself, so Fleet is bounded from the Controls band', () => {
+      // jsdom applies no stylesheet, so this is a source assertion — the same
+      // reason the split-owner guard above reads the CSS directly.
+      const rule = chatControlsCss.split('}').find((b) => b.includes('.pc-fleet-launch-row {'));
+      expect(rule).toMatch(/border-top:\s*1px solid var\(--pc-zone-rule\)/);
+    });
+
     it('keeps every control NAMED despite the shorter visible captions (P-007 does not regress)', () => {
       renderRow(<FleetLaunchRow />);
       // The visible caption shortened to "Name"; the ACCESSIBLE name must still

@@ -23,9 +23,16 @@
  * doored: their consumers parse programmatically and pay no context rent.
  *
  * Never doored, by construction:
- *   - delta-protocol results (`_meta.delta` set) — content[0].text is
- *     structured JSON the CLIENT JSON.parses to reconstruct; a cap corrupts it
- *     (the delta protocol is itself a result-shrinking mechanism);
+ *   - genuine delta ENVELOPE results (`_meta.delta.mode !== 'full'`) —
+ *     content[0].text is structured JSON the CLIENT JSON.parses to
+ *     reconstruct; a cap corrupts it (the delta protocol is itself a
+ *     result-shrinking mechanism). NOTE: every delta-CAPABLE tool also
+ *     stamps `_meta.delta` on an ORDINARY full response (`mode:'full'`,
+ *     reason `no_request` or `proxy_reconstructed`) to advertise the
+ *     capability + carry a cursor — that shape is a normal body and MUST
+ *     still be doored (EI-19325631662380565: the mere presence of the
+ *     block used to skip the door for the whole list-tool family, the
+ *     fattest population it exists to cap);
  *   - non-text content items (images, resource links) — passed through intact.
  *
  * Kill-switch: PAPERCUSP_RESULT_DOOR_OFF=1 bypasses entirely (operational
@@ -148,7 +155,13 @@ function scratchParts(opts: ResultDoorOpts): { workspaceId: string; toolName: st
 export function applyResultDoor<T extends DoorableResult>(result: T, opts: ResultDoorOpts): T {
   try {
     if (process.env.PAPERCUSP_RESULT_DOOR_OFF === '1') return result;
-    if (result._meta && (result._meta as { delta?: unknown }).delta != null) return result;
+    // EI-19325631662380565: `_meta.delta` presence alone is NOT the marker of a
+    // genuine delta envelope — every delta-CAPABLE tool also stamps this block on
+    // an ordinary full response (mode:'full', reason 'no_request' or
+    // 'proxy_reconstructed') to advertise the capability + carry a cursor. Only a
+    // non-'full' mode is a client-reconstructed patch that a text cap would corrupt.
+    const deltaMeta = (result._meta as { delta?: { mode?: unknown } } | undefined)?.delta;
+    if (deltaMeta != null && deltaMeta.mode !== 'full') return result;
     const items = result.content;
     if (!Array.isArray(items)) return result;
 
