@@ -47,7 +47,23 @@ const SLUG = 'papercusp';
  * reusing it means this guard cannot rot the same way. It provisions the table,
  * both family views, and the engineer_issues INSTEAD OF trigger.
  */
-const BASE_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
+const BASE_DDL = `
+  ${HARNESS_FEATURES_CONSOLIDATED_DDL}
+
+  -- Migration 698 defines this predicate, and 726 depends on it. 698 itself is
+  -- NOT applied here: the canonical fixture already carries 698's COLUMN and VIEW
+  -- effects (closed_ts is present, and the views already end ... terminal_reason,
+  -- authority, closed_ts, lane), so re-running 698's pg_get_viewdef surgery on top
+  -- fails with "cannot change name of view column". What the fixture omits is
+  -- 698's FUNCTIONS, because _work-items-schema.ts models tables and views only.
+  -- Mirrored here rather than hand-waved, and pinned by the drift guard at the
+  -- bottom of this file so it cannot silently diverge from either 698 or the
+  -- TypeScript terminal set.
+  CREATE OR REPLACE FUNCTION harness_shared.work_item_status_is_terminal(s text)
+  RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $fn$
+    SELECT s = ANY (ARRAY['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'])
+  $fn$;
+`;
 
 describe('work_items terminal attribution preservation (migration 726)', () => {
   let db: FreshPgDb;

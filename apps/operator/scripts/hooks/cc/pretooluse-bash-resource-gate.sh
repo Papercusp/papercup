@@ -2221,7 +2221,24 @@ def _shell_write_guard():
 
     # `>`/`>>` redirects. The lookahead excludes fd-duplication/comparison
     # forms (`2>&1`, `>=`, `2>&2`) so those never get misread as file targets.
-    for _m in re.finditer(r'\d*(>{1,2})(?![&=])\s*([^\s;&|()<>]+)', _clean):
+    #
+    # EI-18899608047558048: the gap between the operator and its target is
+    # `[^\S\n]*` (same-LINE whitespace only), NOT `\s*`. `_strip_shell_quotes`
+    # replaces an ENTIRE quoted span — `"$OUT"`, `'literal.txt'` — with a
+    # single blank space, with no marker left behind that anything was ever
+    # there. So a redirect whose target was fully quoted (`: > "$OUT"`, `printf
+    # ... >> "$OUT"`) leaves nothing but trailing whitespace after the
+    # operator on that line — and a bare `\s*` happily crosses the following
+    # newline to grab the FIRST TOKEN OF THE NEXT STATEMENT as if it were the
+    # redirect's target (`URL=` from an unrelated following assignment, or
+    # `done` closing a loop body). That is worse than a false negative: it
+    # names a plausible-looking but WRONG path with the same confident wording
+    # used for a real catch, sending the reader hunting a cwd-drift bug that
+    # never happened. Restricting the gap to same-line whitespace makes the
+    # match fail to find a target at all in that case — the correct fail-open,
+    # matching this guard's existing "unsafe to resolve without actually
+    # running the shell" policy for any other unresolvable target.
+    for _m in re.finditer(r'\d*(>{1,2})(?![&=])[^\S\n]*([^\s;&|()<>]+)', _clean):
         if not _looks_like_redirect_path(_m.group(2)):
             continue
         _targets.append((_m.group(2), 'shell redirect (`%s`)' % _m.group(1), _m.start(2)))
