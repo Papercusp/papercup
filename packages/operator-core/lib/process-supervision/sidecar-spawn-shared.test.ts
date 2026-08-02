@@ -9,7 +9,72 @@ import {
   registerSidecarShutdownHooks,
   _resetSidecarShutdownHookRegistryForTests,
   isSidecarEnabledFromEnv,
+  verifySidecarFitness,
 } from './sidecar-spawn-shared';
+
+describe('verifySidecarFitness (EI-19314150478401738)', () => {
+  const LEGACY = ['GET /healthz', 'POST /embed'];
+
+  it('nothing answered ⇒ unreachable, never silently fit', () => {
+    expect(verifySidecarFitness(null, ['POST /embed'], LEGACY)).toEqual({
+      fit: false,
+      reason: 'unreachable',
+      missing: ['POST /embed'],
+    });
+    expect(verifySidecarFitness(undefined, ['POST /embed'], LEGACY).fit).toBe(false);
+    // A non-object body is not a health payload.
+    expect(verifySidecarFitness('ok', ['POST /embed'], LEGACY).fit).toBe(false);
+  });
+
+  it('a declared list is honoured exactly', () => {
+    const health = { capabilities: ['GET /healthz', 'POST /embed', 'POST /rerank'] };
+    expect(verifySidecarFitness(health, ['POST /rerank'], LEGACY)).toEqual({ fit: true });
+    expect(verifySidecarFitness(health, ['POST /embed', 'POST /rerank'], LEGACY)).toEqual({ fit: true });
+    expect(verifySidecarFitness(health, ['POST /summarize'], LEGACY)).toEqual({
+      fit: false,
+      reason: 'missing-capabilities',
+      missing: ['POST /summarize'],
+    });
+  });
+
+  it('NO declared list ⇒ credited with the legacy floor ONLY — the live 16-day-old sidecar case', () => {
+    // Measured live: 200 OK, warm models, no `capabilities` key, and
+    // POST /rerank 404s. It must stay usable for /embed and be refused for
+    // /rerank — crediting it with either everything or nothing is wrong.
+    const stale = { ok: true, pid: 2034810, uptimeMs: 1_401_886_441, models: { 'gemma:document': 'warm' } };
+    expect(verifySidecarFitness(stale, ['POST /embed'], LEGACY)).toEqual({ fit: true });
+    expect(verifySidecarFitness(stale, ['POST /rerank'], LEGACY)).toEqual({
+      fit: false,
+      reason: 'stale-build',
+      missing: ['POST /rerank'],
+    });
+  });
+
+  it('requiring nothing is fit against any live payload', () => {
+    expect(verifySidecarFitness({ ok: true }, [], LEGACY)).toEqual({ fit: true });
+  });
+
+  it('a malformed capabilities value is treated as UNDECLARED, not as empty', () => {
+    // `capabilities: 'POST /rerank'` (a string, not an array) must not be
+    // string-searched into a false positive, nor collapse the legacy floor.
+    expect(verifySidecarFitness({ capabilities: 'POST /rerank' }, ['POST /rerank'], LEGACY).fit).toBe(false);
+    expect(verifySidecarFitness({ capabilities: 'nonsense' }, ['POST /embed'], LEGACY)).toEqual({ fit: true });
+    // Non-string entries are dropped rather than crashing the compare.
+    expect(verifySidecarFitness({ capabilities: [1, null, 'POST /embed'] }, ['POST /embed'], LEGACY)).toEqual({
+      fit: true,
+    });
+  });
+
+  it('an EMPTY declared list is a real answer ("I serve nothing"), not a missing one', () => {
+    // Distinct from undeclared: this build DOES advertise, and advertises
+    // nothing — so it must not inherit the legacy floor.
+    expect(verifySidecarFitness({ capabilities: [] }, ['POST /embed'], LEGACY)).toEqual({
+      fit: false,
+      reason: 'missing-capabilities',
+      missing: ['POST /embed'],
+    });
+  });
+});
 
 describe('resolveSidecarSpawnPlan (WI-3079)', () => {
   it('dev (real .ts on disk) → npx tsx <devScriptPath>', () => {

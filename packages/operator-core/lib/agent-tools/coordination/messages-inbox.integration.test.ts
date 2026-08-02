@@ -22,11 +22,11 @@
  * The fixture keeps the real `PgCoordLog` seam (re-pointed at the baseline DB), so
  * `coordHasPgFastPath()` is true and the pushdown branch is the one exercised here.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { filterInbox, type CoordEnvelope, type InboxOptions } from '@papercusp/coordination/core';
-import { coordLog } from './log';
-import { readInbox } from './messages';
+import { coordLog, coordWorkspaceId } from './log';
+import { readInbox, INBOX_FAST_PATH_ROW_CAP } from './messages';
 
 let fx: BaselineCoordFixture;
 
@@ -147,6 +147,86 @@ describe('readInbox recipient-pushdown (P-003 / D-005 SQL path)', () => {
       const got = await readInbox('alice', { since_ts: future });
       expect(got).toEqual([]);
       expect(await reference('alice', { since_ts: future })).toEqual([]);
+    });
+  });
+
+  // EI-19314819320465915. The row cap is a LIMIT, so the ORDER BY decides WHICH rows
+  // survive it. `ORDER BY id ASC LIMIT n` keeps the n OLDEST and silently discards the
+  // NEWEST — an inbox that freezes: the owner re-reads ancient mail forever and never
+  // sees anything new, while the read still returns a full, plausible 25k rows. It must
+  // be `id DESC`, so the cap degrades by forgetting HISTORY instead.
+  //
+  // Not hypothetical: when this was fixed, `to` matched 20,365 broadcast rows against a
+  // 25,000 cap (81%, growing ~150/day). This test is the guard that the ordering never
+  // silently flips back — it FAILS on `ASC` and passes on `DESC`.
+  //
+  // Seeded with ONE bulk INSERT rather than 25k appendLine calls (seconds vs minutes);
+  // that is also why it asserts on the RAW cap boundary rather than going through
+  // sendMessage.
+  describe('fast-path row cap keeps the NEWEST rows, not the oldest (EI-19314819320465915)', () => {
+    const OVERFLOW = 50;
+
+    async function seedPastCap(): Promise<void> {
+      await fx.admin`
+        INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, ts, workspace_id)
+        SELECT 'messages',
+               'bulk-' || n,
+               jsonb_build_object(
+                 'msg_id', 'bulk-' || n,
+                 'kind',   'message',
+                 'from',   'bulk-sender',
+                 'to',     jsonb_build_array('*'),
+                 'summary','bulk',
+                 'ts',     to_char(TIMESTAMP '2026-01-01 00:00:00' + (n * interval '1 second'),
+                                   'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+               ),
+               TIMESTAMP '2026-01-01 00:00:00' + (n * interval '1 second'),
+               ${coordWorkspaceId()}
+          FROM generate_series(1, ${INBOX_FAST_PATH_ROW_CAP + OVERFLOW}) AS n
+      `;
+    }
+
+    // Hitting the cap DELIBERATELY fires readInbox's own console.warn, so each test
+    // here spies it rather than letting vitest-fail-on-console red the file. Spying
+    // (not silencing) is the point: it lets us assert the warning says the OLDEST rows
+    // were dropped. That sentence was itself backwards before this fix — it claimed the
+    // oldest were dropped while `ASC` was in fact dropping the newest, so anyone
+    // debugging a frozen inbox was being actively misled by the one line meant to help.
+    it('drops the OLDEST rows past the cap and retains the newest', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await seedPastCap();
+      const got = await readInbox('alice');
+      const seen = new Set(ids(got));
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('fast-path row cap'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('OLDEST matching rows beyond the cap were NOT'));
+      warn.mockRestore();
+
+      // Exactly the cap comes back — the LIMIT is doing its job.
+      expect(got.length).toBe(INBOX_FAST_PATH_ROW_CAP);
+
+      // The NEWEST row must survive. Under the old `ASC` ordering this was the row
+      // most certain to be discarded, which is precisely the bug.
+      expect(seen.has(`bulk-${INBOX_FAST_PATH_ROW_CAP + OVERFLOW}`)).toBe(true);
+
+      // ...and the oldest must be the one dropped.
+      expect(seen.has('bulk-1')).toBe(false);
+
+      // The retained window is contiguous and newest-anchored: ids OVERFLOW+1..cap+OVERFLOW.
+      expect(seen.has(`bulk-${OVERFLOW + 1}`)).toBe(true);
+      expect(seen.has(`bulk-${OVERFLOW}`)).toBe(false);
+    });
+
+    it('still returns rows sorted ASCENDING by (ts, msg_id) — the SQL order picks rows, never presentation', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await seedPastCap();
+      const got = await readInbox('alice');
+      warn.mockRestore();
+      const tsValues = got.map((e) => new Date(e.ts).getTime());
+      const ascending = [...tsValues].sort((a, b) => a - b);
+      expect(tsValues).toEqual(ascending);
+      // filterInbox re-sorts, so flipping the SQL to DESC must not reverse the output.
+      expect(new Date(got[0]!.ts).getTime()).toBeLessThan(new Date(got[got.length - 1]!.ts).getTime());
     });
   });
 });

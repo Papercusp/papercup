@@ -18,6 +18,7 @@ import {
   buildConsoleOneliner,
   advSessionTitleTag,
   macConsoleInvocation,
+  macHasGuiSession,
   spawnConsole,
   spawnHeadless,
   headlessLogPath,
@@ -849,6 +850,17 @@ describe('spawnMacConsole verifies `open` — GUI-less mac ghost members (EI-193
   const realPlatform = process.platform;
   let tmp: string;
 
+  // A mac WITH someone logged into the GUI, whose .command was executed (it
+  // self-deletes, so "gone" is the execution receipt). The suite runs on Linux
+  // where /dev/console is root-owned, and `spawn` is mocked so no terminal ever
+  // really runs the script — without these fakes every case below would take the
+  // new no-GUI / never-executed branches rather than exercising what it names.
+  const GUI_OK = {
+    consoleUid: () => 501,
+    commandFileExists: () => false,
+    sleep: async () => {},
+  };
+
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'mac-spawn-'));
     vi.stubEnv('TMPDIR', tmp);
@@ -868,7 +880,7 @@ describe('spawnMacConsole verifies `open` — GUI-less mac ghost members (EI-193
       queueMicrotask(() => child.emit('exit', 1, null));
       return child;
     });
-    const r = await spawnConsole({ envelope });
+    const r = await spawnConsole({ envelope, macProbes: GUI_OK });
     expect(r.status).toBe('error');
     const err = r as { code: number; error: string };
     expect(err.code).toBe(502);
@@ -885,7 +897,7 @@ describe('spawnMacConsole verifies `open` — GUI-less mac ghost members (EI-193
       queueMicrotask(() => child.emit('exit', null, 'SIGKILL'));
       return child;
     });
-    const r = await spawnConsole({ envelope });
+    const r = await spawnConsole({ envelope, macProbes: GUI_OK });
     expect(r.status).toBe('error');
     expect((r as { error: string }).error).toContain('SIGKILL');
   });
@@ -899,7 +911,7 @@ describe('spawnMacConsole verifies `open` — GUI-less mac ghost members (EI-193
       queueMicrotask(() => child.emit('exit', 0, null));
       return child;
     });
-    const r = await spawnConsole({ envelope });
+    const r = await spawnConsole({ envelope, macProbes: GUI_OK });
     expect(r.status).toBe('ok');
     expect((r as { pid: number | null }).pid).toBe(5152);
     expect((r as { terminal: string }).terminal).toBe('Terminal.app');
@@ -907,7 +919,7 @@ describe('spawnMacConsole verifies `open` — GUI-less mac ghost members (EI-193
 
   it('a slow `open` that outlives the probe ⇒ ok (fail OPEN — never manufacture a failure)', async () => {
     spawnMock.mockImplementation(() => fakeChild(5153)); // never exits
-    const r = await spawnConsole({ envelope });
+    const r = await spawnConsole({ envelope, macProbes: GUI_OK });
     expect(r.status).toBe('ok');
     expect((r as { pid: number | null }).pid).toBe(5153);
   }, 10_000);
@@ -926,11 +938,83 @@ describe('spawnMacConsole verifies `open` — GUI-less mac ghost members (EI-193
       queueMicrotask(() => child.emit('error', new Error('spawn open ENOENT')));
       return child;
     });
-    const r = await spawnConsole({ envelope });
+    const r = await spawnConsole({ envelope, macProbes: GUI_OK });
     expect(r.status).toBe('error');
     const err = r as { error: string };
     expect(err.error).toMatch(/ENOENT/);
     expect(err.error).toMatch(/no window opened/i);
     // It must resolve on the error, not sit out the full probe window.
   }, 10_000);
+
+  // EI-19311623077693508 (THIRD and final half) — the case both earlier fixes
+  // missed, and the one that was actually happening. Verified on the rig mac
+  // 2026-08-02: `open` exited 0 ("LaunchServices accepted"), the operator logged
+  // `honored (1 member(s) opened)`, and ZERO agent processes existed. The proof
+  // it never ran: the .command self-deletes (`rm -f "$0"`) as its first act, and
+  // BOTH files from the two honors were still on disk afterwards.
+  //
+  // Note both tests below emit exit 0 — the *success* signal. That is the point:
+  // every earlier test asserted against a failing `open`, so none could see that
+  // a SUCCEEDING `open` proves nothing about whether a window appeared.
+  it('no GUI session (/dev/console owned by root) ⇒ error BEFORE spawning — the rig mac', async () => {
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(5155);
+      queueMicrotask(() => child.emit('exit', 0, null)); // open "succeeds"
+      return child;
+    });
+    const r = await spawnConsole({
+      envelope,
+      macProbes: { consoleUid: () => 0, commandFileExists: () => false, sleep: async () => {} },
+    });
+    expect(r.status).toBe('error');
+    expect((r as { code: number }).code).toBe(502);
+    expect((r as { error: string }).error).toMatch(/no GUI session/i);
+    // It must not even fork `open`: there is nothing a window could be shown on.
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('`open` exits 0 but the .command is NEVER executed ⇒ error, not a phantom ok', async () => {
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(5156);
+      queueMicrotask(() => child.emit('exit', 0, null)); // accepted by LaunchServices
+      return child;
+    });
+    const r = await spawnConsole({
+      envelope,
+      // GUI session present, but the launcher script is still on disk ⇒ it never ran.
+      macProbes: { consoleUid: () => 501, commandFileExists: () => true, sleep: async () => {} },
+    });
+    expect(r.status).toBe('error');
+    expect((r as { code: number }).code).toBe(502);
+    expect((r as { error: string }).error).toMatch(/never executed/i);
+  }, 10_000);
+
+  it('the .command disappearing mid-wait ⇒ ok (a slow but genuine launch is not failed)', async () => {
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(5157);
+      queueMicrotask(() => child.emit('exit', 0, null));
+      return child;
+    });
+    let polls = 0;
+    const r = await spawnConsole({
+      envelope,
+      // Present for the first few polls, then executed (self-deleted).
+      macProbes: { consoleUid: () => 501, commandFileExists: () => ++polls < 4, sleep: async () => {} },
+    });
+    expect(r.status).toBe('ok');
+    expect((r as { pid: number | null }).pid).toBe(5157);
+    expect(polls).toBeGreaterThan(1); // it really did wait rather than pass instantly
+  }, 10_000);
+});
+
+describe('macHasGuiSession (EI-19311623077693508)', () => {
+  it('root-owned /dev/console ⇒ no GUI session', () => {
+    expect(macHasGuiSession(() => 0)).toBe(false);
+  });
+  it('user-owned /dev/console ⇒ GUI session', () => {
+    expect(macHasGuiSession(() => 501)).toBe(true);
+  });
+  it('unreadable /dev/console ⇒ no GUI session (fail toward the path that RUNS)', () => {
+    expect(macHasGuiSession(() => { throw new Error('ENOENT'); })).toBe(false);
+  });
 });

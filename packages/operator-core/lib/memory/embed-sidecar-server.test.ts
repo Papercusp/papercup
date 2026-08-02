@@ -15,6 +15,9 @@ import {
   validateRerankRequest,
   EMBED_SIDECAR_WARM_ENV,
   MAX_TEXTS_PER_CALL,
+  EMBED_SIDECAR_CAP_EMBED,
+  EMBED_SIDECAR_CAP_HEALTHZ,
+  EMBED_SIDECAR_CAP_RERANK,
   EMBED_SIDECAR_RUNTIME,
   type EmbedderBuilders,
   type EmbedSidecarHandle,
@@ -95,6 +98,38 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(body.ok).toBe(true);
     expect(body.runtime).toBe(EMBED_SIDECAR_RUNTIME);
     expect(body.models).toEqual({}); // warmAtBoot:false + no embeds yet ⇒ all cold
+  });
+
+  it('GET /healthz ADVERTISES every route it serves (EI-19314150478401738)', async () => {
+    await boot();
+    const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as { capabilities: string[] };
+    // A sidecar outlives the code that talks to it, so it must be able to say
+    // what it can do — otherwise a route added after the running bundle was
+    // built 404s forever and every caller's fail-safe swallows it.
+    expect(body.capabilities).toEqual(
+      expect.arrayContaining([EMBED_SIDECAR_CAP_HEALTHZ, EMBED_SIDECAR_CAP_EMBED, EMBED_SIDECAR_CAP_RERANK]),
+    );
+  });
+
+  it('the advertised capabilities are exactly the DISPATCHABLE routes — they cannot drift', async () => {
+    await boot();
+    const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as { capabilities: string[] };
+    // Every advertised route must actually dispatch (i.e. not 404). This is
+    // the anti-drift assertion: advertisement is derived from the route table,
+    // so adding a route without advertising it is impossible, and this proves
+    // the converse — nothing is advertised that isn't served.
+    for (const cap of body.capabilities) {
+      const [method, path] = cap.split(' ');
+      const res = await fetch(`${baseUrl}${path}`, {
+        method,
+        ...(method === 'POST'
+          ? { headers: { 'Content-Type': 'application/json' }, body: '{}' }
+          : {}),
+      });
+      // 400 (bad body) is fine — it proves the route EXISTS. 404 would mean
+      // the sidecar advertised something it cannot serve.
+      expect(res.status, `advertised ${cap} must dispatch`).not.toBe(404);
+    }
   });
 
   it('POST /embed returns the D-004 shape, ordered per input text', async () => {

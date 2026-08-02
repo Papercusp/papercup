@@ -59,8 +59,20 @@ beforeAll(async () => {
   // P-008 (work-queue-stuck-item-recovery): harness:health dynamically imports
   // work-queue-health to augment the lib data with the per-harness stuck-queue slice.
   // Mock it so the projection is deterministic (no real PG dependency in this unit test).
+  // The handler wraps that whole slice in a best-effort try/catch, so the two other
+  // modules it pulls in on the same path (db-org's pool accessor, the workspace
+  // registry) must be mocked too — either one throwing silently drops `stuckQueue`
+  // from the payload and the assertion below fails on a missing key, not a wrong one.
   vi.doMock('../../work-queue-health', () => ({
     readHarnessStuckFeatures: readHarnessStuckFeaturesMock,
+  }));
+  vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    getOrgPg: () => ({ sql: vi.fn() }),
+  }));
+  vi.doMock('../../workspace-registry', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    activeWorkspaceId: () => 'default',
   }));
 
   actionsRecent = (await import('../operator/actions_recent')).default as never;

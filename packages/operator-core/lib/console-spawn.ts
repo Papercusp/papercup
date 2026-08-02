@@ -38,6 +38,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -881,6 +882,14 @@ export interface SpawnConsoleOpts {
    */
   desktopEnvProbes?: DesktopEnvProbes;
   /**
+   * EI-19311623077693508: injectable seams for the macOS path — the
+   * `/dev/console` GUI-session check and the `.command` execution receipt.
+   * Tests MUST pass fakes: the suite runs on Linux, where `/dev/console` is
+   * owned by root, so the real probe would (correctly) report "no GUI session"
+   * and short-circuit every macOS case. Production callers omit it.
+   */
+  macProbes?: MacConsoleProbes;
+  /**
    * EI-11578: force a PROCESS-PER-WINDOW emulator (xterm/alacritty/kitty/wezterm)
    * even when a desktop session was detected — used by capability:launch-agent's
    * RESUME/FORK path. A resumed dormant session drops under gnome-terminal's VTE
@@ -1013,7 +1022,7 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
   //    verifies that exit rather than assuming success — callers get a real
   //    error and can fall back to spawnHeadless.
   if (process.platform === 'darwin') {
-    return spawnMacConsole(envelope, oneliner);
+    return spawnMacConsole(envelope, oneliner, opts.macProbes);
   }
 
   // 4. Windows has no server-side path: the operator runs inside the WSL2 distro,
@@ -1244,6 +1253,47 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
 }
 
 /**
+ * Is a human logged into this mac's GUI (a window CAN be displayed)?
+ *
+ * `/dev/console` is owned by the console (GUI) user; on a machine parked at the
+ * loginwindow with nobody logged in it is owned by **root** (uid 0). That is the
+ * live state of the rig mac, and it is a DETERMINISTIC verdict — unlike sniffing
+ * `open`'s exit code, which cannot distinguish "LaunchServices accepted" from
+ * "a window actually appeared" (see spawnMacConsole's doc comment).
+ *
+ * Deliberately a `statSync` rather than shelling out to `stat -f %Su`: no
+ * subprocess on the spawn hot path, and no PATH/quoting surface.
+ */
+export function macHasGuiSession(probe: () => number = () => statSync('/dev/console').uid): boolean {
+  try {
+    return probe() !== 0;
+  } catch {
+    // Unreadable /dev/console ⇒ we cannot prove a GUI session exists. Report
+    // "no GUI" so the caller takes the headless path, which works everywhere —
+    // failing toward the path that runs is strictly better than toward a phantom.
+    return false;
+  }
+}
+
+/** Injectable seams for spawnMacConsole (tests pass fakes; production omits). */
+export interface MacConsoleProbes {
+  /** uid of /dev/console — 0 (root) means nobody is logged into the GUI. */
+  consoleUid?: () => number;
+  /** Did the one-shot `.command` still exist at `path` when polled? */
+  commandFileExists?: (path: string) => boolean;
+  /** Sleep between receipt polls. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * How long after `open` returns we keep waiting for the `.command` to be
+ * executed (it self-deletes on exec — see macConsoleInvocation). A cold
+ * Terminal.app launch on a healthy GUI mac is well under this; the rig case
+ * never reaches this code because the GUI pre-flight short-circuits it.
+ */
+export const MAC_COMMAND_RECEIPT_MS = 2500;
+
+/**
  * macOS spawner — mirrors native_console.rs `spawn_macos_new_window`: write a
  * one-shot, self-deleting `.command` file (chmod 755) and `open -na <term>` it.
  * `open -na` forces a FRESH app instance ⇒ a new window every time (Terminal's
@@ -1251,7 +1301,25 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
  * installed, else Terminal.app. The `.command` execs the same login-shell
  * one-liner the Linux path runs, so colors/env/sentinel behave identically.
  */
-async function spawnMacConsole(envelope: ConsoleEnvelope, oneliner: string): Promise<SpawnConsoleResult> {
+async function spawnMacConsole(
+  envelope: ConsoleEnvelope,
+  oneliner: string,
+  probes: MacConsoleProbes = {},
+): Promise<SpawnConsoleResult> {
+  // Pre-flight (EI-19311623077693508, third and final half): with nobody logged
+  // into the GUI a window CANNOT be displayed, no matter what `open` reports. Say
+  // so BEFORE writing a .command and forking, so delegated-spawn-honor's
+  // `status !== 'ok'` headless fallback engages instead of counting a phantom.
+  if (!macHasGuiSession(probes.consoleUid)) {
+    return {
+      status: 'error',
+      error:
+        'no GUI session on this mac — /dev/console is owned by root (nobody is logged in),' +
+        ' so LaunchServices cannot display a terminal window and `open` would report success anyway' +
+        ' (EI-19311623077693508). A headless spawn is the working path on this host.',
+      code: 502,
+    };
+  }
   // EI-19311623077693508: this path used to return ok the instant Node forked
   // `open`, never observing its EXIT — making macOS the ONLY spawn backend with
   // no verification at all (Linux has the WI-1886(b) probe below; spawnHeadless
@@ -1336,8 +1404,37 @@ async function spawnMacConsole(envelope: ConsoleEnvelope, oneliner: string): Pro
         code: 502,
       };
     }
-    // Exited 0, or outlived the probe ⇒ the launch was accepted. Fail OPEN on
-    // the no-exit case: a slow `open` must not be reported as a failure.
+    // `open` exited 0 (or outlived the probe) ⇒ LaunchServices ACCEPTED the
+    // request. That is NOT proof a window opened — and trusting it is what made
+    // this bug survive two fixes. Verify the POST-CONDITION instead: the
+    // `.command` self-deletes (`rm -f "$0"`) as its first act, so its
+    // DISAPPEARANCE is an execution receipt that cannot be faked by a launcher
+    // that merely accepted the job. Measured on the rig mac 2026-08-02: both
+    // .command files from the two "honored (1 member(s) opened)" spawns were
+    // still on disk afterwards — never executed, zero agent processes.
+    const commandExists = probes.commandFileExists ?? ((p: string) => existsSync(p));
+    const sleep = probes.sleep ?? ((ms: number) => new Promise<void>((r) => { setTimeout(r, ms).unref?.(); }));
+    let ran = !commandExists(inv.file);
+    const deadline = Date.now() + MAC_COMMAND_RECEIPT_MS;
+    while (!ran && Date.now() < deadline) {
+      await sleep(100);
+      ran = !commandExists(inv.file);
+    }
+    if (!ran) {
+      // Best-effort cleanup: nothing executed it, so it will never self-delete.
+      try { unlinkSync(inv.file); } catch { /* best-effort */ }
+      try { unlinkSync(stderrPath); } catch { /* best-effort */ }
+      stderrPath = null;
+      return {
+        status: 'error',
+        error:
+          `open ${inv.term} reported success but the launcher script was never executed` +
+          ` within ${MAC_COMMAND_RECEIPT_MS}ms — no window opened (EI-19311623077693508:` +
+          ' LaunchServices accepted the request and exited 0 without displaying anything;' +
+          ' a headless spawn is the working path on such a host).',
+        code: 502,
+      };
+    }
     try { unlinkSync(stderrPath); } catch { /* best-effort */ }
     stderrPath = null;
     // macOS has no X DISPLAY concept — display/desktopEnvResolvedVia are always

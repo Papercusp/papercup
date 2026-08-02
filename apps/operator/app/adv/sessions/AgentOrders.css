@@ -41,7 +41,6 @@
 }
 .pc-orders__tag-name {
   font-size: 9px;
-  letter-spacing: 0.13em;
   text-transform: uppercase;
   font-weight: 660;
   color: var(--pc-orders-dim);
@@ -88,7 +87,6 @@
   gap: 6px;
   margin: 0 0 6px;
   font-size: 9.5px;
-  letter-spacing: 0.11em;
   text-transform: uppercase;
   font-weight: 640;
   color: var(--pc-orders-dim);
@@ -182,7 +180,7 @@
   padding: 0 4px;
   border-radius: 3px;
   font-size: 8.5px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   text-transform: uppercase;
   font-weight: 660;
   background: color-mix(in srgb, var(--accent), transparent 82%);
@@ -231,7 +229,7 @@
   gap: 6px;
   margin-top: 8px;
   font-size: 9px;
-  letter-spacing: 0.09em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--pc-orders-mute);
 }
