@@ -24,7 +24,10 @@ import { softText, clampText, LIMITS } from '../limits';
 // snapshot succeeded seconds-to-minutes later — the opposite of the truth, on
 // the tool that is the designated PRE-DESTRUCTIVE safety rail. Kept safely
 // under both outer ceilings.
-const SAFE_DEADLINE_MS = 45_000;
+// Exported (not just used internally) so a test can assert against it and a
+// fake-timer race can advance by exactly this amount rather than a hardcoded
+// duplicate literal that would silently drift from the real value.
+export const SAFE_DEADLINE_MS = 45_000;
 
 export default defineTool({
   name: 'backup:snapshot_create',
