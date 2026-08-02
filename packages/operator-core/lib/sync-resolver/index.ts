@@ -5318,8 +5318,25 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { owner } = args as { owner: string };
       const { readInbox, readOutbox } = await import('../agent-tools/coordination/messages');
-      const [inboxAll, outboxAll] = await Promise.all([readInbox(owner, {}), readOutbox(owner, {})]);
-      const tail = <T>(arr: T[]) => (arr.length > 50 ? arr.slice(arr.length - 50) : arr);
+      const TAIL = 50;
+      // WI-6939: this resolver is invalidated by `backingTables` on EVERY write to
+      // coord_event_log, per subscribed owner — making it the hottest caller of the
+      // unbounded readInbox (that statement measured 491,954 calls / 220ms mean /
+      // 30.1h cumulative ACROSS ALL CALLERS, each one seq-scanning the table,
+      // sorting ~20k rows and launching 3 parallel workers). It then kept tail(50),
+      // discarding >99% of the ~20k rows / ~10MB it had just transferred and parsed.
+      // For a typical owner that matched set is 99.8% BROADCAST, so it barely varies
+      // with how much mail this owner actually has.
+      //
+      // Bounding is semantically FREE here, unlike at coord:inbox: `tail` wants the
+      // newest TAIL entries and no further filters run, so stopping the read once
+      // TAIL are in hand yields the identical result — and when fewer than TAIL
+      // exist `enough` stays false and it pages on to exhaustion.
+      const [inboxAll, outboxAll] = await Promise.all([
+        readInbox(owner, {}, { enough: (entries) => entries.length >= TAIL }),
+        readOutbox(owner, {}),
+      ]);
+      const tail = <T>(arr: T[]) => (arr.length > TAIL ? arr.slice(arr.length - TAIL) : arr);
       return [{ owner, inbox: tail(inboxAll), outbox: tail(outboxAll) }];
     },
   },
