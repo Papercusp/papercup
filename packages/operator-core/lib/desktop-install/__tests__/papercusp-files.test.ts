@@ -662,6 +662,29 @@ describe('installPapercuspFiles', () => {
     const leftovers = (await fs.readdir(destDir)).filter((n) => n.endsWith('.tmp'));
     expect(leftovers).toEqual([]);
   });
+
+  it('EI-18755593630003816: the sibling OMP hook path (coord-hook extension) also writes atomically', async () => {
+    // The CC-hook fix above (installClaudeHooks) landed first; the EI explicitly also
+    // asks for "the sibling OMP hook path" — copyIfExists(), the only writer of
+    // paths.extensionPath (~/.papercusp/papercusp-coord.ts, the OMP coord-hook
+    // extension installed on every psu launch/bootstrap same as the CC hooks). Assert
+    // the same behavioral contract: full content lands, and no leftover `*.tmp`
+    // artifact is left beside it (a leftover would mean the rename step never ran).
+    const extSrc = path.join(tmpAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts');
+    const content = '// coord-hook v2 — a bit longer this time\nexport const x = 1;\n';
+    await fs.writeFile(extSrc, content);
+
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    expect(result.extensionWritten).toBe(true);
+
+    const written = await fs.readFile(result.extensionPath, 'utf8');
+    expect(written).toBe(content); // full content, never a truncated prefix
+
+    const leftovers = (await fs.readdir(path.dirname(result.extensionPath))).filter((n) =>
+      n.endsWith('.tmp'),
+    );
+    expect(leftovers).toEqual([]);
+  });
 });
 
 describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
