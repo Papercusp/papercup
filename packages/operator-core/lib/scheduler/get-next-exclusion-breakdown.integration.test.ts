@@ -30,7 +30,7 @@ vi.mock('../workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
 
-const { aggregateIssueClaimExclusions, listIssueClaimableRows } = await import('./get-next');
+const { aggregateIssueClaimExclusions, listIssueClaimableRows, readIssueClaimability } = await import('./get-next');
 
 const H = 'papercup';
 const WS = 'default';
@@ -232,5 +232,62 @@ describe('WI-6673 — listIssueClaimableRows projects severity from payload._ei,
     const rows = await listIssueClaimableRows(undefined, { harness: H }, 10);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ id: 'WI-SEV-4', severity: null });
+  });
+});
+
+/**
+ * EI-18802055183255275 — DB-backed proof that `readIssueClaimability`'s materialize-once
+ * temp-table path (introduced to stop redundant serial full scans of the candidate set —
+ * see get-next.ts's `candidateFromSource`) returns IDENTICAL results to calling
+ * `aggregateIssueClaimExclusions` / `listIssueClaimableRows` directly (the un-materialized,
+ * per-caller-recomputed default path every OTHER test in this file already exercises against
+ * this same real database). The mocked-pg unit tests in claimability-snapshot.test.ts pin the
+ * TRANSACTION SHAPE (query counts) but stub every query to return zero rows, so they cannot
+ * catch a real defect in the temp-table's column projection/typing against live Postgres —
+ * only a real database can.
+ */
+describe('EI-18802055183255275 — readIssueClaimability (materialized temp-table path) agrees with the direct (unmaterialized) reads', () => {
+  it('breakdown + rows + admitted composition from readIssueClaimability match the standalone calls, for a floor-stranded pool', async () => {
+    await seedPlan('rc-plan', 'active');
+    await seedIssue('WI-RC-1', null); // clean, claimable
+    await seedIssue('WI-RC-2', { _claimHold: true }); // claim-hold floored
+    await seedIssue('WI-RC-3', {}, { takenBy: 'su-outside' }); // taken
+    await seedIssue('WI-RC-4', { _ei: { severity: 'critical' } }); // claimable, carries severity
+
+    const direct = await aggregateIssueClaimExclusions(undefined, { harness: H });
+    const directRows = await listIssueClaimableRows(undefined, { harness: H }, 20);
+
+    const viaSnapshot = await readIssueClaimability(undefined, { harness: H }, { limit: 20 });
+
+    expect(viaSnapshot.breakdown).toEqual(direct);
+    // Row order is spec-rank-determined and deterministic for this fixed set — compare
+    // directly rather than as a set, so an ordering regression in the materialized path
+    // (e.g. a lost ORDER BY) would also be caught.
+    expect(viaSnapshot.rows).toEqual(directRows);
+    expect(viaSnapshot.rows.find((r) => r.id === 'WI-RC-4')).toMatchObject({ severity: 'critical' });
+    expect(viaSnapshot.breakdown.matchedByFilter).toBe(4);
+    expect(viaSnapshot.breakdown.claimable).toBe(2); // WI-RC-1, WI-RC-4
+  });
+
+  it('breakdownOnly:true still returns the SAME admitted composition as the unconditional full read (WI-6673 x EI-18802055183255275)', async () => {
+    await seedIssue('WI-RC-10', { _ei: { severity: 'minor' } });
+    await seedIssue('WI-RC-11', { _ei: { severity: 'major' } });
+
+    const full = await readIssueClaimability(undefined, { harness: H }, { limit: 20 });
+    const breakdownOnly = await readIssueClaimability(undefined, { harness: H }, { limit: 20, breakdownOnly: true });
+
+    expect(breakdownOnly.rows).toEqual([]);
+    expect(breakdownOnly.breakdown).toEqual(full.breakdown);
+    expect(breakdownOnly.admitted).toEqual(full.admitted);
+    expect(breakdownOnly.admitted.total).toBe(2);
+  });
+
+  it('sampleExcluded surfaces the SAME excluded ids the breakdown counts, through the materialized snapshot', async () => {
+    await seedIssue('WI-RC-20', { needsHuman: true });
+    await seedIssue('WI-RC-21', null);
+
+    const out = await readIssueClaimability(undefined, { harness: H }, { limit: 20, sampleLimit: 5 });
+    expect(out.breakdown.excluded.needsHuman).toBe(1);
+    expect(out.sample?.needsHuman).toEqual(['WI-RC-20']);
   });
 });
