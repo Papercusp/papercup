@@ -1953,9 +1953,17 @@ export const FLAGS = {
   // confinement at the spawn chokepoints, the 30s reconcile, the processes:* read
   // surfaces, and the Task Manager pane.
   //
-  // DEFAULT OFF (DARK_FLAGS, case 'incomplete') [owner 2026-07-27 "put the task
-  // manager behind a testing flag it isn't ready yet"]. It shipped default-ON the
-  // same day; the owner called it back the same day. See WI-6499.
+  // DEFAULT ON (derived FLAG_DEFAULTS — graduated out of DARK_FLAGS 2026-08-02,
+  // WI-6844) [owner: "we put it behind a testing flag. Remove that flag, we'll make
+  // it part of our standard release"]. It first shipped default-ON on 2026-07-27,
+  // was called back behind a testing gate the same day (WI-6499), and now ships ON
+  // again — this time with the gate it always claimed to have.
+  //
+  // The KEY survives on purpose. This subsystem intercepts EVERY spawn seam on the
+  // box, so an explicit OFF at /admin/features must still restore the pre-feature
+  // behaviour byte-for-byte without needing a revert. A default-ON flag is not a
+  // dark flag; it is a kill-switch, which is why it is no longer rationed by the
+  // parking watermark.
   //
   // ⚠ It ALSO shipped with this comment describing gating that did not exist. The
   // flag had exactly two call sites — the pane's sync query and the /admin/tasks
@@ -2128,7 +2136,13 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'WI-5646 (owner decision 2026-07-26): the external-bench BLUEPRINT is now RETIRED — its design premise ("the treatment IS the shipped coding system, byte for byte") died when the per-feature coding spine was retired 2026-06-24 and `coding` was reassigned to the pot/Mug architecture, so it would benchmark a system that no longer exists. This flag stays dark PERMANENTLY and is NOT awaiting graduation — the prior "dark until the P-009 ~50-task pilot proves the end-to-end path" condition is void; that pilot will not run. (Also still true: the grader adapter is incomplete — M2 in-container modality unbuilt — and infra-heavy.) Do NOT flip ON. It gates the eval UI + run/reproducibility stores, which are kept only to read HISTORICAL run data. Benchmarking the pot/Mug architecture is a NEW blueprint + its own flag, not this one.' }],
     [FLAGS.CODEX_GATEWAY_OAUTH_PROXY, { case: 'incomplete', reason: 'WI-2198: the codex ChatGPT-subscription OAuth streaming reverse-proxy routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport (chatgpt.com/backend-api/codex + auth.openai.com/oauth/token) that can only be verified by an owner-attended live canary against production ChatGPT. Dark until that canary passes; direct native auth is the live fallback. OFF ⇒ codex-cli accounts keep the exec bridge (byte-identical).' }],
     [FLAGS.ONBOARDING_PREVIEW_FEATURES, { case: 'incomplete', reason: 'owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — telemetry consent, mobile pairing (phone notifications / remote control), auto-update channel. OFF ⇒ a fresh install never sees them (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.' }],
-    [FLAGS.TASK_MANAGER, { case: 'incomplete', reason: 'WI-6499, owner-directed 2026-07-27 ("put the task manager behind a testing flag it isn\'t ready yet") — the flag shipped default-ON that morning and the owner called it back the same day, so this is a TESTING gate on a subsystem that touches every spawn seam on the box, not parked finished work. Two things were true when it landed: the subsystem had never run a sustained window on a real box with correct residue classification (the precondition plan D-010 already names before anything acts on `unaccounted`), and the flag was DECORATIVE — it gated only the pane\'s two read surfaces, so OFF still confined every spawn, still wrote the ledger, still ran the 30s reconciler, and still fired a systemd-run probe at module import. WI-6499 made the gate real (task-manager/enabled.ts, fail-CLOSED) so OFF is now byte-identical to the pre-feature box: unconfined + unledgered spawns, no reconcile, processes:list reports disabled. GRADUATION: owner flips ON for testing, watches unaccounted/foreign counts settle over a sustained window, then removes this entry.' }],
+    // TASK_MANAGER GRADUATED 2026-08-02 (WI-6844) on an explicit owner directive:
+    // "we put it behind a testing flag. Remove that flag, we'll make it part of our
+    // standard release." Its entry is gone from here, so it derives default-ON like
+    // every other registered flag; the KEY deliberately survives as a runtime
+    // kill-switch, which is not the same thing as being dark. This is the shrink
+    // direction — see the watermark note below, lowered 14→13 in the same change so
+    // the freed slot ratchets DOWN rather than becoming headroom for the next park.
     // PER_POT_RELEASE_GATE graduated 2026-07-03 (per-hive-git D-008 canary met:
     // oddsmith green-checkpoint went green and FF'd oddsmith main — pipeline_events
     // 'advanced' 2026-07-03T15:16Z): default ON. A hive's gate engages only when
@@ -2384,7 +2398,18 @@ export const DARK_FLAGS_REVIEW_BY = '2026-08-09';
 // correctness window — and the flip back ON is a testing action the owner performs,
 // not a ceremony awaiting an agent. Expected to graduate quickly; if it is still here
 // at the next review, that is the signal to chase.
-export const DARK_FLAGS_HIGH_WATERMARK = 14;
+//
+// 2026-08-02 (WI-6844) — 14→13, papercusp-task-manager GRADUATED on an explicit
+// owner directive ("we put it behind a testing flag. Remove that flag, we'll make
+// it part of our standard release"). The entry above predicted exactly this
+// ("expected to graduate quickly"), which is the whole point of writing the
+// graduation condition down at the time the entry is added.
+//
+// The watermark is lowered rather than left at 14, and that is the deliberate part:
+// a ceiling only ratchets if a graduation SPENDS the slot it frees. Leaving it at 14
+// would silently convert this graduation into headroom for the next park — the exact
+// drift the 22→24→25→26 history above records, just in the polite direction.
+export const DARK_FLAGS_HIGH_WATERMARK = 13;
 
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag
 // defaults ON unless it is in DARK_FLAGS. Resolvers (server.ts getFlag / client.ts /

@@ -8,10 +8,8 @@
  * Spec: apps/operator/docs/dockview-migration-plan-v4.md §4
  */
 
-import postgres from 'postgres';
-import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { sharedUtilityPoolMax } from './resource-profile';
-import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import { getLongLivedAdminPool } from './long-lived-admin-pool';
 
 export const CURRENT_LAYOUT_SCHEMA_VERSION = 1 as const;
 
@@ -620,20 +618,10 @@ function validateFloating(f: FloatingGroup): void {
 
 // ───────── DB plumbing ─────────
 
-let pool: ReturnType<typeof postgres> | null = null;
-function db() {
-  if (!pool) {
-    pool = postgres(getHarnessAdminUrl(), {
-      ...longLivedPoolConnectionOptions('dock-layouts'),
-      max: sharedUtilityPoolMax(),
-      // Transactional pool — drain idle backends (postgres-js would otherwise hold
-      // them open forever; see poolIdleTimeoutSec).
-      idle_timeout: poolIdleTimeoutSec(),
-      prepare: false,
-    });
-  }
-  return pool;
-}
+// Transactional pool — re-resolves the admin URL on every use and rebinds if the endpoint
+// moved (EI-19306394439939264). Shared connection options + idle policy come with it.
+const db = () =>
+  getLongLivedAdminPool('dock-layouts', { max: sharedUtilityPoolMax(), prepare: false });
 
 export type LayoutRow = {
   workspaceId: string;

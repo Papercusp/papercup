@@ -458,7 +458,13 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
     await git(['push', '--no-verify', '--force', 'origin', 'HEAD:main'], rewriter);
 
     await writeFile(join(victim, 'v.txt'), 'victim work\n');
-    const out = await runGitSync('rworphan-victim', { runGit: testRunGit, repoPath: victim, config: { branch: 'main' } });
+    const logs: string[] = [];
+    const out = await runGitSync('rworphan-victim', {
+      runGit: testRunGit,
+      repoPath: victim,
+      config: { branch: 'main' },
+      log: (m) => logs.push(m),
+    });
 
     // git refuses to merge unrelated histories → runGitSync classifies it as ERROR
     // (a merge that failed with NO conflicted paths), which routes to the loud EI-18
@@ -468,7 +474,24 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
     if (out.status === 'error') {
       expect(out.errors.map((e) => e.scope)).toContain('superproject');
       expect(out.errors[0].message).toMatch(/no conflicted paths|unrelated histories/i);
+
+      // WI-6824: the failure must carry the ref pair it ACTUALLY merged, not just the
+      // refusal text. `last_error` is nulled by the next healthy tick, so for the
+      // intermittent form of this fault an unidentified ref pair is unfixable-by-inspection.
+      const msg = out.errors[0].message;
+      // merge-base is the discriminator: no common ancestor is exactly the reported refusal.
+      expect(msg).toContain('merge-base=NONE(unrelated)');
+      expect(msg).toMatch(/attempt=(initial|non-ff-retry)/);
+      expect(msg).toMatch(/HEAD=[0-9a-f]{7,}/);
+      expect(msg).toMatch(/origin\/main=[0-9a-f]{7,}/);
+      // repo IDENTITY — a mis-resolved git-dir merging against the WRONG repository is the
+      // one cause that presents as unrelated histories between two individually-healthy
+      // repos, and it cannot be distinguished after the fact without these two fields.
+      expect(msg).toMatch(/git-dir=\S+/);
+      expect(msg).toMatch(/url=\S+/);
     }
+    // and it must reach the LOG, not only the routine metadata that gets nulled.
+    expect(logs.some((m) => m.includes('merge failed (no conflicted paths)') && m.includes('merge-base=NONE(unrelated)'))).toBe(true);
     expect(await git(['status', '--porcelain', '--untracked-files=no'], victim)).toBe('');
     } finally {
       await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});

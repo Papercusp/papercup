@@ -57,6 +57,38 @@
  * that next agent. It runs the same thirteen calls against a store that already
  * holds the finding, and asserts the push lands on batch ONE — the call that
  * saves the other twelve.
+ *
+ * ═══ ⚠ READ THIS BEFORE CITING THIS FILE AS "P-018 PASSES" ═══════════════════
+ *
+ * IT DOES NOT. This file pins the TRANSPORT half of the acceptance case only —
+ * fires on batch one, pays once, stays in budget, cannot be silenced by a
+ * warm-up throttle. Those are corpus-independent and genuinely green.
+ *
+ * The RETRIEVAL half was measured against the LIVE endpoint on 2026-08-02
+ * (:3170, the same seven batches, real store) and it is RED. Verbatim result:
+ *
+ *   • batch 1 fired — 377 chars, so the timing claim holds;
+ *   • WI-6512 appeared in ZERO of the seven batches. Total 2,360 chars of
+ *     pointers delivered, none of them the recorded answer;
+ *   • the mem0 leg contributed NOTHING to any batch (every block carried only
+ *     the corpus heading). A direct `memory:search` for the symptom in plain
+ *     words returns ZERO hits — the finding was never written to mem0 at all;
+ *   • isolating query dilution from corpus reach with four probes: only a query
+ *     naming the literal id `WI-6512` retrieves it. The symptom in plain words
+ *     does not, and neither does the replayed batch (which matches on
+ *     `apps/operator-vite/src` path noise instead);
+ *   • the sharpest one: the clean symptom query returns EI-18862790811651475 —
+ *     a work-item whose text is "asked whether I ever figured out why loading
+ *     session history takes several seconds. I searched, found nothing". The
+ *     corpus surfaces the RECORD OF THE SAME FAILURE rather than the answer.
+ *
+ * So the mid-turn channel matches SURFACE TOKENS, not the problem. That verdict
+ * is recorded as a plan Decision rather than as a permanently-red test here — a
+ * test that cannot pass until a fix lands belongs on the fix, not in the fleet
+ * gate. A fixture green here must therefore never be read as the acceptance
+ * case passing; a four-record fixture cannot reproduce the ceiling and the
+ * crowd-out that actually decide what surfaces (the trap this very file walked
+ * into on its first draft).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -436,7 +468,7 @@ beforeEach(() => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('P-018 acceptance — replaying the WI-6512 investigation', () => {
+describe('P-018 TRANSPORT half — replaying the WI-6512 investigation (retrieval half is RED, see header)', () => {
   it('fires on batch ONE — the call that saves the other twelve', async () => {
     const pushes = await replay(newOwner());
     const firstHit = pushes.findIndex((p) => p.length > 0);
@@ -446,9 +478,12 @@ describe('P-018 acceptance — replaying the WI-6512 investigation', () => {
     expect(pushes[0]).toContain('WI-6512');
   });
 
-  it('hands back the RECORDED ANSWER, not merely something', async () => {
+  it('DELIVERS the recorded answer once retrieval returns it', async () => {
+    // Conditional by construction: GIVEN a store that ranks the answer first,
+    // the render + budget + clamp path hands back its substance rather than a
+    // bare heading. This says nothing about whether LIVE retrieval ranks it —
+    // measured 2026-08-02, it does not (see the header).
     const pushes = await replay(newOwner());
-    // The measurement WI-6512 was filed to stop the next agent re-taking.
     expect(pushes[0]).toMatch(/ruled out|75ms|20-41ms/i);
   });
 
@@ -483,7 +518,7 @@ describe('P-018 acceptance — replaying the WI-6512 investigation', () => {
   });
 });
 
-describe('P-018 acceptance — firing early stays CHEAP across the whole replay', () => {
+describe('P-018 TRANSPORT half — firing early stays CHEAP across the whole replay', () => {
   it('pays for the answer ONCE, not on all thirteen calls (D-006 epoch dedup)', async () => {
     const pushes = await replay(newOwner());
     const carrying = pushes.filter((p) => p.includes(ANSWER_ID));
@@ -511,7 +546,7 @@ describe('P-018 acceptance — firing early stays CHEAP across the whole replay'
   });
 });
 
-describe('P-018 acceptance — the negative control', () => {
+describe('P-018 TRANSPORT half — the negative control', () => {
   it('says NOTHING when the answer was never recorded', async () => {
     // Without this the suite could pass by injecting on every call. Drop the
     // answer from both legs and the same replay must go silent.

@@ -3513,8 +3513,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         import('../task-manager/inventory'),
         import('../task-manager/enabled'),
       ]);
-      // WI-6499: fail CLOSED via the shared authority — this used to `.catch(() => true)`,
-      // which served a live inventory whenever the flag backend was unreachable.
+      // The fail direction lives in the shared authority, never here — this call site
+      // used to carry its own `.catch(() => true)`, which is how the flag ended up
+      // decorative (WI-6499). It is fail-OPEN again as of WI-6844, but by decision
+      // rather than by accident: the flag graduated to default-ON for the standard
+      // release, so an explicit OFF still serves `disabledInventory()` while an
+      // unreachable backend serves the real one.
       if (!(await isTaskManagerEnabled('sync:taskManager.inventory'))) return [disabledInventory()];
       return [
         await getTaskInventory({

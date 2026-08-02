@@ -18,35 +18,17 @@
  * never a hardcoded `localhost:5432` (embedded-pg is the ship target).
  */
 
-import postgres from 'postgres';
-import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
-import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
+import { getLongLivedAdminPool } from '../../long-lived-admin-pool';
 import type { MergeCursorStore } from './read-merge';
 
-/** Lazily-opened, process-lived shared pool. `max: 2` is ample — the cursor does
- *  one load at boot + a small periodic upsert per fold, never a hot query path. */
-let sharedSql: ReturnType<typeof postgres> | null = null;
-
-function sql(): ReturnType<typeof postgres> {
-  if (!sharedSql) {
-    sharedSql = postgres(getHarnessAdminUrl(), {
-      ...longLivedPoolConnectionOptions('pg-merge-cursor-store'),
-      max: 2,
-      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
-      idle_timeout: poolIdleTimeoutSec(),
-      prepare: false,
-    });
-  }
-  return sharedSql;
-}
-
-/** Test seam: reset the shared pool (so a test can point it at a fresh DSN /
- *  close it between cases). Not used in production. */
-export async function _resetPgMergeCursorPoolForTests(): Promise<void> {
-  const s = sharedSql;
-  sharedSql = null;
-  if (s) await s.end({ timeout: 5 }).catch(() => {});
-}
+/** Process-lived shared pool. `max: 2` is ample — the cursor does one load at boot + a
+ *  small periodic upsert per fold, never a hot query path. Re-resolves the admin URL on
+ *  every use and rebinds if the endpoint moved (EI-19306394439939264).
+ *
+ *  The former `_resetPgMergeCursorPoolForTests` seam is gone with the module-level `let`
+ *  it reset: it had zero callers in the tree, and the registry-wide
+ *  `_resetLongLivedAdminPoolsForTests()` now covers the same need centrally. */
+const sql = () => getLongLivedAdminPool('pg-merge-cursor-store', { max: 2, prepare: false });
 
 /**
  * WI-2105 — a `MergeCursorStore` scoped to one `(workspaceId, harnessSlug)`,

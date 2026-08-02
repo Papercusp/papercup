@@ -390,16 +390,17 @@ const LISTEN_EXEMPT: Record<string, string> = {
 };
 
 /** Transactional pools not yet migrated. This map must only ever SHRINK. */
-const PENDING_MIGRATION: Record<string, string> = {
-  'packages/operator-core/lib/dock-layouts.ts': 'transactional — migrate to getLongLivedAdminPool',
-  'packages/operator-core/lib/llm-testing/promotion/promote.ts': 'transactional — migrate',
-  'packages/operator-core/lib/llm-testing/promotion/candidates.ts': 'transactional — migrate',
-  'packages/operator-core/lib/system-health/desktop-perf-runs.ts': 'transactional — migrate',
-  'packages/operator-core/lib/sync/hyperbee/pg-merge-cursor-store.ts': 'transactional — migrate',
-  // MIGRATED 2026-08-02, entries deleted: the 4 endpoint-route/routes/admin/llm-tests-*.ts
-  // routes now use getLongLivedAdminPool. Deleting the entry is REQUIRED, not tidiness —
-  // the shrink-only test below fails while an entry matches nothing.
-};
+// EMPTY — the transactional migration is COMPLETE (2026-08-02). All 13 sites now use
+// getLongLivedAdminPool: the 4 endpoint-route/routes/admin/llm-tests-*.ts routes, the 4
+// llm-testing/{telemetry,ledger,replay,storage}.ts, then dock-layouts.ts,
+// llm-testing/promotion/{promote,candidates}.ts, system-health/desktop-perf-runs.ts and
+// sync/hyperbee/pg-merge-cursor-store.ts.
+//
+// Keep this map (do not delete the symbol): it is where a genuinely-not-yet-migrated
+// transactional site goes if one is ever introduced. Deleting an entry on migration is
+// REQUIRED, not tidiness — the shrink-only test below fails while an entry matches
+// nothing, which is what stops an exemption outliving its reason.
+const PENDING_MIGRATION: Record<string, string> = {};
 
 const URL_TRACKING_ALLOWLIST = { ...LISTEN_EXEMPT, ...PENDING_MIGRATION };
 

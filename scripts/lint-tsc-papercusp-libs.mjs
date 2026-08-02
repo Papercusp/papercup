@@ -167,26 +167,35 @@ export function main({
 
   if (listOnly) return unreadable.length > 0 ? 1 : 0;
 
-  // Present but gating NOTHING is the silent-un-gating class this item exists to stop — the
-  // same reasoning as `lint:design-primitives` pinning its files through a router that
-  // hard-fails a zero match. Fail LOUDLY instead of reporting a vacuous green.
+  // Present but gating NOTHING must never be reported as a pass — but it must not RED the
+  // release gate either, and that distinction was worth getting right. `libs/papercusp` is a
+  // git SUBMODULE: the candidate tree checks it out at the superproject's PINNED commit, which
+  // can legitimately predate the typecheck scripts (the live papercup-checkpoint tree, pinned
+  // Jul 2, declares ZERO of them). Reddening here would hold `main` for the WHOLE FLEET on a
+  // stale pin — "a condition no commit caused", which is precisely what the WI-6768 adoption
+  // probe was made report-only to avoid.
+  //
+  // So the anti-silent-un-gating protection lives where it cannot hold the fleet hostage: a
+  // WARN here (never a silent green — the operator log says the gate covered nothing), plus a
+  // test asserting the REAL tree still declares them (lint-tsc-papercusp-libs.test.ts). A
+  // genuine removal reds a TEST at development time; a stale submodule pin just warns.
   if (packages.length === 0) {
-    error(
-      '\n✗ libs/papercusp is present but NO package declares a `typecheck` script.\n' +
-        '  This gate has lost its subjects — either the scripts were removed (restore them) or\n' +
-        '  they moved (update discovery in scripts/lint-tsc-papercusp-libs.mjs). Refusing to\n' +
-        '  report a vacuous pass: a gate that checks nothing must never look green (WI-6841).',
+    warn(
+      '\n⚠ libs/papercusp is present but NO package declares a `typecheck` script — this run\n' +
+        '  gated NOTHING. Not failing the release (the submodule pin may simply predate the\n' +
+        '  scripts), but this is NOT evidence that libs/papercusp typechecks. If the scripts were\n' +
+        '  removed or moved, restore them / update discovery in scripts/lint-tsc-papercusp-libs.mjs.',
     );
-    return 1;
+    return 0;
   }
 
   const results = [];
   for (const pkg of packages) {
     const started = Date.now();
-    const r = runOne(pkg);
+    const r = runOne(pkg, spawn, warn);
     const secs = ((Date.now() - started) / 1000).toFixed(1);
     const mark = r.status === 'passed' ? '✓' : r.status === 'skipped-oom' ? '⚠' : '✗';
-    console.log(`${mark} ${pkg.rel} (${secs}s)${r.status === 'skipped-oom' ? ' — SKIPPED (OOM)' : ''}`);
+    log(`${mark} ${pkg.rel} (${secs}s)${r.status === 'skipped-oom' ? ' — SKIPPED (OOM)' : ''}`);
     results.push(r);
   }
 
@@ -195,18 +204,18 @@ export function main({
 
   if (failed.length) {
     for (const f of failed) {
-      console.error(`\n--- ${f.rel} — npm run typecheck exited ${f.exit}${f.signal ? ` (${f.signal})` : ''} ---`);
+      error(`\n--- ${f.rel} — npm run typecheck exited ${f.exit}${f.signal ? ` (${f.signal})` : ''} ---`);
       if (f.infrastructure) {
-        console.error(
+        error(
           '⚠ NON-ZERO EXIT WITH ZERO PARSEABLE `error TS` LINES — treat this as an INFRASTRUCTURE\n' +
             '  failure (a crashed/misconfigured tsc), NOT as "0 errors" (WI-4721).',
         );
       }
-      console.error(f.output.trimEnd());
+      error(f.output.trimEnd());
     }
   }
 
-  console.log(
+  log(
     `\nlibs/papercusp typecheck: ${results.filter((r) => r.status === 'passed').length} passed, ` +
       `${failed.length} failed${skipped.length ? `, ${skipped.length} skipped (OOM)` : ''}` +
       `${unreadable.length ? `, ${unreadable.length} unreadable package.json` : ''}.`,
@@ -215,4 +224,8 @@ export function main({
   return failed.length > 0 || unreadable.length > 0 ? 1 : 0;
 }
 
-process.exit(main());
+// Only run when invoked as a CLI — the test imports the pure pieces above, and a module-level
+// process.exit() would tear the test runner down on import (same pattern as lint-tsc.mjs).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exit(main());
+}

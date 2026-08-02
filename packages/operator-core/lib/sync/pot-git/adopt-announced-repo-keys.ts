@@ -27,6 +27,22 @@
  * reason, which is also why this pass must run AFTER it: the backfill writes the
  * guess down, this pass corrects it against the owner.
  *
+ * ⚠ WHY A FEDERATED-IDENTITY ENTRY IS SKIPPED ENTIRELY (live regression fixed
+ * 2026-08-02). `byPotId` is keyed only by `potId` and is last-write-wins across
+ * EVERY discovered hive descriptor sharing that potId — including a WEAKER
+ * peer's own bare-slug self-announce. An entry that already carries its own
+ * `github_repository_id`/`github_remote` (see {@link hasFederatedIdentity}) can
+ * derive its identity with certainty and IS, or is as good as, the owner — it
+ * must never adopt from that map, strong or not. Live on 2026-08-02: the
+ * tower's own `papercusp` entry (id `1223568103`) was flipped from the correct
+ * `gh-1223568103` to the rig's bare `papercusp`, stamped `'peer'`, because the
+ * only gate was `pot_repo_key_source === 'local'` — which a correctly-derived
+ * value also carries. This pass now (a) never adopts INTO a federated-identity
+ * entry, and (b) actively RESTORES one if a prior (buggy) pass already
+ * corrupted it — the corruption is otherwise permanent: `canonicalRepoKey`
+ * treats any existing pin as authoritative forever, so the ordinary pin-first
+ * backfill (`pinRepoKeysForWorkspace`) never revisits an already-pinned entry.
+ *
  * ⚠ WHAT ADOPTION ALONE DOES NOT FIX. Re-keying makes this device ASK for the
  * right repo; it does not stop a peer from serving a SUPERSEDED store under the
  * old key. The live incident stayed invisible for 7 days precisely because the
@@ -44,7 +60,7 @@ import {
   type HarnessRegistry,
   type ProjectEntry,
 } from '../../harness-registry';
-import { adoptRepoKey } from './repo-identity';
+import { adoptRepoKey, deriveRepoKey, hasFederatedIdentity } from './repo-identity';
 
 /** The only shape this needs from a discovered hive (hive-directory.ts). */
 export interface AnnouncedHomeKey {
@@ -65,6 +81,11 @@ export interface AdoptAnnouncedRepoKeysDeps {
 export interface AdoptAnnouncedRepoKeysResult {
   /** Entries whose key changed to the owner's announced value. */
   adopted: { slug: string; from: string | undefined; to: string }[];
+  /** Entries with their own upstream coords whose OWN derived identity was
+   *  restored — either because a prior (buggy) pass had mis-adopted a
+   *  weaker peer's announced value over it, or any other drift. These never
+   *  came from `byPotId`; see {@link hasFederatedIdentity}. */
+  restoredOwnIdentity: { slug: string; from: string | undefined; to: string }[];
   /** Entries already carrying the announced key (or already peer-adopted). */
   unchanged: number;
   wrote: boolean;
@@ -107,7 +128,7 @@ export async function adoptAnnouncedRepoKeysForWorkspace(
     try {
       announced = await listAnnounced();
     } catch {
-      return { adopted: [], unchanged: 0, wrote: false };
+      return { adopted: [], restoredOwnIdentity: [], unchanged: 0, wrote: false };
     }
 
     // Only announces that actually carry a home key and a TRUSTWORTHY slug.
@@ -116,10 +137,13 @@ export async function adoptAnnouncedRepoKeysForWorkspace(
       if (!h.homeRepoKey || h.potIdSynthetic) continue;
       byPotId.set(h.potId, h.homeRepoKey);
     }
-    if (byPotId.size === 0) return { adopted: [], unchanged: 0, wrote: false };
+    if (byPotId.size === 0) {
+      return { adopted: [], restoredOwnIdentity: [], unchanged: 0, wrote: false };
+    }
 
     const reg = await load(workspaceId);
     const adopted: { slug: string; from: string | undefined; to: string }[] = [];
+    const restoredOwnIdentity: { slug: string; from: string | undefined; to: string }[] = [];
     let unchanged = 0;
     // A key that was already correct but is only now provable as the OWNER's
     // (source 'local' → 'peer'). Worth persisting — it stops a later pass from
@@ -128,6 +152,24 @@ export async function adoptAnnouncedRepoKeysForWorkspace(
 
     for (const entry of reg.projects) {
       if (!isLocalPotHome(entry)) continue;
+
+      if (hasFederatedIdentity(entry)) {
+        // This entry can derive its OWN identity with certainty from real
+        // upstream coords — it must never adopt from `byPotId` (see the
+        // header). Force it back to its own derivation; an already-correct
+        // entry is a true no-op, so this is safe to run every boot.
+        const ownKey = deriveRepoKey(entry);
+        const before = entry.pot_repo_key;
+        if (before === ownKey) {
+          unchanged += 1;
+          continue;
+        }
+        entry.pot_repo_key = ownKey;
+        entry.pot_repo_key_source = 'local';
+        restoredOwnIdentity.push({ slug: entry.slug, from: before, to: ownKey });
+        continue;
+      }
+
       const announcedKey = byPotId.get(entry.slug);
       if (!announcedKey) continue;
 
@@ -151,9 +193,9 @@ export async function adoptAnnouncedRepoKeysForWorkspace(
       adopted.push({ slug: entry.slug, from: before, to: next.key });
     }
 
-    if (adopted.length === 0) {
+    if (adopted.length === 0 && restoredOwnIdentity.length === 0) {
       if (restamped > 0) await save(reg, workspaceId).catch(() => {});
-      return { adopted, unchanged, wrote: restamped > 0 };
+      return { adopted, restoredOwnIdentity, unchanged, wrote: restamped > 0 };
     }
 
     await save(reg, workspaceId);
@@ -165,13 +207,20 @@ export async function adoptAnnouncedRepoKeysForWorkspace(
           `cold-join the pot under the new key (EI-18788176839043286).`,
       );
     }
-    return { adopted, unchanged, wrote: true };
+    for (const r of restoredOwnIdentity) {
+      console.log(
+        `[pot-git] ${r.slug}: restored its own federated repoKey '${r.to}'` +
+          `${r.from ? ` (was '${r.from}')` : ''} — this entry has its own upstream coords ` +
+          `and must never adopt a peer's announced value over them (EI-18788176839043286).`,
+      );
+    }
+    return { adopted, restoredOwnIdentity, unchanged, wrote: true };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     console.warn(
       `[pot-git] workspace '${workspaceId}': announced-repoKey adoption failed (${error}) — ` +
         `keys are unchanged and the next boot retries.`,
     );
-    return { adopted: [], unchanged: 0, wrote: false, error };
+    return { adopted: [], restoredOwnIdentity: [], unchanged: 0, wrote: false, error };
   }
 }

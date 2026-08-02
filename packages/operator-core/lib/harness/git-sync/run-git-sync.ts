@@ -398,6 +398,43 @@ const conflictedFiles = async (runGit: RunGit, repo: string): Promise<string[]> 
   return r.code === 0 ? r.stdout.trim().split('\n').filter(Boolean) : [];
 };
 
+/** WI-6824: a merge that fails with ZERO conflicted paths is classified `error`, and that
+ *  message is the ONLY record of it — git-sync NULLs `last_error` on the next healthy tick,
+ *  so an INTERMITTENT failure leaves nothing to correlate against afterwards (a fault that
+ *  alarmed the fleet for ~10h across 39 sweeps left zero occurrences in 12h of journald, and
+ *  was consequently not reproducible from any on-disk state).
+ *
+ *  Resolve the ref pair the merge ACTUALLY used, so the next flap identifies which pair was
+ *  unrelated instead of being unfixable-by-inspection. `merge-base` is the discriminator:
+ *  it exits non-zero with no output exactly when the histories are unrelated, which is the
+ *  reported failure. `git-dir` + `url` are here because the cheapest way to get a genuine
+ *  unrelated-history refusal between two healthy repos is to resolve the WRONG repository —
+ *  a stale submodule git-dir path (libs/generic/chat-protocol still resolves its git-dir
+ *  through the pre-move `.git/modules/libs/chat-protocol`) would present exactly this way,
+ *  and no amount of after-the-fact inspection of the intended repo can distinguish it. */
+const describeFailedMerge = async (
+  runGit: RunGit,
+  repo: string,
+  remote: string,
+  branch: string,
+  attempt: 'initial' | 'non-ff-retry',
+): Promise<string> => {
+  const read = async (args: string[]): Promise<string> => {
+    const r = await runGit(args, repo);
+    const out = r.stdout.trim();
+    return r.code === 0 && out ? out : '<none>';
+  };
+  const remoteRef = `${remote}/${branch}`;
+  const head = await read(['rev-parse', '--short', 'HEAD']);
+  const remoteSha = await read(['rev-parse', '--short', '--verify', remoteRef]);
+  // exits 1 with empty stdout when there is NO common ancestor — i.e. the refusal itself.
+  const rawBase = await read(['merge-base', 'HEAD', remoteRef]);
+  const base = rawBase === '<none>' ? 'NONE(unrelated)' : rawBase.slice(0, 12);
+  const gitDir = await read(['rev-parse', '--absolute-git-dir']);
+  const url = await read(['config', '--get', `remote.${remote}.url`]);
+  return `attempt=${attempt} HEAD=${head} ${remoteRef}=${remoteSha} merge-base=${base} git-dir=${gitDir} url=${url}`;
+};
+
 // Exported for the non-FF detection table test (test-coverage-gap G21): a git
 // wording change must fail a test, not silently turn retriable rejections into
 // hard escalations.
@@ -1035,7 +1072,11 @@ async function reconcileAndPushOneRepo(
     // merge-resolver can fix (e.g. "local changes would be overwritten", "not
     // something we can merge") — surface as error, don't dispatch a resolver at it.
     if (conflicted.length === 0) {
-      return { status: 'error', message: `merge failed (no conflicted paths): ${mergeOut.slice(0, 300)}` };
+      // WI-6824: LOG it as well as returning it — `last_error` is nulled by the next
+      // healthy tick, so for an intermittent fault the log line is the only durable trace.
+      const diag = await describeFailedMerge(runGit, repoPath, remote, branch, 'initial');
+      o.log(`[git-sync] ${repoPath}: merge failed (no conflicted paths) — ${diag}: ${mergeOut.slice(0, 300)}`);
+      return { status: 'error', message: `merge failed (no conflicted paths) [${diag}]: ${mergeOut.slice(0, 300)}` };
     }
     return { status: 'conflict', conflictedFiles: conflicted };
   }
@@ -1053,7 +1094,9 @@ async function reconcileAndPushOneRepo(
         const m2Out = `${m2.stdout}\n${m2.stderr}`.trim();
         await runGit(['merge', '--abort'], repoPath);
         if (conflicted.length === 0) {
-          return { status: 'error', message: `merge failed (no conflicted paths): ${m2Out.slice(0, 300)}` };
+          const diag = await describeFailedMerge(runGit, repoPath, remote, branch, 'non-ff-retry');
+          o.log(`[git-sync] ${repoPath}: merge failed (no conflicted paths) — ${diag}: ${m2Out.slice(0, 300)}`);
+          return { status: 'error', message: `merge failed (no conflicted paths) [${diag}]: ${m2Out.slice(0, 300)}` };
         }
         return { status: 'conflict', conflictedFiles: conflicted };
       }

@@ -13,10 +13,11 @@
  * getHarnessAdminUrl(), sql.json() for the jsonb body.
  */
 
+// `postgres` stays imported for the JSONValueCompat type below (the value-side pool now
+// comes from getLongLivedAdminPool) — same retained-type-only import as llm-testing/storage.ts.
 import postgres from 'postgres';
-import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { sharedUtilityPoolMax } from '../resource-profile';
-import { getHarnessAdminUrl } from '../embedded-pg-discovery';
+import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 import type {
   AdminTestCheckResult,
   AdminTestStatus,
@@ -137,19 +138,10 @@ export function computeDesktopPerfTrend(runsNewestFirst: DesktopPerfRun[]): Desk
 /** The exact value type postgres-js `sql.json()` accepts (llm-testing/storage.ts pattern). */
 type JSONValueCompat = Parameters<ReturnType<typeof postgres>['json']>[0];
 
-let pool: ReturnType<typeof postgres> | null = null;
-function db() {
-  if (!pool) {
-    pool = postgres(getHarnessAdminUrl(), {
-      ...longLivedPoolConnectionOptions('desktop-perf-runs'),
-      max: sharedUtilityPoolMax(),
-      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
-      idle_timeout: poolIdleTimeoutSec(),
-      prepare: false,
-    });
-  }
-  return pool;
-}
+// Transactional pool — re-resolves the admin URL on every use and rebinds if the endpoint
+// moved (EI-19306394439939264). Shared connection options + idle policy come with it.
+const db = () =>
+  getLongLivedAdminPool('desktop-perf-runs', { max: sharedUtilityPoolMax(), prepare: false });
 
 function nextPerfRunId(): string {
   return `perfrun-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

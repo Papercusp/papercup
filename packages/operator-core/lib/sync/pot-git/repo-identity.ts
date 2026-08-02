@@ -127,6 +127,27 @@ export function deriveRepoKey(entry: RepoIdentityEntry): string {
 }
 
 /**
+ * True when `entry` carries real upstream coords (`github_repository_id` or
+ * `github_remote`) — i.e. rung 1 or 2 of {@link repoKeyLadder} is available,
+ * so this entry can derive its OWN federated identity with confidence rather
+ * than falling back to the bare local `slug` (rung 3, merely conventional).
+ *
+ * Exists so a caller like `adoptAnnouncedRepoKeysForWorkspace` can tell "this
+ * entry IS self-sufficient — it should mint, never adopt" apart from "this
+ * entry has nothing of its own — it is exactly who adoption is for" (see that
+ * module's header). Conflating the two let a self-sufficient entry adopt a
+ * WEAKER peer's bare-slug guess over its own correct `gh-<id>` (live
+ * 2026-08-02: the tower's own `papercusp` entry flipped from `gh-1223568103`
+ * to the rig's bare `papercusp`, source `'peer'`, because the adopt pass had
+ * no way to recognize the tower didn't need to adopt anything at all).
+ */
+export function hasFederatedIdentity(entry: RepoIdentityEntry): boolean {
+  const id = entry.github_repository_id;
+  if (typeof id === 'number' && Number.isFinite(id) && id > 0) return true;
+  return !!entry.github_remote && !!parseGithubUrl(entry.github_remote);
+}
+
+/**
  * The canonical cross-device repoKey for `entry` — see module header. Pure
  * (no IO): callers already have `entry` from `loadHarnessRegistry()`.
  *
