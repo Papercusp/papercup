@@ -359,3 +359,69 @@ export async function planItemLaneBlockReason(
     return null;
   }
 }
+
+export interface PlanItemLiveClaimBlock {
+  reason: string;
+  planSlug: string;
+  itemId: string;
+  claimedBy: string;
+  claimedByLabel: string | null;
+}
+
+/**
+ * WI-5343: an UNASSIGNED work-item's linked plan item can be under a LIVE claim
+ * lease (`harness_shared.plan_item_claims`) even though the plan parser's
+ * `effectiveStatus` never reflects it — `effectiveStatus` is a structural
+ * (blocked-by-graph) computation, not "who currently holds the pen". Evidence:
+ * WI-5137 sat in the claimable backlog, unassigned/todo, while its linked plan
+ * item P-402 was live-claimed by a DIFFERENT session with a fresh checkpoint —
+ * `planItemLaneBlockReason` above cleared it (P-402 wasn't structurally
+ * blocked), so nothing stopped a self-selector from picking up work someone
+ * else was already actively executing (caught only by hand, WI-5137's own
+ * comment thread).
+ *
+ * Distinct from `plan-item-claim-collision.ts`'s `planItemClaimCollision`,
+ * which detects the OPPOSITE drift (an ASSIGNED work-item whose plan item has
+ * since been claimed by someone other than ITS OWN assignee — a live-holder
+ * bug on a row you already hold). This checks the pre-claim question: is the
+ * plan item already spoken for by ANYONE, so an unassigned work-item should
+ * not be advertised as freely self-selectable in the first place? Ownership
+ * doesn't matter here (even "held by me already" means this isn't NEW
+ * self-selectable work — the caller would see their own claim via their own
+ * assignments fold instead).
+ *
+ * Fails OPEN (null) on any lookup error, same contract as the sibling checks
+ * in this file — a claims-store hiccup must never wedge work_items:observe /
+ * coord:orient's claimable read.
+ */
+export async function planItemLiveClaimReason(
+  workItem: Pick<WorkItem, 'payload' | 'harness'> & Partial<Pick<WorkItem, 'id' | 'family'>>,
+): Promise<PlanItemLiveClaimBlock | null> {
+  const stamp = await resolvePlanItemStamp(workItem);
+  if (!stamp) return null;
+  try {
+    const [{ resolvePlanScope }, { getClaim }] = await Promise.all([
+      import('../agent-tools/plans/source'),
+      import('../plan-items/claims'),
+    ]);
+    const { workspaceId, harnessSlug } = await resolvePlanScope({ harnessSlug: workItem.harness ?? undefined });
+    for (const itemId of stamp.item_ids) {
+      const claim = await getClaim(workspaceId, harnessSlug, stamp.plan_slug, itemId);
+      if (claim && !claim.expired) {
+        return {
+          reason:
+            `plan-item ${stamp.plan_slug}#${itemId} — which this work-item implements — is currently held by a ` +
+            `LIVE claim from ${claim.ownerLabel ?? claim.owner}; not eligible for self-select until it releases.`,
+          planSlug: stamp.plan_slug,
+          itemId,
+          claimedBy: claim.owner,
+          claimedByLabel: claim.ownerLabel,
+        };
+      }
+    }
+    return null;
+  } catch {
+    // Fail OPEN — a claims-store hiccup must never wedge the shared claim path.
+    return null;
+  }
+}

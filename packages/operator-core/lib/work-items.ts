@@ -4706,6 +4706,19 @@ export interface WorkItemObservation {
    * the hold short of a bounced `claim_hold_blocked` claim attempt.
    */
   claimHoldParked?: boolean;
+  /**
+   * WI-5343 (the "live lane claim" gap): set when the item is UNCLAIMED yet its
+   * linked plan item is currently held by a LIVE `plan_item_claims` lease —
+   * `effectiveStatus` (the `planItemBlocked` check above) is a structural
+   * blocked-by-graph computation and says nothing about who currently holds
+   * the pen, so this catches the case that check does not: an unassigned
+   * work-item whose plan item someone is actively executing right now.
+   * Distinct from `plan-item-claim-collision.ts`'s drift check (which fires on
+   * an ASSIGNED item whose plan item has since drifted to a DIFFERENT owner);
+   * this is the pre-claim question of whether the plan item is already spoken
+   * for by anyone at all.
+   */
+  planItemLiveClaimed?: { reason: string; planSlug: string; itemId: string; claimedBy: string; claimedByLabel: string | null };
 }
 
 /**
@@ -4770,7 +4783,7 @@ export async function observeWorkItem(
   // SAME reason instead of only discovering it via a bounced claim. Lazy import to
   // avoid a module-cycle with the scheduler layer (which imports work-items types).
   if (unclaimed) {
-    const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
+    const { planItemLaneBlockReason, planItemLiveClaimReason } = await import('./scheduler/plan-item-lane-guard');
     const blocked = await planItemLaneBlockReason(wi);
     if (blocked) {
       return {
@@ -4779,6 +4792,22 @@ export async function observeWorkItem(
         claimedBy: wi.assignee,
         gated: true,
         planItemBlocked: blocked,
+      };
+    }
+    // WI-5343: effectiveStatus alone misses a plan item that is currently LIVE-
+    // CLAIMED by an agent (structural status vs "who holds the pen right now") —
+    // an unassigned work-item whose linked plan item is mid-flight under a live
+    // claim is not really open to a self-selector even though every structural
+    // floor above passed. Surface it the same way (see planItemLiveClaimReason's
+    // doc comment for the WI-5137 incident this closes).
+    const liveClaim = await planItemLiveClaimReason(wi);
+    if (liveClaim) {
+      return {
+        item: wi,
+        available: false,
+        claimedBy: wi.assignee,
+        gated: true,
+        planItemLiveClaimed: liveClaim,
       };
     }
   }
