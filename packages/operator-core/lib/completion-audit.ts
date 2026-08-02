@@ -94,6 +94,31 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
  *    the NEXT one instead of hand-verifying source for every plain `no-completion-record`
  *    hit (most of which are the benign, expected system dedup flips).
  *
+ *    **Scoped to `origin = 'local'` (EI-18821460229478708).** A row's own local write
+ *    path is the ONLY thing this bucket can investigate — this install's `setIssueState`
+ *    / `setWorkItemState`, not a REMOTE peer's. A federated (`origin = 'remote'`) row
+ *    with the same bare shape says nothing about a local write path skipping the gate;
+ *    it says its ORIGIN pot's local completion columns did not survive federation
+ *    (its own concern, covered by `federated-column-completeness.integration.test.ts`,
+ *    never by this per-close audit). Measured live on this install (2026-08-02): 7,461
+ *    of 9,135 raw hits (82%) were `origin = 'remote'` — overwhelmingly residue from the
+ *    authority/ref federation gap mig 708 (EI-18785839681430807) fixed going FORWARD
+ *    but did not backfill, plus rows still arriving from any peer pot that has not yet
+ *    picked up that migration. Counting them here sent a leader after a bug that either
+ *    was never local, or was already fixed a week earlier (EI-18821460229478708's own
+ *    filing history). They remain visible, un-hidden, under the sibling
+ *    `no-completion-record-federated` bucket below — never silently dropped, just
+ *    correctly labeled as not-this-install's-write-path.
+ *
+ *  - `no-completion-record-federated` (EI-18821460229478708) — the FEDERATED sibling of
+ *    `no-completion-record-suspicious`: same bare shape (no ref, no authority, not a
+ *    recognized system bypass identity) but `origin = 'remote'`. Deliberately its own
+ *    NON-actionable bucket rather than folded into `no-completion-record` (which would
+ *    hide the count) or left inside `-suspicious` (which would keep sending
+ *    investigators after another pot's write path, or its own already-fixed history).
+ *    A hit here is diagnostic ONLY about federation transport / the origin pot's own
+ *    completion integrity — never about this install.
+ *
  *  - `geometry-unverified` (WI-5891, the P-014/WI-5874 audit follow-up) — a terminal row
  *    whose `filesChanged` touches a layout-bearing file ({@link touchesLayoutBearingFiles}:
  *    `*.css`/`*.tsx`/`*.jsx`) while `verifiedHow` is `'unit'` or ABSENT. This is the

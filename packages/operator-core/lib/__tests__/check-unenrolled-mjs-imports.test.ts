@@ -26,15 +26,11 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
-import {
-  BASELINE,
-  baselineKey,
-  isSuppressed,
-  offendersIn,
-  scan,
-  findMjsSpecifiers,
-} from '../../../../scripts/check-unenrolled-mjs-imports.mjs';
+// @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only. TS7016
+// attaches to the specifier line, which for a multi-line import is the `from` line, not
+// the `import {` line — so this must be a single-line import for the directive to land
+// on the line it actually suppresses (the exact multi-line-anchoring bug this file guards).
+import { BASELINE, baselineKey, isSuppressed, offendersIn, scan, findMjsSpecifiers } from '../../../../scripts/check-unenrolled-mjs-imports.mjs';
 
 type Offender = { file: string; line: number; spec: string; target: string };
 
