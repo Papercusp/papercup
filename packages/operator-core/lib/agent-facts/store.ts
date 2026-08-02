@@ -943,10 +943,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // tail would make the cap a function of how often facts were CORRECTED rather
   // than how many exist — a heavily-revised fact would evict its own neighbours.
   //
-  // WI-6935: the typed SAFETY slots are EXEMPT from cap eviction, and are excluded
-  // from the ranking entirely so they neither evict nor count toward the offset.
+  // WI-6935 (a): the typed SAFETY slots are EXEMPT from cap eviction, and are
+  // excluded from the ranking entirely so they neither evict nor count toward the
+  // offset.
   // Eviction writes `retracted_at` — the SAME field a deliberate facts:retract
-  // writes — so an evicted fact is indistinguishable from one somebody decided no
+  // writes — so an evicted fact WAS indistinguishable from one somebody decided no
   // longer applies, and listLapsedWallFacts (which filters `retracted_at IS NULL`)
   // can never see it again. For a `wall:` fact that is precisely the failure the
   // slot exists to prevent: absence must never read as "the wall cleared". Ranking
@@ -956,8 +957,17 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // facts evicted from harness:papercusp in 25 minutes, including still-valid ones
   // with TTLs months out. These two prefixes are ~8 live rows across ALL scopes, so
   // exempting them cannot meaningfully weaken the cap.
+  //
+  // WI-6935 (b): stamp `evicted_at` ALONGSIDE `retracted_at` (migration 722), so a
+  // machine eviction is finally distinguishable from a deliberate retract —
+  // `evicted_at IS NOT NULL` ⇒ the cap chose it; NULL ⇒ somebody decided it no
+  // longer applies. It is stamped IN ADDITION, never INSTEAD: `retracted_at IS NULL`
+  // is baked into this table's partial indexes (444/689/690) and the federation
+  // update-capture triggers (461/462), so moving eviction off that field would
+  // spring every evicted row back into every fold — the cap would silently stop
+  // capping. Additive keeps behavior identical and adds only the provenance.
   await sql`
-    UPDATE harness_shared.agent_facts SET retracted_at = now()
+    UPDATE harness_shared.agent_facts SET retracted_at = now(), evicted_at = now()
      WHERE source_hive IS NULL
        AND superseded_at IS NULL
        AND (workspace_id, scope, coalesce(scope_ref,''), key) IN (

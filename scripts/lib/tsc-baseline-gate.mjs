@@ -115,6 +115,11 @@ import { resolve } from 'node:path';
  * @property {number} baselineTotal
  * @property {Record<string, number>} [newBaselineByFile]
  * @property {string[]} [brokenFiles]
+ * @property {string[]} [unattributedBrokenFiles] - TS1xxx-broken files OUTSIDE the caller's
+ *   `changedFiles` set (EI-19321179234197157). Never gates the verdict — reported so the caller
+ *   knows tsc's counts for other files may be under/over-reported while these stay broken — but a
+ *   parse error in a file the caller did not name must not fail a `--mine`/`--files`-scoped run,
+ *   mirroring how an unattributed TYPE-error regression is `peerDrift`, not a gate failure.
  */
 
 /**
@@ -414,8 +419,26 @@ export function decidePerFile({
 }) {
   const total = sumValues(currentByFile);
   const baselineTotal = sumValues(baselineByFile);
-  if (brokenFiles.length > 0) {
-    return { verdict: 'fail-syntax', brokenFiles, regressions: [], improvements: [], total, baselineTotal };
+
+  // EI-19321179234197157: SCOPE the syntax hard-fail the same way a type-error regression is
+  // scoped. Bare/unscoped (changedFiles === null) keeps the original behaviour — ANY broken file
+  // fails, because there is no "yours vs a peer's" distinction to make. Under `--mine`/`--files`,
+  // a TS1xxx parse error OUTSIDE the caller's own changed-file set is a peer's in-flight edit on
+  // this shared checkout (the same population `peerDrift`/`newFiles` already cover for type
+  // errors) — it must not fail a run that named a specific, unrelated file set. A broken file the
+  // caller DID name still hard-fails unconditionally, same as before.
+  const attributedBroken = changedFiles ? brokenFiles.filter((f) => changedFiles.has(f)) : brokenFiles;
+  const unattributedBroken = changedFiles ? brokenFiles.filter((f) => !changedFiles.has(f)) : [];
+  if (attributedBroken.length > 0) {
+    return {
+      verdict: 'fail-syntax',
+      brokenFiles: attributedBroken,
+      unattributedBrokenFiles: unattributedBroken,
+      regressions: [],
+      improvements: [],
+      total,
+      baselineTotal,
+    };
   }
 
   const allFiles = new Set([...Object.keys(currentByFile), ...Object.keys(baselineByFile)]);

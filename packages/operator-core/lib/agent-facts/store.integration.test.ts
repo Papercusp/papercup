@@ -396,6 +396,37 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(keys).toContain('wall:owner-must-ratify');
     expect(keys).toContain('dead-end:already-tried');
   });
+
+  it('WI-6935 (b): a cap eviction is distinguishable from a deliberate retract via evicted_at', async () => {
+    const scopeRef = 'su-evicted-at';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // `deliberate` is asserted first and then explicitly retracted, so it carries a
+    // retracted_at that the cap did NOT write — the control case.
+    await assertFact({ ...base, key: 'deliberate', body: 'retract me on purpose' }, db.sql);
+    await retractFact({ scope: 'owner', scopeRef, key: 'deliberate', workspaceId: WS }, db.sql);
+
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 10; i++) {
+      await assertFact({ ...base, key: `ordinary-${i}`, body: `n ${i}` }, db.sql);
+    }
+
+    const rows = await db.sql<{ key: string; retracted: boolean; evicted: boolean }[]>`
+      SELECT key,
+             (retracted_at IS NOT NULL) AS retracted,
+             (evicted_at   IS NOT NULL) AS evicted
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
+         AND superseded_at IS NULL
+         AND key IN ('deliberate', 'ordinary-0')`;
+    const byKey = new Map(rows.map((r) => [r.key, r]));
+
+    // Both rows are retracted — that is exactly the ambiguity this column resolves.
+    expect(byKey.get('ordinary-0')?.retracted).toBe(true);
+    expect(byKey.get('deliberate')?.retracted).toBe(true);
+    // …and only the machine-chosen one is stamped evicted.
+    expect(byKey.get('ordinary-0')?.evicted).toBe(true);
+    expect(byKey.get('deliberate')?.evicted).toBe(false);
+  });
 });
 
 describe('P-008 (b) depends_on / kind / claim (migration 690)', () => {

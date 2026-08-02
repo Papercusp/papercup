@@ -223,6 +223,32 @@ export interface ActiveCheckpointCheck {
    *  long as your commit is an ancestor of whatever it judges). `current_candidate`/
    *  `candidate_stale` describe a HYPOTHETICAL fresh launch, never this in-flight run. */
   held_externally?: boolean;
+  /** WI-6962: the `systemctl show` probe could not be TRUSTED — its exit status was non-zero
+   *  or its output did not contain an `ActiveState` key at all. This is NOT the same as
+   *  "nothing is running", and conflating the two is what made this detection fail OPEN.
+   *
+   *  Measured 2026-08-02: `systemctl --user show <unknown-unit>` exits **0** and prints
+   *  `ActiveState=inactive` / `MainPID=0`. So a well-formed negative ALWAYS arrives as
+   *  exit 0 WITH an `ActiveState` key — which makes the converse decisive: a non-zero exit
+   *  or a missing key means the probe itself failed (a fork that lost to host pressure, a
+   *  `--user` manager too starved to answer), never that the unit is idle. The old code
+   *  parsed that empty output into `activeState = ''`, fell through the active-state test,
+   *  and returned `{ active: false }` — so `launchDetachedCheckpoint` launched straight
+   *  over a live 8-fork suite. `systemd-run --unit=<same>` does not refuse that collision
+   *  the way this file's comments assumed: journalctl for the run killed at 06:27:05Z shows
+   *  `Stopping` → `Stopped` → `Started` within one second, i.e. the transient unit was
+   *  REPLACED. Net effect: a healthy run 20 minutes into a ~34-55 min suite was destroyed
+   *  and left no red, no error, and no verdict event, so every agent parked on the gate's
+   *  outcome slept on a run that no longer existed (no verdict landed between 01:21Z and
+   *  06:33Z).
+   *
+   *  Set alongside `active: true` deliberately: an indeterminate probe must READ as "a run
+   *  may be in flight" to every consumer that only looks at `.active`, so the conservative
+   *  behaviour is the default one rather than something each caller has to remember. */
+  probe_failed?: boolean;
+  /** WI-6962: why the probe was not trusted (exit status / stderr excerpt), for the refusal
+   *  message — so a caller can tell a starved host from a genuinely broken systemctl. */
+  probe_detail?: string;
 }
 
 /** Minimal shape of a `child_process.spawnSync` result — injectable so
@@ -524,9 +550,35 @@ export function checkActiveCheckpointRun(
   ]);
   const props = parseSystemctlShow(r.stdout);
   const activeState = props.ActiveState ?? '';
+  // WI-6962: a negative is only believable when the probe itself succeeded. `systemctl --user
+  // show` exits 0 and emits `ActiveState=inactive` even for a unit it has never heard of
+  // (measured 2026-08-02), so a well-formed "nothing is running" ALWAYS carries an
+  // `ActiveState` key. Absence of that key — or a non-zero exit — therefore means the probe
+  // FAILED, and the previous code's `props.ActiveState ?? ''` silently turned exactly that
+  // case into a confident negative. See `probe_failed` for the harm.
+  if (r.status !== 0 || !Object.prototype.hasOwnProperty.call(props, 'ActiveState')) {
+    // The run-lock is an INDEPENDENT oracle (a plain file read, no fork), so consult it before
+    // giving up: it is what keeps a transiently-unforkable host from wedging the gate shut.
+    const lockHeld = checkRunLockHeld(root, pidAlive, readLockOwner);
+    const detail =
+      `systemctl show exited ${r.status ?? 'null (spawn failed)'}` +
+      `${Object.prototype.hasOwnProperty.call(props, 'ActiveState') ? '' : ' without an ActiveState property'}` +
+      `${r.stderr.trim() ? `: ${r.stderr.trim().slice(0, 200)}` : ''}`;
+    return {
+      active: true,
+      unit,
+      probe_failed: true,
+      probe_detail: detail,
+      ...(lockHeld.held
+        ? { started_at: lockHeld.started_at ?? null, elapsed_sec: lockHeld.elapsed_sec ?? null, held_externally: true }
+        : {}),
+      // Never replaceable: `candidate_stale` is what unlocks a stop, and we cannot know the
+      // candidate when we could not even read the unit's state.
+      candidate_stale: false,
+    };
+  }
   // 'active' = running; 'activating'/'reloading' = transient states of the same live unit.
-  // A NEVER-STARTED or GC'd unit shows 'inactive' (or systemctl exits non-zero with empty
-  // output for a truly unknown unit) — either way activeState won't be in this set.
+  // A NEVER-STARTED or GC'd unit shows 'inactive' — a TRUSTED negative, per the probe check above.
   if (activeState !== 'active' && activeState !== 'activating' && activeState !== 'reloading') {
     // WI-5685: the manual unit isn't active, but the shared RUN LOCK might still be held by a
     // process that never went through the manual unit at all (the hourly cron tick — see the
@@ -701,8 +753,14 @@ export interface LaunchCheckpointOpts {
   /** Integration tree root (default integrationRoot()). */
   root?: string;
   /** Skip the pre-launch active-run check (WI-1562) and attempt the launch regardless.
-   *  systemd's own same-unit collision guard is still the final backstop — force does NOT
-   *  stop/replace a genuinely active run, it only bypasses OUR proactive refusal. */
+   *  ⚠ WI-6962: this was documented as safe because "systemd's own same-unit collision guard
+   *  is still the final backstop". THAT IS FALSE, and the false belief is what made the
+   *  fail-open probe above look harmless. `systemd-run --collect --unit=<name>` against a
+   *  LIVE unit does not refuse: journalctl for the 2026-08-02T06:27:05Z launch shows
+   *  `Stopping` → `Stopped` → `Started` inside one second — the running suite was REPLACED
+   *  and killed mid-flight. So `force:true` DOES destroy an active run. Our proactive check
+   *  is the only guard there is; treat force as "kill whatever is running", not as a
+   *  no-op-if-busy. */
   force?: boolean;
   /** EI-9672: when the active run is CONFIRMED stale (`candidate_stale` — it's judging an
    *  older candidate than the current quiet-cut-eligible staging state, e.g. it's deep in
@@ -996,6 +1054,23 @@ export function launchDetachedCheckpoint(
 
   if (!opts.force) {
     const active = checkActiveCheckpointRun(root, execFn, readLogHead);
+    // WI-6962: an INDETERMINATE probe is not a refusal to launch "because something is
+    // running" — it is a refusal to GAMBLE. The costs are wildly asymmetric: refusing costs
+    // the caller one retry, while launching into a live run destroys 20+ minutes of an
+    // 8-fork suite and produces no verdict at all (systemd REPLACES the same-named transient
+    // unit rather than refusing the collision, so there is no backstop underneath us). Report
+    // it under its own reason so a caller can tell "wait for the run" from "the host could not
+    // answer" — they need opposite responses, and `force:true` still bypasses this.
+    if (active.probe_failed) {
+      return Promise.resolve({
+        launched: false,
+        unit,
+        argv: [],
+        logPath,
+        reason: 'probe_failed',
+        alreadyRunning: active,
+      });
+    }
     if (active.active) {
       // EI-9672: a CONFIRMED-stale active run (judging an older candidate than the current
       // quiet-cut-eligible staging state — e.g. deep in post-verdict salvage/refire on a

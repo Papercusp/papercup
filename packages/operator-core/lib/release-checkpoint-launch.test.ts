@@ -243,6 +243,71 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     expect(r.started_at).toBeNull();
     expect(r.eta_sec).toBeNull();
   });
+
+  // WI-6962: the probe used to fail OPEN — any systemctl failure parsed to `ActiveState=''`,
+  // fell through the active test, and returned active:false, so the launcher spawned straight
+  // over a live 8-fork suite (systemd REPLACES a same-named transient unit rather than
+  // refusing). These pin the distinction the old code could not express: a TRUSTED negative
+  // vs. "I could not tell".
+  describe('WI-6962 — an untrustworthy probe must not read as "nothing is running"', () => {
+    it('anchors the premise: a well-formed negative carries an ActiveState key (measured against real systemctl)', () => {
+      // `systemctl --user show <unknown-unit>` exits 0 with ActiveState=inactive/MainPID=0.
+      // That is what makes a MISSING key decisive evidence of a failed probe rather than idleness.
+      const execFn = fakeSystemctlShow({ ActiveState: 'inactive', MainPID: '0' });
+      const r = checkActiveCheckpointRun('/tree', execFn, () => null);
+      expect(r.active).toBe(false);
+      expect(r.probe_failed).toBeUndefined();
+    });
+
+    it('fails CLOSED when systemctl exits non-zero (host too starved to fork)', () => {
+      const execFn = vi.fn(() => ({ status: 1, stdout: '', stderr: 'Failed to connect to bus' }));
+      const r = checkActiveCheckpointRun('/tree', execFn, () => null);
+      expect(r.active).toBe(true);
+      expect(r.probe_failed).toBe(true);
+      expect(r.probe_detail).toContain('Failed to connect to bus');
+      // Never replaceable: we cannot know the candidate, so nothing may stop the run.
+      expect(r.candidate_stale).toBe(false);
+    });
+
+    it('fails CLOSED when spawnSync itself failed (status null, empty output)', () => {
+      const execFn = vi.fn(() => ({ status: null, stdout: '', stderr: '' }));
+      const r = checkActiveCheckpointRun('/tree', execFn, () => null);
+      expect(r).toMatchObject({ active: true, probe_failed: true });
+    });
+
+    it('fails CLOSED when the output parses but carries no ActiveState key', () => {
+      // The exact shape the old `props.ActiveState ?? ''` silently turned into a confident
+      // "inactive": a reply that succeeded but did not answer the question asked.
+      const execFn = fakeSystemctlShow({ MainPID: '0' });
+      const r = checkActiveCheckpointRun('/tree', execFn, () => null);
+      expect(r).toMatchObject({ active: true, probe_failed: true });
+    });
+
+    it('still reports the run-lock holder when the probe fails but the lock IS held', () => {
+      const startedAt = new Date(Date.now() - 9 * 60_000).toISOString();
+      const execFn = vi.fn(() => ({ status: 1, stdout: '', stderr: '' }));
+      const r = checkActiveCheckpointRun(
+        '/tree',
+        execFn,
+        () => null,
+        () => true, // pidAlive
+        () => ({ pid: 4242, startedAt }),
+      );
+      expect(r).toMatchObject({ active: true, probe_failed: true, held_externally: true, started_at: startedAt });
+      expect(r.elapsed_sec).toBeGreaterThanOrEqual(9 * 60 - 5);
+    });
+
+    it('launchDetachedCheckpoint REFUSES on an indeterminate probe and never spawns', async () => {
+      const execFn = vi.fn(() => ({ status: 1, stdout: '', stderr: 'bus error' }));
+      const spawnFn = vi.fn();
+      const r = await launchDetachedCheckpoint({ root: '/tree' }, spawnFn as never, execFn, () => null);
+      expect(r.launched).toBe(false);
+      expect(r.reason).toBe('probe_failed');
+      expect(r.alreadyRunning?.probe_failed).toBe(true);
+      // The whole point: no process was started over a possibly-live suite.
+      expect(spawnFn).not.toHaveBeenCalled();
+    });
+  });
 });
 
 // WI-5685: the manual unit only ever sees ITSELF — a cron-invoked run (spawned as a plain

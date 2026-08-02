@@ -87,6 +87,37 @@ export default defineTool({
     // agentRoles note above). Access control is the invoke allowlist; any invoke-allowed red-fixer
     // may fire a fresh green verdict.
     const result = await launchDetachedCheckpoint({ force: args.force, replaceStale: args.replaceStale });
+    // WI-6962: the host could not be asked whether a run is in flight, so we refused rather
+    // than gambled. This is a DIFFERENT answer from already_running and needs a different
+    // response: retry in a moment (the probe is a fork, and it fails under host pressure),
+    // do NOT reach for force — force replaces a live unit, which is the harm we just avoided.
+    if (!result.launched && result.reason === 'probe_failed') {
+      const a = result.alreadyRunning;
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              probe_failed: true,
+              unit: a?.unit ?? null,
+              probe_detail: a?.probe_detail ?? null,
+              held_externally: a?.held_externally ?? false,
+              started_at: a?.started_at ?? null,
+              elapsed_sec: a?.elapsed_sec ?? null,
+              note:
+                `NOT launched: could not determine whether a checkpoint run is already in flight (${a?.probe_detail ?? 'systemctl probe failed'}). ` +
+                'This is almost always transient host pressure starving the `systemctl show` fork — WAIT ~30s and call again; the probe is cheap and self-heals. ' +
+                'Do NOT pass force:true to get past this: force does not "launch only if idle", it launches unconditionally, and systemd REPLACES the same-named transient unit — ' +
+                'that kills a live suite mid-run and produces no verdict at all (WI-6962: exactly how the gate went 5h without a verdict on 2026-08-02). ' +
+                (a?.held_externally
+                  ? 'The shared run-lock IS currently held by a live process, so a run is genuinely in flight — wait for it via checkpoint:await.'
+                  : 'If it keeps failing, check the user systemd manager (`systemctl --user status`) before doing anything else.'),
+            }),
+          },
+        ],
+      };
+    }
     if (!result.launched && result.reason === 'already_running' && result.alreadyRunning) {
       const a = result.alreadyRunning;
       // P-004: a refusal is not a dead end — the in-flight run's verdict IS the one about
