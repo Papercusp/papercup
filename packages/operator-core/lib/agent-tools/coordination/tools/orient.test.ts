@@ -100,10 +100,13 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     // sequential order (never Promise.all on one ctx) + arg forwarding.
     // P-007: coord:whoami is hoisted ABOVE the facts fold (the audience filter
     // needs the caller's fleet), so it now precedes coord:plan-events.
+    // WI-5343: work_items:observe (the claimable floor-parity batch check) runs
+    // right after coord:inbox, before coord:whoami.
     expect(calls.map((c) => c.name)).toEqual([
       'fleet:assignments',
       'work_items:list',
       'coord:inbox',
+      'work_items:observe',
       'coord:whoami',
       'coord:plan-events',
     ]);
@@ -115,8 +118,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     // was stale (last updated for the old default), not a regression in production code.
     expect(calls[1].args).toMatchObject({ harness: 'h', state: 'open', limit: 20, admissibleOnly: true });
     expect(calls[2].args).toMatchObject({ limit: 10, max_body_chars: 300 });
-    // calls[3] is the hoisted coord:whoami (P-007); plan-events follows it.
-    expect(calls[4].args).toMatchObject({ limit: 10 });
+    // WI-5343: calls[3] batch-observes every fetched row for the real claim floors.
+    expect(calls[3].args).toMatchObject({ ids: ['WI-1', 'WI-2'], harness: 'h' });
+    // calls[4] is the hoisted coord:whoami (P-007); plan-events follows it.
+    expect(calls[5].args).toMatchObject({ limit: 10 });
   });
 
   // EI-18667514339699744: coord:orient folds coord:inbox's `entries` under `recent`;
