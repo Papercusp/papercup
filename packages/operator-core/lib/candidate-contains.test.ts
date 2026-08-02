@@ -336,6 +336,104 @@ describe('classifyPathsAgainstCandidate', () => {
     expect(r.reason).toBe('uncommitted');
     expect(r.unknownReason).toBeNull();
   });
+
+  /**
+   * EI-19326775809436764 — the incident: `release:checkpoint-run { paths }` reported
+   * `sync-resolver/index.ts` as `missing / reason:'uncommitted'`, blamed "your file(s)",
+   * and prescribed `git-sync:run, then re-fire` — while the caller's fix (committed as
+   * bd5ba29a9b) was PROVABLY already an ancestor of the candidate (4a9b218ba0). The dirty
+   * working-tree content that broke the blob-identity comparison was a PEER's unrelated,
+   * still-uncommitted edit on the same shared file. A red gate from a needless re-fire on
+   * an already-current candidate costs a multi-hour suite run for nothing.
+   */
+  describe('ancestry refinement — the shared-tree "uncommitted" false-attribution (EI-19326775809436764)', () => {
+    const SAME = 'a'.repeat(40);
+    const OTHER = 'd'.repeat(40);
+    const HEAD_SHA = 'b'.repeat(40);
+
+    it('the incident, reproduced: candidate already carries everything committed for this path — NOT missing, NOT uncommitted', async () => {
+      // candidate lacks the tree's exact bytes (a peer's dirty edit is in the tree, not
+      // in HEAD or the candidate) — the same shape that used to fall straight into
+      // 'uncommitted'. But the last commit that ever touched this path at HEAD
+      // (HEAD_SHA) IS already an ancestor of the candidate: nothing COMMITTED is missing.
+      const git = fakeGit({
+        blobs: { 'cand:index.ts': SAME, 'HEAD:index.ts': SAME },
+        tree: { 'index.ts': OTHER }, // a peer's uncommitted edit, unrelated to the caller
+        newestCommit: { 'HEAD:index.ts': HEAD_SHA },
+        revListCount: { ['cand..' + HEAD_SHA]: '0' }, // 0 ⇒ HEAD_SHA is an ancestor-or-equal of cand
+      });
+      const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['index.ts']);
+      // The recurrence-guard bar, verbatim: NOT missing, NOT a "your file" claim, NOT the
+      // re-fire lever. Reported as UNKNOWN — never a false POSITIVE (D-038 axis 2) — with
+      // an enumerated, branchable reason.
+      expect(r.inCandidate).toBeNull();
+      expect(r.reason).toBeNull();
+      expect(r.unknownReason?.code).toBe('insufficient-data');
+      expect(r.unknownReason?.detail).toContain('every commit landed');
+      expect(r.unknownReason?.detail).not.toMatch(/your file/i);
+
+      const v = await callerEditsInCandidate(git, 'cand', ['index.ts']);
+      expect(v.missing).not.toContain('index.ts');
+      expect(v.unknown).toContain('index.ts');
+
+      // And the tool-facing warning built from this verdict must carry neither the scary
+      // claim nor the wasteful lever for this path.
+      expect(v.missing.length).toBe(0); // renderContainmentWarning is only invoked when missing.length > 0
+    });
+
+    it('a genuinely newer commit (the ancestry check fails) is UNCHANGED — still a real "uncommitted" miss', async () => {
+      // Same dirty-tree shape, but this time the last commit touching the path at HEAD is
+      // NOT yet in the candidate (rev-list --count reports a nonzero count) — a real,
+      // actionable case the refinement must not silently swallow.
+      const git = fakeGit({
+        blobs: { 'cand:index.ts': SAME, 'HEAD:index.ts': SAME },
+        tree: { 'index.ts': OTHER },
+        newestCommit: { 'HEAD:index.ts': HEAD_SHA },
+        revListCount: { ['cand..' + HEAD_SHA]: '3' }, // NOT an ancestor — 3 commits ahead
+      });
+      const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['index.ts']);
+      expect(r.inCandidate).toBe(false);
+      expect(r.reason).toBe('uncommitted');
+    });
+
+    it('no commit has ever touched this path at HEAD — refinement does not apply, original classification stands', async () => {
+      const git = fakeGit({
+        blobs: { 'cand:index.ts': SAME, 'HEAD:index.ts': SAME },
+        tree: { 'index.ts': OTHER },
+        // newestCommit unset ⇒ '' ⇒ no commit found — refineUnattributedUncommitted bails.
+      });
+      const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['index.ts']);
+      expect(r.inCandidate).toBe(false);
+      expect(r.reason).toBe('uncommitted');
+    });
+
+    it('the ancestry read itself FAILS — fails safe to the original classification, never a false unknown', async () => {
+      const git = fakeGit({
+        blobs: { 'cand:index.ts': SAME, 'HEAD:index.ts': SAME },
+        tree: { 'index.ts': OTHER },
+        newestCommit: { 'HEAD:index.ts': HEAD_SHA },
+        // revListCount unset ⇒ null ⇒ the rev-list read FAILED — must not be read as "ancestor".
+      });
+      const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['index.ts']);
+      expect(r.inCandidate).toBe(false);
+      expect(r.reason).toBe('uncommitted');
+    });
+
+    it('the absent-from-candidate branch (a brand-new-looking path) gets the same refinement', async () => {
+      // candidateBlob is null here (the earlier commit deleted/never had the path at the
+      // candidate) rather than merely differing — the OTHER mismatch branch in
+      // classifyPathsAgainstCandidate. Same ancestry proof should still suppress the miss.
+      const git = fakeGit({
+        blobs: { 'HEAD:gone.ts': SAME }, // no 'cand:gone.ts' entry ⇒ candidateBlob is null
+        tree: { 'gone.ts': OTHER }, // differs from HEAD ⇒ would otherwise read as 'uncommitted'
+        newestCommit: { 'HEAD:gone.ts': HEAD_SHA },
+        revListCount: { ['cand..' + HEAD_SHA]: '0' },
+      });
+      const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['gone.ts']);
+      expect(r.inCandidate).toBeNull();
+      expect(r.unknownReason?.code).toBe('insufficient-data');
+    });
+  });
 });
 
 describe('callerEditsInCandidate', () => {

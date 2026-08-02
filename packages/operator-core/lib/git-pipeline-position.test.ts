@@ -242,7 +242,7 @@ const snap = (
       consecutiveReds: 0,
       lastGreenAtMs: 1,
       fireStale: false,
-      fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null,
+      fireStaleReason: null,
       // EI-19325520469216548: defaults for the fields git-pipeline-stats projects from
       // evaluateGateVerdictFreshness — a healthy/unmeasured-by-default fixture so existing
       // cases that don't care about staleness don't have to spell these out.

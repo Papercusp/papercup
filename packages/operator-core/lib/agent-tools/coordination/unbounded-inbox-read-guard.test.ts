@@ -8,6 +8,8 @@
  * its own predicate.
  */
 import { describe, it, expect } from 'vitest';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
 import { isUnboundedInboxCall, ALLOWLIST } from '../../../../../scripts/check-unbounded-inbox-read.mjs';
 
 describe('isUnboundedInboxCall', () => {
