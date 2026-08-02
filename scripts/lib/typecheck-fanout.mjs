@@ -185,7 +185,15 @@ export function runOne(pkg, spawn = realSpawn, warn = console.warn) {
  * Returns the results plus the counts, so the caller decides what is fatal — the same fan-out
  * is BLOCKING for libs/papercusp and, per-package, advisory for a newly-covered root.
  */
-export function runPackages({ packages, label, spawn = realSpawn, log = console.log, warn = console.warn, error = console.error }) {
+export function runPackages({
+  packages,
+  label,
+  unreadableCount = 0,
+  spawn = realSpawn,
+  log = console.log,
+  warn = console.warn,
+  error = console.error,
+}) {
   const results = [];
   for (const pkg of packages) {
     const started = Date.now();
@@ -213,7 +221,8 @@ export function runPackages({ packages, label, spawn = realSpawn, log = console.
 
   log(
     `\n${label} typecheck: ${passed.length} passed, ${failed.length} failed` +
-      `${skipped.length ? `, ${skipped.length} skipped (OOM)` : ''}.`,
+      `${skipped.length ? `, ${skipped.length} skipped (OOM)` : ''}` +
+      `${unreadableCount ? `, ${unreadableCount} unreadable package.json` : ''}.`,
   );
 
   return { results, failed, skipped, passed };

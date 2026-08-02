@@ -125,6 +125,55 @@ describe('deriveInvokeEnvelope — the test-running family (the promotion row)',
   });
 });
 
+describe('deriveInvokeEnvelope — typecheck + logs (the P-009 follow-on rows)', () => {
+  it('turns a project typecheck into build:typecheck args', () => {
+    expect(
+      deriveInvokeEnvelope('typecheck-a-project', 'npx tsc --noEmit -p packages/operator-core'),
+    ).toEqual({ name: 'build:typecheck', args: { project: 'packages/operator-core' } });
+  });
+
+  it('turns a journal window read into logs:read args', () => {
+    const env = deriveInvokeEnvelope(
+      'service-log-read',
+      "journalctl --user -u papercup-dev-api --since '10 min ago'",
+    );
+    expect(env?.name).toBe('logs:read');
+    expect(env?.args).toMatchObject({ unit: 'papercup-dev-api' });
+  });
+
+  it('emits `unit` as a STRING for one unit, not a one-element array', () => {
+    // Mirrors the tool's own argument shape. 91% of this family names exactly
+    // one unit, so emitting ["x"] would make the commonest envelope read as the
+    // rarer multi-unit request.
+    const env = deriveInvokeEnvelope(
+      'service-log-read',
+      "journalctl --user -u papercup-dev-api --since '10 min ago'",
+    );
+    expect(typeof env?.args.unit).toBe('string');
+  });
+
+  it('omits the DEFAULT scope rather than spelling it back out', () => {
+    // `user` is logs:read's default; emitting it makes the call look like it is
+    // asserting something it is not.
+    const env = deriveInvokeEnvelope(
+      'service-log-read',
+      "journalctl --user -u papercup-dev-api --since '10 min ago'",
+    );
+    expect(env?.args).not.toHaveProperty('scope');
+  });
+
+  it('declines a tsc run that would EMIT (no --noEmit)', () => {
+    expect(deriveInvokeEnvelope('typecheck-a-project', 'npx tsc -p packages/operator-core')).toBeNull();
+  });
+
+  it('declines the unit-liveness row, whose answer is a field path not args', () => {
+    // service.systemctl-is-active deliberately declares no rewrite: for a
+    // registered unit its advice is "call dev:service_health bare and read
+    // services.find(...).up", so an args envelope would misrepresent it.
+    expect(deriveInvokeEnvelope('unit-liveness-query', 'systemctl --user is-active papercup-dev-api')).toBeNull();
+  });
+});
+
 describe('pairs whose answer is not a call get no envelope', () => {
   // The load-bearing negative. These rows name `coord:orient` as their tool, but
   // their advisories say the answer ALREADY ARRIVED and to call nothing —

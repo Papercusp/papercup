@@ -1755,6 +1755,65 @@ export interface IsolationResult {
    *  (most of this file's unit tests) need not supply it; its absence just falls back to
    *  the unattributed wording (see ISOLATION_LOAD_STARVATION_MIN_MS). */
   durationMs?: number;
+  /** WI-6969: the failing CASE NAMES parsed from THIS attempt's own output (same
+   *  extractor {@link extractFailingCasesByFile} feeds for the original full-suite run —
+   *  see {@link isDeterministicFailureShape}). Optional so existing hand-built test
+   *  fixtures need not supply it; its absence just disables the failure-shape
+   *  short-circuit below (falls back unchanged to the duration/load-only attribution). */
+  failingCases?: string[];
+  /** WI-6969: true when this attempt's own combined stdout+stderr contains a
+   *  timing-signature string (`waitFor`, `Timed out`, `Exceeded timeout`) — the tell for
+   *  a genuinely timing-sensitive test (e.g. an RTL `waitFor`), for which an identical
+   *  case list across attempts is NOT proof of determinism (a load-sensitive timeout can
+   *  reproduce identically every time the box is hot). Optional; absence is treated as
+   *  `false` — permissive, but the shape check this feeds only ever SKIPS a retry, never
+   *  manufactures an absorption, so a false `false` here is fail-safe (worst case: one
+   *  wasted retry, never a false green). */
+  hasTimingSignature?: boolean;
+}
+
+/** WI-6969: timing-sensitive vocabulary that, if present in an isolation attempt's own
+ *  output, means an identical case list must NOT be read as proof of a deterministic
+ *  break — a load-dependent timeout (RTL `waitFor`, a `Timed out` / `Exceeded timeout`
+ *  vitest message) can reproduce byte-identically on a consistently-hot box. */
+const TIMING_SIGNATURE_RE = /\b(waitFor|Timed out|Exceeded timeout)\b/i;
+
+/** WI-6969: does `out` (an isolation attempt's own combined stdout+stderr) contain a
+ *  timing-signature string? Exported so the real isolation runner and its tests share
+ *  one definition. */
+export function outputHasTimingSignature(out: string): boolean {
+  return TIMING_SIGNATURE_RE.test(out);
+}
+
+/**
+ * WI-6969: strong POSITIVE evidence that an isolation attempt's failure is a
+ * deterministic break rather than a load-dependent flake — the "cheap first cut" from
+ * the incident this fixes (three static registry-coverage assertions retried to budget
+ * exhaustion even though they compare two in-process data structures and structurally
+ * cannot be load-dependent). True only when ALL of:
+ *   - the ORIGINAL (full gate suite) run and THIS isolation attempt failed with the
+ *     EXACT SAME set of case names for this file, and
+ *   - both lists are non-empty (an unparseable list is not evidence of anything), and
+ *   - this attempt's own output carries NO timing-signature string.
+ *
+ * Fail-safe by construction: this can only ever be used to SKIP a retry (never to flip
+ * a verdict), and any missing/ambiguous input (no original cases parsed, no case names
+ * on the attempt, a timing signature present) returns `false` — the existing
+ * duration/load attribution + retry behavior, unchanged. It can therefore never
+ * manufacture a false green; the worst case of getting this wrong is one retry that
+ * would have failed anyway.
+ */
+export function isDeterministicFailureShape(input: {
+  originalCases: string[] | undefined;
+  attempt: IsolationResult;
+}): boolean {
+  const { originalCases, attempt } = input;
+  if (!originalCases || originalCases.length === 0) return false;
+  if (!attempt.failingCases || attempt.failingCases.length === 0) return false;
+  if (attempt.hasTimingSignature) return false;
+  const a = [...originalCases].sort();
+  const b = [...attempt.failingCases].sort();
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 /** EI-18669336904251384: the minimum wall-clock time an isolated re-run attempt must have
@@ -2107,6 +2166,21 @@ export async function attemptFlakeAbsorption(
       let result = await runOnce(f);
       let attempt = 1;
       while (!result.passed && attempt <= retryMax && now() < retryDeadline) {
+        // WI-6969: before spending a retry, check whether THIS attempt already proves
+        // determinism — its failing case list is byte-identical to the ORIGINAL gate
+        // failure's, with no timing-signature string. A static/structural assertion
+        // (e.g. "every registry entry is in the baseline") reproduces identically every
+        // time by construction, so retrying it can never change the outcome; skipping
+        // saves real wall-clock AND stops the log below from blaming ambient load for a
+        // failure that is structurally incapable of being load-caused. Checked EACH
+        // iteration (not just the first) so raising ISOLATION_RETRY_MAX later still gets
+        // the short-circuit on every subsequent attempt, not only the first.
+        if (isDeterministicFailureShape({ originalCases: casesByFile.get(f.file), attempt: result })) {
+          log(
+            `isolation: ${f.workspace}::${f.file} failed with the IDENTICAL case list as the original gate run and no timing signature — deterministic break, not ambient load; abandoning remaining retry budget for this file${describeFailingCases(casesByFile.get(f.file))}`,
+          );
+          break;
+        }
         // EI-18669336904251384: don't assert "ambient host load" unconditionally — a
         // failure that finished in milliseconds was not starved, it ran to completion and
         // failed deterministically (a real break, or a stale candidate whose fix already
@@ -4409,7 +4483,19 @@ export function realCheckpointDeps(
         ],
         { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
       );
-      return { workspace, file, passed: r.code === 0, durationMs: Date.now() - startedAt };
+      // WI-6969: capture THIS attempt's own failing case names + timing-signature so the
+      // retry loop can tell "matches the original failure exactly, structurally can't be
+      // load" from "looks like a real timing-sensitive flake" without spending another
+      // vitest re-run — see isDeterministicFailureShape.
+      const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+      return {
+        workspace,
+        file,
+        passed: r.code === 0,
+        durationMs: Date.now() - startedAt,
+        failingCases: extractFailingTestNames(out),
+        hasTimingSignature: outputHasTimingSignature(out),
+      };
     } catch (e) {
       log(`isolation: vitest re-run of ${workspace}::${file} threw (${e instanceof Error ? e.message : e})`);
       return { workspace, file, passed: false, errored: true, durationMs: Date.now() - startedAt };

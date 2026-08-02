@@ -28,10 +28,12 @@ import {
   formatAge,
   hudRenderStabilitySwitch,
   hudSessionRendersSame,
+  parseHighlight,
   type HudBoard as HudBoardData,
   type HudBadge,
   type HudColumnId,
   type HudFleetRollup,
+  type HudSearchHit,
   type HudSession,
 } from './hud-board-model';
 import { HUD_TABS, HUD_TAB_LABEL, type HudTabId } from './hud-entity-board';
@@ -141,6 +143,48 @@ export interface HudBoardProps {
   entityView?: ReactNode;
 }
 
+/**
+ * The matched transcript excerpt, on the card that matched.
+ *
+ * Segments, never `dangerouslySetInnerHTML` — see `parseHighlight`'s docblock
+ * for why that is a correctness rule and not caution: this is arbitrary agent
+ * transcript text, which routinely contains markup and quoted HTML.
+ */
+function SearchHitStrip({ hit }: { hit: HudSearchHit }) {
+  const segments = useMemo(
+    () => parseHighlight(hit.highlight ?? hit.excerpt),
+    [hit.highlight, hit.excerpt],
+  );
+  if (segments.length === 0) return null;
+  return (
+    <span className="hud__hit">
+      <span className="hud__hit-meta">
+        {/* Whose turn matched changes what the excerpt MEANS — the agent saying
+            a thing and the human asking it are different results. */}
+        {hit.speaker ? <span className="hud__hit-who">{hit.speaker}</span> : null}
+        {/* Not "+N results": these are other TURNS inside this one session, and
+            the card is already the session. */}
+        {hit.more > 0 ? (
+          <span className="hud__hit-more">
+            +{hit.more} more match{hit.more === 1 ? '' : 'es'}
+          </span>
+        ) : null}
+      </span>
+      <span className="hud__hit-text">
+        {segments.map((s, i) =>
+          s.mark ? (
+            <mark key={i} className="hud__hit-mark">
+              {s.text}
+            </mark>
+          ) : (
+            <span key={i}>{s.text}</span>
+          ),
+        )}
+      </span>
+    </span>
+  );
+}
+
 function SessionCard({
   session,
   onOpen,
@@ -181,6 +225,18 @@ function SessionCard({
           <span className="hud__reason">{session.reason}</span>
 
           {session.planSlug ? <span className="hud__plan">{session.planSlug}</span> : null}
+
+          {/* WHY this card is in the result set (owner ask 2026-08-02: "when
+              searching a transcript it doesn't show the relevant part of the
+              conversation on the preview card"). Without it a search returns a
+              wall of cards reading "Claude needs your permission" — true, and
+              useless as a search result, because the matched words are nowhere
+              on screen.
+
+              Rendered only when a transcript match put it here: a session that
+              matched on its own card text needs no excerpt, since the thing that
+              matched is already visible above. */}
+          {session.searchHit ? <SearchHitStrip hit={session.searchHit} /> : null}
 
           {chips.length > 0 ? (
             <span className="hud__chips">

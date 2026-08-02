@@ -55,6 +55,7 @@ import {
   type HudBoard as HudBoardData,
   type HudColumnId,
   type HudRosterEntry,
+  type HudSearchHit,
 } from './hud-board-model';
 import {
   buildPlanBoard,
@@ -365,6 +366,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         if (ctl.signal.aborted || seq !== searchSeq.current) return;
         setSearchError(e instanceof Error ? e.message : 'search failed');
         setSearchOwners(new Set());
+        setSearchHits(null);
       } finally {
         if (seq === searchSeq.current) setSearching(false);
       }
@@ -414,11 +416,12 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
       suOnly: !allAgents,
       fleets: selectedFleets,
       plans: selectedPlans,
+      searchHits: searchHits ?? undefined,
     });
     const reconciled = reconcileBoardIdentity(prevBoardRef.current, built);
     prevBoardRef.current = reconciled;
     return reconciled;
-  }, [searchedEntries, asks, nowMs, allAgents, selectedFleets, selectedPlans]);
+  }, [searchedEntries, asks, nowMs, allAgents, selectedFleets, selectedPlans, searchHits]);
 
   const onToggleFleet = useCallback(
     (slug: string | null) => {

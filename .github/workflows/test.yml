@@ -335,6 +335,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run lint:no-unenrolled-spawn
 
+      # no-unbounded-inbox-read guard (EI-19325897270823423): readInbox/readOutbox
+      # fire on every agent turn, so an unbounded call site's cost multiplies with
+      # fleet size — the class behind operator-hindsight.ts being measured as the
+      # #1 per-agent-turn DB-load driver before it was converted to a targeted SQL
+      # predicate (migration 736). GATING on a NEW call that supplies neither a
+      # `since_ts` bound nor a `window`/`enough` stopping rule; BASELINE is EMPTY.
+      - name: Lint no unbounded inbox read
+        if: ${{ !cancelled() }}
+        run: npm run lint:no-unbounded-inbox-read
+
       # no-raw-installSlug-filter guard (EI-19298972043721870): the READ-PATH analogue
       # of the two guards above. Pot-membership enforcement re-homes rows written under
       # a workspace-global label (hive-canary, @singleton, *, operator, all) to the

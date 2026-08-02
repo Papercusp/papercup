@@ -64,7 +64,7 @@
  *    being checked and has no tool expression.
  */
 
-import type { CoverageResult, SubstitutionPair } from '../types';
+import type { CoverageResult, ReplayToolCall, SubstitutionPair } from '../types';
 
 /** Mirrors `build:typecheck`'s `project` length bound (pinned by model-drift.test.ts). */
 export const BUILD_TYPECHECK_MAX_PROJECT = 400;
@@ -328,6 +328,24 @@ export const tscProjectTypecheck: SubstitutionPair = {
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     return coverTypecheckCommand(parseTscAtom(atom));
+  },
+  /**
+   * P-009 — the executable form of {@link expressionFor}, gated on `cover()`
+   * exactly as the file-read and test families are: if this pair declines to
+   * claim a command it declines to hand over a call for it, because a runnable
+   * line is acted on before it is read.
+   *
+   * No `replayEnvelope`: `tsc`/`npx` are off REPLAYABLE_VERBS, so declaring a
+   * rewrite enrols nothing in replay execution and D-060's hold on widening
+   * that list is untouched. This feeds the advisory path only.
+   */
+  rewrite(atom: string): ReplayToolCall | null {
+    const parsed = parseTscAtom(atom);
+    if (!coverTypecheckCommand(parsed).covered) return null;
+    if (!parsed.project) return null;
+    const args: Record<string, unknown> = { project: parsed.project };
+    if (parsed.incremental === true) args.incremental = true;
+    return { toolName: 'build:typecheck', args };
   },
 };
 

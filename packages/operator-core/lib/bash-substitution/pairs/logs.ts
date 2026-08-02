@@ -47,7 +47,7 @@
  *    read is not a differently-spelled version of the same request.
  */
 
-import type { CoverageResult, SubstitutionPair } from '../types';
+import type { CoverageResult, ReplayToolCall, SubstitutionPair } from '../types';
 import { JOURNAL_LEVELS, JOURNAL_READ_MAX_LIMIT, type JournalScope } from '../../journal-read';
 
 /** Mirrors `logs:read`'s `unit` array bound. Exported so `pairs/model-drift.test.ts`
@@ -305,6 +305,37 @@ export const unitJournalRead: SubstitutionPair = {
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     return coverJournalCommand(parseJournalctlAtom(atom));
+  },
+  /**
+   * P-009 — the executable form of {@link expressionFor}, gated on `cover()`.
+   *
+   * `unit` mirrors the display form's shape rather than always emitting an
+   * array: one unit is a string, several are a list. That is the tool's own
+   * argument shape, and emitting `["x"]` for the single-unit case — 91% of this
+   * family — would make the commonest envelope read as the rarer request.
+   *
+   * `scope` is emitted ONLY when non-default, again mirroring `expressionFor`:
+   * `user` is `logs:read`'s default, and spelling a default back out makes the
+   * call look like it is asserting something it is not.
+   *
+   * No `replayEnvelope`: `journalctl` is off REPLAYABLE_VERBS (D-060 untouched).
+   */
+  rewrite(atom: string): ReplayToolCall | null {
+    const parsed = parseJournalctlAtom(atom);
+    if (!coverJournalCommand(parsed).covered) return null;
+
+    const args: Record<string, unknown> = {};
+    if (parsed.units.length === 1) args.unit = parsed.units[0];
+    else if (parsed.units.length > 1) args.unit = [...parsed.units];
+    if (parsed.identifiers.length) args.identifier = parsed.identifiers[0];
+    if (parsed.since) args.since = parsed.since;
+    if (parsed.until) args.until = parsed.until;
+    if (parsed.grep) args.grep = parsed.grep;
+    if (parsed.level) args.level = parsed.level;
+    if (parsed.limit !== null) args.limit = parsed.limit;
+    if (parsed.scope !== 'user') args.scope = parsed.scope;
+
+    return { toolName: 'logs:read', args };
   },
 };
 
