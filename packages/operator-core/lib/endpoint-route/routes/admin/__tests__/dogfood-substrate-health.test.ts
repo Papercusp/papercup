@@ -43,6 +43,10 @@ const H = vi.hoisted(() => {
     summariseWorkspaceSubstrate: vi.fn(() => state.summary),
     getCachedRemoteBootedHandles: () => state.cachedRemote,
     requestOnlyHost: () => state.requestOnly,
+    // EI-18735338283879820: the route now calls the SHARED predicate rather than
+    // computing `isPrimary && !requestOnly` inline — mirror that same logic here so
+    // the mock stays behaviorally equivalent to the real background-workers export.
+    isSubstrateOwnerProcess: () => state.isPrimary && !state.requestOnly,
   };
 });
 
@@ -55,7 +59,10 @@ vi.mock('../../../../sync/hyperbee/summary', () => ({ summariseWorkspaceSubstrat
 vi.mock('../../../../sync/hyperbee/cluster-booted-handles-sync', () => ({
   getCachedRemoteBootedHandles: H.getCachedRemoteBootedHandles,
 }));
-vi.mock('../../../../background-workers', () => ({ requestOnlyHost: H.requestOnlyHost }));
+vi.mock('../../../../background-workers', () => ({
+  requestOnlyHost: H.requestOnlyHost,
+  isSubstrateOwnerProcess: H.isSubstrateOwnerProcess,
+}));
 // EI-8816: node:cluster.isPrimary drives resolveEffectiveBootedHandles' "am I the
 // substrate owner" check — mock it so the worker-blind-spot branch is reachable in-test
 // (a real vitest process is always isPrimary:true otherwise).
