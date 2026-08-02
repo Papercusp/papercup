@@ -57,8 +57,9 @@ const EXCLUDED_PATH_SEGMENTS = [
   'apps/operator/public/internal/docs/',
   // bundled/vendored sidecar JS (build output, not hand-edited source)
   'papercusp-desktop/src-tauri/env-sidecars/',
-  // this file's own explanatory comments quote the wrong pattern as an example
+  // these files' own explanatory comments quote the wrong pattern as an example
   'packages/operator-core/lib/github-identity-drift.test.ts',
+  'packages/operator-core/lib/canonical-github-identity.ts',
 ];
 
 /**
