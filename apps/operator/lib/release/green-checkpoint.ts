@@ -31,9 +31,10 @@ import {
   advanceReady,
   revListBefore,
   commitUnixTime,
-  changedFiles,
+  changedFilesRecursive,
   commitsBetween,
   type AdvanceResult,
+  type RangeChangeSet,
 } from './git-ops';
 import { toolingRoot, type ReleaseConfig } from './release-config';
 import { runPerfGate, perfGatePolicyFromFlags } from './perf-gate';
@@ -959,6 +960,10 @@ export interface GateLineage {
   /** Of the failing test files, which ones were touched somewhere in
    *  `candidate..tip` — the presumptive-stale discriminator. */
   failingFilesChangedInRange: string[];
+  /** Submodules whose pin MOVED in range but whose contents could not be diffed
+   *  (EI-19365565179927273). Non-empty ⇒ part of the range is UNKNOWN, so an empty
+   *  `failingFilesChangedInRange` must NOT be read as "nothing changed". */
+  submodulesUnexpanded?: string[];
 }
 
 /**
@@ -1012,11 +1017,22 @@ export function formatGateLineageLine(lineage: GateLineage): string {
   if (commitsBehind === 0) {
     return `📍 lineage: candidate ${candidate.slice(0, 8)} IS the current tip ${tip.slice(0, 8)} — nothing newer to blame, this is a real red`;
   }
+  const unexpanded = lineage.submodulesUnexpanded ?? [];
+  // "presumptively a real red" is a CLAIM ABOUT THE WHOLE RANGE, so it may only be made
+  // when the whole range was actually readable. If a submodule's pin moved and we could
+  // not diff inside it, the honest verdict is UNDETERMINED — an agent acting on a false
+  // "real red" goes and "fixes" already-correct files (EI-19365565179927273).
   const discriminator =
     changed.length > 0
       ? `${changed.length} of the failing file(s) were MODIFIED in that range (presumptively STALE — re-verify at tip before re-diagnosing from scratch): ${changed.join(', ')}`
-      : `none of the failing files were modified in that range (presumptively a real red)`;
-  return `📍 lineage: candidate ${candidate.slice(0, 8)} is ${commitsBehind} commit(s) behind tip ${tip.slice(0, 8)} — ${discriminator}`;
+      : unexpanded.length > 0
+        ? `no superproject file matched, but ${unexpanded.length} submodule(s) moved in that range and could not be diffed (skew UNDETERMINED — re-verify at tip before treating this as a real red): ${unexpanded.join(', ')}`
+        : `none of the failing files were modified in that range (presumptively a real red)`;
+  const caveat =
+    changed.length > 0 && unexpanded.length > 0
+      ? ` [also unreadable: ${unexpanded.join(', ')}]`
+      : '';
+  return `📍 lineage: candidate ${candidate.slice(0, 8)} is ${commitsBehind} commit(s) behind tip ${tip.slice(0, 8)} — ${discriminator}${caveat}`;
 }
 
 /** Compute the lineage for a NOT-GREEN verdict. Fail-soft end to end (a lineage
@@ -1036,7 +1052,9 @@ export async function computeGateLineage(
     }
     const [commits, changed] = await Promise.all([
       commitsBetween(repo, candidate, tip),
-      failingTests.length > 0 ? changedFiles(repo, candidate, tip) : Promise.resolve<string[]>([]),
+      failingTests.length > 0
+        ? changedFilesRecursive(repo, candidate, tip)
+        : Promise.resolve<RangeChangeSet>({ files: [], unexpandedSubmodules: [] }),
     ]);
     return {
       candidate,
@@ -1044,7 +1062,14 @@ export async function computeGateLineage(
       commitsBehind: commits.length,
       // Shape-tolerant: vitest reports workspace-relative, git reports repo-relative.
       // See matchFailingFilesToChanged (EI-19324432490048782).
-      failingFilesChangedInRange: matchFailingFilesToChanged(failingTests, changed),
+      //
+      // The list is `changedFilesRecursive`, NOT `changedFiles`, and that is the whole
+      // fix for EI-19365565179927273: a superproject diff reports a submodule bump as the
+      // bare gitlink DIRECTORY, so a submodule test path could never match anything here
+      // and every submodule red read as "presumptively a real red". Expanding the gitlinks
+      // upstream lets the (already correct) suffix matcher work unchanged.
+      failingFilesChangedInRange: matchFailingFilesToChanged(failingTests, changed.files),
+      submodulesUnexpanded: changed.unexpandedSubmodules,
     };
   } catch {
     return null;

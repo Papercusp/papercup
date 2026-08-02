@@ -142,12 +142,46 @@ export async function migrationsBetween(
 
 /**
  * Diff a submodule's OWN history between its gitlink pin at `from` and its pin
- * at `to` (both commit-ish in the SUPERPROJECT `repo`), returning any matched
- * migration paths prefixed with `submodulePath` so they read consistently
- * with the superproject-relative paths the caller already collects. Fail-soft
- * end to end (a shallow clone missing the pin commit, a detached/uninitialized
- * submodule, a pin that didn't move) — returns `[]` rather than throwing,
- * since this only ENRICHES the superproject diff and must never block it.
+ * at `to` (both commit-ish in the SUPERPROJECT `repo`), returning EVERY changed
+ * path prefixed with `submodulePath` so it reads consistently with the
+ * superproject-relative paths callers already collect.
+ *
+ * Deliberately does NOT catch: the two callers want opposite things from a
+ * failure. `migrationsBetween` wants to degrade silently to the superproject
+ * result; `changedFilesRecursive` needs to KNOW it failed so it can report the
+ * range as skew-undetermined rather than claiming nothing changed (see
+ * EI-19365565179927273 — a silent [] there is exactly the false confidence that
+ * sends agents to chase phantom regressions). A `[]` from this function means
+ * "the pin genuinely moved and no files differ"; a throw means "could not tell".
+ *
+ * Pass `pins` when the caller has already read them, so a sweep over N
+ * submodules does not re-run `ls-tree -r` 2N times.
+ */
+export async function changedFilesInSubmodule(
+  repo: string,
+  from: string,
+  to: string,
+  submodulePath: string,
+  pins?: { from: Map<string, string>; to: Map<string, string> },
+): Promise<string[]> {
+  const [pinsFrom, pinsTo] = pins
+    ? [pins.from, pins.to]
+    : await Promise.all([submodulePins(repo, from), submodulePins(repo, to)]);
+  const fromPin = pinsFrom.get(submodulePath);
+  const toPin = pinsTo.get(submodulePath);
+  if (!fromPin || !toPin || fromPin === toPin) return [];
+  const files = await changedFiles(join(repo, submodulePath), fromPin, toPin);
+  // Paths here are relative to the SUBMODULE root (e.g. `libs/papercusp/`), so a
+  // migration reads as `libs/db/sql/...` from inside it — re-prefix with the mount
+  // path for a consistent, superproject-relative result callers can compare directly.
+  return files.map((f) => `${submodulePath}/${f}`);
+}
+
+/**
+ * Migration paths inside a submodule. Fail-soft (a shallow clone missing the pin
+ * commit, a detached/uninitialized submodule, a pin that didn't move) — returns
+ * `[]` rather than throwing, since this only ENRICHES the superproject diff and
+ * must never block the deploy pipeline it feeds.
  */
 async function migrationsBetweenInSubmodule(
   repo: string,
@@ -156,21 +190,78 @@ async function migrationsBetweenInSubmodule(
   submodulePath: string,
 ): Promise<string[]> {
   try {
-    const [pinsFrom, pinsTo] = await Promise.all([submodulePins(repo, from), submodulePins(repo, to)]);
-    const fromPin = pinsFrom.get(submodulePath);
-    const toPin = pinsTo.get(submodulePath);
-    if (!fromPin || !toPin || fromPin === toPin) return [];
-    const submoduleRepo = join(repo, submodulePath);
-    const files = await changedFiles(submoduleRepo, fromPin, toPin);
-    // Paths here are relative to the SUBMODULE root (which mounts at
-    // `libs/papercusp/`), so the migration dir reads as `libs/db/sql/...`
-    // from inside it — re-prefix with the mount path for a consistent,
-    // superproject-relative result the caller can display/compare directly.
-    return files
-      .filter((f) => /(^|\/)libs\/db\/sql\/\d[^/]*\.sql$/.test(f))
-      .map((f) => `${submodulePath}/${f}`);
+    const files = await changedFilesInSubmodule(repo, from, to, submodulePath);
+    return files.filter((f) => /(^|\/)libs\/db\/sql\/\d[^/]*\.sql$/.test(f));
   } catch {
     return [];
+  }
+}
+
+/** The result of a range diff that also looked INSIDE submodules. */
+export interface RangeChangeSet {
+  /** Superproject paths, plus every changed submodule file prefixed with its mount path. */
+  files: string[];
+  /** Submodules whose pin MOVED but whose contents could not be diffed. Non-empty
+   *  means "some of this range is unknown" — never report such a range as clean. */
+  unexpandedSubmodules: string[];
+}
+
+/**
+ * `changedFiles`, with moved gitlinks EXPANDED into the files inside them.
+ *
+ * EI-19365565179927273: a plain superproject `git diff --name-only` reports a
+ * submodule bump as the bare gitlink DIRECTORY (`libs/generic/memory`) and NEVER
+ * as the files inside it. Any consumer that matches a file path against that diff
+ * is therefore structurally blind to every one of this repo's 39 submodules —
+ * silently, and only ever in the direction of "nothing changed here".
+ *
+ * That blindness has now cost real time twice, in two different consumers, from
+ * the same root cause: EI-856 (a migration inside `libs/papercusp` both
+ * under-reported `migrationCount` AND silently disabled the DB-rollback safety
+ * net) and EI-19365565179927273 (the green-checkpoint skew detector reported a
+ * submodule-pinned test fix as "presumptively a real red", sending agents to
+ * re-diagnose 6 already-correct embedder tests). Hence one shared expansion here
+ * rather than a third per-consumer workaround.
+ *
+ * Only submodules whose pin actually MOVED are diffed, so the cost scales with
+ * the bump count, not the 39 submodules. Fail-soft: a probe fault degrades to the
+ * superproject-only list, but names the submodule in `unexpandedSubmodules` so the
+ * caller can say "undetermined" instead of "unchanged".
+ */
+export async function changedFilesRecursive(
+  repo: string,
+  from: string | null,
+  to: string,
+): Promise<RangeChangeSet> {
+  const files = await changedFiles(repo, from, to);
+  if (!from) return { files, unexpandedSubmodules: [] };
+
+  let moved: string[];
+  try {
+    const [pinsFrom, pinsTo] = await Promise.all([submodulePins(repo, from), submodulePins(repo, to)]);
+    moved = [...pinsTo]
+      .filter(([path, sha]) => {
+        const before = pinsFrom.get(path);
+        return before !== undefined && before !== sha;
+      })
+      .map(([path]) => path);
+    if (moved.length === 0) return { files, unexpandedSubmodules: [] };
+
+    const expanded: string[] = [];
+    const unexpandedSubmodules: string[] = [];
+    for (const path of moved) {
+      try {
+        expanded.push(...(await changedFilesInSubmodule(repo, from, to, path, { from: pinsFrom, to: pinsTo })));
+      } catch {
+        unexpandedSubmodules.push(path);
+      }
+    }
+    return { files: [...new Set([...files, ...expanded])], unexpandedSubmodules };
+  } catch {
+    // Could not even enumerate the pins — the same read that just produced a
+    // successful diff, so effectively unreachable. Degrade to superproject-only
+    // rather than inventing an unexpanded list we have no evidence for.
+    return { files, unexpandedSubmodules: [] };
   }
 }
 

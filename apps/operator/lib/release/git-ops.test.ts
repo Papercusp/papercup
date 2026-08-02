@@ -13,6 +13,8 @@ import {
   isAncestor,
   advanceReady,
   changedFiles,
+  changedFilesRecursive,
+  changedFilesInSubmodule,
   migrationsBetween,
   commitsBetween,
   commitShasBetween,
@@ -207,5 +209,118 @@ describe('diff helpers', () => {
 
     const migs = await migrationsBetween(repo, c1, c2);
     expect(migs).toEqual([]); // the submodule's pre-existing migration is NOT re-reported
+  });
+});
+
+// EI-19365565179927273. The same blind spot EI-856 hit for migrations, in a second
+// consumer: the green-checkpoint skew detector matches failing TEST paths against the
+// range diff, so a submodule-pinned test fix read as "presumptively a real red" and sent
+// agents to re-diagnose 6 already-correct embedder tests. `changedFiles` alone can never
+// see inside a gitlink, and this repo has 39 submodules.
+describe('changedFilesRecursive — gitlink expansion', () => {
+  /** Build a submodule at `mount`, pin it, change a file inside it, re-pin. */
+  async function bumpSubmodule(
+    mount: string,
+    innerFile: string,
+  ): Promise<{ before: string; after: string; subRepo: string }> {
+    const subRepo = join(repo, mount);
+    mkdirSync(subRepo, { recursive: true });
+    await git(subRepo, ['init', '-q', '-b', 'main']);
+    await git(subRepo, ['config', 'user.email', 'test@example.com']);
+    await git(subRepo, ['config', 'user.name', 'Test']);
+    await git(subRepo, ['config', 'commit.gpgsign', 'false']);
+    writeFileSync(join(subRepo, 'README.md'), 'sub');
+    await git(subRepo, ['add', '-A']);
+    await git(subRepo, ['commit', '--no-verify', '-q', '-m', 'sub-init']);
+    const pin1 = await revParse(subRepo, 'HEAD');
+    await git(repo, ['update-index', '--add', '--cacheinfo', `160000,${pin1},${mount}`]);
+    await git(repo, ['commit', '--no-verify', '-q', '-m', `pin ${mount}`]);
+    const before = await revParse(repo, 'HEAD');
+
+    const full = join(subRepo, innerFile);
+    mkdirSync(join(full, '..'), { recursive: true });
+    writeFileSync(full, 'expect(dims).toHaveLength(768);');
+    await git(subRepo, ['add', '-A']);
+    await git(subRepo, ['commit', '--no-verify', '-q', '-m', 'fix the test']);
+    const pin2 = await revParse(subRepo, 'HEAD');
+    await git(repo, ['update-index', '--add', '--cacheinfo', `160000,${pin2},${mount}`]);
+    await git(repo, ['commit', '--no-verify', '-q', '-m', `bump ${mount}`]);
+    const after = await revParse(repo, 'HEAD');
+    return { before, after, subRepo };
+  }
+
+  it('expands a moved gitlink into its files, mount-prefixed — the case a plain diff cannot see', async () => {
+    const { before, after } = await bumpSubmodule('libs/generic/memory', 'src/gemma-embedder.test.ts');
+
+    // The bug, stated as an assertion: the superproject diff names ONLY the directory.
+    expect(await changedFiles(repo, before, after)).toEqual(['libs/generic/memory']);
+
+    const { files, unexpandedSubmodules } = await changedFilesRecursive(repo, before, after);
+    expect(files).toContain('libs/generic/memory/src/gemma-embedder.test.ts');
+    expect(unexpandedSubmodules).toEqual([]);
+  });
+
+  it('keeps the superproject files alongside the expanded ones', async () => {
+    const { before } = await bumpSubmodule('libs/generic/memory', 'src/embedder-dims.test.ts');
+    await commit('packages/operator-core/lib/adv-agent-detail.test.ts', 'x', 'superproject change');
+    const after = await revParse(repo, 'HEAD');
+
+    const { files } = await changedFilesRecursive(repo, before, after);
+    expect(files).toContain('packages/operator-core/lib/adv-agent-detail.test.ts');
+    expect(files).toContain('libs/generic/memory/src/embedder-dims.test.ts');
+  });
+
+  it('adds nothing when no gitlink moved (no false positives from unrelated submodules)', async () => {
+    const { after } = await bumpSubmodule('libs/generic/memory', 'src/a.test.ts');
+    await commit('apps/operator/lib/x.ts', 'x', 'superproject only');
+    const later = await revParse(repo, 'HEAD');
+
+    // Pin is identical either side, so the submodule's contents must not be re-reported.
+    const { files, unexpandedSubmodules } = await changedFilesRecursive(repo, after, later);
+    expect(files).toEqual(['apps/operator/lib/x.ts']);
+    expect(unexpandedSubmodules).toEqual([]);
+  });
+
+  it('reports a moved-but-undiffable submodule as UNEXPANDED rather than silently clean', async () => {
+    // The honesty leg. A pin that moved but whose objects are unreachable (a shallow
+    // clone, an uninitialised submodule — here: the checkout removed entirely) must not
+    // degrade to "nothing changed", because that is indistinguishable from a real red.
+    const { before, after, subRepo } = await bumpSubmodule('libs/generic/memory', 'src/a.test.ts');
+    rmSync(subRepo, { recursive: true, force: true });
+
+    const { files, unexpandedSubmodules } = await changedFilesRecursive(repo, before, after);
+    expect(unexpandedSubmodules).toEqual(['libs/generic/memory']);
+    expect(files).toEqual(['libs/generic/memory']); // superproject view only — the gitlink
+  });
+
+  it('expands EVERY moved submodule, not just the first', async () => {
+    const a = await bumpSubmodule('libs/generic/memory', 'src/a.test.ts');
+    const b = await bumpSubmodule('libs/test-config', 'src/b.test.ts');
+
+    const { files } = await changedFilesRecursive(repo, a.before, b.after);
+    expect(files).toContain('libs/generic/memory/src/a.test.ts');
+    expect(files).toContain('libs/test-config/src/b.test.ts');
+  });
+
+  it('changedFilesInSubmodule THROWS on an undiffable submodule instead of returning []', async () => {
+    // Load-bearing asymmetry: migrationsBetween wants to degrade silently, but
+    // changedFilesRecursive must be able to TELL a failure from a genuinely empty diff —
+    // a swallowed [] here is exactly the false confidence this whole item is about.
+    const { before, after, subRepo } = await bumpSubmodule('libs/generic/memory', 'src/a.test.ts');
+    rmSync(subRepo, { recursive: true, force: true });
+
+    await expect(
+      changedFilesInSubmodule(repo, before, after, 'libs/generic/memory'),
+    ).rejects.toThrow();
+  });
+
+  it('returns [] (not a throw) for a submodule whose pin genuinely did not move', async () => {
+    const { after } = await bumpSubmodule('libs/generic/memory', 'src/a.test.ts');
+    await commit('apps/operator/lib/x.ts', 'x', 'superproject only');
+    const later = await revParse(repo, 'HEAD');
+
+    await expect(
+      changedFilesInSubmodule(repo, after, later, 'libs/generic/memory'),
+    ).resolves.toEqual([]);
   });
 });

@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { hardReload } from '@papercusp/operator-core/lib/hard-reload';
+import { neutralizePlantuml } from './vditor-plantuml-guard';
 
 /**
  * Inline fallback when the lazy `import('vditor')` chunk fails to load — which
@@ -149,7 +150,6 @@ export const VDITOR_CDN = '/vditor';
 // plantuml.com. `cdn` cannot redirect it (the render fn takes a cdn arg and
 // ignores it), so it is intercepted in `transform` instead — see
 // vditor-plantuml-guard.ts (cdn-egress-fixes-2026-08-02 P-002).
-export { neutralizePlantuml } from './vditor-plantuml-guard';
 
 // Vditor's CSS (~45 KB / 302 rules) is loaded lazily alongside the editor
 // JS. Importing it at module level pulls the whole stylesheet into every

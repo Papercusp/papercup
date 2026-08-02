@@ -1469,6 +1469,9 @@ const KIND_BADGE: Readonly<Record<FactKind, string>> = {
   conclusion: 'CONCLUSION',
   assumption: 'ASSUMPTION',
   convention: 'CONVENTION',
+  // P-002. Reads as a STOP sign rather than a claim, because that is its whole
+  // job: the reader's correct next action is to NOT re-derive this.
+  undecidable: 'UNDECIDABLE',
 };
 
 export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.now()): string {
@@ -1491,7 +1494,13 @@ export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.
     // on every fact would inflate every orient to make the other modalities
     // citable in a fold that is not where they are cited from.
     const cite = f.kind === 'convention' ? `, cite ${factCitationRef(f)}` : '';
-    return `• [${scope}${aud}] ${badge}${f.body} (expires ~${days}d${src}${cite})`;
+    // P-002: an undecidable's EXIT rides next to the body, not in the trailing
+    // metadata parenthetical, because it is the actionable half of the record —
+    // exactly the P-018 lesson one line above ("a field nobody can see cannot be
+    // judged by its values"). Without it the fold says only "nobody could
+    // determine this", which reads as an invitation to go determine it.
+    const settles = f.kind === 'undecidable' && f.settledBy ? ` — SETTLED BY: ${f.settledBy}` : '';
+    return `• [${scope}${aud}] ${badge}${f.body}${settles} (expires ~${days}d${src}${cite})`;
   });
   return `### Standing facts (deterministic — assert via facts:assert, retract when stale)\n${lines.join('\n')}`;
 }
