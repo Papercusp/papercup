@@ -70,7 +70,14 @@ vi.mock('nuqs', () => ({
 let projectRows: unknown[] | undefined = [];
 let projectsError: Error | null = null;
 const invalidateSpy = vi.fn();
-vi.mock('@papercusp/sync', () => ({
+vi.mock('@papercusp/sync', async () => ({
+  // WI-6948: TasksRunningPill loads its panel via lazyWithRetry, which THIS package
+  // re-exports (operator-core/lib/lazy-with-retry is a pure re-export). A factory that
+  // omits it makes the re-export `undefined` and the whole suite dies with
+  // "lazyWithRetry is not a function". Dynamic import keeps the factory free of
+  // top-level captures — vi.mock is hoisted, which is what the other failure mode
+  // ("no top level variables inside") is complaining about.
+  lazyWithRetry: (await import('react')).lazy,
   useSyncQuery: ({ queryName }: { queryName: string }) => {
     if (queryName === 'harnessProjects.lite') {
       return { data: projectsError ? undefined : projectRows, error: projectsError, invalidate: invalidateSpy };

@@ -1075,6 +1075,70 @@ try:
 except Exception:
     pass  # advisory must never wedge a command
 
+# ── Background `;`-chain TRAILING-REPORTER exit-code advisory (WI-6944) ────
+# The other half of the trap above. That guard matches only a PIPE (`cmd |
+# tee`); this one matches the `;`-chain, where the masking stage is a separate
+# trailing command rather than a pipeline stage:
+#
+#     cmd > /tmp/out.txt 2>&1; echo "===EXIT:$?==="
+#
+# A `;`-chain exits with its LAST command's status, so the trailing `echo`
+# (which always succeeds) replaces cmd's status and the notification reports
+# "completed (exit code 0)" for a run that FAILED.
+#
+# The irony that makes this worth its own detector: the trailing command is
+# almost always an EXIT MARKER the caller added precisely so the log would
+# carry a trustworthy verdict. The diagnostic you reach for when you care most
+# about the answer is exactly what erases the failure from the notification.
+# Proven end-to-end 2026-08-02 (job bnmntj9o4): `sleep 2; false; echo
+# "===PROOF_EXIT:$?==="` -> artifact `===PROOF_EXIT:1===`, notification
+# "completed (exit code 0)". Three real `lint:tsc` runs the same night all
+# ended `===TSC_EXIT:1===` with "1 NEW file(s) have type errors" under a
+# reported exit 0, and were nearly accepted as a green gate check.
+#
+# Deliberately NOT escaped by an `EXIT=$?` capture, unlike the pipe guard
+# above: capturing the code into the LOG makes the artifact honest but does
+# nothing for the NOTIFICATION, and here that very echo is the masking cause.
+# `&&` is safe (it short-circuits, so a failure propagates) and is not matched;
+# `;` and `||` are not.
+#
+# SOFT (never denies), and silent when the command already ends in an explicit
+# `exit "$rc"` — the correct pattern, which makes BOTH channels truthful.
+try:
+    if (tool_name.lower() == 'bash'
+            and tool_input.get('run_in_background')
+            and not ADVISORY):
+        _tr_cmd = _strip_shell_quotes(command)
+        # Already correct? Check RAW too — the fix is usually quoted.
+        _EXIT_RESTORE_RE = re.compile(
+            r'\bexit\s+"?\$\{?(?:rc|RC|status|code|\?)\}?"?\s*$')
+        if not (_EXIT_RESTORE_RE.search(_tr_cmd.strip())
+                or _EXIT_RESTORE_RE.search(command.strip())):
+            _tr_segs = [s.strip() for s in re.split(r';|\n|\|\|', _tr_cmd)
+                        if s.strip()]
+            # Only a MULTI-command line can mask: a lone `echo` masks nothing.
+            if len(_tr_segs) >= 2 and re.match(
+                    r'^(?:\S*/)?(?:echo|printf|ls|date|stat|true|pwd|wc|cat|tee)\b',
+                    _tr_segs[-1]):
+                ADVISORY = (
+                    'background `;`-chain exit-code advisory (WI-6944): this '
+                    'backgrounded command ENDS in `'
+                    + _tr_segs[-1].split()[0]
+                    + '`, and a `;`-chain exits with its LAST command\'s status '
+                    '— so the completion notification will report THAT (almost '
+                    'always 0), not your real command\'s, and a FAILED run reads '
+                    'as "completed (exit code 0)". If the trailing command is an '
+                    'exit marker, note the irony: it is the very thing erasing '
+                    'the failure. Fix by restoring the code on the way out — '
+                    '`cmd > /tmp/out 2>&1; rc=$?; echo "===EXIT:$rc===" >> '
+                    '/tmp/out; exit "$rc"` — which makes BOTH the log and the '
+                    'notification truthful. Otherwise read the VERDICT from the '
+                    'artifact\'s content and never from the notification\'s exit '
+                    'code. Advisory only; this command is proceeding as issued.'
+                )
+except Exception:
+    pass  # advisory must never wedge a command
+
 # ── Foreground `| head` SIGPIPE-kill advisory (EI-18787618439028592) ───────
 # `cmd | head -N` is a DIFFERENT hazard from the background-pipe exit-code
 # trap above, and it applies in the FOREGROUND too (that advisory only fires

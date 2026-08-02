@@ -190,7 +190,19 @@ function matchingPair(atom: string, pairs: SubstitutionPair[]): SubstitutionPair
   return null;
 }
 
-/** An unquoted output redirection makes the atom a WRITE, whatever its verb. */
+/**
+ * Does this atom redirect its output INTO A FILE? Such an atom is a write, and
+ * no read tool can express it, whatever its verb.
+ *
+ * Two forms are deliberately NOT writes, and getting this wrong is expensive in
+ * the pessimistic direction: the first version of this function counted both,
+ * which moved `find` (2,973 atoms) and `cat` (2,507) into `irreducible` on the
+ * strength of a trailing `2>/dev/null`.
+ *
+ *  - `2>&1`, `>&2` — duplicating a file descriptor produces no file;
+ *  - a redirect whose target is `/dev/null` (or `/dev/std*`) — that is noise
+ *    suppression on a READ, the single most common suffix in this corpus.
+ */
 function writesOutput(atom: string): boolean {
   let quote: string | null = null;
   for (let i = 0; i < atom.length; i += 1) {
@@ -200,8 +212,12 @@ function writesOutput(atom: string): boolean {
       continue;
     }
     if (ch === "'" || ch === '"') { quote = ch; continue; }
-    // `2>&1` is stream plumbing on a read, not a write to a file.
-    if (ch === '>' && !atom.startsWith('>&', i) && !/\d>&/.test(atom.slice(Math.max(0, i - 1), i + 3))) return true;
+    if (ch !== '>') continue;
+    const after = atom.slice(i + 1);
+    if (after.startsWith('&')) continue;
+    const target = after.replace(/^>/, '').trimStart().split(/\s+/)[0] ?? '';
+    if (target.startsWith('/dev/null') || target.startsWith('/dev/std')) continue;
+    return true;
   }
   return false;
 }

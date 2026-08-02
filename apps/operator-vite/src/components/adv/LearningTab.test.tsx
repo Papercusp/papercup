@@ -505,7 +505,12 @@ const seenArgs: Record<string, unknown> = {};
 // When set, a hive-less (`{}`) learning.gym read returns THIS instead of
 // gymResult — lets a test model the client's scoped→workspace-wide fallback.
 let gymWideResult: Record<string, unknown> | null = null;
-vi.mock("@papercusp/sync", () => ({
+vi.mock("@papercusp/sync", async () => ({
+  // WI-6948: this suite mocks ./AdvShell with importOriginal, so it loads the REAL
+  // shell -> TasksRunningPill -> lazyWithRetry, which this package re-exports. Without
+  // it the re-export is undefined and vitest surfaces the throw as the generic
+  // "error when mocking a module", which reads like an unrelated hoisting bug.
+  lazyWithRetry: (await import("react")).lazy,
   useSyncQuery: (opts: {
     queryName: string;
     args?: unknown;

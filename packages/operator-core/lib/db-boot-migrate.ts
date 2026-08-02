@@ -24,6 +24,7 @@ import postgres from 'postgres';
 // function silently.
 import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import { isRetryableLockFailure } from './pg-retryable-failure';
 import { checkMigrationDrift, resolveSqlDir, sqlDirCandidates } from './migration-drift';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
@@ -37,6 +38,35 @@ const BOOT_MIGRATE_IDENTITY: AgentIdentity = {
 };
 
 let _ran = false;
+
+// EI-19320461261471579: ride out a transaction-CONTENTION failure instead of
+// leaving the migration pending. This path is not only operator boot — the
+// green-checkpoint gate calls it as its migration PREFLIGHT, and a preflight
+// that leaves a migration pending aborts the whole run as INCONCLUSIVE
+// (`green: null`, reason 'migrations-pending'), holding main for the entire
+// fleet. Observed live twice in 11 minutes on 2026-08-02 (05:50Z, 06:01Z):
+// migration 721 alters harness_shared.work_items, whose two dependent views
+// make an `ALTER TABLE …; CREATE OR REPLACE VIEW …` a guaranteed lock-order
+// inversion against ordinary fleet readers.
+//
+// The budget is deliberately MUCH tighter than db:migrate's (2s→30s over 5
+// attempts): that tool is an agent waiting on one deliberate apply, whereas
+// this runs on the operator's boot path, where a 30s stall delays the dev-api
+// the whole fleet shares. A deadlock does not need a long wait — Postgres has
+// ALREADY broken the cycle by killing one side, so the retry is about letting
+// the surviving transaction commit, not about waiting out a long-lived holder.
+// ~1.2s worst case, then fall through to the existing leave-it-pending path.
+const CONTENTION_RETRY_MAX_ATTEMPTS = 3;
+const CONTENTION_RETRY_BASE_DELAY_MS = 400;
+const CONTENTION_RETRY_MAX_DELAY_MS = 2000;
+
+/** Exponential backoff for contention retry attempt N (1-based): 400ms, 800ms,
+ *  capped at 2s. Pure — unit tested. */
+export function contentionRetryBackoffMs(attempt: number): number {
+  return Math.min(CONTENTION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), CONTENTION_RETRY_MAX_DELAY_MS);
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export interface BootMigrateResult {
   applied: number;
@@ -100,12 +130,38 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
     connection: { lock_timeout: 15_000, application_name: 'papercusp-boot-migrate' },
   });
   try {
-    const { appliedCount, totalKnown, failed } = await applyPendingMigrations({
-      client,
-      sqlDir,
-      continueOnError: true,
-      log: (s) => console.log(`[boot-migrate] ${s}`),
-    });
+    // Retry ONLY pure transaction contention (lock timeout / deadlock /
+    // serialization). Any other failure — a syntax error, a constraint
+    // violation, a genuinely broken migration — is a real defect that no
+    // amount of retrying fixes, so it breaks out immediately and lands in the
+    // existing leave-it-pending + broadcast path below, unchanged. Re-calling
+    // applyPendingMigrations is safe and cheap: the schema_migrations tracker
+    // makes already-applied files a no-op, so a retry re-attempts ONLY what is
+    // still pending.
+    let appliedCount = 0;
+    let totalKnown = 0;
+    let failed: { file: string; error: string }[] = [];
+    for (let attempt = 1; attempt <= CONTENTION_RETRY_MAX_ATTEMPTS; attempt++) {
+      const pass = await applyPendingMigrations({
+        client,
+        sqlDir,
+        continueOnError: true,
+        log: (s) => console.log(`[boot-migrate] ${s}`),
+      });
+      appliedCount += pass.appliedCount;
+      totalKnown = pass.totalKnown;
+      failed = pass.failed;
+      if (failed.length === 0) break;
+      const contentionOnly = failed.every((f) => isRetryableLockFailure(f.error ?? ''));
+      if (!contentionOnly || attempt >= CONTENTION_RETRY_MAX_ATTEMPTS) break;
+      const delayMs = contentionRetryBackoffMs(attempt);
+      console.warn(
+        `[boot-migrate] ${failed.length} migration(s) hit transaction contention ` +
+          `(${failed.map((f) => `${f.file}: ${f.error}`).join('; ')}) — retrying in ${delayMs}ms ` +
+          `(attempt ${attempt + 1}/${CONTENTION_RETRY_MAX_ATTEMPTS}); a deadlock is normally gone on the next try.`,
+      );
+      await sleep(delayMs);
+    }
     if (appliedCount > 0) {
       console.log(`[boot-migrate] applied ${appliedCount} pending migration(s) (of ${totalKnown} known)`);
     }

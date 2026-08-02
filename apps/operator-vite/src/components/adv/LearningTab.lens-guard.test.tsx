@@ -160,7 +160,10 @@ type Read = {
 };
 let reads: Read[] = [];
 
-vi.mock("@papercusp/sync", () => ({
+vi.mock("@papercusp/sync", async () => ({
+  // WI-6948: see LearningTab.test.tsx — the real AdvShell reaches lazyWithRetry, which
+  // this package re-exports, so the factory must supply it.
+  lazyWithRetry: (await import("react")).lazy,
   useSyncQuery: (opts: {
     queryName: string;
     args?: unknown;

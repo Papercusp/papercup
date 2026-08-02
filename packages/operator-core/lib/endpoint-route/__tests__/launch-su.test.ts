@@ -18,6 +18,20 @@ import type { RouteContext } from '../define-route';
 // genuine constant, and asserting the route used it catches a value drift that a
 // hand-copied literal in the mock would have hidden.
 import { DISPLAY_TERMINAL_LAUNCH } from '../../adv-sessions';
+// WI-6821 added `await import('../../../mcp-base-url')` to the LIVE-SPAWN branch of the
+// route. Every test here runs under `vi.useFakeTimers()`, and a FIRST-TIME dynamic import
+// cannot complete while fake timers are installed — the module fetch never gets the real
+// timer/immediate tick it needs, so the route's promise never settles and the test sits
+// until vitest's 60s cap. It only ever bit the FIRST test to take that branch (the import
+// is cached for the rest), which is exactly the shape observed: `1 failed | 28 passed`,
+// and a bimodal 1.4s-or-60s duration in harness_shared.test_runs.
+//
+// Importing it EAGERLY here puts the module in the registry before any fake clock exists,
+// so the route's `await import(...)` resolves from cache. Deliberately a real import and
+// NOT a `vi.mock`: `resolveSpawnHostOperatorBaseUrl` is a pure, dependency-free env reader
+// (86 lines, zero imports), so the genuine implementation is both safe to load and the
+// thing we actually want exercised — mocking it would assert a stub instead.
+import '../../mcp-base-url';
 
 const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
 const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true);

@@ -705,7 +705,7 @@ function launcherRelativePaths(launcherPath: string): string[] {
  * tree is selected at shim invocation time from PAPERCUSP_INTEGRATION_ROOT;
  * embedding it here would recreate the boot-order race this shim fixes.
  */
-function shimRuntimeOptions(launcherPath: string, explicitLauncherEnv: string): ShimRuntimeOptions {
+export function shimRuntimeOptions(launcherPath: string, explicitLauncherEnv: string): ShimRuntimeOptions {
   const releaseRoot = process.env.PAPERCUSP_RELEASE_ROOT?.trim();
   const releaseFallbacks = releaseRoot
     ? launcherRelativePaths(launcherPath).map((relative) => path.join(releaseRoot, relative))
@@ -726,7 +726,7 @@ function shimRuntimeOptions(launcherPath: string, explicitLauncherEnv: string): 
  * integration/release root win, while the install-time fallback keeps a
  * packaged app usable when no root env is exported.
  */
-async function writeShim(
+export async function writeShim(
   shimPath: string,
   launcherPath: string,
   label: string,

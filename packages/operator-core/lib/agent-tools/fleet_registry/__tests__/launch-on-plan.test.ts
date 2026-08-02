@@ -1239,7 +1239,13 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
       {} as never,
     );
     const payload = JSON.parse((res as any).content[0].text);
-    expect(payload.ok).toBe(true);
+    // NOT true: `ok` mirrors `opened.length > 0` on this actual-spawn-attempted path
+    // (launch-on-plan.ts's final `return json({ ok: opened.length > 0, ... })`) — that's
+    // distinct from the early-return "suppressed" paths (relaunchSuppressed/capacitySuppressed)
+    // which hardcode ok:true because THOSE are benign no-ops (nothing was attempted). Here every
+    // spawn WAS attempted and genuinely failed, so ok:false is the correct, honest signal — the
+    // WI-4752 contract is about opened[]/failed[] never lying, not about `ok` staying true.
+    expect(payload.ok).toBe(false);
     expect(payload.opened).toEqual([]);
     expect(payload.failed).toHaveLength(2);
     expect(payload.failed[0].error).toMatch(/ServiceUnknown/);

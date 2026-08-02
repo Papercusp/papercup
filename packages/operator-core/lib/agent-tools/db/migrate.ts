@@ -20,6 +20,9 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { guardResource } from '../locks/resource-lock-guard';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
+// Local bindings for this module's own use — the `export { … } from` below
+// re-exports the same names for existing importers but creates no local binding.
+import { isRetryableLockFailure, lockRetryBackoffMs } from '../../pg-retryable-failure';
 import { openEscalation } from '../coordination/escalations';
 import {
   checkResourceAction,
@@ -72,51 +75,24 @@ const LOCK_RETRY_MAX_ATTEMPTS = 5;
 const MAX_LOCK_TIMEOUT_SQL_SEC = 300; // ceiling — mirrors MAX_DRAIN_SEC's magnitude
 const CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS = 2;
 
-/** True iff psql's stderr is PG's own "canceling statement due to lock
- *  timeout" (SQLSTATE 55P03). Exported + pure for unit testing. */
-export function isLockTimeoutFailure(stderr: string): boolean {
-  return /canceling statement due to lock timeout/i.test(stderr);
-}
-
-/** True iff psql's stderr is PG's own "deadlock detected" (SQLSTATE 40P01).
- *  EI-18747087108453188: a deadlock is if anything MORE retryable than a lock
- *  timeout — Postgres has already broken the cycle by killing one side of it,
- *  so an immediate retry usually succeeds — and it is the MORE LIKELY failure
- *  on this box: any migration touching harness_shared.work_items also touches
- *  its two dependent views (engineer_issues, harness_features_consolidated),
- *  and a reader locks view-then-base while `ALTER TABLE …; CREATE OR REPLACE
- *  VIEW …` locks base-then-view — a guaranteed lock-order inversion against
- *  ordinary fleet read traffic that fires readily on a 122-agent box. Exported
- *  + pure for unit testing. */
-export function isDeadlockFailure(stderr: string): boolean {
-  return /deadlock detected/i.test(stderr);
-}
-
-/** True iff psql's stderr is PG's own serialization-failure cancel (SQLSTATE
- *  40001 — "could not serialize access due to concurrent update" / "...due to
- *  read/write dependencies among transactions"), the third member of PG's
- *  retryable-transaction-error family alongside lock timeout and deadlock.
- *  Exported + pure for unit testing. */
-export function isSerializationFailure(stderr: string): boolean {
-  return /could not serialize access/i.test(stderr);
-}
-
-/** True iff `stderr` is ANY of the retryable transaction-contention failure
- *  classes this loop rides out with backoff: lock timeout, deadlock, or
- *  serialization failure. This is the ONLY predicate {@link
- *  runMigrationWithLockRetry} uses to decide whether to retry — any other
- *  psql error (syntax, constraint, …) fails immediately, unretried. Exported
- *  + pure for unit testing. */
-export function isRetryableLockFailure(stderr: string): boolean {
-  return isLockTimeoutFailure(stderr) || isDeadlockFailure(stderr) || isSerializationFailure(stderr);
-}
-
-/** Exponential backoff (2s, 4s, 8s, 16s, capped at 30s) for attempt N
- *  (1-based) — gives the hot table's writers a window to quiesce between
- *  attempts. Pure + unit tested. */
-export function lockRetryBackoffMs(attempt: number): number {
-  return Math.min(LOCK_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), LOCK_RETRY_MAX_DELAY_MS);
-}
+// EI-19320461261471579: these predicates + the backoff now live in the
+// dependency-free `lib/pg-retryable-failure` module and are RE-EXPORTED here,
+// unchanged, so every existing importer and test keeps working. They moved
+// because db:migrate is only ONE of the two paths that apply migrations — the
+// other is db-boot-migrate (operator boot AND the green-checkpoint gate's
+// migration preflight), which could not import them from this file: migrate.ts
+// pulls in @papercusp/agent-mcp, the lock store and the escalation surface,
+// far too heavy for a boot path. Copying the regexes into that second site
+// would have re-created the very drift this fixes — the deadlock retry landed
+// here and never reached the gate, so a deadlocked migration aborted the run
+// as INCONCLUSIVE and held main for the whole fleet.
+export {
+  isLockTimeoutFailure,
+  isDeadlockFailure,
+  isSerializationFailure,
+  isRetryableLockFailure,
+  lockRetryBackoffMs,
+} from '../../pg-retryable-failure';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
