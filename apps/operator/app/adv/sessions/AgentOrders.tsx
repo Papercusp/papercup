@@ -319,13 +319,22 @@ export default function AgentOrders({
           </section>
 
           {/* ── Standing facts ── */}
-          <section className="pc-orders__sec" id="pc-orders-facts">
-            <h4 className="pc-orders__h">
-              Standing facts
+          <section
+            className="pc-orders__sec"
+            id="pc-orders-facts"
+            data-collapsed={rail.closed('o-facts') ? 'true' : 'false'}
+          >
+            <RailSectionHead
+              sectionId="o-facts"
+              label="Standing facts"
+              className="pc-orders__h"
+              closed={rail.closed('o-facts')}
+              onToggle={() => rail.toggle('o-facts')}
+            >
               {(orders.facts ?? []).length > 0 ? (
                 <span className="pc-orders__n">{(orders.facts ?? []).length}</span>
               ) : null}
-            </h4>
+            </RailSectionHead>
             {(orders.facts ?? []).length > 0 ? (
               (orders.facts ?? []).map((f) => (
                 <div className="pc-orders__row" key={f.key}>
@@ -346,15 +355,27 @@ export default function AgentOrders({
           </section>
 
           {/* ── Walls: blocked on the owner ── */}
-          <section className="pc-orders__sec" id="pc-orders-walls">
-            <h4 className="pc-orders__h">
-              Walls
+          <section
+            className="pc-orders__sec"
+            id="pc-orders-walls"
+            data-collapsed={rail.closed('o-walls') ? 'true' : 'false'}
+            /* A wall is something blocked on the READER. It is the only card in
+               this rail that is addressed to them, so it wears the warn tone. */
+            data-attn={(orders.walls ?? []).length > 0 ? 'true' : undefined}
+          >
+            <RailSectionHead
+              sectionId="o-walls"
+              label="Walls"
+              className="pc-orders__h"
+              closed={rail.closed('o-walls')}
+              onToggle={() => rail.toggle('o-walls')}
+            >
               {(orders.walls ?? []).length > 0 ? (
                 <span className="pc-orders__n pc-orders__n--hot">
                   {(orders.walls ?? []).length}
                 </span>
               ) : null}
-            </h4>
+            </RailSectionHead>
             {(orders.walls ?? []).length > 0 ? (
               (orders.walls ?? []).map((w, i) => (
                 <div className="pc-orders__wall" key={`${w.claim}:${i}`}>
@@ -371,9 +392,18 @@ export default function AgentOrders({
           </section>
 
           {/* ── Carry: what it is tracking, and how old that is ── */}
-          <section className="pc-orders__sec" id="pc-orders-carry">
-            <h4 className="pc-orders__h">
-              Carry
+          <section
+            className="pc-orders__sec"
+            id="pc-orders-carry"
+            data-collapsed={rail.closed('o-carry') ? 'true' : 'false'}
+          >
+            <RailSectionHead
+              sectionId="o-carry"
+              label="Carry"
+              className="pc-orders__h"
+              closed={rail.closed('o-carry')}
+              onToggle={() => rail.toggle('o-carry')}
+            >
               {carryMode ? (
                 <span
                   className="pc-orders__n"
@@ -386,7 +416,7 @@ export default function AgentOrders({
                   {carryMode}
                 </span>
               ) : null}
-            </h4>
+            </RailSectionHead>
             {unavailable.has('carry') ? (
               <Unavailable what="the carry brief" />
             ) : carry ? (

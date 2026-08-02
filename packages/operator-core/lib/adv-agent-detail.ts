@@ -13,8 +13,7 @@
  * (deriveAgentLocks / deriveCoordState) so it unit-tests without PG.
  */
 
-import { coordLog } from './agent-tools/coordination/log';
-import { readAckedMsgIds } from './agent-tools/coordination/messages';
+import { readAckedMsgIds, readInvolvingOwner } from './agent-tools/coordination/messages';
 import { readWatermark, pickUnreadCursor } from './agent-tools/coordination/watermarks';
 import { lastInboxReadAtBatch } from './agent-tools/coordination/inbox-read-freshness';
 import { listHandoffs, type HandoffWithAcceptance } from './agent-tools/coordination/handoffs';
@@ -776,8 +775,15 @@ async function readUnreadCursor(owner: string): Promise<UnreadCursors> {
 /** Read one agent's coord state (last message, unread, open handoffs/escalations). */
 export async function getAgentCoordState(owner: string): Promise<AgentCoordState> {
   try {
+    // EI-19323734935411369: this used to be an unconditional
+    // `coordLog.readLines('messages')` — the ENTIRE messages surface (~76k rows /
+    // ~63MB of JSONB, growing) pulled and JSON-parsed on every dossier open/poll
+    // (`getAgentDetail` calls this unconditionally). `readInvolvingOwner` pushes
+    // the exact same "sent by OR addressed to OR broadcast" union this owner
+    // needs down into SQL, bounded + newest-first — see its docstring in
+    // messages.ts for the full rationale (mirrors readInbox/readOutbox's fix).
     const [messages, acked, handoffs, escalations, cursors] = await Promise.all([
-      coordLog.readLines('messages') as Promise<CoordEnvelope[]>,
+      readInvolvingOwner(owner) as Promise<CoordEnvelope[]>,
       readAckedMsgIds(owner),
       listHandoffs({ status: 'open' }),
       listEscalations({ status: 'open' }),

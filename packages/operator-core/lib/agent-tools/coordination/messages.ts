@@ -868,7 +868,9 @@ function filterOutbox(
  *
  * SENDER-PUSHDOWN FAST PATH (EI-19323734935411369). This was the last PRIMARY
  * (non-catch-fallback) caller of the unbounded `coordLog.readLines('messages')`
- * — it loaded the ENTIRE messages surface and filtered in JS, which on
+ * IN THIS FILE — `adv-agent-detail.ts`'s `getAgentCoordState` also called it
+ * unconditionally (see {@link readInvolvingOwner} below, fixed the same wake).
+ * It loaded the ENTIRE messages surface and filtered in JS, which on
  * 2026-08-02 measured **76,209 rows / 63 MB of JSONB bodies transferred and
  * JSON-parsed on the operator's single event loop, per call**. Across the
  * 349,842 logged calls that unbounded shape returned 9.7 BILLION rows and
@@ -1017,6 +1019,76 @@ export async function readOutboxWindow(
     const entries = await readOutbox(ownerId, opts);
     return { entries, exhausted: true, rowsScanned: entries.length, pages };
   }
+}
+
+/** Hard backstop on rows scanned per `readInvolvingOwner` PG-fast-path call —
+ *  mirrors INBOX_FAST_PATH_ROW_CAP / OUTBOX_FAST_PATH_ROW_CAP. A normal
+ *  per-agent dossier read is nowhere near this; only a pathological backlog
+ *  is capped, and then loudly. */
+export const INVOLVING_FAST_PATH_ROW_CAP = 25_000;
+
+/**
+ * Read every envelope "involving" `ownerId` — sent BY them, addressed TO them,
+ * or broadcast (`to` containing `'*'`) — across the whole `messages` surface.
+ * ALL kinds included (unlike `readInbox`, which defaults to EXCLUDING the
+ * owner's own sends and non-directed `notify` kinds): this exists specifically
+ * to replace `coordLog.readLines('messages')` at a call site that needs the
+ * exact same "from OR to" union the unbounded read used to return, just
+ * bounded — `adv-agent-detail.ts`'s `getAgentCoordState` (the per-agent
+ * dossier's coord section: last-message + unread derivation for ONE owner).
+ *
+ * SENDER-OR-RECIPIENT PUSHDOWN (EI-19323734935411369, the getAgentCoordState
+ * leg). `readOutbox`'s docstring above called itself "the last PRIMARY caller"
+ * of the unbounded read — that missed this one: `getAgentCoordState` is called
+ * unconditionally on every agent-dossier open/poll (`getAgentDetail`), so it
+ * was unconditional PRIMARY traffic exactly like `readOutbox` was, not a rare
+ * catch-fallback.
+ *
+ * ORDER BY id DESC + LIMIT, mirroring readInbox/readOutbox — the newest rows
+ * survive the cap (EI-19314819320465915: `ASC` would keep the OLDEST rows and
+ * silently freeze the view once an owner's involving-set exceeds the cap).
+ * Safe here because the caller (`deriveCoordState`) re-sorts by ts rather than
+ * trusting SQL order.
+ *
+ * Falls back to the authoritative `coordLog.readLines('messages')` on a
+ * non-PG seam (tests) or any query error.
+ */
+export async function readInvolvingOwner(
+  ownerId: string,
+  limit: number = INVOLVING_FAST_PATH_ROW_CAP,
+): Promise<CoordEnvelope[]> {
+  if (coordHasPgFastPath()) {
+    try {
+      const sql = coordSql();
+      const rows = await sql<{ body: unknown }[]>`
+        SELECT body
+          FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${coordWorkspaceId()}
+           AND surface = 'messages'
+           AND (
+             body->>'from' = ${ownerId}
+             OR (
+               jsonb_typeof(body->'to') = 'array'
+               AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
+             )
+           )
+         ORDER BY id DESC
+         LIMIT ${limit}
+      `;
+      if (rows.length >= limit) {
+        console.warn(
+          `[readInvolvingOwner] fast-path row cap (${limit}) hit for owner=${ownerId} — the ` +
+            'OLDEST matching rows beyond the cap were NOT returned.',
+        );
+      }
+      return rows.map(
+        (r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope,
+      );
+    } catch {
+      // Fall through to the authoritative full-surface read below.
+    }
+  }
+  return coordLog.readLines('messages');
 }
 
 /**
