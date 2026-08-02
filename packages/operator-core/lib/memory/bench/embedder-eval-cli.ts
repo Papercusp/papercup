@@ -63,6 +63,7 @@ import { CORPUS_FIXTURE_VERSION, loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-corpus';
 import { loadProseGoldSetFixture, PROSE_GOLD_SET_VERSION } from './prose-gold-set';
+import { compareLegs, classesDisagree, ALL_ANSWERABLE, type PerQueryRow } from './paired-leg-report';
 
 type EmbedFn = (text: string) => Promise<number[]>;
 interface Leg {
@@ -463,6 +464,38 @@ async function main(): Promise<void> {
     }
   }
 
+  // PAIRED verdicts (D-002). Computed HERE, from the per-query rows, rather
+  // than left for a reader to eyeball two class means — which cannot answer
+  // "is this outside noise?" at all, and invites reporting a null as
+  // equivalence.
+  const scoredLegs = Object.entries(results).filter(
+    (e): e is [string, { perQuery: PerQueryRow[] }] =>
+      typeof e[1] === 'object' && e[1] !== null && Array.isArray((e[1] as { perQuery?: unknown }).perQuery),
+  );
+  const baselineName = argValue('--baseline') ?? scoredLegs[0]?.[0];
+  const comparisons: Record<string, unknown> = {};
+  const baseline = scoredLegs.find(([n]) => n === baselineName);
+  if (baseline && scoredLegs.length > 1) {
+    console.log(`\n== PAIRED comparison vs baseline ${baselineName} (D-002: primary verdict) ==`);
+    for (const [name, leg] of scoredLegs) {
+      if (name === baselineName) continue;
+      const cmp = compareLegs(baselineName!, baseline[1].perQuery, name, leg.perQuery);
+      comparisons[name] = { ...cmp, classesDisagree: classesDisagree(cmp) };
+      console.log(`\n  ${baselineName} -> ${name}`);
+      for (const cls of [ALL_ANSWERABLE, 'lexical-gap', 'exact-identifier', 'session-start-intent']) {
+        const row = cmp.byClass[cls];
+        if (row) console.log(`    ${row.statement}`);
+      }
+      if (classesDisagree(cmp)) {
+        console.log(
+          `    ⚠ CLASSES DISAGREE IN SIGN — the pooled ${ALL_ANSWERABLE} number is uninterpretable here (D-002 §5).`,
+        );
+      }
+    }
+  } else if (scoredLegs.length > 1) {
+    console.log(`\n(no paired comparison: --baseline '${baselineName}' did not match a scored leg)`);
+  }
+
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(
     outPath,
@@ -473,7 +506,9 @@ async function main(): Promise<void> {
         corpusVersion,
         goldVersion: gold.version,
         goldSetVersion: corpusChoice === 'prose' ? PROSE_GOLD_SET_VERSION : gold.version,
+        baseline: baselineName,
         results,
+        comparisons,
       },
       null,
       2,

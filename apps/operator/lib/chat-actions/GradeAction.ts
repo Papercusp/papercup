@@ -40,8 +40,16 @@ function ownerId(ctx: ChatActionContext): string {
 
 registerChatAction({
   id: 'posture-grade',
-  label: 'Grade',
-  group: 'posture',
+  // Direction D rule ②: a trailing "…" means a chooser opens; no ellipsis
+  // means it fires now. This one asks for a rubric first, so it earns the
+  // ellipsis — and the longer name is what finally separates it from the
+  // GRADE *mode* pill beside it, which the bare "Grade" was indistinguishable
+  // from (deck change #3's second duplicate pair).
+  label: 'Grade session…',
+  // Regrouped from 'posture' to 'session': with the posture buttons now
+  // rendered as mode pills, this is an act performed ON this session, and it
+  // belongs with the other such acts rather than alone in an empty cluster.
+  group: 'session',
   available: (ctx) => Boolean(ctx.sessionOwnerId),
   params: async () => {
     const rows = await fetchSyncQuery<RubricListRow>({ queryName: 'rubrics.list', args: {} });

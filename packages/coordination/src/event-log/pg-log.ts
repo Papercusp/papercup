@@ -766,7 +766,7 @@ export class PgCoordLog implements CoordEventLog {
     const rows = await sql<{ id: number; body: unknown; ts: Date; msg_id: string }[]>`
       SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
-         ${kinds && kinds.length ? sql`AND body->>'kind' = ANY(${kinds}::text[])` : sql``}
+         ${kindPredicate(sql, kinds)}
          ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
        ORDER BY id DESC
        LIMIT ${limit + 1}
@@ -802,7 +802,7 @@ export class PgCoordLog implements CoordEventLog {
     const rows = await sql<{ id: number; body: unknown; ts: Date; msg_id: string }[]>`
       SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
-         ${kinds && kinds.length ? sql`AND body->>'kind' = ANY(${kinds}::text[])` : sql``}
+         ${kindPredicate(sql, kinds)}
          ${sinceTs ? sql`AND body->>'ts' > ${sinceTs}` : sql``}
          ${planSlug ? sql`AND body->>'plan_slug' = ${planSlug}` : sql``}
          ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}

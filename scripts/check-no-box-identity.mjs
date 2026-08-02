@@ -93,7 +93,19 @@ for (const f of files) {
 }
 
 if (findings.length === 0) {
-  console.log(`✓ no box-identity paths in ${files.length} tracked + untracked-not-ignored source files`);
+  // EI-19327204777381001: SAY the scope in the verdict, don't leave it to the reader.
+  // The enumeration above is superproject-only BY DESIGN (see the scope note) — but a
+  // bare "✓ no box-identity paths in 5,666 files" reads as a repo-wide clean bill of
+  // health, and the large count makes it read as a MORE authoritative one. This repo
+  // declares 39 submodules whose contents were never opened here, so an unqualified
+  // pass renders "I did not look there" identically to "there is nothing there".
+  // Qualifying the line costs nothing and keeps the D-004 scope decision honest;
+  // mirrors check-no-owner-name-tags.mjs, which already states its scope this way.
+  console.log(
+    `✓ no box-identity paths in ${files.length} tracked + untracked-not-ignored source files ` +
+      `(superproject only — submodule contents are NOT enumerated here, by design: they are ` +
+      `redacted at tar time by bin/stage-source-tree.sh. See the scope note above.)`,
+  );
   process.exit(0);
 }
 

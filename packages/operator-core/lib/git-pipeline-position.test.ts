@@ -2343,7 +2343,23 @@ describe('changeInCandidate (P-004)', () => {
         expect(res.changeInCandidate.detail).not.toMatch(/Do NOT re-fire/);
         // It must say what is actually true, and point at the check that IS definitive.
         expect(res.changeInCandidate.detail).toMatch(/PART of the change/);
-        expect(res.changeInCandidate.detail).toMatch(/callerEditsInCandidate|release:checkpoint-run/);
+        /**
+         * ANCESTRY is the definitive check — NOT release:checkpoint-run's
+         * callerEditsInCandidate, which this assertion originally demanded.
+         *
+         * That field carries the SAME false-miss defect (EI-19326775809436764, measured
+         * 2026-08-02 08:00Z): it compares the path's CURRENT content, so on a file the
+         * fleet edits, any peer commit landing after yours reports your change missing
+         * from a candidate that provably contains it — and then prescribes a ~55min
+         * re-fire. Sending the reader there would have relocated this bug, not fixed it.
+         *
+         * So the detail must name the ancestry test AND explicitly warn the reader off
+         * the containment field. `callerEditsInCandidate` still appears in the string —
+         * as the thing NOT to use — which is why this pins the warning phrasing rather
+         * than merely asserting the substring is absent.
+         */
+        expect(res.changeInCandidate.detail).toMatch(/merge-base --is-ancestor/);
+        expect(res.changeInCandidate.detail).toMatch(/Do NOT settle it with[\s\S]*callerEditsInCandidate/);
         // …and the marker note itself must carry the WARNING glyph, never the reassuring
         // ✓ (the position ticks legitimately use ✓, so this pins the note's own prefix).
         expect(res.summary).toMatch(/⚠ The gate's judged candidate/);

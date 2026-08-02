@@ -5,6 +5,7 @@ import { Button } from '@/app/harness/Button';
 import { useLexicon } from '@/lib/useLexicon';
 import { type BoundLexicon } from '@papercusp/lexicon';
 import * as Collapsible from '@radix-ui/react-collapsible';
+import { GITHUB_ISSUES_URL, GITHUB_NEW_ISSUE_URL } from '@papercusp/operator-core/lib/canonical-github-identity';
 
 /**
  * /support — FAQ + chat. Translated from `apps/operator/app/support/page.tsx`.
@@ -152,7 +153,7 @@ function SupportPage() {
         </Button>
         <Button asChild size="lg" variant="accent">
           <a
-            href="https://github.com/papercupai/papercusp/issues/new"
+            href={GITHUB_NEW_ISSUE_URL}
             target="_blank"
             rel="noreferrer"
             style={{ background: 'var(--bg-1)' }}
@@ -220,7 +221,7 @@ function SupportPage() {
         <strong style={{ color: 'var(--fg)' }}>Resources:</strong>{' '}
         <a href="https://papercuspai.com/docs/" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>full documentation</a>{' '}·{' '}
         <a href="https://papercusp.com" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>marketing site</a>{' '}·{' '}
-        <a href="https://github.com/papercupai/papercusp/issues" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>issue tracker</a>{' '}·{' '}
+        <a href={GITHUB_ISSUES_URL} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>issue tracker</a>{' '}·{' '}
         <Link to="/setup" style={{ color: 'var(--accent)' }}>5-step setup</Link>
       </div>
     </div>

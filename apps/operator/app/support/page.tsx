@@ -5,6 +5,7 @@ import { SupportChatButton } from '../_components/SupportChatButton';
 import { SupportAgentPanel } from '../_components/SupportAgentPanel';
 import { Button } from '../harness/Button';
 import { term } from '@papercusp/operator-core/lib/lexicon';
+import { GITHUB_ISSUES_URL, GITHUB_NEW_ISSUE_URL } from '@papercusp/operator-core/lib/canonical-github-identity';
 
 export const metadata = {
   title: 'Support · Papercusp',
@@ -145,7 +146,7 @@ export default function SupportPage() {
         </Button>
         <Button asChild size="lg" variant="accent">
           <a
-            href="https://github.com/papercupai/papercusp/issues/new"
+            href={GITHUB_NEW_ISSUE_URL}
             target="_blank"
             rel="noreferrer"
             style={{ background: 'var(--bg-1)' }}
@@ -213,7 +214,7 @@ export default function SupportPage() {
         <strong style={{ color: 'var(--fg)' }}>Resources:</strong>{' '}
         <a href="https://papercuspai.com/docs/" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>full documentation</a>{' '}·{' '}
         <a href="https://papercusp.com" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>marketing site</a>{' '}·{' '}
-        <a href="https://github.com/papercupai/papercusp/issues" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>issue tracker</a>{' '}·{' '}
+        <a href={GITHUB_ISSUES_URL} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>issue tracker</a>{' '}·{' '}
         <RouteLink href="/setup" style={{ color: 'var(--accent)' }}>5-step setup</RouteLink>
       </div>
     </div>

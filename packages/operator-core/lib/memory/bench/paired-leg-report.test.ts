@@ -1,0 +1,168 @@
+/**
+ * Tests for the paired leg comparison (D-002's verdict shape).
+ *
+ * The bar these tests hold is not "the arithmetic runs" — it is that the
+ * module cannot produce the two WRONG-BUT-PLAUSIBLE reports D-002 was written
+ * to prevent: reporting an underpowered null as equivalence, and quoting the
+ * identifier-dominated pooled number when the classes disagree.
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  compareLegs,
+  classesDisagree,
+  ALL_ANSWERABLE,
+  DECISION_RELEVANT_DELTA_MRR,
+  type PerQueryRow,
+} from './paired-leg-report';
+
+/** Build per-query rows: `rr[i]` is the reciprocal rank of query i. */
+function rows(cls: string, rr: number[], prefix = 'q'): PerQueryRow[] {
+  return rr.map((r, i) => ({
+    id: `${prefix}-${i}`,
+    class: cls,
+    firstRelevantRank: r === 0 ? 0 : Math.round(1 / r),
+    reciprocalRank: r,
+    top1Score: 0.5,
+  }));
+}
+
+describe('compareLegs', () => {
+  it('reports a real degradation as candidate-worse with a CI excluding zero', () => {
+    const base = rows('lexical-gap', Array.from({ length: 80 }, (_, i) => (i % 4 === 0 ? 1 : 0.5)));
+    // Candidate is uniformly half a rank worse on every query.
+    const cand = base.map((r) => ({ ...r, reciprocalRank: r.reciprocalRank - 0.2, firstRelevantRank: 2 }));
+    const cmp = compareLegs('gemma@768', base, 'gemma@384', cand);
+    const all = cmp.byClass[ALL_ANSWERABLE];
+    expect(all.verdict).toBe('candidate-worse');
+    expect(all.deltaMrr.delta.point).toBeCloseTo(-0.2, 6);
+    expect(all.deltaMrr.delta.upper).toBeLessThan(0);
+    expect(all.statement).toMatch(/WORSE/);
+  });
+
+  /**
+   * The failure mode D-002 §4 exists to prevent. A tiny sample with a huge
+   * spread produces delta ≈ 0 — which reads exactly like "the widths are
+   * equivalent" unless the report says otherwise. It must come back
+   * UNDERPOWERED, and the statement must refuse the equivalence wording.
+   */
+  it('calls a WIDE null underpowered rather than "no difference"', () => {
+    const base = rows('lexical-gap', [1, 0, 1, 0, 0.5, 0, 1, 0]);
+    const cand = rows('lexical-gap', [0, 1, 0, 1, 0, 0.5, 0, 1]);
+    const cmp = compareLegs('a', base, 'b', cand);
+    const all = cmp.byClass[ALL_ANSWERABLE];
+    expect(all.verdict).toBe('underpowered');
+    expect(all.deltaMrr.halfWidth).toBeGreaterThan(DECISION_RELEVANT_DELTA_MRR);
+    expect(all.statement).toMatch(/UNDERPOWERED/);
+    expect(all.statement).not.toMatch(/equivalent/i);
+  });
+
+  /**
+   * The complementary case: a null that IS informative because the interval is
+   * tight. Even here the wording must stay "no decision-relevant difference
+   * detected at this power" and explicitly disclaim equivalence.
+   */
+  it('calls a TIGHT null "no decision-relevant difference" and still disclaims equivalence', () => {
+    // 200 queries, identical legs apart from negligible alternating jitter.
+    const rr = Array.from({ length: 200 }, (_, i) => 0.5 + (i % 5) * 0.02);
+    const base = rows('exact-identifier', rr);
+    const cand = base.map((r, i) => ({ ...r, reciprocalRank: r.reciprocalRank + (i % 2 === 0 ? 0.001 : -0.001) }));
+    const cmp = compareLegs('a', base, 'b', cand);
+    const all = cmp.byClass[ALL_ANSWERABLE];
+    expect(all.verdict).toBe('no-detected-difference');
+    expect(all.deltaMrr.halfWidth).toBeLessThanOrEqual(DECISION_RELEVANT_DELTA_MRR);
+    expect(all.statement).toMatch(/NOT a finding of equivalence/);
+    expect(all.statement).toMatch(/80%-power MDE/);
+  });
+
+  it('EXCLUDES hard negatives — pooling them would dilute every delta toward zero', () => {
+    const answerable = rows('lexical-gap', [1, 1, 1, 1]);
+    const negatives = rows('hard-negative', [0, 0, 0, 0, 0, 0, 0, 0], 'hn');
+    const base = [...answerable, ...negatives];
+    const cand = [
+      ...answerable.map((r) => ({ ...r, reciprocalRank: 0.5, firstRelevantRank: 2 })),
+      ...negatives,
+    ];
+    const cmp = compareLegs('a', base, 'b', cand);
+    // n counts only the 4 answerable queries, and the delta is the full -0.5 —
+    // not the -0.167 that pooling the 8 zero-RR negatives would have produced.
+    expect(cmp.byClass[ALL_ANSWERABLE].n).toBe(4);
+    expect(cmp.byClass[ALL_ANSWERABLE].deltaMrr.delta.point).toBeCloseTo(-0.5, 6);
+    expect(cmp.byClass['hard-negative']).toBeUndefined();
+  });
+
+  it('reports each class separately as well as pooled', () => {
+    const base = [...rows('lexical-gap', [1, 1, 0.5], 'lg'), ...rows('exact-identifier', [0.5, 0.5], 'ei')];
+    const cand = [...rows('lexical-gap', [0.5, 0.5, 0.25], 'lg'), ...rows('exact-identifier', [0.5, 0.5], 'ei')];
+    const cmp = compareLegs('a', base, 'b', cand);
+    expect(Object.keys(cmp.byClass).sort()).toEqual([ALL_ANSWERABLE, 'exact-identifier', 'lexical-gap']);
+    expect(cmp.byClass['exact-identifier'].deltaMrr.delta.point).toBeCloseTo(0, 10);
+    expect(cmp.byClass['lexical-gap'].deltaMrr.delta.point).toBeLessThan(0);
+  });
+
+  it('runs McNemar on hit@1, ignoring queries where the legs agree', () => {
+    // 6 queries: 3 concordant hits, 3 where only the baseline hit.
+    const base = rows('exact-identifier', [1, 1, 1, 1, 1, 1]);
+    const cand = rows('exact-identifier', [1, 1, 1, 0.5, 0.5, 0.5]);
+    const m = compareLegs('a', base, 'b', cand).byClass[ALL_ANSWERABLE].hitAt1;
+    expect(m).toMatchObject({ onlyA: 3, onlyB: 0, concordant: 3 });
+    expect(m.p).toBeCloseTo(0.25, 10); // 2·P(X≤0 | n=3,½) = 2/8
+  });
+
+  /**
+   * Aligning by position instead of id would pair unrelated queries and still
+   * emit a confident interval. The join must fail loudly instead.
+   */
+  it('throws when a query is missing from the candidate rather than mis-pairing', () => {
+    const base = rows('lexical-gap', [1, 1, 1]);
+    const cand = rows('lexical-gap', [1, 1]);
+    expect(() => compareLegs('a', base, 'b', cand)).toThrow(/missing from b/);
+  });
+
+  it('pairs by ID even when the candidate rows arrive in a different order', () => {
+    const base = rows('lexical-gap', [1, 0.5, 0.25]);
+    const cand = [...rows('lexical-gap', [1, 0.5, 0.25])].reverse();
+    const cmp = compareLegs('a', base, 'b', cand);
+    // Correct pairing ⇒ exactly zero delta. A positional join would pair
+    // q-0's 1.0 against q-2's 0.25 and report a spurious difference.
+    expect(cmp.byClass[ALL_ANSWERABLE].deltaMrr.delta.point).toBeCloseTo(0, 10);
+  });
+
+  it('is deterministic given a seed', () => {
+    const base = rows('lexical-gap', [1, 0.5, 0.33, 0.25, 1, 0.5]);
+    const cand = rows('lexical-gap', [0.5, 0.5, 1, 0.25, 0.33, 1]);
+    expect(compareLegs('a', base, 'b', cand, { seed: 42 })).toEqual(
+      compareLegs('a', base, 'b', cand, { seed: 42 }),
+    );
+  });
+});
+
+describe('classesDisagree', () => {
+  it('flags opposite-signed class verdicts (pooled number uninterpretable)', () => {
+    // lexical-gap strongly worse, exact-identifier strongly better.
+    const base = [
+      ...rows('lexical-gap', Array(60).fill(1), 'lg'),
+      ...rows('exact-identifier', Array(60).fill(0.2), 'ei'),
+    ];
+    const cand = [
+      ...rows('lexical-gap', Array(60).fill(0.2), 'lg'),
+      ...rows('exact-identifier', Array(60).fill(1), 'ei'),
+    ];
+    const cmp = compareLegs('a', base, 'b', cand);
+    expect(cmp.byClass['lexical-gap'].verdict).toBe('candidate-worse');
+    expect(cmp.byClass['exact-identifier'].verdict).toBe('candidate-better');
+    expect(classesDisagree(cmp)).toBe(true);
+  });
+
+  it('does not flag agreement, and ignores the pooled pseudo-class', () => {
+    const base = [
+      ...rows('lexical-gap', Array(60).fill(1), 'lg'),
+      ...rows('exact-identifier', Array(60).fill(1), 'ei'),
+    ];
+    const cand = [
+      ...rows('lexical-gap', Array(60).fill(0.2), 'lg'),
+      ...rows('exact-identifier', Array(60).fill(0.2), 'ei'),
+    ];
+    const cmp = compareLegs('a', base, 'b', cand);
+    expect(classesDisagree(cmp)).toBe(false);
+  });
+});

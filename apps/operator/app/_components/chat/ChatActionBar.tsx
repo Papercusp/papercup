@@ -97,42 +97,21 @@ async function confirmed(action: ChatAction, ctx: ChatActionContext): Promise<bo
 }
 
 /**
- * Inline styles, deliberately — `.chat-action-bar` / `.chat-action-bar-button`
- * were emitted by this component but defined in NO stylesheet in the repo, so
- * the bar rendered as bare UA buttons with the icon jammed against the label
- * ("↻Resume in new terminal"). The chat surface and AgentInspectorModal both
- * style inline rather than via a sheet, so this matches the surrounding
- * convention instead of introducing a stylesheet only this component loads.
+ * P-003 replaced this component's inline styles with the shared control
+ * VOCABULARY (`pc-ctl-*`, chat-controls.css, loaded by SessionChatModal).
  *
- * The button values are copied from AgentInspectorModal's resume/fork/focus
- * buttons so the two surfaces render as visibly the same control — which is
- * the actual ask behind P-015 ("the same ones that show up in the turn
- * history"). The classNames are kept for tests and for any future sheet.
+ * The inline styles existed because `.chat-action-bar-button` was emitted here
+ * but defined in NO stylesheet in the repo, so the bar rendered as bare UA
+ * buttons with the icon jammed against the label ("↻Resume in new terminal").
+ * A real sheet now exists and every chat surface loads it, so the classes are
+ * load-bearing rather than decorative — and being classes is the point: the
+ * five shapes have to be declared in ONE place for "rounded means the system
+ * is telling you something" to hold anywhere.
+ *
+ * The old classNames (`chat-action-bar`, `chat-action-bar-button`) are kept
+ * alongside the new ones so existing tests and any external selector keep
+ * working.
  */
-const BAR_STYLE: CSSProperties = {
-  display: 'flex',
-  flexWrap: 'wrap',
-  alignItems: 'center',
-  gap: 6,
-  padding: '6px 8px',
-};
-
-const BUTTON_STYLE: CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 4,
-  font: 'inherit',
-  fontSize: 11,
-  lineHeight: 1.4,
-  padding: '2px 8px',
-  borderRadius: 5,
-  border: '1px solid var(--border)',
-  background: 'var(--bg-1)',
-  color: 'var(--fg)',
-};
-
-const GROUP_STYLE: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6 };
-
 interface GroupedActions {
   group: string;
   actions: ChatAction[];

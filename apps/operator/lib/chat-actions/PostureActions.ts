@@ -1,7 +1,16 @@
 /**
- * Posture actions — Autonomy (radio: manual/auto/cold-auto) and Overlays
- * (checkbox: ideate/drain/grade) as TWO ChatActions writing
- * mode:set { ownerDirected: true } (gui-chat-session-controls-2026-07-25 P-004).
+ * Posture modes — the autonomy axis (manual/auto/cold-auto) and the three
+ * stackable overlays (ideate/drain/grade) as FOUR ChatModeActions writing
+ * mode:set { ownerDirected: true }
+ * (gui-chat-session-controls-2026-07-25 P-004, reshaped by
+ * session-chat-popup-direction-d-2026-08-02 P-005).
+ *
+ * P-005 changed the SHAPE, not the writes. These were two ChatActions —
+ * buttons labelled `Autonomy` and `Overlays` that opened a card and reported
+ * nothing about the current state, so the state had to appear elsewhere as a
+ * read-only chip. One concept, two objects, two places, neither admitting it
+ * was the other: that is the confusion the owner reported. As mode-actions
+ * they report AND set, so each is one pill.
  *
  * Labels/hints come from the mode registry
  * (packages/operator-core/lib/modes/registry — the SAME source mode:set /
@@ -21,9 +30,8 @@
  * whichever mode wasn't already active. This avoids needing a mode:get round
  * trip just to pre-populate the card.
  */
-import { z } from 'zod';
 import { modeById, modeChipLabel } from '@papercusp/operator-core/lib/modes/registry';
-import { registerChatAction } from './registry';
+import { registerChatModeAction } from './registry';
 import type { ChatActionContext } from './types';
 
 const AUTONOMY_IDS = ['manual', 'auto', 'cold-auto'] as const;
@@ -60,68 +68,110 @@ function ownerId(ctx: ChatActionContext): string {
   return ctx.sessionOwnerId;
 }
 
-registerChatAction({
-  id: 'posture-autonomy',
-  label: 'Autonomy',
+/**
+ * The standing modes currently registered on the session this chat is attached
+ * to, read straight off `ctx`.
+ *
+ * The roster row types `modes` as `Array<HudMode | string>` — a bare string is
+ * tolerated because federation and a mid-deploy SSE push both produce one — so
+ * both shapes are normalised here. Exported for test.
+ */
+export function activeModes(ctx: ChatActionContext): Set<string> {
+  const raw = ctx.modes;
+  if (!Array.isArray(raw)) return new Set();
+  const out = new Set<string>();
+  for (const m of raw) {
+    if (typeof m === 'string') {
+      out.add(m);
+    } else if (m && typeof m === 'object' && typeof (m as { mode?: unknown }).mode === 'string') {
+      out.add((m as { mode: string }).mode);
+    }
+  }
+  return out;
+}
+
+/* ── P-005: the four Mode pills ────────────────────────────────────────────
+ * These REPLACE the previous `Autonomy` and `Overlays` buttons. Those were
+ * verbs that opened a card, and said nothing about what was currently set —
+ * so the current value had to be shown elsewhere as a read-only chip, which is
+ * the AUTO-chip/Autonomy-button duplicate the owner reported. A pill reports
+ * and sets, so each mode is now exactly one object on the surface.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+registerChatModeAction({
+  id: 'mode-autonomy',
+  cap: 'AUTO',
   group: 'posture',
   available: (ctx) => Boolean(ctx.sessionOwnerId),
-  params: async () => ({
-    prompt: 'Set autonomy posture',
-    dataSchema: z.object({ picks: z.tuple([z.enum(AUTONOMY_IDS)]) }),
-    presentation: {
-      kind: 'radio',
-      options: AUTONOMY_IDS.map((id) => ({
-        id,
-        label: id === 'manual' ? 'Manual' : (modeById(id)?.title ?? modeChipLabel(id)),
-        hint:
-          id === 'manual'
-            ? 'Confirm-before-acting posture — no standing autonomy mode'
-            : modeById(id)?.oneLiner,
-      })),
-    },
-    allowDecline: true,
-  }),
-  run: async (ctx, value) => {
-    const [choice] = (value as { picks: [AutonomyId] }).picks;
-    const reason = 'owner set autonomy posture from the chat action bar';
-    const agent = ownerId(ctx);
-    if (choice === 'manual') {
-      // Clear both autonomy-axis modes — enabled:false is a no-op on
-      // whichever wasn't set, so this is safe without a prior-state read.
-      await Promise.all([
-        postModeSet(agent, 'auto', false, reason),
-        postModeSet(agent, 'cold-auto', false, reason),
-      ]);
-      return;
+  current: (ctx) => {
+    const modes = activeModes(ctx);
+    // Order matters: cold-auto is the more specific of the two, and an agent
+    // carrying both should read as the colder one rather than silently
+    // reporting the warmer.
+    if (modes.has('cold-auto')) {
+      return { value: 'cold', on: true, title: modeById('cold-auto')?.oneLiner };
     }
-    await postModeSet(agent, choice, true, reason);
+    if (modes.has('auto')) {
+      return { value: 'on', on: true, title: modeById('auto')?.oneLiner };
+    }
+    return {
+      value: 'off',
+      on: false,
+      title: 'Confirm-before-acting posture — no standing autonomy mode is set',
+    };
+  },
+  options: () =>
+    AUTONOMY_IDS.map((id) => ({
+      id,
+      label: id === 'manual' ? 'Manual' : (modeById(id)?.title ?? modeChipLabel(id)),
+      hint:
+        id === 'manual'
+          ? 'Confirm-before-acting posture — no standing autonomy mode'
+          : modeById(id)?.oneLiner,
+    })),
+  set: async (ctx, optionId) => {
+    const choice = optionId as AutonomyId;
+    const reason = 'owner set autonomy posture from the chat control band';
+    const agent = ownerId(ctx);
+    // RECONCILE THE WHOLE AXIS, always. The previous implementation only
+    // ENABLED the chosen mode, so switching auto → cold-auto left `auto`
+    // standing as well and the agent carried two autonomy modes at once.
+    // enabled:false is a no-op on whichever was not set, so setting every
+    // option explicitly is both correct and safe with no prior-state read.
+    await Promise.all(
+      AUTONOMY_IDS.filter((id) => id !== 'manual').map((id) =>
+        postModeSet(agent, id, id === choice, reason),
+      ),
+    );
   },
 });
 
-registerChatAction({
-  id: 'posture-overlays',
-  label: 'Overlays',
-  group: 'posture',
-  available: (ctx) => Boolean(ctx.sessionOwnerId),
-  params: async () => ({
-    prompt: 'Set overlay modes (stackable — pick any number)',
-    dataSchema: z.object({ picks: z.array(z.enum(OVERLAY_IDS)) }),
-    presentation: {
-      kind: 'checkbox',
-      options: OVERLAY_IDS.map((id) => ({
-        id,
-        label: modeById(id)?.title ?? modeChipLabel(id),
-        hint: modeById(id)?.oneLiner,
-      })),
+for (const overlay of OVERLAY_IDS) {
+  registerChatModeAction({
+    id: `mode-${overlay}`,
+    cap: modeChipLabel(overlay).toUpperCase(),
+    group: 'posture',
+    available: (ctx) => Boolean(ctx.sessionOwnerId),
+    current: (ctx) => {
+      const on = activeModes(ctx).has(overlay);
+      return { value: on ? 'on' : 'off', on, title: modeById(overlay)?.oneLiner };
     },
-    allowDecline: true,
-  }),
-  run: async (ctx, value) => {
-    const picks = new Set((value as { picks: OverlayId[] }).picks);
-    const reason = 'owner set overlay modes from the chat action bar';
-    const agent = ownerId(ctx);
-    // Reconcile all three explicitly (checked → enabled, unchecked →
-    // disabled) rather than diffing against a fetched prior state.
-    await Promise.all(OVERLAY_IDS.map((id) => postModeSet(agent, id, picks.has(id), reason)));
-  },
-});
+    // Stackable overlays are independent booleans, so each pill offers only
+    // its own two states — which is also why they are separate pills rather
+    // than one multi-select: three independent switches read as three
+    // switches, and the old single `Overlays` button hid all three behind a
+    // name that named none of them.
+    options: () => [
+      { id: 'on', label: 'On', hint: modeById(overlay)?.oneLiner },
+      { id: 'off', label: 'Off' },
+    ],
+    set: async (ctx, optionId) => {
+      await postModeSet(
+        ownerId(ctx),
+        overlay,
+        optionId === 'on',
+        'owner set overlay modes from the chat control band',
+      );
+    },
+  });
+}

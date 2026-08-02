@@ -967,7 +967,13 @@ export async function reconcileLoopRoutines(
 
       // EI-13818: a reclassified lifecycle-death re-arms after `turnDeath.rearmDelayMs` (reset-
       // aware for usage_limit, else the plain interval) instead of the blind interval — never
-      // shorter than the interval either way, so this can only push the next fire LATER.
+      // shorter than the interval either way.
+      //
+      // ⚠ This DELAY being longer never meant the stored next_fire_at moved later: the ordinary
+      // statement below is never-later by construction, so a longer rearmMs was silently
+      // DISCARDED whenever a nearer next_fire_at was already set (WI-6852 — the comment that
+      // used to sit here claimed the opposite and is exactly what hid the bug). Only the
+      // `deferPastWall` branch can actually push the next fire out.
       const rearmMs = turnDeath?.rearmDelayMs ?? intervalMs;
 
       // Pass an ISO STRING + explicit ::timestamptz cast, NOT a Date object: the operator's

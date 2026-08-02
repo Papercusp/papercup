@@ -20,9 +20,20 @@ export {
   getChatAction,
   listChatActions,
   listAllChatActionIds,
+  registerChatModeAction,
+  getChatModeAction,
+  listChatModeActions,
+  listAllChatModeActionIds,
   _resetChatActionsForTests,
 } from './registry';
-export type { ChatAction, ChatActionContext, ChatActionConfirm } from './types';
+export type {
+  ChatAction,
+  ChatActionContext,
+  ChatActionConfirm,
+  ChatModeAction,
+  ChatModeOption,
+  ChatModeState,
+} from './types';
 
 // Side-effect: registers concrete actions.
 import './PostureActions';
