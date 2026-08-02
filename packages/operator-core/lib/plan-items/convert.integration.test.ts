@@ -33,9 +33,13 @@ vi.mock('@papercusp/db-org', async () => {
 });
 // getWorkItem returns a stub for any id (null for ids starting 'missing'); the
 // other work-items exports are convert-only — stubbed so the import resolves.
+// ISSUE_FAMILY_KINDS must be the REAL value (not a stub array) — findConvertedWorkItemByStamp
+// binds it into a `= ANY(...)` SQL filter against a real Postgres, so a wrong/missing value
+// silently changes which rows match rather than throwing.
 vi.mock('../work-items', () => ({
   getWorkItem: (id: string, harness?: string) =>
     id.startsWith('missing') ? null : { id, harness: harness ?? null, state: 'open' },
+  ISSUE_FAMILY_KINDS: ['bug', 'change', 'task'],
   createWorkItem: vi.fn(), claimWorkItem: vi.fn(), releaseWorkItem: vi.fn(), linkWorkItem: vi.fn(),
   isWorkItemKind: () => true,
 }));

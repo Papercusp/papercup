@@ -580,6 +580,7 @@ describe('coord_event_log federation (real PG)', () => {
       // FREE and the budget correctly never binds. To exercise the budget at all this
       // test must emit a real wake, so make the mock wake one watcher.
       vi.mocked(emitAwaitedEvent).mockImplementation(async () => ({
+        ok: true,
         key: 'k',
         woken: 1,
         notified: ['su-watcher'],
@@ -599,6 +600,7 @@ describe('coord_event_log federation (real PG)', () => {
         // Restore the suite-wide default (woken: 0) — mockImplementation persists
         // past this test otherwise, and would silently bill every later re-fire.
         vi.mocked(emitAwaitedEvent).mockImplementation(async () => ({
+          ok: true,
           key: '',
           woken: 0,
           notified: [],
