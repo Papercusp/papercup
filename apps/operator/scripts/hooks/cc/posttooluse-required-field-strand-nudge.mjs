@@ -57,6 +57,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
 /** Detector location, relative to the repo root — also how the root is identified. */
@@ -65,7 +66,14 @@ const DETECTOR_REL = join('scripts', 'check-required-field-strands.mjs');
 /** Parsing two versions of a very large file is not worth an edit-time nudge. */
 const MAX_BYTES = 400_000;
 
-main();
+// Run the hook ONLY when executed as a binary — never on import. Mirrors
+// scripts/check-required-field-strands.mjs's own `invokedDirectly` guard.
+// Without this, importing the module (as the test suite does, to exercise
+// nudgeFor against the REAL detector) runs main(), which waits on stdin and
+// then calls process.exit(0) — killing the vitest worker mid-run. Caught by
+// this file's own tests: 10 passed, and the run still reported FAILED.
+const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (invokedDirectly) main();
 
 async function main() {
   if (process.argv.includes('--self-test')) return selfTest();

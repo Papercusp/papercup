@@ -43,7 +43,7 @@ import { potHomeSlugForHarness } from './hive-federation';
  * existing `pot-membership` import keeps working unchanged.
  */
 export { PLATFORM_POT_SLUG, canonicalPotSlug, isPlatformPotScope } from './platform-pot-slug';
-import { PLATFORM_POT_SLUG } from './platform-pot-slug';
+import { PLATFORM_POT_SLUG, canonicalPotSlug } from './platform-pot-slug';
 
 /**
  * Workspace-global scope labels a work item might carry INSTEAD of a real Pot slug

@@ -65,8 +65,9 @@ describe('HydratedWorkRefPill — work-item refs', () => {
 
 describe('HydratedWorkRefPill — plan-item refs (P-006-adjacent scoping)', () => {
   const PLAN_ITEMS_ROWS = [
-    { plan: 'chat-ref-pills-2026-07-26', archived: false, item: { id: 'P-003', effectiveStatus: 'done', text: 'WorkRefPill component' } },
-    { plan: 'chat-ref-pills-2026-07-26', archived: false, item: { id: 'P-006', effectiveStatus: 'wip', text: 'P-NNN scoping' } },
+    // No `archived` — the plans:items UI projection drops it (WI-7086).
+    { plan: 'chat-ref-pills-2026-07-26', item: { id: 'P-003', effectiveStatus: 'done', text: 'WorkRefPill component' } },
+    { plan: 'chat-ref-pills-2026-07-26', item: { id: 'P-006', effectiveStatus: 'wip', text: 'P-NNN scoping' } },
   ];
 
   it('queries plans.items scoped to the message planSlug, work-item query disabled', () => {

@@ -10,7 +10,7 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 function fakeSql(tables: {
   revisions?: Array<{ harness_slug: string; plan_slug: string; author_id: string; author_kind: string }>;
   members?: Array<{ github_user_id: number; github_username: string; display_name: string | null; avatar_url: string | null; device_attestations: unknown }>;
-  parts?: Array<{ part_key: string; author: string | null }>;
+  parts?: Array<{ plan_slug?: string; part_key: string; author: string | null }>;
   users?: Array<{ id: string; username: string; display_name: string | null }>;
 }): Sql {
   const unsafe = async (query: string) => {

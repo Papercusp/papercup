@@ -51,18 +51,56 @@ describe('projectPlansReadForUi — plans:items', () => {
     expect(row).not.toHaveProperty('blockedByIssues');
     expect(item).not.toHaveProperty('rawLine');
     expect(item).not.toHaveProperty('unresolvedBlockers');
-    // display fields preserved verbatim
+
+    // ── WI-7086: BOTH halves of the drop are pinned, so a field that comes
+    // back (a re-inflation) and a field that goes away (a silent read break)
+    // each red exactly one assertion.
+    //
+    // KEPT — the union of what all four live consumers read.
     expect(row.plan).toBe('my-plan');
-    expect(row.archived).toBe(false);
     expect(item.id).toBe('P-001');
-    expect(item.storedStatus).toBe('todo');
     expect(item.effectiveStatus).toBe('todo');
     expect(item.importance).toBe('high');
-    expect(item.phase).toBe('Phase 1');
-    expect(item.blockedBy).toEqual(['P-000']);
-    expect(item.decisionRefs).toEqual(['D-001']);
-    expect(item.lineNumber).toBe(12);
     expect(item.lastEditedBy).toEqual({ handle: 'ada' });
+
+    // DROPPED — verified unread across PlanItemsList / PlansClient /
+    // use-create-data / HydratedWorkRefPill. `archived` is read by NOTHING but a
+    // comment; `storedStatus`/`needsHuman` only ever backed a SERVER-side filter
+    // arg. Together with the nested-null omit this is the bulk of the saving.
+    expect(row).not.toHaveProperty('archived');
+    expect(item).not.toHaveProperty('storedStatus');
+    expect(item).not.toHaveProperty('phase');
+    expect(item).not.toHaveProperty('blockedBy');
+    expect(item).not.toHaveProperty('decisionRefs');
+    expect(item).not.toHaveProperty('lineNumber');
+  });
+
+  it('omits null-valued keys on the nested item (D-025 applied to this feed)', () => {
+    const out = projectPlansReadForUi('items', {
+      items: [
+        {
+          plan: 'p',
+          item: { id: 'P-1', text: 'short', effectiveStatus: 'todo', lastEditedBy: null, importance: null },
+        },
+      ],
+    }) as { items: Array<Record<string, unknown>> };
+    const item = out.items[0].item as Record<string, unknown>;
+    // `lastEditedBy: null` was 2,542 of 3,327 rows on the live payload.
+    expect(item).not.toHaveProperty('lastEditedBy');
+    expect(item).not.toHaveProperty('importance');
+    // …without collateral damage to a falsy-but-present value.
+    expect(item.id).toBe('P-1');
+    expect(item.effectiveStatus).toBe('todo');
+  });
+
+  it('keeps falsy-but-not-null item values (0 / "" / false survive the omit)', () => {
+    const out = projectPlansReadForUi('items', {
+      items: [{ plan: 'p', item: { id: 'P-1', text: '', effectiveStatus: 'todo', count: 0, flag: false } }],
+    }) as { items: Array<{ item: Record<string, unknown> }> };
+    const item = out.items[0].item;
+    expect(item.text).toBe('');
+    expect(item.count).toBe(0);
+    expect(item.flag).toBe(false);
   });
 
   it('leaves a short item.text unchanged (no ellipsis on sub-cap text)', () => {

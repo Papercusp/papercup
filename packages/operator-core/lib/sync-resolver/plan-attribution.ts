@@ -226,14 +226,28 @@ export async function enrichPlanItemsRows(
   }));
   const resolved = await resolvePlanAuthorIdentities(workspaceId, inputs, { sql });
 
+  // ⚠ SET THE KEY ONLY WHEN IT RESOLVES — never `lastEditedBy: null` (WI-7086,
+  // the same defect WI-7045 fixed one function up in enrichPlanListRows). This
+  // enrichment runs AFTER `projectPlansReadForUi` has omitted the item's
+  // null-valued keys (read-dispatch.ts projects, then the plans.items resolver
+  // enriches), so an unconditional null here lands BEHIND that omission and puts
+  // 2,542 of 3,327 nulls straight back on a live payload (~50 KB) — invisible to
+  // the projection's own test, catchable only by counting residual nulls in the
+  // SERVED bytes. It also contradicts the contract omission establishes: the
+  // client's `PlanItem` declares this `?: AuthorIdentity`, so an explicit null
+  // makes that declaration a lie in the opposite direction. Absent = unresolved.
   return list.map((r) => {
     const plan = typeof r.plan === 'string' ? r.plan : '';
     const id = r.item && typeof r.item.id === 'string' ? r.item.id : '';
     const author = plan && id ? authorByItem.get(`${plan}:${id}`) : undefined;
-    const lastEditedBy: ResolvedAuthor | null = author
-      ? resolved.get(planAuthorKey('pubkey', author)) ?? null
-      : null;
-    return r.item ? { ...r, item: { ...r.item, lastEditedBy } } : r;
+    const lastEditedBy: ResolvedAuthor | undefined = author
+      ? resolved.get(planAuthorKey('pubkey', author))
+      : undefined;
+    if (!r.item) return r;
+    const item = { ...r.item };
+    delete item.lastEditedBy;
+    if (lastEditedBy) item.lastEditedBy = lastEditedBy;
+    return { ...r, item };
   });
 }
 

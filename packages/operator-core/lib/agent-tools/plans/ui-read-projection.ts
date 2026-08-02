@@ -76,11 +76,43 @@
 export const UI_TEXT_PREVIEW_MAX = 280;
 
 /** True non-display fields carried on the FULL plans:items row (top-level) that
- *  no UI consumer reads (verified: PlanItemRow = { plan, archived, item }). */
-const ITEMS_ROW_DROP = ['coverage', 'blockedByIssues'] as const;
+ *  no UI consumer reads. `archived` and `coverageDivergence` join the original
+ *  two under WI-7086: the four consumers below read only `plan` and the nested
+ *  `item`, and `archived` survives solely as a comment about the SERVER's
+ *  ordering (PlanItemsList.tsx:140), never as a field anything branches on. */
+const ITEMS_ROW_DROP = ['coverage', 'blockedByIssues', 'archived', 'coverageDivergence'] as const;
 
-/** Parse-internal fields on the nested `item` the PlanItem UI type omits. */
-const ITEM_DROP = ['rawLine', 'unresolvedBlockers'] as const;
+/**
+ * Fields on the nested `item` that no plans:items UI consumer reads — the parse
+ * internals the PlanItem UI type already omitted, plus the WI-7086 additions.
+ *
+ * The read-set is the UNION across ALL FOUR live consumers, taken from their
+ * sort/filter/count paths and not just their JSX (the WI-7085 lesson):
+ *   PlanItemsList.tsx    id, text, importance, effectiveStatus (through
+ *                        `itemPillStatus(item: { effectiveStatus })`), lastEditedBy
+ *   PlansClient.tsx      id  — only as the `${plan}::${item.id}` dedupe key
+ *   use-create-data.ts   id  — same key, plus a `typeof item.id === 'string'` guard
+ *   HydratedWorkRefPill  id, effectiveStatus, text
+ * None of the four DESTRUCTURES `item`, so no default-valued binding can hide a
+ * read from the greps above.
+ *
+ * `needsHuman` and `storedStatus` look load-bearing and are not: every live call
+ * site filters SERVER-side (`usePlanItems({ needsHuman: true })`, `{ actionable:
+ * true }`, `{ status: 'blocked' }`), so the client never re-derives a predicate
+ * it already asked the server to apply. `effectiveStatus` — the one status the
+ * pill actually renders — is deliberately NOT dropped.
+ */
+const ITEM_DROP = [
+  'rawLine',
+  'unresolvedBlockers',
+  'storedStatus',
+  'phase',
+  'blockedBy',
+  'decisionRefs',
+  'lineNumber',
+  'authority',
+  'riskTier',
+] as const;
 
 /**
  * Preview cap for an attention item's `body` in the LIST feed. Larger than
@@ -179,9 +211,12 @@ function projectItems(data: Record<string, unknown>): Record<string, unknown> {
     if (item && typeof item === 'object') {
       const it = omit(item as Record<string, unknown>, ITEM_DROP);
       if ('text' in it) it.text = clipPreview(it.text, UI_TEXT_PREVIEW_MAX);
-      r.item = it;
+      // The nested item carries the nulls on this feed, so the omit has to reach
+      // INTO it — `item` is a plain projected bag here, not a discriminated
+      // union, so the `ref` caveat in {@link omitNullValues} does not apply.
+      r.item = omitNullValues(it);
     }
-    return r;
+    return omitNullValues(r);
   });
   return { ...data, items: rows };
 }

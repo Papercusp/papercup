@@ -154,14 +154,40 @@ export interface PlanItem {
 }
 
 /**
+ * The subset of {@link PlanItem} that survives the plans:items UI projection
+ * (`ITEM_DROP` in operator-core agent-tools/plans/ui-read-projection.ts).
+ *
+ * Narrowed rather than reusing `PlanItem` because that type is SHARED with
+ * `plans:get`, which is the full-fidelity detail read and passes through the
+ * projection byte-identical — PlanDetail/PlanEditor/PlanKanbanView legitimately
+ * read `storedStatus`/`phase`/`blockedBy`/`decisionRefs`/`lineNumber` there.
+ * Declaring them here too would tell this feed's consumers a field is available
+ * when the projection has already dropped it (WI-7086; same split as
+ * `CodeRecipeListRow` vs `CodeRecipeRow` in WI-7085).
+ */
+export interface PlanListItem {
+  id: string;
+  effectiveStatus: ItemStatus;
+  text: string;
+  /** 4th axis — urgent|high|normal|low. Surfaced as a row badge + sort key. */
+  importance?: Importance;
+  /** ABSENT — never null — when no real per-op author has federated. The
+   *  resolver omits the key entirely (plan-attribution.ts), so declaring this
+   *  `?: T` rather than `T | null` turns a future `=== null` into a TS2367
+   *  no-overlap error instead of a silently-always-false branch. */
+  lastEditedBy?: AuthorIdentity;
+}
+
+/**
  * `plans:items` returns rows that carry the parent plan's slug — the
  * cross-plan use cases (inbox, actionable) need to know which plan
  * each item came from.
+ *
+ * No `archived`: the projection drops it (no consumer branched on it).
  */
 export interface PlanItemRow {
   plan: string;
-  archived: boolean;
-  item: PlanItem;
+  item: PlanListItem;
 }
 
 /* ── Attention feed (plans:attention) — wire types mirroring

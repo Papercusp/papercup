@@ -144,7 +144,9 @@ function mkPlan(over: Record<string, unknown> = {}) {
   };
 }
 function mkItem(plan: string, id: string) {
-  return { plan, archived: false, item: { id, storedStatus: 'todo', effectiveStatus: 'todo', text: `text ${id}` } };
+  // Wire shape AFTER the plans:items UI projection — no `archived`/`storedStatus`
+  // (WI-7086). PlansClient itself only reads `plan` + `item.id`.
+  return { plan, item: { id, effectiveStatus: 'todo', text: `text ${id}` } };
 }
 
 beforeEach(() => {

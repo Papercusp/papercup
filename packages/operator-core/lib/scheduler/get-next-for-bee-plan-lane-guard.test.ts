@@ -9,11 +9,11 @@
  * fail-open-serve-anyway exhaustion path guaranteed handing out a row already
  * confirmed blocked; see the last test below).
  *
- * getNextWorkItem / planItemLaneBlockReason / releaseWorkItem are mocked at
- * the module boundary — no PG. `ignoreStoredSpec:true` still resolves the
- * claim-spec record so WI-4770's fleet-transition guard can fail closed; the
- * SQL fixture therefore behaves like an empty store while isolating the loop
- * under test. Run: cd packages/operator-core && npx vitest run
+ * getNextWorkItem / planItemLaneBlockReason / releaseWorkItem / recordClaimAttempt
+ * are mocked at the module boundary — no PG. `ignoreStoredSpec:true` still
+ * resolves the claim-spec record so WI-4770's fleet-transition guard can fail
+ * closed; the SQL fixture therefore behaves like an empty store while isolating
+ * the loop under test. Run: cd packages/operator-core && npx vitest run
  * lib/scheduler/get-next-for-bee-plan-lane-guard.test.ts
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -44,6 +44,12 @@ vi.mock('../work-items', async (importOriginal) => ({
   releaseWorkItem: (...args: unknown[]) => releaseWorkItemMock(...args),
 }));
 
+const recordClaimAttemptMock = vi.fn(async (..._args: unknown[]) => undefined);
+vi.mock('../orchestrator/claim-audit', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../orchestrator/claim-audit')>()),
+  recordClaimAttempt: (...args: unknown[]) => recordClaimAttemptMock(...args),
+}));
+
 const matchesWorkItemClaimSpecMock = vi.fn((..._args: unknown[]) => true);
 vi.mock('./claim-spec-match', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./claim-spec-match')>()),
@@ -66,6 +72,7 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     planItemLaneBlockReasonMock.mockReset();
     releaseWorkItemMock.mockReset().mockResolvedValue(null);
     matchesWorkItemClaimSpecMock.mockReset().mockReturnValue(true);
+    recordClaimAttemptMock.mockReset().mockResolvedValue(undefined);
   });
 
   it('fails closed when the bee already holds an active or parked claim (EI-11796)', async () => {
@@ -267,6 +274,144 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
       harness: 'papercusp',
       expectedAssignee: 'me',
       announceClaimable: false,
+    });
+  });
+
+  /**
+   * P-011 (work-item-dependency-edges-2026-08-02): the lane-guard bounce is
+   * deliberately INVISIBLE to the caller — the row is claimed, lane-checked, released,
+   * and never returned — so until this instrumentation landed it left no trace at all:
+   * no counter, no log, no ledger row. That made the plan's own closing question ("has
+   * the lane guard demoted to a backstop now that the dependency floor does the work
+   * pre-claim?") unanswerable, because the quantity it asks about was never recorded.
+   * An invisible cost cannot be shown to have dropped.
+   *
+   * These tests exist because a detector/instrument that is only asserted against a
+   * happy run is indistinguishable from one that never fires (D-019's negative-control
+   * rule, recorded on this same plan). So: prove it FIRES on the bounce, prove it
+   * DISCRIMINATES (a clear lane writes no bounce row — otherwise the count is
+   * meaningless), prove it COUNTS one per bounce, and prove it can never touch
+   * admission.
+   */
+  describe('claim_audit instrumentation of the bounce (P-011)', () => {
+    function auditCalls() {
+      return recordClaimAttemptMock.mock.calls.map(([raw]) => {
+        const attempt = raw as {
+          feature_id: string;
+          claimer_pubkey: string;
+          harnessSlug: string;
+          outcome: string;
+          detail?: string;
+        };
+        return {
+          ...attempt,
+          // auditClaimAttempt JSON-stringifies detail (and truncates at 2000 chars)
+          // before handing it to the emitter — parse it back to assert on fields.
+          detail: JSON.parse(attempt.detail ?? '{}') as Record<string, unknown>,
+        };
+      });
+    }
+    const bounceRows = () => auditCalls().filter((c) => c.detail.reason === 'plan-lane-blocked');
+
+    it('records a claim_audit row carrying the lane guard\'s verdict when it bounces a row', async () => {
+      getNextWorkItemMock
+        .mockResolvedValueOnce(claimResult('F-1')) // blocked
+        .mockResolvedValueOnce(claimResult('F-2')); // clear
+      planItemLaneBlockReasonMock
+        .mockResolvedValueOnce({ reason: 'blocked-by', planSlug: 'a-plan', itemId: 'P-007', effectiveStatus: 'blocked' })
+        .mockResolvedValueOnce(null);
+
+      const res = await getNextForBee({ cupId: 'me', harness: 'papercusp', ignoreStoredSpec: true });
+
+      expect(res?.workItem.id).toBe('F-2');
+      const bounces = bounceRows();
+      expect(bounces).toHaveLength(1);
+      expect(bounces[0]).toMatchObject({
+        feature_id: 'F-1',
+        claimer_pubkey: 'me',
+        harnessSlug: 'papercusp',
+        // 'lost' is the existing outcome for a NON-COMPETITIVE refusal (the fail-closed
+        // fleet-scope refusal uses it too) — nothing was lost to another claimer here, so
+        // `reason` is what distinguishes this from a genuine race.
+        outcome: 'lost',
+      });
+      // The guard's own verdict, not just a count: which plan item held the row and why.
+      // Without these the ledger says churn happened but not which of the guard's three
+      // distinct jobs produced it — and only the blocked-by one is the job the dependency
+      // floor is expected to take over, which is the whole question P-011 asks.
+      expect(bounces[0].detail).toMatchObject({
+        planSlug: 'a-plan',
+        itemId: 'P-007',
+        effectiveStatus: 'blocked',
+        laneReason: 'blocked-by',
+        family: 'feature',
+      });
+      // Instrumentation is ADDITIVE — the release it observes still happens, unchanged.
+      expect(releaseWorkItemMock).toHaveBeenCalledWith('F-1', {
+        harness: 'papercusp',
+        expectedAssignee: 'me',
+        announceClaimable: false,
+      });
+    });
+
+    // NEGATIVE CONTROL (D-019). Without this, a `reason` field that was always present —
+    // or an assertion that merely counted audit rows — would pass identically, and the
+    // bounce count P-011 reads would silently include every ordinary won claim.
+    it('writes NO bounce row when the lane is clear — the reason field is what makes the churn countable', async () => {
+      getNextWorkItemMock.mockResolvedValueOnce(claimResult('F-clear'));
+      planItemLaneBlockReasonMock.mockResolvedValueOnce(null);
+
+      const res = await getNextForBee({ cupId: 'me', harness: 'papercusp', ignoreStoredSpec: true });
+
+      expect(res?.workItem.id).toBe('F-clear');
+      expect(bounceRows()).toHaveLength(0);
+      // The won claim is still audited (that path predates P-011) — so the discriminator
+      // has to be `reason`, not the mere presence of a row.
+      const all = auditCalls();
+      expect(all).toHaveLength(1);
+      expect(all[0].outcome).toBe('won');
+      expect(all[0].detail.reason).toBeUndefined();
+      expect(releaseWorkItemMock).not.toHaveBeenCalled();
+    });
+
+    it('records one row per bounce, so the ledger count IS the churn count (exhaustion path)', async () => {
+      for (let i = 0; i < 5; i += 1) {
+        getNextWorkItemMock.mockResolvedValueOnce(claimResult(`F-${i}`));
+        planItemLaneBlockReasonMock.mockResolvedValueOnce({
+          reason: 'blocked',
+          planSlug: 'a-plan',
+          itemId: `F-${i}`,
+          effectiveStatus: 'blocked',
+        });
+      }
+
+      const res = await getNextForBee({ cupId: 'me', harness: 'papercusp', ignoreStoredSpec: true });
+
+      expect(res).toBeNull();
+      const bounces = bounceRows();
+      expect(bounces).toHaveLength(5);
+      expect(bounces.map((b) => b.feature_id)).toEqual(['F-0', 'F-1', 'F-2', 'F-3', 'F-4']);
+      // Fail-closed exhaustion writes no `won` row — every audit row on this path is a bounce.
+      expect(auditCalls()).toHaveLength(5);
+    });
+
+    // Pure observability: a claim_audit hiccup (PG blip, schema drift) must never fail or
+    // delay a real claim. The instrument is allowed to lose data; it is NOT allowed to
+    // change who gets served.
+    it('never lets an audit-write failure touch admission', async () => {
+      recordClaimAttemptMock.mockRejectedValue(new Error('claim_audit unavailable'));
+      getNextWorkItemMock
+        .mockResolvedValueOnce(claimResult('F-1')) // blocked → bounce audit throws
+        .mockResolvedValueOnce(claimResult('F-2')); // clear → won audit throws too
+      planItemLaneBlockReasonMock
+        .mockResolvedValueOnce({ reason: 'blocked', planSlug: 'a-plan', itemId: 'F-1', effectiveStatus: 'blocked' })
+        .mockResolvedValueOnce(null);
+
+      const res = await getNextForBee({ cupId: 'me', harness: 'papercusp', ignoreStoredSpec: true });
+
+      expect(res?.workItem.id).toBe('F-2');
+      expect(releaseWorkItemMock).toHaveBeenCalledTimes(1);
+      expect(recordClaimAttemptMock).toHaveBeenCalledTimes(2);
     });
   });
 });

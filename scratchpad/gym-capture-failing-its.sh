@@ -21,7 +21,16 @@ OUT=$BASE/failing-its.jsonl
 PIN=$(git -C "$DEST" rev-parse HEAD)
 echo "PIN=$PIN  substrate=$DEST"
 
-grep '"verdict":"admitted"' "$IN" | while read -r LINE; do
+# NOT `grep … | while read`: the loop body runs npm/vitest, which inherits the
+# PIPE as its stdin and consumes the remaining candidate lines. Measured — that
+# form reported "[0 failing]" for candidates that provably fail 5 of 13 when the
+# same commands are run by hand. `mapfile` + a plain for-loop keeps the body in
+# THIS shell (so the summary sees the real counts too), and every child gets
+# </dev/null so nothing can eat the driver's input again.
+mapfile -t LINES < <(grep '"verdict":"admitted"' "$IN")
+echo "candidates to measure: ${#LINES[@]}"
+
+for LINE in "${LINES[@]}"; do
   F=$(echo "$LINE"  | grep -o '"implPath":"[^"]*"' | sed 's/.*://;s/"//g')
   T=$(echo "$LINE"  | grep -o '"testPath":"[^"]*"' | sed 's/.*://;s/"//g')
   P=$(echo "$LINE"  | grep -o '"parent":"[^"]*"'   | sed 's/.*://;s/"//g')
@@ -29,8 +38,17 @@ grep '"verdict":"admitted"' "$IN" | while read -r LINE; do
   git -C "$DEST" checkout -q "$PIN" -- "$F" 2>/dev/null
   git -C "$DEST" checkout -q "$P"   -- "$F" 2>/dev/null || continue
 
-  RAW=$( cd "$DEST" && npm run test:file -- "$T" 2>&1 )
+  RAW=$( cd "$DEST" && npm run test:file -- "$T" 2>&1 </dev/null )
   git -C "$DEST" checkout -q "$PIN" -- "$F"
+
+  # A run that produced no verdict line at all did not measure anything — say so
+  # rather than recording it as "0 failing", which is indistinguishable from a
+  # candidate that genuinely passes and would silently drop a real task.
+  if ! printf '%s\n' "$RAW" | grep -q 'TEST_FILE_RESULT'; then
+    echo "[UNMEASURED] $F — no TEST_FILE_RESULT in output"
+    printf '{"implPath":"%s","testPath":"%s","failingCount":-1,"failing":[]}\n' "$F" "$T" >> "$OUT"
+    continue
+  fi
 
   # Vitest's failure summary prints `FAIL  <file> > <describe…> > <it>` (verified
   # against a live run). Take the LAST ` > ` segment — the requirement title.

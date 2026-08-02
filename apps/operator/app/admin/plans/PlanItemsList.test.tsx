@@ -28,10 +28,11 @@ function mkRow(over: Partial<PlanItemRow['item']> & { plan?: string } = {}): Pla
   const { plan = 'plan-a', ...itemOver } = over;
   return {
     plan,
-    archived: false,
+    // No `archived` / `storedStatus`: the plans:items UI projection drops both
+    // (WI-7086), so a fixture carrying them would model a wire shape the
+    // consumer never receives.
     item: {
       id: 'P-001',
-      storedStatus: 'todo',
       effectiveStatus: 'todo',
       text: 'Do the thing',
       ...itemOver,

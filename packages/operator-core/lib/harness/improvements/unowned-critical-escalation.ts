@@ -33,6 +33,13 @@ export interface UnownedCriticalCandidate {
   kind: string;
   title: string;
   harness: string | null;
+  /** WI-6846: `item.origin` ('local' | 'remote' | null, defaulted to 'local' below).
+   *  'remote' means this node did NOT author the row — it can neither claim NOR
+   *  close it (`work_items:set_state` refuses remote-authored mutation; the
+   *  claimable pre-filter already excludes it from self-select). Only the
+   *  authoring peer resolving it (or federation delivering that resolution)
+   *  clears a 'remote' row — see `partitionUnownedCriticalsByOrigin` below. */
+  origin: string | null;
   /** Hours since the item was filed, rounded to 1 decimal. */
   ageHours: number;
   createdAt: string;
@@ -65,6 +72,7 @@ export function unownedAgedCriticals(
       kind: item.kind,
       title: item.title,
       harness: item.harness,
+      origin: item.origin ?? 'local',
       ageHours: Math.round(hours * 10) / 10,
       createdAt: item.createdAt,
     });
@@ -77,6 +85,14 @@ export function unownedAgedCriticals(
  * a given FLEET's claim spec would ADMIT — reuses `matchesWorkItemClaimSpec`
  * (the SAME predicate scheduler:get_next evaluates), so "would this fleet
  * pull it" here and at claim time can never drift apart.
+ *
+ * Deliberately does NOT filter by `origin` here — `matchesWorkItemClaimSpec` is
+ * the shared claim-spec predicate and must stay identical to what claim-time
+ * evaluates. The remote-origin exclusion `scheduler:get_next` applies is a
+ * SEPARATE structural pre-filter (`federationDetector`), not part of the spec
+ * predicate — so this can (correctly) admit remote-origin rows. Callers that
+ * need to distinguish actionable from federation-blocked rows should use
+ * {@link partitionUnownedCriticalsByOrigin} on the result.
  */
 export function unownedCriticalsMatchingFleetSpec(
   items: readonly WorkItem[],
@@ -85,6 +101,39 @@ export function unownedCriticalsMatchingFleetSpec(
 ): UnownedCriticalCandidate[] {
   const admitted = items.filter((item) => matchesWorkItemClaimSpec(item, spec));
   return unownedAgedCriticals(admitted, opts);
+}
+
+/**
+ * WI-6846: a leader reading `unownedCriticals` cannot act on a `origin:'remote'`
+ * row from this node — it can neither claim it (the claimable pre-filter already
+ * excludes remote-origin rows from self-select) nor close it
+ * (`work_items:set_state` refuses to mutate a remote-authored row locally; only
+ * the authoring peer, or federation delivering that peer's resolution, clears
+ * it). Left unpartitioned, a majority-remote backlog reads as urgent unowned
+ * work a leader is expected to act on, when in fact most of it is inert here.
+ *
+ * `actionable` = this node COULD claim/resolve it (origin is 'local', or any
+ * value other than the literal 'remote' — unset/unknown origin defaults to
+ * 'local' upstream in {@link unownedAgedCriticals}, so it is never silently
+ * dropped from the actionable bucket by an absent value).
+ * `federatedUnresolvable` = origin === 'remote': visible so nothing is hidden,
+ * but explicitly called out as NOT this node's to resolve.
+ */
+export interface PartitionedUnownedCriticals {
+  actionable: UnownedCriticalCandidate[];
+  federatedUnresolvable: UnownedCriticalCandidate[];
+}
+
+export function partitionUnownedCriticalsByOrigin(
+  candidates: readonly UnownedCriticalCandidate[],
+): PartitionedUnownedCriticals {
+  const actionable: UnownedCriticalCandidate[] = [];
+  const federatedUnresolvable: UnownedCriticalCandidate[] = [];
+  for (const c of candidates) {
+    if (c.origin === 'remote') federatedUnresolvable.push(c);
+    else actionable.push(c);
+  }
+  return { actionable, federatedUnresolvable };
 }
 
 /**

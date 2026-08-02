@@ -3843,7 +3843,7 @@ export async function setWorkItemClaimHold(
  * tagged with its own actor id instead of an agent's.
  */
 export async function recordBulkHoldClearAudit(
-  sql: ReturnType<typeof getOrgPg>['sql'],
+  sql: { unsafe: ReturnType<typeof getOrgPg>['sql']['unsafe'] },
   rows: ReadonlyArray<{ id: string; workspaceId: string; formerHolder: string | null }>,
   opts: { actor: string; sweepName: string },
 ): Promise<void> {
