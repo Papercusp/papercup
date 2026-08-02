@@ -39,12 +39,22 @@
  * per-tick from the watchdog routine's payload_template (PAYLOAD_TUNABLE_KEYS
  * in watchdog.ts) — threshold tuning never needs a deploy.
  *
- * Dark ship (D-001): all five collectors ride ONE flag,
- * `papercusp-learning-slo-sensors` (default OFF, KNOWN_DARK_FLAGS). They are
- * SQL-only (zero LLM spend), ride the watchdog's own routine (no routine of
- * their own, no governor registration), but a breach FILES — so the flag flip
- * is the single P-001 arming act. While dark each collector reports a 'dark'
- * note in the tick record and emits nothing.
+ * Armed (EI-18886519654229938 — corrected 2026-08-02; this comment previously
+ * said "default OFF, KNOWN_DARK_FLAGS", which was never true in the code: the
+ * flag was never added to DARK_FLAGS, so it has always derived live default-ON
+ * via FLAG_DEFAULTS). All five collectors ride ONE flag,
+ * `papercusp-learning-slo-sensors`, default ON. They are SQL-only (zero LLM
+ * spend) and ride the watchdog's own routine (no routine of their own, no
+ * governor registration). The self-learning-frontier-2026-06-12 P-001 arming
+ * gate closed 2026-06-13 (D-010) with wave 1 — the zero-spend, SQL-only
+ * audit-as-sensors collectors this file implements — explicitly named as
+ * safe-to-arm-with-no-spend-risk; that arming simply landed as "never added
+ * to DARK_FLAGS" instead of an explicit flip, and zero `learning-slo:*`
+ * findings have ever fired (verified live 2026-08-02), so the sensors have
+ * been running quietly and safely all along. The flag itself remains a normal
+ * operator kill-switch — flip it OFF via /admin/features to silence every
+ * collector; each then reports a 'dark' note in the tick record and emits
+ * nothing, per `darkOrNull` below.
  *
  * All signals are LIVE-STATE (no `latestAt`): a breach that still holds after
  * its filed item was resolved is a genuine regression, so the post-resolve
@@ -196,7 +206,7 @@ export interface LearningSloOptions {
 
 /** Injectable IO seam (unit tests run without PG / flags). */
 export interface LearningSloDeps {
-  /** Armed check — default reads FLAGS.LEARNING_SLO_SENSORS (the D-001 dark gate). */
+  /** Armed check — default reads FLAGS.LEARNING_SLO_SENSORS (default ON; a normal operator kill-switch, not a D-001 dark gate — see the module doc). */
   isArmed: () => Promise<boolean>;
   sql: () => Sql;
 }
@@ -206,9 +216,11 @@ const defaultDeps: LearningSloDeps = {
   sql: () => getOrgPg().sql as unknown as Sql,
 };
 
-/** The dark-tick result every collector returns while the flag is OFF. */
+/** The dark-tick result every collector returns while the flag is OFF (the normal
+ *  off-state of any kill-switch flag — see the module doc for why this is no longer
+ *  a D-001 arming gate). */
 export const LEARNING_SLO_DARK_NOTE =
-  'dark: papercusp-learning-slo-sensors OFF (D-001 — the flag flip is the P-001 arming act)';
+  'dark: papercusp-learning-slo-sensors OFF (operator kill-switch — flip via /admin/features to re-arm; the P-001 arming gate closed 2026-06-13, self-learning-frontier-2026-06-12 D-010)';
 
 async function darkOrNull(deps: LearningSloDeps): Promise<CollectorResult | null> {
   let armed = false;

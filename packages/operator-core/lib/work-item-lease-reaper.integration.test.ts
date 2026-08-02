@@ -37,7 +37,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   getFlag: async () => true,
 }));
 
-const { runWorkItemLeaseReap, gatherProtectedSessionOwners } = await import('./idle-session-reaper');
+const { runWorkItemLeaseReap, gatherProtectedSessionOwners, gatherBusyOwners } = await import('./idle-session-reaper');
 const { acquireClaimLocal, getClaim } = await import('./work-item-claims');
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -194,5 +194,42 @@ describe('gatherProtectedSessionOwners includeClaimHolders toggle (the circulari
     await seedPresence('su-really-live', 1_000);
     const protectedOwners = await gatherProtectedSessionOwners(sql, { includeClaimHolders: false });
     expect(protectedOwners.has('su-really-live')).toBe(true);
+  });
+
+  // WI-6638 side-finding (EI-19357343...): harness_features_consolidated is the
+  // FEATURE-ONLY view (`WHERE item_kind <> ALL ('{bug,change,task}')`) — an
+  // issue-family (bug/change/task) claim lives in engineer_issues.assignee and
+  // was previously INVISIBLE to this leg, so a session holding a WI-/EI- claim
+  // was never protected here. Same fixture shape as the feature-family test
+  // above, proving parity across both families.
+  it('an ISSUE-family (bug/change/task) claim alone protects its holder — same as feature-family', async () => {
+    await seedIssue('EI-CLAIM-PROTECT', 'su-issue-claim-only', 5 * GRACE_MS);
+    const protectedOwners = await gatherProtectedSessionOwners(sql, {});
+    expect(protectedOwners.has('su-issue-claim-only')).toBe(true);
+  });
+
+  it('includeClaimHolders:false: an issue-family claim ALONE no longer protects either', async () => {
+    await seedIssue('EI-CLAIM-NO-PROTECT', 'su-issue-claim-only-2', 5 * GRACE_MS);
+    const protectedOwners = await gatherProtectedSessionOwners(sql, { includeClaimHolders: false });
+    expect(protectedOwners.has('su-issue-claim-only-2')).toBe(false);
+  });
+});
+
+describe('gatherBusyOwners issue-family parity (WI-6638 side-finding)', () => {
+  it('a feature-family claim marks its holder busy (unchanged baseline)', async () => {
+    await seedFeature('F-BUSY-1', 'su-busy-feature', 5 * GRACE_MS);
+    const busy = await gatherBusyOwners(sql, {});
+    expect(busy.has('su-busy-feature')).toBe(true);
+  });
+
+  it('an issue-family (bug/change/task) claim ALSO marks its holder busy — the fix', async () => {
+    await seedIssue('EI-BUSY-1', 'su-busy-issue', 5 * GRACE_MS);
+    const busy = await gatherBusyOwners(sql, {});
+    expect(busy.has('su-busy-issue')).toBe(true);
+  });
+
+  it('an owner with no claim of either kind is not busy', async () => {
+    const busy = await gatherBusyOwners(sql, {});
+    expect(busy.has('su-nobody-claims-this')).toBe(false);
   });
 });

@@ -2937,9 +2937,14 @@ export async function defaultPapercuspCollectors(
     // Audit-as-sensors (self-learning-frontier P-047 / FB-21): the learning
     // system's own health KPIs as standing SLO collectors — a breach files
     // into the very queue it measures, kinds per FB-18's fidelity rules.
-    // All five ride ONE dark flag (papercusp-learning-slo-sensors, D-001 —
-    // each reports a 'dark' note while OFF), are SQL-only, and read their
-    // thresholds from LEARNING_SLO_DEFAULTS / this tick's payload tunables.
+    // All five ride ONE flag (papercusp-learning-slo-sensors), default ON —
+    // NOT a D-001 dark-shipped flag (EI-18886519654229938: this comment used
+    // to claim it was; the flag was never added to DARK_FLAGS, so it has
+    // always derived live default-ON, and the P-001 arming gate for this
+    // exact wave-1 zero-spend sensor closed 2026-06-13 anyway, D-010). It
+    // remains a normal operator kill-switch (each collector reports a 'dark'
+    // note while OFF); all five are SQL-only, and read their thresholds from
+    // LEARNING_SLO_DEFAULTS / this tick's payload tunables.
     {
       name: 'papercusp-triage-entropy',
       collect: () => import('./learning-slo').then((m) => m.triageEntropyCollector(workspaceId, opts)),

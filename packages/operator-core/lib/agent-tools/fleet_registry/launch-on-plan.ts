@@ -1982,14 +1982,36 @@ export default defineTool({
       const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
       if (kickoffIds.length > 0 && !args.confirmKickoffMismatch && claimSpecWorkspaceId) {
         const effectiveSpec = await getClaimSpec({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId: claimSpecWorkspaceId });
-        const { getWorkItem } = await import('../../work-items');
+        const { lookupWorkItem } = await import('../work_items/_lookup');
         const mismatches: string[] = [];
+        const unreadable: string[] = [];
         for (const id of kickoffIds) {
-          const item = await getWorkItem(id, harness).catch(() => null);
-          if (!item) continue; // not found — not a scope problem; the claim call 404s on its own
+          // WI-6746: `.catch(() => null)` here would collapse "the item is not there" with "I
+          // could not ask", and a blip would then silently contribute NO mismatch — i.e. the
+          // refusal below disappears exactly when the database is unhealthy. This site's posture
+          // stays FAIL OPEN (a diagnosis must never strand a launch), so an unreadable id is not
+          // escalated to a refusal — but it is REPORTED, so the launch never claims a clean
+          // pre-check it did not actually get.
+          const lookup = await lookupWorkItem(id, harness);
+          if (lookup.status === 'unreadable') {
+            unreadable.push(`${id} (${lookup.error})`);
+            continue;
+          }
+          if (lookup.status === 'missing') continue; // genuinely not there — the claim call 404s on its own
+          const item = lookup.item;
           if (TERMINAL_WORK_ITEM_STATES.has(String(item.state ?? '').toLowerCase())) continue; // already finished — nothing to claim
           const matches = await itemMatchesRawClaimSpec(item, effectiveSpec, claimSpecWorkspaceId);
           if (!matches) mismatches.push(id);
+        }
+        if (unreadable.length > 0) {
+          const note =
+            `KICKOFF/CLAIM-SPEC PRE-CHECK INCOMPLETE (WI-6746): could not read ${unreadable.join(', ')} — ` +
+            `${unreadable.length === 1 ? 'that id was' : 'those ids were'} NOT checked against the claim spec ` +
+            `(${formatSpecRef(effectiveSpec.specId, effectiveSpec.revision)}), so this launch proceeded WITHOUT ` +
+            `a verdict on ${unreadable.length === 1 ? 'it' : 'them'}. If a member cannot claim what its brief ` +
+            `names, widen the spec (scheduler:set_claim_spec { fleet: "${fleetSlug}", … }) or re-launch once the ` +
+            `read succeeds.`;
+          briefReadError = briefReadError ? `${briefReadError}\n${note}` : note;
         }
         if (mismatches.length > 0) {
           try {

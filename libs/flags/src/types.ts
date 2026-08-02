@@ -693,11 +693,14 @@ export const FLAGS = {
   // learning-system SLO collectors riding the existing improvement-watchdog
   // tick (triage-distribution entropy, capture-vs-consume flow imbalance,
   // MTTSH regression, governor budget starvation, memory recall zero-hit
-  // spike). SQL-only, zero LLM spend, no routine of its own — but a breach
-  // FILES into the improvements queue, so it ships dark until the plan's
-  // P-001 arming gate closes (D-001: no new capture volume into a drain
-  // still being repaired). OFF = every collector reports a 'dark' note and
-  // emits nothing.
+  // spike). SQL-only, zero LLM spend, no routine of its own — a breach FILES
+  // into the improvements queue. DEFAULT ON (derived FLAG_DEFAULTS — not in
+  // DARK_FLAGS; EI-18886519654229938, 2026-08-02: this comment used to say it
+  // ships dark pending the plan's P-001 arming gate, but that gate closed
+  // 2026-06-13 naming this exact wave-1 zero-spend sensor bank as
+  // safe-to-arm — D-010 — and zero learning-slo:* findings have ever fired).
+  // OFF is a normal operator kill-switch: every collector reports a 'dark'
+  // note and emits nothing.
   LEARNING_SLO_SENSORS: "papercusp-learning-slo-sensors",
   // self-learning-frontier-2026-06-12 (P-045/P-046 / FB-19): the graduation
   // evidence tracker — `system:graduation-scan` counts per-class clean
