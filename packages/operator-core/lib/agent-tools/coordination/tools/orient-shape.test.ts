@@ -257,3 +257,128 @@ describe('P-016 role-fold shaping (paneContext cap / deepWork pass-through)', ()
     }
   });
 });
+
+// EI-19314271768708528: `leaderBrief` had no shaper, so it reached the result-door's
+// bounded-payload pass full-fat and was dropped WHOLE — on a monitor wake (the mode that
+// exists to deliver it) the leader was left with `me`, its own one-row assignment view,
+// which reads exactly like a fleet-wide "1 alive, 0 stalled" verdict. Shaping it is what
+// makes tier 2b's ordering promotion in assembleOrientOutput actually land: promoted-but-
+// oversized and never-folded are indistinguishable to the reader.
+describe('EI-19314271768708528 leaderBrief shaping (monitor-wake fleet visibility)', () => {
+  const member = (i: number, over: Record<string, unknown> = {}) => ({
+    agentId: `su-member-${i}`,
+    label: `su · m${i}`,
+    fleetRole: 'member',
+    sessionState: 'live',
+    verdict: 'monitoring',
+    wakeMode: 'auto',
+    contextPressure: 'ok',
+    load: 1,
+    queuedCount: 1,
+    workItemIds: [`EI-${1000 + i}`],
+    doing: { id: `EI-${1000 + i}`, title: 'x'.repeat(400), status: 'open' },
+    stalled: false,
+    ...over,
+  });
+
+  // The reporting incident: 11 members, one dead, one idle-with-claimable carrying a
+  // ~450-char benchSuggestion.reason, one at critical context with an unanswered body.
+  const fatBrief = () => ({
+    summary: {
+      fleet: 'nonp2p-bug-drain-0801',
+      members: 11,
+      dead: 1,
+      stalled: 0,
+      idle_with_claimable: 1,
+      unanswered_directed: 5,
+      unowned_criticals: 18,
+      idleWithClaimableAlert: true,
+    },
+    members: [
+      ...Array.from({ length: 8 }, (_, i) => member(i)),
+      member(8, { sessionState: 'ended', verdict: 'dead', doing: null, workItemIds: [] }),
+      member(9, {
+        doing: null,
+        workItemIds: [],
+        load: 0,
+        benchSuggestion: { kind: 'idle-with-claimable', item: null, reason: 'r'.repeat(450) },
+      }),
+      member(10, {
+        contextPressure: 'critical',
+        unanswered: { count: 1, oldestAgeMs: 1_918_532, newest: [{ body: 'b'.repeat(900) }] },
+      }),
+    ],
+    unownedCriticals: Array.from({ length: 18 }, (_, i) => ({ id: `EI-${i}`, title: 'y'.repeat(200) })),
+  });
+
+  it('keeps summary WHOLE — every aggregate alert a leader acts on survives the cap', () => {
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, tier) as {
+        leaderBrief: { summary: Record<string, unknown> };
+      };
+      expect(out.leaderBrief.summary).toEqual(fatBrief().summary);
+    }
+  });
+
+  it('shrinks the brief monotonically by tier so the door has no reason to drop it whole', () => {
+    const before = JSON.stringify(fatBrief()).length;
+    const sized = (tier: 'trimmed' | 'standard') =>
+      JSON.stringify((shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, tier) as { leaderBrief: unknown }).leaderBrief).length;
+    const trimmed = sized('trimmed');
+    const standard = sized('standard');
+    // Both tiers shrink; trimmed is strictly the leaner projection (standard keeps the
+    // whole roster of a normal-sized fleet on purpose, so it shrinks by less).
+    expect(standard).toBeLessThan(before);
+    expect(trimmed).toBeLessThan(standard);
+    // The bound that actually matters: `trimmed` is the tier the reporting incident ran
+    // under (tier=trimmed, forced=true), so it must land small enough to survive the
+    // budget alongside me/claimable/inbox rather than being dropped whole.
+    expect(trimmed).toBeLessThan(4_000);
+  });
+
+  it('ranks actionable members FIRST — a head-slice would hide the dead one behind 8 healthy', () => {
+    const out = shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, 'trimmed') as {
+      leaderBrief: { members: Array<{ agentId: string }> };
+    };
+    const kept = out.leaderBrief.members.map((m) => m.agentId);
+    // dead (8), pressured/unanswered (10) and idle-with-claimable (9) are the rows a
+    // leader must intervene on; a naive .slice(0,6) would have kept members 0-5 only.
+    expect(kept).toContain('su-member-8');
+    expect(kept).toContain('su-member-10');
+    expect(kept).toContain('su-member-9');
+  });
+
+  it('leaves the D-004 count + fetch-pointer when the roster is capped', () => {
+    const out = shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, 'trimmed') as {
+      leaderBrief: { members: unknown[]; membersTruncated?: { total: number; shown: number; more: string } };
+    };
+    expect(out.leaderBrief.members.length).toBe(6);
+    expect(out.leaderBrief.membersTruncated).toMatchObject({ total: 11, shown: 6, more: 'fleet:leader-brief' });
+  });
+
+  it('caps the unbounded advisory rosters with a pointer', () => {
+    const out = shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, 'trimmed') as {
+      leaderBrief: { unownedCriticals: unknown[]; unownedCriticalsTruncated?: { total: number } };
+    };
+    expect(out.leaderBrief.unownedCriticals.length).toBe(5);
+    expect(out.leaderBrief.unownedCriticalsTruncated).toMatchObject({ total: 18 });
+  });
+
+  it('drops per-member unanswered message BODIES but keeps the count a leader acts on', () => {
+    const out = shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, 'trimmed') as {
+      leaderBrief: { members: Array<{ agentId: string; unanswered?: { count: number; newest?: unknown } }> };
+    };
+    const pressured = out.leaderBrief.members.find((m) => m.agentId === 'su-member-10');
+    expect(pressured?.unanswered).toMatchObject({ count: 1, oldestAgeMs: 1_918_532 });
+    expect(pressured?.unanswered).not.toHaveProperty('newest');
+  });
+
+  it('passes a small brief through without inventing truncation markers', () => {
+    const small = { summary: { fleet: 'f', members: 2, dead: 0 }, members: [member(0), member(1)] };
+    const out = shapeOrient({ ...fixture(), leaderBrief: small }, 'standard') as {
+      leaderBrief: { members: unknown[]; membersTruncated?: unknown };
+    };
+    expect(out.leaderBrief.members.length).toBe(2);
+    expect(out.leaderBrief.membersTruncated).toBeUndefined();
+  });
+});

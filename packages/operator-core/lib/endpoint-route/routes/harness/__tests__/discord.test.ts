@@ -3,8 +3,14 @@
  *
  * Route-shaped (defineTool). All side effects mocked: the harness registry
  * (path resolution), project-files (config read/write), node:fs existsSync
- * (the `.papercusp/shared.json` shared check), and global fetch (the Discord
- * widget probe). No real FS, PG, or network.
+ * (the `.papercusp/shared.json` shared check), global fetch (the Discord
+ * widget probe), and the sync-cache invalidation the PUT handler fires
+ * (`notifySyncInvalidate`) — unmocked, that dynamically-imported call opens a
+ * REAL Postgres connection via sync-sse's LISTEN/NOTIFY bus, which
+ * `assertRealPgAllowed` correctly refuses in a unit test; the refusal is
+ * swallowed into `console.error` by the bus's `onError`, which
+ * vitest-fail-on-console then reports as an unrelated console-output failure
+ * (EI-19313794584074297). No real FS, PG, or network.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +29,7 @@ const H = vi.hoisted(() => {
     loadProjectFiles: vi.fn(async () => ({ config: state.config })),
     saveProjectFiles: vi.fn(async (..._args: unknown[]) => {}),
     fetchMock: vi.fn(),
+    notifySyncInvalidate: vi.fn(async (..._args: unknown[]) => {}),
   };
 });
 
@@ -35,6 +42,11 @@ vi.mock('../../../../harness-registry', () => ({
   deregisterEphemeralForeignHarness: vi.fn(async () => {}),
 }));
 vi.mock('../../../../harness-project-files', () => ({ loadProjectFiles: H.loadProjectFiles, saveProjectFiles: H.saveProjectFiles }));
+// The PUT handler dynamically `import()`s sync-sse to fire notifySyncInvalidate
+// after a save (data-sync migration P-009) — mock it the same way every other
+// route test does (e.g. admin/deploy-accounts-register.test.ts), so this stays
+// route-unit-scoped instead of opening sync-sse's real PG LISTEN/NOTIFY bus.
+vi.mock('../../../../sync-sse', () => ({ notifySyncInvalidate: H.notifySyncInvalidate }));
 
 import routes from '../discord';
 
@@ -56,6 +68,7 @@ beforeEach(() => {
   H.state.config = null;
   H.state.projects = [{ slug: 'shared-harness', path: '/repo/shared' }];
   H.saveProjectFiles.mockClear();
+  H.notifySyncInvalidate.mockClear();
   H.fetchMock.mockReset();
   vi.stubGlobal('fetch', H.fetchMock);
   // Clear the per-process widget cache between tests.

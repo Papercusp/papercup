@@ -375,7 +375,12 @@ async function completeOne(
 
   const existing = await getWorkItem(it.id, it.harness);
   if (!existing) return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };
-  if (it.state && existing.family === 'issue' && existing.origin === 'remote') {
+  // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
+  // creation (still-under-investigation federation/replay-provenance defect). Trusting it
+  // ALONE strands the true author — check IDENTITY first: createdBy === the caller means
+  // they genuinely ARE the authoring peer regardless of what `origin` currently reads.
+  const callerIsAuthor = !!existing.createdBy && existing.createdBy === ident.ownerId;
+  if (it.state && existing.family === 'issue' && existing.origin === 'remote' && !callerIsAuthor) {
     return {
       ok: false,
       id: it.id,

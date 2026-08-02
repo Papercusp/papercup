@@ -192,6 +192,17 @@ export interface WorkItem {
   /** Durable delegator (collapse-delegate D-002): who created+assigned it.
    *  Issue-family only today (feature-family has no assigned_by column). */
   assignedBy: string | null;
+  /**
+   * WI-6822-follow-up (EI-19313515375179600): the ORIGINAL AUTHOR's ownerId — issue-family
+   * only today (engineer_issues.created_by; feature-family has no equivalent column, so this
+   * is always null there). Identity-based, NOT origin-derived: this is the caller-comparable
+   * field the `origin==='remote'` mutation guards should check FIRST (createdBy === the calling
+   * ownerId ⇒ the caller genuinely IS the authoring peer, regardless of what `origin` currently
+   * reads) — `origin` can flip local→remote well after creation (an unresolved federation/
+   * replay-provenance defect, still under investigation) and stranded the true author when the
+   * guards trusted `origin` alone.
+   */
+  createdBy: string | null;
   /** Issue-family only. */
   severity: string | null;
   /** Parent work-item id (a chunk's parent, D-004). */
@@ -392,6 +403,7 @@ export function issueToWorkItem(i: EngineerIssue): WorkItem {
     // held >STALE_MS with zero checkpoints to 'stalled' even while actively worked.
     lastProgressAt: i.lastProgressAt,
     assignedBy: i.assignedBy,
+    createdBy: i.createdBy,
     severity: i.severity,
     parent: null,
     payload: i.payload ?? null,
@@ -476,6 +488,7 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     takenAt: r.taken_at == null ? null : tsIso(r.taken_at),
     lastProgressAt: r.last_progress_at == null ? null : tsIso(r.last_progress_at),
     assignedBy: null, // feature-family has no assigned_by column (collapse-delegate D-002)
+    createdBy: null, // feature-family has no equivalent authorship column
     severity: null,
     parent: r.parent_id,
     payload: r.payload ?? null,
@@ -1433,6 +1446,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     takenAt: assignTo ? tsIso(now) : null,
     lastProgressAt: null,
     assignedBy: null, // feature-family has no assigned_by column (collapse-delegate D-002)
+    createdBy: null, // feature-family has no equivalent authorship column
     severity: null,
     parent: input.parent ?? null,
     payload: input.payload ?? null,
@@ -2050,7 +2064,15 @@ export async function setWorkItemState(
   }
   let result: WorkItem | null;
   if (wi.family === 'issue') {
-    if (wi.origin === 'remote') {
+    // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
+    // creation (an unresolved federation/replay-provenance defect, still under investigation —
+    // see the work-item's own body). Trusting `origin` ALONE here strands the true author: they
+    // wrote the item, `origin` later mislabels it 'remote', and the refusal below sends them to
+    // "their authoring peer" — which IS them, on the only node they have. Check IDENTITY first:
+    // if the caller (`opts.by`) is the item's recorded author (`createdBy`), they genuinely ARE
+    // the authoring peer regardless of what `origin` currently reads — permit the mutation.
+    const callerIsAuthor = !!opts.by && !!wi.createdBy && opts.by === wi.createdBy;
+    if (wi.origin === 'remote' && !callerIsAuthor) {
       throw new Error(
         `work_item '${id}' is remote-authored and cannot be mutated locally; ` +
           `its authoring peer must claim/resolve it, and this node will receive the ` +

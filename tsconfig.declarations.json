@@ -66,6 +66,7 @@
     "scripts/check-transitive-boundary.mjs",
     "scripts/check-vite-externalized-warnings.mjs",
     "scripts/lint-migrations.mjs",
+    "scripts/lint-tsc-papercusp-libs.mjs",
     "packages/operator-core/lib/inference-gateway/watchdog.mjs"
   ]
 }

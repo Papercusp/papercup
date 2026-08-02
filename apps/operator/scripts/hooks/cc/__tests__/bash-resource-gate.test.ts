@@ -60,6 +60,13 @@ function runGate(
       HOME: fakeHome,
       PAPERCUSP_SID: nextSid(),
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', // dead port — fail-open fast
+      // Pin the heavy-admission gate's load input: it reads the REAL host
+      // /proc/loadavg, so on a loaded box (load1 > threshold) every
+      // expectAllow test of an UNRELATED guard reds on the admission deny
+      // (observed live 2026-08-02 at load1=137: the fd-duplication shell-write
+      // test failed on the admission message). Tests OF the admission gate set
+      // their own OVER/UNDER via the `...env` spread below, which wins.
+      PC_HEAVY_LOAD1_OVERRIDE: '0',
       ...env,
     },
     timeout: 15_000,

@@ -136,6 +136,12 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     presence: vi.fn(async () => livePresence) as never,
     alive: vi.fn(() => true),
     isLoopArmed: vi.fn(async () => false),
+    // WI-6860: hermetic by default — the real getLoopStatus opens a live PG
+    // connection (getOrgPg), which a unit test must never touch. Only the
+    // EI-19294445744419497 staleness-hint branch (noteUpdatedAtMs != null)
+    // reads this; default to "no status" so that branch's staleness hint is
+    // simply omitted unless a test overrides it.
+    getLoopStatusFn: vi.fn(async () => null) as never,
     forceResume: vi.fn(async () => false),
     resumePlanRun: vi.fn(async () => ({ ok: true as const })),
     // Hermetic by default: no live psu-pty host (don't read the real ~/.papercusp).

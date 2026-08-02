@@ -1032,6 +1032,14 @@ export interface ExecuteWakeDeps {
    *  walls text is still current. Injected for tests; defaults to the real
    *  getLoopCarryNoteWithMeta (carry-note.ts). */
   getLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
+  /** WI-6860: read the subscriber's loop status (for `lastTurnAt`) — used ONLY by
+   *  the EI-19294445744419497 un-checkpointed-work staleness hint to compare a
+   *  cold carry-note's write instant against the subscriber's actual last turn.
+   *  Injected for tests; defaults to the real getLoopStatus (harness/routines/loop.ts).
+   *  Without this seam, the real getLoopStatus (which opens a live Postgres
+   *  connection via getOrgPg) is unmockable, so any unit test that reaches this
+   *  branch trips assertRealPgAllowed and fails via vitest-fail-on-console. */
+  getLoopStatusFn?: typeof getLoopStatus;
   /** compaction-continuity-hardening-2026-07-07 P-003: assemble the subscriber's
    *  carry BRIEF (held work-items + checkpoints, standing facts/walls, armed awaits,
    *  fleet pointer) appended to a COLD injection after the carry-note. Injected for
@@ -1198,7 +1206,10 @@ async function injectPsuHostWake(
     let lastTurnAtMs: number | null = null;
     if (noteUpdatedAtMs != null) {
       try {
-        const st = await getLoopStatus(d.subscriberId);
+        // WI-6860: go through the injectable seam (defaults to the real
+        // getLoopStatus) instead of calling the direct import — the direct call
+        // was unmockable and opened a real Postgres connection in unit tests.
+        const st = await (deps.getLoopStatusFn ?? getLoopStatus)(d.subscriberId);
         lastTurnAtMs = st?.lastTurnAt ? new Date(st.lastTurnAt).getTime() : null;
         if (lastTurnAtMs != null && !Number.isFinite(lastTurnAtMs)) lastTurnAtMs = null;
       } catch (e) {
