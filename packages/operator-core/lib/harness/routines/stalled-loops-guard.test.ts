@@ -53,7 +53,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const sql = fakeSql([]);
     const getStatuses = vi.fn();
     const autoPause = vi.fn(async () => {});
-    const broadcast = vi.fn(async () => true);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
     const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
     expect(res).toEqual({ checked: 0, paused: 0, sample: [], dryRun: false });
     expect(getStatuses).not.toHaveBeenCalled();
@@ -75,7 +75,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       ]),
     );
     const autoPause = vi.fn(async () => {});
-    const broadcast = vi.fn(async () => true);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
 
     const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
 
@@ -103,7 +103,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const sql = fakeSql([{ id: 'rt_ok', target_owner_id: 'su-ok' }]);
     const getStatuses = vi.fn(async () => new Map([['su-ok', status({ ownerId: 'su-ok', turnsStalled: false })]]));
     const autoPause = vi.fn(async () => {});
-    const broadcast = vi.fn(async () => true);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
 
     const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
 
@@ -116,7 +116,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const sql = fakeSql([{ id: 'rt_x', target_owner_id: 'su-x' }]);
     const getStatuses = vi.fn(async () => new Map<string, LoopStatus>());
     const autoPause = vi.fn(async () => {});
-    const broadcast = vi.fn(async () => true);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
 
     const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
 
@@ -128,7 +128,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const sql = fakeSql([{ id: 'rt_dead', target_owner_id: 'su-dead' }]);
     const getStatuses = vi.fn(async () => new Map([['su-dead', status({ ownerId: 'su-dead', turnsStalled: true })]]));
     const autoPause = vi.fn(async () => {});
-    const broadcast = vi.fn(async () => true);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
 
     const res = await sweepStalledLoops({ sql, workspaceId: 'ws', dryRun: true }, { getStatuses, autoPause, broadcast });
 
@@ -149,7 +149,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       return new Map([['su-dup', status({ ownerId: 'su-dup', turnsStalled: true })]]);
     });
     const autoPause = vi.fn(async () => {});
-    const broadcast = vi.fn(async () => true);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
 
     await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
 

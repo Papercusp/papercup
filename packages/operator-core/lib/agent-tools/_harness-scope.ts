@@ -56,6 +56,28 @@ export function isAllHarnessSentinel(v: string | null | undefined): boolean {
   return s === '*' || s === 'all';
 }
 
+/**
+ * EI-18894866320087268: a distinct, workspace-clamp-SAFE way for a doc-reading tool
+ * (docs:search / docs:outline / docs:get) to reach the Papercusp engineering /
+ * agent-insights corpus. `harness:'all'`/`'*'` is intentionally blocked for a
+ * workspace-scoped superuser session by the transport-level scoped-superuser-
+ * workspace clamp (`_mcp-handler.ts`'s `harness_forbidden`, P-006/P-007/P-008) — a
+ * real security boundary against cross-workspace TENANT data. But the engineering
+ * corpus is Papercusp's own static reference documentation, identical for every
+ * workspace, not tenant data — so a workspace-scoped session should still be able
+ * to read it. That clamp inspects only the literal strings `'all'`/`'*'`, so this
+ * distinct literal reaches the tool's handler untouched even under a scoped
+ * session. Docs tools treat a match exactly like `HarnessScope`'s `'all'` kind for
+ * adapter-resolution purposes (see resolveAdapter's `!harnessSlug || harnessSlug
+ * === '*'` branch) — never as a concrete harness slug to look up (which would 404
+ * with `harness_not_registered`). It is NOT a general cross-harness/cross-workspace
+ * escape: `resolveAdapter`'s own `isSuperuser` gate (and every OTHER clamp in
+ * `_mcp-handler.ts`) still applies unchanged.
+ */
+export function isEngineeringDocsSentinel(v: string | null | undefined): boolean {
+  return (v?.trim().toLowerCase() ?? '') === 'engineering';
+}
+
 export type HarnessScope =
   | { kind: 'harness'; slug: string }
   | { kind: 'all' }

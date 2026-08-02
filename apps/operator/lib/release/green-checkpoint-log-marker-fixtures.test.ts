@@ -68,4 +68,32 @@ describe('EI-18832272104497819: captured fixture markers cannot impersonate a ve
   it('the placeholder is not itself the marker (a self-defeating substitution)', () => {
     expect(CAPTURED_RESULT_MARKER_PLACEHOLDER).not.toContain(GREEN_CHECKPOINT_RESULT_MARKER);
   });
+
+  // EI-19346606967082413 extended what goes into this body: the orchestrator transcript is
+  // now prepended to the suite output. That transcript is TEED from the same log() the gate
+  // narrates itself with, so a line in it can carry a result marker too — which would walk
+  // straight back into the impostor-verdict hole this whole describe exists to close.
+  //
+  // The write site composes defang(transcript + suiteOutput) as ONE string for exactly this
+  // reason. A refactor that prepends the transcript OUTSIDE the defang call — the natural
+  // way to write it, and it looks harmless — would reopen the hole for the half of the body
+  // a reader is most likely to trust, because the transcript is the gate's own voice rather
+  // than captured fixture noise. This is the negative control for that.
+  it('defangs a marker that arrives via the ORCHESTRATOR transcript, not just the suite output', () => {
+    const transcript =
+      '--- orchestrator transcript (1 line(s)) ---\n' +
+      `2026-08-02T16:00:00.000Z [green-checkpoint] ${GREEN_CHECKPOINT_RESULT_MARKER} {"reason":"up-to-date","green":true}\n` +
+      '--- end orchestrator transcript ---\n';
+    const suiteOutput = ' Test Files  571 passed (573)\n';
+
+    // Composed the way the write site composes it: ONE defang pass over both halves.
+    const persisted = defangCapturedResultMarkers(transcript + suiteOutput);
+
+    expect(persisted).not.toContain(GREEN_CHECKPOINT_RESULT_MARKER);
+    expect(persisted).toContain(CAPTURED_RESULT_MARKER_PLACEHOLDER);
+    // the fence and the suite output are untouched — defanging neutralises the marker only
+    expect(persisted).toContain('--- orchestrator transcript (1 line(s)) ---');
+    expect(persisted).toContain('--- end orchestrator transcript ---');
+    expect(persisted).toContain(' Test Files  571 passed (573)');
+  });
 });
