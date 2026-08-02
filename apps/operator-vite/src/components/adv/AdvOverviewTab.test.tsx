@@ -118,6 +118,7 @@ vi.mock('@papercusp/sync', () => ({
 
 import AdvOverviewTab from './AdvOverviewTab';
 import type { AttentionItem, PlanListRow } from '@/app/admin/plans/plans-api';
+import { advRosterArgs } from '@/lib/adv-roster-args';
 
 const plan = (over: Partial<PlanListRow>): PlanListRow =>
   ({
@@ -246,7 +247,14 @@ describe('AdvOverviewTab component', () => {
     // shared cache entry + one shared membership rule) — never a client-side
     // heartbeat re-derivation (PG-text timestamps are NaN under WebKit, which
     // read every agent as 'stale' and blanked this tile).
-    expect(syncArgs['advRoster.list']).toMatchObject({ workspaceId: null, endedLimit: 20 });
+    //
+    // P-026: assert against `advRosterArgs()` rather than a hand-written
+    // literal. The literal was the whole defect — this file pinned
+    // `endedLimit: 20` while HudView/SessionChatModal pinned 50, so two tests
+    // could BOTH pass while the app minted two 240 KB cache entries for the
+    // same roster. Comparing to the canonical builder means a call site that
+    // drifts back to a bespoke shape fails here.
+    expect(syncArgs['advRoster.list']).toMatchObject(advRosterArgs(null));
     // The activity feed asks for the WHOLE stream explicitly (system_only:false)
     // and filters actors client-side — the server default must not decide.
     expect(syncArgs['dev.coordFeed']).toMatchObject({ system_only: false });

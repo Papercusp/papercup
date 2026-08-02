@@ -22,6 +22,7 @@ import {
   type TaskRow,
   type TaskState,
 } from './types';
+import type { ExemptReason, ProcessScope } from './scope-class';
 
 /** One process as the scanner observed it. */
 export interface ScannedProcess {
@@ -34,6 +35,17 @@ export interface ScannedProcess {
   cmdline: string;
   /** true when this process lives inside our root slice. */
   owned: boolean;
+  /**
+   * `owned`, refined for HUMAN readers (EI-19325095302441792). The reconciler still
+   * decides on `owned`; this splits the `owned:false` residue into lifetimes we
+   * deliberately do not own (`exempt`) and genuine escapes (`unaccounted`), so a
+   * pane cannot present the owner's own terminal windows as a coverage hole.
+   * Derived by `classifyScope` — see scope-class.ts for why the rules are
+   * structural rather than a list of process names.
+   */
+  scope: ProcessScope;
+  /** Non-null exactly when `scope === 'exempt'`. */
+  exemptReason: ExemptReason | null;
 }
 
 export interface AliveVerdict {

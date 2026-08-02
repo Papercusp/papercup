@@ -71,8 +71,10 @@ concurrently written can legitimately observe different states; that is expected
   a **concurrent claim-spec write** (the leader re-steering via `scheduler:set_claim_spec`) landing
   between them — check `updated_at`/`revision` on the two reads; if the later one has a higher
   revision or a fresher `updatedAt`, that is the whole explanation.
-- `code:run` inner calls only rebind `ctx` (workspace/tx/principal) when the call's *effective
-  workspace differs from the outer ctx's* — see `bindInnerDispatch` in
+- `code:run` inner calls only rebind the *binding* (workspace/tx/principal) when the call's
+  *effective workspace differs from the outer ctx's* — see `bindInnerDispatch` in
   `packages/operator-core/lib/agent-tools/code/run.ts`. Absent an explicit per-call `{ workspace
-  }` override (or a `crossWorkspace`-flagged tool), the exact same `ctx` — and therefore the exact
-  same resolved `ownerId` — is used for every inner call in a batch.
+  }` override (or a `crossWorkspace`-flagged tool), every inner call gets a fresh shallow copy of
+  `ctx` (`{ ...ctx, contextTier: undefined, transportCapExempt: true }`) — not the same object
+  reference, but every identity-relevant field on it is untouched, so the resolved `ownerId` is
+  the same for every inner call in a batch.

@@ -550,6 +550,18 @@ export function checkpointRunLockDir(logDir: string, integrationRoot: string): s
 /** EI-18757156963245979: the run's own PHASE, published beside the run-lock so the LAUNCH
  *  side can tell "healthy run about to deliver a verdict" from "wedged run worth replacing".
  *
+ *  `isolating` (EI-19328677512071640) = the suite went RED and this process is inside the
+ *  load-flake isolation re-run (`attemptFlakeAbsorption` / `attemptWorkerCrashAbsorption`),
+ *  re-running each originally-failing file at SINGLE concurrency to decide load-flake vs real
+ *  break. Host contention here corrupts the CLASSIFIER, not merely the timing — a starved
+ *  re-run reads a real pass as a failure and red-pins the fleet. This is the window
+ *  `scripts/pc-heavy.sh` reserves headroom for; `suite` alone could not express it, because
+ *  the long main sweep and this short sensitive tail shared one marker.
+ *
+ *  ⚠ Emitted ONLY by the default `runGreen`. A test/caller that injects its own `runGreen`
+ *  never publishes it, so a reader must treat `isolating` as an optional hint and degrade to
+ *  the `suite` behavior when it is absent — never require it.
+ *
  *  `delivering` = the suite has finished and this process is in the verdict path
  *  (stale-red re-triage, auto-refire, prefix salvage). That phase is seconds-to-minutes
  *  from either greening or RE-FIRING the gate onto a newer tip, so it is the single worst
@@ -561,7 +573,10 @@ export function checkpointRunLockDir(logDir: string, integrationRoot: string): s
  *  deleted by the release path keyed on its token — mutating it per-phase would race the
  *  release. Best-effort in every direction; a missing/garbled marker simply degrades to the
  *  age-based decision, never to a crash. */
-export function writeCheckpointRunPhase(lockDir: string, phase: 'suite' | 'delivering'): void {
+export function writeCheckpointRunPhase(
+  lockDir: string,
+  phase: 'suite' | 'isolating' | 'delivering',
+): void {
   try {
     writeFileSync(path.join(lockDir, 'phase.json'), JSON.stringify({ phase, at: new Date().toISOString() }));
   } catch {
@@ -3777,6 +3792,17 @@ export function realCheckpointDeps(
       // longer what is failing — but the five legs it skipped have still never run.
       let suiteAbsorbed = false;
       if (r.code !== 0) {
+        // EI-19328677512071640: publish the `isolating` phase for the DURATION of the
+        // isolation re-run only. This is the single-concurrency window whose verdict is
+        // corrupted by host contention, so it is what pc-heavy's gate reserve clamps for.
+        // Restored to `suite` immediately after the block below: the post-absorption legs
+        // are heavy but NOT classifier-sensitive, and leaving the marker stuck at
+        // `isolating` would over-throttle the fleet for the rest of the run — the very
+        // defect this item exists to remove. Best-effort in both directions (the writer
+        // already swallows its own errors), and a marker stranded by a crash is harmless:
+        // pc-heavy gates on the lock owner's LIVE pid first, so a dead run clamps nobody.
+        const _phaseLockDir = checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot);
+        writeCheckpointRunPhase(_phaseLockDir, 'isolating');
         // WI-6956: `concurrentRun` first so an explicitly-configured flakeAbsorptionOpts
         // (the real-deps tests' injection seam) still wins; absent it, the real confirming
         // runner above is what gates absorption.
@@ -3803,6 +3829,12 @@ export function realCheckpointDeps(
             flakeSuspects = crash.flakeSuspects;
           }
         }
+        // Back to `suite`: the sensitive single-concurrency window is over. The legs that
+        // may follow are heavy but not classifier-sensitive, and a marker left at
+        // `isolating` would over-throttle the fleet for the rest of the run. No
+        // try/finally: if absorption throws, the run dies and its pid with it, and
+        // pc-heavy gates on the lock owner's LIVE pid before it ever reads the phase.
+        writeCheckpointRunPhase(_phaseLockDir, 'suite');
 
         if (suiteAbsorbed) {
           // WI-6053 — THE FIX. Absorption is not a bypass. The suite is now considered

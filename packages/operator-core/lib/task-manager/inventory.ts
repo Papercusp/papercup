@@ -68,6 +68,16 @@ export type LiveProcessRow = {
   cgroupPath: string;
   /** true = inside our slice (enrolled lineage); false = signature-matched, unenrolled. */
   owned: boolean;
+  /**
+   * `owned:false` split into the two populations a reader must not confuse:
+   * `exempt` (a lifetime we deliberately do not own — the owner's terminal, a
+   * systemd unit) and `unaccounted` (a genuine escape). Rendering both as one
+   * "UNENROLLED" group is the defect this field exists to fix — it presented ~98%
+   * of the box as a coverage hole (EI-19325095302441792).
+   */
+  scope: ProcessScope;
+  /** Non-null exactly when `scope === 'exempt'` — the reason to show the reader. */
+  exemptReason: ExemptReason | null;
 };
 
 export type TaskInventory = {
@@ -103,6 +113,12 @@ export function disabledInventory(): TaskInventory {
 
 /** Cap on live-process rows shipped to the pane. */
 const MAX_LIVE_PROCESS_ROWS = 4000;
+
+/** Row priority under the cap: ours, then real escapes, then exempt lifetimes. */
+function scopeRank(scope: ProcessScope): number {
+  if (scope === 'owned') return 0;
+  return scope === 'unaccounted' ? 1 : 2;
+}
 
 /**
  * SHARED TTL memo for the live scan (owner-directed 2026-08-02).
@@ -163,18 +179,27 @@ async function runLiveScan(): Promise<LiveScanResult> {
           sample: g.sampleCmdline.slice(0, 200),
         })),
       },
-      // Owned first (enrolled lineage), then the signature-matched strangers; within
-      // each, by pid so the order is stable across the 5s refresh and rows do not
-      // jump under the reader's cursor.
+      // Owned first (enrolled lineage), then the genuine escapes, then the
+      // deliberately-exempt lifetimes; within each, by pid so the order is stable
+      // across the 5s refresh and rows do not jump under the reader's cursor.
+      //
+      // Ranking `unaccounted` ABOVE `exempt` is what makes the cap safe rather than
+      // lucky: exempt rows are the large population (157 terminal processes on this
+      // box, against ~13 real escapes), so a pid-ordered cut could drop precisely
+      // the rows that carry the alarm and leave the pane reporting a clean gap it
+      // simply could not see. The cap is not biting today at 4000 — this keeps the
+      // property true if it ever does (EI-19325095302441792).
       liveProcesses: tick.scannedProcesses
         .slice()
-        .sort((a, b) => Number(b.owned) - Number(a.owned) || a.pid - b.pid)
+        .sort((a, b) => scopeRank(a.scope) - scopeRank(b.scope) || a.pid - b.pid)
         .slice(0, MAX_LIVE_PROCESS_ROWS)
         .map((p) => ({
           pid: p.pid,
           cmdline: p.cmdline ? p.cmdline.slice(0, 300) : null,
           cgroupPath: p.cgroupPath,
           owned: p.owned,
+          scope: p.scope,
+          exemptReason: p.exemptReason,
         })),
     };
   } catch (e) {

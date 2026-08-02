@@ -37,6 +37,7 @@ import {
   type CgroupFs,
 } from './cgroup-read';
 import { TASK_ROOT_SLICE } from './types';
+import { classifyScope } from './scope-class';
 import type { ScannedProcess } from './reconcile';
 
 export interface ScanOptions {
@@ -171,12 +172,20 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
       foreignCount++;
     }
     seen.add(pid);
+    const cgroupPath = relCgroupPath(absDir, cgroupRoot);
+    // Classify HERE, not in the pane. The rule set is the guard's intent expressed
+    // at runtime; duplicating it in a component is how the two drift apart, and a
+    // pane that classifies for itself is a pane that can quietly invent a coverage
+    // hole (EI-19325095302441792).
+    const { scope, exemptReason } = classifyScope(cgroupPath, owned);
     processes.push({
       pid,
-      cgroupPath: relCgroupPath(absDir, cgroupRoot),
+      cgroupPath,
       processIdentity: readIdentity(pid, bootId, fs),
       cmdline: parseProcCmdline(fs.readFile(`/proc/${pid}/cmdline`)),
       owned,
+      scope,
+      exemptReason,
     });
   };
 
