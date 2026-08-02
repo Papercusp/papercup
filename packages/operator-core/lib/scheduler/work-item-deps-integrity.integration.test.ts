@@ -89,6 +89,9 @@ const thread = (threadId: string, parentKind: string, parentRef: string) => db.s
   INSERT INTO harness_shared.coord_threads (workspace_id, thread_id, parent_kind, parent_ref)
   VALUES (${WS}, ${threadId}, ${parentKind}, ${parentRef})`;
 
+// @covers INV-01 INV-02 INV-12 INV-13
+// INV-12 needs BOTH halves and gets them: 'reports ZERO defects for correctly-written edges'
+// is the silent-on-clean control without which every FIRES case below proves nothing.
 describe('reconcileWorkItemDepEndpoints — the D-017 endpoint-integrity detector', () => {
   it('reports ZERO defects for correctly-written edges of BOTH families', async () => {
     // The baseline. Asserted first so a later CATCH result is attributable to the seeded
@@ -248,6 +251,7 @@ describe('reconcileWorkItemDepEndpoints — the D-017 endpoint-integrity detecto
  * scored a clean defects=0, which is exactly how 32 stale refs stayed live under a green
  * verdict. If a future change narrows the sweep back to one relation, these fail.
  */
+// @covers INV-03 INV-13
 describe('reconcileWorkItemDepEndpoints — coverage of the AUTHORITATIVE ref-holders', () => {
   it('CATCHES a stale harness qualifier in coord_links, which the mirror never shows', async () => {
     // The live shape: the item was re-homed to another pot and the ref kept the old slug.

@@ -374,6 +374,30 @@ questions that agents routinely conflate; hand-resolving them cost 11 tool calls
 do not invent a lever when the honest move is to wait. Full field-by-field guide:
 [reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction).
 
+**About to ACT on one of these values — or quote it into a message, a plan, or a
+work-item? RE-READ it, don't copy it: `state:read { cell }`.** These same values are
+registered CELLS off the *same* resolver (`gitPipelinePosition()`), so this is a
+re-read, never a second source of truth: `gate.greenCheckpoint.candidate` ·
+`gate.greenCheckpoint.verdict` · `git.mainBehindStaging` · `git.pipelinePosition` ·
+`deploy.3070.sha` (omit `cell` to list them). Every one is a value that changes under
+you mid-turn, and a transcribed copy of one is how a correct observation becomes a
+confidently wrong report an hour later.
+
+Two specifics worth knowing:
+
+- **"Is the gate red about MY change?"** — `state:read { cell:
+  'gate.greenCheckpoint.candidate', as: '<your path>' }`. It is per-path on purpose, and
+  its falsifier is a **blob containment** check against the candidate — the same
+  primary method the long recipe below prescribes, run for you. Its stated job is to
+  kill exactly one error: *"the gate is red" read as "the gate is red ABOUT MY
+  CHANGE."* That error, not the red itself, is what repeatedly costs hours here.
+- **Waiting for one to CHANGE** (a verdict, a deploy sha) → `state:subscribe`, not a
+  poll loop and not a hand-built await.
+
+⚠ This does **not** supersede the `inFlightRetriage` marker below for *"which sha is
+the run judging right now"* — that stays the authority for a LIVE run (the cell answers
+containment, which is the question you usually actually have).
+
 ⚠ **`judgingContainsPath: false` with `missingReason: 'newer-commit'` does NOT mean your
 change missed the candidate — and on a shared file it usually means the opposite.** That
 verdict compares the path's **current content**, so the moment ANY peer commits to the same

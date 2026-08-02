@@ -65,6 +65,7 @@ function claimResult(id: string) {
   };
 }
 
+// @covers INV-07
 describe('getNextForBee — plan-item-lane guard retry loop', () => {
   beforeEach(() => {
     sqlMock.mockReset().mockResolvedValue([]);
@@ -293,7 +294,10 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
    * meaningless), prove it COUNTS one per bounce, and prove it can never touch
    * admission.
    */
-  describe('claim_audit instrumentation of the bounce (P-011)', () => {
+  // @covers INV-14
+// The 'writes NO bounce row when the lane is clear' case is the half that makes the count
+// mean something: an always-recording instrument would pass every other case identically.
+describe('claim_audit instrumentation of the bounce (P-011)', () => {
     function auditCalls() {
       return recordClaimAttemptMock.mock.calls.map(([raw]) => {
         const attempt = raw as {

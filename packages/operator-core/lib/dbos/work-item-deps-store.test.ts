@@ -4,6 +4,7 @@ import { workItemBlockingEdge, wouldCreateCycle } from './work-item-deps-store';
 // edges are blocked -> [blockers]; a cycle = a circular blocking dependency (deadlock).
 const m = (o: Record<string, string[]>): Map<string, string[]> => new Map(Object.entries(o));
 
+// @covers INV-08
 describe('wouldCreateCycle (acyclicity guard, P-008)', () => {
   it('allows an edge into an empty graph', () => {
     expect(wouldCreateCycle(new Map(), 'A', ['B'])).toBe(false);
@@ -75,6 +76,7 @@ describe('workItemBlockingEdge (coord_links → scheduler mirror)', () => {
  * blocked_kind='feature' with a properly qualified ref, yet point at item_kind='task' rows) —
  * that needs a DB read, so it is a separate guard. Do not extend these tests to imply otherwise.
  */
+// @covers INV-01
 describe('work_item_deps endpoint ref-form invariant (P-005 / D-009)', () => {
   const issue = { kind: 'issue', ref: 'EI-1' };
   const feature = { kind: 'feature', ref: 'papercusp#F-1' };

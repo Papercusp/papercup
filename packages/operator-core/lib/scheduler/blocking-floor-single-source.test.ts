@@ -110,6 +110,9 @@ function relLib(file: string): string {
 
 const SOURCE_FILES = collectSourceFiles(LIB_ROOT);
 
+// @covers INV-11
+// STATIC: no live reader hardcodes a blocker-leg workspace (the migration-719 defect).
+// The behavioural tenancy sweep is P-006, over a non-'default' tenant.
 describe('dependency-blocking floor has ONE definition per family (P-014 / D-007 guard)', () => {
   it('scans a non-trivial number of source files (guards against a broken walker silently passing)', () => {
     // A guard whose scan set is empty passes every assertion below while checking nothing —
@@ -163,6 +166,9 @@ describe('dependency-blocking floor has ONE definition per family (P-014 / D-007
   });
 });
 
+// @covers INV-06
+// A STATIC proof: it shows every self-select door CALLS the one floor helper. The
+// behavioural half of INV-06 lives in claim-respects-blocking.integration.test.ts.
 describe('every SELF-SELECT claim door routes through the shared floor (P-014 / D-008)', () => {
   const getNext = readFileSync(join(LIB_ROOT, 'scheduler', 'get-next.ts'), 'utf8');
   const workItems = readFileSync(join(LIB_ROOT, 'work-items.ts'), 'utf8');

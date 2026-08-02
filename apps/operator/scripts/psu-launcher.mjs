@@ -1434,8 +1434,15 @@ export function nativeSessionIdFromLaunchArgs(args = []) {
  *
  * Pure — exported for tests. `mintId` is injectable for deterministic tests.
  */
-export function mintRecycleArgs(args = [], { mintId = () => randomUUID(), agent = null } = {}) {
+export function mintRecycleArgs(
+  args = [],
+  { mintId = () => randomUUID(), agent = null, personaFile = null } = {},
+) {
   const src = args.map((a) => String(a ?? ''));
+  // stale-prompt-render-in-live-sessions-2026-08-02 P-002: the freshly re-rendered
+  // base persona, when the operator produced one. See the --system-prompt-file case
+  // in the copy loop below for why this exists.
+  const persona = typeof personaFile === 'string' && personaFile.trim() ? personaFile.trim() : null;
   const hasSessionId = src.some((a) => a === '--session-id' || a.startsWith('--session-id='));
   // A RESUME-launched Claude session (`claude --resume <id>`) has no --session-id
   // to rotate — but a recycle/carry-respawn successor never wants the old
@@ -1468,6 +1475,29 @@ export function mintRecycleArgs(args = [], { mintId = () => randomUUID(), agent 
     }
     if (a.startsWith('--resume=')) continue;
     if (a === '--continue' || a === '--fork-session') continue;
+    // stale-prompt-render-in-live-sessions-2026-08-02 P-002: THE staleness bug lived
+    // in the bare `out.push(a)` below. It copies every remaining flag through
+    // verbatim — including `--system-prompt-file <the PREDECESSOR's render>` — so a
+    // session's base persona was pinned to the first launch of its chain forever,
+    // however many times it respawned. Only the carry document was ever refreshed.
+    // Measured 2026-08-02: 27 of 53 live claude sessions ran a render up to 14 days
+    // old, so every prompt fix of that fortnight reached only half the fleet.
+    //
+    // REPLACE the value, never append a second flag (claude takes the last one, but
+    // relying on that would be an accident waiting to be reordered), and only when
+    // the caller actually obtained a fresh render — a null personaFile means the
+    // refresh was unavailable or failed, and then keeping the inherited path is the
+    // deliberate fail-soft: a stale prompt beats a lost session. An argv with no
+    // --system-prompt-file at all (omp/codex) is left alone; we never ADD the flag.
+    if (persona && a === '--system-prompt-file') {
+      out.push('--system-prompt-file', persona);
+      i++; // consume the stale render path
+      continue;
+    }
+    if (persona && a.startsWith('--system-prompt-file=')) {
+      out.push(`--system-prompt-file=${persona}`);
+      continue;
+    }
     out.push(a);
   }
   if (!hasSessionId) out.push('--session-id', freshId);
@@ -1488,6 +1518,7 @@ export function mintCarryRespawnArgs(
     mintId = () => randomUUID(),
     home = homedir(),
     agent = 'claude',
+    personaFile = null,
   } = {},
 ) {
   const text = String(systemPromptAddendum ?? '').trim();
@@ -1495,7 +1526,12 @@ export function mintCarryRespawnArgs(
   // Carry-respawn is claude-only, so the mint may synthesize --session-id for a
   // resume-launched argv (see mintRecycleArgs); nativeId can then only be null
   // for a genuinely non-claude agent hint.
-  const rotated = mintRecycleArgs(args, { mintId, agent });
+  // `personaFile` (P-002) rides through to mintRecycleArgs, which owns the
+  // --system-prompt-file swap — the copy-through it fixes lives there, so both
+  // respawn modes (carry AND plain recycle) get the fresh render from one code
+  // path. This function stays PURE: the network call that produces personaFile is
+  // the caller's, where its failure can be caught and fail-softed.
+  const rotated = mintRecycleArgs(args, { mintId, agent, personaFile });
   if (!rotated.nativeId) throw new Error('carry-respawn requires a Claude --session-id launch');
   const dir = join(home, '.papercusp', 'launch-context');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -4797,6 +4833,52 @@ export async function reportSessionRespawned(
   }
 }
 
+/**
+ * Ask the operator to RE-RENDER this session's base persona from current prompt
+ * sources, and return the fresh file's path (or null).
+ *
+ * stale-prompt-render-in-live-sessions-2026-08-02 P-002. A respawn rebuilds argv
+ * from the ORIGINAL argv, so `--system-prompt-file` used to be copied through
+ * verbatim and a long-lived session ran its FIRST launch's render forever — 27 of
+ * 53 live sessions were up to 14 days stale when measured. A respawn is already a
+ * full relaunch, so re-rendering is nearly free; the host swaps the returned path
+ * into the successor's argv via mintRecycleArgs.
+ *
+ * NULL ON EVERYTHING — unreachable operator, timeout, non-200, a session with no
+ * stored launch spec, a refused render. The caller then keeps the inherited path
+ * and respawns anyway. That fail-soft is deliberate and not negotiable: a respawn
+ * that died because the operator was briefly unreachable would lose the session,
+ * which is strictly worse than running a stale prompt. Bounded well under the
+ * respawn's own kill timeout so a wedged operator delays a respawn rather than
+ * stalling it. Exported with injectables for tests.
+ */
+export async function refreshPersonaRender(
+  coordOwnerId,
+  { fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 8_000 } = {},
+) {
+  if (!coordOwnerId) return { promptFile: null, reason: 'no-owner' };
+  try {
+    const tok = token ?? readToken();
+    const r = await fetchImpl(operatorUrl + '/api/agent-mcp/console/bootstrap-su/persona-refresh', {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        'content-type': 'application/json',
+        ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+      },
+      body: JSON.stringify({ coordOwnerId: String(coordOwnerId) }),
+    });
+    if (!r?.ok) return { promptFile: null, reason: `http-${r?.status ?? 'error'}` };
+    const j = await r.json();
+    if (j?.ok !== true || typeof j?.promptFile !== 'string' || !j.promptFile) {
+      return { promptFile: null, reason: String(j?.reason ?? 'not-rendered') };
+    }
+    return { promptFile: j.promptFile, reason: null, bytes: Number(j.bytes) || null };
+  } catch (e) {
+    return { promptFile: null, reason: `error: ${e?.message ?? String(e)}` };
+  }
+}
+
 /** Critical (not best-effort) session-port disposition. The server accepts a
  * delivery only when `proof.nativeRef` names the target backend's own persisted
  * transcript containing the exact rendered hash. If the POST response is lost,
@@ -5318,6 +5400,12 @@ function runWrapper({
         // + native→coord re-anchor here so the host stays launcher-agnostic.
         mintRecycleArgs,
         mintCarryRespawnArgs,
+        // stale-prompt-render-in-live-sessions-2026-08-02 P-002: a respawn must
+        // re-render the base persona instead of inheriting the predecessor's file,
+        // or every prompt fix stops at the session's FIRST launch. Injected like the
+        // mints so the host stays launcher-agnostic; returns null on any failure and
+        // the host then keeps the inherited render.
+        refreshPersonaFile: () => refreshPersonaRender(ownerId),
         // agent-launch-resume-primitives P-011/D-008: the first turn for a scripted
         // RESUME/FORK. A resumed CLI has no positional-prompt seam (the fresh path's
         // kickoff rides the argv), and a session that just came back from the dead is

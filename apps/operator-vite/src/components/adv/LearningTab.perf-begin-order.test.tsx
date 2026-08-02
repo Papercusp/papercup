@@ -36,8 +36,8 @@
 // guarantee is asserted, not assumed) and the source of LearningTab itself (so
 // a revert to `useEffect` fails here rather than silently in production).
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
@@ -127,10 +127,17 @@ describe("learning-view-switch begin/settle ordering", () => {
 });
 
 describe("LearningTab source contract", () => {
-  const source = readFileSync(
-    fileURLToPath(new URL("./LearningTab.tsx", import.meta.url)),
-    "utf8",
-  );
+  // Resolved from cwd rather than import.meta.url: Vite rewrites module URLs to
+  // a non-file scheme, so fileURLToPath throws here (ERR_INVALID_URL_SCHEME).
+  // Both candidates are tried so the test is indifferent to whether the runner
+  // starts in the workspace or the repo root.
+  const REL = "src/components/adv/LearningTab.tsx";
+  const sourcePath = [
+    resolve(process.cwd(), REL),
+    resolve(process.cwd(), "apps/operator-vite", REL),
+  ].find(existsSync);
+  if (!sourcePath) throw new Error(`LearningTab.tsx not found from ${process.cwd()}`);
+  const source = readFileSync(sourcePath, "utf8");
 
   it("begins the interaction in a LAYOUT effect, not a passive one", () => {
     // Guards the real component, not the model above: the behavioural tests

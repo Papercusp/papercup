@@ -3856,6 +3856,10 @@ interface PostSuiteLegs {
   ok: boolean;
   typecheck: LegOutcome;
   typecheckPapercuspLibs: LegOutcome;
+  /** WI-7155 / EI-19376779013716004: the SUPERPROJECT roots (apps/*, packages/*,
+   *  libs/generic/*) that neither `lint:tsc` (operator-core only) nor the libs/papercusp
+   *  fan-out reached. 8 packages, every one a measured strict zero when wired. */
+  typecheckWorkspaces: LegOutcome;
   /** WI-7140: libs/papercusp/packages/orchestrator, at a STRICT ZERO baseline. */
   typecheckOrchestrator: LegOutcome;
   lintMigrations: LegOutcome;
@@ -3885,6 +3889,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     ok: true,
     typecheck: skipped,
     typecheckPapercuspLibs: skipped,
+    typecheckWorkspaces: skipped,
     typecheckOrchestrator: skipped,
     lintMigrations: skipped,
     lintMigrationForwardCompat: skipped,

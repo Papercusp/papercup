@@ -145,6 +145,7 @@ async function seedRandomGraph(n: number): Promise<string[]> {
   return ids;
 }
 
+// @covers INV-15
 describe('reconcileReadiness — drift detection over migration 379 sidecar', () => {
   it('reports drift=0: the triggers keep the sidecar EXACT (random graphs)', async () => {
     for (let round = 0; round < 6; round++) {

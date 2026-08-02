@@ -209,6 +209,10 @@ beforeEach(async () => {
 // — set the flag via the flags store and assert IDENTICAL claim outcomes across both arms.
 // ────────────────────────────────────────────────────────────────────────────
 
+// @covers INV-04 INV-05 INV-06
+// INV-04 (an existing edge with a non-terminal blocker is EFFECTIVE) and INV-05 (it is
+// RELEASED once the blocker goes terminal) are the two halves of the same proof, and this
+// describe drives both through BOTH self-select doors, which is INV-06.
 describe('scheduler claim respects blocking — NEVER hands out a blocked item (P-005)', () => {
   // Explicit INLINE arm (flag OFF) — the reversible kill-switch fallback. (The sidecar/ON arm — now the
   // shipped default — is the dedicated describe at the bottom.) Pinned so both paths stay covered
@@ -290,6 +294,7 @@ describe('scheduler claim respects blocking — NEVER hands out a blocked item (
   });
 });
 
+// @covers INV-15
 describe('maintained readiness sidecar tracks the inline oracle through the lifecycle (379)', () => {
   it('add-edge → blocked, terminal-blocker → ready, drop-edge → ready: sidecar mirrors the oracle at every step', async () => {
     await seedFeature('F-blocker', { status: 'wip', createdTs: 1 });
@@ -324,6 +329,7 @@ describe('maintained readiness sidecar tracks the inline oracle through the life
 // so the INDEXED work_item_blocked anti-join in claimFloorsWhereSql is driven end-to-end through
 // BOTH entry points (the equivalence proof above covers the sidecar==oracle predicate; this covers
 // the anti-join SQL fragment itself — a wrong column match would claim a blocked item or claim none).
+// @covers INV-04 INV-06
 describe('claim respects blocking with SCHEDULER_MAINTAINED_READY ON — the indexed sidecar anti-join (P-005 cutover)', () => {
   beforeEach(() => setFlagOverridesForTest({ [FLAGS.SCHEDULER_MAINTAINED_READY]: true }));
   afterEach(() => setFlagOverridesForTest({}));

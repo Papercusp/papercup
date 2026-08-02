@@ -1925,6 +1925,13 @@ export function hostThroughPty(o) {
     // standalone host + existing tests behavior-identical (same args, no anchor).
     mintRecycleArgs = (a) => ({ args: a, nativeId: null }),
     mintCarryRespawnArgs = (a) => mintRecycleArgs(a),
+    // stale-prompt-render-in-live-sessions-2026-08-02 P-002: re-render this
+    // session's base persona from CURRENT prompt sources before a respawn mints the
+    // successor's argv. Injected by the launcher (which owns the operator call) for
+    // the same reason as the mints — the host must stay launcher-agnostic. The
+    // default returns no file, which reproduces the pre-fix behaviour exactly: the
+    // successor inherits the predecessor's rendered prompt.
+    refreshPersonaFile = async () => ({ promptFile: null, reason: 'not-wired' }),
     onRespawn = () => {},
     // WI-3141: injectable parent-pid probe for the orphan watchdog, so a test can
     // drive a fake reparent-to-init without a real fork. Defaults to the live ppid.
@@ -3320,13 +3327,47 @@ export function hostThroughPty(o) {
       // Assemble + persist the NEXT child's argv before killing the current one.
       // If carry-file creation fails, the settled current session remains alive
       // and its native/force-compaction backstops remain available.
+      //
+      // P-002 (stale-prompt-render-in-live-sessions-2026-08-02): re-render the base
+      // persona FIRST, so the fresh path can be swapped into the argv below. Without
+      // it, mintRecycleArgs copies `--system-prompt-file <predecessor's render>`
+      // through verbatim and this session runs its FIRST launch's prompt forever —
+      // 27 of 53 live sessions were up to 14 days stale when measured.
+      //
+      // Ordering: this runs BEFORE the kill, so a slow operator delays the respawn
+      // rather than leaving the session dead while we wait. FAIL-SOFT: any failure
+      // yields null and the successor keeps the inherited render — a stale prompt is
+      // strictly better than a lost session — but it is RECORDED, never silent, so
+      // a persistently-failing refresh is diagnosable instead of looking like the
+      // bug this fixes.
+      let personaFile = null;
+      let personaRefreshReason = null;
+      try {
+        const refreshed = await refreshPersonaFile();
+        personaFile = refreshed?.promptFile ?? null;
+        personaRefreshReason = personaFile ? null : (refreshed?.reason ?? 'no-file');
+      } catch (e) {
+        personaFile = null;
+        personaRefreshReason = `threw: ${e?.message ?? String(e)}`;
+      }
+      if (!personaFile && personaRefreshReason && personaRefreshReason !== 'not-wired') {
+        appendHostEvent(ownerId, 'persona-refresh-skipped', {
+          mode: respawnMode,
+          reason: personaRefreshReason,
+        });
+      }
       let recycleArgs;
       let nativeId;
       let launchContextPath = null;
       try {
         const minted = systemPromptAddendum
-          ? mintCarryRespawnArgs(args, { systemPromptAddendum, ownerId, agent: env.PAPERCUSP_AGENT })
-          : mintRecycleArgs(args, { agent: env.PAPERCUSP_AGENT });
+          ? mintCarryRespawnArgs(args, {
+              systemPromptAddendum,
+              ownerId,
+              agent: env.PAPERCUSP_AGENT,
+              personaFile,
+            })
+          : mintRecycleArgs(args, { agent: env.PAPERCUSP_AGENT, personaFile });
         recycleArgs = minted.args;
         nativeId = minted.nativeId;
         launchContextPath = minted.launchContextPath ?? null;
@@ -3475,6 +3516,10 @@ export function hostThroughPty(o) {
           // false = the successor boots with NO first prompt (P-010 answered case)
           // and waits for its loop/coord wake — expected, but worth seeing.
           firstPrompt: Boolean(carryText),
+          // P-002: did this successor get a FRESH base persona, or inherit the
+          // predecessor's render? The whole point of the fix, so it is observable
+          // per respawn rather than inferable only from a prompt diff.
+          personaRefreshed: Boolean(personaFile),
         });
       }
       // P-022: session:compacted:<owner> used to fire from the /compact handler's

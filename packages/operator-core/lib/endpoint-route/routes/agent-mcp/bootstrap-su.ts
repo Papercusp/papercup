@@ -49,9 +49,7 @@ import { launchContextDir, launchContextPathFor } from '../../../su-launch-conte
 import { buildLaunchSpec } from '../../../role-launch-spec';
 import {
   blockingInstructionConflicts,
-  buildInstructionPrecedenceTrace,
   lintInstructionText,
-  renderInstructionPrecedenceContext,
   type InstructionLintReport,
   type InstructionRuntimeContext,
 } from '../../../instruction-lint';
@@ -85,19 +83,21 @@ import {
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION, type SessionPortContractSummary } from '../../../session-port/types';
 import { recordSessionPortTelemetry } from '../../../session-port/telemetry';
 
-const CORS_HEADERS: Record<string, string> = {
+// Exported for the sibling launcher-facing routes split out of this file (the
+// persona refresh) — one copy of the CORS/principal boilerplate, not two.
+export const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, OPTIONS',
   'access-control-allow-headers': 'content-type, accept, authorization',
 };
 
-function jsonRes(body: unknown, init?: number | ResponseInit): Response {
+export function jsonRes(body: unknown, init?: number | ResponseInit): Response {
   const r = Response.json(body, typeof init === 'number' ? { status: init } : init);
   for (const [k, v] of Object.entries(CORS_HEADERS)) r.headers.set(k, v);
   return r;
 }
 
-async function gatePrincipal(headers: Headers): Promise<Response | null> {
+export async function gatePrincipal(headers: Headers): Promise<Response | null> {
   try {
     await requirePrincipal(headers);
     return null;

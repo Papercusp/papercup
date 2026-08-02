@@ -73,7 +73,10 @@
   border-radius: 4px;
   background: color-mix(in oklab, transparent, white 3.5%);
   padding: 0 8px 6px;
-  overflow: hidden;
+  /* x-hidden keeps the card's rounded corners clipping a long unbroken token;
+     y-auto is the height bound below. Two axes, two reasons — never `overflow:
+     hidden` plus an override, which reads as one of them being a mistake. */
+  overflow-x: hidden;
   /* ② of the two collapse mechanisms (rail-sections.tsx): an OPEN section still
      cannot run away with the column. Its body scrolls inside its own card with
      the cap pinned, so a 40-message Coord list costs the same vertical space as
