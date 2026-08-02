@@ -5,6 +5,7 @@ import {
   recentFailingFiles,
   splitFailingSignature,
   verifyGateFailingFiles,
+  reconcileFailingFiles,
   ledgerFilesForCandidate,
   verifyGateVerdict,
   type AdmissionSnapshotLite,
@@ -669,24 +670,96 @@ describe('EI-17603 — verifyGateVerdict: distrust the gate\'s own record when t
     expect(res.snap.gate.failingTests).toEqual(['lib/a.test.ts']);
   });
 
-  it('confirmed (overlap with the ledger) ⇒ leaves the gate\'s record untouched', async () => {
+  it('fully confirmed (every named file is in the ledger, nothing missing) ⇒ leaves the gate\'s record untouched', async () => {
     const res = await verifyGateVerdict(redWithFiles(['lib/a.test.ts', 'lib/b.test.ts']), {
-      sql: (async () => [{ file_path: 'lib/b.test.ts' }]) as unknown as WhyChainDeps['sql'],
+      sql: (async () => [{ file_path: 'lib/a.test.ts' }, { file_path: 'lib/b.test.ts' }]) as unknown as WhyChainDeps['sql'],
     });
     expect(res.disjoint).toBe(false);
     expect(res.snap.gate.failingTests).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
   });
 
-  it('DISJOINT (the live-observed bug): clears failingTests and hands back the ledger files, WITHOUT mutating the input snapshot', async () => {
+  it('WI-6529 — PARTIAL overlap (a real bug, live 2026-07-27): drops the unconfirmed (false-positive) file, keeps the confirmed one', async () => {
+    // The exact shape any-overlap-confirms-all used to miss: 'lib/a.test.ts' has since gone
+    // green (not in the ledger for this commit) but rode along because 'lib/b.test.ts' — a
+    // genuine red — made the OLD coarse check call the whole list "confirmed".
+    const res = await verifyGateVerdict(redWithFiles(['lib/a.test.ts', 'lib/b.test.ts']), {
+      sql: (async () => [{ file_path: 'lib/b.test.ts' }]) as unknown as WhyChainDeps['sql'],
+    });
+    expect(res.disjoint).toBe(true);
+    expect(res.snap.gate.failingTests).toEqual(['lib/b.test.ts']);
+    expect(res.snap.gate.failingTests).not.toContain('lib/a.test.ts');
+  });
+
+  it('WI-6529 — an entirely missing failing workspace (a real bug, live 2026-07-27): adds the ledger file the checkpoint never named', async () => {
+    // The checkpoint named only its (real) operator-core failure; the ledger shows a SECOND,
+    // genuinely-red file in a different workspace that the checkpoint's own record omitted.
+    const res = await verifyGateVerdict(redWithFiles(['lib/dbos/orchestrator-runner-scope.test.ts']), {
+      sql: (async () => [
+        { file_path: 'lib/dbos/orchestrator-runner-scope.test.ts' },
+        { file_path: 'app/_lints/css-tokens.test.ts' },
+      ]) as unknown as WhyChainDeps['sql'],
+    });
+    expect(res.disjoint).toBe(true);
+    expect(res.snap.gate.failingTests).toEqual(
+      ['app/_lints/css-tokens.test.ts', 'lib/dbos/orchestrator-runner-scope.test.ts'].sort(),
+    );
+  });
+
+  it('DISJOINT (the live-observed bug): reconciles failingTests to the ledger\'s real files (keeping step sentinels), WITHOUT mutating the input snapshot', async () => {
     const input = redWithFiles(['@papercusp/operator-vite', 'lib/a.test.ts', 'lib/b.test.ts']);
     const res = await verifyGateVerdict(input, {
       sql: (async () => [{ file_path: 'lib/totally-different.test.ts' }]) as unknown as WhyChainDeps['sql'],
     });
     expect(res.disjoint).toBe(true);
     expect(res.ledgerFiles).toEqual(['lib/totally-different.test.ts']);
-    expect(res.snap.gate.failingTests).toEqual([]);
+    // The (never ledger-checked) step sentinel rides back through untouched; the two wrong file
+    // names are replaced by the ledger's real one.
+    expect(res.snap.gate.failingTests).toEqual(['@papercusp/operator-vite', 'lib/totally-different.test.ts']);
     // The input object itself must be untouched (pure function — no shared-reference surprises).
     expect(input.gate.failingTests).toEqual(['@papercusp/operator-vite', 'lib/a.test.ts', 'lib/b.test.ts']);
+  });
+});
+
+describe('WI-6529 — reconcileFailingFiles: per-file reconciliation (not any-overlap)', () => {
+  it('empty ledger ⇒ unverifiable, returns the input unchanged', () => {
+    expect(reconcileFailingFiles(['lib/a.test.ts'], [])).toEqual({ files: ['lib/a.test.ts'], corrected: false });
+  });
+
+  it('every named file confirmed, nothing missing ⇒ unchanged', () => {
+    expect(reconcileFailingFiles(['lib/a.test.ts'], ['lib/a.test.ts', 'lib/unrelated.test.ts'])).toEqual({
+      files: ['lib/a.test.ts'],
+      corrected: false,
+    });
+  });
+
+  it('drops a named file the ledger does not confirm (false positive)', () => {
+    expect(reconcileFailingFiles(['lib/a.test.ts', 'lib/b.test.ts'], ['lib/b.test.ts'])).toEqual({
+      files: ['lib/b.test.ts'],
+      corrected: true,
+    });
+  });
+
+  it('adds a ledger file the checkpoint never named (false negative)', () => {
+    expect(reconcileFailingFiles(['lib/a.test.ts'], ['lib/a.test.ts', 'lib/c.test.ts'])).toEqual({
+      files: ['lib/a.test.ts', 'lib/c.test.ts'],
+      corrected: true,
+    });
+  });
+
+  it('corrects BOTH directions at once — the exact WI-6529 shape', () => {
+    // named: one false positive (a.test.ts) + one real confirmed (b.test.ts).
+    // ledger: the confirmed one + one the checkpoint never named at all (c.test.ts).
+    expect(reconcileFailingFiles(['lib/a.test.ts', 'lib/b.test.ts'], ['lib/b.test.ts', 'lib/c.test.ts'])).toEqual({
+      files: ['lib/b.test.ts', 'lib/c.test.ts'],
+      corrected: true,
+    });
+  });
+
+  it('fully disjoint ⇒ replaced entirely by the ledger files', () => {
+    expect(reconcileFailingFiles(['lib/a.test.ts'], ['lib/totally-different.test.ts'])).toEqual({
+      files: ['lib/totally-different.test.ts'],
+      corrected: true,
+    });
   });
 });
 

@@ -677,6 +677,36 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.positionsUnknown.sort()).toEqual(['committedLocal', 'deployed', 'inMain', 'onStaging']);
     });
 
+    /**
+     * WI-6525 — the same never-touched-and-not-dirty path as the WI-6484 test above,
+     * but with a RED gate behind it. Before this fix, `notInCandidate` stayed `false`
+     * for a path this unresolved (its `changeInCandidate` containment fields are
+     * `null`, not `false`, so the strict `=== false` compare never fired), and
+     * `deriveBlocker` fell straight through the `committed` stage's null lever to the
+     * `gate` stage's "fix the reds" lever — sending the caller to green a gate that
+     * has nothing to do with their (nonexistent) file. The fix: the `committed` stage
+     * now reports the true blocker itself, so it is the first (and only) lever
+     * `deriveBlocker` finds.
+     */
+    it('does NOT emit "fix the reds" for a path that never existed — even with a red gate behind it (WI-6525)', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'does/not/exist.ts' },
+        {
+          git: fakeGit({}), // no pathCommit, no dirty ⇒ the path plausibly does not exist at all
+          loadDeploy: async () => deploy(),
+          loadSnapshot: async () => snap({ consecutiveReds: 4 }),
+        },
+      );
+      expect(res.targetSha).toBeNull();
+      expect(res.gate.consecutiveReds).toBe(4); // the red is real and measured …
+      expect(res.blockedOn).toBe('committed'); // … but it is NOT where this path is blocked.
+      expect(res.nextAction).not.toBeNull();
+      expect(res.nextAction).not.toMatch(/fix the reds/);
+      expect(res.nextAction).not.toMatch(/release:checkpoint-run/);
+      expect(res.nextAction).toMatch(/verify the path\/sha/);
+      expect(res.summary).toContain('no commit found'); // the honest headline is unchanged
+    });
+
     it('reports a sha-only probe as not-applicable, never as "no run in flight"', async () => {
       const res = await gitPipelinePosition(
         { sha: 'abc1234567' },

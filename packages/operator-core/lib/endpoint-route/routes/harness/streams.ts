@@ -12,6 +12,7 @@
  */
 import { join } from 'node:path';
 import { statSync, readFileSync, openSync, readSync, closeSync } from 'node:fs';
+import { open as openFileAsync } from 'node:fs/promises';
 import { sseResponse } from '@papercusp/sse';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { resolvePhasedProject, harnessDir, parseFeatures, tailFile } from '../../../harness-core';
@@ -1060,10 +1061,22 @@ const sessionThinkingStream = defineTool({
             const chunk = Buffer.alloc(1024 * 1024);
             let lineRest = '';
             let offset = 0;
-            const fd = openSync(p, 'r');
+            // WI-6512: this loop used to use the SYNCHRONOUS fs (openSync/readSync),
+            // which blocks Node's single event loop thread for the ENTIRE scan — and a
+            // deep-link anchor search streams the WHOLE transcript up to (and a bit past)
+            // the matched entry before it can stop (session-anchor-window.ts's docstring:
+            // "without anchorTs: a full scan"; WITH anchorTs it still scans everything
+            // BEFORE the anchor, which is most of the file for an anchor late in a long
+            // session). Measured live transcripts up to 261MB raw — a synchronous scan of
+            // that size stalls every OTHER concurrent request on the operator too, not
+            // just this one, for however long the scan takes. Async fs (fs/promises)
+            // performs the identical byte-for-byte scan and produces the identical
+            // result, but each `await fh.read()` yields the event loop back between
+            // chunks, so a slow anchor scan no longer starves unrelated traffic.
+            const fh = await openFileAsync(p, 'r');
             try {
               while (offset < stat.size && !collector.done) {
-                const n = readSync(fd, chunk, 0, chunk.length, offset);
+                const { bytesRead: n } = await fh.read(chunk, 0, chunk.length, offset);
                 if (n <= 0) break;
                 offset += n;
                 lineRest += decoder.write(chunk.subarray(0, n));
@@ -1081,7 +1094,7 @@ const sessionThinkingStream = defineTool({
                 for (const e of parser.flush()) collector.push(e);
               }
             } finally {
-              closeSync(fd);
+              await fh.close();
             }
             const res = collector.result();
             if (!res) {

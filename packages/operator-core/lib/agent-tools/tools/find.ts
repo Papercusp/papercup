@@ -171,7 +171,7 @@ export default defineTool({
     'CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list ' +
     '(activated:true) and are directly callable; on a full-catalog session there is nothing to expand ' +
     '(activated:false) — call them via tools:invoke. High-confidence runtime symptoms (slow/queued, ' +
-    'connection-refused, process-running-with-no-window) route their decisive diagnostic to hit #1. ' +
+    'connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1. ' +
     'Always read `activated` + `howToCall` rather than ' +
     'assuming a direct call resolves.',
   guidance: {

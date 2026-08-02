@@ -390,6 +390,153 @@ describe('P-021 — the material lens rides the SAME dispatch', () => {
 });
 
 /**
+ * WI-6506 — THE FALSIFIER REACHES THE READER.
+ *
+ * The defect these tests exist against: `falsifier` had exactly ONE runtime consumer
+ * in the whole tree (`validateCellSpec`'s STRING checks, at registration) and
+ * `cell-read.ts` never mentioned the word at all (`grep -c falsifier cell-read.ts` →
+ * 0) — a reader got the headline and never the independent measurement declared to
+ * contradict a false reading of it. Same shape as D-039's `unknownHoist` bug above:
+ * declared, validated, and read by nothing.
+ */
+describe('WI-6506 — the falsifier rides the SAME dispatch to the reader', () => {
+  it('delivers field/value/kills extracted from the SAME payload — no second resolver call', async () => {
+    registerCell(spec());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, serving: { startedSinceCodeChange: false } });
+
+    const r = await readCell('test.cell', READER, ENV);
+
+    expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(1);
+    expect(r.status).toBe('value');
+    if (r.status === 'value') {
+      expect(r.falsifier).toEqual({
+        field: 'serving.startedSinceCodeChange',
+        value: false,
+        kills: '"deployed ✓" read as "the running process executes my code"',
+      });
+    }
+  });
+
+  it('a null AT the falsifier path is a REAL resolved answer, not drift', async () => {
+    registerCell(spec());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, serving: { startedSinceCodeChange: null } });
+
+    const r = await readCell('test.cell', READER, ENV);
+    expect(r.status).toBe('value');
+    if (r.status === 'value') {
+      expect(r.falsifier.value).toBeNull();
+      expect(r.falsifier.drifted).toBeUndefined();
+    }
+  });
+
+  it('⚠ a MISSING falsifier path is reported drifted, never silently null', async () => {
+    registerCell(spec());
+    // `serving` is present, but the declared LEAF key is absent — registration drift,
+    // not a measured silence.
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, serving: {} });
+
+    const r = await readCell('test.cell', READER, ENV);
+    expect(r.status).toBe('value');
+    if (r.status === 'value') {
+      expect(r.falsifier.drifted).toBe(true);
+      expect(r.falsifier.value).toBeNull();
+    }
+  });
+
+  it('⚠ a legitimately-null INTERMEDIATE segment is drift, not a resolved null — own-key existence, never valueAtPath', async () => {
+    // The exact ambiguity the item is filed about: `valueAtPath` short-circuits on
+    // `cur == null` at EVERY segment, so a null `serving.nested` and a genuinely
+    // missing `serving.nested.leaf` key both read as `undefined` through it — byte-
+    // identical to the healthy "measured null" case. This is precisely what bit
+    // `agent.goal`'s `goal.agreement` (P-011, cell-falsifier-reality.test.ts): the
+    // own-key walk must tell them apart instead of silently agreeing with the wrong
+    // one of the two.
+    registerCell(spec({ falsifier: { field: 'serving.nested.leaf', measurement: 'x', kills: 'y' } }));
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, serving: { nested: null } });
+
+    const r = await readCell('test.cell', READER, ENV);
+    expect(r.status).toBe('value');
+    if (r.status === 'value') {
+      expect(r.falsifier.drifted).toBe(true);
+      expect(r.falsifier.value).toBeNull();
+    }
+  });
+
+  /** Recursive merge of two `{a:{b:v}}`-shaped payload fragments — needed because a
+   *  cell's headline and falsifier can share a top-level key (`gate.greenCheckpoint.candidate`
+   *  declares both under `changeInCandidate`), and a shallow spread would let the
+   *  second fragment silently clobber the first's leaf. */
+  function deepMerge(a: Record<string, unknown>, b: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = { ...a };
+    for (const [k, v] of Object.entries(b)) {
+      const existing = out[k];
+      if (
+        existing !== null &&
+        typeof existing === 'object' &&
+        !Array.isArray(existing) &&
+        v !== null &&
+        typeof v === 'object' &&
+        !Array.isArray(v)
+      ) {
+        out[k] = deepMerge(existing as Record<string, unknown>, v as Record<string, unknown>);
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+
+  /** Build `{a:{b:value}}` from "a.b" — mirrors the D-039 sweep's `payloadAtPath` below. */
+  function payloadAtPath(path: string, value: unknown): Record<string, unknown> {
+    const segs = path.split('.');
+    const root: Record<string, unknown> = {};
+    let cur = root;
+    segs.forEach((seg, i) => {
+      if (i === segs.length - 1) cur[seg] = value;
+      else {
+        const next: Record<string, unknown> = {};
+        cur[seg] = next;
+        cur = next;
+      }
+    });
+    return root;
+  }
+
+  const pollBuiltins = BUILTIN_CELLS.filter((s) => s.changeSignal.kind === 'poll');
+
+  it('the sweep is NON-VACUOUS — there are registered poll cells to check', () => {
+    expect(pollBuiltins.length).toBeGreaterThanOrEqual(6);
+    for (const s of pollBuiltins) expect(s.falsifier.field.trim()).toBeTruthy();
+  });
+
+  it.each(pollBuiltins.map((s) => [s.cell, s] as const))(
+    '%s delivers its declared falsifier through readCell, undrifted',
+    async (_cell, s) => {
+      registerCell(s);
+      const headlinePath = (s.changeSignal as { path: string }).path;
+      const payload = deepMerge(
+        payloadAtPath(headlinePath, s.nullable ? null : 'headline-value'),
+        payloadAtPath(s.falsifier.field, 'falsifier-value'),
+      );
+      dispatchReadOnlyTool.mockResolvedValue(payload);
+
+      const subject = s.callerRelativity.kind === 'parameter' ? 'a-subject' : undefined;
+      const r = await readCell(s.cell, READER, ENV, subject);
+
+      expect(r.status).toBe('value');
+      if (r.status === 'value') {
+        // The assertion the bug would have failed: PRESENT, keyed by what the spec
+        // declares rather than by a name this test hard-codes, and NOT drifted.
+        expect(r.falsifier.field).toBe(s.falsifier.field);
+        expect(r.falsifier.kills).toBe(s.falsifier.kills);
+        expect(r.falsifier.value).toBe('falsifier-value');
+        expect(r.falsifier.drifted).toBeUndefined();
+      }
+    },
+  );
+});
+
+/**
  * D-039 / WI-6444 — THE HOIST REACHES THE READER.
  *
  * The defect these tests exist against: `unknownHoist` was declared on all six

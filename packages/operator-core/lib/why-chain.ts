@@ -708,7 +708,12 @@ export async function computePipelineHealth(
   const proxyFiles = needsProxy ? (disjoint ? ledgerFiles : await recentFailingFiles(deps)) : [];
   const gate = withDisjointNote(proxyFiles.length ? gateStage(snap, proxyFiles) : provisional, disjoint);
   const deploy = deployStage(snap);
-  const failingFiles = namedFailures(snap, proxyFiles);
+  // `recentFailingFiles` is documented (and consumed) as FILES to go fix — never a package/step
+  // sentinel (`isStepShaped` exists precisely because a build-step name must never masquerade as
+  // a file to dispatch a fix at). `namedFailures` can legitimately return sentinels mixed in with
+  // files (they still belong in the human-readable `gate.reason` above), so strip them here for
+  // the STRUCTURED field.
+  const failingFiles = splitFailingSignature(namedFailures(snap, proxyFiles)).failingFiles;
 
   return {
     generatedAtMs: now,
@@ -756,12 +761,14 @@ export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChain
     poolStage(accounts),
   ];
   const rootCause = stages.find((s) => s.status !== 'ok') ?? null;
-  // WI-6529: the top-level `recentFailingFiles` field MUST name exactly what the gate stage's
-  // own `reason` text names — it is the same `namedFailures` precedence (the reconciled
+  // WI-6529: the top-level `recentFailingFiles` field MUST be DERIVED FROM exactly what the gate
+  // stage's own `reason` text names — the same `namedFailures` precedence (the reconciled
   // first-hand record beats the proxy) computeWhyChain's stage above already applies. Returning
   // the raw proxy here instead (the pre-fix bug) is how a real verdict shipped `reason` text
-  // naming two failing files while this field reported `[]` in the SAME response.
-  const failingFiles = namedFailures(snap, proxyFiles);
+  // naming two failing files while this field reported `[]` in the SAME response. Package/step
+  // sentinels are stripped (see the matching comment in computePipelineHealth) — this field is
+  // documented as FILES, never a build-step name to (mis)dispatch a fix at.
+  const failingFiles = splitFailingSignature(namedFailures(snap, proxyFiles)).failingFiles;
 
   const chainLine = stages.map((s) => `${s.stage.toUpperCase()}: ${s.status} (${s.reason})`).join(' → ');
   const summary = rootCause
