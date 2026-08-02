@@ -393,6 +393,85 @@ describe('buildHeadlessSpawnCommand (EI-9748 Route A — cgroup escape)', () => 
   });
 });
 
+describe('buildHeadlessSpawnCommand — the scope is never created outside our slice (EI-19366263067183489)', () => {
+  // WHAT WENT WRONG. `--slice` used to be emitted only when `taskScope` was non-null, so the
+  // un-enrolled fallback still created a REAL systemd scope holding a real agent subtree —
+  // in `app.slice`, with no ledger row. Untracked AND unreapable simultaneously: nothing knew
+  // it existed, and nothing could sweep it. 90 such scopes accumulated over 16 days (422
+  // processes, 20.9 GB, ~29 cores). These tests exist so that combination cannot come back.
+
+  const OWNED = /^--slice=papercusp(-[a-z0-9-]+)?\.slice$/;
+
+  it('emits a slice for the UN-ENROLLED fallback, not just the enrolled path', () => {
+    const { bin, args } = buildHeadlessSpawnCommand('exec claude', 'hl', {
+      platform: 'linux',
+      hasSystemdRun: () => true,
+    }); // taskScope omitted => the un-enrolled fallback, the exact path that leaked
+    expect(bin).toBe('systemd-run');
+    const slice = args.find((a) => a.startsWith('--slice='));
+    expect(slice).toBeDefined();
+    // It must land somewhere `isOwnedCgroupPath` recognizes. `papercusp-agent-session.slice`
+    // nests under `papercusp.slice` by systemd's dash-hierarchy rule, so a slice-level sweep
+    // reaches it even with no ledger row to look it up by.
+    expect(slice).toMatch(OWNED);
+  });
+
+  it('still honours the caller-supplied slice when enrolment DID succeed', () => {
+    // CONTROL for the test above: if the fallback were the only path emitting a slice, or if
+    // a hardcoded slice had replaced the caller's, that bug would pass the first assertion
+    // and fail here.
+    const { args } = buildHeadlessSpawnCommand(
+      'exec claude',
+      'hl',
+      { platform: 'linux', hasSystemdRun: () => true },
+      { unit: 'pc-task-abc.scope', slice: 'papercusp-agent-session.slice' },
+    );
+    expect(args).toContain('--slice=papercusp-agent-session.slice');
+    expect(args).toContain('--unit=pc-task-abc.scope');
+  });
+
+  it('STRUCTURAL: every input that produces a scope produces a slice', () => {
+    // The recurrence guard. Asserting the two cases above by hand would not stop a THIRD
+    // branch being added later that forgets the slice again — which is exactly how this
+    // regressed the first time (the enrolled path was added, the null path left behind).
+    // So enumerate: whatever the taskScope, if we chose systemd-run we must have a slice.
+    const scopes = [
+      undefined,
+      null,
+      { unit: 'pc-task-1.scope', slice: 'papercusp-agent-session.slice' },
+      { unit: 'pc-task-2.scope', slice: 'papercusp.slice' },
+    ];
+    for (const taskScope of scopes) {
+      const { bin, args } = buildHeadlessSpawnCommand(
+        'exec claude',
+        'hl',
+        { platform: 'linux', hasSystemdRun: () => true },
+        taskScope,
+      );
+      expect(bin).toBe('systemd-run');
+      const slices = args.filter((a) => a.startsWith('--slice='));
+      // Exactly one — a duplicated flag would let systemd pick and make the effective
+      // placement depend on argv order.
+      expect(slices).toHaveLength(1);
+      expect(slices[0]).toMatch(OWNED);
+      expect(args.some((a) => a.startsWith('--unit='))).toBe(true);
+    }
+  });
+
+  it('adds no slice on the non-systemd fallback, where there is no scope to place', () => {
+    // The guard above must not be read as "always pass --slice": with no systemd there is no
+    // scope at all, and a --slice on a plain `bash -lc` would be a broken argv.
+    for (const probes of [
+      { platform: 'linux' as const, hasSystemdRun: () => false },
+      { platform: 'darwin' as const, hasSystemdRun: () => true },
+    ]) {
+      const { bin, args } = buildHeadlessSpawnCommand('exec claude', 'hl', probes);
+      expect(bin).toBe('bash');
+      expect(args.some((a) => a.startsWith('--slice='))).toBe(false);
+    }
+  });
+});
+
 describe('wrapHeadlessSigtermDiagnostic (EI-9748)', () => {
   it('prepends a TERM trap that logs + exits 143, then runs the original oneliner unmodified', () => {
     const out = wrapHeadlessSigtermDiagnostic("cd '/proj' ; (eval 'psu --headless')");

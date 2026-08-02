@@ -16,6 +16,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 
 import { useCallback, useMemo } from 'react';
 import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
+import type { NativeSessionHandle } from '@papercusp/operator-core/lib/native-session-handles';
 import { modeChipLabel, modeChipTitle } from '@papercusp/operator-core/lib/modes/registry';
 import { LivenessDot, type Liveness } from '@/app/coord/presence-ui';
 import { Select } from '@/app/harness/Select';
@@ -67,33 +68,28 @@ export interface RosterEntry {
   launchStartedAt: string | null;
 }
 
-export type NativeSessionHandle =
-  | {
-      backend: 'claude';
-      source: 'adv_sessions' | 'spawned_agents';
-      ownerId: string | null;
-      sessionId: string | null;
-      exactResumeSupported: boolean;
-      missingReason: string | null;
-    }
-  | {
-      backend: 'codex';
-      source: 'adv_sessions' | 'spawned_agents';
-      ownerId: string | null;
-      codexHome: string;
-      rolloutId: string | null;
-      exactResumeSupported: boolean;
-      missingReason: string | null;
-    }
-  | {
-      backend: 'omp';
-      source: 'adv_sessions' | 'spawned_agents';
-      ownerId: string | null;
-      ompThreadId: string | null;
-      agentHome: string | null;
-      exactResumeSupported: boolean;
-      missingReason: string | null;
-    };
+/** The CANONICAL handle, re-exported — deliberately not a local re-declaration
+ *  (WI-7110).
+ *
+ *  This used to be a hand-written structural COPY of the operator-core union,
+ *  and it had silently drifted: EI-308 added `configDir` to the claude variant
+ *  (the per-session CLAUDE_CONFIG_DIR without which the resume command this UI
+ *  hands the user to copy-paste fails), the producer populated it, AgentDossier
+ *  READ it — and this mirror never grew the field, so the app compiled against a
+ *  claude handle that does not admit `configDir`.
+ *
+ *  Nothing caught it because `apps/operator` declares no `typecheck` script and
+ *  no gate compiles it (EI-19368695058552932), so its 2 errors sat invisible to
+ *  both the routine loop and the fleet gate. A `import type` is erased at build
+ *  time — no runtime module is pulled into the client bundle — and 146 files in
+ *  this app already import from operator-core, so there is no reason to keep a
+ *  second copy that can only ever drift again. */
+export type {
+  NativeSessionHandle,
+  ClaudeNativeSessionHandle,
+  CodexNativeSessionHandle,
+  OmpNativeSessionHandle,
+} from '@papercusp/operator-core/lib/native-session-handles';
 
 /** The relevant fields of an ended adv_sessions row (AdvSessionRow subset). */
 export interface EndedRow {

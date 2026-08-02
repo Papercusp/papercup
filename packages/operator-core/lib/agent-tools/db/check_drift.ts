@@ -21,12 +21,10 @@ export default defineTool({
     when: 'After adding a migration, or when a runtime "missing column/relation" error suggests the live DB lags the sql/ dir.',
     notWhen: 'Applying a migration — that is the boot auto-apply (restart) or db:migrate for a one-off.',
     chaining:
-      "missing or missing_canonical non-empty → restart the operator (or db:migrate the file under exclusive(db-schema)). " +
-      "EI-18757486483124756: `sql_dir` is whichever tree served THIS call (often the RELEASE checkout, e.g. via the " +
-      "papercusp-su MCP endpoint) — `canonical_sql_dir` is the SEPARATE staging tree agents author migrations in " +
-      "(resolved via PAPERCUSP_INTEGRATION_ROOT, independent of `sql_dir`). `missing_canonical` is scanned against " +
-      "that canonical tree directly, so a migration you JUST wrote in staging is caught there even when `sql_dir` " +
-      "points elsewhere and its own `missing` reads clean — `in_sync` is false whenever either is non-empty.",
+      'missing/missing_canonical non-empty → restart the operator (or db:migrate that file). `sql_dir` is the tree ' +
+      'that SERVED this call (often the release checkout); `canonical_sql_dir` is the staging tree agents author in — ' +
+      'so a migration you just wrote is caught by `missing_canonical` even when `sql_dir` reads clean ' +
+      '(EI-18757486483124756).',
     seeAlso: [
       'db:migrate (apply a pending migration)',
       'db:next-migration (scaffold the next migration file)',

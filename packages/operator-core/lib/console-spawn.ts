@@ -1658,6 +1658,24 @@ export function buildHeadlessSpawnCommand(
     // Un-enrolled fallback keeps the historical name so nothing that greps for
     // `papercup-headless-` breaks when the ledger is unavailable.
     const unitName = taskScope?.unit ?? `papercup-headless-${safeLabel}-${process.pid}-${Date.now()}`;
+    // EI-19366263067183489: the slice is UNCONDITIONAL. It used to be emitted only when
+    // `taskScope` was non-null, which meant the un-enrolled fallback created a REAL systemd
+    // scope holding a real agent subtree in `app.slice` — outside `papercusp.slice`, with no
+    // ledger row. That is the worst of both worlds: nothing knew it existed (no row to join
+    // on) AND nothing could sweep it (outside our slice), so it was untracked and unreapable
+    // at the same time. Measured 2026-08-02: 90 such scopes had accumulated over 16 days —
+    // 422 processes, 20.9 GB RSS, ~29 cores burned continuously, and 0 of 88 orphaned agents
+    // had written a transcript in the previous 2 hours. They were spinning, not working.
+    //
+    // Note this does NOT make the fallback fail closed, and deliberately so: `confined` is
+    // false in three cases (enroll-sync.ts:67) and one of them — `taskManagerEnabledSync()`
+    // returning false — is a DESIGNED path whose contract is explicitly "byte-identical to
+    // pre-feature behaviour: an unconfined, unledgered spawn". Refusing to spawn there would
+    // break the flag-off path outright. Being unledgered is intended when the flag is off;
+    // being UNREAPABLE never was. So the fix targets reapability, which is safe in all three
+    // cases: the scope lands inside `papercusp.slice`, where `isOwnedCgroupPath` recognizes
+    // it and a slice-level sweep can stop it even with no ledger row to look it up by.
+    const sliceName = taskScope?.slice ?? sliceForClass('agent-session');
     return {
       bin: 'systemd-run',
       args: [
@@ -1666,7 +1684,7 @@ export function buildHeadlessSpawnCommand(
         '--collect',
         '--quiet',
         `--unit=${unitName}`,
-        ...(taskScope ? [`--slice=${taskScope.slice}`] : []),
+        `--slice=${sliceName}`,
         '--',
         'bash',
         '-lc',
