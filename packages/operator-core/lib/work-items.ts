@@ -3125,14 +3125,23 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
          AND d.blocked_ref = harness_shared.harness_features_consolidated.harness_slug
                                || '#' || harness_shared.harness_features_consolidated.feature_id
          AND (
+           -- Migration 719: BOTH blocker legs resolve within the BLOCKED item's own
+           -- workspace. The issue leg used to hardcode 'default' — where 147 of 28,049
+           -- issues live — so the blocker was never found, "an absent blocker never
+           -- blocks" applied, and EVERY issue-family blocking edge was inert
+           -- (EI-19313459163394127: 32/32 dead, 10 with a live non-terminal blocker).
+           -- Keep this predicate identical to harness_shared.work_item_is_blocked(),
+           -- which materializes the sidecar the useMaintainedReady branch above reads;
+           -- if the two drift, the flag silently changes claim behavior.
            EXISTS (
              SELECT 1 FROM harness_shared.harness_features_consolidated bf
-              WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+              WHERE bf.workspace_id = harness_shared.harness_features_consolidated.workspace_id
+                AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
                 AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
            )
            OR EXISTS (
              SELECT 1 FROM harness_shared.engineer_issues bi
-              WHERE bi.workspace_id = 'default'
+              WHERE bi.workspace_id = harness_shared.harness_features_consolidated.workspace_id
                 AND bi.issue_id = d.blocker_ref
                 AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
            )

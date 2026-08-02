@@ -13,11 +13,32 @@
  * watchdogs exist to cover for their own services.
  *
  * DETECTION: the proxy is a stateless HTTP/TCP passthrough with no internal request counters to
- * inspect (unlike the inference-gateway's /stats-based freeze detector), so end-to-end
- * REACHABILITY through :9071 (not a direct :3070 probe, which would miss a wedge in the proxy
- * itself) is the whole signal. ANY response at all — success or a proxied error status — proves
- * the event loop is alive and forwarding; only a timeout/abort/connection-refused counts as
- * unreachable. Restart once unreachable for >= UNREACHABLE_MS.
+ * inspect (unlike the inference-gateway's /stats-based freeze detector), so REACHABILITY of
+ * :9071 (not a direct :3070 probe, which would miss a wedge in the proxy itself) is the whole
+ * signal. Only a timeout/abort/connection-refused counts as unreachable; restart once
+ * unreachable for >= UNREACHABLE_MS.
+ *
+ * ⚠ THE LIVENESS PROBE MUST NOT TRAVERSE THE UPSTREAM (WI-6743). This originally polled
+ * `/api/health`, which the proxy FORWARDS to :3070, on the reasoning that "ANY response at all,
+ * success or a proxied error status, proves the event loop is alive". That reasoning is void
+ * here, because it contradicts this proxy's headline feature: retry-on-refused deliberately
+ * WITHHOLDS a response for up to retryWindowMs (90s) while :3070 restarts, precisely so a deploy
+ * is invisible to MCP clients. So during every deploy the proxy was alive and behaving exactly
+ * as designed, and the probe recorded it as unreachable.
+ *
+ * Measured cost: 272 false `unreachable` incidents from 2026-07-10 to 2026-08-02. 11 of the 12
+ * that fall inside journalctl's retention window are within 15s of a `Started papercup-dev-api`
+ * (signed delta -5s..+8s); across all 272, deploy minutes (papercup-release HEAD reflog) peak at
+ * :31/:32 and stall minutes at :32/:33/:34 — the same distribution shifted by the restart lag.
+ * 76/272 fall within 60s of a deploy vs 8/272 for a +30min placebo shift. Beyond the noise, this
+ * blinded the detector to the condition it exists for: a genuine wedge and a routine deploy
+ * produced a byte-identical log line, and the resulting 272 look-alikes are what made WI-6743
+ * spend two investigation cycles chasing DB-pool exhaustion and CPU starvation.
+ *
+ * We therefore poll LIVENESS_PROBE_PATH, which the proxy answers ITSELF (proxy.ts) without
+ * touching :3070. A wedged event loop still cannot answer it, so wedge detection is unchanged;
+ * upstream health is already covered — and correctly CLASSIFIED — by the session-plane and
+ * data-plane probes below, which is where that judgement belongs.
  *
  * SAFE FOR UNATTENDED OPERATION: same shape as the bg-host / inference-gateway watchdogs — a
  * restart debounce + a rolling-hour circuit breaker so a misfire can never restart-loop forever,
@@ -35,6 +56,18 @@ import { dirname, join } from 'node:path';
 
 const PORT = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_PORT) || 9071;
 const POLL_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_POLL_MS) || 15_000;
+/**
+ * The liveness path — see "THE LIVENESS PROBE MUST NOT TRAVERSE THE UPSTREAM" above.
+ * proxy.ts answers this one locally (`{ok:true,target}`) and returns BEFORE any forwarding,
+ * so it stays truthful while retry-on-refused is holding a real request. Any upstream-forwarded
+ * path (`/api/health`, `/api/mcp`, …) is WRONG here and reintroduces WI-6743's false alarms.
+ */
+export const LIVENESS_PROBE_PATH = '/__mcp_proxy_health';
+
+/** Exported so the "must not traverse the upstream" invariant is unit-testable. */
+export function livenessProbeUrl(port = PORT) {
+  return `http://127.0.0.1:${port}${LIVENESS_PROBE_PATH}`;
+}
 /** The 2026-07-10 incident ran ~9min undetected; this threshold is deliberately short (2x the
  *  bg-host's 30s poll granularity) so a real wedge is caught within ~1min, not left to fester. */
 const UNREACHABLE_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_UNREACHABLE_MS) || 45_000;
@@ -329,10 +362,11 @@ async function poll() {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 5_000);
-    // ANY http response (including a proxied 4xx/5xx) proves the event loop answered — that's
-    // the whole liveness signal. We deliberately do not inspect the body/status further; the
-    // wedge signature is "nothing comes back at all", not "the upstream returned an error".
-    await fetch(`http://127.0.0.1:${PORT}/api/health`, { signal: ctrl.signal });
+    // ANY http response proves the event loop answered — that's the whole liveness signal. We
+    // deliberately do not inspect the body/status further; the wedge signature is "nothing comes
+    // back at all". The path MUST be the proxy-local one: a forwarded path cannot answer while
+    // retry-on-refused holds a request through a :3070 restart (WI-6743).
+    await fetch(livenessProbeUrl(PORT), { signal: ctrl.signal });
     clearTimeout(t);
     if (unreachableSince) log(`recovered (was unreachable ${Math.round((Date.now() - unreachableSince) / 1000)}s)`);
     unreachableSince = 0;

@@ -15,6 +15,19 @@
  * Also reports `source` so a caller can tell the two schema sources apart without
  * inferring it: 'input-schema' (plan-authored JSON Schema), 'template' (a
  * code-registry zod type), or 'none'. Read-only.
+ *
+ * P-013 widened this into the ONE read the admin input form needs: it also returns
+ * the current `values` and the full start verdict (`ready`, plus the refusal's
+ * code/issues/hint). The alternative was a UI chaining get-input-schema +
+ * get-template-data and then re-deriving readiness client-side — a third
+ * implementation of the gate's rule, in TypeScript the gate does not own.
+ *
+ * That widening also FIXED a disagreement this file's own header promised could not
+ * happen. `required`/`missing` were computed with the JSON-Schema-only helpers, which
+ * see nothing on a `template:` (zod registry) plan — so such a plan reported
+ * `missing: []` while plans:start refused it with `missing: ['x']`. Both now come
+ * from `planRequiredKeys` / `evaluatePlanStartReadiness`, the very functions the gate
+ * calls, so the promise in the header is now structural rather than aspirational.
  */
 
 import { z } from 'zod';
@@ -23,10 +36,7 @@ import { getPlanRow } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
-import {
-  jsonSchemaRequiredKeys,
-  missingRequiredJsonSchemaKeys,
-} from '../../json-schema-validation';
+import { evaluatePlanStartReadiness, planRequiredKeys } from './plan-input-validation';
 
 const argsSchema = z
   .object({
@@ -46,9 +56,9 @@ const argsSchema = z
 export default defineTool({
   name: 'plans:get-input-schema',
   description:
-    "Read a plan's declared input schema (the `input_schema` jsonb), its REQUIRED field names, and which required fields are still missing from the supplied values. Returns { source: 'input-schema'|'template'|'none', inputSchema, template, required, missing, version }. `missing` is computed by the same helper the start gate uses, so it cannot disagree with a refusal. Read-only.",
+    "Read a plan's input contract AND whether it may start: { source: 'input-schema'|'template'|'none', inputSchema, template, required, missing, values, ready, code?, issues?, hint?, version }. `required`/`missing`/`ready` come from the start gate's own oracle, so they cannot disagree with a refusal — `ready:false` here means every start door would refuse, and `hint` is that refusal's message. `values` is the currently-supplied data, so one call renders a complete input form. Read-only.",
   guidance: {
-    when: "Finding out what a plan needs before it can start — rendering an input form, or checking why a start was refused. `missing` answers it directly.",
+    when: "Finding out what a plan needs before it can start — rendering an input form, or checking why a start was refused. `missing` + `hint` answer it directly.",
     notWhen:
       'Declaring the schema — plans:set-input-schema. Supplying the values — plans:set-template-data. Reading the values themselves — plans:get-template-data.',
     chaining:
@@ -73,20 +83,31 @@ export default defineTool({
         const row = await getPlanRow(slug, opts);
         if (!row) return { ok: false as const, slug, error: 'not_found' };
         const schema = (row.inputSchema ?? null) as Record<string, unknown> | null;
-        // A registry `template` type carries its required-ness in code (its zod
-        // schema), not in a readable array — so `required`/`missing` are reported
-        // for the plan-authored source only, and `source` says which you have.
-        // The start gate still enforces the registry path; it just surfaces the
-        // failure as invalid_data issues rather than a name list.
         const source = schema ? 'input-schema' : row.template ? 'template' : 'none';
+        // Both of these are the gate's OWN functions, not a re-derivation: whatever a
+        // start door would say about this plan right now is what a caller reads here.
+        // A registry `template` plan keeps its required-ness in zod rather than a
+        // readable array, and planRequiredKeys introspects that shape — which is why
+        // `required` is now populated for both sources instead of only the JSON one.
+        const ref = { template: row.template, inputSchema: row.inputSchema };
+        const readiness = evaluatePlanStartReadiness(ref, row.templateData);
         return {
           ok: true as const,
           slug: row.planSlug,
           source,
           inputSchema: schema,
           template: row.template,
-          required: jsonSchemaRequiredKeys(schema),
-          missing: missingRequiredJsonSchemaKeys(schema, row.templateData),
+          required: planRequiredKeys(ref),
+          missing: readiness.ready ? [] : readiness.missing,
+          // The values the schema constrains — returned so a form can render its
+          // current state without a second round-trip to plans:get-template-data.
+          values: row.templateData ?? null,
+          // The verdict a start door would give, verbatim. `ready: true` means every
+          // start door would admit this plan as it stands.
+          ready: readiness.ready,
+          ...(readiness.ready
+            ? {}
+            : { code: readiness.code, issues: readiness.issues, hint: readiness.hint }),
           version: row.version,
         };
       },

@@ -23,9 +23,21 @@
 #   scripts/pc-heavy.sh -- ./node_modules/.bin/vitest run lib/x.test.ts
 #
 # Tunables (env):
-#   PC_HEAVY_SLOTS        concurrent heavy runs allowed. Default max(2, cores/32)
-#                         — 32 mirrors affected-tests.mjs's per-suite worker cap,
-#                         so full occupancy is ~cores workers, i.e. ~1x the box.
+#   PC_HEAVY_SLOTS        concurrent heavy runs allowed. Set = FIXED count (no load
+#                         adaptation). Default: LOAD-ADAPTIVE (EI-19313096203661357) —
+#                         floor max(2, cores/32) when the box is saturated (32 mirrors
+#                         affected-tests.mjs's per-suite worker cap, so floor occupancy
+#                         is ~1x the box even if every admitted job is a full sweep),
+#                         widening by one slot per 16 cores of load1 headroom, capped
+#                         at cores/8. The old fixed cores/32 modeled EVERY job as a
+#                         32-worker sweep, so a 128-core box admitted 4 jobs even at
+#                         load 20 while tsc/small test:file runs (~1-4 cores each)
+#                         queued 57 deep behind them. Waiters recompute while polling,
+#                         so the admitted count tracks load in both directions.
+#   PC_HEAVY_LOAD1_OVERRIDE  inject load1 for the adaptive default (tests — same
+#                         convention as pretooluse-bash-resource-gate.sh); non-numeric
+#                         or unreadable load fails conservative, to the floor.
+#   PC_HEAVY_DEBUG        "1" → print the computed slot count + inputs to stderr.
 #   PC_HEAVY_TIMEOUT_SEC  max seconds to WAIT for a slot before running anyway
 #                         (default 900). Running-anyway (never blocking forever)
 #                         keeps a wedged holder from deadlocking the fleet; the
@@ -111,10 +123,40 @@ if [ "${PC_HEAVY_RELEASE_GATE:-}" = "1" ]; then
 fi
 
 _cores="$(nproc 2>/dev/null || echo 8)"
+_floor=$(( _cores / 32 ))
+[ "$_floor" -lt 2 ] && _floor=2
+_ceil=$(( _cores / 8 ))
+[ "$_ceil" -lt "$_floor" ] && _ceil="$_floor"
+
+# Load-adaptive slot count (EI-19313096203661357): floor + one slot per 16 cores
+# of load1 headroom, capped at cores/8. Saturated (load1 >= cores) = exactly the
+# old fixed behavior; an idle 128-core box admits 12 instead of 4. load1 is the
+# right signal because the observed starvation was UNGATED load (qemu/kopia)
+# pinning the box while small gated jobs queued 57 deep — headroom, not slot
+# occupancy, is what says whether another niced job fits.
+_calc_slots() {
+  local load1
+  if [ -n "${PC_HEAVY_LOAD1_OVERRIDE:-}" ]; then
+    load1="${PC_HEAVY_LOAD1_OVERRIDE%%.*}"
+  else
+    load1="$(awk '{ print int($1) }' /proc/loadavg 2>/dev/null)"
+  fi
+  case "$load1" in ''|*[!0-9]*) echo "$_floor"; return ;; esac
+  local headroom=$(( _cores - load1 ))
+  [ "$headroom" -lt 0 ] && headroom=0
+  local n=$(( _floor + headroom / 16 ))
+  [ "$n" -gt "$_ceil" ] && n="$_ceil"
+  echo "$n"
+}
+
 _slots="${PC_HEAVY_SLOTS:-}"
+_slots_fixed=1
 if [ -z "$_slots" ]; then
-  _slots=$(( _cores / 32 ))
-  [ "$_slots" -lt 2 ] && _slots=2
+  _slots_fixed=0
+  _slots="$(_calc_slots)"
+fi
+if [ "${PC_HEAVY_DEBUG:-}" = "1" ]; then
+  echo "[pc-heavy] slots=$_slots fixed=$_slots_fixed cores=$_cores floor=$_floor ceil=$_ceil" >&2
 fi
 _dir="${PC_HEAVY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}"
 _timeout="${PC_HEAVY_TIMEOUT_SEC:-900}"
@@ -293,6 +335,10 @@ done
 if [ -z "$_held" ]; then
   _fallback_deadline=$(( $(date +%s) + _timeout ))
   while :; do
+    # Adaptive default: re-read load each sweep so a waiter's admitted count
+    # tracks the box — load dropping widens the probe set mid-wait, rising
+    # load narrows it back toward the floor (held slots are never revoked).
+    [ "$_slots_fixed" = 0 ] && _slots="$(_calc_slots)"
     for _i in $(seq 0 $(( _slots - 1 ))); do
       if { exec {_fd}>"$_dir/slot.$_i"; } 2>/dev/null; then
         if flock -n "$_fd"; then _held=1; break 2; fi

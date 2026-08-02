@@ -682,6 +682,16 @@ would otherwise drown your one new one.
 > yours, or — worse — your own genuine regression arrives amid peer noise all labelled
 > "YOU changed" and you dismiss the lot as fleet drift. `--files` is the only form whose
 > attribution is trustworthy here.
+>
+> Since EI-19305736771912430 that trust extends to the **exit code**, not just the report:
+> under `--files` a NEW file (one the baseline has never seen) that is outside the set you
+> named no longer reds your run — so **a red under `--files` always means a file YOU named**.
+> The unscoped findings are still printed, split into "uncommitted, a peer is likely mid-edit"
+> and "COMMITTED: a standing red that WILL red the fleet" — the second kind needs an owner even
+> though it is not your gate failure. `--mine` deliberately still fails on them: it *infers* the
+> changed set from `git status`, and git-sync commits the tree every few minutes, so absence
+> from that set is not evidence (EI-18766822535373909). `--files` *declares* it, which is the
+> evidence `git status` cannot supply.
 
 ⚠⚠ **`lint:tsc` typechecks `packages/operator-core` ONLY** — it is a single
 `tsc -p packages/operator-core/tsconfig.json` (`scripts/lint-tsc.mjs`). A change confined

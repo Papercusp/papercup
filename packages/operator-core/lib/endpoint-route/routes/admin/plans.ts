@@ -60,6 +60,9 @@ const READ_VERBS = new Set([
   'runs',
   // plan-agent-launch P-023: the run-detail view's transcript.
   'run-transcript',
+  // plan-structured-inputs P-013: the inputs panel reads the plan's schema,
+  // its current values, and the start verdict through one verb.
+  'get-input-schema',
 ]);
 // `set-content` and `set-frontmatter` land in agent-plan-tracking
 // Phase 5 (D-011 of plans-admin-ui-2026-05-20). Listing them now means
@@ -98,6 +101,10 @@ const WRITE_VERBS = new Set([
   // owner-plans-single-pane P-008 / EI-15304: the Plans face's stale-plan
   // sweep archives (or restores) a plan — plans:set-archived.
   'set-archived',
+  // plan-structured-inputs P-013: the inputs panel supplies a parameterized
+  // plan's values, so a human can satisfy the start gate from the UI rather
+  // than having to call plans:set-template-data from an agent session.
+  'set-template-data',
 ]);
 
 // Admin proxy identity: the writes (set-status/set-now/add-decision/
