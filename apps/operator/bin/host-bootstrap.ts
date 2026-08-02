@@ -800,10 +800,27 @@ export function runBootstrap(): void {
   // clears stale `agent_runs.running` and `harness_lanes` rows whose
   // recorded PID is gone. (TTL-based sweeps for status/scan-locks/claims/
   // auth live in the expirable registry below.) Idempotent.
-  try {
-    ensureHarnessStatusSweep();
-  } catch (e) {
-    console.warn('[api] harness-status-sweep failed to start:', (e as Error)?.message ?? e);
+  //
+  // EI-19305266463631270: PRIMARY-ONLY, for the SAME reason as the fs-watcher above and
+  // the credential sync below — this was the only one of the three missing the guard.
+  // Its internal stand-down (harness-status-sweep.ts) keys off backgroundWorkersEnabled(),
+  // which the note at the fs-watcher above already explains cannot express "once per
+  // host": the dev-api drop-in sets PAPERCUSP_BACKGROUND_WORKERS=0 service-wide, so on the
+  // 16-worker :3070 release cluster it read false in all 17 processes, none of them stood
+  // down, and all 17 armed a 30s PID-liveness sweep (measured: 4 distinct release-worker
+  // pids caught issuing harness_lanes/agent_runs statements in one 40s sample, zero from
+  // bg-host). The immediate cold-boot tick made every deploy a 17-way thundering herd too.
+  //
+  // Coverage is unchanged in every other topology: bg-host and the desktop (backgroundWorkers
+  // ON, unclustered) still stand down and let the in-process-periodic scheduler own the sweep;
+  // :3170 (request-only, unclustered) still arms it as the documented fallback — all three are
+  // `cluster.isPrimary === true`, so the guard is a no-op for them.
+  if (cluster.isPrimary) {
+    try {
+      ensureHarnessStatusSweep();
+    } catch (e) {
+      console.warn('[api] harness-status-sweep failed to start:', (e as Error)?.message ?? e);
+    }
   }
 
   // Wave-advance sweep — RETIRED (dbos-system-completion P-044 / Path A). Under

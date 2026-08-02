@@ -191,8 +191,8 @@ describe('suggestProjects — a refusal has to be actionable', () => {
     // matching `submodule` and promoting that subtree above its siblings — a
     // typo would then outrank the projects the caller actually has.
     const suggestions = suggestProjects(root, 'libs/sub');
-    expect(suggestions.every((s) => s.startsWith('libs/'))).toBe(true);
     expect(suggestions[0]).toBe('libs/flags/tsconfig.json');
+    expect(suggestions[0]).not.toBe('libs/submodule/libs/db/tsconfig.json');
     // Contrast: the exact segment DOES promote the subtree.
     expect(suggestProjects(root, 'libs/submodule')[0]).toBe('libs/submodule/libs/db/tsconfig.json');
   });

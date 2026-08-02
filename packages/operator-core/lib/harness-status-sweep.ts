@@ -195,20 +195,27 @@ export function ensureHarnessStatusSweep(): SweepState {
   // NOT also run this legacy timer. The legacy path is left as the fallback for
   // hosts where the new scheduler does NOT run (e.g. the :3170 request-only operator).
   //
-  // ⚠ CLAIM NARROWED 2026-08-02 (P-018). This used to say the stand-down meant
-  // "exactly one fires". That was true per PROCESS but false per HOST: on the
-  // 16-worker :3070 cluster, backgroundWorkersEnabled() is true in every worker (it
-  // reads only env, which a fork inherits), so all 17 processes stood this timer down
-  // and all 17 armed the scheduler's copy — seventeen sweeps, not one.
+  // ⚠ CORRECTED 2026-08-02 (EI-19305266463631270). An earlier revision of this comment
+  // asserted that on the 16-worker :3070 cluster backgroundWorkersEnabled() is TRUE in
+  // every worker, so all 17 stood this timer down and armed the scheduler's copy instead.
+  // That is backwards, and it inverted the whole case table below. Measured reality: all 17
+  // :3070 processes carry PAPERCUSP_BACKGROUND_WORKERS=0 (the dev-api drop-in sets it
+  // service-wide), so backgroundWorkersEnabled() is FALSE in each — none of them stood
+  // down, all 17 armed THIS legacy timer, and the scheduler's copy never armed there at
+  // all. The fix is on the caller side: host-bootstrap now guards the
+  // ensureHarnessStatusSweep() call with `cluster.isPrimary`, matching the fs-watcher and
+  // credential-sync singletons it sits between.
   //
-  // P-018 restored the host-wide claim from the other side: the scheduler's checks now
-  // default to `scope: 'host'` (cluster primary only). Walking the three cases, since
-  // this stand-down is what makes them safe:
-  //   cluster WORKER  — legacy stands down (bgWorkers true); scheduler skips it
-  //                     (host-scoped) ⇒ neither runs here, by design.
-  //   cluster PRIMARY — legacy stands down; scheduler arms it ⇒ exactly one, host-wide.
-  //   :3170 / no bg   — legacy arms as the fallback; the scheduler suite is never
-  //                     armed there at all ⇒ exactly one.
+  // The stand-down below is therefore NOT a host-singleton mechanism and must not be
+  // relied on as one — it only answers "has the in-process-periodic scheduler taken
+  // ownership of this sweep on this host". `cluster.isPrimary` at the call site is what
+  // makes it once-per-host. Walking the cases with both gates in place:
+  //   cluster WORKER  — never reached: the caller's cluster.isPrimary guard skips it.
+  //   cluster PRIMARY — bgWorkers FALSE on :3070, so this legacy timer arms; the
+  //                     scheduler suite is not armed on that host ⇒ exactly one, host-wide.
+  //   bg-host/desktop — bgWorkers TRUE, so this stands down and the scheduler owns the
+  //                     sweep (both are unclustered, so the caller's guard is a no-op).
+  //   :3170 / no bg   — legacy arms as the fallback; scheduler never armed ⇒ exactly one.
   if (backgroundWorkersEnabled()) {
     _g.__harnessStatusSweep = {
       timer: undefined as unknown as ManagedHandle,

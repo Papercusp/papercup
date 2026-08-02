@@ -85,27 +85,99 @@ export function listTrackedFiles(cwd = ROOT) {
   // uninitialized submodule, which is why coverage is computed separately below
   // rather than inferred from the exit code.
   const files = gitLines('ls-files --recurse-submodules', cwd);
+  return { files, ...coverageOf(files, cwd) };
+}
 
+/**
+ * Coverage partition for an ALREADY-COMPUTED file list — the seam that lets a
+ * guard keep its own enumeration and still report honest coverage (WI-6776).
+ *
+ * Several guards cannot simply call `listTrackedFiles()`: check-no-nul-in-source
+ * and check-no-control-bytes need `-z` (NUL-delimited) output because a guard
+ * about byte-level corruption must not itself assume filenames are newline-free,
+ * and check-env-feature-gates uses `git grep --recurse-submodules`. Forcing them
+ * onto one enumerator would trade a real property for uniformity. What they
+ * actually need to share is the COVERAGE CONTRACT, not the `git` invocation — so
+ * that is what this exports.
+ *
+ * Returns `{ declared, scanned, unscanned }` where the partition is exact:
+ * a declared submodule is `scanned` iff some emitted file sits under it.
+ */
+export function coverageOf(files, cwd = ROOT) {
   const declared = declaredSubmodules(cwd);
   const scanned = [];
   const unscanned = [];
   for (const path of declared) {
-    // A submodule contributed content iff some emitted file sits under it.
     if (files.some((f) => f.startsWith(`${path}/`))) scanned.push(path);
     else unscanned.push(path);
   }
+  return { declared, scanned, unscanned };
+}
 
-  return { files, declared, scanned, unscanned };
+/** Does this submodule directory hold content on disk, whatever git can see? */
+function hasContentOnDisk(path, cwd) {
+  try {
+    return readdirSync(join(cwd, path)).length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * One-line coverage suffix for a guard's success message, so a ✓ always states
  * what it did NOT look at. Returns '' when every declared submodule was scanned.
+ *
+ * Accepts either the bare `unscanned` array or a whole `listTrackedFiles()`
+ * result (preferred — it already knows `declared`, so no re-read of .gitmodules).
+ *
+ * ── WHY THIS REPORTS A CAUSE, NOT JUST A LIST (WI-6776) ─────────────────────
+ * The first version said "NOT scanned — not initialized", which is the right
+ * FACT with the wrong DIAGNOSIS, and the wrong diagnosis is expensive. Measured
+ * 2026-08-02 in papercusp-checkpoint (the GREEN GATE's own tree): 0/39
+ * submodules enumerated, yet 38 of them are checked out with content on disk.
+ * They are `git archive`-extracted by setup-release-checkout.sh — deliberately,
+ * because many pins are never pushed to origin — and an archive-extracted tree
+ * has no `.git`, so `git ls-files --recurse-submodules` cannot descend. Nothing
+ * is "uninitialized"; the enumerator simply cannot see a perfectly present tree.
+ * (A linked worktree with unregistered submodules degrades identically.)
+ *
+ * Telling an agent "not initialized" in that tree sends it to `git submodule
+ * update --init` chasing a fault that does not exist. That wasted-diagnostic-time
+ * cost is precisely what EI-19301033966613245 was filed about, so the suffix
+ * names the shape it actually found:
+ *
+ *   present-on-disk-but-not-enumerable → archive-extracted / worktree (BY DESIGN)
+ *   absent-from-disk                   → genuinely not initialized
+ *
+ * Reporting the RATIO is the load-bearing part: `0/39` cannot be misread as
+ * clean, whereas a bare ✓ over an empty scan reads exactly like a pass.
  */
-export function describeUnscanned(unscanned) {
-  if (unscanned.length === 0) return '';
+export function describeUnscanned(unscannedOrScan, cwd = ROOT) {
+  const isScan = unscannedOrScan && !Array.isArray(unscannedOrScan);
+  const unscanned = isScan ? unscannedOrScan.unscanned : unscannedOrScan;
+  if (!unscanned || unscanned.length === 0) return '';
+  const declared = isScan ? unscannedOrScan.declared : declaredSubmodules(cwd);
+  const total = declared?.length ?? unscanned.length;
+
+  const present = unscanned.filter((p) => hasContentOnDisk(p, cwd));
+  const absent = unscanned.filter((p) => !present.includes(p));
+
+  // Cap the name list: in a release-shaped tree EVERY submodule lands in one
+  // bucket for one by-design reason, and printing 39 paths every run buries the
+  // ratio that actually matters.
+  const names = (list) => (list.length <= 4 ? list.join(', ') : `${list.slice(0, 4).join(', ')} +${list.length - 4} more`);
+
+  const parts = [];
+  if (present.length > 0) {
+    parts.push(
+      `${present.length} present on disk but NOT git-enumerable — archive-extracted release checkout ` +
+        `or linked worktree (no .git, so --recurse-submodules cannot descend), BY DESIGN: ${names(present)}`,
+    );
+  }
+  if (absent.length > 0) parts.push(`${absent.length} not initialized: ${names(absent)}`);
+
   return (
-    ` (⚠ ${unscanned.length} declared submodule(s) NOT scanned — not initialized: ` +
-    `${unscanned.join(', ')}; this result says nothing about them)`
+    ` (⚠ coverage ${total - unscanned.length}/${total} declared submodule(s) enumerated; ` +
+    `${parts.join('; ')}. This result says nothing about them.)`
   );
 }

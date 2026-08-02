@@ -15,6 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { describeUnscanned } from './lib/tracked-files.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -229,9 +230,20 @@ function main() {
   }
 
   if (offenders.length === 0) {
+    // WI-6776: this line used to report `submodulePrefixes().length` — the count of
+    // gitlink entries in the INDEX, which is 38 whether or not a single submodule
+    // file was opened. Measured 2026-08-02: in papercusp-checkpoint (this gate's own
+    // tree) the scan covered ZERO submodules and still printed "and 38 submodule(s)",
+    // i.e. the success line asserted the exact opposite of what happened. Report what
+    // was actually reached, as a RATIO, so an empty scan cannot read as a clean one.
+    const prefixes = submodulePrefixes();
+    const covered = prefixes.filter((p) => scanned.some((f) => f.startsWith(p)));
+    const unscanned = prefixes.filter((p) => !covered.includes(p));
     console.log(
       `check-no-control-bytes: clean — ${scanned.length} tracked source files scanned ` +
-        `across the superproject and ${submodulePrefixes().length} submodule(s), no forbidden raw control bytes`,
+        `across the superproject and ${covered.length}/${prefixes.length} submodule(s), ` +
+        `no forbidden raw control bytes` +
+        describeUnscanned({ declared: prefixes, scanned: covered, unscanned }, ROOT),
     );
     return;
   }

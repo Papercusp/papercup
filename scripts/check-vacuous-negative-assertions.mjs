@@ -62,6 +62,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync, realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { coverageOf, describeUnscanned } from './lib/tracked-files.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -393,7 +394,21 @@ function trackedFiles() {
     .filter(Boolean);
 }
 
-/** If the scan resolves to implausibly little, the enumeration broke and a ✓ would be a lie. */
+/**
+ * If the scan resolves to implausibly little, the enumeration broke and a ✓ would be a lie.
+ *
+ * ⚠ WI-6776 — this is an ABSOLUTE floor, and it does NOT catch the submodule case.
+ * In a release-shaped checkout (`papercusp-checkpoint`, `papercusp-release`: submodule
+ * source is `git archive`-extracted, so there is no `.git` for `--recurse-submodules` to
+ * descend into) the superproject alone clears both thresholds easily while contributing
+ * ZERO submodule files — measured 2026-08-02: 20,106 files vs 25,647, with 488 `libs/`
+ * files against 3,714.
+ *
+ * For THIS lint a shrunken corpus is worse than a false clean: per the `trackedFiles`
+ * note below, a smaller corpus makes literals look absent, which manufactures DRIFTED
+ * findings and gates on them. So coverage is reported on BOTH exits — a red against an
+ * incomplete corpus is a red you should not act on before fixing the enumeration.
+ */
 const MIN_EXPECTED_CORPUS = 2000;
 const MIN_EXPECTED_TESTS = 500;
 
@@ -461,10 +476,16 @@ function main(argv) {
     console.log('');
   }
 
+  // WI-6776: the corpus is the instrument here, so every verdict states its coverage.
+  const cov = coverageOf(list, ROOT);
+  const coverageNote = describeUnscanned(cov, ROOT);
+
   if (drifted.length === 0) {
     console.log(
       `✓ vacuous negative assertions: none of ${considered} static-literal negative assertion(s) ` +
-        `pins a reworded string (${orphaned.length} orphaned, non-gating).`,
+        `pins a reworded string (${orphaned.length} orphaned, non-gating). Corpus: ${corpusFiles.length} file(s) ` +
+        `across the superproject + ${cov.scanned.length}/${cov.declared.length} submodule(s).` +
+        coverageNote,
     );
     return 0;
   }
@@ -486,6 +507,18 @@ function main(argv) {
       `  if the guard is obsolete. If the absence is deliberate, annotate the line with\n` +
       `  "// ${PRAGMA} <reason>". See EI-18765867705399052.`,
   );
+  if (coverageNote) {
+    // WI-6776: a finding here means "this literal exists nowhere emittable". If the
+    // corpus never opened a subtree, that premise is unproven and these may be
+    // artefacts of the gap rather than real dead guards — fix coverage FIRST.
+    console.error(
+      `\n  ⚠ READ THIS BEFORE ACTING ON THE FINDINGS — the corpus was INCOMPLETE:` +
+        `${coverageNote}\n` +
+        `  Every verdict above rests on "the literal appears in no tracked non-test file", which\n` +
+        `  an incomplete corpus cannot establish. Re-run where the enumeration is whole before\n` +
+        `  editing any assertion.`,
+    );
+  }
   return 1;
 }
 

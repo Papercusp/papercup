@@ -53,8 +53,21 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { coverageOf, describeUnscanned } from './lib/tracked-files.mjs';
 
 const FIX = process.argv.includes('--fix');
+
+/**
+ * WI-6776: pinned to the repo root rather than inherited from `process.cwd()`.
+ * Enumerating from a subdirectory returns only that subtree's files, so the scan
+ * reports a confident ✓ having opened almost nothing — the same false-clean class
+ * this script exists to surface. `scripts/lib/tracked-files.mjs` pins ROOT for
+ * exactly this reason; the reads below resolve against it so `--fix` cannot write
+ * to a path interpreted relative to a different cwd.
+ */
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 /** The NUL as a CHARACTER, built numerically so this file never contains one. */
 const NUL_CHAR = String.fromCharCode(0);
@@ -76,18 +89,22 @@ const SKIP_RE = /(^|\/)(fixtures?|__fixtures__|snapshots?|__snapshots__)\//;
  * scope, `--fix` cannot repair what the checker reports.
  */
 function trackedFiles() {
-  const out = execFileSync('git', ['ls-files', '-z', '--recurse-submodules'], { maxBuffer: 64 * 1024 * 1024 });
+  const out = execFileSync('git', ['ls-files', '-z', '--recurse-submodules'], {
+    cwd: ROOT,
+    maxBuffer: 64 * 1024 * 1024,
+  });
   return out
     .toString('utf8')
     .split(NUL_CHAR)
     .filter((p) => p && SOURCE_RE.test(p) && !SKIP_RE.test(p));
 }
 
+const scannedFiles = trackedFiles();
 const hits = [];
-for (const path of trackedFiles()) {
+for (const path of scannedFiles) {
   let buf;
   try {
-    buf = readFileSync(path);
+    buf = readFileSync(join(ROOT, path));
   } catch {
     continue; // deleted-but-still-tracked, submodule gitlink, etc.
   }
@@ -111,12 +128,19 @@ for (const path of trackedFiles()) {
     // round-trip, so splitting on the NUL char and rejoining cannot disturb any
     // other byte (including multi-byte UTF-8 sequences).
     const fixed = Buffer.from(buf.toString('latin1').split(NUL_CHAR).join('\\x00'), 'latin1');
-    writeFileSync(path, fixed);
+    writeFileSync(join(ROOT, path), fixed);
   }
 }
 
 if (hits.length === 0) {
-  console.log('✓ no literal NUL bytes in tracked source');
+  // WI-6776: a bare ✓ over an enumeration that reached no submodule is
+  // indistinguishable from a real clean. State the coverage so it cannot be.
+  const { declared, scanned, unscanned } = coverageOf(scannedFiles, ROOT);
+  console.log(
+    `✓ no literal NUL bytes in ${scannedFiles.length} tracked source file(s) ` +
+      `(superproject + ${scanned.length}/${declared.length} submodule(s))` +
+      describeUnscanned({ declared, scanned, unscanned }, ROOT),
+  );
   process.exit(0);
 }
 
