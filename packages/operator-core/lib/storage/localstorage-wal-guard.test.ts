@@ -61,15 +61,20 @@ describe('discoverWalCandidates (real fs)', () => {
 
   it('finds only *.localstorage-wal files, skipping other extensions and dirs', () => {
     dir = mkdtempSync(join(tmpdir(), 'wal-guard-disc-'));
+    // NB: keep the connection OPEN (never .close()) — SQLite auto-checkpoints
+    // (and removes) the WAL when the last connection closes cleanly, which
+    // would defeat the point of this fixture. A real WebKit process never
+    // closes its connection either, which is exactly the scenario this guard
+    // exists for.
     const db = new DatabaseSync(join(dir, 'http_localhost_3070.localstorage'));
     db.exec('PRAGMA journal_mode=WAL;');
     db.exec('CREATE TABLE t (v TEXT);');
     db.prepare('INSERT INTO t (v) VALUES (?)').run('x');
-    db.close();
     // an unrelated file that must be ignored
     require('node:fs').writeFileSync(join(dir, 'notes.txt'), 'hi');
 
     const found = discoverWalCandidates([dir]);
+    db.close();
     expect(found).toHaveLength(1);
     expect(found[0].walPath).toBe(join(dir, 'http_localhost_3070.localstorage-wal'));
     expect(found[0].dbPath).toBe(join(dir, 'http_localhost_3070.localstorage'));
@@ -94,12 +99,16 @@ describe('checkpointOne (real sqlite)', () => {
   it('reclaims the WAL to (near) zero when nothing else holds a snapshot open', () => {
     dir = mkdtempSync(join(tmpdir(), 'wal-guard-ckpt-'));
     const dbPath = join(dir, 'test.localstorage');
+    // NB: keep the writer connection OPEN (idle, no explicit transaction) —
+    // this is the realistic shape: WebKit never closes its connection either.
+    // SQLite only blocks a TRUNCATE checkpoint on an ACTIVE txn/read snapshot,
+    // not on a merely-open idle connection (verified — an idle open connection
+    // does not prevent a full reclaim).
     const db = new DatabaseSync(dbPath);
     db.exec('PRAGMA journal_mode=WAL;');
     db.exec('CREATE TABLE t (v TEXT);');
     const stmt = db.prepare('INSERT INTO t (v) VALUES (?)');
     for (let i = 0; i < 3000; i++) stmt.run('x'.repeat(2000));
-    db.close(); // no lingering connection of our own
 
     const walPath = `${dbPath}-wal`;
     expect(existsSync(walPath)).toBe(true);
@@ -107,9 +116,10 @@ describe('checkpointOne (real sqlite)', () => {
     expect(before).toBeGreaterThan(1 * MB);
 
     const outcome = checkpointOne(dbPath);
+    db.close();
     expect(outcome.ok).toBe(true);
     expect(outcome.walBytesBefore).toBe(before);
-    // TRUNCATE mode with no contention reclaims fully.
+    // TRUNCATE mode with no active reader/writer reclaims fully.
     expect(outcome.walBytesAfter).toBe(0);
     expect(outcome.busy).toBe(false);
   });
@@ -159,6 +169,9 @@ describe('runWalCheckpointSweep (end-to-end, real fs + sqlite)', () => {
   it('checkpoints only the over-threshold db and reports bytes reclaimed', () => {
     dir = mkdtempSync(join(tmpdir(), 'wal-guard-sweep-'));
 
+    // Both connections stay OPEN (idle) through the sweep — see the note on
+    // the checkpointOne test above for why closing early defeats the fixture.
+
     // A big WAL, over threshold.
     const bigDb = join(dir, 'big.localstorage');
     const big = new DatabaseSync(bigDb);
@@ -166,7 +179,6 @@ describe('runWalCheckpointSweep (end-to-end, real fs + sqlite)', () => {
     big.exec('CREATE TABLE t (v TEXT);');
     const bigStmt = big.prepare('INSERT INTO t (v) VALUES (?)');
     for (let i = 0; i < 4000; i++) bigStmt.run('x'.repeat(2000));
-    big.close();
 
     // A tiny WAL, under threshold — must be left untouched.
     const smallDb = join(dir, 'small.localstorage');
@@ -174,13 +186,14 @@ describe('runWalCheckpointSweep (end-to-end, real fs + sqlite)', () => {
     small.exec('PRAGMA journal_mode=WAL;');
     small.exec('CREATE TABLE t (v TEXT);');
     small.prepare('INSERT INTO t (v) VALUES (?)').run('x');
-    small.close();
 
     const smallWalBefore = statSync(`${smallDb}-wal`).size;
     const bigWalBefore = statSync(`${bigDb}-wal`).size;
     expect(bigWalBefore).toBeGreaterThan(1 * MB);
 
     const result = runWalCheckpointSweep({ thresholdBytes: 1 * MB, roots: [dir] });
+    big.close();
+    small.close();
 
     expect(result.checked).toBe(2);
     expect(result.overThreshold).toBe(1);

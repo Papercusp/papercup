@@ -636,6 +636,62 @@ export function findRequiredParamPrefixMatch(
 }
 
 /**
+ * P-004 / D-002 — the ZERO-PARAM-FAMILY-WITH-A-SUFFIX guard. The exact INVERSE of
+ * {@link findRequiredParamPrefixMatch} above, and the other half of the same hole.
+ *
+ * {@link keyMatchesCatalog} answers true for `k === prefix || k.startsWith(prefix + ':')`.
+ * That prefix test is deliberately PERMISSIVE (a templated family must match every
+ * concrete instantiation), but the EI-10870 orphan guard consumes its `true` as PROOF
+ * THAT AN EMITTER EXISTS. For a family declaring NO params, no emitter ever fires a
+ * suffixed form — so every suffix is structurally dead, and the orphan guard stays
+ * silent about it. Absence of a warning then reads as a positive verdict, which is
+ * precisely the shape this plan exists to remove.
+ *
+ * Live cost before this guard: 42 awaits from 6 distinct agents, 100% timeout, ZERO
+ * real fires ever — `work-item:claimable:*` (32), `work-item:claimable:p2p-release-verify-lane`
+ * (9), `work-item:claimable:papercusp:backlog-drain` (1) — while the canonical bare
+ * `work-item:claimable` ran 1913 awaits / 1221 real fires. The mistake is a REASONABLE
+ * generalisation: every neighbouring family DOES take a suffix (`work-item:done:<id>`,
+ * `work-item:unblocked:<id>`, `release:green:<pipeline>`), and scoping guidance points at
+ * `payload_filter` — which those agents applied to the KEY instead.
+ *
+ * Handles the pattern form too, which is why this is ONE guard rather than two: for a
+ * glob only the literal head before the first `*` is decidable, and
+ * `work-item:claimable:*` → `work-item:claimable:` still strictly extends the family
+ * prefix. A glob whose literal head stops short of the separator (`work-item:claimable*`)
+ * legitimately matches the bare key and is NOT flagged; a glob starting with `*` is
+ * undecidable and is likewise left alone.
+ *
+ * Returns the offended family when `key` strictly extends a zero-param family's prefix;
+ * `undefined` otherwise. Never throws. The caller WARNS — never rejects (EI-10870's
+ * discipline: a false "nothing emits this" is worse than no warning, because it trains
+ * the warning out).
+ */
+export function findZeroParamSuffixMismatch(
+  key: string,
+  entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
+): { entry: EventCatalogEntry; prefix: string } | undefined {
+  const raw = String(key ?? '').trim();
+  if (!raw) return undefined;
+  // For a PATTERN, only the literal head before the first glob `*` is decidable —
+  // anything at or after the wildcard could match a legitimate concrete key.
+  const star = raw.indexOf('*');
+  const literal = star === -1 ? raw : raw.slice(0, star);
+  if (!literal) return undefined;
+  for (const e of entries) {
+    // A declared param means a suffix is exactly what the family expects.
+    if (e.params.length > 0) continue;
+    // Defensive: a template carrying a placeholder without a declared param is a
+    // catalog authoring bug, not a dead key — say nothing rather than mislead.
+    if (e.keyTemplate.includes('<')) continue;
+    const prefix = familyKeyPrefix(e);
+    if (prefix.length === 0) continue;
+    if (literal.startsWith(`${prefix}:`)) return { entry: e, prefix };
+  }
+  return undefined;
+}
+
+/**
  * EI-18701276960172209 — a catalog-based "did you mean…?" suggestion for a key
  * that matches NO family ({@link keyMatchesCatalog} false). A self-declared
  * announced gate is deliberately exempted from the orphan-await guard above (an

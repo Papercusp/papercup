@@ -190,10 +190,50 @@
   background: #1b2c42;
 }
 
+/* OWNER-REPORTED 2026-08-02: the panel rendered fully TRANSLUCENT — work-item rows
+   and status chips from the page behind it bled straight through the task list and
+   nothing was readable.
+   Cause: this rule set only geometry. The sibling `.pc-advshell__hives-pop` carries
+   its own background/border/shadow/position because the shared <Popover> primitive
+   supplies GEOMETRY ONLY, not a surface — I copied the width/padding from it and not
+   the thing that makes it opaque. Mirroring the hives popover's full surface here.
+   The background is deliberately a flat opaque colour (not a gradient with alpha):
+   this panel scrolls a dense monospace table, and any translucency at all makes the
+   text underneath legible through it. */
 .pc-advshell__tasks-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 80;
   width: 620px;
   max-width: calc(100vw - 40px);
   padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
+  border-radius: 10px;
+  background: #0d1829;
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.62),
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+}
+.pc-advshell__tasks-pop::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  right: 24px;
+  width: 10px;
+  height: 10px;
+  transform: rotate(45deg);
+  border-left: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
+  border-top: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
+  background: #0d1829;
+}
+/* The scroll body must also be opaque in its own right: the sticky group headers
+   scroll UNDER nothing, but the rows scroll under the sticky header, and a
+   transparent row lets the header's own text show through as the list moves. */
+.pc-tasks-roster,
+.pc-tasks-roster__scroll {
+  background: #0d1829;
 }
 .pc-tasks-roster {
   display: flex;

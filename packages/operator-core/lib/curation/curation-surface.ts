@@ -6,7 +6,7 @@
  * decides to surface something, it writes ONE curated message into the
  * workspace's operator conversation as a system-generated assistant turn, then
  * fires the sync-invalidate so it live-tails into the desktop chat AND any pui
- * operator pane subscribed to `operatorTurns.byConversation` (the
+ * operator pane subscribed to `operatorTurns.page` (the
  * `tui-operator-surface` plan). No new transport — it rides the existing chat
  * channel, so curated status appears exactly where the user already talks to
  * the operator.
@@ -43,6 +43,6 @@ export async function surfaceCuratedMessage(
     source: 'system',
     report: report ?? null,
   });
-  void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: convo.id }).catch(() => {});
+  void notifySyncInvalidate('operatorTurns.page', { conversationId: convo.id }).catch(() => {});
   return { conversationId: convo.id, turnId: turn.id };
 }

@@ -15,9 +15,13 @@ const h = vi.hoisted(() => ({
   setMode: vi.fn(async (_opts: unknown) => ({ ok: true, mode: { id: 'auto' }, switchedFrom: null, noop: false })),
   sendMessage: vi.fn(async (..._args: unknown[]) => ({ msg_id: 'm-1' })),
   refreshControlAnchorAfterMutation: vi.fn(async (_opts: unknown) => ({ generation: 1 })),
+  getLoopStatus: vi.fn(async (_ownerId: string) => null as { active: boolean } | null),
 }));
 
 vi.mock('../../modes/store', () => ({ setMode: h.setMode }));
+// Partial mock on purpose: set.ts uses only getLoopStatus from this module, and a real
+// import would drag the org-PG client into a unit test.
+vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: h.getLoopStatus }));
 vi.mock('../coordination/messages', () => ({ sendMessage: h.sendMessage }));
 vi.mock('../coordination/control-anchor', () => ({
   refreshControlAnchorAfterMutation: h.refreshControlAnchorAfterMutation,
@@ -39,7 +43,7 @@ vi.mock('../coordination/identity', async () => {
   };
 });
 
-import setTool from './set';
+import setTool, { wakeSourceWarning } from './set';
 import { ADMIN_COORD_UI_OWNER } from '../coordination/identity';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

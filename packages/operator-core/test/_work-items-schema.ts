@@ -131,6 +131,15 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     closed_ts bigint,
     last_released_by text,
     last_released_at timestamptz,
+    -- migration 721 (WI-6934): payload->>'lane' materialised as a STORED generated column
+    -- so the observation-lane floor filters without detoasting payload. work-items.ts's
+    -- observationLaneExclusionSql now emits "wi.lane IS DISTINCT FROM 'observation'", and
+    -- that floor is ANDed into EVERY claim path — so a fixture without this column fails
+    -- the claim UPDATE outright with 'column "wi.lane" does not exist', exactly as the
+    -- closed_ts and terminal_reason comments above record for their own migrations.
+    -- (Observed: claim-respects-blocking.integration.test.ts went 4/17 red on this.)
+    -- GENERATED ALWAYS — never write it directly; write payload.lane.
+    lane text GENERATED ALWAYS AS (payload ->> 'lane') STORED,
     _search tsvector GENERATED ALWAYS AS (
       setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
       setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
@@ -205,7 +214,12 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- the issue-family view when 698 landed. Found via EI-19313515375179600 (WI-6822
       -- follow-up): every test in work-items-claim-issue-scope-reread.integration.test.ts
       -- was red for this reason, including ones unrelated to that item's own fix.
-      closed_ts
+      closed_ts,
+      -- migration 721 (WI-6934) appends "lane" LAST here too (CREATE OR REPLACE VIEW only
+      -- permits adding columns at the end, which is why 721 puts it last and why it must
+      -- stay last here). Issue-family reads that go through this view need it for the same
+      -- reason the base table does — see the lane column comment above.
+      lane
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;

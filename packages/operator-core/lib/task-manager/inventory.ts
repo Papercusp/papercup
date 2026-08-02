@@ -87,6 +87,12 @@ export type TaskInventoryOptions = {
   state?: string | null;
   cls?: string | null;
   includeEnded?: boolean;
+  /**
+   * With `live`, run the scan but ship NO per-process rows — the totals in `live`
+   * only. For the header pill, which must state a true count of running processes
+   * without carrying the process table onto every tab.
+   */
+  countsOnly?: boolean;
   live?: boolean;
 };
 
@@ -95,8 +101,86 @@ export function disabledInventory(): TaskInventory {
   return { enabled: false, summary: { total: 0, byState: {}, byClass: {} }, rows: [], live: null, liveProcesses: [] };
 }
 
-/** Cap on live-process rows shipped to the pane. Well above the ~400 this box runs. */
-const MAX_LIVE_PROCESS_ROWS = 800;
+/** Cap on live-process rows shipped to the pane. */
+const MAX_LIVE_PROCESS_ROWS = 4000;
+
+/**
+ * SHARED TTL memo for the live scan (owner-directed 2026-08-02).
+ *
+ * The scan is a cgroup-tree walk, so it used to be affordable only for a pane you
+ * had deliberately opened. That constraint is what made the header pill report the
+ * LEDGER count — "3 tasks" on a box running 131 agents, which the owner correctly
+ * called impossible. The pill is mounted on every tab, so it could not have paid
+ * for a scan per render.
+ *
+ * Memoising the scan removes that trade-off: the pill, the open panel and the
+ * /admin/tasks page now share ONE walk per TTL no matter how many readers there
+ * are, so the pill can afford to show the true number instead of a cheap wrong one.
+ *
+ * In-flight calls share the SAME promise, not just the settled value — otherwise N
+ * simultaneous mounts on a fresh cache each start their own walk, which is exactly
+ * the stampede the memo exists to prevent.
+ */
+const LIVE_SCAN_TTL_MS = 5_000;
+let liveScanMemo: { at: number; promise: Promise<LiveScanResult> } | null = null;
+
+type LiveScanResult = { live: unknown; liveProcesses: LiveProcessRow[] };
+
+/** Test seam — drop the memo so a test never reads another test's scan. */
+export function resetLiveScanMemoForTest(): void {
+  liveScanMemo = null;
+}
+
+function scanLive(now: number): Promise<LiveScanResult> {
+  if (liveScanMemo && now - liveScanMemo.at < LIVE_SCAN_TTL_MS) return liveScanMemo.promise;
+  const promise = runLiveScan();
+  liveScanMemo = { at: now, promise };
+  // A rejected scan must not be cached as the answer for the whole TTL — but
+  // runLiveScan already converts a fault into a `{ error }` payload rather than
+  // throwing, so this only guards a genuinely unexpected throw.
+  void promise.catch(() => { liveScanMemo = null; });
+  return promise;
+}
+
+async function runLiveScan(): Promise<LiveScanResult> {
+  // Never let a scan fault take the PANE down — a task manager that goes blank
+  // exactly when the box is unhealthy is worse than one that renders the ledger
+  // with a "live view unavailable" note.
+  try {
+    const tick = await reconcileTick({
+      dryRun: true,
+      scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
+    });
+    return {
+      live: {
+        ...tick.summary,
+        degraded: tick.degraded,
+        degradedReason: tick.degradedReason,
+        scan: tick.scan,
+        unaccounted: tick.result.unaccounted.map((g) => ({
+          cgroupPath: g.cgroupPath,
+          pids: g.pids,
+          sample: g.sampleCmdline.slice(0, 200),
+        })),
+      },
+      // Owned first (enrolled lineage), then the signature-matched strangers; within
+      // each, by pid so the order is stable across the 5s refresh and rows do not
+      // jump under the reader's cursor.
+      liveProcesses: tick.scannedProcesses
+        .slice()
+        .sort((a, b) => Number(b.owned) - Number(a.owned) || a.pid - b.pid)
+        .slice(0, MAX_LIVE_PROCESS_ROWS)
+        .map((p) => ({
+          pid: p.pid,
+          cmdline: p.cmdline ? p.cmdline.slice(0, 300) : null,
+          cgroupPath: p.cgroupPath,
+          owned: p.owned,
+        })),
+    };
+  } catch (e) {
+    return { live: { error: (e as Error).message.slice(0, 300) }, liveProcesses: [] };
+  }
+}
 
 export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise<TaskInventory> {
   const { state, cls, includeEnded = false, live: wantLive = false } = opts;
@@ -118,41 +202,13 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
   let live: unknown = null;
   let liveProcesses: LiveProcessRow[] = [];
   if (wantLive) {
-    // Never let a scan fault take the PANE down — a task manager that goes blank
-    // exactly when the box is unhealthy is worse than one that renders the ledger
-    // with a "live view unavailable" note.
-    try {
-      const tick = await reconcileTick({
-        dryRun: true,
-        scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
-      });
-      live = {
-        ...tick.summary,
-        degraded: tick.degraded,
-        degradedReason: tick.degradedReason,
-        scan: tick.scan,
-        unaccounted: tick.result.unaccounted.map((g) => ({
-          cgroupPath: g.cgroupPath,
-          pids: g.pids,
-          sample: g.sampleCmdline.slice(0, 200),
-        })),
-      };
-      // Owned first (enrolled lineage), then the signature-matched strangers; within
-      // each, by pid so the order is stable across the 5s refresh and rows do not
-      // jump under the reader's cursor.
-      liveProcesses = tick.scannedProcesses
-        .slice()
-        .sort((a, b) => Number(b.owned) - Number(a.owned) || a.pid - b.pid)
-        .slice(0, MAX_LIVE_PROCESS_ROWS)
-        .map((p) => ({
-          pid: p.pid,
-          cmdline: p.cmdline ? p.cmdline.slice(0, 300) : null,
-          cgroupPath: p.cgroupPath,
-          owned: p.owned,
-        }));
-    } catch (e) {
-      live = { error: (e as Error).message.slice(0, 300) };
-    }
+    const scanned = await scanLive(Date.now());
+    live = scanned.live;
+    // `countsOnly` is the HEADER PILL's arm: it needs the live TOTALS to state a
+    // true process count, but shipping 4000 cmdlines to a control that renders one
+    // short string would put the whole process table behind every tab of the app.
+    // Same memoised scan either way — this drops only the payload.
+    liveProcesses = opts.countsOnly ? [] : scanned.liveProcesses;
   }
 
   return {

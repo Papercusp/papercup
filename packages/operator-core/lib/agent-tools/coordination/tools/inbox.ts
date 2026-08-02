@@ -392,10 +392,18 @@ export default defineTool({
         () =>
           // WI-6939: the unbounded readInbox matches ~99.8% BROADCAST rows — ~20k
           // rows / ~10MB transferred per call to return `limit` (15-50) entries.
-          // Measured live: 491,954 calls, 220ms mean, 30.1 CUMULATIVE HOURS of DB
-          // time, each one seq-scanning the table, sorting ~20k rows and launching
-          // 3 extra parallel workers. The same query with a `since_ts` bound costs
-          // 11.6ms — a 20x gap explained entirely by the WINDOW, not the predicate.
+          // Each such call seq-scans coord_event_log, sorts ~20k rows and launches
+          // 3 extra parallel workers; with a `since_ts` bound the same query costs
+          // 11.6ms against 220ms — a 20x gap explained entirely by the WINDOW, not
+          // the predicate.
+          //
+          // ⚠ ATTRIBUTION: the 491,954-call / 30.1-hour figure on that statement is
+          // the total across ALL of readInbox's callers, NOT this tool's share.
+          // coord:inbox is only ~38k invocations over the same period (and some are
+          // served from the cache below), so it is a minority of them — the hottest
+          // caller is the `agent.coordMailbox` sync resolver, which re-runs on every
+          // coord_event_log write. Do not read this comment as "coord:inbox costs
+          // 30 hours".
           //
           // So read a bounded newest-first window, paging backwards only while THIS
           // tool's own filters have not yet yielded `limit` visible entries. The

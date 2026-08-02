@@ -3528,7 +3528,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // arm is a kernel scan and must not be run on a tab nobody is looking at.
   'taskManager.inventory': {
     resolve: async (args: unknown) => {
-      const a = (args ?? {}) as { state?: string; cls?: string; includeEnded?: boolean; live?: boolean };
+      const a = (args ?? {}) as {
+        state?: string; cls?: string; includeEnded?: boolean; live?: boolean; countsOnly?: boolean;
+      };
       const [{ getTaskInventory, disabledInventory }, { isTaskManagerEnabled }] = await Promise.all([
         import('../task-manager/inventory'),
         import('../task-manager/enabled'),
@@ -3546,6 +3548,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           cls: a.cls ?? null,
           includeEnded: a.includeEnded === true,
           live: a.live === true,
+          countsOnly: a.countsOnly === true,
         }),
       ];
     },

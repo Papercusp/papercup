@@ -96,6 +96,7 @@ import {
   isStaleReleaseFixerCandidate,
   checkReleaseFixerCandidateStale,
   classifyGateStallStatus,
+  gateStallNoopLogMessage,
   shouldWarnOnStallClearMiss,
   annotateFailingTestsWithFlakeStats,
   releaseToolingStatus,
@@ -252,8 +253,12 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     // EI-2615 fixed for lock contention — and it would be self-reinforcing here:
     // a stale schema would inflate consecutiveReds, which escalates as a broken
     // build, sending agents after test failures that are really a missing column.
-    // The genuine "migration never applies" case is covered by the same backstop
-    // as skipped-locked — fireStale on last-fire/last-green age.
+    // The genuine "migration never applies" case is covered by a backstop — but
+    // NOT `fireStale`, as this comment used to say (EI-19321275470651356):
+    // `fireStale` keys on last_fired_at, which a noop tick still refreshes, so it
+    // reads FRESH. The detector that actually fires is `checkMainBehindStaging`
+    // (>20 commits + >1h + no advance in 2h), with `verdictStale` (no green in 12h)
+    // as the deep backstop — both in release/green-stall-watchdog.ts.
     expect(classifyGateStallStatus('migrations-pending', false)).toBe('noop');
     // …and a moved pin still wins, exactly as for every other status.
     expect(classifyGateStallStatus('migrations-pending', true)).toBe('reset');
@@ -263,6 +268,39 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     for (const status of ['not-green', 'error', 'create-failed', 'not-fast-forward']) {
       expect(classifyGateStallStatus(status, false)).toBe('red');
     }
+  });
+});
+
+describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite operator advices)', () => {
+  // Both statuses classify as 'noop' and both leave gate_health untouched — that part
+  // is correct and deliberate. What differs is what the READER should do next, and the
+  // single shared message used to give the wrong answer for one of them.
+
+  it('skipped-locked keeps the peer-lock wording — a peer run IS in flight', () => {
+    const msg = gateStallNoopLogMessage('skipped-locked');
+    expect(msg).toContain('an active peer run holds the lock');
+    expect(msg).toContain('skipped-locked');
+  });
+
+  it('migrations-pending must NOT claim a peer run holds the lock — nobody is coming', () => {
+    // The regression: this message is one of the first things read when `main` stops
+    // advancing. "an active peer run holds the lock" tells the reader to WAIT, which is
+    // correct for a lock collision and actively wrong here — the run aborted at the
+    // migration preflight and no verdict is coming until the migration applies.
+    const msg = gateStallNoopLogMessage('migrations-pending');
+    expect(msg).not.toContain('an active peer run holds the lock');
+    expect(msg).toContain('migration preflight');
+    expect(msg).toContain('NO peer run is in flight');
+  });
+
+  it('names the detector that DOES cover the freeze, so the reader is not left thinking nothing watches it', () => {
+    // Leaving gate_health untouched reads like "unmonitored" unless the message says
+    // otherwise; the freeze is caught by checkMainBehindStaging, not by this counter.
+    expect(gateStallNoopLogMessage('migrations-pending')).toContain('checkMainBehindStaging');
+  });
+
+  it('an unknown noop-class status falls back to the peer-lock wording rather than throwing', () => {
+    expect(gateStallNoopLogMessage('some-future-status')).toContain('some-future-status');
   });
 });
 

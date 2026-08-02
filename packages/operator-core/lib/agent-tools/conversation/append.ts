@@ -51,7 +51,7 @@ export default defineTool({
       source,
     });
     const { notifySyncInvalidate } = await import('../../sync-sse');
-    void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: conv.id })
+    void notifySyncInvalidate('operatorTurns.page', { conversationId: conv.id })
       .catch(() => { /* best-effort */ });
     return { data: { ok: true, seq: turn.seq } };
   },

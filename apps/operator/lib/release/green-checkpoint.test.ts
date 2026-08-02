@@ -32,6 +32,7 @@ import {
   isQuarantinedTestFile,
   parseFailingFilesByWorkspace,
   decideFlakeAbsorption,
+  decideConcurrencyConfirmation,
   attemptFlakeAbsorption,
   ISOLATION_MAX_FILES,
   ISOLATION_RETRY_MAX,
@@ -2131,7 +2132,11 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
       ran.push(`${workspace}::${file}`);
       return { workspace, file, passed: true }; // both pass at single concurrency
     };
-    const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun);
+    // WI-6956: absorption now also requires the CONFIRMING co-execution pass. The
+    // 2026-06-23 incident was genuine box-weather, so the files pass together too.
+    const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, {
+      concurrentRun: async ({ workspace }) => ({ workspace, passed: true }),
+    });
     expect(out.absorbedToGreen).toBe(true);
     expect(out.flakeSuspects).toEqual([
       '@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts',
@@ -2268,6 +2273,9 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
         sleep: async (ms) => {
           sleeps.push(ms);
         },
+        // WI-6956: EI-15849 was genuine ambient load — once the box settled the files
+        // pass CO-EXECUTED too, so the confirming pass must not block this absorption.
+        concurrentRun: async ({ workspace }) => ({ workspace, passed: true }),
       });
       expect(out.absorbedToGreen).toBe(true);
       expect(out.flakeSuspects).toEqual([
@@ -2371,6 +2379,139 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
       for (const line of attributionLines) {
         expect(line).toContain('duration not measured');
       }
+    });
+  });
+
+  // WI-6956: the absorber's discriminator ("passes in isolation") IS the defining
+  // property of a concurrency-dependent failure class, so for that class it was
+  // structurally blind — and the only thing preventing a false green was
+  // ISOLATION_MAX_FILES declining to look at a big red. That makes the bug fire on
+  // PROGRESS: shrink such a class past the guard and the gate flips green on a broken
+  // tree. These pin the confirming co-execution pass that closes it.
+  describe('WI-6956 confirming co-execution pass (a concurrency-dependent class is never absorbed)', () => {
+    /** Every file passes ALONE — the signature shared by genuine weather AND by the bug. */
+    const passesAlone = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+      workspace,
+      file,
+      passed: true,
+    });
+
+    it('THE RECURRENCE GUARD: files that all pass ALONE but REPRODUCE co-executed are NOT absorbed', async () => {
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, passesAlone, undefined, {
+        // the no-real-PG rail's exact shape: clean alone, fails the moment they run together
+        concurrentRun: async ({ workspace }) => ({ workspace, passed: false }),
+      });
+      expect(out.absorbedToGreen).toBe(false);
+      expect(out.flakeSuspects).toEqual([]);
+      expect(out.note).toContain('REPRODUCED');
+      expect(out.note).toContain('CONCURRENCY-DEPENDENT DEFECT');
+    });
+
+    it('passes the originally-failing files of each workspace to the confirming run, TOGETHER', async () => {
+      const batches: { workspace: string; files: string[] }[] = [];
+      await attemptFlakeAbsorption(INCIDENT_OUTPUT, passesAlone, undefined, {
+        concurrentRun: async ({ workspace, files }) => {
+          batches.push({ workspace, files });
+          return { workspace, passed: true };
+        },
+      });
+      // one co-executed batch for the single workspace, carrying BOTH failing files
+      expect(batches).toHaveLength(1);
+      expect(batches[0].workspace).toBe('@papercusp/operator-core');
+      expect(batches[0].files).toEqual([
+        'lib/llm-testing/__tests__/runner-aggregate.test.ts',
+        'lib/scout/scheduler-workspace-scope.test.ts',
+      ]);
+    });
+
+    it('an ABSENT confirming runner declines to absorb (fail-safe, never the old pass-alone criterion)', async () => {
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, passesAlone);
+      expect(out.absorbedToGreen).toBe(false);
+      expect(out.note).toContain('NO confirming co-execution re-run');
+    });
+
+    it('a THROWING confirming runner is undetermined ⇒ stays red (uncertainty never flips green)', async () => {
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, passesAlone, undefined, {
+        concurrentRun: async () => {
+          throw new Error('vitest spawn failed');
+        },
+      });
+      expect(out.absorbedToGreen).toBe(false);
+      expect(out.note).toContain('UNDETERMINED');
+    });
+
+    it('an ERRORED confirming result is undetermined ⇒ stays red', async () => {
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, passesAlone, undefined, {
+        concurrentRun: async ({ workspace }) => ({ workspace, passed: false, errored: true }),
+      });
+      expect(out.absorbedToGreen).toBe(false);
+      expect(out.note).toContain('UNDETERMINED');
+    });
+
+    it('EI-15849 stays absorbable: genuine weather passes co-executed once the box settles', async () => {
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, passesAlone, undefined, {
+        concurrentRun: async ({ workspace }) => ({ workspace, passed: true }),
+      });
+      expect(out.absorbedToGreen).toBe(true);
+      expect(out.note).toContain('CO-EXECUTED');
+    });
+
+    it('the confirming pass never runs at all when isolation already found a real break', async () => {
+      let confirmCalled = false;
+      const out = await attemptFlakeAbsorption(
+        INCIDENT_OUTPUT,
+        async ({ workspace, file }) => ({ workspace, file, passed: false }),
+        undefined,
+        {
+          sleep: async () => {},
+          concurrentRun: async ({ workspace }) => {
+            confirmCalled = true;
+            return { workspace, passed: true };
+          },
+        },
+      );
+      expect(out.absorbedToGreen).toBe(false);
+      expect(confirmCalled).toBe(false);
+    });
+  });
+
+  describe('decideConcurrencyConfirmation (pure)', () => {
+    const ff = (workspace: string, file: string) => ({ workspace, file });
+
+    it('weather: every workspace passed co-executed', () => {
+      const d = decideConcurrencyConfirmation({
+        originalFailing: [ff('@p/core', 'a.test.ts'), ff('@p/core', 'b.test.ts')],
+        concurrentResults: [{ workspace: '@p/core', passed: true }],
+      });
+      expect(d.verdict).toBe('weather');
+    });
+
+    it('reproduced: any workspace failing co-executed wins over an undetermined sibling', () => {
+      const d = decideConcurrencyConfirmation({
+        originalFailing: [ff('@p/core', 'a.test.ts'), ff('@p/web', 'b.test.ts')],
+        concurrentResults: [
+          { workspace: '@p/core', passed: false },
+          { workspace: '@p/web', passed: false, errored: true },
+        ],
+      });
+      expect(d.verdict).toBe('reproduced');
+      expect(d.reproducedIn).toEqual(['@p/core']);
+      expect(d.undeterminedIn).toEqual(['@p/web']);
+    });
+
+    it('undetermined: a workspace with NO confirming result is never assumed to have passed', () => {
+      const d = decideConcurrencyConfirmation({
+        originalFailing: [ff('@p/core', 'a.test.ts'), ff('@p/web', 'b.test.ts')],
+        concurrentResults: [{ workspace: '@p/core', passed: true }], // nothing for @p/web
+      });
+      expect(d.verdict).toBe('undetermined');
+      expect(d.undeterminedIn).toEqual(['@p/web']);
+    });
+
+    it('undetermined: no originally-failing files (nothing was confirmed)', () => {
+      expect(decideConcurrencyConfirmation({ originalFailing: [], concurrentResults: [] }).verdict).toBe(
+        'undetermined',
+      );
     });
   });
 });

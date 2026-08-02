@@ -208,7 +208,7 @@ const voiceTurn = defineTool({
             source: 'voice_stt',
           });
           messages.push({ role: 'user', content: transcript });
-          void notifySyncInvalidate('operatorTurns.byConversation', {
+          void notifySyncInvalidate('operatorTurns.page', {
             conversationId: conversation.id,
           }).catch(() => {});
         } catch (e) {
@@ -381,7 +381,7 @@ const voiceTurn = defineTool({
                 source: 'voice_tts',
                 report: parsed.report,
               });
-              void notifySyncInvalidate('operatorTurns.byConversation', {
+              void notifySyncInvalidate('operatorTurns.page', {
                 conversationId: conversation.id,
               }).catch(() => {});
             } catch (e) {

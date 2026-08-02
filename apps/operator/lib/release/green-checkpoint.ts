@@ -60,6 +60,14 @@ export interface CheckpointDeps {
    *  wiring is unit-testable without running real vitest; realCheckpointDeps shells it
    *  through the CheckpointExec seam. */
   isolationRun?(input: { workspace: string; file: string }): Promise<IsolationResult>;
+  /** WI-6956: the CONFIRMING co-execution re-run — the originally-failing files of ONE
+   *  workspace re-run TOGETHER with file parallelism ON, so a shared-state concurrency
+   *  defect REPRODUCES instead of vanishing the way it does under `--no-file-parallelism`.
+   *  Gates every red→green absorption: an isolated pass alone is the defining property of
+   *  a concurrency-dependent bug, not evidence against one. Optional + injected on the
+   *  same seam as isolationRun so the wiring stays unit-testable; when absent the absorber
+   *  declines to absorb (fail-safe). */
+  concurrentRun?(input: { workspace: string; files: string[] }): Promise<ConcurrentRerunResult>;
   /** worker-pool-crash-absorption-2026-06-25 (WI-806): re-run ONE whole workspace's
    *  suite at REDUCED concurrency (a single fork) after the gate run crashed a vitest
    *  worker fork (OOM/ENOMEM under fleet load) and emitted NO per-file `FAIL` lines —
@@ -1305,6 +1313,102 @@ export function decideFlakeAbsorption(input: {
   return { verdict, flakeAbsorbed, stillFailing };
 }
 
+/* ── WI-6956: the CONFIRMING re-run — the variable is CO-EXECUTION, not load ───
+ *
+ * decideFlakeAbsorption above decides "load-flake vs real break" from ONE observable:
+ * the file PASSES when re-run in isolation. For a DETERMINISTIC break that is sound —
+ * such a file fails the isolated re-run too, so it is never absorbed.
+ *
+ * It is NOT sound for a CONCURRENCY-DEPENDENT failure class, because for that class
+ * "passes in isolation" is not evidence of flakiness — it is the DEFINING PROPERTY of
+ * the bug. The discriminator and the class's signature are the same observable, so the
+ * classifier is structurally blind to it. Measured live 2026-08-02: the no-real-PG rail
+ * class failed the gate and passed 4/4 in isolation, file for file. The only thing
+ * keeping the gate honest was {@link ISOLATION_MAX_FILES} refusing to look at a 53-file
+ * red at all — an accident of SCALE, not detection. That makes the bug WORSE as
+ * remediation progresses: the moment such a class shrinks past ISOLATION_MAX_FILES,
+ * every remaining file passes its isolated re-run BY CONSTRUCTION, and the gate flips
+ * GREEN on a still-broken tree and fast-forwards `main` onto it. The failure mode is
+ * triggered by progress, and a false green is strictly worse than the red it replaces.
+ *
+ * The root error: the isolated re-run changes TWO variables at once — CO-EXECUTION and
+ * TIME — then attributes the whole difference to time ("box weather"). This confirming
+ * pass changes only ONE. It re-runs the very same files TOGETHER, file parallelism ON,
+ * which separates the two hypotheses:
+ *
+ *   - genuine ambient-load weather (EI-15849's endpoint-route cluster) ⇒ once the box
+ *     has settled the files pass CO-EXECUTED too ⇒ still absorbed, as intended.
+ *   - a shared-state concurrency defect (the no-real-PG rail) ⇒ reproduces the moment
+ *     the files run together ⇒ NEVER absorbed.
+ *
+ * Note this is why a cluster-shape heuristic ("N files in one subtree all passing alone
+ * is suspicious") was rejected: EI-15849 was itself a cohesive 14-file single-subtree
+ * cluster that WAS genuine weather, so cluster shape cannot separate the two.
+ *
+ * Deliberate trade, stated plainly: while the box is still hot the confirming pass can
+ * fail on genuine weather, and the gate then stays RED. That is the correct direction to
+ * err — a false red costs a re-run, a false green ships a broken `main` — but it IS a
+ * real reduction in absorption availability, not a free win.
+ */
+
+/** WI-6956: outcome of ONE workspace's confirming co-execution re-run. */
+export interface ConcurrentRerunResult {
+  /** The workspace whose originally-failing files were re-run together. */
+  workspace: string;
+  /** true ⇒ the co-executed batch PASSED — the failures did NOT reproduce. */
+  passed: boolean;
+  /** true ⇒ the confirming re-run itself errored/timed out ⇒ UNDETERMINED (never absorb). */
+  errored?: boolean;
+}
+
+export type ConcurrencyConfirmation =
+  /** every workspace's batch passed CO-EXECUTED ⇒ the red really was box-weather. */
+  | 'weather'
+  /** at least one workspace REPRODUCED the failure co-executed ⇒ concurrency-dependent defect. */
+  | 'reproduced'
+  /** a confirming run errored / never ran ⇒ undetermined ⇒ caller keeps the red. */
+  | 'undetermined';
+
+/**
+ * WI-6956: the PURE confirming decision (mirrors {@link decideFlakeAbsorption}'s shape
+ * and its fail-safe bias). Absorption requires POSITIVE proof that the failures do not
+ * reproduce under co-execution:
+ *   - `reproduced`   ⇐ ANY workspace's co-executed batch failed. Takes precedence over
+ *                       `undetermined`: a reproduction is positive evidence of a defect,
+ *                       and the note should say the strongest true thing.
+ *   - `undetermined` ⇐ a workspace has no result, or its confirming run errored.
+ *   - `weather`      ⇐ every workspace re-ran and PASSED co-executed. Only THIS may absorb.
+ */
+export function decideConcurrencyConfirmation(input: {
+  originalFailing: FailingFile[];
+  concurrentResults: ConcurrentRerunResult[];
+}): { verdict: ConcurrencyConfirmation; reproducedIn: string[]; undeterminedIn: string[] } {
+  const { originalFailing, concurrentResults } = input;
+  const workspaces = [...new Set(originalFailing.map((f) => f.workspace))];
+  if (workspaces.length === 0) {
+    return { verdict: 'undetermined', reproducedIn: [], undeterminedIn: [] };
+  }
+  const byWorkspace = new Map(concurrentResults.map((r) => [r.workspace, r]));
+  const reproducedIn: string[] = [];
+  const undeterminedIn: string[] = [];
+  for (const ws of workspaces) {
+    const r = byWorkspace.get(ws);
+    // No result for a workspace we asked about, or the re-run errored ⇒ we cannot prove
+    // the failures fail to reproduce ⇒ undetermined (fail-safe; never flip to green).
+    if (!r || r.errored) undeterminedIn.push(ws);
+    else if (!r.passed) reproducedIn.push(ws);
+  }
+  const verdict: ConcurrencyConfirmation =
+    reproducedIn.length > 0 ? 'reproduced' : undeterminedIn.length > 0 ? 'undetermined' : 'weather';
+  return { verdict, reproducedIn, undeterminedIn };
+}
+
+/** WI-6956: wall-clock cap for ONE workspace's confirming co-execution re-run. Larger
+ *  than ISOLATION_RUN_TIMEOUT_MS (that caps a single file at single concurrency; this
+ *  runs up to ISOLATION_MAX_FILES files together) but well under the workspace-wide
+ *  WORKSPACE_RERUN_TIMEOUT_MS, since it re-runs only the originally-failing files. */
+export const CONCURRENT_CONFIRM_TIMEOUT_MS = 10 * 60_000;
+
 /** The most files the isolation step will ever re-run. A broad red (many distinct
  *  failing files) is a real regression, not the box-weather flake this absorbs —
  *  re-running dozens of files would also blow the gate's wall-clock budget. Mirrors
@@ -1400,6 +1504,13 @@ export async function attemptFlakeAbsorption(
     now?: () => number;
     /** Sleep seam — injected for tests (never real-sleeps in a unit test). Default a real `setTimeout`. */
     sleep?: (ms: number) => Promise<void>;
+    /** WI-6956: the CONFIRMING co-execution re-run (see the block comment above
+     *  {@link decideConcurrencyConfirmation}). REQUIRED for any absorption to be
+     *  possible: without it the absorber cannot run the one experiment that separates
+     *  ambient box-weather from a concurrency-dependent defect, so it declines to
+     *  absorb rather than guess. Absence is fail-safe (the gate stays red), never a
+     *  silent bypass. */
+    concurrentRun?: (input: { workspace: string; files: string[] }) => Promise<ConcurrentRerunResult>;
   } = {},
 ): Promise<FlakeAbsorptionOutcome> {
   const keep = (note: string): FlakeAbsorptionOutcome => ({ absorbedToGreen: false, flakeSuspects: [], note });
@@ -1408,6 +1519,9 @@ export async function attemptFlakeAbsorption(
   const retryBudgetMs = opts.retryBudgetMs ?? ISOLATION_RETRY_BUDGET_MS;
   const now = opts.now ?? (() => Date.now());
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  // WI-6956: no default — an absent confirming runner must FAIL SAFE (decline to absorb),
+  // never fall back to the isolated-pass-only criterion this exists to replace.
+  const concurrentRun = opts.concurrentRun;
   try {
     // EI-18673560248447615: parsed once up front so every log line below can NAME the
     // cases that failed, instead of sending the reader to the separate full-suite log.
@@ -1471,7 +1585,46 @@ export async function attemptFlakeAbsorption(
     }
     const decision = decideFlakeAbsorption({ originalFailing, isolationResults });
     if (decision.verdict === 'all-flakes') {
-      const note = `isolation: ALL ${decision.flakeAbsorbed.length} originally-failing file(s) PASSED in isolation — absorbed as load-flake(s): ${decision.flakeAbsorbed.join(', ')}`;
+      // WI-6956: an isolated PASS is NOT yet proof of weather — for a concurrency-dependent
+      // class it is the bug's own signature. Run the confirming co-execution pass (the same
+      // files together, file parallelism ON) before ever flipping red→green.
+      const passedAlone = `isolation: all ${decision.flakeAbsorbed.length} originally-failing file(s) PASSED in isolation`;
+      if (!concurrentRun) {
+        return keep(
+          `${passedAlone}, but NO confirming co-execution re-run is wired (concurrentRun) — an isolated pass ALONE cannot tell ambient box-weather from a concurrency-dependent defect, whose defining property is exactly that it passes alone (WI-6956); gate stays red`,
+        );
+      }
+      const filesByWorkspace = new Map<string, string[]>();
+      for (const f of originalFailing) {
+        const list = filesByWorkspace.get(f.workspace) ?? [];
+        list.push(f.file);
+        filesByWorkspace.set(f.workspace, list);
+      }
+      log(
+        `${passedAlone} — confirming under CO-EXECUTION across ${filesByWorkspace.size} workspace(s) (file parallelism ON) before absorbing`,
+      );
+      const concurrentResults: ConcurrentRerunResult[] = [];
+      for (const [workspace, files] of filesByWorkspace) {
+        try {
+          concurrentResults.push(await concurrentRun({ workspace, files }));
+        } catch (e) {
+          log(
+            `isolation: confirming co-execution re-run of ${workspace} errored (${e instanceof Error ? e.message : e}) — undetermined, gate stays red`,
+          );
+          concurrentResults.push({ workspace, passed: false, errored: true });
+        }
+      }
+      const confirmation = decideConcurrencyConfirmation({ originalFailing, concurrentResults });
+      if (confirmation.verdict !== 'weather') {
+        const why =
+          confirmation.verdict === 'reproduced'
+            ? `the SAME files REPRODUCED their failure when re-run TOGETHER in ${confirmation.reproducedIn.join(', ')} — that is a CONCURRENCY-DEPENDENT DEFECT, not box-weather`
+            : `the confirming co-execution re-run was UNDETERMINED in ${confirmation.undeterminedIn.join(', ')} — uncertainty never flips red→green`;
+        const note = `${passedAlone}, but ${why} (WI-6956); gate stays red. Files: ${decision.flakeAbsorbed.join(', ')}`;
+        log(note);
+        return keep(note);
+      }
+      const note = `isolation: ALL ${decision.flakeAbsorbed.length} originally-failing file(s) PASSED in isolation AND again when re-run CO-EXECUTED — absorbed as load-flake(s): ${decision.flakeAbsorbed.join(', ')}`;
       log(note);
       return { absorbedToGreen: true, flakeSuspects: decision.flakeAbsorbed, note };
     }
@@ -3378,6 +3531,36 @@ export function realCheckpointDeps(
       return { workspace, file, passed: false, errored: true, durationMs: Date.now() - startedAt };
     }
   };
+  // WI-6956: the CONFIRMING co-execution re-run. Same checkpoint tree and the same
+  // committed-defaults env as BOTH the gate run and the isolation run — and, critically,
+  // WITHOUT the `--no-file-parallelism` + VITEST_MAX_FORKS/THREADS=1 that isolationRun
+  // applies. That is the whole point: the only variable this changes relative to the
+  // isolation run is CO-EXECUTION, so a shared-state concurrency defect reproduces here
+  // while genuine ambient box-weather (which needed TIME, not solitude) passes. Only the
+  // originally-failing files are re-run, so this is bounded by ISOLATION_MAX_FILES rather
+  // than the workspace's whole suite. On timeout/spawn-error we return errored:true ⇒
+  // decideConcurrencyConfirmation reports `undetermined` ⇒ the gate keeps its red.
+  const concurrentRun = async ({
+    workspace,
+    files,
+  }: {
+    workspace: string;
+    files: string[];
+  }): Promise<ConcurrentRerunResult> => {
+    const env = buildGreenCheckpointEnv(null);
+    try {
+      const r = await exec('npm', ['run', 'test', '--workspace', workspace, '--', ...files], {
+        cwd: cfg.checkpointRoot,
+        env,
+        allowNonZero: true,
+        timeoutMs: CONCURRENT_CONFIRM_TIMEOUT_MS,
+      });
+      return { workspace, passed: r.code === 0 };
+    } catch (e) {
+      log(`isolation: confirming co-execution re-run of ${workspace} threw (${e instanceof Error ? e.message : e})`);
+      return { workspace, passed: false, errored: true };
+    }
+  };
   // WI-806: re-run ONE crashed WORKSPACE's whole suite at REDUCED concurrency (a single
   // fork) after a vitest worker-pool crash (OOM/terminate under fleet load) that emitted
   // NO per-file `FAIL` lines. Same committed-defaults env + checkpoint tree as the gate
@@ -3404,6 +3587,7 @@ export function realCheckpointDeps(
   };
   return {
     isolationRun,
+    concurrentRun,
     workspaceRerun,
     runId,
     // EI-10800: the single AWAITED emit seam every gate-verdict now flows through. Was a
@@ -3519,7 +3703,13 @@ export function realCheckpointDeps(
       // longer what is failing — but the five legs it skipped have still never run.
       let suiteAbsorbed = false;
       if (r.code !== 0) {
-        const outcome = await attemptFlakeAbsorption(fullOutput, isolationRun, log, flakeAbsorptionOpts);
+        // WI-6956: `concurrentRun` first so an explicitly-configured flakeAbsorptionOpts
+        // (the real-deps tests' injection seam) still wins; absent it, the real confirming
+        // runner above is what gates absorption.
+        const outcome = await attemptFlakeAbsorption(fullOutput, isolationRun, log, {
+          concurrentRun,
+          ...flakeAbsorptionOpts,
+        });
         isolationNote = outcome.note;
         if (outcome.absorbedToGreen) {
           suiteAbsorbed = true;

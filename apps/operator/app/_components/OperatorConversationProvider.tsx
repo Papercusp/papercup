@@ -1135,21 +1135,31 @@ export function OperatorConversationProvider({
     setOlderBeforeSeq(oldestLoadedSeqRef.current);
   }, [hasMoreEarlier, loadingEarlier]);
 
-  // Cross-tab live tail. Subscribe to the most-recent N turns; the
-  // reconciler appends only those whose seq is strictly greater than
+  // Cross-tab live tail — the SAME query as the hydration fetch above, not a
+  // second one. It used to be `operatorTurns.byConversation` { limit: 200 },
+  // which resolves through the identical listTurnsRecent() call as
+  // `operatorTurns.page` { limit: INITIAL_PAGE }; with INITIAL_PAGE === 200 the
+  // two fetched the same ~200 turns concurrently in two shapes on every mount
+  // (the duplicate ~770 KB pair measured twice in D-012 of
+  // no-http-anywhere-2026-07-28). Reading `initialPage` here collapses them to
+  // one cache key and one request.
+  //
+  // Liveness is unaffected by the shared query's staleTime: invalidateQueries
+  // marks the entry stale and refetches ACTIVE observers regardless of
+  // staleTime, and the SSE invalidations for this conversation carry
+  // { conversationId } only — which deep-partial-matches this key (verified
+  // against @tanstack/query-core 5.100.5: a { conversationId } filter matches
+  // { conversationId, limit } and does NOT match another conversation).
+  //
+  // The reconciler appends only turns whose seq is strictly greater than
   // `newestLoadedSeqRef`. The previous "count > local.length" heuristic
   // doesn't survive infinite-scroll: prepending older history would
   // make the heuristic always think the remote is behind.
   //
-  // Limit 200 mirrors INITIAL_PAGE: the live tail is a window, not the
-  // conversation depth — the user-facing depth is bounded only by how
-  // far they scroll back. Older turns land via loadEarlier() against PG.
-  const turnsSync = useSyncQuery<OperatorTurnRow>({
-    queryName: "operatorTurns.byConversation",
-    args: { conversationId: convId ?? "", limit: 200 },
-    enabled: !!convId,
-  });
-  const remoteTurns = (turnsSync.data as OperatorTurnRow[] | undefined) ?? [];
+  // INITIAL_PAGE bounds the tail: it is a window, not the conversation depth —
+  // the user-facing depth is bounded only by how far they scroll back. Older
+  // turns land via loadEarlier() against PG.
+  const remoteTurns = initialPage?.turns ?? [];
   // Row count is not a sufficient revision: answering an already-rendered
   // choice card mutates tools[i].answered in place while the tail length stays
   // constant. Track the mutable projection explicitly so cross-tab updates and

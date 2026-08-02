@@ -4124,31 +4124,12 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${isIssueLocallyClaimableWhereSql(sql, issueWs)}
          AND ${filter.swarmId ? sql`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
          AND ${filter.excludeRedundant ? sql`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : sql`TRUE`}
-         AND NOT EXISTS (
-             SELECT 1 FROM harness_shared.work_item_deps d
-              -- d.workspace_id is the COORDINATION workspace the edge table is keyed in
-              -- (every edge is written there); the BLOCKER legs below scope to the blocked
-              -- item's OWN workspace (wi.workspace_id) — migration 719. The issue leg used
-              -- to hardcode 'default', where 147 of 28,049 issues live, so it never matched
-              -- and every issue-family blocking edge was inert (EI-19313459163394127).
-              WHERE d.workspace_id = 'default'
-                AND d.dep_type = 'blocks'
-                AND d.blocked_ref = wi.feature_id
-                AND (
-                  EXISTS (
-                    SELECT 1 FROM harness_shared.harness_features_consolidated bf
-                     WHERE bf.workspace_id = wi.workspace_id
-                       AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                       AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
-                  )
-                  OR EXISTS (
-                    SELECT 1 FROM harness_shared.engineer_issues bi
-                     WHERE bi.workspace_id = wi.workspace_id
-                       AND bi.issue_id = d.blocker_ref
-                       AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
-                  )
-                )
-         )
+         -- The blocking floor, from the ONE shared definition (D-007). This is the READY
+         -- diagnosis, so it must apply exactly what claimNextIssueWorkItem enforces — the
+         -- same reason the reserved-plan-lane comment below gives: "the miss diagnosis never
+         -- disagrees with what claim_next actually serves". Sharing the fragment is what
+         -- makes that promise structural rather than a convention two copies have to keep.
+         AND ${depsBlockedExclusionSql(sql)}
          -- WI-2118 (P-009 leak): a reserved-plan-lane item is NOT ready to self-select — count it
          -- as pending-but-gated (present in the POOL above, excluded here), the SAME floor the claim
          -- applies, so the miss diagnosis never disagrees with what claim_next actually serves.

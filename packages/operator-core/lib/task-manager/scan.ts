@@ -63,7 +63,19 @@ export interface ScanOptions {
    * allowance before the owned pass had finished, set `truncated`, and thereby put
    * the reconciler into permanent DEGRADED mode — where it never closes a stranded
    * row again. A display-only view must never be able to disable the ledger's
-   * correctness path. Foreign is capped low on purpose; it is a courtesy pane.
+   * correctness path.
+   *
+   * It is SEPARATENESS that made that safe, not lowness — a distinction the
+   * original 400 blurred, and it cost the owner a wrong answer (2026-08-02): with
+   * ~400 foreign processes on this box the pane reported exactly "UNENROLLED (400)"
+   * and "Scan capped", i.e. the cap WAS the number. A reader cannot tell a real 400
+   * from a truncated 400, so the courtesy view was quietly answering "how many
+   * Papercusp processes are running?" with its own limit.
+   *
+   * Now that the two budgets cannot starve each other, the foreign cap only has to
+   * bound the PAYLOAD, so it is sized to actually cover a busy fleet host instead.
+   * The owned pass keeps its own 4000 and its own truncation flag; nothing here can
+   * put the reconciler into degraded mode.
    */
   maxForeignProcesses?: number;
   /** Our own pid, excluded from the foreign pass (we are not foreign to ourselves). */
@@ -71,7 +83,10 @@ export interface ScanOptions {
 }
 
 const DEFAULT_MAX_OWNED = 4000;
-const DEFAULT_MAX_FOREIGN = 400;
+// Raised 400 → 4000 (owner-directed 2026-08-02: the task manager must show EVERY
+// active Papercusp process, and at 400 it was reporting its own cap as the answer).
+// Safe because the owned/foreign budgets are separate — see maxForeignProcesses.
+const DEFAULT_MAX_FOREIGN = 4000;
 
 /**
  * The systemd user-manager cgroup that owns our slice, derived from our OWN

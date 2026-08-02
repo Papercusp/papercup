@@ -618,10 +618,19 @@ export type GateStallClass = 'reset' | 'noop' | 'red';
  *     the dev PG is known to be behind the candidate, so this tick produced no
  *     verdict about the code at all; counting a non-verdict as a red is the
  *     identical false-increment bug EI-2615 fixed for lock contention. And it
- *     is covered by the identical backstop: a migration that never applies
- *     means the gate stops rendering verdicts, which `fireStale` (last-fire /
- *     last-green age) already alarms on — so "inconclusive" can never go
- *     silent, it just stops being mislabelled as a broken build.
+ *     is covered by a backstop, so "inconclusive" never goes silent — it just
+ *     stops being mislabelled as a broken build. EI-19321275470651356 pins down
+ *     WHICH backstop, because the obvious guess is wrong and cost a reader an
+ *     investigation: it is NOT `fireStale`. `fireStale` keys on `last_fired_at`,
+ *     which a noop tick still refreshes (see the WI-4489 note further down), so
+ *     it reads FRESH throughout. The real detectors both live in
+ *     release/green-stall-watchdog.ts, on a 15-min sweep:
+ *       · `checkMainBehindStaging` — >20 commits behind AND >1h AND no advance
+ *         in 2h. This is the one that actually fires (verified live on
+ *         2026-08-02: a migrations-pending freeze escalated at 04:48Z, ~3.5h in).
+ *       · `evaluateGreenStall`'s `verdictStale` — no GREEN verdict in 12h, the
+ *         deep backstop. Keyed on `lastGreenAt`, which a noop leaves stale on
+ *         purpose — that staleness IS the signal.
  *   - 'red': every other non-green verdict (not-green / error / create-failed /
  *     not-fast-forward / …) still counts toward the stall streak.
  */
@@ -645,6 +654,35 @@ export function classifyGateStallStatus(status: string, pinMoved: boolean): Gate
  */
 export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: number): boolean {
   return stallAlerted && clearedCount === 0;
+}
+
+/**
+ * EI-19321275470651356: the log line `trackGateStall` emits for a `'noop'` tick.
+ *
+ * `'noop'` covers two conditions whose correct operator response is OPPOSITE, so they
+ * must not share one message:
+ *   · `skipped-locked`      — a peer run IS in flight and will produce the verdict.
+ *                             "wait, this resolves itself" is correct advice.
+ *   · `migrations-pending`  — the preflight aborted and NOBODY is coming. Telling that
+ *                             reader "an active peer run holds the lock" is factually
+ *                             false, and it points them away from the real cause at
+ *                             exactly the moment they are asking why `main` is stuck.
+ *
+ * Pure + exported so the distinction has a DB-free regression test, matching the
+ * convention `shouldWarnOnStallClearMiss` / `classifyGateStallStatus` already set here.
+ */
+export function gateStallNoopLogMessage(status: string): string {
+  if (status === 'migrations-pending') {
+    return (
+      `[green-checkpoint] 'migrations-pending' — this run ABORTED at the migration preflight ` +
+      `(the dev PG is known to be behind the candidate). NO peer run is in flight and no verdict ` +
+      `is coming until the pending migration applies — see the pending migration(s) and their ` +
+      `errors named just above. Leaving gate_health untouched (not a red: this tick judged no code ` +
+      `at all; the deploy freeze itself is caught by checkMainBehindStaging / the green-stall ` +
+      `watchdog, not by this counter — see classifyGateStallStatus)`
+    );
+  }
+  return `[green-checkpoint] '${status}' — an active peer run holds the lock; leaving gate_health untouched (not a red, see classifyGateStallStatus)`;
 }
 
 /**
@@ -711,9 +749,9 @@ export async function trackGateStall(
     // gate's health — leave gate_health completely untouched (don't even seed
     // lastFrom) so a slower, still-in-flight green tick's eventual reset write
     // can never be shadowed by this tick's false-red read-modify-write.
-    console.log(
-      `[green-checkpoint] '${status}' — an active peer run holds the lock; leaving gate_health untouched (not a red, see classifyGateStallStatus)`,
-    );
+    // EI-19321275470651356: the two conditions in this class need opposite operator
+    // advice, so the message is chosen by status (see gateStallNoopLogMessage).
+    console.log(gateStallNoopLogMessage(status));
     return;
   }
   let next: Record<string, unknown>;

@@ -79,7 +79,7 @@ export async function notifyOperatorHindsight(headline: string, kind = 'delegate
       text: `[While you were away] ${headline}`,
       source: 'system',
     });
-    void notifySyncInvalidate('operatorTurns.byConversation', {
+    void notifySyncInvalidate('operatorTurns.page', {
       conversationId: conversation.id,
     }).catch(() => {});
   } catch (err) {

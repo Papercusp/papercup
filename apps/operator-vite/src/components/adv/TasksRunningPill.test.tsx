@@ -3,9 +3,17 @@
  * TasksRunningPill render + guard coverage (WI-6844).
  *
  * The third header pill, added when the task manager moved out of the left rail's
- * middle pane. What is worth pinning is its SELF-HIDING contract and the fact that
- * it does NOT run a kernel scan: it is mounted on every tab, so a stray
- * `live: true` here would put a cgroup walk behind every page of the operator.
+ * middle pane.
+ *
+ * The contract INVERTED on 2026-08-02 after the owner caught the pill reading
+ * "3 tasks" on a box running 131 agents. It used to count LEDGER rows and
+ * deliberately skip the live scan (mounted on every tab, the scan looked too
+ * expensive). That made it cheap and wrong by two orders of magnitude. It now
+ * reports the live scan's process total, affordable because the scan is memoised
+ * server-side and shared with the panel; the ledger is only a fallback for when the
+ * scan is unavailable. The tests below pin the NEW direction, and the old
+ * "does NOT request the live scan" case is inverted rather than deleted so the
+ * reversal is legible to whoever reads this next.
  *
  * Mocks mirror HivesRunningPill.test — the sync query, nuqs and the lazy panel are
  * stubbed so this isolates the pill's own guards. TooltipProvider is required
@@ -39,13 +47,13 @@ vi.mock('nuqs', () => ({
   parseAsBoolean: { withDefault: () => ({}) },
 }));
 
-// The panel carries the scan and its own sync read — stub it to a marker so this
-// file only asserts that the popover mounts it.
+// The panel carries its own read — stub it to a marker so this file only asserts
+// that the popover mounts it.
 vi.mock('./TasksRosterPanel', () => ({
   default: () => <div data-testid="tasks-roster-panel">panel</div>,
 }));
 
-import TasksRunningPill, { countActive } from './TasksRunningPill';
+import TasksRunningPill, { countActive, countProcesses } from './TasksRunningPill';
 
 const Pill = () => (
   <TooltipProvider>
@@ -56,6 +64,7 @@ const Pill = () => (
 const payload = (over: Record<string, unknown> = {}) => ({
   enabled: true,
   summary: { total: 12, byState: { running: 9, starting: 3, exited: 40 }, byClass: {} },
+  live: { scan: { processes: 431 } },
   ...over,
 });
 
@@ -67,10 +76,33 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-describe('countActive', () => {
+describe('countProcesses', () => {
+  it('reports the live scan total, NOT the ledger', () => {
+    // The owner-reported defect in one assertion: a ledger showing 3 running rows
+    // on a box where the scan sees 431 processes must report 431.
+    expect(countProcesses({
+      enabled: true,
+      summary: { total: 884, byState: { running: 3, exited: 881 }, byClass: {} },
+      live: { scan: { processes: 431 } },
+    })).toBe(431);
+  });
+
+  it('falls back to the ledger only when the scan is unavailable', () => {
+    const summary = { total: 12, byState: { running: 9, starting: 3 }, byClass: {} };
+    expect(countProcesses({ enabled: true, summary, live: null })).toBe(12);
+    expect(countProcesses({ enabled: true, summary, live: { scan: {} } })).toBe(12);
+    // A degraded scan reporting 0 is not evidence of an empty box — prefer the
+    // ledger's honest undercount over a confident zero.
+    expect(countProcesses({ enabled: true, summary, live: { scan: { processes: 0 } } })).toBe(12);
+  });
+
+  it('is 0 with no payload at all', () => {
+    expect(countProcesses(undefined)).toBe(0);
+  });
+});
+
+describe('countActive (the ledger fallback)', () => {
   it('counts running + starting, and nothing else', () => {
-    // `exited` is the bulk of the ledger (884 rows on this box, 560 of them exited)
-    // — counting it would make the pill read "884 tasks" on an idle machine.
     expect(countActive({ running: 9, starting: 3, exited: 500, stranded: 200 })).toBe(12);
   });
 
@@ -95,37 +127,45 @@ describe('<TasksRunningPill>', () => {
     expect(screen.queryByTestId('tasks-running-pill')).toBeNull();
   });
 
-  it('renders nothing when nothing is active', () => {
-    H.payload = payload({ summary: { total: 40, byState: { exited: 40 }, byClass: {} } });
+  it('renders nothing when nothing at all is running', () => {
+    H.payload = payload({
+      summary: { total: 40, byState: { exited: 40 }, byClass: {} },
+      live: { scan: { processes: 0 } },
+    });
     render(<Pill />);
     expect(screen.queryByTestId('tasks-running-pill')).toBeNull();
   });
 
-  it('shows the active count, not the ledger total', () => {
-    render(<Pill />);
-    // total is 12 and active is 12 here by coincidence of the fixture; assert the
-    // rendered text so a swap to summary.total is still caught by the case below.
-    expect(screen.getByTestId('tasks-running-pill').textContent).toContain('12 tasks');
-  });
-
-  it('distinguishes the active count from the ledger total', () => {
-    H.payload = payload({ summary: { total: 884, byState: { running: 3, exited: 881 }, byClass: {} } });
+  // THE REGRESSION TEST for what the owner caught. A ledger with 3 running rows and
+  // a scan seeing 431 must render 431 — never 3.
+  it('shows the scanned process count, not the ledger count', () => {
+    H.payload = payload({
+      summary: { total: 884, byState: { running: 3, exited: 881 }, byClass: {} },
+      live: { scan: { processes: 431 } },
+    });
     render(<Pill />);
     const text = screen.getByTestId('tasks-running-pill').textContent ?? '';
-    expect(text).toContain('3 tasks');
+    expect(text).toContain('431 processes');
+    expect(text).not.toContain('3 process');
     expect(text).not.toContain('884');
   });
 
-  it('singularises one task', () => {
-    H.payload = payload({ summary: { total: 1, byState: { running: 1 }, byClass: {} } });
+  it('says "process" not "task" — the two are different populations', () => {
     render(<Pill />);
-    expect(screen.getByTestId('tasks-running-pill').textContent).toContain('1 task');
+    expect(screen.getByTestId('tasks-running-pill').textContent).toContain('processes');
   });
 
-  // The load-bearing one. This pill mounts on every tab; the `live` arm walks the
-  // cgroup tree. Asking for it here would put a kernel scan behind every page.
-  it('does NOT request the live scan — that belongs to the panel', () => {
+  it('singularises one process', () => {
+    H.payload = payload({ live: { scan: { processes: 1 } } });
     render(<Pill />);
-    expect(H.lastArgs).toEqual({});
+    expect(screen.getByTestId('tasks-running-pill').textContent).toContain('1 process');
+  });
+
+  // INVERTED 2026-08-02. This previously asserted `{}` — that the pill must NOT ask
+  // for the scan — which is precisely what made it report the ledger. It now must
+  // ask, with countsOnly so the 4000-row process table does not ride onto every tab.
+  it('requests the live scan, counts-only', () => {
+    render(<Pill />);
+    expect(H.lastArgs).toEqual({ live: true, countsOnly: true });
   });
 });

@@ -173,7 +173,7 @@ const converse = defineTool({
           source: modality === 'voice' ? 'voice_stt' : 'text_typed',
         });
         messages.push({ role: 'user', content: text });
-        void notifySyncInvalidate('operatorTurns.byConversation', {
+        void notifySyncInvalidate('operatorTurns.page', {
           conversationId: conversation.id,
         }).catch(() => {});
         void userTurn;
@@ -271,7 +271,7 @@ const converse = defineTool({
                 source: modality === 'voice' ? 'voice_tts' : 'text_typed',
                 report: parsed.report,
               });
-              void notifySyncInvalidate('operatorTurns.byConversation', {
+              void notifySyncInvalidate('operatorTurns.page', {
                 conversationId: conversation.id,
               }).catch(() => {});
             } catch (e) {

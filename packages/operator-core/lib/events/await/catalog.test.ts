@@ -15,6 +15,7 @@ import {
   familyKeyPrefix,
   keyMatchesCatalog,
   findRequiredParamPrefixMatch,
+  findZeroParamSuffixMismatch,
   findCatalogNearMiss,
   type EventCatalogEntry,
 } from './catalog';
@@ -300,6 +301,67 @@ describe('EI-13089 — findRequiredParamPrefixMatch (the family-prefix-missing-r
     expect(findRequiredParamPrefixMatch('work-item:claimable')).toBeUndefined();
     expect(findRequiredParamPrefixMatch('overwatch:surface-landed')).toBeUndefined();
     expect(findRequiredParamPrefixMatch('')).toBeUndefined();
+  });
+});
+
+describe('P-004/D-002 — findZeroParamSuffixMismatch (the zero-param-family-with-a-suffix guard)', () => {
+  it('flags the live incident keys: a suffix on work-item:claimable, which declares NO params', () => {
+    // 42 awaits from 6 agents, 100% timeout, ZERO real fires ever — while the bare key
+    // ran 1913 awaits / 1221 real fires. keyMatchesCatalog says `true` for all of these
+    // (prefix match), which is exactly why the EI-10870 orphan guard stayed silent.
+    for (const key of [
+      'work-item:claimable:p2p-release-verify-lane',
+      'work-item:claimable:papercusp:backlog-drain',
+      'work-item:claimable:*',
+    ]) {
+      expect(findZeroParamSuffixMismatch(key), key).toMatchObject({
+        entry: { family: 'work-item-claimable' },
+        prefix: 'work-item:claimable',
+      });
+      // The precondition for the whole bug: the permissive prefix test says "known key".
+      expect(keyMatchesCatalog(key), key).toBe(true);
+    }
+  });
+
+  it('does NOT flag the canonical bare key of a zero-param family', () => {
+    for (const e of EVENT_CATALOG) {
+      if (e.params.length > 0 || e.keyTemplate.includes('<')) continue;
+      expect(findZeroParamSuffixMismatch(e.keyTemplate), e.keyTemplate).toBeUndefined();
+    }
+  });
+
+  it('does NOT flag a suffix on an OPTIONAL-param family — release:green:<pipeline> is real', () => {
+    // The plan item assumed the wildcard itself was the defect. It is not: this family
+    // genuinely emits a scoped form, so both the concrete and glob keys are legitimate.
+    // (release:green's real defect is a pipeline-blind BANNER, not the key — see D-002.)
+    expect(findZeroParamSuffixMismatch('release:green:papercusp')).toBeUndefined();
+    expect(findZeroParamSuffixMismatch('release:green:*')).toBeUndefined();
+    expect(findZeroParamSuffixMismatch('green-checkpoint:red:oddsmith')).toBeUndefined();
+  });
+
+  it('does NOT flag a suffix on a REQUIRED-param family (that is the sibling guard EI-13089)', () => {
+    expect(findZeroParamSuffixMismatch('work-item:done:WI-4528')).toBeUndefined();
+    expect(findZeroParamSuffixMismatch('work-item:done:*')).toBeUndefined();
+    expect(findZeroParamSuffixMismatch('lock:grant:ticket-1')).toBeUndefined();
+  });
+
+  it('a glob whose literal head stops SHORT of the separator legitimately matches the bare key', () => {
+    // `work-item:claimable*` → ^work-item:claimable.*$ DOES match the bare emit, so it
+    // is not dead. Only a head that strictly extends the prefix with `:` is impossible.
+    expect(findZeroParamSuffixMismatch('work-item:claimable*')).toBeUndefined();
+    expect(findZeroParamSuffixMismatch('work-item:*')).toBeUndefined();
+  });
+
+  it('says nothing about an undecidable or empty key rather than guessing', () => {
+    expect(findZeroParamSuffixMismatch('*:claimable:x')).toBeUndefined(); // literal head is empty
+    expect(findZeroParamSuffixMismatch('*')).toBeUndefined();
+    expect(findZeroParamSuffixMismatch('')).toBeUndefined();
+    expect(findZeroParamSuffixMismatch('   ')).toBeUndefined();
+    expect(findZeroParamSuffixMismatch(undefined as unknown as string)).toBeUndefined();
+  });
+
+  it('does NOT flag an unrelated orphan key (that is the EI-10870 orphan guard\'s job)', () => {
+    expect(findZeroParamSuffixMismatch('overwatch:surface-landed')).toBeUndefined();
   });
 });
 

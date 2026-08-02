@@ -20,6 +20,7 @@ import {
   keyMatchesCatalog,
   mergeInstalledEventCatalog,
   findRequiredParamPrefixMatch,
+  findZeroParamSuffixMismatch,
   findCatalogNearMiss,
   type EventCatalogEntry,
 } from '../../events/await/catalog';
@@ -364,6 +365,17 @@ export default defineTool({
         };
       }
     }
+
+    // ── P-004/D-002: the ZERO-PARAM-FAMILY-WITH-A-SUFFIX guard — the exact inverse of
+    // the EI-13089 check above, and deliberately NOT gated on `patternAwait`. Every other
+    // emitter-existence probe in this handler skips globs, so for a pattern the ABSENCE of
+    // a warning has never been evidence of anything: the check simply never ran, and the
+    // agent cannot distinguish that from "checked and fine". This one IS decidable for a
+    // glob (its literal head before the first `*`), and is cheap + synchronous (static
+    // catalog, no I/O), so it runs for BOTH forms. An announced gate is exempt: a
+    // hand-minted pair-emit key really is fired by its declarer, so the catalog says
+    // nothing about it. Warns, never rejects.
+    const zeroParamSuffix = announcedGate ? undefined : findZeroParamSuffixMismatch(eventKey);
 
     let unknownEventKey = false;
     if (!patternAwait && !announcedGate) {
@@ -770,6 +782,16 @@ export default defineTool({
               ? {
                   family_prefix_missing_param: true,
                   family_prefix_missing_param_advice: `"${eventKey}" is the FAMILY PREFIX for '${requiredParamPrefixMismatch.family}' (template ${requiredParamPrefixMismatch.keyTemplate}), but its '${requiredParamPrefixMismatch.paramName}' param is REQUIRED — no emitter ever fires the bare key, so this await can only TIME OUT. Did you mean the parameterized key (fill in ${requiredParamPrefixMismatch.paramName}), or the glob form "${eventKey}:*" to wake on ANY instance? Registered anyway — this is a warning, not a refusal.`,
+                }
+              : {}),
+            ...(zeroParamSuffix
+              ? {
+                  zero_param_family_suffix: true,
+                  zero_param_family_suffix_advice: `"${eventKey}" appends a suffix to "${zeroParamSuffix.prefix}", but that family ('${zeroParamSuffix.entry.family}', template ${zeroParamSuffix.entry.keyTemplate}) declares NO key params — its emitter (${zeroParamSuffix.entry.emitter}) only ever fires the bare key "${zeroParamSuffix.prefix}". Nothing catalogued fires a suffixed form, so this await can only TIME OUT.${
+                    zeroParamSuffix.entry.payloadFiltered
+                      ? ` Scope it with payload_filter instead of in the key: await "${zeroParamSuffix.prefix}" and narrow on the payload (that is what this family is designed for).`
+                      : ` Await the bare key "${zeroParamSuffix.prefix}" instead.`
+                  } Registered anyway — this is a warning, not a refusal.`,
                 }
               : {}),
             ...(autoScopedFrom
