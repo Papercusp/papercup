@@ -2209,13 +2209,15 @@ except Exception:
 #
 # LITERAL PATHS ONLY, same discipline as the shell-write guard: this never
 # parses the interpreted language — it only checks whether a literal tree
-# path substring appears anywhere in the code payload (a `-c`/`-e` quoted
-# argument, or a heredoc body that follows an interpreter invocation), AND
-# that same payload contains a recognizable WRITE-shaped call. HONEST LIMIT
-# (permanent, not a bug to fix later): an interpreter can always construct a
-# path at runtime (string concatenation, an env var, a computed join), and a
-# write call this heuristic doesn't recognize slips through too — no static
-# scan of the command text can see either. The guard's value is catching the
+# path substring appears as an ARGUMENT TO a recognized write-shaped/file-
+# construct call (a `-c`/`-e` quoted argument, or a heredoc body that follows
+# an interpreter invocation) — see EI-18814109122347052 below for why it is
+# scoped to call arguments rather than the whole payload — AND that same
+# payload contains a recognizable WRITE-shaped call. HONEST LIMIT (permanent,
+# not a bug to fix later): an interpreter can always construct a path at
+# runtime (string concatenation, an env var, a computed join), and a write
+# call this heuristic doesn't recognize slips through too — no static scan of
+# the command text can see either. The guard's value is catching the
 # ordinary, literal, accidental case — precisely the case that produced both
 # this near-miss and EI-18664655909328670's stray-file incident — not
 # achieving completeness.
