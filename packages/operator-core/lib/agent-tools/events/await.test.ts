@@ -43,6 +43,11 @@ vi.mock('../../events/await/store', () => ({
   // Overridden per-test below to exercise the announced-gate path.
   findAnnouncementsForKey: vi.fn(async () => [] as unknown[]),
   findNearMissKeys: vi.fn(async () => [] as unknown[]),
+  // EI-19332682533219755: a PATTERN registration now discloses which concrete keys
+  // its glob really covers (the `release:green:*` cross-pipeline incident).
+  // Defaults to "no observed keys" ⇒ no advisory, so every pre-existing pattern
+  // test above is unaffected; overridden per-test below to exercise the warning.
+  probePatternMatchScope: vi.fn(async () => ({ prefix: '', matchedKeys: [], truncated: false })),
 }));
 vi.mock('../../events/await/engine', () => ({ startAwaitSweeper: vi.fn() }));
 vi.mock('../coordination/messages', () => ({ getMessageById: vi.fn() }));
@@ -87,7 +92,7 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
 
 import awaitTool from './await';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
-import { registerAwait, cancelAwaitsForSubscribersOnKeys, probeKeyFireEvidence, findAnnouncementsForKey } from '../../events/await/store';
+import { registerAwait, cancelAwaitsForSubscribersOnKeys, probeKeyFireEvidence, findAnnouncementsForKey, probePatternMatchScope } from '../../events/await/store';
 import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
@@ -203,6 +208,82 @@ describe('events:await wrapper defaults', () => {
   it('an exact key is NOT flagged as a pattern', async () => {
     const out = await call({ event: 'lock:grant:t1' });
     expect(out.pattern).toBeUndefined();
+  });
+
+  // ── EI-19332682533219755: the CROSS-SCOPE PATTERN disclosure ──────────────
+  // `release:green:*` reads as "MY gate went green" but the pipeline is a key
+  // SEGMENT, so on a multi-pipeline host the glob silently subscribes to other
+  // projects — and the foreign wake still arrives as satisfied:true.
+  describe('EI-19332682533219755 — a glob that spans multiple concrete keys', () => {
+    it('DISCLOSES the foreign pipeline when the glob really spans several keys', async () => {
+      vi.mocked(probePatternMatchScope).mockResolvedValueOnce({
+        prefix: 'release:green',
+        matchedKeys: ['release:green:papercusp', 'release:green:oddsmith'],
+        truncated: false,
+      });
+      const out = await call({ event: 'release:green:*' });
+
+      expect(out.pattern_spans_multiple_keys).toBe(true);
+      expect(out.pattern_matched_keys).toEqual(['release:green:papercusp', 'release:green:oddsmith']);
+      // The advisory must NAME the foreign key — naming it is the whole fix, since
+      // the incident was caught only by hand-checking a sha against the repo.
+      expect(out.pattern_spans_multiple_keys_advice).toContain('release:green:oddsmith');
+      expect(out.pattern_spans_multiple_keys_advice).toContain('payload_filter');
+    });
+
+    it('WARNS but still REGISTERS — cross-scope monitors are legitimate, so it never refuses', async () => {
+      vi.mocked(probePatternMatchScope).mockResolvedValueOnce({
+        prefix: 'release:green',
+        matchedKeys: ['release:green:papercusp', 'release:green:oddsmith'],
+        truncated: false,
+      });
+      const out = await call({ event: 'release:green:*' });
+
+      expect(out.ok).toBe(true);
+      expect(out.await_id).toBe(99);
+      expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe('release:green:*');
+      expect(out.pattern_spans_multiple_keys_advice).toContain('not a refusal');
+    });
+
+    it('stays SILENT on a glob that covers only ONE observed key — that is what its author expected', async () => {
+      vi.mocked(probePatternMatchScope).mockResolvedValueOnce({
+        prefix: 'release:green',
+        matchedKeys: ['release:green:papercusp'],
+        truncated: false,
+      });
+      const out = await call({ event: 'release:green:*' });
+      expect(out.pattern_spans_multiple_keys).toBeUndefined();
+    });
+
+    it('is never consulted for an EXACT key — the scoped form is the recommended fix, and must stay quiet', async () => {
+      const out = await call({ event: 'release:green:papercusp' });
+      expect(vi.mocked(probePatternMatchScope)).not.toHaveBeenCalled();
+      expect(out.pattern_spans_multiple_keys).toBeUndefined();
+    });
+
+    it('is FAIL-SOFT: a probe that throws still registers the await', async () => {
+      // withBoundedTimeout logs the degrade — expected here, so assert it rather
+      // than letting vitest-fail-on-console flag it.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(probePatternMatchScope).mockRejectedValueOnce(new Error('pg down'));
+      const out = await call({ event: 'release:green:*' });
+      expect(out.ok).toBe(true);
+      expect(out.await_id).toBe(99);
+      expect(registerAwait).toHaveBeenCalledTimes(1);
+      expect(out.pattern_spans_multiple_keys).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:patternScope'));
+      warn.mockRestore();
+    });
+
+    it('marks a capped scan so the count reads as a floor, not a total', async () => {
+      vi.mocked(probePatternMatchScope).mockResolvedValueOnce({
+        prefix: 'work-item:done',
+        matchedKeys: ['work-item:done:WI-1', 'work-item:done:WI-2'],
+        truncated: true,
+      });
+      const out = await call({ event: 'work-item:done:*' });
+      expect(out.pattern_spans_multiple_keys_advice).toContain('2+');
+    });
   });
 
   it('rejects an unknown macro and a too-broad pattern (never registers)', async () => {

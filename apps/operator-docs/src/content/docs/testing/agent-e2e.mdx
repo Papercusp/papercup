@@ -652,6 +652,25 @@ with a peer's shell also running, pass your **own** `--port`/`--token`
 (read from your shell's log line `Token file: ...`) explicitly —
 auto-discovery can otherwise attach to the peer's shell instead of yours.
 
+⚠️ **`--port` ALONE (no matching `--token`) authenticates by LUCK, not by
+the port you named (EI-18881979191079014).** `--port` selects the
+ENDPOINT, but with no `--pid`/`--token` the CLI still resolves its auth
+TOKEN independently, by an arbitrary `/tmp` readdir order — so `--port`
+only "works" when the arbitrarily-chosen token happens to belong to the
+app on that port. With one bridge alive (nobody else on the box) this is
+invisible; the instant a peer's shell (or your own second boot) has a
+bridge up too, the SAME command that worked a moment ago either fails
+with a confusing `Bridge authentication failed — check your token` (you
+never supplied one) or, worse, silently authenticates against SOMEONE
+ELSE'S app. This is exactly the failure mode a resolved-but-unmatched
+`--port` (e.g. read back from `tauri-agent-tools probe`'s listing rather
+than from your OWN token file) walks into. **Prefer `--pid <pid>` for
+every subcommand** — it selects the token AND the target together, and
+is what `scripts/verify-tauri-headless.sh` exports as `$VERIFY_TAURI_PID`
+for exactly this reason. If you must use `--port`, pair it with the
+`--token` read from that SAME port's token file — never a bare `--port`
+value on its own.
+
 Net: with `ui:dispatch set_url` + `wait` (no `sleep`) + explicit
 port/token, a multi-route drive is deterministic; without them it
 flakes and can produce false-green audits (e.g. "verifying" N routes

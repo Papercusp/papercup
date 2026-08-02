@@ -120,3 +120,74 @@ describe('snapshot() step decomposition', () => {
     });
   });
 });
+
+describe('snapshot() opts.onStarted (EI-18875467740392530)', () => {
+  it('fires with the durable row id BEFORE the expensive kopia step settles — the guarantee a caller races against a shorter deadline depends on', async () => {
+    fakeHost();
+    let releaseKopiaStep!: () => void;
+    const kopiaStepGate = new Promise<void>((resolve) => { releaseKopiaStep = resolve; });
+    const calls: string[] = [];
+    const recording: StepRunner = {
+      runStep: async <T>(name: string, _fn: () => Promise<T>): Promise<T> => {
+        calls.push(name);
+        if (name === 'backup-kopia-create') {
+          // Held open until the test explicitly releases it, so the assertion
+          // below observes onStarted having ALREADY fired while the overall
+          // snapshot() promise is still pending — proving it is not merely
+          // bundled into the final resolved value.
+          await kopiaStepGate;
+        }
+        const canned: Record<string, unknown> = {
+          'backup-insert-row': { id: 42, startedAtMs: 1000 },
+          'backup-kopia-create': { snapshotId: 'kopia-late', bytesAdded: 1, bytesTotal: 2, durationMs: 5 },
+          'backup-record-result': undefined,
+          'backup-pre-snapshot-hook': undefined,
+        };
+        return canned[name] as T;
+      },
+    };
+    configureBackupStepRunner(recording);
+
+    const wb = new WorkspaceBackup({ workspaceId: 'ws-1', workspaceRoot: '/tmp/backup-test-root/ws-1' });
+    vi.spyOn(wb, 'ensureRepo').mockResolvedValue(undefined);
+
+    let startedId: number | undefined;
+    let settled = false;
+    const snapshotPromise = wb
+      .snapshot('manual', undefined, { onStarted: (id) => { startedId = id; } })
+      .then((r) => { settled = true; return r; });
+
+    // Let microtasks drain up to (but not past) the held-open kopia step.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(startedId).toBe(42); // fired already
+    expect(settled).toBe(false); // ...while the overall promise is still pending
+
+    releaseKopiaStep();
+    const result = await snapshotPromise;
+    expect(settled).toBe(true);
+    expect(result.snapshotId).toBe(42);
+  });
+
+  it('is optional — omitting it changes nothing about the result', async () => {
+    fakeHost();
+    const recording: StepRunner = {
+      runStep: async <T>(name: string): Promise<T> => {
+        const canned: Record<string, unknown> = {
+          'backup-insert-row': { id: 9, startedAtMs: 1000 },
+          'backup-kopia-create': { snapshotId: 'kopia-9', bytesAdded: 1, bytesTotal: 2, durationMs: 1 },
+          'backup-record-result': undefined,
+          'backup-pre-snapshot-hook': undefined,
+        };
+        return canned[name] as T;
+      },
+    };
+    configureBackupStepRunner(recording);
+    const wb = new WorkspaceBackup({ workspaceId: 'ws-1', workspaceRoot: '/tmp/backup-test-root/ws-1' });
+    vi.spyOn(wb, 'ensureRepo').mockResolvedValue(undefined);
+
+    const result = await wb.snapshot('manual');
+    expect(result.snapshotId).toBe(9);
+  });
+});

@@ -30,6 +30,7 @@ import launchOnPlan, {
   remotePlacementUnsupportedArgs,
   resolveRemotePlacementHive,
   isSelfPublishedSeatOffer,
+  extractKickoffWorkItemIds,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -912,5 +913,42 @@ describe('resolveRemotePlacementHive (WI-5211 — multi-hive disambiguation)', (
     expect(bad.ok).toBe(false);
     const none = resolveRemotePlacementHive({ kind: 'none' }, 'papercusp', 'papercusp');
     expect(none.ok).toBe(false);
+  });
+});
+
+/**
+ * EI-18862608742257943: extractKickoffWorkItemIds — the pure id-extraction half of
+ * the kickoff-vs-claim-spec launch check. A member kicked off with a brief naming
+ * "WI-6502 ... it is your only job" whose fleet claim spec doesn't admit WI-6502
+ * could not claim it at all: assignee stayed NULL, fleet:assignments showed it
+ * holding nothing, and the death-resilience reclaim net never engaged. This reuses
+ * the SAME id regex the work_items:create mirror-guard already uses (WI-<n> /
+ * EI-<n>, case-insensitive, deduped) rather than inventing a second one.
+ */
+describe('extractKickoffWorkItemIds (EI-18862608742257943 — kickoff-vs-claim-spec launch check)', () => {
+  it('extracts a WI- id from the exact kickoff phrasing that produced the bug', () => {
+    expect(extractKickoffWorkItemIds(['You are taking over WI-6502 ... it is your only job.'])).toEqual(['WI-6502']);
+  });
+
+  it('extracts an EI- id too, case-insensitively, deduped across texts', () => {
+    expect(
+      extractKickoffWorkItemIds(['fix ei-18860001 please', 'EI-18860001 is the one, also see WI-100 and wi-100']),
+    ).toEqual(expect.arrayContaining(['EI-18860001', 'WI-100']));
+    expect(extractKickoffWorkItemIds(['ei-1 EI-1 Ei-1'])).toEqual(['EI-1']);
+  });
+
+  it('collects ids across MULTIPLE brief texts (shared + per-member)', () => {
+    const ids = extractKickoffWorkItemIds(['shared brief mentions WI-1', null, 'member brief mentions WI-2', undefined, '']);
+    expect(ids.sort()).toEqual(['WI-1', 'WI-2']);
+  });
+
+  it('returns empty for briefs with no work-item id, and tolerates all-blank input', () => {
+    expect(extractKickoffWorkItemIds(['just build the feature, no ticket'])).toEqual([]);
+    expect(extractKickoffWorkItemIds([null, undefined, '', '   '])).toEqual([]);
+    expect(extractKickoffWorkItemIds([])).toEqual([]);
+  });
+
+  it('does NOT match a bare F- feature id (mirror-guard\'s own documented non-target)', () => {
+    expect(extractKickoffWorkItemIds(['work F-AUTO-42 next'])).toEqual([]);
   });
 });
