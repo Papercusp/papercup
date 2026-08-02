@@ -128,18 +128,36 @@ export type ConvertPlanItemResult =
   | { status: 'refused'; reason: string; assignee?: string }
   | { status: 'conflict'; conflict: PlanItemClaim };
 
+/**
+ * Shared workspace-scope resolver for the implements/relates link plane — see
+ * listConvertedPlanItemRefs below for the full explanation of why every reader here
+ * must UNION both tenants rather than pin one: the plane is split by FAMILY
+ * (feature-family under DEFAULT_COORD_WORKSPACE, issue-family under
+ * coordScopeWorkspace()), so a single-tenant read is blind to a whole family.
+ * `workspaceIds` exists only to pin the set in tests.
+ */
+function implementsLinkScopes(workspaceIds?: readonly string[]): string[] {
+  return workspaceIds?.length
+    ? [...new Set(workspaceIds)]
+    : [...new Set([DEFAULT_COORD_WORKSPACE, coordScopeWorkspace()])];
+}
+
 /** Resolve the work_item that `implements` a plan item (or null). Reads the
  *  coord_links edge written at conversion; src is an issue-family id or a
- *  harness-qualified feature ref ('<harness>#<id>'). */
+ *  harness-qualified feature ref ('<harness>#<id>'). Unions both workspaces the
+ *  implements-link plane is split across (see implementsLinkScopes) — a single-tenant
+ *  read here would be blind to whichever family lives in the other workspace. */
 export async function findImplementingWorkItem(
   planSlug: string,
   itemId: string,
+  workspaceIds?: readonly string[],
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
+  const scopes = implementsLinkScopes(workspaceIds);
   const rows = await sql<{ src_kind: string; src_ref: string }[]>`
     SELECT src_kind, src_ref
       FROM harness_shared.coord_links
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+     WHERE workspace_id = ANY(${scopes})
        AND rel = ${IMPLEMENTS_REL}
        AND dst_kind = ${PLAN_ITEM_KIND}
        AND dst_ref = ${planItemRef(planSlug, itemId)}
@@ -244,13 +262,25 @@ export async function findConvertedWorkItemByStamp(
  * non-terminal — if the parent closes anyway, the plan silently reads as fully
  * satisfied while real, tracked work remains open. Order is newest-linked-first;
  * callers typically only care whether ANY non-terminal item exists.
+ *
+ * Unions both workspaces the implements/relates link plane is split across (see
+ * implementsLinkScopes) — EI-19346291419606670: this reader used to hardcode
+ * DEFAULT_COORD_WORKSPACE alone, so on `rel='relates'` it saw only ~18% of coverage
+ * links (293 in the real per-workspace tenant vs 64 in 'default') and the guard
+ * FAILED OPEN: a plan item could close as fully satisfied while real tracked work
+ * remained open in the tenant this reader never looked at.
  */
-export async function findCoverageWorkItems(planSlug: string, itemId: string): Promise<WorkItem[]> {
+export async function findCoverageWorkItems(
+  planSlug: string,
+  itemId: string,
+  workspaceIds?: readonly string[],
+): Promise<WorkItem[]> {
   const { sql } = getOrgPg();
+  const scopes = implementsLinkScopes(workspaceIds);
   const rows = await sql<{ src_kind: string; src_ref: string }[]>`
     SELECT src_kind, src_ref
       FROM harness_shared.coord_links
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+     WHERE workspace_id = ANY(${scopes})
        AND rel = 'relates'
        AND dst_kind = ${PLAN_ITEM_KIND}
        AND dst_ref = ${planItemRef(planSlug, itemId)}

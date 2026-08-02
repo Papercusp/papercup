@@ -166,7 +166,7 @@ import { makePolicyEnforcedApply } from './policy-admission';
  * cycle-avoidance some call sites rely on (e.g. `./boot-all`, which imports
  * this module back).
  */
-function memoizeDynamicImport<T>(load: () => Promise<T>): () => Promise<T> {
+export function memoizeDynamicImport<T>(load: () => Promise<T>): () => Promise<T> {
   let cached: Promise<T> | null = null;
   return () => {
     if (!cached) {

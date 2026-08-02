@@ -28,7 +28,8 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const SELF_PATH = fileURLToPath(import.meta.url);
+const REPO_ROOT = resolve(dirname(SELF_PATH), '../../../..');
 const PROJECTION_REL = 'packages/operator-core/lib/sync/hyperbee/projections/presence.ts';
 const SCAN_ROOTS = ['packages', 'libs', 'apps'];
 const SKIP_DIRS = new Set([
@@ -136,6 +137,11 @@ describe('hand-rolled shared_presence fixtures track the presence projection (EI
     let fixturesSeen = 0;
 
     for (const file of files) {
+      // Skip THIS file: its own negative-control block below deliberately embeds
+      // partial/synthetic `shared_presence` DDL strings to exercise the extractor,
+      // and those are not real fixtures — scanning them here would self-flag as an
+      // offender regardless of every real fixture's actual state.
+      if (file === SELF_PATH) continue;
       let text: string;
       try {
         text = readFileSync(file, 'utf8');
