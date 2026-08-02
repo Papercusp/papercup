@@ -114,8 +114,12 @@ export interface ReconcileLinkedWorkItemsResult {
  *
  *  The leading `payload->'plan_item' IS NOT NULL` is load-bearing, not a
  *  redundant guard: it matches the PARTIAL predicate of
- *  work_items_plan_item_stamp_idx / hfc_plan_item_stamp_idx (migration 725)
- *  exactly, which is what permits an index scan rather than a seq scan.
+ *  work_items_plan_item_stamp_idx (migration 725) exactly, which is what
+ *  permits an index scan rather than a seq scan. harness_features_consolidated
+ *  is a plain (non-aggregating) view over work_items, so a query against it
+ *  inlines onto the same base-table index — there is no separate hfc-side
+ *  index (WI-7049: migration 725 originally tried to add one directly on the
+ *  view, which is illegal on Postgres and was removed).
  *
  *  ⚠ Do NOT reintroduce a `CASE WHEN jsonb_typeof(payload) = 'string'` unwrap
  *  here. That mitigation for the postgres-js `::jsonb` binding quirk
