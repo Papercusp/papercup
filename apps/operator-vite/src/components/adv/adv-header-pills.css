@@ -276,6 +276,17 @@
 }
 .pc-tasks-roster__pressure dd.is-warn { color: #f5a524; }
 .pc-tasks-roster__pressure dd.is-bad { color: #e5484d; }
+/* Says out loud that Enrolled and Scanned are different UNITS. Without it the
+   ratio looks computable, and computing it is how a 98% "coverage hole" got
+   reported to the owner (EI-19325095302441792). */
+.pc-tasks-roster__units {
+  margin: 0;
+  padding: 0 10px 6px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #5d7086;
+}
+.pc-tasks-roster__units strong { color: #8497ad; font-weight: 600; }
 
 .pc-tasks-roster__alarm {
   padding: 7px 10px;
@@ -324,6 +335,25 @@
   z-index: 1;
 }
 .pc-tasks-roster__group-head.is-bad { color: #e5484d; }
+/* The exempt group's header is a real <button> (nuqs-backed expand, so the state
+   is in the URL and `ui:get_state` can see it). Strip the UA button chrome so it
+   matches the sibling <header> elements exactly. */
+button.pc-tasks-roster__group-head {
+  width: 100%;
+  border: 0;
+  font: inherit;
+  font-size: 10.5px;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.pc-tasks-roster__group-head:hover { color: #b8c7d9; }
+button.pc-tasks-roster__group-head:focus-visible { outline: 1px solid #3d6ea5; outline-offset: -1px; }
+/* An exempt group's chip states a REASON, not a warning — neutral, not amber. */
+.pc-tasks-roster__group.is-muted .pc-tasks-roster__chip {
+  color: #8497ad;
+  border-color: #22364f;
+}
 .pc-tasks-roster__group-count {
   font-family: ui-monospace, monospace;
   opacity: 0.6;
@@ -353,6 +383,11 @@
    all. Both are visible gaps, tinted rather than hidden. */
 .pc-tasks-roster__row.is-unconfined { border-left-color: rgba(245, 165, 36, 0.55); }
 .pc-tasks-roster__row.is-orphan { background: rgba(229, 72, 77, 0.08); }
+/* Exempt rows are CONTEXT, not findings: they exist so the scan total adds up.
+   Deliberately the quietest thing in the panel — the whole defect this fixes was
+   alarm styling applied to the owner's own terminal windows. */
+.pc-tasks-roster__row.is-muted { opacity: 0.5; }
+.pc-tasks-roster__row.is-muted:hover { opacity: 0.8; }
 .pc-tasks-roster__row[data-state="stranded"] { opacity: 0.55; }
 
 .pc-tasks-roster__age {

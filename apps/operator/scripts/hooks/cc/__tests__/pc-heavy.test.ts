@@ -705,4 +705,94 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
     for (const [, d] of evts) { cur += d; max = Math.max(max, cur); }
     expect(max).toBe(1);
   });
+
+  // ── Phase-aware clamp DEPTH (EI-19328677512071640) ─────────────────────────
+  // v1 clamped for a run's WHOLE lifetime (~2.7h observed) to protect a window
+  // that lasts minutes. These pin the depth table — but the load-bearing ones are
+  // the fail-safe cases: every unknown must degrade toward MORE throttle. A bug
+  // that relaxes on an unrecognized input silently deletes the protection the
+  // whole reserve exists to provide, while still looking correct in review.
+  describe('phase-aware clamp depth (EI-19328677512071640)', () => {
+    /** phase.json exactly as green-checkpoint's writeCheckpointRunPhase publishes it:
+     *  beside owner.json in the SAME lock dir. An omitted `phaseProtocol` IS the
+     *  protocol-1 (old writer) case — not a malformed one. */
+    const plantPhase = (lock: string, body: string | object): void =>
+      writeFileSync(join(lock, 'phase.json'), typeof body === 'string' ? body : JSON.stringify(body));
+    const at = () => new Date().toISOString();
+
+    it('relaxes to /2 during the long `suite` sweep (protocol >= 2 writer)', () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'suite', at: at(), phaseProtocol: 2 });
+      const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+      expect(r.status).toBe(0);
+      // 12/2, NOT v1's 12/4 — this is the throughput the item was filed to reclaim.
+      expect(slotsLine(r.stderr)).toContain('slots=6 ');
+      expect(slotsLine(r.stderr)).toContain('phase=suite');
+    });
+
+    it('clamps HARD (/4) during `isolating` — the single-concurrency window the reserve exists for', () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'isolating', at: at(), phaseProtocol: 2 });
+      const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+      expect(slotsLine(r.stderr)).toContain('slots=3 ');
+      expect(slotsLine(r.stderr)).toContain('phase=isolating');
+    });
+
+    // Not an obvious case, and the reason it is here is that the ORIGINAL design
+    // note got it wrong: `delivering` sounds like a post-verdict wind-down, but
+    // green-checkpoint re-runs every failing file at tip there (deps.runTestsAtRef)
+    // and feeds classifyRedAgainstTip. Contention flips a VERDICT in that window
+    // exactly as it does in isolation, so it must clamp hard.
+    it('clamps HARD (/4) during `delivering` too — it re-runs failing files at tip to decide stale-vs-real', () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'delivering', at: at(), phaseProtocol: 2 });
+      expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' }).stderr)).toContain('slots=3 ');
+    });
+
+    // THE deployment-ordering guard, and the single most important test here.
+    // The gate runs from the RELEASE checkout, which LAGS staging — so a new
+    // reader genuinely does meet an old writer, for as long as the release is
+    // behind. Protocol 1 folded the isolation re-run INSIDE `suite`, so relaxing
+    // on a protocol-1 `suite` would strip protection from the live isolation
+    // re-run while every other test on this page still passed.
+    it('does NOT relax on `suite` from a protocol-1 writer (no phaseProtocol field)', () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'suite', at: at() });
+      const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+      expect(slotsLine(r.stderr)).toContain('slots=3 ');
+    });
+
+    it('degrades to v1 depth (/4) on EVERY unreadable or unrecognized phase — never to relaxation', () => {
+      const lock = plantLock(liveOwner());
+      for (const body of [
+        '',                                          // empty file
+        '{',                                         // truncated json
+        'not json at all',                           // garbage
+        '{"phase":"suite"}',                         // protocol 1 (field absent)
+        '{"phase":"suite","phaseProtocol":1}',       // protocol explicitly older
+        '{"phase":"suite","phaseProtocol":"two"}',   // non-numeric protocol
+        '{"phase":"wat","phaseProtocol":2}',         // unknown phase name
+        '{"phaseProtocol":2}',                       // protocol but no phase
+      ]) {
+        plantPhase(lock, body);
+        const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+        expect(slotsLine(r.stderr), `body=${JSON.stringify(body)}`).toContain('slots=3 ');
+      }
+    });
+
+    it('a live run that never published phase.json stays at v1 depth', () => {
+      plantLock(liveOwner());
+      const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+      expect(slotsLine(r.stderr)).toContain('slots=3 ');
+      expect(slotsLine(r.stderr)).toContain('phase=unknown');
+    });
+
+    it('phase never resurrects a DEAD run — liveness is still decided first', () => {
+      const lock = plantLock({ pid: deadPid, startedAt: at(), token: 'tok' });
+      plantPhase(lock, { phase: 'isolating', at: at(), phaseProtocol: 2 });
+      const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+      expect(slotsLine(r.stderr)).toContain('slots=12');
+      expect(slotsLine(r.stderr)).toContain('gate=0');
+    });
+  });
 });

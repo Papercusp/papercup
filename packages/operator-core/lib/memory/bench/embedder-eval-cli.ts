@@ -2,7 +2,8 @@
  * Embedder-quality gate CLI (shared-embedding-sidecar-and-enrichment-2026-07-10, P-001).
  *
  *   npx tsx packages/operator-core/lib/memory/bench/embedder-eval-cli.ts \
- *     [--legs gemma,local,openai,harrier,harrier384,sidecar[:model],ollama:<model>] \
+ *     [--legs gemma@512,granite97@384,granite311@384,qwen3@384,local,openai,\
+ *             harrier,harrier384,sidecar[:model],ollama:<model>] \
  *     [--corpus memory|prose] \
  *     [--sidecar http://127.0.0.1:PORT] [--ollama http://127.0.0.1:11434] \
  *     [--dims 384] [--out <path.json>] \
@@ -41,6 +42,28 @@
  * (document for the corpus, query for the queries) — scoring gemma with one
  * symmetric prompt understates it and voids the comparison.
  *
+ * ⚠ THAT TRAP GENERALIZES, AND IT IS NOT ONLY ABOUT PROMPTS. Every family here
+ * has its OWN pooling and its OWN prompting, and no two candidates agree:
+ *
+ *   family      pooling      prompts      native
+ *   gemma       mean         asymmetric   768  (MRL 768/512/256/128 — 384 UNTRAINED)
+ *   granite97   cls          symmetric    384  (no truncation needed at all)
+ *   granite311  cls          symmetric    768  (MRL 768/512/384/256/128 — 384 TRAINED)
+ *   qwen3       last_token   asymmetric   1024 (MRL 32..1024)
+ *   harrier     last_token   (in-graph)   1024 (no MRL)
+ *
+ * Applying the wrong pooling never throws — it returns a plausible vector from
+ * a subtly wrong space — so the failure mode is a leg that looks like a fair
+ * loss and is really a measurement bug. That is why legs route through the
+ * SHIPPED builders (`MRL_FAMILIES`) rather than closures defined here: the
+ * configuration measured and the configuration shipped are one object. Each
+ * builder's docblock cites the model's own `1_Pooling/config.json` and
+ * `config_sentence_transformers.json` for these values, not a summary of a card.
+ *
+ * Per-leg cost (`msPerDoc`, `msPerQuery`, `peakRssMB`) is reported alongside
+ * quality because the desktop carries the winner in-process — see `embedAll`
+ * for why RSS is only comparable across ONE-family runs.
+ *
  * The --sidecar leg speaks the D-004 API (POST {url}/embed { model, kind, texts })
  * so a candidate backend (Node-ONNX sidecar, Ollama, TEI) is measurable behind
  * the exact interface production would call.
@@ -52,11 +75,13 @@ import {
   buildGemmaEmbedder,
   buildHarrierEmbedder,
   buildLocalEmbedder,
+  buildGraniteEmbedder,
+  buildQwen3Embedder,
   gemmaPrompt,
   harrierPrompt,
   mrlTruncate,
   isTrainedDim,
-  EMBEDDER_DIM_SPECS,
+  dimSpecFor,
   GEMMA_TARGET_DIMS,
 } from '@papercusp/memory';
 import { buildOpenAiEmbedder, resolveOpenAiKey } from '../configure';
@@ -148,8 +173,29 @@ function ollamaLeg(url: string, model: string): Leg {
   return { name: `ollama:${model}`, doc: call('document'), query: call('query') };
 }
 
-/** `gemma@512` — an MRL width of an in-process family (P-002's sweep shape). */
-const MRL_LEG = /^(gemma|harrier)@(\d+)$/;
+/** `gemma@512` / `granite311@384` — a width of an in-process family. */
+const MRL_LEG = /^([a-z][a-z0-9]*)@(\d+)$/;
+
+/**
+ * In-process embedder families the sweep can score, by leg prefix.
+ *
+ * Every entry MUST be the production builder, never a bench-local
+ * reimplementation. Each of these models differs from the others in POOLING
+ * and PROMPTING — mean/CLS/last-token, symmetric/asymmetric — and getting
+ * either wrong does not error: it yields a plausible vector from a subtly
+ * wrong space, which this bench would then report as a fair loss for that
+ * model. Routing through the shipped builders is what keeps the measured
+ * configuration and the shippable configuration the same object.
+ */
+type FamilyBuilder = (o: { kind: 'document' | 'query'; dims: number }) => EmbedFn;
+const MRL_FAMILIES: Record<string, FamilyBuilder> = {
+  gemma: ({ kind, dims }) => buildGemmaEmbedder({ kind, dims }),
+  harrier: ({ kind, dims }) => buildHarrierEmbedder({ kind, dims }),
+  // P-003 candidates for the untrained-384 cut.
+  granite97: ({ kind, dims }) => buildGraniteEmbedder({ variant: '97m', kind, dims }),
+  granite311: ({ kind, dims }) => buildGraniteEmbedder({ variant: '311m', kind, dims }),
+  qwen3: ({ kind, dims }) => buildQwen3Embedder({ kind, dims }),
+};
 
 /**
  * Widest requested width per MRL family. Every member of a family embeds at
@@ -176,28 +222,31 @@ async function buildLegs(
   for (const name of names) {
     try {
       const mrl = MRL_LEG.exec(name);
-      if (mrl) {
-        const family = mrl[1] as 'gemma' | 'harrier';
+      if (mrl && MRL_FAMILIES[mrl[1]]) {
+        const family = mrl[1];
         const dims = Number(mrl[2]);
-        const native = EMBEDDER_DIM_SPECS[family].nativeDims;
+        const build = MRL_FAMILIES[family];
+        const spec = dimSpecFor(family);
+        if (!spec) {
+          // A family with a builder but no declared spec could still be
+          // embedded — but nothing could then say whether the requested width
+          // is one the model was trained at, which is the whole question this
+          // sweep exists to answer. Refuse rather than measure blind (D-001).
+          out.push({ name, error: `no declared dim spec for family '${family}' — add one to CANDIDATE_DIM_SPECS` });
+          continue;
+        }
         // Asking for more dims than the model HAS is not a wider embedding —
         // mrlTruncate would silently hand back the native vector and the leg
         // would be scored under a label claiming a width it never had.
-        if (dims > native) {
-          out.push({ name, error: `dims ${dims} exceeds ${family} native ${native}` });
+        if (dims > spec.nativeDims) {
+          out.push({ name, error: `dims ${dims} exceeds ${family} native ${spec.nativeDims}` });
           continue;
         }
         const at = familyWidths.get(family) ?? dims;
         out.push({
           name,
-          doc:
-            family === 'gemma'
-              ? buildGemmaEmbedder({ kind: 'document', dims: at })
-              : buildHarrierEmbedder({ kind: 'document', dims: at }),
-          query:
-            family === 'gemma'
-              ? buildGemmaEmbedder({ kind: 'query', dims: at })
-              : buildHarrierEmbedder({ kind: 'query', dims: at }),
+          doc: build({ kind: 'document', dims: at }),
+          query: build({ kind: 'query', dims: at }),
           mrl: { family, dims },
         });
       } else if (name === 'gemma') {
@@ -235,7 +284,12 @@ async function buildLegs(
         if (!sidecarUrl) out.push({ name, error: 'pass --sidecar <url>' });
         else out.push(sidecarLeg(sidecarUrl, name.includes(':') ? name.split(':')[1] : 'gemma'));
       } else {
-        out.push({ name, error: `unknown leg '${name}'` });
+        out.push({
+          name,
+          error:
+            `unknown leg '${name}' — in-process families take an explicit width ` +
+            `(${Object.keys(MRL_FAMILIES).join('|')})@<dims>`,
+        });
       }
     } catch (e) {
       out.push({ name, error: `build_failed: ${e instanceof Error ? e.message : String(e)}` });
@@ -244,14 +298,49 @@ async function buildLegs(
   return out;
 }
 
-async function embedAll(fn: EmbedFn, texts: string[], label: string): Promise<{ vecs: number[][]; seconds: number }> {
+/** Resident set size in MB. Worker threads share the process, so this DOES
+ *  include the ONNX model+arena loaded inside the embed worker. */
+function rssMB(): number {
+  return +(process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+}
+
+/**
+ * Embed every text, timing the pass and tracking peak RSS.
+ *
+ * Footprint matters here as much as quality: the desktop ships this in-process
+ * (P-003), so a model that wins on MRR while costing another GB resident may
+ * still lose. RSS is sampled along the way, not just at the end, because the
+ * ONNX arena can peak mid-pass on a long document and settle back.
+ *
+ * ⚠ RSS IS CUMULATIVE PER PROCESS. The embed worker caches one pipeline PER
+ * model, so a run scoring several families measures the second family on top
+ * of the first's resident weights — the delta is then a marginal cost, not
+ * that model's standalone footprint. For a comparable per-model number, score
+ * ONE family per process and compare `peakRssMB` across runs (the `--legs
+ * none --compare-with a.json,b.json` re-analysis pass exists precisely so
+ * splitting a sweep across processes costs nothing).
+ */
+async function embedAll(
+  fn: EmbedFn,
+  texts: string[],
+  label: string,
+): Promise<{ vecs: number[][]; seconds: number; peakRssMB: number }> {
   const vecs: number[][] = [];
+  let peakRss = process.memoryUsage().rss;
+  const sampleRss = (): void => {
+    const rss = process.memoryUsage().rss;
+    if (rss > peakRss) peakRss = rss;
+  };
   const t0 = Date.now();
   for (let i = 0; i < texts.length; i++) {
     vecs.push(l2norm(await fn(texts[i])));
-    if ((i + 1) % 50 === 0) console.log(`  [${label}] ${i + 1}/${texts.length}`);
+    if ((i + 1) % 50 === 0) {
+      sampleRss();
+      console.log(`  [${label}] ${i + 1}/${texts.length}`);
+    }
   }
-  return { vecs, seconds: (Date.now() - t0) / 1000 };
+  sampleRss();
+  return { vecs, seconds: (Date.now() - t0) / 1000, peakRssMB: +(peakRss / 1024 / 1024).toFixed(1) };
 }
 
 interface ClassRow {
@@ -463,9 +552,11 @@ async function main(): Promise<void> {
     const baseDims = base.mrl!.dims;
     const widths = members.map((m) => m.mrl!.dims);
     console.log(`\n== ${family} MRL family ${widths.join('/')}: ONE pass at ${baseDims}, narrower widths derived ==`);
+    const rssBeforeMB = rssMB();
     try {
       const doc = await embedAll(base.doc, corpusTexts, `${family}@${baseDims}/doc`);
       const query = await embedAll(base.query, queryTexts, `${family}@${baseDims}/query`);
+      const spec = dimSpecFor(family);
       for (const m of members) {
         const d = m.mrl!.dims;
         record(
@@ -475,11 +566,22 @@ async function main(): Promise<void> {
           {
             // Whether the model was actually TRAINED at this width — read from
             // the declared spec, never restated here (D-001).
-            trainedDim: isTrainedDim(EMBEDDER_DIM_SPECS[family as 'gemma' | 'harrier'], d),
+            trainedDim: spec ? isTrainedDim(spec, d) : null,
+            model: spec?.model ?? null,
             sharedPass: `${family}@${baseDims}`,
             derived: d !== baseDims,
             docSeconds: +doc.seconds.toFixed(1),
             querySeconds: +query.seconds.toFixed(1),
+            // Cost, which the shared pass makes SHARED: every width of a
+            // family is derived from the base pass, so these numbers describe
+            // the family's ONE forward pass and are identical across its
+            // members by construction — never evidence that a narrower width
+            // is cheaper to PRODUCE (it is only cheaper to store).
+            msPerDoc: +((doc.seconds * 1000) / Math.max(corpusTexts.length, 1)).toFixed(1),
+            msPerQuery: +((query.seconds * 1000) / Math.max(queryTexts.length, 1)).toFixed(1),
+            rssBeforeMB,
+            peakRssMB: Math.max(doc.peakRssMB, query.peakRssMB),
+            rssDeltaMB: +(Math.max(doc.peakRssMB, query.peakRssMB) - rssBeforeMB).toFixed(1),
           },
         );
       }
@@ -492,12 +594,18 @@ async function main(): Promise<void> {
 
   for (const leg of standalone) {
     console.log(`\n== ${leg.name}: embedding ==`);
+    const rssBeforeMB = rssMB();
     try {
       const doc = await embedAll(leg.doc, corpusTexts, `${leg.name}/doc`);
       const query = await embedAll(leg.query, queryTexts, `${leg.name}/query`);
       record(leg.name, doc.vecs, query.vecs, {
         docSeconds: +doc.seconds.toFixed(1),
         querySeconds: +query.seconds.toFixed(1),
+        msPerDoc: +((doc.seconds * 1000) / Math.max(corpusTexts.length, 1)).toFixed(1),
+        msPerQuery: +((query.seconds * 1000) / Math.max(queryTexts.length, 1)).toFixed(1),
+        rssBeforeMB,
+        peakRssMB: Math.max(doc.peakRssMB, query.peakRssMB),
+        rssDeltaMB: +(Math.max(doc.peakRssMB, query.peakRssMB) - rssBeforeMB).toFixed(1),
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

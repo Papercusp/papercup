@@ -15,6 +15,24 @@
  *
  *     EVERY "COULDN'T MEASURE" MUST BE A FAIL, NEVER A PASS.
  *
+ * R6 adds that rule's mirror image (WI-7000):
+ *
+ *     AN ASSERT NOBODY CALLS IS NOT EVIDENCE.
+ *
+ * R1–R5 catch an assert that runs and cannot fail. R6 catches an assert that
+ * never runs at all — which is strictly worse, because it reds nothing and
+ * looks fine in review. `bin/lib/federation-asserts.sh` shipped all five LIVE-1
+ * parity asserts (fed_assert_wake_bridge / _delivery_receipts /
+ * _federated_events / _presence_gossip / _claim_spec_federation) correct and
+ * complete; the caller the runbook named, deb-hetzner-federation.sh, was the
+ * RETIRED Hetzner scenario. So the helpers were unreachable for a month while
+ * four of five LIVE-1 surfaces stayed "unproven cross-machine, manual PG
+ * inspection". Nothing failed. That is the point: a function nobody calls
+ * fails silently forever — it just quietly stops being evidence.
+ *
+ * (Retiring a surface should include grepping what ONLY it called. R6 is that
+ * grep, made standing.)
+ *
  * A negative/threshold assert over a REMOTE probe (ssh + psql) cannot tell
  * "confirmed zero" from "the query never ran" — both are an empty string. Coercing
  * that empty to 0 sets the baseline to the most permissive value for a

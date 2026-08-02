@@ -192,13 +192,6 @@ export interface FleetLaunchRowProps {
 export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRowProps) {
   // Selections live in the URL (see the module header). Prefixed keys so they
   // cannot collide with the ~180 params already in use across this app.
-  /**
-   * P-007: whether the launcher is expanded. nuqs, not useState — this is
-   * disclosure open-state, which the repo's own rule puts in the URL (and it
-   * means a half-filled fleet form survives a reload alongside the field
-   * values below, which are already nuqs for the same reason).
-   */
-  const [fleetOpen, setFleetOpen] = useQueryState('fleetOpen', parseAsBoolean.withDefault(false));
   const [fleetName, setFleetName] = useQueryState('fleetName', parseAsString.withDefault(''));
   const [planSlug, setPlanSlug] = useQueryState('fleetPlan', parseAsString);
   const [model, setModel] = useQueryState('fleetModel', parseAsString.withDefault(''));
@@ -321,57 +314,31 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
       data-testid="fleet-launch-row"
       aria-label="Launch a fleet"
     >
-      {/* ── P-007: the disclosure ──────────────────────────────────────────
-          Collapsed, this is ONE control in the vocabulary's Action shape, with
-          the trailing "…" that means a chooser opens. Expanded, it is the
-          captioned form below.
+      {/* ── P-007: CAPTIONS, and deliberately NOT a disclosure ──────────────
+          Deck item #5 drew this collapsed, behind a "✛ Launch a fleet…"
+          trigger. I built that, and it was wrong: owner ask (ii) at the top of
+          this file says "Instead of abutton like the others make this fleet
+          launching its own always visible row", so collapsing it turns the row
+          back into exactly the button the owner rejected. The owner's
+          2026-08-02 decision that the launcher STAYS in the popup settled
+          WHERE it lives, not whether it is collapsed. The row therefore stays
+          unconditionally visible, and FleetLaunchRow.test.tsx's "renders
+          unconditionally, with a control for every option" is the test that
+          holds that line — it caught this.
 
-          WI-6505's requirement survives intact: the row is still rendered
-          OUTSIDE `actionCtx`, so it is still reachable exactly when the
-          session is dead or will not start — a disclosure costs one click,
-          where the actionCtx gate removed the row entirely based on state the
-          user did not choose. The owner confirmed 2026-08-02 that the launcher
-          STAYS in the popup, so this is a form change, not a move. ── */}
-      {!fleetOpen ? (
-        <div className="pc-ctl-band">
-          <button
-            type="button"
-            className="pc-ctl-act"
-            onClick={() => void setFleetOpen(true)}
-            data-testid="fleet-launch-disclosure"
-          >
-            <span className="pc-ctl-act__inner">
-              <span className="pc-ctl-act__icon" aria-hidden="true">
-                ✛
-              </span>
-              <span>Launch a fleet…</span>
-            </span>
-          </button>
-        </div>
-      ) : (
-        <>
-          <div className="pc-ctl-band">
-            <span className="pc-ctl-band__label">Fleet</span>
-            <span className="pc-ctl-band__spacer" />
-            <button
-              type="button"
-              className="pc-ctl-act pc-ctl-act--ghost"
-              onClick={() => void setFleetOpen(false)}
-              data-testid="fleet-launch-collapse"
-              aria-label="Hide the fleet launcher"
-            >
-              <span className="pc-ctl-act__inner">Cancel</span>
-            </button>
-          </div>
-          {/* Every control below is a Field: a caption ABOVE a recessed well.
-              The captions are the whole point of this item — until now these
-              seven controls had NO visible names at all, their labels existed
-              only in `ariaLabel`, and that is literally where the owner's
-              complaint text came from ("Plan the fleet works", "Account
-              routing for every fleet member"). Those strings were never meant
-              to be read as UI copy; they were being read as UI copy because
-              nothing else named the controls. */}
-          <div className="pc-new-session-launcher pc-fleet-launch-row__fields">
+          What P-007 does change is the FORM, which is where the owner's actual
+          complaint was: every control now carries a VISIBLE caption above a
+          recessed well (the vocabulary's Field shape). Until now these seven
+          controls had no visible names at all — their labels existed only in
+          `ariaLabel`, and that is literally where the owner's complaint text
+          came from ("Plan the fleet works", "Account routing for every fleet
+          member", "Headed or headless members"). Those strings were never
+          written as UI copy; they were being READ as UI copy because nothing
+          else named the controls. ── */}
+      <div className="pc-ctl-band">
+        <span className="pc-ctl-band__label">Fleet</span>
+      </div>
+      <div className="pc-new-session-launcher pc-fleet-launch-row__fields">
         <div className="pc-ctl-field">
           <span className="pc-ctl-field__cap" id="fleet-cap-name">
             Fleet name
@@ -463,22 +430,20 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             data-testid="fleet-launch-count"
           />
         </div>
-          </div>
-          <div className="pc-ctl-band pc-fleet-launch-row__submit">
-            <span className="pc-ctl-band__spacer" />
-            <Button
-              variant="primary"
-              size="sm"
-              className="pc-new-session-launcher__btn"
-              onClick={() => void launch()}
-              disabled={launching}
-              data-testid="fleet-launch-submit"
-            >
-              {launching ? 'Launching…' : '+ Launch fleet'}
-            </Button>
-          </div>
-        </>
-      )}
+      </div>
+      <div className="pc-ctl-band pc-fleet-launch-row__submit">
+        <span className="pc-ctl-band__spacer" />
+        <Button
+          variant="primary"
+          size="sm"
+          className="pc-new-session-launcher__btn"
+          onClick={() => void launch()}
+          disabled={launching}
+          data-testid="fleet-launch-submit"
+        >
+          {launching ? 'Launching…' : '+ Launch fleet'}
+        </Button>
+      </div>
     </div>
   );
 }

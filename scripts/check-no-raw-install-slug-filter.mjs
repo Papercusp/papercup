@@ -49,29 +49,57 @@ export const ALLOWLIST = new Set([
   // check-no-raw-setinterval allowlists its own definition site).
   'scripts/check-no-raw-install-slug-filter.mjs',
 
-  // WI-6978, relation audited 2026-08-02: harness_shared.harness_escalations is NOT a
-  // re-homed relation, so a raw-installSlug filter on it is CORRECT and must not be
-  // "fixed" into routineStorageSlug() — that would rewrite the read away from the rows
-  // the writes actually produce.
+  // ── RELATION VERDICT: harness_shared.harness_escalations is NOT re-homed ──────────
+  // WI-6978, audited 2026-08-02. A raw-installSlug filter on this relation is CORRECT
+  // and must NOT be "fixed" into routineStorageSlug() — that would rewrite the read away
+  // from the rows the writes actually produce. Recorded ONCE here and shared by every
+  // file below that reads only this relation; re-audit if a writer ever starts resolving
+  // the slug for this table.
   //
   // Settled on the RELATION, three independent ways, not on the call-site pattern:
   //  1. TRIGGERS — harness_escalations carries only capture_git_export_outbox,
   //     emit_change_notify and a tsv-update trigger. No trigger rewrites harness_slug,
   //     and no re-home trigger exists on ANY of the candidate tables: re-homing here is
   //     purely application-level (routineStorageSlug → resolveWorkItemPot), never a DB
-  //     rewrite. So "check pg_trigger" alone cannot settle a relation — checking the
-  //     WRITE PATHS is what does.
-  //  2. WRITE PATHS — all ~19 writers to harness_escalations insert a RAW slug
+  //     rewrite. So "check pg_trigger" alone cannot settle a relation — it returns empty
+  //     for every table here, which LOOKS like a clean answer and is not one. Checking
+  //     the WRITE PATHS is what settles it.
+  //  2. WRITE PATHS — all ~19 source writers to harness_escalations insert a RAW slug
   //     (`${row.install_slug}` / `${harnessSlug}`); not one calls routineStorageSlug.
+  //     (A repo-wide grep shows a single routineStorageSlug co-occurrence, in
+  //     apps/operator/dist-host/hono-host.mjs — a whole-app BUILD BUNDLE, not a writer.)
   //     Reads and writes therefore agree, which is the property that matters.
   //  3. LIVE DATA — rows are stored under real harness slugs (papercusp 61 rows incl. a
   //     release-trigger row, newest 2026-08-02T07:42Z; papercup, oddsmith, quartermaster,
   //     per-instance slugs). Nothing is collapsed under the platform Pot, which is the
   //     signature the re-homing bug leaves behind.
-  //
-  // Covers all 4 sites in this file (the RELEASE_TRIGGER_FREEZE / FIRE_STALE escalation
-  // reads). Re-audit if a writer ever starts resolving the slug for this table.
+
+  // Covers all 4 sites (the RELEASE_TRIGGER_FREEZE / FIRE_STALE escalation reads).
   'packages/operator-core/lib/release/green-stall-watchdog.ts',
+
+  // GRADUATED 2026-08-02 (WI-6978). Covers both sites — :185 (the "already paged this
+  // episode" latch read) and :265 (the recovery-leg UPDATE). harness_escalations is this
+  // file's ONLY relation, so the verdict above applies whole.
+  //
+  // Two further reasons specific to THIS file, either of which is independently
+  // sufficient — so it is not resting on the shared verdict alone:
+  //  4. ITS OWN WRITE IS RAW — the INSERT at :228 stores `${installSlug}` verbatim.
+  //     Read and write are in the same function and agree by construction, so this
+  //     watchdog cannot be blinded to rows it produced itself.
+  //  5. THE SLUG CANNOT BE A RE-HOMING TRIGGER — `installSlug` here is NOT a routine's
+  //     `install_slug` (the thing the trap needs). :299 resolves it from
+  //     `operatorHomeHarnessSlug()` — env PAPERCUSP_POT_HOME_SLUG, else the
+  //     LEGACY_DEFAULT_HOME_HARNESS constant, which is 'papercusp'. That is a concrete
+  //     hive slug by construction: never a member of WORKSPACE_GLOBAL_LABELS
+  //     ({operator, *, @singleton, all, hive-canary}), and NOT the 'papercup' /
+  //     'papercup-hive' pair that canonicalPotSlug() folds to the platform Pot — the
+  //     second, easily-missed re-homing path. So even if this relation WERE re-homed,
+  //     this call site could not reach the trap.
+  //
+  // Confirmed live: the row for phase 'release-deploy-staleness-watchdog' is stored
+  // under harness_slug='papercusp' — exactly what :185/:265 filter on — not under the
+  // platform Pot.
+  'packages/operator-core/lib/release-deploy-staleness-watchdog.ts',
 ]);
 
 /**
@@ -88,13 +116,38 @@ export const ALLOWLIST = new Set([
  * earns an ALLOWLIST entry stating WHY its relation is not subject to re-homing.
  * A NEW file here is a hard guard failure, not a BASELINE addition — that is the ratchet.
  */
+/*
+ * ⚠ AUDIT BY RELATION, NOT BY FILE. The remaining entries cover 7 DISTINCT relations,
+ * and the verdict is a property of the relation — so auditing one can clear several
+ * files at once, and a file touching two relations needs BOTH settled before it moves.
+ * Mapped 2026-08-02 (WI-6978) by resolving each flagged site to its nearest enclosing
+ * FROM/INTO/UPDATE/JOIN:
+ *
+ *   harness_plans                   plan-run-action (x2) · ready-plan-autostart ·
+ *                                   draft-review-watchdog        ← 3 files, audit first
+ *   autoloop_state                  liveness-alarm · overwatch/snapshot   ← 2 files
+ *   plan_runs                       plan-run-action (x2)
+ *   scout_routed_ideas              ungraded-filings-watchdog
+ *   pr_reviewer_settings            poll-daemon
+ *   trusted_authors                 poll-daemon
+ *   harness_features_consolidated   poll-daemon   ← a multi-tenant *_consolidated table:
+ *                                   keyed (workspace_id, harness_slug, ...), so a raw
+ *                                   filter can silently read ANOTHER TENANT's row
+ *
+ * The settled method (pg_trigger CANNOT do this — it returns empty for every table here,
+ * which reads exactly like a clean bill of health): (a) resolve the RELATION at each
+ * flagged site; (b) grep every writer to it and check whether ANY resolves the slug via
+ * routineStorageSlug; (c) confirm against live data — rows under real harness slugs mean
+ * NOT re-homed, rows collapsed under the platform Pot mean re-homed. Also check (d)
+ * where the site's `installSlug` COMES FROM: one derived from operatorHomeHarnessSlug()
+ * is a concrete hive slug and can never trigger re-homing regardless of the relation.
+ */
 export const BASELINE = new Set([
-  // green-stall-watchdog.ts GRADUATED to ALLOWLIST 2026-08-02 (WI-6978): its relation
-  // (harness_escalations) was audited and is genuinely NOT re-homed — see the reason
-  // recorded at the ALLOWLIST entry above. 9 → 8 files pending audit.
+  // GRADUATED to ALLOWLIST 2026-08-02 (WI-6978), both on the audited harness_escalations
+  // verdict recorded above: green-stall-watchdog.ts, then
+  // release-deploy-staleness-watchdog.ts. 9 → 7 files pending audit.
   'packages/operator-core/lib/harness/routines/plan-run-action.ts',
   'packages/operator-core/lib/pr-host/poll-daemon.ts',
-  'packages/operator-core/lib/release-deploy-staleness-watchdog.ts',
   'packages/operator-core/lib/system-health/liveness-alarm.ts',
   'packages/operator-core/lib/scout/ungraded-filings-watchdog.ts',
   'packages/operator-core/lib/scout/ready-plan-autostart.ts',

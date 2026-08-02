@@ -149,7 +149,7 @@ afterEach(() => {
 
 /** Fill the two structurally-required fields (name + lane) so a launch can proceed. */
 function fillRequired(planSlug = planRows[0].slug) {
-  fireEvent.change(screen.getByLabelText('Name for the new fleet'), { target: { value: 'my-fleet' } });
+  fireEvent.change(screen.getByLabelText('Fleet name'), { target: { value: 'my-fleet' } });
   fireEvent.change(screen.getByLabelText('Plan the fleet works'), { target: { value: planSlug } });
 }
 
@@ -238,9 +238,9 @@ describe('FleetLaunchRow — the owner’s five options are all present', () => 
     // (iii) headed or headless
     expect(screen.getByLabelText('Headed or headless members')).toBeTruthy();
     // (iv) how many
-    expect(screen.getByLabelText('How many members to launch')).toBeTruthy();
+    expect(screen.getByLabelText('Members')).toBeTruthy();
     // …plus the two the launcher structurally requires: a name and a lane.
-    expect(screen.getByLabelText('Name for the new fleet')).toBeTruthy();
+    expect(screen.getByLabelText('Fleet name')).toBeTruthy();
     expect(screen.getByLabelText('Plan the fleet works')).toBeTruthy();
   });
 
@@ -265,7 +265,7 @@ describe('FleetLaunchRow — the owner’s five options are all present', () => 
 
   it('bounds the count input to the launcher’s real range', () => {
     renderRow(<FleetLaunchRow />);
-    const count = screen.getByLabelText('How many members to launch') as HTMLInputElement;
+    const count = screen.getByLabelText('Members') as HTMLInputElement;
     expect(count.min).toBe('1');
     expect(count.max).toBe(String(FLEET_MAX_MEMBERS));
   });
@@ -275,7 +275,7 @@ describe('FleetLaunchRow — launching', () => {
   it('launches one member PER count, with every chosen value on each', async () => {
     renderRow(<FleetLaunchRow />);
     fillRequired();
-    fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Members'), { target: { value: '3' } });
     fireEvent.change(screen.getByLabelText('Headed or headless members'), { target: { value: HEADLESS_VALUE } });
     fireEvent.change(screen.getByLabelText('Account routing for every fleet member'), {
       target: { value: 'acct-pool-1' },
@@ -300,7 +300,7 @@ describe('FleetLaunchRow — launching', () => {
     launchImpl = async () => ({ ok: true, fleetSlug: 'server-assigned-slug' });
     renderRow(<FleetLaunchRow />);
     fillRequired();
-    fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Members'), { target: { value: '3' } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
 
     await waitFor(() => expect(launchCalls.length).toBe(3));
@@ -318,7 +318,7 @@ describe('FleetLaunchRow — launching', () => {
     launchImpl = async () => ({ ok: false, error: '`psu` not found on PATH' });
     renderRow(<FleetLaunchRow />);
     fillRequired();
-    fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '4' } });
+    fireEvent.change(screen.getByLabelText('Members'), { target: { value: '4' } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
 
     await waitFor(() => expect(toastCalls.length).toBeGreaterThan(0));
@@ -343,7 +343,7 @@ describe('FleetLaunchRow — launching', () => {
   it('clamps an over-max count before it reaches the launcher', async () => {
     renderRow(<FleetLaunchRow />);
     fillRequired();
-    fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '99' } });
+    fireEvent.change(screen.getByLabelText('Members'), { target: { value: '99' } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(launchCalls.length).toBe(FLEET_MAX_MEMBERS));
   });
@@ -390,7 +390,7 @@ describe('FleetLaunchRow — launching', () => {
 
   it('refuses a fleet with no lane without calling the launcher', async () => {
     renderRow(<FleetLaunchRow />);
-    fireEvent.change(screen.getByLabelText('Name for the new fleet'), { target: { value: 'my-fleet' } });
+    fireEvent.change(screen.getByLabelText('Fleet name'), { target: { value: 'my-fleet' } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(toastCalls.length).toBeGreaterThan(0));
     expect(launchCalls.length).toBe(0);
@@ -406,7 +406,7 @@ describe('FleetLaunchRow — launching', () => {
     };
     renderRow(<FleetLaunchRow />);
     fillRequired();
-    fireEvent.change(screen.getByLabelText('How many members to launch'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Members'), { target: { value: '3' } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
     await waitFor(() => expect(toastCalls.length).toBeGreaterThan(0));
     expect(toastCalls[0].kind).toBe('success');

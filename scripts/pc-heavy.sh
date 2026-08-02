@@ -276,7 +276,13 @@ _effective_slots() {
   if [ "$_slots_fixed" = 1 ]; then _n="$_slots_base"; else _n="$(_calc_slots)"; fi
   case "$_n" in ''|*[!0-9]*) _n="$_floor" ;; esac
   if _gate_reserve_active; then
-    local _clamped=$(( _n / 4 ))
+    # Depth depends on WHICH phase the live run is in (EI-19328677512071640).
+    # _gate_reserve_active set _gate_lockdir for us; every unknown answers 4.
+    local _div
+    _div="$(_gate_clamp_divisor)"
+    case "$_div" in ''|*[!0-9]*) _div=4 ;; esac
+    [ "$_div" -lt 1 ] && _div=4
+    local _clamped=$(( _n / _div ))
     [ "$_clamped" -lt 1 ] && _clamped=1
     [ "$_clamped" -lt "$_n" ] && _n="$_clamped"
   fi
@@ -291,13 +297,20 @@ fi
 _gate_active=0
 _gate_reserve_active && _gate_active=1
 _slots="$(_effective_slots)"
+_gate_phase=""
+_gate_div=4
 if [ "$_gate_active" = 1 ]; then
-  echo "[pc-heavy] release gate is JUDGING — heavy slots clamped to $_slots to keep" \
-       "headroom for its isolation re-run (EI-19315056231449472)." \
+  _gate_div="$(_gate_clamp_divisor)"
+  case "$_gate_div" in ''|*[!0-9]*) _gate_div=4 ;; esac
+  _gate_phase=$(head -c 4096 "${_gate_lockdir:-}/phase.json" 2>/dev/null | tr -d ' \n' \
+                 | sed -n 's/.*"phase":"\([a-zA-Z]*\)".*/\1/p' | head -1)
+  [ -n "$_gate_phase" ] || _gate_phase="unknown"
+  echo "[pc-heavy] release gate is JUDGING (phase=$_gate_phase) — heavy slots clamped to" \
+       "$_slots to keep headroom for its isolation re-run (EI-19315056231449472)." \
        "Override with PC_HEAVY_GATE_RESERVE=0." >&2
 fi
 if [ "${PC_HEAVY_DEBUG:-}" = "1" ]; then
-  echo "[pc-heavy] slots=$_slots fixed=$_slots_fixed cores=$_cores floor=$_floor ceil=$_ceil gate=$_gate_active" >&2
+  echo "[pc-heavy] slots=$_slots fixed=$_slots_fixed cores=$_cores floor=$_floor ceil=$_ceil gate=$_gate_active phase=${_gate_phase:-none} div=$_gate_div" >&2
 fi
 _dir="${PC_HEAVY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}"
 _timeout="${PC_HEAVY_TIMEOUT_SEC:-900}"
