@@ -35,9 +35,9 @@
  *   .papercusp/, .git/, and all historical migration SQL
  *   (libs/papercusp/libs/db/sql/**) — those are frozen, never hand-edited.
  */
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const args = process.argv.slice(2);
 const checkMode = args.includes('--check');
@@ -55,17 +55,24 @@ const KEEP_RE =
 
 const root = resolve(import.meta.dirname, '..');
 
+// WI-6666: plain `git ls-files` STOPS AT THE SUPERPROJECT BOUNDARY — a submodule
+// (libs/generic/**, libs/papercusp/**, papercusp-desktop/**) is a single gitlink
+// entry with no extension, so it and everything inside it was never opened. This
+// scan is explicitly repo-wide (it carves out only the frozen migration-SQL
+// subfolder of libs/papercusp, implying the REST of that submodule is in scope),
+// so the old enumerator silently skipped ~24% of the tree it claimed to cover.
+// `listTrackedFiles` recurses into submodules; `unscanned` is surfaced in the
+// report so a genuinely-uninitialized submodule (libs/zero-harness) still reads
+// as "not checked" rather than silently "clean".
 function trackedFiles() {
-  const out = execFileSync('git', ['ls-files'], { cwd: root, maxBuffer: 64 * 1024 * 1024 })
-    .toString('utf8')
-    .split('\n')
-    .filter(Boolean);
-  return out.filter((f) => {
+  const { files: out, unscanned } = listTrackedFiles(root);
+  const filtered = out.filter((f) => {
     if (EXCLUDE_PATH_RE.test(f)) return false;
     if (EXCLUDE_MIGRATION_SQL_RE.test(f)) return false;
     if (scanDir && !f.startsWith(scanDir.replace(/^\.?\//, ''))) return false;
     return true;
   });
+  return { files: filtered, unscanned };
 }
 
 function isBinaryLike(path) {
@@ -79,7 +86,7 @@ function isGeneratedReport(path) {
   return /(^|\/)junit\.xml$/.test(path) || /(^|\/)coverage\//.test(path);
 }
 
-const files = trackedFiles();
+const { files, unscanned } = trackedFiles();
 const hits = []; // { file, line, text, kept }
 let scanned = 0;
 
@@ -109,13 +116,20 @@ const nonKeptDocs = nonKept.filter((h) => isDocFile(h.file));
 const nonKeptCode = nonKept.filter((h) => !isDocFile(h.file));
 
 if (jsonMode) {
-  console.log(JSON.stringify({ scannedFiles: scanned, totalHits: hits.length, nonKeptHits: nonKept.length, keptHits: kept.length, hits }, null, 2));
+  console.log(
+    JSON.stringify(
+      { scannedFiles: scanned, totalHits: hits.length, nonKeptHits: nonKept.length, keptHits: kept.length, unscanned, hits },
+      null,
+      2,
+    ),
+  );
 } else {
   console.log(
     `scan-lexicon: ${scanned} tracked files scanned, ${hits.length} hits ` +
       `(${nonKept.length} non-kept [${nonKeptCode.length} code, ${nonKeptDocs.length} docs/mdx — ` +
       `docs are frequently HISTORICAL runbooks describing past file paths, D-002 "historical plans/briefs untouched" ` +
-      `— review before treating as a rename miss], ${kept.length} kept-set)`,
+      `— review before treating as a rename miss], ${kept.length} kept-set)` +
+      (scanDir ? '' : describeUnscanned(unscanned)),
   );
   if (nonKept.length > 0) {
     console.log('\nNon-kept hits (review each — real rename miss vs. a keep-set case this heuristic missed):');

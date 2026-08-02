@@ -43,9 +43,11 @@ import {
 } from '../memory/configure';
 import type { EmbedFn, ResolvedEmbedder } from '@papercusp/memory';
 import { buildSidecarAwareEmbedder } from '../memory/embed-sidecar-wiring';
+// The prose column width contract — ONE source, not a restated `384`
+// (D-005 §5). `fitsProseColumns` is the dims guard; `modeTargetDims` is what a
+// mode declares it emits. A test asserts the two agree.
+import { PROSE_VECTOR_DIMS, fitsProseColumns, modeTargetDims } from './prose-vector-dims';
 
-// Exported for embed-space-self-check.ts (WI-3644): the expected vector width.
-export const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 // F-E5 (app-wide-load-traps § E): hardware-adaptive embed batch — a big host
 // pushes bigger batches for throughput, a laptop keeps latency/memory down.
@@ -80,7 +82,10 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): EmbedFn {
         body: JSON.stringify({
           model: OPENAI_EMBEDDER_MODEL,
           input: text,
-          dimensions: EMBEDDER_DIM,
+          // What the openai mode DECLARES it emits. The prose-column contract
+          // test asserts this equals PROSE_VECTOR_DIMS, so asking for the
+          // declared width can never write a vector the column cannot hold.
+          dimensions: modeTargetDims('openai'),
         }),
       });
       adm.recordResponse(headersToRecord(r.headers));
@@ -345,7 +350,7 @@ export async function backfillTable(
       stats.scanned += 1;
       try {
         const vec = await embed(row.body);
-        if (vec.length !== EMBEDDER_DIM) {
+        if (!fitsProseColumns(vec.length)) {
           stats.errors += 1;
           continue;
         }
@@ -417,11 +422,16 @@ export async function runBackfillSweep(): Promise<BackfillStats[] | { skipped: s
   try {
     const resolved = await resolveBackfillEmbedder();
     // Skip entirely when disabled OR when the active embedder's dims don't fit
-    // the vector(384) columns (harrier is native 1024, memory-side only — the
-    // P-006 verdict keeps prose/registry surfaces on gemma). Without this
-    // guard a harrier preference would burn a full batch of ~4×-cost embeds
-    // per table per tick just to count every row as a dims-mismatch error.
-    if (resolved.mode === 'disabled' || resolved.dims !== EMBEDDER_DIM) {
+    // the prose columns. Without this guard an ineligible preference would burn
+    // a full batch of embeds per table per tick just to count every row as a
+    // dims-mismatch error.
+    //
+    // Who is ineligible (PROSE_ELIGIBLE_MODES): harrier, native 1024 with no
+    // MRL — the long-standing case; and since D-005, `local` too — bge-small is
+    // natively 384 and cannot emit the 768 the columns now hold. A `local`
+    // preference therefore leaves prose lexical-only rather than re-embedding
+    // the whole column into a weaker space, which is what used to happen.
+    if (resolved.mode === 'disabled' || !fitsProseColumns(resolved.dims)) {
       __sweepState.lastResult = TARGETS.map((t) => ({
         table: t.table,
         scanned: 0,

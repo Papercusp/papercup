@@ -24,8 +24,8 @@
 import { withWorkspace } from '@papercusp/db-org';
 import { resolvePlanScope, type PlanSourceOpts } from './source';
 
-/** Width of the migration-553 embedding columns (= embed-backfill's EMBEDDER_DIM). */
-const EMBED_DIM = 384;
+// The prose column width contract — ONE source, not a restated `384` (D-005 §5).
+import { fitsProseColumns } from '../../search/prose-vector-dims';
 /** Below this cosine similarity a token-flagged candidate is considered a
  *  DIFFERENT effort and cleared from the similar_exists refusal.
  *
@@ -153,9 +153,9 @@ export async function semanticPlanHits(
   try {
     const d = deps ?? searchDeps;
     const resolved = await d.resolveEmbedder();
-    if (!resolved || resolved.dims !== EMBED_DIM) return null;
+    if (!resolved || !fitsProseColumns(resolved.dims)) return null;
     const vec = await resolved.embed(query);
-    if (vec.length !== EMBED_DIM) return null;
+    if (!fitsProseColumns(vec.length)) return null;
     return await d.queryTopPlans(vec, resolved.mode, opts);
   } catch {
     return null;
@@ -189,9 +189,9 @@ export async function confirmSimilarPlans<T extends { slug: string }>(
   try {
     const d = deps ?? confirmDeps;
     const resolved = await d.resolveEmbedder();
-    if (!resolved || resolved.dims !== EMBED_DIM) return noVerdict;
+    if (!resolved || !fitsProseColumns(resolved.dims)) return noVerdict;
     const vec = await resolved.embed(`${proposed.title}\n${(proposed.body ?? '').slice(0, 2000)}`);
-    if (vec.length !== EMBED_DIM) return noVerdict;
+    if (!fitsProseColumns(vec.length)) return noVerdict;
     const sims = await d.querySimilarities(vec, resolved.mode, candidates.map((c) => c.slug), opts);
     const threshold = planDupeConfirmThreshold();
     const kept: Array<T & { similarity?: number }> = [];

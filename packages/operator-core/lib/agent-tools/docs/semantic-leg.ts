@@ -17,8 +17,8 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 
-/** Width of the migration-552 embedding column (= embed-backfill's EMBEDDER_DIM). */
-const EMBED_DIM = 384;
+// The prose column width contract — ONE source, not a restated `384` (D-005 §5).
+import { fitsProseColumns } from '../../search/prose-vector-dims';
 /** Over-fetch factor: several sections of one page can crowd the top-k; fetch
  *  extra rows so page-level dedupe still fills `limit` distinct pages. */
 const OVERFETCH = 3;
@@ -79,9 +79,9 @@ export async function semanticDocHits(
   try {
     const d = deps ?? realDeps;
     const resolved = await d.resolveEmbedder();
-    if (!resolved || resolved.dims !== EMBED_DIM) return null;
+    if (!resolved || !fitsProseColumns(resolved.dims)) return null;
     const vec = await resolved.embed(query);
-    if (vec.length !== EMBED_DIM) return null;
+    if (!fitsProseColumns(vec.length)) return null;
     const rows = await d.querySections(vec, resolved.mode, sourceKey, limit * OVERFETCH);
     // Rows arrive distance-ordered; keep each page's best section.
     const bySlug = new Map<string, DocSemanticHit>();

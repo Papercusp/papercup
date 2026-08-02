@@ -59,8 +59,8 @@ import { dedupSignature, type DupCluster } from '../harness/improvements/digest'
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import { parseVectorText } from '../search/embed-space-self-check';
 
-/** Width of the migration-551/553 embedding columns (= embed-backfill's EMBEDDER_DIM). */
-const EMBED_DIM = 384;
+// The prose column width contract — ONE source, not a restated `384` (D-005 §5).
+import { fitsProseColumns } from '../search/prose-vector-dims';
 /** Whole-leg budget (resolve the current embedding mode + one stored-vector PG join
  *  + the O(n²) cosine pass — no embed() calls since WI-4183/EI-9694 reused stored
  *  vectors). A slow join or a wedged embedder-preference read simply forfeits THIS
@@ -202,7 +202,7 @@ async function embedAndCluster(
   if (candidates.length < 2 || candidates.length > MAX_EMBED_CANDIDATES) return null;
   const resolved = await deps.resolveEmbedder();
   if (!resolved || resolved.mode === 'disabled' || !('embed' in resolved)) return null;
-  if (resolved.dims !== EMBED_DIM) return null; // harrier@1024 — no vector(384) verdict possible
+  if (!fitsProseColumns(resolved.dims)) return null; // dims-ineligible for the prose columns (harrier@1024, local@384) — no verdict possible
   const vectorById = await deps.queryStoredVectors(
     resolved.mode,
     candidates.map((c) => c.id),
@@ -213,7 +213,7 @@ async function embedAndCluster(
   const usable: Array<{ id: string; title: string; vector: number[] }> = [];
   for (const c of candidates) {
     const v = vectorById.get(c.id);
-    if (v && v.length === EMBED_DIM) usable.push({ id: c.id, title: c.title, vector: v });
+    if (v && fitsProseColumns(v.length)) usable.push({ id: c.id, title: c.title, vector: v });
   }
   if (usable.length < 2) return null;
   return clusterByCosine(

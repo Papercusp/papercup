@@ -37,9 +37,10 @@
  * DECLARED constant, not derived from the live seed state (a re-wire would flip the
  * seed, so a derived set could never detect its own regression).
  */
-import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -108,15 +109,18 @@ export const isExcluded = (f) =>
   f === 'scripts/check-no-retired-style.mjs' ||
   !/\.(ts|tsx|sql)$/.test(f);
 
-/** Scan the tracked tree for re-wire offenders (excludes tests + _retired + self). */
-export function findOffenders() {
-  const tracked = execSync('git ls-files', {
-    cwd: ROOT,
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-  })
-    .split('\n')
-    .filter(Boolean);
+/**
+ * Scan the tracked tree for re-wire offenders (excludes tests + _retired + self).
+ *
+ * WI-6666: enumerates via the shared `listTrackedFiles` helper, which recurses into
+ * submodules. A bare `git ls-files` does NOT — it emits one gitlink entry per
+ * submodule — so this guard previously never opened libs/generic/**, libs/papercusp/**,
+ * or papercusp-desktop/**, where routine/blueprint wiring code also lives. Returns
+ * `{ offenders, unscanned }` so `main` can report coverage; `findOffenders` below
+ * keeps the plain-array contract the unit test pins (`() => string[]`).
+ */
+export function scanTree() {
+  const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
   const offenders = [];
   for (const f of tracked) {
@@ -129,13 +133,21 @@ export function findOffenders() {
     }
     if (isRetiredRoutineRewire(text)) offenders.push(f);
   }
-  return offenders;
+  return { offenders, unscanned };
+}
+
+/** Plain-array contract (pinned by no-retired-style-guard.test.ts) — see scanTree(). */
+export function findOffenders() {
+  return scanTree().offenders;
 }
 
 function main() {
-  const offenders = findOffenders();
+  const { offenders, unscanned } = scanTree();
   if (offenders.length === 0) {
-    console.log('✓ no-retired-style: every migrated loop routes through system:blueprint-run — none re-wired bespoke.');
+    console.log(
+      '✓ no-retired-style: every migrated loop routes through system:blueprint-run — none re-wired bespoke.' +
+        describeUnscanned(unscanned),
+    );
     process.exit(0);
   }
   console.error('✗ a MIGRATED work-loop is re-wired to its retired bespoke action (two execution models):');

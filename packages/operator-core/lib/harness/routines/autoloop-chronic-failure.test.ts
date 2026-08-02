@@ -947,6 +947,122 @@ describe('autoloopChronicFailureSweep — WI-4632: escalation ALSO wakes overwat
   });
 });
 
+describe('autoloopSilentStopSweep (EI-19281872822982156) — the error-count-independent liveness sweep', () => {
+  function mockRows(rows: AutoloopStateRow[]): void {
+    const sql = vi.fn(() => Promise.resolve(rows));
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+  }
+
+  beforeEach(() => {
+    vi.mocked(recentWatchdogFires).mockResolvedValue(0);
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    vi.mocked(captureImprovement).mockResolvedValue({} as never);
+    vi.mocked(requestOverwatchWake).mockResolvedValue({ wired: true, result: { fired: true } });
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS;
+  });
+
+  it('the motivating case: kettle, 0 errors, last_status ok, 7d silent — files the observation AND wakes overwatch', async () => {
+    mockRows([
+      {
+        harness_slug: 'papercusp',
+        role: 'kettle',
+        consecutive_errors: 0,
+        last_status: 'ok',
+        routine_active: null,
+        last_fired_at: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    ]);
+
+    const results = await autoloopSilentStopSweep();
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ harnessSlug: 'papercusp', role: 'kettle', outcome: 'escalated', overwatchWaked: true });
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+    expect(captureImprovement).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'bug', title: expect.stringContaining('kettle@papercusp') }),
+    );
+    expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
+  });
+
+  it('a currently-chronic (over-threshold) row never double-escalates here — the chronic sweep\'s own scope', async () => {
+    mockRows([
+      {
+        harness_slug: 'papercusp',
+        role: 'gym-cycle',
+        consecutive_errors: 30,
+        last_status: 'x',
+        routine_active: true,
+        last_fired_at: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    ]);
+
+    const results = await autoloopSilentStopSweep();
+
+    expect(results).toEqual([]);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('an explicitly-paused routine (routine_active:false) is left to the stale-paused-routines alarm', async () => {
+    mockRows([
+      {
+        harness_slug: 'papercusp',
+        role: 'bp-singleton-scout-0',
+        consecutive_errors: 0,
+        last_status: 'ok',
+        routine_active: false,
+        last_fired_at: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    ]);
+
+    const results = await autoloopSilentStopSweep();
+
+    expect(results).toEqual([]);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('debounced (already fired within 24h): never re-files AND never re-wakes overwatch', async () => {
+    vi.mocked(recentWatchdogFires).mockResolvedValue(1);
+    mockRows([
+      {
+        harness_slug: 'papercusp',
+        role: 'kettle',
+        consecutive_errors: 0,
+        last_status: 'ok',
+        routine_active: null,
+        last_fired_at: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    ]);
+
+    const results = await autoloopSilentStopSweep();
+
+    expect(results[0].outcome).toBe('debounced');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(requestOverwatchWake).not.toHaveBeenCalled();
+  });
+
+  it('PAPERCUSP_AUTOLOOP_SILENT_STOP_MS <= 0 disables the sweep entirely (independent kill switch)', async () => {
+    process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS = '0';
+    mockRows([
+      {
+        harness_slug: 'papercusp',
+        role: 'kettle',
+        consecutive_errors: 0,
+        last_status: 'ok',
+        routine_active: null,
+        last_fired_at: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    ]);
+
+    const results = await autoloopSilentStopSweep();
+
+    expect(results).toEqual([]);
+    expect(getOrgPg).not.toHaveBeenCalled();
+  });
+});
+
 describe('shouldLogChronicOutcome — EI-12968 (rate-limit the skip-family LOG LINE, not the decision)', () => {
   beforeEach(() => vi.clearAllMocks());
 

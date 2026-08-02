@@ -466,6 +466,33 @@ export default function AgentDossier({
         <div className="pc-dossier__note">This agent is no longer in the live roster.</div>
       )}
 
+      {/* ── Fleet wind-down banner (R1+ P-009 leg d) ──────────────────────────
+          TOP of the rail, above everything — because it reframes every signal
+          below it. An agent in a winding-down fleet that is claiming nothing and
+          looks idle is not broken; it is being REFUSED work by the scheduler,
+          and without this line the reader diagnoses a healthy agent as stuck.
+
+          It renders ONLY when the fleet is not plain 'active' (the server sends
+          null otherwise), so its mere presence is the news — there is no
+          "fleet: active" row to learn to ignore. */}
+      {signals?.fleetControl ? (
+        <div className="pc-dossier__windown" data-testid="dossier-fleet-control" role="status">
+          <span className="pc-dossier__windown-state">
+            {signals.fleetControl.fleet} · {signals.fleetControl.state}
+          </span>
+          {signals.fleetControl.reason ? (
+            <span className="pc-dossier__windown-reason">{signals.fleetControl.reason}</span>
+          ) : null}
+          <span className="pc-dossier__h-note">
+            {signals.fleetControl.by ? `by ${signals.fleetControl.by}` : null}
+            {signals.fleetControl.by && signals.fleetControl.since != null ? ' · ' : null}
+            {signals.fleetControl.since != null
+              ? formatRelativeUpdated(signals.fleetControl.since)
+              : null}
+          </span>
+        </div>
+      ) : null}
+
       {/* Rail R1 P-008 — the ten Tier-1/2 reference rows used to sit HERE, above
           everything operational. They now live in the Reference section at the
           bottom, previewed three-at-a-time behind one drill-in: [deck R1]

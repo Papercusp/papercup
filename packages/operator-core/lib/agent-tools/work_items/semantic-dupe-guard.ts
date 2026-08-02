@@ -31,8 +31,8 @@ import { issuesScopeWorkspace } from '../../issues-engineer';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 
-/** Width of the migration-551 embedding columns (= embed-backfill's EMBEDDER_DIM). */
-const EMBED_DIM = 384;
+// The prose column width contract — ONE source, not a restated `384` (D-005 §5).
+import { fitsProseColumns } from '../../search/prose-vector-dims';
 const DEFAULT_HARD = 0.93;
 const DEFAULT_SOFT = 0.85;
 /** Whole-prescreen budget (embed + both queries). A warm sidecar answers in
@@ -140,10 +140,10 @@ const realDeps: SemanticDupeDeps = {
 async function classify(d: SemanticDupeDeps, input: { title: string; summary?: string; harness?: string }): Promise<SemanticDupeResult | null> {
   const resolved = await d.resolveEmbedder();
   if (!resolved || resolved.mode === 'disabled' || !('embed' in resolved)) return null;
-  if (resolved.dims !== EMBED_DIM) return null; // harrier@1024 — no vector(384) verdict possible
+  if (!fitsProseColumns(resolved.dims)) return null; // dims-ineligible for the prose columns (harrier@1024, local@384) — no verdict possible
   // Mirror the stored shape exactly (TARGETS bodySql: title || '\n' || left(body, 2000)).
   const vec = await resolved.embed(`${input.title}\n${(input.summary ?? '').slice(0, 2000)}`);
-  if (vec.length !== EMBED_DIM) return null;
+  if (!fitsProseColumns(vec.length)) return null;
   const candidates = await d.queryCandidates(vec, resolved.mode, input.harness);
   const t = dupeThresholds();
   const sorted = [...candidates].sort((a, b) => b.similarity - a.similarity);

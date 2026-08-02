@@ -2972,12 +2972,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return enrichPlanListRows(plans);
     },
   },
-  // plans.byHive — CROSS-MEMBER browse (WI-259 P-006, D-010). Plans across EVERY
-  // member harness of a shared hive. Reuses plans.list's read with the member-slug
-  // SET (callPlansRead already accepts `harness_slugs` — read-dispatch.ts), so the
-  // rows are identical to the per-harness list (each carries its harness_slug =
-  // member origin) + the same attribution enrichment. Member-origin-scoped reads
-  // (plans.list) are UNCHANGED; this is the explicit cross-member rollup view.
+  // plans.byHive — CROSS-MEMBER browse (WI-259 P-006, D-010). Reuses plans.list's read
+  // with the member-slug SET (callPlansRead already accepts `harness_slugs` —
+  // read-dispatch.ts), so the rows are identical to the per-harness list + the same
+  // attribution enrichment. Member-origin-scoped reads (plans.list) are UNCHANGED.
+  //
+  // ⚠ Plans are HIVE-scoped, so this fan-out COLLAPSES: every member harness resolves to
+  // the same Hive HOME plan set (resolvePlanScope), and there is exactly one plan set per
+  // hive to roll up. The `harness` on each row is therefore the hive home, NOT a
+  // per-member origin — a member does not own a distinct set of plans the way it owns a
+  // distinct set of features (which is why featuresConsolidated.byHive really does fan
+  // out and this does not). Reading it as member-origin is what WI-7083 fixed: the
+  // fan-out used to dedupe on the REQUESTED slug, so each member re-read the home set and
+  // the view served N identical copies stamped with N different member slugs — 1,820 rows
+  // / 1,249,750 B for a hive whose real content is 910 rows / 682,955 B.
   'plans.byHive': {
     argsSchema: z.object({ potHomeSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {

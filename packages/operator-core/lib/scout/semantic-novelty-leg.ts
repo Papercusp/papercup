@@ -31,8 +31,8 @@ import {
   type CorpusNoveltyOptions,
 } from './critique-core';
 
-/** Width of the migration-551/553 embedding columns (= embed-backfill's EMBEDDER_DIM). */
-const EMBED_DIM = 384;
+// The prose column width contract — ONE source, not a restated `384` (D-005 §5).
+import { fitsProseColumns } from '../search/prose-vector-dims';
 /** Whole-leg budget (embed + both join queries). A warm sidecar answers in ~10ms;
  *  a cold in-process model load (~2.8s) simply forfeits THIS pass's semantic leg. */
 const BUDGET_MS = 2500;
@@ -151,9 +151,9 @@ async function resolveSims(
   if (planSlugToRefs.size === 0 && wiIdToRefs.size === 0) return null;
   const resolved = await deps.resolveEmbedder();
   if (!resolved || resolved.mode === 'disabled' || !('embed' in resolved)) return null;
-  if (resolved.dims !== EMBED_DIM) return null; // harrier@1024 — no vector(384) verdict possible
+  if (!fitsProseColumns(resolved.dims)) return null; // dims-ineligible for the prose columns (harrier@1024, local@384) — no verdict possible
   const vec = await resolved.embed(text.slice(0, 2000));
-  if (vec.length !== EMBED_DIM) return null;
+  if (!fitsProseColumns(vec.length)) return null;
   const [planSims, wiSims] = await Promise.all([
     deps.queryPlanSims(vec, resolved.mode, [...planSlugToRefs.keys()]),
     deps.queryWorkItemSims(vec, resolved.mode, [...wiIdToRefs.keys()]),

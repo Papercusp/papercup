@@ -38,6 +38,33 @@ vi.mock('./agent-tools/coordination/unanswered-directed', async (importOriginal)
   ...(await importOriginal<typeof import('./agent-tools/coordination/unanswered-directed')>()),
   fetchUnansweredDirected: (...a: unknown[]) => fetchUnansweredDirected(...a),
 }));
+// P-009 legs (a) lane / (b) announced gates / (d) fleet control. The lane, gate
+// and fleet reads are DYNAMIC imports inside adv-agent-detail (its static module
+// graph is deliberately unchanged — the plans tree and events store are large
+// and the dossier is cold-path); `vi.mock` intercepts a dynamic import exactly
+// as it does a static one, so they mock identically to the five legs above.
+const fetchPresenceFleet = vi.fn();
+vi.mock('./agent-tools/coordination/presence-fleet', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-tools/coordination/presence-fleet')>()),
+  fetchPresenceFleet: (...a: unknown[]) => fetchPresenceFleet(...a),
+}));
+const listActiveAnnouncements = vi.fn();
+const listActiveAwaits = vi.fn();
+vi.mock('./events/await/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./events/await/store')>()),
+  listActiveAnnouncements: (...a: unknown[]) => listActiveAnnouncements(...a),
+  listActiveAwaits: (...a: unknown[]) => listActiveAwaits(...a),
+}));
+const readPlanBySlug = vi.fn();
+vi.mock('./agent-tools/plans/source', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-tools/plans/source')>()),
+  readPlanBySlug: (...a: unknown[]) => readPlanBySlug(...a),
+}));
+const getFleet = vi.fn();
+vi.mock('./agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-fleets-store')>()),
+  getFleet: (...a: unknown[]) => getFleet(...a),
+}));
 const lastToolCallAtByOwner = vi.fn();
 vi.mock('./fleet/assignments', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./fleet/assignments')>()),
@@ -48,7 +75,14 @@ vi.mock('./workspace-registry', async (importOriginal) => ({
   activeWorkspaceId: () => 'ws-1',
 }));
 
-const { deriveAgentLocks, deriveCoordState, getAgentSignals } = await import('./adv-agent-detail');
+const {
+  deriveAgentLocks,
+  deriveCoordState,
+  getAgentSignals,
+  deriveClaimProgress,
+  deriveLane,
+  deriveAnnouncedGates,
+} = await import('./adv-agent-detail');
 // The shared cursor rule, asserted alongside the counter it now feeds so the
 // two cannot drift (unread-count-truthfulness-2026-07-27 P-002/P-003).
 const { pickUnreadCursor } = await import('./agent-tools/coordination/watermarks');
@@ -711,6 +745,15 @@ describe('getAgentSignals', () => {
     getPresence.mockResolvedValue(null);
     fetchUnansweredDirected.mockResolvedValue(new Map());
     lastToolCallAtByOwner.mockResolvedValue(new Map());
+    // P-009 defaults: no fleet, no gates declared, no awaits. The lane + fleet
+    // legs short-circuit BEFORE their dynamic import when the agent declared no
+    // plan / belongs to no fleet, so `readPlanBySlug`/`getFleet` stay unused on
+    // this path — a test that needs them sets presence/fleet membership first.
+    fetchPresenceFleet.mockResolvedValue(new Map());
+    listActiveAnnouncements.mockResolvedValue([]);
+    listActiveAwaits.mockResolvedValue([]);
+    readPlanBySlug.mockResolvedValue(null);
+    getFleet.mockResolvedValue(null);
     // getAgentSignals deliberately console.warns each signal that throws
     // (EI-18694403367371331 — a swallowed failure must be VISIBLE in logs,
     // not just in the returned DTO); spy + swallow it here so these
@@ -746,7 +789,15 @@ describe('getAgentSignals', () => {
       { id: 'WI-5993', title: 'do the thing', harness: 'papercusp', checkpoint: 'in progress', checkpointUpdatedAtMs: NOW },
     ]);
     const out = await getAgentSignals('su-ae6cbc84');
-    expect(out.currentClaim).toEqual({ id: 'WI-5993', title: 'do the thing', harness: 'papercusp' });
+    // presence resolves to null here, so there is no activity timestamp to judge
+    // progress from — 'unknown', NOT a guessed 'stalled' (P-009 leg c).
+    expect(out.currentClaim).toEqual({
+      id: 'WI-5993',
+      title: 'do the thing',
+      harness: 'papercusp',
+      progress: 'unknown',
+      idleSec: null,
+    });
     expect(out.lastCheckpoint).toEqual({ text: 'in progress', updatedAtMs: NOW });
     expect(out.unavailableSignals).toEqual([]);
   });
@@ -757,18 +808,199 @@ describe('getAgentSignals', () => {
     const out = await getAgentSignals('su-1');
     expect(out.loop).toBeNull();
     expect(out.unavailableSignals).toEqual(['loop']);
-    expect(out.currentClaim).toEqual({ id: 'WI-1', title: 't', harness: 'papercusp' });
+    expect(out.currentClaim).toMatchObject({ id: 'WI-1', title: 't', harness: 'papercusp' });
   });
 
-  it('every one of the six signals can throw independently and all are reported, not just the first', async () => {
+  it('every one of the signals can throw independently and all are reported, not just the first', async () => {
     getLoopStatus.mockRejectedValue(new Error('a'));
     readHeldWorkItems.mockRejectedValue(new Error('b'));
     getPresence.mockRejectedValue(new Error('c'));
     fetchUnansweredDirected.mockRejectedValue(new Error('d'));
     lastToolCallAtByOwner.mockRejectedValue(new Error('e'));
+    fetchPresenceFleet.mockRejectedValue(new Error('f'));
+    listActiveAnnouncements.mockRejectedValue(new Error('g'));
     const out = await getAgentSignals('su-1');
     expect(new Set(out.unavailableSignals)).toEqual(
-      new Set(['loop', 'currentClaim', 'context', 'unanswered', 'lastToolCall']),
+      new Set([
+        'loop',
+        'currentClaim',
+        'context',
+        'unanswered',
+        'lastToolCall',
+        'fleetControl',
+        'announcedGates',
+      ]),
     );
+  });
+
+  // ── P-009 wiring: the three new legs on the SAME best-effort contract ──────
+
+  it('a declared plan produces a lane; the plan read THROWING is distinguishable from having no plan', async () => {
+    getPresence.mockResolvedValue({ currentPlanSlug: 'hud-redesign', lastActiveAt: null });
+    readPlanBySlug.mockResolvedValue({
+      parsed: {
+        now: { state: 'Rail density', next: 'P-004' },
+        items: [
+          { id: 'P-001', text: 'done one', storedStatus: 'done', blockedBy: [] },
+          { id: 'P-002', text: 'pick me', storedStatus: 'todo', blockedBy: [], phase: 'Phase 2' },
+        ],
+      },
+      archived: false,
+      row: {},
+    });
+    const out = await getAgentSignals('su-1');
+    expect(out.lane).toMatchObject({
+      planSlug: 'hud-redesign',
+      nowState: 'Rail density',
+      nextActionable: { id: 'P-002', title: 'pick me', phase: 'Phase 2' },
+      claimableCount: 1,
+    });
+    expect(out.unavailableSignals).toEqual([]);
+
+    // ...and a THROWN plan read reports itself rather than looking lane-less.
+    readPlanBySlug.mockRejectedValue(new Error('plan store down'));
+    const broken = await getAgentSignals('su-1');
+    expect(broken.lane).toBeNull();
+    expect(broken.unavailableSignals).toEqual(['lane']);
+  });
+
+  it('an agent with no declared plan reports lane:null WITHOUT marking it unavailable (and never reads the plan store)', async () => {
+    const out = await getAgentSignals('su-1');
+    expect(out.lane).toBeNull();
+    expect(out.unavailableSignals).not.toContain('lane');
+    expect(readPlanBySlug).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a visible gate the agent is NOT awaiting, and marks the one it is', async () => {
+    fetchPresenceFleet.mockResolvedValue(new Map([['su-1', { fleetSlug: 'atlas', fleetRole: 'bee' }]]));
+    listActiveAnnouncements.mockResolvedValue([
+      { eventKey: 'fleet:atlas:gate-green', note: 'suite', scopeKind: 'fleet', scopeRef: 'atlas', subscriberId: 'su-lead' },
+      { eventKey: 'fleet:other:nope', note: null, scopeKind: 'fleet', scopeRef: 'other', subscriberId: 'su-x' },
+    ]);
+    listActiveAwaits.mockResolvedValue([{ eventKey: 'fleet:atlas:gate-green' }]);
+    const out = await getAgentSignals('su-1');
+    // Another fleet's gate is not visible to this agent at all.
+    expect(out.announcedGates.map((g) => g.event)).toEqual(['fleet:atlas:gate-green']);
+    expect(out.announcedGates[0]).toMatchObject({ awaited: true, scope: 'fleet:atlas' });
+  });
+
+  it('fleetControl is null for an ACTIVE fleet — its presence is the news, so an active fleet says nothing', async () => {
+    fetchPresenceFleet.mockResolvedValue(new Map([['su-1', { fleetSlug: 'atlas', fleetRole: 'bee' }]]));
+    getFleet.mockResolvedValue({ controlState: 'active', controlReason: null, controlBy: null, controlAt: null });
+    expect((await getAgentSignals('su-1')).fleetControl).toBeNull();
+
+    getFleet.mockResolvedValue({
+      controlState: 'winding-down',
+      controlReason: 'plan complete',
+      controlBy: 'su-lead',
+      controlAt: NOW,
+    });
+    expect((await getAgentSignals('su-1')).fleetControl).toEqual({
+      fleet: 'atlas',
+      state: 'winding-down',
+      reason: 'plan complete',
+      by: 'su-lead',
+      since: NOW,
+    });
+  });
+});
+
+// ─────────────────── P-009 pure derivations (no mocks needed) ───────────────
+
+describe('deriveClaimProgress (P-009 leg c)', () => {
+  const T = 1_700_000_000_000;
+
+  it('reads fresh activity as progressing and stale activity as stalled, at the SHARED threshold', () => {
+    // INTENT_STALE_SEC defaults to 30m — the same threshold coord:presence and
+    // the leader-brief judge a stalled lane with. Bracket it on both sides
+    // rather than testing one arbitrary point.
+    expect(deriveClaimProgress(new Date(T - 60_000).toISOString(), T)).toEqual({
+      progress: 'progressing',
+      idleSec: 60,
+    });
+    expect(deriveClaimProgress(new Date(T - 40 * 60_000).toISOString(), T)).toEqual({
+      progress: 'stalled',
+      idleSec: 2400,
+    });
+  });
+
+  it('returns unknown — never a guessed stall — when there is no activity timestamp to judge', () => {
+    // The distinction that matters: "we cannot tell" must not render as
+    // "this agent has stopped", which is an accusation the data does not support.
+    expect(deriveClaimProgress(null, T)).toEqual({ progress: 'unknown', idleSec: null });
+    expect(deriveClaimProgress(undefined, T)).toEqual({ progress: 'unknown', idleSec: null });
+    expect(deriveClaimProgress('not-a-date', T)).toEqual({ progress: 'unknown', idleSec: null });
+  });
+
+  it('clamps a future timestamp to 0 rather than emitting negative idle', () => {
+    // Clock skew across hosts is real here; a "-12s idle" reads as corruption.
+    expect(deriveClaimProgress(new Date(T + 12_000).toISOString(), T)).toEqual({
+      progress: 'progressing',
+      idleSec: 0,
+    });
+  });
+});
+
+describe('deriveLane (P-009 leg a)', () => {
+  const items = [
+    { id: 'P-001', text: 'shipped', effectiveStatus: 'done', unresolvedBlockers: [], needsHuman: false },
+    { id: 'P-002', text: 'blocked one', effectiveStatus: 'todo', unresolvedBlockers: ['P-001'], needsHuman: false },
+    { id: 'P-003', text: 'owner must ratify', effectiveStatus: 'todo', unresolvedBlockers: [], needsHuman: true },
+    { id: 'P-004', text: 'first pickable', effectiveStatus: 'todo', unresolvedBlockers: [], needsHuman: false, phase: 'Phase 3' },
+    { id: 'P-005', text: 'also pickable', effectiveStatus: 'todo', unresolvedBlockers: [], needsHuman: false },
+  ];
+
+  it('counts ONLY genuinely actionable items — blocked and needs-human are not claimable', () => {
+    const lane = deriveLane('hud-redesign', { state: 'S', next: 'N' }, items);
+    expect(lane.nextActionable).toEqual({ id: 'P-004', title: 'first pickable', phase: 'Phase 3' });
+    // 2, not 4: P-002 has an unresolved blocker and P-003 needs a human. Counting
+    // raw `todo` here is the exact over-count the shared resolver prevents.
+    expect(lane.claimableCount).toBe(2);
+  });
+
+  it('a live plan with nothing pickable reports count 0 WITH its Now block — the state a lone nextActionable cannot express', () => {
+    const lane = deriveLane('p', { state: 'Blocked on review', next: null }, [items[0], items[1]]);
+    expect(lane.nextActionable).toBeNull();
+    expect(lane.claimableCount).toBe(0);
+    expect(lane.nowState).toBe('Blocked on review');
+  });
+
+  it('normalizes blank/whitespace Now lines to null so the UI never renders a labelled blank', () => {
+    const lane = deriveLane('p', { state: '   ', next: '' }, []);
+    expect(lane.nowState).toBeNull();
+    expect(lane.nowNext).toBeNull();
+    expect(deriveLane('p', null, []).nowState).toBeNull();
+  });
+});
+
+describe('deriveAnnouncedGates (P-009 leg b)', () => {
+  const gate = (eventKey: string, scopeKind: string | null = null, scopeRef: string | null = null) => ({
+    eventKey,
+    note: null,
+    scopeKind,
+    scopeRef,
+    subscriberId: 'su-lead',
+  });
+
+  it('flags a declared gate the agent is not listening for, and sorts it AHEAD of awaited ones', () => {
+    const out = deriveAnnouncedGates([gate('awaited-one'), gate('nobody-listening')], ['awaited-one']);
+    // The actionable half reads first — a gate nobody awaits is the finding.
+    expect(out.map((g) => [g.event, g.awaited])).toEqual([
+      ['nobody-listening', false],
+      ['awaited-one', true],
+    ]);
+  });
+
+  it('matches keys EXACTLY — a near-miss key must surface as not-awaited, because it will not rendezvous at runtime', () => {
+    // `phase3_ready` vs `phase-3-ready` never fires for the waiter. Collapsing
+    // them here (as normalizeEventKey would) hides precisely the bug this split
+    // exists to expose, so the strict comparison is deliberate.
+    const out = deriveAnnouncedGates([gate('phase-3-ready')], ['phase3_ready']);
+    expect(out[0].awaited).toBe(false);
+  });
+
+  it('renders scope as kind:ref, and a scope-less announcement as global', () => {
+    const out = deriveAnnouncedGates([gate('a', 'plan', 'my-plan'), gate('b')], []);
+    expect(out.map((g) => g.scope)).toEqual(['plan:my-plan', 'global']);
   });
 });
