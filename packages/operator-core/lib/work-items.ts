@@ -4483,9 +4483,27 @@ export async function claimNextIssueWorkItem(
   // reported no claimable work-item. Also accept the operator-scope encoding for the SAME
   // resolved issue workspace, so operator-wide issues become self-pickable by any harness.
   const operatorScopeSlug = `operator:${issueWs}`;
-  // Claimable issue status = 'open'; terminal (resolved|closed) excluded by status, blocked
-  // ones by readiness (below).
-  const states = ISSUE_FAMILY_CLAIMABLE_STATES;
+  // Claimable issue status = 'open' by default; terminal (resolved|closed) excluded by
+  // status, blocked ones by readiness (below).
+  //
+  // WI-6453 follow-up (2026-08-02): this UNCONDITIONALLY ignored `filter.states` (the
+  // caller/spec's own states override, e.g. `states:['open','failing']` from
+  // scheduler:set_claim_spec — CLAIM_STATES_ALLOWLIST explicitly allows 'failing') and
+  // always claimed status='open' only — the ONE place in this whole subsystem that did.
+  // Every sibling read/diagnose path honors it: aggregateIssueClaimExclusions and 4 other
+  // helpers in scheduler/get-next.ts all compute `opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES`,
+  // and explainIssueClaimFloors is unit-tested to honor a states:['failing'] override
+  // (get-next-miss-diagnosis.integration.test.ts). So a fleet leader who set
+  // `states:['open','failing']` on a claim spec (to also self-select re-triable failing
+  // issue-family work) got a READ oracle (work_items:claimable / the miss-diagnosis
+  // breakdown) that correctly counted 'failing' rows as claimable, while THIS — the real
+  // scheduler:get_next self-select path — could never actually claim one: a textbook
+  // claim-path/read-path divergence in the same class as EI-10062/WI-4309/WI-5275/WI-5822,
+  // just triggered by a states override instead of a filter shape. Found while investigating
+  // WI-6453 (no live repro for that report's original AND-shaped-exclusion spec after two
+  // prior deep investigations); this is a distinct, independently-confirmed bug in the same
+  // subsystem. See claim-next-issue-honors-states.integration.test.ts.
+  const states = filter.states?.length ? filter.states : ISSUE_FAMILY_CLAIMABLE_STATES;
   const issueKinds = opts.issueKinds?.length ? [...opts.issueKinds] : [...ISSUE_FAMILY_KINDS];
   // WI-4309: when the caller (get-next.ts tier 3) extracted a closed-world `id in [...]`
   // set from the spec, narrow the claim to EXACTLY those ids instead of either ignoring

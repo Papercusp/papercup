@@ -54,7 +54,6 @@
  * into an if-chain.
  */
 
-import { withBoundedTimeout } from './bounded-timeout';
 import { cellUnknown, type CellUnknown } from './cell-contract';
 import { getCell, type CellReader, type CellSpec } from './cell-registry';
 import {
@@ -98,6 +97,24 @@ export type CellRead =
        * `materiality.why` rule exists to keep auditable.
        */
       material?: { path: string; value: unknown };
+      /**
+       * WI-6506 — the field whose ENTIRE PURPOSE is to stop a caller misreading the
+       * headline, actually delivered instead of declared-and-discarded. Before this,
+       * `falsifier` had exactly one runtime consumer (`validateCellSpec`'s STRING
+       * checks at registration) and `cell-read.ts` never mentioned it at all — a
+       * reader got the headline and never the independent measurement meant to
+       * contradict a false reading of it.
+       *
+       * EXTRACTED FROM THE SAME DISPATCH (axis 5 — one derivation, many lenses):
+       * `spec.falsifier.field` is a third `valueAtPath`-shaped projection of the
+       * payload already in hand, exactly like `material` above. No second resolver
+       * call, so it cannot drift from the value it qualifies.
+       *
+       * Always present on a `value` result — every registered cell declares a
+       * falsifier (`validateCellSpec` requires it), so there is no "cell declares
+       * none" omission case here the way there is for `material`/`unknownHoist`.
+       */
+      falsifier: CellFalsifierRead;
       /**
        * D-039 — THE HOIST. Present exactly when the spec declares `unknownHoist`,
        * which the registry allows only on a `nullable` cell (axis 2). Carries the
@@ -240,13 +257,20 @@ export interface CellReadEnv {
  * acquire, a claim, a presence read) cannot wedge its caller forever.
  *
  * Deliberately the NARROWEST of the three fix directions the bug report weighed: it
- * bounds `readCell`'s own WAIT on the dispatch, not the dispatch itself (`withBoundedTimeout`,
- * reused rather than a hand-rolled `Promise.race`, is explicit about this: "does NOT cancel
- * the underlying query"). The resolver call keeps running in the background — no
- * AbortSignal is threaded through `dispatchReadOnlyTool` yet — so a resolver that leaks a
- * lock or a connection on its own is still a bug worth fixing separately. What this closes
- * is the specific failure this module documents: a caller on a hot path — a lock acquire, a
- * claim, a presence read — waiting on `readCell` forever because ITS resolver hung.
+ * bounds `readCell`'s own WAIT on the dispatch, not the dispatch itself — this does NOT
+ * cancel the underlying resolver call (no AbortSignal is threaded through
+ * `dispatchReadOnlyTool` yet), so a resolver that leaks a lock or a connection on its own
+ * is still a bug worth fixing separately. What this closes is the specific failure this
+ * module documents: a caller on a hot path — a lock acquire, a claim, a presence read —
+ * waiting on `readCell` forever because ITS resolver hung.
+ *
+ * (`bounded-timeout.ts`'s `withBoundedTimeout` was considered and deliberately NOT
+ * reused here — it unconditionally `console.warn`s and swallows every rejection into a
+ * generic degraded result, which is right for its own independent-fan-out-reads use case
+ * but wrong for gate 2: a resolver rejection here is an ordinary, already-classified
+ * outcome — e.g. an access-denial `ReadOnlyDispatchError` — that must keep its typed
+ * `.code` and must not log. Only the deadline is novel, so only the deadline is raced in
+ * by hand, immediately below.)
  */
 export const CELL_READ_TIMEOUT_MS = Number(process.env.PAPERCUSP_CELL_READ_TIMEOUT_MS) || 10_000;
 
@@ -311,58 +335,57 @@ export async function readCell(
 
   // GATE 2 — the resolver tool's own role gate, enforced on the dispatch.
   //
-  // ⚠ BOUNDED BY `withBoundedTimeout` (WI-6488) — this module's own header claims TOTAL,
-  // but "never throws" and "always terminates" are different properties, and only the
-  // first held before this fix. A resolver that never settles must not make readCell
-  // never settle either, on consumers this module itself names as hot paths (a lock
-  // acquire, a claim, a presence read). See CELL_READ_TIMEOUT_MS above for why this
-  // bounds the WAIT rather than cancelling the dispatch.
+  // ⚠ RACED AGAINST A DEADLINE (WI-6488) — this module's own header claims TOTAL, but
+  // "never throws" and "always terminates" are different properties, and only the first
+  // held before this fix. A resolver that never settles must not make readCell never
+  // settle either, on consumers this module itself names as hot paths (a lock acquire, a
+  // claim, a presence read). See CELL_READ_TIMEOUT_MS above for why this bounds the WAIT
+  // rather than cancelling the dispatch.
   //
-  // The dispatch error is captured in a closure (rather than trusted to
-  // `withBoundedTimeout`'s stringified `errorMessage`) because gate-2 classification
-  // needs the ORIGINAL `ReadOnlyDispatchError` — its `.code` drives
-  // `unknownForDispatchError`'s access-denial-vs-everything-else branch, which a bare
-  // string cannot reconstruct.
-  let dispatchError: unknown;
-  const DISPATCH_TIMED_OUT = Symbol('cell-read:dispatch-timed-out');
-  const raced = await withBoundedTimeout(
-    () =>
+  // NOT `bounded-timeout.ts`'s `withBoundedTimeout`: that helper unconditionally
+  // console.warns and swallows EVERY rejection into a generic "degraded" result — right
+  // for its own fan-out-of-independent-reads use case, wrong here, where a resolver
+  // rejection (e.g. an access-denial `ReadOnlyDispatchError`) is an ORDINARY, already-
+  // handled outcome of this gate that must keep its typed `.code` for classification
+  // below and must NOT log. Only the deadline is novel here, so only the deadline is
+  // raced in by hand.
+  const timedOut = Symbol('cell-read:dispatch-timed-out');
+  let payload: unknown;
+  try {
+    const raced = await Promise.race([
       dispatchReadOnlyTool(spec.changeSignal.tool, args, {
         workspaceId: env.workspaceId,
         harnessSlug: env.harnessSlug,
         role: env.role,
         onBehalfOf: reader.ownerId,
         spawnId: 'cell-read',
-      }).catch((err) => {
-        dispatchError = err;
-        throw err;
       }),
-    { fallback: DISPATCH_TIMED_OUT, timeoutMs: CELL_READ_TIMEOUT_MS, label: `cell-read:${cell}` },
-  );
-
-  let payload: unknown;
-  if (raced.degraded && raced.reason === 'timeout') {
-    // The resolver WAS allowed to look — it just did not finish in time. That is
-    // `resolver-failed` by this module's own mapping table (line ~199), never
-    // `not-measured`: the caller's lever is retry-or-escalate, not "obtain access".
-    return {
-      status: 'unknown',
-      cell,
-      unknown: cellUnknown(
-        'resolver-failed',
-        `the resolver ("${spec.changeSignal.tool}") did not respond within ${CELL_READ_TIMEOUT_MS}ms. ` +
-          'readCell stopped waiting on it (WI-6488) — this bounds the CALLER, not the resolver: the ' +
-          'dispatch may still be running in the background. If this recurs for the same cell, the ' +
-          "resolver itself likely has a genuine hang (a wedged lock, an unbounded external call) that " +
-          'needs its own fix, not a longer timeout.',
-      ),
-    };
-  }
-  if (raced.degraded) {
-    // reason === 'error' — the dispatch threw. Reclassify off the CAPTURED error (not
-    // `raced.errorMessage`, which is a plain string) so ReadOnlyDispatchError's code
-    // still drives the access-denial branch below.
-    const err = dispatchError;
+      new Promise<typeof timedOut>((resolve) => {
+        const timer = setTimeout(() => resolve(timedOut), CELL_READ_TIMEOUT_MS);
+        // Never keep the process alive on this timer alone (a lingering dispatch we no
+        // longer wait for must not stop the operator from exiting).
+        timer.unref?.();
+      }),
+    ]);
+    if (raced === timedOut) {
+      // The resolver WAS allowed to look — it just did not finish in time. That is
+      // `resolver-failed` by this module's own mapping table (line ~199), never
+      // `not-measured`: the caller's lever is retry-or-escalate, not "obtain access".
+      return {
+        status: 'unknown',
+        cell,
+        unknown: cellUnknown(
+          'resolver-failed',
+          `the resolver ("${spec.changeSignal.tool}") did not respond within ${CELL_READ_TIMEOUT_MS}ms. ` +
+            'readCell stopped waiting on it (WI-6488) — this bounds the CALLER, not the resolver: the ' +
+            'dispatch may still be running in the background. If this recurs for the same cell, the ' +
+            "resolver itself likely has a genuine hang (a wedged lock, an unbounded external call) that " +
+            'needs its own fix, not a longer timeout.',
+        ),
+      };
+    }
+    payload = raced;
+  } catch (err) {
     if (err instanceof ReadOnlyDispatchError || (err as Error)?.name === 'ReadOnlyDispatchError') {
       return { status: 'unknown', cell, unknown: unknownForDispatchError(err as ReadOnlyDispatchError) };
     }
@@ -373,7 +396,6 @@ export async function readCell(
       unknown: cellUnknown('resolver-failed', err instanceof Error ? err.message : String(err)),
     };
   }
-  payload = raced.value;
 
   /**
    * ⚠ THE PROJECTION IS INSIDE A GUARD, and the guard is not decorative — it closes a
