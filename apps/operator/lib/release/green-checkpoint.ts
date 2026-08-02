@@ -4375,7 +4375,27 @@ export function realCheckpointDeps(
         const header =
           `[green-checkpoint] candidate=${candidateSha ?? 'unresolved'} ` +
           `base=${base ?? 'none'} written=${new Date().toISOString()} green=${green}\n`;
-        writeFileSync(logPath, header + defangCapturedResultMarkers(fullOutput));
+        // EI-19346606967082413: the ORCHESTRATOR transcript rides AHEAD of the suite stdout.
+        // Without this call the file records only what the SUITE printed, never what the gate
+        // DECIDED — and a SCHEDULER-fired run redirects its stdout nowhere (only a manual run
+        // gets a /tmp log), so it left no artifact at all of which candidate(s) it judged or
+        // that it auto-refired. That gap is why "which sha is this run judging" repeatedly
+        // produced contradictory answers across agents, and why the `inFlightRetriage`
+        // routines marker had to be invented to recover state this log should have carried.
+        //
+        // PREPENDED, not appended, for two reasons: a reader who tails or truncates a copy
+        // still gets the decisions, and it cannot displace the suite tail triage reads. Safe
+        // for that triage either way — no orchestrator message carries an uppercase "FAIL "
+        // token, so `grep -aoE "FAIL .{0,80}"` sees exactly what it saw before.
+        //
+        // Defanged in the SAME pass as the suite output, deliberately: a teed line may echo
+        // GREEN_CHECKPOINT_RESULT_MARKER, and this file is explicitly NOT the verdict channel
+        // (EI-18832272104497819) — composing the two halves before defanging keeps that
+        // invariant true for both instead of only the suite half.
+        writeFileSync(
+          logPath,
+          header + defangCapturedResultMarkers(renderOrchestratorTranscript() + fullOutput),
+        );
         log(`full suite output → ${logPath}`);
         // P-014: prune logs older than 14 days so this dir doesn't grow unbounded.
         pruneOldLogs(logDir, 14);

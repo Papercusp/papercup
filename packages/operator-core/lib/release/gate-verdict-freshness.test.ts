@@ -251,4 +251,139 @@ describe('evaluateGateVerdictFreshness', () => {
       expect(v.stale).toBe(false);
     });
   });
+
+  /**
+   * Rule 5 — CANDIDATE-FOSSIL (EI-19346660748445728).
+   *
+   * Rules 1-4 all ask "has something happened SINCE this verdict?", so all four are blind to a
+   * verdict that was already describing ancient code when it was WRITTEN. Fixtures below are the
+   * real measured population from 2026-08-02, taken from the persisted verdict logs
+   * (`~/.papercusp/checkpoint-logs/<ts>-base-<sha>-cand-<sha>.log`), whose filenames carry both
+   * the write time and the candidate.
+   *
+   * The discrimination that matters is the EI-10609 lesson this suite already states: a detector
+   * that fires on the healthy case is worse than none. The healthy band here is TIGHT (19-35 min)
+   * and the outliers are ORDERS out (up to 651), so the threshold has real room — but only if the
+   * healthy cases are pinned, which is what `HEALTHY_AGES_MIN` does.
+   */
+  describe('rule 5 — candidate-fossil', () => {
+    /** A red that none of rules 1-4 can touch: pin unmoved, routine on time, no retriage. This is
+     *  the shape the 12:53Z incident actually had — which is why it read as a live red. */
+    const UNTOUCHED_BY_OTHER_RULES = {
+      consecutiveReds: 1,
+      observedFromPin: 'e79857e2d593',
+      currentGreenPinSha: 'e79857e2d593',
+      lastFiredAtMs: null,
+    };
+    /** The real outlier: verdict written 12:53:12Z judging a candidate committed 02:01:48Z. */
+    const FOSSIL_VERDICT_AT = Date.parse('2026-08-02T12:53:12Z');
+    const FOSSIL_CANDIDATE_AT = Date.parse('2026-08-02T02:01:48Z');
+
+    it('⭐ flags the 2026-08-02 12:53Z incident: a verdict judging a 10.9h-old candidate', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...UNTOUCHED_BY_OTHER_RULES,
+        observedAtMs: FOSSIL_VERDICT_AT,
+        candidateCommittedAtMs: FOSSIL_CANDIDATE_AT,
+        commitsBehindTip: 86,
+      });
+      expect(v.stale).toBe(true);
+      expect(v.reasonCode).toBe('candidate-fossil');
+      expect(v.reason).toMatch(/ALREADY 10\.9h old/);
+      expect(v.reason).toMatch(/86 commit\(s\) landed on staging that it never saw/);
+      // The operative instruction: this red must not dispatch anyone at the tests it names.
+      expect(v.reason).toMatch(/Do NOT go fix the test\(s\) it names/);
+    });
+
+    /** Every healthy candidate age measured that day, in minutes (n=25), plus the two benign 54s.
+     *  NONE may trip the rule — this is the false-positive floor. */
+    const HEALTHY_AGES_MIN = [19, 25, 25, 26, 28, 28, 29, 29, 29, 30, 30, 31, 32, 33, 33, 34, 34, 34, 35, 35, 35, 39, 54, 54];
+    it.each(HEALTHY_AGES_MIN)('does NOT fire on the healthy structural window (%i min)', (min) => {
+      const v = evaluateGateVerdictFreshness({
+        ...UNTOUCHED_BY_OTHER_RULES,
+        observedAtMs: FOSSIL_VERDICT_AT,
+        candidateCommittedAtMs: FOSSIL_VERDICT_AT - min * 60_000,
+        commitsBehindTip: 4,
+      });
+      expect(v.stale).toBe(false);
+      expect(v.reasonCode).toBeNull();
+      // ...but the measurement is still surfaced, so a caller can show the ordinary window.
+      expect(v.candidateAgeMs).toBe(min * 60_000);
+    });
+
+    it('fires on the 121-min outlier (the same candidate judged twice, 2026-08-01 23:35Z)', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...UNTOUCHED_BY_OTHER_RULES,
+        observedAtMs: FOSSIL_VERDICT_AT,
+        candidateCommittedAtMs: FOSSIL_VERDICT_AT - 121 * 60_000,
+      });
+      expect(v.stale).toBe(true);
+      expect(v.reasonCode).toBe('candidate-fossil');
+      // No commitsBehindTip ⇒ the clause is omitted rather than rendered with a null/0.
+      expect(v.reason).not.toMatch(/commit\(s\) landed/);
+    });
+
+    it('is UNAVAILABLE (never a false positive) on a blob predating candidateCommittedAt', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...UNTOUCHED_BY_OTHER_RULES,
+        observedAtMs: FOSSIL_VERDICT_AT,
+        candidateCommittedAtMs: null,
+      });
+      expect(v.stale).toBe(false);
+      expect(v.candidateAgeMs).toBeNull();
+    });
+
+    it('treats clock skew (candidate committed AFTER the verdict) as unavailable, not as a fossil', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...UNTOUCHED_BY_OTHER_RULES,
+        observedAtMs: FOSSIL_VERDICT_AT,
+        candidateCommittedAtMs: FOSSIL_VERDICT_AT + 5 * 60_000,
+      });
+      expect(v.stale).toBe(false);
+      expect(v.candidateAgeMs).toBeNull();
+    });
+
+    it('never fires on a GREEN blob — a stale green is inert (the module-wide invariant)', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...UNTOUCHED_BY_OTHER_RULES,
+        consecutiveReds: 0,
+        observedAtMs: FOSSIL_VERDICT_AT,
+        candidateCommittedAtMs: FOSSIL_CANDIDATE_AT,
+      });
+      expect(v.stale).toBe(false);
+      expect(v.reasonCode).toBeNull();
+    });
+
+    it('⭐ yields to pin-advance: PROOF of a green outranks "the candidate was old"', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...UNTOUCHED_BY_OTHER_RULES,
+        currentGreenPinSha: '1e0ddc586454', // pin moved ⇒ a green provably happened since
+        observedAtMs: FOSSIL_VERDICT_AT,
+        candidateCommittedAtMs: FOSSIL_CANDIDATE_AT,
+      });
+      expect(v.reasonCode).toBe('pin-advance');
+      // The measurement rides along regardless of WHICH rule fired.
+      expect(v.candidateAgeMs).toBe(FOSSIL_VERDICT_AT - FOSSIL_CANDIDATE_AT);
+    });
+
+    it('⭐ outranks writer-starved: name the concrete defect, not the weakest inference', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...UNTOUCHED_BY_OTHER_RULES,
+        observedAtMs: FOSSIL_VERDICT_AT,
+        // Both rules hold: the writer also starved for >1.5 intervals after this verdict.
+        lastFiredAtMs: FOSSIL_VERDICT_AT + GATE_FIRE_INTERVAL_MS * 2,
+        candidateCommittedAtMs: FOSSIL_CANDIDATE_AT,
+      });
+      expect(v.reasonCode).toBe('candidate-fossil');
+    });
+
+    it('honours an explicit fossilAgeMs override', () => {
+      const base = {
+        ...UNTOUCHED_BY_OTHER_RULES,
+        observedAtMs: FOSSIL_VERDICT_AT,
+        candidateCommittedAtMs: FOSSIL_VERDICT_AT - 40 * 60_000,
+      };
+      expect(evaluateGateVerdictFreshness(base).stale).toBe(false);
+      expect(evaluateGateVerdictFreshness({ ...base, fossilAgeMs: 30 * 60_000 }).stale).toBe(true);
+    });
+  });
 });

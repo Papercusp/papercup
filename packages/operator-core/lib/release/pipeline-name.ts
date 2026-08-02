@@ -1,0 +1,83 @@
+/**
+ * pipeline-name.ts — the ONE derivation of the `pipeline` identity stamped on gate-verdict
+ * events (EI-19344528739076339).
+ *
+ * ## What a "pipeline" actually is — read this before scoping anything on it
+ *
+ * It is the **sanitized basename of the integration root directory**. It is NOT the harness
+ * slug, and nothing anywhere enforces that the two agree. `green-checkpoint.ts`'s own doc
+ * comment names the hazard directly: this box co-hosts `papercusp` and `papercup`, one letter
+ * apart, and the value is whatever the checkout directory happens to be called.
+ *
+ * Measured 2026-08-02 against `harness_shared.event_key_fires`, the four pipelines that have
+ * ever emitted a gate verdict here are `papercusp`, `oddsmith`, `hello-world-3` and
+ * `hello-world-3-pot`. All four ALSO happen to be real `install_slug`s — so the mapping is
+ * true today. It is true by naming convention, not by construction, and the failure mode when
+ * it stops being true is SILENT: a `payload_filter` narrowed on a slug that never appears in
+ * any payload produces an await that simply never fires, and an agent sleeping to its timeout
+ * for a green that already landed is strictly worse than one woken by the wrong pipeline. A
+ * spurious wake is noise you can see; a filter that can never match is a hang you cannot.
+ *
+ * So: **never derive the pipeline from a harness slug.** Derive it the way the EMITTER does,
+ * from the same root, with the same function — then it cannot drift by construction rather
+ * than by convention.
+ *
+ * ## Why this module exists
+ *
+ * This exact eight-token expression was independently re-typed in three places
+ * (green-checkpoint.ts's exported `pipelineName`, release/trace.ts's file-local copy, and
+ * — as a harness-slug ASSUMPTION rather than a copy — the fix originally proposed on
+ * EI-19344528739076339). Three copies of a rule whose whole job is that two parties agree is
+ * the drift waiting to happen. One export, imported by consumers.
+ */
+import * as path from 'node:path';
+
+/**
+ * The pipeline identity for a given integration root — the basename, sanitized to a safe
+ * event-key segment. Byte-identical to `green-checkpoint.ts`'s exported `pipelineName`, which
+ * is the emitter of record; `pipeline-name.test.ts` pins them equivalent so a change to either
+ * cannot silently desynchronize the awaiting side from the emitting side.
+ */
+export function pipelineName(integrationRoot: string): string {
+  const base = path.basename(path.resolve(integrationRoot));
+  return (base.replace(/[^a-zA-Z0-9_-]/g, '-') || 'default').slice(0, 64);
+}
+
+/**
+ * The pipeline THIS process belongs to, resolved from the same env var the release plumbing
+ * uses (`PAPERCUSP_INTEGRATION_ROOT`, else the operator's conventional `../..`).
+ *
+ * Returns `null` rather than a guess when it cannot be resolved. That is the whole point: a
+ * caller auto-scoping an await must be able to tell "I know which pipeline I am" from "I do
+ * not", because only the first justifies installing a filter. Callers that cannot resolve it
+ * must WARN, never narrow — see events/await.ts's gate-key auto-scope.
+ */
+export function currentPipelineName(): string | null {
+  try {
+    const root = process.env.PAPERCUSP_INTEGRATION_ROOT ?? path.resolve(process.cwd(), '..', '..');
+    const name = pipelineName(root);
+    // 'default' is the sanitizer's fallback for an empty basename — a real answer is never
+    // this, so treating it as unresolved keeps a degenerate cwd from installing a filter that
+    // matches nothing.
+    return name && name !== 'default' ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The gate-verdict event keys that are emitted GLOBALLY (unscoped) by every co-hosted pipeline
+ * on this box, alongside their `<key>:<pipeline>` siblings.
+ *
+ * Awaiting one of these bare keys subscribes you to ~13 unrelated pipelines. It has produced a
+ * false "the gate is green" twice in one day (EI-19311522275272409, and again on
+ * EI-19344528739076339's filer) — both times on `release:green`, which is maximally dangerous
+ * precisely because it arrives as `satisfied:true` on a family literally named "green", right
+ * when the reader is primed for good news, and the documented next step after green is to SHIP.
+ */
+export const MULTI_PIPELINE_GATE_KEYS: readonly string[] = ['release:green', 'green-checkpoint:red'];
+
+/** Is `key` one of the globally-emitted gate keys that needs pipeline scoping? */
+export function isMultiPipelineGateKey(key: string): boolean {
+  return MULTI_PIPELINE_GATE_KEYS.includes(key);
+}

@@ -58,8 +58,42 @@
  *      until it settles). Like rule 3 this is live first-hand evidence, not an inference — the run
  *      that produced the cached red is, this moment, re-verifying it. Checked FIRST: it is the
  *      most current of the four (rule 3 is about a run that already finished; this one hasn't).
+ *   5. CANDIDATE-FOSSIL (EI-19346660748445728) — the verdict judged a commit that was ALREADY
+ *      ancient when the verdict was written. See below; this is the only rule that needs nothing
+ *      to have happened afterwards.
  *
  * A verdict you cannot distinguish from a STALE verdict is not a verdict.
+ *
+ * ## Rule 5 and the blind spot it closes (EI-19346660748445728)
+ *
+ * Rules 1-4 all ask the SAME question in different ways: *has something happened SINCE this
+ * verdict?* (the pin moved, the writer starved, a re-triage ran, a refire is in flight). Every one
+ * of them is therefore blind to a verdict that was **already describing ancient code at the moment
+ * it was produced** — nothing needs to happen afterwards for that verdict to be untrustworthy, so
+ * no "since" rule can catch it.
+ *
+ * That gap is not hypothetical. Measured across every persisted verdict on 2026-08-02 (n≈30),
+ * candidate age at verdict time was tightly clustered at **19-35 min** — the structural cost of the
+ * quiet-cut plus a ~55min suite — with a hard tail of outliers at **54, 70, 121, 362 and 651 min**.
+ * The 651-minute case (verdict written 12:53:12Z judging a candidate committed 02:01:48Z) reported
+ * 40 failures for a defect that had been FIXED ~9h before the verdict was written. Because no rule
+ * covered it, `stale` came back FALSE and the red was presented as current: four agents reached
+ * four contradictory conclusions from it and ~2h of fleet time went into diagnosing already-fixed
+ * code. Its own header corroborated the fossil independently — `tasks=15` where every healthy
+ * verdict that day ran `tasks=42`, because a base→candidate diff that narrow selects a completely
+ * different affected set.
+ *
+ * The inputs this rule needs were ALREADY being recorded. `release-actions.ts` has written
+ * `gate_health.candidateCommittedAt` + `commitsBehindTip` for some time, and mentions them in a
+ * broadcast NOTE — but the machine-readable `stale` verdict that every consumer actually branches
+ * on (`dev:pipeline_position`, `/admin/git`, the why-chain) never read them. A durable record
+ * nobody reads is not a fix; it is the same silence with better bookkeeping. This rule is the
+ * read side.
+ *
+ * Deliberately conservative: {@link CANDIDATE_FOSSIL_AGE_MS} defaults to 120 min — 2.2× the
+ * oldest HEALTHY observation in that sample (54 min), so an ordinary quiet-cut verdict can never
+ * trip it, while every genuine outlier measured does. It reports `stale` WITHOUT claiming green
+ * (see `reasonCode`): a fossil verdict is unreliable, not disproven.
  */
 
 import { describeRefireBudget, type StoredInFlightRetriage } from './in-flight-retriage';
@@ -67,6 +101,20 @@ import { describeRefireBudget, type StoredInFlightRetriage } from './in-flight-r
 /** One green-checkpoint fire interval. The routine is hourly; the 1.5× slack below keeps a fire
  *  that lands a little late from reading as a starved writer. */
 export const GATE_FIRE_INTERVAL_MS = 60 * 60_000;
+
+/**
+ * Rule 5 threshold: how old the JUDGED CANDIDATE may be, at verdict time, before the verdict is
+ * treated as describing a fossil rather than the tree we would ship.
+ *
+ * 120 min is chosen from measurement, not taste (EI-19346660748445728). The healthy population on
+ * 2026-08-02 (n≈25) sat at 19-35 min with a single benign 54; the outliers were 70, 121, 362 and
+ * 651. 120 min clears the healthy maximum by 2.2× — so the ordinary quiet-cut + ~55min-suite path
+ * can NEVER trip this — while still catching every genuine outlier observed.
+ *
+ * Overridable per-call via `GateVerdictFreshnessInput.fossilAgeMs` (the module stays pure — env is
+ * read by callers, never here), mirroring `intervalMs`/{@link GATE_FIRE_INTERVAL_MS}.
+ */
+export const CANDIDATE_FOSSIL_AGE_MS = 120 * 60_000;
 
 export interface GateVerdictFreshnessInput {
   /** The red streak the cache is reporting. A ZERO-red (green) verdict going stale is harmless —
@@ -95,6 +143,19 @@ export interface GateVerdictFreshnessInput {
    *  freshness-checked by `parseInFlightRetriage`), when a stale-candidate auto-refire is currently
    *  running. Null/absent when no refire is in flight, or its marker is missing/abandoned. */
   inFlightRetriage?: StoredInFlightRetriage | null;
+  /** EI-19346660748445728 — Rule 5 input. When the COMMIT this verdict judged was authored
+   *  (`gate_health.candidateCommittedAt`, parsed to epoch ms). Null/absent on a blob predating the
+   *  field, or when the writer could not resolve it — the rule is then unavailable and says
+   *  nothing, rather than guessing. Judged against `observedAtMs` (verdict time), never against
+   *  `Date.now()`: the question is how stale the candidate was WHEN JUDGED, and using now-time
+   *  would make every old-but-healthy verdict look like a fossil. */
+  candidateCommittedAtMs?: number | null;
+  /** EI-19346660748445728 — Rule 5 enrichment (`gate_health.commitsBehindTip`). Not required to
+   *  fire the rule; when present it turns "the candidate was old" into the number that actually
+   *  tells a reader how much newer work the verdict never saw. */
+  commitsBehindTip?: number | null;
+  /** Rule 5 threshold; defaults to {@link CANDIDATE_FOSSIL_AGE_MS}. */
+  fossilAgeMs?: number;
 }
 
 export interface GateVerdictFreshness {
@@ -113,9 +174,26 @@ export interface GateVerdictFreshness {
    *   - 'refire-in-flight' — a stale-candidate auto-refire for this exact red is running RIGHT
    *                          NOW; a fresh verdict is imminent, so this cached red must not be
    *                          acted on in the meantime.
+   *   - 'candidate-fossil' — the verdict judged a commit that was already ancient when it was
+   *                          written, so it describes neither the tree we would ship nor, very
+   *                          likely, current reality. NOT proof of green (like 'writer-starved',
+   *                          the true colour is unknown) — but unlike it, the cause is concrete
+   *                          and named, and the correct response is to re-judge at tip rather
+   *                          than to fix the tests this verdict names.
    * `null` when `stale` is false.
    */
-  reasonCode: 'pin-advance' | 'writer-starved' | 'retriage-proven' | 'refire-in-flight' | null;
+  reasonCode:
+    | 'pin-advance'
+    | 'writer-starved'
+    | 'retriage-proven'
+    | 'refire-in-flight'
+    | 'candidate-fossil'
+    | null;
+  /** EI-19346660748445728: how stale the judged candidate was at verdict time, in ms — present
+   *  whenever it could be computed, INDEPENDENT of whether rule 5 fired. A caller can surface the
+   *  ordinary ~30min structural window (a real, load-bearing property of every verdict this gate
+   *  produces) without waiting for the outlier threshold to trip. */
+  candidateAgeMs?: number | null;
 }
 
 const short = (sha: string): string => sha.slice(0, 12);
@@ -135,11 +213,23 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
     lastFiredAtMs,
     retriageStaleTip,
     inFlightRetriage,
+    candidateCommittedAtMs,
+    commitsBehindTip,
   } = input;
   const intervalMs = input.intervalMs ?? GATE_FIRE_INTERVAL_MS;
+  const fossilAgeMs = input.fossilAgeMs ?? CANDIDATE_FOSSIL_AGE_MS;
+
+  // Rule 5's measurement, computed once. Deliberately relative to `observedAtMs` (verdict time),
+  // not now-time — see `candidateCommittedAtMs`. A negative age means the writer's two clocks
+  // disagree (clock skew, or a committer date in the future); that is not evidence of a fossil,
+  // so it is treated as unavailable rather than folded into the comparison below.
+  const candidateAgeMs =
+    observedAtMs != null && candidateCommittedAtMs != null && observedAtMs >= candidateCommittedAtMs
+      ? observedAtMs - candidateCommittedAtMs
+      : null;
 
   // Only a RED verdict can misdirect. A stale green is inert.
-  if (consecutiveReds <= 0) return { stale: false, reason: null, reasonCode: null };
+  if (consecutiveReds <= 0) return { stale: false, reason: null, reasonCode: null, candidateAgeMs };
 
   // Rule 4 — REFIRE-IN-FLIGHT (EI-18669342433807110). Checked FIRST — this is live, RIGHT-NOW
   // evidence (a run is this moment re-verifying the exact red being read), more current than any
@@ -161,6 +251,7 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
           ? ` ⚠ this is the LAST refire — if it comes back red the verdict STICKS, so be ready to act on it`
           : ''),
       reasonCode: 'refire-in-flight',
+      candidateAgeMs,
     };
   }
 
@@ -178,6 +269,7 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
         `suite could confirm ${short(retriageStaleTip)} green, so the recorded failing-test names are ` +
         `unconfirmed at record time (they may already be fixed)`,
       reasonCode: 'retriage-proven',
+      candidateAgeMs,
     };
   }
 
@@ -190,6 +282,31 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
         `the release pin has advanced ${short(observedFromPin)} → ${short(currentGreenPinSha)} since this red was recorded — ` +
         `the pin only moves on a GREEN checkpoint, so the gate has greened since`,
       reasonCode: 'pin-advance',
+      candidateAgeMs,
+    };
+  }
+
+  // Rule 5 — CANDIDATE-FOSSIL (EI-19346660748445728). Placed AFTER rule 1 and BEFORE rule 2 on
+  // purpose. Rule 1 outranks it: a pin-advance PROVES a green happened, which lets a caller reset
+  // the streak outright, whereas a fossil only says the verdict is unreliable. Rule 2 ranks below
+  // it: "the writer starved" is the weakest inference here and explains nothing about the verdict
+  // itself, while this names a concrete, measured defect in what was judged. Both can hold at once
+  // (an old verdict about an old candidate); the more explanatory one should be what a reader sees.
+  if (candidateAgeMs != null && candidateAgeMs > fossilAgeMs) {
+    const hrs = Math.round((candidateAgeMs / 3_600_000) * 10) / 10;
+    return {
+      stale: true,
+      reason:
+        `this verdict judged a commit that was ALREADY ${hrs}h old when the verdict was written` +
+        (commitsBehindTip != null && commitsBehindTip > 0
+          ? ` (${commitsBehindTip} commit(s) landed on staging that it never saw)`
+          : '') +
+        ` — far beyond the ~30min structural quiet-cut+suite window, so it describes neither the ` +
+        `tree we would ship nor, most likely, current reality. Do NOT go fix the test(s) it names ` +
+        `on this evidence: re-judge at tip first, and treat the fossil candidate itself as a bug ` +
+        `in candidate selection`,
+      reasonCode: 'candidate-fossil',
+      candidateAgeMs,
     };
   }
 
@@ -204,10 +321,13 @@ export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): 
         `the green-checkpoint has fired since this verdict without producing a new one (last verdict ${hrs}h before the last fire) — ` +
         `its runs are being SKIPPED (run-lock contention), so this red is unverified`,
       reasonCode: 'writer-starved',
+      candidateAgeMs,
     };
   }
 
   // A blob predating `observedAt` cannot be judged by rule 2. Say so plainly instead of guessing:
   // absence of a timestamp is not evidence of freshness, but it is not evidence of staleness either.
-  return { stale: false, reason: null, reasonCode: null };
+  // `candidateAgeMs` still rides along: the ordinary ~30min window is worth surfacing on a verdict
+  // that is NOT stale, and a caller that shows it cannot be surprised by it later.
+  return { stale: false, reason: null, reasonCode: null, candidateAgeMs };
 }

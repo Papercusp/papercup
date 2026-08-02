@@ -58,6 +58,9 @@ import {
   SELF_WATCHDOG_MS,
   isNothingToGate,
   realCheckpointDeps,
+  recordOrchestratorLine,
+  resetOrchestratorLog,
+  renderOrchestratorTranscript,
   pipelineName,
   formatGateLineageLine,
   computeGateLineage,
@@ -2289,6 +2292,95 @@ describe('realCheckpointDeps.runGreen — SPA build retains dist chunks (EI-1869
     expect(r.green).toBe(true);
     expect(buildCalled).toBe(true); // the build leg actually ran — didn't skip/short-circuit
     expect(buildEnv?.PAPERCUSP_RETAIN_DIST_CHUNKS).toBe('1');
+  });
+});
+
+// EI-19346606967082413: the persisted verdict log used to record ONLY the suite's stdout.
+// Every ORCHESTRATOR decision — `checkpointing candidate <sha>`, the quiet-cut pick, and each
+// in-process `auto-refiring` — went to stdout alone. A MANUAL run redirects that to /tmp; a
+// SCHEDULER-fired run redirects it NOWHERE. So a cron run left no artifact whatsoever of which
+// candidate(s) it judged, which is why "which sha is this run judging" repeatedly produced
+// contradictory answers from agents reading the same files, and why the `inFlightRetriage`
+// routines marker had to be invented to recover state this log should have carried.
+//
+// The first fix attempt is the reason this test exists. It shipped the ring buffer, the
+// once-per-run reset seam and the tee — and stopped one hunk short of CALLING
+// renderOrchestratorTranscript() at the write site. It compiled, it typechecked, every test
+// stayed green, and it was a complete no-op: the buffer filled on every run and was thrown
+// away. That is the same class as EI-18694489428714850 above — not a missing FEATURE, a
+// missing WIRE — and no test of the helper in isolation can ever catch it, because the helper
+// was perfect. So this asserts the WIRE, end to end: a line recorded on the buffer has to come
+// out the other end INSIDE THE FILE.
+describe('realCheckpointDeps.runGreen — the orchestrator transcript reaches the persisted log (EI-19346606967082413)', () => {
+  let tree: string;
+  let logDir: string;
+  beforeEach(() => {
+    tree = mkdtempSync(join(tmpdir(), 'gc-transcript-'));
+    logDir = mkdtempSync(join(tmpdir(), 'gc-logs-'));
+    // The buffer is module-global, so a neighbouring test's lines would otherwise leak in
+    // and make this pass for the wrong reason.
+    resetOrchestratorLog();
+  });
+  afterEach(() => {
+    rmSync(tree, { recursive: true, force: true });
+    rmSync(logDir, { recursive: true, force: true });
+    resetOrchestratorLog();
+  });
+
+  const runAndReadLog = async (suiteStdout: string): Promise<string> => {
+    const { readdirSync, readFileSync } = await import('node:fs');
+    writeFileSync(join(tree, 'package.json'), JSON.stringify({ name: 'x', scripts: { 'test:affected': 'true' } }));
+    const exec: CheckpointExec = async (cmd, args) => {
+      // git grep's "no match" exit code — no committed conflict markers on this fake tree.
+      if (cmd === 'git' && args[0] === 'grep') return { code: 1, stdout: '', stderr: '' };
+      return { code: 0, stdout: suiteStdout, stderr: '' };
+    };
+    const cfg = releaseConfig({
+      checkpointRoot: tree,
+      checkpointLogDir: logDir,
+      greenCmd: 'npm run test:affected',
+      spaBuildWorkspace: '', // isolate to the suite leg — no SPA build on a fake tree
+    });
+    await realCheckpointDeps(cfg, exec).runGreen(tree, 'base');
+    const written = readdirSync(logDir).filter((f) => f.endsWith('.log'));
+    expect(written).toHaveLength(1); // exactly one log per run, as the write site promises
+    return readFileSync(join(logDir, written[0]!), 'utf8');
+  };
+
+  it('⭐ carries a recorded orchestrator line into the written file, inside the transcript fence', async () => {
+    // Verbatim shape of the line green-checkpoint.ts:2745 emits — the single most-wanted
+    // fact about any run, and the one a cron run used to lose entirely.
+    recordOrchestratorLine('checkpointing candidate abc12345 (base none)');
+    const body = await runAndReadLog('Test Files  3 passed (3)\n');
+
+    expect(body).toContain('checkpointing candidate abc12345');
+    // ...and it must be FENCED, not loose in the suite output: the fence is what makes it
+    // greppable and keeps it from reading as something the suite itself printed.
+    const fenceStart = body.indexOf('--- orchestrator transcript');
+    expect(fenceStart).toBeGreaterThanOrEqual(0);
+    const fenceEnd = body.indexOf('--- end orchestrator transcript');
+    expect(fenceEnd).toBeGreaterThan(fenceStart);
+    expect(body.indexOf('checkpointing candidate abc12345')).toBeGreaterThan(fenceStart);
+    expect(body.indexOf('checkpointing candidate abc12345')).toBeLessThan(fenceEnd);
+  });
+
+  it('does not displace the suite output the log already existed to preserve', async () => {
+    // The negative control. A "fix" that wrote the transcript OVER the suite stdout would
+    // satisfy the assertion above while destroying the log's original purpose.
+    recordOrchestratorLine('quiet-cut: tip deadbeef is 63s old (<240s quiet window)');
+    const body = await runAndReadLog('Test Files  571 passed (573)\n      Tests  42576 passed\n');
+
+    expect(body).toContain('Test Files  571 passed (573)');
+    expect(body).toContain('Tests  42576 passed');
+    // header first, then the transcript, then the suite output it precedes
+    expect(body.indexOf('[green-checkpoint] candidate=')).toBe(0);
+    expect(body.indexOf('--- orchestrator transcript')).toBeLessThan(body.indexOf('Test Files  571 passed'));
+  });
+
+  it('adds no fence at all when the run recorded nothing (an empty header is worse than none)', () => {
+    // Kept as a direct call rather than a runGreen round-trip: runGreen legitimately logs
+    // its own lines before the write, so "empty transcript" is not reachable through it.
+    expect(renderOrchestratorTranscript([])).toBe('');
   });
 });
 

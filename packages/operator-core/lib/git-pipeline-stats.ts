@@ -466,6 +466,25 @@ export async function gitPipelineSnapshot(
   // NOW, already freshness-checked (missing/malformed/abandoned ⇒ null).
   const inFlightRetriage = parseInFlightRetriage(gateHealth.inFlightRetriage);
   /**
+   * EI-19346660748445728 — Rule 5 input. `gate_health.candidateCommittedAt` is written by
+   * `release-actions.ts` as an ISO STRING (`git show -s --format=%cI`), unlike its sibling
+   * `observedAt`, which is epoch ms from `Date.now()`. Parsing is therefore NOT symmetric with the
+   * `num()` above and must not be made to look like it: a `num()` on the ISO string yields NaN,
+   * which would silently disable the rule while looking wired.
+   *
+   * Both shapes are accepted anyway — a number passes through — so a writer that ever switches to
+   * epoch ms cannot quietly turn the rule off. An unparseable value degrades to null (rule
+   * unavailable), never to 0, which would date the candidate to 1970 and make EVERY verdict a
+   * fossil — the loudest possible false positive.
+   */
+  const candidateCommittedAtMs = ((): number | null => {
+    const raw = gateHealth.candidateCommittedAt;
+    if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
+    if (typeof raw !== 'string' || raw.trim() === '') return null;
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  })();
+  /**
    * P-007 (D-038 axis 2). The `?? 0` below is load-bearing for every downstream
    * consumer — they all expect a number — but the fallback DESTROYS the distinction
    * between "the gate ran and recorded no reds" and "no counter was recorded at all",
@@ -496,6 +515,13 @@ export async function gitPipelineSnapshot(
     retriageStaleTip,
     // EI-18669342433807110 — Rule 4: an in-flight refire for this exact red, when one is running.
     inFlightRetriage,
+    // EI-19346660748445728 — Rule 5: how old the JUDGED COMMIT already was when this verdict was
+    // written. Both fields were being recorded here long before anything read them; this is the
+    // read side, and it is what makes a 10h-stale red announce itself instead of presenting as
+    // current (measured 2026-08-02: a 651-min-fossil verdict cost ~2h of fleet time and produced
+    // four contradictory conclusions, because `stale` came back false).
+    candidateCommittedAtMs,
+    commitsBehindTip: num(gateHealth.commitsBehindTip),
   });
   const effectiveGate = pinProvenGateCorrection(gcVerdictStaleReasonCode, {
     consecutiveReds: rawConsecutiveReds,

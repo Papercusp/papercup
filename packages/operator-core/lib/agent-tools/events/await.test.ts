@@ -7,7 +7,7 @@
  * default, that overrides flow through, and that the response carries
  * await_id/expires_ts/wake_handle.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@papercusp/agent-mcp', () => ({
   defineTool: (def: unknown) => def,
@@ -919,5 +919,78 @@ describe('EI-13846 — default the `work-item:claimable` payload_filter to the c
     expect(getClaimSpecRecord).not.toHaveBeenCalled();
     await call({ event: 'lock:grant:t1' });
     expect(getClaimSpecRecord).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * EI-19344528739076339 — the gate-verdict keys are emitted GLOBALLY by every co-hosted
+ * pipeline (~13 on this box), so awaiting one BARE subscribes you to strangers' gates. Twice
+ * in one day that produced a confident, wrong "the gate is green" — once woken by oddsmith's
+ * advance while papercusp had no verdict at all, once while papercusp was RED with its refire
+ * still in flight. The prior fix put a `[pipeline]` prefix on the wake SUMMARY, which only
+ * helps an agent that reads the banner — not one whose wake was parked and redelivered across
+ * a carry-respawn. The trap is the KEY CHOICE, so it is closed at registration.
+ */
+describe('EI-19344528739076339 — auto-scope a bare multi-pipeline gate key to THIS pipeline', () => {
+  const ORIGINAL_ROOT = process.env.PAPERCUSP_INTEGRATION_ROOT;
+  beforeEach(() => {
+    process.env.PAPERCUSP_INTEGRATION_ROOT = '/home/x/papercupai-workspace/papercusp';
+  });
+  afterEach(() => {
+    if (ORIGINAL_ROOT === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    else process.env.PAPERCUSP_INTEGRATION_ROOT = ORIGINAL_ROOT;
+  });
+
+  it('⭐ narrows a bare `release:green` await to { pipeline } derived from THIS integration root', async () => {
+    const out = await call({ event: 'release:green' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      payloadFilter: { pipeline: { equals: 'papercusp' } },
+    });
+    expect(out.auto_scoped_payload_filter).toBe(true);
+    expect(out.payload_filter_source).toMatchObject({ source: 'pipeline', pipeline: 'papercusp' });
+  });
+
+  it('⭐ narrows a bare `green-checkpoint:red` await the same way', async () => {
+    await call({ event: 'green-checkpoint:red' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      payloadFilter: { pipeline: { equals: 'papercusp' } },
+    });
+  });
+
+  /** Even a correctly pipeline-scoped release:green fires for a PARTIAL advance (longest
+   *  green prefix; the tip is still RED) — so "green" alone is not "deployable". */
+  it('⭐ warns that release:green also fires for a PARTIAL advance', async () => {
+    const out = await call({ event: 'release:green' });
+    expect(String(out.auto_scoped_payload_filter_advice)).toMatch(/partial/i);
+    expect(String(out.auto_scoped_payload_filter_advice)).toMatch(/redTip/);
+  });
+
+  it('an explicit payload_filter always wins — never silently replaced', async () => {
+    const filter = { pipeline: { equals: 'oddsmith' } };
+    const out = await call({ event: 'release:green', payload_filter: filter });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: filter });
+    expect(out.auto_scoped_payload_filter).toBeUndefined();
+  });
+
+  it('an ALREADY pipeline-scoped key is left completely alone', async () => {
+    const out = await call({ event: 'release:green:papercusp' });
+    expect(out.auto_scoped_payload_filter).toBeUndefined();
+    expect(out.unscoped_gate_key_await).toBeUndefined();
+  });
+
+  /**
+   * The safety property — and the reason this is NOT scoped on the caller's harness slug.
+   * `pipeline` is the sanitized basename of the integration root, not a slug; that the two
+   * agree for all four emitting pipelines today is naming convention, not construction. A
+   * filter narrowed on a value that never appears in any payload yields an await that can
+   * NEVER fire: a silent hang, strictly worse than the wrong-pipeline wake being fixed. So
+   * an unresolvable pipeline must WARN, never narrow.
+   */
+  it('⭐ WARNS instead of narrowing when this process\'s own pipeline cannot be resolved', async () => {
+    process.env.PAPERCUSP_INTEGRATION_ROOT = '/';
+    const out = await call({ event: 'release:green' });
+    expect(out.auto_scoped_payload_filter).toBeUndefined();
+    expect(out.unscoped_gate_key_await).toBe(true);
+    expect(String(out.unscoped_gate_key_advice)).toMatch(/never match|silent hang|can never/i);
   });
 });

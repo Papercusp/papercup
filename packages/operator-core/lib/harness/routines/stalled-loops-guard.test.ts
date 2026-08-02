@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { sweepStalledLoops } from './stalled-loops-guard';
+import { sweepStalledLoops, type StalledLoopsSweepDeps } from './stalled-loops-guard';
 import type { LoopStatus } from './loop';
+
+// Bind the mocks to the REAL dep signatures (the convention session-ingest-lag-watchdog.test.ts
+// already uses). A bare `vi.fn(async () => true)` records a ZERO-arg call tuple, so reading
+// `broadcast.mock.calls[0][0]` below is a type error — and vitest is type-blind, so a green test
+// run cannot see it. It surfaces only at `lint:tsc`, i.e. at the fleet gate.
+type BroadcastFn = NonNullable<StalledLoopsSweepDeps['broadcast']>;
 
 /** Minimal fake `harness_shared.routines` SELECT — the sweep's only direct SQL read. */
 function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
@@ -86,11 +92,11 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
 
     // ONE broadcast for the whole batch, not one per disarmed owner.
     expect(broadcast).toHaveBeenCalledTimes(1);
-    const call = broadcast.mock.calls[0][0];
-    expect(call.summary).toContain('2 armed engine loop');
-    expect(call.body).toContain('su-dead1');
-    expect(call.body).toContain('su-dead2');
-    expect(call.body).not.toContain('su-ok');
+    const call = broadcast.mock.calls[0]?.[0];
+    expect(call?.summary).toContain('2 armed engine loop');
+    expect(call?.body).toContain('su-dead1');
+    expect(call?.body).toContain('su-dead2');
+    expect(call?.body).not.toContain('su-ok');
   });
 
   it('no stalled owners → no auto-pause and no broadcast at all', async () => {
@@ -138,7 +144,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       { id: 'rt_old', target_owner_id: 'su-dup' },
       { id: 'rt_new', target_owner_id: 'su-dup' },
     ]);
-    const getStatuses = vi.fn(async (owners: string[]) => {
+    const getStatuses = vi.fn(async (owners: readonly string[]) => {
       expect(owners).toEqual(['su-dup']);
       return new Map([['su-dup', status({ ownerId: 'su-dup', turnsStalled: true })]]);
     });

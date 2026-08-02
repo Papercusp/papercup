@@ -44,6 +44,7 @@ import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 import { resolvePlanScope } from '../plans/source';
+import { currentPipelineName, isMultiPipelineGateKey } from '../../release/pipeline-name';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { formatSpecRef } from '../../scheduler/claim-spec';
 import { resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-workspace';
@@ -713,6 +714,41 @@ export default defineTool({
       }
     }
 
+    // ── EI-19344528739076339 (cross-pipeline false green): the same auto-narrow, for the
+    // gate-verdict keys. `green-checkpoint.ts` emits a GLOBAL `release:green` /
+    // `green-checkpoint:red` alongside each `<key>:<pipeline>` sibling, so the bare key fires
+    // from every one of the ~13 co-hosted pipelines on this box. An agent awaiting it is
+    // woken by a STRANGER'S gate with nothing in the wake itself saying so.
+    //
+    // Twice in one day that produced a false "the gate is green": EI-19311522275272409 (woken
+    // by oddsmith's advance of 9a8aa848 while papercusp had no verdict in that window at all)
+    // and again at 12:17:49Z (woken by oddsmith's b54be5962 while papercusp was RED with its
+    // refire still in flight). Measured at the time: bare `release:green` last fired for
+    // oddsmith, while `release:green:papercusp` was ~10.7h stale.
+    //
+    // The prior fix put a `[pipeline]` prefix on the SUMMARY, which helps only an agent that
+    // reads the wake banner — not one whose wake was parked and redelivered across a
+    // carry-respawn (exactly the filer's case), and not one inspecting events:status. The
+    // trap is the KEY CHOICE, so it has to be closed at registration.
+    //
+    // ⚠ Scoped on the pipeline DERIVED THE WAY THE EMITTER DERIVES IT, never on the caller's
+    // harness slug. `pipeline` is the sanitized basename of the integration root; that it
+    // currently equals a slug for all four emitting pipelines is naming convention, not
+    // construction. Narrowing on a slug that never appears in any payload yields an await
+    // that CANNOT fire — a silent hang, strictly worse than the wrong-pipeline wake this
+    // fixes. Hence: resolve it or warn, never guess.
+    let autoScopedPipeline: string | null = null;
+    let unscopedGateKeyWarning = false;
+    if (!patternAwait && eventKey && isMultiPipelineGateKey(eventKey) && effectivePayloadFilter == null) {
+      const pipeline = currentPipelineName();
+      if (pipeline) {
+        effectivePayloadFilter = { pipeline: { equals: pipeline } };
+        autoScopedPipeline = pipeline;
+      } else {
+        unscopedGateKeyWarning = true;
+      }
+    }
+
     // ── EI-14225: retire the CALLER'S OWN prior pending registration(s) on this
     // EXACT key before adding a new one. events:await is one-shot by construction
     // (the caller only ever wants ONE outstanding wait per key) — the canonical
@@ -854,6 +890,24 @@ export default defineTool({
                   unscoped_claimable_await: true,
                   unscoped_claimable_advice:
                     'EI-13846: no payload_filter was passed, and you have no claim spec that narrows over the claimable payload (id/kind/title/plan), so this await is UNSCOPED — it will wake you on EVERY hive-wide work-item:claimable emission, which fires constantly on a large board. If you are fleet-scoped, confirm scheduler:get_claim_spec narrows on one of those fields; otherwise pass an explicit payload_filter or expect frequent guaranteed-miss wakes.',
+                }
+              : {}),
+            ...(autoScopedPipeline
+              ? {
+                  auto_scoped_payload_filter: true,
+                  payload_filter: effectivePayloadFilter,
+                  payload_filter_source: { source: 'pipeline' as const, pipeline: autoScopedPipeline },
+                  auto_scoped_payload_filter_advice: `EI-19344528739076339: "${eventKey}" is emitted GLOBALLY by every co-hosted pipeline on this box (~13 of them), so awaiting it bare subscribes you to strangers' gates — it has produced a false "the gate is green" twice in one day. No payload_filter was passed, so this await was AUTOMATICALLY narrowed to { pipeline: "${autoScopedPipeline}" }, derived from THIS process's integration root exactly as the emitter derives it. Pass an explicit payload_filter to override, or await the pipeline-scoped key "${eventKey}:${autoScopedPipeline}" directly.${
+                    eventKey === 'release:green'
+                      ? ' ⚠ Note that even a correctly-scoped release:green does NOT by itself mean the tip is green: the same key also fires for a PARTIAL advance (longest green prefix, tip still red) with payload.partial=true + payload.redTip. Check `partial` before concluding the pipeline is deployable.'
+                      : ''
+                  }`,
+                }
+              : {}),
+            ...(unscopedGateKeyWarning
+              ? {
+                  unscoped_gate_key_await: true,
+                  unscoped_gate_key_advice: `EI-19344528739076339: "${eventKey}" is emitted GLOBALLY by every co-hosted pipeline on this box, so this await can be woken by an UNRELATED pipeline's gate — the failure mode is a confident, wrong "the gate is green". It was NOT auto-scoped because this process's own pipeline could not be resolved from PAPERCUSP_INTEGRATION_ROOT, and a filter narrowed on a guess would be worse than none (an await that can never match is a silent hang, not a noisy wake). Await the pipeline-scoped key "${eventKey}:<pipeline>" instead, or pass payload_filter { pipeline: { equals: "<pipeline>" } } explicitly. Registered anyway — this is a warning, not a refusal.`,
                 }
               : {}),
             expires_ts: row.expiresTs,
