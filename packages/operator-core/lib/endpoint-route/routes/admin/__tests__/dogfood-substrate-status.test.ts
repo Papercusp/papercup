@@ -36,6 +36,10 @@ const H = vi.hoisted(() => {
     state,
     listBootedHandles: () => state.booted,
     requestOnlyHost: () => state.requestOnly,
+    // EI-18735338283879820: the route now calls the SHARED predicate rather than
+    // computing `isPrimary && !requestOnly` inline — mirror that same logic here so
+    // the mock stays behaviorally equivalent to the real background-workers export.
+    isSubstrateOwnerProcess: () => state.isPrimary && !state.requestOnly,
     getCachedRemoteBootedHandles: () => state.cachedRemote,
   };
 });
@@ -43,7 +47,10 @@ const H = vi.hoisted(() => {
 vi.mock('../../../../sync/hyperbee/boot-all', () => ({
   listBootedHandles: H.listBootedHandles,
 }));
-vi.mock('../../../../background-workers', () => ({ requestOnlyHost: H.requestOnlyHost }));
+vi.mock('../../../../background-workers', () => ({
+  requestOnlyHost: H.requestOnlyHost,
+  isSubstrateOwnerProcess: H.isSubstrateOwnerProcess,
+}));
 vi.mock('../../../../sync/hyperbee/cluster-booted-handles-sync', () => ({
   getCachedRemoteBootedHandles: H.getCachedRemoteBootedHandles,
 }));

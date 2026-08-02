@@ -1059,6 +1059,7 @@ describe('reclaimFirstOutputStalledSpawns (EI-7345 — first-output stall reclai
       host?: string;
       bootId?: string;
       pid?: number;
+      runId?: string;
     } = {},
   ) {
     await insertSpawn(spawnId, over.status ?? 'running', over.heartbeatAgoSec ?? 5, {
@@ -1067,6 +1068,7 @@ describe('reclaimFirstOutputStalledSpawns (EI-7345 — first-output stall reclai
       pid: over.pid ?? CHILD_PID,
       startedAgoSec: over.startedAgoSec ?? 6 * 60, // started 6 min ago > 5-min threshold
       lastOutputAgoSec: over.lastOutputAgoSec, // omitted ⇒ NULL (never produced output)
+      runId: over.runId, // omitted ⇒ insertSpawn defaults to `r-<spawnId>`
     });
   }
 
