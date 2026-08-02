@@ -65,6 +65,9 @@ export interface ApplyTriageResult {
   /** Present when the EVIDENCE-STALENESS GUARD downgraded an incoming place→gate
    *  (EI-18696839552593260). `requestedDecision` is what the caller asked for. */
   evidenceDowngrade?: { requestedDecision: TriageDecision; citedIds: string[]; staleIds: string[] };
+  /** Present when the CODE-EXISTENCE GUARD downgraded an incoming place→gate
+   *  (EI-18801316749542776). `requestedDecision` is what the caller asked for. */
+  existenceDowngrade?: { requestedDecision: TriageDecision; tokens: string[]; matches: CodeExistenceMatch[] };
   error?: string;
 }
 
@@ -79,6 +82,11 @@ export interface TriageCoreDeps {
     opts?: { skipCompletionGate?: boolean },
   ) => Promise<EngineerIssue | null>;
   commentIssue: (id: string, body: string, authorId?: string) => Promise<ThreadPostRow | null>;
+  /** EI-18801316749542776: search the live tree for a vocabulary token, returning the
+   *  repo-relative paths it occurs in (best-effort, capped). Optional — an omitted
+   *  dep silently skips the code-existence guard (never blocks a decision). Production
+   *  default: `defaultSearchTree` (grep over the integration root). */
+  searchTree?: (token: string) => Promise<string[]>;
   mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
 }
 

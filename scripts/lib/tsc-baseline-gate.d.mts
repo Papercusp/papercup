@@ -309,12 +309,17 @@ export function formatAttributionHeadline({ count, explicit }: {
  * right thing: scoping their check exactly, at the moment they are deciding whether their change
  * is safe to leave in the shared tree.
  *
- * @param {{explicit: boolean}} opts `explicit` — the changed-set came from `--files` (named by
- *   the caller) rather than `--mine` (inferred from `git status`).
+ * @param {{explicit: boolean, liveEditCount?: number, standingCount?: number}} opts `explicit` —
+ *   the changed-set came from `--files` (named by the caller) rather than `--mine` (inferred from
+ *   `git status`). `liveEditCount`/`standingCount` split the new files into a peer's uncommitted
+ *   live edits vs committed standing reds (EI-19278299775574199); omitting BOTH yields the full
+ *   standing text, so a caller that does not supply the split is never quietly exonerated.
  * @returns {string[]} console lines, already indented.
  */
 export function formatNewFileGuidance({ explicit, liveEditCount, standingCount }: {
     explicit: boolean;
+    liveEditCount?: number;
+    standingCount?: number;
 }): string[];
 /**
  * Split `newFiles` into a peer's LIVE EDITS and STANDING reds — the two populations the

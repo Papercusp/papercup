@@ -34,8 +34,9 @@
  * justification as the in-process throttle already in `work-items-events.ts`.
  */
 
-import { groupByAgent, listFleetAssignments } from '../../fleet/assignments';
+import { groupByAgent, listFleetAssignments, type AgentAssignment } from '../../fleet/assignments';
 import { reconcileWakeability } from '../../agent-tools/fleet/assignments';
+import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
 import { fetchContextPressure } from '../../agent-tools/coordination/context-pressure';
 import {
   detectFleetTransitions,
@@ -67,7 +68,15 @@ export function __resetFleetTransitionSnapshotForTests(): void {
  * Agents in NO fleet are dropped: their transitions are nobody's fleet event.
  */
 export async function gatherFleetObservations(): Promise<FleetMemberObservation[]> {
-  const agents = groupByAgent(await listFleetAssignments({}));
+  // `reconcileWakeability` WRITES `sessionState` onto the rows it is handed, but
+  // `AgentAssignment` does not declare the field — so the widened row type has to
+  // be named here, or the reconciled result narrows straight back to
+  // `AgentAssignment` and reading `.sessionState` off it is a type error.
+  type ObservableAgent = AgentAssignment & {
+    sessionState?: SessionState | null;
+    confirmLiveness?: boolean | null;
+  };
+  const agents: ObservableAgent[] = groupByAgent(await listFleetAssignments({}));
   const fleeted = agents.filter((a) => Boolean(a.fleetSlug));
   if (fleeted.length === 0) return [];
 
