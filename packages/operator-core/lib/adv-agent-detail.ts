@@ -49,6 +49,11 @@ import {
 import { getLoopStatus } from './harness/routines/loop';
 import { readHeldWorkItems } from './carry-brief';
 import { getPresence } from './agent-tools/coordination/presence';
+// P-009 leg (c): the SHARED stalled-lane threshold + oracle. Imported, never
+// re-derived — a second local rule is how two surfaces end up disagreeing about
+// whether the same agent is stalled.
+import { computeIntentStale } from './agent-tools/coordination/presence-tier1';
+import { fetchPresenceFleet } from './agent-tools/coordination/presence-fleet';
 import { fetchUnansweredDirected } from './agent-tools/coordination/unanswered-directed';
 import { lastToolCallAtByOwner } from './fleet/assignments';
 import { activeWorkspaceId } from './workspace-registry';
@@ -196,10 +201,34 @@ export interface AgentDossierLoopStatus {
   stalled: boolean;
 }
 
+/**
+ * Is the agent holding this claim actually MOVING it? (P-009 leg (c) — the
+ * health word the deck renders on the claim's own row.)
+ *
+ * A claim id alone is the single most misread field in the dossier: it looks
+ * identical whether the holder took it 30 seconds ago or wandered off two hours
+ * back, and "held" reads as "being worked on". That is exactly the wrong
+ * conclusion for the reader who matters here — a leader deciding whether to
+ * reclaim — so the id never renders without this verdict beside it.
+ *
+ * `unknown` is a first-class third state, NOT a pessimistic default: presence
+ * carries no activity timestamp until a row's first genuine-activity write, and
+ * guessing `stalled` there would invent a stall out of missing data.
+ */
+export type ClaimProgress = 'progressing' | 'stalled' | 'unknown';
+
 export interface AgentDossierClaim {
   id: string;
   title: string | null;
   harness: string | null;
+  /** Derived from the holder's last GENUINE activity vs INTENT_STALE_SEC — the
+   *  same threshold + `computeIntentStale` oracle every other surface judges a
+   *  stalled lane with, never a second local rule (a divergent idea of "stalled"
+   *  is worse than none: two surfaces then disagree about the same agent). */
+  progress: ClaimProgress;
+  /** Seconds since that last genuine activity — what makes the verdict legible
+   *  ("stalled 40m" vs a bare "stalled"). null ⇔ progress === 'unknown'. */
+  idleSec: number | null;
 }
 
 export interface AgentDossierCheckpoint {
@@ -216,7 +245,82 @@ export interface AgentDossierCheckpoint {
  * `unavailableSignals` means ITS read threw this call — render "unavailable",
  * never the same look as a legitimate empty/none state.
  */
-export type AgentSignalKey = 'loop' | 'currentClaim' | 'context' | 'unanswered' | 'lastToolCall';
+export type AgentSignalKey =
+  | 'loop'
+  | 'currentClaim'
+  | 'context'
+  | 'unanswered'
+  | 'lastToolCall'
+  | 'lane'
+  | 'announcedGates'
+  | 'fleetControl';
+
+/**
+ * P-009 leg (a) — the agent's LANE: which plan it declared, and what that plan
+ * says about where the work stands.
+ *
+ * The dossier could already answer "what is this agent holding" but not "what is
+ * it FOR" — and a claim id divorced from its plan's `## Now` is unreadable to
+ * anyone who did not write the plan. This is the section that makes the rest of
+ * the rail interpretable.
+ */
+export interface AgentLane {
+  planSlug: string;
+  /** The plan's `## Now` state/next lines — null when the plan carries no Now block. */
+  nowState: string | null;
+  nowNext: string | null;
+  /** The first ACTIONABLE item (effectiveStatus todo, no unresolved blockers,
+   *  not needs-human) — the same admissibility `plans:get` computes, resolved
+   *  through the shared `resolveEffectiveStatus` oracle rather than a second
+   *  local rule. null when nothing qualifies (plan fully claimed/blocked/done). */
+  nextActionable: { id: string; title: string; phase: string | null } | null;
+  /** How many items meet that same bar — "3 items in this lane". A count of 0
+   *  with a non-null `nowState` is the honest signal that a plan is alive but
+   *  has nothing pickable, which a single `nextActionable` alone cannot say. */
+  claimableCount: number;
+}
+
+/**
+ * P-009 leg (b) — an announced gate VISIBLE to this agent. Rendered SPLIT
+ * against the agent's live subscriptions: awaited on one side, available-but-
+ * not-awaited on the other.
+ *
+ * Neither half is diagnostic alone, which is the whole reason the deck insists
+ * on showing both together. An await on a key nobody ever declared looks
+ * perfectly healthy in the subscriptions list — it is simply a wait that will
+ * never end. A declared gate the agent is not listening for looks like nothing
+ * at all. Side by side, both failures are obvious at a glance.
+ */
+export interface AgentAnnouncedGate {
+  event: string;
+  note: string | null;
+  /** `fleet:<slug>` / `plan:<slug>` / `harness:<slug>` / `global`. */
+  scope: string;
+  announcedBy: string;
+  /** True when this agent has NO active await on the key. Computed EXACT-match
+   *  on purpose: a near-miss key (`phase3_ready` vs `phase-3-ready`) does NOT
+   *  rendezvous at runtime, so collapsing the two here would hide precisely the
+   *  bug this split exists to expose. */
+  awaited: boolean;
+}
+
+/**
+ * P-009 leg (d) — the agent's fleet control state, surfaced ONLY when it is not
+ * plain `active`.
+ *
+ * That conditionality is the design: a fleet winding down is news, an active one
+ * is not, so the section's mere PRESENCE is the signal. It answers "why is this
+ * agent refusing work" for a reader who never saw the wind-down cue — including
+ * one looking at an agent that joined after it was issued.
+ */
+export interface AgentFleetControl {
+  fleet: string;
+  state: string;
+  reason: string | null;
+  by: string | null;
+  /** Epoch ms, as the registry stores it. */
+  since: number | null;
+}
 
 export interface AgentSignals {
   /** null when the agent has no engine loop routine at all (never armed) —
@@ -234,6 +338,17 @@ export interface AgentSignals {
   unansweredDirectedCount: number;
   /** Last recorded tool_invocations row for this owner — null if never observed. */
   lastToolCallAt: string | null;
+  /** The agent's declared plan + where that plan stands. null when it declared
+   *  no plan, the plan is unreadable — OR the read threw; check
+   *  `unavailableSignals` to tell a lane-less agent from a broken read. */
+  lane: AgentLane | null;
+  /** Gates visible to this agent, each flagged awaited / not-awaited. Empty is a
+   *  legitimate answer (nothing declared in its scopes) — a THROWN read is
+   *  reported through `unavailableSignals`, never as an empty list. */
+  announcedGates: AgentAnnouncedGate[];
+  /** Present only when the agent's fleet is NOT in plain `active` control state
+   *  (see the DTO) — null for a non-fleet agent, an active fleet, or a failed read. */
+  fleetControl: AgentFleetControl | null;
   /** Signal keys whose underlying read THREW this call rather than returning
    *  genuinely empty data (EI-18694403367371331). Empty array = every signal
    *  resolved normally (even if some legitimately came back empty/none). */
@@ -777,7 +892,103 @@ const ALL_AGENT_SIGNAL_KEYS: AgentSignalKey[] = [
   'context',
   'unanswered',
   'lastToolCall',
+  'lane',
+  'announcedGates',
+  'fleetControl',
 ];
+
+// ─────────────── P-009 pure derivations (unit-tested without PG) ────────────
+
+/**
+ * PURE (leg c): is a held claim progressing, and how idle is its holder?
+ *
+ * Delegates the threshold judgement to `computeIntentStale` — the SAME oracle
+ * coord:presence, fleet:assignments and the leader-brief all judge a stalled
+ * lane with. Re-deriving it locally would let this surface quietly disagree
+ * with every other one about the same agent, which is worse than not showing it.
+ */
+export function deriveClaimProgress(
+  lastActiveAt: string | null | undefined,
+  nowMs: number = Date.now(),
+): { progress: ClaimProgress; idleSec: number | null } {
+  if (!lastActiveAt) return { progress: 'unknown', idleSec: null };
+  const t = Date.parse(lastActiveAt);
+  if (Number.isNaN(t)) return { progress: 'unknown', idleSec: null };
+  const idleSec = Math.max(0, Math.round((nowMs - t) / 1000));
+  const stale = computeIntentStale(idleSec);
+  if (stale == null) return { progress: 'unknown', idleSec };
+  return { progress: stale ? 'stalled' : 'progressing', idleSec };
+}
+
+/**
+ * PURE (leg a): shape a parsed plan into the lane section.
+ *
+ * `resolvedItems` must come from `resolveEffectiveStatus` — passing raw
+ * `storedStatus` items would silently count blocked work as claimable, which is
+ * the specific over-count the shared resolver exists to prevent.
+ */
+export function deriveLane(
+  planSlug: string,
+  now: { state?: string | null; next?: string | null } | null | undefined,
+  resolvedItems: Array<{
+    id: string;
+    text: string;
+    phase?: string | null;
+    effectiveStatus?: string;
+    unresolvedBlockers?: unknown[];
+    needsHuman?: boolean;
+  }>,
+): AgentLane {
+  const actionable = resolvedItems.filter(
+    (it) =>
+      it.effectiveStatus === 'todo' &&
+      (it.unresolvedBlockers?.length ?? 0) === 0 &&
+      !it.needsHuman,
+  );
+  const first = actionable[0] ?? null;
+  return {
+    planSlug,
+    // A Now block is present-or-absent as a whole, but an EMPTY string in either
+    // line is as good as absent to a reader — normalize both to null so the UI
+    // never renders a labelled blank.
+    nowState: now?.state?.trim() ? now.state.trim() : null,
+    nowNext: now?.next?.trim() ? now.next.trim() : null,
+    nextActionable: first
+      ? { id: first.id, title: first.text, phase: first.phase ?? null }
+      : null,
+    claimableCount: actionable.length,
+  };
+}
+
+/**
+ * PURE (leg b): flag each visible gate as awaited or not, against the keys this
+ * agent actually holds an active await on.
+ *
+ * EXACT key match, deliberately — see `AgentAnnouncedGate.awaited`. Awaited
+ * gates sort last so the actionable half (what nobody is listening for) reads
+ * first, which is the only ordering that makes the section scannable.
+ */
+export function deriveAnnouncedGates(
+  visible: Array<{
+    eventKey: string;
+    note: string | null;
+    scopeKind: string | null;
+    scopeRef: string | null;
+    subscriberId: string;
+  }>,
+  subscribedEventKeys: readonly string[],
+): AgentAnnouncedGate[] {
+  const awaitedKeys = new Set(subscribedEventKeys);
+  return visible
+    .map((a) => ({
+      event: a.eventKey,
+      note: a.note,
+      scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
+      announcedBy: a.subscriberId,
+      awaited: awaitedKeys.has(a.eventKey),
+    }))
+    .sort((x, y) => Number(x.awaited) - Number(y.awaited));
+}
 
 const EMPTY_SIGNALS: AgentSignals = {
   loop: null,
@@ -787,6 +998,9 @@ const EMPTY_SIGNALS: AgentSignals = {
   lastCheckpoint: null,
   unansweredDirectedCount: 0,
   lastToolCallAt: null,
+  lane: null,
+  announcedGates: [],
+  fleetControl: null,
   // The outer-catch fallback below can't tell which individual read failed
   // (it fires on a synchronous bug in the shaping code, not a rejected
   // promise — every promise already carries its own per-key catch), so it
@@ -812,18 +1026,43 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
     };
   try {
     const workspaceId = activeWorkspaceId();
-    const [loopStatus, held, presence, unanswered, lastToolCall] = await Promise.all([
+    const [loopStatus, held, presence, unanswered, lastToolCall, fleetByOwner] = await Promise.all([
       getLoopStatus(owner).catch(onFailure('loop')(null)),
       readHeldWorkItems(owner, workspaceId).catch(onFailure('currentClaim')([])),
       getPresence(owner).catch(onFailure('context')(null)),
       fetchUnansweredDirected([owner]).catch(onFailure('unanswered')(new Map())),
       lastToolCallAtByOwner([owner]).catch(onFailure('lastToolCall')(new Map())),
+      // Feeds BOTH the fleet-control leg and the gate-visibility filter; keyed
+      // 'fleetControl' because that is the leg a reader loses outright if it
+      // fails (gates degrade to a narrower, still-correct visibility scope).
+      fetchPresenceFleet([owner]).catch(onFailure('fleetControl')(new Map())),
     ]);
     // readHeldWorkItems is ordered DESC by feature_id (most-recently-created
     // first) — the front row is the agent's most current claim, matching what
     // "current claim" means at a glance.
     const top = held[0] ?? null;
+
+    // ── P-009 second phase: three legs that need phase-one context to scope
+    // their reads (the plan the agent declared, the fleet it belongs to, the
+    // harness its claim lives in). Run concurrently with each other; each is
+    // independently best-effort on the SAME contract as phase one — a throw is
+    // reported through `unavailableSignals`, never rendered as a clean empty.
+    const fleetSlug = fleetByOwner.get(owner)?.fleetSlug ?? null;
+    const planSlug = presence?.currentPlanSlug ?? null;
+    const harnessSlug = top?.harness ?? null;
+    const [lane, announcedGates, fleetControl] = await Promise.all([
+      readAgentLane(planSlug, harnessSlug, workspaceId).catch(onFailure('lane')(null)),
+      readAnnouncedGatesFor(owner, { fleetSlug, planSlug, harnessSlug }).catch(
+        onFailure('announcedGates')([] as AgentAnnouncedGate[]),
+      ),
+      readFleetControlFor(workspaceId, fleetSlug).catch(onFailure('fleetControl')(null)),
+    ]);
+    const claimProgress = deriveClaimProgress(presence?.lastActiveAt ?? null);
+
     return {
+      lane,
+      announcedGates,
+      fleetControl,
       loop: loopStatus
         ? {
             active: loopStatus.active,
@@ -833,7 +1072,15 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
             stalled: loopStatus.stalled,
           }
         : null,
-      currentClaim: top ? { id: top.id, title: top.title, harness: top.harness } : null,
+      currentClaim: top
+        ? {
+            id: top.id,
+            title: top.title,
+            harness: top.harness,
+            progress: claimProgress.progress,
+            idleSec: claimProgress.idleSec,
+          }
+        : null,
       contextTokens: presence?.contextTokens ?? null,
       compactionLimit: presence?.compactionLimit ?? null,
       lastCheckpoint:

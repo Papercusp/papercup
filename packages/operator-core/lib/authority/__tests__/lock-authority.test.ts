@@ -687,7 +687,7 @@ describe('lockAuthorityForHive — requiresRoutine (EI-19330771435294981)', () =
 
     const viaRoutine = await lockAuthorityForHive('hive', hiveDeps(rows, { requiresRoutine: 'git-sync' }));
     expect(viaRoutine.isSelf).toBe(false);
-    expect(viaRoutine.peer?.machineLabel).toBe('mac'); // argmin over {aaa, zzz, self mmm}
+    expect(viaRoutine.peer?.machineLabel).toBe('mac'); // argmin over {aaa, zzz, self zzzzzz}
   });
 
   it('excludes a peer that does not publish the required routine', async () => {
@@ -722,6 +722,37 @@ describe('lockAuthorityForHive — requiresRoutine (EI-19330771435294981)', () =
         hiveDeps(inert, { requiresRoutine: 'git-sync', useHrwRendezvous: true }),
       ),
     ).toEqual({ isSelf: true, liveCount: 1 });
+  });
+
+  it('NARROWS the HRW selector too — the excluded peer wins no scope, and it is not a blanket self-election', async () => {
+    // The degenerate case above only proves HRW fails SAFE when NOTHING qualifies.
+    // This is the positive half P-006 asks for: that the narrowing actually binds
+    // on the rendezvous path. HRW picks by hash, so no single scope key has a
+    // hardcodable winner — but the narrowing is exactly assertable as a property.
+    // Sweeping scope keys pins BOTH directions, which one key never could:
+    // 'aaa' is reachable ungated, unreachable gated, and 'zzz' still wins real
+    // scopes (so the gate narrowed candidacy rather than collapsing to self).
+    const mixed: Row[] = [
+      { ...rows[0]!, active_routines: ['gym-cycle'] }, // 'aaa' does NOT run git-sync
+      rows[1]!,
+    ];
+    const winners = async (over: Partial<LockAuthorityDeps>) =>
+      Promise.all(
+        Array.from({ length: 40 }, (_, i) => `scope-${i}`).map(async (scopeKey) => {
+          const r = await lockAuthorityForHive(
+            'hive',
+            hiveDeps(mixed, { useHrwRendezvous: true, scopeKey, ...over }),
+          );
+          return r.isSelf ? '(self)' : r.peer?.machineLabel;
+        }),
+      );
+
+    const ungated = await winners({});
+    expect(ungated).toContain('mac'); // 'aaa' is genuinely reachable under HRW
+
+    const gated = await winners({ requiresRoutine: 'git-sync' });
+    expect(gated).not.toContain('mac'); // ...and never is, once the routine is required
+    expect(gated).toContain('tower'); // 'zzz' still wins scopes — candidacy narrowed, not disabled
   });
 
   it('INTERSECTS with eligibleDevices — both are necessary conditions', async () => {

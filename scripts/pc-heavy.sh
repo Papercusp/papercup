@@ -351,6 +351,50 @@ esac
 if [ "$_coalesce_enabled" = 1 ]; then
   _coalesce_ttl="${PC_HEAVY_COALESCE_SEC:-90}"
 
+  # ── Per-caller freshness barrier (EI-19340233074452707) ───────────────
+  # PC_HEAVY_FRESH_AFTER=<epoch-seconds> lets a caller say: "replay a result
+  # only if that run STARTED at/after this instant." It exists because the
+  # tree-state token below, while correct, is far STRICTER than correctness
+  # requires — and on a fleet-edited tree that difference is the whole
+  # ballgame.
+  #
+  # The token asks "did ANY file in the tree change?". Measured on this repo
+  # 2026-08-02: one change every ~18s (11 distinct tokens in 199s), against a
+  # ~170s operator-core compile. So the key moves ~9 times DURING a single
+  # compile and two callers arriving seconds apart never compute the same key
+  # — they cannot even see each other's lock. Zero coalescing; N full
+  # compiles. Observed three separate times that day: 5, then 3, then 4
+  # byte-identical `tsc -p packages/operator-core/tsconfig.json` runs live at
+  # once (load1 120-186). See fact
+  # `pc-heavy-tree-token-churns-faster-than-a-compile` and WI-7017, which
+  # closed having proved the token cannot be tuned into working.
+  #
+  # But the question the token is a PROXY for is per-caller and much narrower:
+  #
+  #     a run that started at S is a valid answer for file F  iff  mtime(F) < S
+  #
+  # A full compile reads the whole tree, so its output is sound for every file
+  # that did not change after it began — no matter what changed ELSEWHERE. The
+  # token conflates "MY file moved" with "somebody else's file moved", and only
+  # the first can invalidate my answer. That conflation is why coalescing looked
+  # impossible here.
+  #
+  # So a caller that knows which files it is asking about passes the barrier and
+  # we drop the token: the caller has taken responsibility for the freshness
+  # question the token was standing in for, and answers it exactly instead of
+  # conservatively. A caller that does NOT set it keeps today's behaviour
+  # unchanged (token in the key) — this is purely opt-in, and the EI-18688348461605365
+  # hazard it guards against is preserved for everyone who does not opt in.
+  #
+  # Note this also makes the coalescer SERIALIZING for the opt-in case, which is
+  # the actual win: a follower whose barrier the current leader cannot satisfy
+  # does not replay it and does not race off to run its own — it waits out the
+  # leader (liveness-observed below), then wins the lock and becomes the next
+  # leader, and every peer that queued behind it replays THAT run. N concurrent
+  # compiles collapse to one at a time with the arrivals batched behind it.
+  _fresh_after="${PC_HEAVY_FRESH_AFTER:-}"
+  case "$_fresh_after" in ''|*[!0-9]*) _fresh_after="" ;; esac
+
   # ── Tree-state token (EI-18688348461605365) ────────────────────────────
   # cwd+argv alone is a STALE key whenever the SOURCE the command exercises
   # changed between two identical invocations — the single most common way
@@ -370,15 +414,23 @@ if [ "$_coalesce_enabled" = 1 ]; then
   # Fail-open: git/stat unavailable just yields an empty token, degrading to
   # the previous cwd+argv-only behavior rather than erroring — coalescing
   # was already best-effort, this doesn't change that contract.
+  #
+  # Skipped entirely when the caller supplied a freshness barrier: the token
+  # would then be both redundant (the barrier answers the same question, per
+  # file) and harmful (it re-fragments the key so the barrier never gets a
+  # chance to match). Skipping also drops the `git status` call from those
+  # callers' hot path.
   _tree_token=""
-  for _a in "$@"; do
-    if [ -f "$_a" ]; then
-      _tree_token="$_tree_token|$(stat -c '%Y:%s' "$_a" 2>/dev/null)"
+  if [ -z "$_fresh_after" ]; then
+    for _a in "$@"; do
+      if [ -f "$_a" ]; then
+        _tree_token="$_tree_token|$(stat -c '%Y:%s' "$_a" 2>/dev/null)"
+      fi
+    done
+    if command -v git >/dev/null 2>&1; then
+      _git_state=$(git status --porcelain=v2 --branch --untracked-files=no 2>/dev/null)
+      [ -n "$_git_state" ] && _tree_token="$_tree_token|$(printf '%s' "$_git_state" | sha1sum | cut -d' ' -f1)"
     fi
-  done
-  if command -v git >/dev/null 2>&1; then
-    _git_state=$(git status --porcelain=v2 --branch --untracked-files=no 2>/dev/null)
-    [ -n "$_git_state" ] && _tree_token="$_tree_token|$(printf '%s' "$_git_state" | sha1sum | cut -d' ' -f1)"
   fi
 
   # Key on cwd + full argv + tree-state token, NUL-separated so args
@@ -389,13 +441,42 @@ if [ "$_coalesce_enabled" = 1 ]; then
   _c_exit="$_coalesce_dir/$_key.exit"
   _c_lockdir="$_coalesce_dir/$_key.lock"
 
+  # $_c_exit holds "<rc>" or, since the freshness barrier, "<rc> <startedAtEpoch>".
+  #
+  # The start stamp is packed INTO the exit file rather than written beside it as
+  # its own `.started` file, and that is a correctness requirement, not tidiness:
+  # a leader publishes its result at the END of the run, so with two files there
+  # is a window in which `.started` has been updated to the NEW run while `.exit`
+  # still holds the PREVIOUS one's. A follower reading the pair in that window
+  # replays an OLD result while believing it started at the NEW time — precisely
+  # the pre-edit-answer hazard the barrier exists to prevent, reintroduced by the
+  # bookkeeping. One write, one atomic fact.
+  _c_rc=""
+  _c_started=""
+  _c_read_exit() {
+    _c_rc=""; _c_started=""
+    [ -f "$_c_exit" ] || return 1
+    read -r _c_rc _c_started < "$_c_exit" 2>/dev/null || return 1
+    case "$_c_rc" in ''|*[!0-9]*) return 1 ;; esac
+    return 0
+  }
+
   # True when $_c_exit exists and is fresh enough to reuse.
   _coalesce_fresh() {
-    [ -f "$_c_exit" ] || return 1
+    _c_read_exit || return 1
     _mt=$(stat -c %Y "$_c_exit" 2>/dev/null) || return 1
     _now=$(date +%s)
     _age=$(( _now - _mt ))
-    [ "$_age" -ge 0 ] && [ "$_age" -le "$_coalesce_ttl" ]
+    [ "$_age" -ge 0 ] && [ "$_age" -le "$_coalesce_ttl" ] || return 1
+    # Barrier: the cached run must have STARTED at/after the caller's watermark.
+    # A result with no start stamp (written by a pre-barrier pc-heavy) is
+    # unusable for a barrier caller — absence of the stamp is not evidence the
+    # run was recent enough, so it must read as "cannot replay", never as "fine".
+    if [ -n "$_fresh_after" ]; then
+      case "$_c_started" in ''|*[!0-9]*) return 1 ;; esac
+      [ "$_c_started" -ge "$_fresh_after" ] || return 1
+    fi
+    return 0
   }
 
   # Replays the cached run's stdout/stderr/exit-code and NEVER RETURNS.
@@ -405,7 +486,7 @@ if [ "$_coalesce_enabled" = 1 ]; then
          "Disable via PC_HEAVY_COALESCE=0." >&2
     cat "$_c_out" 2>/dev/null
     cat "$_c_err" >&2 2>/dev/null
-    exit "$(cat "$_c_exit" 2>/dev/null || echo 1)"
+    exit "${_c_rc:-1}"
   }
 
   # ── Leader liveness (EI-19343301596011451) ────────────────────────────────

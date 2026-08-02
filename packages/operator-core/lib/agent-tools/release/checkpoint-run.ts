@@ -33,6 +33,7 @@ import {
   REPLACE_STALE_MIN_AGE_SEC,
 } from '../../release-checkpoint-launch';
 import { attributeRetriageToRun, describeRefireBudget, readInFlightRetriage } from '../../release/in-flight-retriage';
+import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
 
 export default defineTool({
   name: 'release:checkpoint-run',
@@ -137,15 +138,41 @@ export default defineTool({
       // Only trust it for THIS run: a marker written before this run started belongs to an
       // earlier one, and reporting it would silence a genuinely new red with a stale rescue.
       const liveRetriage = retriage && retriage.belongsToRun !== false ? retriage : null;
-      const containment = await checkpointCandidateContainment({
-        // The marker is what the running process published about ITSELF; `a.candidate` is at best
-        // a log read and, on the cron path this branch usually describes, an INFERENCE from the
-        // checkpoint checkout's live HEAD. Prefer the observation — same precedence
-        // `mapCheckpointRunInFlight` already applies for dev:pipeline_position.
-        candidateSha: liveRetriage?.marker.refiringCandidate ?? a.candidate ?? null,
-        tipSha: a.current_head ?? null,
-        paths: args.paths,
-      });
+      // P-001 (plan agent-epistemics-2026-08-02): preferring the marker was necessary but not
+      // sufficient. When the marker is ABSENT and the run is `held_externally`, the only candidate
+      // left is `a.candidate` — the checkpoint checkout's live HEAD, re-read after the fact
+      // (release-checkpoint-launch.ts:686). That is an INFERENCE about a process this tool cannot
+      // see, and it silently changes between two reads. Computing containment from it returns a
+      // fully-formed `callerEditsInCandidate` verdict — files, reasons, a warning string — resting
+      // on a field that cannot support one, and a caller has no way to tell that verdict apart
+      // from one computed against an observed sha.
+      //
+      // That is the exact shape the 2026-08-02 post-mortem indicts: four careful agents produced
+      // four contradictory answers in ninety minutes, each reasoning correctly from a field that
+      // could not bear the weight. REFUSE rather than return a plausible number — a refusal that
+      // names the authoritative source costs one query; a plausible wrong verdict costs a morning.
+      const candidateIsInferred = !liveRetriage && (a.held_externally ?? false);
+      const containment = candidateIsInferred
+        ? refuseAnswer({
+            question: 'Does the in-flight run judge a candidate that contains your change?',
+            because:
+              'This run is held by a DIFFERENT process (the cron tick) and has published no in-flight-retriage marker, ' +
+              "so the only candidate available is the checkpoint checkout's live HEAD re-read after the fact — an inference " +
+              'about a process this tool cannot observe, which changes silently between reads.',
+            insteadRead:
+              "the run's OWN published state: SELECT metadata->'gate_health'->'inFlightRetriage' FROM harness_shared.routines " +
+              "WHERE target_role='system:green-checkpoint' AND install_slug=<harness> AND workspace_id=<workspace> " +
+              '(scope BOTH — the table is multi-tenant); or wait for the verdict via checkpoint:await, which names its own candidate',
+          })
+        : await checkpointCandidateContainment({
+            // The marker is what the running process published about ITSELF; `a.candidate` is at best
+            // a log read and, on the cron path this branch usually describes, an INFERENCE from the
+            // checkpoint checkout's live HEAD. Prefer the observation — same precedence
+            // `mapCheckpointRunInFlight` already applies for dev:pipeline_position.
+            candidateSha: liveRetriage?.marker.refiringCandidate ?? a.candidate ?? null,
+            tipSha: a.current_head ?? null,
+            paths: args.paths,
+          });
       // EI-18757736867106199: the ADVICE must come from the SAME oracle as the ENFORCEMENT.
       // classifyReplaceRequest (EI-18757156963245979) already refuses to stop a `delivering`
       // run at any age — but this note was still computed from age ALONE, so the tool went on
