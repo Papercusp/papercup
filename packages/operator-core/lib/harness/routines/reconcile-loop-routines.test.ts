@@ -1371,11 +1371,22 @@ describe('reconcileLoopRoutines — presence-quiescence defers behind the sessio
   });
 
   it('a deferred loop is NOT wedged — the layer-3 stuck-park backstop still re-arms it at its dwell floor', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const updates: unknown[][] = [];
-    // Same lagging-watermark row, but now far past the stuck-park dwell: the backstop must win,
-    // so the worst case of deferring is a LATE settle, never a permanently parked loop.
+    // Same lagging-watermark row (so completionSignal keeps DEFERRING), now just past the
+    // stuck-park dwell — stuckBackstopCadenceMs = max(default, interval*4) = 60min at 900s — so
+    // the layer-3 backstop takes over. This is the safety property the defer rests on: the worst
+    // case of deferring is a LATE settle, never a permanently parked loop.
+    // The terminal guard is injected non-breaching so this asserts the RE-ARM, not the
+    // dead-owner termination decision (which is a separate path with its own tests above).
     const sql = fakeSql([quiescentRow({ turns_ingest_watermark: new Date(T0 - 30_000) })], updates);
-    const res = await reconcile({ sql, nowMs: T0 + 3 * 3_600_000, readFireState: NO_PRIOR_ERRORS });
+    const res = await reconcile({
+      sql,
+      nowMs: T0 + 61 * 60_000,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: async () => ({ breach: false }),
+    });
+    expect(res.terminated).toEqual([]);
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('stuck-backstop');
   });

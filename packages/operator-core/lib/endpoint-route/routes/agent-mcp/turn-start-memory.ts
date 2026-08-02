@@ -150,17 +150,12 @@ const turnStartMemory = defineTool({
           // to "no signals" — the pre-P-044 query — and never delays the turn.
           const signalsPromise = (async () => {
             try {
-              const [{ resolveAgentSignals, pgAgentSignalsSource, resolveRepoRootSync }, { getOrgPg }] =
-                await Promise.all([
-                  import('../../../memory/agent-signals'),
-                  import('@papercusp/db-org'),
-                ]);
-              const { sql } = getOrgPg();
-              const repoRoot = resolveRepoRootSync(body.cwd);
-              return await resolveAgentSignals(
-                pgAgentSignalsSource(sql, { ownerId: owner, workspaceId }),
-                repoRoot ? { repoRoot } : {},
-              );
+              const { resolveAgentSignalsForOwner } = await import('../../../memory/agent-signals');
+              return await resolveAgentSignalsForOwner({
+                ownerId: owner,
+                workspaceId,
+                ...(body.cwd ? { cwd: body.cwd } : {}),
+              });
             } catch {
               return undefined;
             }

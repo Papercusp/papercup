@@ -253,6 +253,19 @@ jobs:
       - name: Lint no unenrolled detached spawn
         run: npm run lint:no-unenrolled-spawn
 
+      # no-raw-installSlug-filter guard (EI-19298972043721870): the READ-PATH analogue
+      # of the two guards above. Pot-membership enforcement re-homes rows written under
+      # a workspace-global label (hive-canary, @singleton, *, operator, all) to the
+      # platform Pot, so a read filtering `harness_slug = ${installSlug}` verbatim can
+      # match ZERO rows forever — with no error, which for a DETECTOR is
+      # indistinguishable from "everything is healthy" (EI-19298246923137692 cost ~12
+      # days of blind canary). GATING on NEW sites; a shrink-to-empty BASELINE
+      # grandfathers the 18 pre-existing ones, which need a per-RELATION audit rather
+      # than a blind sweep (not every raw filter is a bug — pot/install-scoped tables
+      # are correctly read by the literal slug).
+      - name: Lint no raw installSlug harness_slug filter
+        run: npm run lint:no-raw-install-slug
+
       # no-ungated-infinite-animation guard (hud-tab-public-release-2026-07-28 P-010 /
       # WI-6542): an `infinite` CSS animation on a selector that matches as soon as the
       # element renders keeps the whole 60fps repaint loop alive forever. Measured on the

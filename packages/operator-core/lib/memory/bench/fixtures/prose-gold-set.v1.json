@@ -1,10 +1,10 @@
 {
   "version": "v1",
   "corpusVersion": "v1",
-  "frozenAt": "2026-08-02T07:23:15.734Z",
-  "count": 120,
+  "frozenAt": "2026-08-02T07:24:48.645Z",
+  "count": 134,
   "classes": {
-    "lexical-gap": 10,
+    "lexical-gap": 24,
     "session-start-intent": 8,
     "hard-negative": 12,
     "exact-identifier": 90
@@ -100,6 +100,132 @@
         "doc:papercusp-engineering#agent-insights/coord-emit-subscription-scoping#gotchas"
       ],
       "note": "avoids 'coord/emit/subscription-scoped/broadcast/audience'"
+    },
+    {
+      "id": "plg-011",
+      "class": "lexical-gap",
+      "query": "every alert funnels through one shared helper that fans out to both destinations the moment something important is written, with no polling loop anywhere",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/attention-push-delivery#one-helper-two-channels-event-driven"
+      ],
+      "note": "avoids 'notifyAttention/push/channel/event-driven/attention/producer'"
+    },
+    {
+      "id": "plg-012",
+      "class": "lexical-gap",
+      "query": "to introduce another category of alert you invoke the common helper where the record is created and register the new label so the phone build knows about it",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/attention-push-delivery#extending-it"
+      ],
+      "note": "avoids 'extending/notifyAttention/kind/MOBILE_KIND'; sibling of plg-011 on the same page"
+    },
+    {
+      "id": "plg-013",
+      "class": "lexical-gap",
+      "query": "the fact that a change already landed in version control is not evidence that a compile failure is permanent rather than half-delivered",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/committed-is-not-settled-git-sync-landing-race#the-one-line-rule"
+      ],
+      "note": "avoids 'committed/settled/git-sync/red/standing/tick'"
+    },
+    {
+      "id": "plg-014",
+      "class": "lexical-gap",
+      "query": "never raise a complaint about a brand-new file the first moment you notice it — pause, then look again a few minutes later",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/committed-is-not-settled-git-sync-landing-race#rules-of-thumb"
+      ],
+      "note": "avoids 'file/type red/re-run/first sight'; sibling of plg-013"
+    },
+    {
+      "id": "plg-015",
+      "class": "lexical-gap",
+      "query": "the number handed back by the listing only describes the slice you just received, not how many records exist altogether",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/coord-escalations-pagination-semantics#total-count-is-just-the-size-of-this-page-not-the-backlog-size"
+      ],
+      "note": "avoids 'total/count/page/backlog/escalations/offset'"
+    },
+    {
+      "id": "plg-016",
+      "class": "lexical-gap",
+      "query": "before rewriting the description of a task that keeps failing, go and inspect the actual storage its mechanism depends on and quote the real shape",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/cursed-item-respec-verify-data-model#the-guard"
+      ],
+      "note": "avoids 'cursed/re-spec/verify/data model/grep/dispatch'"
+    },
+    {
+      "id": "plg-017",
+      "class": "lexical-gap",
+      "query": "a unit of work that fails to be placed enough times trips a protective cutout and gets flagged as unusable",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/cursed-item-respec-verify-data-model#what"
+      ],
+      "note": "avoids 'cursed/breakerThreshold/circuit breaker/placement'; sibling of plg-016"
+    },
+    {
+      "id": "plg-018",
+      "class": "lexical-gap",
+      "query": "telling apart a process that has never actually run from one that is simply too new to have produced any numbers yet",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/dark-learning-loops-are-triple-gated#how-to-tell-dark-from-young"
+      ],
+      "note": "avoids 'dark/young/loop/gate/firing/stale/scored'"
+    },
+    {
+      "id": "plg-019",
+      "class": "lexical-gap",
+      "query": "a wait-until-it-is-live helper that matches on one precise fingerprint will hang forever when the shipping system bundles several changes together",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/deploy-await-exact-sha-batched-deploy-strand#the-lesson-an-auto-serve-batching-pipeline-breaks-exact-identity-waits"
+      ],
+      "note": "avoids 'sha/deploy/await/batched/exact identity/strand'"
+    },
+    {
+      "id": "plg-020",
+      "class": "lexical-gap",
+      "query": "somebody finishes a fix, asks to be told the moment it starts serving, and then simply never gets woken up",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/deploy-await-exact-sha-batched-deploy-strand#the-symptom"
+      ],
+      "note": "avoids 'sha/await/deploy/strand'; sibling of plg-019"
+    },
+    {
+      "id": "plg-021",
+      "class": "lexical-gap",
+      "query": "a single failing checkpoint produced three different explanations from three different people in one sitting",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/deploy-pipeline-is-async-self-healing#the-mistake-this-prevents"
+      ],
+      "note": "avoids 'gate/red/diagnoses/agents/session'"
+    },
+    {
+      "id": "plg-022",
+      "class": "lexical-gap",
+      "query": "if it really has jammed, do not sit there watching it — either raise it with a person or push it out by hand yourself",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/deploy-pipeline-is-async-self-healing#on-a-genuine-stall-don-t-wait-escalate-or-force-the-deploy"
+      ],
+      "note": "avoids 'stall/wait/escalate/force/deploy'; sibling of plg-021"
+    },
+    {
+      "id": "plg-023",
+      "class": "lexical-gap",
+      "query": "you leave the edit sitting in place and a chain of scheduled jobs records it, checks it, and promotes it over the following few minutes",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/deploy-pipeline-is-async-self-healing#the-pipeline-async-minutes-two-ports"
+      ],
+      "note": "avoids 'pipeline/async/git-sync/commit/gate/port'; third sibling on the same page"
+    },
+    {
+      "id": "plg-024",
+      "class": "lexical-gap",
+      "query": "there is no dedicated role that pushes releases out; the machinery recovers on its own and the existing repair agents cover it",
+      "expected": [
+        "doc:papercusp-engineering#agent-insights/deploy-pipeline-is-async-self-healing#the-deployer-already-exists-as-the-fixer-family"
+      ],
+      "note": "avoids 'deployer/fixer family/self-heals/pipeline'; fourth sibling — maximal same-page competition"
     },
     {
       "id": "psi-001",

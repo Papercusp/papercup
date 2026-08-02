@@ -52,6 +52,8 @@ import {
 import { buildOpenAiEmbedder, resolveOpenAiKey } from '../configure';
 import { CORPUS_FIXTURE_VERSION, loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
+import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-corpus';
+import { loadProseGoldSetFixture, PROSE_GOLD_SET_VERSION } from './prose-gold-set';
 
 type EmbedFn = (text: string) => Promise<number[]>;
 interface Leg {
@@ -192,12 +194,35 @@ interface ClassRow {
   mrr_at_10: number;
 }
 
+/**
+ * Per-query outcome. Aggregates alone CANNOT support the verdict this bench
+ * exists to produce: "is the difference outside noise?" is a PAIRED question
+ * (same corpus, same queries, only the embedder varies), so the statistic is a
+ * paired bootstrap / McNemar over per-query results — neither of which is
+ * computable from class means. Emitting these makes a defensible confidence
+ * interval possible downstream instead of eyeballing two rounded numbers.
+ */
+interface QueryOutcomeRow {
+  id: string;
+  class: string;
+  /** 1-based rank of the first relevant doc; 0 when none was found. */
+  firstRelevantRank: number;
+  /** Reciprocal rank (0 when missed) — the continuous paired statistic. */
+  reciprocalRank: number;
+  /** Cosine of the top hit, whatever it was (drives the rejection margin). */
+  top1Score: number;
+}
+
 function scoreLeg(
   corpusKeys: string[],
   docVecs: number[][],
-  queries: Array<{ class: string; query: string; expected: string[] }>,
+  queries: Array<{ id: string; class: string; query: string; expected: string[] }>,
   queryVecs: number[][],
-): { byClass: Record<string, ClassRow>; rejection: { answerableTop1Mean: number; hardNegTop1Mean: number; margin: number } } {
+): {
+  byClass: Record<string, ClassRow>;
+  rejection: { answerableTop1Mean: number; hardNegTop1Mean: number; margin: number };
+  perQuery: QueryOutcomeRow[];
+} {
   const agg = new Map<string, { n: number; r: Record<number, number>; rrSum: number }>();
   const bump = (bucket: string, firstRel: number) => {
     let a = agg.get(bucket);
@@ -210,16 +235,19 @@ function scoreLeg(
   let ansN = 0;
   let hnTop1 = 0;
   let hnN = 0;
+  const perQuery: QueryOutcomeRow[] = [];
 
   for (let qi = 0; qi < queries.length; qi++) {
     const q = queries[qi];
     const sims = docVecs.map((dv, di) => ({ di, s: dot(queryVecs[qi], dv) })).sort((a, b) => b.s - a.s);
+    const top1 = sims[0]?.s ?? 0;
     if (!ANSWERABLE.has(q.class)) {
-      hnTop1 += sims[0]?.s ?? 0;
+      hnTop1 += top1;
       hnN++;
+      perQuery.push({ id: q.id, class: q.class, firstRelevantRank: 0, reciprocalRank: 0, top1Score: +top1.toFixed(6) });
       continue;
     }
-    ansTop1 += sims[0]?.s ?? 0;
+    ansTop1 += top1;
     ansN++;
     const exp = new Set(q.expected);
     let firstRel = Infinity;
@@ -231,6 +259,13 @@ function scoreLeg(
     }
     bump(q.class, firstRel);
     bump('ALL_ANSWERABLE', firstRel);
+    perQuery.push({
+      id: q.id,
+      class: q.class,
+      firstRelevantRank: Number.isFinite(firstRel) ? firstRel : 0,
+      reciprocalRank: firstRel <= MRR_CUTOFF ? +(1 / firstRel).toFixed(6) : 0,
+      top1Score: +top1.toFixed(6),
+    });
   }
 
   const byClass: Record<string, ClassRow> = {};
@@ -248,6 +283,7 @@ function scoreLeg(
   return {
     byClass,
     rejection: { answerableTop1Mean, hardNegTop1Mean, margin: +(answerableTop1Mean - hardNegTop1Mean).toFixed(4) },
+    perQuery,
   };
 }
 
@@ -264,12 +300,24 @@ async function main(): Promise<void> {
       `embedder-eval-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`,
     );
 
-  const corpus = loadCorpusFixture();
-  const gold = loadGoldSetFixture();
+  // Which corpus/gold-set pair to score against. 'memory' (default) keeps the
+  // original memory-bench behaviour; 'prose' scores the prose surfaces, whose
+  // distribution is different enough that the memory gold set does not
+  // transfer (prose-embedding-384-untrained-mrl-fix P-001).
+  const corpusChoice = (argValue('--corpus') ?? 'memory') as 'memory' | 'prose';
+  if (corpusChoice !== 'memory' && corpusChoice !== 'prose') {
+    console.error(`unknown --corpus '${corpusChoice}' (expected 'memory' or 'prose')`);
+    process.exit(1);
+  }
+  const corpus = corpusChoice === 'prose' ? loadProseCorpusFixture() : loadCorpusFixture();
+  const gold = corpusChoice === 'prose' ? loadProseGoldSetFixture() : loadGoldSetFixture();
+  const corpusVersion = corpusChoice === 'prose' ? PROSE_CORPUS_FIXTURE_VERSION : CORPUS_FIXTURE_VERSION;
   const corpusKeys = corpus.map((e) => e.key);
   const corpusTexts = corpus.map((e) => e.text);
   const queryTexts = gold.queries.map((q) => q.query);
-  console.log(`corpus=${corpusKeys.length} queries=${gold.queries.length} legs=${legNames.join(',')}`);
+  console.log(
+    `corpus=${corpusChoice}/${corpusVersion} docs=${corpusKeys.length} queries=${gold.queries.length} legs=${legNames.join(',')}`,
+  );
 
   const results: Record<string, unknown> = {};
   for (const leg of await buildLegs(legNames, sidecarUrl, ollamaUrl)) {
@@ -305,7 +353,14 @@ async function main(): Promise<void> {
   fs.writeFileSync(
     outPath,
     JSON.stringify(
-      { generatedAt: new Date().toISOString(), corpusVersion: CORPUS_FIXTURE_VERSION, goldVersion: gold.version, results },
+      {
+        generatedAt: new Date().toISOString(),
+        corpus: corpusChoice,
+        corpusVersion,
+        goldVersion: gold.version,
+        goldSetVersion: corpusChoice === 'prose' ? PROSE_GOLD_SET_VERSION : gold.version,
+        results,
+      },
       null,
       2,
     ),

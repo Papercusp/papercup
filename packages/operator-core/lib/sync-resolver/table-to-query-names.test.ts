@@ -401,21 +401,31 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
     );
   });
 
-  // P-025 / no-http-anywhere-2026-07-28 D-016: the chat pane used to run a
-  // second query, `operatorTurns.byConversation`, over the same
-  // listTurnsRecent() rows — ~200 turns fetched twice per mount. It was merged
-  // into `operatorTurns.page`. Re-adding the name here would be silent: the
-  // client no longer subscribes to it, so every invalidation fired at it is a
-  // no-op against a name nothing reads, and the chat simply stops updating
-  // live with no error and no failing test. Pin its absence.
-  it('no longer maps the removed operatorTurns.byConversation name', () => {
-    expect(TABLE_TO_QUERY_NAMES['harness_shared.operator_turns']).not.toContain(
-      'operatorTurns.byConversation',
-    );
+  // P-025 / no-http-anywhere-2026-07-28 D-016 + D-018: the chat pane used to run a
+  // second query, `operatorTurns.byConversation`, over the same listTurnsRecent()
+  // rows — ~200 turns fetched twice per mount. It was merged into
+  // `operatorTurns.page`, and no client subscribes to the old name any more.
+  //
+  // The invariant is COUPLED TO THE REGISTRY rather than an absolute "never appears",
+  // deliberately. Mapping a name that no resolver serves is dead wiring: every
+  // invalidation fired at it is a no-op against a name nothing reads, which is the
+  // false-liveness shape (accounts.pool / WI-6796) — it looks wired while pushing
+  // nothing. But WI-6964 is holding the resolver entry alive on purpose for the
+  // moment, DECLARED and WIRED, so its shrink-only ratchet stays green instead of
+  // leaving the gate red while the deletion waits on a very hot lock. An absolute pin
+  // would fight that interim state; this one tolerates it and ARMS ITSELF the instant
+  // the resolver entry goes, which is exactly when re-adding the mapping becomes a bug.
+  it('does not map operatorTurns.byConversation once its resolver entry is gone', () => {
+    const stillRegistered = knownQueryNamesV2().includes('operatorTurns.byConversation');
     for (const [table, names] of Object.entries(TABLE_TO_QUERY_NAMES)) {
-      expect(names, `${table} still maps the removed query name`).not.toContain(
-        'operatorTurns.byConversation',
-      );
+      const mapped = names.some((n) => (typeof n === 'string' ? n : n.name) === 'operatorTurns.byConversation');
+      if (!stillRegistered) {
+        expect(
+          mapped,
+          `${table} maps 'operatorTurns.byConversation', but no resolver serves that name — ` +
+            `dead wiring: every invalidation fired at it is a no-op against a name nothing reads.`,
+        ).toBe(false);
+      }
     }
   });
 });

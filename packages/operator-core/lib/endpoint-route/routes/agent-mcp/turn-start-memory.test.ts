@@ -46,11 +46,8 @@ vi.mock('../../../memory/detect-harness-slug', () => ({
   detectHarnessSlugSync: detectHarnessSlugSyncMock,
 }));
 vi.mock('../../../memory/agent-signals', () => ({
-  resolveAgentSignals: resolveAgentSignalsMock,
-  pgAgentSignalsSource: () => ({}),
-  resolveRepoRootSync: () => '/repo',
+  resolveAgentSignalsForOwner: resolveAgentSignalsMock,
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 
 import routes from './turn-start-memory';
 

@@ -11,11 +11,16 @@
  *       symbol names;
  *   (c) the active file.
  *
- * ⚠ THIS MODULE DOES NOT AFFECT RETRIEVAL. `retrievalQueryText()` still ignores
- * `agentSignals`, and a test in recall-query.test.ts pins that. Wiring these
- * signals into the lexical leg is P-044 — deliberately a separate item so the
- * P-041 baseline being measured right now is not contaminated by a fix it is
- * meant to judge. Nothing here is called from `turn-start-memory.ts` yet.
+ * ⚠ WHICH LEG THIS FEEDS, because it is NOT the obvious one. P-044 routed these
+ * signals to the LEXICAL leg only — `retrievalQueryText()` still ignores them
+ * and a tripwire in recall-query.test.ts pins that, permanently. The cosine leg
+ * embeds its query as ONE vector, and D-041 measured identifiers pulling that
+ * vector off-topic, so folding these into the cosine query is the bug, not the
+ * finishing touch. The composition (and its tight per-class caps, which are
+ * NOT the caps below) lives in `recall-query.ts`'s `lexicalQueryText`.
+ *
+ * Live at `turn-start-memory.ts` via `resolveAgentSignalsForOwner` at the
+ * bottom of this file.
  *
  * ══ THE DESIGN POINT: DEFAULT-DENY, IDENTIFIERS ONLY ══
  *
@@ -70,10 +75,14 @@ export interface ClaimedItem {
 }
 
 // ─────────────────────────────── caps ───────────────────────────────
-// These feed a retrieval query, and P-044 routes them to the LEXICAL leg. An
-// unbounded identifier dump would swamp the human's terms in that leg, so every
-// list is capped and ordered most-recent-first (the caller passes rows newest
-// first, and extraction preserves that order, so a cap keeps the RECENT end).
+// How much SIGNAL this resolver carries. Ordered most-recent-first (the caller
+// passes rows newest first and extraction preserves that order, so a cap keeps
+// the RECENT end).
+//
+// ⚠ NOT the query budget. `recall-query.ts` applies its OWN, much tighter caps
+// (4/4/2) to what may enter the scored lexical query, because that score is
+// normalized by query-token count — see LEXICAL_MAX_PATHS there. Widening these
+// does not widen that, and it should not: the two bound different things.
 
 /** Max distinct file paths carried. */
 export const MAX_PATHS = 12;
@@ -626,6 +635,45 @@ export async function resolveAgentSignals(
       // under load and already bounded.
       console.warn(`[memory] agent-signals resolve failed: ${String(err)}`);
     }
+    return undefined;
+  }
+}
+
+/**
+ * The one-call form the injection ENDPOINTS use: resolve this owner's signals
+ * from the operator database, given only what a hook already sends.
+ *
+ * Exists so a route does not have to assemble the PG plumbing itself. That is
+ * not only tidiness — `@papercusp/db-org` is a heavy module with a generated
+ * schema surface, and a route that imports it directly forces every colocated
+ * test to whole-module-mock it, which then breaks the OTHER importers sharing
+ * that worker (`agent-mcp/src/tools/harness/get.ts` reads `generated.*` at
+ * module scope and dies on a partial mock). Keeping the dependency behind this
+ * seam lets a route's test mock THIS module and nothing else.
+ *
+ * Same posture as `resolveAgentSignals`: never throws, deadline-bounded, and
+ * `undefined` on any failure.
+ */
+export async function resolveAgentSignalsForOwner(opts: {
+  ownerId: string;
+  workspaceId: string;
+  /** The session's cwd, for repo-relative path resolution. */
+  cwd?: string;
+  deadlineMs?: number;
+}): Promise<AgentSignals | undefined> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const repoRoot = resolveRepoRootSync(opts.cwd);
+    return await resolveAgentSignals(
+      pgAgentSignalsSource(sql, { ownerId: opts.ownerId, workspaceId: opts.workspaceId }),
+      {
+        ...(repoRoot ? { repoRoot } : {}),
+        ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}),
+      },
+    );
+  } catch {
+    // A missing/failed PG handle is the same class as a failed read: no signals.
     return undefined;
   }
 }

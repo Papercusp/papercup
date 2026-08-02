@@ -466,7 +466,7 @@ function rowToConversation(r: Record<string, unknown>): ConversationRow {
  * future write-path regression that forgets to canonicalize at ingest.
  * Idempotent: already-canonical names pass through unchanged.
  */
-function normalizeTurnTools(tools: unknown): TurnToolCall[] | null {
+export function normalizeTurnTools(tools: unknown): TurnToolCall[] | null {
   if (!Array.isArray(tools)) return null;
   return tools.map((t) =>
     t && typeof t === 'object' && typeof (t as { name?: unknown }).name === 'string'
