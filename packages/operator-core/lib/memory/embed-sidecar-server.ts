@@ -9,7 +9,14 @@
  *
  *   POST /embed   { model?, kind: 'query'|'document', texts: string[] }
  *              →  { vectors: number[][], dims, runtime, modelRev }
+ *   POST /rerank  { model?, query: string, texts: string[] }
+ *              →  { scores: number[], runtime, modelRev }
  *   GET  /healthz →  { ok, pid, uptimeMs, models: { '<model>:<kind>': state } }
+ *
+ * /rerank serves cross-encoder rerankers for the same reason: one warm ~150M
+ * model per host, not per process. It returns scores INDEX-ALIGNED with the
+ * request's texts and never reorders — ordering, topN and thresholds stay in
+ * @papercusp/rerank on the client, so ranking policy lives in one place.
  *
  * The SERVER owns the space-defining knobs (D-002): task prompts, MRL
  * truncation and ORT thread caps all live in the wrapped @papercusp/memory
@@ -54,14 +61,18 @@ import {
   SIDECAR_MAX_TEXT_CHARS,
   type GemmaEmbedKind,
 } from '@papercusp/memory';
+import { FAST_RERANKER_MODEL, LOCAL_RERANKER_MODEL, loadCrossEncoder, scoreCrossEncoder } from '@papercusp/rerank';
 
 export const EMBED_SIDECAR_DEFAULT_PORT = 3384; // mnemonic: the 384-dim space it serves
 export const EMBED_SIDECAR_PORT_ENV = 'PAPERCUSP_EMBED_SIDECAR_PORT';
-/** Comma-separated models to warm at boot (e.g. "gemma,harrier"); default gemma.
+/** Comma-separated models to warm at boot (e.g. "gemma,harrier,rerank");
+ *  default gemma, and no reranker.
  *  A host whose live embedder mode is harrier should warm it here too — under
  *  Restart=always supervision every restart otherwise lazy-loads the model on
  *  the first real request, which is what turns a clean restart into a visible
- *  first-embed timeout (WI-4021). */
+ *  first-embed timeout (WI-4021). The same argument applies to a reranker on a
+ *  host that serves search, which is why this one env carries both (see
+ *  resolveWarmModels / resolveWarmRerankers). */
 export const EMBED_SIDECAR_WARM_ENV = 'PAPERCUSP_EMBED_SIDECAR_WARM';
 /** Printed to stdout once listening — the spawn-side handshake line. */
 export const EMBED_SIDECAR_READY_LINE = 'PAPERCUSP_EMBED_SIDECAR_READY';
@@ -118,6 +129,71 @@ const MODEL_REVS: Record<EmbedSidecarModel, string> = {
 };
 
 /**
+ * Cross-encoder rerankers this sidecar serves, for the SAME reason it serves
+ * embedders: one warm model per host instead of one per process. A reranker is
+ * ~150M params and seconds to load, so a per-process copy is exactly the cost
+ * this sidecar exists to remove.
+ *
+ * 'rerank' is the quality tier; 'rerank-fast' is ~7.5x cheaper per pair at a
+ * real quality cost (measured — see the plan's D-001).
+ */
+export const RERANK_SIDECAR_MODELS = ['rerank', 'rerank-fast'] as const;
+export type RerankSidecarModel = (typeof RERANK_SIDECAR_MODELS)[number];
+
+const RERANK_MODEL_REVS: Record<RerankSidecarModel, string> = {
+  rerank: LOCAL_RERANKER_MODEL,
+  'rerank-fast': FAST_RERANKER_MODEL,
+};
+
+export interface RerankRequest {
+  model: RerankSidecarModel;
+  query: string;
+  texts: string[];
+}
+
+export interface RerankResponse {
+  /** Relevance scores index-aligned with the request's `texts`. */
+  scores: number[];
+  runtime: string;
+  modelRev: string;
+}
+
+/**
+ * Pure request validation for /rerank (unit-tested without a server).
+ *
+ * Note the asymmetry with /embed: a reranker scores a (query, text) PAIR, so
+ * `query` is required and `kind` is meaningless here.
+ */
+export function validateRerankRequest(body: unknown): RerankRequest | { error: string } {
+  if (typeof body !== 'object' || body === null) return { error: 'body must be a JSON object' };
+  const b = body as { model?: unknown; query?: unknown; texts?: unknown };
+  const model = b.model === undefined ? 'rerank' : b.model;
+  if (!RERANK_SIDECAR_MODELS.includes(model as RerankSidecarModel)) {
+    return { error: `unknown model '${String(model)}' — expected one of: ${RERANK_SIDECAR_MODELS.join(', ')}` };
+  }
+  if (typeof b.query !== 'string' || b.query.trim() === '') {
+    return { error: 'query must be a non-empty string' };
+  }
+  if (b.query.length > MAX_TEXT_CHARS) {
+    return { error: `query exceeds ${MAX_TEXT_CHARS} chars (got ${b.query.length}) — truncate before reranking` };
+  }
+  if (!Array.isArray(b.texts) || b.texts.length === 0) {
+    return { error: 'texts must be a non-empty array of strings' };
+  }
+  if (b.texts.length > MAX_TEXTS_PER_CALL) {
+    return { error: `texts exceeds the ${MAX_TEXTS_PER_CALL}-per-call cap (got ${b.texts.length}) — split the batch` };
+  }
+  for (let i = 0; i < b.texts.length; i++) {
+    const t = b.texts[i];
+    if (typeof t !== 'string') return { error: `texts[${i}] is not a string` };
+    if (t.length > MAX_TEXT_CHARS) {
+      return { error: `texts[${i}] exceeds ${MAX_TEXT_CHARS} chars (got ${t.length}) — truncate before reranking` };
+    }
+  }
+  return { model: model as RerankSidecarModel, query: b.query, texts: b.texts as string[] };
+}
+
+/**
  * Pure request validation (unit-tested without a server). Returns the parsed
  * request or an error string suitable for a 400 body.
  */
@@ -149,16 +225,44 @@ export function validateEmbedRequest(body: unknown): EmbedRequest | { error: str
 
 type WarmState = 'cold' | 'warming' | 'warm' | 'failed';
 
-/** The boot-warm model set: EMBED_SIDECAR_WARM_ENV comma-list filtered to known
- *  models (unknown names dropped), deduped; empty/unset ⇒ ['gemma']. Pure. */
-export function resolveWarmModels(env: NodeJS.ProcessEnv = process.env): EmbedSidecarModel[] {
-  const raw = env[EMBED_SIDECAR_WARM_ENV];
-  if (!raw?.trim()) return ['gemma'];
-  const known = raw
+const warmTokens = (env: NodeJS.ProcessEnv): string[] =>
+  (env[EMBED_SIDECAR_WARM_ENV] ?? '')
     .split(',')
     .map((s) => s.trim())
-    .filter((s): s is EmbedSidecarModel => (EMBED_SIDECAR_MODELS as readonly string[]).includes(s));
-  return known.length > 0 ? [...new Set(known)] : ['gemma'];
+    .filter((s) => s !== '');
+
+/**
+ * The boot-warm EMBEDDER set: EMBED_SIDECAR_WARM_ENV comma-list filtered to
+ * known embedders (unknown names dropped), deduped; empty/unset ⇒ ['gemma'].
+ *
+ * The env now also carries reranker ids (see resolveWarmRerankers), so "no
+ * embedder named" no longer implies "the host forgot to configure this". A list
+ * naming ONLY rerankers warms no embedder rather than silently loading gemma —
+ * warming a ~300MB model the host did not ask for is the surprise to avoid. The
+ * gemma default survives for the genuinely unconfigured cases: unset, blank, or
+ * nothing recognized at all.
+ */
+export function resolveWarmModels(env: NodeJS.ProcessEnv = process.env): EmbedSidecarModel[] {
+  const tokens = warmTokens(env);
+  if (tokens.length === 0) return ['gemma'];
+  const embedders = [
+    ...new Set(tokens.filter((s): s is EmbedSidecarModel => (EMBED_SIDECAR_MODELS as readonly string[]).includes(s))),
+  ];
+  if (embedders.length > 0) return embedders;
+  const namedAReranker = tokens.some((s) => (RERANK_SIDECAR_MODELS as readonly string[]).includes(s));
+  return namedAReranker ? [] : ['gemma'];
+}
+
+/** The boot-warm RERANKER set from the same env. Default: none — a host opts in,
+ *  because a reranker is only useful to hosts that actually serve search. */
+export function resolveWarmRerankers(env: NodeJS.ProcessEnv = process.env): RerankSidecarModel[] {
+  return [
+    ...new Set(
+      warmTokens(env).filter((s): s is RerankSidecarModel =>
+        (RERANK_SIDECAR_MODELS as readonly string[]).includes(s),
+      ),
+    ),
+  ];
 }
 
 /** Builder seam — tests inject fakes so no unit test loads a real ONNX model. */
@@ -176,9 +280,34 @@ const defaultBuilders: EmbedderBuilders = {
   harrier: (kind) => Promise.resolve(buildHarrierEmbedder({ kind })),
 };
 
+/** Reranker equivalent of EmbedderBuilders — tests inject fakes so no unit test
+ *  loads a real cross-encoder. */
+export type RerankFn = (query: string, texts: string[]) => Promise<number[]>;
+export type RerankerBuilders = {
+  [M in RerankSidecarModel]: () => Promise<RerankFn>;
+};
+
+const buildSidecarReranker = (model: string) => async (): Promise<RerankFn> => {
+  // Load eagerly so the builder's promise resolving MEANS the model is warm —
+  // that is what makes the warm-state registry and /healthz honest.
+  await loadCrossEncoder({ model });
+  // scoreCrossEncoder THROWS on failure, deliberately: this server must report
+  // a 500 (and flip the slot to 'failed') rather than quietly serve neutral
+  // scores. The lib's fail-safe passthrough belongs on the CLIENT side, where
+  // there is a retrieval order to degrade to.
+  return (query, texts) => scoreCrossEncoder(query, texts, { model });
+};
+
+const defaultRerankBuilders: RerankerBuilders = {
+  rerank: buildSidecarReranker(LOCAL_RERANKER_MODEL),
+  'rerank-fast': buildSidecarReranker(FAST_RERANKER_MODEL),
+};
+
 export interface EmbedSidecarOptions {
   port?: number;
   builders?: EmbedderBuilders;
+  /** Reranker builder seam — tests inject fakes (see `builders`). */
+  rerankBuilders?: RerankerBuilders;
   /** Skip the boot warm-up (tests). Production warms gemma at boot. */
   warmAtBoot?: boolean;
   log?: (line: string) => void;
@@ -228,6 +357,7 @@ function readBody(req: http.IncomingMessage): Promise<string> {
  */
 export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedSidecarHandle {
   const builders = opts.builders ?? defaultBuilders;
+  const rerankBuilders = opts.rerankBuilders ?? defaultRerankBuilders;
   const log = opts.log ?? ((line: string) => console.log(line));
   const port = opts.port ?? Number(process.env[EMBED_SIDECAR_PORT_ENV] ?? EMBED_SIDECAR_DEFAULT_PORT);
   const startedAt = Date.now();
@@ -254,6 +384,31 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         },
       );
       embedders.set(key, p);
+    }
+    return p;
+  };
+
+  // Rerankers share the SAME warm-state registry (so /healthz reports one
+  // picture of what this host has loaded) and the same don't-memoize-failures
+  // rule, for the same reason: a transient download fault must not brick the
+  // slot for the process lifetime.
+  const rerankers = new Map<RerankSidecarModel, Promise<RerankFn>>();
+  const getReranker = (model: RerankSidecarModel): Promise<RerankFn> => {
+    let p = rerankers.get(model);
+    if (!p) {
+      warm[model] = 'warming';
+      p = rerankBuilders[model]().then(
+        (fn) => {
+          warm[model] = 'warm';
+          return fn;
+        },
+        (err) => {
+          warm[model] = 'failed';
+          rerankers.delete(model);
+          throw err;
+        },
+      );
+      rerankers.set(model, p);
     }
     return p;
   };
@@ -328,12 +483,10 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       vecCache.delete(oldest);
     }
   };
-  const embedOneCached = (
-    model: EmbedSidecarModel,
-    kind: GemmaEmbedKind,
-    text: string,
-  ): Promise<number[]> => {
-    const key = `${model}:${kind}\0${text}`;
+  /** Cache + coalesce + enqueue one unit of ONNX work under `key`. Shared by
+   *  /embed and /rerank so both get the same fairness and memory bounds, and
+   *  neither can starve the other (one FIFO, not two competing ones). */
+  const computeCached = (key: string, work: () => Promise<number[]>): Promise<number[]> => {
     const cached = cacheGet(key);
     if (cached) {
       cacheHits++;
@@ -346,10 +499,9 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     }
     cacheMisses++;
     const run = enqueue(async () => {
-      const embed = await getEmbedder(model, kind);
-      const vec = await embed(text);
-      cachePut(key, vec);
-      return vec;
+      const value = await work();
+      cachePut(key, value);
+      return value;
     });
     inflight.set(key, run);
     void run.then(
@@ -358,6 +510,34 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     );
     return run;
   };
+
+  const embedOneCached = (
+    model: EmbedSidecarModel,
+    kind: GemmaEmbedKind,
+    text: string,
+  ): Promise<number[]> =>
+    computeCached(`${model}:${kind}\0${text}`, async () => {
+      const embed = await getEmbedder(model, kind);
+      return embed(text);
+    });
+
+  // One PAIR per unit, matching /embed's one-text-per-unit choice. A cross-
+  // encoder could score a whole batch in one forward pass, but per-pair units
+  // buy the same three properties the embed path documents — FIFO fairness (a
+  // small rerank does not wait out a peer's 100-doc batch), coalescing of
+  // concurrent identical pairs, and an LRU hit on repeat queries — and D-001
+  // measured per-pair cost as flat in batch size, so batching would trade those
+  // away for nothing. The score is boxed as a 1-element array to reuse the
+  // vector cache; the model is in the key, so the namespaces cannot collide.
+  const rerankOneCached = (model: RerankSidecarModel, query: string, text: string): Promise<number> =>
+    computeCached(`${model}\0${query}\0${text}`, async () => {
+      const rerankFn = await getReranker(model);
+      const scores = await rerankFn(query, [text]);
+      if (scores.length !== 1 || typeof scores[0] !== 'number' || !Number.isFinite(scores[0])) {
+        throw new Error(`reranker returned a bad score for one pair: ${JSON.stringify(scores)}`);
+      }
+      return [scores[0]];
+    }).then((boxed) => boxed[0]);
 
   const handleEmbed = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     let parsed: unknown;
@@ -388,6 +568,36 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     }
   };
 
+  const handleRerank = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readBody(req));
+    } catch (e) {
+      json(res, 400, { error: `invalid JSON body: ${e instanceof Error ? e.message : String(e)}` });
+      return;
+    }
+    const v = validateRerankRequest(parsed);
+    if ('error' in v) {
+      json(res, 400, { error: v.error });
+      return;
+    }
+    try {
+      // Scores stay index-aligned with the request's texts; ordering, topN and
+      // any threshold are the CLIENT's job. The server never reorders — that
+      // keeps the ranking policy in one place (@papercusp/rerank) instead of
+      // split across a wire.
+      const scores = await Promise.all(v.texts.map((text) => rerankOneCached(v.model, v.query, text)));
+      const body: RerankResponse = {
+        scores,
+        runtime: EMBED_SIDECAR_RUNTIME,
+        modelRev: RERANK_MODEL_REVS[v.model],
+      };
+      json(res, 200, body);
+    } catch (e) {
+      json(res, 500, { error: `rerank_failed: ${e instanceof Error ? e.message : String(e)}` });
+    }
+  };
+
   const server = http.createServer((req, res) => {
     const url = (req.url ?? '').split('?')[0];
     if (req.method === 'GET' && url === '/healthz') {
@@ -404,6 +614,10 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     }
     if (req.method === 'POST' && url === '/embed') {
       void handleEmbed(req, res);
+      return;
+    }
+    if (req.method === 'POST' && url === '/rerank') {
+      void handleRerank(req, res);
       return;
     }
     json(res, 404, { error: `no route ${req.method} ${url}` });
@@ -431,6 +645,14 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
             .then(() => log(`[embed-sidecar] ${model}:${kind} warm`))
             .catch((e) => log(`[embed-sidecar] ${model}:${kind} warm-up failed: ${e instanceof Error ? e.message : e}`));
         }
+      }
+      // Rerankers are opt-in via the same env (default: none) — a host that
+      // does not serve search should not pay a ~150M-param load.
+      for (const model of resolveWarmRerankers()) {
+        getReranker(model)
+          .then((rerankFn) => rerankFn('warm-up', ['warm-up']))
+          .then(() => log(`[embed-sidecar] ${model} warm`))
+          .catch((e) => log(`[embed-sidecar] ${model} warm-up failed: ${e instanceof Error ? e.message : e}`));
       }
     });
   }
