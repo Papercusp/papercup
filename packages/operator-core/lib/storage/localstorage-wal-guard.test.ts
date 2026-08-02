@@ -192,8 +192,6 @@ describe('runWalCheckpointSweep (end-to-end, real fs + sqlite)', () => {
     expect(bigWalBefore).toBeGreaterThan(1 * MB);
 
     const result = runWalCheckpointSweep({ thresholdBytes: 1 * MB, roots: [dir] });
-    big.close();
-    small.close();
 
     expect(result.checked).toBe(2);
     expect(result.overThreshold).toBe(1);
@@ -201,9 +199,15 @@ describe('runWalCheckpointSweep (end-to-end, real fs + sqlite)', () => {
     expect(result.bytesReclaimed).toBeGreaterThan(0);
     expect(result.errors).toEqual([]);
 
-    // The small one was never touched.
+    // The small one was never touched — assert BEFORE closing either
+    // connection: closing the last connection to a WAL db triggers SQLite's
+    // own auto-checkpoint, which would remove/shrink the file regardless of
+    // what the sweep did and make this assertion meaningless.
     expect(statSync(`${smallDb}-wal`).size).toBe(smallWalBefore);
     expect(statSync(`${bigDb}-wal`).size).toBe(0);
+
+    big.close();
+    small.close();
   });
 
   it('a missing root sweeps to an empty, error-free result', () => {

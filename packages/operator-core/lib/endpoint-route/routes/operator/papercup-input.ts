@@ -73,7 +73,7 @@ export default defineTool({
             elConvId: null,
           });
           const { notifySyncInvalidate } = await import('../../../sync-sse');
-          void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: conv.id })
+          void notifySyncInvalidate('operatorTurns.page', { conversationId: conv.id })
             .catch(() => { /* best-effort */ });
         } catch (err) {
           // The pane got the words either way — never fail the voice turn

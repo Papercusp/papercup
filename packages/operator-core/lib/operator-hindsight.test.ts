@@ -62,7 +62,7 @@ describe('notifyOperatorHindsight — two deliveries (P-008)', () => {
       text: '[While you were away] Deep dive WI-123 landed: the answer.',
     });
     // Live sidebars refresh via the same sync query they already subscribe to.
-    expect(h.notifySyncInvalidate).toHaveBeenCalledWith('operatorTurns.byConversation', {
+    expect(h.notifySyncInvalidate).toHaveBeenCalledWith('operatorTurns.page', {
       conversationId: 'conv-1',
     });
   });

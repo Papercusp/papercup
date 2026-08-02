@@ -67,7 +67,7 @@ describe('POST /operator/conversations/:id/turns', () => {
       source: 'voice_stt',
     });
     expect(j.conversationId).toBe('conv-real-uuid');
-    expect(invalidate).toHaveBeenCalledWith('operatorTurns.byConversation', {
+    expect(invalidate).toHaveBeenCalledWith('operatorTurns.page', {
       conversationId: 'conv-real-uuid',
     });
   });

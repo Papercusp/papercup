@@ -58,6 +58,92 @@ beforeEach(() => {
   h.setMode.mockClear().mockResolvedValue({ ok: true, mode: { id: 'auto' }, switchedFrom: null, noop: false });
   h.sendMessage.mockClear().mockResolvedValue({ msg_id: 'm-1' });
   h.refreshControlAnchorAfterMutation.mockClear().mockResolvedValue({ generation: 1 });
+  h.getLoopStatus.mockClear().mockResolvedValue(null);
+});
+
+/**
+ * WI-6949 — the wake-source guard. An autonomy mode is an AUTHORIZATION posture, not a
+ * wake source; registering one with no armed loop leaves the agent running only for as
+ * long as an interactive owner keeps replying, and silently inert the moment they stop.
+ */
+describe('wakeSourceWarning (pure)', () => {
+  const warn = (o: Partial<Parameters<typeof wakeSourceWarning>[0]>) =>
+    wakeSourceWarning({ modeId: 'auto', axis: 'autonomy', enabled: true, loopActive: false, ...o });
+
+  it('warns when an autonomy mode is entered with no armed loop', () => {
+    const msg = warn({});
+    expect(msg).toContain('NO WAKE SOURCE');
+    // The remedy must be spelled out as a callable, not alluded to.
+    expect(msg).toContain('loop:arm');
+  });
+
+  it('stays silent when a loop is already armed — the agent has a real wake source', () => {
+    expect(warn({ loopActive: true })).toBeNull();
+  });
+
+  it('stays silent when EXITING a mode (enabled:false), which removes no wake source', () => {
+    expect(warn({ enabled: false })).toBeNull();
+  });
+
+  it('covers cold-auto (same autonomy axis)', () => {
+    expect(warn({ modeId: 'cold-auto' })).toContain('NO WAKE SOURCE');
+  });
+
+  it('covers drain, an OVERLAY-axis mode that nonetheless implies auto', () => {
+    expect(warn({ modeId: 'drain', axis: 'overlay' })).toContain('NO WAKE SOURCE');
+  });
+
+  it('does NOT fire for overlay modes that imply no autonomy (ideate, grade)', () => {
+    expect(warn({ modeId: 'ideate', axis: 'overlay' })).toBeNull();
+    expect(warn({ modeId: 'grade', axis: 'overlay' })).toBeNull();
+  });
+});
+
+describe('mode:set handler — wake-source guard wiring', () => {
+  beforeEach(() => {
+    currentIdentity = { ownerId: ME, ownerLabel: 'su · me', source: 'omp-hook-session', workspaceId: 'default', userId: null };
+  });
+
+  it('self-set auto with no loop returns the warning in the payload', async () => {
+    h.getLoopStatus.mockResolvedValue(null);
+    const body = parse(await run({ mode: 'auto', reason: 'go', ownerDirected: true }));
+    expect(body.wakeSource).toBe('owner-only');
+    expect(body.wakeSourceWarning).toContain('loop:arm');
+  });
+
+  it('self-set auto with a loop already armed returns no warning', async () => {
+    h.getLoopStatus.mockResolvedValue({ active: true });
+    const body = parse(await run({ mode: 'auto', reason: 'go', ownerDirected: true }));
+    expect(body.wakeSourceWarning).toBeUndefined();
+    expect(body.wakeSource).toBeUndefined();
+  });
+
+  it('reads the TARGET\'s loop on a peer-set, not the caller\'s — the target is who goes inert', async () => {
+    currentIdentity = { ownerId: PEER, ownerLabel: 'su · peer', source: 'omp-hook-session', workspaceId: 'default', userId: null };
+    await run({ mode: 'auto', reason: 'you drive', agent: ME });
+    expect(h.getLoopStatus).toHaveBeenCalledWith(ME);
+  });
+
+  it('appends the warning to the coord message a peer-set delivers, so the target sees it too', async () => {
+    currentIdentity = { ownerId: PEER, ownerLabel: 'su · peer', source: 'omp-hook-session', workspaceId: 'default', userId: null };
+    h.getLoopStatus.mockResolvedValue(null);
+    await run({ mode: 'auto', reason: 'you drive', agent: ME });
+    const [, sendOpts] = h.sendMessage.mock.calls[0] as [unknown, Record<string, string>];
+    expect(sendOpts.body).toContain('NO WAKE SOURCE');
+  });
+
+  it('is FAIL-SOFT: a loop-read failure suppresses the advisory but never fails the mode change', async () => {
+    h.getLoopStatus.mockRejectedValue(new Error('pg down'));
+    const body = parse(await run({ mode: 'auto', reason: 'go' }));
+    expect(body.ok).toBe(true);
+    expect(body.wakeSourceWarning).toBeUndefined();
+  });
+
+  it('does not even read the loop when the mode change was a no-op', async () => {
+    h.setMode.mockResolvedValue({ ok: true, mode: { id: 'auto' }, switchedFrom: null, noop: true });
+    await run({ mode: 'auto', reason: 'already on' });
+    expect(h.getLoopStatus).not.toHaveBeenCalled();
+  });
 });
 
 describe('mode:set handler — callerIsOwnerAuthority wiring', () => {

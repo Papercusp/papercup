@@ -139,7 +139,7 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'network.hive.asks', 'network.hive.beacons', 'network.hive.wakes', 'network.hiveDirectory', 'notes.list',
   'operatorBudget.byWorkspace', 'operatorConfig.byWorkspace', 'operatorConversations.current',
   'operatorPreferences.byWorkspace', 'operatorReports.latest', 'operatorStandingApprovals.byWorkspace',
-  'operatorTurns.byConversation', 'operatorTurns.page', 'overwatch.controlState', 'overwatch.liveness',
+  'operatorTurns.page', 'overwatch.controlState', 'overwatch.liveness',
   'overwatch.snapshot', 'p2p.allotments', 'p2p.audit', 'p2p.grants', 'p2p.settings',
   'pendingReviews.byHarness', 'planItems.byPlan', 'planSessions.list', 'plans.attention',
   'plans.attentionCounts', 'plans.attentionItem', 'plans.byHive', 'plans.get', 'plans.items', 'plans.lint',

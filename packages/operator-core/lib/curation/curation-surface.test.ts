@@ -53,7 +53,7 @@ describe('surfaceCuratedMessage', () => {
 
   it('fires a sync-invalidate so it live-tails into the chat', async () => {
     await surfaceCuratedMessage('hello');
-    expect(mockedInvalidate).toHaveBeenCalledWith('operatorTurns.byConversation', {
+    expect(mockedInvalidate).toHaveBeenCalledWith('operatorTurns.page', {
       conversationId: 'conv-1',
     });
   });

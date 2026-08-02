@@ -322,6 +322,45 @@ describe('renderCarryDoc (pure)', () => {
     expect(text).toContain('- no active modes');
   });
 
+  // WI-6949 — AUTO with no loop is an ALARM, not a neutral fact. The prior wording buried
+  // the consequence behind an "unless an owner is present" get-out, which a successor
+  // reading it WITH an owner present correctly resolved to "fine" — and then inherited the
+  // halt when the owner left. These pin that the two cases read differently.
+  describe('the AUTO × no-loop combination escalates', () => {
+    const render = (modes: { mode: string; ownerDirected: boolean; reason: string }[], loopActive: boolean) =>
+      renderCarryDoc(doc({ sessionMode: { modes, loopActive, loopIntervalSec: loopActive ? 60 : null } }), NOW);
+
+    it('shouts when an autonomy mode is on and no loop is armed', () => {
+      const text = render([{ mode: 'auto', ownerDirected: true, reason: 'owner said keep going' }], false);
+      expect(text).toContain('NOT ARMED, AND AN AUTONOMY MODE IS ON');
+      expect(text).toContain('HALTS');
+      expect(text).toContain('loop:arm');
+    });
+
+    it('escalates for cold-auto and drain too, not just auto', () => {
+      for (const mode of ['cold-auto', 'drain']) {
+        expect(render([{ mode, ownerDirected: true, reason: 'r' }], false)).toContain('NOT ARMED, AND AN AUTONOMY MODE IS ON');
+      }
+    });
+
+    it('does NOT escalate for a non-autonomy mode alone (ideate)', () => {
+      const text = render([{ mode: 'ideate', ownerDirected: true, reason: 'r' }], false);
+      expect(text).not.toContain('AN AUTONOMY MODE IS ON');
+      expect(text).toContain('loop: not armed');
+    });
+
+    it('does NOT escalate when the loop IS armed, however autonomous the mode', () => {
+      const text = render([{ mode: 'auto', ownerDirected: true, reason: 'r' }], true);
+      expect(text).not.toContain('NOT ARMED');
+      expect(text).toContain('loop: ARMED');
+    });
+
+    it('even the no-modes line names the owner as a wake source that can disappear', () => {
+      const text = render([], false);
+      expect(text).toMatch(/only wake source is the owner speaking/i);
+    });
+  });
+
   it('the mechanical stamp OUTRANKS the speaker in tail headers (WI-3532 class)', () => {
     const text = renderCarryDoc(
       doc({

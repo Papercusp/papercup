@@ -164,12 +164,12 @@ export default defineTool({
       }
 
       // The answer mutates an existing assistant row and appends a user row.
-      // Refresh both consumers: the live tail handles open windows, while the
-      // page query is the authoritative bootstrap after a desktop reload.
-      void Promise.all([
-        notifySyncInvalidate('operatorTurns.byConversation', { conversationId }),
-        notifySyncInvalidate('operatorTurns.page', { conversationId }),
-      ]).catch(() => { /* best-effort */ });
+      // One invalidation now covers both consumers: since P-025 the live tail
+      // and the reload bootstrap are the SAME `operatorTurns.page` query (the
+      // separate `operatorTurns.byConversation` name was removed), so the
+      // former two-name fan-out would be a duplicate of itself.
+      void notifySyncInvalidate('operatorTurns.page', { conversationId })
+        .catch(() => { /* best-effort */ });
 
       return Response.json({
         ok: true,

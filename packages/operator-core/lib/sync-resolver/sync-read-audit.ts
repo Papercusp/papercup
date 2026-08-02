@@ -105,7 +105,6 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'featureDebugNotes.byHarness': null,
   'featureNotes.byHarness': null,
   'hiveFromRepo.progress': null,
-  'operatorTurns.byConversation': null,
   'operatorTurns.page': null,
   'planItems.byPlan': null,
   'plans.attentionItem': null, // a specific attention item id (slim-plans-attention-sync-payload-2026-07-26 P-004) — no stable fixture

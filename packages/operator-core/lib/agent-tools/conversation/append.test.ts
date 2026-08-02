@@ -53,7 +53,7 @@ describe('conversation:append (EI-2905 — pass conv.id, never the nonexistent c
       { role: 'user', text: 'ping' } as never,
       {} as never,
     );
-    expect(vi.mocked(notifySyncInvalidate)).toHaveBeenCalledWith('operatorTurns.byConversation', {
+    expect(vi.mocked(notifySyncInvalidate)).toHaveBeenCalledWith('operatorTurns.page', {
       conversationId: 'conv-1',
     });
   });

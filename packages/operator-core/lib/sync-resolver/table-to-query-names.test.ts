@@ -395,10 +395,28 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
     expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_entity_subscriptions']).toContain('conversations.questionDetail');
   });
 
-  it('refreshes both operator-turn live-tail and paged hydration queries', () => {
+  it('refreshes the merged operator-turn query that serves both live tail and hydration', () => {
     expect(TABLE_TO_QUERY_NAMES['harness_shared.operator_turns']).toEqual(
-      expect.arrayContaining(['operatorTurns.byConversation', 'operatorTurns.page']),
+      expect.arrayContaining(['operatorTurns.page']),
     );
+  });
+
+  // P-025 / no-http-anywhere-2026-07-28 D-016: the chat pane used to run a
+  // second query, `operatorTurns.byConversation`, over the same
+  // listTurnsRecent() rows — ~200 turns fetched twice per mount. It was merged
+  // into `operatorTurns.page`. Re-adding the name here would be silent: the
+  // client no longer subscribes to it, so every invalidation fired at it is a
+  // no-op against a name nothing reads, and the chat simply stops updating
+  // live with no error and no failing test. Pin its absence.
+  it('no longer maps the removed operatorTurns.byConversation name', () => {
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.operator_turns']).not.toContain(
+      'operatorTurns.byConversation',
+    );
+    for (const [table, names] of Object.entries(TABLE_TO_QUERY_NAMES)) {
+      expect(names, `${table} still maps the removed query name`).not.toContain(
+        'operatorTurns.byConversation',
+      );
+    }
   });
 });
 

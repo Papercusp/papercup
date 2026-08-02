@@ -77,7 +77,7 @@ const post = defineTool({
       tools: Array.isArray(body.tools) && body.tools.length > 0 ? (body.tools as any) : null,
       report,
     });
-    void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: id })
+    void notifySyncInvalidate('operatorTurns.page', { conversationId: id })
       .catch(() => { /* best-effort */ });
     // conversationId lets an `active` caller adopt the resolved id.
     return Response.json({ turn, conversationId: id });

@@ -183,7 +183,7 @@ async function persistTurn(
     // Without this the turn is stored but no open chat pane refetches — the
     // user only sees it after an unrelated invalidate/reload (WI-4838 C).
     const { notifySyncInvalidate } = await import('../sync-sse');
-    void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: conv.id })
+    void notifySyncInvalidate('operatorTurns.page', { conversationId: conv.id })
       .catch(() => { /* best-effort */ });
   } catch (err) {
     console.warn('[voice-host] persist turn failed:', (err as Error)?.message ?? err);

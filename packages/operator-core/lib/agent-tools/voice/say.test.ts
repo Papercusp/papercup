@@ -47,7 +47,7 @@ describe('voice:say', () => {
       text: 'Paris.',
       source: 'voice_tts',
     });
-    expect(invalidate).toHaveBeenCalledWith('operatorTurns.byConversation', {
+    expect(invalidate).toHaveBeenCalledWith('operatorTurns.page', {
       conversationId: 'conv-9',
     });
   });
