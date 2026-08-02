@@ -17,6 +17,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { normalizeEventKey } from './announce-key';
 import { keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
@@ -434,17 +435,27 @@ export async function listParkedAwaitsForSubscribers(
 }
 
 /** Active awaits matching an event key — peek without firing (sources may use
- *  this to decide whether anyone is waiting at all). */
+ *  this to decide whether anyone is waiting at all).
+ *
+ *  EI-19284963139619048: this is one of the reads `loop:status`'s wake-reachability
+ *  probe runs (gate 1, "is a standing await armed"). It used to run on the plain,
+ *  unbounded `getOrgPg()` admin pool like the rest of this file — a deliberate
+ *  convention for most of the file's traffic, per the module header — but a stall
+ *  here (lock wait / slow scan under fleet load) hung `loop:status` itself until
+ *  the client's own 300s idle-timeout killed the call blind (pg-bounded-txn.ts's
+ *  header documents this exact symptom class, already fixed for `work_items:comment`).
+ *  boundedOrgTxn sets a real statement_timeout so a stall now fails fast + typed
+ *  instead — every caller here already treats a rejection as "no live await"
+ *  (fail-soft), so a timeout degrades the same way a genuine empty result would. */
 export async function listActiveAwaitsForKey(eventKey: string): Promise<AwaitRow[]> {
-  const { sql } = getOrgPg();
   const ws = eventsWs();
-  const rows = await sql`
+  const rows = await boundedOrgTxn((tx) => tx`
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws} AND event_key = ${eventKey}
        AND fired_at IS NULL AND cancelled_at IS NULL
        AND policy <> 'announce'
      ORDER BY created_at ASC
-  `;
+  `);
   return rows.map(mapAwait);
 }
 

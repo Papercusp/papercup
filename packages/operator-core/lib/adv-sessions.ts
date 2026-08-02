@@ -13,6 +13,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { boundedOrgTxn } from './pg-bounded-txn';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
 

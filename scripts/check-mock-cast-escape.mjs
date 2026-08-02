@@ -40,10 +40,10 @@
  *   0 — at or below baseline (below-baseline only locks in with --update)
  *   1 — count exceeded baseline (a NEW escape was added), or the baseline file is unreadable
  */
-import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_FILE = resolve(ROOT, '.mock-cast-escape-baseline.json');
@@ -241,9 +241,17 @@ export function decide({ count, baselineCount, updateFlag = false }) {
   return { verdict: 'ok' };
 }
 
+/**
+ * WI-6666: the original pathspec form (`git ls-files '*.test.ts' '*.test.tsx'`) STOPS
+ * AT THE SUPERPROJECT BOUNDARY exactly like a bare `git ls-files` — a pathspec glob
+ * doesn't add recursion, it just filters what the (unrecursed) listing returns. So
+ * every `.test.ts`/`.test.tsx` inside libs/generic/**, libs/papercusp/**, and
+ * papercusp-desktop/** was invisible to this ratchet. `listTrackedFiles` recurses into
+ * submodules; filtering by suffix here reproduces the same glob semantics.
+ */
 function listTestFiles() {
-  const out = execFileSync('git', ['ls-files', '*.test.ts', '*.test.tsx'], { cwd: ROOT, encoding: 'utf8' });
-  return out.split('\n').filter(Boolean);
+  const { files, unscanned } = listTrackedFiles(ROOT);
+  return { files: files.filter((f) => f.endsWith('.test.ts') || f.endsWith('.test.tsx')), unscanned };
 }
 
 function readBaseline() {
@@ -275,7 +283,7 @@ function main() {
 
   const baselineCount = readBaseline();
 
-  const files = listTestFiles();
+  const { files, unscanned } = listTestFiles();
   /** @type {Record<string, MockCastEscape[]>} */
   const byFile = {};
   let count = 0;
