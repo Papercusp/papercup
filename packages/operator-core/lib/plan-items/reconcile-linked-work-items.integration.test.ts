@@ -95,7 +95,12 @@ vi.mock('../work-items', async () => {
 const h3 = vi.hoisted(() => ({
   getPlanRow: vi.fn(
     async (_slug: string, _opts?: unknown) =>
-      null as { items: { id: string; status: string; blockedBy?: string[] }[] } | null,
+      null as {
+        items: { id: string; status: string; blockedBy?: string[] }[];
+        // EI-19319970920449941: optional in every pre-existing test (defaults to
+        // undefined -> the reconciler treats a missing field as "no decisions").
+        decisions?: { id: string; title: string; body: string; date: string | null; itemRefs: string[] }[];
+      } | null,
   ),
 }));
 // EI-18732669095544832: `classifyPlanLane` (the new resyncPlanItemLaneNow's lane
@@ -433,6 +438,82 @@ describe('reconcileLinkedWorkItemsForPlanItem — dropped plan item (EI-14693)',
 
     expect(result.reconciled).toEqual([]);
     expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+});
+
+describe('reconcileLinkedWorkItemsForPlanItem — cites plan decisions in completionRef (EI-19319970920449941)', () => {
+  it('cites the decision(s) that name this plan item via itemRefs, not a bare flip', async () => {
+    stub({ id: 'WI-evidenced', state: 'open', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-020', srcRef: 'WI-evidenced' });
+    h3.getPlanRow.mockResolvedValue({
+      items: [{ id: 'P-020', status: 'done' }],
+      decisions: [
+        { id: 'D-001', title: 'Unrelated', body: '...', date: null, itemRefs: ['P-999'] },
+        { id: 'D-002', title: 'The real evidence', body: '...', date: null, itemRefs: ['P-020', 'P-021'] },
+      ],
+    });
+
+    await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-020' });
+
+    expect(setWorkItemState).toHaveBeenCalledWith(
+      'WI-evidenced',
+      'resolved',
+      expect.objectContaining({
+        completionRef: expect.stringContaining('evidence recorded on plan decision(s) D-002'),
+      }),
+    );
+    // The unrelated decision (no itemRefs match) must NOT be cited.
+    const call = setWorkItemState.mock.calls.find(([id]) => id === 'WI-evidenced');
+    expect(call?.[2].completionRef).not.toContain('D-001');
+  });
+
+  it('cites off `knownDecisions` too — the periodic sweep never re-fetches the row', async () => {
+    await insertWorkItemRow({ id: 'F-swevidence', kind: 'feature', status: 'todo', planSlug: 'psevidence', itemId: 'P-1' });
+    await edge({ plan: 'psevidence', item: 'P-1', srcRef: 'sheets#F-swevidence', srcKind: 'feature' });
+    stub({ id: 'F-swevidence', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+    h3.getPlanRow.mockResolvedValue({
+      items: [{ id: 'P-1', status: 'done' }],
+      decisions: [{ id: 'D-010', title: 'Sweep evidence', body: '...', date: null, itemRefs: ['P-1'] }],
+    });
+
+    await reconcileOrphanedPlanItemWorkItems();
+
+    expect(setWorkItemState).toHaveBeenCalledWith(
+      'F-swevidence',
+      'passed',
+      expect.objectContaining({ completionRef: expect.stringContaining('evidence recorded on plan decision(s) D-010') }),
+    );
+  });
+
+  it('leaves the completionRef as a bare flip when no decision names this item', async () => {
+    stub({ id: 'WI-bare', state: 'open', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-021', srcRef: 'WI-bare' });
+    h3.getPlanRow.mockResolvedValue({
+      items: [{ id: 'P-021', status: 'done' }],
+      decisions: [{ id: 'D-003', title: 'About something else', body: '...', date: null, itemRefs: ['P-999'] }],
+    });
+
+    await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-021' });
+
+    expect(setWorkItemState).toHaveBeenCalledWith(
+      'WI-bare',
+      'resolved',
+      expect.objectContaining({ completionRef: expect.not.stringContaining('evidence recorded') }),
+    );
+  });
+
+  it('is a clean no-op when the plan has no decisions at all (undefined field, pre-existing rows)', async () => {
+    stub({ id: 'WI-nodecisions', state: 'open', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-022', srcRef: 'WI-nodecisions' });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-022', status: 'done' }] });
+
+    await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-022' });
+
+    expect(setWorkItemState).toHaveBeenCalledWith(
+      'WI-nodecisions',
+      'resolved',
+      expect.objectContaining({ completionRef: expect.not.stringContaining('evidence recorded') }),
+    );
   });
 });
 

@@ -507,6 +507,25 @@ async function completeOne(
   const completionAuthority = authorityForCompletion(completionEvidenceForGate);
   const unbackedLiveDroveUiClose = closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceForGate);
 
+  // EI-19319623239777505: the object actually PERSISTED to the row additionally carries
+  // the caller's free-text `completion.summary`. This is deliberately a SEPARATE object
+  // from `completionEvidenceForGate` above — that one stays exactly as before (scoped to
+  // the load-bearing structured fields) because `hasTests` below, `authorityForCompletion`,
+  // and `isBackedLiveDroveUiClaim` all key off whether STRUCTURED evidence was supplied;
+  // folding `summary` into `completionEvidenceForGate` itself would make a bare-summary,
+  // no-verification completion silently read as "evidence supplied" to every one of those
+  // checks. Before this, `summary` was written nowhere durable: work_items:complete never
+  // passes a `completionRef` (see the P-004 comment above), and the second-terminal-close
+  // attestation path in work-items.ts falls back to that same absent `opts.completionRef`
+  // — so a caller's whole narrative lived only in this call's RETURN value, gone the
+  // moment the response was read. Persisting it under `evidence.summary` (both on a normal
+  // close AND inside a second-close attestation, since that path reads `opts.completionEvidence`)
+  // fixes both cases from one write, without touching the authority/warning semantics above.
+  const summaryText = it.completion.summary?.trim();
+  const completionEvidenceToPersist: CompletionVerificationEvidence | undefined = summaryText
+    ? { ...(completionEvidenceForGate ?? {}), summary: summaryText }
+    : completionEvidenceForGate;
+
   // EI-18797014705631713: citing an artifact is not the same as HAVING one. The text
   // check above proves a path was written down; this reads the file. A screenshot of a
   // window that never painted is a valid PNG at a valid path proving nothing, and it is
@@ -603,10 +622,12 @@ async function completeOne(
       const res = await setWorkItemStateWithAliasInfo(it.id, effectiveState, {
         harness: it.harness,
         by: ident.ownerId,
-        // NO `completionRef` — see the block comment above. The summary is not lost:
-        // it is persisted on the completion record itself, which is where a reader
-        // should look for the narrative. What lands on the row is the judgement.
-        completionEvidence: completionEvidenceForGate,
+        // NO `completionRef` — see the block comment above. The narrative is not
+        // lost: `completionEvidenceToPersist` (EI-19319623239777505) carries the
+        // caller's free-text `summary` alongside whatever structured fields exist,
+        // so it lands durably on the row's `_completionEvidence`, not just in this
+        // call's return value.
+        completionEvidence: completionEvidenceToPersist,
         // P-008 (d): the resolved declaration, persisted under
         // TERMINAL_ASSUMPTIONS_KEY beside the evidence it rests on.
         assumptions: resolvedAssumptions,

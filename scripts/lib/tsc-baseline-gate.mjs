@@ -19,7 +19,7 @@
 import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { recordStandingReds } from './tsc-red-observations.mjs';
+import { recordStandingReds, DWELL_SEC } from './tsc-red-observations.mjs';
 
 /**
  * One diagnostic parsed out of tsc's output.
@@ -629,6 +629,32 @@ export function formatNewFileGuidance({ explicit, liveEditCount = 0, standingCou
     `   auto-commits this shared tree every few minutes, which silently drops your own recent work out of that set.`,
     TELL_THE_AUTHOR,
     `   To scope this check to exactly the files you touched, re-run with --files=<comma-separated paths>.`,
+  ];
+}
+
+/**
+ * The closing lines of the SCOPED (`--files`) new-file report, for the COMMITTED population.
+ *
+ * WI-7153. This block used to end "…the committed one(s) above need an owner", which reads as an
+ * instruction to FILE a work-item — and directly contradicts `recordStandingReds()`, called a few
+ * lines later on this same population. That mechanism exists precisely BECAUSE filing on first
+ * sight is wrong: these reds are dominated by self-healing (measured 2026-08-02: 4 of 5 gone in
+ * 15min, unaided), so `tsc-red-sweep` deliberately waits DWELL_SEC before judging one ownerless.
+ *
+ * With the recording silent and the prose asking for an owner, every reader correctly concluded
+ * "nobody has this, so I should file it". Two agents filed the SAME 9 paths 75 seconds apart on
+ * 2026-08-02 (WI-7149 / WI-7150), at 1.9–7.1 minutes of observed life — 6–24x under the dwell —
+ * which is exactly the backlog-noise outcome the hot-path/sweeper split was designed to avoid.
+ *
+ * The dwell is read from DWELL_SEC rather than written out, so this text cannot drift from the
+ * policy it describes.
+ */
+export function formatStandingRedFooter({ dwellSec = DWELL_SEC } = {}) {
+  return [
+    `    Not YOUR gate failure (you did not name them), so this run stays green.`,
+    `    ALREADY RECORDED — do NOT hand-file a work-item. tsc-red-sweep files only the ones still`,
+    `    standing after ${Math.round(dwellSec / 60)}min; most self-heal first (measured: 4 of 5 gone in 15min), so`,
+    `    filing on sight just makes duplicates (WI-7149/WI-7150, 75s apart). If one is YOURS, fix it.`,
   ];
 }
 
@@ -1446,9 +1472,11 @@ export function runTscBaselineGate({
         );
         for (const r of liveEdits) console.log(`${formatRow(r)}  ← uncommitted, a peer is likely mid-edit`);
         for (const r of standing) console.log(`${formatRow(r)}  ← COMMITTED: a standing red that WILL red the fleet`);
+        // WI-7153 — the footer is an exported pure function so the "do not hand-file" contract is
+        // unit-testable; inline console.log in a process.exit branch was untestable, which is why
+        // the contradiction with recordStandingReds() below survived unnoticed.
         if (standing.length > 0) {
-          console.log(`    Not YOUR gate failure (you did not name them), so this run stays green — but the`);
-          console.log(`    committed one(s) above need an owner. A bare npm run of this gate reds the fleet on them.`);
+          for (const line of formatStandingRedFooter()) console.log(line);
         }
         // EI-19342686127995790 — this is the exact line the fleet computes ~9x/hour and discards.
         // Remember it so a red that OUTLIVES its author can be found later; the sweeper (never this

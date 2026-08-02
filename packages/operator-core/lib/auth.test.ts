@@ -1,99 +1,88 @@
 /**
- * Integration tests for the local-account auth lib. Exercises the
- * full bcrypt round-trip + session lookup + change-password contract
- * against a live embedded-pg. Skipped when PG isn't reachable so the
- * suite stays green on machines without it.
+ * Unit-tier tests for the local-account auth lib. Exercises the full bcrypt
+ * round-trip + session lookup + change-password contract against a REAL but
+ * ISOLATED Postgres — a throwaway, fully-migrated database cloned per run
+ * from a cached testcontainers template (see `createOrgTestDb`,
+ * `../test/_org-test-db.ts`), dropped in `afterAll`.
  *
  * Why integration vs pure-unit: lib/auth.ts is end-to-end SQL — there
  * are no separable pure paths to unit-test. The bugs that actually
  * happen here (pg client field shape, bcrypt verify wiring, session
  * TTL stored as Date vs ISO) only surface against real PG.
+ *
+ * EI-19318128948371877 (decision B): this file used to run its queries
+ * directly against the shared LIVE dev embedded-pg (a raw `pg.Client` probe +
+ * `delete process.env.PAPERCUSP_FORBID_REAL_PG` opt-out) — every `signup()`
+ * call leaked a permanent row into the box every concurrent fleet agent
+ * shares (~29k rows self-healed per EI-12970). It now stands up its OWN
+ * throwaway database per run and drops it afterward, so nothing outlives this
+ * file's own process — the leak class is gone by construction, not by a
+ * cleanup sweep.
+ *
+ * @papercusp/db-org is mocked wholesale (mirrors
+ * `user-preferences.integration.test.ts`), so `lib/auth.ts`'s `getOrgPg()`
+ * never reaches the real `buildClient()` — the PAPERCUSP_FORBID_REAL_PG unit
+ * rail (EI-19311807188719573) never engages here; there is nothing to opt out
+ * of, unlike the old per-file escape hatch.
+ *
+ * Why this file stays `*.test.ts` (unit tier) rather than
+ * `*.integration.test.ts`: the green-checkpoint gate runs `test:affected` —
+ * the UNIT layer only, no `--integration` — so renaming this file would
+ * silently DELETE it from every gate run (see EI-19318128948371877's
+ * analysis). Keeping it here, DB-backed but isolated, is the deliberate fix.
+ *
+ * See PLAN-operator-arc-2026-05-12.md and migration 058.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import type { OrgTestDb } from '../test/_org-test-db';
 
-let pgReachable = false;
+const h = vi.hoisted(() => ({ sql: null as any }));
+
+// Mirrors user-preferences.integration.test.ts's mock shape exactly — auth.ts
+// only ever destructures `{ sql }` from getOrgPg() (grep confirms 9/9 call
+// sites), so this is a faithful stand-in, not a partial mock.
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+
+let db: OrgTestDb | null = null;
+let dbReady = false;
 let authMod: typeof import('./auth') | null = null;
 
-// EI-12970: every uname() below feeds a signup() call, which INSERTs a
-// permanent row into harness_shared.users. Unlike the session rows this
-// file cleans up per-test, nothing ever deleted the user rows themselves —
-// this suite alone leaked ~29k debris rows into the live dev PG (this file
-// intentionally targets the real embedded-pg, not testcontainers; see the
-// module docstring). Track every username this run creates and delete them
-// in afterAll below.
-const createdUsernames: string[] = [];
-
 beforeAll(async () => {
-  // EI-19311807188719573 / WI-6915: the unit layer sets PAPERCUSP_FORBID_REAL_PG=1, which
-  // makes buildClient() throw on any real pool. This file DELIBERATELY targets the live
-  // embedded-pg (see the module docstring) — lib/auth.ts is end-to-end SQL with no
-  // separable pure paths — so it takes the documented per-file opt-out from
-  // libs/test-config/src/setup-no-real-pg.ts: delete the var in our own beforeAll, which
-  // runs AFTER that module-level set and therefore wins.
-  //
-  // Why the file's own pgReachable guard could NOT absorb this: the probe below opens a
-  // RAW `pg` Client, which the rail does not guard (it guards buildClient, the shared-pool
-  // choke point). So the probe succeeded, pgReachable stayed true, and the rail then threw
-  // inside lib/auth.ts — 28 hard failures across this file and its siblings, red-pinning
-  // the fleet gate. A reachability probe that does not travel the same path as the code
-  // under test cannot gate that code.
-  delete process.env.PAPERCUSP_FORBID_REAL_PG;
+  const { createOrgTestDb } = await import('../test/_org-test-db');
   try {
-    const { pgClientFields } = await import('./memory/mem0-connection');
-    const fields = await pgClientFields();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Client } = require('pg') as typeof import('pg');
-    const c = new Client(fields);
-    await c.connect();
-    await c.query('SELECT 1 FROM harness_shared.users LIMIT 1');
-    // Self-heal: sweep STALE ('vitest_%' older than 2h) debris on every run
-    // so the historical backlog (and any future regression of the cleanup
-    // below) drains automatically without a separate scheduled job. The 2h
-    // floor is well past any single test run, so it never touches a
-    // concurrent in-flight run's fresh rows on this heavily-parallel
-    // shared dev box.
-    await c.query(
-      `DELETE FROM harness_shared.users
-        WHERE username LIKE 'vitest_%'
-          AND created_at < now() - interval '2 hours'`,
-    );
-    await c.end();
-    pgReachable = true;
+    db = await createOrgTestDb();
   } catch {
-    pgReachable = false;
+    // Soft-skip, mirroring this file's previous "no PG reachable" contract —
+    // now "no Docker/testcontainer reachable" (e.g. a capability:bash sandbox
+    // with no docker.sock; see pg-container.ts's NO-DOCKER escape hatch,
+    // PAPERCUSP_TEST_PG_ADMIN_URL). Stays green on a machine without either.
+    dbReady = false;
+    return;
   }
-  if (pgReachable) {
-    authMod = await import('./auth');
-    // Drizzle schema-import path errors on first call when called
-    // mid-test under vitest's worker. Warm-up via a known-no-op so the
-    // first real signup doesn't race the init.
-    try { await authMod.getSessionUserOrDefault(); } catch { /* ok */ }
-  }
-});
+  h.sql = db.adminSql;
+  dbReady = true;
+  authMod = await import('./auth');
+  // Drizzle schema-import path errors on first call when called mid-test
+  // under vitest's worker. Warm-up via a known-no-op so the first real
+  // signup doesn't race the init.
+  try { await authMod.getSessionUserOrDefault(); } catch { /* ok */ }
+  // 180s: a cold template build (first run on this box/container, ~500
+  // migrations replayed once) comfortably exceeds the unit layer's default
+  // 60s hookTimeout — override it explicitly rather than touch the shared
+  // config. Every LATER file/run clones the cached template (near-instant),
+  // so this budget is a one-time cost, not a per-file tax.
+}, 180_000);
 
 afterAll(async () => {
-  if (!pgReachable || createdUsernames.length === 0) return;
-  const { pgClientFields } = await import('./memory/mem0-connection');
-  const fields = await pgClientFields();
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Client } = require('pg') as typeof import('pg');
-  const c = new Client(fields);
-  await c.connect();
-  try {
-    await c.query('DELETE FROM harness_shared.users WHERE username = ANY($1)', [
-      createdUsernames,
-    ]);
-  } finally {
-    await c.end();
-  }
+  await db?.cleanup();
 });
 
 const itPg = (name: string, fn: () => Promise<void> | void) => {
   it(name, async () => {
-    if (!pgReachable || !authMod) {
-      // Soft-skip so CI without embedded-pg stays green.
+    if (!dbReady || !authMod) {
+      // Soft-skip so a Docker-less environment stays green.
       return;
     }
     await fn();
@@ -101,42 +90,7 @@ const itPg = (name: string, fn: () => Promise<void> | void) => {
 };
 
 describe('auth.ts integration', () => {
-  const uname = () => {
-    const n = `vitest_${randomBytes(4).toString('hex')}`;
-    createdUsernames.push(n);
-    return n;
-  };
-
-  // EI-12970 recurrence guard (part 4 of the fix): the beforeAll self-heal
-  // sweep above already deleted every 'vitest_%' row older than 2h for THIS
-  // run, so right now there should be exactly zero stale rows regardless of
-  // how many concurrent fleet test runs are mid-flight (their own rows are
-  // all fresh, not stale). A regression that breaks the sweep (wrong table,
-  // wrong predicate, sweep silently failing) makes this fail immediately
-  // instead of debris quietly re-accumulating to another 29k rows. The total
-  // (fresh + stale) count is bounded generously so normal concurrent-run
-  // noise never flags it, while a full-blown regression still would.
-  itPg('EI-12970 regression guard: vitest_* debris in harness_shared.users stays bounded', async () => {
-    const { pgClientFields } = await import('./memory/mem0-connection');
-    const fields = await pgClientFields();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Client } = require('pg') as typeof import('pg');
-    const c = new Client(fields);
-    await c.connect();
-    try {
-      const stale = await c.query<{ n: number }>(
-        `SELECT count(*)::int AS n FROM harness_shared.users
-          WHERE username LIKE 'vitest_%' AND created_at < now() - interval '2 hours'`,
-      );
-      expect(Number(stale.rows[0]!.n)).toBe(0);
-      const total = await c.query<{ n: number }>(
-        `SELECT count(*)::int AS n FROM harness_shared.users WHERE username LIKE 'vitest_%'`,
-      );
-      expect(Number(total.rows[0]!.n)).toBeLessThan(2000);
-    } finally {
-      await c.end();
-    }
-  });
+  const uname = () => `vitest_${randomBytes(4).toString('hex')}`;
 
   itPg('signup creates user and login returns a session token', async () => {
     const name = uname();
@@ -193,72 +147,44 @@ describe('auth.ts integration', () => {
     const name = uname();
     await authMod!.signup(name, 'T', 'x');
     const session = await authMod!.login(name, 'x');
-    const { pgClientFields } = await import('./memory/mem0-connection');
-    const fields = await pgClientFields();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Client } = require('pg') as typeof import('pg');
-    const c = new Client(fields);
-    await c.connect();
-    try {
-      const before = await c.query('SELECT 1 FROM harness_shared.user_sessions WHERE token=$1', [session.token]);
-      expect(before.rowCount).toBe(1);
-      await authMod!.logout(session.token);
-      const after = await c.query('SELECT 1 FROM harness_shared.user_sessions WHERE token=$1', [session.token]);
-      expect(after.rowCount).toBe(0);
-    } finally {
-      await c.end();
-    }
+    const before = await db!.adminSql`
+      SELECT 1 FROM harness_shared.user_sessions WHERE token=${session.token}`;
+    expect(before.length).toBe(1);
+    await authMod!.logout(session.token);
+    const after = await db!.adminSql`
+      SELECT 1 FROM harness_shared.user_sessions WHERE token=${session.token}`;
+    expect(after.length).toBe(0);
   });
 
   itPg('login sweeps expired + stale never-reused sessions, keeps active ones (EI-338)', async () => {
     const name = uname();
     await authMod!.signup(name, 'T', 'pw');
     const s1 = await authMod!.login(name, 'pw');
-    const { pgClientFields } = await import('./memory/mem0-connection');
-    const fields = await pgClientFields();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Client } = require('pg') as typeof import('pg');
-    const c = new Client(fields);
-    await c.connect();
+    const sql = db!.adminSql;
     const tok = () => randomBytes(32).toString('hex');
     const expired = tok();
     const orphan = tok();
     const oldActive = tok();
-    try {
-      // expired outright
-      await c.query(
-        `INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, created_at)
-         VALUES ($1, $2, now() - interval '1 hour', now() - interval '31 days')`,
-        [expired, s1.user.id],
-      );
-      // in-TTL but never re-presented since mint and past the 48h grace —
-      // the EI-338 orphan signature (cookie-less webview mints leave
-      // last_seen_at == created_at; the column is NOT NULL)
-      await c.query(
-        `INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, created_at, last_seen_at)
-         VALUES ($1, $2, now() + interval '29 days', now() - interval '3 days', now() - interval '3 days')`,
-        [orphan, s1.user.id],
-      );
-      // old but actively used — last_seen_at refresh must protect it
-      await c.query(
-        `INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, created_at, last_seen_at)
-         VALUES ($1, $2, now() + interval '29 days', now() - interval '3 days', now() - interval '5 minutes')`,
-        [oldActive, s1.user.id],
-      );
-      const s2 = await authMod!.login(name, 'pw'); // triggers the opportunistic sweep
-      const left = await c.query(
-        'SELECT token FROM harness_shared.user_sessions WHERE token = ANY($1)',
-        [[expired, orphan, oldActive, s1.token]],
-      );
-      const survivors = left.rows.map((r: { token: string }) => r.token).sort();
-      expect(survivors).toEqual([oldActive, s1.token].sort());
-      await authMod!.logout(s2.token);
-    } finally {
-      await c.query('DELETE FROM harness_shared.user_sessions WHERE token = ANY($1)', [
-        [expired, orphan, oldActive, s1.token],
-      ]);
-      await c.end();
-    }
+    // expired outright
+    await sql`
+      INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, created_at)
+      VALUES (${expired}, ${s1.user.id}, now() - interval '1 hour', now() - interval '31 days')`;
+    // in-TTL but never re-presented since mint and past the 48h grace — the
+    // EI-338 orphan signature (cookie-less webview mints leave last_seen_at
+    // == created_at; the column is NOT NULL)
+    await sql`
+      INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, created_at, last_seen_at)
+      VALUES (${orphan}, ${s1.user.id}, now() + interval '29 days', now() - interval '3 days', now() - interval '3 days')`;
+    // old but actively used — last_seen_at refresh must protect it
+    await sql`
+      INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, created_at, last_seen_at)
+      VALUES (${oldActive}, ${s1.user.id}, now() + interval '29 days', now() - interval '3 days', now() - interval '5 minutes')`;
+    const s2 = await authMod!.login(name, 'pw'); // triggers the opportunistic sweep
+    const left = await sql<{ token: string }[]>`
+      SELECT token FROM harness_shared.user_sessions WHERE token = ANY(${[expired, orphan, oldActive, s1.token]})`;
+    const survivors = left.map((r) => r.token).sort();
+    expect(survivors).toEqual([oldActive, s1.token].sort());
+    await authMod!.logout(s2.token);
   });
 
   itPg('changePassword invalidates ALL existing sessions (the route re-issues)', async () => {
@@ -266,27 +192,14 @@ describe('auth.ts integration', () => {
     await authMod!.signup(name, 'T', 'old');
     const s1 = await authMod!.login(name, 'old');
     const s2 = await authMod!.login(name, 'old');
-    const { pgClientFields } = await import('./memory/mem0-connection');
-    const fields = await pgClientFields();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Client } = require('pg') as typeof import('pg');
-    const c = new Client(fields);
-    await c.connect();
-    try {
-      const before = await c.query(
-        'SELECT COUNT(*)::int n FROM harness_shared.user_sessions WHERE token IN ($1,$2)',
-        [s1.token, s2.token],
-      );
-      expect(before.rows[0].n).toBe(2);
-      await authMod!.changePassword(s1.user.id, 'old', 'new');
-      const after = await c.query(
-        'SELECT COUNT(*)::int n FROM harness_shared.user_sessions WHERE token IN ($1,$2)',
-        [s1.token, s2.token],
-      );
-      expect(after.rows[0].n).toBe(0);
-    } finally {
-      await c.end();
-    }
+    const sql = db!.adminSql;
+    const before = await sql<{ n: number }[]>`
+      SELECT COUNT(*)::int n FROM harness_shared.user_sessions WHERE token IN (${s1.token},${s2.token})`;
+    expect(before[0].n).toBe(2);
+    await authMod!.changePassword(s1.user.id, 'old', 'new');
+    const after = await sql<{ n: number }[]>`
+      SELECT COUNT(*)::int n FROM harness_shared.user_sessions WHERE token IN (${s1.token},${s2.token})`;
+    expect(after[0].n).toBe(0);
   });
 
   itPg('changePassword requires the current password', async () => {
@@ -315,23 +228,12 @@ describe('auth.ts integration', () => {
     const name = uname();
     await authMod!.signup(name, 'T', 'x');
     const session = await authMod!.login(name, 'x');
-    const { pgClientFields } = await import('./memory/mem0-connection');
-    const fields = await pgClientFields();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Client } = require('pg') as typeof import('pg');
-    const c = new Client(fields);
-    await c.connect();
-    try {
-      const r = await c.query<{ expires_at: Date }>(
-        'SELECT expires_at FROM harness_shared.user_sessions WHERE token=$1', [session.token],
-      );
-      expect(r.rows[0].expires_at).toBeInstanceOf(Date);
-      // Within 1 minute of expected 30d-from-now
-      const expected = Date.now() + 30 * 24 * 60 * 60 * 1000;
-      expect(Math.abs(r.rows[0].expires_at.getTime() - expected)).toBeLessThan(60_000);
-      await authMod!.logout(session.token);
-    } finally {
-      await c.end();
-    }
+    const r = await db!.adminSql<{ expires_at: Date }[]>`
+      SELECT expires_at FROM harness_shared.user_sessions WHERE token=${session.token}`;
+    expect(r[0].expires_at).toBeInstanceOf(Date);
+    // Within 1 minute of expected 30d-from-now
+    const expected = Date.now() + 30 * 24 * 60 * 60 * 1000;
+    expect(Math.abs(r[0].expires_at.getTime() - expected)).toBeLessThan(60_000);
+    await authMod!.logout(session.token);
   });
 });

@@ -739,6 +739,59 @@ describe('work_items:complete (keyed-array)', () => {
     expect(setWorkItemStateWithAliasInfo.mock.calls[0][2]).not.toHaveProperty('completionRef');
   });
 
+  // EI-19319623239777505: before this, `completion.summary` was echoed back in the
+  // tool's RETURN value but never written to the row — work_items:complete deliberately
+  // never passes `completionRef` (P-004, asserted above), and the structured
+  // `completionEvidence` object built by `completionEvidenceFromRecord` never included
+  // `summary` at all. A reader of `payload._completionEvidence` after the call had no way
+  // to recover the caller's narrative, only the structured judgement.
+  it('carries `completion.summary` through onto the persisted completionEvidence, alongside structured fields', async () => {
+    getWorkItem.mockResolvedValue(item);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: {
+        summary: 'A long free-text narrative describing exactly what changed and why.',
+        testsRun: 'npm run test:file -- x.test.ts',
+        verifiedHow: 'unit',
+      },
+    });
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'F-12',
+      'passed',
+      expect.objectContaining({
+        completionEvidence: expect.objectContaining({
+          summary: 'A long free-text narrative describing exactly what changed and why.',
+          testsRun: 'npm run test:file -- x.test.ts',
+          verifiedHow: 'unit',
+        }),
+      }),
+    );
+  });
+
+  // The bare-string-summary-only case: NO structured fields at all. Before this fix
+  // `completionEvidenceFromRecord` returned `undefined` here (nothing structured to
+  // report) and the summary went with it. The summary must still land, even though
+  // `completionAuthority` correctly stays 'proposed' (no verifiedHow/testsRun/testResult).
+  it('still persists a bare summary with zero structured evidence — and does not thereby fake a `committed` authority', async () => {
+    getWorkItem.mockResolvedValue(item);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: { summary: 'just a narrative, no structured evidence' },
+    });
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'F-12',
+      'passed',
+      expect.objectContaining({
+        completionAuthority: 'proposed',
+        completionEvidence: { summary: 'just a narrative, no structured evidence' },
+      }),
+    );
+  });
+
   it('fills completion.workItem from the id when the caller omits it (DRY)', async () => {
     getWorkItem.mockResolvedValue(item);
     const r = await one({ id: 'F-12', completion: { summary: 's' } });

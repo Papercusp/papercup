@@ -694,6 +694,16 @@ export function fleetScopedMiss(
      *  surfaced alongside (not instead of) the cooldown-only message when both are present. */
     issueBreakdown?: import('./get-next').IssueClaimExclusionBreakdown | null;
     /**
+     * WI-7151 (EI-19318364531323846): the TIER-1 (feature-family) candidate count from
+     * {@link diagnoseFleetScopeFeatureFamilyMatch}, computed by the caller ONLY when
+     * `issueBreakdown.matchedByFilter === 0` (the case that would otherwise certify
+     * `specEmpty`). A positive count proves the spec is NOT "matches nothing" — the
+     * issue-family breakdown is merely blind to the feature family — so it suppresses the
+     * false `spec_matches_nothing` verdict below in favor of an honest, non-drain report.
+     * `null`/`undefined`/`0` ⇒ no change from the pre-existing issue-family-only behavior.
+     */
+    featureFamilyMatched?: number | null;
+    /**
      * WI-5947: the caller's verdict on a would-be claim/read divergence, after re-asking the
      * CLAIM path (the only oracle that can settle it). `'confirmed-twice'` — two claim attempts
      * missed while survivors persisted across two readings — is the only value that licenses
@@ -776,7 +786,13 @@ export function fleetScopedMiss(
   // survivors) — the two are mutually exclusive by construction. Must be named LOUDLY: this is
   // the exact shape that let a starved fleet confidently self-diagnose "not a spec bug" for
   // 4.5h (see diagnoseFleetScopeIssueFloorMiss's doc comment).
-  const specEmpty = !paused && breakdown != null && breakdown.matchedByFilter === 0;
+  // WI-7151 (EI-19318364531323846): a positive tier-1 (feature-family) match count PROVES
+  // the issue-family-only `matchedByFilter === 0` cannot be trusted as "the spec matches
+  // nothing" — see diagnoseFleetScopeFeatureFamilyMatch's doc comment. Mutually exclusive
+  // with `specEmpty` by construction (both require the same `matchedByFilter === 0` base).
+  const featureFamilyMiss =
+    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !!(opts?.featureFamilyMatched && opts.featureFamilyMatched > 0);
+  const specEmpty = !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss;
   // EI-18741523426513509: the spec's filter DID match real rows, but every one is presently
   // excluded by a TRANSIENT claim floor (an uncleared plan-lane blocker, a peer's claim-hold,
   // needs-human, a federation-detector gate, …) — the pool is legitimately, honestly empty
@@ -851,6 +867,15 @@ export function fleetScopedMiss(
           'fleet is mutating, so the likeliest explanation by far is that a row became claimable in between (a peer released, a claim-hold ' +
           'lapsed, a detector filed) — NOT a defect. This was NOT confirmed by a second claim attempt, so do not report it as one ' +
           '(WI-5947). windDown is NOT set: there may well be work — just pull again.'
+        : featureFamilyMiss
+          ? `ISSUE-FAMILY DIAGNOSIS BLIND SPOT (WI-7151 / EI-19318364531323846): the claim path selected nothing, and the ` +
+            `issue-family-only breakdown reports 0 matching row(s) — but ${opts?.featureFamilyMatched} FEATURE-family row(s) ` +
+            `(the family every plans:start promotion mints) match claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
+            'view.filter and pass every claim floor. The issue-family breakdown is STRUCTURALLY blind to the feature family ' +
+            '(it only ever queries bug/change/task rows), so its `matchedByFilter: 0` is NOT evidence your spec matches ' +
+            'nothing — it only means "nothing in the issue family". This is NOT a drained lane and NOT a spec-authoring ' +
+            'problem: it is either a transient race (pull again) or a genuine claim-path defect in the tier-1 (feature-family) ' +
+            'narrowing. windDown is deliberately NOT set: do not stand down, and do not re-author the claim spec on this alone.'
         : specEmpty
           ? `SPEC MATCHES NOTHING (EI-18663622382734446): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
             'view.filter matches 0 issue-family row(s) in this harness/workspace at all — this is a SPEC-AUTHORING problem ' +
@@ -884,7 +909,9 @@ export function fleetScopedMiss(
     // WI-5947: an UNCONFIRMED survivor reading is equally disqualifying for a drain stamp. It may
     // not be a claim-path defect, but it is certainly not evidence of an empty lane — certifying
     // windDown off the back of it is the same harmful call, reached by a different route.
-    windDown: !divergent && !unconfirmedSurvivors,
+    // WI-7151: same for a confirmed tier-1 (feature-family) match the issue-family breakdown
+    // could not see — a real candidate exists, so a member must not stand down off this miss.
+    windDown: !divergent && !unconfirmedSurvivors && !featureFamilyMiss,
     // EI-15185: the ready-made payload_filter derived from THIS member's own claim
     // spec — present only when the spec can be narrowed over the claimable payload's
     // fields (id/kind/title/plan). Copy it verbatim into the idle-park await below.
@@ -900,6 +927,11 @@ export function fleetScopedMiss(
     // relayed report) can branch on this WITHOUT digging into excludedBreakdown.matchedByFilter.
     // Absent for every other miss shape — this is deliberately the loud, rare case.
     ...(specEmpty ? { reason: 'spec_matches_nothing' as const } : {}),
+    // WI-7151 (EI-19318364531323846): named, top-level reason for the issue-family-diagnosis
+    // blind spot — a caller (or a leader reading a relayed report) can branch on this WITHOUT
+    // digging into excludedBreakdown, and it is DELIBERATELY DISTINCT from `spec_matches_nothing`
+    // (opposite remedy: this one means real work exists, do not touch the spec).
+    ...(featureFamilyMiss ? { reason: 'issue_family_diagnosis_blind_spot' as const, featureFamilyMatched: opts?.featureFamilyMatched ?? 0 } : {}),
     // EI-18741523426513509: named, top-level reason for the floor-gated (transient) case — the
     // effect-vs-cause counterpart of `spec_matches_nothing` above. A caller (or a leader reading
     // a relayed report) can branch on this WITHOUT digging into excludedBreakdown to tell "your
@@ -915,7 +947,11 @@ export function fleetScopedMiss(
     ...(breakdown
       ? {
           excludedBreakdown: breakdown,
-          excludedBreakdownSummary: specEmpty
+          excludedBreakdownSummary: featureFamilyMiss
+            ? `Your spec's filter matches 0 issue-family row(s), but ${opts?.featureFamilyMatched} FEATURE-family row(s) match it and ` +
+              "pass every claim floor — this breakdown only ever queries bug/change/task rows, so its 0 says nothing about your " +
+              'spec\'s feature-family matches. Do NOT treat this as a spec-authoring problem; see the top-level error/advice.'
+            : specEmpty
             ? "Your spec's filter matches 0 issue-family row(s) at all — there is nothing for any floor to exclude. " +
               'The SPEC ITSELF is the problem (an over-narrow filter, a stale id allowlist, wrong plan/kind scoping), not the pool.'
             : `Your spec's filter matches ${breakdown.matchedByFilter} issue-family row(s); stranded by: ` +
@@ -957,6 +993,13 @@ export function fleetScopedMiss(
             'actively mutating, and an unconfirmed reading is not evidence of a defect (WI-5947). Call scheduler:get_next again now; ' +
             'if a row really did free up you will simply get it. Only a miss carrying divergenceRecheck:"confirmed-twice" — two claim ' +
             'attempts against two readings that both showed survivors — is worth escalating.'
+          : featureFamilyMiss
+          ? `PULL AGAIN, and do NOT re-author the claim spec: ${opts?.featureFamilyMatched} feature-family row(s) match your spec and pass ` +
+            'every claim floor (WI-7151 / EI-19318364531323846) — the issue-family-only breakdown above cannot see them, so its ' +
+            '`matchedByFilter: 0` is not proof of a spec bug. This claim already retried once against the real tier-1 pool; if it ' +
+            'still misses after a couple more pulls, report it to your fleet leader as a possible claim-path defect in the tier-1 ' +
+            '(feature-family) narrowing — quoting `reason: "issue_family_diagnosis_blind_spot"` and `featureFamilyMatched` — rather ' +
+            'than a spec-authoring problem (do NOT quote spec_matches_nothing; that has the opposite remedy). Do NOT stand down.'
           : specEmpty
           ? 'ESCALATE to your fleet leader NOW (EI-18663622382734446) — this is a leader-alert-worthy spec-authoring bug, not a ' +
             'normal drain: quote `reason: "spec_matches_nothing"` and excludedBreakdown.matchedByFilter=0 plus your spec id/revision. ' +

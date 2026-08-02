@@ -39,6 +39,7 @@ import {
   readFleetPauseState,
   diagnoseFleetScopeCooldownMiss,
   diagnoseFleetScopeIssueFloorMiss,
+  diagnoseFleetScopeFeatureFamilyMatch,
 } from '../../scheduler/fleet-scope-admission';
 
 /**
@@ -560,6 +561,11 @@ export default defineTool({
     // === 0, the overwhelmingly common shape) never enters this block and pays nothing.
     let issueBreakdown: import('../../scheduler/get-next').IssueClaimExclusionBreakdown | null = null;
     let divergenceRecheck: 'resolved-by-retry' | 'confirmed-twice' | undefined;
+    // WI-7151 (EI-19318364531323846): the tier-1 (feature-family) match count, computed ONLY
+    // when the issue-family breakdown would otherwise certify a false `spec_matches_nothing` —
+    // see diagnoseFleetScopeFeatureFamilyMatch's doc comment. Left null for every other miss
+    // shape (zero extra cost on the common paths).
+    let featureFamilyMatched: number | null = null;
     if (!res && reconciliation.scope) {
       issueBreakdown = await diagnoseFleetScopeIssueFloorMiss({
         scope: reconciliation.scope,
@@ -599,6 +605,40 @@ export default defineTool({
           });
           if (recheck) issueBreakdown = recheck;
           if (recheck && recheck.claimable > 0) divergenceRecheck = 'confirmed-twice';
+        }
+      } else if (issueBreakdown && issueBreakdown.matchedByFilter === 0) {
+        // WI-7151: the issue-family breakdown reports a confident zero — but it is
+        // STRUCTURALLY blind to the feature family (bug/change/task only). Check tier-1
+        // before letting this certify a false `spec_matches_nothing` (e.g. a plan-scoped
+        // spec whose promoted items are feature-family, per D-009).
+        featureFamilyMatched = await diagnoseFleetScopeFeatureFamilyMatch({
+          scope: reconciliation.scope,
+          harness: args.harness,
+          workspaceId: ident.workspaceId,
+          states: args.states,
+          rigAvailable: args.rigAvailable,
+        });
+        if (featureFamilyMatched && featureFamilyMatched > 0) {
+          // A genuine tier-1 candidate exists even though the claim (which just queried
+          // this exact table) missed moments ago — retry once, same shape as the
+          // claimable>0 divergence recheck above.
+          const retry = await withBoundedTimeout(
+            getNextForBee({
+              cupId: ident.ownerId,
+              workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+              harness: args.harness,
+              heldPaths: args.heldPaths,
+              states: args.states,
+              rigAvailable: args.rigAvailable,
+              ignoreStoredSpec: !specOn && !reconciliation.scope,
+              checkIdleDrainOnMiss: true,
+            }),
+            { fallback: null, timeoutMs: GET_NEXT_BUDGET_MS, label: 'scheduler:get_next:featureFamilyRecheck' },
+          );
+          if (!retry.degraded && retry.value) {
+            res = retry.value;
+            featureFamilyMatched = null; // claimed on retry — nothing left to explain
+          }
         }
       }
     }
@@ -806,6 +846,10 @@ export default defineTool({
     // for reasons that have nothing to do with the floors.
     const issueBreakdownForMiss =
       !res && reconciliation.scope && !invalidHarnessKnownSlugs ? issueBreakdown : null;
+    // WI-7151: same suppression as issueBreakdownForMiss — irrelevant once res is set (claimed
+    // on a retry) or when the miss isn't fleet-scoped/is an invalid-harness miss.
+    const featureFamilyMatchedForMiss =
+      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? featureFamilyMatched : null;
     return {
       content: [
         {
@@ -859,6 +903,7 @@ export default defineTool({
                   ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
                       cooldownDiag,
                       issueBreakdown: issueBreakdownForMiss,
+                      featureFamilyMatched: featureFamilyMatchedForMiss,
                       divergenceRecheck,
                       harness: args.harness,
                     })

@@ -12,14 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import {
-  collectExportedInterfaceMembers,
-  collectInterfaceMembersAcrossFiles,
-  diffOptionalSeamAdditions,
-  findRealFallback,
-  findStrandedObjectLiterals,
-  formatNoFindings,
-} from '../../../../scripts/check-optional-seam-strands.mjs';
+import { collectExportedInterfaceMembers, collectInterfaceMembersAcrossFiles, diffOptionalSeamAdditions, findRealFallback, findStrandedObjectLiterals, formatNoFindings } from '../../../../scripts/check-optional-seam-strands.mjs';
 
 describe('collectExportedInterfaceMembers', () => {
   it('classifies a `typeof <imported fn>` optional member as seam-shaped', () => {

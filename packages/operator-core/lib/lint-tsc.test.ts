@@ -26,6 +26,7 @@ import {
   filesReferencingTypeNames,
   formatAttributionHeadline,
   formatNewFileGuidance,
+  formatStandingRedFooter,
   partitionNewFilesByLiveEdit,
   diagnosticLinesForFiles,
   partitionStandingByCommitRecency,
@@ -156,6 +157,56 @@ describe('formatNewFileGuidance — never prescribe the flag the caller already 
       expect(joined(explicit)).toMatch(/baseline has no known-good state|no baseline at all/i);
     },
   );
+});
+
+describe('formatStandingRedFooter — never ask for an owner the sweeper is already deciding about (WI-7153)', () => {
+  // WHY THIS IS PINNED. This footer and `recordStandingReds()` run on the SAME population, a few
+  // lines apart, and used to contradict each other: the footer closed with "the committed one(s)
+  // above need an owner" while the recorder existed precisely BECAUSE filing on first sight is
+  // wrong — these reds are dominated by self-healing (measured 2026-08-02: 4 of 5 gone in 15min),
+  // so tsc-red-sweep waits DWELL_SEC before judging one ownerless.
+  //
+  // The prose won, because agents read prose and appendFileSync is silent. Two agents filed the
+  // SAME 9 paths 75 seconds apart on 2026-08-02 (WI-7149 / WI-7150) at 1.9–7.1 minutes of observed
+  // life — 6–24x under the dwell — manufacturing exactly the backlog noise the split was built to
+  // prevent. A third of the same shape (EI-19374659820125824) was closed as a duplicate the same
+  // day. If a future edit reintroduces a call to action here, this fails instead of quietly
+  // re-arming the duplicate generator.
+  const joined = (opts?: { dwellSec?: number }) => formatStandingRedFooter(opts).join('\n');
+
+  it('does NOT tell the reader the reds need an owner', () => {
+    expect(joined()).not.toMatch(/needs? an owner/i);
+  });
+
+  it('says the finding is already recorded, and says not to hand-file', () => {
+    const text = joined();
+    expect(text).toMatch(/already recorded/i);
+    expect(text).toMatch(/do NOT hand-file/i);
+  });
+
+  it('names the sweeper that owns the decision, so the reader can go read it', () => {
+    expect(joined()).toMatch(/tsc-red-sweep/);
+  });
+
+  // The dwell must be DERIVED, not written out: a hardcoded "45min" silently becomes a lie the
+  // moment DWELL_SEC moves, and this footer is the only place most readers ever learn the policy.
+  it('derives the dwell from the passed dwellSec rather than hardcoding it', () => {
+    expect(joined({ dwellSec: 45 * 60 })).toContain('45min');
+    expect(joined({ dwellSec: 90 * 60 })).toContain('90min');
+    expect(joined({ dwellSec: 90 * 60 })).not.toContain('45min');
+  });
+
+  // Non-vacuousness. The remedy for over-filing is NOT "ignore these" — a committed red really
+  // does red the fleet at the next bare run. If a future edit softens this into pure reassurance,
+  // it would trade a duplicate-work-item problem for an ignored-standing-red problem, which is
+  // strictly worse. The footer must keep telling an owner to act.
+  it('still tells a reader who OWNS one of these to fix it', () => {
+    expect(joined()).toMatch(/if one is yours.*fix it/i);
+  });
+
+  it('does not claim the run failed — a scoped run stays green on files it did not name', () => {
+    expect(joined()).toMatch(/stays green/i);
+  });
 });
 
 const SAMPLE = [
