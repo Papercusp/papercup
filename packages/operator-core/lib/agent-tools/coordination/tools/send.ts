@@ -396,7 +396,14 @@ const fieldProvenanceArg = z
       'than authored, so adoption measurement never counts them as sender intent.',
   );
 
-const itemSpec = z.object({
+// EI-19295149246007753 guard (b): exported so send-arg-shape.test.ts can assert
+// FIELD-NAME PARITY between this (the items[] axis's canonical field set) and the
+// top-level single-form object schema below — the residual risk after fix (a): a
+// field added here but never mirrored onto the top-level object still validates
+// fine on itemSpec, but a caller using the single form has it silently stripped
+// by zod's default "unknown keys" behavior BEFORE the handler ever runs. Test-only
+// export; nothing outside this file's own tests should import it.
+export const itemSpec = z.object({
   to: toArg,
   summary: summaryArg,
   body: messageBodyArg,

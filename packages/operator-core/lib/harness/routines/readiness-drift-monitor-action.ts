@@ -22,20 +22,42 @@
  * is idempotent and cannot invent state the triggers wouldn't. Set
  * `payload_template.repair = false` for a detect-only tick.
  *
- * ⚠ SCOPE LIMIT — this catches a TRIGGER that has fallen out of step with the
- * ORACLE. It cannot catch an oracle that is itself wrong: when the predicate is
- * defective, the sidecar and the oracle agree perfectly and drift reads 0. That is
+ * ⚠ SCOPE LIMIT — the readiness sweep catches a TRIGGER that has fallen out of step
+ * with the ORACLE. It cannot catch an oracle that is itself wrong: when the predicate
+ * is defective, the sidecar and the oracle agree perfectly and drift reads 0. That is
  * not hypothetical — it is exactly how EI-19313459163394127 hid. Every issue-family
  * blocking edge in the system was inert for months while this reconciliation would
  * have reported a clean missing=0/extra=0. Correctness of the predicate is the job
- * of migration 719's regression tests, NOT of this monitor; do not read a green tick
- * here as "blocking works".
+ * of migration 719's regression tests, NOT of this monitor; do not read a green
+ * readiness tick as "blocking works".
+ *
+ * SECOND SWEEP — ENDPOINT INTEGRITY (EI-19325959789634791 / D-017). One concrete
+ * slice of that blind spot is now covered here. An edge whose endpoint declares a
+ * `*_kind` (or ref FORM) disagreeing with the family of the row it resolves to is
+ * INERT: form-valid, mirrored, acyclic, counted by every row-shape check, and
+ * invisible to the floor that must honour it. The readiness sweep cannot see it
+ * (it is feature-only, and the sidecar agrees with the oracle either way), so
+ * `reconcileWorkItemDepEndpoints` runs on this SAME tick. It is a SEPARATE
+ * invariant on a separate table — kept as its own detector rather than folded into
+ * reconcileReadiness, which structurally cannot see issue-family rows.
+ *
+ * The endpoint sweep is DETECT-ONLY, deliberately. The write seam
+ * (`resolveDepEndpoint`) now makes the mismatch inexpressible, so a NEW mismatch
+ * means something BYPASSED that seam — a fact to investigate, not to paper over.
+ * Auto-rewriting the rows here would also make this a second edge writer, which is
+ * exactly what D-010/D-014 exist to prevent. Repair stays the writer's job
+ * (re-running syncWorkItemDepEdges for the affected item).
  *
  * Never throws (the routine engine treats a throw as a failed step, and a monitor
- * must not be able to wedge the tick).
+ * must not be able to wedge the tick). The two sweeps are independently guarded, so
+ * a failure in one cannot suppress the other.
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { reconcileReadiness, type ReadinessKey } from '../../scheduler/readiness-reconcile';
+import {
+  reconcileWorkItemDepEndpoints,
+  type DepEndpointDefect,
+} from '../../scheduler/work-item-deps-integrity';
 
 /** Max keys named in a log line — the rest are summarized by count. */
 const SAMPLE = 10;
@@ -71,7 +93,58 @@ async function repairKeys(keys: readonly ReadinessKey[]): Promise<number> {
   return repaired;
 }
 
+const fmtEndpoint = (defects: readonly DepEndpointDefect[]): string =>
+  defects
+    .slice(0, SAMPLE)
+    .map(
+      (d) =>
+        `edge#${d.edge_id} ${d.side}=${d.ref} declared=${d.declared_kind}` +
+        (d.expected_kind ? ` expected=${d.expected_kind}` : ' (resolves to nothing)'),
+    )
+    .join(', ') + (defects.length > SAMPLE ? ` …+${defects.length - SAMPLE} more` : '');
+
+/**
+ * The D-017 endpoint-integrity sweep. Detect-only (see the module header for why), and
+ * separately guarded so a failure here cannot suppress the readiness sweep above.
+ */
+async function sweepEndpointIntegrity(): Promise<void> {
+  try {
+    const res = await reconcileWorkItemDepEndpoints();
+    if (res.defects === 0) {
+      console.log('[readiness-drift-monitor] work_item_deps endpoints are family-consistent (defects=0)');
+      return;
+    }
+    // MISMATCHED leads: those edges are silently inert, which is the D-017 hazard.
+    // DANGLING is hygiene — the writer tolerates an absent blocker by design.
+    console.warn(
+      `[readiness-drift-monitor] ENDPOINT DEFECTS defects=${res.defects} ` +
+        `mismatched=${res.mismatched.length} (declared kind/form disagrees with the target row's family → the edge gates NOTHING) ` +
+        `dangling=${res.dangling.length} (endpoint resolves to no row)`,
+    );
+    if (res.mismatched.length > 0) {
+      console.warn(`[readiness-drift-monitor] mismatched: ${fmtEndpoint(res.mismatched)}`);
+      console.warn(
+        '[readiness-drift-monitor] a mismatch should be INEXPRESSIBLE at the write seam ' +
+          '(resolveDepEndpoint) — its presence means a writer BYPASSED that seam. Investigate the ' +
+          'writer; repair by re-running syncWorkItemDepEdges for the affected item, not by hand-editing rows.',
+      );
+    }
+    if (res.dangling.length > 0) {
+      console.warn(`[readiness-drift-monitor] dangling: ${fmtEndpoint(res.dangling)}`);
+    }
+  } catch (e) {
+    console.warn(
+      '[readiness-drift-monitor] endpoint-integrity sweep failed (non-fatal): ' +
+        (e instanceof Error ? e.message : String(e)),
+    );
+  }
+}
+
 registerSystemAction('readiness-drift-monitor', async (ctx: SystemActionCtx) => {
+  // Runs regardless of how the readiness sweep below exits (including its early returns),
+  // because the two answer different questions and a clean readiness tick says nothing
+  // about endpoint integrity.
+  await sweepEndpointIntegrity();
   try {
     const repairEnabled = ctx.payloadTemplate?.repair !== false;
 

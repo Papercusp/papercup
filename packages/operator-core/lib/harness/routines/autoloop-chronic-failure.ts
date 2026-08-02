@@ -68,7 +68,7 @@
  * (planted, origin=drill)'` — under the SANDBOX workspace to exercise the fire-circuit-open
  * collector, then the drill machinery itself detects, heals (`consecutive_errors = 0`), and
  * cleans it up (drill-classes.ts `circuitOpenDrill`). It is NEVER a real chronic failure. But this
- * sweep's SELECT is NOT workspace-scoped (it reads every workspace's rows, filtering only on
+ * sweep's SELECT was NOT workspace-scoped (it read every workspace's rows, filtering only on
  * `consecutive_errors >= threshold`), so it saw the planted row transiently present and escalated
  * it as "CHRONIC autoloop failure: red-queen-drill-worker@red-queen-sandbox red 7 consecutive
  * fires" — a false positive that re-fired every 24h debounce cycle. Every artifact the drill harness
@@ -77,6 +77,32 @@
  * types.ts). So the sweep drops any row whose `harness_slug` is the red-queen sandbox — restoring
  * the sandbox-partition invariant every live workspace-scoped collector already honors. See
  * `isRedQueenDrillRow`.
+ *
+ * BOTH SWEEPS ARE NOW WORKSPACE-SCOPED (EI-19372306666296664) — the fix EI-12429 should have been.
+ * Excluding ONE known-bad `harness_slug` (above) left the unscoped query itself in place, so the
+ * same defect recurred from a DIFFERENT tenant: a `workspace_id = 'default'` row for the retired
+ * `director` role, dead 93 days, was filed as "SILENTLY STOPPED autoloop role: director@papercusp"
+ * — a live-looking papercusp incident for a role that does not exist in this workspace
+ * (EI-19370235414830628). `harness_slug` is NOT unique across workspaces ('papercusp' exists in
+ * both `default` and `papercusp-workspace`), and the rendered identity dropped the workspace, so
+ * the alert was textually indistinguishable from a real one.
+ *
+ * It was also a genuinely WRONG WRITE, not just noise: `workspaceId` was already resolved in both
+ * functions and passed to `recentWatchdogFires`/`claimWatchdogFire`, so the escalation SIDE EFFECTS
+ * were workspace-scoped while the row SET was not — a foreign tenant's row consumed the ACTIVE
+ * workspace's 24h debounce slot, and could suppress a real alert for the same (harness, role).
+ * Both SELECTs now carry `s.workspace_id = ${workspaceId}` and every message renders
+ * `role@harness [workspace]` (see `autoloopRowIdentity`).
+ *
+ * `isRedQueenDrillRow` DELIBERATELY STAYS, though scoping now excludes the planted row by
+ * construction (it lives under `SANDBOX_WORKSPACE_ID`, and the drill does NOT change the
+ * process-global active workspace — its `workspaceId` parameter never reaches `activeWorkspaceId()`,
+ * red-queen/sandbox.ts EI-6933). The two guards key on INDEPENDENT axes: this one on `workspace_id`,
+ * that one on `harness_slug`. `activeWorkspaceId()` honors a `PAPERCUSP_WORKSPACE_ID` env pin
+ * (workspace-registry precedence #2), so a drill-dedicated process pinned to the sandbox workspace
+ * would see the planted row again with only the scope guard in place. Removing a cheap, tested,
+ * independent-axis guard because a new one usually subsumes it is how EI-12429 became a recurrence
+ * in the first place.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
@@ -201,6 +227,28 @@ export function isRedQueenDrillRow(row: Pick<AutoloopStateRow, 'harness_slug'>):
   return row.harness_slug === SANDBOX_HARNESS_SLUG;
 }
 
+/** PURE: the rendered identity of an autoloop row — `role@harness [workspace]` (EI-19372306666296664).
+ *
+ *  The workspace is NOT decoration. Both sweeps used to render `` `${role}@${harness_slug}` ``,
+ *  dropping the one field that distinguishes tenants — and `harness_slug` is NOT unique across
+ *  workspaces (`'papercusp'` exists in BOTH `default` and `papercusp-workspace`). So when the
+ *  unscoped SELECT above returned a foreign tenant's row, the resulting alert was textually
+ *  INDISTINGUISHABLE from a live one: a dead `default`-workspace `director` row, retired 93 days
+ *  earlier, was filed as "SILENTLY STOPPED autoloop role: director@papercusp" and sent a reader
+ *  hunting a live papercusp role that does not exist (EI-19370235414830628).
+ *
+ *  The SELECT is now workspace-scoped, so this can only ever render the ACTIVE workspace — which
+ *  is exactly why it is worth printing. A scope that is enforced but invisible cannot be audited
+ *  from its own output: if the predicate is ever dropped again, the identity says so on the very
+ *  first alert instead of producing another undiagnosable false positive. A guard's scope belongs
+ *  in what it PRINTS, not only in what it checks. */
+export function autoloopRowIdentity(
+  row: Pick<AutoloopStateRow, 'role' | 'harness_slug'>,
+  workspaceId: string,
+): string {
+  return `${row.role}@${row.harness_slug} [${workspaceId}]`;
+}
+
 /** PURE: is this an ephemeral `loop:arm` OWNER loop identified by its ROLE NAME alone
  *  (EI-7220)? `loopRoutineName(ownerId)` (routines/loop.ts) is `` `loop-${ownerId}` ``, so a
  *  loop:arm loop's `autoloop_state.role` — and its materialized routine name — ALWAYS begins
@@ -264,7 +312,8 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
         FROM harness_shared.autoloop_state s
    LEFT JOIN harness_shared.routines r
           ON r.name = s.role AND r.workspace_id = s.workspace_id
-       WHERE s.consecutive_errors >= ${threshold}`;
+       WHERE s.workspace_id = ${workspaceId}
+         AND s.consecutive_errors >= ${threshold}`;
     // EI-12429: a Red Queen vaccination-drill row (a synthetic `red-queen-sandbox` artifact the
     // drill harness plants, detects, heals and cleans up itself) is never a real chronic failure.
     // Report it as skipped-drill (checked FIRST, mirroring selectChronicFailures) so the loop-arm/
@@ -338,7 +387,7 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
           results.push({ harnessSlug: b.harness_slug, role: b.role, outcome: 'debounced', reason: 'escalated within 24h' });
           continue;
         }
-        const reason = `${b.role}@${b.harness_slug}: ${b.consecutive_errors} consecutive errors — last_status: ${(b.last_status ?? '').slice(0, 200)}`;
+        const reason = `${autoloopRowIdentity(b, workspaceId)}: ${b.consecutive_errors} consecutive errors — last_status: ${(b.last_status ?? '').slice(0, 200)}`;
         // EI-6777: the `alreadyFired` read above is a cheap, racy pre-check —
         // multiple concurrent sweep ticks/processes can all observe "not fired
         // yet" before any of them records a fire. Atomically re-check + claim
@@ -351,7 +400,7 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
         }
         const { captureImprovement } = await import('../improvements/capture-core');
         await captureImprovement({
-          title: `CHRONIC autoloop failure: ${b.role}@${b.harness_slug} red ${b.consecutive_errors} consecutive fires`,
+          title: `CHRONIC autoloop failure: ${autoloopRowIdentity(b, workspaceId)} red ${b.consecutive_errors} consecutive fires`,
           kind: 'bug',
           severity: 'major',
           body:
@@ -382,7 +431,7 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
           const wakeHarness = resolvePotHomeSlug(b.harness_slug, undefined);
           if (wakeHarness) {
             const wake = await requestOverwatchWake({
-              reason: `CHRONIC autoloop failure: ${b.role}@${b.harness_slug} red ${b.consecutive_errors} consecutive fires — survey + unwedge (observation filed; read its last_status verbatim first)`,
+              reason: `CHRONIC autoloop failure: ${autoloopRowIdentity(b, workspaceId)} red ${b.consecutive_errors} consecutive fires — survey + unwedge (observation filed; read its last_status verbatim first)`,
               harness: wakeHarness,
               workspaceId,
             });
@@ -534,7 +583,8 @@ export async function autoloopSilentStopSweep(): Promise<SilentStopResult[]> {
         FROM harness_shared.autoloop_state s
    LEFT JOIN harness_shared.routines r
           ON r.name = s.role AND r.workspace_id = s.workspace_id
-       WHERE s.last_fired_at IS NOT NULL
+       WHERE s.workspace_id = ${workspaceId}
+         AND s.last_fired_at IS NOT NULL
          AND s.last_fired_at < now() - make_interval(secs => ${Math.floor(silentStopMs / 1000)})`;
     const silent = selectSilentlyStoppedRoles(allRows, threshold, { now, silentStopMs });
     for (const s of silent) {
@@ -548,7 +598,7 @@ export async function autoloopSilentStopSweep(): Promise<SilentStopResult[]> {
         }
         const ageHours = Math.round((now - lastFiredAtMs(s)) / 3_600_000);
         const reason =
-          `${s.role}@${s.harness_slug}: no fire in ${ageHours}h despite consecutive_errors=${s.consecutive_errors} ` +
+          `${autoloopRowIdentity(s, workspaceId)}: no fire in ${ageHours}h despite consecutive_errors=${s.consecutive_errors} ` +
           `(last_status: ${(s.last_status ?? '').slice(0, 160)}) — a cleanly-stopped role, invisible to the ` +
           `error-streak-driven chronic-failure sweep (EI-19281872822982156).`;
         // EI-6777-style single-flight: atomically re-check + claim the debounce slot
@@ -560,7 +610,7 @@ export async function autoloopSilentStopSweep(): Promise<SilentStopResult[]> {
         }
         const { captureImprovement } = await import('../improvements/capture-core');
         await captureImprovement({
-          title: `SILENTLY STOPPED autoloop role: ${s.role}@${s.harness_slug} — no fire in ${ageHours}h, ${s.consecutive_errors} errors`,
+          title: `SILENTLY STOPPED autoloop role: ${autoloopRowIdentity(s, workspaceId)} — no fire in ${ageHours}h, ${s.consecutive_errors} errors`,
           kind: 'bug',
           severity: 'major',
           body:
@@ -578,7 +628,7 @@ export async function autoloopSilentStopSweep(): Promise<SilentStopResult[]> {
           const wakeHarness = resolvePotHomeSlug(s.harness_slug, undefined);
           if (wakeHarness) {
             const wake = await requestOverwatchWake({
-              reason: `SILENTLY STOPPED autoloop role: ${s.role}@${s.harness_slug} — no fire in ${ageHours}h (observation filed; read its last_status verbatim first)`,
+              reason: `SILENTLY STOPPED autoloop role: ${autoloopRowIdentity(s, workspaceId)} — no fire in ${ageHours}h (observation filed; read its last_status verbatim first)`,
               harness: wakeHarness,
               workspaceId,
             });

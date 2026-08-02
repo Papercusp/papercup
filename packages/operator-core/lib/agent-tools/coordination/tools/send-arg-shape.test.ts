@@ -32,7 +32,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import sendTool from './send';
+import sendTool, { itemSpec } from './send';
 
 /** Every issue message from a failed parse, joined — order-independent matching. */
 function refusal(args: unknown): string {
@@ -238,5 +238,47 @@ describe('WI-6522 — regression pins that must not be traded away', () => {
     it('stays entirely OPTIONAL — every existing send shape is unaffected', () => {
       expect(sendTool.args.safeParse({ to: ['peer'], summary: 'hi', expects: 'none' }).success).toBe(true);
     });
+  });
+});
+
+/**
+ * EI-19295149246007753 — field-name PARITY between the items[] axis (`itemSpec`,
+ * the canonical field set) and the top-level single-form object schema.
+ *
+ * The single form used to be built from a hand-listed ~30-field object literal,
+ * independent of `itemSpec` — a field added to itemSpec but forgotten there
+ * validated fine (ok:true) and then silently vanished before sendOne ever saw
+ * it. That mapping was fixed structurally: the single-form SendMsg is now
+ * derived by copying itemSpec's own field names off `args` (see send.ts's
+ * EI-19295149246007753 comment), so a value-level drop can no longer happen
+ * for a field the top-level SCHEMA actually declares.
+ *
+ * The residual risk this test guards: a field added to `itemSpec` but never
+ * mirrored onto the top-level object schema below it. zod strips unrecognised
+ * top-level keys by DEFAULT (no error), so such a field would still validate on
+ * items[], while a single-form caller's value is stripped before the handler
+ * — or even the field-copy loop above — ever runs. This asserts every itemSpec
+ * key is also a top-level schema key, at the SCHEMA level (`.def.out.shape`,
+ * zod v4's introspectable inner object of the `z.preprocess` wrapper) rather
+ * than by re-auditing a hand-kept list, so a forgotten mirror reds this test
+ * instead of shipping a silent drop.
+ */
+describe('EI-19295149246007753 — single-form schema mirrors every itemSpec field', () => {
+  it('every itemSpec key is ALSO declared on the top-level (single-form) object schema', () => {
+    const itemKeys = Object.keys(itemSpec.shape).sort();
+    const topLevelShape = (sendTool.args as unknown as { def: { out: { shape: Record<string, unknown> } } }).def.out
+      .shape;
+    const topLevelKeys = Object.keys(topLevelShape);
+    const missing = itemKeys.filter((k) => !topLevelKeys.includes(k));
+    expect(
+      missing,
+      `itemSpec field(s) ${JSON.stringify(missing)} are NOT declared on the top-level single-form schema — ` +
+        'a single-form caller passing this field has it silently stripped by zod before the handler runs. ' +
+        'Add it to the z.object({...}) literal alongside the other …Arg fields in send.ts.',
+    ).toEqual([]);
+  });
+
+  it('sanity: itemSpec is non-trivial (guards the introspection path itself from silently matching an empty set)', () => {
+    expect(Object.keys(itemSpec.shape).length).toBeGreaterThan(10);
   });
 });

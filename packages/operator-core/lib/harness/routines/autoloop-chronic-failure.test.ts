@@ -27,6 +27,7 @@ import {
   isLoopArmOwnerLoop,
   isLoopArmOwnerRole,
   isRedQueenDrillRow,
+  autoloopRowIdentity,
   autoloopChronicFailureSweep,
   shouldLogChronicOutcome,
   silentStopThresholdMs,

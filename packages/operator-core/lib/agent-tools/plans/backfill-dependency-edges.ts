@@ -86,8 +86,10 @@ export default defineTool({
       edgesPreserved: result.edgesPreserved,
     });
 
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ harnessSlug, ...result }) }],
-    };
+    // Canonical ToolResponse shape: return the payload and let the single
+    // serializeToolResponse path own wire encoding (auto-TOON on the agent-facing
+    // MCP transport). Hand-rolled inline JSON is the legacy shape the
+    // tool-data-shape ratchet counts.
+    return { data: { harnessSlug, ...result } };
   },
 });
