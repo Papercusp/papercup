@@ -22,7 +22,12 @@ import pgHealthTool from './pg_health';
 const OURS = { systemIdentifier: '7635091775813704249', database: 'papercusp' };
 const IMPOSTOR = { systemIdentifier: '7111222333444555666', database: 'papercusp' };
 
-const run = () => (pgHealthTool as { handler: (a: unknown) => Promise<{ data: any }> }).handler({});
+// Via `unknown`: the tool's declared arg/event generics do not overlap this narrowed shape,
+// and TS2352 correctly refuses the direct assertion.
+const run = () =>
+  (pgHealthTool as unknown as {
+    handler: (a: unknown) => Promise<{ data: Record<string, any> }>;
+  }).handler({});
 
 beforeEach(() => {
   _resetStoreIdentityForTests();

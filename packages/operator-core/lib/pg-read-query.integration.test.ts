@@ -145,6 +145,53 @@ describe('pgReadQuery — bigint precision (EI-18789855771421275)', () => {
   });
 });
 
+/**
+ * EI-19331550321709126 recurrence guard: `... AT TIME ZONE 'UTC'` (a
+ * timestamptz -> bare `timestamp` cast, oid 1114) is the idiom agents reach
+ * for specifically to "get UTC" out of a timestamptz column. Before the fix,
+ * postgres-js's default oid-1114 parser interpreted the bare string as
+ * SERVER-LOCAL, so on a non-UTC server the value came back silently shifted
+ * by the server's UTC offset — while still LOOKING like a correct UTC value
+ * (trailing "Z"). This reproduces the exact repro shape end-to-end against a
+ * real PG server whose session TZ is forced to a non-UTC zone, through
+ * `pgReadQuery` (the real dev:pg_query code path).
+ */
+describe('pgReadQuery — timestamp-without-tz UTC parsing (EI-19331550321709126)', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    // Force a non-UTC session TZ so a server already running UTC (as most CI/dev
+    // boxes do) still exercises the bug this test guards against.
+    await db.adminSql.unsafe("SET TIME ZONE 'America/New_York'");
+  }, 120_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  it('AT TIME ZONE \'UTC\' round-trips to the SAME instant, not shifted by the session offset', async () => {
+    const r = await pgReadQuery(
+      "SELECT to_timestamp(1785654929.372) AT TIME ZONE 'UTC' AS t",
+      { client: db.adminSql },
+    );
+    const t = r.rows[0]?.t;
+    expect(t).toBeInstanceOf(Date);
+    // 1785654929.372 epoch seconds == this exact UTC instant. Before the fix this
+    // rendered ~4h in the future (the America/New_York offset applied on top of an
+    // already-UTC value) — see the EI repro for the live-incident numbers.
+    expect((t as Date).toISOString()).toBe('2026-08-02T07:15:29.372Z');
+  });
+
+  it('a genuine timestamptz column (no cast) is unaffected by the session TZ', async () => {
+    const r = await pgReadQuery(
+      "SELECT '2026-08-02T07:15:29.372Z'::timestamptz AS t",
+      { client: db.adminSql },
+    );
+    expect((r.rows[0]?.t as Date).toISOString()).toBe('2026-08-02T07:15:29.372Z');
+  });
+});
+
 // EI-10514: EXPLAIN-only schema validation (parses/plans, never executes or writes) —
 // built for validateRubricReplicationSql to schema-check embedded rubric drill SQL.
 describe('explainReadQuery (real PG)', () => {

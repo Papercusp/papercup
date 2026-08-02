@@ -101,6 +101,22 @@ describe('observeResolve', () => {
     expect(lines).toHaveLength(2);
   });
 
+  it('emits ONE line even for a multi-line error message', () => {
+    // A zod failure is pretty-printed multi-line JSON. Left alone it splits one
+    // event across a dozen journal lines and defeats the grep this module
+    // exists to enable — seen on the first live emit (2026-08-02).
+    const { lines, emit } = recorder();
+    observeResolve({
+      name: 'learning.analyzeCycle',
+      argsJson: '{\n  "cycleId": null\n}',
+      elapsedMs: 1,
+      error: new Error('[\n  {\n    "expected": "string",\n    "path": [\n "cycleId"\n]\n  }\n]'),
+      emit,
+    });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain('\n');
+  });
+
   it('never throws, whatever it is handed', () => {
     expect(() =>
       observeResolve({

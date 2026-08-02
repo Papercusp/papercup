@@ -8,6 +8,7 @@ import './buffer-polyfill';
 // brand-agnostic; see grid-colors.ts).
 import './grid-colors';
 import './query-health-gate';
+import './lazy-reload-gate';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { RouterProvider, createRouter } from '@tanstack/react-router';

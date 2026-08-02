@@ -2229,6 +2229,33 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
       expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
     });
 
+    /**
+     * EI-19333253837331724 — the same cross-line misattribution, filed independently
+     * against the pre-fix guard as "the guard reports the redirect target as `nohup`".
+     * The reporter's own hypothesis (a `nohup` COMMAND PREFIX shifts the redirect-target
+     * extractor) does not match how the guard actually works — it is regex-based, not a
+     * positional argv walk, and `nohup` is never treated as a prefix by the shell-write
+     * guard's target scan at all. Reproducing the pre-fix guard directly (a local revert
+     * of the `[^\S\n]*` fix back to `\s*`) confirms the REAL mechanism is exactly
+     * EI-18899608047558048: the EARLIER `: > "$LOG"` redirect (not the later `nohup ...
+     * >> "$LOG"` one) had its fully-quoted target blanked to nothing, and the old `\s*`
+     * gap crossed the newline to grab `nohup` — the first token of the FOLLOWING
+     * statement — as if it were that redirect's own target. Already fixed by the same
+     * same-line-whitespace restriction Shape A/B cover above; this case is kept as its
+     * own test because the captured token ("nohup") is a real command name, which is
+     * exactly the shape a future regression here would be easiest to misdiagnose again.
+     */
+    it('allows the exact filed EI-19333253837331724 repro: a quoted $VAR redirect immediately followed by a `nohup ...` statement', () => {
+      const command =
+        'cd ' +
+        CANON +
+        '\n' +
+        'LOG=/tmp/docs-build-opencode-omp.log\n' +
+        ': > "$LOG"\n' +
+        "nohup ./scripts/pc-heavy.sh -- bash -c 'cd apps/operator-docs && npm run build' >> \"$LOG\" 2>&1 &";
+      expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    });
+
     it('does not cross a `;`-separated statement on the SAME line either', () => {
       const command = ': > "$OUT"; URL=http://example.com';
       expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));

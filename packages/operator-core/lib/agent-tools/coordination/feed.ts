@@ -28,6 +28,7 @@ import { compareByTsThenId } from '@papercusp/coordination/core';
 import { coordLog } from './log';
 import { estimateTokens } from './presence-cost';
 import { collectRetractedIds, suppressRetracted } from './retraction';
+import { getSupersededMap } from './messages';
 
 type CursorSurfaceState = { cursor: number | undefined; exhausted: boolean };
 
@@ -59,6 +60,18 @@ export interface CoordFeedRow extends CoordEnvelope {
   surface: CoordSurface;
   /** True when `to` addresses everyone (`['*']`). */
   broadcast: boolean;
+  /** P-004: the msg_id of the correction that REPLACED this message, when the
+   *  original sender superseded it (migration 732). Present only on superseded
+   *  rows, so its absence means "not corrected" without a second lookup.
+   *
+   *  Deliberately a MARK, not a suppression — the opposite of `coord:retract`
+   *  above, and migration 732 says why: "a retraction that does not say what
+   *  REPLACES it strands the reader." Hiding the original would leave a peer who
+   *  half-remembers it unable to find out what happened; showing it with a
+   *  forward pointer lets them follow the chain to the current claim. */
+  superseded_by?: string;
+  /** When it was superseded (ISO), alongside {@link superseded_by}. */
+  superseded_at?: string | null;
 }
 
 export interface ReadCoordFeedOpts {
@@ -336,6 +349,44 @@ export async function readCoordFeed(
     if (tokenBudget !== null && tokens >= tokenBudget) break;
   }
   const nextCursor = visible.length > page.length ? (page[page.length - 1]?.ts ?? null) : null;
+
+  // P-004 follow-up: annotate superseded messages. Migration 732 records the
+  // marker and coord:supersede writes it, but nothing on the READ side surfaced
+  // it — so `coord:feed` and `coord:catch-up` (which delegates here) both showed
+  // a retracted claim as live to the reader arriving LATER. That reader is the
+  // silent half of a retraction cascade: they generate no message and no
+  // argument, which is exactly why the cascade survives everyone believing they
+  // have cleaned it up.
+  //
+  // Done AFTER the page is bounded, so this is one small keyed query over at most
+  // `limit` ids rather than a join widening the per-surface reads. It runs on the
+  // page only — a row beyond the cursor is annotated when that page is fetched.
+  //
+  // Note the returned `tokens` estimate is computed above, before this annotation,
+  // so it under-counts by ~2 short fields on superseded rows only. Left as-is: it
+  // is documented as an estimate, and re-costing the page would mean serializing
+  // every row a second time to account for a field that is absent from almost all
+  // of them.
+  // Guarded at the CALL SITE as well as inside getSupersededMap. Belt-and-braces
+  // on purpose: the annotation is metadata ABOUT history, never history itself, so
+  // losing it must never cost the caller their messages. The inner guard covers a
+  // failing query today; this one keeps the guarantee true if that helper is ever
+  // refactored into something that can throw.
+  if (page.length > 0) {
+    try {
+      const marks = await getSupersededMap(
+        page.map((r) => r.msg_id).filter((id): id is string => typeof id === 'string'),
+      );
+      for (const row of page) {
+        const mark = typeof row.msg_id === 'string' ? marks.get(row.msg_id) : undefined;
+        if (!mark) continue;
+        row.superseded_by = mark.supersededBy;
+        row.superseded_at = mark.supersededAt;
+      }
+    } catch {
+      // Unmarked, but complete — see above.
+    }
+  }
 
   return { rows: page, nextCursor, total: visible.length, byKind, tokens };
 }

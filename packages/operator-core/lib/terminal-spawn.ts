@@ -71,6 +71,68 @@ export function shellEscape(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * Env vars that IDENTIFY the terminal (or multiplexer) the OPERATOR ITSELF was
+ * started in. A launch's terminal identity is RE-DERIVED, NEVER INHERITED —
+ * the same rule launch-su already applies to `PAPERCUSP_OPERATOR_URL`.
+ *
+ * The one that bites (EI-19385011811175105, owner-reported 2026-08-02): the
+ * desktop's operator sidecar is started by `npm run dev` inside a gnome-terminal
+ * tab, so its env carries that tab's own
+ * `GNOME_TERMINAL_SCREEN=/org/gnome/Terminal/screen/<uuid>`. gnome-terminal reads
+ * it as "open the new window RELATIVE TO THIS SCREEN" and asks the factory for it
+ * over D-Bus; the originating tab is long gone, so the call fails with
+ *
+ *     # Error creating terminal: Failed to get screen from object path /org/gnome/Terminal/screen/<uuid>
+ *
+ * and the client EXITS 0 having opened nothing. Exit code 0 makes the failure
+ * invisible to any status check — which is why the stderr capture below exists
+ * too. Measured live against the running sidecar's real env: baseline → no
+ * window; minus `GNOME_TERMINAL_SCREEN` (or minus `GNOME_TERMINAL_SERVICE`) →
+ * window opens. Downstream this rendered as "This session's launch failed — its
+ * terminal closed before the session came online. Try launching it again.", advice
+ * that could not possibly work because every retry failed identically.
+ *
+ * The rest are the exact analogues on the other emulators, plus the multiplexer
+ * vars — we are opening a BRAND-NEW WINDOW, so a psu that believes it is still
+ * inside the operator's tmux/zellij pane is wrong in the same way.
+ */
+export const TERMINAL_CONTEXT_ENV_KEYS: readonly string[] = [
+  // GNOME / VTE
+  'GNOME_TERMINAL_SCREEN',
+  'GNOME_TERMINAL_SERVICE',
+  'VTE_VERSION',
+  // KDE
+  'KONSOLE_DBUS_SERVICE',
+  'KONSOLE_DBUS_SESSION',
+  'KONSOLE_DBUS_WINDOW',
+  'KONSOLE_PROFILE_NAME',
+  // others
+  'ALACRITTY_SOCKET',
+  'ALACRITTY_WINDOW_ID',
+  'WEZTERM_PANE',
+  'WEZTERM_UNIX_SOCKET',
+  'ITERM_SESSION_ID',
+  'TERM_SESSION_ID',
+  'TERMINATOR_UUID',
+  'TILIX_ID',
+  'WINDOWID',
+  // multiplexers
+  'TMUX',
+  'TMUX_PANE',
+  'ZELLIJ',
+  'ZELLIJ_SESSION_NAME',
+  'ZELLIJ_PANE_ID',
+  'STY',
+];
+
+/** `env` minus {@link TERMINAL_CONTEXT_ENV_KEYS}. Pure — returns a copy. */
+export function scrubTerminalContextEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = { ...env };
+  for (const k of TERMINAL_CONTEXT_ENV_KEYS) delete out[k];
+  return out;
+}
+
 export interface SpawnInTerminalOpts {
   /** Shell one-liner run inside `bash -lc` in the new terminal window. */
   oneliner: string;
@@ -93,10 +155,26 @@ export interface SpawnInTerminalOpts {
 }
 
 export type SpawnInTerminalResult =
-  | { ok: true; terminal: string; pid: number | undefined; likelyOpened: boolean }
+  | {
+      ok: true;
+      terminal: string;
+      pid: number | undefined;
+      likelyOpened: boolean;
+      /**
+       * What the emulator printed to stderr before it died, when it died — the
+       * ONLY evidence available for a silent failure, since gnome-terminal exits
+       * 0 on one (see TERMINAL_CONTEXT_ENV_KEYS). Set only alongside
+       * `likelyOpened:false`, so callers can name the cause instead of reporting
+       * a bare "the terminal closed".
+       */
+      stderr?: string;
+    }
   | { ok: false; code: 'no_terminal' | 'spawn_failed'; error: string };
 
 export const DEFAULT_LIVENESS_CHECK_DELAY_MS = 400;
+
+/** Max chars of emulator stderr kept — enough for a startup complaint, not a log. */
+export const STDERR_CAPTURE_LIMIT = 1000;
 
 /** Whether `pid` is still alive right now — a best-effort `kill(pid, 0)` probe
  *  (throws ESRCH-class errors for a dead/foreign-namespace pid, never actually
@@ -134,19 +212,49 @@ export async function spawnInTerminal(opts: SpawnInTerminalOpts): Promise<SpawnI
   try {
     const child = spawn(term.bin, [...term.args, 'bash', '-lc', opts.oneliner], {
       detached: true,
-      stdio: 'ignore',
+      // stderr is PIPED, not ignored: a silent launch failure exits 0 (see
+      // TERMINAL_CONTEXT_ENV_KEYS), so the diagnostic line is the only evidence
+      // there is, and `stdio:'ignore'` threw it away. stdin/stdout stay ignored —
+      // the window owns those.
+      stdio: ['ignore', 'ignore', 'pipe'],
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
-      env: opts.env ?? process.env,
+      env: scrubTerminalContextEnv(opts.env ?? process.env),
     });
     child.unref();
     const pid = child.pid;
+    // Bounded: we only ever want the first line or two of a startup complaint,
+    // and this buffer must not grow with a window that stays open for hours.
+    let stderr = '';
+    child.stderr?.on('error', () => {});
+    child.stderr?.on('data', (d: unknown) => {
+      if (stderr.length < STDERR_CAPTURE_LIMIT) stderr += String(d);
+    });
     let likelyOpened = true;
     const delayMs = opts.livenessCheckDelayMs ?? DEFAULT_LIVENESS_CHECK_DELAY_MS;
     if (pid != null && delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       likelyOpened = isProcessAlive(pid);
     }
-    return { ok: true, terminal: term.bin, pid, likelyOpened };
+    if (likelyOpened) {
+      // The window is up and may live for hours. Stop accumulating, but do NOT
+      // destroy the pipe — closing the read end of a LIVE child's stderr risks
+      // EPIPE/SIGPIPE in the emulator, which would kill the very window we just
+      // opened. Drain it instead and unref so it cannot hold the event loop.
+      child.stderr?.removeAllListeners('data');
+      child.stderr?.resume();
+      (child.stderr as unknown as { unref?: () => void })?.unref?.();
+    } else {
+      // Dead child ⇒ nothing left to receive a broken pipe, so this is safe.
+      child.stderr?.destroy();
+    }
+    const tail = stderr.trim().slice(0, STDERR_CAPTURE_LIMIT);
+    return {
+      ok: true,
+      terminal: term.bin,
+      pid,
+      likelyOpened,
+      ...(!likelyOpened && tail ? { stderr: tail } : {}),
+    };
   } catch (e: any) {
     return { ok: false, code: 'spawn_failed', error: `spawn ${term.bin} failed: ${e?.message}` };
   }

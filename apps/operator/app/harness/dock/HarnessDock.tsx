@@ -10,7 +10,7 @@
 
 'use client';
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import { DockWorkspace, createFetchDockLayoutStore, type DockLayoutRow, type DockLayoutStore } from '@papercusp/dock-workbench';
 import { fetchSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -65,7 +65,23 @@ export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
   // hydrated the PG layout and bound the dockview API. The measure spans dock
   // mount → dock live (layout load + dockview mount + panel creation) — the
   // dock-hydration cost.
-  useEffect(() => {
+  //
+  // MUST be a LAYOUT effect, not a passive one (WI-7021 / EI-19375505819043214
+  // class of bug — see perf-marks.ts's "WHERE TO PUT THE BEGIN" doc comment).
+  // endInteraction fires from onApiReady, which DockviewReact's own vendored
+  // `React.useEffect(() => { ...; props.onReady({ api }); }, [])` invokes as a
+  // PASSIVE effect of a component several levels below this one in the tree
+  // (DockviewReact, inside DockWorkspace, inside this component). React runs
+  // passive effects child-before-parent within a commit, so with begin also in
+  // a passive effect, DockviewReact's mount effect (child) fires BEFORE this
+  // component's own mount effect (parent) — endInteraction runs first, with no
+  // start mark yet written, and silently no-ops (perf-marks.ts's "SILENT ZERO"
+  // failure mode). The begin's mark is then written a moment later with nothing
+  // left to ever consume it: harness-dock-open never emits a measure, on any
+  // route, regardless of how genuinely the dock mounted. ALL layout effects
+  // across the whole tree run before ANY passive effect, so a layout-effect
+  // begin here is guaranteed to precede DockviewReact's passive onReady effect.
+  useLayoutEffect(() => {
     beginInteraction(PERF_INTERACTIONS.harnessDockOpen);
   }, []);
 

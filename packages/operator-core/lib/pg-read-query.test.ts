@@ -16,6 +16,8 @@ import {
   buildClaimabilityAdvisory,
   buildDerivedColumnRedirect,
   clearTenantScopeSchemaCache,
+  classifyTenantPrescription,
+  refutedTenantAdvisory,
   PgReadQueryError,
 } from './pg-read-query';
 
@@ -967,5 +969,96 @@ describe('buildClaimabilityAdvisory (status=open is the lifecycle axis, not clai
         "SELECT title FROM harness_shared.work_items -- WHERE status = 'open'\n WHERE feature_id = 'EI-1'",
       ),
     ).toBeNull();
+  });
+});
+
+/**
+ * VERIFY-BEFORE-PRESCRIBE (plan false-premise-in-prescriptive-artifacts-2026-08-02
+ * P-003; canonical instance EI-19324633485547042).
+ *
+ * The advisory used to infer a predicate from a column's EXISTENCE and recommend it
+ * unchecked. That premise was measured false on at least three unrelated tables, each
+ * handled by appending to a hardcoded list. These pin the general rule instead: a
+ * prescription refuted by the table's own rows must be REPLACED, never merely
+ * annotated — and every uncertain case must fail OPEN, so the guard can never become
+ * the reason a genuine tenant warning stops firing.
+ */
+describe('classifyTenantPrescription (verify-before-prescribe)', () => {
+  const pop = (over: Record<string, unknown> = {}) => ({
+    hasRows: true,
+    workspaceIdHit: true as boolean | null,
+    harnessSlugHit: null as boolean | null,
+    actualWorkspaceIds: [] as string[],
+    actualHarnessSlugs: [] as string[],
+    at: Date.now(),
+    ...over,
+  });
+  const bothChecked = { checkedWorkspaceId: true, checkedHarnessSlug: true };
+
+  it('prescribes when the predicate actually matches rows', () => {
+    expect(classifyTenantPrescription(pop(), bothChecked).kind).toBe('prescribe');
+  });
+
+  it('REFUTES when the table has rows but the prescribed workspace_id matches none', () => {
+    // The event_key_fires / event_awaits shape: every row is the literal 'default'.
+    const v = classifyTenantPrescription(
+      pop({ workspaceIdHit: false, actualWorkspaceIds: ['default'] }),
+      bothChecked,
+    );
+    expect(v.kind).toBe('refute');
+    expect(v).toMatchObject({ column: 'workspace_id', actual: ['default'] });
+  });
+
+  it('REFUTES on harness_slug independently of workspace_id', () => {
+    const v = classifyTenantPrescription(
+      pop({ workspaceIdHit: true, harnessSlugHit: false, actualHarnessSlugs: [] }),
+      bothChecked,
+    );
+    expect(v).toMatchObject({ kind: 'refute', column: 'harness_slug' });
+  });
+
+  it('fails OPEN when the probe returned nothing — an unprobed table keeps the old advisory', () => {
+    expect(classifyTenantPrescription(null, bothChecked).kind).toBe('prescribe');
+  });
+
+  it('fails OPEN on an EMPTY table — zero rows makes the hit-test meaningless', () => {
+    // Not evidence the predicate is wrong: there is simply nothing to match yet.
+    expect(
+      classifyTenantPrescription(pop({ hasRows: false, workspaceIdHit: false }), bothChecked).kind,
+    ).toBe('prescribe');
+  });
+
+  it('ignores a column it was not asked to check', () => {
+    expect(
+      classifyTenantPrescription(pop({ harnessSlugHit: false }), {
+        checkedWorkspaceId: true,
+        checkedHarnessSlug: false,
+      }).kind,
+    ).toBe('prescribe');
+  });
+});
+
+describe('refutedTenantAdvisory', () => {
+  it('names the REAL key so the agent gets a usable predicate, not just a refusal', () => {
+    const msg = refutedTenantAdvisory(
+      'harness_shared.event_key_fires',
+      'workspace_id',
+      'papercusp-workspace',
+      ['default'],
+    );
+    expect(msg).toContain("NONE match workspace_id = 'papercusp-workspace'");
+    expect(msg).toContain("keyed 'default'");
+    expect(msg).toContain('Do NOT add that predicate');
+  });
+
+  it('states the NULL case explicitly rather than showing an empty list', () => {
+    // The test_runs shape: CI rows are env-stamped, so both keys are NULL.
+    const msg = refutedTenantAdvisory('harness_shared.test_runs', 'harness_slug', 'papercusp', []);
+    expect(msg).toContain('every row has harness_slug NULL');
+  });
+
+  it('explains WHY the empty result is dangerous — a zero is never re-checked', () => {
+    const msg = refutedTenantAdvisory('t', 'workspace_id', 'w', ['default']);
+    expect(msg).toContain('no rows exist');
   });
 });

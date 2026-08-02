@@ -229,7 +229,71 @@ const tenantScopeCache = new Map<string, TenantScopeInfo>();
 /** Test seam — drop the tenant-scope schema cache. */
 export function clearTenantScopeSchemaCache(): void {
   tenantScopeCache.clear();
+  tenantPopulationCache.clear();
 }
+
+/**
+ * VERIFY-BEFORE-PRESCRIBE — does the predicate we are about to recommend
+ * actually match any rows? (plan false-premise-in-prescriptive-artifacts-2026-08-02
+ * P-003; canonical instance EI-19324633485547042.)
+ *
+ * ## Why this exists
+ *
+ * The generic advisory below infers a predicate from `information_schema`: the
+ * table HAS a `workspace_id` column, therefore scope by `workspace_id = <the
+ * session's workspace>`. That is a PREMISE, not an observation, and it has now
+ * been measured false on at least three unrelated tables:
+ *
+ *   - `agent_facts`  — `harness_slug` is NULL for ~99.6% of rows (EI-18669912007336072)
+ *   - `event_awaits` / `event_wake_deliveries` / `event_key_fires` — every row is
+ *     the literal `'default'` (WI-6847: 0 rows returned against 32,152 and 37,756
+ *     real rows; EI-19324633485547042 for the third)
+ *   - `test_runs` — CI rows are env-stamped and NULL on both keys (EI-19324633485547042:
+ *     25,214 pass + 246 fail rows, all NULL)
+ *
+ * Each was handled by ADDING THE TABLE TO A HARDCODED LIST, which costs one
+ * agent-incident per table discovered and leaves every not-yet-discovered table
+ * armed. The failure is also the dangerous direction: the advisory exists to stop
+ * you reading ANOTHER tenant's rows (wrong but visible), and applying it here
+ * produces an EMPTY result — and a zero is never re-checked, because it reads as
+ * "no rows exist" rather than "your predicate is wrong".
+ *
+ * The code comment above `TENANT_SCOPE_OVERRIDES` already names the exact defect
+ * — "a column's PRESENCE in information_schema is not evidence it is POPULATED" —
+ * so the knowledge was never missing; only the check was. This probe supplies it:
+ * one bounded `EXISTS` per table, asking the question the advisory was assuming
+ * the answer to.
+ *
+ * FAILS OPEN in every direction. A probe error, a timeout, an unparseable
+ * relation name, or an unresolved session workspace all yield `null`, which
+ * restores exactly the pre-existing behaviour. A guard against false-empty
+ * results must never itself become a reason the advisory stops firing.
+ */
+interface TenantPopulation {
+  /** Does the table have ANY rows? An empty table makes the hit-test meaningless. */
+  hasRows: boolean;
+  /** Does the PRESCRIBED workspace_id predicate match ≥1 row? null = not probed. */
+  workspaceIdHit: boolean | null;
+  /** Does the PRESCRIBED harness_slug predicate match ≥1 row? null = not probed. */
+  harnessSlugHit: boolean | null;
+  /** What the rows are ACTUALLY keyed by — so a miss can name the right value. */
+  actualWorkspaceIds: string[];
+  actualHarnessSlugs: string[];
+  at: number;
+}
+
+const tenantPopulationCache = new Map<string, TenantPopulation>();
+
+/** Population changes far faster than schema, so it caches for less time. */
+const TENANT_POPULATION_CACHE_TTL_MS = 60_000;
+
+/**
+ * Relation names are interpolated (PG cannot parameterize an identifier), so they
+ * are hard-validated first. Anything that is not a plain `schema.table` of word
+ * characters is refused outright rather than escaped — this probe is an optional
+ * enrichment, so declining is free, while a clever escape is not.
+ */
+const SAFE_RELATION_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$/;
 
 interface TenantScopeOverride {
   /**
@@ -526,6 +590,120 @@ async function readTenantScopeInfo(
     }
   }
   return result;
+}
+
+/**
+ * Probe whether the prescription would actually match rows — see
+ * {@link TenantPopulation}. One bounded query per table; `null` = fail open.
+ *
+ * The DISTINCT sample is taken from a bounded window rather than the whole
+ * relation: it only has to be good enough to NAME the real key in a hint, and an
+ * unbounded `SELECT DISTINCT` on a hot multi-million-row table would cost far
+ * more than the advisory is worth.
+ */
+async function probeTenantPopulation(
+  table: string,
+  info: TenantScopeInfo,
+  resolved: { workspaceId?: string | null; harnessSlug?: string | null },
+  client?: OrgSql,
+): Promise<TenantPopulation | null> {
+  if (!SAFE_RELATION_RE.test(table)) return null;
+  const checkWs = info.hasWorkspaceId && !!resolved.workspaceId;
+  const checkHs = info.hasHarnessSlug && !!resolved.harnessSlug;
+  if (!checkWs && !checkHs) return null;
+
+  const cached = tenantPopulationCache.get(table);
+  if (cached && Date.now() - cached.at < TENANT_POPULATION_CACHE_TTL_MS) return cached;
+
+  const params: string[] = [];
+  const selects: string[] = [`EXISTS (SELECT 1 FROM ${table}) AS has_rows`];
+  if (checkWs) {
+    params.push(resolved.workspaceId!);
+    selects.push(`EXISTS (SELECT 1 FROM ${table} WHERE workspace_id = $${params.length}) AS ws_hit`);
+    selects.push(
+      `(SELECT array_agg(DISTINCT v) FROM (SELECT workspace_id::text AS v FROM ${table} ` +
+        `WHERE workspace_id IS NOT NULL LIMIT 500) s) AS ws_vals`,
+    );
+  }
+  if (checkHs) {
+    params.push(resolved.harnessSlug!);
+    selects.push(`EXISTS (SELECT 1 FROM ${table} WHERE harness_slug = $${params.length}) AS hs_hit`);
+    selects.push(
+      `(SELECT array_agg(DISTINCT v) FROM (SELECT harness_slug::text AS v FROM ${table} ` +
+        `WHERE harness_slug IS NOT NULL LIMIT 500) s) AS hs_vals`,
+    );
+  }
+
+  try {
+    const sql = client ?? getOrgPg().sql;
+    const rows = (await sql.unsafe(`SELECT ${selects.join(', ')}`, params)) as unknown as Array<{
+      has_rows: boolean;
+      ws_hit?: boolean;
+      hs_hit?: boolean;
+      ws_vals?: string[] | null;
+      hs_vals?: string[] | null;
+    }>;
+    const r = rows[0];
+    if (!r) return null;
+    const pop: TenantPopulation = {
+      hasRows: !!r.has_rows,
+      workspaceIdHit: checkWs ? !!r.ws_hit : null,
+      harnessSlugHit: checkHs ? !!r.hs_hit : null,
+      actualWorkspaceIds: (r.ws_vals ?? []).slice(0, 3),
+      actualHarnessSlugs: (r.hs_vals ?? []).slice(0, 3),
+      at: Date.now(),
+    };
+    tenantPopulationCache.set(table, pop);
+    return pop;
+  } catch {
+    // Fail OPEN — an unprobed table keeps the pre-existing advisory verbatim.
+    return null;
+  }
+}
+
+/**
+ * PURE: turn a probe result into the advisory this table actually warrants.
+ *
+ * Three outcomes, and the middle one is the whole point:
+ *   - `prescribe` — the predicate matches rows; emit the advisory unchanged.
+ *   - `refute`    — the table HAS rows and the predicate matches NONE of them.
+ *                   Emitting the prescription here manufactures a false empty,
+ *                   so it is replaced by a warning naming the real key.
+ *   - `silent`    — nothing useful to say (empty table, or unprobed).
+ *
+ * Exported for unit tests: this decision is the load-bearing one, and it is worth
+ * pinning without a database.
+ */
+export function classifyTenantPrescription(
+  pop: TenantPopulation | null,
+  opts: { checkedWorkspaceId: boolean; checkedHarnessSlug: boolean },
+): { kind: 'prescribe' | 'silent' } | { kind: 'refute'; column: string; actual: string[] } {
+  if (!pop || !pop.hasRows) return { kind: 'prescribe' };
+  if (opts.checkedWorkspaceId && pop.workspaceIdHit === false) {
+    return { kind: 'refute', column: 'workspace_id', actual: pop.actualWorkspaceIds };
+  }
+  if (opts.checkedHarnessSlug && pop.harnessSlugHit === false) {
+    return { kind: 'refute', column: 'harness_slug', actual: pop.actualHarnessSlugs };
+  }
+  return { kind: 'prescribe' };
+}
+
+/** The advisory emitted when the prescription is REFUTED by the table's own rows. */
+export function refutedTenantAdvisory(
+  table: string,
+  column: string,
+  prescribed: string,
+  actual: string[],
+): string {
+  const actualNote = actual.length
+    ? `its rows are keyed ${actual.map((v) => `'${v}'`).join(' / ')}${actual.length >= 3 ? ' (sampled)' : ''}`
+    : `every row has ${column} NULL`;
+  return (
+    `⚠ tenant scope: ${table} has rows, but NONE match ${column} = '${prescribed}' — ` +
+    `${actualNote}. Do NOT add that predicate: it would return an empty result that reads ` +
+    'like "no rows exist" rather than "wrong predicate". Scope by the real key above, or ' +
+    'query unscoped. (verify-before-prescribe, EI-19324633485547042.)'
+  );
 }
 
 /**
@@ -922,6 +1100,28 @@ export async function buildTenantScopeAdvisory(
       const cols = [off.hasWorkspaceId ? 'workspace_id' : null, off.hasHarnessSlug ? 'harness_slug' : null]
         .filter(Boolean)
         .join(' + ');
+
+      // VERIFY BEFORE PRESCRIBING (P-003). Ask the table whether the predicate we
+      // are about to recommend matches anything, instead of inferring it from the
+      // column's existence. A refutation REPLACES the advisory rather than
+      // annotating it: telling an agent to add a predicate AND that the predicate
+      // is wrong invites them to add it anyway.
+      const checkedWorkspaceId = off.hasWorkspaceId && !!resolvedOpts.workspaceId;
+      const checkedHarnessSlug = off.hasHarnessSlug && !!resolvedOpts.harnessSlug;
+      const pop = await probeTenantPopulation(
+        off.table,
+        { hasWorkspaceId: off.hasWorkspaceId, hasHarnessSlug: off.hasHarnessSlug, at: 0 },
+        resolvedOpts,
+        opts.client,
+      );
+      const verdict = classifyTenantPrescription(pop, { checkedWorkspaceId, checkedHarnessSlug });
+      if (verdict.kind === 'refute') {
+        const prescribed =
+          verdict.column === 'workspace_id' ? resolvedOpts.workspaceId! : resolvedOpts.harnessSlug!;
+        parts.push(refutedTenantAdvisory(off.table, verdict.column, prescribed, verdict.actual));
+        continue;
+      }
+
       const suggested: string[] = [];
       if (off.hasWorkspaceId && resolvedOpts.workspaceId) suggested.push(`workspace_id = ${quote(resolvedOpts.workspaceId)}`);
       if (off.hasHarnessSlug && resolvedOpts.harnessSlug) suggested.push(`harness_slug = ${quote(resolvedOpts.harnessSlug)}`);

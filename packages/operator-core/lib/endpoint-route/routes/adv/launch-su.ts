@@ -324,7 +324,9 @@ const launchSu = defineTool({
     // it in a transient `systemd-run --user --scope` sibling of the operator's own
     // service, so an operator restart cannot reap it (EI-9748). A bare detached
     // spawn here would skip both.
-    let spawned: { ok: true; terminal: string; pid: number | undefined; likelyOpened: boolean } | { ok: false; error: string };
+    let spawned:
+      | { ok: true; terminal: string; pid: number | undefined; likelyOpened: boolean; stderr?: string }
+      | { ok: false; error: string };
     if (body.headless) {
       try {
         const [{ buildConsoleEnvelope }, { spawnHeadless }, { papercuspPathForWorkspace }, { resolveSpawnHostOperatorBaseUrl }] =
@@ -398,9 +400,16 @@ const launchSu = defineTool({
     // once it does). When the spawned terminal process already exited by the
     // time we checked, say so — a silent no-op reported as confident success
     // is worse than an honest "not sure this worked".
+    //
+    // EI-19385011811175105: when the emulator printed something on its way out,
+    // LEAD with that line. A silent failure here exits 0, so its stderr is the
+    // only evidence of the cause, and without it the owner is told only that
+    // "the terminal closed" — which reads as a transient hiccup and sends them
+    // to retry a launch that will fail identically every single time.
     const warning = spawned.likelyOpened
       ? undefined
-      : 'the spawned terminal process exited almost immediately — it may not have opened a window ' +
+      : (spawned.stderr ? `${spawned.terminal}: ${spawned.stderr} — ` : '') +
+        'the spawned terminal process exited almost immediately — it may not have opened a window ' +
         '(a headless/offscreen display, or the terminal emulator failed silently). Check /adv/sessions ' +
         'for the new session; if it never appears, the launch did not actually happen.';
 

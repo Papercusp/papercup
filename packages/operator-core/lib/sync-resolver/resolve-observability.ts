@@ -79,9 +79,23 @@ function admit(key: string, now: number): number | null {
   return null;
 }
 
+/**
+ * Collapse to ONE line and bound the length.
+ *
+ * Not cosmetic: a zod validation failure serialises as pretty-printed
+ * multi-line JSON, so an un-collapsed message splits a single event across a
+ * dozen journal lines — which breaks the `grep '[sync-error]'` this whole
+ * module exists to make possible, and makes a repeat count meaningless.
+ * Observed on the first live emit (learning.analyzeCycle, 2026-08-02).
+ */
+function oneLine(value: string, max: number): string {
+  const flat = value.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
 /** Args are query filters/ids, not payloads, but bound them anyway. */
 function briefArgs(argsJson: string): string {
-  const trimmed = argsJson.length > 160 ? `${argsJson.slice(0, 160)}…` : argsJson;
+  const trimmed = oneLine(argsJson, 160);
   return trimmed === '{}' ? '' : ` args=${trimmed}`;
 }
 
@@ -115,7 +129,7 @@ export function observeResolve(input: ObserveResolveInput): void {
       const err = error as { name?: string; message?: string } | undefined;
       const isTimeout = err?.name === 'QueryResolveTimeoutError';
       kind = isTimeout ? 'sync-timeout' : 'sync-error';
-      detail = ` err=${(err?.message ?? String(error)).slice(0, 200)}`;
+      detail = ` err=${oneLine(err?.message ?? String(error), 200)}`;
     } else if (elapsedMs >= SLOW_MS) {
       kind = 'sync-slow';
     } else {
