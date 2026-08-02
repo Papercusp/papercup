@@ -28,19 +28,18 @@
  *     of live `'user'` rows: 60.2% carry one (loop-fire 413, wake-pump 108,
  *     self-compaction 63, fleet-kickoff 59) and are dropped here.
  *  2. **Known unenveloped machine heads.** The envelope test is necessary but
- *     NOT sufficient, and asserting otherwise would have shipped the bug: of the
- *     425 unenveloped rows in the same window, a minority are skill bodies and
- *     spawn prompts the CLI injects with no papercusp envelope to stamp. Only
- *     unambiguous, machine-emitted heads are listed below — a bare `# Heading`
- *     is NOT one of them, because a human pastes markdown.
+ *     NOT sufficient, and treating it as sufficient DID ship a bug that the live
+ *     acceptance caught: of the 430 unenveloped rows in the same window, 167
+ *     (38.8%) are CLI/hook/watchdog injections — `<task-notification>` blocks,
+ *     interrupt markers, Stop-hook feedback, skill bodies. See
+ *     `UNENVELOPED_MACHINE_HEADS`.
  *  3. **A per-entry cap (the one that does not depend on classifying correctly).**
- *     This is the load-bearing defence. Per-owner the residue in (2) is near
- *     zero — it concentrates in spawn-only sessions that have no human turns to
- *     recover anyway — but "near zero" is not zero, and the cap converts a
- *     misclassification from catastrophic (query becomes 8,000 chars of
- *     boilerplate) into bounded (one capped slot wasted). Never remove the cap
- *     on the grounds that the filters look good; the filters are heuristics and
- *     the cap is arithmetic.
+ *     This is the load-bearing defence, and it is the reason (2) is allowed to be
+ *     an incomplete heuristic list. Whatever the catalogue misses contributes at
+ *     most `HUMAN_TAIL_ENTRY_CHARS`, so a misclassification is bounded (one
+ *     capped slot wasted) rather than catastrophic (the query becomes 8,000
+ *     chars of boilerplate). Never remove the cap on the grounds that the
+ *     filters look good; the filters are heuristics, the cap is arithmetic.
  *
  * The current prompt is composed FIRST and is never displaced (see
  * `composeRecallQuery`). That is what rules out the "char budget over a mixed
@@ -85,12 +84,44 @@ const TAIL_ROW_CHARS = 2_000;
 
 /**
  * Machine turns that arrive with NO papercusp envelope, because no papercusp
- * injector produced them — the CLI itself does. Add only heads that a human
- * demonstrably never types; a false positive here silently drops the human's
- * words, which is the failure this whole module exists to prevent.
+ * injector produced them — the CLI, a hook, or a watchdog did.
+ *
+ * ⚠ THIS LIST IS LOAD-BEARING, NOT A LONG TAIL. Measured over 3 days of live
+ * `'user'` rows: 430 carried no envelope, and **167 of them (38.8%) match a
+ * pattern below** — task-notifications 72, interrupt markers 54, MCP auto-heal
+ * advisories 24, Stop-hook feedback 13, skill preambles 4. Together with the
+ * 60.2% that ARE enveloped, ~75.6% of all `speaker='user'` rows are machine
+ * text — independently corroborating D-033's 74.4% by a different route.
+ *
+ * That number is also a correction: an earlier draft of this module asserted the
+ * unenveloped residue was "near zero per-owner". It was measured by grepping for
+ * the two shapes that draft already knew about, so it could only ever confirm
+ * itself. The live acceptance run caught it — every tail it built was topped by
+ * `<task-notification>` blocks. If you extend this list, enumerate the
+ * population first (GROUP BY on the head) instead of testing a guess.
+ *
+ * Add only heads a human demonstrably never types: a false positive here
+ * silently drops the owner's words, which is the failure this module exists to
+ * prevent. That is why there is no `^# ` rule (a human pastes markdown) and no
+ * length rule (a human pastes documents) — the per-entry cap covers what the
+ * catalogue misses, which is the residue's proper home.
+ *
+ * These are HEURISTICS and deliberately do NOT live in `turn-provenance.ts`
+ * beside `INJECTED_CHROME_PATTERNS`: that module's classification is
+ * PROOF-based (an envelope, or a ledger hash match), and mixing pattern guesses
+ * into it would let a heuristic masquerade as a verified provenance verdict.
  */
 const UNENVELOPED_MACHINE_HEADS: readonly RegExp[] = [
-  // Claude Code's skill loader preamble, e.g. "Base directory for this skill: /home/…"
+  // The CLI's own tag-wrapped injections. Named explicitly rather than as a
+  // generic `^<tag>` so a human pasting XML keeps their turn.
+  /^\s*<(task-notification|system-reminder|local-command-stdout|local-command-stderr|command-message|command-name)\b/,
+  // CLI control markers for an aborted turn — text about the session, not in it.
+  /^\s*\[Request interrupted by user/,
+  // Stop-hook feedback: our own hook chain talking back into the turn.
+  /^\s*Stop hook feedback:/,
+  // The MCP transport auto-heal advisory (mcp-dark-watchdog).
+  /^\s*⚠\s*MCP transport auto-heal/,
+  // Claude Code's skill-loader preamble, e.g. "Base directory for this skill: …"
   /^\s*Base directory for this skill:/,
 ];
 

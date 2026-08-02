@@ -125,10 +125,11 @@ export function describeUnfitSidecar(url: string, fitness: SidecarFitness): stri
       : `it advertises capabilities but not: ${missing}`;
   return (
     `[embed-sidecar] VERSION SKEW: the sidecar at ${url} cannot serve [${missing}] — ${age}. ` +
-    'It is a long-running process running a BUILT BUNDLE, so restarting it is NOT enough: ' +
-    'rebuild the bundle (npm run build:embed-sidecar) and then restart its owner ' +
-    '(systemctl --user restart papercup-embed-sidecar.service), or point ' +
-    'PAPERCUSP_EMBED_SIDECAR_URL at a current one. Falling back to the in-process engine ' +
+    'It runs a BUILT BUNDLE and is frozen at its build time while its callers advance, so the ' +
+    'fix is to restart whatever OWNS the process so its bundle is rebuilt: on hosts running ' +
+    'papercup-embed-sidecar.service that is `systemctl --user restart papercup-embed-sidecar.service` ' +
+    "(the unit's ExecStartPre re-bundles the entry before it starts). Otherwise point " +
+    'PAPERCUSP_EMBED_SIDECAR_URL at a current sidecar. Falling back to the in-process engine ' +
     'for this capability rather than calling a route that would 404 forever.'
   );
 }

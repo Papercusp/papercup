@@ -140,12 +140,15 @@ describe('resolveProcessSidecarUrl', () => {
             [EMBED_SIDECAR_CAP_RERANK],
           ),
         ).toBeNull();
-        // Loud + actionable: names the skew, and the rebuild (NOT just a
-        // restart — a restart re-execs the same stale bundle).
+        // Loud + actionable, and the remedy must be a REAL command. The unit's
+        // ExecStartPre re-bundles the entry, so restarting it IS the fix —
+        // an earlier draft of this message invented `npm run
+        // build:embed-sidecar`, which does not exist in any package.json.
         const msg = errSpy.mock.calls.flat().join(' ');
         expect(msg).toMatch(/VERSION SKEW/);
         expect(msg).toMatch(/POST \/rerank/);
-        expect(msg).toMatch(/rebuild/i);
+        expect(msg).toMatch(/systemctl --user restart papercup-embed-sidecar\.service/);
+        expect(msg).not.toMatch(/npm run build:embed-sidecar/);
       } finally {
         errSpy.mockRestore();
       }

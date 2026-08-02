@@ -17,6 +17,7 @@ import {
   strongestTier,
   type SubstitutionMatch,
 } from '../../bash-substitution/match';
+import { recordFiresDetached } from '../../bash-substitution/fires';
 import { getSubstitutionRows } from '../../bash-substitution/registry';
 import { readIdentity } from './identity';
 import { checkBashCommand } from './resource-command-match';
@@ -39,10 +40,21 @@ import { checkBashCommand } from './resource-command-match';
 async function substitutionVerdict(
   command: string,
   workspaceId: string,
+  ownerId: string | null,
 ): Promise<{ substitutions: SubstitutionMatch[]; substitutionTier: string | null }> {
   try {
     const rows = await getSubstitutionRows(workspaceId);
     const substitutions = matchCommandToSubstitutions(command, rows);
+
+    // P-003: record the fire. DETACHED and unawaited — the advisory is already
+    // computed and an agent is blocked on this response, so making them wait on
+    // a write only we will ever read is the wrong trade. It is also the second
+    // half of the fail-open contract in this function's header: telemetry that
+    // can delay or break a command is worse than no telemetry.
+    if (substitutions.length > 0) {
+      recordFiresDetached({ workspaceId, ownerId, matches: substitutions });
+    }
+
     return { substitutions, substitutionTier: strongestTier(substitutions) };
   } catch {
     return { substitutions: [], substitutionTier: null };
@@ -77,7 +89,7 @@ export default defineTool({
     // gate on the hot path and the two reads are independent.
     const [verdict, substitution] = await Promise.all([
       checkBashCommand({ command: args.command, coordinationDomain, ownerId }),
-      substitutionVerdict(args.command, workspaceId),
+      substitutionVerdict(args.command, workspaceId, ownerId ?? null),
     ]);
 
     return {

@@ -1,0 +1,222 @@
+/**
+ * Per-fire telemetry for the substitution registry
+ * (plan `bash-substitution-reachable-ceiling-2026-08-01`, P-003).
+ *
+ * WHAT WAS MISSING: the registry could say which rows exist and what verdict the
+ * audit gave, but not whether a rule had ever fired or whether anyone complied.
+ * Every iteration in that plan — the Phase 5 tier promotions, the Phase 6
+ * before/after, D-042's auto-substitution — is unmeasurable without it.
+ *
+ * `false_positive_count` is not a substitute and must not be read as one: it is
+ * 0 on every row and is pinned at 0 BY CONSTRUCTION (D-042), because nothing
+ * increments it. A counter nobody writes reads exactly like a clean bill of
+ * health.
+ *
+ * TWO SURFACES, deliberately. A hot counter pair on the registry row
+ * (`match_count`, `last_fired_at`) is cheap and always current; the append-only
+ * `bash_tool_substitution_fires` table is complete but expensive. Neither
+ * replaces the other — the counter cannot say WHO fired or whether they
+ * complied, and rendering a count from an aggregate over the event table would
+ * put a scan on a path that runs once per shell command per agent.
+ */
+
+import { getOrgPg } from '@papercusp/db-org';
+import type { SubstitutionMatch } from './match';
+
+type OrgSql = ReturnType<typeof getOrgPg>['sql'];
+
+/**
+ * The tool whose invocation must never count as compliance: the gate's own.
+ *
+ * `locks:check_command` is what a PreToolUse hook calls to GET the advisory, so
+ * it is very often the firing session's chronologically next tool call. Counting
+ * it would measure the hook calling itself, and — because it fires on the same
+ * commands the advisory targets — would do so in a way that correlates with the
+ * rules being evaluated. Not an edge case: it would be the dominant signal.
+ */
+export const GATE_TOOL_NAME = 'locks:check_command';
+
+/**
+ * How long a fire waits before the resolver will judge it.
+ *
+ * The question is "what did this session do NEXT", so resolving immediately
+ * would race the answer into existence — the next call has not happened yet, and
+ * a fire judged at t+0 would resolve against whatever the agent happened to be
+ * doing concurrently. 60s is comfortably longer than the gap between an agent's
+ * consecutive tool calls and far shorter than a session.
+ */
+export const COMPLIANCE_SETTLE_MS = 60_000;
+
+/**
+ * How long the resolver waits before concluding a session made no further call
+ * at all. Past this the fire is marked resolved with `complied` left NULL — an
+ * explicit "no evidence", never a `false`. See the migration's index comment for
+ * why that distinction is load-bearing.
+ */
+export const COMPLIANCE_ABANDON_MS = 60 * 60_000;
+
+/**
+ * Record that these registry rows claimed an atom, and bump their hot counters.
+ *
+ * BEST EFFORT BY CONTRACT. The caller is `locks:check_command`, whose whole
+ * design property is that it is fail-open and strictly additive: an error in the
+ * substitution path must never change the lock decision or wedge a gate that
+ * every agent's every shell command passes through. So this swallows its own
+ * errors and returns how many fires it managed to write. Telemetry that can
+ * block a command is worse than no telemetry.
+ *
+ * Callers should NOT await this on the hot path — see `recordFiresDetached`.
+ */
+export async function recordSubstitutionFires(opts: {
+  workspaceId: string;
+  ownerId: string | null;
+  matches: SubstitutionMatch[];
+  client?: OrgSql;
+}): Promise<number> {
+  const { workspaceId, ownerId, matches } = opts;
+  if (matches.length === 0) return 0;
+
+  try {
+    const sql = opts.client ?? getOrgPg().sql;
+    let written = 0;
+
+    for (const match of matches) {
+      // Joined on (workspace_id, intent_label) — the registry's unique key — so
+      // the fire carries the row's real id without the caller having to know it.
+      // A match whose row has since been deleted inserts nothing rather than
+      // failing: the atom was claimed by a rule that no longer exists, which is
+      // not an event worth recording and definitely not one worth throwing over.
+      const rows = (await sql`
+        INSERT INTO harness_shared.bash_tool_substitution_fires
+          (workspace_id, row_id, intent_label, tool_name, session_id, command, tier)
+        SELECT ${workspaceId}, s.id, s.intent_label, s.tool_name,
+               ${ownerId}, ${match.atom}, ${match.tier}
+          FROM harness_shared.bash_tool_substitutions s
+         WHERE s.workspace_id = ${workspaceId}
+           AND s.intent_label = ${match.intentLabel}
+        RETURNING row_id
+      `) as Array<{ row_id: string }>;
+
+      if (rows.length === 0) continue;
+      written += rows.length;
+
+      await sql`
+        UPDATE harness_shared.bash_tool_substitutions
+           SET match_count = match_count + 1,
+               last_fired_at = now()
+         WHERE workspace_id = ${workspaceId}
+           AND intent_label = ${match.intentLabel}
+      `;
+    }
+
+    return written;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Fire-and-forget wrapper for the hot path.
+ *
+ * Deliberately not awaited by the gate: the advisory is already computed and the
+ * agent is waiting on it, so making them wait on two writes to learn something
+ * only we will read is the wrong trade. The rejection handler is required rather
+ * than decorative — an unhandled rejection in the operator process is a real
+ * crash, and "the telemetry took the operator down" would be a spectacular way
+ * to fail at measuring compliance.
+ */
+export function recordFiresDetached(opts: {
+  workspaceId: string;
+  ownerId: string | null;
+  matches: SubstitutionMatch[];
+}): void {
+  void recordSubstitutionFires(opts).catch(() => undefined);
+}
+
+export interface ComplianceResolution {
+  /** Fires examined this pass. */
+  examined: number;
+  /** Fires that got a real true/false measurement. */
+  measured: number;
+  /** Fires closed with `complied` NULL — the session made no further call. */
+  noFollowUp: number;
+}
+
+/**
+ * Resolve `complied` for fires that have settled.
+ *
+ * Compliance is defined by P-003 as "did that session's next tool call use the
+ * named tool". This finds the firing session's chronologically next invocation
+ * after the fire — excluding {@link GATE_TOOL_NAME}, which is the hook asking
+ * about the very command that fired — and compares its tool name.
+ *
+ * Runs as a sweep rather than inline because the answer does not exist at fire
+ * time. Idempotent: it only touches rows with `resolved_at IS NULL`.
+ */
+export async function resolveFireCompliance(opts: {
+  workspaceId: string;
+  limit?: number;
+  client?: OrgSql;
+  now?: Date;
+}): Promise<ComplianceResolution> {
+  const sql = opts.client ?? getOrgPg().sql;
+  const now = opts.now ?? new Date();
+  const settledBefore = new Date(now.getTime() - COMPLIANCE_SETTLE_MS);
+  const abandonedBefore = new Date(now.getTime() - COMPLIANCE_ABANDON_MS);
+  const limit = opts.limit ?? 500;
+
+  const pending = (await sql`
+    SELECT id, session_id, tool_name, fired_at
+      FROM harness_shared.bash_tool_substitution_fires
+     WHERE workspace_id = ${opts.workspaceId}
+       AND resolved_at IS NULL
+       AND fired_at < ${settledBefore}
+     ORDER BY fired_at
+     LIMIT ${limit}
+  `) as Array<{ id: string; session_id: string | null; tool_name: string; fired_at: Date }>;
+
+  let measured = 0;
+  let noFollowUp = 0;
+
+  for (const fire of pending) {
+    // A fire with no session id can never be resolved — there is nobody whose
+    // next call to inspect. Close it as "no evidence" rather than leaving it to
+    // be re-scanned forever.
+    const next = fire.session_id
+      ? ((await sql`
+          SELECT tool_name
+            FROM harness_shared.tool_invocations
+           WHERE coord_owner_id = ${fire.session_id}
+             AND invoked_at > ${fire.fired_at}
+             AND tool_name <> ${GATE_TOOL_NAME}
+           ORDER BY invoked_at
+           LIMIT 1
+        `) as Array<{ tool_name: string }>)
+      : [];
+
+    if (next.length > 0) {
+      const complied = next[0].tool_name === fire.tool_name;
+      await sql`
+        UPDATE harness_shared.bash_tool_substitution_fires
+           SET complied = ${complied}, resolved_at = now()
+         WHERE id = ${fire.id}
+      `;
+      measured += 1;
+      continue;
+    }
+
+    // No subsequent call yet. Before the abandonment window that is simply "too
+    // early to tell" and the fire is left alone; after it, the session is gone
+    // and the honest record is resolved-with-no-verdict.
+    if (fire.fired_at < abandonedBefore) {
+      await sql`
+        UPDATE harness_shared.bash_tool_substitution_fires
+           SET resolved_at = now()
+         WHERE id = ${fire.id}
+      `;
+      noFollowUp += 1;
+    }
+  }
+
+  return { examined: pending.length, measured, noFollowUp };
+}

@@ -2603,6 +2603,55 @@ except Exception:
 # kill-switch PC_HEAVY_ADMISSION=off; skipped when PC_HEAVY_BYPASS=1 (pc-heavy
 # sets it) or the caller is not an agent/shared-tree session (owner exempt);
 # every error path allows. PC_HEAVY_LOAD1_OVERRIDE lets tests inject a load.
+# ══ BENIGN LEADING WRAPPERS — ONE definition, two consumers ══
+#
+# A "benign wrapper" is a token sequence that runs NO command of its own: it
+# adjusts the environment / priority / time limit and then execs whatever
+# follows. TWO places below need exactly this set, and they must agree:
+#
+#   1. the PEEL loop in _heavy_admission — strips them off the FRONT so the
+#      start-anchored bypass checks (pc-heavy.sh, the root npm entrypoints) can
+#      see the real command word hiding behind them;
+#   2. the heavy-detection ANCHOR — recognizes command POSITION mid-string, so
+#      `echo hi && timeout 60 npx vitest` is still read as a heavy at position.
+#
+# EI-19317242751258158: this concept was written TWICE and the copies had
+# DIVERGED. The peel knew `timeout`; the anchor did not. NEITHER knew a bare
+# `VAR=val` assignment prefix — only the `env VAR=val` spelling. Both halves of
+# that divergence were measured live on 2026-08-02, and they fail in OPPOSITE
+# and equally bad directions:
+#
+#   • BYPASS (the anchor's gap) — `FOO=1 npx tsc`, `PC_HEAVY_COALESCE=0 npx
+#     vitest` and `echo hi && timeout 60 npx vitest` escaped heavy admission
+#     ENTIRELY, i.e. the exact herd this gate exists to stop, with a two-token
+#     prefix in front of it.
+#   • FRICTION (the peel's gap) — `PC_HEAVY_COALESCE=0 scripts/pc-heavy.sh --
+#     node_modules/.bin/vitest` was DENIED, with a message instructing the
+#     caller to run it under scripts/pc-heavy.sh, which is what it WAS doing.
+#     That is the EI-9634 / EI-10001 / WI-4547 "the guard blocks its own
+#     prescribed remedy" trap for the fourth time — each previous fix added the
+#     one missing wrapper to ONE of the two lists, which is precisely how they
+#     drifted apart.
+#
+# So: keep this ONE definition. Adding a wrapper to only one consumer is how
+# this bug is reintroduced, and the divergence is invisible until someone
+# probes the exact right command shape.
+_BENIGN_WRAPPER_ALTS = (
+    r'sudo(?:\s+(?:-[ugpUrCht]\s+\S+|-[A-Za-z]+|--[\w-]+(?:=\S*)?))*\s+',
+    r'env(?:\s+[A-Za-z_]\w*=\S*)*\s+',
+    r'nice(?:\s+-n\s*-?\d+)?\s+',
+    r'ionice(?:\s+-\w+(?:\s+\d+)?)*\s+',
+    r'rtk\s+',
+    r'time\s+',
+    r'timeout(?:\s+(?:-[a-zA-Z]\S*|--[\w-]+(?:=\S*)?))*\s+-?\d+\S*\s+',
+    # A bare `VAR=val ` prefix — the `env VAR=val` spelling minus the `env`.
+    # The shell parses a leading WORD=VALUE as an assignment, never as a command
+    # word, so peeling it can no more hide a command than peeling `env` can.
+    r'[A-Za-z_]\w*=\S*\s+',
+)
+_BENIGN_WRAPPERS = '(?:' + '|'.join(_BENIGN_WRAPPER_ALTS) + ')'
+
+
 def _heavy_admission():
     if os.environ.get('PC_HEAVY_ADMISSION', 'on').strip().lower() in ('off', '0', 'false', 'no'):
         return
@@ -2657,12 +2706,10 @@ def _heavy_admission():
             # since pipefail is what stops `… | tail` from masking a real exit code.
             r'|set\s+(?:-o\s+[\w-]+|\+o\s+[\w-]+|[-+][A-Za-z]+)(?:\s+(?:-o\s+[\w-]+|\+o\s+[\w-]+|[-+][A-Za-z]+))*[ \t]*(?:&&|;|\n)\s*'
             r'|\(\s*'  # one subshell open: ( scripts/pc-heavy.sh … ) &
-            r'|sudo(?:\s+(?:-[ugpUrCht]\s+\S+|-[A-Za-z]+|--[\w-]+(?:=\S*)?))*\s+'
-            r'|env(?:\s+[A-Za-z_]\w*=\S*)*\s+'
-            r'|nice(?:\s+-n\s*-?\d+)?\s+'
-            r'|ionice(?:\s+-\w+(?:\s+\d+)?)*\s+'
-            r'|rtk\s+|time\s+'
-            r'|timeout(?:\s+(?:-[a-zA-Z]\S*|--[\w-]+(?:=\S*)?))*\s+-?\d+\S*\s+'
+            # The shared benign-wrapper set (sudo/env/nice/ionice/rtk/time/
+            # timeout/bare-assignment). Defined ONCE above so the peel and the
+            # heavy-detection anchor below can never drift apart again.
+            r'|' + _BENIGN_WRAPPERS +
             r')',
             '', _pc_lead, count=1)
         if _next == _pc_lead:
@@ -2717,8 +2764,12 @@ def _heavy_admission():
     # executable must be followed by whitespace or end so `vitest.config`,
     # `vitest-guide`, `testing` etc. don't match. Bare `tsx` is intentionally
     # NOT heavy (it runs light one-shot scripts far more often than builds).
-    anchor = (r'(?:^|[;&|\n]\s*|\bsudo\s+|\bnice\s+(?:-n\s*-?\d+\s+)?'
-              r'|\bionice\s+(?:-\S+\s*)*|\benv\s+(?:\S+=\S*\s+)+|\brtk\s+|\btime\s+|\S*/)')
+    # The wrapper arm is the SHARED _BENIGN_WRAPPERS set (see its definition
+    # above) rather than a second hand-maintained copy — that copy is what had
+    # drifted (EI-19317242751258158). `{1,4}` mirrors the peel's bounded loop so
+    # stacked wrappers (`nice -n 10 timeout 60 npx vitest`) are recognized at
+    # command position too; `\b` keeps `nice` from matching inside `ionice`.
+    anchor = (r'(?:^|[;&|\n]\s*|(?:\b' + _BENIGN_WRAPPERS + r'){1,4}|\S*/)')
     heavy_re = re.compile(
         anchor + r'(?:'
         r'(?:npx\s+|pnpm\s+|bunx\s+)?vitest(?=\s|$)'
