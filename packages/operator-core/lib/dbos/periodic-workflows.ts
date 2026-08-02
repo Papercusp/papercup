@@ -49,6 +49,7 @@ import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
+import { runWalCheckpointSweep } from '../storage/localstorage-wal-guard';
 import { runMemoryAnchorAuditOnce } from '../memory/audit-memory-anchors';
 // EI-1622: the high-frequency EPHEMERAL periodic checks (systemHealth,
 // harnessStatusSweep, connectionPressure, serviceHealth, completionRefVerify,
@@ -751,6 +752,38 @@ const diskSpaceAlarmWorkflow = idempotentRegisterWorkflow('diskSpaceAlarm', () =
   }),
 );
 DBOS.registerScheduled(diskSpaceAlarmWorkflow, { name: 'diskSpaceAlarm', crontab: '0 13,43 * * * *' });
+
+// Hourly (:08, off the other stampedes): WebKit localStorage WAL checkpoint
+// guard (WI-4189 follow-on — localstorage-wal-guard.ts). The 2026-07-11
+// root-disk-100% incident's single dominant leak was NOT any PG/disk store
+// this file already GCs — it was the desktop webview's WebKit localStorage
+// backing store: a ~5MB logical db carrying a ~34GB WAL because a long-lived
+// WebKitNetworkProcess reader pins old frames and nothing ever checkpoints
+// them back down. `TRUNCATE`-mode `wal_checkpoint` is non-blocking on readers
+// (best-effort — commits what it can, never corrupts, never hangs; see the
+// module doc + tests for the exact SQLite semantics this relies on), so it is
+// safe to run unattended against a db the live desktop app has open. Default
+// ON; kill-switch PAPERCUSP_WAL_GUARD=0. Never throws. Shed under loop pressure.
+async function localstorageWalGuardTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (process.env.PAPERCUSP_WAL_GUARD === '0') return;
+    if (shouldShedHeavyTick('localstorage-wal-guard')) return;
+    const r = runWalCheckpointSweep();
+    if (r.overThreshold > 0) {
+      console.log(
+        `[localstorage-wal-guard] ${r.checkpointed}/${r.overThreshold} over-threshold WAL(s) checkpointed, ` +
+          `~${(r.bytesReclaimed / 1024 ** 2).toFixed(0)}MB reclaimed` +
+          (r.errors.length ? `, ${r.errors.length} error(s): ${r.errors.map((e) => e.dbPath).join(', ')}` : ''),
+      );
+    }
+  }, { name: 'localstorage-wal-guard' });
+}
+const localstorageWalGuardWorkflow = idempotentRegisterWorkflow('localstorageWalGuard', () =>
+  DBOS.registerWorkflow(localstorageWalGuardTick, {
+    name: 'localstorageWalGuard', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(localstorageWalGuardWorkflow, { name: 'localstorageWalGuard', crontab: '0 8 * * * *' });
 
 // Daily 05:00 (after the 03:00–04:30 GC/prune cluster, off the :00 stampede): the
 // Layer-1 memory-anchor audit (papercusp-su-memory-2026-05-25 P-019). Re-checks
