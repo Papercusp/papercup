@@ -463,6 +463,43 @@ describe('startingLaunchesToRosterEntries (WI-6376 — terminal launch boot wind
     expect(e.pid).toBe(4242);
   });
 
+  // WI-6821 — the launch died and the card kept saying "starting up". The verdict
+  // is read off PERSISTED state, so the board, the modal and the pui cannot
+  // disagree about it and it survives a reload.
+  it('marks a launch that ended without ever registering as FAILED, in the past tense', () => {
+    const row = adv({
+      id: 93,
+      display: 'terminal',
+      coordOwnerId: 'su-dead',
+      endedAt: '2026-08-02T02:25:11.000Z',
+      sessionId: null,
+    });
+    const [e] = startingLaunchesToRosterEntries([row], 'box-1');
+    expect(e.launchFailed).toBe(true);
+    expect(e.intent).toBe('launch failed');
+  });
+
+  it('leaves a launch still inside its boot window saying "starting up"', () => {
+    const row = adv({ id: 94, display: 'terminal', coordOwnerId: 'su-boot', endedAt: null });
+    const [e] = startingLaunchesToRosterEntries([row], 'box-1');
+    expect(e.launchFailed).toBe(false);
+    expect(e.intent).toBe('starting up');
+  });
+
+  // A session that booted and later ended is an ORDINARY end. Calling that a
+  // failed launch would be a second lie, pointed the other way.
+  it('does not call a session that registered before ending a failed launch', () => {
+    const row = adv({
+      id: 95,
+      display: 'terminal',
+      coordOwnerId: 'su-ok',
+      endedAt: '2026-08-02T02:25:11.000Z',
+      sessionId: 'sess-1',
+    });
+    const [e] = startingLaunchesToRosterEntries([row], 'box-1');
+    expect(e.launchFailed).toBe(false);
+  });
+
   it("keeps display='terminal' so the pui's workbench-only pane filter can never pane it", () => {
     const row = adv({ id: 92, display: 'terminal', coordOwnerId: 'su-x' });
     const [e] = startingLaunchesToRosterEntries([row], 'box-1');

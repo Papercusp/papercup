@@ -1672,6 +1672,25 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
     expect(src.PAPERCUSP_FLAG_DEMO).toBe('1');
   });
 
+  // EI-19307211919650123: the gate's test rows must be distinguishable from an
+  // agent's local run. These stamps are PAPERCUSP_-prefixed, so they only work if
+  // they are applied AFTER the strip loop — which is the whole point of the first
+  // assertion below (a host value must be overridden, not merely absent).
+  it('stamps PAPERCUSP_TEST_RUN_SOURCE=ci AFTER the strip, overriding any host value', () => {
+    const env = buildGreenCheckpointEnv('b', { PAPERCUSP_TEST_RUN_SOURCE: 'local' });
+    expect(env.PAPERCUSP_TEST_RUN_SOURCE).toBe('ci');
+  });
+
+  it('groups the run with PAPERCUSP_TEST_RUN_GROUP only when a runId is given', () => {
+    const withId = buildGreenCheckpointEnv('b', {}, 'run-abc');
+    expect(withId.PAPERCUSP_TEST_RUN_GROUP).toBe('run-abc');
+    // A host-leaked group must not survive when this run has no id of its own —
+    // otherwise a gate run would inherit some agent's run-group and mis-attribute.
+    const noId = buildGreenCheckpointEnv('b', { PAPERCUSP_TEST_RUN_GROUP: 'leaked' });
+    expect(noId.PAPERCUSP_TEST_RUN_GROUP).toBeUndefined();
+    expect(noId.PAPERCUSP_TEST_RUN_SOURCE).toBe('ci');
+  });
+
   it('sets GREEN_CHECKPOINT=1 and AFFECTED_BASE only when a base is given', () => {
     const withBase = buildGreenCheckpointEnv('abc', {});
     expect(withBase.GREEN_CHECKPOINT).toBe('1');

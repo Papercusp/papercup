@@ -23,7 +23,7 @@
 // nobody is waiting. Do NOT reach for a cache: a cache still pays full cost on
 // cold load, and still fails outright on a host without the binary.
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 const OPERATOR_CORE_LIB = resolve(__dirname, '..');
@@ -255,6 +255,184 @@ describe('no heavy I/O on a sync-resolver read path', () => {
       expect(
         existsSync(resolve(REPO_ROOT, 'packages/operator-core', entry.file)),
         `ALLOW entry ${entry.file} no longer exists — remove it`,
+      ).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Guard 2: no UNBOUNDED `SELECT *` on a wide-TOAST table (WI-6125,
+// db-performance-remediation-2026-07-26 P-009).
+//
+// THE CLASS THIS DETECTS: a `SELECT *`-shaped read with no LIMIT against a
+// table whose rows detoast large — the D-006 shape (an unbounded
+// `SELECT body FROM coord_event_log ... ORDER BY id ASC` was a top pg_stat
+// consumer until fixed). Per D-005, byte count is not the cost model —
+// DETOAST is: every row fetched from these tables decompresses its TOASTed
+// jsonb/text out-of-line, so an unbounded read pays that per row for the
+// whole table. The audit that closed P-009 found ZERO such reads in runtime
+// code (the only `SELECT *` sites on these tables are CREATE VIEW definitions
+// and LIMIT-bounded reads), so this guard exists to keep the count at zero,
+// not to burn down debt.
+//
+// THE TABLE SET is mechanical, not vibes: every table whose TOAST relation
+// exceeded 20 MB, measured live 2026-08-02 (largest: session_archive_files
+// 2.9 GB toast). engineer_issues / harness_features_consolidated are views
+// over work_items and inherit its width; coord_event_log is included for its
+// D-006 history. Re-derive with:
+//   SELECT c.oid::regclass, pg_size_pretty(pg_relation_size(c.reltoastrelid))
+//   FROM pg_class c WHERE c.relkind='r' AND c.reltoastrelid <> 0
+//   ORDER BY pg_relation_size(c.reltoastrelid) DESC;
+//
+// FIX PATTERN when this fails: name the columns you need (skip the wide
+// jsonb/text ones), or add a LIMIT, or push the filter server-side behind a
+// tool/resolver arg. Per D-011, do NOT reach for jsonb slicing as the fix —
+// measured, slicing was SLOWER than not projecting; the win is fetching
+// fewer ROWS (bound the read), not thinner bytes per row.
+const WIDE_TOAST_TABLES = [
+  'session_archive_files',
+  'session_turns',
+  'harness_run_output',
+  'plan_revisions',
+  'memory_vec_harrier',
+  'operator_turns',
+  'work_items',
+  'engineer_issues',
+  'harness_features_consolidated',
+  'tool_invocations',
+  'event_wake_deliveries',
+  'harness_plans',
+  'pipeline_events',
+  'substrate_outbox',
+  'coord_event_log',
+];
+
+/** Server-code roots the SQL scan covers (repo-relative). */
+const SQL_SCAN_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];
+
+/**
+ * Justified unbounded wide selects — e.g. a single-row-by-key read where
+ * `LIMIT 1` would be redundant. Keyed by repo-relative file path. Empty today;
+ * prefer adding a LIMIT over adding an entry.
+ */
+const WIDE_SELECT_ALLOW: Array<{ file: string; why: string }> = [];
+
+/**
+ * ⚠ SHRINK-ONLY, same convention as KNOWN_OFFENDERS above: the high-watermark
+ * assertion FAILS if this list grows.
+ */
+const WIDE_SELECT_KNOWN_OFFENDERS: string[] = [
+  // sessions:digest's `scoped` CTE is SELECT * on session_turns (823 MB toast)
+  // with all-optional filters, referenced 4× so PG materializes it — a
+  // no-filter call detoasts `text` for every workspace turn. Naming columns
+  // alone is no fix (text IS used by the kickoff/closing legs); the real fix
+  // is a narrow CTE + join-back for the two DISTINCT ON winners' text, which
+  // needs its own measured pass (D-006). Tracked as a WI-6125 follow-up.
+  'packages/operator-core/lib/agent-tools/sessions/digest.ts',
+];
+
+/** The count at the time this guard was written. May only go DOWN. */
+const WIDE_SELECT_HIGH_WATERMARK = 1;
+
+const WIDE_SELECT_RE = new RegExp(
+  `SELECT\\s+\\*\\s+FROM\\s+(?:harness_shared\\.)?(${WIDE_TOAST_TABLES.join('|')})\\b`,
+  'gi',
+);
+
+function* walkServerTs(dir: string): Generator<string> {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.name === 'node_modules' || e.name === 'dist' || e.name === '_retired' || e.name === '__tests__') continue;
+    const full = join(dir, e.name);
+    if (e.isDirectory()) yield* walkServerTs(full);
+    else if (
+      e.isFile() &&
+      e.name.endsWith('.ts') &&
+      !e.name.endsWith('.d.ts') &&
+      !/\.(test|spec)\.ts$/.test(e.name)
+    )
+      yield full;
+  }
+}
+
+/** Offending matches in one file: `SELECT *` on a wide table with no LIMIT in the statement. */
+function unboundedWideSelects(file: string): Array<{ line: number; table: string }> {
+  let src: string;
+  try {
+    src = readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  const out: Array<{ line: number; table: string }> = [];
+  let m: RegExpExecArray | null;
+  WIDE_SELECT_RE.lastIndex = 0;
+  while ((m = WIDE_SELECT_RE.exec(src))) {
+    // A VIEW definition projects lazily — it is not a row-fetching read.
+    const before = src.slice(Math.max(0, m.index - 300), m.index);
+    if (/CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\b/i.test(before)) continue;
+    // Statement extent: to the end of the template literal / statement, capped.
+    const tail = src.slice(m.index, m.index + 800);
+    const ends = [tail.indexOf('`'), tail.indexOf(';')].filter((i) => i >= 0);
+    const stmt = ends.length ? tail.slice(0, Math.min(...ends)) : tail;
+    if (/\bLIMIT\b/i.test(stmt)) continue;
+    out.push({ line: src.slice(0, m.index).split('\n').length, table: m[1] });
+  }
+  return out;
+}
+
+describe('no unbounded SELECT * on a wide-TOAST table (P-009)', () => {
+  it('no server path issues a LIMIT-less SELECT * against a wide-TOAST table', () => {
+    const allowedFiles = new Set([
+      ...WIDE_SELECT_ALLOW.map((a) => a.file),
+      ...WIDE_SELECT_KNOWN_OFFENDERS,
+    ]);
+    const offenders: string[] = [];
+    for (const root of SQL_SCAN_ROOTS) {
+      for (const file of walkServerTs(resolve(REPO_ROOT, root))) {
+        const rel = file.replace(REPO_ROOT + '/', '');
+        if (allowedFiles.has(rel)) continue;
+        for (const hit of unboundedWideSelects(file)) {
+          offenders.push(`  ${rel}:${hit.line}  [${hit.table}]`);
+        }
+      }
+    }
+    expect(
+      offenders.length,
+      `An UNBOUNDED \`SELECT *\` against a wide-TOAST table landed on a server path.\n` +
+        `Every row fetched detoasts its wide jsonb/text out-of-line (D-005: detoast, not bytes, is the\n` +
+        `cost model), so a LIMIT-less read pays that for the whole table — the D-006 coord_event_log class.\n\n` +
+        `Fix: name the columns you need, add a LIMIT, or push the filter server-side. Per D-011 do NOT\n` +
+        `reach for jsonb slicing (measured slower); bound the ROW COUNT. A genuinely-justified site\n` +
+        `(single-row-by-key) gets a WIDE_SELECT_ALLOW entry with a reason.\n` +
+        `Offenders:\n${offenders.join('\n')}\n`,
+    ).toBe(0);
+  });
+
+  it('the wide-select baseline never grows (shrink-only)', () => {
+    expect(
+      WIDE_SELECT_KNOWN_OFFENDERS.length,
+      `The wide-select baseline GREW. Fix the read (name columns / add a LIMIT) instead of appending here.\n` +
+        `This list may only SHRINK.`,
+    ).toBeLessThanOrEqual(WIDE_SELECT_HIGH_WATERMARK);
+  });
+
+  it('every wide-select ALLOW/baseline entry still exists (and ALLOW carries a reason)', () => {
+    for (const entry of WIDE_SELECT_ALLOW) {
+      expect(entry.why.length, `WIDE_SELECT_ALLOW entry ${entry.file} needs a reason`).toBeGreaterThan(20);
+      expect(
+        existsSync(resolve(REPO_ROOT, entry.file)),
+        `WIDE_SELECT_ALLOW entry ${entry.file} no longer exists — remove it`,
+      ).toBe(true);
+    }
+    for (const file of WIDE_SELECT_KNOWN_OFFENDERS) {
+      expect(
+        existsSync(resolve(REPO_ROOT, file)),
+        `Wide-select known offender ${file} no longer exists — remove it from the baseline`,
       ).toBe(true);
     }
   });

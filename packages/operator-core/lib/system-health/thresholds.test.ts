@@ -30,6 +30,8 @@ import {
   SYNC_LAG_WARN_MS,
   DEPLOY_BEHIND_WARN,
   GIT_SYNC_PUSH_FAIL_CRIT,
+  POOL_PROJECTION_STALE_WARN_MS,
+  POOL_PROJECTION_STALE_CRIT_MS,
   MCP_PROXY_HARD_FAIL_CRIT,
   DISK_USED_WARN_PCT,
   DISK_USED_CRIT_PCT,
@@ -214,7 +216,8 @@ describe('tokensStatus', () => {
   const tk = (o: Partial<TokensHealth> = {}): TokensHealth => ({
     gatewayEnabled: false, gatewayReachable: null, pausedBuckets: 0, totalBuckets: 4,
     fleetInFlight: 1, fleetCap: 8, spendUsd: 1, windowMs: 3_600_000,
-    accountsTotal: 3, accountsAvailable: 3, accountsPaused: 0, gateway: null, ...o,
+    accountsTotal: 3, accountsAvailable: 3, accountsPaused: 0, gateway: null,
+    gatewayDb: null, poolProjectionFreshestAgeMs: null, ...o,
   });
   it('crit when all accounts paused (starved)', () => {
     expect(tokensStatus(tk({ accountsAvailable: 0 }))).toBe('crit');
@@ -249,6 +252,53 @@ describe('tokensStatus', () => {
   });
   it('warn on a slot-leak (P-005/W3): a leaked slot the valve cannot reclaim, before it wedges', () => {
     expect(tokensStatus(tk({ gateway: gw({ slotLeak: true }) }))).toBe('warn');
+  });
+
+  // ── Gateway DB loss (EI-19303809952284205) — the detector that was missing entirely ──
+  //
+  // The 2026-08-01 incident: the gateway kept serving traffic and reporting ok:true on /healthz for
+  // HOURS while its Postgres was unreachable, so every account usage-window write was dropped, the
+  // pool could not reload (collapsing to ONE synthetic credential, healthyAccounts: 0), and the
+  // owner's Accounts tab silently froze. It was found by a human noticing a stale UI panel.
+  it('crit when the gateway reports its own DB is gone — the fast leg (~3min)', () => {
+    expect(
+      tokensStatus(tk({ gatewayDb: { ok: false, connectionLevel: true, failingOps: ['pool-reload'], unhealthyForMs: 180_000, lastError: 'ECONNREFUSED 127.0.0.1:20216' } })),
+    ).toBe('crit');
+  });
+  it('a HEALTHY gatewayDb report does not itself change the verdict', () => {
+    expect(
+      tokensStatus(tk({ gatewayDb: { ok: true, connectionLevel: false, failingOps: [], unhealthyForMs: null, lastError: null } })),
+    ).toBe('ok');
+  });
+  it('an ABSENT gatewayDb (deploy-skew / gateway too old to report) is unknown, not a fault', () => {
+    // A long-lived gateway is EXACTLY the process this condition afflicts (the incident's had been
+    // up 13.7 days), so null must never read as healthy — but it must not red the panel either.
+    // That is precisely why the independent projection leg below exists.
+    expect(tokensStatus(tk({ gatewayDb: null }))).toBe('ok');
+  });
+  it('crit when NO usage-window write has landed for hours despite real fleet spend — the independent leg', () => {
+    expect(tokensStatus(tk({ spendUsd: 12.5, poolProjectionFreshestAgeMs: POOL_PROJECTION_STALE_CRIT_MS }))).toBe('crit');
+  });
+  it('warn at the earlier projection-stall floor', () => {
+    expect(tokensStatus(tk({ spendUsd: 12.5, poolProjectionFreshestAgeMs: POOL_PROJECTION_STALE_WARN_MS }))).toBe('warn');
+  });
+  it('an IDLE box is never alarmed: no spend means there were no responses to observe', () => {
+    // Alarming on a quiet box is how a detector teaches its reader to ignore it.
+    expect(tokensStatus(tk({ spendUsd: 0, poolProjectionFreshestAgeMs: 24 * 60 * 60_000 }))).toBe('ok');
+  });
+  it('a never-observed pool is not a fault', () => {
+    expect(tokensStatus(tk({ spendUsd: 12.5, poolProjectionFreshestAgeMs: null }))).toBe('ok');
+  });
+  it('a projection just under the warn floor stays ok', () => {
+    expect(tokensStatus(tk({ spendUsd: 12.5, poolProjectionFreshestAgeMs: POOL_PROJECTION_STALE_WARN_MS - 1 }))).toBe('ok');
+  });
+  it('the DB-loss crit outranks the wedge crit but both are crit — order cannot silently downgrade', () => {
+    expect(
+      tokensStatus(tk({
+        gateway: gw({ wedge: true }),
+        gatewayDb: { ok: false, connectionLevel: true, failingOps: ['pool-reload'], unhealthyForMs: 600_000, lastError: 'ECONNREFUSED' },
+      })),
+    ).toBe('crit');
   });
   it('ok with a healthy gateway sub-panel', () => {
     expect(tokensStatus(tk({ gateway: gw() }))).toBe('ok');

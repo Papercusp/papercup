@@ -632,6 +632,8 @@ const tokensData = (o: Partial<TokensHealth> = {}): TokensHealth => ({
   accountsAvailable: 3,
   accountsPaused: 0,
   gateway: null,
+  gatewayDb: null,
+  poolProjectionFreshestAgeMs: null,
   ...o,
 });
 

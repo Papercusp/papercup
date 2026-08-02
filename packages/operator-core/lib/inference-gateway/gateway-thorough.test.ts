@@ -31,6 +31,7 @@ import {
   ROUTED_ACCOUNT_HEADER,
 } from './gateway';
 import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
+import { FAILURE_STREAK, SUSTAIN_MS, _resetDbHealth, recordDbOutcome } from './db-health';
 
 /* ------------------------------------------------------------------ *
  * Part 1 — PURE PARSERS (no I/O; fast + deterministic)
@@ -229,6 +230,10 @@ afterEach(async () => {
   await upstream?.close();
   gw = undefined;
   upstream = undefined;
+  // EI-19303809952284205: the db-health tracker is a PROCESS singleton (it has to be — its writers
+  // are composed independently of the gateway object). Reset it or a DB-loss test poisons the
+  // /healthz assertions of every test that runs after it.
+  _resetDbHealth();
 });
 
 async function boot(
@@ -391,6 +396,71 @@ describe('admin + observability endpoints', () => {
     expect(health.status).toBe(503);
     const hb = (await health.json()) as { pausedUntil?: number };
     expect(hb.pausedUntil).toBeGreaterThan(Date.now());
+  });
+
+  // EI-19303809952284205 — `/healthz`'s `ok` used to be a hardcoded literal `true`, describing only
+  // whether the process was answering. On 2026-08-01 the gateway's Postgres was unreachable for HOURS
+  // (account pool unloadable → collapsed to one synthetic credential, healthyAccounts: 0, every
+  // usage-window write dropped) and every prober still read green. These pin the fix.
+  it('/healthz stays 200 through a SINGLE durable-write failure — one blip must not shed a healthy gateway', async () => {
+    await boot(ok200);
+    recordDbOutcome('pool-reload', false, new Error('ECONNREFUSED 127.0.0.1:20216'));
+    const res = await ask('/healthz', { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok?: boolean; db?: { ok?: boolean; failingOps?: string[] } };
+    expect(body.ok).toBe(true);
+    // ...but the condition IS already visible to anyone reading the block.
+    expect(body.db?.ok).toBe(true);
+    expect(body.db?.failingOps).toEqual(['pool-reload']);
+  });
+
+  it('/healthz reports ok:false + 503 once the DB has been gone long enough, and says why', async () => {
+    await boot(ok200);
+    const err = new Error('ECONNREFUSED 127.0.0.1:20216');
+    // Back-date the streak: the verdict is evaluated at READ time, so the streak must ALREADY be
+    // older than SUSTAIN_MS when /healthz is polled.
+    const t0 = Date.now() - SUSTAIN_MS - 10_000;
+    for (let i = 0; i < FAILURE_STREAK; i++) recordDbOutcome('pool-reload', false, err, t0 + i * 1000);
+
+    const res = await ask('/healthz', { method: 'GET' });
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as {
+      ok?: boolean;
+      db?: { ok?: boolean; connectionLevel?: boolean; failingOps?: string[]; lastError?: string };
+    };
+    expect(body.ok).toBe(false);
+    expect(body.db?.ok).toBe(false);
+    expect(body.db?.connectionLevel).toBe(true);
+    expect(body.db?.failingOps).toEqual(['pool-reload']);
+    expect(body.db?.lastError).toContain('ECONNREFUSED');
+  });
+
+  it('/healthz recovers to 200 as soon as a durable write lands again', async () => {
+    await boot(ok200);
+    const err = new Error('ECONNREFUSED 127.0.0.1:20216');
+    // Back-date the streak: the verdict is evaluated at READ time, so the streak must ALREADY be
+    // older than SUSTAIN_MS when /healthz is polled.
+    const t0 = Date.now() - SUSTAIN_MS - 10_000;
+    for (let i = 0; i < FAILURE_STREAK; i++) recordDbOutcome('pool-reload', false, err, t0 + i * 1000);
+    expect((await ask('/healthz', { method: 'GET' })).status).toBe(503);
+
+    recordDbOutcome('pool-reload', true);
+    const res = await ask('/healthz', { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { ok?: boolean }).ok).toBe(true);
+  });
+
+  it('the same db block reaches /stats and /admin/stats — every prober sees one truth', async () => {
+    await boot(ok200);
+    const err = new Error('ECONNREFUSED 127.0.0.1:20216');
+    const t0 = Date.now() - SUSTAIN_MS - 10_000;
+    for (let i = 0; i < FAILURE_STREAK; i++) recordDbOutcome('window-projection', false, err, t0 + i * 1000);
+    for (const path of ['/stats', '/admin/stats']) {
+      const res = await ask(path, { method: 'GET' });
+      const body = (await res.json()) as { db?: { ok?: boolean; failingOps?: string[] } };
+      expect(body.db?.ok, path).toBe(false);
+      expect(body.db?.failingOps, path).toEqual(['window-projection']);
+    }
   });
 
   it('/stats and /admin/stats both return the snapshot with the expected shape', async () => {

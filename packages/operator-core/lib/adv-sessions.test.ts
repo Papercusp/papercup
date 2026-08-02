@@ -1,6 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { toIsoTimestamp } from './adv-sessions';
+import {
+  isDeadTerminalLaunch,
+  isFailedTerminalLaunch,
+  toIsoTimestamp,
+  type AdvSessionRow,
+} from './adv-sessions';
 
 const SOURCE = readFileSync(new URL('./adv-sessions.ts', import.meta.url), 'utf8');
 
@@ -60,5 +65,105 @@ describe('toIsoTimestamp', () => {
 
   it('throws on invalid timestamps', () => {
     expect(() => toIsoTimestamp('not-a-timestamp')).toThrow(/invalid timestamp/i);
+  });
+});
+
+/**
+ * WI-6821 — the owner clicked "+ new session", the launch died, and the popup sat
+ * on "Starting up — waiting for this session to come online…" because NOTHING
+ * ever marked the row failed. A dead launch and a still-booting one were
+ * indistinguishable, so the roster advertised the corpse for the whole window and
+ * the only correction was a 60s client-side timer (a guess, not evidence).
+ *
+ * These pin the two predicates that make the difference an OBSERVATION. Both are
+ * pure with an injected `pidAlive`, so the decision is provable without spawning
+ * real processes — which is the point: detection must be testable, not merely
+ * watched in production.
+ */
+describe('terminal-launch death detection (WI-6821)', () => {
+  const launch = (over: Partial<AdvSessionRow> = {}): AdvSessionRow =>
+    ({
+      id: 1,
+      display: 'terminal',
+      pid: 4242,
+      sessionId: null,
+      endedAt: null,
+      ...over,
+    }) as AdvSessionRow;
+
+  const gone = () => false;
+  const alive = () => true;
+
+  describe('isDeadTerminalLaunch', () => {
+    it('calls a terminal launch dead when its pid is gone and it never registered', () => {
+      expect(isDeadTerminalLaunch(launch(), gone)).toBe(true);
+    });
+
+    it('never calls a launch dead while its terminal process is still alive', () => {
+      expect(isDeadTerminalLaunch(launch(), alive)).toBe(false);
+    });
+
+    // The safe direction, and the one that matters under pid-wrap (~daily on this
+    // box): a RECYCLED pid can only ever read alive, so wrap can make us MISS a
+    // dead launch — it can never make us declare a live one dead.
+    it('treats a registered session as booted even if its recorded pid is gone', () => {
+      expect(isDeadTerminalLaunch(launch({ sessionId: 'sess-1' }), gone)).toBe(false);
+    });
+
+    // No handle means NO EVIDENCE. Guessing here would fabricate a diagnosis,
+    // which is the exact bug class this item exists to remove.
+    it('says nothing about a launch with no recorded pid', () => {
+      expect(isDeadTerminalLaunch(launch({ pid: null }), gone)).toBe(false);
+    });
+
+    it('leaves an already-reconciled row alone', () => {
+      expect(isDeadTerminalLaunch(launch({ endedAt: '2026-08-02T02:25:00.000Z' }), gone)).toBe(
+        false,
+      );
+    });
+
+    // Only `display='terminal'` rows are local by construction, which is what
+    // makes the pid a sound liveness handle without a host column.
+    it('refuses to probe a row that is not a terminal launch', () => {
+      expect(isDeadTerminalLaunch(launch({ display: 'workbench' }), gone)).toBe(false);
+      expect(isDeadTerminalLaunch(launch({ display: null }), gone)).toBe(false);
+    });
+  });
+
+  describe('isFailedTerminalLaunch', () => {
+    it('reads failure off PERSISTED state — ended, never registered', () => {
+      expect(isFailedTerminalLaunch(launch({ endedAt: '2026-08-02T02:25:00.000Z' }))).toBe(true);
+    });
+
+    it('is false while the launch is still within its boot window', () => {
+      expect(isFailedTerminalLaunch(launch())).toBe(false);
+    });
+
+    // A session that booted and later ended is an ORDINARY end and belongs in the
+    // `ended` list — calling it a failed launch would be a second kind of lie.
+    it('is false for a session that registered before it ended', () => {
+      expect(
+        isFailedTerminalLaunch(launch({ endedAt: '2026-08-02T02:25:00.000Z', sessionId: 'sess-1' })),
+      ).toBe(false);
+    });
+  });
+
+  // We never reap this process — it is not our child — so we never observe a
+  // status. Writing a sentinel would invent a fact, which is precisely the
+  // failure mode being fixed; `session_id IS NULL` is the marker we actually know.
+  it('the reconciler stamps ended_at and does NOT invent an exit_code', () => {
+    const stmt = SOURCE.split('UPDATE harness_shared.adv_sessions')
+      .slice(1)
+      .map((tail) => tail.slice(0, tail.indexOf('`')))
+      .find((s) => s.includes('session_id IS NULL') && s.includes('ended_at = now()'));
+    expect(stmt).toBeDefined();
+    expect(stmt).not.toMatch(/exit_code\s*=/);
+  });
+
+  // Dropping the row instead of flagging it would leave SessionChatModal to fall
+  // through to "No recent Claude session found for this agent" — replacing a
+  // spinner with a shrug. The tier must still SELECT the failed row.
+  it('the starting tier still selects launches that ended without registering', () => {
+    expect(SOURCE).toMatch(/AND \(ended_at IS NULL OR session_id IS NULL\)/);
   });
 });

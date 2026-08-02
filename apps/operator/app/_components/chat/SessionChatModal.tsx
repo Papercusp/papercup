@@ -60,7 +60,7 @@ import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import { useAgentDetail } from '../../adv/sessions/use-agent-detail';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
-import { Terminal } from 'lucide-react';
+import { Maximize, Maximize2, Minimize, Minimize2, Terminal, X } from 'lucide-react';
 import { AGENT_MARKS, type ChatMessage } from './ChatConversation';
 import {
   contextPct,
@@ -146,15 +146,10 @@ const DOSSIER_RAIL_OVERLAY_STYLE: React.CSSProperties = {
   zIndex: 5,
 };
 
-const DOSSIER_TOGGLE_STYLE: React.CSSProperties = {
-  position: 'absolute',
-  top: 8,
-  right: 8,
-  zIndex: 6,
-  fontSize: 11,
-  lineHeight: 1,
-  padding: '4px 9px',
-};
+/* DOSSIER_TOGGLE_STYLE was here. The detail toggle moved into the shared
+   maximize toolbar (CHAT_TOOLBAR_STYLE below) so the popup has ONE cluster of
+   window controls rather than a lone button in the corner and two more beside
+   it — session-chat-popup-direction-d-2026-08-02 P-001. */
 
 /** Narrow-viewport breakpoint below which the dossier rail stops sitting
  *  side-by-side and becomes a collapsible overlay drawer instead — same
@@ -173,6 +168,67 @@ function useIsNarrowViewport(query: string): boolean {
     return () => media.removeEventListener('change', sync);
   }, [query]);
   return isNarrow;
+}
+
+/* ── Maximize (session-chat-popup-direction-d-2026-08-02 P-001) ─────────────
+ *
+ * [owner 2026-08-01 22:29, verbatim] "add 2 buttons. a full window button
+ * that makes it take up the full size of the window and a full screen button
+ * that makes it take up the full screen. Both options above should be for the
+ * actual conversation not the panes to the left and belo, but it should also
+ * include the chatbox for the user to enter in messages"
+ *
+ * Two modes, one rule. `window` grows the modal to the whole app window;
+ * `screen` hands the conversation to the Fullscreen API. In BOTH, what you see
+ * is the transcript, the composer and the one-line status footer — the dossier
+ * rail, the control band and the fleet row are out.
+ *
+ * D-002: the excluded set is defined STRUCTURALLY, by the DOM, and never as a
+ * list of things to hide. `screen` calls requestFullscreen() on the
+ * conversation REGION element, so the browser itself decides what fills the
+ * screen: everything inside that element, nothing outside it. `window` mirrors
+ * the same boundary in layout. The payoff is the deck's deferred Phase-2 left
+ * Orders panel — the "panes to the left" of the ask — which will mount as a
+ * sibling of that region and is therefore already excluded, with no edit here
+ * and no chance of someone forgetting to add it to a hide-list.
+ */
+const CHAT_MAX_MODES = ['window', 'screen'] as const;
+type ChatMaxMode = (typeof CHAT_MAX_MODES)[number];
+
+/** The toolbar lives INSIDE the conversation region, not beside it. It has to:
+ *  in real fullscreen only that element is painted, so a toolbar mounted as its
+ *  sibling would be invisible at exactly the moment the user needs the control
+ *  that gets them back out. */
+const CHAT_TOOLBAR_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 8,
+  right: 8,
+  zIndex: 6,
+  display: 'flex',
+  gap: 4,
+  alignItems: 'center',
+};
+
+const CHAT_TOOLBAR_BUTTON_STYLE: React.CSSProperties = {
+  fontSize: 11,
+  lineHeight: 1,
+  padding: '4px 7px',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+};
+
+/**
+ * Is `el` the element currently painted fullscreen?
+ *
+ * Deliberately reads the DOM rather than trusting our own "I asked for
+ * fullscreen" flag: the user can leave fullscreen by pressing Esc or F11,
+ * which fires no click of ours. `document.fullscreenElement` is the only
+ * source that is right in every one of those exits.
+ */
+function isFullscreenElement(el: Element | null): boolean {
+  if (!el || typeof document === 'undefined') return false;
+  return document.fullscreenElement === el;
 }
 
 /** Resolve the most relevant CLAUDE session for this owner via the existing
@@ -707,6 +763,93 @@ export default function SessionChatModal({
   const [dossierOpen, setDossierOpen] = useQueryState('chatDossier', parseAsBoolean.withDefault(true));
   const isNarrow = useIsNarrowViewport(DOSSIER_NARROW_MEDIA_QUERY);
 
+  /* ── P-001 maximize ──────────────────────────────────────────────────────
+     Which maximize mode is on, in the URL like every other bit of this
+     popup's state (nuqs-by-default) so it is deep-linkable and reachable from
+     ui:get_state / ui:dispatch. Absent ⇒ the normal centred popup. */
+  const [chatMax, setChatMax] = useQueryState('chatMax', parseAsStringLiteral(CHAT_MAX_MODES));
+  const conversationRef = useRef<HTMLDivElement | null>(null);
+
+  /* Whether the browser is ACTUALLY painting our region fullscreen, which is
+     not the same question as `chatMax === 'screen'` and must not be inferred
+     from it. Two ways they diverge, both routine:
+       - a shared/reloaded URL carrying `chatMax=screen` cannot enter
+         fullscreen on load, because the API requires a user gesture. The page
+         renders maximized and the button still offers to go fullscreen;
+       - Esc / F11 leaves fullscreen without any click of ours.
+     So the DOM is the authority and this mirrors it. */
+  const [screenActive, setScreenActive] = useState(false);
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const sync = () => {
+      const active = isFullscreenElement(conversationRef.current);
+      setScreenActive(active);
+      // Left fullscreen by a route we did not drive (Esc, F11, the browser
+      // dropping it on tab switch) — drop the mode with it, or the popup sits
+      // in a maximized layout the user just asked to leave.
+      if (!active) setChatMax((prev) => (prev === 'screen' ? null : prev));
+    };
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  }, [setChatMax]);
+
+  /** Layout-maximized: true for BOTH modes. `screen` still needs the
+   *  full-window layout underneath it — if the webview refuses fullscreen (or
+   *  a deep link arrives before a gesture can grant it) the user gets the
+   *  maximized popup rather than nothing happening. */
+  const maximized = chatMax != null;
+
+  const exitScreen = useCallback(async () => {
+    if (typeof document === 'undefined') return;
+    if (document.fullscreenElement) {
+      try {
+        await document.exitFullscreen();
+      } catch {
+        // Already gone, or the UA refused — `fullscreenchange`/the next sync
+        // settles the real state either way. Nothing to report to the user.
+      }
+    }
+  }, []);
+
+  const toggleWindow = useCallback(() => {
+    if (chatMax === 'window') {
+      void setChatMax(null);
+      return;
+    }
+    // Coming from `screen`: leave the browser's fullscreen first, then land in
+    // window mode. Without the explicit set, the fullscreenchange handler
+    // above would clear the mode entirely and the click would read as "exit
+    // maximize" rather than "switch to full window".
+    void exitScreen().then(() => setChatMax('window'));
+  }, [chatMax, exitScreen, setChatMax]);
+
+  const toggleScreen = useCallback(() => {
+    if (screenActive) {
+      void exitScreen().then(() => setChatMax(null));
+      return;
+    }
+    const el = conversationRef.current;
+    // No element, or a webview with the Fullscreen API switched off: fall back
+    // to full-window rather than doing nothing. A dead button is the worse
+    // failure — the user asked for "bigger" and there IS a bigger we can give.
+    if (!el || typeof el.requestFullscreen !== 'function') {
+      void setChatMax('window');
+      return;
+    }
+    void Promise.resolve(el.requestFullscreen())
+      .then(() => setChatMax('screen'))
+      .catch(() => setChatMax('window'));
+  }, [screenActive, exitScreen, setChatMax]);
+
+  /* Leaving the popup must not leave the browser in fullscreen or the mode in
+     the URL — reopening any session would otherwise inherit a maximize the
+     user never asked for on it. */
+  const closeChat = useCallback(() => {
+    void exitScreen();
+    void setChatMax(null);
+    onClose();
+  }, [exitScreen, setChatMax, onClose]);
+
   // hud-first-nav-and-dossier-2026-07-26 P-004 (D-002's one deliberate
   // duplicate): the footer's "⚠ N locks / M unread" chip opens the rail
   // (it may be collapsed) and scrolls it to the named section — a plain DOM
@@ -749,27 +892,136 @@ export default function SessionChatModal({
     <Modal
       open={open}
       onOpenChange={(next) => {
-        if (!next) onClose();
+        if (!next) closeChat();
       }}
       title={title}
-      contentStyle={{
-        // hud-first-nav-and-dossier-2026-07-26 P-003: widen to make room for
-        // the dossier rail when it's open AND there's room to show it
-        // side-by-side; on a narrow viewport the rail overlays instead
-        // (DOSSIER_RAIL_OVERLAY_STYLE below), so the modal stays at its
-        // original width rather than crushing the transcript.
-        width: dossierOpen && !isNarrow ? 'min(1040px, 96vw)' : 'min(720px, 92vw)',
-        height: 'min(80vh, 820px)',
-        padding: 0,
-        display: 'flex',
-        flexDirection: 'column',
-      }}
+      /* P-001: while the browser is painting the conversation fullscreen, Esc
+         is the user's way OUT of fullscreen — the UA consumes it and never
+         dispatches the keydown. Leaving the dialog's own Esc handler armed
+         means the one press both drops fullscreen and closes the chat, so the
+         conversation the user was reading disappears when they only asked for
+         a smaller window. */
+      closeOnEscape={!screenActive}
+      wrapStyle={maximized ? { padding: 0 } : undefined}
+      contentStyle={
+        maximized
+          ? {
+              // Fill the app window edge to edge. `100dvh` rather than `100vh`
+              // so a mobile/overlay browser chrome bar cannot push the
+              // composer below the fold — the composer is the half of this the
+              // owner explicitly asked to keep.
+              width: '100vw',
+              maxWidth: 'none',
+              height: '100dvh',
+              maxHeight: '100dvh',
+              borderRadius: 0,
+              padding: 0,
+              display: 'flex',
+              flexDirection: 'column',
+            }
+          : {
+              // hud-first-nav-and-dossier-2026-07-26 P-003: widen to make room for
+              // the dossier rail when it's open AND there's room to show it
+              // side-by-side; on a narrow viewport the rail overlays instead
+              // (DOSSIER_RAIL_OVERLAY_STYLE below), so the modal stays at its
+              // original width rather than crushing the transcript.
+              width: dossierOpen && !isNarrow ? 'min(1040px, 96vw)' : 'min(720px, 92vw)',
+              height: 'min(80vh, 820px)',
+              padding: 0,
+              display: 'flex',
+              flexDirection: 'column',
+            }
+      }
     >
       <div
         style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', position: 'relative' }}
         data-testid="session-chat-modal"
       >
         <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        {/* P-001 / D-002 — THE conversation region. Its DOM boundary is the
+            whole definition of what "maximize the conversation" means: this
+            element is what requestFullscreen() is called on, so the browser
+            paints exactly its subtree and nothing else. Everything the owner
+            asked to keep (transcript, composer, the one-line status footer,
+            and the escalation cards that are part of the conversation) is
+            INSIDE; everything they asked to leave out is a sibling BELOW or
+            the rail beside it. Adding a pane later means putting it outside
+            this element — there is no hide-list to remember to update. */}
+        <div
+          ref={conversationRef}
+          data-testid="session-chat-conversation"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            position: 'relative',
+            // A fullscreened element is transparent by default (the UA only
+            // paints ::backdrop black), so without this the transcript renders
+            // on bare black instead of the popup's own surface.
+            ...(screenActive ? { background: 'var(--bg-popover, #0d1829)' } : null),
+          }}
+        >
+        {open ? (
+          <div style={CHAT_TOOLBAR_STYLE} data-testid="session-chat-toolbar">
+            <button
+              type="button"
+              className="pc-button"
+              onClick={toggleWindow}
+              aria-pressed={chatMax === 'window'}
+              aria-label={chatMax === 'window' ? 'Exit full window' : 'Full window'}
+              title={chatMax === 'window' ? 'Exit full window' : 'Fill the app window with the conversation'}
+              data-testid="session-chat-full-window"
+              style={CHAT_TOOLBAR_BUTTON_STYLE}
+            >
+              {chatMax === 'window' ? <Minimize2 size={12} aria-hidden="true" /> : <Maximize2 size={12} aria-hidden="true" />}
+            </button>
+            <button
+              type="button"
+              className="pc-button"
+              onClick={toggleScreen}
+              aria-pressed={screenActive}
+              aria-label={screenActive ? 'Exit full screen' : 'Full screen'}
+              title={screenActive ? 'Exit full screen' : 'Fill the whole screen with the conversation'}
+              data-testid="session-chat-full-screen"
+              style={CHAT_TOOLBAR_BUTTON_STYLE}
+            >
+              {screenActive ? <Minimize size={12} aria-hidden="true" /> : <Maximize size={12} aria-hidden="true" />}
+            </button>
+            {/* The detail toggle only makes sense while the rail can be shown;
+                maximized deliberately has no rail (D-002). */}
+            {!maximized ? (
+              <button
+                type="button"
+                className="pc-button"
+                onClick={() => void setDossierOpen(!dossierOpen)}
+                aria-pressed={dossierOpen}
+                aria-label={dossierOpen ? 'Hide agent detail' : 'Show agent detail'}
+                data-testid="session-chat-dossier-toggle"
+                style={CHAT_TOOLBAR_BUTTON_STYLE}
+              >
+                {dossierOpen ? 'Hide detail ›' : '‹ Detail'}
+              </button>
+            ) : null}
+            {/* Maximized covers the backdrop, and in fullscreen Esc is spoken
+                for — so without an explicit ✕ there is no way out but the
+                maximize toggles. */}
+            {maximized ? (
+              <button
+                type="button"
+                className="pc-button"
+                onClick={closeChat}
+                aria-label="Close conversation"
+                title="Close conversation"
+                data-testid="session-chat-close"
+                style={CHAT_TOOLBAR_BUTTON_STYLE}
+              >
+                <X size={12} aria-hidden="true" />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {pendingEscalations.length > 0 ? (
           <div
             style={{ flex: '0 0 auto', maxHeight: '45%', overflowY: 'auto', borderBottom: '1px solid var(--border)' }}
@@ -826,7 +1078,10 @@ export default function SessionChatModal({
           />
         ) : null}
         {sentOk ? <div style={BANNER_STYLE}>Sent — the agent is woken if it's live.</div> : null}
-        {actionCtx && (
+        </div>
+        {/* ── Below the conversation region, therefore excluded from maximize
+            (P-001 / D-002). These are the "panes below" of the owner's ask. ── */}
+        {!maximized && actionCtx && (
           <>
             {/* Renders whatever askUserLocal card an action's params()/confirm
                 step opens (P-002 substrate) — the SAME renderer the
@@ -841,10 +1096,21 @@ export default function SessionChatModal({
             bar needs a resolved live session to act ON; launching a fleet does
             not, and the moment a human most wants a fleet is often exactly when
             this session is dead, still starting, or failed to resolve — the
-            states where `actionCtx` is null and the bar is absent. */}
-        <FleetLaunchRow />
+            states where `actionCtx` is null and the bar is absent.
+
+            Maximize is the ONE thing that hides it, and that does not weaken
+            WI-6505's reason: maximize is a mode the user just switched on by
+            hand and can switch off in one click on a button that is on screen
+            in both modes — unlike the `actionCtx` gate, which hid the row
+            based on session state the user did not choose and could not undo.
+            (Deck item 5 proposes moving this row to the Sessions board
+            entirely; that is P-007 and is owner-gated — see D-003.) */}
+        {!maximized ? <FleetLaunchRow /> : null}
       </div>
-        {open && dossierOpen ? (
+        {/* The rail is a SIBLING of the conversation region, so maximize
+            excludes it structurally (D-002) — this `!maximized` is the layout
+            half of the same rule, not a second hide-list. */}
+        {open && dossierOpen && !maximized ? (
           <div
             data-testid="session-chat-dossier-rail"
             style={isNarrow ? DOSSIER_RAIL_OVERLAY_STYLE : DOSSIER_RAIL_SIDE_STYLE}
@@ -862,19 +1128,6 @@ export default function SessionChatModal({
               onClose={() => void setDossierOpen(false)}
             />
           </div>
-        ) : null}
-        {open ? (
-          <button
-            type="button"
-            className="pc-button"
-            onClick={() => void setDossierOpen(!dossierOpen)}
-            aria-pressed={dossierOpen}
-            aria-label={dossierOpen ? 'Hide agent detail' : 'Show agent detail'}
-            data-testid="session-chat-dossier-toggle"
-            style={DOSSIER_TOGGLE_STYLE}
-          >
-            {dossierOpen ? 'Hide detail ›' : '‹ Detail'}
-          </button>
         ) : null}
       </div>
     </Modal>

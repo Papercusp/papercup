@@ -1197,6 +1197,72 @@ describe('SessionChatModal', () => {
       expect(screen.queryByText(STARTING)).toBeNull();
     });
 
+    // ── WI-6821: an OBSERVED death, not a timeout ────────────────────────────
+    // The owner's report: "clicking new session is still showing 'Starting up —
+    // waiting for this session to come online…'". Nothing ever stamped the dead
+    // launch's row, so the roster advertised it as starting for the whole 15min
+    // window and only a 60s client timer ever softened the copy — to a HEDGE
+    // ("may have failed"), because the client genuinely did not know. Now the
+    // server observes the terminal process is gone and says so at once.
+    const OBSERVED_FAILED = /This session’s launch failed — its terminal closed/;
+
+    it('reports an observed launch failure IMMEDIATELY, without waiting out the grace window', async () => {
+      seedTiers({
+        // startedAt is seconds ago: the 60s timer has NOT fired. Only the
+        // server's observation can produce the failure copy here.
+        starting: [
+          { ownerId: 'su-new-1', startedAt: new Date().toISOString(), launchFailed: true },
+        ],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText(OBSERVED_FAILED)).toBeTruthy());
+      expect(screen.queryByText(STARTING)).toBeNull();
+      // Not the timer's hedge — we OBSERVED this one, so it is stated flatly.
+      expect(screen.queryByText(FAILED)).toBeNull();
+    });
+
+    it('tells the dossier rail too, so the rail beside the banner cannot contradict it', async () => {
+      seedTiers({
+        starting: [
+          { ownerId: 'su-new-1', startedAt: new Date().toISOString(), launchFailed: true },
+        ],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+      expect(lastAgentDossierProps?.launchFailed).toBe(true);
+    });
+
+    // Non-vacuity, and the property that keeps the honest copy leading: a
+    // still-booting launch must NOT pick up the failure copy just because the
+    // field exists on the payload.
+    it('does not report failure for a launch the server has not called failed', async () => {
+      seedTiers({
+        starting: [
+          { ownerId: 'su-new-1', startedAt: new Date().toISOString(), launchFailed: false },
+        ],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText(STARTING)).toBeTruthy());
+      expect(screen.queryByText(OBSERVED_FAILED)).toBeNull();
+    });
+
+    // An older operator (or a mid-deploy SSE push) sends no such field. That must
+    // degrade to today's behaviour, never to a fabricated failure.
+    it('degrades to the timer path when the payload omits launchFailed entirely', async () => {
+      seedTiers({ starting: [{ ownerId: 'su-new-1', startedAt: new Date().toISOString() }] });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText(STARTING)).toBeTruthy());
+      expect(screen.queryByText(OBSERVED_FAILED)).toBeNull();
+    });
+
     // An undateable launch must not be reported as a FAILED one — the board
     // makes the same call (ageSec(null) falls through rather than accusing).
     it('stays on "starting up" when the record carries no usable startedAt', async () => {

@@ -470,6 +470,17 @@ describe('AgentDossier', () => {
 
   // WI-6367: a never-started agent arrives here identically to an ended one
   // (entry: null). Told which it is, the rail must not use the past tense.
+  // WI-6821: once the launch is OBSERVED dead, "starting up" is a lie here just
+  // as much as in the banner next to it. launchFailed outranks startingUp — both
+  // are set together for a failed launch, so precedence is what decides the copy.
+  it('says the launch failed (not "starting up") when launchFailed is set', () => {
+    const { getByText, queryByText } = render(
+      <AgentDossier ownerId="su-dead-1" entry={null} onClose={() => {}} startingUp launchFailed />,
+    );
+    expect(getByText("This session's launch failed — it never came online.")).toBeTruthy();
+    expect(queryByText("Starting up — this agent hasn't registered yet.")).toBeNull();
+  });
+
   it('says the agent is starting up (not "no longer in the live roster") when startingUp is set', () => {
     const { getByText, queryByText } = render(
       <AgentDossier ownerId="su-new-1" entry={null} onClose={() => {}} startingUp />,

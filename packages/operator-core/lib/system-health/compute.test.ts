@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, mergeHealthPanels, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, mergeHealthPanels, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
@@ -789,6 +789,67 @@ describe('computeAccountsAvailable — starvation-watchdog false-positive fix (E
 
   it('a null gateway snapshot (gateway unreachable) never throws — edge-throttle just reads as unknown/false', () => {
     expect(() => computeAccountsAvailable([account('a1')], null, NOW)).not.toThrow();
+  });
+});
+
+describe('computeProjectionFreshestAgeMs — the independent gateway-DB-loss leg (EI-19303809952284205)', () => {
+  const NOW = 1_784_000_000_000;
+
+  function account(id: string, overrides: Partial<ClaudeAccount['rate']> = {}): ClaudeAccount {
+    return {
+      id,
+      credentialRef: `token:${id}`,
+      addedAt: NOW - 1000,
+      boundTo: [],
+      rate: { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0, ...overrides },
+    };
+  }
+
+  it('null when no account has ever been observed — a fresh pool is not a fault', () => {
+    expect(computeProjectionFreshestAgeMs([account('a1'), account('a2')], NOW)).toBeNull();
+  });
+
+  it('null on an empty pool', () => {
+    expect(computeProjectionFreshestAgeMs([], NOW)).toBeNull();
+  });
+
+  it('measures the age of the single observed reading', () => {
+    expect(computeProjectionFreshestAgeMs([account('a1', { utilizationAt: NOW - 90_000 })], NOW)).toBe(90_000);
+  });
+
+  it('takes the FRESHEST reading, not the oldest — a starved account must not fabricate an alarm', () => {
+    // The live 2026-08-01 case: aviynw10's egress proxy was transport-failing, so NO traffic reached
+    // it and its reading sat hours old while the write path was perfectly healthy (the owner flagged
+    // this as unrelated pre-existing noise). Taking the max here would alarm on it every single tick.
+    const age = computeProjectionFreshestAgeMs(
+      [
+        account('aviynw10', { utilizationAt: NOW - 8 * 60 * 60_000 }), // starved: no traffic reaching it
+        account('aviynw3', { utilizationAt: NOW - 45_000 }), // busy: written 45s ago
+      ],
+      NOW,
+    );
+    expect(age).toBe(45_000);
+  });
+
+  it('reports a large age only when NOTHING anywhere has moved — the real write-path-dead condition', () => {
+    const age = computeProjectionFreshestAgeMs(
+      [
+        account('a1', { utilizationAt: NOW - 5 * 60 * 60_000 }),
+        account('a2', { utilizationAt: NOW - 6 * 60 * 60_000 }),
+      ],
+      NOW,
+    );
+    expect(age).toBe(5 * 60 * 60_000);
+  });
+
+  it('ignores accounts with no reading when others have one', () => {
+    expect(
+      computeProjectionFreshestAgeMs([account('a1'), account('a2', { utilizationAt: NOW - 1000 })], NOW),
+    ).toBe(1000);
+  });
+
+  it('clamps a future-dated reading to 0 rather than reporting a negative age', () => {
+    expect(computeProjectionFreshestAgeMs([account('a1', { utilizationAt: NOW + 5_000 })], NOW)).toBe(0);
   });
 });
 

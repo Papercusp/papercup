@@ -478,6 +478,103 @@ describe('replay receipt is persisted only AFTER the tool transaction commits', 
   });
 });
 
+/* ─── replayed calls are visible to telemetry (WI-6792) ─────────────────── */
+
+describe('a replayed call records a tool_invocation row', () => {
+  const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
+  const REPLAYED = { content: [{ type: 'text', text: '{"ok":true,"created":"WI-42"}' }] };
+
+  it('emits exactly one row, status "replayed", without running the tool', async () => {
+    h.storedReplay = REPLAYED;
+    const before = seen.length;
+    const res = await callTool('gatingtest:scoped', { probe: 'v' }, scoped('ws-test'), {
+      idempotencyKey: 'idem-replay-1',
+    });
+
+    // The stored outcome was served verbatim and the tool never ran — otherwise
+    // this is testing the normal dispatch path, not the replay branch.
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toBe('{"ok":true,"created":"WI-42"}');
+    expect(res._meta?.replayed).toBe(true);
+    expect(seen.length).toBe(before);
+    // No dispatch ⇒ no tx and no fresh receipt: the replay is a pure read.
+    expect(h.withWorkspaceCalls).toEqual([]);
+    expect(h.replayStores).toEqual([]);
+
+    // The whole bug in one assertion: this array used to be EMPTY for a replay,
+    // so a retry storm looked like a fleet-wide write gap.
+    expect(h.invocations).toHaveLength(1);
+    const row = h.invocations[0]!;
+    expect(row.status).toBe('replayed');
+    expect(row.toolName).toBe('gatingtest:scoped');
+    expect(row.args).toEqual({ probe: 'v' });
+    // The retry key rides metadata so a storm is groupable by the key re-sent.
+    expect(row.metadataJson).toMatchObject({ replayIdempotencyKey: 'idem-replay-1' });
+  });
+
+  it('attributes the row exactly as a fresh call would — the point of building ctx first', async () => {
+    // Baseline: what the SAME call records when it really dispatches.
+    const fresh = await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+      idempotencyKey: 'idem-attrib-fresh',
+    });
+    expect(fresh.isError).not.toBe(true);
+    expect(h.invocations).toHaveLength(1);
+    const freshRow = h.invocations[0]!;
+    expect(freshRow.status).toBe('ok');
+
+    h.invocations.length = 0;
+    h.storedReplay = REPLAYED;
+    await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+      idempotencyKey: 'idem-attrib-replay',
+    });
+    expect(h.invocations).toHaveLength(1);
+    const replayRow = h.invocations[0]!;
+
+    // Same window key ⇒ the replay groups with the real calls it accompanies,
+    // which is what makes "how much of this window was replay?" one query.
+    expect(replayRow.windowKey).toBe(freshRow.windowKey);
+    expect(replayRow.ctx.role).toBe(freshRow.ctx.role);
+    expect(replayRow.ctx.runId).toBe(freshRow.ctx.runId);
+    expect(replayRow.ctx.spawnId).toBe(freshRow.ctx.spawnId);
+    expect(replayRow.ctx.harnessSlug).toBe(freshRow.ctx.harnessSlug);
+  });
+
+  it('serves the replay even when recording its telemetry throws', async () => {
+    // A telemetry failure must cost a row, never a re-executed write: if the
+    // throw escaped to the lookup's catch, the handler would fall through and
+    // run the tool again — double-applying the mutation replay exists to guard.
+    h.storedReplay = REPLAYED;
+    const boom = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deps = (await import('../../projected-tool-deps')).PROJECTED_DEPS as {
+      recordInvocation?: (i: unknown) => Promise<void>;
+    };
+    const real = deps.recordInvocation;
+    deps.recordInvocation = async () => {
+      throw new Error('telemetry queue exploded');
+    };
+    try {
+      const before = seen.length;
+      const res = await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+        idempotencyKey: 'idem-replay-telemetry-throws',
+      });
+      expect(textOf(res)).toBe('{"ok":true,"created":"WI-42"}');
+      expect(seen.length).toBe(before); // the tool did NOT re-run
+      expect(h.withWorkspaceCalls).toEqual([]);
+    } finally {
+      deps.recordInvocation = real;
+      boom.mockRestore();
+    }
+  });
+
+  it('records nothing extra for a call with no stored result', async () => {
+    const res = await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+      idempotencyKey: 'idem-no-stored-result',
+    });
+    expect(res.isError).not.toBe(true);
+    expect(h.invocations.map((r) => r.status)).toEqual(['ok']);
+  });
+});
+
 /* ─── caller backend/model stamping (fleet-launch-agent-inheritance-2026-07-03) ─── */
 
 describe('caller backend/model stamping', () => {
