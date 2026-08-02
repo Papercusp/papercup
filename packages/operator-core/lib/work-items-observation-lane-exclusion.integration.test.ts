@@ -150,7 +150,7 @@ describe('diagnoseClaimNextMiss treats an observation-only backlog as DRAINED (D
     // so it must NOT inflate the pool — a scorecard-only queue reads drained, so a drainer idles.
     await seedIssue('EI-obs-diag', { kind: 'change', createdTs: 100, payload: { lane: 'observation' } });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.pendingUnclaimed).toBe(0);
     expect(diag.readyUnclaimed).toBe(0);
     expect(diag.drained).toBe(true);
@@ -160,7 +160,7 @@ describe('diagnoseClaimNextMiss treats an observation-only backlog as DRAINED (D
     await seedIssue('EI-obs-diag-2', { kind: 'change', createdTs: 100, payload: { lane: 'observation' } });
     await seedIssue('WI-ready-diag-2', { createdTs: 200 });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.pendingUnclaimed).toBe(1); // ONLY the real item — the observation is excluded from the pool
     expect(diag.readyUnclaimed).toBe(1);
     expect(diag.drained).toBe(false);

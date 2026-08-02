@@ -4162,6 +4162,16 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
     const issueWs = issuesScopeWorkspace();
     const operatorScopeSlug = `operator:${issueWs}`;
     const issueCooldown = releaseCooldownSec();
+    // EI-19370051676057812: honor an explicit `states` override on the ISSUE legs too. Both
+    // counts below used to hardcode ISSUE_FAMILY_CLAIMABLE_STATES while the FEATURE legs above
+    // read `filter.states ?? ['open']`, so a caller passing e.g. states:['failing'] got its
+    // feature counts filtered and its issue counts NOT — silently blended into one
+    // pendingUnclaimed/readyUnclaimed/drained verdict with no error. That made THIS diagnostic
+    // disagree with the claim path it exists to explain: explainIssueClaimFloors (below) already
+    // computes `filter.states?.length ? filter.states : ISSUE_FAMILY_CLAIMABLE_STATES`, and
+    // claimNextIssueWorkItem honors a states override, so a state-specific miss was diagnosed
+    // against a pool the claim would never serve. Same shape as :4521 — one source of truth.
+    const issueStates = filter.states?.length ? [...filter.states] : [...ISSUE_FAMILY_CLAIMABLE_STATES];
     const issuePoolRows = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n
         FROM harness_shared.work_items wi
@@ -4169,7 +4179,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND wi.workspace_id = ${issueWs}
          AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
          AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
-         AND wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[])
+         AND wi.status = ANY(${issueStates}::text[])
          -- D-005: observation-lane rows never enter the work queue, so they are NOT part of the
          -- "work here a bee shouldn't idle on" POOL — excluding them here (not just from READY,
          -- as the rig/claimHold floors are) lets a scorecard-only backlog read drained:true.
@@ -4204,7 +4214,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND wi.workspace_id = ${issueWs}
          AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
          AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
-         AND wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[])
+         AND wi.status = ANY(${issueStates}::text[])
          -- work-item-status-full-unify: mirror claimNextIssueWorkItem's origin floor (own-node aware)
          -- so READY counts what the claim actually serves. Previously this query had NO origin floor
          -- at all → it over-counted true-remote issues as ready while the claim (origin='local')

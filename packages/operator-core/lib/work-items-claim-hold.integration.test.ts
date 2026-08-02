@@ -286,7 +286,7 @@ describe('diagnoseClaimNextMiss reports a held-only backlog as pending-but-not-r
   it('pendingUnclaimed > 0, readyUnclaimed === 0 (genuinely gated, never a false race or false drained)', async () => {
     await seedIssue('WI-held-diag', { createdTs: 100, payload: { _claimHold: true } });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.pendingUnclaimed).toBeGreaterThan(0);
     expect(diag.readyUnclaimed).toBe(0);
     expect(diag.drained).toBe(false); // work exists — a caller must not treat this as an empty queue
@@ -296,7 +296,7 @@ describe('diagnoseClaimNextMiss reports a held-only backlog as pending-but-not-r
     await seedIssue('WI-held-diag-2', { createdTs: 100, payload: { _claimHold: true } });
     await seedIssue('WI-ready-diag-2', { createdTs: 200 });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.readyUnclaimed).toBeGreaterThanOrEqual(1);
   });
 });

@@ -4,7 +4,7 @@ body_embedding: "[0.10520298,0.012009924,-0.03630385,-0.077016115,0.061396595,-0
 body_embedding_mode: "gemma"
 body_tsv: ""
 escalation: null
-mtime_ms: 1785220598293
+mtime_ms: 1785660807801
 phase: "github-bridge"
 risk_tier: null
 supervisor_notes: null

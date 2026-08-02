@@ -18,6 +18,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// NEVER hand-roll an "unwritable path" here: a made-up '/proc/…' hangs Node's
+// recursive mkdir forever (EI-19369372064589484). This fixture fails ENOTDIR in 0ms.
+import { unwritablePath } from '@papercusp/operator-core/lib/testing/unwritable-path';
+
 // __tests__ → cc → hooks → scripts → operator → apps → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../..');
 const PC_HEAVY = join(ROOT, 'scripts', 'pc-heavy.sh');
@@ -64,7 +68,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     const r = spawnSync('bash', [PC_HEAVY, 'bash', '-c', 'echo ok'], {
       encoding: 'utf8',
       // an unwritable slot dir proves the bypass path never tries to lock
-      env: { PATH: process.env.PATH ?? '', PC_HEAVY_BYPASS: '1', PC_HEAVY_DIR: '/proc/nonexistent/slots' },
+      env: { PATH: process.env.PATH ?? '', PC_HEAVY_BYPASS: '1', PC_HEAVY_DIR: unwritablePath('slots') },
       timeout: 10_000,
     });
     expect(r.status).toBe(0);
@@ -136,7 +140,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
   it('runs unthrottled (fail-open) when the slot dir cannot be created', () => {
     const r = spawnSync('bash', [PC_HEAVY, 'bash', '-c', 'echo ran'], {
       encoding: 'utf8',
-      env: { PATH: process.env.PATH ?? '', PC_HEAVY_DIR: '/proc/nonexistent/slots', PC_HEAVY_IONICE: '' },
+      env: { PATH: process.env.PATH ?? '', PC_HEAVY_DIR: unwritablePath('slots'), PC_HEAVY_IONICE: '' },
       timeout: 10_000,
     });
     expect(r.status).toBe(0);

@@ -144,7 +144,7 @@ describe('diagnoseClaimNextMiss treats a marker-only backlog as DRAINED (EI-8802
   it('pendingUnclaimed === 0 and drained === true (idle is correct — NOT pending-but-gated)', async () => {
     await seedIssue('WI-loop-marker-diag', { createdTs: 100, title: 'Loop wake #9: continue backlog drain' });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.pendingUnclaimed).toBe(0);
     expect(diag.readyUnclaimed).toBe(0);
     expect(diag.drained).toBe(true);
@@ -154,7 +154,7 @@ describe('diagnoseClaimNextMiss treats a marker-only backlog as DRAINED (EI-8802
     await seedIssue('WI-loop-marker-diag-2', { createdTs: 100, title: 'Loop wake #10: continue backlog drain' });
     await seedIssue('WI-ready-diag-2', { createdTs: 200 });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.pendingUnclaimed).toBe(1); // ONLY the real item — the marker row is excluded
     expect(diag.readyUnclaimed).toBe(1);
     expect(diag.drained).toBe(false);

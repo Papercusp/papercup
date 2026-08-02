@@ -38,10 +38,23 @@ mode.
 > on 2026-08-02 an agent starting its own instance killed the **owner's live
 > desktop** (WI-7101). The malformed file is generated, not tracked, so `git status`
 > is clean and every checked-in `capabilities/*.json` parses fine, which is exactly
-> why it reads as a mystery. `npm run dev` now claims a per-instance target-dir slot
-> (`bin/lib/claim-target-dir.sh`) so concurrent desktops cannot corrupt each other:
+> why it reads as a mystery. Every `tauri dev` launched through npm now claims a
+> per-instance target-dir slot, so concurrent desktops cannot corrupt each other:
 > a lone launch keeps the shared dir and its warm cache, a second one isolates
-> automatically and says so. Bypassing the wrapper bypasses that protection.
+> automatically and says so.
+>
+> The claim lives at the **`tauri` npm script** (`bin/tauri-guarded`, which sources
+> `bin/lib/claim-target-dir.sh` for the `dev` subcommand only) — a chokepoint every
+> launcher already passes through, so `npm run dev`, `dev:hmr`, `bin/desktop-preview-prod`
+> and **`scripts/verify-tauri-headless.sh`** are all covered. It used to be wired into
+> `bin/desktop-dev-nohmr` alone, which left it a convention each new launcher had to
+> remember, and three then forgot — including the headless-verify script this file
+> tells you to use, so the documented safe practice was itself launching an
+> unprotected build (EI-19369470572700441). `papercusp-desktop/test/tauri-dev-slot-chokepoint.test.js`
+> fails if a launcher routes around it again.
+>
+> Still unprotected by construction: a **`cargo tauri dev`** that skips npm entirely.
+> Don't.
 
 > **You CAN — and therefore MUST — verify UI yourself; "I can't check UI
 > headless" is a mistake, not a constraint.** Launching this shell is within

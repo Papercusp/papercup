@@ -149,7 +149,7 @@ describe('diagnoseClaimNextMiss treats a detector-only backlog as DRAINED (WI-26
     // drained, so a drainer idles instead of hot-retrying an item it can never self-select.
     await seedIssue('EI-detector-diag', { createdTs: 100, payload: detectorPayload() });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.pendingUnclaimed).toBe(0);
     expect(diag.readyUnclaimed).toBe(0);
     expect(diag.drained).toBe(true);
@@ -159,7 +159,7 @@ describe('diagnoseClaimNextMiss treats a detector-only backlog as DRAINED (WI-26
     await seedIssue('EI-detector-diag-2', { createdTs: 100, payload: detectorPayload() });
     await seedIssue('WI-ready-diag-2', { createdTs: 200 });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.pendingUnclaimed).toBe(1); // ONLY the real item — the detector row is excluded
     expect(diag.readyUnclaimed).toBe(1);
     expect(diag.drained).toBe(false);

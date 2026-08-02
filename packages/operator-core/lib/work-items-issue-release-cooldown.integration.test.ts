@@ -169,7 +169,7 @@ describe('diagnoseClaimNextMiss honors the same issue-family cooldown floor (mig
     await seedIssue('WI-cool-diag-1', { createdTs: 100, takenBy: 'bee-1' });
     await wi.releaseWorkItem('WI-cool-diag-1', { harness: H });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'bee-1', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'bee-1' });
     expect(diag.pendingUnclaimed).toBeGreaterThan(0);
     expect(diag.readyUnclaimed).toBe(0);
   });
@@ -178,7 +178,7 @@ describe('diagnoseClaimNextMiss honors the same issue-family cooldown floor (mig
     await seedIssue('WI-cool-diag-2', { createdTs: 100, takenBy: 'bee-1' });
     await wi.releaseWorkItem('WI-cool-diag-2', { harness: H });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'bee-2', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'bee-2' });
     expect(diag.readyUnclaimed).toBeGreaterThanOrEqual(1);
   });
 });

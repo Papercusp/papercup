@@ -199,7 +199,7 @@ describe('diagnoseClaimNextMiss treats an already-completed-only backlog as DRAI
       terminalCompletionRef: 'Duplicate of WI-3543',
     });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.pendingUnclaimed).toBe(0);
     expect(diag.readyUnclaimed).toBe(0);
     expect(diag.drained).toBe(true);
@@ -213,7 +213,7 @@ describe('diagnoseClaimNextMiss treats an already-completed-only backlog as DRAI
     });
     await seedIssue('WI-ready-diag-2', { createdTs: 200 });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.pendingUnclaimed).toBe(1); // ONLY the real item — the completed row is excluded
     expect(diag.readyUnclaimed).toBe(1);
     expect(diag.drained).toBe(false);

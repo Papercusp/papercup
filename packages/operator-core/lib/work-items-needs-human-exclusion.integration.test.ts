@@ -134,7 +134,7 @@ describe('diagnoseClaimNextMiss treats a needsHuman-only backlog as DRAINED (EI-
     // drainer idles instead of hot-retrying an item it can never actually self-select.
     await seedIssue('EI-human-diag', { kind: 'change', createdTs: 100, payload: { needsHuman: true } });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.pendingUnclaimed).toBe(0);
     expect(diag.readyUnclaimed).toBe(0);
     expect(diag.drained).toBe(true);
@@ -144,7 +144,7 @@ describe('diagnoseClaimNextMiss treats a needsHuman-only backlog as DRAINED (EI-
     await seedIssue('EI-human-diag-2', { kind: 'change', createdTs: 100, payload: { needsHuman: true } });
     await seedIssue('WI-ready-diag-2', { createdTs: 200 });
 
-    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag', states: ['todo'] });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
     expect(diag.pendingUnclaimed).toBe(1); // ONLY the real item — the needs-human row is excluded
     expect(diag.readyUnclaimed).toBe(1);
     expect(diag.drained).toBe(false);
