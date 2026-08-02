@@ -886,6 +886,26 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     expect(env.PAPERCUSP_SPAWN_ID).toMatch(/^s-\d+-/);
   });
 
+  it('EI-13668: stamps extraEnv.PAPERCUSP_AGENT_ROLE with the CANONICAL role so the child\'s own presence writes report it correctly', async () => {
+    // Mirrors the harness-spawn-routes.integration.test.ts assertion for the OTHER
+    // spawn chokepoint. Without this env stamp, deriveAgentRole (identity.ts) falls
+    // back to the generic identity.source→role mapping ('cup') on every presence
+    // write the child's OWN session makes after its one-shot spawn-time seed, so
+    // `@role:<x>` addressing (role-slot-live-resolve.ts) never finds a truly-live
+    // holder for any role spawned through this chokepoint.
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'queen' });
+    expect(res.ok).toBe(true);
+    const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
+    expect(env.PAPERCUSP_AGENT_ROLE).toBe('mug');
+  });
+
+  it('EI-13668: an already-canonical role is stamped unchanged', async () => {
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
+    expect(res.ok).toBe(true);
+    const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
+    expect(env.PAPERCUSP_AGENT_ROLE).toBe('cup');
+  });
+
   it('rejects when the workspace is at the running-spawn ceiling', async () => {
     const ceiling = spawnConcurrencyCeiling();
     runningCount = ceiling;

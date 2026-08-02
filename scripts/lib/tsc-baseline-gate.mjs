@@ -856,6 +856,28 @@ export function runTscBaselineGate({
   //
   // Fail-open (matching pc-heavy's own contract): no wrapper on disk ⇒ run tsc directly.
   // Admission control must never be the reason a legitimate typecheck cannot start.
+  //
+  // COALESCING WINDOW — identical argv is necessary but NOT sufficient. pc-heavy's follower
+  // loop polls for the leader's result until `now + PC_HEAVY_COALESCE_SEC` (default 90s) and
+  // then GIVES UP and runs its own copy (`pc-heavy.sh:423,452`). A full operator-core compile
+  // is ~104s, i.e. LONGER than that window — so with the default a concurrent follower always
+  // times out just before the leader finishes and compiles anyway. Measured 2026-08-02 09:50Z:
+  // FOUR byte-identical operator-core compiles queued simultaneously, none coalesced.
+  //
+  // So the window is raised for THIS invocation only (env on the child, not a global default),
+  // sized to comfortably exceed a cold compile plus queue wait. No other pc-heavy caller is
+  // affected.
+  //
+  // Why a longer window is SAFE here: staleness is NOT bounded by the TTL, it is bounded by the
+  // KEY. The key already folds in a tree-state token (cwd + argv + `git status --porcelain=v2`),
+  // so a replay can only ever serve a caller whose tracked tree is byte-identical to the
+  // leader's — exactly when re-running would reproduce the same diagnostics.
+  //
+  // ⚠ Residual hole, unchanged in KIND but widened in DURATION: the tree token uses
+  // `--untracked-files=no`, so a NEW UNTRACKED .ts picked up by the tsconfig does not bust the
+  // key. That hole exists at 90s too; this widens its window. Accepted because the gate's own
+  // verdict is per-file against a committed baseline, and an untracked file has no baseline
+  // entry. Revisit if that ever stops being true.
   const pcHeavyPath = resolve(root, 'scripts', 'pc-heavy.sh');
   try {
     tscOutput = existsSync(pcHeavyPath)
@@ -863,6 +885,7 @@ export function runTscBaselineGate({
           cwd: root,
           encoding: 'utf-8',
           maxBuffer: 64 * 1024 * 1024,
+          env: { ...process.env, PC_HEAVY_COALESCE_SEC: process.env.PC_HEAVY_COALESCE_SEC ?? '420' },
         })
       : execSync(`${tscCommand} 2>&1`, {
           cwd: root,
