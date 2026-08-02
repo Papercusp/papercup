@@ -85,7 +85,11 @@ describe('rubrics.* / scorecards.* resolvers', () => {
 
     const out = await r('scorecards.list', { rubricRef: 'r-1' });
     expect(out).toHaveLength(1);
-    expect(listScorecards).toHaveBeenCalledWith({ rubricRef: 'r-1', limit: 100 }); // the default
+    // WI-6124/D-015: links are OPT-IN at the store, and this resolver feeds the UI
+    // scorecard list, which renders them — so it MUST opt in. Asserting `includeLinks`
+    // here (rather than loosening to objectContaining) makes this the regression guard
+    // for a call site silently dropping the opt-in and re-introducing the empty-links UI.
+    expect(listScorecards).toHaveBeenCalledWith({ rubricRef: 'r-1', limit: 100, includeLinks: true });
   });
 
   it('scorecards.list rejects a missing rubricRef (arg validation)', async () => {

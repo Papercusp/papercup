@@ -31,7 +31,12 @@ const demoteMock = vi.fn(async () => ({ ok: true }));
 const startMock = vi.fn(async () => ({}));
 const pauseMock = vi.fn(async () => ({}));
 const setNowMock = vi.fn(async () => ({ ok: true }));
-vi.mock('./plans-api', () => ({
+// `writeError` is spread in REAL from the module (WI-6941) — the describe block below
+// tests it directly, and a hand-stubbed copy would pass while the shipped reader
+// reported failed bulk writes as successes. Everything listed after the spread is
+// still explicitly overridden.
+vi.mock('./plans-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./plans-api')>()),
   bucketOf: ({ status, startStatus }: { status: string; startStatus: string | null }) => {
     if (status === 'shipped') return 'shipped';
     if (status === 'rejected' || status === 'superseded') return 'rejected';

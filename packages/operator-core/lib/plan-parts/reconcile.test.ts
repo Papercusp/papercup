@@ -92,6 +92,11 @@ describe('ensurePlanPartsReconciledOnce (flag-gated, once-per-process)', () => {
     let runs = 0;
     const seams = {
       isFlagOn: async () => true,
+      // `sql` must be injected even though every other seam is: reconcilePlanParts
+      // resolves `deps.sql ?? getOrgPg().sql` BEFORE it calls loadPlans, so without
+      // this the real pool is opened (and the no-real-PG rail throws) before any
+      // seam runs — swallowed by the best-effort catch, leaving runs at 0.
+      sql: {} as never,
       loadPlans: async () => { runs++; return []; },
       storeFor: (() => new InMemoryPlanPartsStore()) as never,
       now: () => 1,

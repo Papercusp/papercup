@@ -64,6 +64,9 @@ beforeEach(() => {
   // capability:launch-agent → human-readable text + (optional) isError
   launchHandler.mockResolvedValue({ content: [{ type: 'text', text: `Launched su-new into ${SLUG}` }] });
   // Roster: the old member before the kill, a NEW live owner once the replacement has booted.
+  // mockReset (not clearAllMocks) — a leftover `once` value would be consumed by the verification
+  // poll instead of the snapshot, and the test would then really wait out the 90s window.
+  listFleetPresence.mockReset();
   listFleetPresence
     .mockResolvedValueOnce([row(LEADER), row(MEMBER)])
     .mockResolvedValue([row(LEADER), row('su-new-xyz')]);
@@ -208,14 +211,14 @@ describe('awaitReplacementMember', () => {
   });
 
   it('ignores a new owner whose heartbeat is stale (a corpse row, not a live agent)', async () => {
-    const sleep = vi.fn(async () => {});
+    let t = nowFn();
     const res = await awaitReplacementMember({
       before: new Set(['a']),
       list: async () => [{ ownerId: 'b', startedAt: new Date(0), heartbeatAt: new Date(nowFn() - 600_000) }],
       timeoutMs: 5_000,
       intervalMs: 1_000,
-      now: nowFn,
-      sleep,
+      now: () => t,
+      sleep: async (ms: number) => { t += ms; },
     });
     expect(res.verified).toBe(false);
     expect(res.rosterOwnerIds).toEqual(['b']);
@@ -252,7 +255,8 @@ describe('awaitReplacementMember', () => {
       sleep,
     });
     expect(res.verified).toBe(false);
-    expect(sleep).toHaveBeenCalledTimes(4); // 4 sleeps → t=4000; a 5th would exceed 5000
+    // sleeps at t=0,1000,2000,3000,4000 → t=5000; the next poll would overrun the 5s budget
+    expect(sleep).toHaveBeenCalledTimes(5);
     expect(res.waitedMs).toBeLessThanOrEqual(5_000);
   });
 });

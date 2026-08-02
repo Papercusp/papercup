@@ -68,8 +68,12 @@ export async function awaitReplacementMember(opts: {
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
   } = opts;
   const startedAt = now();
+  // Bound the loop by ITERATIONS as well as by the clock: the deadline test alone spins forever if
+  // `now` ever fails to advance, and a tool call that never returns is a worse failure than a
+  // slightly early give-up.
+  const maxPolls = Math.ceil(timeoutMs / Math.max(1, intervalMs)) + 2;
   let rosterOwnerIds: string[] = [];
-  for (;;) {
+  for (let poll = 0; ; poll += 1) {
     let rows: FleetPresenceRow[] = [];
     try {
       rows = await list();
@@ -84,7 +88,7 @@ export async function awaitReplacementMember(opts: {
     if (fresh) {
       return { verified: true, newMemberOwnerId: fresh.ownerId, waitedMs: at - startedAt, rosterOwnerIds };
     }
-    if (at - startedAt + intervalMs > timeoutMs) {
+    if (at - startedAt + intervalMs > timeoutMs || poll + 1 >= maxPolls) {
       return { verified: false, newMemberOwnerId: null, waitedMs: at - startedAt, rosterOwnerIds };
     }
     await sleep(intervalMs);
