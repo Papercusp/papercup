@@ -31,10 +31,6 @@ export const PERF_INTERACTIONS = {
    *  chunk loads and the palette content first renders. First-open pays the
    *  dynamic-import cost, so this guards a regression in that chunk. */
   commandPaletteOpen: 'command-palette-open',
-  /** Op-chat sidebar Inbox face: a filter/facet click re-scopes the virtualized
-   *  attention list → the row virtualizer re-renders + settles. Guards a
-   *  regression in the large-list filter/settle path (WI-5339). */
-  inboxListSettle: 'inbox-list-settle',
   /** A conversation is opened (chatId set) → the agent_chats detail resolves
    *  and the thread transcript first renders. The "open a conversation and wait
    *  for it to load" path. */

@@ -55,9 +55,6 @@ export const DESKTOP_PERF_BUDGETS: DesktopPerfBudgets = {
     // Command palette: first open pays the lazy cmdk+Radix chunk load, so the
     // ceiling is generous vs. a warm re-open.
     'command-palette-open': 400,
-    // Inbox filter → virtualized list re-scope + settle: a bounded list op that
-    // should feel instant.
-    'inbox-list-settle': 300,
     // Open a conversation → agent_chats detail resolves + transcript renders. A
     // network+render load path, so a route-scale ceiling.
     'conversation-thread-load': 1500,

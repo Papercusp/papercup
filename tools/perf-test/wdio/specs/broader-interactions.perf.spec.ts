@@ -9,13 +9,20 @@
  *
  * Covered here (the cleanly driver-triggerable ones):
  *   - command-palette-open : ?palette=true → the lazy cmdk chunk mounts.
- *   - inbox-list-settle     : op-chat Inbox face → a filter chip re-scopes the
- *                             virtualized list.
  *   - harness-dock-open     : /adv dock mount → dockview API bind (hydration);
  *                             emitted once on mount, so we read the latest.
  *
  * (conversation-thread-load needs a specific chat fixture to open; it is
  * exercised by the in-app suite's read-latest check + its component-wiring test.)
+ *
+ * inbox-list-settle was RETIRED (EI-18854256403211741 / WI-6543, 2026-08-02):
+ * it drove the op-chat sidebar Inbox face, which was retired 2026-07-26
+ * (hud-consolidation-2026-07-26 D-001, `_retired/inbox-pane/`). The HUD board
+ * that replaced it has no comparable virtualized-list-filter interaction (a
+ * Kanban board with a plain text-filter input, not a re-scoped virtualized
+ * list), so the honest fix was to delete the check + its budget rather than
+ * invent an instrumentation target nothing actually exercises. See
+ * PERF_INTERACTIONS in perf-marks.ts for the still-live interaction set.
  *
  * Budgets MIRROR DESKTOP_PERF_BUDGETS.interactions
  * (packages/operator-core/lib/system-health/desktop-perf-budgets.ts). This runner
@@ -30,7 +37,6 @@ import { recordInteractionMs } from "../perf-report";
 import { waitForAppMount } from "../app-mount";
 
 const COMMAND_PALETTE_OPEN_BUDGET_MS = 400;
-const INBOX_LIST_SETTLE_BUDGET_MS = 300;
 const HARNESS_DOCK_OPEN_BUDGET_MS = 1500;
 
 /**
@@ -125,65 +131,6 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     expect(measuredMs).not.toBeNull();
     expect(measuredMs as number).toBeLessThanOrEqual(
       COMMAND_PALETTE_OPEN_BUDGET_MS,
-    );
-  });
-
-  it("re-scopes the Inbox virtualized list within budget", async () => {
-    const NAME = "inbox-list-settle";
-    await waitForAppMount(browser);
-
-    // Open the op-chat sidebar Inbox face and force the 'needs' filter, so
-    // clicking 'all' is a real re-scope.
-    await browser.execute(() => {
-      const u = new URL(location.href);
-      u.searchParams.set("opcv", "inbox");
-      u.searchParams.set("opci", "needs");
-      history.pushState({}, "", u.pathname + u.search + u.hash);
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    });
-
-    await browser.waitUntil(
-      async () =>
-        await browser.execute(() =>
-          Boolean(document.querySelector('[data-testid="inbox-filter-all"]')),
-        ),
-      {
-        timeout: 20_000,
-        timeoutMsg:
-          "no inbox filter chips in the sidebar Inbox face within 20s (is the op-chat sidebar open?)",
-      },
-    );
-
-    // Clear stale measure, then click the 'all' chip to START the interaction
-    // (beginInteraction fires on the click; endInteraction after the list
-    // re-renders).
-    await browser.execute((name) => {
-      try {
-        if (performance.clearMeasures) performance.clearMeasures(name);
-      } catch {
-        /* ignore */
-      }
-      const chip = document.querySelector<HTMLElement>(
-        '[data-testid="inbox-filter-all"]',
-      );
-      if (chip) chip.click();
-    }, NAME);
-
-    await browser.waitUntil(
-      async () =>
-        await browser.execute(
-          (name) => performance.getEntriesByName(name, "measure").length > 0,
-          NAME,
-        ),
-      { timeout: 6_000, timeoutMsg: `no "${NAME}" measure within 6s of click` },
-    );
-
-    const measuredMs = await latestMeasure(NAME);
-    // Record BEFORE the asserts — see the note in the palette test above.
-    recordInteractionMs(NAME, measuredMs, INBOX_LIST_SETTLE_BUDGET_MS);
-    expect(measuredMs).not.toBeNull();
-    expect(measuredMs as number).toBeLessThanOrEqual(
-      INBOX_LIST_SETTLE_BUDGET_MS,
     );
   });
 

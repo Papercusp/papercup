@@ -1,0 +1,271 @@
+/**
+ * resolver-backing-table-coverage.test.ts — the RESOLVER → TABLE → INVALIDATION guard
+ * (EI-19304902443341820).
+ *
+ * THE GAP THIS CLOSES
+ * -------------------
+ * Its sibling `cache-tag-trigger-coverage.integration.test.ts` checks TABLE_TO_QUERY_NAMES against
+ * the PG triggers with exact set-equality. That has teeth in three directions — a newly-mapped
+ * table with no trigger, a removed trigger, a stale exemption — but every one of them requires the
+ * table to ALREADY BE in the map. A resolver reading a table listed in NEITHER
+ * `TABLE_TO_QUERY_NAMES` nor `OPERATOR_STATE_SYNC_NAMES` was invisible to that guard, and to every
+ * other check in the repo.
+ *
+ * The only thing standing between that and a silently-dead sync query was a maintenance comment in
+ * table-to-query-names.ts. A comment is not a guard.
+ *
+ * `accounts.pool` (added 2026-06-15) read `harness_shared.operator_account_pool` and was never
+ * mapped, so not one invalidation ever fired from a pool write — for the query whose entire purpose
+ * is showing continuously-updating account usage. Nothing errored; the tab quietly refreshed on
+ * remount only. It took the owner noticing stale numbers, ~7 weeks later, to surface it (WI-6796).
+ * Note the asymmetry that makes this bite: the cheapest failure to introduce was the one nothing
+ * checked.
+ *
+ * WHY THE TABLE DIRECTION, AND NOT A CHEAPER NAME-LEVEL CHECK
+ * ----------------------------------------------------------
+ * The tempting cheap guard is "every registry name must appear in a map or in some
+ * `notifySyncInvalidate('<name>')` callsite". It would NOT have caught this. `accounts.pool` had
+ * FOUR such callsites the entire time (register / remove / reset-rate / probe-capacity). The query
+ * had a push path — just not from the writer that actually moves its data (the gateway's continuous
+ * usage-window projection). Only the resolver → TABLE direction can express that.
+ *
+ * That derivation is unsound in the other direction too: the derived-reads precompute producer
+ * invalidates via `notifySyncInvalidate(producer.key)` — a VARIABLE — so a literal-string scan
+ * reports six perfectly live panels as having no push path at all. Both errors were measured while
+ * triaging this. Do not reintroduce it.
+ *
+ * WHY HERMETIC (no PG, O(1) per entry)
+ * ------------------------------------
+ * Deliberately NOT the "dispatch every entry against a real database" shape. That was tried and
+ * repeatedly blew the green gate under load — see the note in sync-read-audit.ts, where the timeout
+ * went 10s → 30s → 120s and then past it at ~123 entries. Structural inspection catches this class
+ * at a cost the gate can absorb.
+ *
+ * WHAT IT ASSERTS
+ * ---------------
+ *   1. Every table a resolver DECLARES in `backingTables` invalidates THAT query name through one
+ *      of the two invalidation surfaces — or carries a documented PUSH_EXEMPT reason + re-arm.
+ *   2. Every registry entry either declares `backingTables` or sits in UNDECLARED_BASELINE, which
+ *      is SHRINK-ONLY: exact set-equality fails on a new undeclared entry, and the size ceiling
+ *      fails even if someone edits the list to make room.
+ *   3. Neither allow-list may go stale.
+ */
+import { describe, expect, it } from 'vitest';
+import { knownQueryNamesV2, getRegistryEntryV2 } from '../index';
+import { TABLE_TO_QUERY_NAMES } from '../table-to-query-names';
+import { OPERATOR_STATE_SYNC_NAMES } from '../../operator-state-pg';
+
+/**
+ * Declared (queryName, table) pairs that intentionally have NO table-driven invalidation, each with
+ * the reason AND the condition that would re-arm it. Keyed `"<queryName> :: <schema>.<table>"`.
+ *
+ * Mirrors the `COVERAGE_EXEMPT` idiom in the sibling trigger guard on purpose, so a deliberately
+ * poll-only query (per /internal/docs/agent-insights/push-vs-poll-and-the-90s-dedupe — continuous
+ * gauges, external probes) stays legal but DECLARED, rather than merely absent and indistinguishable
+ * from a bug.
+ */
+const PUSH_EXEMPT: Record<string, string> = {
+  // Continuous heartbeat gauge: shared_presence is rewritten by every agent's keepalive, so a
+  // per-row notify is the notify-storm anti-pattern (/internal/docs/performance) for a panel whose
+  // entire content is "who is alive right now" — polling IS the semantics here.
+  // RE-ARM: only if presence gains a debounced / coalesced change producer.
+  'sidebar.hives :: harness_shared.shared_presence':
+    'continuous presence heartbeat; per-row notify = notify-storm. Poll-only by design.',
+
+  // The derived-reads precompute substrate. These six resolvers are plain SELECTs against the
+  // snapshot table, and the PRODUCER already pushes for them: derived-reads/registry.ts fires
+  // notifySyncInvalidate(producer.key) after the upsert and ONLY when the payload md5 actually
+  // changed. That is a strictly better signal than a table trigger, which would also fire on the
+  // no-op refreshes that are the common case for a slow-moving producer.
+  // RE-ARM: remove if that producer-side push is ever dropped.
+  ...Object.fromEntries(
+    [
+      'dev.serviceHealth',
+      'dev.deployState',
+      'dev.gitPipeline',
+      'dev.gitPipelineHives',
+      'insights.coordTokens',
+      'learning.soakReport',
+    ].map((n) => [
+      `${n} :: harness_shared.derived_read_snapshots`,
+      'precompute substrate; the PRODUCER pushes notifySyncInvalidate(producer.key) on a real payload change (derived-reads/registry.ts) — better than a table trigger, which would also fire on no-op refreshes.',
+    ]),
+  ),
+};
+
+/**
+ * Registry entries that do not yet declare `backingTables`.
+ *
+ * SHRINK-ONLY. This is a ratchet, not a parking lot: it exists so the guard could be introduced
+ * without auditing all 213 resolvers in one sitting, and every name removed from it is one more
+ * panel whose liveness is provable rather than assumed. Do NOT add to it — a new registry entry
+ * must declare its backing tables (or a PUSH_EXEMPT reason). See UNDECLARED_CEILING below.
+ */
+const UNDECLARED_BASELINE: readonly string[] = [
+  'adaptiveTelemetry.byHarness', 'advRoster.list', 'advSessions.list', 'agentChats.byHarness',
+  'agentChats.detail', 'agentConfig.modelTiersBaseline', 'agentDetail.byOwner',
+  'agentRunsConsolidated.bySlug', 'agentRunsConsolidated.recent', 'auditLog.operatorDecisions',
+  'automation.catalog', 'autonomy.graduation', 'autonomy.policy', 'chunkPlans.byFeature',
+  'chunkPlans.byHarness', 'codeRecipes', 'contributors.byHarness', 'conversations.agentChatDetail',
+  'conversations.agentChatList', 'conversations.agentMessageDetail', 'conversations.agentMessageList',
+  'conversations.deliberationDetail', 'conversations.deliberationList', 'conversations.questionDetail',
+  'conversations.questionsList', 'coord.history', 'coord.inbox', 'coord.plans', 'decision.ledger',
+  'designFeatures.byHarness', 'designMemos.list', 'designRegistry.search', 'designRegressions.list',
+  'designSketches.byFeature', 'designTokens.list', 'dev.assignableMembers', 'dev.coordFeed',
+  'dev.coordPresence', 'dev.fleetGovernor', 'dev.pgActiveQueries', 'dev.pgHealth', 'dev.telemetry',
+  'dev.toolFormatAdoption', 'discordConfig.byHarness', 'dockLayouts.byName', 'dockLayouts.list',
+  'evals.benchEstimate', 'evals.benchRun', 'evals.benchRunLive', 'evals.benchRuns', 'evals.coordTrace',
+  'evals.fleet', 'evals.report', 'evals.runs', 'evals.suites', 'featureAudit.byHarness',
+  'featureDebugNotes.byHarness', 'featureNotes.byHarness', 'featurePrs.byHarness',
+  'featureTimeline.byFeature', 'featuresConsolidated.byHive', 'featuresConsolidated.byPlanSlug',
+  'featuresConsolidated.bySlug', 'featuresConsolidated.detail', 'fleet.status',
+  'fleetAssignments.byHarness', 'fleets.byWorkspace', 'harnessArchives.byHarness',
+  'harnessBrainstorm.byHarness', 'harnessCheckpoints.byHarness', 'harnessDecisions.byHarness',
+  'harnessEscalations.byHarness', 'harnessHookLogs.byHarness', 'harnessLanes.byHarness',
+  'harnessLanes.snapshot', 'harnessPendingIssues.byHarness', 'harnessProjectFiles.byHarness',
+  'harnessProjects.lite', 'harnessScreenshots.byHarness', 'harnessSkills.byHarness',
+  'harnessSmokeTest.byHarness', 'harnessStatus.byHarness', 'harnessTests.byHarness',
+  'harnessTextArtifact.byHarness', 'harnessWorkspaces.byHarness', 'health.history', 'health.snapshot',
+  'hive.beaconConsent', 'hive.controlState', 'hive.overrides', 'hive.steering', 'hive.workspaceScope',
+  'hiveFromRepo.progress', 'hiveRoster.byHarness', 'hiveRoster.byHive', 'insights.tokens',
+  'issuesConsolidated.bySlug', 'knowledgePacks.candidates', 'knowledgePacks.list', 'kpis.all',
+  'learning.analyze', 'learning.analyzeCycle', 'learning.apiary', 'learning.bakeoff', 'learning.demand',
+  'learning.efficacy', 'learning.ekg', 'learning.experiments', 'learning.frontier', 'learning.gym',
+  'learning.health', 'learning.hive', 'learning.hiveEvalTrend', 'learning.hiveList',
+  'learning.hiveThroughput', 'learning.improvements', 'learning.knowledge', 'learning.mugWakeEfficiency',
+  'learning.observations', 'learning.observations.counts', 'learning.redQueen',
+  'learning.releaseReadiness', 'learning.retain', 'learning.scout', 'learning.scoutDrafts',
+  'mugBrief.floorView', 'network.board', 'network.federationStatus', 'network.fleet.wakes',
+  'network.hive.asks', 'network.hive.beacons', 'network.hive.wakes', 'network.hiveDirectory', 'notes.list',
+  'operatorBudget.byWorkspace', 'operatorConfig.byWorkspace', 'operatorConversations.current',
+  'operatorPreferences.byWorkspace', 'operatorReports.latest', 'operatorStandingApprovals.byWorkspace',
+  'operatorTurns.byConversation', 'operatorTurns.page', 'overwatch.controlState', 'overwatch.liveness',
+  'overwatch.snapshot', 'p2p.allotments', 'p2p.audit', 'p2p.grants', 'p2p.settings',
+  'pendingReviews.byHarness', 'planItems.byPlan', 'planSessions.list', 'plans.attention',
+  'plans.attentionCounts', 'plans.attentionItem', 'plans.byHive', 'plans.get', 'plans.items', 'plans.lint',
+  'plans.list', 'plans.revisions', 'plans.runHistory', 'plans.runs', 'plans.schedule',
+  'plans.scheduledOccurrences', 'plans.search', 'plans.viewer', 'plansDrafts.bySlug',
+  'pluginConfigs.byHarness', 'pluginEnables.byWorkspace', 'prReviewerSettings.byHarness',
+  'projectSpecRevisions.byProject', 'proposalsShared.byHarness', 'recipeCandidates', 'rubrics.list',
+  'rubrics.trend', 'savedPrompts.byScope', 'scheduler.running', 'scorecards.list', 'sidebar.fleetCups',
+  'snapshotsConsolidated.bySlug', 'storage.usage', 'taskManager.inventory', 'testing.assertionsByHarness',
+  'toastLog.recent', 'trust.list', 'usage.spend', 'userActions.byHarness', 'userActions.byKind',
+  'userActions.recent', 'userMemory.feedbackStats', 'userMemory.journalStatus', 'userMemory.list',
+  'userPreferences.current', 'voicePrefs.effective', 'voicePrefs.workspace', 'weather.current',
+  'workItems.byHarness', 'workItems.delta24h', 'workItems.detail', 'workItems.stats',
+];
+
+/**
+ * The baseline may only SHRINK. Set to the seeded size; lower it as entries are declared. Raising
+ * it takes a deliberate edit here, which is the point: it makes growth visible in review instead of
+ * a quiet append (the DARK_FLAGS_HIGH_WATERMARK pattern, and for the same reason — that watermark
+ * got silently bumped 22→24→25→26 for the same bug class until it was split and pinned).
+ */
+const UNDECLARED_CEILING = 201;
+
+/** Does a write to `table` invalidate `name`, through either invalidation surface? */
+function tableInvalidates(table: string, name: string): boolean {
+  for (const t of TABLE_TO_QUERY_NAMES[table] ?? []) {
+    if ((typeof t === 'string' ? t : t.name) === name) return true;
+  }
+  // OPERATOR_STATE_SYNC_NAMES is keyed by BARE table name; TABLE_TO_QUERY_NAMES by schema.table.
+  const bare = table.includes('.') ? table.slice(table.indexOf('.') + 1) : table;
+  const stateNames = (OPERATOR_STATE_SYNC_NAMES as Record<string, readonly string[] | undefined>)[bare];
+  return (stateNames ?? []).includes(name);
+}
+
+function declaredTables(name: string): readonly string[] {
+  return getRegistryEntryV2(name)?.backingTables ?? [];
+}
+
+describe('sync resolvers — every declared backing table actually invalidates its query', () => {
+  const allNames = [...knownQueryNamesV2()].sort();
+
+  it('sanity: the registry is non-trivial and both invalidation maps loaded', () => {
+    // Guards against a silently-empty set making every check below vacuous.
+    expect(allNames.length).toBeGreaterThan(100);
+    expect(Object.keys(TABLE_TO_QUERY_NAMES).length).toBeGreaterThan(20);
+    expect(Object.keys(OPERATOR_STATE_SYNC_NAMES).length).toBeGreaterThan(0);
+  });
+
+  it('the regression case is pinned: accounts.pool declares operator_account_pool AND is invalidated by it', () => {
+    // This exact pair was un-live for ~7 weeks (WI-6796). If this ever fails again, the Accounts tab
+    // has silently gone back to refreshing on remount only.
+    expect(declaredTables('accounts.pool')).toContain('harness_shared.operator_account_pool');
+    expect(tableInvalidates('harness_shared.operator_account_pool', 'accounts.pool')).toBe(true);
+  });
+
+  it('every declared (query, table) pair is invalidated, or documented in PUSH_EXEMPT', () => {
+    const unwired: string[] = [];
+    for (const name of allNames) {
+      for (const table of declaredTables(name)) {
+        const key = `${name} :: ${table}`;
+        if (tableInvalidates(table, name)) continue;
+        if (PUSH_EXEMPT[key]) continue;
+        unwired.push(key);
+      }
+    }
+    expect(
+      unwired.sort(),
+      `Sync quer(ies) declare a backing table whose writes do NOT invalidate them. The panel will ` +
+        `LOOK live and will not be — it refreshes on remount only, silently, exactly as accounts.pool ` +
+        `did for ~7 weeks (WI-6796). For each: EITHER add the query name to that table's entry in ` +
+        `table-to-query-names.ts / OPERATOR_STATE_SYNC_NAMES, OR — if it is deliberately poll-only (a ` +
+        `continuous gauge, an external probe; see push-vs-poll-and-the-90s-dedupe) — add it to ` +
+        `PUSH_EXEMPT in this file with the reason AND the re-arm condition.\n` +
+        `  unwired: [${unwired.join(', ')}]`,
+    ).toEqual([]);
+  });
+
+  it('no PUSH_EXEMPT entry is stale (each names a real declared pair that still lacks invalidation)', () => {
+    const stale: string[] = [];
+    for (const key of Object.keys(PUSH_EXEMPT)) {
+      const [name, table] = key.split(' :: ');
+      if (!name || !table) {
+        stale.push(`${key} (malformed key — expected "<queryName> :: <schema>.<table>")`);
+        continue;
+      }
+      if (!declaredTables(name).includes(table)) {
+        stale.push(`${key} (no longer declared on that resolver)`);
+        continue;
+      }
+      if (tableInvalidates(table, name)) stale.push(`${key} (now genuinely invalidated — the exemption is dead)`);
+    }
+    expect(
+      stale.sort(),
+      `PUSH_EXEMPT has stale entr(ies) — the pair is no longer declared, or has SINCE gained real ` +
+        `invalidation. Remove the dead exemption so the allow-list keeps meaning something: ${stale.join(', ')}`,
+    ).toEqual([]);
+  });
+});
+
+describe('sync resolvers — the undeclared baseline is a shrink-only ratchet', () => {
+  const allNames = [...knownQueryNamesV2()].sort();
+
+  it('every registry entry either declares backingTables or is in the baseline', () => {
+    const undeclared = allNames.filter((n) => declaredTables(n).length === 0).sort();
+    expect(
+      undeclared,
+      `The set of registry entries WITHOUT a backingTables declaration has changed.\n` +
+        `  • Added a NEW sync query? Declare its backingTables (see QueryEntry in sync-resolver/index.ts). ` +
+        `Do NOT append it to UNDECLARED_BASELINE — the baseline is closed, and appending re-opens exactly ` +
+        `the hole this guard exists to close.\n` +
+        `  • Just declared one that used to be undeclared? Remove it from UNDECLARED_BASELINE and lower ` +
+        `UNDECLARED_CEILING to match. That is one more panel whose liveness is now provable.`,
+    ).toEqual([...UNDECLARED_BASELINE].sort());
+  });
+
+  it('the baseline never grows', () => {
+    expect(
+      UNDECLARED_BASELINE.length,
+      `UNDECLARED_BASELINE grew. It is a ratchet for retiring an EXISTING gap, not a parking lot for ` +
+        `new undeclared queries — a new entry must declare its backing tables instead.`,
+    ).toBeLessThanOrEqual(UNDECLARED_CEILING);
+  });
+
+  it('the baseline names only real registry entries (it cannot rot ahead of the registry)', () => {
+    const known = new Set(knownQueryNamesV2());
+    const ghosts = UNDECLARED_BASELINE.filter((n) => !known.has(n));
+    expect(ghosts, `UNDECLARED_BASELINE names quer(ies) no longer in the registry: ${ghosts.join(', ')}`).toEqual([]);
+  });
+});

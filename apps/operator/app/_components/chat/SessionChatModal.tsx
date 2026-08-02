@@ -41,6 +41,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useQueryState, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '../../harness/Modal';
+import { Tooltip } from '../../harness/Tooltip';
 import { OperatorChat } from '../OperatorChat';
 import { useAgentThinkingStream } from '../../harness/AgentThinkingStream';
 import { sessionTimelineToChatMessages } from './session-transcript-mapping';
@@ -974,30 +975,45 @@ export default function SessionChatModal({
         >
         {open ? (
           <div style={CHAT_TOOLBAR_STYLE} data-testid="session-chat-toolbar">
-            <button
-              type="button"
-              className="pc-button"
-              onClick={toggleWindow}
-              aria-pressed={chatMax === 'window'}
-              aria-label={chatMax === 'window' ? 'Exit full window' : 'Full window'}
-              title={chatMax === 'window' ? 'Exit full window' : 'Fill the app window with the conversation'}
-              data-testid="session-chat-full-window"
-              style={CHAT_TOOLBAR_BUTTON_STYLE}
+            {/* Tooltip, not a `title=` attribute: these are ICON-ONLY buttons, so
+                the hover text is the only place their meaning is written for a
+                sighted user — and a native title is unreachable by keyboard and
+                on touch. `lint:design-primitives` fails a title on a <button>
+                for exactly this reason. */}
+            <Tooltip
+              label={chatMax === 'window' ? 'Exit full window' : 'Fill the app window with the conversation'}
+              side="bottom"
+              align="end"
             >
-              {chatMax === 'window' ? <Minimize2 size={12} aria-hidden="true" /> : <Maximize2 size={12} aria-hidden="true" />}
-            </button>
-            <button
-              type="button"
-              className="pc-button"
-              onClick={toggleScreen}
-              aria-pressed={screenActive}
-              aria-label={screenActive ? 'Exit full screen' : 'Full screen'}
-              title={screenActive ? 'Exit full screen' : 'Fill the whole screen with the conversation'}
-              data-testid="session-chat-full-screen"
-              style={CHAT_TOOLBAR_BUTTON_STYLE}
+              <button
+                type="button"
+                className="pc-button"
+                onClick={toggleWindow}
+                aria-pressed={chatMax === 'window'}
+                aria-label={chatMax === 'window' ? 'Exit full window' : 'Full window'}
+                data-testid="session-chat-full-window"
+                style={CHAT_TOOLBAR_BUTTON_STYLE}
+              >
+                {chatMax === 'window' ? <Minimize2 size={12} aria-hidden="true" /> : <Maximize2 size={12} aria-hidden="true" />}
+              </button>
+            </Tooltip>
+            <Tooltip
+              label={screenActive ? 'Exit full screen' : 'Fill the whole screen with the conversation'}
+              side="bottom"
+              align="end"
             >
-              {screenActive ? <Minimize size={12} aria-hidden="true" /> : <Maximize size={12} aria-hidden="true" />}
-            </button>
+              <button
+                type="button"
+                className="pc-button"
+                onClick={toggleScreen}
+                aria-pressed={screenActive}
+                aria-label={screenActive ? 'Exit full screen' : 'Full screen'}
+                data-testid="session-chat-full-screen"
+                style={CHAT_TOOLBAR_BUTTON_STYLE}
+              >
+                {screenActive ? <Minimize size={12} aria-hidden="true" /> : <Maximize size={12} aria-hidden="true" />}
+              </button>
+            </Tooltip>
             {/* The detail toggle only makes sense while the rail can be shown;
                 maximized deliberately has no rail (D-002). */}
             {!maximized ? (
@@ -1017,17 +1033,18 @@ export default function SessionChatModal({
                 for — so without an explicit ✕ there is no way out but the
                 maximize toggles. */}
             {maximized ? (
-              <button
-                type="button"
-                className="pc-button"
-                onClick={closeChat}
-                aria-label="Close conversation"
-                title="Close conversation"
-                data-testid="session-chat-close"
-                style={CHAT_TOOLBAR_BUTTON_STYLE}
-              >
-                <X size={12} aria-hidden="true" />
-              </button>
+              <Tooltip label="Close conversation" side="bottom" align="end">
+                <button
+                  type="button"
+                  className="pc-button"
+                  onClick={closeChat}
+                  aria-label="Close conversation"
+                  data-testid="session-chat-close"
+                  style={CHAT_TOOLBAR_BUTTON_STYLE}
+                >
+                  <X size={12} aria-hidden="true" />
+                </button>
+              </Tooltip>
             ) : null}
           </div>
         ) : null}

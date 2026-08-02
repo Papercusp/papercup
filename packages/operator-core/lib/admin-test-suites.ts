@@ -787,38 +787,6 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       },
     },
     {
-      id: 'interaction-inbox-list-settle',
-      label: 'Inbox list filter settle interaction',
-      run: async () => {
-        // Open the op-chat sidebar Inbox face, force the 'needs' filter, then click
-        // the 'all' chip so the scoped virtualized list definitely re-scopes; the
-        // begin fires on the chip click, the end after the list re-renders (P-006).
-        await clearPerfRecorder(ctx);
-        const result = await measureInteraction(ctx, {
-          name: 'inbox-list-settle',
-          setup: `const u = new URL(location.href); u.searchParams.set('opcv', 'inbox'); u.searchParams.set('opci', 'needs'); history.pushState({}, '', u.pathname + u.search + u.hash); window.dispatchEvent(new PopStateEvent('popstate'));`,
-          triggerSelector: '[data-testid="inbox-filter-all"]',
-          settleTimeoutMs: 6_000,
-        });
-        const budgetMs = DESKTOP_PERF_BUDGETS.interactions['inbox-list-settle'];
-        if (!result.ok) {
-          return fail(
-            `The Inbox filter re-scopes the virtualized list within ${budgetMs}ms in the Tauri desktop shell.`,
-            `Could not measure inbox-list-settle: ${result.detail}`,
-            ['Open the op-chat sidebar Inbox face (?opcv=inbox) so the filter chips (inbox-filter-all) are present.'],
-          );
-        }
-        const verdict = evaluateInteractionBudget('inbox-list-settle', result.measuredMs);
-        return statusResult(
-          verdict.ok,
-          `The Inbox filter re-scopes the virtualized list within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
-          `inbox-list-settle=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
-          undefined,
-          [{ key: 'interaction:inbox-list-settle', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
-        );
-      },
-    },
-    {
       id: 'interaction-conversation-thread-load',
       label: 'Conversation thread load interaction',
       run: async () => {

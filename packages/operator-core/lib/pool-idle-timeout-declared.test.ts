@@ -400,10 +400,9 @@ const PENDING_MIGRATION: Record<string, string> = {
   'packages/operator-core/lib/llm-testing/promotion/candidates.ts': 'transactional — migrate',
   'packages/operator-core/lib/system-health/desktop-perf-runs.ts': 'transactional — migrate',
   'packages/operator-core/lib/sync/hyperbee/pg-merge-cursor-store.ts': 'transactional — migrate',
-  'packages/operator-core/lib/endpoint-route/routes/admin/llm-tests-findings.ts': 'transactional — migrate',
-  'packages/operator-core/lib/endpoint-route/routes/admin/llm-tests-runs.ts': 'transactional — migrate',
-  'packages/operator-core/lib/endpoint-route/routes/admin/llm-tests-finding-by-id.ts': 'transactional — migrate',
-  'packages/operator-core/lib/endpoint-route/routes/admin/llm-tests-run-by-id.ts': 'transactional — migrate',
+  // MIGRATED 2026-08-02, entries deleted: the 4 endpoint-route/routes/admin/llm-tests-*.ts
+  // routes now use getLongLivedAdminPool. Deleting the entry is REQUIRED, not tidiness —
+  // the shrink-only test below fails while an entry matches nothing.
 };
 
 const URL_TRACKING_ALLOWLIST = { ...LISTEN_EXEMPT, ...PENDING_MIGRATION };
@@ -467,9 +466,15 @@ function tickLockSql(): Sql {
 describe('admin pools track the URL they were built with (EI-19306394439939264)', () => {
   const files = SCAN_ROOTS.flatMap((r) => walk(join(REPO_ROOT, r)));
 
-  it('finds the admin-pool sites it is meant to guard (test is not vacuously green)', () => {
-    const total = files.reduce((n, f) => n + findUntrackedAdminPoolSites(readFileSync(f, 'utf8')).length, 0);
-    expect(total).toBeGreaterThanOrEqual(10);
+  it('the tree scan is wired correctly (test is not vacuously green)', () => {
+    // Non-vacuity is anchored to the STABLE singleton-pool population and to the scan
+    // finding files at all — deliberately NOT to the number of untracked pools. Driving
+    // that number to ZERO is the entire point of this guard, so asserting it stays >= N
+    // would red the gate for whoever finishes the migration: the guard would punish its
+    // own success. (The fixture describe above is what proves the detector still fires.)
+    const singletons = files.reduce((n, f) => n + findSingletonPoolSites(readFileSync(f, 'utf8')).length, 0);
+    expect(files.length).toBeGreaterThan(100);
+    expect(singletons).toBeGreaterThanOrEqual(10);
   });
 
   it('no NEW singleton admin pool bypasses getLongLivedAdminPool', () => {

@@ -42,7 +42,6 @@ describe('PERF_INTERACTIONS registry', () => {
     // keys + the desktopPerformanceChecks measure keys. Pinned so a rename can't
     // silently sever the wiring.
     expect(PERF_INTERACTIONS.commandPaletteOpen).toBe('command-palette-open');
-    expect(PERF_INTERACTIONS.inboxListSettle).toBe('inbox-list-settle');
     expect(PERF_INTERACTIONS.conversationThreadLoad).toBe('conversation-thread-load');
     expect(PERF_INTERACTIONS.harnessDockOpen).toBe('harness-dock-open');
   });
@@ -59,7 +58,6 @@ describe('PERF_INTERACTIONS registry', () => {
   it('every P-006 interaction begins + ends like plan-popup-open (shared substrate)', () => {
     for (const name of [
       PERF_INTERACTIONS.commandPaletteOpen,
-      PERF_INTERACTIONS.inboxListSettle,
       PERF_INTERACTIONS.conversationThreadLoad,
       PERF_INTERACTIONS.harnessDockOpen,
     ]) {

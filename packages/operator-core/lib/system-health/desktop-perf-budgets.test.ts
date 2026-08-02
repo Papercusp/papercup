@@ -11,7 +11,6 @@ describe('DESKTOP_PERF_BUDGETS', () => {
 
   it('declares the P-006 broadened interaction budgets', () => {
     expect(DESKTOP_PERF_BUDGETS.interactions['command-palette-open']).toBe(400);
-    expect(DESKTOP_PERF_BUDGETS.interactions['inbox-list-settle']).toBe(300);
     expect(DESKTOP_PERF_BUDGETS.interactions['conversation-thread-load']).toBe(1500);
     expect(DESKTOP_PERF_BUDGETS.interactions['harness-dock-open']).toBe(1500);
   });
@@ -20,8 +19,6 @@ describe('DESKTOP_PERF_BUDGETS', () => {
     // over budget → fail; at/under → pass, per interaction key.
     expect(evaluateInteractionBudget('command-palette-open', 401).ok).toBe(false);
     expect(evaluateInteractionBudget('command-palette-open', 400).ok).toBe(true);
-    expect(evaluateInteractionBudget('inbox-list-settle', 301).ok).toBe(false);
-    expect(evaluateInteractionBudget('inbox-list-settle', 250).ok).toBe(true);
     expect(evaluateInteractionBudget('conversation-thread-load', 1600).ok).toBe(false);
     expect(evaluateInteractionBudget('harness-dock-open', 1500).ok).toBe(true);
   });

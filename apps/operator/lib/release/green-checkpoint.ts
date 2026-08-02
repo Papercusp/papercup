@@ -2840,6 +2840,7 @@ interface PostSuiteLegs {
    *  documented subject-hive opt-out, and it never contributes evidence of green. */
   ok: boolean;
   typecheck: LegOutcome;
+  typecheckPapercuspLibs: LegOutcome;
   lintMigrations: LegOutcome;
   lintIdentity: LegOutcome;
   lintDesignPrimitives: LegOutcome;
@@ -2860,6 +2861,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
   return {
     ok: true,
     typecheck: skipped,
+    typecheckPapercuspLibs: skipped,
     lintMigrations: skipped,
     lintIdentity: skipped,
     lintDesignPrimitives: skipped,
@@ -2932,6 +2934,57 @@ export async function runPostSuiteLegs(
         '\n\n=== TYPECHECK FAILED (npm run lint:tsc) — operator-core type regressions block the release ===\n' +
           typecheck.stdout +
           typecheck.stderr,
+      );
+    }
+  }
+
+  // WI-6841: the leg above resolves to packages/operator-core ONLY (`lint:tsc` →
+  // scripts/lint-tsc.mjs), so the EIGHT typecheck gates that libs/papercusp packages had
+  // earned one at a time — libs/db, packages/{file-claim, blueprint-distribution, harness,
+  // harness/docs-viewer, locks} and plugins/gitnexus-bridge at a strict zero, plus
+  // packages/orchestrator on a per-file baseline (WI-6826) — were executed by NOTHING.
+  // `test:affected` is type-blind by design (esbuild/Vitest never typechecks) and
+  // `libs/papercusp/package.json` has `build`/`test --workspaces` but no typecheck
+  // equivalent, so a type regression under libs/papercusp surfaced NOWHERE: the gates
+  // existed, passed by hand, and gated nothing.
+  //
+  // Placed immediately after the operator-core typecheck because it is the same class of
+  // check — grouping them keeps the failure block coherent when a shared type changes and
+  // breaks both — and because operator-core imports libs/papercusp, so its red is usually
+  // the more diagnostic of the two to see first.
+  //
+  // ONE aggregating leg, not eight: measured 2026-08-02 (uncoalesced, at load 107) the whole
+  // fan-out is ≈33s against a ~55min suite (~1%), which does not warrant eight entries in the
+  // verdict, and one leg keeps the failure block readable + pays pc-heavy's admission toll once.
+  // ⚠ The script alone would NOT have fixed this — a fan-out nothing calls has the identical
+  // defect one level up. This leg is what gives it teeth; keep them wired together.
+  const libsTypecheckCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:tsc:papercusp-libs');
+  if (haltedBy) {
+    legs.typecheckPapercuspLibs = { status: 'skipped', skipReason: haltedBy };
+  } else if (libsTypecheckCheck === 'unreadable') {
+    legs.typecheckPapercuspLibs = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:tsc:papercusp-libs)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc:papercusp-libs ===\n`,
+    );
+  } else if (libsTypecheckCheck === 'absent') {
+    legs.typecheckPapercuspLibs = { status: 'skipped', skipReason: 'candidate provides no lint:tsc:papercusp-libs script' };
+  } else {
+    const libsTypecheck = await exec('npm', ['run', 'lint:tsc:papercusp-libs'], {
+      cwd: treeDir,
+      env,
+      allowNonZero: true,
+      heavy: true,
+    });
+    legs.typecheckPapercuspLibs = { status: libsTypecheck.code === 0 ? 'passed' : 'failed' };
+    if (libsTypecheck.code !== 0) {
+      haltedBy = 'lint:tsc:papercusp-libs failed';
+      failingSignatures.push('lint:tsc:papercusp-libs');
+      outputs.push(
+        '\n\n=== LIBS/PAPERCUSP TYPECHECK FAILED (npm run lint:tsc:papercusp-libs) — a type regression in a libs/papercusp package blocks the release ===\n' +
+          libsTypecheck.stdout +
+          libsTypecheck.stderr,
       );
     }
   }
@@ -3259,9 +3312,16 @@ export async function runPostSuiteLegs(
     }
   }
 
-  legs.ok = ![legs.typecheck, legs.lintMigrations, legs.lintIdentity, legs.lintDesignPrimitives, legs.lintNoControlBytes, legs.lintPlane, legs.build].some(
-    (l) => l.status === 'failed',
-  );
+  legs.ok = ![
+    legs.typecheck,
+    legs.typecheckPapercuspLibs,
+    legs.lintMigrations,
+    legs.lintIdentity,
+    legs.lintDesignPrimitives,
+    legs.lintNoControlBytes,
+    legs.lintPlane,
+    legs.build,
+  ].some((l) => l.status === 'failed');
   legs.output = outputs.join('');
   legs.failingSignatures = failingSignatures;
   return legs;

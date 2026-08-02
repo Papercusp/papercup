@@ -92,7 +92,7 @@ vi.mock('./config', () => ({
   backupHost: () => ({ getHarnessAdminUrl: () => h.adminUrl }),
 }));
 
-import { runPreSnapshotHook } from './hook.ts';
+import { runPreSnapshotHook } from './hook';
 
 const ctx = { workspaceId: 'ws-1', workspaceRoot: '/work/ws-1' };
 

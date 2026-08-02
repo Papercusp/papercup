@@ -4,25 +4,17 @@
  *
  * Ported from app/api/admin/llm-tests/findings/route.ts. `auth: 'public'`.
  */
-import postgres from 'postgres';
-import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { sharedUtilityPoolMax } from '../../../resource-profile';
-import { getHarnessAdminUrl } from '../../../embedded-pg-discovery';
+import { getLongLivedAdminPool } from '../../../long-lived-admin-pool';
 import { defineTool } from '@papercusp/agent-mcp';
 
-let pool: ReturnType<typeof postgres> | null = null;
-function db() {
-  if (!pool) {
-    pool = postgres(getHarnessAdminUrl(), {
-      ...longLivedPoolConnectionOptions('llm-tests-findings-route'),
-      max: sharedUtilityPoolMax(),
-      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
-      idle_timeout: poolIdleTimeoutSec(),
-      prepare: false,
-    });
-  }
-  return pool;
-}
+// Transactional pool. Re-resolves the admin URL on every use and rebinds if the endpoint
+// moved (EI-19306394439939264) — the module-level singleton this replaced could not. The
+// shared connection options and idle policy are applied for us, so this site can't omit them.
+const db = () => getLongLivedAdminPool('llm-tests-findings-route', {
+  max: sharedUtilityPoolMax(),
+  prepare: false,
+});
 
 export default defineTool({
   method: 'GET',

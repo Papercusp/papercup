@@ -232,6 +232,42 @@ export interface QueryEntry<TArgs = unknown> {
   argsSchema?: z.ZodSchema<TArgs>;
   /** Resolver: takes validated args, returns flat row array. */
   resolve: (args: TArgs) => Promise<unknown[]>;
+  /**
+   * The `<schema>.<table>` relations whose WRITES should make this query refetch — so the
+   * resolver → table → invalidation chain is checkable end to end instead of by convention
+   * (EI-19304902443341820).
+   *
+   * WHY THIS EXISTS. `__tests__/cache-tag-trigger-coverage.integration.test.ts` guards
+   * TABLE_TO_QUERY_NAMES against the PG triggers with exact set-equality — strong, but it can only
+   * see tables ALREADY in the map. A resolver reading a table in NEITHER `TABLE_TO_QUERY_NAMES` nor
+   * `OPERATOR_STATE_SYNC_NAMES` was invisible to it and to every other check. The only thing
+   * standing in the way was a doc comment, and a comment is not a guard.
+   *
+   * `accounts.pool` (added 2026-06-15) read `harness_shared.operator_account_pool` and was never
+   * mapped, so NOT ONE invalidation ever fired from a pool write — for the query whose entire
+   * purpose is showing continuously-updating account usage. Nothing failed; the tab quietly
+   * refreshed on remount only, for ~7 weeks, until the owner noticed stale numbers (WI-6796).
+   *
+   * It had FOUR `notifySyncInvalidate('accounts.pool')` action callsites the whole time (register /
+   * remove / reset-rate / probe-capacity). That is precisely why a NAME-level guard cannot catch
+   * this class, and why the TABLE direction is what has to be declared: the query had a push path —
+   * just not from the writer that actually moves its data.
+   *
+   * WHAT TO LIST: the relations this query's DATA comes from, not every table its helpers touch.
+   * Workspace/tenant-scoping joins (`pot_members`, `projects`) are not backing tables — a write
+   * there should not refetch the panel. The test to apply: "if a row changed here, should this
+   * panel visibly update?"
+   *
+   * Checked by `__tests__/resolver-backing-table-coverage.test.ts`: every listed table must map to
+   * THIS query name in one of the two invalidation maps, or carry a documented PUSH_EXEMPT reason.
+   * Not mechanically derivable from the resolver body — resolvers call helper functions rather than
+   * raw SQL, and walking the imports over-reports badly (measured: it attributes `pot_members` to
+   * nearly every query, purely from scoping code).
+   *
+   * Omit ONLY if the name is in that guard's shrink-only UNDECLARED_BASELINE. New entries must
+   * declare — the baseline is closed to additions.
+   */
+  backingTables?: readonly string[];
 }
 
 // Dispatch + NAME_NOT_FOUND now come from the shared lib
@@ -3199,6 +3235,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // independently defensive → a missing column/table degrades that section, never a
   // 500. NOT table-backed — refreshes on mount + manual invalidate.
   'insights.coordTokens': {
+    // Plain SELECT against the derived-reads precompute substrate. Declared so the guard can see
+    // the chain; PUSH_EXEMPT there records that the PRODUCER pushes (notifySyncInvalidate on a
+    // real payload change) rather than a table trigger — a strictly better signal.
+    backingTables: ['harness_shared.derived_read_snapshots'],
     argsSchema: z.object({
       harness: z.string().min(1).max(120).optional(),
       windowMs: z
@@ -4252,6 +4292,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // local device has no live attestation (grants resolve ONLY through attested
   // devices — P-001/X9 — so "missing" means P2P-inert on that hive).
   'p2p.devices': {
+    // EI-19304902443341820: the device/member roster reads this table but was not in its
+    // invalidation list, so a device joining or leaving never pushed. Mapping added.
+    backingTables: ['harness_shared.pot_members'],
     resolve: async () => {
       const rows: unknown[] = [];
       try {
@@ -4718,6 +4761,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // (client reads data[0]). Fail-soft: an individual hive read failure is omitted rather
   // than taking the whole panel down.
   'learning.soakReport': {
+    // Plain SELECT against the derived-reads precompute substrate. Declared so the guard can see
+    // the chain; PUSH_EXEMPT there records that the PRODUCER pushes (notifySyncInvalidate on a
+    // real payload change) rather than a table trigger — a strictly better signal.
+    backingTables: ['harness_shared.derived_read_snapshots'],
     argsSchema: z.object({
       hive: z.string().max(120).optional(),
       windowHours: z.number().int().min(12).max(24).optional(),
@@ -4950,6 +4997,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 
   // dev.serviceHealth — up/down + latency probe of the dev endpoints now.
   'dev.serviceHealth': {
+    // Plain SELECT against the derived-reads precompute substrate. Declared so the guard can see
+    // the chain; PUSH_EXEMPT there records that the PRODUCER pushes (notifySyncInvalidate on a
+    // real payload change) rather than a table trigger — a strictly better signal.
+    backingTables: ['harness_shared.derived_read_snapshots'],
     // PRECOMPUTED (WI-5476): probeAll spawned systemctl on the read path. Served
     // from the derived-read snapshot; the 90s producer ttl + 2-min routine keep it
     // near-live, and _meta.derivedRead.computedAt lets the panel show "as of …".
@@ -4963,6 +5014,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // dev.deployState — read-only release-gate snapshot: green :3070's ref vs
   // `ready` vs `main`, how far behind, last deploy time (the #10 antidote).
   'dev.deployState': {
+    // Plain SELECT against the derived-reads precompute substrate. Declared so the guard can see
+    // the chain; PUSH_EXEMPT there records that the PRODUCER pushes (notifySyncInvalidate on a
+    // real payload change) rather than a table trigger — a strictly better signal.
+    backingTables: ['harness_shared.derived_read_snapshots'],
     // PRECOMPUTED (WI-5476): devDeployState spawned git (log/rev-list) on the read
     // path. Served from the derived-read snapshot; the pipeline moves slowly so a
     // 5-min snapshot is amply fresh.
@@ -4978,6 +5033,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // state, any OPEN merge conflict, windowed history counts (mig 177 pipeline_events),
   // a recent timeline, and the deploy gap. Snapshot wrapped in a 1-element array.
   'dev.gitPipeline': {
+    // Plain SELECT against the derived-reads precompute substrate. Declared so the guard can see
+    // the chain; PUSH_EXEMPT there records that the PRODUCER pushes (notifySyncInvalidate on a
+    // real payload change) rather than a table trigger — a strictly better signal.
+    backingTables: ['harness_shared.derived_read_snapshots'],
     // PRECOMPUTED (whole-app-sync-payload-audit P-007): gitPipelineSnapshot() fans
     // out ~6 `git` fork/execs via devDeployState() on the read path (3.1s cold; the
     // GitClient's 30s staleTime > devDeployState's 10s cache TTL made every panel
@@ -4999,6 +5058,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // deploy. Empty until a coding hive with a repo is gated (PER_POT_RELEASE_GATE is
   // default-OFF during rollout — D-008).
   'dev.gitPipelineHives': {
+    // Plain SELECT against the derived-reads precompute substrate. Declared so the guard can see
+    // the chain; PUSH_EXEMPT there records that the PRODUCER pushes (notifySyncInvalidate on a
+    // real payload change) rather than a table trigger — a strictly better signal.
+    backingTables: ['harness_shared.derived_read_snapshots'],
     // PRECOMPUTED (WI-5476): gitPipelineHiveRows spawned git per hive on the read
     // path. Served from the derived-read snapshot.
     resolve: async () => {
@@ -5220,6 +5283,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // bee-dossier comms section renders; `fleet:cup_mail`'s core, most-recent 50
   // per side). One row: { owner, inbox, outbox }.
   'sidebar.cupMail': {
+    // EI-19304902443341820: reads the coord log via readInbox/readOutbox. It was NOT in that
+    // table's invalidation list, so a coord message pushed to coord.inbox and dev.coordFeed while
+    // this mailbox beside them stayed stale until remount. Mapping added.
+    backingTables: ['harness_shared.coord_event_log'],
     argsSchema: z.object({ owner: z.string().min(1).max(200) }),
     resolve: async (args) => {
       const { owner } = args as { owner: string };
@@ -5234,6 +5301,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // multi-party threads — the all-hands channel the Swarm comms view shows
   // under the selected agent's direct mail).
   'sidebar.conversations': {
+    // EI-19304902443341820: the table WAS mapped — but only to conversations.questionsList /
+    // questionDetail, not to this all-hands list, which therefore refreshed on remount only.
+    // The accounts.pool shape in its subtler form: mapped table, unmapped reader.
+    backingTables: ['harness_shared.coord_conversations'],
     argsSchema: z.object({
       state: z.string().optional(),
       limit: clampedLimit(200, 50),
@@ -5470,6 +5541,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
   'accounts.sessionOverride': {
+    backingTables: ['harness_shared.operator_account_override'],
     argsSchema: z.object({ workspaceId: z.string().optional() }),
     resolve: async (args) => {
       const [{ getAccountOverride }, { activeWorkspaceId }] = await Promise.all([
@@ -5782,6 +5854,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // joined but went quiet still lists, flagged). The Hives tab groups these
   // per device client-side, mirroring the pui Hives tab.
   'sidebar.hives': {
+    // Continuous presence heartbeat — deliberately poll-only (PUSH_EXEMPT in the coverage guard):
+    // a per-row notify on every agent keepalive is the notify-storm anti-pattern.
+    backingTables: ['harness_shared.shared_presence'],
     resolve: async () => {
       const { listFederatedPresence } = await import('../agent-tools/coordination/federated-presence');
       // All rows, stale ones flagged (a hive that joined but went quiet still
@@ -6243,6 +6318,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // accounts:reset-rate / register / remove / link-complete fire
   // notifySyncInvalidate('accounts.pool') so the tab is live without polling.
   'accounts.pool': {
+    // THE regression case (WI-6796 / EI-19304902443341820). This table is rewritten continuously by
+    // the inference gateway (makeWindowProjector → recordAccountWindow) as it observes each
+    // response's anthropic-ratelimit-unified-* headers — that stream IS this tab's live data — yet
+    // the pool was in neither invalidation map for ~7 weeks. Pinned by the coverage guard.
+    backingTables: ['harness_shared.operator_account_pool'],
     argsSchema: z.object({ workspace: z.string().min(1).optional() }),
     resolve: async (args) => {
       const { workspace } = args as { workspace?: string };
