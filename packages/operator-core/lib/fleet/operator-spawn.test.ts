@@ -886,20 +886,27 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     expect(env.PAPERCUSP_SPAWN_ID).toMatch(/^s-\d+-/);
   });
 
-  it('EI-13668: stamps extraEnv.PAPERCUSP_AGENT_ROLE with the CANONICAL role so the child\'s own presence writes report it correctly', async () => {
+  it('EI-13668: stamps extraEnv.PAPERCUSP_AGENT_ROLE with the role so the child\'s own presence writes report it correctly', async () => {
     // Mirrors the harness-spawn-routes.integration.test.ts assertion for the OTHER
     // spawn chokepoint. Without this env stamp, deriveAgentRole (identity.ts) falls
     // back to the generic identity.source→role mapping ('cup') on every presence
     // write the child's OWN session makes after its one-shot spawn-time seed, so
     // `@role:<x>` addressing (role-slot-live-resolve.ts) never finds a truly-live
-    // holder for any role spawned through this chokepoint.
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'queen' });
+    // holder for any role spawned through this chokepoint. `role` reaching this
+    // chokepoint is already canonical post pot-rename (the `knownRole` admission
+    // gate above only accepts AGENT_ROLES entries, which are canonical ids — the
+    // legacy `queen` alias is resolved to `mug` upstream, at the /invoke HTTP
+    // route in harness/spawn.ts), so `canonicalCoordRole` here is effectively an
+    // identity no-op for every role this test can legally pass — asserted anyway
+    // so a future re-introduction of a non-canonical role id at this chokepoint
+    // is still caught.
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'mug' });
     expect(res.ok).toBe(true);
     const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(env.PAPERCUSP_AGENT_ROLE).toBe('mug');
   });
 
-  it('EI-13668: an already-canonical role is stamped unchanged', async () => {
+  it('EI-13668: a different role is stamped as itself, not a stale/hardcoded value', async () => {
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
     expect(res.ok).toBe(true);
     const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
