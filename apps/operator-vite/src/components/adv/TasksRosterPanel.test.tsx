@@ -236,7 +236,9 @@ describe('<TasksRosterPanel>', () => {
     });
     render(<TasksRosterPanel active />);
     expect(screen.getByTestId('task-scanned-41208')).toBeTruthy();
-    expect(screen.getByTestId('tasks-roster').textContent).toContain('unenrolled');
+    // The row carries no `scope`, so splitUnowned's absent-discriminant rule puts
+    // it in the `unaccounted` group (over-report rather than silently exempt).
+    expect(screen.getByTestId('tasks-roster').textContent).toContain('unaccounted');
   });
 
   it('keeps unenrolled rows OUT of the ledger groups', () => {

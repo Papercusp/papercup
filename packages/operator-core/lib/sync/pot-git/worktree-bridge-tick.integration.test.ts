@@ -49,6 +49,10 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
   let s1 = '';
   let s2 = '';
   let s3 = '';
+  /** EI-19332963201820362: a commit strictly AHEAD of s3, so the accept-census
+   *  negative control has something that can genuinely fast-forward (every
+   *  earlier sha is at-or-behind canonical by the time that test runs). */
+  let s4 = '';
 
   const openDuplex = (): Promise<Socket> => {
     dials++;
@@ -88,6 +92,10 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
     await git(['add', '.'], src);
     await git(['commit', '-q', '-m', 'S3'], src);
     s3 = await git(['rev-parse', 'HEAD'], src);
+    await writeFile(join(src, 'f.txt'), 'v4\n');
+    await git(['add', '.'], src);
+    await git(['commit', '-q', '-m', 'S4'], src);
+    s4 = await git(['rev-parse', 'HEAD'], src);
 
     peerRepo = await ensurePotGitRepo('hive-c', 'repo-int');
     localMirror = await ensurePotGitRepo('hive-c', 'repo-local');

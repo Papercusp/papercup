@@ -90,6 +90,34 @@ export async function notifyOperatorHindsight(headline: string, kind = 'delegate
   }
 }
 
+/*
+ * EI-19323045109346905 — these two readInbox callers are DELIBERATELY NOT converted
+ * to the bounded `window` read, and this comment exists so the next person working
+ * that item does not "finish the job" and make them slower. Measured 2026-08-02.
+ *
+ * A `window` stopping rule is POST-FILTER: readInboxWindow pages until
+ * `enough(visible(rows))` returns true, and that is its ONLY early exit
+ * (messages.ts, `satisfied:`). So a bounded window is a win only when the
+ * caller's filter matches DENSELY enough to hit the threshold in the first page
+ * or two. When the filter matches RARELY, `enough` never fires and the pager
+ * walks the whole history anyway — in up to INBOX_MAX_PAGES (25) round-trips
+ * instead of the single INBOX_FAST_PATH_ROW_CAP query it replaced. That is
+ * strictly worse, and it degrades silently (only warnOnPageBudgetExhausted
+ * notices).
+ *
+ * This filter is the sparse case, by construction and in fact:
+ *   - it selects one notify_kind (HINDSIGHT_NOTIFY_KIND) that is ALSO unacked, and
+ *   - live count of `operator_hindsight` rows in coord_event_log: 0, against 1,296
+ *     notify rows overall (the channel is dormant — `notifyOperatorHindsight` has
+ *     production callers, but the read side currently has none outside tests).
+ * Zero matches is the pathological input for a post-filter rule: it can never be
+ * satisfied, so it always pays the maximum.
+ *
+ * If these ever need bounding, the right lever is a `since_ts` lower bound (which
+ * IS pushed into SQL — unlike `kinds`, which filterInbox applies in JS afterwards),
+ * or a targeted COUNT for peek. Not `enough`.
+ */
+
 /**
  * Drain the operator's pending hindsight notifications (those not yet acked by the
  * voice surface), acking each so it does not replay on the next connect. Returns the
