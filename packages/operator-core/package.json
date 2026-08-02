@@ -37,6 +37,7 @@
     "@papercusp/kokoro-tts": "*",
     "@papercusp/locks-core": "*",
     "@papercusp/memory": "*",
+    "@papercusp/rerank": "*",
     "@papercusp/model-pricing": "*",
     "@papercusp/orchestrator": "*",
     "@papercusp/p2p-voice": "*",

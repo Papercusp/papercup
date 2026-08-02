@@ -10,12 +10,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createEmbedSidecarServer,
   resolveWarmModels,
+  resolveWarmRerankers,
   validateEmbedRequest,
+  validateRerankRequest,
   EMBED_SIDECAR_WARM_ENV,
   MAX_TEXTS_PER_CALL,
   EMBED_SIDECAR_RUNTIME,
   type EmbedderBuilders,
   type EmbedSidecarHandle,
+  type RerankerBuilders,
 } from './embed-sidecar-server';
 
 describe('resolveWarmModels', () => {
@@ -431,5 +434,202 @@ describe('bounded concurrency (P-004 memory-public-release-hardening-2026-07-11)
     await boot(3);
     const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as { concurrency: number };
     expect(body.concurrency).toBe(3);
+  });
+});
+
+/**
+ * P-005 (local-reranker-gte-modernbert-2026-08-02): the /rerank surface.
+ *
+ * Same discipline as the embed tests above — INJECTED fake rerankers, no ONNX
+ * model ever loads here. The real-model proof is the live verification item;
+ * this file pins the wire contract: validation, index-aligned scores, the
+ * SHARED warm registry, lazy build with non-memoized failures, and the
+ * caching/coalescing the reranker inherits from the embed path.
+ */
+describe('validateRerankRequest', () => {
+  it('accepts a minimal valid request and defaults model to rerank', () => {
+    expect(validateRerankRequest({ query: 'q', texts: ['a'] })).toEqual({
+      model: 'rerank',
+      query: 'q',
+      texts: ['a'],
+    });
+  });
+
+  it('requires a real query — a reranker scores a PAIR, so a blank query is meaningless', () => {
+    expect(validateRerankRequest({ texts: ['a'] })).toHaveProperty('error');
+    expect(validateRerankRequest({ query: '   ', texts: ['a'] })).toHaveProperty('error');
+    expect(validateRerankRequest({ query: 42, texts: ['a'] })).toHaveProperty('error');
+  });
+
+  it('rejects unknown models and bad texts, and enforces the batch cap', () => {
+    expect(validateRerankRequest(null)).toHaveProperty('error');
+    expect(validateRerankRequest({ model: 'zerank-2', query: 'q', texts: ['a'] })).toHaveProperty('error');
+    expect(validateRerankRequest({ query: 'q', texts: [] })).toHaveProperty('error');
+    expect(validateRerankRequest({ query: 'q', texts: [42] })).toHaveProperty('error');
+    expect(validateRerankRequest({ query: 'q', texts: Array(MAX_TEXTS_PER_CALL + 1).fill('x') })).toHaveProperty(
+      'error',
+    );
+  });
+
+  it('accepts the fast tier', () => {
+    expect(validateRerankRequest({ model: 'rerank-fast', query: 'q', texts: ['a'] })).toEqual({
+      model: 'rerank-fast',
+      query: 'q',
+      texts: ['a'],
+    });
+  });
+});
+
+describe('warm-env split between embedders and rerankers', () => {
+  it('reads reranker ids out of the same env, defaulting to none', () => {
+    expect(resolveWarmRerankers({})).toEqual([]);
+    expect(resolveWarmRerankers({ [EMBED_SIDECAR_WARM_ENV]: 'gemma,harrier' })).toEqual([]);
+    expect(resolveWarmRerankers({ [EMBED_SIDECAR_WARM_ENV]: 'gemma,rerank' })).toEqual(['rerank']);
+    expect(resolveWarmRerankers({ [EMBED_SIDECAR_WARM_ENV]: 'rerank,rerank,rerank-fast' })).toEqual([
+      'rerank',
+      'rerank-fast',
+    ]);
+  });
+
+  it('a reranker-only list warms NO embedder — not a surprise gemma load', () => {
+    expect(resolveWarmModels({ [EMBED_SIDECAR_WARM_ENV]: 'rerank' })).toEqual([]);
+    expect(resolveWarmRerankers({ [EMBED_SIDECAR_WARM_ENV]: 'rerank' })).toEqual(['rerank']);
+  });
+
+  it('still defaults to gemma when nothing is recognized (the unconfigured case is unchanged)', () => {
+    expect(resolveWarmModels({ [EMBED_SIDECAR_WARM_ENV]: 'gpt-9,nope' })).toEqual(['gemma']);
+    expect(resolveWarmModels({ [EMBED_SIDECAR_WARM_ENV]: 'gemma,rerank' })).toEqual(['gemma']);
+  });
+});
+
+describe('rerank sidecar HTTP surface (fake rerankers, ephemeral port)', () => {
+  let handle: EmbedSidecarHandle | null = null;
+  let baseUrl = '';
+  const rerankBuilds: string[] = [];
+  const scored: Array<{ query: string; texts: string[] }> = [];
+
+  /** Scores by text length so ordering is assertable without a model. */
+  const fakeRerankBuilders: RerankerBuilders = {
+    rerank: async () => {
+      rerankBuilds.push('rerank');
+      return async (query: string, texts: string[]) => {
+        scored.push({ query, texts });
+        return texts.map((t) => t.length);
+      };
+    },
+    'rerank-fast': async () => {
+      rerankBuilds.push('rerank-fast');
+      return async (_query: string, texts: string[]) => texts.map((t) => -t.length);
+    },
+  };
+
+  async function bootRerank(rerankBuilders: RerankerBuilders = fakeRerankBuilders): Promise<void> {
+    handle = createEmbedSidecarServer({ port: 0, rerankBuilders, warmAtBoot: false, log: () => {} });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+  }
+
+  const rerank = (body: unknown) =>
+    fetch(`${baseUrl}/rerank`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  afterEach(async () => {
+    await handle?.close();
+    handle = null;
+    rerankBuilds.length = 0;
+    scored.length = 0;
+  });
+
+  it('returns scores INDEX-ALIGNED with the request texts, never reordered', async () => {
+    await bootRerank();
+    // Deliberately not in score order: the server must NOT sort. Ordering is
+    // the client's job, so a server that "helpfully" sorted would silently
+    // misalign every caller that zips scores back onto its own candidates.
+    const res = await rerank({ query: 'q', texts: ['aaa', 'a', 'aa'] });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { scores: number[]; runtime: string; modelRev: string };
+    expect(body.scores).toEqual([3, 1, 2]);
+    expect(body.runtime).toBe(EMBED_SIDECAR_RUNTIME);
+    expect(body.modelRev).toContain('gte-reranker-modernbert');
+  });
+
+  it('serves the fast tier under its own model rev', async () => {
+    await bootRerank();
+    const body = (await (await rerank({ model: 'rerank-fast', query: 'q', texts: ['ab'] })).json()) as {
+      scores: number[];
+      modelRev: string;
+    };
+    expect(body.scores).toEqual([-2]);
+    expect(body.modelRev).toContain('ms-marco');
+  });
+
+  it('builds each reranker once and reports it in the SHARED warm registry', async () => {
+    await bootRerank();
+    await rerank({ query: 'q', texts: ['a'] });
+    await rerank({ query: 'q2', texts: ['b'] });
+    await rerank({ model: 'rerank-fast', query: 'q', texts: ['c'] });
+    expect(rerankBuilds).toEqual(['rerank', 'rerank-fast']);
+    expect(handle!.warmStates()).toEqual({ rerank: 'warm', 'rerank-fast': 'warm' });
+
+    // /healthz shows embedders and rerankers in one picture of the host.
+    const health = (await (await fetch(`${baseUrl}/healthz`)).json()) as { models: Record<string, string> };
+    expect(health.models).toEqual({ rerank: 'warm', 'rerank-fast': 'warm' });
+  });
+
+  it('caches and coalesces per (model, query, text) pair', async () => {
+    await bootRerank();
+    await rerank({ query: 'q', texts: ['a', 'b'] });
+    await rerank({ query: 'q', texts: ['a', 'c'] }); // 'a' is a cache hit
+    // One scoring call per UNIQUE pair: a,b,c — not 4.
+    expect(scored.map((s) => s.texts[0])).toEqual(['a', 'b', 'c']);
+
+    const health = (await (await fetch(`${baseUrl}/healthz`)).json()) as {
+      cache: { hits: number; misses: number };
+    };
+    expect(health.cache.misses).toBe(3);
+    expect(health.cache.hits).toBe(1);
+  });
+
+  it('a different query is a different pair — scores are never reused across queries', async () => {
+    await bootRerank();
+    await rerank({ query: 'q1', texts: ['a'] });
+    await rerank({ query: 'q2', texts: ['a'] });
+    expect(scored.map((s) => s.query)).toEqual(['q1', 'q2']);
+  });
+
+  it('400s invalid requests and 500s a reranker failure without killing the server', async () => {
+    await bootRerank();
+    expect((await rerank({ model: 'nope', query: 'q', texts: ['a'] })).status).toBe(400);
+    expect((await rerank({ query: '', texts: ['a'] })).status).toBe(400);
+    expect((await fetch(`${baseUrl}/rerank`, { method: 'POST', body: '{{' })).status).toBe(400);
+
+    await handle!.close();
+    let attempts = 0;
+    await bootRerank({
+      ...fakeRerankBuilders,
+      rerank: async () => {
+        attempts++;
+        throw new Error('model download failed');
+      },
+    });
+    const failed = await rerank({ query: 'q', texts: ['a'] });
+    expect(failed.status).toBe(500);
+    expect(((await failed.json()) as { error: string }).error).toContain('rerank_failed');
+    expect(handle!.warmStates()).toEqual({ rerank: 'failed' });
+
+    // A failed build must NOT be memoized — a transient download fault cannot
+    // brick the slot for the process lifetime.
+    expect((await rerank({ query: 'q2', texts: ['a'] })).status).toBe(500);
+    expect(attempts).toBe(2);
+
+    // …and the server is still serving.
+    expect((await fetch(`${baseUrl}/healthz`)).status).toBe(200);
+  });
+
+  it('GET /rerank is not a route (POST only)', async () => {
+    await bootRerank();
+    expect((await fetch(`${baseUrl}/rerank`)).status).toBe(404);
   });
 });
