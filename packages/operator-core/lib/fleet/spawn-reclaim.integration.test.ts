@@ -1167,6 +1167,36 @@ describe('reclaimFirstOutputStalledSpawns (EI-7345 — first-output stall reclai
     const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
     expect(r.reclaimed).toBe(1);
   });
+
+  // EI-18729995135827661 (2026-08-02): non-supervised-bee classes (overwatch / blueprint /
+  // implement / in-process loopback launches) NEVER populate last_output_at, at ANY age, by
+  // design (EI-7215) — so absent a class-based exclusion they are structurally
+  // indistinguishable from a genuinely first-output-stalled bee the moment they cross the
+  // threshold. Pin that this reaper now excludes them the same way reclaimWedgedSpawns and
+  // classifyCeilingJamRow already do.
+  it('does NOT reap a `launch-*` in-process-loopback-style run_id, even with a real (non-operator) pid — that class never streams, by design', async () => {
+    await insertFirstOutputStall('loopback-style', { runId: 'launch-1785179384123-a1b2c3' });
+    const { fn, seen } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('does NOT reap a `durable-spawn:`-prefixed spawn_id — the other isSupervisedBeeRow exclusion', async () => {
+    await insertFirstOutputStall('durable-spawn:worker-1', {});
+    const { fn, seen } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('STILL reaps a genuinely supervised-bee spawn_id (e.g. `opspawn-...`) with a plain run_id', async () => {
+    await insertFirstOutputStall('opspawn-1785179384123-x9y8z7', { runId: 'r-opspawn-test' });
+    const { fn, seen } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(1);
+    expect(seen).toHaveLength(1);
+  });
 });
 
 describe('reclaimCeilingJamDebits (EI-7204/EI-7197 — periodic ceiling-debit reconcile, real PG)', () => {
