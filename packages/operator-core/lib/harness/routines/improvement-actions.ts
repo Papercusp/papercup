@@ -243,7 +243,7 @@ registerSystemAction('improvement-triage', async (_ctx: SystemActionCtx) => {
           ` (scanned ${hygiene.scanned})`,
       );
     }
-    // EI-19340598344414318: a no-op write (remote-origin row, EI-7833/migration 521) used to
+    // WI-7034: a no-op write (remote-origin row, EI-7833/migration 521) used to
     // be silently miscounted as closed and left a misleading "duplicate of X" comment on an
     // item that stayed open forever. Surface it loudly so it doesn't go unnoticed again.
     if (hygiene.failed.length > 0) {

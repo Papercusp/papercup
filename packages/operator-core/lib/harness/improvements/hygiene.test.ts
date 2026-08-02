@@ -132,7 +132,7 @@ describe('planHygieneSweep — age-out', () => {
 
 describe('runHygieneSweep — persistence + dryRun', () => {
   // Success-path stub rows — any truthy value satisfies the null-check the sweep
-  // now applies (EI-19340598344414318); the loop only inspects truthiness.
+  // now applies (WI-7034); the loop only inspects truthiness.
   const fakeIssue = (id: string) => ({ id } as unknown as EngineerIssue);
   const fakePost = { id: 1 } as unknown as ThreadPostRow;
 
@@ -184,7 +184,7 @@ describe('runHygieneSweep — persistence + dryRun', () => {
     expect(lc.triageDecision).toBe('reject');
   });
 
-  // EI-19340598344414318 (live 2026-08-02): the `engineer_issues` compat view's INSTEAD OF
+  // WI-7034 (live 2026-08-02): the `engineer_issues` compat view's INSTEAD OF
   // trigger silently no-ops an UPDATE against a remote-origin row (EI-7833/migration 521) —
   // mergeIssuePayload/setIssueState return null while commentIssue (a different, unguarded
   // table) still succeeds. The old code never checked the return values, so it posted a

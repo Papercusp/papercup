@@ -376,13 +376,50 @@ containment question cannot be settled from primary evidence, say so and wait �
 it from these fields. Four agents produced four contradictory conclusions here in ninety minutes,
 each reasoning correctly from the same untrustworthy inputs.
 
-✅ **There IS a second primary source, and it answers step 0 in one command — the RUN'S OWN LOG.**
-The run emits `checkpointing candidate <sha>` (green-checkpoint.ts:2348) *once per candidate*, and
-the in-process auto-refire RE-EMITS it. So the **LAST** match is the sha being judged now, and the
-number of matches is the number of candidates this run has had:
+✅ **THE PRIMARY SOURCE THAT WORKS FOR EVERY RUN — the routines marker in Postgres.** It is the
+ONLY read that answers step 0 for a SCHEDULER-fired run, and it is the authority for a LIVE one:
+
+```sql
+SELECT metadata->'gate_health'->'inFlightRetriage'   AS live_refire,     -- the LIVE run's candidate
+       metadata->'gate_health'->>'observedCandidate' AS last_completed,  -- the LAST COMPLETED pass
+       metadata->'gate_health'->>'consecutiveReds'   AS reds
+  FROM harness_shared.routines
+ WHERE target_role = 'system:green-checkpoint'
+   AND install_slug = '<harness>' AND workspace_id = '<workspace>';   -- multi-tenant: scope BOTH
+```
+
+The two keys answer DIFFERENT questions — conflating them is its own confident-wrong-answer path:
+
+- **`inFlightRetriage` non-null ⇒ its `refiringCandidate` IS the sha being judged right now**, and
+  `refireAttempt`/`maxRefires` say how much rescue budget is left. Null ⇒ no refire in flight ⇒ the
+  run is still on its first candidate. Treat a marker older than 3h as an abandoned run.
+- **`observedCandidate` names the LAST COMPLETED pass**, never the live one — the same caveat this
+  file already states for the persisted checkpoint-logs. Reading it as the in-flight candidate is a
+  guaranteed one-pass-stale answer.
+
+⚠ **Scope BOTH `install_slug` AND `workspace_id`.** That table is multi-tenant, one row per harness.
+Measured 2026-08-02 11:44Z, ordering it `last_fired_at DESC LIMIT 5` returned oddsmith,
+hello-world-hive, dummy-pot-0707, quartermaster and hello-world-3 — `papercusp` was not in the top
+five. An unscoped query returns some other harness's gate: well-formed, confident, wrong.
+
+🚫 **The `/tmp/papercup-green-checkpoint-manual-*` grep below covers MANUAL runs ONLY — a
+scheduler-fired run writes no such log at all.** This file used to present that grep as *the* answer
+to step 0. It is cron-blind, and it fails in the most expensive direction: `ls -t` cheerfully returns
+the newest MANUAL log, which during a cron red is hours old, and its last `checkpointing candidate`
+reads exactly like a fresh answer. Measured 2026-08-02 11:45Z against the live 11:15:03Z cron run —
+the grep returned `4961cfb8` (discarded ~2h earlier) while the marker returned
+`refiringCandidate: 16dbb52a7849`; the running process (pid 514562) held no `.log` fd at all. Two
+agents hit this in one morning, one correctly filing "candidate undeterminable" while the answer sat
+in Postgres (EI-19340690933031666).
+
+**For a MANUAL run the run's own log is still a good second source.** It emits
+`checkpointing candidate <sha>` (green-checkpoint.ts:2348) *once per candidate*, and the in-process
+auto-refire RE-EMITS it — so the **LAST** match is the sha being judged, and the number of matches is
+the number of candidates that run has had:
 
 ```bash
-# Pick the NEWEST log by mtime FIRST, then take that ONE file's last candidate.
+# MANUAL runs only. Pick the NEWEST log by mtime FIRST, then take that ONE file's last candidate.
+# Check that mtime against the run you care about — a stale manual log looks identical to a fresh one.
 f=$(ls -t /tmp/papercup-green-checkpoint-manual-*T*Z.log | head -1)
 grep -o "checkpointing candidate [0-9a-f]*" "$f" | tail -1
 ```
@@ -397,8 +434,9 @@ then `4961cfb8` at byte 2281 — two candidates, one run, and the second is the 
 Cross-checked against the verdict's own persisted log, whose FILENAME independently names it:
 `~/.papercusp/checkpoint-logs/<ts>-base-<sha>-cand-4961cfb8b3fc.log`. Those two sources are
 independent, so when they agree the candidate is settled. Note the persisted log is written at each
-pass's END, so during a live run it names the PREVIOUS pass — prefer the `/tmp` unit log for a run
-still in flight, and use the persisted filename to confirm a COMPLETED verdict.
+pass's END, so during a live run it names the PREVIOUS pass — use the persisted filename to confirm a
+COMPLETED verdict, and for a run still in flight prefer the `inFlightRetriage` marker above (the
+`/tmp` unit log only exists if that run was fired MANUALLY).
 
 ⚠ **Do NOT take the FIRST match, and do not trust `release:checkpoint-run`'s `candidate` over this
 grep.** Until EI-19327704778173646 that field came from a bare `.match()` on the log — the FIRST

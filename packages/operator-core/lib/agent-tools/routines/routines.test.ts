@@ -159,7 +159,7 @@ describe('routines:list', () => {
     // trimmed is the tier an agent sees unless it asks for full, so this is where the
     // fix actually has to land. Asserted explicitly so a future trim-slimming edit
     // cannot quietly remove it.
-    const trimmed = listTool.payload!.trimmed!({
+    const trimmed = listTool.shape!.trimmed!({
       count: 1,
       routines: [
         {

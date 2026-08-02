@@ -164,7 +164,7 @@ export interface HygieneSweepResult {
   agedOut: number;
   dryRun: boolean;
   /**
-   * Actions whose underlying write silently no-op'd (EI-19340598344414318): either
+   * Actions whose underlying write silently no-op'd (WI-7034): either
    * `mergeIssuePayload` or `setIssueState` returned null — most commonly a
    * remote-origin row (EI-7833/migration 521's INSTEAD OF trigger skip-guard on the
    * `engineer_issues` compat view refuses a local UPDATE) or the row vanished mid-sweep.
@@ -231,7 +231,7 @@ export async function runHygieneSweep(
     const closedIssue = await deps.setIssueState(a.id, 'closed', 'improvement-hygiene', undefined, {
       skipCompletionGate: true,
     });
-    // EI-19340598344414318: both writes go through the `engineer_issues` compat view,
+    // WI-7034: both writes go through the `engineer_issues` compat view,
     // whose INSTEAD OF trigger silently no-ops (returns null) an UPDATE against a
     // remote-origin row (EI-7833/migration 521) or a row that vanished mid-sweep.
     // `commentIssue` writes a DIFFERENT table (coord_thread_posts) unguarded by that
