@@ -189,11 +189,26 @@ export function ensureHarnessStatusSweep(): SweepState {
   // EI-1622: the in-process-periodic scheduler (dbos/in-process-periodic.ts, armed
   // from host-bootstrap under `backgroundWorkers`) now owns this sweep wherever
   // background workers run. This legacy in-process timer stands down on the SAME
-  // predicate so exactly one fires — and it now uses backgroundWorkersEnabled()
-  // (NOT dbosTimersActive): the new scheduler runs independent of DBOS, so the
-  // desktop app (backgroundWorkers ON, DBOS OFF) must NOT also run this legacy
-  // timer. The legacy path is left as the fallback for hosts where the new
-  // scheduler does NOT run (e.g. the :3170 request-only operator).
+  // predicate so the two never both fire in ONE process — and it now uses
+  // backgroundWorkersEnabled() (NOT dbosTimersActive): the new scheduler runs
+  // independent of DBOS, so the desktop app (backgroundWorkers ON, DBOS OFF) must
+  // NOT also run this legacy timer. The legacy path is left as the fallback for
+  // hosts where the new scheduler does NOT run (e.g. the :3170 request-only operator).
+  //
+  // ⚠ CLAIM NARROWED 2026-08-02 (P-018). This used to say the stand-down meant
+  // "exactly one fires". That was true per PROCESS but false per HOST: on the
+  // 16-worker :3070 cluster, backgroundWorkersEnabled() is true in every worker (it
+  // reads only env, which a fork inherits), so all 17 processes stood this timer down
+  // and all 17 armed the scheduler's copy — seventeen sweeps, not one.
+  //
+  // P-018 restored the host-wide claim from the other side: the scheduler's checks now
+  // default to `scope: 'host'` (cluster primary only). Walking the three cases, since
+  // this stand-down is what makes them safe:
+  //   cluster WORKER  — legacy stands down (bgWorkers true); scheduler skips it
+  //                     (host-scoped) ⇒ neither runs here, by design.
+  //   cluster PRIMARY — legacy stands down; scheduler arms it ⇒ exactly one, host-wide.
+  //   :3170 / no bg   — legacy arms as the fallback; the scheduler suite is never
+  //                     armed there at all ⇒ exactly one.
   if (backgroundWorkersEnabled()) {
     _g.__harnessStatusSweep = {
       timer: undefined as unknown as ManagedHandle,

@@ -75,7 +75,8 @@ export default defineTool({
         // is checked here: an armed plan whose required inputs are unset would fail in
         // an unattended 03:00 routine instead of in front of whoever armed it.
         const gate = startVerdictForRow(plan, slug);
-        if (!gate.ok) return { ok: false as const, slug, ...gate.refusal };
+        // The refusal already carries `slug` — spreading it is the whole result.
+        if (!gate.ok) return { ok: false as const, ...gate.refusal };
         const res = await armPlanSchedule({
           workspaceId: plan.workspaceId,
           harnessSlug: plan.harnessSlug,

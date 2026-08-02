@@ -67,6 +67,54 @@ import type {
   FactProbeResult,
 } from './premise-resolve';
 
+/**
+ * The work-item probe's store dependencies, imported ONCE and shared by every
+ * caller — created lazily on first probe, so the dynamic-import property the
+ * header insists on is fully preserved (nothing is pulled into `send.ts`'s load
+ * -time graph).
+ *
+ * ⚠ THE SHARING IS THE POINT, NOT THE CACHING. `resolvePremiseStamps` resolves
+ * every ref through `Promise.all`, so a message citing two work-items probes
+ * them CONCURRENTLY. When two concurrent probes each opened their own
+ * `import()` of the same module, one of them could resolve to a DIFFERENT
+ * module instance than the other — and under Vitest that is the *unmocked* one,
+ * so one leg silently escaped `vi.mock` and read the real database.
+ *
+ * That is not a test-only curiosity, it is how this file's own regression got
+ * in and stayed invisible: `premise-probes.test.ts` asserted `WI-6560#completion`
+ * stamps `broken`, the escaping leg read the LIVE row instead of the fixture,
+ * and the assertion still passed for as long as the real WI-6560 happened to be
+ * open. It began failing the moment that row was closed — a red gate for the
+ * whole fleet, caused by production data moving, in a suite that mocks its
+ * store precisely so it cannot depend on production data. Sharing one import
+ * promise makes the escape impossible rather than unlikely.
+ *
+ * A rejection is NOT cached: the memo is cleared so a transient import failure
+ * degrades one probe to `unknown` (the fail-soft contract above) instead of
+ * poisoning every future probe in the process.
+ */
+type WorkItemProbeDeps = {
+  getWorkItem: (id: string, harness?: string) => Promise<{ state: string } | null>;
+  ISSUE_TERMINAL_STATES: readonly string[];
+};
+let workItemDepsPromise: Promise<WorkItemProbeDeps> | null = null;
+
+function loadWorkItemDeps(): Promise<WorkItemProbeDeps> {
+  workItemDepsPromise ??= Promise.all([
+    import('../../work-items'),
+    import('../../work-item-dispatch-states'),
+  ])
+    .then(([workItems, dispatchStates]) => ({
+      getWorkItem: workItems.getWorkItem as WorkItemProbeDeps['getWorkItem'],
+      ISSUE_TERMINAL_STATES: dispatchStates.ISSUE_TERMINAL_STATES,
+    }))
+    .catch((err) => {
+      workItemDepsPromise = null;
+      throw err;
+    });
+  return workItemDepsPromise;
+}
+
 export interface PremiseProbeScope {
   /** The sender's harness, used to disambiguate a feature-family work-item id. */
   harnessSlug?: string | null;
@@ -127,10 +175,7 @@ export function premiseProbes(scope: PremiseProbeScope = {}): PremiseProbes {
   return {
     async workItem(id: string): Promise<WorkItemProbeResult | null> {
       try {
-        const [{ getWorkItem }, { ISSUE_TERMINAL_STATES }] = await Promise.all([
-          import('../../work-items'),
-          import('../../work-item-dispatch-states'),
-        ]);
+        const { getWorkItem, ISSUE_TERMINAL_STATES } = await loadWorkItemDeps();
         // ⚠ CROSS-HARNESS RETRY BEFORE DECLARING NON-EXISTENCE. `getWorkItem`'s
         // issue-family leg is a global `getIssue`, but its FEATURE-family leg
         // filters on `harness_slug` — so a feature cited from a peer's harness

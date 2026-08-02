@@ -120,7 +120,8 @@ export default defineTool({
         const gate = await checkPlanStartable(slug, await ctxToPlanSourceOpts(sctx));
         if (!gate.ok) {
           ctxAny.metadata?.({ slug, harnessSlug, refused: gate.refusal.code });
-          return { ok: false as const, slug, harnessSlug, ...gate.refusal };
+          // The refusal already carries `slug`; only harnessSlug is additive here.
+          return { ok: false as const, harnessSlug, ...gate.refusal };
         }
 
         const rows = await withWorkspace(startWorkspaceId, async (tx) => {

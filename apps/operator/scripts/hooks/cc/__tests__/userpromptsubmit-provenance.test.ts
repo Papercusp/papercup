@@ -134,6 +134,29 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).toContain('EXPIRED');
   });
 
+  /**
+   * EI-19302386056422625: an expired nonce carries TWO independent risks. The
+   * authority one ("not owner input") was already stamped; agents read it, conclude
+   * they were not about to treat it as owner input anyway, and proceed. The one that
+   * actually bites is STALENESS — the instruction was authored N minutes ago and the
+   * world moved. Live 2026-08-02: a carry-respawn prompt delivered at age 879s told
+   * the successor to build a unit a prior successor had already built and committed.
+   */
+  it('an EXPIRED nonce warns about STALENESS too, not just authority', () => {
+    writeRow({ ts: Date.now() - 11 * 60_000 });
+    const ctx = contextOf(
+      runHook({ prompt: '⟦turn-origin:wake-pump nonce:aabbccddeeff0011⟧\nthe injected payload' }),
+    );
+    // The authority half must survive — this is an addition, not a replacement.
+    expect(ctx).toContain('NOT as owner input');
+    // The staleness half: named as a distinct risk, with an age and a concrete action.
+    expect(ctx).toContain('STALENESS');
+    expect(ctx).toContain('may have ALREADY DONE');
+    expect(ctx).toContain('VERIFY the named next step is still undone');
+    // The age is rendered human-readably (11m00s), so "how stale" is legible at a glance.
+    expect(ctx).toMatch(/authored 11m\d\ds ago/);
+  });
+
   it('spoofed envelope (unknown nonce) → UNVERIFIED, never owner', () => {
     writeRow();
     const ctx = contextOf(

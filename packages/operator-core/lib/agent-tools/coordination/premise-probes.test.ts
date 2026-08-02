@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { premiseProbes, isFullFormMsgId } from './premise-probes';
-import { resolvePremiseStamps } from './premise-resolve';
+import { resolvePremiseStamps, type PremiseProbes } from './premise-resolve';
 
 const getMessageById = vi.fn();
 const getWorkItem = vi.fn();
@@ -121,17 +121,44 @@ describe('the OTHER false-accusation guard — a cross-harness item must not rea
 });
 
 describe('a BARE work-item premise asserts existence — never completion (D-026 correction 2)', () => {
+  // This asserts the RESOLVER's semantics, so it injects a probe double through
+  // the seam the module exists to provide, rather than driving the production
+  // probe and mocking the store underneath it. That is not a style preference:
+  // the earlier version did the latter and, because two distinct refs resolve
+  // CONCURRENTLY, one leg escaped `vi.mock` and read the live database — so the
+  // verdict below silently depended on the real WI-6560's state and went red
+  // for the whole fleet the moment that row was closed. A double cannot be
+  // escaped. (The production probe's own store behaviour is covered by the
+  // suites above, which call it directly, and by the anti-escape pin below.)
+  const openItem: PremiseProbes = {
+    workItem: async () => ({ exists: true, state: 'open', terminal: false }),
+  };
+
   it('holds on an OPEN item, where the same item cited #completion is broken', async () => {
+    const [bare, completion] = await resolvePremiseStamps(
+      ['WI-6560', 'WI-6560#completion'],
+      openItem,
+    );
+    expect(bare!.status).toBe('holds');
+    expect(completion!.status).toBe('broken');
+    expect(completion!.note).toContain('open');
+  });
+
+  // THE ANTI-ESCAPE PIN (the regression that reddened the gate).
+  // Two DISTINCT refs are probed concurrently, so the production probe resolves
+  // its store imports twice over. If those imports are ever un-shared again,
+  // one leg resolves a different (unmocked) module instance and this call count
+  // drops to 1 — which is the ONLY loud symptom, since the escaping leg returns
+  // a real row that usually looks plausible. Assert the count, not just the
+  // verdict: a verdict-only assertion is exactly what stayed green for as long
+  // as production data happened to agree with the fixture.
+  it('never lets a concurrently-probed ref escape to the real store', async () => {
     getWorkItem.mockResolvedValue({ state: 'open' });
-    const probes = premiseProbes();
-    // DIAG: a NONEXISTENT id. The mock says {state:'open'} for everything, so
-    // any 'unresolvable' can ONLY have come from the real store.
-    const ghost = await resolvePremiseStamps(['WI-99999999', 'WI-99999999#completion'], probes);
-    // eslint-disable-next-line no-console
-    console.log('DIAG ghost mockCalls=', getWorkItem.mock.calls.length, 'ghost=', JSON.stringify(ghost));
-    const [bare, completion] = await resolvePremiseStamps(['WI-6560', 'WI-6560#completion'], probes);
-    // eslint-disable-next-line no-console
-    console.log('DIAG total mockCalls=', getWorkItem.mock.calls.length, 'stamps=', JSON.stringify([bare, completion]));
+    const [bare, completion] = await resolvePremiseStamps(
+      ['WI-6560', 'WI-6560#completion'],
+      premiseProbes(),
+    );
+    expect(getWorkItem).toHaveBeenCalledTimes(2);
     expect(bare!.status).toBe('holds');
     expect(completion!.status).toBe('broken');
   });

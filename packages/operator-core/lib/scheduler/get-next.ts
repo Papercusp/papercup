@@ -80,6 +80,7 @@ import {
   type WorkItem,
 } from '../work-items';
 import { issuesScopeWorkspace } from '../issues-engineer';
+import { isIssueLocallyClaimableWhereSql } from '../work-items-admission';
 
 /** A composed `sql` WHERE/ORDER-BY fragment (porsager pending-query — the type a bare
  *  `sql`...`` tagged template returns, so fragments compose by `${}` interpolation). */
@@ -753,6 +754,16 @@ export interface IssueClaimExclusionBreakdown {
     crossMachineRig: number;
     blockedDep: number;
     cooldown: number;
+    /** WI-6409: a true-remote-origin row (federated in from a peer node, not authored by
+     *  this node — see {@link isIssueLocallyClaimableWhereSql}). The real claim path
+     *  (`claimNextIssueWorkItem`) and the READY miss-diagnosis have enforced this floor
+     *  since work-item-status-full-unify (2026-07-20); this oracle did not apply it at
+     *  all until WI-6409, so it OVER-COUNTED `claimable` by every untaken remote row —
+     *  the confirmed root cause of the recurring "claim-path/read-path divergence"
+     *  class (EI-10062/WI-4309/WI-5275/WI-5822/WI-6409): the oracle reported N
+     *  survivors while `scheduler:get_next` claimed 0, because N of them were
+     *  remote-origin and only the real claim path refused them. */
+    remoteOrigin: number;
   };
 }
 
