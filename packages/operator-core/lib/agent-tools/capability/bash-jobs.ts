@@ -286,6 +286,31 @@ function appendOutput(job: BashJob, chunk: string): void {
   }
 }
 
+/**
+ * EI-18764990059061608 — the terminal marker every job's spill log ends with once
+ * it reaches a terminal state, so a caller that reads the log FILE directly
+ * (`cat`/Read on `log_path`, bypassing `capability:bash_output`'s own `status`
+ * field entirely) can tell "finished, genuinely no output" from "still running,
+ * nothing flushed yet" without an extra call. The two states are otherwise
+ * byte-identical to a raw file read — that ambiguity is exactly what closed a
+ * red typecheck as a clean claim in the filed bug.
+ *
+ * Its ABSENCE from a raw read means the job has not reached a terminal state yet
+ * (or its tracking/log was lost some other way) — never read an empty/partial
+ * file lacking this line as evidence of a clean or completed result. Kept as one
+ * exported, pure formatter (rather than inlined at each of the three call sites)
+ * so the exact text can be asserted in a test and can never drift between them.
+ */
+export const JOB_LOG_END_MARKER_PREFIX = '[capability:bash] JOB END';
+
+export function formatJobLogEndMarker(status: BashStatus, exitCode: number | null, endedAtMs: number): string {
+  return (
+    `\n${JOB_LOG_END_MARKER_PREFIX}: status=${status} exit=${exitCode ?? 'null'} at ${new Date(endedAtMs).toISOString()}` +
+    ' — this line marks the job reaching a terminal state; if it is ABSENT, the job has not finished yet ' +
+    '(an empty or partial read before this line is NOT evidence of a clean or completed result).\n'
+  );
+}
+
 export interface RunOptions {
   command: string;
   cwd: string;
@@ -372,6 +397,17 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
         logPath,
         durationMs: Date.now() - startedAt,
       };
+      // EI-18764990059061608: the terminal marker goes to the SPILL LOG only —
+      // never into `buffer`/`output` above, which callers (e.g. the EI-1617
+      // secrets test) assert byte-exact. A foreground call already returns its
+      // own `status` synchronously to the caller that awaited it; the marker is
+      // for a SEPARATE reader tailing `logPath` mid-run (a large build, watched
+      // from another tool call) who has no other way to see this job finish.
+      try {
+        logStream?.write(formatJobLogEndMarker(status, exitCode, Date.now()));
+      } catch {
+        /* best-effort; a spill-write fault must not affect the result */
+      }
       // Resolve only AFTER the spill log has fully flushed to disk: a fire-and-forget
       // `end()` returns before createWriteStream's buffered writes reach the file, so a
       // caller (or test) that reads `logPath` synchronously could see a partially
@@ -509,6 +545,10 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     job.status = 'failed';
     job.endedAt = Date.now();
     clearTimeout(timer);
+    // EI-18764990059061608: see formatJobLogEndMarker's doc — this is what lets a
+    // raw `cat`/Read of `logPath` (bypassing bash_output's own `status` field)
+    // tell "finished" from "nothing written yet" without a second call.
+    appendOutput(job, formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
     try { job.logStream?.end(); } catch { /* ignore */ }
     job.logStream = null;
     finishSyncEnrolment(enrolment, {
@@ -522,6 +562,8 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     job.exitCode = code;
     job.endedAt = Date.now();
     clearTimeout(timer);
+    // EI-18764990059061608: see formatJobLogEndMarker's doc.
+    appendOutput(job, formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
     try { job.logStream?.end(); } catch { /* ignore */ }
     job.logStream = null;
     // `timed_out` is preserved distinctly rather than collapsed into a kill: the

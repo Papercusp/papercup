@@ -180,6 +180,123 @@ export function proseShaped(lit) {
   return (lit.match(/[A-Za-z]/g) || []).length / lit.length >= 0.6;
 }
 
+// ── front-end 2: prompt/doc literals quoting emitted output (EI-18773280958875269) ──
+/**
+ * A prompt (a `blueprints/**\/prompts/*.md` agent brief) told every release-fixer agent
+ * to grep a reply for `⚠ quiet-cut EXCLUDED` — a banner `checkpoint-run.ts` had already
+ * stopped emitting. Front-end 1 above only ever scans TEST files for assertions and
+ * PROSE files as (excluded) corpus; nothing ever scans a prompt/doc's OWN quoted text
+ * against what the code can actually emit. This is that second front-end, over the
+ * SAME corpus (`corpusFiles` in main(), passed in as `includes`) and the SAME
+ * DRIFTED/ORPHANED verdict + suppression pragma as front-end 1 — not a new system.
+ *
+ * DELIBERATELY SCOPED to blueprint prompts only (`DOC_PROMPT_RE` below), not the whole
+ * doc corpus (agent-insights/CLAUDE.md/READMEs): those narrate INCIDENTS on purpose,
+ * routinely quoting a banner/recipe that is no longer correct as the point of the
+ * example ("this file used to prescribe exactly that... has been removed" is a real
+ * CLAUDE.md sentence). Scanning that corpus would flag the teaching device itself.
+ * A blueprint prompt has no such genre — every line is a live instruction to an agent
+ * about to act on it — so absence there is a straight defect, never a narrative device.
+ * Widening scope (agent-insights docs, with the pragma covering the deliberate-history
+ * case) is a natural follow-up once this is proven quiet here.
+ *
+ * REPORT-ONLY BY DESIGN (never flips the exit code) — see main()'s doc section. A
+ * substring/fragment heuristic over free-form prose is inherently noisier than the
+ * structural regex front-end 1 parses out of test source, and a new GATING check with
+ * unproven false-positive behavior is exactly the class of mistake CLAUDE.md's own
+ * "Adding a tool" prompt-weight-budget story warns about (a scoped quick-check the repo
+ * SHOULD have caught it with — this is that quick-check for prompt drift, not yet a gate).
+ */
+export const DOC_PROMPT_RE = /^libs\/papercusp\/packages\/harness\/blueprints\/[^/]+\/prompts\/.*\.md$/;
+
+const BANNER_MARK_RE = /[⚠✓✗✅❌🚫⛔]/;
+
+/**
+ * "Looks like it names emitted output" — the ticket's own predicate: prose-shaped
+ * (≥3 words, mostly letters) OR carries a banner marker. Unlike `proseShaped` above,
+ * digits are NOT disqualifying: a real banner routinely embeds a placeholder word or
+ * count ("N commit(s)"), and rejecting on `\d` would silently exempt the exact shape
+ * that bit this repo (`⚠ PREDICTED exclusion: N commit(s) …`).
+ *
+ * @param {string} lit
+ * @returns {boolean}
+ */
+export function looksLikeEmittedOutput(lit) {
+  const trimmed = lit.trim();
+  if (trimmed.length < 4) return false;
+  if (BANNER_MARK_RE.test(trimmed)) return true;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length < 3) return false;
+  if (trimmed.length < 15) return false;
+  return (trimmed.match(/[A-Za-z]/g) || []).length / trimmed.length >= 0.6;
+}
+
+/**
+ * @typedef {object} DocLiteral
+ * @property {number} line
+ * @property {string} lit
+ */
+
+/**
+ * Single-backtick inline-code spans in a markdown file, fenced ``` code blocks blanked
+ * out first (their backticks are not inline-code delimiters, and their contents are
+ * verbatim command/output examples this lint is not scoped to judge).
+ *
+ * @param {string} text
+ * @returns {DocLiteral[]}
+ */
+export function extractDocLiterals(text) {
+  const stripped = text.replace(/```[\s\S]*?```/g, (m) => m.replace(/[^\n]/g, ' '));
+  const lineOf = (idx) => stripped.slice(0, idx).split('\n').length;
+  /** @type {DocLiteral[]} */
+  const out = [];
+  for (const m of stripped.matchAll(/`([^`\n]{4,300})`/g)) {
+    out.push({ line: lineOf(m.index), lit: m[1] });
+  }
+  return out;
+}
+
+/** Pragma on the literal's own line, or the line immediately above (an HTML comment —
+ *  markdown has no `//`), e.g. `<!-- vacuous-negative-ok: historical example -->`. */
+function suppressedDoc(lines, lineNo) {
+  const i = lineNo - 1;
+  return (lines[i] ?? '').includes(PRAGMA) || (lines[i - 1] ?? '').includes(PRAGMA);
+}
+
+/**
+ * Judge one prompt file's backticked literals against the code corpus. Mirrors
+ * `judgeFile`'s DRIFTED/ORPHANED split: DRIFTED when a long fragment of the literal IS
+ * in the corpus (the guarded string was reworded, not removed — the live incident's
+ * shape); ORPHANED when nothing resembling it survives.
+ *
+ * @param {{ file: string; text: string; includes: IncludesFn }} args
+ * @returns {{ considered: number; findings: VacuousFinding[] }}
+ */
+export function judgeDocFile({ file, text, includes }) {
+  const lines = text.split('\n');
+  const literals = extractDocLiterals(text);
+  /** @type {VacuousFinding[]} */
+  const findings = [];
+  let considered = 0;
+  for (const { line, lit } of literals) {
+    if (!looksLikeEmittedOutput(lit)) continue;
+    considered++;
+    const trimmed = lit.trim();
+    if (includes(lit) || (trimmed !== lit && includes(trimmed))) continue;
+    if (suppressedDoc(lines, line)) continue;
+    const drift = driftFragment(lit, includes);
+    findings.push({
+      file,
+      line,
+      kind: 'doc-literal',
+      lit,
+      verdict: drift ? 'DRIFTED' : 'ORPHANED',
+      fragment: drift?.fragment ?? null,
+    });
+  }
+  return { considered, findings };
+}
+
 // ── literal extraction ────────────────────────────────────────────────────────────
 const PUNCT_ESCAPES = new Set([
   '.', '(', ')', '[', ']', '{', '}', '$', '^', '*', '+', '?', '|', '/', '\\', '-', '"', "'", '`',
@@ -458,6 +575,41 @@ function main(argv) {
     const r = judgeFile({ file: f, text, includes });
     considered += r.considered;
     for (const finding of r.findings) (finding.verdict === 'DRIFTED' ? drifted : orphaned).push(finding);
+  }
+
+  // Front-end 2 (EI-18773280958875269): blueprint-prompt literals that quote emitted
+  // output no longer producible. REPORT-ONLY — see judgeDocFile's header for why this
+  // never gates (never affects the exit code below), unlike front-end 1's DRIFTED.
+  const docFiles = list.filter((p) => DOC_PROMPT_RE.test(p) && !isExcluded(p));
+  const docFindings = [];
+  let docConsidered = 0;
+  for (const f of docFiles) {
+    let text;
+    try {
+      text = readFileSync(resolve(ROOT, f), 'utf8');
+    } catch {
+      continue;
+    }
+    const r = judgeDocFile({ file: f, text, includes });
+    docConsidered += r.considered;
+    docFindings.push(...r.findings);
+  }
+  if (docFindings.length > 0) {
+    console.log(
+      `⚠ prompt-literal drift (report-only, EI-18773280958875269): ${docFindings.length} ` +
+        `backticked literal(s) across ${docFiles.length} blueprint prompt(s) look like emitted ` +
+        `output but do not appear in the code corpus (${docConsidered} literal(s) judged). A ` +
+        'DRIFTED entry means a long fragment of it still IS in the code — likely a reworded ' +
+        'banner the prompt was never updated to match:\n',
+    );
+    for (const f of docFindings) {
+      console.log(`    ${f.file}:${f.line}  [${f.verdict}]  ${JSON.stringify(f.lit)}`);
+      if (f.fragment) console.log(`        near: ${JSON.stringify(f.fragment)}`);
+    }
+    console.log(
+      `  Not gating — this front-end is new and unproven at scale; verify each finding by hand,\n` +
+        `  fix the prompt, or suppress with "<!-- ${PRAGMA} <reason> -->" on the line above.\n`,
+    );
   }
 
   if (report) {

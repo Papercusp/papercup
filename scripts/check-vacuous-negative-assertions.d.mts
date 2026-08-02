@@ -55,6 +55,48 @@
  */
 export function proseShaped(lit: string): boolean;
 /**
+ * "Looks like it names emitted output" — the ticket's own predicate: prose-shaped
+ * (≥3 words, mostly letters) OR carries a banner marker. Unlike `proseShaped` above,
+ * digits are NOT disqualifying: a real banner routinely embeds a placeholder word or
+ * count ("N commit(s)"), and rejecting on `\d` would silently exempt the exact shape
+ * that bit this repo (`⚠ PREDICTED exclusion: N commit(s) …`).
+ *
+ * @param {string} lit
+ * @returns {boolean}
+ */
+export function looksLikeEmittedOutput(lit: string): boolean;
+/**
+ * @typedef {object} DocLiteral
+ * @property {number} line
+ * @property {string} lit
+ */
+/**
+ * Single-backtick inline-code spans in a markdown file, fenced ``` code blocks blanked
+ * out first (their backticks are not inline-code delimiters, and their contents are
+ * verbatim command/output examples this lint is not scoped to judge).
+ *
+ * @param {string} text
+ * @returns {DocLiteral[]}
+ */
+export function extractDocLiterals(text: string): DocLiteral[];
+/**
+ * Judge one prompt file's backticked literals against the code corpus. Mirrors
+ * `judgeFile`'s DRIFTED/ORPHANED split: DRIFTED when a long fragment of the literal IS
+ * in the corpus (the guarded string was reworded, not removed — the live incident's
+ * shape); ORPHANED when nothing resembling it survives.
+ *
+ * @param {{ file: string; text: string; includes: IncludesFn }} args
+ * @returns {{ considered: number; findings: VacuousFinding[] }}
+ */
+export function judgeDocFile({ file, text, includes }: {
+    file: string;
+    text: string;
+    includes: IncludesFn;
+}): {
+    considered: number;
+    findings: VacuousFinding[];
+};
+/**
  * The plain string a regex source encodes, or null when it uses real regex power
  * (`\d`, `\s`, a character class, alternation, a quantifier). Only a pattern that is
  * a plain literal can be judged by "does this string exist anywhere".
@@ -107,6 +149,33 @@ export function judgeFile({ file, text, includes }: {
     findings: VacuousFinding[];
 };
 /**
+ * A prompt (a `blueprints/**\/prompts/*.md` agent brief) told every release-fixer agent
+ * to grep a reply for `⚠ quiet-cut EXCLUDED` — a banner `checkpoint-run.ts` had already
+ * stopped emitting. Front-end 1 above only ever scans TEST files for assertions and
+ * PROSE files as (excluded) corpus; nothing ever scans a prompt/doc's OWN quoted text
+ * against what the code can actually emit. This is that second front-end, over the
+ * SAME corpus (`corpusFiles` in main(), passed in as `includes`) and the SAME
+ * DRIFTED/ORPHANED verdict + suppression pragma as front-end 1 — not a new system.
+ *
+ * DELIBERATELY SCOPED to blueprint prompts only (`DOC_PROMPT_RE` below), not the whole
+ * doc corpus (agent-insights/CLAUDE.md/READMEs): those narrate INCIDENTS on purpose,
+ * routinely quoting a banner/recipe that is no longer correct as the point of the
+ * example ("this file used to prescribe exactly that... has been removed" is a real
+ * CLAUDE.md sentence). Scanning that corpus would flag the teaching device itself.
+ * A blueprint prompt has no such genre — every line is a live instruction to an agent
+ * about to act on it — so absence there is a straight defect, never a narrative device.
+ * Widening scope (agent-insights docs, with the pragma covering the deliberate-history
+ * case) is a natural follow-up once this is proven quiet here.
+ *
+ * REPORT-ONLY BY DESIGN (never flips the exit code) — see main()'s doc section. A
+ * substring/fragment heuristic over free-form prose is inherently noisier than the
+ * structural regex front-end 1 parses out of test source, and a new GATING check with
+ * unproven false-positive behavior is exactly the class of mistake CLAUDE.md's own
+ * "Adding a tool" prompt-weight-budget story warns about (a scoped quick-check the repo
+ * SHOULD have caught it with — this is that quick-check for prompt drift, not yet a gate).
+ */
+export const DOC_PROMPT_RE: RegExp;
+/**
  * DRIFTED gates: a prose literal that exists nowhere emittable, while a long fragment of
  * it IS in the source — the guard is pinned to that string's OLD wording.
  * ORPHANED reports only: nothing resembling the literal survives, or the literal is not
@@ -153,3 +222,7 @@ export type VacuousFinding = {
  * drive a synthetic corpus.
  */
 export type IncludesFn = (needle: string) => boolean;
+export type DocLiteral = {
+    line: number;
+    lit: string;
+};
