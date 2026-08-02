@@ -137,39 +137,30 @@ const turnStartMemory = defineTool({
       const memoryPromise = (async (): Promise<string> => {
         if (body.memoryEnabled === false) return '';
         try {
-          const [
-            { buildMemoryContextBlock },
-            { getSessionUserOrDefault },
-            { stripInjectedChrome },
-            { buildRecallQueryWithHumanTail },
-          ] = await Promise.all([
-            import('../../../memory/injection'),
-            import('../../../auth'),
-            import('../../../turn-provenance/turn-provenance'),
-            import('../../../memory/human-turn-tail'),
-          ]);
+          const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }, { stripInjectedChrome }] =
+            await Promise.all([
+              import('../../../memory/injection'),
+              import('../../../auth'),
+              import('../../../turn-provenance/turn-provenance'),
+            ]);
           const user = await getSessionUserOrDefault().catch(() => null);
           // Retrieve on what the turn is ABOUT, not on the scaffolding it
           // arrived in — see PROMPT_QUERY_CLAMP above and D-033. Never empty
           // for a non-empty prompt, so this cannot silently disable recall.
           const queryText = stripInjectedChrome(prompt);
-          // P-006 / D-046: the query is the prompt PLUS the last 3 turns the
-          // HUMAN spoke. The prompt is composed first and is never displaced,
-          // so this can only ADD signal to the query that used to ship — and a
-          // failed/empty tail degrades to exactly the old prompt-only slice.
-          // ⚠ The tail filters on PROVENANCE, not `speaker`; see human-turn-tail.ts.
-          const queryContext = await buildRecallQueryWithHumanTail({
-            owner,
-            workspaceId,
-            current: queryText,
-            clamp: PROMPT_QUERY_CLAMP,
-          });
+          // ⚠ P-006 / D-046 (the human-turn tail) is DELIBERATELY NOT WIRED HERE.
+          // `memory/human-turn-tail.ts` implements the owner's chosen shape and is
+          // fully tested, but its LIVE-corpus acceptance measured a REGRESSION and
+          // D-046's own re-open clause governs: a topical prompt whose human tail is
+          // procedural ("continue where you left off" — the single most common human
+          // turn in this corpus) loses its on-topic hits entirely. See plan decision
+          // D-047. Do not wire this without re-running that measurement.
           return (
             (await buildMemoryContextBlock({
               userId: user?.id ?? null,
               workspaceId,
               harnessSlugs: harness ? [harness] : [],
-              queryContext,
+              queryContext: queryText.slice(0, PROMPT_QUERY_CLAMP),
               session: { sessionId: owner, port: 'turn-start' },
               budgetChars: TURN_START_BUDGET_CHARS,
               heading: 'Relevant memory (turn-start delta)',

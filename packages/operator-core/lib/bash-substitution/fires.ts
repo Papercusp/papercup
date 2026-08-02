@@ -133,6 +133,25 @@ export function recordFiresDetached(opts: {
   void recordSubstitutionFires(opts).catch(() => undefined);
 }
 
+/** Postgres `undefined_table`. */
+const PG_UNDEFINED_TABLE = '42P01';
+
+/**
+ * Is this the telemetry tables simply not existing yet?
+ *
+ * Migration 720 adds an ACCESS EXCLUSIVE-requiring column to
+ * `bash_tool_substitutions`, a table every operator process reads on a 30s cache
+ * cycle — so it lands during a restart window rather than against a live fleet,
+ * and the code ships BEFORE the schema does. That gap is expected and bounded,
+ * but a sweep that runs every routines tick must not spend it crying wolf: a
+ * warning per tick for a known-pending migration trains the reader to ignore the
+ * channel, so the real failure — the one this sweep exists to surface — arrives
+ * into a log nobody trusts.
+ */
+function isMissingTelemetrySchema(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { code?: string }).code === PG_UNDEFINED_TABLE;
+}
+
 export interface ComplianceResolution {
   /** Fires examined this pass. */
   examined: number;

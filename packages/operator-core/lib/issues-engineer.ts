@@ -1084,10 +1084,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
-       AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
-       AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
-       AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
-       AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
+         AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
          AND ${
            filter.audit

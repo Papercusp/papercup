@@ -19,7 +19,77 @@ import type { MemberSpec } from '../../agent-launch-core';
 import killTool from '../fleet/kill';
 import launchTool from '../capability/launch-agent';
 import { resolveFleetMemberTarget } from './member-target';
+import { listFleetPresence, type FleetPresenceRow } from '../coordination/presence-fleet';
 import { json, ROUTING_LADDER } from './_shared';
+
+/** Default window to wait for the replacement's FIRST heartbeat before calling the respawn failed. */
+const DEFAULT_VERIFY_SEC = 90;
+const VERIFY_POLL_MS = 3_000;
+/** A presence row counts as the live replacement only if its heartbeat is this fresh. */
+const VERIFY_FRESH_MS = 120_000;
+
+export interface AwaitReplacementResult {
+  verified: boolean;
+  newMemberOwnerId: string | null;
+  waitedMs: number;
+  /** Owners seen in the fleet at the end of the wait — the evidence behind a `false`. */
+  rosterOwnerIds: string[];
+}
+
+/**
+ * Wait for a NEW live member to appear in the fleet's presence roster after a launch.
+ *
+ * Why this exists (EI: fleet:respawn-member false success): capability:launch-agent returns
+ * as soon as it has spawned the member's TERMINAL, and the terminal's launch script ends in
+ * `exec "$SHELL" -l` — so when the agent CLI dies before its first turn (an exhausted account
+ * pool, a bad model spec, a missing credential) you are left with a live pid, a live terminal,
+ * and NO agent, while the launcher reports success. An agent that actually booted writes a
+ * coord_presence row; nothing else does. So the roster is the only sound oracle, and a respawn
+ * that cannot observe one must report failure rather than inherit the launcher's optimism.
+ *
+ * All IO is injected so this unit-tests without PG or real time.
+ */
+export async function awaitReplacementMember(opts: {
+  before: Set<string>;
+  list: () => Promise<FleetPresenceRow[]>;
+  timeoutMs: number;
+  intervalMs?: number;
+  freshMs?: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<AwaitReplacementResult> {
+  const {
+    before,
+    list,
+    timeoutMs,
+    intervalMs = VERIFY_POLL_MS,
+    freshMs = VERIFY_FRESH_MS,
+    now = () => Date.now(),
+    sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+  } = opts;
+  const startedAt = now();
+  let rosterOwnerIds: string[] = [];
+  for (;;) {
+    let rows: FleetPresenceRow[] = [];
+    try {
+      rows = await list();
+    } catch {
+      // A transient read failure is not evidence either way — keep polling until the deadline.
+    }
+    rosterOwnerIds = rows.map((r) => r.ownerId);
+    const at = now();
+    const fresh = rows.find(
+      (r) => !before.has(r.ownerId) && at - new Date(r.heartbeatAt).getTime() <= freshMs,
+    );
+    if (fresh) {
+      return { verified: true, newMemberOwnerId: fresh.ownerId, waitedMs: at - startedAt, rosterOwnerIds };
+    }
+    if (at - startedAt + intervalMs > timeoutMs) {
+      return { verified: false, newMemberOwnerId: null, waitedMs: at - startedAt, rosterOwnerIds };
+    }
+    await sleep(intervalMs);
+  }
+}
 
 /** fleet:kill returns the bulk envelope `{ data: { ok, results, counts } }` — success is
  *  zero failed items (top-level `ok` only means the batch ran). */
@@ -88,6 +158,13 @@ export default defineTool({
         .max(200)
         .optional()
         .describe('Dedupe key for the relaunch: re-firing with the same key reports deduped instead of launching a second replacement.'),
+      verifySec: z
+        .number()
+        .int()
+        .min(0)
+        .max(300)
+        .optional()
+        .describe(`Seconds to wait for the replacement's first heartbeat before reporting the respawn failed (default ${DEFAULT_VERIFY_SEC}). 0 skips verification and returns as soon as the launcher does — the launcher only knows it spawned a terminal, so ok:true then means "launch requested", not "agent exists".`),
     })
     .refine(
       (a) =>
@@ -112,7 +189,18 @@ export default defineTool({
     if (!target.ok) {
       return json(target as unknown as Record<string, unknown>, true);
     }
-    const { slug, memberOwnerId, invokedAs } = target;
+    const { slug, memberOwnerId, invokedAs, workspaceId } = target;
+
+    // 0. Snapshot the fleet's roster BEFORE the kill, so the replacement is identified by being
+    //    an owner-id that was not there before — a respawn mints a NEW identity, so "some member
+    //    is present" is not evidence; "a member nobody had seen is present" is.
+    let rosterBefore = new Set<string>();
+    let rosterReadable = true;
+    try {
+      rosterBefore = new Set((await listFleetPresence(workspaceId, slug)).map((r) => r.ownerId));
+    } catch {
+      rosterReadable = false;
+    }
 
     // 1. Drain the old session (graceful SIGTERM + close its terminal; releases its claims). If the
     //    kill fails we do NOT launch a replacement — otherwise two members race the same lane.

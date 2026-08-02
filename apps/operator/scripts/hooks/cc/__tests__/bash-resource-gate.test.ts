@@ -1073,18 +1073,87 @@ describe('heavy-command admission control (WI-3821)', () => {
 
   it.each([
     // Not a free pass: `=on` is NOT an off-value, so my value alternation must
-    // reject it and leave the command gated. Use the `env`-prefixed form so the
-    // heavy detector actually sees the wrapped `vitest` as heavy (a BARE
-    // `KEY=val vitest` prefix was never recognized as heavy by the detector's
-    // anchor to begin with — that gap predates this fix) — this exercises the
-    // off/0/false/no vs on discrimination in the new inline check directly.
+    // reject it and leave the command gated.
+    //
+    // These used to be pinned to the `env`-prefixed spelling with the note that
+    // "a BARE `KEY=val vitest` prefix was never recognized as heavy by the
+    // detector's anchor to begin with — that gap predates this fix". That gap
+    // was real, and it was a GATE BYPASS, not a quirk: it is closed by
+    // EI-19317242751258158, so the bare forms below now discriminate too.
+    // Both spellings are kept — the pair is what proves the fix did not simply
+    // move the gap from one to the other.
     ['env PC_HEAVY_ADMISSION=on does not bypass', 'env PC_HEAVY_ADMISSION=on vitest run x.test.ts'],
     ['env PC_HEAVY_ADMISSION=onward (not an off-value) does not bypass', 'env PC_HEAVY_ADMISSION=onward vitest run x.test.ts'],
+    ['bare PC_HEAVY_ADMISSION=on does not bypass (EI-19317242751258158)', 'PC_HEAVY_ADMISSION=on vitest run x.test.ts'],
+    ['bare PC_HEAVY_ADMISSION=onward does not bypass (EI-19317242751258158)', 'PC_HEAVY_ADMISSION=onward vitest run x.test.ts'],
     // The prefix must be at command position — hidden after a real heavy op it
     // does not un-gate the leading heavy command.
     ['inline off after a raw heavy stays gated', 'vitest run a.test.ts && PC_HEAVY_ADMISSION=off vitest run b.test.ts'],
   ])('does NOT over-bypass %s (EI-10913 guard)', (_label, command) => {
     expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
+  /**
+   * EI-19317242751258158 — "benign leading wrapper" was defined TWICE in the
+   * hook (the peel loop, and the heavy-detection anchor) and the two copies had
+   * DIVERGED. The peel knew `timeout`; the anchor did not. NEITHER knew a bare
+   * `VAR=val` assignment prefix — only the `env VAR=val` spelling.
+   *
+   * That single divergence failed in two OPPOSITE directions at once, which is
+   * why it survived three previous fixes to this area (EI-9634, EI-10001,
+   * WI-4547): each added the missing wrapper to ONE of the two lists.
+   *
+   *   • BYPASS   — a two-token prefix in front of a heavy command escaped
+   *     admission ENTIRELY. This is the failure that matters: the gate exists
+   *     to stop a vitest/tsc herd melting the box, and `FOO=1 npx vitest` was
+   *     never even evaluated.
+   *   • FRICTION — the mirror image: `PC_HEAVY_COALESCE=0 scripts/pc-heavy.sh
+   *     -- node_modules/.bin/vitest` was DENIED with a message telling the
+   *     caller to run it under scripts/pc-heavy.sh, which is what it was doing.
+   *
+   * Both directions are pinned below, plus the false-positive corner: the
+   * assignment prefix is general enough (`\w+=`) to match ordinary prose, so it
+   * counts only at a real command position. `echo "PC_HEAVY=1 vitest is the
+   * way"` denied during development of this fix — it must not.
+   */
+  it.each([
+    ['bare VAR= in front of a heavy', 'PC_HEAVY_COALESCE=0 npx vitest run x.test.ts'],
+    ['bare VAR= in front of tsc', 'FOO=1 npx tsc --noEmit'],
+    ['several bare assignments in front of a heavy', 'FOO=1 BAR=2 npx vitest run x.test.ts'],
+    ['bare VAR= in front of npm test', 'FOO=1 npm test'],
+    // Mid-chain: the peel only strips from the FRONT, so a non-peelable first
+    // segment used to hide the wrapper from the anchor entirely.
+    ['mid-chain timeout-wrapped heavy', 'echo hi && timeout 60 npx vitest run x.test.ts'],
+    ['mid-chain bare VAR= heavy', 'echo hi && FOO=1 npx vitest run x.test.ts'],
+    ['mid-chain stacked nice+timeout heavy', 'echo hi && nice -n 10 timeout 60 npx vitest run x.test.ts'],
+    ['mid-chain assignment after a semicolon', 'echo hi; PC_HEAVY_COALESCE=0 npx tsc --noEmit'],
+  ])('closes the wrapper-divergence BYPASS: denies %s (EI-19317242751258158)', (_label, command) => {
+    expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
+  it.each([
+    // The exact filed repro. A path-invoked heavy is what makes it visible: the
+    // `\S*/` anchor fires on `node_modules/.bin/`, so the command reached the
+    // deny while the identical command WITHOUT the assignment prefix was
+    // admitted — i.e. adding an env var to the blessed remedy broke it.
+    ['VAR= scripts/pc-heavy.sh -- <path heavy> (the filed repro)', 'PC_HEAVY_COALESCE=0 scripts/pc-heavy.sh -- node_modules/.bin/vitest run x.test.ts'],
+    ['several assignments then pc-heavy', 'FOO=1 BAR=2 scripts/pc-heavy.sh -- node_modules/.bin/vitest run x.test.ts'],
+    ['cd <dir> && VAR= scripts/pc-heavy.sh -- <path heavy>', 'cd packages/operator-core && PC_HEAVY_COALESCE=0 scripts/pc-heavy.sh -- node_modules/.bin/vitest run x.test.ts'],
+    ['VAR= in front of a self-throttled root entrypoint', 'FOO=1 npm run test:affected'],
+  ])('closes the wrapper-divergence FRICTION: allows %s (EI-19317242751258158)', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
+  it.each([
+    // The bare-assignment arm is far more general than the named wrappers
+    // (`sudo`, `nice`, …), so it is honoured ONLY at a real command position.
+    // Free-floating mid-string it would deny ordinary prose that merely NAMES a
+    // heavy command — each of these denied while developing the fix.
+    ['a heavy named in a quoted grep pattern', "grep 'FOO=1 vitest' package.json"],
+    ['a heavy named in prose after an assignment-looking token', 'echo "PC_HEAVY=1 vitest is the way"'],
+    ['an assignment-looking token in a commit message', 'git commit -m "set FOO=1 before vitest runs"'],
+  ])('does NOT false-positive on %s (EI-19317242751258158 FP guard)', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
   });
 
   // These scoping tests probe with a RAW heavy (vitest) — `npm run test:affected`

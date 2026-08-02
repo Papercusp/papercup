@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
     cacheReadTokens: 0, cacheCreationTokens: 0, spendUsd: 0.01, buckets: [],
   })),
   loadAccountPool: vi.fn(async () => ({ accounts: [] as unknown[] })),
+  readOperatorState: vi.fn(async () => null),
   listPresence: vi.fn(async () => [] as Array<{ heartbeatAt: string }>),
   activeWorkspaceId: vi.fn(() => 'ws-test'),
 }));
@@ -33,6 +34,18 @@ vi.mock('./rate-limit-config', () => ({ getCachedRateLimitConfig: h.getCachedRat
 vi.mock('./agent-usage-telemetry', () => ({ summarizeUsage: h.summarizeUsage }));
 // B-GW-4 opus-budget: mock only the pool loader; the pure summarizeOpusBudget runs for real.
 vi.mock('./deployment/account-pool-store', () => ({ loadAccountPool: h.loadAccountPool }));
+// ...but the opus-budget leg has a SECOND IO edge that was missed: `readOpusBudgetPolicy()`
+// reads operator_state from real PG, and the whole leg is `.catch(() => null)`, so once the
+// no-real-PG rail (EI-19311807188719573) started throwing there it degraded silently to
+// `opusBudget: null` — an ordinary assertion failure with the rail message nowhere in it,
+// and before the rail these cases only passed because the read hit the live database. Stub
+// the STATE READ rather than readOpusBudgetPolicy itself, so the real default-merge and the
+// real DEFAULT_OPUS_BUDGET_POLICY bands still run: null = no stored override, which is the
+// empty-store case the module documents as byte-identical to the baked defaults.
+vi.mock('./operator-state-pg', () => ({
+  readOperatorState: h.readOperatorState,
+  writeOperatorState: vi.fn(async () => {}),
+}));
 // EI-18106936190883400 (liveAgents): mock presence — the real PRESENCE_STALE_MS constant
 // runs for real (it's a pure number, no need to mock it).
 vi.mock('./agent-tools/coordination/presence', () => ({ listPresence: h.listPresence, PRESENCE_STALE_MS: 10 * 60 * 1000 }));

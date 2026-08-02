@@ -169,11 +169,23 @@ beforeEach(() => {
       undo: async () => {},
     }),
   }));
+  // EI-19318632694308003: getOrgPg() is called by _create.ts ITSELF (not inside any
+  // module mocked below) on the provision / cross-drain / release-seed / wake paths.
+  // The unit-test live-PG guard (assertRealPgAllowed, EI-19311807188719573) THROWS
+  // there rather than returning a lazily-connecting pool, and every one of those call
+  // sites sits in a try/catch that swallows the throw into a console.warn — so the
+  // guarded step silently never runs (provisionCalls stays empty) AND
+  // vitest-fail-on-console turns the warn into a suite failure. Inject the seam double
+  // the guard's own message prescribes; the modules handed this sql are already mocked
+  // no-ops above, so a dud tag is behaviour-neutral. importOriginal keeps every OTHER
+  // db-org export real — only getOrgPg is replaced.
+  vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    getOrgPg: () => ({ sql: (..._a: unknown[]) => Promise.resolve([]) }),
+  }));
   // P-020: the per-pot learning-loop provision step is mocked (its own behavior is
   // pinned in lib/pot/provision-learning-loop.test.ts). It ignores the sql it's
-  // handed, so the real getOrgPg flows through untouched (the wake-defaults step
-  // shares that pool). The flag gate resolves ON via the @papercusp/flags/server
-  // mock above.
+  // handed. The flag gate resolves ON via the @papercusp/flags/server mock above.
   vi.doMock('../../pot/provision-learning-loop', () => ({
     provisionPotLearningLoop: async (input: { workspaceId: string; potSlug: string }) => {
       provisionCalls.push({ workspaceId: input.workspaceId, potSlug: input.potSlug });
@@ -255,6 +267,7 @@ afterEach(() => {
   vi.doUnmock('../../knowledge-packs/load-packs');
   vi.doUnmock('../../knowledge-packs/seed');
   vi.doUnmock('../../pot/provision-learning-loop');
+  vi.doUnmock('@papercusp/db-org');
   vi.doUnmock('../../hive-settings-store');
   vi.doUnmock('../../harness/usage-actor');
   vi.doUnmock('../../harness/hive-repo-init');

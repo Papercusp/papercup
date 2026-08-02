@@ -40,6 +40,41 @@ export async function fetchPresenceFleet(
   return out;
 }
 
+/** One fleet member's presence row, as the respawn/launch verification reads it. */
+export interface FleetPresenceRow {
+  ownerId: string;
+  startedAt: Date;
+  heartbeatAt: Date;
+}
+
+/**
+ * IO seam: the fleet's CURRENT presence roster (every owner labeled into `fleetSlug`),
+ * newest-heartbeat first. Backed by the (workspace_id, fleet_slug) partial index.
+ *
+ * This is the "did a launch actually produce an agent?" oracle: a launcher can only
+ * report that it spawned a terminal, and that terminal's wrapper survives the CLI dying
+ * instantly — so a launch is verified by a NEW owner appearing here with a live
+ * heartbeat, never by the launcher's own return value.
+ */
+export async function listFleetPresence(
+  workspaceId: string,
+  fleetSlug: string,
+): Promise<FleetPresenceRow[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ owner_id: string; started_at: Date; heartbeat_at: Date }[]>`
+    SELECT owner_id, started_at, heartbeat_at
+      FROM harness_shared.coord_presence
+     WHERE workspace_id = ${workspaceId}
+       AND fleet_slug = ${fleetSlug}
+     ORDER BY heartbeat_at DESC
+  `;
+  return rows.map((r) => ({
+    ownerId: r.owner_id,
+    startedAt: r.started_at,
+    heartbeatAt: r.heartbeat_at,
+  }));
+}
+
 /**
  * Resolve one caller's CURRENT fleet membership from coord presence, with the
  * launch environment used only when the authoritative read itself fails.
