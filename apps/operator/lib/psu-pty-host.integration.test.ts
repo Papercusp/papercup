@@ -118,7 +118,38 @@ describe('session-port managed seed + native persistence helpers', () => {
   it('waits for OMP backend startup rather than treating terminal-query noise as editor readiness', () => {
     expect(startupOutputReady('omp', '\x1b[6n\x1b[?25l')).toBe(false);
     expect(startupOutputReady('omp', '\x1b[2J omp v16.3.3 \x1b[0m')).toBe(true);
-    expect(startupOutputReady('codex', '\x1b[6n')).toBe(true);
+  });
+
+  // WI-4943: a live Claude→Codex port wrote its managed seed while Codex was
+  // still typewriter-animating its onboarding "Tip: ..." line (and, sometimes,
+  // an MCP-startup warning typed the same way) — long before the composer
+  // existed. The PTY host's OLD codex behavior (any non-empty output ⇒ ready)
+  // treated that animation's very first byte, or any mid-typing frame, as
+  // startup-ready. Verified against a real captured `codex` v0.146.0 PTY boot
+  // (character-by-character cursor-reposition repaint) and the shipped
+  // `@openai/codex-linux-x64` binary's own embedded composer-footer strings
+  // ("NN% context left" is chrome the TUI only paints once its editable input
+  // line is installed).
+  it('waits for the Codex composer footer rather than its first output byte or onboarding-tip animation', () => {
+    // The very first byte a fresh Codex TUI emits is bare terminal-capability
+    // probe noise, not proof of readiness.
+    expect(startupOutputReady('codex', '\x1b[6n')).toBe(false);
+    // A mid-animation frame of the real onboarding-tip typewriter effect (one
+    // character per repaint, via save/restore-cursor + line-clear escapes) —
+    // still not the composer.
+    const tipAnimationFrame =
+      '\x1b[?2026h\x1b[1;1H\x1b[2K\x1b[1m  T\x1b[0m\x1b7\x1b8\x1b[1B\x1b[1G\x1b[2K\x1b[1m  i\x1b[0m' +
+      '\x1b7\x1b8\x1b[1B\x1b[1G\x1b[2K\x1b[1m  p\x1b[0m\x1b[?2026l';
+    expect(startupOutputReady('codex', tipAnimationFrame)).toBe(false);
+    // A quiet gap can also open mid-animation, right after the tip finishes and
+    // before Codex resumes typing an MCP-startup warning the same way — still
+    // not the composer, and exactly the pause an ordinary quiescence check
+    // could misread as "settled at a prompt".
+    expect(startupOutputReady('codex', '\x1b[1m  together.\x1b[0m')).toBe(false);
+    // The composer's live context-budget readout is real chrome, not user
+    // content — present only once the editable input line exists.
+    expect(startupOutputReady('codex', '\x1b[38;5;244m100\x1b[0m% context left')).toBe(true);
+    expect(startupOutputReady('codex', ' 62%  context left ')).toBe(true);
   });
 
   it('signals the forkpty process group and retains a direct-child fallback', () => {

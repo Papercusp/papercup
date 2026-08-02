@@ -352,8 +352,21 @@ A run cannot judge a commit that did not exist when it started. In the case abov
 outside it. This costs nothing, requires no marker/blob/ancestry, and catches the error
 instantly in both directions.
 
-Do **not** try to settle step 0 by reading `papercup-checkpoint`: despite its name it is a
-stale worktree (HEAD dated 2026-07-02, `.git` mtime June 5), not the tree the gate runs.
+⚠ **Do not try to settle step 0 by reading a checkpoint worktree.** There are at least two and
+their names differ by one letter — `papercup-checkpoint` (HEAD dated 2026-07-02, a month stale)
+and `papercusp-checkpoint` — plus transient `papercusp-checkpoint-simtmp-*` dirs. On 2026-08-02
+neither matched the candidate the tool was reporting, and reading the wrong one produced a
+confident wrong answer that went out to 16 agents. A worktree HEAD is a *live* read of a tree
+that may be between runs, mid-reset, or simply not the one the gate is using.
+
+Nor can you settle it from `started_at`/`elapsed_sec` when the response says the manual unit is
+**idle** and `held_externally: true` — those fields then describe the idle unit, not the cron
+process actually holding the run-lock, and `elapsed_sec` is only `now − started_at` recomputed.
+
+**The only primary observation is the verdict itself, which names its own candidate.** When the
+containment question cannot be settled from primary evidence, say so and wait — do not arbitrate
+it from these fields. Four agents produced four contradictory conclusions here in ninety minutes,
+each reasoning correctly from the same untrustworthy inputs.
 
 **Then — and only then — settle containment with ancestry + blob against THAT sha. Step 1
 without step 0 proves the right thing about the wrong object:**
@@ -440,16 +453,58 @@ caught. **Neither reason code is evidence about your change — settle it with a
 and treat every containment field (`marker`, `changeInCandidate`, `callerEditsInCandidate`) as a
 hint that fails in the direction of arguing for a wasteful re-fire.**
 
-When a run is in flight, its own log line (`checkpointing candidate <sha>`) can be fresher
-than `judgingSha`, which lags — but ⚠ **do not glob `/tmp/papercup-green-checkpoint-manual-*.log`
-and take the newest.** Tests write synthetic placeholder shas into that same namespace, and
-`ls -t` routinely returns the TEST file first (EI-19326961954611487). Observed 2026-08-02:
-the newest match was `…-manual-ryte5.log`, containing only
-`was judging 11111111 … superseded by 222222222222` — which reads as a real replaceStale
-displacement and is not. Real run logs are `…-manual-<unit>-<ISO>.log`, so match
-**`/tmp/papercup-green-checkpoint-manual-*T*Z.log`** and ignore any line whose sha is not
-40-hex. When the log and `judgingSha` disagree, prefer whichever you can corroborate with
-the ancestry+blob check above — not the log by default.
+⚠⚠ **A RUN'S JUDGED CANDIDATE CHANGES MID-RUN — "which sha is this run judging" has no single
+stable answer, and every source below answers a slightly different question.** On a red that
+re-tests clean at tip, `green-checkpoint.ts:2600-2621` calls `runGreenCheckpoint(..., { candidate:
+tip, refireAttempts: +1 })` **recursively, inside the same process** (cap `autoRefireCapFromEnv()`,
+currently 2). So the **pid and start time stay FIXED while the candidate ADVANCES** — and a run
+that has been alive for an hour may be on its second candidate, having already discarded the red
+you are still reasoning about.
+
+This single unstated mechanism cost 5–6 agents ~2h and at least four public retractions on
+2026-08-02, because it makes true observations look mutually contradictory:
+`checkpointRunInFlight.candidate` advancing under an **identical `startedAtMs`** is not corruption —
+it is the auto-refire's signature, and it was retracted as impossible. `ps` showing ONE process
+since 07:15Z was simultaneously true and never contradicted it.
+
+**The authoritative read of a LIVE run** is the marker the refire writes for exactly this purpose:
+
+```sql
+SELECT metadata->'gate_health'->'inFlightRetriage'   -- fromCandidate / refiringCandidate
+  FROM harness_shared.routines                        -- refireAttempt / maxRefires / observedAtMs
+ WHERE target_role = 'system:green-checkpoint'
+   AND install_slug = '<harness>' AND workspace_id = '<workspace>';   -- multi-tenant, scope both
+```
+
+`null` means no refire is in flight (the run is still on its first candidate). Treat a marker older
+than `IN_FLIGHT_RETRIAGE_MAX_AGE_MS` (3h) as an abandoned run, not a long one.
+
+⚠ **The persisted log names a COMPLETED pass, never the live one.**
+`~/.papercusp/checkpoint-logs/<ts>-base-<sha>-cand-<sha>.log` is `writeFileSync`'d **once, at each
+pass's END** — its first line is literally `candidate=… base=… written=<ISO> green=<bool>`, and the
+filename timestamp is the WRITE time, not the run's start. Observed 2026-08-02: a log named
+`…-cand-1ee32228e0cf.log` carried `written=07:38:58Z green=false` and a terminal
+`AFFECTED_TESTS_RESULT status=failed` tail while its process was still alive 25 min later, having
+already re-fired onto a newer tip. Reading it as the in-flight candidate is a guaranteed
+one-pass-stale answer.
+
+⚠ **Do not glob `/tmp/papercup-green-checkpoint-manual-*.log` and take the newest.** Tests write
+synthetic placeholder shas into that same namespace, and `ls -t` routinely returns the TEST file
+first (EI-19326961954611487). Observed 2026-08-02: the newest match was `…-manual-ryte5.log`,
+containing only `was judging 11111111 … superseded by 222222222222` — which reads as a real
+replaceStale displacement and is not. Real run logs are `…-manual-<unit>-<ISO>.log`, so match
+**`/tmp/papercup-green-checkpoint-manual-*T*Z.log`** and ignore any line whose sha is not 40-hex.
+
+🚨 **Never fire a manual `release:checkpoint-run` while a run is in its re-triage window.** That
+window is where a STALE red gets voided and the gate re-fires itself onto a newer tip;
+`green-checkpoint.ts:2566` states plainly that killing it "discards the rescue and costs a full
+suite". A gate that looks stuck on a doomed candidate is very often seconds from rescuing itself —
+check `inFlightRetriage` **before** concluding a re-fire is needed. Two agents were minutes from
+firing one on 2026-08-02 while the automatic refire was already green on the affected suite.
+
+⚠ And when it does re-fire: **a passing affected-tests suite is NOT a green gate.** The lint/perf/
+desktop/delta gates and the `main` fast-forward still have to clear; an agent asserted "gate green"
+off the suite result that same morning and had to retract it.
 
 ## Server-side edits and the two-port model — no hot-reload
 
