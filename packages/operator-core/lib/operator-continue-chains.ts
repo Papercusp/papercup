@@ -23,23 +23,18 @@
 import { randomUUID } from 'node:crypto';
 import { sharedUtilityPoolMax } from './resource-profile';
 
-import postgres from 'postgres';
-import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
-
-import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import { getLongLivedAdminPool } from './long-lived-admin-pool';
 import { activeWorkspaceId } from './workspace-registry';
 
-let pool: ReturnType<typeof postgres> | null = null;
+// EI-19306394439939264: was a module-level `let pool` that tracked no URL, so it could
+// never notice the DB endpoint moving underneath it (WI-6739 — ~100 min of ECONNREFUSED
+// to a dead embedded-pg port). The accessor re-resolves and rebinds; attribution options
+// and idle_timeout now come from it, so this site cannot forget either.
 function db() {
-  if (!pool)
-    pool = postgres(getHarnessAdminUrl(), {
-      ...longLivedPoolConnectionOptions('operator-continue-chains'),
-      max: sharedUtilityPoolMax(),
-      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
-      idle_timeout: poolIdleTimeoutSec(),
-      prepare: false,
-    });
-  return pool;
+  return getLongLivedAdminPool('operator-continue-chains', {
+    max: sharedUtilityPoolMax(),
+    prepare: false,
+  });
 }
 
 const CHAIN_LOOKBACK_SECS = 300; // 5 min — matches the V8 default maxContinueChainSecs

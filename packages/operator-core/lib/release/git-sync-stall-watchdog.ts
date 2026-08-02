@@ -132,6 +132,62 @@ export interface GitSyncStallVerdict {
 const hrs = (ms: number): number => Math.round(ms / 3_600_000);
 
 /**
+ * Pure: does this verdict mean COMMITS ARE NOT LANDING (code strands uncommitted + un-deployable),
+ * or only that git-sync recorded a persistent FAULT while HEAD kept advancing?
+ *
+ * A frozen HEAD / dead fire / reap-loop strands code. A pure error STREAK does not: one lane can
+ * fail every tick — e.g. a single submodule whose merge is refused — while the superproject
+ * commits and pushes normally. The two need opposite first moves, so conflating them sends the
+ * reader after an engine wedge that is not there.
+ *
+ * Live miss this exists to stop (2026-08-02, papercusp): a 39-sweep (~10h) streak of
+ * `libs/generic/{cache,chat-protocol}: merge failed … refusing to merge unrelated histories`
+ * paged the whole fleet as "code is stranding … likely a DBOS executor reaping stuck git-sync
+ * fires" while origin/staging advanced every ~5 min and the GitHub bridge reported
+ * `divergence: clear`. Every remedy the page named (rescue-commit the tree, chase the engine)
+ * was for a stall that was not happening; the actual failing leg was submodule reconcile.
+ */
+export function isStrandingVerdict(verdict: GitSyncStallVerdict): boolean {
+  return verdict.commitStale || verdict.fireStale || verdict.persistentReap;
+}
+
+/**
+ * Pure: the reader-facing diagnosis for a stall verdict — what is wrong, why it matters, and the
+ * first move — DERIVED from which signals fired rather than assumed. Single source for the fleet
+ * broadcast, the owner notification and the escalation row, so the three can never disagree about
+ * the same verdict (they did: only `summary` branched, three other strings asserted stranding
+ * unconditionally).
+ */
+export function gitSyncStallDiagnosis(
+  verdict: GitSyncStallVerdict,
+  installSlug: string,
+): { summary: string; title: string; why: string } {
+  if (isStrandingVerdict(verdict)) {
+    return {
+      summary: `git-sync STALLED on ${installSlug} — firing but NOT committing; code is stranding uncommitted + un-deployable.`,
+      title: 'git-sync STALLED — commits not landing, code stranding',
+      why:
+        `Why it matters: a deploy ships only COMMITTED HEAD, so stranded edits can't reach :3070 ` +
+        `until git-sync commits them. Common root: a DBOS executor reaping stuck git-sync fires ` +
+        `(engine wedge — a lock/restart won't fix it). Claim it: inspect metadata.last_error on ` +
+        `the ${installSlug} git-sync routine, and rescue-commit the tree if the strand is urgent.`,
+    };
+  }
+  // Pure error streak: HEAD is still advancing — say so, or the reader chases a phantom stall.
+  return {
+    summary: `git-sync FAULTING on ${installSlug} — a persistent fault streak; HEAD is still advancing, so this is a FAILING LEG, not a commit stall.`,
+    title: 'git-sync FAULTING — a persistent failing leg (commits still landing)',
+    why:
+      `Why it matters: git-sync has recorded the SAME fault on consecutive sweeps, so one leg is ` +
+      `reliably failing — but HEAD is advancing, so this is NOT the code-stranding stall and a ` +
+      `rescue-commit is the WRONG move. Read metadata.last_error on the ${installSlug} git-sync ` +
+      `routine FIRST and fix the leg it names (a submodule that cannot merge, a rejected push, a ` +
+      `failing bridge). Verify before assuming a strand: compare the tree HEAD against ` +
+      `origin/<branch> — if origin is current, nothing is stranded.`,
+  };
+}
+
+/**
  * Pure: decide whether one ACTIVE git-sync routine is in a silent stall. Exported for unit
  * testing (the DB wiring + head-movement tracking is in checkGitSyncStall / integration-covered).
  *
@@ -250,12 +306,12 @@ export function gitSyncStallEscalationBody(opts: {
     headUnchangedHrs: opts.headUnchangedMs != null ? hrs(opts.headUnchangedMs) : null,
     lastStatus: opts.lastStatus,
     emitted_at: opts.nowMs,
-    detail:
-      `git-sync silent stall (watchdog): ${opts.verdict.reason}. The auto-commit of this checkout ` +
-      `is not landing, so edits strand uncommitted and CANNOT deploy (a deploy ships only committed ` +
-      `HEAD). Common root: a DBOS executor reaping stuck git-sync fires (bg-host/engine wedge — a ` +
-      `lock/restart won't fix it). First moves: check metadata.last_error on the routine; rescue-` +
-      `commit the stranded tree if urgent.`,
+    /** Which failure MODE this is — a stranding stall vs a failing leg with HEAD still advancing.
+     *  Consumers should branch on this rather than re-deriving it from the four signal flags. */
+    stranding: isStrandingVerdict(opts.verdict),
+    detail: `git-sync ${isStrandingVerdict(opts.verdict) ? 'silent stall' : 'persistent fault streak'} (watchdog): ${
+      opts.verdict.reason
+    }. ${gitSyncStallDiagnosis(opts.verdict, opts.installSlug).why}`,
   });
 }
 
@@ -400,17 +456,16 @@ export async function checkGitSyncStall(
         if (flip.count !== 1) continue; // another process won the flip
 
         // Say what the verdict actually is: a frozen-HEAD/fire/reap stall strands code; a pure
-        // persistent-fault streak means commits MAY not be landing (HEAD may still advance).
-        const summary =
-          verdict.commitStale || verdict.fireStale || verdict.persistentReap
-            ? `git-sync STALLED on ${row.install_slug} — firing but NOT committing; code is stranding uncommitted + un-deployable.`
-            : `git-sync FAULTING on ${row.install_slug} — a fault has persisted across consecutive watchdog sweeps; commits may not be landing.`;
+        // persistent-fault streak is a FAILING LEG with HEAD still advancing. One derivation
+        // feeds the broadcast, the notification and the escalation row so they cannot disagree.
+        const diagnosis = gitSyncStallDiagnosis(verdict, row.install_slug);
+        const summary = diagnosis.summary;
         try {
           const { notifyAttention } = await import('../attention-notify');
           await notifyAttention({
             kind: 'intervention',
-            title: 'git-sync STALLED — commits not landing, code stranding',
-            body: `git-sync (${row.install_slug}) silent stall: ${verdict.reason}. Edits strand uncommitted + can't deploy. See routine metadata.last_error; rescue-commit if urgent.`,
+            title: diagnosis.title,
+            body: `git-sync (${row.install_slug}): ${verdict.reason}. ${diagnosis.why}`,
             importance: 'urgent',
             workspaceId: row.workspace_id,
             data: { commitStale: verdict.commitStale, fireStale: verdict.fireStale, errorStall: verdict.errorStall, persistentReap: verdict.persistentReap },
@@ -422,11 +477,7 @@ export async function checkGitSyncStall(
         // it next turn and someone can claim it, without a wake storm.
         await broadcastSevereEvent({
           summary,
-          body:
-            `${verdict.reason}\n\nWhy it matters: a deploy ships only COMMITTED HEAD, so stranded edits ` +
-            `can't reach :3070 until git-sync commits them. Likely a DBOS executor reaping stuck git-sync ` +
-            `fires (engine wedge — a lock/restart won't fix it). Claim it: inspect metadata.last_error on ` +
-            `the ${row.install_slug} git-sync routine, and rescue-commit the tree if the strand is urgent.`,
+          body: `${verdict.reason}\n\n${diagnosis.why}`,
           category: 'severe-event',
           // WI-1444 condition lifecycle: recovery below broadcasts the matching
           // resolution, so late inbox readers see this alarm annotated resolved.

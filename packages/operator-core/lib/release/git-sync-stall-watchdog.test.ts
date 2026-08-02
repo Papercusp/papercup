@@ -8,6 +8,8 @@ import { describe, it, expect } from 'vitest';
 import {
   evaluateGitSyncStall,
   gitSyncStallEscalationBody,
+  gitSyncStallDiagnosis,
+  isStrandingVerdict,
   shouldAlarmSustained,
   nextStallSweeps,
   type GitSyncStallSnapshot,
@@ -351,5 +353,96 @@ describe('EI-9030b sustain debounce (edge-trigger before broadcast)', () => {
       streak = nextStallSweeps(true, streak); // sweep 2 → 2
       expect(shouldAlarmSustained(true, streak)).toBe(true);
     });
+  });
+});
+
+describe('stranding vs failing-leg diagnosis (2026-08-02 papercusp misdiagnosis)', () => {
+  // A pure error STREAK with HEAD advancing: one leg fails every tick while the superproject
+  // commits + pushes normally. Live case: 39 sweeps (~10h) of
+  // "libs/generic/{cache,chat-protocol}: merge failed … refusing to merge unrelated histories"
+  // while origin/staging advanced every ~5 min and the GitHub bridge read divergence: clear.
+  const errorStreakOnly = evaluateGitSyncStall(
+    {
+      ...base,
+      lastError:
+        'libs/generic/cache: merge failed (no conflicted paths): fatal: refusing to merge unrelated histories',
+      errorSweeps: 39,
+    },
+    NOW,
+  );
+
+  it('a pure error streak IS stalled but is NOT a stranding verdict (HEAD still advancing)', () => {
+    expect(errorStreakOnly.stalled).toBe(true);
+    expect(errorStreakOnly.errorStall).toBe(true);
+    expect(errorStreakOnly.commitStale).toBe(false);
+    expect(errorStreakOnly.fireStale).toBe(false);
+    expect(errorStreakOnly.persistentReap).toBe(false);
+    expect(isStrandingVerdict(errorStreakOnly)).toBe(false);
+  });
+
+  it('each stranding signal on its own IS a stranding verdict', () => {
+    expect(isStrandingVerdict(evaluateGitSyncStall({ ...base, headUnchangedMs: 31 * M }, NOW))).toBe(true);
+    expect(isStrandingVerdict(evaluateGitSyncStall({ ...base, lastFiredMs: NOW - 4 * H }, NOW))).toBe(true);
+    expect(isStrandingVerdict(evaluateGitSyncStall({ ...base, reapedCount: 3 }, NOW))).toBe(true);
+  });
+
+  it('the failing-leg diagnosis never claims code is stranding, and never blames the executor reaper', () => {
+    const d = gitSyncStallDiagnosis(errorStreakOnly, 'papercusp');
+    // The exact false claims the live page made.
+    expect(d.why).not.toMatch(/stranded edits|code is stranding|strand uncommitted/i);
+    expect(d.why).not.toMatch(/executor reaping|engine wedge/i);
+    expect(d.title).not.toMatch(/code stranding/i);
+    // …and it must say the true thing instead.
+    expect(d.summary).toMatch(/HEAD is still advancing/i);
+    expect(d.why).toMatch(/rescue-commit is the WRONG move/i);
+    expect(d.why).toMatch(/metadata\.last_error/);
+  });
+
+  it('the stranding diagnosis still carries the strand warning + reaper hint (unchanged for real stalls)', () => {
+    const d = gitSyncStallDiagnosis(evaluateGitSyncStall({ ...base, headUnchangedMs: 31 * M }, NOW), 'papercusp');
+    expect(d.summary).toMatch(/STALLED/);
+    expect(d.title).toMatch(/code stranding/i);
+    expect(d.why).toMatch(/executor reaping/i);
+    expect(d.why).toMatch(/rescue-commit the tree/i);
+  });
+
+  it('the two verdicts produce DIFFERENT summary/title/why — the conflation regression', () => {
+    const leg = gitSyncStallDiagnosis(errorStreakOnly, 'papercusp');
+    const strand = gitSyncStallDiagnosis(evaluateGitSyncStall({ ...base, headUnchangedMs: 31 * M }, NOW), 'papercusp');
+    expect(leg.summary).not.toBe(strand.summary);
+    expect(leg.title).not.toBe(strand.title);
+    expect(leg.why).not.toBe(strand.why);
+  });
+
+  it('the escalation row carries a `stranding` flag and the matching detail for each mode', () => {
+    const legBody = JSON.parse(
+      gitSyncStallEscalationBody({
+        installSlug: 'papercusp',
+        verdict: errorStreakOnly,
+        lastFiredMs: base.lastFiredMs,
+        headUnchangedMs: 5 * M,
+        lastStatus: 'synced',
+        nowMs: NOW,
+      }),
+    );
+    expect(legBody.stranding).toBe(false);
+    expect(legBody.errorStall).toBe(true);
+    expect(legBody.detail).toMatch(/persistent fault streak/i);
+    expect(legBody.detail).not.toMatch(/executor reaping|CANNOT deploy/i);
+
+    const strandVerdict = evaluateGitSyncStall({ ...base, headUnchangedMs: 31 * M }, NOW);
+    const strandBody = JSON.parse(
+      gitSyncStallEscalationBody({
+        installSlug: 'papercusp',
+        verdict: strandVerdict,
+        lastFiredMs: base.lastFiredMs,
+        headUnchangedMs: 31 * M,
+        lastStatus: 'synced',
+        nowMs: NOW,
+      }),
+    );
+    expect(strandBody.stranding).toBe(true);
+    expect(strandBody.detail).toMatch(/silent stall/i);
+    expect(strandBody.detail).toMatch(/executor reaping/i);
   });
 });

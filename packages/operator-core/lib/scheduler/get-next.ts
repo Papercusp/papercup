@@ -1441,28 +1441,60 @@ export async function readIssueClaimability(
     await tx.unsafe(`SET LOCAL statement_timeout = ${stmtMs}`);
     const client = tx as unknown as OrgSql;
 
-    const breakdown = await aggregateIssueClaimExclusions(filter, { ...shared, client });
+    // EI-18802055183255275: materialize the candidate set — the full spec `view.filter`
+    // AND all 13 claim floors, evaluated over the WHOLE issue-family population for this
+    // harness — exactly ONCE, into a session-scoped temp table every sibling read below
+    // scans instead of recomputing from scratch. Previously each of the (up to) 4 reads
+    // below independently re-ran the full filter+floor computation as its OWN statement;
+    // measured 2026-08-02 against the real `p2p-release` spec (63-predicate `any` filter,
+    // ~14k-row candidate population): ONE such pass costs ~6.2s, so the unmerged 2-4
+    // serial passes summed to ~12-25s — comfortably past readIssueClaimability's own
+    // per-statement timeout even though no single original statement was individually
+    // pathological (this is why `work_items:claimable { spec:'p2p-release' }` timed out,
+    // including under `breakdownOnly:true`, which still paid 2 of those passes per the
+    // WI-6673 unconditional admitted-composition read). Materializing once turns that into
+    // ~1 full pass + several sub-100ms scans of the already-computed ~14k-row temp table.
+    // Temp tables ARE permitted inside a READ ONLY transaction (they are session-local,
+    // not the kind of catalog/relation write the read-only guard exists to block); ON
+    // COMMIT DROP cleans it up when this transaction ends, so a pooled connection can
+    // never carry a stale copy into its next, unrelated checkout — and each concurrent
+    // caller gets its OWN connection for the duration of `sql.begin`, so the fixed literal
+    // table name never collides across concurrent readIssueClaimability calls (Postgres
+    // temp tables are per-backend-session, invisible across connections).
+    const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
+    const issueWs = issuesScopeWorkspace();
+    const operatorScopeSlug = `operator:${issueWs}`;
+    const assignee = opts.assignee ?? '';
+    const sub = issueClaimCandidateSubquery(client, {
+      compiled: compileFilter(client, filter),
+      assignee,
+      cooldown: releaseCooldownSec(),
+      harness: opts.harness,
+      states,
+      issueWs,
+      operatorScopeSlug,
+      rigAvailable: opts.rigAvailable,
+    });
+    const precomputedTable = 'claim_candidate_snapshot';
+    await client`CREATE TEMP TABLE ${client.unsafe(precomputedTable)} ON COMMIT DROP AS ${sub}`;
+
+    const breakdown = await aggregateIssueClaimExclusions(filter, { ...shared, client, precomputedTable });
     const rows = readOpts.breakdownOnly
       ? []
-      : await listIssueClaimableRows(filter, { ...shared, spec: opts.spec, client }, readOpts.limit);
+      : await listIssueClaimableRows(
+          filter,
+          { ...shared, spec: opts.spec, client, precomputedTable },
+          readOpts.limit,
+        );
     const sample = readOpts.sampleLimit
-      ? await sampleIssueClaimExclusions(filter, { ...shared, client }, readOpts.sampleLimit)
+      ? await sampleIssueClaimExclusions(filter, { ...shared, client, precomputedTable }, readOpts.sampleLimit)
       : undefined;
     // WI-6673: composition of the ADMITTED set, in the SAME snapshot as the count it
     // describes. Unconditional — it is not an opt-in extra, because the whole failure
     // mode is a caller quoting the count WITHOUT having thought to ask for composition.
-    //
-    // COST NOTE (measured 2026-08-01): this is a FOURTH serial aggregation in this
-    // transaction, and postgres.js serialises on the single tx connection, so it adds
-    // roughly one more floor-stack pass per call. That is deliberate for `work_items:
-    // claimable`, which EXISTS to be quoted. It is pure waste for
-    // harness/routines/unguarded-halt-rescue-action.ts, which destructures only
-    // `{ breakdown }` and cannot quote a count to anyone — worth folding the composition
-    // into aggregateIssueClaimExclusions' single pass (same snapshot, one query) rather
-    // than making it opt-in, since an opt-out flag would just recreate the original bug.
-    // NOT urgent: `scheduler:get_next` does NOT route through this function, so the
-    // fleet's hot claim path is unaffected by this cost.
-    const admitted = await aggregateAdmittedComposition(filter, { ...shared, client });
+    // EI-18802055183255275: this used to be a genuine "fourth serial full scan" cost (see
+    // the COST NOTE this replaced) — now it is a cheap scan of the materialized table above.
+    const admitted = await aggregateAdmittedComposition(filter, { ...shared, client, precomputedTable });
 
     return { breakdown, rows, admitted, ...(sample ? { sample } : {}) };
   })) as IssueClaimabilityReading;
