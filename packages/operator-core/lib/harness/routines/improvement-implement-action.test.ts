@@ -11,6 +11,16 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// The routine reads its risk-tier policy via readAutoImplementPolicy → readOperatorState, which
+// opens a real PG pool [EI-19311807188719573]. Stub the STORE, not the policy: `null` = "nothing
+// stored", so readAutoImplementPolicy still computes the genuine DEFAULT_RISK_TIER_POLICY merge
+// under test rather than a hand-written shape that would silently drift from the real defaults.
+vi.mock('../../operator-state-pg', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../operator-state-pg')>()),
+  readOperatorState: vi.fn(async () => null),
+  writeOperatorState: vi.fn(async () => {}),
+  updateOperatorState: vi.fn(async () => {}),
+}));
 vi.mock('../improvements/read-items', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../improvements/read-items')>()),
   readImprovementItems: vi.fn(async () => []),

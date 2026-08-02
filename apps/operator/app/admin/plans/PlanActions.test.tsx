@@ -89,7 +89,7 @@ describe('parseRefList', () => {
 
 describe('PlanActions component', () => {
   function renderActions(over: { items?: unknown[]; planStatus?: string; startStatus?: string | null } = {}) {
-    const cb = { onChanged: vi.fn(), onOptimisticStatus: vi.fn(), onStartStatusChange: vi.fn(), onPlanStatusChange: vi.fn() };
+    const cb = { onChanged: vi.fn(), onOptimisticStatus: vi.fn(), onStartStatusChange: vi.fn(), onPlanStatusChange: vi.fn(), onStartRefused: vi.fn() };
     render(
       <PlanActions
         slug="proj" items={(over.items ?? []) as never} decisions={[]} currentNow={null}

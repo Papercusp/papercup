@@ -188,4 +188,99 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       HARNESS_DOCK_OPEN_BUDGET_MS,
     );
   });
+
+  it("loads a conversation thread within budget when opened from a work item", async () => {
+    const NAME = "conversation-thread-load";
+    await waitForAppMount(browser);
+
+    // Navigate to the /adv Harnesses dock — the seeded Work-items-over-Detail
+    // split (WorkItemsPanel + DetailPanel). Same route the Playwright e2e
+    // (apps/operator/e2e/adv-work-item-detail-chat.spec.ts) drives; here against
+    // the REAL papercusp harness rather than a stubbed slug, so we discover a
+    // row instead of deep-linking a fixed id. SPA-navigate via pushState —
+    // location.assign() tears down the WebDriver session (see the note above).
+    await browser.execute(() => {
+      const u = new URL(location.href);
+      u.searchParams.set("tab", "harnesses");
+      u.searchParams.set("slug", "papercusp");
+      u.searchParams.set("scope", "self");
+      u.searchParams.set("welcome", "0");
+      history.pushState({}, "", u.pathname + u.search + u.hash);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitForAppMount(browser);
+
+    // Wait for at least one row in the Work items grid. RichGrid (grid-core)
+    // gives BOTH the header and every body row `role="row"` (see RichGrid.tsx —
+    // no per-row data-testid exists), so index 0 is always the header and index
+    // 1 is the first real data row once one has rendered.
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(
+          () => document.querySelectorAll('[role="row"]').length > 1,
+        ),
+      {
+        timeout: 20_000,
+        timeoutMsg:
+          "no work-item rows within 20s (is the harness slug valid, and does it have work items?)",
+      },
+    );
+
+    // Click the first data row — RichGrid's onRowClick → WorkItemsPanel's
+    // setSelectedId → the `?sel` nuqs param the Detail pane follows.
+    await browser.execute(() => {
+      const rows = document.querySelectorAll<HTMLElement>('[role="row"]');
+      rows[1]?.click();
+    });
+
+    // Wait for the Detail pane to resolve that selection and render its Chat
+    // action (WorkItemDetail, DetailPanel.tsx — every WI-* row gets one).
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(() =>
+          Boolean(document.querySelector('[data-testid="wi-detail-chat"]')),
+        ),
+      {
+        timeout: 15_000,
+        timeoutMsg:
+          'no [data-testid="wi-detail-chat"] within 15s of selecting a work-item row',
+      },
+    );
+
+    // Clear any stale measure, then click Chat: openFeatureChat POSTs a real
+    // agent_chats row and fires the open-chat event; HarnessesDock's drain
+    // mounts <ChatPanel>, which begins conversation-thread-load when chatId is
+    // set and ends it when that chat's transcript first renders
+    // (ChatPanel.tsx:168/171).
+    await browser.execute((name) => {
+      try {
+        if (performance.clearMeasures) performance.clearMeasures(name);
+      } catch {
+        /* ignore */
+      }
+      document
+        .querySelector<HTMLElement>('[data-testid="wi-detail-chat"]')
+        ?.click();
+    }, NAME);
+
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(
+          (name) => performance.getEntriesByName(name, "measure").length > 0,
+          NAME,
+        ),
+      {
+        timeout: 20_000,
+        timeoutMsg: `no "${NAME}" measure emitted within 20s of opening the chat`,
+      },
+    );
+
+    const measuredMs = await latestMeasure(NAME);
+    // Record BEFORE the asserts — see the note in the palette test above.
+    recordInteractionMs(NAME, measuredMs, CONVERSATION_THREAD_LOAD_BUDGET_MS);
+    expect(measuredMs).not.toBeNull();
+    expect(measuredMs as number).toBeLessThanOrEqual(
+      CONVERSATION_THREAD_LOAD_BUDGET_MS,
+    );
+  });
 });
