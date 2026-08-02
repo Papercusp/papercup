@@ -1979,8 +1979,8 @@ export default defineTool({
     // this handler (poolEffect preview, degenerate-lane composition, …).
     try {
       const kickoffIds = extractKickoffWorkItemIds(kickoffBriefTexts);
-      if (kickoffIds.length > 0 && !args.confirmKickoffMismatch) {
-        const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
+      const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
+      if (kickoffIds.length > 0 && !args.confirmKickoffMismatch && claimSpecWorkspaceId) {
         const effectiveSpec = await getClaimSpec({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId: claimSpecWorkspaceId });
         const { getWorkItem } = await import('../../work-items');
         const mismatches: string[] = [];
