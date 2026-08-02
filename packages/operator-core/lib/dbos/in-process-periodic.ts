@@ -63,19 +63,37 @@ export interface PeriodicCheck {
    * PER-PROCESS state, where skipping a worker would leave that worker's own state unfed.
    *
    * ── Why this field exists ────────────────────────────────────────────────────
-   * host-bootstrap arms this suite under `backgroundWorkers && !utilityHost`, and its
-   * comment claims that gate stops "a naive interval running N× across :3070 cluster
-   * request workers". It does NOT: `backgroundWorkersEnabled()` reads only env
-   * (PAPERCUSP_BACKGROUND_WORKERS / PAPERCUSP_HONO_PORT), and a forked cluster worker
-   * INHERITS its parent's env, so it returns true in every worker. Measured 2026-08-01
-   * on the 16-worker :3070 release cluster: ≥7 distinct worker pids each independently
-   * ran the system-health tick's wide `engineer_issues` read inside one 75s sample, and
-   * the fleet-wide rate implied ~22.6 concurrent tickers. The same file already uses
-   * `cluster.isPrimary` for exactly this class (the credential-sync watcher, EI-3385) and
-   * cross-references it as the right gate — this check suite simply never got it.
+   * This is a LATENT-FOOTGUN GUARD, not a live performance fix. Be precise about what
+   * it does and does not buy, because an earlier version of this comment got it wrong
+   * and the correction is recorded as db-performance-remediation-2026-07-26 D-014.
    *
-   * On a NON-clustered host `cluster.isPrimary` is true, so single-process hosts (the
-   * dev/staging trees, the desktop's own operator) are unaffected.
+   * The soundness argument (this part holds): host-bootstrap arms this suite under
+   * `backgroundWorkers && !utilityHost`, and that gate cannot express "once per HOST".
+   * `backgroundWorkersEnabled()` reads only env (PAPERCUSP_BACKGROUND_WORKERS /
+   * PAPERCUSP_HONO_PORT) and a forked cluster worker INHERITS its parent's env, so on a
+   * host that is BOTH background-workers-enabled AND clustered it returns true in the
+   * primary and in every worker alike — and each would independently run every
+   * host-scoped sweep. `cluster.isPrimary` is the gate that actually answers the
+   * question; the same file already uses it for exactly this class (the credential-sync
+   * watcher, EI-3385), and this suite simply never got it.
+   *
+   * What it does NOT buy (the retracted claim): no host in the current deployment is
+   * both clustered and background-workers-enabled, so this field is a no-op everywhere
+   * today. The :3070 release cluster is forked 16-wide but every one of its 17 processes
+   * carries PAPERCUSP_BACKGROUND_WORKERS=0, so `backgroundWorkersEnabled()` is FALSE and
+   * this suite NEVER ARMS there at all (see background-workers.ts:66-69, which documents
+   * that value as deliberate for the request workers). bg-host does run the suite but is
+   * unclustered (PAPERCUSP_CLUSTER_WORKERS=0), so `isPrimary` is true and nothing is
+   * skipped. An earlier comment here cited "~22.6 concurrent tickers" measured across
+   * release-worker pids as this guard's motivation; those reads are real but are
+   * REQUEST-DRIVEN traffic load-balanced across the workers, not N copies of the tick.
+   * Sixteen workers each serving 1/16th of one request stream do the same total DB work
+   * as one worker serving all of it — process count is not tick count.
+   *
+   * So: keep this guard (it makes an unsound gate sound, and the class has bitten before
+   * — EI-312 leg 1, where vitest workers each ran a "host boot" check against the live
+   * DB), but do not attribute a DB-load reduction to it, and do not close a performance
+   * item on it.
    */
   scope?: 'host' | 'process';
   tick: () => Promise<void> | void;

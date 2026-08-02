@@ -33,6 +33,8 @@
  * deliberately not initialized — a legitimate skip, but still a stated one.
  */
 import { execSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * Repo root. NOTE the '../..': this module lives at scripts/lib/, one level

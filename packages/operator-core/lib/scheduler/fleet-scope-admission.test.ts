@@ -632,6 +632,7 @@ describe('fleet scope assignment admission (P-016)', () => {
         crossMachineRig: 0,
         blockedDep: 0,
         cooldown: 0,
+        remoteOrigin: 0,
       },
     };
 
@@ -731,6 +732,7 @@ describe('fleet scope assignment admission (P-016)', () => {
           crossMachineRig: 0,
           blockedDep: 0,
           cooldown: 0,
+          remoteOrigin: 0,
         },
       };
       const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: externalBlockerOnlyBreakdown });
@@ -815,6 +817,7 @@ describe('fleet scope assignment admission (P-016)', () => {
         crossMachineRig: 0,
         blockedDep: 0,
         cooldown: 0,
+        remoteOrigin: 0,
       },
     };
 
@@ -914,6 +917,7 @@ describe('fleet scope assignment admission (P-016)', () => {
         crossMachineRig: 0,
         blockedDep: 0,
         cooldown: 1,
+        remoteOrigin: 0,
       },
     };
 

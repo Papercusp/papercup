@@ -225,6 +225,7 @@ describe('applyFleetControl', () => {
           crossMachineRig: 0,
           blockedDep: 0,
           cooldown: 0,
+          remoteOrigin: 0,
         },
       },
       spec: { specId: 'bug-drain', revision: 4, source: 'cup' as const },

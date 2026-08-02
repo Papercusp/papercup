@@ -186,10 +186,15 @@ describe('suggestProjects — a refusal has to be actionable', () => {
   });
 
   it('matches whole path SEGMENTS, so a prefix-of-a-name is not treated as related', () => {
-    // 'libs/sub' must not rank libs/submodule/** — that would promote a typo
-    // above genuinely-related neighbours.
+    // 'libs/sub' shares the real segment `libs`, so every libs/* project is
+    // legitimately related and ranks. What must NOT happen is `sub` partially
+    // matching `submodule` and promoting that subtree above its siblings — a
+    // typo would then outrank the projects the caller actually has.
     const suggestions = suggestProjects(root, 'libs/sub');
-    expect(suggestions).toEqual(suggestProjects(root));
+    expect(suggestions.every((s) => s.startsWith('libs/'))).toBe(true);
+    expect(suggestions[0]).toBe('libs/flags/tsconfig.json');
+    // Contrast: the exact segment DOES promote the subtree.
+    expect(suggestProjects(root, 'libs/submodule')[0]).toBe('libs/submodule/libs/db/tsconfig.json');
   });
 
   it('falls back to the generic interleaved list when the operand relates to nothing', () => {
