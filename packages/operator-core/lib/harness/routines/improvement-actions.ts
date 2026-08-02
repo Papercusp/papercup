@@ -238,7 +238,18 @@ registerSystemAction('improvement-triage', async (_ctx: SystemActionCtx) => {
     const hygiene = await runHygieneSweep({ maxActions: hygieneCap });
     if (hygiene.planned.length > 0) {
       console.log(
-        `[improvement-triage] hygiene: ${hygiene.dupClosed} dup-closed, ${hygiene.agedOut} aged out (scanned ${hygiene.scanned})`,
+        `[improvement-triage] hygiene: ${hygiene.dupClosed} dup-closed, ${hygiene.agedOut} aged out` +
+          (hygiene.failed.length > 0 ? `, ${hygiene.failed.length} no-op (row not locally writable)` : '') +
+          ` (scanned ${hygiene.scanned})`,
+      );
+    }
+    // EI-19340598344414318: a no-op write (remote-origin row, EI-7833/migration 521) used to
+    // be silently miscounted as closed and left a misleading "duplicate of X" comment on an
+    // item that stayed open forever. Surface it loudly so it doesn't go unnoticed again.
+    if (hygiene.failed.length > 0) {
+      console.warn(
+        `[improvement-triage] hygiene: ${hygiene.failed.length} item(s) could not actually be closed locally — ` +
+          hygiene.failed.map((f) => `${f.id} (${f.reason})`).join(', '),
       );
     }
   } catch (e) {

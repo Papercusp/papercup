@@ -1090,9 +1090,21 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
   it('⭐ a manual run (release:checkpoint-run) — which self-records via recordCheckpointVerdict and never touches the routine handler — still fires the release-fixer for a fresh red', async () => {
     // The candidate must survive isStaleReleaseFixerCandidate's live re-verify: exists (cat-file -e
     // exit 0) and NOT yet promoted onto origin/main (rev-list --count > 0 ⇒ not an ancestor).
-    spawnMock
-      .mockImplementationOnce(() => fakeSpawn('', 0)) // cat-file -e <candidate>^{commit} → exists
-      .mockImplementationOnce(() => fakeSpawn('3', 0)); // rev-list --count origin/main..<candidate> → not promoted
+    //
+    // Dispatch on ARGS, not call ORDER. Other git reads share this same `spawn` seam — since
+    // EI-19329732364513693, trackGateStall measures candidate staleness (`log -1 --format=%cI`
+    // and `rev-list --count <candidate>..staging`) on the same recordCheckpointVerdict path, and
+    // it runs FIRST. A positional mockImplementationOnce chain therefore hands this check
+    // someone else's response: cat-file silently reads as exit≠0, the candidate looks GC'd, the
+    // fixer dispatch is skipped, and this test fails for a reason that has nothing to do with
+    // the behaviour it guards. Matching on args is immune to any future added git call.
+    spawnMock.mockImplementation((_cmd: unknown, args: string[]) => {
+      if (args.includes('cat-file')) return fakeSpawn('', 0); // <candidate>^{commit} → exists
+      if (args.some((a) => typeof a === 'string' && a.startsWith('origin/main..'))) {
+        return fakeSpawn('3', 0); // rev-list --count origin/main..<candidate> → not promoted
+      }
+      return fakeSpawn('', 0); // any other git read (staleness measurement) — value irrelevant here
+    });
 
     const recorded = await recordCheckpointVerdict(
       { workspaceId: 'ws-42', installSlug: 'my-harness' },

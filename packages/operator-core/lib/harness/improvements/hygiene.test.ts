@@ -16,7 +16,8 @@ import {
 } from './hygiene';
 import { OBSERVATION_TOPIC, IMPROVEMENT_TOPIC } from './read-items';
 import type { ImprovementCandidate } from './policy';
-import type { IssueAgeRow } from '../../issues-engineer';
+import type { EngineerIssue, IssueAgeRow } from '../../issues-engineer';
+import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 
 const NOW = Date.parse('2026-06-09T12:00:00Z');
 const daysAgo = (d: number): string => new Date(NOW - d * 24 * 60 * 60 * 1000).toISOString();
@@ -130,22 +131,31 @@ describe('planHygieneSweep — age-out', () => {
 });
 
 describe('runHygieneSweep — persistence + dryRun', () => {
-  const mkDeps = (items: ImprovementCandidate[]) => {
+  // Success-path stub rows — any truthy value satisfies the null-check the sweep
+  // now applies (EI-19340598344414318); the loop only inspects truthiness.
+  const fakeIssue = (id: string) => ({ id } as unknown as EngineerIssue);
+  const fakePost = { id: 1 } as unknown as ThreadPostRow;
+
+  const mkDeps = (items: ImprovementCandidate[], opts: { noOp?: 'merge' | 'setState' | 'both' } = {}) => {
     const closed: string[] = [];
     const merged: Record<string, unknown>[] = [];
+    const commented: string[] = [];
     const deps: HygieneSweepDeps = {
       readItems: vi.fn(async () => items),
       setIssueState: vi.fn(async (id) => {
         closed.push(id);
-        return null;
+        return opts.noOp === 'setState' || opts.noOp === 'both' ? null : fakeIssue(id);
       }),
-      commentIssue: vi.fn(async () => null),
-      mergeIssuePayload: vi.fn(async (_id, patch) => {
+      commentIssue: vi.fn(async (id) => {
+        commented.push(id);
+        return fakePost;
+      }),
+      mergeIssuePayload: vi.fn(async (id, patch) => {
         merged.push(patch);
-        return null;
+        return opts.noOp === 'merge' || opts.noOp === 'both' ? null : fakeIssue(id);
       }),
     };
-    return { deps, closed, merged };
+    return { deps, closed, merged, commented };
   };
 
   it('dryRun plans without writing', async () => {
@@ -160,16 +170,83 @@ describe('runHygieneSweep — persistence + dryRun', () => {
   });
 
   it('executes: closes with decidedReason + reject-route lifecycle', async () => {
-    const { deps, closed, merged } = mkDeps([
+    const { deps, closed, merged, commented } = mkDeps([
       cand({ id: 'old', title: 'stale minor docs nit', createdAt: daysAgo(50) }),
     ]);
     const res = await runHygieneSweep({ nowMs: NOW }, deps);
     expect(res.agedOut).toBe(1);
+    expect(res.failed).toEqual([]);
     expect(closed).toEqual(['old']);
+    expect(commented).toEqual(['old']); // comment posted ONLY because the writes actually took
     expect(merged[0].decidedReason).toContain('aged out');
     const lc = merged[0].ideaLifecycle as Record<string, unknown>;
     expect(lc.state).toBe('triaged');
     expect(lc.triageDecision).toBe('reject');
+  });
+
+  // EI-19340598344414318 (live 2026-08-02): the `engineer_issues` compat view's INSTEAD OF
+  // trigger silently no-ops an UPDATE against a remote-origin row (EI-7833/migration 521) —
+  // mergeIssuePayload/setIssueState return null while commentIssue (a different, unguarded
+  // table) still succeeds. The old code never checked the return values, so it posted a
+  // "duplicate of X (hygiene sweep)" comment and counted the close as done, while the item's
+  // state/payload never actually changed — it stayed open and kept re-dispatching for 11+
+  // days across a 34-item duplicate chain, re-claimed by multiple agents.
+  it('a no-op setIssueState is NOT counted as closed and posts NO misleading comment', async () => {
+    const { deps, commented } = mkDeps(
+      [cand({ id: 'old', title: 'stale minor docs nit', createdAt: daysAgo(50) })],
+      { noOp: 'setState' },
+    );
+    const res = await runHygieneSweep({ nowMs: NOW }, deps);
+    expect(res.agedOut).toBe(0);
+    expect(res.dupClosed).toBe(0);
+    expect(res.failed).toEqual([{ id: 'old', reason: 'set-state-no-op' }]);
+    expect(commented).toHaveLength(0);
+  });
+
+  it('a no-op mergeIssuePayload is NOT counted as closed and posts NO misleading comment', async () => {
+    const { deps, commented } = mkDeps(
+      [cand({ id: 'old', title: 'stale minor docs nit', createdAt: daysAgo(50) })],
+      { noOp: 'merge' },
+    );
+    const res = await runHygieneSweep({ nowMs: NOW }, deps);
+    expect(res.agedOut).toBe(0);
+    expect(res.failed).toEqual([{ id: 'old', reason: 'merge-no-op' }]);
+    expect(commented).toHaveLength(0);
+  });
+
+  it('both writes no-op ⇒ reason is the combined no-op-write', async () => {
+    const { deps, commented } = mkDeps(
+      [cand({ id: 'old', title: 'stale minor docs nit', createdAt: daysAgo(50) })],
+      { noOp: 'both' },
+    );
+    const res = await runHygieneSweep({ nowMs: NOW }, deps);
+    expect(res.failed).toEqual([{ id: 'old', reason: 'no-op-write' }]);
+    expect(commented).toHaveLength(0);
+  });
+
+  it('one no-op item does not block a later item in the same sweep from closing normally', async () => {
+    const items = [
+      cand({ id: 'noop', title: 'stale minor docs nit alpha', createdAt: daysAgo(50) }),
+      cand({ id: 'good', title: 'stale minor docs nit beta entirely distinct wording', createdAt: daysAgo(51) }),
+    ];
+    const closed: string[] = [];
+    const commented: string[] = [];
+    const deps: HygieneSweepDeps = {
+      readItems: vi.fn(async () => items),
+      setIssueState: vi.fn(async (id) => {
+        closed.push(id);
+        return id === 'noop' ? null : fakeIssue(id);
+      }),
+      commentIssue: vi.fn(async (id) => {
+        commented.push(id);
+        return fakePost;
+      }),
+      mergeIssuePayload: vi.fn(async (id) => fakeIssue(id)),
+    };
+    const res = await runHygieneSweep({ nowMs: NOW }, deps);
+    expect(res.agedOut).toBe(1);
+    expect(res.failed).toEqual([{ id: 'noop', reason: 'set-state-no-op' }]);
+    expect(commented).toEqual(['good']);
   });
 });
 

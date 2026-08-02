@@ -778,5 +778,36 @@ export async function honorSpawnRequestFromProjection(
     { expect: 'honoring' },
     args.sql,
   );
+
+  // EI-19333624101736074: FEDERATE the success. `local_disposition` above is
+  // deliberately host-local and never crosses the wire (projections/
+  // work-offers.ts:22,330), so without this receipt the requester's evidence
+  // for a completed honor is identical to its evidence for a request nobody
+  // picked up — measured live tower->Win rig 2026-08-02, and the ambiguity
+  // alone cost two wakes. The receipt is the ONE channel proven to cross.
+  //
+  // It names the ACCOUNT the seat actually ran under, including any auto→default
+  // downgrade this host applied (Gate 4.6), because "honored, but on which
+  // account?" is the first question asked when the member then dies at boot —
+  // and answering it currently requires shelling into the honoring host.
+  const partial = spawn.failed > 0 ? `, ${spawn.failed} FAILED to open` : '';
+  await emitReceipt({
+    workspaceId: args.workspaceId,
+    potSlug: args.potHomeSlug,
+    kind: 'honored',
+    offerId: args.row.offer_id,
+    action: 'delegated-seat:spawn',
+    detail:
+      `honored: opened ${spawn.opened}/${payload.count} member(s)${partial} for fleet ` +
+      `'${args.row.fleet_slug}' on seat '${slot.ref}' with account='${acct.account}'` +
+      (acct.note ? ` (${acct.note})` : '') +
+      '. NOTE: this receipt attests the member PROCESS was launched, not that it ' +
+      'booted successfully — a member can still die at boot (e.g. auth failure).',
+    requester: { kind: 'session', ref: payload.requesterOwnerId, githubUserId: publisher },
+    responderGithubUserId: actor.githubUserId,
+    responderDevicePubkey: devicePubkey,
+    actor: 'delegated-spawn-honor',
+  });
+
   return { outcome: 'honored', opened: spawn.opened, failed: spawn.failed };
 }

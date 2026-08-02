@@ -30,9 +30,41 @@ import type { OrgSql } from '../work-items';
 import { resolveP2pGrantWorkspace } from './grant-store';
 import type { P2pCapability, P2pGranteeKind } from './capabilities';
 
-/** X8 receipt taxonomy. */
-export const P2P_RECEIPT_KINDS = ['refusal', 'excused-breach'] as const;
+/**
+ * X8 receipt taxonomy.
+ *
+ * ⚠ WIRE CONTRACT — this is not a local enum. `isP2pReceiptWireRow`
+ * (sync/hyperbee/projections/p2p-receipts.ts) validates inbound rows against
+ * this exact set and DROPS anything outside it, and mig 468/723 pins the same
+ * list as a DB CHECK. So a peer that predates a new kind silently discards
+ * those receipts. Widening it means: migration first, then this list, and
+ * accept that older peers drop the new kind until they update.
+ *
+ * - `refusal`        — a refused/interrupted cross-peer action; REQUIRES the
+ *                      structured refusal {code, detail} and bumps the M15
+ *                      refused-op counters.
+ * - `excused-breach` — preemption-class interruption (X8: host kill-switch
+ *                      wind-down, revocation-lite downgrade); excluded from
+ *                      reliability signals (P-203).
+ * - `honored`        — the SUCCESS fact for a completed cross-peer action
+ *                      (EI-19333624101736074). Carries NO refusal and must
+ *                      NOT touch the refused-op counters.
+ */
+export const P2P_RECEIPT_KINDS = ['refusal', 'excused-breach', 'honored'] as const;
 export type P2pReceiptKind = (typeof P2P_RECEIPT_KINDS)[number];
+
+/**
+ * Kinds that denote a FAILED/interrupted op, i.e. the ones the M15 refused-op
+ * counters are evidence for. `honored` is deliberately absent: those counters
+ * are the trust boundary's evidence that foreign work was refused (P-413), and
+ * counting successes into them corrupts the one artifact D-001 relies on.
+ */
+const REFUSAL_CLASS_KINDS: ReadonlySet<string> = new Set<P2pReceiptKind>(['refusal', 'excused-breach']);
+
+/** True when the kind denotes a failed/interrupted op rather than a success. */
+export function isRefusalClassReceiptKind(kind: string): boolean {
+  return REFUSAL_CLASS_KINDS.has(kind);
+}
 
 export interface P2pReceipt {
   workspaceId: string;
@@ -159,6 +191,27 @@ export async function emitP2pReceipt(
   if (args.kind === 'refusal' && !args.refusal) {
     return { ok: false, refusal: { code: 'refusal_required', detail: "kind='refusal' requires the structured refusal {code, missing?, detail}." } };
   }
+  // The mirror of the check above: a SUCCESS receipt carrying a refusal code is
+  // incoherent, and would surface in p2p:trace as a refusal on the very path
+  // this kind exists to distinguish from one (EI-19333624101736074).
+  if (!isRefusalClassReceiptKind(args.kind) && args.refusal) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'refusal_on_success_receipt',
+        detail: `kind='${args.kind}' is a success fact and must not carry a structured refusal — put the outcome in \`detail\`.`,
+      },
+    };
+  }
+  if (!isRefusalClassReceiptKind(args.kind) && !args.detail?.trim()) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'detail_required',
+        detail: `kind='${args.kind}' carries no refusal code, so \`detail\` is its ONLY payload — emitting it empty federates a content-free success.`,
+      },
+    };
+  }
 
   const sql = sqlOverride ?? getOrgPg().sql;
   const receiptId = randomUUID();
@@ -201,21 +254,30 @@ export async function emitP2pReceipt(
   }
 
   // (c) counter — best-effort.
-  try {
-    await bumpRefusedOpCounter(
-      { workspaceId: ws, potSlug: hive, reason: `${args.kind}:${args.refusal?.code ?? args.action}` },
-      sql,
-    );
-  } catch {
-    /* counter is advisory */
+  // ONLY refusal-class kinds bump it. These counters are the trust boundary's
+  // evidence that foreign work was REFUSED (P-413/D-001); counting a success
+  // into them would corrupt the one artifact that evidence rests on
+  // (EI-19333624101736074).
+  if (isRefusalClassReceiptKind(args.kind)) {
+    try {
+      await bumpRefusedOpCounter(
+        { workspaceId: ws, potSlug: hive, reason: `${args.kind}:${args.refusal?.code ?? args.action}` },
+        sql,
+      );
+    } catch {
+      /* counter is advisory */
+    }
   }
 
   // M21: ONE log line, offer-id threaded — both sides grep the same shape.
-  console.warn(
+  // A success is logged at info: warn-level successes train the reader to
+  // ignore the warn stream that the refusal receipts depend on.
+  const line =
     `[p2p:receipt] ${args.kind} action=${args.action}${offerId ? ` offer=${offerId}` : ''} ` +
-      `code=${args.refusal?.code ?? '-'} missing=${args.refusal?.missing ?? '-'} ` +
-      `requester=${args.requester?.kind ?? '-'}:${args.requester?.ref ?? '-'} receipt=${receiptId}`,
-  );
+    `code=${args.refusal?.code ?? '-'} missing=${args.refusal?.missing ?? '-'} ` +
+    `requester=${args.requester?.kind ?? '-'}:${args.requester?.ref ?? '-'} receipt=${receiptId}`;
+  if (isRefusalClassReceiptKind(args.kind)) console.warn(line);
+  else console.log(line);
 
   return { ok: true, receipt };
 }

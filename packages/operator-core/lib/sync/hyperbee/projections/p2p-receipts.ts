@@ -71,8 +71,34 @@ function composeKey(row: P2pReceiptWireRow): string {
   return row.receipt_id;
 }
 
+/**
+ * Unknown kinds already warned about, so a peer steadily emitting a newer kind
+ * logs once per process rather than once per row. Log-dedupe only — carries no
+ * state anything reads back.
+ */
+const warnedUnknownKinds = new Set<string>();
+
 function decodeValue(raw: unknown): P2pReceiptWireRow | null {
-  return isP2pReceiptWireRow(raw) ? raw : null;
+  if (isP2pReceiptWireRow(raw)) return raw;
+
+  // EI-19333624101736074: P2P_RECEIPT_KINDS is a WIRE CONTRACT, so a peer
+  // running a NEWER build emits kinds this one has never heard of — and the
+  // guard above drops them indistinguishably from malformed junk. That silent
+  // drop is the same defect class the 'honored' kind was added to fix (a fact
+  // that never crosses looks exactly like a fact that never happened), so make
+  // taxonomy skew SAY SO. Still dropped — accepting an unvalidated kind would
+  // defeat the guard — but no longer invisible.
+  const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+  const kind = r && typeof r.kind === 'string' ? r.kind : null;
+  if (kind && !KIND_SET.has(kind) && !warnedUnknownKinds.has(kind)) {
+    warnedUnknownKinds.add(kind);
+    console.warn(
+      `[p2p-receipts] DROPPED inbound receipt(s) of unknown kind '${kind}' — this peer's ` +
+        `P2P_RECEIPT_KINDS (${[...KIND_SET].join(', ')}) predates the emitting peer's. ` +
+        `Update this host to stop discarding them; further '${kind}' rows are dropped silently.`,
+    );
+  }
+  return null;
 }
 
 function refuse(

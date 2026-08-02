@@ -310,6 +310,59 @@ describe('honorSpawnRequestFromProjection', () => {
     );
   });
 
+  // EI-19333624101736074: the success must FEDERATE. local_disposition is
+  // host-local, so without this receipt a completed honor is indistinguishable
+  // from a request nobody picked up.
+  it('honors ⇒ emits a federated kind=honored receipt naming the account (EI-19333624101736074)', async () => {
+    const { d, emitReceipt } = deps();
+    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(emitReceipt).toHaveBeenCalledOnce();
+    expect(emitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'honored',
+        offerId: 'spawnreq-0123456789abcdef',
+        action: 'delegated-seat:spawn',
+        workspaceId: WS,
+        potSlug: HOME,
+        requester: expect.objectContaining({ ref: 'su-a', githubUserId: UID_A }),
+      }),
+    );
+    // A success carries NO structured refusal — that is what keeps it out of
+    // the refused-op counters and out of p2p:trace's refusal reading.
+    const emitted = emitReceipt.mock.calls[0]![0] as { refusal?: unknown; detail: string };
+    expect(emitted.refusal).toBeUndefined();
+    expect(emitted.detail).toContain("account='auto'");
+    expect(emitted.detail).toContain('opened 2/2');
+  });
+
+  it('honors with an auto→default downgrade ⇒ the receipt names the substitution', async () => {
+    const resolveHonorAccount = vi.fn(async () => ({
+      ok: true as const,
+      account: 'default',
+      note: "downgraded --account=auto → default: this host's gateway pool is empty",
+    }));
+    const { d, emitReceipt } = deps({ resolveHonorAccount });
+    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    const emitted = emitReceipt.mock.calls[0]![0] as { kind: string; detail: string };
+    expect(emitted.kind).toBe('honored');
+    expect(emitted.detail).toContain("account='default'");
+    expect(emitted.detail).toContain('gateway pool is empty');
+  });
+
+  // The honest limit of the receipt: spawnMembers reports a WINDOW opened, not
+  // a booted agent. Over-claiming here would recreate the phantom-honor
+  // ambiguity one layer up.
+  it('the honored receipt does NOT claim the member booted, and reports a partial open', async () => {
+    const { d, emitReceipt } = deps({
+      spawnMembers: vi.fn(async () => ({ opened: 1, failed: 1, firstError: 'second window failed' })),
+    });
+    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 1, failed: 1 });
+    const emitted = emitReceipt.mock.calls[0]![0] as { detail: string };
+    expect(emitted.detail).toContain('opened 1/2');
+    expect(emitted.detail).toContain('1 FAILED to open');
+    expect(emitted.detail).toMatch(/not that it booted successfully/i);
+  });
+
   it('a lost claim race ⇒ already_claimed, no spawn (double-apply cannot double-spawn)', async () => {
     const { d, spawnMembers } = deps({ setDisposition: vi.fn(async () => false) });
     expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'already_claimed' });

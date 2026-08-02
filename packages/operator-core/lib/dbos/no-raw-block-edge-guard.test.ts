@@ -46,6 +46,28 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
       expect(writesRawBlocksEdge('await linkWorkItem(id, dst, "blocks");')).toBe(true);
       expect(writesRawBlocksEdge('await linkWorkItem(id, dst, `blocks`);')).toBe(true);
     });
+
+    /**
+     * The case that killed the first, tighter implementation of this predicate.
+     * An argument-level match ("is 'blocks' inside the call's own parens?") looked
+     * more precise and was measurably WORSE: the one real in-tree caller
+     * (agent-tools/work_items/link.ts) passes the rel as a VARIABLE, so the tight
+     * form missed the only shape that actually occurs. These lock the variable form
+     * so nobody "tightens" the predicate back into that blind spot.
+     */
+    it('flags the VARIABLE rel form — the shape the real caller uses', () => {
+      expect(
+        writesRawBlocksEdge("const rel = 'blocks';\nawait linkWorkItem(id, dst, rel, { harness });"),
+      ).toBe(true);
+    });
+
+    it('flags a rel reached via a branch, not a literal argument (the link.ts shape)', () => {
+      expect(
+        writesRawBlocksEdge(
+          "if (it.rel === 'blocks') { /* ... */ }\nawait linkWorkItem(it.id, dst, it.rel, { harness });",
+        ),
+      ).toBe(true);
+    });
   });
 
   describe('does NOT flag reads — reading a blocker set cannot create a cycle', () => {
@@ -107,14 +129,24 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
       ).toBe(false);
     });
 
-    it('does not let a distant unrelated blocks string arm a linkWorkItem call', () => {
-      // The call itself uses 'relates'; the word 'blocks' appears in a LATER statement.
-      // Bounded matching (stops at `;`) is what keeps this from being a false positive.
-      expect(
-        writesRawBlocksEdge(
-          "await linkWorkItem(id, dst, 'relates');\nconst label = 'blocks';",
-        ),
-      ).toBe(false);
-    });
+  });
+
+  /**
+   * The KNOWN, ACCEPTED coarseness of the file-level match, pinned deliberately so it
+   * is a documented property rather than a surprise to the next reader.
+   *
+   * A file that writes some OTHER rel and separately mentions 'blocks' is flagged.
+   * That is the price of catching the variable-rel form above, and it was paid with
+   * eyes open: measured against the live tree (5680 scanned files, 2026-08-02) this
+   * costs exactly ONE file — work-items.ts, the linkWorkItem definition site — which
+   * is allowlisted with a reason. If a future file trips this legitimately, the fix is
+   * to reference the policy or add a REASONED allowlist entry; the fix is NOT to
+   * tighten the predicate back to argument-level matching, which would reopen the
+   * blind spot that the real caller already lives in.
+   */
+  it('KNOWN TRADE: flags a non-blocks write in a file that also mentions blocks', () => {
+    expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'relates');\nconst label = 'blocks';")).toBe(
+      true,
+    );
   });
 });

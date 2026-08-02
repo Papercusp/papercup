@@ -33,6 +33,7 @@
  * when zstd is unavailable, and neither this module nor `streams.ts` should
  * carry that on its load path.
  */
+import { join } from 'node:path';
 import {
   findCodexRolloutPath,
   findCodexRolloutPathByUuid,
@@ -77,7 +78,18 @@ export interface RematTranscriptDeps {
   }) => Promise<{ ok: boolean; reason?: string; root?: string }>;
   /** Newest archived native session id for an adv-session row id. */
   findArchivedSessionIdForAdv: (advSessionId: number) => Promise<string | null>;
-  resolveClaude: (sessionId: string, owner?: string) => Promise<string | null>;
+  /**
+   * `root`, when given, is the CLAUDE_CONFIG_DIR the restore actually wrote
+   * into (`restored.root` — the archive's own `session_root`, EI-16982). It
+   * must be consulted DIRECTLY and cannot be replaced by `owner`: an archive
+   * can be stamped with an `owner` that no longer matches the directory its
+   * bytes physically live under (a stale/misattributed `session_archives.owner`
+   * — observed live, e.g. a forked session whose CLAUDE_CONFIG_DIR stayed
+   * pointed at its parent's isolated dir), in which case an owner-only
+   * re-resolve searches the WRONG directory and reports the session
+   * unrecoverable even though the restore just wrote it to disk.
+   */
+  resolveClaude: (sessionId: string, owner?: string, root?: string) => Promise<string | null>;
   resolveOmp: (threadId: string) => Promise<string | null>;
   resolveCodexByUuid: (rolloutId: string, root: string) => Promise<string | null>;
   resolveCodexBySessionKey: (sessionKey: string, root: string) => Promise<string | null>;
@@ -92,7 +104,12 @@ async function defaultDeps(): Promise<RematTranscriptDeps> {
   return {
     rematerializeSession: (key) => rematerializeSession(key, pgSessionArchiveStore()),
     findArchivedSessionIdForAdv,
-    resolveClaude: (sessionId, owner) => resolveInteractiveTranscript(sessionId, { owner }),
+    // EI-16982: search the ACTUAL restored root directly (in addition to the
+    // owner-hint fast path) — `root` is the archive's own `session_root`, so
+    // it finds the file even when `owner` is stale/misattributed relative to
+    // where the bytes actually live on disk.
+    resolveClaude: (sessionId, owner, root) =>
+      resolveInteractiveTranscript(sessionId, { owner, ...(root ? { roots: [join(root, 'projects')] } : {}) }),
     resolveOmp: (threadId) => findOmpSessionPath(threadId),
     // Point the by-uuid walk at the root the restore actually wrote to — its
     // default is the GLOBAL ~/.codex, where a per-session rollout never lives.
@@ -187,7 +204,7 @@ export async function rematerializeTranscript(
   try {
     switch (key.kind) {
       case 'claude':
-        path = await deps.resolveClaude(key.sessionId, key.owner);
+        path = await deps.resolveClaude(key.sessionId, key.owner, root);
         break;
       case 'omp':
         path = await deps.resolveOmp(key.threadId);

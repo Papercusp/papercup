@@ -109,7 +109,37 @@ describe('rematerializeTranscript — the claude/omp legs are unchanged', () => 
     expect(deps.rematerializeSession).toHaveBeenCalledWith(
       expect.objectContaining({ sourceKind: 'claude', sessionId: 'sess-1' }),
     );
-    expect(deps.resolveClaude).toHaveBeenCalledWith('sess-1', 'su-1');
+    // The RESTORED ROOT is passed alongside the owner hint (EI-16982) — see the
+    // misattribution regression test below for why the root can't be dropped.
+    expect(deps.resolveClaude).toHaveBeenCalledWith('sess-1', 'su-1', '/cfg');
+  });
+
+  it('EI-16982: re-resolves via the RESTORED ROOT when the archive owner is stale/misattributed', async () => {
+    // Reproduces the live bug: session_archives.owner can name a DIFFERENT
+    // coord owner than the one the caller (the UI, keyed off coord_presence /
+    // psu-pty's own event ledger) asks about — e.g. a forked session whose
+    // CLAUDE_CONFIG_DIR stayed pointed at its parent's isolated dir. The
+    // restore still lands the bytes under the archive's OWN session_root
+    // ('/session-claude/su-OTHER-OWNER'), never under the asked-about owner's
+    // dir — so a resolver that trusts only `owner` reports the session
+    // unrecoverable even though rematerializeSession just wrote it to disk.
+    const RESTORED_ROOT = '/home/u/.papercusp/session-claude/su-actual-owner-on-disk';
+    const REAL_PATH = `${RESTORED_ROOT}/projects/p/8c0f946c.jsonl`;
+    const deps = codexDeps({
+      rematerializeSession: vi.fn(async () => ({ ok: true, root: RESTORED_ROOT })),
+      // Models the pre-fix resolver: it only ever sees `owner`, and the caller's
+      // asserted owner ('su-e2982660') does NOT match where the file actually
+      // lives, so an owner-only lookup would return null. Passing `root` lets
+      // the resolver find it directly regardless of the owner mismatch.
+      resolveClaude: vi.fn(async (_sessionId, _owner, root) => (root === RESTORED_ROOT ? REAL_PATH : null)),
+    });
+    const r = await rematerializeTranscript(
+      { kind: 'claude', sessionId: '8c0f946c', owner: 'su-e2982660' },
+      deps,
+    );
+
+    expect(r).toEqual({ path: REAL_PATH, reason: 'restored', root: RESTORED_ROOT });
+    expect(deps.resolveClaude).toHaveBeenCalledWith('8c0f946c', 'su-e2982660', RESTORED_ROOT);
   });
 
   it('omp uses its thread id directly as the archive key', async () => {

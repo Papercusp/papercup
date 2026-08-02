@@ -26,13 +26,15 @@
  *
  *   node scripts/check-no-raw-block-edge.mjs
  *
- * THE TELL — a WRITE of a blocks edge, never a read:
- *   (a) a raw `INSERT INTO harness_shared.coord_links` in a file that also carries a
- *       `'blocks'` rel literal, or
- *   (b) a `linkWorkItem(...)` call whose arguments include a `'blocks'` literal.
- * A file is CLEARED when it references either sanctioned entry point, since that
- * means the policy is being applied. Comments are stripped first, so prose about
- * blocks edges never trips it.
+ * THE TELL — a WRITE of a blocks edge, never a read: the file touches a coord_links
+ * WRITE primitive (`linkWorkItem(...)` or a raw `INSERT INTO harness_shared.coord_links`)
+ * AND carries a `'blocks'` rel literal. A file is CLEARED when it references either
+ * sanctioned entry point, since that means the policy is being applied. Comments are
+ * stripped first, so prose about blocks edges never trips it.
+ *
+ * The match is FILE-LEVEL rather than argument-level, which is a measured trade — see
+ * `writesRawBlocksEdge` for why the tighter form was implemented, tested, and rejected
+ * (it missed the one real in-tree caller, which passes the rel as a variable).
  *
  * Deliberately NOT flagged (verified against the live tree): READS such as
  * `listIn(ref, { rel: 'blocks' })` / `listInMany(dsts, { rel: 'blocks' })` in
@@ -67,7 +69,19 @@ const ROOT = new URL('..', import.meta.url).pathname;
  * the 'blocks' literal. Nothing else belongs here — a new site that needs to write
  * a blocks edge should CALL one of its entry points, not be exempted from them.
  */
-export const ALLOWLIST = new Set(['packages/operator-core/lib/dbos/feature-blockers-edges.ts']);
+export const ALLOWLIST = new Set([
+  // The policy module: holds the authoritative writer + the tool-facing guard, so it
+  // legitimately contains the raw INSERT and the 'blocks' literal. It IS the thing
+  // every other site must route through.
+  'packages/operator-core/lib/dbos/feature-blockers-edges.ts',
+  // The DEFINITION SITE of the generic `linkWorkItem` primitive (work-items.ts:5360) —
+  // allowlisted the same way the sibling guards allowlist their own definition sites.
+  // Verified 2026-08-02: it does not CALL linkWorkItem anywhere; its 'blocks' literals
+  // are work_item_deps SQL (dep_type='blocks' — a different table), read-side
+  // `links.listIn(target, { rel: 'blocks' })`, and the rel dispatch inside the
+  // definition itself. A blocks-edge WRITE added here would need re-review by hand.
+  'packages/operator-core/lib/work-items.ts',
+]);
 
 /**
  * Grandfathered offenders. EMPTY on purpose and must remain so — the tree was clean
@@ -96,28 +110,39 @@ export function stripComments(text) {
   return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 }
 
-/** A raw write into the polymorphic edge table. */
-const RAW_INSERT = /INSERT\s+INTO\s+harness_shared\.coord_links/i;
+/**
+ * A call into a coord_links WRITE primitive: the generic link writer, or a raw INSERT.
+ * Reads (`listIn` / `listInMany` / `listOut`) are deliberately absent — reading a
+ * blocker set cannot create a cycle.
+ */
+const WRITE_PRIMITIVE = /\blinkWorkItem\s*\(|INSERT\s+INTO\s+harness_shared\.coord_links/i;
 /** A `blocks` rel literal in any quoting style. */
 const BLOCKS_LITERAL = /['"`]blocks['"`]/;
-/**
- * A linkWorkItem CALL carrying a 'blocks' literal. Bounded to 400 chars and stopping
- * at a `;` so it matches the call's own arguments (including a multi-line call) rather
- * than an unrelated 'blocks' string further down the file.
- */
-const LINK_CALL_WITH_BLOCKS = /\blinkWorkItem\s*\([^;]{0,400}?['"`]blocks['"`]/s;
 /** Referencing either sanctioned entry point means the policy is being applied. */
 const SANCTIONED = /syncFeatureBlockEdges|guardFeatureBlockEdgeAcyclic/;
 
 /**
  * Does this source WRITE a feature→feature `blocks` edge without going through the
  * acyclicity policy? Pure (text → boolean) so it is unit-testable in isolation.
+ *
+ * FILE-LEVEL on purpose, and this is a deliberate trade rather than laziness. The
+ * obvious tighter predicate — require the `'blocks'` literal INSIDE the call's own
+ * arguments — was implemented first and MEASURED against the tree: it missed
+ * `agent-tools/work_items/link.ts`, which passes the rel as a VARIABLE
+ * (`linkWorkItem(it.id, dst, it.rel, ...)` after an `it.rel === 'blocks'` branch).
+ * Since the one real in-tree caller already uses the variable form, a
+ * literal-in-call predicate would miss the realistic bypass shape while looking
+ * precise — the worst combination for a guard.
+ *
+ * So: a file that touches a coord_links write primitive AND traffics in a `blocks`
+ * rel must reference the policy, or be allowlisted. Measured cost of the coarser
+ * form on the live tree (2026-08-02, 5680 scanned files): exactly ONE additional
+ * file, `work-items.ts`, which merely DEFINES linkWorkItem — allowlisted above with
+ * a reason, the same way the sibling guards allowlist their own definition sites.
  */
 export function writesRawBlocksEdge(text) {
   const t = stripComments(text);
-  const writesBlocksEdge =
-    (RAW_INSERT.test(t) && BLOCKS_LITERAL.test(t)) || LINK_CALL_WITH_BLOCKS.test(t);
-  return writesBlocksEdge && !SANCTIONED.test(t);
+  return WRITE_PRIMITIVE.test(t) && BLOCKS_LITERAL.test(t) && !SANCTIONED.test(t);
 }
 
 /**
