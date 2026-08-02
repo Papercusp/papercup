@@ -33,7 +33,12 @@ vi.mock('../../../memory/injection', () => ({
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
 
-import routes, { deriveQuery, deriveBatchQuery, clampToBudget } from './mid-turn-context';
+import routes, {
+  deriveQuery,
+  deriveBatchQuery,
+  clampToBudget,
+  splitLegQueries,
+} from './mid-turn-context';
 
 const endpoint = routes[0] as unknown as {
   handler: (req: Request) => Promise<Response>;
@@ -280,5 +285,80 @@ describe('mid-turn-context — the budget is enforced HERE, because injection.ts
     const out = clampToBudget(block, 120);
     const head = out.split(' … ')[0]!;
     expect(head.endsWith('word')).toBe(true);
+  });
+});
+
+describe('splitLegQueries — de-diluting the cosine query (P-044 / F-L, motivated by D-041)', () => {
+  it('strips path tokens from the COSINE half and keeps the LEXICAL half whole', () => {
+    // D-041's batch one, in shape: four content words carrying a directory path
+    // twice plus a full component path. The cosine leg embeds ONE vector, so
+    // those tokens were pulling it toward "files under apps/operator-vite".
+    const derived =
+      'session history slow apps/operator-vite/src · apps/operator-vite/src/components/HistoryDropdown.tsx';
+    const { cosine, lexical } = splitLegQueries(derived);
+    expect(cosine).toBe('session history slow ·');
+    expect(lexical).toBe(derived);
+  });
+
+  it('strips an absolute path and a single-slash path that carries an extension', () => {
+    expect(splitLegQueries('why empty /home/x/repo/lib/a.ts').cosine).toBe('why empty');
+    expect(splitLegQueries('why empty memory/injection.ts').cosine).toBe('why empty');
+  });
+
+  it('LEAVES prose that merely contains a slash — where the false positives live', () => {
+    // `and/or`, `input/output`, `24/7` are things an agent really does type into
+    // a Grep pattern or a Bash description; stripping them would delete meaning
+    // from the very query this is protecting.
+    for (const text of ['check the and/or branch', 'the input/output split', 'runs 24/7']) {
+      expect(splitLegQueries(text).cosine).toBe(text);
+    }
+  });
+
+  it('FALLS BACK to the full text when stripping leaves no prose — the load-bearing case', () => {
+    // A Read-only batch is nothing but paths. buildMemoryContextBlock gates on
+    // the COSINE text being non-empty, so returning '' here would silently
+    // disable mid-turn recall for every path-only batch — a far larger
+    // regression than the dilution this fixes. And with no prose present there
+    // is nothing to dilute, so keeping the full text costs nothing.
+    const derived = deriveBatchQuery([
+      { tool: 'Read', toolInput: { file_path: 'packages/operator-core/lib/memory/injection.ts' }, toolResponse: 'x' },
+    ]);
+    const { cosine, lexical } = splitLegQueries(derived);
+    expect(cosine).toBe(derived);
+    expect(lexical).toBe(derived);
+  });
+
+  it('treats a "(no result)" marker as chrome, not as the prose worth keeping', () => {
+    // Otherwise a barren path-only batch reads as "has words" and the cosine
+    // query becomes the literal string "(no result)".
+    const derived = deriveBatchQuery([
+      { tool: 'Glob', toolInput: { pattern: 'apps/**/Foo.tsx' }, toolResponse: 'No files found' },
+    ]);
+    expect(splitLegQueries(derived).cosine).toBe(derived);
+  });
+
+  it('is a no-op on a query with no paths at all', () => {
+    const derived = 'why does session history take several seconds to load';
+    expect(splitLegQueries(derived)).toEqual({ cosine: derived, lexical: derived });
+  });
+
+  it('the endpoint sends the two halves to the two legs', async () => {
+    buildMemoryContextBlockMock.mockResolvedValueOnce('## Possibly relevant (mid-turn)\n\n- hit');
+    await post({
+      owner: owner(),
+      toolCalls: [
+        {
+          tool: 'Grep',
+          toolInput: { pattern: 'session history slow', path: 'apps/operator-vite/src' },
+          toolResponse: 'No matches found',
+        },
+      ],
+    });
+    const arg = buildMemoryContextBlockMock.mock.calls[0]![0] as {
+      queryContext: { userText: string; lexicalText: string };
+    };
+    expect(arg.queryContext.userText).not.toContain('apps/operator-vite/src');
+    expect(arg.queryContext.userText).toContain('session history slow');
+    expect(arg.queryContext.lexicalText).toContain('apps/operator-vite/src');
   });
 });

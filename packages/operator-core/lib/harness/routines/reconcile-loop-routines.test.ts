@@ -1306,3 +1306,77 @@ describe('defaultEscalateLifecycleDeath — stable conditionKey (EI-186680252396
     expect(input.body).toMatch(/~33m/); // the detail still lives in body, just not in summary
   });
 });
+
+describe('reconcileLoopRoutines — presence-quiescence defers behind the session_turns ingest watermark (WI-6852)', () => {
+  const T0 = 1_782_000_000_000;
+  const QUIET = 70_000; // > FALLBACK_QUIET_MS (60s)
+
+  /** A warm loop that settles ONLY via presence-quiescence: no lifecycle marker, no turn journal. */
+  const quiescentRow = (over: Record<string, unknown> = {}) => ({
+    id: 'rt-1',
+    target_owner_id: 'su-test',
+    interval_sec: 900,
+    parked: true,
+    install_slug: 'papercusp',
+    name: 'loop-su-test',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: new Date(T0),
+    lifecycle_completed_at: null,
+    turn_journal_completed_at: null,
+    presence_last_active_at: new Date(T0 + 4_000),
+    last_assistant_text_after_fire: null,
+    ...over,
+  });
+
+  it('DEFERS the settle while the ingest watermark is BEHIND the quiet instant (the live 02:58 fire-into-a-wall repro)', async () => {
+    const updates: unknown[][] = [];
+    // The owner IS ingested (watermark present) but the ingest has not yet reached the final
+    // beat, so a null assistant text is a LAG artifact — not evidence the turn ended cleanly.
+    const sql = fakeSql([quiescentRow({ turns_ingest_watermark: new Date(T0 - 30_000) })], updates);
+    const res = await reconcile({ sql, nowMs: T0 + QUIET, readFireState: NO_PRIOR_ERRORS });
+    expect(res.rearmed).toBe(0);
+    expect(updates).toHaveLength(0); // stayed parked — no bare-interval re-arm into the wall
+  });
+
+  it('SETTLES normally once the watermark has REACHED the quiet instant (the absence is then real)', async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql([quiescentRow({ turns_ingest_watermark: new Date(T0 + 4_000) })], updates);
+    const res = await reconcile({ sql, nowMs: T0 + QUIET, readFireState: NO_PRIOR_ERRORS });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('presence-quiescence');
+  });
+
+  it('does NOT defer when the owner has NO indexed turns at all — deferring needs positive evidence of lag, so this population keeps today behavior', async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql([quiescentRow({ turns_ingest_watermark: null })], updates);
+    const res = await reconcile({ sql, nowMs: T0 + QUIET, readFireState: NO_PRIOR_ERRORS });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('presence-quiescence');
+  });
+
+  it('does NOT defer when the assistant text IS present — a lagging watermark is irrelevant once the evidence itself has landed', async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        quiescentRow({
+          last_assistant_text_after_fire: 'ordinary turn text',
+          turns_ingest_watermark: new Date(T0 - 30_000),
+        }),
+      ],
+      updates,
+    );
+    const res = await reconcile({ sql, nowMs: T0 + QUIET, readFireState: NO_PRIOR_ERRORS });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('presence-quiescence');
+  });
+
+  it('a deferred loop is NOT wedged — the layer-3 stuck-park backstop still re-arms it at its dwell floor', async () => {
+    const updates: unknown[][] = [];
+    // Same lagging-watermark row, but now far past the stuck-park dwell: the backstop must win,
+    // so the worst case of deferring is a LATE settle, never a permanently parked loop.
+    const sql = fakeSql([quiescentRow({ turns_ingest_watermark: new Date(T0 - 30_000) })], updates);
+    const res = await reconcile({ sql, nowMs: T0 + 3 * 3_600_000, readFireState: NO_PRIOR_ERRORS });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('stuck-backstop');
+  });
+});

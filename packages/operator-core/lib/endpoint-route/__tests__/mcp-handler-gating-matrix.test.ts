@@ -441,6 +441,70 @@ beforeEach(() => {
   _resetVerifiedSpawns(); // every case reuses spawn='spawn-1' — isolate the real verified-spawn tracker per test
 });
 
+/* ─── caller-specified result projection (P-020 / D-041) ────────────────── */
+
+describe('projection — the caller-specified reduction stage at the dispatch layer', () => {
+  const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
+
+  it('STRIPS `projection` before the tool sees it — tool schemas are additionalProperties:false', () => {
+    // The whole point of a dispatch-level reserved arg: it must never reach the
+    // tool's own schema validation, or every tool in the catalog rejects it as
+    // an unknown key.
+    return callTool(
+      'gatingtest:scoped',
+      { probe: 'v', projection: { pipe: [{ op: 'head', n: 1 }] } },
+      scoped('ws-test'),
+    ).then(() => {
+      expect(seen).toHaveLength(1);
+      expect(seen[0].args).toEqual({ probe: 'v' });
+      expect(seen[0].args).not.toHaveProperty('projection');
+    });
+  });
+
+  it('applies the projection to the result and reports it in _meta', async () => {
+    const res = await callTool(
+      'gatingtest:scoped',
+      { projection: { pipe: [{ op: 'count' }] } },
+      scoped('ws-test'),
+    );
+    expect(res.isError).not.toBe(true);
+    // The probe returns one line; `count` (wc -l) turns the body into "1".
+    expect(res.content[0]?.text).toBe('1');
+    expect(textOf(res)).toContain('[projection: wc -l');
+    expect(res._meta?.resultProjection).toMatchObject({ applied: true, linesIn: 1, linesOut: 1 });
+  });
+
+  it('a projection that filters everything out returns an empty body, not the unfiltered result', async () => {
+    const res = await callTool(
+      'gatingtest:scoped',
+      { projection: { pipe: [{ op: 'grep', pattern: 'definitely-not-present' }] } },
+      scoped('ws-test'),
+    );
+    expect(res.content[0]?.text).toBe('');
+    expect(textOf(res)).not.toContain('gatingtest:scoped-ok');
+  });
+
+  it('an INVALID projection fails CLOSED — the tool never runs', async () => {
+    // Fail-closed is the point: a caller who asked for a reduction must not be
+    // silently handed the full result (and its token bill) instead.
+    const res = await callTool(
+      'gatingtest:scoped',
+      { projection: { pipe: [{ op: 'grep', pattern: '[[:digit:]]' }] } },
+      scoped('ws-test'),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('projection_invalid');
+    expect(textOf(res)).toContain('POSIX');
+    expect(seen).toHaveLength(0); // the tool was never dispatched
+  });
+
+  it('no `projection` arg leaves the result byte-identical (the overwhelmingly common path)', async () => {
+    const res = await callTool('gatingtest:scoped', { probe: 'v' }, scoped('ws-test'));
+    expect(textOf(res)).toBe('gatingtest:scoped-ok');
+    expect(res._meta?.resultProjection).toBeUndefined();
+  });
+});
+
 /* ─── replay receipt durability ordering (EI-19301511582594101) ─────────── */
 
 describe('replay receipt is persisted only AFTER the tool transaction commits', () => {

@@ -402,7 +402,7 @@ export const INBOX_FAST_PATH_ROW_CAP = 25_000;
 export async function readInbox(
   ownerId: string,
   opts: InboxOptions = {},
-  window?: InboxWindowSpec,
+  window?: CoordWindowSpec,
 ): Promise<CoordEnvelope[]> {
   // Recipient-pushdown fast path (fleet-concurrency-first P-003, round4 D-005):
   // readInbox is the dominant `coord_event_log` call — every agent fires it every
@@ -504,15 +504,19 @@ export const INBOX_PAGE_ROWS = 1_000;
  *  so a bounded read can never reach LESS history than the capped full read. */
 export const INBOX_MAX_PAGES = 25;
 
-/** Opt a `readInbox` call into the bounded keyset-paged read (WI-6939). */
-export interface InboxWindowSpec {
+/** Opt a `readInbox` or `readOutbox` call into the bounded keyset-paged read
+ *  (WI-6939 built it for the inbox; EI-19323045109346905 extended it to the
+ *  outbox). Named for the coord log rather than the inbox because BOTH
+ *  directions page the same table on the same loop — only the match predicate
+ *  and the visibility projection differ. */
+export interface CoordWindowSpec {
   /** The CALLER's stopping rule, over the envelopes visible so far. Paging stops
    *  when this returns true or history is exhausted. It lives with the caller
    *  because the selective filters do (see {@link readInboxWindow}). */
   enough: (entries: CoordEnvelope[]) => boolean;
 }
 
-export interface InboxWindowResult {
+export interface CoordWindowResult {
   /** Filtered + retraction-suppressed envelopes, ascending by (ts, msg_id). */
   entries: CoordEnvelope[];
   /** True when paging reached the end of this owner's matching history. */
@@ -557,11 +561,97 @@ export interface InboxWindowResult {
  *
  * Falls back to the authoritative `readInbox` on a non-PG seam or any query error.
  */
+/**
+ * The keyset pager both windowed reads share — newest-first over
+ * `coord_event_log`, stopping when the caller is satisfied or history runs out.
+ *
+ * EXTRACTED rather than copied (EI-19323045109346905). The inbox and outbox
+ * windows differ in exactly two places — the row-match predicate and how raw
+ * rows project to VISIBLE envelopes — and everything else (the `id < beforeId`
+ * cursor, the short-page exhaustion test, the page budget, the skew-padded
+ * `since_ts` bound, the fail-soft warn) is subtle enough that a second copy
+ * would drift. In particular the "evaluate `enough` on VISIBLE entries, never
+ * raw rows" rule is the whole correctness argument for the under-fill hazard,
+ * and it is the first thing a copy gets wrong.
+ *
+ * `satisfied` receives the accumulated RAW rows and is expected to project them
+ * itself, because only the caller knows what "visible" means for its direction.
+ */
+async function pageCoordEventLogDesc(params: {
+  /** Direction-specific row match, e.g. recipient-pushdown or `from = owner`. */
+  match: (sql: ReturnType<typeof coordSql>) => unknown;
+  /** Skew-padded lower bound, or null for no bound. */
+  sinceBound: string | null;
+  /** Caller's stopping rule over the accumulated raw rows. */
+  satisfied: (raw: CoordEnvelope[]) => boolean;
+}): Promise<{ raw: CoordEnvelope[]; exhausted: boolean; pages: number }> {
+  const { match, sinceBound, satisfied } = params;
+  const raw: CoordEnvelope[] = [];
+  let beforeId: string | number | null = null;
+  let pages = 0;
+  let exhausted = false;
+  const sql = coordSql();
+  while (pages < INBOX_MAX_PAGES) {
+    // Explicit annotation: `beforeId` is assigned FROM `rows` and then read back
+    // into the next iteration's query, which TS otherwise flags as circular (TS7022).
+    const rows: { id: string | number; body: unknown }[] = await sql<
+      { id: string | number; body: unknown }[]
+    >`
+      SELECT id, body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
+         ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
+         ${match(sql)}
+       ORDER BY id DESC
+       LIMIT ${INBOX_PAGE_ROWS}
+    `;
+    pages += 1;
+    for (const r of rows) {
+      raw.push((typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
+    }
+    // A short page means we reached the end of this owner's matching history.
+    if (rows.length < INBOX_PAGE_ROWS) {
+      exhausted = true;
+      break;
+    }
+    beforeId = rows[rows.length - 1]!.id;
+    if (satisfied(raw)) break;
+  }
+  return { raw, exhausted, pages };
+}
+
+/**
+ * Never truncate silently. Running out of page budget without satisfying the
+ * caller means older matching rows exist that this read did NOT return — the
+ * same failure shape as the row cap (EI-19314819320465915), and the caller only
+ * sees `entries`, so without this the shortfall is invisible. `exhausted:false`
+ * is the machine-readable form; this is the one a human debugging a short
+ * mailbox will actually see.
+ */
+function warnOnPageBudgetExhausted(
+  label: string,
+  ownerId: string,
+  sinceTs: string | undefined,
+  exhausted: boolean,
+  pages: number,
+  rowsScanned: number,
+): void {
+  if (exhausted || pages < INBOX_MAX_PAGES) return;
+  console.warn(
+    `[${label}] page budget (${INBOX_MAX_PAGES} x ${INBOX_PAGE_ROWS}) exhausted for ` +
+      `owner=${ownerId} since_ts=${sinceTs ?? '(none)'} without satisfying the caller's ` +
+      `stopping rule — matching rows OLDER than the ${rowsScanned} read were NOT returned; ` +
+      'page via since_ts for a genuine full-history backfill.',
+  );
+}
+
 export async function readInboxWindow(
   ownerId: string,
   opts: InboxOptions = {},
   enough: (entries: CoordEnvelope[]) => boolean = () => false,
-): Promise<InboxWindowResult> {
+): Promise<CoordWindowResult> {
   if (!coordHasPgFastPath()) {
     const entries = await readInbox(ownerId, opts);
     return { entries, exhausted: true, rowsScanned: entries.length, pages: 1 };
@@ -569,63 +659,38 @@ export async function readInboxWindow(
   const sinceBound = opts.since_ts
     ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
     : null;
-  const raw: CoordEnvelope[] = [];
-  const visible = (): CoordEnvelope[] =>
+  const visible = (raw: CoordEnvelope[]): CoordEnvelope[] =>
     suppressRetracted(filterInbox(raw, ownerId, opts), collectRetractedIds(raw));
-  let beforeId: string | number | null = null;
   let pages = 0;
-  let exhausted = false;
   try {
-    const sql = coordSql();
-    while (pages < INBOX_MAX_PAGES) {
-      // Explicit annotation: `beforeId` is assigned FROM `rows` and then read back
-      // into the next iteration's query, which TS otherwise flags as circular (TS7022).
-      const rows: { id: string | number; body: unknown }[] = await sql<
-        { id: string | number; body: unknown }[]
-      >`
-        SELECT id, body
-          FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${coordWorkspaceId()}
-           AND surface = 'messages'
-           ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
-           ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
-           AND jsonb_typeof(body->'to') = 'array'
-           AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
-         ORDER BY id DESC
-         LIMIT ${INBOX_PAGE_ROWS}
-      `;
-      pages += 1;
-      for (const r of rows) {
-        raw.push((typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
-      }
-      // A short page means we reached the end of this owner's history.
-      if (rows.length < INBOX_PAGE_ROWS) {
-        exhausted = true;
-        break;
-      }
-      beforeId = rows[rows.length - 1]!.id;
-      if (enough(visible())) break;
-    }
+    const paged = await pageCoordEventLogDesc({
+      sinceBound,
+      match: (sql) => sql`
+        AND jsonb_typeof(body->'to') = 'array'
+        AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
+      `,
+      satisfied: (raw) => enough(visible(raw)),
+    });
+    pages = paged.pages;
+    warnOnPageBudgetExhausted(
+      'readInboxWindow',
+      ownerId,
+      opts.since_ts,
+      paged.exhausted,
+      paged.pages,
+      paged.raw.length,
+    );
+    return {
+      entries: visible(paged.raw),
+      exhausted: paged.exhausted,
+      rowsScanned: paged.raw.length,
+      pages: paged.pages,
+    };
   } catch {
     // Any query error falls back to the authoritative full read.
     const entries = await readInbox(ownerId, opts);
     return { entries, exhausted: true, rowsScanned: entries.length, pages };
   }
-  // Never truncate silently. Running out of page budget without satisfying the
-  // caller means older matching rows exist that this read did NOT return — the
-  // same failure shape as the row cap (EI-19314819320465915), and the caller only
-  // sees `entries`, so without this the shortfall is invisible. `exhausted:false`
-  // is the machine-readable form; this is the one a human debugging a short inbox
-  // will actually see.
-  if (!exhausted && pages >= INBOX_MAX_PAGES) {
-    console.warn(
-      `[readInboxWindow] page budget (${INBOX_MAX_PAGES} x ${INBOX_PAGE_ROWS}) exhausted for ` +
-        `owner=${ownerId} since_ts=${opts.since_ts ?? '(none)'} without satisfying the caller's ` +
-        `stopping rule — matching rows OLDER than the ${raw.length} read were NOT returned; ` +
-        'page via since_ts for a genuine full-history backfill.',
-    );
-  }
-  return { entries: visible(), exhausted, rowsScanned: raw.length, pages };
 }
 
 /**
@@ -826,6 +891,7 @@ function filterOutbox(
 export async function readOutbox(
   ownerId: string,
   opts: { since_ts?: string } = {},
+  window?: CoordWindowSpec,
 ): Promise<CoordEnvelope[]> {
   const sinceMs = opts.since_ts ? new Date(opts.since_ts).getTime() : 0;
   // Gated on a true PG backend: an in-memory/fs seam (tests) keeps using
@@ -839,6 +905,34 @@ export async function readOutbox(
         Number.isFinite(sinceMs) && sinceMs > 0
           ? new Date(sinceMs - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
           : null;
+
+      // EI-19323045109346905: a caller that only needs the newest slice pages a
+      // bounded window instead of pulling the whole sender history. Unlike the
+      // inbox this is NOT the dominant cost — the outbox predicate (`from =
+      // owner`) is already selective, where the inbox's matched ~99.8%
+      // broadcasts — so this exists for the one call site whose read-to-use
+      // ratio is genuinely bad (sidebar.cupMail, which wants tail(50)), not as
+      // the recommended default. `since_ts` callers stay on the single-shot
+      // read: it is one bounded query already.
+      if (window) {
+        const visible = (raw: CoordEnvelope[]): CoordEnvelope[] =>
+          filterOutbox(raw, ownerId, sinceMs);
+        const paged = await pageCoordEventLogDesc({
+          sinceBound,
+          match: (s) => s`AND body->>'from' = ${ownerId}`,
+          satisfied: (raw) => window.enough(visible(raw)),
+        });
+        warnOnPageBudgetExhausted(
+          'readOutbox',
+          ownerId,
+          opts.since_ts,
+          paged.exhausted,
+          paged.pages,
+          paged.raw.length,
+        );
+        return visible(paged.raw);
+      }
+
       const rows = await sql<{ body: unknown }[]>`
         SELECT body
           FROM harness_shared.coord_event_log

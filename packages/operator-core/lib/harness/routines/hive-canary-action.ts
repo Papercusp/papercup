@@ -46,7 +46,7 @@ import { loadHarnessRegistry } from '../../harness-registry';
 import { captureImprovement } from '../improvements/capture-core';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
 import { requestUrgentPotWake } from '../../pot/urgent-wake';
-import { resolveWorkItemPot } from '../../pot-membership';
+import { routineStorageSlug } from '../../pot-membership';
 
 /**
  * The harness_slug canary rows are actually STORED under — which is NOT always the
@@ -65,18 +65,7 @@ import { resolveWorkItemPot } from '../../pot-membership';
  * `installSlug` is still the right value for the registry self-gate, pause resolution,
  * log lines and watchdogKeys (stable alarm identity) — only DB row addressing moves.
  */
-async function canaryStorageSlug(installSlug: string, workspaceId: string): Promise<string> {
-  try {
-    return (await resolveWorkItemPot({ rawSlug: installSlug, workspaceId })) ?? installSlug;
-  } catch (e) {
-    // Fail open to the literal slug: a resolver hiccup must not silently disable the
-    // detector (that failure mode is exactly what this function exists to prevent).
-    console.warn(
-      `[hive-canary] pot resolve failed for "${installSlug}" — falling back to literal slug: ${e instanceof Error ? e.message : e}`,
-    );
-    return installSlug;
-  }
-}
+const canaryStorageSlug = routineStorageSlug;
 
 /**
  * Terminal-enough statuses: the loop carried the canary to a verdict. Includes the

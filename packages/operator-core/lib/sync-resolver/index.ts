@@ -1117,7 +1117,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     // push-liveness that does not exist — the panel would LOOK live and refresh on
     // remount only, which is the accounts.pool defect (WI-6796) this file's second
     // guard was written to catch. Declaring less than you read is safe; declaring
-    // more than is WIRED is the bug. Wiring the other five is WI-6969.
+    // more than is WIRED is the bug. Wiring the other five is WI-6974.
     backingTables: ['harness_shared.work_items'],
     argsSchema: z.object({ ownerId: z.string().min(1) }),
     resolve: async (args) => {
@@ -5414,7 +5414,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     // invalidation sites already repointed — so that deletion, not a declaration, is
     // what satisfies the shrink-only ratchet here. If the merge is ever reconsidered,
     // declare the table above AND add this query name to the operator_turns array in
-    // table-to-query-names.ts in the same change. See WI-6969.
+    // table-to-query-names.ts in the same change. See WI-6974.
     argsSchema: z.object({ conversationId: z.string().min(1), limit: clampedLimit(500, 200) }),
     resolve: async (args) => {
       const { conversationId, limit } = args as { conversationId: string; limit: number };

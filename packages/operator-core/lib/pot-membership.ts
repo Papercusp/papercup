@@ -149,6 +149,45 @@ export async function resolveWorkItemPot(args: ResolveWorkItemPotArgs): Promise<
   return lookup.platformPot();
 }
 
+/**
+ * The `harness_slug` a ROUTINE's rows are actually STORED under — which is NOT always
+ * the routine's own `install_slug` (EI-19298246923137692, generalized by
+ * EI-19298972043721870).
+ *
+ * Pot-membership enforcement canonicalizes the WRITE path: a row written under a
+ * {@link isWorkspaceGlobalLabel} slug (`hive-canary`, `@singleton`, `*`, `operator`,
+ * `all`, `operator:<ws>`, the bare workspace id) is re-homed to the platform Pot. A
+ * READ path that filters `harness_slug = ${installSlug}` verbatim therefore matches
+ * **zero rows, forever** — with no error and no warning. For a detector that is
+ * indistinguishable from "everything is healthy", which is precisely why it went
+ * unnoticed for ~12 days: six canaries sat open with their reported-stamps NULL and
+ * the 15-minute SLA sweep reported success on every single tick.
+ *
+ * Resolving through the SAME resolver the write path uses keeps reads and writes in
+ * agreement BY CONSTRUCTION, including for any label added to that set later.
+ *
+ * ⚠ Scope: this is for addressing DB ROWS ONLY. `installSlug` remains the correct
+ * value for registry self-gating, pause resolution, log lines and watchdogKeys (stable
+ * alarm identity) — re-homing those would break alarm continuity.
+ *
+ * ⚠ Not every raw-`installSlug` filter is a bug: a relation that is NOT subject to
+ * re-homing (pot-scoped or install-scoped tables) is correctly read by the literal
+ * slug. Check the RELATION, never pattern-match the call site.
+ *
+ * FAILS OPEN to the literal slug: a resolver hiccup must not silently disable a
+ * detector — that failure mode is exactly what this function exists to prevent.
+ */
+export async function routineStorageSlug(installSlug: string, workspaceId: string): Promise<string> {
+  try {
+    return (await resolveWorkItemPot({ rawSlug: installSlug, workspaceId })) ?? installSlug;
+  } catch (e) {
+    console.warn(
+      `[routine-storage-slug] pot resolve failed for "${installSlug}" — falling back to literal slug: ${e instanceof Error ? e.message : e}`,
+    );
+    return installSlug;
+  }
+}
+
 /** Production PG-backed {@link PotLookup} for one workspace. */
 export function pgPotLookup(workspaceId: string): PotLookup {
   return {
