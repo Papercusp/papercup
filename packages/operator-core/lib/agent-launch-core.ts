@@ -17,7 +17,7 @@
  */
 import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
-import { mapAdvSessionRow, type AdvSessionRow } from './adv-sessions';
+import { mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy } from './adv-sessions';
 import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
 import { composeLaunchModelSpec, MIN_COMPACTION_LIMIT_TOKENS } from './agent-config-constants';
 
@@ -99,7 +99,12 @@ export interface ResumeTarget {
   ownerId: string | null;
   agent: string | null;
   cwd: string | null;
+  /** ⚠ Only an end time when {@link endedBy} is `'self'`. Otherwise a sweeper stamped it on
+   *  NOTICING the process was gone, so it cannot answer "when did this session end". */
   endedAt: string | null;
+  /** Who wrote {@link endedAt} (migration 735). `null` = legacy row, provenance UNKNOWN —
+   *  which is not the same as a clean self-reported exit. */
+  endedBy: AdvSessionEndedBy | null;
   /** A live pty host currently serves this identity — an in-place resume would
    *  collide (WI-3882/WI-3455); the caller must fork instead (D-007). */
   live: boolean;
@@ -137,7 +142,8 @@ export async function resolveResumeTarget(ref: {
   // drop valid rows.
   const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
     SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-           window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+           window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code,
+           ended_by
       FROM harness_shared.adv_sessions
      WHERE ${
        sessionId
@@ -175,6 +181,7 @@ export async function resolveResumeTarget(ref: {
     agent: row.agent,
     cwd: row.cwd,
     endedAt: row.endedAt,
+    endedBy: row.endedBy,
     live: host != null,
     advSessionId: row.id,
   };

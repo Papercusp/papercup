@@ -82,15 +82,41 @@ function runRouter(args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutM
   return new Promise((resolve) => {
     let output = '';
     let timedOut = false;
+    // EI-19324351741370770: `scripts/test-files.mjs` launches the REAL vitest run via
+    // `spawnSync('npx', ['vitest', 'run', ...])` — synchronously, and WITHOUT its own
+    // `detached: true` — so that vitest process inherits THIS process's process group
+    // rather than becoming reparented on its own. Killing only `child` (the router) by
+    // its own pid terminates the router but leaves vitest running as an ORPHAN: Unix
+    // never cascade-kills a process's children just because the parent died. That
+    // orphan then keeps executing (and holding forks) for the suite's real duration,
+    // invisible to the caller, who was told `error:'timeout'` and reasonably assumes
+    // nothing is still running. Following the tool's own "re-run it detached" hint then
+    // launches a SECOND concurrent run of the same suite.
+    //
+    // Fix: spawn the router `detached: true` so it becomes the leader of a NEW process
+    // group (pgid === its own pid); vitest, spawned without its own `detached`, inherits
+    // THAT group. On timeout, signal the NEGATIVE pid — killing the whole process group,
+    // router and every child/grandchild it spawned — instead of just the router itself.
     const child = spawn(process.execPath, [join(cwd, 'scripts', 'test-files.mjs'), ...args], {
       cwd,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    const killGroup = (signal: NodeJS.Signals) => {
+      if (!child.pid) return;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        // Group already gone, or (non-POSIX) negative-pid kill unsupported — fall back
+        // to at least killing the router itself so we never silently no-op.
+        try { child.kill(signal); } catch { /* already gone */ }
+      }
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      try { child.kill('SIGTERM'); } catch { /* already gone */ }
-      setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, 5000).unref();
+      killGroup('SIGTERM');
+      setTimeout(() => killGroup('SIGKILL'), 5000).unref();
     }, timeoutMs);
     // Cap retained diagnostics — the router's own output is a fallback for the
     // error paths, never the success path's payload.

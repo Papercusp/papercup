@@ -464,6 +464,53 @@ export function isSuSession(e: HudRosterEntry): boolean {
   return e.agentPaneKind === 'su';
 }
 
+/**
+ * Does this session's own ON-CARD text match the query?
+ *
+ * The INSTANT half of the sessions search (owner ask 2026-08-02: "the search
+ * transcripts doesn't automatically run the search instead I have to press
+ * enter — mimic the implementation we did in the Work tab for the work items
+ * pane"). The Work-items pane feels live because its query is applied by a
+ * `useMemo` over rows already in memory — zero latency per keystroke. The
+ * sessions box could not do that: it searches full turn HISTORY, which is not
+ * in the roster payload, so every keystroke had to wait on a network round-trip
+ * (measured 0.4–4.9s on /api/adv/sessions/search-transcripts, 2026-08-02).
+ * Seconds of no visible change reads as "it didn't run", and whatever you press
+ * next looks like what triggered it — there is no Enter handler in that path and
+ * never was.
+ *
+ * So the board now filters on THIS synchronously while the transcript pass runs
+ * behind it, and unions the two. Deliberately the same shape as the entity
+ * board's `matchesQuery` (case-insensitive substring, no ranking, no fuzzy):
+ * the two search boxes sit one tab apart and must not behave subtly differently.
+ *
+ * Fields are the ones a human can actually SEE on the card or would name from
+ * memory — its label/handle, what it said it is doing, its plan/fleet/harness,
+ * its role. Not `currentFiles`: a path match would silently pull in sessions
+ * whose card shows nothing resembling the query.
+ */
+export function matchesSessionText(e: HudRosterEntry, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  const hay = [
+    e.label,
+    e.ownerId,
+    shortHandle(e.ownerId),
+    e.intent,
+    e.role,
+    e.agent,
+    e.fleetSlug,
+    e.fleetRole,
+    e.currentPlanSlug,
+    e.harnessSlug,
+    ...e.claims.flatMap((c) => [c.id, c.planSlug]),
+  ];
+  for (const v of hay) {
+    if (typeof v === 'string' && v.toLowerCase().includes(needle)) return true;
+  }
+  return false;
+}
+
 /** The asks addressed to the human, grouped by the agent that asked. */
 export function asksByOwner(asks: HudAsk[]): Map<string, HudAsk[]> {
   const out = new Map<string, HudAsk[]>();

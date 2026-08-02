@@ -46,6 +46,7 @@ import {
   ALL_PLANS,
   NO_PLAN_TOKEN,
   buildHudBoard,
+  matchesSessionText,
   reconcileBoardIdentity,
   HUD_COLUMNS,
   type HudAsk,
@@ -268,6 +269,19 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   const [searchError, setSearchError] = useState<string | null>(null);
   const searchSeq = useRef(0);
 
+  /* The INSTANT half (owner ask 2026-08-02 — see `matchesSessionText`). Keyed on
+     the RAW query, not the debounced one: this is the pass that has to land on
+     the same frame as the keystroke, exactly like the Work-items pane. The
+     transcript pass below stays debounced, because it is the one that costs a
+     round-trip. */
+  const localOwners = useMemo(() => {
+    const q = rawSessionQuery.trim();
+    if (!q) return null;
+    const out = new Set<string>();
+    for (const e of entries) if (matchesSessionText(e, q)) out.add(e.ownerId);
+    return out;
+  }, [entries, rawSessionQuery]);
+
   useEffect(() => {
     const q = sessionQuery.trim();
     // <2 chars is "not searching yet", NOT "no matches" — it must clear the
@@ -319,10 +333,32 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     return () => ctl.abort();
   }, [sessionQuery]);
 
-  const searchedEntries = useMemo(
-    () => (searchOwners ? entries.filter((e) => searchOwners.has(e.ownerId)) : entries),
-    [entries, searchOwners],
-  );
+  /* UNION, not intersection: the two passes answer different questions about the
+     same session ("does its card say this" vs "did it ever say this"), so a hit
+     from either is a hit. Intersecting would make the board NARROW when the
+     slow pass returned, i.e. cards would vanish a second after appearing.
+
+     `null` from a pass means "not applicable / nothing yet", never "matched
+     nothing" — an empty Set is the real no-match. That distinction is what keeps
+     a 1-character query (below the transcript floor) filtering locally instead
+     of blanking the board. */
+  const searchedEntries = useMemo(() => {
+    if (!localOwners && !searchOwners) return entries;
+    return entries.filter(
+      (e) => Boolean(localOwners?.has(e.ownerId)) || Boolean(searchOwners?.has(e.ownerId)),
+    );
+  }, [entries, localOwners, searchOwners]);
+
+  /* How many sessions the SLOW pass added that the instant one had not already
+     found — the honest measure of what waiting bought you, and what the input's
+     status chip reports. A transcript hit that the card text also matched is not
+     "+1 transcript": it was already on screen. */
+  const transcriptExtra = useMemo(() => {
+    if (!searchOwners) return null;
+    let n = 0;
+    for (const id of searchOwners) if (!localOwners?.has(id)) n += 1;
+    return n;
+  }, [searchOwners, localOwners]);
 
   /* WI-6560 — `buildHudBoard` is pure and allocates fresh session objects every
      call, and this memo re-runs on every 15s clock tick. `reconcileBoardIdentity`
@@ -624,11 +660,24 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         suOnly={!allAgents}
         onToggleSuOnly={() => void setAllAgents((v) => !v)}
         onOpenSession={onOpenSession}
-        loading={roster.loading || searching}
+        /* NOT `|| searching` any more. Folding the transcript pass into the
+           board's loading flag made every keystroke put the whole board into
+           "Reading the session roster…" for the length of a 0.4–4.9s request —
+           the instant local results were computed and then hidden behind a
+           spinner, which is the very inertness this change exists to remove.
+           The slow pass now reports itself on the input instead. */
+        loading={roster.loading}
         error={roster.error ? String(roster.error) : searchError}
         sessionQuery={rawSessionQuery}
         onSessionQuery={(q) => void setSessionQuery(q === '' ? null : q)}
-        searchActive={searchOwners !== null}
+        /* A QUERY is active, which is not the same as "the transcript pass has
+           answered" (the old test, `searchOwners !== null`). With the instant
+           pass a 1-char query filters the board while the transcript pass has
+           not run at all, and the empty-board copy has to say "nothing matched"
+           for that case rather than "no sessions are running". */
+        searchActive={rawSessionQuery.trim().length > 0}
+        sessionSearching={searching}
+        transcriptExtra={transcriptExtra}
         headerAction={
           <NewSessionLauncher
             onLaunched={(ownerId) => {

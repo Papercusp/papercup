@@ -574,6 +574,12 @@ function SessionStateHeader({
       className="pc-ctl-band pc-ctl-band--status pc-ctl-band--with-toolbars"
       data-testid="session-chat-state-header"
     >
+      {/* The zone cap. It sits AFTER the reserved left gutter, not before it:
+          the Orders toggle is absolutely positioned over that gutter [owner
+          2026-08-02: keep it on the left], so the leading edge of the band's
+          own row is where this lands. Nothing here is a verb — this zone is
+          facts that change on their own, plus the window controls. */}
+      <span className="pc-zone-cap">Status</span>
       <span className="pc-ctl-state" title={`Liveness: ${entry.liveness}`}>
         {/* The shared presence dot, not a local one — liveness colour stays
             single-sourced with /coord and the HUD board. */}

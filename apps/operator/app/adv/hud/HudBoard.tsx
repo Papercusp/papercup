@@ -91,16 +91,28 @@ export interface HudBoardProps {
   loading: boolean;
   error: string | null;
   /**
-   * Sessions-board search box (owner ask 2026-07-26). Unlike the entity tabs'
-   * filter this does NOT narrow rows already on screen — HudView runs it against
-   * every session's full TURN HISTORY server-side and hands down an already
-   * narrowed `board`, so this component stays presentation-only.
+   * Sessions-board search box (owner ask 2026-07-26, made live-as-you-type
+   * 2026-08-02). HudView runs TWO passes and hands down an already-narrowed
+   * `board`, so this component stays presentation-only: an instant pass over the
+   * roster it already holds (same feel as the entity tabs' filter) and a
+   * debounced pass over every session's full TURN HISTORY server-side, unioned.
    */
   sessionQuery?: string;
   onSessionQuery?: (q: string) => void;
-  /** True while a transcript search is narrowing the board — drives the empty copy,
-   *  so "no session matched your search" never reads as "no sessions are running". */
+  /** A query is active — drives the empty copy, so "nothing matched your search"
+   *  never reads as "no sessions are running". */
   searchActive?: boolean;
+  /**
+   * The SLOW (transcript) pass is in flight. Reported on the input itself rather
+   * than as a board-wide spinner: the instant pass has already filtered the
+   * board by now, and hiding that behind a loading state for the length of a
+   * multi-second request is exactly the inertness this pair of props exists to
+   * remove. The board must keep showing what it already knows.
+   */
+  sessionSearching?: boolean;
+  /** How many sessions the transcript pass added BEYOND the instant matches —
+   *  what waiting actually bought you. `null` = it has not answered yet. */
+  transcriptExtra?: number | null;
   /**
    * Slot rendered at the right edge of the board header, before the
    * su-only toggle — the "+ New session" launch control
@@ -329,6 +341,8 @@ export default function HudBoard({
   sessionQuery = '',
   onSessionQuery,
   searchActive = false,
+  sessionSearching = false,
+  transcriptExtra = null,
   tab,
   onSelectTab,
   entityView,
@@ -446,6 +460,23 @@ export default function HudBoard({
               data-testid="hud-session-search"
               onChange={(e) => onSessionQuery(e.target.value)}
             />
+            {/* The slow pass, reported where you are already looking. Typing
+                filters the board on THIS keystroke; this says whether a wider
+                answer is still coming, so a pause reads as "still searching"
+                rather than "it ignored me" — the whole complaint behind the
+                2026-08-02 ask. role=status (not alert): it must reach a screen
+                reader without stealing focus from the box being typed in. */}
+            {searchActive && (sessionSearching || (transcriptExtra ?? 0) > 0) ? (
+              <span
+                className={`hud__search-status${sessionSearching ? ' hud__search-status--busy' : ''}`}
+                data-testid="hud-session-search-status"
+                role="status"
+              >
+                {sessionSearching
+                  ? 'transcripts…'
+                  : `+${transcriptExtra} transcript${transcriptExtra === 1 ? '' : 's'}`}
+              </span>
+            ) : null}
           </span>
         ) : null}
 
@@ -578,9 +609,16 @@ export default function HudBoard({
         <p className="hud__state">
           {/* A search that matched nothing must NOT render as "no sessions are
               running" — that reads as an empty roster and sends you looking for
-              a launch bug instead of clearing the filter. */}
+              a launch bug instead of clearing the filter.
+
+              Three states, not two, since the search became two passes: nothing
+              matched YET but the slow pass is still running (say so, or a board
+              that is about to fill reads as a final "no matches"), nothing
+              matched at all, and no search at all. */}
           {searchActive
-            ? 'No session transcript matched that search. Sessions whose history has not been indexed yet will not appear — clear the search to see the full board.'
+            ? sessionSearching
+              ? 'No session card matches that yet — still searching transcripts…'
+              : 'Nothing matched that search — neither the session cards nor their transcripts. Sessions whose history has not been indexed yet will not appear; clear the search to see the full board.'
             : suOnly
               ? 'No su sessions are running. Launch one with the psu command, or from the New session button — either way it appears here.'
               : 'No agents on the roster.'}

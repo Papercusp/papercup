@@ -289,12 +289,12 @@ defineTool({
     // hard cap at 1875 total) — the detailed WI-5685 race-condition explanation now
     // lives ONLY on the candidateSha arg's own .describe() (still full detail there,
     // uncounted by the prompt-weight budget), not duplicated here.
-    "Sleep until the pipeline green-checkpoint resolves — arms awaits on release:green:<pipeline> (passed), green-checkpoint:red:<pipeline> (held), and green-checkpoint:inconclusive:<pipeline> (no verdict — a wedge; payload.reason names why). candidateSha (EI-12457) binds to your exact candidate; omit it to wake on any candidate and lineage-check payload.sha via release:trace — see the candidateSha arg description for the WI-5685 race caveat (a later candidate that still contains your commit will NOT wake a sha-bound await). An already-judged candidateSha returns already_judged immediately instead of a dead wait. runId binds to the exact judging run. pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait. Then END YOUR TURN.",
+    "Sleep until the pipeline green-checkpoint resolves — arms awaits on release:green:<pipeline> (passed), green-checkpoint:red:<pipeline> (held), and green-checkpoint:inconclusive:<pipeline> (no verdict — a wedge; payload.reason names why). candidateSha (EI-12457) binds to your exact candidate; omit it to wake on any candidate and lineage-check payload.sha via release:trace — see the candidateSha arg description for the WI-5685 race caveat (a later candidate that still contains your commit will NOT wake a sha-bound await). An already-judged candidateSha returns already_judged, not a dead wait. runId binds to the exact judging run. pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait. Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
     when: "You need the gate verdict — green (your change cleared into main) or held/red — before proceeding, instead of re-polling dev:pipeline_position / dev:build_status.",
     notWhen:
-      "Waiting for the DEPLOY (past the gate, live on :3070) — that is deploy:await. Configuring the gate — release:checkpoint-config. Unsure your commit will be the EXACT judged candidate (a cron tick may race ahead of you) — omit candidateSha instead of binding to a sha that may never be the one that verdicts; lineage-check with release:trace on wake.",
+      "Waiting for the DEPLOY (past the gate, live on :3070) — that is deploy:await. Configuring the gate — release:checkpoint-config. Unsure your commit will be the EXACT judged candidate (a cron tick may race ahead) — omit candidateSha rather than bind to a sha that may never verdict; lineage-check with release:trace on wake.",
     chaining:
       "checkpoint:await { candidateSha } → end turn → on wake, payload tells you green (advanced) or red (payload.summary = failing tail) for this pipeline/candidate; resume or go fix the red.",
     seeAlso: [

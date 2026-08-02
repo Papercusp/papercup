@@ -44,6 +44,7 @@ import {
   type AgentOrders as AgentOrdersDTO,
   type AgentOrdersSignalKey,
 } from './use-agent-orders';
+import { RailSectionHead, useRailCollapse } from './rail-sections';
 import './AgentOrders.css';
 
 /** A section that could not be read, rendered so it can never be mistaken for
@@ -96,6 +97,9 @@ export default function AgentOrders({
 }: AgentOrdersProps): React.JSX.Element {
   const { orders, error, loading } = useAgentOrders(ownerId || null, enabled);
   const nowMs = useMemo(() => Date.now(), []);
+  /* Collapse state lives in the URL, shared with the Activity rail — see
+     rail-sections.tsx for why one param and why not useState. */
+  const rail = useRailCollapse();
 
   const unavailable = useMemo(
     () => new Set<AgentOrdersSignalKey>(orders?.unavailable ?? []),
@@ -107,16 +111,21 @@ export default function AgentOrders({
 
   return (
     <aside className="pc-orders" aria-label="Agent orders" data-testid="agent-orders">
-      <header className="pc-orders__tag">
+      {/* The ZONE title (owner-approved Framed look, artifact 6379bb65): a
+          vertical zone is tall and narrow, so a full-width filled bar across its
+          top costs nothing you care about — unlike the three horizontal bands,
+          which are named by an inline cap inside their existing row. It is
+          sticky, so the column never scrolls away from its own name. */}
+      <header className="pc-orders__tag pc-zone-title">
         <span className="pc-orders__tag-name">Orders</span>
         {/* "they", not "it" [owner 2026-08-02]: an agent is referred to as a
             person throughout this UI, and the singular they keeps that voice
             without gendering a session. */}
-        <span className="pc-orders__tag-sub">— what they were told</span>
+        <span className="pc-orders__tag-sub pc-zone-title__sub">— what they were told</span>
         {onClose ? (
           <button
             type="button"
-            className="pc-orders__close"
+            className="pc-orders__close pc-zone-title__close"
             onClick={onClose}
             aria-label="Hide orders panel"
             data-testid="agent-orders-close"
@@ -143,8 +152,18 @@ export default function AgentOrders({
       {orders ? (
         <>
           {/* ── Mission: the section that explains every other section ── */}
-          <section className="pc-orders__sec pc-orders__sec--mission" id="pc-orders-mission">
-            <h4 className="pc-orders__h">Mission</h4>
+          <section
+            className="pc-orders__sec pc-orders__sec--mission"
+            id="pc-orders-mission"
+            data-collapsed={rail.closed('o-mission') ? 'true' : 'false'}
+          >
+            <RailSectionHead
+              sectionId="o-mission"
+              label="Mission"
+              className="pc-orders__h"
+              closed={rail.closed('o-mission')}
+              onToggle={() => rail.toggle('o-mission')}
+            />
             {unavailable.has('mission') ? (
               <Unavailable what="the instruction precedence" />
             ) : orders.mission ? (
@@ -191,13 +210,22 @@ export default function AgentOrders({
           </section>
 
           {/* ── Modes + wake mode ── */}
-          <section className="pc-orders__sec" id="pc-orders-modes">
-            <h4 className="pc-orders__h">
-              Modes
+          <section
+            className="pc-orders__sec"
+            id="pc-orders-modes"
+            data-collapsed={rail.closed('o-modes') ? 'true' : 'false'}
+          >
+            <RailSectionHead
+              sectionId="o-modes"
+              label="Modes"
+              className="pc-orders__h"
+              closed={rail.closed('o-modes')}
+              onToggle={() => rail.toggle('o-modes')}
+            >
               {(orders.modes ?? []).length > 0 ? (
                 <span className="pc-orders__n">{(orders.modes ?? []).length}</span>
               ) : null}
-            </h4>
+            </RailSectionHead>
             {unavailable.has('modes') ? (
               <Unavailable what="the mode registry" />
             ) : (orders.modes ?? []).length > 0 ? (

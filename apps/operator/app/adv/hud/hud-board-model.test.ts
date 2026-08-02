@@ -21,6 +21,7 @@ import {
   HUD_DEFAULT_THRESHOLDS,
   isInfrastructureAwait,
   isSuSession,
+  matchesSessionText,
   shortHandle,
   TERMINAL_LAUNCH_ONLINE_GRACE_SEC,
   toHudSession,

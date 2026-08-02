@@ -316,6 +316,45 @@ const CORPUS_NAMESPACED_TABLES = new Set([
   'event_wake_deliveries',
 ]);
 
+/**
+ * `harness_shared.test_runs` (EI-19324633485547042) does NOT fit either registry above. Unlike
+ * {@link CORPUS_NAMESPACED_TABLES}, its `workspace_id`/`harness_slug` columns are NOT always-wrong
+ * — rows ingested through the per-hive Tests-tab route (migration 413) genuinely carry real,
+ * multi-tenant values. But every row from the CI / dogfood-admin-ui vitest reporter — the
+ * population that matters for GATE triage — has BOTH columns NULL by construction: they are
+ * env-derived (`libs/test-config/src/admin-test-runs-reporter.ts`) and that writer never stamps
+ * them. So the generic heuristic's own signal of "correctly scoped" (the query MENTIONS
+ * workspace_id/harness_slug) is backwards here: adding that predicate — exactly what the generic
+ * advisory used to suggest — silently excludes every CI/gate row and returns a clean-looking empty
+ * result, indistinguishable from "no failures". `source`/`commit_sha` are the columns that actually
+ * discriminate a gate row, so `test_runs` is excluded from the generic/override checks below and
+ * gets its own advisory ({@link buildTestRunsAdvisory}) that clears ONLY on those two columns —
+ * firing even when workspace_id/harness_slug ARE present, since their presence is the trap, not the
+ * fix.
+ */
+const TEST_RUNS_TABLE = 'test_runs';
+
+/**
+ * Independent advisory for {@link TEST_RUNS_TABLE} — see its doc comment for why this can't be
+ * expressed as a {@link TENANT_SCOPE_OVERRIDES} entry (those suppress on "any required column
+ * mentioned"; here workspace_id/harness_slug mentioned is exactly the failure this warns about).
+ * Fires whenever `test_runs` is referenced with a WHERE clause and neither `source` nor
+ * `commit_sha` is mentioned; returns null once either is present (the caveat's own fix).
+ */
+function buildTestRunsAdvisory(stripped: string, tables: string[]): string | null {
+  if (!tables.some((t) => bareTableName(t) === TEST_RUNS_TABLE)) return null;
+  const mentions = (col: string): boolean => new RegExp(`\\b${col}\\b`, 'i').test(stripped);
+  if (mentions('source') || mentions('commit_sha')) return null;
+  return (
+    '⚠ harness_shared.test_runs: workspace_id/harness_slug are NULL-by-design for CI/dogfood-reporter ' +
+    'rows (env-derived — libs/test-config/src/admin-test-runs-reporter.ts — and stamped ONLY by the ' +
+    'per-hive Tests-tab ingestion route, migration 413). A workspace_id/harness_slug predicate therefore ' +
+    "silently EXCLUDES every CI/gate row and reads as a clean 'no failures' — for CI/gate triage scope by " +
+    "source/commit_sha instead. Also: status values are 'pass'/'fail'/'skip', NOT 'passed'/'failed' — " +
+    "status <> 'passed' matches every row (EI-19324633485547042)."
+  );
+}
+
 /** The bare (unqualified) table name — `schema.table` → `table`. */
 function bareTableName(ref: string): string {
   const i = ref.lastIndexOf('.');
@@ -786,6 +825,21 @@ export function buildClaimabilityAdvisory(rawSql: string): string | null {
   );
 }
 
+/**
+ * Resolve a caller-supplied scope value to a REAL id, or `undefined` if it is absent OR the
+ * `'*'` wildcard sentinel (`_harness-scope.ts`: every su/operator-scope call sets
+ * `ctx.harnessSlug = '*'`, and the same convention applies to `ctx.workspaceId`). Suggesting a
+ * literal `= '*'` predicate is a distinct bug from "no predicate at all" (EI-19324633485547042
+ * point 3): `'*'` is not a SQL wildcard for `=`, so the "fix" is a query that matches nothing and
+ * reads as a clean, confidence-inspiring empty result — worse than the missing-predicate warning
+ * it was supposed to resolve. Every other call site that threads `ctx.harnessSlug` into a real
+ * predicate already guards this (`agent-tools/_harness-scope.ts` and ~15 sibling sites); this
+ * advisory builder was the one that hadn't.
+ */
+function realScopeValue(v?: string | null): string | undefined {
+  return v && v !== '*' ? v : undefined;
+}
+
 export async function buildTenantScopeAdvisory(
   rawSql: string,
   opts: { client?: OrgSql; workspaceId?: string | null; harnessSlug?: string | null } = {},
@@ -794,6 +848,12 @@ export async function buildTenantScopeAdvisory(
   if (!/\bwhere\b/i.test(stripped)) return null;
   const tables = extractReferencedTables(rawSql);
   if (!tables.length) return null;
+
+  // Never suggest a literal '*' predicate — resolve the sentinel to "unresolved" up front so
+  // every downstream `suggest`/predicate builder only ever sees a real id or undefined.
+  const resolvedOpts = { ...opts, workspaceId: realScopeValue(opts.workspaceId), harnessSlug: realScopeValue(opts.harnessSlug) };
+
+  const testRunsAdvisory = buildTestRunsAdvisory(stripped, tables);
 
   const mentions = (col: string): boolean => new RegExp(`\\b${col}\\b`, 'i').test(stripped);
   const genericMentioned = mentions('workspace_id') || mentions('harness_slug');
@@ -804,8 +864,12 @@ export async function buildTenantScopeAdvisory(
   // but not harness_slug must still be recognized as correctly scoped, and a
   // query filtering agent_facts by harness_slug alone must still be flagged
   // (that's the exact wrong-predicate footgun this override exists to catch).
+  // test_runs is excluded here too — see buildTestRunsAdvisory's doc comment for why its
+  // "workspace_id/harness_slug mentioned ⇒ scoped" signal is backwards for that table.
   const overrideTables = tables.filter((t) => TENANT_SCOPE_OVERRIDES[bareTableName(t)]);
-  const genericTables = tables.filter((t) => !TENANT_SCOPE_OVERRIDES[bareTableName(t)]);
+  const genericTables = tables.filter(
+    (t) => !TENANT_SCOPE_OVERRIDES[bareTableName(t)] && bareTableName(t) !== TEST_RUNS_TABLE,
+  );
 
   const overrideOffenders: Array<{ table: string; override: TenantScopeOverride }> = [];
   for (const t of overrideTables) {
@@ -826,16 +890,18 @@ export async function buildTenantScopeAdvisory(
     }
   }
 
-  if (!overrideOffenders.length && !genericOffenders.length) return null;
+  if (!overrideOffenders.length && !genericOffenders.length && !testRunsAdvisory) return null;
 
   const parts: string[] = [];
+
+  if (testRunsAdvisory) parts.push(testRunsAdvisory);
 
   for (const { table, override } of overrideOffenders.slice(0, 3)) {
     parts.push(
       `⚠ tenant scope: ${table} (keyed by ${override.keyDescription}) — multi-tenant, but this ` +
         `filtered query has no ${override.requiredColumns.join('/')} predicate — a bare slug/id ` +
         "filter can silently match ANOTHER tenant's rows and read as a clean-looking " +
-        `empty/stale result rather than an error. Add: ${override.suggest(opts)}.` +
+        `empty/stale result rather than an error. Add: ${override.suggest(resolvedOpts)}.` +
         (override.preferredTool ? ` Or use ${override.preferredTool}.` : '') +
         ' (agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope, EI-18669912007336072).',
     );
@@ -852,8 +918,8 @@ export async function buildTenantScopeAdvisory(
         .filter(Boolean)
         .join(' + ');
       const suggested: string[] = [];
-      if (off.hasWorkspaceId && opts.workspaceId) suggested.push(`workspace_id = ${quote(opts.workspaceId)}`);
-      if (off.hasHarnessSlug && opts.harnessSlug) suggested.push(`harness_slug = ${quote(opts.harnessSlug)}`);
+      if (off.hasWorkspaceId && resolvedOpts.workspaceId) suggested.push(`workspace_id = ${quote(resolvedOpts.workspaceId)}`);
+      if (off.hasHarnessSlug && resolvedOpts.harnessSlug) suggested.push(`harness_slug = ${quote(resolvedOpts.harnessSlug)}`);
       const actionable = suggested.length
         ? ` Add: ${suggested.join(' AND ')}.`
         : ` Add the resolved ${cols.replaceAll(' + ', '/')} scope predicate(s).`;

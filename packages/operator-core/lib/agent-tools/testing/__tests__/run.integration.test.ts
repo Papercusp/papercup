@@ -23,6 +23,7 @@
  * path is identical for pass and fail (same spawn, same report, same distil).
  */
 import { describe, it, expect } from 'vitest';
+import { readdir, readFile } from 'node:fs/promises';
 import runTool from '../run';
 
 /**
@@ -68,6 +69,29 @@ const GREEN_TARGET = 'packages/operator-core/lib/testing-flakiness.test.ts';
  * Chosen for being a pure readFileSync text guard: fast, PG-free, no Tauri/Xvfb.
  */
 const CROSS_WORKSPACE_GREEN_TARGET = 'apps/operator/lib/verify-tauri-headless-port-straggler.test.ts';
+
+/**
+ * Every process in a `testing:run` invocation's tree (the router + the vitest
+ * it spawns via `spawnSync`) inherits `PAPERCUSP_TEST_RUN_GROUP=<runId>` in its
+ * environment (run.ts stamps it explicitly for the admin-test-runs-reporter).
+ * That makes it a reliable, collision-free marker for "is anything from THIS
+ * specific run still alive" on a box where many other agents' unrelated vitest
+ * processes are routinely running concurrently — scanning by test-file name or
+ * `vitest` alone would false-positive on their traffic.
+ */
+async function pidsTaggedWithRun(runId: string): Promise<number[]> {
+  const marker = `PAPERCUSP_TEST_RUN_GROUP=${runId}`;
+  const entries = await readdir('/proc').catch(() => [] as string[]);
+  const pids: number[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const environ = await readFile(`/proc/${entry}/environ`, 'utf8').catch(() => null);
+    // /proc/<pid>/environ is NUL-separated, not newline-separated — a plain
+    // .includes() still finds the marker fine since we only need substring presence.
+    if (environ && environ.includes(marker)) pids.push(Number(entry));
+  }
+  return pids;
+}
 
 describe('testing:run (integration)', () => {
   it('runs a real file through the router and returns a distilled green result', async () => {
@@ -129,4 +153,39 @@ describe('testing:run (integration)', () => {
     expect(out.ok).toBe(false);
     expect(['route_error', 'no_report']).toContain(out.error);
   }, 180_000);
+
+  // EI-19324351741370770: the foreground timeout used to kill only the router
+  // process (`scripts/test-files.mjs`'s own pid) — but the router launches the REAL
+  // vitest run via a synchronous `spawnSync`, WITHOUT its own `detached: true`, so
+  // that vitest process merely inherited the router's process group rather than
+  // dying with it. Killing the router by its own pid left vitest running as an
+  // orphan for the suite's real duration — invisible to the caller, who was handed
+  // `error:'timeout'` and reasonably believed nothing was still running, then
+  // (per the tool's own advice) launched a SECOND concurrent run of the same suite.
+  //
+  // A timeoutMs at zod's floor (1000ms) reliably fires before ANY real vitest cold
+  // start completes, so this deterministically exercises the timeout branch rather
+  // than racing a fast pass. Two green targets (spanning two workspaces) make the
+  // run slower still, widening the margin.
+  it(
+    'kills the WHOLE process tree on the foreground timeout — no orphan survives',
+    async () => {
+      const out = await body(call({
+        files: [GREEN_TARGET, CROSS_WORKSPACE_GREEN_TARGET],
+        timeoutMs: 1000,
+      }));
+
+      expect(out.ok).toBe(false);
+      expect(out.error).toBe('timeout');
+      expect(typeof out.runId).toBe('string');
+
+      // Give the SIGTERM → (5s) → SIGKILL fallback (run.ts's own `killGroup` retry)
+      // time to land before asserting on the absence of survivors.
+      await new Promise((resolve) => setTimeout(resolve, 8000));
+
+      const survivors = await pidsTaggedWithRun(out.runId as string);
+      expect(survivors).toEqual([]);
+    },
+    30_000,
+  );
 });

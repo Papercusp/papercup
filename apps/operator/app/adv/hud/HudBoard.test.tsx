@@ -172,8 +172,69 @@ describe('HudBoard — sessions transcript search', () => {
       sessionQuery: 'nothing matches this',
       searchActive: true,
     });
-    expect(getByText(/No session transcript matched that search/i)).toBeTruthy();
+    expect(getByText(/Nothing matched that search/i)).toBeTruthy();
     expect(queryByText(/No su sessions are running/i)).toBeNull();
+  });
+
+  /* The 2026-08-02 ask ("it doesn't automatically run the search, I have to
+     press enter") was not an event bug — there is no key handler in this path
+     and never was. It was that the only pass was a 0.4–4.9s round-trip with no
+     visible sign it was running, so typing looked ignored. These pin the two
+     halves of the fix that live in THIS component: the slow pass reports itself,
+     and an empty board mid-search does not lie about being final. */
+  describe('the transcript pass reports itself on the input', () => {
+    it('shows a busy state while the slow pass is still running', () => {
+      const { getByTestId } = renderBoard([entry()], {
+        onSessionQuery: vi.fn(),
+        sessionQuery: 'gym',
+        searchActive: true,
+        sessionSearching: true,
+      });
+      const status = getByTestId('hud-session-search-status');
+      expect(status.textContent).toMatch(/transcripts/i);
+      expect(status.className).toContain('hud__search-status--busy');
+    });
+
+    // The count is what WAITING bought you — sessions the instant pass could not
+    // have found. Reporting the raw transcript-hit count would double-count
+    // every session whose card text already matched.
+    it('reports how many sessions the transcript pass ADDED once it answers', () => {
+      const { getByTestId } = renderBoard([entry()], {
+        onSessionQuery: vi.fn(),
+        sessionQuery: 'gym',
+        searchActive: true,
+        sessionSearching: false,
+        transcriptExtra: 24,
+      });
+      const status = getByTestId('hud-session-search-status');
+      expect(status.textContent).toBe('+24 transcripts');
+      expect(status.className).not.toContain('--busy');
+    });
+
+    it('singularises, and says nothing at all when the slow pass added nothing', () => {
+      const { getByTestId, queryByTestId, rerender, props } = renderBoard([entry()], {
+        onSessionQuery: vi.fn(),
+        sessionQuery: 'gym',
+        searchActive: true,
+        transcriptExtra: 1,
+      });
+      expect(getByTestId('hud-session-search-status').textContent).toBe('+1 transcript');
+      rerender(<HudBoard {...props} transcriptExtra={0} />);
+      expect(queryByTestId('hud-session-search-status')).toBeNull();
+    });
+
+    // A board that is about to fill must not read as a final "no matches" —
+    // that is the same misread as the empty-roster one above, one state later.
+    it('an empty board mid-search says it is still searching, not that nothing matched', () => {
+      const { getByText, queryByText } = renderBoard([], {
+        onSessionQuery: vi.fn(),
+        sessionQuery: 'gym',
+        searchActive: true,
+        sessionSearching: true,
+      });
+      expect(getByText(/still searching transcripts/i)).toBeTruthy();
+      expect(queryByText(/Nothing matched that search/i)).toBeNull();
+    });
   });
 
   it('an empty board with NO search still says no sessions are running', () => {

@@ -229,6 +229,12 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
       aria-label="Chat actions"
       data-testid="chat-action-bar"
     >
+      {/* The zone cap — everything in this band changes THIS session, which is
+          what separates it from the Fleet strip below (that one acts on
+          something else entirely). Inline at the band's leading edge rather than
+          a title row: the popup was just compacted from five rows to two, and a
+          header row per zone would have spent that back. */}
+      <span className="pc-zone-cap">Controls</span>
       {/* Modes first: they say what the agent IS, and the verbs below act on
           it. Reading order follows that dependency. */}
       {modes.map((mode) => {

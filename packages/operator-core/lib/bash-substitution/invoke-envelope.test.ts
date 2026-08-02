@@ -80,6 +80,51 @@ describe('deriveInvokeEnvelope — the file-read family', () => {
   });
 });
 
+describe('deriveInvokeEnvelope — the test-running family (the promotion row)', () => {
+  it('turns the router form into a finished testing:run call', () => {
+    expect(
+      deriveInvokeEnvelope('run-test-files', 'npm run test:file -- packages/operator-core/lib/a.test.ts'),
+    ).toEqual({ name: 'testing:run', args: { files: ['packages/operator-core/lib/a.test.ts'] } });
+  });
+
+  it('carries a -t pattern through as testNamePattern', () => {
+    expect(
+      deriveInvokeEnvelope(
+        'run-test-files',
+        'npm run test:file -- packages/operator-core/lib/a.test.ts -- -t "renders the header"',
+      ),
+    ).toEqual({
+      name: 'testing:run',
+      args: { files: ['packages/operator-core/lib/a.test.ts'], testNamePattern: 'renders the header' },
+    });
+  });
+
+  it('turns the raw-vitest BYPASS form into the same routed call', () => {
+    // The substitution that removes the zero-match false green, so the envelope
+    // for it is the one most worth being executable.
+    expect(deriveInvokeEnvelope('run-test-files-unrouted', 'npx vitest run packages/operator-core/lib/a.test.ts')).toEqual({
+      name: 'testing:run',
+      args: { files: ['packages/operator-core/lib/a.test.ts'] },
+    });
+  });
+
+  it('declines a redirect-to-log run, which the tool cannot reproduce', () => {
+    // The command's literal effect includes an artifact testing:run never
+    // writes. cover() already refuses it; the envelope must not offer a call
+    // that silently drops the file the agent asked for.
+    expect(
+      deriveInvokeEnvelope(
+        'run-test-files',
+        'npm run test:file -- packages/operator-core/lib/a.test.ts > /tmp/run.log 2>&1',
+      ),
+    ).toBeNull();
+  });
+
+  it('declines `npm run test:affected` — the recorded non-substitute', () => {
+    expect(deriveInvokeEnvelope('run-affected-tests', 'npm run test:affected')).toBeNull();
+  });
+});
+
 describe('pairs whose answer is not a call get no envelope', () => {
   // The load-bearing negative. These rows name `coord:orient` as their tool, but
   // their advisories say the answer ALREADY ARRIVED and to call nothing —

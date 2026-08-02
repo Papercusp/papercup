@@ -336,7 +336,12 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
           written as UI copy; they were being READ as UI copy because nothing
           else named the controls. ── */}
       <div className="pc-new-session-launcher pc-fleet-launch-row__fields">
-        <span className="pc-ctl-band__label pc-fleet-strip__label">Fleet</span>
+        {/* The zone's NAME, not a group caption. It already sat at this band's
+            leading edge as grey text; as a filled cap it joins the same
+            vocabulary the other five zones use — and it is what makes "this band
+            does not act on the session you are looking at" legible. Zero added
+            height: the cap shares the row it was already on. */}
+        <span className="pc-zone-cap pc-fleet-strip__label">Fleet</span>
         <div className="pc-ctl-field pc-ctl-field--inline">
           {/* The VISIBLE caption shortens to "Name" (the strip's own "FLEET"
               label supplies the rest of the phrase to a sighted reader), but

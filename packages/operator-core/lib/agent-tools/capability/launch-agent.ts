@@ -271,10 +271,19 @@ export default defineTool({
           `⚠ ${target.ownerId ?? 'that session'} is still LIVE — resuming it in place would open a second CLI against one transcript (WI-3882), so it was FORKED instead. The fork has a FRESH identity; the original keeps running untouched.`,
         );
       }
+      // P-015: `endedAt` is an END TIME only when the session reported its own exit.
+      // Otherwise a sweeper stamped it on noticing the process was already gone, so
+      // stating it as "ended <ts>" asserts something we do not know (WI-7126).
+      const endedPhrase =
+        target.endedAt == null
+          ? 'end time unknown'
+          : target.endedBy === 'self'
+            ? `ended ${target.endedAt}`
+            : `last recorded ${target.endedAt} — that is when ${target.endedBy ?? 'an unrecorded writer'} NOTICED it was gone, not when it ended`;
       notes.push(
         fork
-          ? `Forking session ${target.sessionId} (${target.agent ?? 'agent'}, last seen ${target.endedAt ?? 'live'}) — the fork mints a NEW coord id; find it in coord:presence.`
-          : `Resuming session ${target.sessionId} (${target.agent ?? 'agent'}, ended ${target.endedAt ?? 'unknown'}) — it re-attaches its ORIGINAL identity ${target.ownerId ?? '(unknown)'}.`,
+          ? `Forking session ${target.sessionId} (${target.agent ?? 'agent'}, ${target.live ? 'live' : endedPhrase}) — the fork mints a NEW coord id; find it in coord:presence.`
+          : `Resuming session ${target.sessionId} (${target.agent ?? 'agent'}, ${endedPhrase}) — it re-attaches its ORIGINAL identity ${target.ownerId ?? '(unknown)'}.`,
       );
     }
 

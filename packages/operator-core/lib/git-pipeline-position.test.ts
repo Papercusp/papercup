@@ -1262,6 +1262,28 @@ describe('runtime-owner map (EI-10895)', () => {
     expect(own.restartTarget).toBeNull();
   });
 
+  /* ---------------------------------------------------------------------- *
+   * EI-19323821719374642: green-checkpoint.ts has zero non-test importers and is ALWAYS
+   * launched as a detached systemd-run unit pinned to the STAGING integration tree
+   * (release-checkpoint-launch.ts), whether fired by the bg-host cron routine or a manual
+   * release:checkpoint-run call. Absent a dedicated entry this fell through to DEFAULT_OWNER
+   * (operator-release, releasePipelineApplies:true) — telling an agent to wait on a :3070
+   * deploy for code a deploy can never carry, and it produced a false "gate deadlock" during a
+   * live incident.
+   * ---------------------------------------------------------------------- */
+  it('EI-19323821719374642: green-checkpoint.ts is NOT deploy-carried — it always runs as a detached staging-tree CLI', () => {
+    const own = classifyRuntimeOwner('apps/operator/lib/release/green-checkpoint.ts')!;
+    expect(own.host).toBe('bg-host');
+    expect(own.releasePipelineApplies).toBe(false);
+    expect(own.restartTarget).toBe('bg-host');
+    expect(own.activation).toMatch(/detached/i);
+    expect(own.activation).toMatch(/staging/i);
+    // Must name BOTH triggers — the cron routine AND the manual tool — since either can fire it
+    // and both land on the same staging-tree spawn.
+    expect(own.activation).toMatch(/system:green-checkpoint/);
+    expect(own.activation).toMatch(/release:checkpoint-run/);
+  });
+
   it('ordinary operator code still reads as release-pipeline-carried (no false positives)', () => {
     for (const p of ['apps/operator/app/page.tsx', 'packages/operator-core/lib/agent-tools/dev/why.ts']) {
       const own = classifyRuntimeOwner(p)!;

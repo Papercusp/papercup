@@ -69,6 +69,7 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 import { hardText, LIMITS } from '../limits';
 import { externalHomePathToLockKey } from './external-path';
+import { isTransientPgConnectionError } from '../../host-benign-errors';
 
 /** wake_on_grant queue window (await-event-primitive D-005): how long a
  *  SLEEPING waiter's ticket stays grant-eligible. Much longer than the 300s
@@ -580,48 +581,89 @@ export default defineTool({
         // lapse), nothing else in PG fires the cascade. The poke runs
         // the janitor + cascade for our workspace; if we should now
         // be granted, the status read below picks that up.
-        await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-          pokeWorkspace(tx, coordinationDomain),
-        );
-
-        const status = await readWaiterStatus(sqlPool, ticketId);
-        if (status.status === 'granted' && status.granted_lock_id) {
-          return ok(ownerId, ownerLabel, 
-            status.granted_lock_id,
-            status.granted_expires_ts ?? new Date(Date.now() + ttlSec * 1000),
-            status.paths ?? paths,
-            Math.floor((Date.now() - startedAt) / 1000),
+        //
+        // EI-19324204900062056: a long blocking wait can outlive a
+        // server-side connection (pgbouncer's transaction-pooling
+        // reclaim, or a PG-server-side reset) — postgres-js's pool
+        // reconnects transparently on the NEXT query, but the query
+        // IN FLIGHT when the connection dropped rejects with
+        // CONNECTION_CLOSED/CONNECT_TIMEOUT (the same transient class
+        // pg-transient-retry.ts + host-benign-errors.ts already
+        // classify as self-healing elsewhere). Previously that raw
+        // rejection propagated out of the tool handler and killed the
+        // whole call with an opaque MCP -32603, indistinguishable at
+        // the call site from a dead operator/datastore. Treat it the
+        // same as a silent notification drop: skip this tick, loop
+        // back and re-poll on the reconnected pool — the outer
+        // `waitUntilMs` bound still governs, so this cannot spin
+        // forever, and a genuinely non-transient error still rethrows.
+        try {
+          await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+            pokeWorkspace(tx, coordinationDomain),
           );
+
+          const status = await readWaiterStatus(sqlPool, ticketId);
+          if (status.status === 'granted' && status.granted_lock_id) {
+            return ok(ownerId, ownerLabel,
+              status.granted_lock_id,
+              status.granted_expires_ts ?? new Date(Date.now() + ttlSec * 1000),
+              status.paths ?? paths,
+              Math.floor((Date.now() - startedAt) / 1000),
+            );
+          }
+          if (status.status === 'cancelled' || status.status === 'expired') {
+            // External cancel or DB-side expiry; bail.
+            break;
+          }
+          // status === 'waiting' → loop back, await again.
+        } catch (err: unknown) {
+          if (!isTransientPgConnectionError(err)) throw err;
+          // Transient connection blip mid-wait — the next iteration's
+          // queries run on postgres-js's auto-reconnected pool.
         }
-        if (status.status === 'cancelled' || status.status === 'expired') {
-          // External cancel or DB-side expiry; bail.
-          break;
-        }
-        // status === 'waiting' → loop back, await again.
       }
 
       // Step 6: timeout — mark expired and return busy snapshot.
-      await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) => {
-        if (ticketId) await expireWaiter(tx, ticketId);
-      });
+      //
+      // EI-19324204900062056: this is the SAME transient-connection
+      // exposure as the poll loop above, on the tail end where a wait
+      // legitimately ran to its own deadline. Degrade to a structured
+      // "can't confirm final state" response instead of crashing the
+      // call — the caller still has ticket_id and can retry with
+      // wake_on_grant:true (which does not hold the turn/connection
+      // open and so isn't exposed to this class at all).
+      try {
+        await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) => {
+          if (ticketId) await expireWaiter(tx, ticketId);
+        });
+      } catch (err: unknown) {
+        if (!isTransientPgConnectionError(err)) throw err;
+        return waitConnectionUnstable(ticketId);
+      }
 
       // Re-read the current busy snapshot (may differ from the initial
       // first.busy if some paths freed but others didn't).
-      const finalBusy = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) => {
-        const r = await tryAcquire(tx, {
-          coordinationDomain,
-          owner: ownerId,
-          ownerLabel,
-          paths,
-          intent: args.intent,
-          ttlSec,
+      let finalBusy: { won: true; lockId: string; expires: Date; held: string[] } | { won: false; busy: AcquireBusy[] };
+      try {
+        finalBusy = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) => {
+          const r = await tryAcquire(tx, {
+            coordinationDomain,
+            owner: ownerId,
+            ownerLabel,
+            paths,
+            intent: args.intent,
+            ttlSec,
+          });
+          if (r.ok) {
+            // Lucky race — got it after timeout fired but before re-read.
+            return { won: true as const, lockId: r.lock_id, expires: r.expires_ts, held: r.held };
+          }
+          return { won: false as const, busy: r.busy };
         });
-        if (r.ok) {
-          // Lucky race — got it after timeout fired but before re-read.
-          return { won: true as const, lockId: r.lock_id, expires: r.expires_ts, held: r.held };
-        }
-        return { won: false as const, busy: r.busy };
-      });
+      } catch (err: unknown) {
+        if (!isTransientPgConnectionError(err)) throw err;
+        return waitConnectionUnstable(ticketId);
+      }
 
       if (finalBusy.won) {
         // notify firehose removed at the source (D-002)
@@ -724,6 +766,33 @@ function workspaceContended() {
           busy: [],
           advice:
             'The lock service could not serialize this call in time (per-workspace advisory-lock timeout — concurrent lock ops in this workspace, often your OWN parallel edits, or a starved PG pool). NO holder blocks you: do NOT queue wake_on_grant; retry the operation after a short pause.',
+        }),
+      },
+    ],
+  };
+}
+
+/** EI-19324204900062056: a blocking wait's DB connection dropped (pgbouncer
+ * transaction-pooling reclaim / a PG-server-side reset) and did not
+ * reconnect in time to confirm the final state. Distinct, structured
+ * `reason` — never a thrown/opaque MCP error — so the caller can tell this
+ * apart from "held by another agent" and retry via wake_on_grant (which
+ * doesn't hold a connection open across the wait, so isn't exposed to this
+ * class). The ticket may still be granted server-side later; wake_on_grant
+ * picks that up. */
+function waitConnectionUnstable(ticketId: string | null) {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({
+          ok: false,
+          reason: 'wait_connection_unstable',
+          transient: true,
+          ticket_id: ticketId,
+          busy: [],
+          advice:
+            'The lock service could not confirm the final wait state (a transient DB connection blip outlived the blocking wait). No holder is confirmed to block you. Retry with wake_on_grant:true and END YOUR TURN instead of a long blocking wait.',
         }),
       },
     ],

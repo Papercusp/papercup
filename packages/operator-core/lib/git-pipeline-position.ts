@@ -459,6 +459,32 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
         'Rust/Tauri shell code — it is COMPILED into the desktop binary, not served by any host. Neither a deploy nor a `dev:restart` activates it: rebuild the shell (`cd papercusp-desktop && npm run dev`).',
     },
   },
+  // EI-19323821719374642: green-checkpoint.ts has ZERO non-test importers repo-wide (verified by
+  // grep) — it is never `await import`ed or loaded in-process by any long-lived host. It exists
+  // purely as a standalone CLI, always launched as a DETACHED systemd-run unit
+  // (release-checkpoint-launch.ts's buildCheckpointSystemdArgv, `--working-directory=<root>`
+  // pinned to `PAPERCUSP_INTEGRATION_ROOT` — the STAGING tree) regardless of whether the launch
+  // was triggered by the `system:green-checkpoint` cron routine (dispatched by routinesTick,
+  // bg-host-only) or a manual `release:checkpoint-run` MCP call. Absent this entry the path fell
+  // through to DEFAULT_OWNER (operator-release, releasePipelineApplies:true) — which told an
+  // agent to wait on a :3070 DEPLOY for code a deploy can never carry, and produced a false "gate
+  // deadlock" diagnosis during a live green-checkpoint incident (four agents mid-incident; it
+  // survived only because the finding was labelled a question rather than asserted).
+  //
+  // `host: 'bg-host'` / `restartTarget: 'bg-host'` is the closest fit in the existing enum, not a
+  // literal claim that this runs INSIDE the bg-host process — the activation text below spells
+  // out the more precise truth (fresh spawn every run, so the very next invocation already
+  // carries the edit; no restart is strictly required at all).
+  {
+    match: /^apps\/operator\/lib\/release\/green-checkpoint\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'green-checkpoint.ts is a DETACHED CLI (systemd-run, unit papercup-green-checkpoint-*) — every run, whether fired by the bg-host cron routine (`system:green-checkpoint`) or a manual `release:checkpoint-run` call, is launched with --working-directory pinned to the STAGING integration tree, never the release checkout. A :3070 deploy NEVER changes what this file executes. Because it is a fresh tsx spawn each run (not a long-lived daemon), your edit is already what the NEXT invocation runs — the periodic cron tick, or fire one now with release:checkpoint-run. dev:restart { target: "bg-host", confirm: true } is not required but is harmless if you want to be sure the cron-side trigger path also sees it.',
+    },
+  },
   // EI-19369080695408825 — MUST STAY LAST. The catch-all for routinesTick-dispatched
   // sweeps, DERIVED from routines-workflow.ts's real `await import(...)` set rather than
   // hand-copied (see routines-dispatch-derivation.ts for why, and for the failure

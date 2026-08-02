@@ -50,7 +50,7 @@
  *    artifact the tool does not produce (see the note on that exclusion below).
  */
 
-import type { CoverageResult, SubstitutionPair } from '../types';
+import type { CoverageResult, ReplayToolCall, SubstitutionPair } from '../types';
 
 /**
  * Mirrors `testing:run`'s `files` array bound. Exported so `pairs/model-drift.test.ts`
@@ -249,6 +249,35 @@ function expressionFor(parsed: ParsedTestCommand): string {
 }
 
 /**
+ * The EXECUTABLE form of {@link expressionFor} — the same call, as arguments
+ * rather than as display text (P-009).
+ *
+ * Gated on `cover()` exactly as the file-read family's `readRewrite` is, and for
+ * the same reason: an advisory that renders a runnable `tools:invoke` line for a
+ * command the tool cannot faithfully serve is worse than one that renders prose,
+ * because the agent runs it before noticing. So the two are ONE decision — if
+ * this family declines to claim a command, it declines to hand over a call for
+ * it too.
+ *
+ * Args mirror `expressionFor` field-for-field on purpose. That duplication is
+ * the same deliberate mirror `cover()`/`rewrite()` keep throughout this module
+ * (D-055): the display string and the executable call are allowed to be written
+ * twice precisely so a replay can put them side by side and catch a drift, which
+ * is how the `head` 200x over-read was found.
+ */
+function rewriteTestCommand(
+  pair: Pick<SubstitutionPair, 'cover'>,
+  atom: string,
+  parse: (atom: string) => ParsedTestCommand,
+): ReplayToolCall | null {
+  if (!pair.cover(atom).covered) return null;
+  const parsed = parse(atom);
+  const args: Record<string, unknown> = { files: parsed.files };
+  if (parsed.testNamePattern) args.testNamePattern = parsed.testNamePattern;
+  return { toolName: 'testing:run', args };
+}
+
+/**
  * The shared capability envelope: everything `testing:run` can and cannot
  * express about a parsed test command. Both equivalent pairs use this, so the
  * two rows can never drift from each other.
@@ -325,6 +354,14 @@ export const routerTestFiles: SubstitutionPair = {
   cover(atom: string): CoverageResult {
     return coverTestCommand(parseRouterAtom(atom));
   },
+  // P-009. No `replayEnvelope`: `npm` is not on the replay allowlist
+  // (REPLAYABLE_VERBS), so declaring a rewrite here does NOT enrol this pair in
+  // replay execution — D-060's hold on widening that list is untouched. The
+  // rewrite exists for the ADVISORY path, which is where this row's 432 fires
+  // are, and it is the row the testing:run promotion is about.
+  rewrite(atom: string): ReplayToolCall | null {
+    return rewriteTestCommand(routerTestFiles, atom, parseRouterAtom);
+  },
 };
 
 /**
@@ -356,6 +393,11 @@ export const rawVitestFiles: SubstitutionPair = {
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     return coverTestCommand(parseRawVitestAtom(atom));
+  },
+  // P-009 — see the sibling above. `vitest`/`npx` are likewise off the replay
+  // allowlist, so this is an advisory-path rewrite only.
+  rewrite(atom: string): ReplayToolCall | null {
+    return rewriteTestCommand(rawVitestFiles, atom, parseRawVitestAtom);
   },
 };
 
