@@ -18,17 +18,27 @@
  *           which is synchronous by design (see enroll-sync.ts's header) and cannot
  *           grow an await without changing every spawn seam on the box.
  *
- * FAILS CLOSED, deliberately — the opposite of the two call sites this replaces,
- * which both did `.catch(() => true)`. That bias was right for a finished
- * subsystem whose absence would be the outage; it is wrong for one the owner has
- * declared unready. If the flag backend is unreachable we must not silently
- * confine and ledger every process on the box. Unknown ⇒ off.
+ * FAILS OPEN. This bias flipped on 2026-08-02 (WI-6844, owner-directed: "we put
+ * it behind a testing flag. Remove that flag, we'll make it part of our standard
+ * release"). The flag graduated out of DARK_FLAGS and now derives default-ON, so
+ * the subsystem is shipped, not unready — and for a shipped subsystem it is the
+ * ABSENCE that is the outage: an unreachable flag backend must not silently
+ * un-confine and un-ledger every process on the box, leaving the reconciler with
+ * nothing to reconcile and `processes:list` reporting disabled. Unknown ⇒ on,
+ * which is what the two original call sites did (`.catch(() => true)`) before
+ * WI-6499 inverted them for the testing window.
+ *
+ * The flag KEY deliberately survives as a runtime kill-switch: this subsystem
+ * intercepts every spawn seam on the box, so an explicit OFF at /admin/features
+ * must still restore the pre-feature behaviour byte-for-byte without a revert.
+ * An explicit `false` from the backend is always honoured — only the UNKNOWN
+ * case changed.
  */
 
 import { FLAGS } from '@papercusp/flags';
 import { getFlag, onFlagChange } from '@papercusp/flags/server';
 
-/** null = "not resolved yet", which reads as OFF for sync callers. */
+/** null = "not resolved yet", which reads as ON for sync callers (fail-open). */
 let cached: boolean | null = null;
 let inflight: Promise<boolean> | null = null;
 
@@ -40,21 +50,24 @@ let inflight: Promise<boolean> | null = null;
  * to the surface that asked.
  */
 export async function isTaskManagerEnabled(distinctId = 'task-manager'): Promise<boolean> {
-  const on = await getFlag(FLAGS.TASK_MANAGER, distinctId).catch(() => false);
+  const on = await getFlag(FLAGS.TASK_MANAGER, distinctId).catch(() => true);
   cached = on;
   return on;
 }
 
 /**
- * The last resolved answer, or `false` if none has landed yet.
+ * The last resolved answer, or `true` if none has landed yet (fail-open).
  *
- * A spawn that happens in the window before the first resolve runs UNENROLLED.
- * That is the correct bias while the subsystem is off by default: an unenrolled
- * spawn is exactly the pre-feature behaviour, whereas a wrongly-enrolled one
- * confines a process into a cgroup the operator may not be ready to manage.
+ * A spawn in the window before the first resolve is ENROLLED. That is the
+ * correct bias now that the subsystem ships default-ON: an unenrolled spawn is
+ * invisible to the ledger FOREVER (enrolment binds at spawn and cannot be
+ * applied retroactively), so a boot-window miss permanently punches a hole in
+ * the no-escape property — whereas a spawn enrolled a moment before an explicit
+ * OFF resolves is merely confined into a cgroup we then stop reconciling, which
+ * the next reconcile tick closes out cleanly.
  */
 export function taskManagerEnabledSync(): boolean {
-  return cached === true;
+  return cached !== false;
 }
 
 /**

@@ -1,12 +1,19 @@
 /**
- * enabled.test.ts — the task-manager master switch (WI-6499).
+ * enabled.test.ts — the task-manager master switch (WI-6499, re-pointed WI-6844).
  *
- * The behaviour worth pinning is the FAIL DIRECTION. The two call sites this
- * module replaced both did `.catch(() => true)`, so an unreachable flag backend
- * silently turned the whole subsystem on. For a subsystem the owner has declared
- * unready — one that confines and ledgers every spawn on the box — that default is
- * backwards, and it is exactly the kind of inversion that survives review because
- * nothing observable changes until the backend is down.
+ * The behaviour worth pinning is the FAIL DIRECTION, and it has now been correct
+ * in BOTH directions at different times, which is exactly why it needs a test
+ * rather than a comment. WI-6499 made it fail CLOSED while the owner had declared
+ * the subsystem unready: an unreachable backend must not silently confine and
+ * ledger every process on the box. WI-6844 graduated the flag to default-ON as
+ * part of the standard release, which inverts the argument — for a SHIPPED
+ * subsystem the absence is the outage, and an unenrolled spawn is invisible to
+ * the ledger forever because enrolment binds at spawn.
+ *
+ * So: unknown ⇒ ON. An EXPLICIT `false` is still honoured in every path — the
+ * kill-switch has to keep working, and that is the other half of what is pinned
+ * here. This is the kind of inversion that survives review because nothing
+ * observable changes until the backend is down.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -47,9 +54,15 @@ describe('isTaskManagerEnabled', () => {
     await expect(isTaskManagerEnabled()).resolves.toBe(false);
   });
 
-  it('FAILS CLOSED when the flag backend throws', async () => {
+  it('FAILS OPEN when the flag backend throws', async () => {
     getFlag.mockRejectedValue(new Error('posthog unreachable'));
+    await expect(isTaskManagerEnabled()).resolves.toBe(true);
+  });
+
+  it('still honours an EXPLICIT false — the kill-switch survives graduation', async () => {
+    getFlag.mockResolvedValue(false);
     await expect(isTaskManagerEnabled()).resolves.toBe(false);
+    expect(taskManagerEnabledSync()).toBe(false);
   });
 
   it('passes the call site through as the distinctId', async () => {
@@ -60,8 +73,10 @@ describe('isTaskManagerEnabled', () => {
 });
 
 describe('taskManagerEnabledSync', () => {
-  it('is false before any resolve has landed', () => {
-    expect(taskManagerEnabledSync()).toBe(false);
+  // The boot window. A spawn here is enrolled rather than skipped, because an
+  // unenrolled spawn can never be adopted later — enrolment binds at spawn.
+  it('is true before any resolve has landed', () => {
+    expect(taskManagerEnabledSync()).toBe(true);
   });
 
   it('reflects the last resolved answer, both ways', async () => {
@@ -74,14 +89,14 @@ describe('taskManagerEnabledSync', () => {
     expect(taskManagerEnabledSync()).toBe(false);
   });
 
-  it('is false after a failed resolve, not stale-true', async () => {
-    getFlag.mockResolvedValue(true);
+  it('is true after a failed resolve, not stale-false', async () => {
+    getFlag.mockResolvedValue(false);
     await isTaskManagerEnabled();
-    expect(taskManagerEnabledSync()).toBe(true);
+    expect(taskManagerEnabledSync()).toBe(false);
 
     getFlag.mockRejectedValue(new Error('backend died'));
     await isTaskManagerEnabled();
-    expect(taskManagerEnabledSync()).toBe(false);
+    expect(taskManagerEnabledSync()).toBe(true);
   });
 });
 

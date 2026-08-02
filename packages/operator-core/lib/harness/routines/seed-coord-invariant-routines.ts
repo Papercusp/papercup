@@ -79,7 +79,15 @@ async function main(): Promise<void> {
       ON CONFLICT (install_slug, name) DO UPDATE SET
         trigger_config = EXCLUDED.trigger_config,
         target_role = EXCLUDED.target_role,
-        active = EXCLUDED.active,
+        -- WARNING: "active" is deliberately NOT re-applied on conflict --
+        -- seeding CREATES a routine, it does not re-decide whether an existing
+        -- one should be running. It used to clobber it, which made adding ONE
+        -- routine to the list above silently RE-ACTIVATE every other routine
+        -- an operator had deliberately switched off (measured 2026-08-02:
+        -- coord-invariant-monitor was active=false in this workspace, and a
+        -- plain re-seed to install presence-transition-sweep would have turned
+        -- it back on with nothing in the output saying so). The INSERT arm
+        -- still honours the --inactive flag for genuinely new rows.
         updated_at = now()`;
     console.log(`[seed-coord-invariant] ${id} seeded (active=${active})`);
   }

@@ -1428,6 +1428,15 @@ describe('SessionChatModal', () => {
   describe('P-001 maximize: full window + full screen', () => {
     const COMPOSER = /Type to wake/;
 
+    // The file's top-level beforeEach clears the nuqs VALUE store but not the
+    // setter spies, which are created lazily and then live for the whole file.
+    // Every assertion below is `toHaveBeenCalledWith(<a specific mode>)`, so a
+    // call left over from an earlier case would satisfy it without this — the
+    // test would pass whether or not the click did anything.
+    beforeEach(() => {
+      for (const s of Object.values(nuqsSetters)) s.mockClear();
+    });
+
     function seedRoster(entries: Array<Record<string, unknown>>) {
       H.results['advRoster.list'] = {
         data: [{ active: entries, pending: [] }],
