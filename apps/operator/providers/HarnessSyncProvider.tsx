@@ -82,6 +82,30 @@ export function resolveMaxInFlightFetches(isTauriEnv: boolean): number | undefin
 // FLAGS.SYNC_RESOURCE_DELTA is ON (the effect below); OFF ⇒ no codec ⇒ full re-fetches, as today.
 const syncDeltaCodec = createSyncDeltaCodec();
 
+/**
+ * WI-6656: the persisted sync cache (WI-3318, `enablePersistedSyncCache()` in
+ * RootSyncProvider) dehydrates every SUCCESSFUL query in this app's shared
+ * QueryClient. Measured live 2026-07-28: a handful of queries dominate the
+ * payload (`plans.attention` ~1002KB, `plans.list` ~800KB, `operatorTurns.page`
+ * ~421KB, `operatorTurns.byConversation` ~421KB, `advRoster.list` ~254KB) —
+ * together enough to blow the ~5MB localStorage quota (3236KB dehydrated vs the
+ * 4MiB `maxBytes` guard, before UTF-16 overhead), so the snapshot never wrote
+ * at all and the reload-paints-from-disk benefit was entirely unrealized.
+ *
+ * Excluding these opts them out of PERSISTENCE only (`meta.persist = false` —
+ * see `SyncProviderProps.persistExcludeQueryNames`); they keep polling/SSE
+ * exactly as before and still populate the live in-memory cache. Excluding
+ * them brings the remaining snapshot well under budget so the small,
+ * high-value queries persist as designed.
+ */
+const PERSIST_EXCLUDE_QUERY_NAMES = [
+  'plans.attention',
+  'plans.list',
+  'operatorTurns.page',
+  'operatorTurns.byConversation',
+  'advRoster.list',
+] as const;
+
 export function HarnessSyncProvider({
   children,
   userID = 'papercusp-anon',
@@ -108,6 +132,7 @@ export function HarnessSyncProvider({
         restEndpoint={DEFAULT_REST_ENDPOINT}
         ssePollIntervalMs={ssePollIntervalMs}
         maxInFlightFetches={resolveMaxInFlightFetches(isTauri())}
+        persistExcludeQueryNames={PERSIST_EXCLUDE_QUERY_NAMES}
       >
         {children}
       </SyncProvider>

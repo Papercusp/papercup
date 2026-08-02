@@ -16,7 +16,7 @@ import {
 } from '@papercusp/docs-engine';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter as engineeringBase } from './_engineering-adapter';
-import { HARNESS_REQUIRED_DETAIL, resolveHarnessScope } from '../_harness-scope';
+import { HARNESS_REQUIRED_DETAIL, isEngineeringDocsSentinel, resolveHarnessScope, type HarnessScope } from '../_harness-scope';
 import { coerceDocsGetSlugs } from './get-coerce';
 
 function wrapWithPreamble(base: DocSource): DocSource {
@@ -110,8 +110,11 @@ const argsSchema = z.preprocess(
         .string()
         .optional()
         .describe(
-          "Harness slug whose docs to read. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope). " +
-            "Omit only when the session is already scoped to a harness — otherwise you'll get harness_required.",
+          "Harness slug whose docs to read. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope) — " +
+            "but only on an UNSCOPED (--all-workspaces) session; a workspace-scoped su session gets harness_forbidden for 'all'/'*'. " +
+            "To reach the SAME framework/agent-insights corpus from a workspace-scoped session, pass 'engineering' instead — a " +
+            "distinct literal the workspace clamp does not intercept (EI-18894866320087268). Omit only when the session is " +
+            "already scoped to a harness — otherwise you'll get harness_required.",
         ),
     })
     .refine((v) => !v.heading || v.slugs.length === 1, {
@@ -151,7 +154,14 @@ export default defineTool({
       signal?: AbortSignal;
       metadata?: (d: Record<string, unknown>) => void;
     };
-    const scope = resolveHarnessScope(args.harness, ctxAny);
+    // EI-18894866320087268: 'engineering' is a distinct sentinel from 'all'/'*' that a
+    // workspace-scoped session CAN use (see isEngineeringDocsSentinel's doc comment) —
+    // handled before resolveHarnessScope so it never falls into the "concrete harness
+    // slug" branch (which would otherwise 404 looking up a harness literally named
+    // "engineering"). Resolves to the exact same scope as harness:'all'.
+    const scope: HarnessScope = isEngineeringDocsSentinel(args.harness)
+      ? { kind: 'all' }
+      : resolveHarnessScope(args.harness, ctxAny);
     if (scope.kind === 'none') {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ error: 'harness_required', detail: HARNESS_REQUIRED_DETAIL }) }],

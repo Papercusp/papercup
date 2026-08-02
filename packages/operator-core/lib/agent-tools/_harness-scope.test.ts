@@ -8,6 +8,7 @@ import {
   harnessRequiredResult,
   harnessScopedCtx,
   isAllHarnessSentinel,
+  isEngineeringDocsSentinel,
   resolveConcreteHarnessSlug,
   resolveHarnessScope,
 } from './_harness-scope';
@@ -18,6 +19,22 @@ describe('isAllHarnessSentinel', () => {
   });
   it('treats a real slug / empty / nullish as not-sentinel', () => {
     for (const v of ['papercup', 'restart', '', undefined, null]) expect(isAllHarnessSentinel(v)).toBe(false);
+  });
+});
+
+describe('isEngineeringDocsSentinel (EI-18894866320087268)', () => {
+  it('treats "engineering" (any case, trimmed) as the sentinel', () => {
+    for (const v of ['engineering', 'ENGINEERING', ' Engineering ']) expect(isEngineeringDocsSentinel(v)).toBe(true);
+  });
+  it('does NOT treat all/*/a real slug/empty/nullish as the engineering sentinel', () => {
+    for (const v of ['all', '*', 'papercup', 'restart', '', undefined, null]) {
+      expect(isEngineeringDocsSentinel(v)).toBe(false);
+    }
+  });
+  it('is a DISTINCT literal from isAllHarnessSentinel — neither predicate double-matches the other\'s sentinel', () => {
+    expect(isAllHarnessSentinel('engineering')).toBe(false);
+    expect(isEngineeringDocsSentinel('all')).toBe(false);
+    expect(isEngineeringDocsSentinel('*')).toBe(false);
   });
 });
 

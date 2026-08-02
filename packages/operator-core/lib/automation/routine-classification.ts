@@ -324,6 +324,14 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:hive-git-gc': { spend: 'none', why: 'Garbage-collects hive git objects' },
   'system:gc-plan-runs': { spend: 'none', why: 'Prunes finished plan-run rows' },
   'system:gc-dead-loops': { spend: 'none', why: 'Reaps loop rows whose owning session is long gone' },
+  'system:sweep-stalled-loops': {
+    spend: 'none',
+    // Disarms (a plain UPDATE ... active=false) an ARMED loop whose computeTurnsStalled
+    // verdict is true, then — like presence-transition-sweep above — writes ONE
+    // inject-only ('*' broadcast, no wake) coord message per sweep summarizing every
+    // owner it disarmed. No spawn, no dispatch, no wake: a fire cannot bill turns.
+    why: 'Disarms turns-stalled loop routines and broadcasts an inject-only fleet notice — no spawn/dispatch/wake',
+  },
   'system:gc-verify-instances': {
     spend: 'none',
     why: 'Reaps abandoned verify-tauri-headless work dirs, displays and sidecars — filesystem only',

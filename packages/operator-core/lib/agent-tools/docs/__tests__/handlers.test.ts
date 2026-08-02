@@ -284,6 +284,34 @@ describe('docs:outline handler — engineering scope brief-by-default (EI-400)',
   });
 });
 
+// EI-18894866320087268: harness:'all' reaches the engineering/agent-insights corpus but is
+// REJECTED with harness_forbidden at the transport layer for a workspace-scoped session — and
+// the tool's own scopeNote used to instruct retrying with exactly that forbidden value. 'engineering'
+// is a distinct literal (never intercepted by that clamp) that reaches the SAME surface, even when
+// ctx.harnessSlug is a concrete harness (the workspace-scoped shape) — it must NOT be treated as a
+// harness slug to look up (which would 404 harness_not_registered, since no harness is named "engineering").
+describe("docs:outline handler — 'engineering' sentinel (EI-18894866320087268)", () => {
+  it("harness:'engineering' from a workspace-scoped ctx (concrete harnessSlug) reaches the engineering surface, not harness_not_registered", async () => {
+    mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]); // no harness named "engineering" registered
+    const tool = (await import('../outline')).default;
+    const res = await tool.handler(
+      { harness: 'engineering' } as never,
+      { harnessSlug: 'sheets', isSuperuser: true } as never,
+    );
+    const p = payloadOf(res);
+    expect(p.surface).toBe('engineering');
+    expect(p.error).toBeUndefined();
+  });
+
+  it("harness:'engineering' without isSuperuser → no_docs_source (same gate as harness:'all')", async () => {
+    mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+    const tool = (await import('../outline')).default;
+    const res = await tool.handler({ harness: 'engineering' } as never, { harnessSlug: 'sheets' } as never);
+    expect(textResult(res).isError).toBe(true);
+    expect(payloadOf(res).error).toBe('no_docs_source');
+  });
+});
+
 describe('docs:get handler', () => {
   it('harness_required gate fires (no arg, ctx "*") with no engine call', async () => {
     mockRegistry([]);
@@ -322,6 +350,19 @@ describe('docs:get handler', () => {
   it('args schema rejects an empty slugs array', async () => {
     const mod = await import('../get');
     expect(mod.default.args.safeParse({ slugs: [] }).success).toBe(false);
+  });
+
+  // EI-18894866320087268: see the docs:outline sentinel describe above for the full rationale.
+  it("harness:'engineering' from a workspace-scoped ctx reaches the engineering surface, not harness_not_registered", async () => {
+    mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+    const tool = (await import('../get')).default;
+    const res = await tool.handler(
+      { slugs: ['p1'], harness: 'engineering' } as never,
+      { harnessSlug: 'sheets', isSuperuser: true } as never,
+    );
+    const p = payloadOf(res);
+    expect(p.surface).toBe('engineering');
+    expect(p.error).toBeUndefined();
   });
 });
 
@@ -512,6 +553,43 @@ describe('docs:search handler', () => {
       const p = payloadOf(res);
       expect(p.surface).toBe('engineering');
       expect(p.scopeNote).toBeUndefined();
+    });
+
+    it("names the harness:'engineering' escape (workspace-scoped-safe) alongside harness:'all'", async () => {
+      mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+      const tool = (await import('../search')).default;
+      const res = await tool.handler({ query: 'auth flow', limit: 8 } as never, { harnessSlug: 'sheets' } as never);
+      expect(payloadOf(res).scopeNote).toMatch(/harness:'engineering'/);
+    });
+  });
+
+  // EI-18894866320087268: harness:'all' is REJECTED with harness_forbidden at the transport
+  // layer for a workspace-scoped session; 'engineering' is a distinct literal that is NOT
+  // intercepted by that clamp and reaches the same corpus — even when ctx.harnessSlug is a
+  // concrete harness (the workspace-scoped shape), and it must not be looked up as a harness slug.
+  describe("'engineering' sentinel (EI-18894866320087268)", () => {
+    it("harness:'engineering' from a workspace-scoped ctx reaches the engineering surface, not harness_not_registered", async () => {
+      mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]); // no harness named "engineering" registered
+      const tool = (await import('../search')).default;
+      const res = await tool.handler(
+        { query: 'auth flow', limit: 8, harness: 'engineering' } as never,
+        { harnessSlug: 'sheets', isSuperuser: true } as never,
+      );
+      const p = payloadOf(res);
+      expect(p.surface).toBe('engineering');
+      expect(p.error).toBeUndefined();
+      expect(searchDocs).toHaveBeenCalledTimes(1);
+    });
+
+    it("harness:'engineering' without isSuperuser → no_docs_source (same gate as harness:'all')", async () => {
+      mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+      const tool = (await import('../search')).default;
+      const res = await tool.handler(
+        { query: 'auth flow', limit: 8, harness: 'engineering' } as never,
+        { harnessSlug: 'sheets' } as never,
+      );
+      expect(textResult(res).isError).toBe(true);
+      expect(payloadOf(res).error).toBe('no_docs_source');
     });
   });
 

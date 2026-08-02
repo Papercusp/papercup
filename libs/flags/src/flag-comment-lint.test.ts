@@ -222,6 +222,83 @@ export const DARK_FLAGS = new Map([
     expect(findMismatches(entries, extractDarkFlagKeys(src))).toEqual([]);
   });
 
+  // ── EI-18886519654229938 / EI-19360358881224651: the SIXTH claim-of-darkness form ──
+  // A "ships dark" narrative claim with NEITHER a literal "DEFAULT OFF" NOR "Listed in
+  // DARK_FLAGS" NOR any reversed/verb form — the exact phrasing LEARNING_SLO_SENSORS and
+  // GRADUATION_TRACKER both used in the real tree, which slipped past all five prior
+  // forms and stayed classified null (skipped) despite being a real mismatch.
+
+  it('THE EI-18886519654229938 CASE: a bare "ships dark until … arming gate closes" claim (no other established form present) is now classified, not skipped', () => {
+    // Verbatim shape of the real LEARNING_SLO_SENSORS / GRADUATION_TRACKER comments
+    // that slipped past the guard (neither contains "DEFAULT OFF" or "Listed in
+    // DARK_FLAGS" anywhere).
+    const src = `
+export const FLAGS = {
+  // five collectors riding the existing watchdog tick. SQL-only, zero LLM spend,
+  // no routine of its own — but a breach FILES into the improvements queue, so it
+  // ships dark until the plan's P-001 arming gate closes (D-001).
+  AUDIT_SENSORS: "papercusp-audit-sensors",
+} as const;
+export const DARK_FLAGS = new Map([]);
+`;
+    const entries = parseFlagEntries(src);
+    // Before this fix: null (skipped) — none of forms 1-5 match this phrasing at all.
+    expect(claimedDefault(entries[0])).toBe('off');
+    const mismatches = findMismatches(entries, extractDarkFlagKeys(src));
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0]).toMatchObject({ key: 'AUDIT_SENSORS', kind: 'claims-dark-but-not-listed' });
+  });
+
+  it('the bare "ship(s) dark" form also fires when the flag IS correctly in DARK_FLAGS (consistent, no mismatch)', () => {
+    const src = `
+export const FLAGS = {
+  // unreviewed cutover surface, so it ships dark until the owner signs off.
+  RISKY_CUTOVER: "papercusp-risky-cutover",
+} as const;
+export const DARK_FLAGS = new Map([
+  [FLAGS.RISKY_CUTOVER, { case: 'owner-authority', reason: 'unreviewed cutover' }],
+]);
+`;
+    const entries = parseFlagEntries(src);
+    expect(claimedDefault(entries[0])).toBe('off');
+    expect(findMismatches(entries, extractDarkFlagKeys(src))).toEqual([]);
+  });
+
+  it('does NOT false-positive on the repo-wide idiom "finished work never ships dark" (a negated principle, not a darkness claim)', () => {
+    // Verbatim shape of real entries (INBOX_DURABLE_ESCALATIONS, EPHEMERAL_CADENCE)
+    // that cite this idiom as the REASON they are correctly default-ON.
+    const src = `
+export const FLAGS = {
+  // DEFAULT ON (not in DARK_FLAGS — finished work never ships dark): additive,
+  // reviewed, and verified live for two weeks with zero incidents.
+  GRADUATED_ADDITIVE: "papercusp-graduated-additive",
+} as const;
+export const DARK_FLAGS = new Map([]);
+`;
+    const entries = parseFlagEntries(src);
+    expect(claimedDefault(entries[0])).toBe('on');
+    expect(findMismatches(entries, extractDarkFlagKeys(src))).toEqual([]);
+  });
+
+  it('a "ship dark" (singular, third-person-plural subject) OFF-branch description does not wrongly assert when the SAME comment already declares DEFAULT ON (ambiguous both ⇒ skip, not a false mismatch)', () => {
+    // Mirrors the real PLATFORM_IMPROVEMENT_LOOPS shape: "DEFAULT ON: … OFF = the
+    // Class-C loops ship dark." — describes what happens to OTHER things when OFF,
+    // not a claim about THIS flag's own default. Both an ON claim and a dark-ship
+    // phrase appear unquoted in one comment, so per rule 3 this stays a SKIP (null),
+    // never a false 'off' mismatch.
+    const src = `
+export const FLAGS = {
+  // DEFAULT ON: dev workspaces run the full loop set. OFF = the Class-C loops
+  // ship dark.
+  LOOP_GATE: "papercusp-loop-gate",
+} as const;
+export const DARK_FLAGS = new Map([]);
+`;
+    const entries = parseFlagEntries(src);
+    expect(claimedDefault(entries[0])).toBeNull();
+    expect(findMismatches(entries, extractDarkFlagKeys(src))).toEqual([]);
+  });
+
   it('does NOT false-positive on the UNQUOTED negative narration "was never actually added to the DARK_FLAGS map"', () => {
     // The precision guard specific to this rule. The repo's correction convention often
     // narrates the map in the NEGATIVE, and unlike the WI-3855 case at the top of this
@@ -266,12 +343,20 @@ describe('flag-comment-lint: the real tree (libs/flags/src/types.ts)', () => {
    * its comment was fixed) is always welcome — this list should only shrink.
    */
   // ════════════════════════════════════════════════════════════════════════════════════
-  // PENDING_MISMATCHES — EMPTY as of 2026-07-12 (WI-4238/WI-4239/WI-4240, su-00a91).
+  // PENDING_MISMATCHES — was EMPTY 2026-07-12 to 2026-08-02 (WI-4238/WI-4239/WI-4240,
+  // su-00a91); ONE entry as of 2026-08-02 (EI-19360358881224651, su-5622daef), added
+  // the same day the SIXTH form of this bug class (step 6 in flag-comment-lint.ts's
+  // module doc — a bare "ships dark" narrative claim) started being detected at all.
+  // Widening the detector surfaced two real, previously-invisible mismatches in the
+  // same sweep: LEARNING_SLO_SENSORS (EI-18886519654229938 — resolved: comment was
+  // stale, code was right, see below) and GRADUATION_TRACKER (EI-19360358881224651 —
+  // genuinely needs an owner arming ruling, listed below).
   //
-  // The entire flag-comment/DARK_FLAGS mismatch backlog is CLEARED: every flag whose comment
-  // and DARK_FLAGS membership disagreed has been resolved in the RIGHT direction (verified per
-  // flag against the code and the live data — not blanket-"restored"). If this list is empty,
-  // the guard below asserts the real tree has ZERO mismatches; a NEW one fails the build.
+  // The entire PRIOR flag-comment/DARK_FLAGS mismatch backlog was CLEARED: every flag
+  // whose comment and DARK_FLAGS membership disagreed had been resolved in the RIGHT
+  // direction (verified per flag against the code and the live data — not blanket-
+  // "restored"). If this list is empty, the guard below asserts the real tree has ZERO
+  // mismatches; a NEW one not on this list fails the build.
   //
   // HOW THE TEN WERE RESOLVED — and why the split matters (the whole finding):
   //  · COMMENT WAS STALE, code was right → comment corrected, NO DARK_FLAGS change (5):
@@ -287,6 +372,15 @@ describe('flag-comment-lint: the real tree (libs/flags/src/types.ts)', () => {
   //  · FINISHED ADDITIVE WORK → ratified DEFAULT ON, comment corrected (1):
   //      INBOX_DURABLE_ESCALATIONS (resolve wired on every card-exit path; 0 leaks in 2 weeks).
   //
+  // 2026-08-02 (EI-18886519654229938, su-5622daef) — the ELEVENTH, resolved the same way as
+  // the first five above:
+  //  · COMMENT WAS STALE, code was right → comment corrected, NO DARK_FLAGS change (1):
+  //      LEARNING_SLO_SENSORS (self-learning-frontier-2026-06-12 D-010 explicitly named this
+  //      exact wave-1 zero-spend, SQL-only sensor bank safe-to-arm when the P-001 gate closed
+  //      2026-06-13; the comment was simply never updated after that. Live-verified: zero
+  //      `learning-slo:*` watchdog findings have ever fired, so it has run quietly and safely
+  //      the whole time).
+  //
   // ⚠ THE TRAP, recorded so the next reader does not repeat it: this lint reports that a
   // comment and DARK_FLAGS DISAGREE — it CANNOT say WHICH SIDE IS WRONG. The first eight
   // instances were all "comment right, code wrong" (the EI-7230 bug), so every later reader
@@ -299,7 +393,20 @@ describe('flag-comment-lint: the real tree (libs/flags/src/types.ts)', () => {
   // /internal/docs/agent-insights/a-flag-mismatch-is-a-question-not-a-verdict
   //
   // To re-open: add { key, reason: '<why it needs a ruling before it can be resolved> + <ref>' }.
-  const PENDING_MISMATCHES: ReadonlyArray<{ key: string; reason: string }> = [];
+  const PENDING_MISMATCHES: ReadonlyArray<{ key: string; reason: string }> = [
+    {
+      key: 'GRADUATION_TRACKER',
+      reason:
+        'EI-19360358881224651 (2026-08-02): comment says "ships dark until the plan\'s P-001 ' +
+        'arming gate closes" but the key is absent from DARK_FLAGS (live default-ON). Unlike ' +
+        'LEARNING_SLO_SENSORS, this loop is NOT named in any of D-010\'s three arming waves, so ' +
+        '(unlike that one) this needs an actual owner/leader ruling on whether to arm it (flag ' +
+        'stays ON, routine flipped active, comment corrected) or formally dark-ship it (added to ' +
+        'DARK_FLAGS). Currently safe in practice regardless: the @singleton routine row is ' +
+        'active=false and the loop has never self-registered with the learning governor, so the ' +
+        'flag bug alone has zero live exposure today.',
+    },
+  ];
 
   it('the pending-allowlist itself stays honest: every listed key is a REAL current mismatch (never a stale/unnecessary entry)', () => {
     const staleAllowlistEntries = PENDING_MISMATCHES.filter((p) => !realMismatchKeys.has(p.key));

@@ -209,6 +209,18 @@ describe('renderBuiltAtStamp (EI-18697157970421032, pure)', () => {
     expect(renderBuiltAtStamp(NOW)).toBe(renderBuiltAtStamp(NOW));
     expect(renderBuiltAtStamp(NOW)).not.toBe(renderBuiltAtStamp(NOW + 1));
   });
+
+  it('warns about the build-to-death blind window (EI-18894888815338094)', () => {
+    // A successor's own pre-respawn session can keep doing real, durable work
+    // (finishing an experiment, writing an artifact) AFTER this stamp but before
+    // it actually dies — none of that is reflected in an already-frozen document.
+    // The stamp must tell the reader this document is a LOWER BOUND, not a
+    // complete record, and to check the filesystem/work-item before redoing work.
+    const stamp = renderBuiltAtStamp(NOW);
+    expect(stamp).toMatch(/BLIND WINDOW/);
+    expect(stamp).toContain('may have kept working');
+    expect(stamp).toMatch(/check the filesystem/);
+  });
 });
 
 describe('renderCarryDoc (pure)', () => {

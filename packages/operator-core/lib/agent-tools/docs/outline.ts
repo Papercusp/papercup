@@ -186,7 +186,7 @@ export default defineTool({
     notWhen:
       'You already called docs:outline this run — cached. For prose recall (chats, escalations, brainstorms) use search:fulltext. To explore another harness from outside, use cross_harness:docs_outline.',
     chaining:
-      "docs:outline → (harness:'all' only) docs:outline { harness:'all', section } to drill into one section → docs:get { slugs: [...] }. Use { slug, heading } when only one section of a long page is relevant.",
+      "docs:outline → (harness:'all'/'engineering' only) docs:outline { harness:'all', section } to drill into one section → docs:get { slugs: [...] }. Use { slug, heading } when only one section of a long page is relevant. A workspace-scoped session gets harness_forbidden for 'all' — pass 'engineering' instead (same corpus, EI-18894866320087268).",
     seeAlso: [
       'docs:search (find a page by specific term instead of browsing the tree)',
       'docs:get (read the slugs the outline lists)',
@@ -201,8 +201,11 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "Harness slug whose docs outline to return. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope). " +
-          "Omit only when the session is already scoped to a harness — otherwise you'll get harness_required.",
+        "Harness slug whose docs outline to return. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope) — " +
+          "but only on an UNSCOPED (--all-workspaces) session; a workspace-scoped su session gets harness_forbidden for 'all'/'*'. " +
+          "To reach the SAME framework/agent-insights corpus from a workspace-scoped session, pass 'engineering' instead — a distinct " +
+          "literal the workspace clamp does not intercept (EI-18894866320087268). Omit only when the session is already scoped to a " +
+          "harness — otherwise you'll get harness_required.",
       ),
     section: z
       .string()
@@ -237,7 +240,14 @@ export default defineTool({
       signal?: AbortSignal;
       metadata?: (d: Record<string, unknown>) => void;
     };
-    const scope = resolveHarnessScope(args.harness, ctxAny);
+    // EI-18894866320087268: 'engineering' is a distinct sentinel from 'all'/'*' that a
+    // workspace-scoped session CAN use (see isEngineeringDocsSentinel's doc comment) —
+    // handled before resolveHarnessScope so it never falls into the "concrete harness
+    // slug" branch (which would otherwise 404 looking up a harness literally named
+    // "engineering"). Resolves to the exact same scope as harness:'all'.
+    const scope: HarnessScope = isEngineeringDocsSentinel(args.harness)
+      ? { kind: 'all' }
+      : resolveHarnessScope(args.harness, ctxAny);
     if (scope.kind === 'none') {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ error: 'harness_required', detail: HARNESS_REQUIRED_DETAIL }) }],

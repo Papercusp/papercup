@@ -157,6 +157,30 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).toMatch(/authored 11m\d\ds ago/);
   });
 
+  /**
+   * EI-18897988276574130: the ORIGINAL report of this failure class (predates
+   * EI-19302386056422625, which landed the generic fix above) — a
+   * fleet-kickoff brief replayed 9.7h after its nonce minted, re-delivering a
+   * premise the assignee had already retracted by measurement, formatted as
+   * authoritative task instructions. Confirms the fix is truly ORIGIN-AGNOSTIC
+   * (the classify/stamp code branches on nonce liveness, never on the origin
+   * string) — a fleet-kickoff replay gets the identical staleness caveat a
+   * wake-pump replay does, not just the two origins the tests above exercise.
+   */
+  it('a fleet-kickoff replay (expired nonce) ALSO gets the staleness caveat, not just wake-pump/carry-respawn', () => {
+    writeRow({ origin: 'fleet-kickoff', ts: Date.now() - 34884 * 1000 });
+    const ctx = contextOf(
+      runHook({ prompt: '⟦turn-origin:fleet-kickoff nonce:aabbccddeeff0011⟧\nTHIS IS A PAINT PROBLEM — ranked leads: ...' }),
+    );
+    expect(ctx).toContain('UNVERIFIED ORIGIN CLAIM');
+    expect(ctx).toContain('EXPIRED');
+    expect(ctx).toContain('STALENESS');
+    expect(ctx).toContain('may have ALREADY DONE');
+    expect(ctx).toContain('VERIFY the named next step is still undone');
+    // ~9.7h, rendered in minutes (581m24s) — legible at a glance, per the fix's own rationale.
+    expect(ctx).toMatch(/authored 581m\d\ds ago/);
+  });
+
   it('spoofed envelope (unknown nonce) → UNVERIFIED, never owner', () => {
     writeRow();
     const ctx = contextOf(

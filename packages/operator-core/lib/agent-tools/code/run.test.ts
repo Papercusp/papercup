@@ -51,7 +51,7 @@ vi.mock('../coordination/identity', async (importOriginal) => ({
   resolveAgentIdentity: () => ({ ownerId: 'owner-x' }),
 }));
 
-import { shapeCodeRunLogs, shapeMutationEcho, bindInnerDispatch } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
+import { shapeCodeRunLogs, shapeMutationEcho, annotateChildFailureWarning, bindInnerDispatch } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
 
 /**
  * B-CX-2A: the code:run tool registers into the projected registry, is marked write-effect
@@ -621,6 +621,128 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
     }) as Record<string, unknown>;
     expect(shaped.okFalseWarning).toBeUndefined();
     expect(shaped.okFalseMutations).toBeUndefined();
+  });
+});
+
+// WI-7061: `ok:true` on the envelope means "the script executed", but every caller reads it as
+// "the work succeeded". EI-7669/EI-7784 closed that for WRITE-effect calls (okFalseMutations +
+// okFalseWarning). A READ-effect call that reports its own `ok:false` was left with NO naming
+// signal at all, for two compounding reasons:
+//
+//   1. the warning is built ONLY from okFalseMutations, and orchestrate.ts populates that list
+//      `if (tool.effect === 'write')` — so a failed read is never in it; and
+//   2. shapeMutationEcho early-returns on `plannedMutations.length === 0`, so a script that made
+//      NO writes at all never even reaches the warning block.
+//
+// Detection itself was already general — orchestrate.ts pushes EVERY semantically-failed child
+// (read or write) into `childFailures` and sets `partial: true` off it. So the caller was handed
+// `ok:true, partial:true` and a childFailures array, with nothing saying WHAT failed in prose.
+// That is the actual gap, and it is narrower than "code:run has no nested-failure detection":
+// the signal existed, the human-readable pointer to it did not.
+describe('annotateChildFailureWarning — a failed READ-effect child call is named too (WI-7061)', () => {
+  const base = { ok: true as const, summary: { done: true }, logs: [] as string[], dryRun: false };
+
+  it('⭐ names a failed read-effect call even when the script made NO writes at all', () => {
+    // The exact shape that used to slip through: zero plannedMutations (so the mutation-echo
+    // path early-returns) and a read tool that resolved with its own ok:false.
+    const annotated = annotateChildFailureWarning({
+      ...base,
+      partial: true,
+      plannedMutations: [],
+      okFalseMutations: [],
+      childFailures: [
+        { tool: 'work_items:get', kind: 'semantic', result: { ok: false, error: 'not_found' } },
+      ],
+    }) as Record<string, unknown>;
+
+    expect(annotated.ok).toBe(true); // still true — the script did run. This is the misleading bit.
+    expect(annotated.partial).toBe(true);
+    expect(annotated.childFailureWarning).toEqual(expect.stringContaining('work_items:get'));
+    expect(annotated.childFailureWarning).toEqual(expect.stringContaining('ok:false'));
+
+    // THE GAP, pinned permanently rather than as a transient red: the mutation-echo path alone
+    // cannot produce this warning for the same input — `plannedMutations.length === 0` makes it
+    // return untouched. If someone later "simplifies" by folding the annotation back into
+    // shapeMutationEcho, this assertion fails and says why.
+    const echoOnly = shapeMutationEcho({
+      ...base,
+      partial: true,
+      plannedMutations: [],
+      okFalseMutations: [],
+      childFailures: [
+        { tool: 'work_items:get', kind: 'semantic', result: { ok: false, error: 'not_found' } },
+      ],
+    }) as Record<string, unknown>;
+    expect(echoOnly.childFailureWarning).toBeUndefined();
+    expect(echoOnly.okFalseWarning).toBeUndefined();
+  });
+
+  it('does NOT duplicate a write failure okFalseWarning already names', () => {
+    // The negative control that keeps the two fields complementary rather than redundant: a
+    // write failure is already covered in prose by okFalseWarning, so naming it again here
+    // would just add noise to the result an agent has to read.
+    const annotated = annotateChildFailureWarning({
+      ...base,
+      partial: true,
+      plannedMutations: [{ tool: 'coord:send', args: { to: ['nobody'] } }],
+      okFalseMutations: [
+        { tool: 'coord:send', args: { to: ['nobody'] }, result: { ok: false, error: 'unknown_recipient' } },
+      ],
+      childFailures: [
+        { tool: 'coord:send', kind: 'semantic', result: { ok: false, error: 'unknown_recipient' } },
+      ],
+    }) as Record<string, unknown>;
+
+    expect(annotated.childFailureWarning).toBeUndefined();
+  });
+
+  it('names ONLY the read failures when a script mixed a failed read with a failed write', () => {
+    const annotated = annotateChildFailureWarning({
+      ...base,
+      partial: true,
+      plannedMutations: [{ tool: 'coord:send', args: { to: ['nobody'] } }],
+      okFalseMutations: [
+        { tool: 'coord:send', args: { to: ['nobody'] }, result: { ok: false, error: 'unknown_recipient' } },
+      ],
+      childFailures: [
+        { tool: 'coord:send', kind: 'semantic', result: { ok: false, error: 'unknown_recipient' } },
+        { tool: 'plans:get', kind: 'semantic', result: { ok: false, error: 'not_found' } },
+      ],
+    }) as Record<string, unknown>;
+
+    expect(annotated.childFailureWarning).toEqual(expect.stringContaining('plans:get'));
+    expect(annotated.childFailureWarning).not.toEqual(expect.stringContaining('coord:send'));
+  });
+
+  it('is a no-op on a clean run, and on a fixture with no childFailures field at all', () => {
+    const clean = annotateChildFailureWarning({
+      ...base,
+      plannedMutations: [],
+      childFailures: [],
+    }) as Record<string, unknown>;
+    expect(clean.childFailureWarning).toBeUndefined();
+
+    // Defensive: hand-built/older fixtures omit childFailures entirely — must not throw.
+    const legacy = annotateChildFailureWarning({
+      ...base,
+      plannedMutations: [],
+    } as never) as Record<string, unknown>;
+    expect(legacy.childFailureWarning).toBeUndefined();
+  });
+
+  it('does not fire for a THROWN child (rejected/uncertain) — those have their own warnings', () => {
+    // buildFailureWarning already covers the throw path with double-write semantics; naming
+    // them here too would contradict it (a rejected call provably wrote nothing).
+    const annotated = annotateChildFailureWarning({
+      ...base,
+      ok: false as unknown as true,
+      plannedMutations: [],
+      childFailures: [
+        { tool: 'work_items:claim', kind: 'rejected', error: 'bad args' },
+        { tool: 'work_items:claim', kind: 'uncertain', error: 'timeout' },
+      ],
+    }) as Record<string, unknown>;
+    expect(annotated.childFailureWarning).toBeUndefined();
   });
 });
 

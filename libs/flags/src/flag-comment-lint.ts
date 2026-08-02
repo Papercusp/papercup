@@ -74,6 +74,18 @@
  *      to ASK the question, and a comment's word order should not decide whether it
  *      gets asked. Also folds in the verb form ("defaults to OFF") and a colon after
  *      DEFAULT ("DEFAULT: OFF"), which the original `[\s-]+` character class missed.
+ *
+ *   6. A "SHIPS DARK" NARRATIVE CLAIM COUNTS TOO (EI-18886519654229938 /
+ *      EI-19360358881224651, 2026-08-02) — the fifth AND sixth real recurrences of
+ *      this exact bug class, found live in THIS repo's own types.ts, neither caught
+ *      by any of steps 1-5: LEARNING_SLO_SENSORS and GRADUATION_TRACKER each said
+ *      "…so it ships dark until the plan's P-001 arming gate closes" with no literal
+ *      "DEFAULT OFF", no "listed in DARK_FLAGS", and no reversed/verb form anywhere
+ *      in the comment — five established forms, zero matches, silently skipped both.
+ *      "ship(s) dark" is now its own claim-of-darkness form, EXCLUDING the common
+ *      negated idiom "finished work never ships dark" (used by several genuinely
+ *      default-ON entries to explain why they are correctly ON, not why they are
+ *      dark) via a `never|not|no|n't` guard within 30 chars before the phrase.
  */
 
 export interface FlagCommentEntry {

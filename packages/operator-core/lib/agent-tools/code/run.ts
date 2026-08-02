@@ -223,7 +223,10 @@ export default defineTool({
     // batch (e.g. 600+ set_priority calls) — even when the script's own `summary` is tiny — and
     // forces the agent to split one logical write across many code:run calls. shapeMutationEcho
     // swaps it for a compact { count, byTool } summary on a committing run.
-    const shownResult = shapeCodeRunLogs(shapeMutationEcho(result));
+    // WI-7061: annotate AFTER shapeMutationEcho, never inside it — that function returns early
+    // when the script planned no mutations, which is exactly the read-only case whose failed
+    // child call had no naming signal at all.
+    const shownResult = shapeCodeRunLogs(annotateChildFailureWarning(shapeMutationEcho(result)));
 
     const payload =
       similarRecipes.length > 0 || facadeHelp || fieldMissHelp
@@ -648,6 +651,66 @@ export function buildFailureWarning(
       `landed before retrying, to avoid a double-write.${suffix}` +
       (rejected.length > 0 || uncertain.length > 0 ? ` ${ORDERING_HINT}` : ''),
     ...strandedWriteWarning(stranded),
+  };
+}
+
+/**
+ * WI-7061: name a READ-effect child call that reported its own `ok:false`.
+ *
+ * EI-7669/EI-7784 closed this for WRITE-effect calls, but only for those: orchestrate.ts fills
+ * `okFalseMutations` under `if (tool.effect === 'write')`, and the prose warning built from it
+ * lives inside `shapeMutationEcho`, which early-returns on `plannedMutations.length === 0`. So a
+ * script that made no writes — or that made writes and ALSO consumed a failed read — handed the
+ * caller `ok:true` + `partial:true` and nothing saying WHAT failed.
+ *
+ * Detection was never the gap: orchestrate.ts already pushes every semantically-failed child
+ * (read or write) into `childFailures` and derives `partial` from it. The missing piece was the
+ * human-readable pointer, which is what agents actually read. A failed READ is its own hazard,
+ * distinct from a failed write: the script very likely branched on it, or folded it into a
+ * summary, so the returned value can be confidently wrong rather than merely incomplete.
+ *
+ * Deliberately COMPLEMENTARY to `okFalseWarning`, never overlapping — a write already named
+ * there is skipped here, so the two fields never say the same thing twice, and the remediation
+ * each implies stays distinct (a write asks "did it land?", a read asks "did I reason on junk?").
+ * Thrown children are skipped too: `buildFailureWarning` owns those, with double-write semantics
+ * this must not contradict (a `rejected` call provably wrote nothing).
+ *
+ * Applied at the call site, AFTER shapeMutationEcho, precisely so the mutation-echo early return
+ * cannot suppress it.
+ */
+export function annotateChildFailureWarning<T extends OrchestrationRunResult | Record<string, unknown>>(
+  result: T,
+): T | Record<string, unknown> {
+  const childFailures = (result as { childFailures?: unknown }).childFailures;
+  if (!Array.isArray(childFailures) || childFailures.length === 0) return result;
+
+  const namedByOkFalse = new Set(
+    (((result as { okFalseMutations?: unknown }).okFalseMutations as
+      | ReadonlyArray<{ tool?: unknown }>
+      | undefined) ?? [])
+      .map((m) => (typeof m?.tool === 'string' ? m.tool : undefined))
+      .filter((t): t is string => t !== undefined),
+  );
+
+  const unnamed = Array.from(
+    new Set(
+      (childFailures as ReadonlyArray<{ tool?: unknown; kind?: unknown }>)
+        // 'semantic' only — a thrown child belongs to buildFailureWarning, not here.
+        .filter((f) => f?.kind === 'semantic')
+        .map((f) => (typeof f?.tool === 'string' ? f.tool : undefined))
+        .filter((t): t is string => t !== undefined)
+        .filter((t) => !namedByOkFalse.has(t)),
+    ),
+  );
+  if (unnamed.length === 0) return result;
+
+  return {
+    ...result,
+    childFailureWarning:
+      `${unnamed.length} read-effect call(s) dispatched without throwing but reported ok:false in ` +
+      `their own result: ${unnamed.join(', ')}. The script still ran to completion, so \`ok\` is ` +
+      'true — but any value derived from these calls may be wrong, not merely missing. Check ' +
+      '`childFailures` for each result before trusting this summary.',
   };
 }
 
